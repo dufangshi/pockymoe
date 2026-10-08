@@ -206,7 +206,9 @@ pub(crate) fn shared_thread_path_allowed(
                 return true;
             }
             let parts: Vec<&str> = suffix.split('/').filter(|part| !part.is_empty()).collect();
-            parts.len() == 3 && parts[0] == "requests" && parts[2] == "respond"
+            parts.len() == 3
+                && ((parts[0] == "requests" && parts[2] == "respond")
+                    || (parts[0] == "pending-steers" && parts[2] == "steer"))
         }
         _ => false,
     }
@@ -523,6 +525,11 @@ mod tests {
             &Method::POST,
             "/api/threads/thread-1/prompt"
         ));
+        assert!(!access_allows(
+            &access,
+            &Method::POST,
+            "/api/threads/thread-1/pending-steers/pending-1/steer"
+        ));
         access.thread_access = "control".to_string();
         for route in [
             "/api/management/harnesses",
@@ -541,6 +548,16 @@ mod tests {
             &access,
             &Method::POST,
             "/api/threads/thread-1/prompt"
+        ));
+        assert!(access_allows(
+            &access,
+            &Method::POST,
+            "/api/threads/thread-1/pending-steers/pending-1/steer"
+        ));
+        assert!(!access_allows(
+            &access,
+            &Method::POST,
+            "/api/threads/thread-1/pending-steers/pending-1"
         ));
         assert!(!access_allows(
             &access,
