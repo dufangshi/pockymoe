@@ -89,7 +89,9 @@ test('theme presets restyle the app, combine with color modes and persist across
   await expect(root).toHaveAttribute('data-theme-preset', 'plum-pocket');
   await expect(root).toHaveAttribute('data-theme-effective', 'dark');
   const composer = page.locator('.matter-workbench .thread-graph-composer-shell');
-  await expect(composer).toHaveCSS('border-top-style', 'dashed');
+  // A solid felt edge with a stitched seam inside it.
+  await expect(composer).toHaveCSS('border-top-style', 'solid');
+  await expect.poll(() => composer.evaluate((node) => getComputedStyle(node, '::before').borderTopStyle)).toBe('dashed');
   if (!mobile) {
     const avatar = page.locator('.matter-thread-row .matter-thread-avatar[data-agent="codex"]').first();
     await expect(avatar).toBeVisible();
