@@ -69,3 +69,65 @@ test('Plum Pocket replies carry the agent byline and phone-sized step targets; C
   await expect(page.getByText('Short answer without tools.')).toBeVisible();
   await expect(page.locator('.thread-transcript-agent')).toHaveCount(0);
 });
+
+test('Plum Pocket step stream reads prose first: quiet toggle, small muted steps, line icons', async ({ page, request }) => {
+  const absPath = path.resolve(process.env.E2E_WORKSPACE_ROOT!, randomUUID());
+  await mkdir(absPath, { recursive: true });
+  const workspace = await (await request.post(`${base}/api/workspaces`, { data: { absPath, label: 'Plum stream' } })).json();
+  const started = await (await request.post(`${base}/api/threads/start`, { data: { workspaceId: workspace.id, title: 'Plum stream', provider: 'acp', agentId: 'claude', model: 'ios-e2e-stream', approvalMode: 'yolo' } })).json();
+  const id = started.id ?? started.thread.id;
+  const detail = await (await request.get(`${base}/api/threads/${id}`)).json();
+  const at = (seconds: number) => new Date(Date.UTC(2026, 9, 11, 9, 0, seconds)).toISOString();
+  await page.routeWebSocket(/\/ws(?:\?.*)?$/, socket => {
+    socket.send(JSON.stringify({ type: 'supervisor.connected' }));
+    socket.onMessage(() => socket.send(JSON.stringify({ type: 'supervisor.pong' })));
+  });
+  await page.route(`**/api/threads/${id}?**`, route => route.fulfill({ json: {
+    ...detail, totalTurnCount: 1, activeSubagents: [], thread: { ...detail.thread, status: 'running', activeTurnId: 'run' },
+    turns: [{ id: 'run', status: 'inProgress', startedAt: at(0), completedAt: null, items: [
+      { id: 'p', kind: 'userMessage', text: 'Fix the banner.', createdAt: at(0) },
+      { id: 'c1', kind: 'commandExecution', text: 'rg -n banner src', status: 'completed', createdAt: at(2) },
+      { id: 'r1', kind: 'fileRead', text: '/repo/src/banner.ts', status: 'completed', createdAt: at(3) },
+      { id: 'm1', kind: 'agentMessage', text: 'The banner gets the raw API message, so translating it at render time covers this case.', createdAt: at(9) },
+      { id: 'w1', kind: 'other', origin: 'nativeTaskNotification', taskStatus: 'completed', text: 'Run the tests', createdAt: at(11), awakenedAt: at(11) },
+      { id: 'm2', kind: 'agentMessage', text: 'Tests pass.', createdAt: at(12) },
+      { id: 'c2', kind: 'commandExecution', text: 'git commit', status: 'in_progress', createdAt: at(13) },
+    ] }],
+  } }));
+  await page.addInitScript(() => {
+    localStorage.setItem('remote-codex.locale', 'en');
+    localStorage.setItem('pockymoe-theme-preset', 'plum-pocket');
+    localStorage.setItem(`pockymoe.onboarding.v1:${JSON.stringify([location.origin, 'local:owner'])}`, JSON.stringify({ welcomeDismissed: true, completed: [] }));
+  });
+  await page.goto(`/threads/${id}`);
+  const toggle = page.locator('.thread-graph-worked-summary > button').first();
+  await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  // The expanded work toggle is plain text: no pill or shadow, even right after a tap.
+  expect(await toggle.evaluate((e) => [getComputedStyle(e).backgroundColor, getComputedStyle(e).boxShadow])).toEqual(['rgba(0, 0, 0, 0)', 'none']);
+
+  const timeline = page.locator('.thread-execution-timeline').first();
+  const narration = timeline.getByText('The banner gets the raw API message', { exact: false });
+  await expect(narration).toBeVisible();
+  const stepsLabel = timeline.locator('.is-plain-group .thread-graph-history-group-summary > span').first();
+  const style = (locator: typeof narration) => locator.evaluate((e) => {
+    const css = getComputedStyle(e);
+    return { size: parseFloat(css.fontSize), weight: Number(css.fontWeight) };
+  });
+  const prose = await style(narration);
+  const steps = await style(stepsLabel);
+  expect(prose.size).toBeGreaterThan(steps.size);
+  expect(steps.weight).toBeLessThanOrEqual(500);
+  expect(steps.weight).toBeLessThanOrEqual(prose.weight + 100);
+
+  // Step icons are cap-height line doodles with no tile behind them.
+  await stepsLabel.click();
+  const icon = timeline.locator('.thread-history-direct-action .thread-graph-history-tool-icon, .thread-graph-history-group-inline-icon').first();
+  await expect(icon).toBeVisible();
+  const box = (await icon.boundingBox())!;
+  expect(box.width).toBeLessThanOrEqual(13);
+  expect(await icon.evaluate((e) => getComputedStyle(e).maskImage || getComputedStyle(e).webkitMaskImage)).toContain('svg');
+  // Wake notices follow the same muted size.
+  const wake = timeline.locator('.thread-graph-task-notice').first();
+  expect((await style(wake)).size).toBeLessThan(prose.size);
+});

@@ -73,6 +73,27 @@
   --tx-shadow: 0 8px 22px rgb(8 3 12 / 28%);
 }
 
+/* Hand-drawn step icons (16px grid, used as CSS masks so they take the text color). */
+:root[data-theme-preset='plum-pocket'] {
+  --tx-ico-terminal: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.55' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M2.6 4.4c1.5 1 2.8 2.1 3.9 3.5-1.1 1.3-2.4 2.5-3.8 3.6'/%3E%3Cpath d='M8.4 11.9c1.6-.1 3.3 0 5 .2'/%3E%3C/svg%3E");
+  --tx-ico-read: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.55' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 2.4c2-.1 4-.1 5.6 0l2.6 2.7c.1 2.9.1 5.8-.1 8.6-2.6.2-5.3.2-8 .1-.2-3.8-.2-7.6-.1-11.4z'/%3E%3Cpath d='M9.5 2.5c0 1 0 2 .1 2.9 1 0 1.8 0 2.6-.1'/%3E%3Cpath d='M5.8 8.2c1.4-.1 2.8-.1 4.3 0'/%3E%3Cpath d='M5.8 10.9c1.1 0 2.2-.1 3.3 0'/%3E%3C/svg%3E");
+  --tx-ico-edit: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.55' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 13.1c.2-1.2.5-2.3.9-3.3l6.6-6.6c.8-.7 1.9-.5 2.4.3.5.7.3 1.6-.4 2.2l-6.6 6.5c-.9.4-1.9.7-2.9.9z'/%3E%3Cpath d='M9.4 4.4l2.1 2.2'/%3E%3C/svg%3E");
+  --tx-ico-web: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.55' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M8 2.3c3.2-.1 5.7 2.4 5.7 5.7 0 3.2-2.5 5.8-5.7 5.7-3.1 0-5.7-2.5-5.6-5.7C2.4 4.9 4.9 2.3 8 2.3z'/%3E%3Cpath d='M8 2.4c-1.7 1.6-2.4 3.5-2.3 5.6.1 2.2.9 4 2.3 5.6'/%3E%3Cpath d='M8 2.4c1.6 1.6 2.3 3.6 2.3 5.6s-.8 4-2.3 5.6'/%3E%3Cpath d='M2.7 6.3c3.5-.4 7.1-.4 10.6 0'/%3E%3Cpath d='M2.8 9.9c3.4.4 7 .4 10.4-.1'/%3E%3C/svg%3E");
+  --tx-ico-search: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.55' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6.9 2.8c2.3 0 4.1 1.8 4.1 4.1 0 2.2-1.8 4-4.1 4-2.2.1-4-1.8-4-4 0-2.3 1.8-4.1 4-4.1z'/%3E%3Cpath d='M10 10.1c1.1 1 2.1 2 3.1 3.1'/%3E%3C/svg%3E");
+  --tx-ico-think: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.55' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 11.3c-1.6.1-2.7-1-2.6-2.3.1-1.3 1.2-2.1 2.4-1.9.2-1.7 1.6-2.8 3.2-2.7 1.4.1 2.5 1.1 2.7 2.4 1.3-.2 2.5.7 2.5 2 0 1.4-1.1 2.4-2.6 2.4-1.9.1-3.8.1-5.6.1z'/%3E%3Cpath d='M4 13.5h.1'/%3E%3Cpath d='M2.6 14.8h.1'/%3E%3C/svg%3E");
+  --tx-ico-wake: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.55' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 11.2c.6-.6.9-1.5.9-2.6V7.1c0-1.9 1.4-3.5 3.1-3.5s3.1 1.6 3.1 3.5v1.5c0 1.1.3 2 .9 2.6-2.7.3-5.4.3-8 0z'/%3E%3Cpath d='M6.8 13.2c.6.6 1.8.6 2.4 0'/%3E%3Cpath d='M2.4 4.6c.4-.9 1-1.6 1.8-2.1'/%3E%3Cpath d='M13.6 4.6c-.4-.9-1-1.6-1.8-2.1'/%3E%3C/svg%3E");
+  --tx-ico-wait: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.55' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4.3 2.6c2.5-.1 5-.1 7.4 0'/%3E%3Cpath d='M4.3 13.4c2.5.1 5 .1 7.4 0'/%3E%3Cpath d='M5 2.7c0 2.2 1.2 3.6 3 5.3 1.8-1.7 3-3.1 3-5.3'/%3E%3Cpath d='M5 13.3c0-2.2 1.2-3.6 3-5.3 1.8 1.7 3 3.1 3 5.3'/%3E%3C/svg%3E");
+  --tx-ico-agent: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.55' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M8 3.6c2.8 0 4.7 1.8 4.7 4.4 0 2.6-2 4.4-4.7 4.4S3.3 10.6 3.3 8C3.3 5.4 5.2 3.6 8 3.6z'/%3E%3Cpath d='M8 3.6c0-.7.1-1.2.4-1.6'/%3E%3Cpath d='M6.3 7.6h.1'/%3E%3Cpath d='M9.7 7.6h.1'/%3E%3Cpath d='M6.6 9.8c.9.6 2 .6 2.8 0'/%3E%3C/svg%3E");
+  --tx-ico-tool: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.55' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M10.6 2.6c-1.6.2-2.6 1.6-2.3 3.1L3 11c-.6.6-.6 1.5 0 2 .6.6 1.4.6 2-.1l5.3-5.2c1.5.4 3-.6 3.2-2.2l-1.6 1-1.6-.4-.4-1.6z'/%3E%3C/svg%3E");
+  --tx-ico-skill: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.55' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M7.6 2.4c.5 2.6 1.3 3.4 3.8 3.9-2.5.5-3.3 1.3-3.8 3.9-.5-2.6-1.3-3.4-3.8-3.9 2.5-.5 3.3-1.3 3.8-3.9z'/%3E%3Cpath d='M12.2 10.2c.2 1 .5 1.3 1.4 1.5-.9.2-1.2.5-1.4 1.5-.2-1-.5-1.3-1.4-1.5.9-.2 1.2-.5 1.4-1.5z'/%3E%3C/svg%3E");
+  --tx-ico-plan: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.55' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M2.8 4.3l1 1 1.7-2'/%3E%3Cpath d='M2.8 9.1l1 1 1.7-2'/%3E%3Cpath d='M7.4 4.6c1.9-.1 3.8-.1 5.8 0'/%3E%3Cpath d='M7.4 9.4c1.9-.1 3.8 0 5.8 0'/%3E%3Cpath d='M7.4 13c1.3 0 2.6-.1 3.9 0'/%3E%3C/svg%3E");
+  --tx-ico-pocket: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.55' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M2.6 4.3c3.6-.4 7.2-.4 10.8 0 .3 4.9-1.8 8.9-5.4 9.3C4.4 13.2 2.3 9.2 2.6 4.3z'/%3E%3Cpath d='M4.6 6.4h.9'/%3E%3Cpath d='M7.6 6.5h.9'/%3E%3Cpath d='M10.5 6.4h.9'/%3E%3C/svg%3E");
+  --tx-ico-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.55' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M2.7 3.6c3.5-.2 7.1-.2 10.6 0 .2 3 .2 5.9 0 8.8-3.5.2-7.1.2-10.6 0-.2-2.9-.2-5.8 0-8.8z'/%3E%3Cpath d='M3.3 11.5l3.2-3.3 2.4 2.3 1.6-1.4 2.3 2.3'/%3E%3Cpath d='M10.4 6.1h.1'/%3E%3C/svg%3E");
+  --tx-ico-box: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.55' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M2.6 4c3.6-.2 7.2-.2 10.8 0v2.3c-3.6.2-7.2.2-10.8 0z'/%3E%3Cpath d='M3.4 6.5c.1 2.3.1 4.6 0 6.9 3.1.2 6.1.2 9.2 0-.1-2.3-.1-4.6 0-6.9'/%3E%3Cpath d='M6.4 8.9c1.1.1 2.1.1 3.2 0'/%3E%3C/svg%3E");
+  --tx-ico-hook: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.55' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M10.6 2.6v6.6c0 2.4-1.4 4-3.4 4-1.9 0-3.2-1.3-3.2-3.2 0-.7.2-1.3.5-1.8'/%3E%3Cpath d='M4.5 8.2l-1.4.4'/%3E%3C/svg%3E");
+  --tx-ico-info: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.55' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M8 2.3c3.2-.1 5.7 2.4 5.7 5.7 0 3.2-2.5 5.8-5.7 5.7-3.1 0-5.7-2.5-5.6-5.7C2.4 4.9 4.9 2.3 8 2.3z'/%3E%3Cpath d='M8 7.4c0 1.3.1 2.5 0 3.7'/%3E%3Cpath d='M8 5h.1'/%3E%3C/svg%3E");
+}
+
 /* ── Turn rhythm ─────────────────────────────────────────────────────────── */
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-turn { padding-block: 0.9rem; }
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-turn-body > :not([hidden]) ~ :not([hidden]),
@@ -158,17 +179,28 @@
   letter-spacing: 0.01em;
   color: var(--tx-name);
 }
+/* The work summary is a quiet inline text toggle: no pill, no shadow, in any state. */
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-worked-summary > button {
+  gap: 3px;
   min-height: 28px;
-  margin-inline: -6px 0;
-  padding: 0 6px;
-  border-radius: 999px;
-  color: var(--theme-fg-soft);
+  margin: 0;
+  padding: 0;
+  border-radius: 4px;
+  color: var(--theme-fg-muted);
 }
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-worked-summary > button:hover:not(:disabled) { background: var(--theme-hover); color: var(--theme-fg); }
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-worked-summary > button:focus-visible { outline: 2px solid var(--theme-accent-solid); outline-offset: 1px; }
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-worked-label { font-size: 12px; font-weight: 600; }
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-worked-summary .thread-execution-step-count { color: var(--theme-fg-muted); font-size: 12px; }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-worked-summary > button,
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-worked-summary > button:is(:hover, :active, :focus, [aria-expanded='true']) {
+  border: 0;
+  background: none;
+  box-shadow: none;
+}
+@media (hover: hover) {
+  :root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-worked-summary > button:hover:not(:disabled) { color: var(--theme-fg); }
+}
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-worked-summary > button:focus-visible { outline: 2px solid var(--theme-accent-solid); outline-offset: 2px; }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-worked-summary > button svg { width: 13px; height: 13px; }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-worked-label { font-size: 12.5px; font-weight: 500; }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-worked-summary .thread-execution-step-count { color: var(--theme-fg-muted); font-size: 12.5px; font-weight: 400; }
 /* While the agent works, its avatar breathes a mustard ring. */
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-turn[data-turn-active='true'] .thread-transcript-agent .matter-thread-avatar {
   animation: tx-avatar-working 1.8s ease-in-out infinite;
@@ -222,6 +254,8 @@
     margin-left: 42px;
     width: auto;
   }
+  /* Narration inside the steps card already sits in that column. */
+  :root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-turn:has(.thread-transcript-agent) .thread-execution-timeline .thread-graph-message[data-role='assistant'] { margin-left: 0; }
 }
 
 /* ── Running: a typing bubble with the agent's face ──────────────────────── */
@@ -244,10 +278,11 @@
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-turn-footer .thread-progress-indicator .rounded-full { width: 7px; height: 7px; }
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-turn-footer .thread-progress-indicator:focus-visible { outline: 2px solid var(--theme-accent-solid); }
 
-/* ── Steps: a stitched pocket card ───────────────────────────────────────── */
+/* ── Steps: a stitched pocket card where the agent's narration is the content
+   and the steps are small muted annotations with hand-drawn line icons. ── */
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-execution-timeline {
   margin: 2px 0 10px;
-  padding: 6px 8px;
+  padding: 8px 14px;
   border: 1.5px dashed var(--tx-card-border);
   border-radius: 16px;
   background: var(--tx-card);
@@ -255,158 +290,202 @@
 }
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-execution-timeline > * { margin: 0; }
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-execution-timeline > *::before { content: none; }
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-execution-timeline .thread-graph-message-bubble { font-size: 13px; }
 
-/* The card header ("9 steps · 1m 54s") gets the pocket's >_ badge. */
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell .is-plain-group > .thread-graph-history-group-card > .thread-graph-history-group-toggle {
-  gap: 8px;
-  min-height: 34px;
-  padding: 2px 4px;
-  border-radius: 10px;
-}
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell .is-plain-group > .thread-graph-history-group-card > .thread-graph-history-group-toggle::before {
-  content: '>_';
-  display: inline-grid;
-  flex: none;
-  place-items: center;
-  width: 24px;
-  height: 24px;
-  border-radius: 50%;
-  background: var(--theme-accent-solid);
-  color: var(--theme-accent-solid-fg);
-  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--theme-accent-solid-fg) 18%, transparent);
-  font: 800 10px/1 ui-monospace, 'SFMono-Regular', Menlo, monospace;
-  letter-spacing: -0.04em;
-}
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell .is-compact-group.is-plain-group > .thread-graph-history-group-card > button > .thread-graph-history-group-summary > span {
+/* Narration: full ink, the reading size of a reply. */
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-execution-timeline .thread-graph-message[data-role='assistant'] { padding: 6px 0 8px; color: var(--theme-fg); }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell.thread-ui-shell .thread-execution-timeline .thread-graph-message[data-role='assistant'] :is(.thread-graph-message-bubble, .thread-graph-markdown, .thread-graph-message-prose, .thread-graph-plain-text) {
+  font-size: 14.5px;
+  font-weight: 400;
+  line-height: 1.72;
   color: var(--theme-fg);
-  font-size: 13px;
-  font-weight: 700;
 }
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell .is-plain-group > .thread-graph-history-group-card > button > .thread-graph-history-group-time { color: var(--theme-fg-muted); }
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell .is-plain-group > .thread-graph-history-group-card > .thread-graph-history-group-toggle .thread-graph-history-group-chevron { margin-left: auto; }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-execution-timeline .thread-graph-message[data-role='assistant'] .thread-graph-markdown p { margin-bottom: 0.45rem; }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-execution-timeline .thread-graph-message-time-row { margin-bottom: 1px; }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-execution-timeline .thread-graph-message-time-row .thread-graph-message-time { font-size: 10.5px; color: var(--theme-fg-muted); }
 
-/* Lists inside the card: no rail, rows sit on the card. */
+/* Thoughts: a muted aside with a thought-cloud doodle. */
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell.thread-ui-shell .thread-execution-timeline .thread-graph-message[data-variant='reasoning'] :is(.thread-graph-message-bubble, .thread-graph-markdown, .thread-graph-message-prose, .thread-graph-plain-text, strong) {
+  font-size: 12.5px;
+  font-weight: 400;
+  line-height: 1.6;
+  color: var(--theme-fg-muted);
+}
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-execution-timeline .thread-graph-message[data-variant='reasoning'] .thread-graph-message-bubble { padding-left: 19px; }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-execution-timeline .thread-graph-message[data-variant='reasoning'] .thread-graph-message-bubble::before {
+  content: '';
+  position: absolute;
+  top: 0.32em;
+  left: 0;
+  width: 12px;
+  height: 12px;
+  background: var(--tx-tile-read-fg);
+  -webkit-mask: var(--tx-ico-think) center / contain no-repeat;
+  mask: var(--tx-ico-think) center / contain no-repeat;
+}
+
+/* Step rows: 12px, regular weight, muted. */
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell :is(.is-compact-group > .thread-graph-history-group-card > .thread-graph-history-group-toggle, .thread-history-direct-action, .matter-command-step) {
+  gap: 7px;
+  min-height: 28px;
+  padding: 2px 4px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--theme-fg-muted);
+}
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-execution-timeline :is(.is-compact-group > .thread-graph-history-group-card > .thread-graph-history-group-toggle, .thread-history-direct-action) { margin-left: -4px; }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-history-direct-row { gap: 6px; padding: 0; font-size: 12px; }
+/* Touch screens keep :hover after a tap, so only pointers that hover get a tint. */
+@media (hover: hover) {
+  :root[data-theme-preset='plum-pocket'] .thread-ui-shell :is(.thread-graph-history-group-toggle, .thread-history-direct-action, .matter-command-step):hover { background: var(--tx-row-hover); color: var(--theme-fg-soft); }
+}
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell :is(.thread-graph-history-group-toggle, .thread-history-direct-action, .matter-command-step):focus-visible {
+  outline: 2px solid var(--theme-accent-solid);
+  outline-offset: -2px;
+}
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .is-compact-group .thread-graph-history-group-summary > span,
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .is-compact-group.is-plain-group > .thread-graph-history-group-card > button > .thread-graph-history-group-summary > span {
+  color: var(--theme-fg-muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-history-tool-label { flex: none; color: var(--theme-fg-muted); font-weight: 500; }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-history-direct-preview { color: var(--theme-fg-soft); }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell :is(.thread-graph-history-group-chevron, .matter-step-chevron) svg,
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-step-chevron { width: 11px; height: 11px; color: var(--theme-fg-muted); }
+
+/* The step-group header ("4 steps · 14s ›") reads inline, with a pocket doodle. */
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .is-plain-group > .thread-graph-history-group-card > .thread-graph-history-group-toggle { gap: 6px; }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .is-plain-group > .thread-graph-history-group-card > .thread-graph-history-group-toggle::before {
+  content: '';
+  flex: none;
+  width: 12px;
+  height: 12px;
+  background: var(--tx-tile-edit-fg);
+  -webkit-mask: var(--tx-ico-pocket) center / contain no-repeat;
+  mask: var(--tx-ico-pocket) center / contain no-repeat;
+}
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .is-plain-group > .thread-graph-history-group-card > button > .thread-graph-history-group-time { color: var(--theme-fg-muted); font-size: 10.5px; }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .is-plain-group > .thread-graph-history-group-card > .thread-graph-history-group-toggle .thread-graph-history-group-chevron { margin-left: 0; }
+
+/* Lists inside the card. */
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell .is-compact-group > .thread-graph-history-group-card > .thread-graph-history-group-list {
-  margin: 2px 0 2px 0;
+  margin: 0 0 2px;
   padding: 0;
   border-left: 0;
 }
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-history-group-list > * + * { margin-top: 0; }
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell .is-compact-group:not(.is-plain-group) > .thread-graph-history-group-card > .thread-graph-history-group-list {
-  margin-left: 15px;
-  padding-left: 15px;
-  border-left: 1.5px dotted var(--theme-border-strong);
+  margin-left: 5px;
+  padding-left: 12px;
+  border-left: 1px dotted var(--theme-border-strong);
 }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .is-plain-group > .thread-graph-history-group-card > .thread-graph-history-group-list { padding-left: 2px; }
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-history-group.is-compact-group { padding: 0; }
 
-/* Every step row: tile, verb, mono detail, status, time. */
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell .is-compact-group:not(.is-plain-group) > .thread-graph-history-group-card > .thread-graph-history-group-toggle,
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-history-direct-action {
-  gap: 9px;
-  min-height: 34px;
-  padding: 3px 4px;
-  border-radius: 10px;
-  font-size: 12.5px;
-  color: var(--theme-fg-soft);
+/* Hand-drawn line icons, about cap height, no tile or disc behind them.
+   The icon box masks itself; the Lucide glyph inside is hidden. */
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell.thread-ui-shell :is(.is-compact-group .thread-graph-history-group-inline-icon, .thread-history-direct-action .thread-graph-history-tool-icon, .thread-graph-history-event-icon) {
+  display: inline-block;
+  flex: 0 0 12px;
+  width: 12px !important;
+  height: 12px !important;
+  margin: 0;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: currentColor !important;
+  color: var(--theme-fg-muted) !important;
+  -webkit-mask: var(--tx-ico, var(--tx-ico-info)) center / contain no-repeat;
+  mask: var(--tx-ico, var(--tx-ico-info)) center / contain no-repeat;
 }
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-history-direct-row { gap: 6px; padding: 0; font-size: 12.5px; }
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell :is(.thread-graph-history-group-toggle, .thread-history-direct-action, .matter-command-step):hover { background: var(--tx-row-hover); }
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell :is(.thread-graph-history-group-toggle, .thread-history-direct-action, .matter-command-step):focus-visible {
-  outline: 2px solid var(--theme-accent-solid);
-  outline-offset: -2px;
-}
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell .is-compact-group .thread-graph-history-group-summary > span { font-size: 12.5px; color: var(--theme-fg); font-weight: 600; }
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-history-tool-label { flex: none; color: var(--theme-fg-muted); font-weight: 600; }
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-history-direct-preview { color: var(--theme-fg); }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell :is(.is-compact-group .thread-graph-history-group-inline-icon, .thread-history-direct-action .thread-graph-history-tool-icon, .thread-graph-history-event-icon) > * { visibility: hidden; }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell.thread-ui-shell :is(.thread-graph-history-group-command .thread-graph-history-group-inline-icon, .is-command .thread-graph-history-tool-icon) { --tx-ico: var(--tx-ico-terminal); color: var(--tx-tile-agent-fg) !important; }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell.thread-ui-shell :is(.thread-graph-history-group-file-read .thread-graph-history-group-inline-icon, .is-file-read .thread-graph-history-tool-icon) { --tx-ico: var(--tx-ico-read); color: var(--tx-tile-read-fg) !important; }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell.thread-ui-shell :is(.thread-graph-history-group-file-change .thread-graph-history-group-inline-icon, .is-file-change .thread-graph-history-event-icon) { --tx-ico: var(--tx-ico-edit); color: var(--tx-tile-edit-fg) !important; }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell.thread-ui-shell :is(.thread-graph-history-group-search .thread-graph-history-group-inline-icon, .is-search .thread-graph-history-tool-icon) { --tx-ico: var(--tx-ico-web); color: var(--tx-tile-search-fg) !important; }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell.thread-ui-shell :is(.thread-graph-history-group-tool .thread-graph-history-group-inline-icon, .is-tool .thread-graph-history-tool-icon) { --tx-ico: var(--tx-ico-tool); color: var(--theme-fg-muted) !important; }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell.thread-ui-shell .thread-graph-history-group-tool .thread-graph-history-group-inline-icon:has(.lucide-bot),
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell.thread-ui-shell .is-agent .thread-graph-history-tool-icon { --tx-ico: var(--tx-ico-agent); color: var(--tx-tile-agent-fg) !important; }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell.thread-ui-shell .is-skill .thread-graph-history-tool-icon { --tx-ico: var(--tx-ico-skill); color: var(--tx-tile-edit-fg) !important; }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell.thread-ui-shell .is-plan .thread-graph-history-event-icon { --tx-ico: var(--tx-ico-plan); color: var(--tx-tile-edit-fg) !important; }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell.thread-ui-shell .is-context .thread-graph-history-event-icon { --tx-ico: var(--tx-ico-box); }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell.thread-ui-shell .is-image .thread-graph-history-event-icon { --tx-ico: var(--tx-ico-image); color: var(--tx-tile-search-fg) !important; }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell.thread-ui-shell .is-hook .thread-graph-history-event-icon { --tx-ico: var(--tx-ico-hook); }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell.thread-ui-shell .is-artifact .thread-graph-history-event-icon { --tx-ico: var(--tx-ico-box); }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-history-event-icon { margin-top: 0.55rem; }
 
-/* Kind tiles. */
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell :is(.is-compact-group .thread-graph-history-group-inline-icon, .thread-history-direct-action .thread-graph-history-tool-icon) {
-  display: inline-grid;
-  flex: 0 0 24px;
-  place-items: center;
-  width: 24px;
-  height: 24px;
-  border: 0;
-  border-radius: 8px;
-  background: var(--tx-tile-tool);
-  color: var(--tx-tile-tool-fg);
+/* Wake, wait and other background notices: the same quiet annotation. */
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-task-notice { font-size: 12px; }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-task-notice-toggle { gap: 7px; color: var(--theme-fg-muted); }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-task-notice-label { font-weight: 500; }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-task-notice-time { font-size: 10.5px; }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-task-notice-icon { display: none; }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-task-notice-toggle:has(.thread-graph-task-notice-icon)::before {
+  content: '';
+  flex: none;
+  width: 12px;
+  height: 12px;
+  background: var(--tx-tile-edit-fg);
+  -webkit-mask: var(--tx-ico-wake) center / contain no-repeat;
+  mask: var(--tx-ico-wake) center / contain no-repeat;
 }
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell :is(.is-compact-group .thread-graph-history-group-inline-icon, .thread-history-direct-action .thread-graph-history-tool-icon) svg { width: 14px; height: 14px; }
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-history-direct-action .thread-graph-history-tool-icon > * { border: 0; background: none; padding: 0; width: auto; height: auto; }
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell :is(.thread-graph-history-group-file-read .thread-graph-history-group-inline-icon, .is-file-read .thread-graph-history-tool-icon) { background: var(--tx-tile-read); color: var(--tx-tile-read-fg); }
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell :is(.thread-graph-history-group-command .thread-graph-history-group-inline-icon, .is-command .thread-graph-history-tool-icon) { background: var(--tx-tile-command); color: var(--tx-tile-command-fg); }
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell :is(.thread-graph-history-group-file-change .thread-graph-history-group-inline-icon, .is-file-change .thread-graph-history-tool-icon) { background: var(--tx-tile-edit); color: var(--tx-tile-edit-fg); }
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell :is(.thread-graph-history-group-search .thread-graph-history-group-inline-icon, .is-search .thread-graph-history-tool-icon) { background: var(--tx-tile-search); color: var(--tx-tile-search-fg); }
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell :is(.thread-graph-history-group-tool .thread-graph-history-group-inline-icon, .is-agent .thread-graph-history-tool-icon) { background: var(--tx-tile-agent); color: var(--tx-tile-agent-fg); }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-task-notice-toggle:has(.lucide-hourglass)::before {
+  -webkit-mask-image: var(--tx-ico-wait);
+  mask-image: var(--tx-ico-wait);
+}
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-task-notice.is-failed .thread-graph-task-notice-toggle::before { background: var(--tx-fail); }
 
-/* Commands and paths in mono, commands on a small chip. */
+/* Commands and paths in mono, without chips: annotations, not buttons. */
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell :is(.is-command, .is-file-read) .thread-history-direct-preview,
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-command-step .matter-step-title {
   font-family: ui-monospace, 'SFMono-Regular', 'JetBrains Mono', Menlo, Consolas, monospace;
-  font-size: 12px;
+  font-size: 11.5px;
+  color: var(--theme-fg-soft);
 }
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell .is-command .thread-history-direct-preview {
-  flex: 0 1 auto;
-  padding: 1px 7px;
-  border-radius: 6px;
-  background: var(--tx-code-chip);
-  color: var(--tx-code-chip-fg);
-}
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .is-command .thread-history-direct-preview { flex: 0 1 auto; }
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell .is-command .thread-history-direct-preview + .matter-step-status { margin-right: auto; }
 
 /* Tool calls and searches inside an expanded group. */
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-history-group-list > .thread-graph-history-detail-row {
-  min-height: 32px;
-  padding: 4px 6px;
-  border-radius: 9px;
+  min-height: 28px;
+  padding: 2px 4px;
+  border-radius: 8px;
+  font-size: 12px;
 }
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-history-group-tool .thread-graph-history-detail-text {
   font-family: ui-monospace, 'SFMono-Regular', 'JetBrains Mono', Menlo, Consolas, monospace;
-  font-size: 12px;
-  color: var(--theme-fg);
-}
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-history-group-list .thread-graph-history-detail-meta { color: var(--theme-fg-muted); }
-
-/* Rows inside an expanded group. */
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-command-step {
-  gap: 9px;
-  min-height: 32px;
-  padding: 4px 6px;
-  border-radius: 9px;
-  font-size: 12px;
+  font-size: 11.5px;
   color: var(--theme-fg-soft);
 }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-history-group-list .thread-graph-history-detail-meta { color: var(--theme-fg-muted); font-size: 10.5px; }
+
+/* Step numbers are plain small figures. */
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-step-number {
-  display: inline-grid;
   flex: none;
-  place-items: center;
-  min-width: 22px;
-  height: 18px;
-  border-radius: 6px;
-  background: var(--theme-muted);
+  min-width: 14px;
   color: var(--theme-fg-muted);
   font-size: 10px;
-  font-weight: 700;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
 }
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-step-title { color: var(--theme-fg); }
 
-/* Status: green check, rose cross, mustard spinner. */
+/* Status: small green check, rose cross, mustard spinner. */
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-step-status.is-completed { color: var(--tx-ok); }
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-step-status.is-failed { color: var(--tx-fail); }
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-step-status.is-pending { color: var(--tx-run); }
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-step-status svg { width: 15px; height: 15px; }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-step-status svg { width: 12px; height: 12px; }
 
 /* Line deltas. */
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-history-delta-badge {
   border: 0;
   background: transparent;
   font-family: ui-monospace, 'SFMono-Regular', Menlo, monospace;
-  font-weight: 700;
+  font-size: 10.5px;
+  font-weight: 600;
 }
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-history-delta-badge.is-add { color: var(--tx-ok); }
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-history-delta-badge.is-remove { color: var(--tx-fail); }
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell :is(.thread-graph-relative-time, .matter-step-time, .thread-graph-history-group-time) { color: var(--theme-fg-muted); }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell :is(.thread-graph-relative-time, .matter-step-time, .thread-graph-history-group-time) { color: var(--theme-fg-muted); font-size: 10.5px; }
 
 /* Running batches keep Classic's sheen, in plum. */
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell .is-compact-group.is-running-batch > .thread-graph-history-group-card > button > .thread-graph-history-group-summary > span {
@@ -419,38 +498,12 @@
 @media (prefers-reduced-motion: reduce) {
   :root[data-theme-preset='plum-pocket'] .thread-ui-shell .is-compact-group.is-running-batch > .thread-graph-history-group-card > button > .thread-graph-history-group-summary > span {
     background: none;
-    color: var(--theme-fg);
+    color: var(--theme-fg-muted);
   }
 }
-
-/* Commentary and thoughts between steps: quiet notes aligned with the step text. */
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-execution-timeline .thread-graph-message[data-role='assistant'] {
-  padding: 2px 4px 4px 37px;
-  color: var(--theme-fg-soft);
-}
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-execution-timeline .thread-graph-message[data-role='assistant'] .thread-graph-markdown {
-  font-size: 13px;
-  line-height: 1.6;
-}
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-execution-timeline .thread-graph-message[data-role='assistant'] .thread-graph-markdown :is(h1, h2, h3, h4) {
-  margin: 0.2em 0;
-  font-size: 13px;
-  color: var(--theme-fg);
-}
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-execution-timeline .thread-graph-message[data-role='assistant'] .thread-graph-markdown p { margin-bottom: 0.3rem; }
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-history-group-summary .animate-pulse { background-color: var(--theme-accent-solid); }
 
-/* Plan, context and generic events: small cards with a tile. */
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-history-event-icon {
-  display: grid;
-  place-items: center;
-  width: 26px;
-  height: 26px;
-  border-radius: 8px;
-  background: var(--tx-tile-tool);
-  color: var(--tx-tile-tool-fg);
-}
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell .is-plan .thread-graph-history-event-icon { background: var(--tx-badge); color: var(--tx-badge-fg); }
+/* Plan, context and generic events. */
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-history-event-title { font-family: var(--plum-display); font-weight: 600; }
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell :is(.thread-graph-thinking-body, .thread-graph-plan-card) {
   border: 1.5px dashed var(--tx-card-border);
@@ -707,4 +760,11 @@
 
 @media (prefers-reduced-motion: reduce) {
   :root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-transcript-agent .matter-thread-avatar { animation: none; }
+}
+
+@media (max-width: 639px) {
+  :root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-execution-timeline { padding: 6px 12px; }
+  /* Steps stay small to the eye but keep 44px rows for thumbs. */
+  :root[data-theme-preset='plum-pocket'] .thread-ui-shell.thread-ui-shell :is(.is-compact-group > .thread-graph-history-group-card > .thread-graph-history-group-toggle, .thread-history-direct-action, .matter-command-step, .thread-graph-history-group-list > .thread-graph-history-detail-row) { min-height: 44px; }
+  :root[data-theme-preset='plum-pocket'] .thread-ui-shell.thread-ui-shell .thread-execution-timeline .thread-graph-message[data-role='assistant']:not([data-variant='reasoning']) :is(.thread-graph-message-bubble, .thread-graph-markdown, .thread-graph-message-prose, .thread-graph-plain-text) { font-size: 15px; }
 }
