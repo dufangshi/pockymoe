@@ -39,10 +39,10 @@ modes.
 - Agent-thread groups carry neutral class hooks (`matter-agent-threads`,
   `matter-agent-threads-summary`, `matter-agent-threads-menu`,
   `matter-agent-threads-item`) that only a preset styles.
-- On phones, Plum Pocket keeps the workbench top bar to 44px controls and moves
-  Home, Chat and the device monitor into the thread drawer (`matter-drawer-tools`).
-  The workbench checks the preset with `useDocumentThemePreset()`; Classic keeps
-  them in the top bar.
+- On phones, Plum Pocket keeps the workbench top bar to 44px-tall controls and moves
+  Home and Chat into the thread drawer (`matter-drawer-tools`). The device monitor
+  stays in the top bar as a compact CPU/memory meter. The workbench checks the
+  preset with `useDocumentThemePreset()`; Classic keeps all of them in the top bar.
 - The chat composer form carries `data-agent` (derived from the harness label) and
   `data-composer-busy` while a turn runs, and the toolbox rows carry
   `data-toolbox-action`. Classic ignores them. Plum Pocket uses them for the
