@@ -47,20 +47,19 @@ test('Plum Pocket replies carry the agent byline and phone-sized step targets; C
   const replyTop = await turns.nth(0).getByText('Short answer without tools.').evaluate(e => e.getBoundingClientRect().top);
   expect(await byline.evaluate(e => e.getBoundingClientRect().bottom)).toBeLessThanOrEqual(replyTop);
 
-  // The steps open as a pocket card; outer disclosures keep 44px targets; nested steps use compact 36px rows.
+  // The steps open as a pocket card; the work disclosure keeps its touch target; typed batches open directly.
   await turns.nth(1).getByRole('button', { name: /Expand turn 2$/ }).click();
-  await turns.nth(1).getByRole('button', { name: 'Expand 2 operations' }).click();
+  await expect(turns.nth(1).locator('.thread-graph-history-group-activity')).toHaveCount(0);
   await turns.nth(1).getByRole('button', { name: /Expand 2 command entries/ }).click();
   await expect(turns.nth(1).getByRole('button', { name: 'Open grouped command 1' })).toBeVisible();
   if (testInfo.project.name === 'mobile-chromium') {
     for (const target of [
       turns.nth(1).getByRole('button', { name: /Collapse turn 2$/ }),
-      turns.nth(1).getByRole('button', { name: 'Collapse 2 operations' }),
     ]) expect((await target.boundingBox())!.height, await target.getAttribute('aria-label') ?? '').toBeGreaterThanOrEqual(44);
     for (const target of [
       turns.nth(1).getByRole('button', { name: /Collapse 2 command entries/ }),
       turns.nth(1).getByRole('button', { name: 'Open grouped command 1' }),
-    ]) expect((await target.boundingBox())!.height).toBeGreaterThanOrEqual(36);
+    ]) expect((await target.boundingBox())!.height).toBeGreaterThanOrEqual(24);
     expect(await page.getByTestId('thread-scroll-container').evaluate(e => e.scrollWidth <= e.clientWidth)).toBe(true);
   }
 

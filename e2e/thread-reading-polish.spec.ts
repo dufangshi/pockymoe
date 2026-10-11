@@ -781,7 +781,7 @@ test('live narration replaces its outside preview during tools and wake, with co
   const boxes = await rows.evaluateAll(els => els.map(el => { const r = el.getBoundingClientRect(); return { y: r.y, bottom: r.bottom }; }));
   for (let i = 1; i < boxes.length; i++) expect(boxes[i]!.y - boxes[i - 1]!.bottom).toBeLessThanOrEqual(4);
   const subgroupToggle = children.locator('.thread-graph-history-group-toggle').first();
-  if (isMobile) expect((await subgroupToggle.boundingBox())!.height).toBeLessThanOrEqual(36);
+  if (isMobile) expect((await subgroupToggle.boundingBox())!.height).toBeLessThanOrEqual(28);
   await expect(page.getByText(progress.text, { exact: true })).toHaveCount(1);
   expect(await page.getByTestId('thread-scroll-container').evaluate(el => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
   await batch.scrollIntoViewIfNeeded();
@@ -810,4 +810,61 @@ test('live narration replaces its outside preview during tools and wake, with co
   await page.reload();
   await expect(page.getByText(final.text, { exact: true })).toBeVisible();
   await expect(page.getByText(progress.text, { exact: true })).toHaveCount(0);
+});
+
+test('a homogeneous command batch opens once with half-sized whitespace', async ({ page, request }, testInfo) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('remote-codex.locale', 'zh-CN');
+    localStorage.setItem('remote-codex-theme-mode', 'light');
+    localStorage.setItem('pockymoe-theme-preset', 'plum-pocket');
+    localStorage.setItem(`pockymoe.onboarding.v1:${JSON.stringify([location.origin, 'local:owner'])}`, JSON.stringify({ welcomeDismissed: true, completed: [] }));
+  });
+  const id = await createThread(request);
+  const detail = await (await request.get(`${base}/api/threads/${id}`)).json();
+  const startedAt = new Date(Date.now() - 60_000).toISOString();
+  const commands = Array.from({ length: 14 }, (_, i) => ({ id: `command-${i}`, kind: 'commandExecution', text: ['git status --short', 'rg -n progress src', 'pnpm typecheck', 'pnpm test'][i % 4], status: 'completed', createdAt: new Date(Date.parse(startedAt) + i * 2000).toISOString() }));
+  await page.routeWebSocket(/\/ws(?:\?.*)?$/, socket => {
+    socket.send(JSON.stringify({ type: 'supervisor.connected' }));
+    socket.onMessage(() => socket.send(JSON.stringify({ type: 'supervisor.pong' })));
+  });
+  await page.route(`**/api/threads/${id}?**`, route => route.fulfill({ json: {
+    ...detail, totalTurnCount: 1, activeSubagents: [], thread: { ...detail.thread, status: 'idle', activeTurnId: null },
+    turns: [{ id: 'command-batch', status: 'completed', startedAt, items: [
+      { id: 'prompt', kind: 'userMessage', text: '检查改动并运行验证。' },
+      { id: 'progress', kind: 'agentMessage', text: '我先检查实现，再运行相关验证。' },
+      ...commands,
+      { id: 'final', kind: 'agentMessage', text: '全部检查已完成。' },
+    ] }],
+  } }));
+  await page.goto(`/threads/${id}`);
+  await page.locator('.thread-graph-worked-summary button[aria-expanded]').click();
+  const history = page.locator('.thread-execution-timeline');
+  await expect(history.locator('.thread-graph-history-group-activity')).toHaveCount(0);
+  const group = history.locator('.thread-graph-history-group-command');
+  const header = group.locator('.thread-graph-history-group-toggle');
+  await expect(header).toContainText('14 条命令');
+  expect((await header.boundingBox())!.height).toBeLessThanOrEqual(28);
+  await header.click();
+  const rows = group.locator('.matter-command-step');
+  await expect(rows).toHaveCount(14);
+  const geometry = await rows.evaluateAll(els => els.map(el => ({ height: el.getBoundingClientRect().height, lineHeight: parseFloat(getComputedStyle(el).lineHeight), y: el.getBoundingClientRect().y })));
+  for (let i = 0; i < geometry.length; i++) {
+    expect(geometry[i]!.height).toBeLessThanOrEqual(24);
+    expect(geometry[i]!.height - geometry[i]!.lineHeight).toBeLessThanOrEqual(6);
+    if (i) expect(geometry[i]!.y - geometry[i - 1]!.y).toBeLessThanOrEqual(24);
+  }
+  const narrative = history.getByText('我先检查实现，再运行相关验证。', { exact: true });
+  expect((await header.boundingBox())!.y - (await narrative.boundingBox())!.y - (await narrative.boundingBox())!.height).toBeLessThanOrEqual(8);
+  expect(await page.getByTestId('thread-scroll-container').evaluate(el => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
+  // Keep the entire batch above the floating composer for the visual evidence.
+  await history.evaluate(el => {
+    const scroll = document.querySelector('[data-testid="thread-scroll-container"]')!;
+    const composer = document.querySelector('[data-testid="chat-composer"]')!;
+    scroll.scrollTop += Math.max(0, el.getBoundingClientRect().bottom - composer.getBoundingClientRect().top + 8);
+  });
+  await history.screenshot({ path: testInfo.outputPath('single-command-batch.png'), scale: 'css' });
+  await header.click();
+  await expect(rows).toHaveCount(0);
+  await header.click();
+  await expect(rows).toHaveCount(14);
 });

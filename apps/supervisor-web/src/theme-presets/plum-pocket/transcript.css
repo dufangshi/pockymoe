@@ -292,14 +292,14 @@
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-execution-timeline > *::before { content: none; }
 
 /* Narration: full ink, the reading size of a reply. */
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-execution-timeline .thread-graph-message[data-role='assistant'] { padding: 6px 0 8px; color: var(--theme-fg); }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-execution-timeline .thread-graph-message[data-role='assistant'] { padding: 3px 0 4px; color: var(--theme-fg); }
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell.thread-ui-shell .thread-execution-timeline .thread-graph-message[data-role='assistant'] :is(.thread-graph-message-bubble, .thread-graph-markdown, .thread-graph-message-prose, .thread-graph-plain-text) {
   font-size: 14.5px;
   font-weight: 400;
   line-height: 1.72;
   color: var(--theme-fg);
 }
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-execution-timeline .thread-graph-message[data-role='assistant'] .thread-graph-markdown p { margin-bottom: 0.45rem; }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-execution-timeline .thread-graph-message[data-role='assistant'] .thread-graph-markdown p { margin-bottom: 0.225rem; }
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-execution-timeline .thread-graph-message-time-row { margin-bottom: 1px; }
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-execution-timeline .thread-graph-message-time-row .thread-graph-message-time { font-size: 10.5px; color: var(--theme-fg-muted); }
 
@@ -769,8 +769,15 @@
   :root[data-theme-preset='plum-pocket'] .thread-ui-shell.thread-ui-shell .thread-execution-timeline .thread-graph-message[data-role='assistant']:not([data-variant='reasoning']) :is(.thread-graph-message-bubble, .thread-graph-markdown, .thread-graph-message-prose, .thread-graph-plain-text) { font-size: 15px; }
 }
 
-/* Nested steps are one compact block; narration keeps its reading rhythm. */
+/* Compact step rhythm: half the previous blank space around each label. */
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-history-group-activity > .thread-graph-history-group-card > .thread-graph-history-group-list > * { margin-block: 0; }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-execution-timeline .thread-graph-markdown > p:last-child { margin-bottom: 0; }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell.thread-ui-shell .thread-execution-timeline .thread-graph-history-group-list :is(.matter-command-step, .thread-graph-history-detail-row) {
+  min-height: 24px;
+  padding-block: 1px;
+  line-height: 18px;
+}
 @media (max-width: 639px) {
-  :root[data-theme-preset='plum-pocket'] .thread-ui-shell.thread-ui-shell .thread-graph-history-group-activity .thread-graph-history-group-list :is(.thread-graph-history-group-toggle, .thread-history-direct-action, .matter-command-step, .thread-graph-history-detail-row) { min-height: 36px; }
+  :root[data-theme-preset='plum-pocket'] .thread-ui-shell.thread-ui-shell .thread-execution-timeline :is(.is-compact-group > .thread-graph-history-group-card > .thread-graph-history-group-toggle, .thread-history-direct-action) { min-height: 28px; }
+  :root[data-theme-preset='plum-pocket'] .thread-ui-shell.thread-ui-shell .thread-execution-timeline .is-plain-group > .thread-graph-history-group-card > .thread-graph-history-group-toggle { min-height: 32px; }
 }

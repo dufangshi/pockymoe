@@ -70,8 +70,10 @@ modes.
 - Transcript turns carry `data-turn-status`, and under Plum Pocket each reply opens
   with the replying agent's avatar and name (`graph-chat/TranscriptAgent.tsx`).
 - Expanded step batches keep their child tools and subgroups indented behind a
-  vertical guide in both presets. Plum Pocket uses contiguous 36px nested rows on
-  phones; the outer work and batch disclosures retain 44px touch targets.
+  vertical guide in both presets. Plum Pocket uses contiguous 24px detail rows and 28px subgroup headers;
+  mixed-operation batch headers are 32px on phones. The outer work disclosure
+  retains its 44px touch target. A single typed batch uses its own disclosure
+  directly without a redundant outer step batch.
 - Outer pages (workspaces, devices, relay home, sign-in, account, admin, guide,
   import, port preview) carry a neutral `data-page` attribute on their root.
   `plum-pocket/pages.css` uses it to hide help paragraphs and eyebrows, turn boxed
