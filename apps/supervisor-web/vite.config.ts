@@ -9,7 +9,10 @@ import { defineConfig } from 'vite';
 const require = createRequire(import.meta.url);
 
 function packageChunk(id: string) {
-  if (!id.includes('/node_modules/')) {
+  // A stylesheet assigned to a vendor chunk makes that whole chunk a static
+  // dependency of its importer (the shared UI imports xterm.css eagerly), so
+  // leave CSS to the default chunking.
+  if (!id.includes('/node_modules/') || /\.css($|\?)/.test(id)) {
     return null;
   }
 
@@ -72,7 +75,13 @@ export default defineConfig(({ mode }) => {
   const apiProxyTarget = process.env.VITE_API_PROXY_TARGET ?? 'http://127.0.0.1:8787';
   const wsProxyTarget = process.env.VITE_WS_PROXY_TARGET ?? 'ws://127.0.0.1:8787';
   const threadUiRoot = path.resolve(__dirname, '../../pockymoe-thread-ui');
-  const lucideReactEntry = require.resolve('lucide-react', { paths: [__dirname] });
+  // One lucide-react copy for the app and the shared UI. Use its ES module
+  // build: the CommonJS entry cannot be tree-shaken and ships every icon.
+  const lucideReactPackage = require.resolve('lucide-react/package.json', { paths: [__dirname] });
+  const lucideReactEntry = path.join(
+    path.dirname(lucideReactPackage),
+    (require(lucideReactPackage) as { module: string }).module,
+  );
   const threeDmolEntry = require.resolve('3dmol', { paths: [__dirname] });
   const threeDmolSource = require.resolve('3dmol/build/3Dmol-min.js', {
     paths: [__dirname],
@@ -155,14 +164,10 @@ export default defineConfig(({ mode }) => {
       chunkSizeWarningLimit: 550,
       rollupOptions: {
         output: {
+          // The shared UI is left to the default chunking so its lazy imports
+          // (Monaco editor and diff, workspace panel, graph view, xterm, mermaid)
+          // stay separate chunks instead of joining the first-paint bundle.
           manualChunks(id) {
-            if (
-              id.includes('/pockymoe-thread-ui/packages/thread-ui/') ||
-              id.includes('/node_modules/@pockymoe/thread-ui/')
-            ) {
-              return 'thread-ui';
-            }
-
             return packageChunk(id);
           },
         },

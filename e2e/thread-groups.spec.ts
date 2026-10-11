@@ -7,7 +7,7 @@ test.afterEach(async ({ page }) => {
   await page.unrouteAll({ behavior: 'wait' });
 });
 
-test('agent tabs stay grouped after polling and navigate through an unclipped menu', async ({ page, request }, testInfo) => {
+test('agent tabs stay grouped after list refreshes and navigate through an unclipped menu', async ({ page, request }, testInfo) => {
   const base = `http://127.0.0.1:${process.env.E2E_API_PORT ?? 8787}`;
   const directory = path.resolve(process.env.E2E_WORKSPACE_ROOT ?? '.local/e2e-playwright', `groups-${randomUUID()}`);
   await fs.mkdir(directory, { recursive: true });
@@ -40,7 +40,13 @@ test('agent tabs stay grouped after polling and navigate through an unclipped me
   const toggle = tabs.getByRole('button', { name: 'Research root: 2 agent threads' });
   await expect(toggle).toBeVisible();
   await expect(tabs.locator('a.matter-group-tab')).toHaveCount(1);
-  await expect.poll(() => snapshots).toBeGreaterThanOrEqual(2);
+  // Another thread's turn events make the page re-read the list.
+  const refreshList = async () => {
+    const before = snapshots;
+    expect((await request.post(`${base}/api/threads/${grandchild.id}/prompt`, { data: { prompt: 'hello' } })).ok()).toBe(true);
+    await expect.poll(() => snapshots).toBeGreaterThan(before);
+  };
+  await refreshList();
   await expect(toggle).toBeVisible();
   if (testInfo.project.name === 'mobile-chromium') {
     await page.getByRole('button', { name: 'Toggle shortcuts sidebar' }).click();
@@ -55,6 +61,8 @@ test('agent tabs stay grouped after polling and navigate through an unclipped me
   const parentDetail = await (await request.get(`${base}/api/threads/${root.id}?view=summary`)).json();
   expect(parentDetail.thread.status).toBe('idle');
   descendantRunning = false;
+  await expect.poll(async () => (await (await request.get(`${base}/api/threads/${grandchild.id}?view=summary&limit=1`)).json()).thread.status).toBe('idle');
+  await refreshList();
   await expect(dot).toHaveAttribute('data-status', 'idle');
   await expect(tabs.locator('.matter-group-tab [role="img"]')).toHaveAttribute('data-status', 'idle');
   if (testInfo.project.name === 'mobile-chromium') {

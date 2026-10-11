@@ -99,6 +99,31 @@ describe('account thread navigation', () => {
     unmount();
   });
 
+  it('reuses the page thread list for its own device and fetches only other devices', async () => {
+    const refs = ['mac', 'wsl'].flatMap(deviceId => ['root', 'child'].map(threadId => ({ deviceId, threadId, title: threadId, favorite: false })));
+    const root = { id: 'root', workspaceId: 'app', title: 'Root', status: 'idle' } as ThreadDto;
+    const child = { ...root, id: 'child', parentThreadId: 'root', rootThreadId: 'root' };
+    const calls: string[] = [];
+    vi.mocked(request).mockImplementation(async url => {
+      calls.push(String(url));
+      if (url === '/relay/account/workbench') return { threads: refs, notifications: [] };
+      if (String(url).includes('/mac/api/threads?')) return [root, child];
+      throw new Error(`Unexpected URL: ${url}`);
+    });
+    const { result, rerender, unmount } = renderHook(({ threads }) =>
+      useWorkbenchNavigation(null, threads, 'wsl', undefined, { sharesDeviceThreads: true }),
+    { initialProps: { threads: [] as ThreadDto[] } });
+    // Before the page list loads, its device's references wait instead of
+    // fetching one summary each.
+    await waitFor(() => expect(result.current.navigationReady).toBe(true));
+    await waitFor(() => expect(calls).toHaveLength(2));
+    expect(calls).toEqual(['/relay/account/workbench', '/relay/devices/mac/api/threads?includeAgentThreads=true']);
+    rerender({ threads: [root, { ...child, status: 'running' }] });
+    await waitFor(() => expect(result.current.threads.find(thread => thread.key === 'wsl:child')?.status).toBe('running'));
+    expect(calls.some(url => url.includes('/wsl/'))).toBe(false);
+    unmount();
+  });
+
   it('retains account navigation during device switches without recording the previous device transcript', async () => {
     const focus = vi.spyOn(document, 'hasFocus').mockReturnValue(true);
     const refs = ['mac', 'wsl'].map(deviceId => ({ deviceId, threadId: `${deviceId}-thread`, title: deviceId, workspaceLabel: 'App', favorite: false, visitedAt: '' }));

@@ -106,7 +106,9 @@ swap, each GPU, container limits): an icon, the value and a meter colored from
 green to red by load, with temperature and power as small chips. The CPU row
 expands into a usage chart with a 0–100% scale and the current reading, and a
 per-core chart grid, drawn from about the last 30 samples the page has polled. A failed or stale sample replaces button
-percentages with dashes; the details retain the last sample with its age. Hidden browser tabs pause polling. Older Supervisors display
+percentages with dashes; the details retain the last sample with its age. The
+topbar meter samples every 15 seconds and the open dialog every 2 seconds; hidden
+browser tabs pause polling and sample again on return. Older Supervisors display
 an update instruction instead of fabricated zeroes.
 
 Validation covers Linux native samples against `/proc/stat` and `/proc/meminfo`,

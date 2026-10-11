@@ -53,12 +53,25 @@ function loadLocal(): NavigationSnapshot {
   }
 }
 
+/** Relay navigation re-reads other devices this often while visible. */
+export const RELAY_NAVIGATION_REFRESH_MS = 30_000;
+
 export function useWorkbenchNavigation(
   detail: ThreadDetailDto | null,
   threads: ThreadDto[],
   deviceId: string | null,
   routeThreadId?: string,
+  options: {
+    /**
+     * `threads` is the caller's live list of every thread on `deviceId`
+     * (including agent threads), so navigation does not fetch it again.
+     */
+    sharesDeviceThreads?: boolean;
+  } = {},
 ) {
+  const sharesDeviceThreads = options.sharesDeviceThreads === true;
+  const threadsRef = useRef(threads);
+  threadsRef.current = threads;
   useI18n();
   const relay = relayModeActive();
   const [snapshot, setSnapshot] = useState<NavigationSnapshot>({
@@ -102,7 +115,10 @@ export function useWorkbenchNavigation(
         if (relay) {
           // Explicit device + thread paths: never switch the browser's selected device to poll.
           const deviceSnapshots = new Map<string, ThreadDto[]>();
-          const pendingDevices = [...new Set(next.threads.map(r => r.deviceId).filter((id): id is string => !!id))];
+          // The page keeps the current device's list current from its events.
+          const sharedDevice = sharesDeviceThreads ? deviceId : null;
+          if (sharedDevice && threadsRef.current.length) deviceSnapshots.set(sharedDevice, threadsRef.current);
+          const pendingDevices = [...new Set(next.threads.map(r => r.deviceId).filter((id): id is string => !!id && id !== sharedDevice))];
           await Promise.all(Array.from({ length: Math.min(6, pendingDevices.length) }, async () => {
             while (alive && pendingDevices.length) {
               const id = pendingDevices.shift()!;
@@ -115,7 +131,9 @@ export function useWorkbenchNavigation(
               } catch { /* Thread-scoped access falls back to summary/group endpoints below. */ }
             }
           }));
-          const pending = [...next.threads];
+          // Until the shared list has loaded, its threads wait for the next pass
+          // instead of one summary request each.
+          const pending = next.threads.filter(r => !sharedDevice || r.deviceId !== sharedDevice || deviceSnapshots.has(sharedDevice));
           const missing: ThreadReference[] = [];
           const updates: Record<string, ThreadActivity> = {};
           const groups = new Map<string, ThreadReference>();
@@ -193,7 +211,8 @@ export function useWorkbenchNavigation(
       }
     }
     void refresh();
-    const interval = window.setInterval(() => void refresh(), 5000);
+    // Local navigation is localStorage only; relay navigation crosses devices.
+    const interval = window.setInterval(() => void refresh(), relay ? RELAY_NAVIGATION_REFRESH_MS : 5000);
     const onVisible = () => {
       if (document.visibilityState === 'visible') void refresh();
     };
@@ -206,7 +225,7 @@ export function useWorkbenchNavigation(
       document.removeEventListener('visibilitychange', onVisible);
       window.removeEventListener('storage', onVisible);
     };
-  }, [relay, deviceId]);
+  }, [relay, deviceId, sharesDeviceThreads]);
 
   const save = useCallback(
     async (favorite?: boolean, markRead = false, target?: ThreadReference) => {

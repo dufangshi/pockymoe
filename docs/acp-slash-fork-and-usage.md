@@ -9,7 +9,9 @@ capability and command differences; the Node supervisor is not needed.
 returns, and can change between prompts. The ACP multiplexer stores the latest
 list by process ID and raw session ID, independently of the running turn.
 `GET /api/threads/{id}/capabilities` returns that session's negotiated capabilities
-and toolbox. The composer refreshes this snapshot while the thread is open.
+and toolbox. The page refreshes this snapshot after the thread's turn and
+connection events and shortly after the session opens
+([web-live-updates.md](web-live-updates.md)).
 Native slash commands remain ACP prompts; product actions such as fork use their
 structured HTTP action. A command advertised by one session does not enable it
 in another session or in the provider's default capabilities.

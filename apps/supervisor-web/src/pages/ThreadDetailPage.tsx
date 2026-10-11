@@ -153,6 +153,7 @@ import {
 import { useMobileComposerLayout } from './useMobileComposerLayout';
 import { useThreadAuxiliaryActions } from './useThreadAuxiliaryActions';
 import { useThreadListPolling } from './useThreadListPolling';
+import { useEventDrivenRefresh } from '../lib/useEventDrivenRefresh';
 import { useThreadWorkspaceAdapter } from './useThreadWorkspaceAdapter';
 import { ThreadCreateForm } from './thread-create/ThreadCreateForm';
 
@@ -161,7 +162,35 @@ const DETAIL_TURN_PAGE_SIZE = 3;
 const SUPERVISOR_SOCKET_RECONNECT_DELAY_MS = 1_000;
 const SUPERVISOR_HEALTHCHECK_INTERVAL_MS = 2_000;
 const SUPERVISOR_CONNECTION_STALE_MS = 5_500;
+/** Summary re-read while a turn runs and no socket delivers its events. */
 const ACTIVE_THREAD_REFRESH_INTERVAL_MS = 3_000;
+/** Capability snapshot fallback; events and connection changes refresh it sooner. */
+const CAPABILITY_FALLBACK_REFRESH_MS = 60_000;
+/** ACP agents announce commands shortly after a session opens. */
+const CAPABILITY_SETTLE_DELAYS_MS = [1_500, 6_000];
+/** Turn end without a following thread.updated (older Supervisors). */
+const TURN_END_REFRESH_GRACE_MS = 1_500;
+const DETAIL_REFRESH_COALESCE_MS = 150;
+// Other threads' events that change what the thread list shows.
+const THREAD_LIST_EVENT_TYPES = new Set([
+  'thread.turn.started',
+  'thread.turn.completed',
+  'thread.turn.failed',
+  'thread.updated',
+]);
+// Current-thread events after which the capability snapshot may differ.
+const CAPABILITY_EVENT_TYPES = new Set([
+  'thread.harness.ready',
+  'thread.turn.started',
+  'thread.turn.completed',
+  'thread.turn.failed',
+  'thread.updated',
+  'thread.collaboration.updated',
+]);
+const isPendingSteerUpdate = (event: ThreadEventEnvelope) =>
+  event.type === 'thread.updated' && event.payload.reason === 'pending_steer_updated';
+const threadIsActive = (detail: ThreadDetailDto | null) =>
+  Boolean(detail && (detail.thread.activeTurnId != null || detail.thread.status === 'running'));
 const SOCKET_CONNECTING = 0;
 
 const SOCKET_OPEN = 1;
@@ -443,6 +472,12 @@ export function ThreadDetailPage() {
   const detailMutationInFlightRef = useRef(0);
   const detailMutationChainRef = useRef<Promise<void>>(Promise.resolve());
   const detailRefreshPendingRef = useRef(false);
+  const detailLoadsInFlightRef = useRef(0);
+  const detailLoadStartedAtRef = useRef(0);
+  // The socket opened while the first summary was loading: re-read it only if
+  // the thread turns out to be running (its events may predate the socket).
+  const recheckAfterFirstOpenRef = useRef(false);
+  const initialLoadRetriesRef = useRef(0);
   const pageContextRequestIdRef = useRef(0);
   const pageContextProviderRef = useRef<ThreadDto['provider'] | null>(null);
   const terminalTurnPendingRef = useRef<string | null>(null);
@@ -667,7 +702,7 @@ export function ThreadDetailPage() {
     access: null,
     error: null,
   });
-  const workbenchNavigation = useWorkbenchNavigation(detail, threads, relayRouteDeviceId, id);
+  const workbenchNavigation = useWorkbenchNavigation(detail, threads, relayRouteDeviceId, id, { sharesDeviceThreads: true });
   const relayDeviceRouteActive =
     relayModeActive() && Boolean(relayRouteDeviceId);
   const relayAccess = relayAccessState.access;
@@ -1040,11 +1075,16 @@ export function ThreadDetailPage() {
       cancelled = true;
     };
   }, [detail?.thread.id, detail?.workspace.id, detailRef]);
-  useThreadListPolling({
+  // One list for the page, its tabs and the workbench navigation. Other
+  // threads' socket events refresh it; the fallback covers renames and deletes.
+  const threadList = useThreadListPolling({
     enabled: Boolean(id),
     setThreads,
     includeAgentThreads: true,
+    live: realtimeConnection.socketOpen,
   });
+  const threadListRef = useRef(threadList);
+  threadListRef.current = threadList;
 
   const flushBufferedLiveOutput = useCallback(() => {
     const buffered = liveOutputBufferRef.current;
@@ -1351,28 +1391,46 @@ export function ThreadDetailPage() {
 
   useThreadTabStatus(detail?.thread ?? null);
 
-  useEffect(() => {
+  const refreshCapabilities = useCallback(async () => {
     if (!id) return;
-    let cancelled = false;
-    const refresh = async () => {
-      try {
-        const snapshot = await fetchThreadCapabilitySnapshot(id);
-        if (cancelled) return;
-        setBackendCapabilities(snapshot.effectiveCapabilities ?? UNAVAILABLE_AGENT_CAPABILITIES);
-        setBackendManagementSchema((current) => ({
-          hostConfigFiles: current?.hostConfigFiles ?? [],
-          toolboxItems: snapshot.toolboxItems ?? [],
-          hookCommandTemplates: current?.hookCommandTemplates ?? [],
-          providerConfigFormat: current?.providerConfigFormat ?? 'none',
-          mcpConfigFormat: current?.mcpConfigFormat ?? 'none',
-          configArchives: current?.configArchives ?? false,
-          buildRestart: current?.buildRestart ?? false,
-        }));
-      } catch { /* Initial page load reports connection errors; keep the last snapshot. */ }
-    };
-    const timer = window.setInterval(() => { void refresh(); }, 3000);
-    return () => { cancelled = true; window.clearInterval(timer); };
+    const snapshot = await fetchThreadCapabilitySnapshot(id);
+    if (activeThreadIdRef.current !== id) return;
+    setBackendCapabilities(snapshot.effectiveCapabilities ?? UNAVAILABLE_AGENT_CAPABILITIES);
+    setBackendManagementSchema((current) => ({
+      hostConfigFiles: current?.hostConfigFiles ?? [],
+      toolboxItems: snapshot.toolboxItems ?? [],
+      hookCommandTemplates: current?.hookCommandTemplates ?? [],
+      providerConfigFormat: current?.providerConfigFormat ?? 'none',
+      mcpConfigFormat: current?.mcpConfigFormat ?? 'none',
+      configArchives: current?.configArchives ?? false,
+      buildRestart: current?.buildRestart ?? false,
+    }));
   }, [id]);
+  // The page context reads the first snapshot. Afterwards the thread's events,
+  // its connection, a reconnect or a return to the tab refresh it; failures
+  // keep the last snapshot.
+  const capabilityRefresh = useEventDrivenRefresh({
+    enabled: Boolean(id),
+    refresh: refreshCapabilities,
+    fallbackMs: CAPABILITY_FALLBACK_REFRESH_MS,
+    coalesceMs: 500,
+  });
+  const capabilityRefreshRef = useRef(capabilityRefresh);
+  capabilityRefreshRef.current = capabilityRefresh;
+  const threadConnectionKey = detail?.thread.id === id && detail.thread.isLoaded
+    ? `${id}:${detail.thread.provider}:${detail.thread.agentId ?? ''}:${detail.thread.providerSessionId ?? ''}`
+    : null;
+  const previousConnectionKeyRef = useRef<{ id: string; key: string | null } | null>(null);
+  useEffect(() => {
+    const previous = previousConnectionKeyRef.current;
+    previousConnectionKeyRef.current = { id, key: threadConnectionKey };
+    // Only a connection made while the page is open; the first snapshot covers
+    // a thread that was already connected.
+    if (!threadConnectionKey || !previous || previous.id !== id || previous.key === threadConnectionKey) return;
+    const timers = CAPABILITY_SETTLE_DELAYS_MS.map(delay =>
+      window.setTimeout(() => capabilityRefreshRef.current.request(0), delay));
+    return () => timers.forEach(timer => window.clearTimeout(timer));
+  }, [id, threadConnectionKey]);
 
   const loadPageContext = useCallback(
     async ({ seedThread }: { seedThread?: ThreadDto | null } = {}) => {
@@ -1398,6 +1456,9 @@ export function ThreadDetailPage() {
       const capabilityRequest = threadId
         ? fetchThreadCapabilitySnapshot(threadId)
         : Promise.resolve(null);
+      // Claim the provider before awaiting: detail loads that finish meanwhile
+      // (socket open, recovery) must not start the same bundle again.
+      pageContextProviderRef.current = provider;
 
       const [threadResult, statusResult, modelResult, agentResult, capabilityResult] = await Promise.allSettled([
         fetchThreads(true).catch(() => threadId ? fetchThreadGroup(seedThread?.rootThreadId ?? threadId).catch(() => fetchThreadGroup(threadId)) : []),
@@ -1410,8 +1471,13 @@ export function ThreadDetailPage() {
       if (pageContextRequestIdRef.current !== requestId) {
         return;
       }
+      if (statusResult.status === 'rejected' && modelResult.status === 'rejected') {
+        // Let the next detail load retry the context.
+        pageContextProviderRef.current = null;
+      }
 
       if (threadResult.status === 'fulfilled') {
+        threadListRef.current.markFresh();
         setThreads(
           seedThread
             ? mergeThreadIntoList(threadResult.value, seedThread)
@@ -1422,20 +1488,19 @@ export function ThreadDetailPage() {
       }
 
       if (statusResult.status === 'fulfilled') {
-        pageContextProviderRef.current = provider;
         setStatus(statusResult.value.status);
         setBackendCapabilities(statusResult.value.capabilities);
         setBackendManagementSchema(statusResult.value.managementSchema);
       }
 
       if (modelResult.status === 'fulfilled') {
-        pageContextProviderRef.current = provider;
         setModelOptions(modelResult.value);
       }
       if (agentResult.status === 'fulfilled') {
         setAgentOptions(agentResult.value);
       }
       if (capabilityResult.status === 'fulfilled' && capabilityResult.value) {
+        capabilityRefreshRef.current.markFresh();
         const capabilitySnapshot = capabilityResult.value;
         setBackendCapabilities(
           capabilitySnapshot.effectiveCapabilities ??
@@ -1486,6 +1551,8 @@ export function ThreadDetailPage() {
         setError(null);
       }
 
+      detailLoadsInFlightRef.current += 1;
+      detailLoadStartedAtRef.current = Date.now();
       try {
         const detailResponse = await fetchThreadDetail(id, {
           limit,
@@ -1498,6 +1565,14 @@ export function ThreadDetailPage() {
         if (pageContextProviderRef.current !== detailResponse.thread.provider) {
           void loadPageContext({ seedThread: detailResponse.thread });
         }
+        if (recheckAfterFirstOpenRef.current) {
+          recheckAfterFirstOpenRef.current = false;
+          if (threadIsActive(detailResponse)) {
+            window.setTimeout(() => {
+              void loadThreadDetail({ showLoading: false, clearError: false, reportError: false });
+            }, 0);
+          }
+        }
       } catch (caught) {
         if (loadRequestIdRef.current !== requestId || !reportError) {
           return;
@@ -1508,6 +1583,7 @@ export function ThreadDetailPage() {
             : translate("workbench.unableToLoadThreadDetail"),
         );
       } finally {
+        detailLoadsInFlightRef.current -= 1;
         if (loadRequestIdRef.current === requestId) {
           setLoading(false);
         }
@@ -1515,6 +1591,29 @@ export function ThreadDetailPage() {
     },
     [applyDetailResponse, id, loadPageContext, routeKey],
   );
+
+  // A first load that failed retries with backoff while the tab is visible.
+  const initialLoadFailed = !loading && detail === null && error !== null;
+  useEffect(() => {
+    if (!initialLoadFailed) return;
+    const delay = Math.min(60_000, 3_000 * 2 ** initialLoadRetriesRef.current);
+    let timer: number | null = null;
+    const retry = () => {
+      if (document.visibilityState === 'hidden') return;
+      document.removeEventListener('visibilitychange', retry);
+      initialLoadRetriesRef.current += 1;
+      void loadThreadDetail({ showLoading: false });
+    };
+    timer = window.setTimeout(() => {
+      timer = null;
+      if (document.visibilityState === 'hidden') document.addEventListener('visibilitychange', retry);
+      else retry();
+    }, delay);
+    return () => {
+      if (timer !== null) window.clearTimeout(timer);
+      document.removeEventListener('visibilitychange', retry);
+    };
+  }, [initialLoadFailed, loadThreadDetail]);
 
   useEffect(() => {
     const refresh = () => {void loadThreadDetail({showLoading:false,clearError:false});};
@@ -1644,6 +1743,8 @@ export function ThreadDetailPage() {
     loadRequestIdRef.current += 1;
     pageContextRequestIdRef.current += 1;
     pageContextProviderRef.current = null;
+    recheckAfterFirstOpenRef.current = false;
+    initialLoadRetriesRef.current = 0;
     setDetail(null);
     setError(null);
     setLoading(true);
@@ -1708,16 +1809,24 @@ export function ThreadDetailPage() {
   useEffect(() => {
     let isDisposed = false;
     let heartbeatIntervalId: number | null = null;
+    let detailRefreshTimer: number | null = null;
+    const turnEndTimers = new Set<number>();
+    let socketOpenedBefore = false;
 
+    // Events often arrive together (turn start and status); read once.
     const refreshThreadDetailSilently = () => {
-      if (interruptingRef.current) {
+      if (interruptingRef.current || detailRefreshTimer !== null) {
         return;
       }
-      void loadThreadDetail({
-        showLoading: false,
-        clearError: false,
-        reportError: false,
-      });
+      detailRefreshTimer = window.setTimeout(() => {
+        detailRefreshTimer = null;
+        if (isDisposed || interruptingRef.current) return;
+        void loadThreadDetail({
+          showLoading: false,
+          clearError: false,
+          reportError: false,
+        });
+      }, DETAIL_REFRESH_COALESCE_MS);
     };
 
     const clearReconnectTimer = () => {
@@ -1762,7 +1871,14 @@ export function ThreadDetailPage() {
     const handleSocketEvent = (event: ThreadEventEnvelope) => {
       referenceEventRef.current(event);
       if (event.threadId !== id) {
+        // The current thread reaches the list through its own detail reads.
+        if (THREAD_LIST_EVENT_TYPES.has(event.type) && !isPendingSteerUpdate(event)) {
+          threadListRef.current.refresh();
+        }
         return;
+      }
+      if (CAPABILITY_EVENT_TYPES.has(event.type) && !isPendingSteerUpdate(event)) {
+        capabilityRefreshRef.current.request();
       }
       // Record receipt, not rendering, polling or socket keepalive time.
       if (event.type.startsWith('thread.item.') || event.type.startsWith('thread.turn.')
@@ -2029,6 +2145,14 @@ export function ThreadDetailPage() {
           event.type === 'thread.turn.completed' ||
           event.type === 'thread.turn.failed'
         ) {
+          // The Supervisor follows a turn end with thread.updated once it has
+          // persisted the turn. Read the summary anyway if none follows.
+          const endedAt = Date.now();
+          const timer = window.setTimeout(() => {
+            turnEndTimers.delete(timer);
+            if (!isDisposed && detailLoadStartedAtRef.current < endedAt) refreshThreadDetailSilently();
+          }, TURN_END_REFRESH_GRACE_MS);
+          turnEndTimers.add(timer);
           clearBufferedLiveOutput();
           setLiveOutput('');
           const eventTurnId =
@@ -2190,8 +2314,24 @@ export function ThreadDetailPage() {
           return;
         }
 
-        supervisorRecoveryPendingRef.current = true;
-        refreshThreadDetailSilently();
+        const reconnected = socketOpenedBefore;
+        socketOpenedBefore = true;
+        supervisorRecoveryPendingRef.current = false;
+        const known = detailRef.current?.thread.id === id ? detailRef.current : null;
+        if (reconnected) {
+          // Events may have been missed while the socket was down.
+          refreshThreadDetailSilently();
+          threadListRef.current.refresh(0);
+          capabilityRefreshRef.current.request(0);
+        } else if (known) {
+          // The first summary is current unless a running turn's events
+          // slipped in before the socket subscribed.
+          if (threadIsActive(known)) refreshThreadDetailSilently();
+        } else if (detailLoadsInFlightRef.current > 0) {
+          recheckAfterFirstOpenRef.current = true;
+        } else {
+          refreshThreadDetailSilently();
+        }
         sendSupervisorPing();
         syncRealtimeConnectionState();
       });
@@ -2229,13 +2369,15 @@ export function ThreadDetailPage() {
 
       try {
         await fetchSupervisorHealth();
-        const shouldRefreshFromRecovery = supervisorRecoveryPendingRef.current;
         supervisorHealthOkAtRef.current = new Date().toISOString();
-        if (shouldRefreshFromRecovery) {
+        const socketState = supervisorSocketRef.current?.readyState ?? SOCKET_CLOSED;
+        // A socket that opens refreshes the thread itself; read it here only
+        // while the socket stays down.
+        if (supervisorRecoveryPendingRef.current && socketState === SOCKET_CLOSED) {
           supervisorRecoveryPendingRef.current = false;
           refreshThreadDetailSilently();
         }
-        if ((supervisorSocketRef.current?.readyState ?? SOCKET_CLOSED) !== SOCKET_OPEN) {
+        if (socketState !== SOCKET_OPEN) {
           connectSocket();
         }
       } catch {
@@ -2292,14 +2434,25 @@ export function ThreadDetailPage() {
         connectSocket();
       }
 
-      void runHealthCheck();
+      // The socket's pongs prove the Supervisor is reachable; check HTTP
+      // health only while it is down, and not from a hidden tab.
+      if (
+        (supervisorSocketRef.current?.readyState ?? SOCKET_CLOSED) !== SOCKET_OPEN &&
+        document.visibilityState !== 'hidden'
+      ) {
+        void runHealthCheck();
+      }
       syncRealtimeConnectionState();
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState !== 'hidden') runHeartbeat();
     };
 
     window.addEventListener('online', handleBrowserOnline);
     window.addEventListener('offline', handleBrowserOffline);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
     connectSocket();
-    void runHealthCheck();
     heartbeatIntervalId = window.setInterval(
       runHeartbeat,
       SUPERVISOR_HEALTHCHECK_INTERVAL_MS,
@@ -2309,10 +2462,13 @@ export function ThreadDetailPage() {
       isDisposed = true;
       window.removeEventListener('online', handleBrowserOnline);
       window.removeEventListener('offline', handleBrowserOffline);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
       clearReconnectTimer();
       if (heartbeatIntervalId !== null) {
         window.clearInterval(heartbeatIntervalId);
       }
+      if (detailRefreshTimer !== null) window.clearTimeout(detailRefreshTimer);
+      turnEndTimers.forEach(timer => window.clearTimeout(timer));
       clearBufferedLiveOutput();
       closeSupervisorSocket();
     };
@@ -2327,21 +2483,25 @@ export function ThreadDetailPage() {
     upsertLiveTimelineItem,
   ]);
 
-  useEffect(() => {
-    const shouldPollForTurnUpdates =
-      detail?.thread.activeTurnId !== null ||
-      detail?.thread.status === 'running' ||
+  // Socket events drive a running turn. Poll its summary only while no socket
+  // is open, after the first load, and never from a hidden tab.
+  const realtimeSocketOpen = realtimeConnection.socketOpen;
+  const turnActivityPending =
+    detail != null &&
+    (detail.thread.activeTurnId != null ||
+      detail.thread.status === 'running' ||
       optimisticTurn !== null ||
       optimisticSteers.length > 0 ||
       liveOutput.length > 0 ||
       livePlan !== null ||
-      liveItems !== null;
-
-    if (!shouldPollForTurnUpdates) {
+      liveItems !== null);
+  useEffect(() => {
+    if (!turnActivityPending || realtimeSocketOpen) {
       return;
     }
 
     const intervalId = window.setInterval(() => {
+      if (document.visibilityState === 'hidden') return;
       void loadThreadDetail({
         showLoading: false,
         clearError: false,
@@ -2352,16 +2512,7 @@ export function ThreadDetailPage() {
     return () => {
       window.clearInterval(intervalId);
     };
-  }, [
-    detail?.thread.activeTurnId,
-    detail?.thread.status,
-    liveOutput.length,
-    liveItems,
-    livePlan,
-    loadThreadDetail,
-    optimisticSteers.length,
-    optimisticTurn,
-  ]);
+  }, [turnActivityPending, realtimeSocketOpen, loadThreadDetail]);
 
   const handleLoadEarlierTurns = useCallback(async () => {
     if (!detail || detail.turns.length === 0 || loadingEarlier) {

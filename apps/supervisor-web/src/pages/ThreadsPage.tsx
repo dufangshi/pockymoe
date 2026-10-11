@@ -26,7 +26,8 @@ export function ThreadsPage() {
   const [error, setError] = useState<string | null>(null);
   const [retry, setRetry] = useState(0);
   const navigation = useWorkbenchNavigation(null, threads, deviceId);
-  useThreadListPolling({ enabled: !loading && !!workspace, setThreads });
+  // The empty-workspace page only waits for a first thread to open it.
+  useThreadListPolling({ enabled: !loading && !!workspace, setThreads, intervalMs: 30_000 });
   useEffect(() => {
     let active = true;
     setLoading(true); setError(null); setWorkspace(null); setThreads([]);

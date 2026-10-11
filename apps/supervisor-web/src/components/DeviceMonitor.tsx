@@ -17,6 +17,11 @@ const gib = (bytes: number) => `${(bytes / 2 ** 30).toFixed(1)} GiB`;
 const SENSOR_SETUP = 'https://github.com/dufangshi/pockymoe/blob/main/docs/device-monitor.md#linux-sensor-access';
 /** Samples kept for the CPU charts: about a minute while the dialog polls. */
 const HISTORY = 30;
+/** The open dialog samples every 2 s; the topbar meter every 15 s. */
+const OPEN_POLL_MS = 2_000;
+const CLOSED_POLL_MS = 15_000;
+/** A sample older than about two intervals is shown as stale. */
+const staleAfterSeconds = (open: boolean) => (open ? 15 : 35);
 type CpuSample = { at: string; total: number | null; cores: Array<number | null> };
 
 function Meter({ value, label, thin = false }: { value: number | null; label: string; thin?: boolean }) {
@@ -153,7 +158,7 @@ export function DeviceMonitor() {
       } finally {
         clearTimeout(timeout);
         busy = false;
-        if (!disposed && !stopped) timer = setTimeout(poll, open ? 2000 : 5000);
+        if (!disposed && !stopped) timer = setTimeout(poll, open ? OPEN_POLL_MS : CLOSED_POLL_MS);
       }
     };
     void poll();
@@ -178,7 +183,7 @@ export function DeviceMonitor() {
   const age = data
     ? Math.max(0, Math.floor((now - Date.parse(data.sampledAt)) / 1000))
     : null;
-  const stale = Boolean(error) || (age != null && age > 15);
+  const stale = Boolean(error) || (age != null && age > staleAfterSeconds(open));
   const gpu = data?.gpus.find((gpu) => gpu.usagePercent != null);
   return (
     <>

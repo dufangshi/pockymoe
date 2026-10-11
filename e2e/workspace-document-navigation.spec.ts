@@ -206,10 +206,12 @@ test('GitHub README HTML renders centered badges and workspace illustrations', a
   await lightbox.getByRole('button', { name: 'Zoom in', exact: true }).click();
   await expect(lightbox.locator('.thread-graph-image-lightbox-scale')).toContainText('125%');
   await lightbox.evaluate(el => el.setAttribute('data-kept-preview', 'readme'));
-  // Each real capability poll refreshes the parent page. The same modal and zoom
+  // Each thread refresh re-renders the parent page. The same modal and zoom
   // must survive consecutive refreshes, rather than disappearing a few seconds later.
   for (let i = 0; i < 2; i++) {
-    await page.waitForResponse(response => response.url().includes('/capabilities') && response.ok());
+    const refreshed = page.waitForResponse(response => /\/api\/threads\/[^/?]+\?view=summary/.test(response.url()) && response.ok());
+    await page.evaluate(() => window.dispatchEvent(new Event('model-pricing-updated')));
+    await refreshed;
     await expect(lightbox).toHaveAttribute('data-kept-preview', 'readme');
     await expect(lightbox.locator('.thread-graph-image-lightbox-scale')).toContainText('125%');
   }

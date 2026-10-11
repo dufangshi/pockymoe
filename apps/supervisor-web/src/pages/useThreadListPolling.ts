@@ -1,10 +1,14 @@
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback } from 'react';
 
 import type { ThreadDto } from '@pockymoe/shared';
 import type { Dispatch, SetStateAction } from 'react';
 import { fetchThreads } from '../lib/api';
+import { useEventDrivenRefresh } from '../lib/useEventDrivenRefresh';
 
-export const THREAD_LIST_POLL_INTERVAL_MS = 5_000;
+/** Fallback while the Supervisor socket announces thread changes. */
+export const THREAD_LIST_POLL_INTERVAL_MS = 60_000;
+/** Fallback while no socket announces changes. */
+export const THREAD_LIST_OFFLINE_POLL_INTERVAL_MS = 10_000;
 
 function stableStringify(value: unknown) {
   return JSON.stringify(value);
@@ -39,56 +43,46 @@ export function mergeThreadListSnapshot(
   return changed ? merged : current;
 }
 
+/**
+ * Keeps a thread list current. Callers announce changes with `refresh()` (for
+ * example on thread WebSocket events); otherwise the list is re-read on a slow
+ * fallback (`intervalMs`, or `offlineIntervalMs` while `live` is false), never
+ * while the tab is hidden, and right away on return to the tab.
+ */
 export function useThreadListPolling(input: {
   enabled: boolean;
   setThreads: Dispatch<SetStateAction<ThreadDto[]>>;
   intervalMs?: number;
+  offlineIntervalMs?: number;
+  /** A socket is connected and announces thread changes. */
+  live?: boolean;
   includeAgentThreads?: boolean;
 }) {
-  const { enabled, setThreads, intervalMs = THREAD_LIST_POLL_INTERVAL_MS, includeAgentThreads = false } = input;
-  const inFlightRef = useRef(false);
+  const {
+    enabled,
+    setThreads,
+    intervalMs = THREAD_LIST_POLL_INTERVAL_MS,
+    offlineIntervalMs = THREAD_LIST_OFFLINE_POLL_INTERVAL_MS,
+    live = true,
+    includeAgentThreads = false,
+  } = input;
 
-  const refreshThreads = useCallback(async () => {
-    if (!enabled || inFlightRef.current) {
-      return;
-    }
-
-    if (
-      typeof document !== 'undefined' &&
-      document.visibilityState === 'hidden'
-    ) {
-      return;
-    }
-
-    inFlightRef.current = true;
+  const load = useCallback(async () => {
     try {
       const nextThreads = await fetchThreads(includeAgentThreads);
       setThreads((current) => mergeThreadListSnapshot(current, nextThreads));
     } catch {
-      // Keep the existing room list stable; the next poll can recover.
-    } finally {
-      inFlightRef.current = false;
+      // Keep the existing room list stable; the next refresh can recover.
     }
-  }, [enabled, setThreads, includeAgentThreads]);
+  }, [setThreads, includeAgentThreads]);
 
-  useEffect(() => {
-    if (!enabled || typeof window === 'undefined') {
-      return;
-    }
-
-    const intervalId = window.setInterval(() => {
-      void refreshThreads();
-    }, intervalMs);
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible') {
-        void refreshThreads();
-      }
-    };
-
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    return () => {
-      window.clearInterval(intervalId);
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-    };
-  }, [enabled, intervalMs, refreshThreads]);
+  const { request, markFresh } = useEventDrivenRefresh({
+    enabled,
+    refresh: load,
+    fallbackMs: live ? intervalMs : Math.min(intervalMs, offlineIntervalMs),
+    coalesceMs: 400,
+    // Busy devices announce many turns; re-read at most every 2 s.
+    minIntervalMs: 2_000,
+  });
+  return { refresh: request, markFresh };
 }
