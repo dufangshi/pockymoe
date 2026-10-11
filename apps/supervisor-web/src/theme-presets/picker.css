@@ -1,5 +1,8 @@
 /* Theme preset cards in Settings → Preferences → Appearance. */
+/* The visually hidden radio must stay inside the card: focusing it would otherwise
+   scroll the dialog, which clips its overflow. */
 .theme-preset-option {
+  position: relative;
   display: grid;
   gap: 4px;
   padding: 10px 12px 12px;

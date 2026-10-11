@@ -78,6 +78,8 @@ test('theme presets restyle the app, combine with color modes and persist across
   await expect(presets.getByRole('radio', { name: /^Classic/ })).toBeChecked();
   await presets.locator('label').filter({ hasText: 'Plum Pocket' }).click();
   await expect(root).toHaveAttribute('data-theme-preset', 'plum-pocket');
+  // Focusing the card's hidden radio must not scroll the clipped dialog itself.
+  expect(await dialog.evaluate(node => node.scrollTop)).toBe(0);
   await expect(presets.getByRole('radio', { name: /^Plum Pocket/ })).toBeChecked();
   expect(await token('--theme-accent-solid')).toBe('#e8a93a');
   await dialog.getByRole('radio', { name: 'Dark', exact: true }).locator('..').click();
@@ -101,6 +103,7 @@ test('theme presets restyle the app, combine with color modes and persist across
   const inside = page.getByRole('dialog', { name: 'Settings', exact: true });
   await inside.getByRole('radiogroup', { name: 'Theme' }).locator('label').filter({ hasText: 'Classic' }).click();
   await expect(root).toHaveAttribute('data-theme-preset', 'classic');
+  expect(await inside.evaluate(node => node.scrollTop)).toBe(0);
   await expect(root).toHaveAttribute('data-theme-effective', 'dark');
   await page.keyboard.press('Escape');
   await expect(composer).toHaveCSS('border-top-style', 'solid');

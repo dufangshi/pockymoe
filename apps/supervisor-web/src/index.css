@@ -102,8 +102,8 @@
   --action-success-bg: oklch(0.74 0.12 158);
   --action-success-bg-hover: oklch(0.8 0.11 158);
   --action-success-fg: oklch(0.18 0.035 158);
-  --action-danger-bg: oklch(0.68 0.17 20);
-  --action-danger-bg-hover: oklch(0.73 0.16 20);
+  --action-danger-bg: oklch(0.52 0.18 22);
+  --action-danger-bg-hover: oklch(0.58 0.17 22);
   --action-danger-fg: oklch(0.97 0.01 20);
   --status-info-bg: oklch(0.7 0.1 220 / 0.13);
   --status-info-border: oklch(0.7 0.1 220 / 0.34);
