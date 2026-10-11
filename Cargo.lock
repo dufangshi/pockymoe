@@ -2211,7 +2211,7 @@ dependencies = [
 
 [[package]]
 name = "pockymoe"
-version = "0.12.86"
+version = "0.12.87"
 dependencies = [
  "anyhow",
  "clap",
@@ -2229,7 +2229,7 @@ dependencies = [
 
 [[package]]
 name = "pockymoe-protocol"
-version = "0.12.86"
+version = "0.12.87"
 dependencies = [
  "chrono",
  "serde",
@@ -2239,7 +2239,7 @@ dependencies = [
 
 [[package]]
 name = "pockymoe-relay"
-version = "0.12.86"
+version = "0.12.87"
 dependencies = [
  "aes-gcm 0.10.3",
  "anyhow",
@@ -2277,7 +2277,7 @@ dependencies = [
 
 [[package]]
 name = "pockymoe-runtime"
-version = "0.12.86"
+version = "0.12.87"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2315,7 +2315,7 @@ dependencies = [
 
 [[package]]
 name = "pockymoe-supervisor"
-version = "0.12.86"
+version = "0.12.87"
 dependencies = [
  "aes-gcm 0.10.3",
  "anyhow",
