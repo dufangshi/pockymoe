@@ -9,7 +9,10 @@ turn's existing durable event channel.
 The timeline saves a small waiting anchor. A task notification updates that
 anchor with its wake cause and timestamp; subsequent execution and reports
 follow it. Repeated delivery of a terminal notice does not create another row.
-Monitor progress events are distinct from terminal completion notices. A user
+Awakened notices fold with adjacent operations into step batches and count as
+steps, including standalone notices. Pending waiting anchors stay separate
+from step batches. Wake timestamps, rather than the original wait start, are
+used for batch durations. Monitor progress events are distinct from terminal completion notices. A user
 steer can temporarily resume work without consuming the eventual wake anchor.
 
 When Claude's foreground is already idle, `_session/steering` may return

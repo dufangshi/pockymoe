@@ -122,6 +122,7 @@ test('native task notifications use compact prose and expand without mobile over
   }}));
   await page.goto(`/threads/${id}`);
   await page.locator('.thread-graph-worked-summary button[aria-expanded]').click();
+  await page.locator('.thread-graph-history-group-activity > .thread-graph-history-group-card > button').click();
   const notice = page.locator('.thread-graph-task-notice').first();
   await expect(notice.locator('.thread-graph-task-notice-toggle')).toContainText('已唤醒');
   await expect(page.locator('.thread-graph-task-notice.is-failed')).toContainText('后台任务失败');
@@ -561,6 +562,7 @@ test('background wake replaces its waiting anchor and continues within the same 
   const emit=(type:string,payload:object)=>socket!.send(JSON.stringify({type,threadId:id,timestamp:new Date().toISOString(),payload}));
   items=[prompt,foreground,wake,checking,command,final];
   for (const item of [wake,checking,command,final]) emit('thread.item.completed',{turnId,item});
+  await page.locator('.thread-graph-history-group-activity > .thread-graph-history-group-card > button').click();
   await expect(waitRow).toHaveCount(1);
   await expect(waitRow).toContainText('已唤醒');
   await expect(page.getByText(final.text,{exact:true})).toBeVisible();
@@ -582,6 +584,7 @@ test('background wake replaces its waiting anchor and continues within the same 
   expect(detailLoads).toBe(0);
   await page.locator('.thread-graph-worked-summary button[aria-expanded]').click();
   await expect.poll(()=>detailLoads).toBe(1);
+  await page.locator('.thread-graph-history-group-activity > .thread-graph-history-group-card > button').click();
   await expect(waitRow).toContainText('已唤醒');
   await expect(page.getByText(final.text,{exact:true})).toBeVisible();
   await expect(page.locator('.thread-graph-turn-footer')).toHaveCount(0);
@@ -614,6 +617,7 @@ test('background wake replaces its waiting anchor and continues within the same 
     await expect(waitRow).toHaveCount(0);
     await expect(page.getByText(progress.text, { exact: true })).toHaveCount(0);
     await workedToggle.click();
+    await page.locator('.thread-graph-history-group-activity > .thread-graph-history-group-card > button').click();
     await expect(waitRow).toContainText('已唤醒');
     await expect(page.getByText(progress.text, { exact: true })).toBeVisible();
   }
@@ -867,4 +871,86 @@ test('a homogeneous command batch opens once with half-sized whitespace', async 
   await expect(rows).toHaveCount(0);
   await header.click();
   await expect(rows).toHaveCount(14);
+});
+
+test('delivered wakes fold into steps while pending waits stay separate across streaming and reload', async ({ page, request }, testInfo) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('remote-codex.locale', 'zh-CN');
+    localStorage.setItem('remote-codex-theme-mode', 'dark');
+    localStorage.setItem('pockymoe-theme-preset', 'plum-pocket');
+    localStorage.setItem(`pockymoe.onboarding.v1:${JSON.stringify([location.origin, 'local:owner'])}`, JSON.stringify({ welcomeDismissed: true, completed: [] }));
+  });
+  const id = await createThread(request);
+  const detail = await (await request.get(`${base}/api/threads/${id}`)).json();
+  const startedAt = new Date(Date.now() - 600000).toISOString();
+  const awakenedAt = new Date(Date.now() - 10000).toISOString();
+  const operationAt = new Date(Date.now() - 6000).toISOString();
+  const turnId = 'folded-wakes';
+  const prompt = { id: 'prompt', kind: 'userMessage', text: '检查后台任务并汇报结果。', sequence: 1 };
+  const narration = { id: 'narration', kind: 'agentMessage', responsePhase: 'commentary', text: '第一项检查已完成，正在等待第二项。', sequence: 2 };
+  const wake = { id: 'wake', kind: 'other', origin: 'nativeTaskNotification', taskStatus: 'completed', status: 'completed', text: '第一项构建已完成', createdAt: startedAt, awakenedAt, sequence: 3 };
+  const command = { id: 'command', kind: 'commandExecution', status: 'completed', text: '检查构建产物', createdAt: operationAt, updatedAt: operationAt, sequence: 4 };
+  const read = { id: 'read', kind: 'fileRead', status: 'completed', text: '读取检查报告', createdAt: operationAt, updatedAt: operationAt, sequence: 5 };
+  const wait = { id: 'wait', kind: 'other', origin: 'nativeBackgroundWait', status: 'waiting', text: '', createdAt: operationAt, waitingStartedAt: operationAt, sequence: 6 };
+  let items: object[] = [prompt, narration, wake, command, read, wait];
+  let completed = false;
+  let socket: WebSocketRoute | undefined;
+  await page.routeWebSocket(/\/ws(?:\?.*)?$/, current => {
+    socket = current;
+    current.send(JSON.stringify({ type: 'supervisor.connected' }));
+    current.onMessage(() => current.send(JSON.stringify({ type: 'supervisor.pong' })));
+  });
+  await page.route(`**/api/threads/${id}?**`, route => route.fulfill({ json: {
+    ...detail, totalTurnCount: 1, activeSubagents: [],
+    thread: { ...detail.thread, status: completed ? 'idle' : 'running', activeTurnId: completed ? null : turnId },
+    turns: [{ id: turnId, status: completed ? 'completed' : 'inProgress', startedAt, completedAt: completed ? new Date().toISOString() : null, items }],
+  } }));
+  await page.goto(`/threads/${id}`);
+  const worked = page.locator('.thread-graph-worked-summary button[aria-expanded]');
+  const activity = page.locator('.thread-graph-history-group-activity');
+  const batchToggle = activity.locator(':scope > .thread-graph-history-group-card > button');
+  const notices = page.locator('.thread-graph-task-notice');
+  await expect(page.getByText(narration.text, { exact: true })).toBeVisible();
+  await worked.click();
+  await expect(activity).toHaveCount(1);
+  await expect(batchToggle).toContainText('3 个步骤');
+  await expect(batchToggle).toContainText('4s');
+  await expect(activity.locator('.thread-graph-task-notice')).toHaveCount(0);
+  await expect(notices).toHaveCount(1);
+  await expect(notices).toContainText('等待唤醒');
+  await page.screenshot({ path: testInfo.outputPath('folded-wakes-pending-wait.png'), scale: 'css' });
+  await batchToggle.click();
+  await expect(activity.locator('.thread-graph-task-notice')).toContainText('已唤醒');
+  await expect(activity).not.toContainText('等待唤醒');
+  await expect(page.getByText(command.text, { exact: true })).toBeVisible();
+  await batchToggle.click();
+  await expect(notices).toHaveCount(1);
+  const wakeTwo = { ...wait, origin: 'nativeTaskNotification', status: 'completed', taskStatus: 'completed', text: '第二项检查已完成', awakenedAt: new Date().toISOString() };
+  const commandTwo = { ...command, id: 'command-two', text: '核对第二项检查', sequence: 7 };
+  items = [prompt, narration, wake, command, read, wakeTwo, commandTwo];
+  for (const item of [wakeTwo, commandTwo]) socket!.send(JSON.stringify({ type: 'thread.item.completed', threadId: id, timestamp: new Date().toISOString(), payload: { turnId, item } }));
+  await expect(batchToggle).toContainText('5 个步骤');
+  await expect(batchToggle).toHaveAttribute('aria-expanded', 'false');
+  await expect(notices).toHaveCount(0);
+  await expect(page.locator('.thread-graph-turn-footer')).not.toContainText('等待唤醒');
+  await batchToggle.click();
+  await expect(activity.locator('.thread-graph-task-notice')).toHaveCount(2);
+  await page.screenshot({ path: testInfo.outputPath('expanded-wake-steps.png'), scale: 'css' });
+  const final = { id: 'final', kind: 'agentMessage', responsePhase: 'final', status: 'completed', text: '两项检查均已通过，这是最终报告。', sequence: 8 };
+  items.push(final);
+  completed = true;
+  socket!.send(JSON.stringify({ type: 'thread.item.completed', threadId: id, timestamp: new Date().toISOString(), payload: { turnId, item: final } }));
+  socket!.send(JSON.stringify({ type: 'thread.turn.completed', threadId: id, timestamp: new Date().toISOString(), payload: { turnId, status: 'completed' } }));
+  await page.reload();
+  await expect(page.getByText(final.text, { exact: true })).toBeVisible();
+  await expect(page.getByText(narration.text, { exact: true })).toHaveCount(0);
+  await expect(notices).toHaveCount(0);
+  await worked.click();
+  await expect(batchToggle).toContainText('5 个步骤');
+  await expect(notices).toHaveCount(0);
+  await batchToggle.click();
+  await expect(notices).toHaveCount(2);
+  await worked.click();
+  await expect(notices).toHaveCount(0);
+  await expect(page.getByText(final.text, { exact: true })).toBeVisible();
 });
