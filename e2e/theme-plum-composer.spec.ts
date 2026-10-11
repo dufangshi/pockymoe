@@ -5,7 +5,22 @@ import { expect, test, type APIRequestContext, type Page } from '@playwright/tes
 
 const api = `http://127.0.0.1:${process.env.E2E_API_PORT ?? 8787}`;
 
+test.afterEach(async ({ page }) => { await page.unrouteAll({ behavior: 'ignoreErrors' }); });
+
 async function openPlum(page: Page, request: APIRequestContext, mode: 'light' | 'dark' = 'light') {
+  // A subscription and a reported context window, so the usage meter and the bar render.
+  await page.route('**/api/agent-runtimes/*/subscription-usage*', (route) => route.fulfill({ json: { usage: {
+    provider: 'claude', authKind: 'subscription', observedAt: new Date().toISOString(), stale: false,
+    windows: [
+      { id: '5h', durationMinutes: 300, label: '5h', usedPercent: 20, resetsAt: new Date(Date.now() + 3_600_000).toISOString() },
+      { id: '7d', durationMinutes: 10_080, label: '7d', usedPercent: 40, resetsAt: new Date(Date.now() + 86_400_000).toISOString() },
+    ] } } }));
+  await page.route(/\/api\/threads\/[0-9a-f-]+\?/, async (route) => {
+    const response = await route.fetch();
+    const detail = await response.json();
+    detail.thread.contextUsage = { availability: 'available', remainingPercent: 60, tokensInContextWindow: 1000, modelContextWindow: 2500, updatedAt: new Date().toISOString() };
+    await route.fulfill({ response, json: detail });
+  });
   const absPath = path.resolve(process.env.E2E_WORKSPACE_ROOT!, `plum-${randomUUID()}`);
   await mkdir(absPath, { recursive: true });
   const workspace = await (await request.post(`${api}/api/workspaces`, { data: { absPath, label: 'plum' } })).json();
@@ -55,10 +70,11 @@ test('plum composer keeps compact geometry, touch targets and the mascot', async
   expect(Math.abs(g.send.bottom - g.tools.bottom)).toBeLessThanOrEqual(3);
   expect(g.peek).toContain('composer-peek-claude.webp');
   if (mobile) {
-    expect(g.slash.height).toBeGreaterThanOrEqual(40);
-    expect(g.send.width).toBeGreaterThanOrEqual(44);
-    const hit = await composer.locator('.thread-graph-composer-send-button').evaluate((el) => getComputedStyle(el, '::after').inset);
-    expect(hit).toBe('-2px');
+    // 36px keys whose hit areas reach 44px.
+    expect(g.slash.height).toBeGreaterThanOrEqual(36);
+    expect(g.send.width).toBeGreaterThanOrEqual(42);
+    const hit = await composer.locator('.thread-graph-composer-icon-button').first().evaluate((el) => getComputedStyle(el, '::after').inset);
+    expect(hit).toBe('-4px');
   } else {
     await expect(composer.locator('.composer-model-avatar')).toBeVisible();
   }
@@ -103,4 +119,48 @@ test('plum composer respects reduced motion', async ({ page, request }) => {
   const transition = await composer.locator('.thread-graph-composer-send-button').evaluate((el) => getComputedStyle(el).transitionDuration);
   expect(transition.split(',').every((value) => parseFloat(value) === 0)).toBe(true);
   expect(await composer.evaluate((node) => getComputedStyle(node, '::before').transitionDuration)).toBe('0s');
+});
+
+test('plum composer sews the usage meter onto its seam and centres the context bar', async ({ page, request }) => {
+  const { composer } = await openPlum(page, request);
+  const usage = composer.locator('.thread-graph-composer-shell .thread-composer-usage-tag .thread-subscription-usage');
+  await expect(usage).toBeVisible();
+  await expect(composer.locator('.thread-composer-usage-footer')).toHaveCount(0);
+  const g = await composer.evaluate((node) => {
+    const r = (s: string) => node.querySelector(s)!.getBoundingClientRect();
+    return { shell: r('.thread-graph-composer-shell'), usage: r('.thread-subscription-usage'), chip: r('.composer-model-label'), bar: r('.thread-context-progress-track'), size: getComputedStyle(node.querySelector('.thread-subscription-usage')!).fontSize };
+  });
+  // It straddles the bottom edge instead of taking a row below the composer.
+  expect(g.usage.top).toBeLessThan(g.shell.bottom);
+  expect(g.usage.bottom).toBeGreaterThan(g.shell.bottom);
+  expect(g.usage.bottom - g.shell.bottom).toBeLessThanOrEqual(8);
+  expect(parseFloat(g.size)).toBeLessThanOrEqual(9);
+  // The context bar sits inside the chip with equal insets.
+  expect(Math.abs((g.bar.left - g.chip.left) - (g.chip.right - g.bar.right))).toBeLessThanOrEqual(1);
+  expect(g.bar.bottom).toBeLessThanOrEqual(g.chip.bottom);
+});
+
+test('plum settings fit every tab on one line and keep hints for screen readers', async ({ page, request }, info) => {
+  await openPlum(page, request);
+  await page.getByRole('button', { name: 'Open settings', exact: true }).first().click();
+  const dialog = page.getByRole('dialog', { name: 'Settings', exact: true });
+  await expect(dialog).toBeVisible();
+  const nav = dialog.locator('.settings-navigation');
+  const fits = await nav.evaluate((el) => el.scrollWidth <= el.clientWidth + 1);
+  expect(fits).toBe(true);
+  for (const tab of await nav.getByRole('tab').all()) {
+    const box = (await tab.boundingBox())!;
+    if (info.project.name === 'mobile-chromium') expect(box.height).toBeGreaterThanOrEqual(44);
+    await expect(tab).toHaveAccessibleName(/\S/);
+  }
+  await nav.getByRole('tab', { name: 'Preferences' }).click();
+  const hint = dialog.locator('.settings-hint').first();
+  await expect(hint).toHaveCount(1);
+  expect(await hint.evaluate((el) => el.getBoundingClientRect().width)).toBeLessThanOrEqual(1);
+  // Toggles are switches and buttons never wrap.
+  const toggle = dialog.locator('.settings-panel input[type=checkbox]').first();
+  await expect(toggle).toHaveCSS('width', '34px');
+  const wrapped = await dialog.locator('.settings-panel').evaluate((panel) => [...panel.querySelectorAll('button')]
+    .filter((b) => b.offsetParent && b.textContent!.trim() && b.scrollWidth > b.clientWidth + 1).map((b) => b.textContent));
+  expect(wrapped).toEqual([]);
 });

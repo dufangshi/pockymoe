@@ -141,20 +141,22 @@
 
 /* ── Felt keys: slash, attach, stop and send ──────────────────────────────── */
 
+/* Slash and attach are light, half-translucent felt so the prompt stays the
+   main thing; send and stop stay solid. */
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell [data-composer-layout] :is(.thread-graph-composer-icon-button, .thread-graph-composer-stop-button, .thread-graph-composer-send-button) {
   position: relative;
-  width: 34px !important;
-  height: 34px !important;
-  min-width: 34px !important;
-  min-height: 34px !important;
+  width: 30px !important;
+  height: 30px !important;
+  min-width: 30px !important;
+  min-height: 30px !important;
   border: 0 !important;
-  border-radius: 12px !important;
+  border-radius: 10px !important;
   transition: background-color 140ms ease, transform 120ms ease, box-shadow 120ms ease;
 }
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell [data-composer-layout] .thread-graph-composer-icon-button {
-  background: var(--pc-key) !important;
+  background: color-mix(in srgb, var(--pc-key) 55%, transparent) !important;
   color: var(--pc-key-fg) !important;
-  box-shadow: inset 0 -2px 0 var(--pc-key-lip) !important;
+  box-shadow: inset 0 -1.5px 0 color-mix(in srgb, var(--pc-key-lip) 60%, transparent) !important;
 }
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell [data-composer-layout] .thread-graph-composer-icon-button:hover {
   background: var(--pc-key-hover) !important;
@@ -168,7 +170,7 @@
 }
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell [data-composer-layout] .composer-slash-glyph {
   font-family: var(--plum-display);
-  font-size: 19px;
+  font-size: 17px;
   font-weight: 600;
   line-height: 1;
   transform: translateY(-1px) skewX(-6deg);
@@ -176,11 +178,11 @@
 
 /* Send: a mustard key, a little wider than the others. */
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell [data-composer-layout] .thread-graph-composer-send-button {
-  width: 42px !important;
-  min-width: 42px !important;
+  width: 38px !important;
+  min-width: 38px !important;
   background: var(--pc-send) !important;
   color: var(--pc-send-fg) !important;
-  box-shadow: inset 0 -3px 0 var(--pc-send-lip) !important;
+  box-shadow: inset 0 -2px 0 var(--pc-send-lip) !important;
 }
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell [data-composer-layout] .thread-graph-composer-send-button:hover:not(:disabled) { background: var(--pc-send-hover) !important; }
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell [data-composer-layout] .thread-graph-composer-send-button.ui-action-info { background: var(--theme-accent-soft) !important; color: var(--theme-accent-strong) !important; box-shadow: inset 0 0 0 1.5px var(--theme-accent-border), inset 0 -3px 0 var(--theme-accent-border) !important; }
@@ -200,7 +202,10 @@
   box-shadow: inset 0 -2px 0 var(--pc-stop-lip) !important;
 }
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell [data-composer-layout] .thread-graph-composer-stop-button:hover { background: var(--pc-stop-hover) !important; }
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell [data-composer-layout] .thread-graph-composer-stop-button > span { width: 11px; height: 11px; border-radius: 3.5px; }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell [data-composer-layout] .thread-graph-composer-stop-button > span { width: 10px; height: 10px; border-radius: 3px; }
+
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell [data-composer-layout] .thread-graph-composer-icon-button > svg { width: 15px; height: 15px; }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell [data-composer-layout] .thread-graph-composer-send-button > svg { width: 16px; height: 16px; }
 
 /* Pressing a key pushes it into the felt. */
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell [data-composer-layout] :is(.thread-graph-composer-icon-button, .thread-graph-composer-stop-button, .thread-graph-composer-send-button):active:not(:disabled) {
@@ -214,23 +219,28 @@
 
 /* ── Model chip: mascot, name, effort, chevron ────────────────────────────── */
 
+/* Name and effort are centred on one axis; the context bar sits inside the chip
+   with equal insets, so chip, text and bar share the same centre line. */
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell [data-composer-layout] .composer-model-control { position: relative; }
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell [data-composer-layout] .composer-model-label {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, max-content) auto;
   grid-template-areas: 'avatar name chevron' 'avatar effort chevron';
   align-items: center;
-  justify-items: start;
-  column-gap: 7px;
-  min-height: 34px;
-  max-width: min(17rem, max(4rem, calc(100cqi - 14rem)));
-  padding: 3px 7px 3px 4px;
+  justify-content: center;
+  justify-items: center;
+  column-gap: 6px;
+  min-height: 30px;
+  max-width: min(16rem, max(4rem, calc(100cqi - 13rem)));
+  padding: 2px 8px;
   border: 1.5px dashed transparent;
-  border-radius: 12px;
+  border-radius: 10px;
   color: var(--theme-fg-soft);
-  text-align: left;
+  text-align: center;
   transition: background-color 140ms ease, border-color 140ms ease;
 }
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell [data-composer-layout] .composer-model-label:hover:not(:disabled) { background: var(--pc-key); }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell [data-composer-layout] .composer-model-control:has(> .thread-context-progress-track) .composer-model-label { padding-bottom: 7px; }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell [data-composer-layout] .composer-model-label:hover:not(:disabled) { background: color-mix(in srgb, var(--pc-key) 70%, transparent); }
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell [data-composer-layout] .composer-model-label[aria-expanded='true'] {
   background: var(--theme-accent-soft);
   border-color: var(--theme-accent-border);
@@ -238,37 +248,91 @@
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell [data-composer-layout] .composer-model-label:not(:has(.composer-model-effort)) { grid-template-areas: 'avatar name chevron'; }
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell [data-composer-layout] .composer-model-avatar {
   grid-area: avatar;
-  width: 26px;
-  height: 26px;
+  width: 22px;
+  height: 22px;
 }
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell [data-composer-layout] .composer-model-name {
   grid-area: name;
   max-width: 100%;
   color: var(--theme-fg);
-  font-size: 12.5px;
+  font-size: 12px;
   font-weight: 700;
-  line-height: 15px;
+  line-height: 14px;
 }
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell [data-composer-layout] .composer-model-effort {
   grid-area: effort;
+  max-width: 100%;
+  overflow: hidden;
   color: var(--theme-fg-muted);
-  font-size: 10.5px;
+  font-size: 10px;
   font-weight: 600;
-  line-height: 13px;
+  line-height: 12px;
+  text-overflow: ellipsis;
   opacity: 1;
 }
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell [data-composer-layout] .composer-model-chevron {
   grid-area: chevron;
-  width: 13px;
-  height: 13px;
+  width: 12px;
+  height: 12px;
   color: var(--theme-fg-muted);
   transition: transform 160ms ease;
 }
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell [data-composer-layout] .composer-model-label[aria-expanded='true'] .composer-model-chevron { transform: rotate(180deg); }
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell .composer-model-control .thread-context-progress-track {
-  height: 3px;
-  margin: 1px 8px 0 37px;
-  background: color-mix(in srgb, var(--pc-key-lip) 80%, transparent);
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell [data-composer-layout] .composer-model-control > .thread-context-progress-track {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: 3px;
+  height: 2.5px;
+  margin: 0;
+  background: color-mix(in srgb, var(--pc-key-lip) 85%, transparent);
+}
+/* The fill colour is set inline (sky, amber, rose by remaining context); keep
+   the warning colours and swap only the healthy sky for mustard. */
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .composer-model-control .thread-context-progress-fill[style*='125, 211, 252'] { background-color: var(--theme-accent-solid) !important; }
+
+/* ── Usage meter: a small tag sewn onto the bottom seam ───────────────────── */
+
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-composer-usage-tag {
+  position: absolute;
+  z-index: 2;
+  right: 18px;
+  bottom: -7px;
+  display: flex;
+  height: 13px;
+  pointer-events: none;
+}
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-composer-usage-tag .thread-subscription-usage {
+  position: relative;
+  inset: auto;
+  height: 13px;
+  gap: 6px;
+  padding: 0 6px;
+  border: 1px solid var(--pc-edge);
+  border-radius: 999px;
+  background: var(--pc-felt);
+  color: var(--theme-fg-muted);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 11px;
+  opacity: 1;
+  pointer-events: auto;
+}
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-composer-usage-tag .thread-subscription-usage:hover { color: var(--theme-fg); }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-composer-usage-tag .thread-subscription-usage:focus-visible { outline: 2px solid var(--pc-focus); outline-offset: 1px; }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-composer-usage-tag [data-subscription-window-track] { width: 16px; height: 3px; background: color-mix(in srgb, var(--pc-key-lip) 85%, transparent); }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-composer-usage-tag [role='tooltip'] {
+  border-color: var(--pc-edge);
+  border-radius: 10px;
+  background: var(--pc-felt);
+  color: var(--theme-fg);
+  box-shadow: var(--pc-menu-shadow);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+/* Its row below the composer is gone, so the pocket sits a little lower. */
+@media (min-width: 640px) {
+  :root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench .thread-graph-composer-host:has(.thread-composer-usage-tag) { bottom: 22px; }
 }
 
 /* ── Menus: one felt card style for model, slash toolbox and attachments ──── */
@@ -548,14 +612,13 @@
 /* ── Narrow panes and phones ──────────────────────────────────────────────── */
 
 @container (max-width: 480px) {
-  :root[data-theme-preset='plum-pocket'] .thread-ui-shell [data-composer-layout] :is(.thread-graph-composer-icon-button, .thread-graph-composer-stop-button) { width: 32px !important; min-width: 32px !important; }
-  :root[data-theme-preset='plum-pocket'] .thread-ui-shell [data-composer-layout] .composer-model-label { max-width: min(10rem, max(4rem, calc(100cqi - 13rem))); column-gap: 5px; padding-right: 4px; }
+  :root[data-theme-preset='plum-pocket'] .thread-ui-shell [data-composer-layout] :is(.thread-graph-composer-icon-button, .thread-graph-composer-stop-button) { width: 28px !important; min-width: 28px !important; }
+  :root[data-theme-preset='plum-pocket'] .thread-ui-shell [data-composer-layout] .composer-model-label { max-width: min(9rem, max(4rem, calc(100cqi - 12rem))); column-gap: 4px; padding-inline: 6px; }
   :root[data-theme-preset='plum-pocket'] .thread-ui-shell [data-composer-layout] .composer-model-chevron { display: none; }
 }
 /* Phones and split panes: the peeking mascot carries the identity, the chip keeps the words. */
 @container (max-width: 420px) {
   :root[data-theme-preset='plum-pocket'] .thread-ui-shell [data-composer-layout] .composer-model-avatar { display: none; }
-  :root[data-theme-preset='plum-pocket'] .thread-ui-shell [data-composer-layout] .composer-model-label { padding-left: 6px; }
 }
 @container (max-width: 300px) {
   :root[data-theme-preset='plum-pocket'] .thread-ui-shell [data-composer-layout] :is(.thread-graph-composer-icon-button, .thread-graph-composer-stop-button, .thread-graph-composer-send-button) { width: 26px !important; height: 26px !important; min-width: 26px !important; min-height: 26px !important; border-radius: 9px !important; }
@@ -571,22 +634,24 @@
   :root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-composer-pending-row :is(.thread-composer-steer-button, .thread-composer-queue-remove) { height: 40px; }
   :root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-composer-pending-row .thread-composer-queue-remove { width: 40px; }
 }
-/* Touch: 40px keys with a 44px hit area. */
+/* Touch: 36px keys, each with a 44px hit area; the gaps keep the areas apart. */
 @media (pointer: coarse) {
   :root[data-theme-preset='plum-pocket'] .thread-ui-shell [data-composer-layout] :is(.thread-graph-composer-icon-button, .thread-graph-composer-stop-button, .thread-graph-composer-send-button) {
-    width: 40px !important;
-    height: 40px !important;
-    min-width: 40px !important;
-    min-height: 40px !important;
-    border-radius: 13px !important;
+    width: 36px !important;
+    height: 36px !important;
+    min-width: 36px !important;
+    min-height: 36px !important;
+    border-radius: 12px !important;
   }
-  :root[data-theme-preset='plum-pocket'] .thread-ui-shell [data-composer-layout] .thread-graph-composer-send-button { width: 44px !important; min-width: 44px !important; }
+  :root[data-theme-preset='plum-pocket'] .thread-ui-shell [data-composer-layout] .thread-graph-composer-send-button { width: 42px !important; min-width: 42px !important; }
   :root[data-theme-preset='plum-pocket'] .thread-ui-shell [data-composer-layout] :is(.thread-graph-composer-icon-button, .thread-graph-composer-stop-button, .thread-graph-composer-send-button, .composer-model-label)::after {
     content: '';
     position: absolute;
-    inset: -2px;
+    inset: -4px;
   }
-  :root[data-theme-preset='plum-pocket'] .thread-ui-shell [data-composer-layout] .composer-model-label { position: relative; min-height: 40px; }
+  :root[data-theme-preset='plum-pocket'] .thread-ui-shell [data-composer-layout] .composer-model-label::after { inset: -4px 0; }
+  :root[data-theme-preset='plum-pocket'] .thread-ui-shell [data-composer-layout] :is(.composer-tools, .composer-settings, .thread-graph-composer-toolbar) { gap: 6px !important; }
+  :root[data-theme-preset='plum-pocket'] .thread-ui-shell [data-composer-layout] .composer-model-label { position: relative; min-height: 36px; }
   :root[data-theme-preset='plum-pocket'] .thread-ui-shell [data-composer-menu-surface='true'] :is(.thread-graph-composer-menu-item, [role='menuitemradio'], button[data-toolbox-action], [data-toolbox-action] > button) { min-height: 44px; }
 }
 @media (prefers-reduced-motion: reduce) {

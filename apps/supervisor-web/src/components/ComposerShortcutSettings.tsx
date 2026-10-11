@@ -7,11 +7,11 @@ export function ComposerShortcutSettings() {
   const disabled =
     !nav?.setSendShortcut || nav.sendShortcutLoading || nav.sendShortcutSaving;
   return (
-    <fieldset className="py-5">
+    <fieldset className="settings-shortcuts py-5">
       <legend className="text-sm font-semibold">{translate("settings.messageShortcuts")}</legend>
-      <p className="mt-1 text-xs leading-5 text-[var(--theme-fg-muted)]">
+      <p className="settings-hint mt-1 text-xs leading-5 text-[var(--theme-fg-muted)]">
         {translate("settings.savedToYourAccountAndAppliedAcross")}</p>
-      <div className="mt-3 space-y-2">
+      <div className="settings-choice-group mt-3 space-y-2">
         {(
           [
             {
@@ -30,7 +30,7 @@ export function ComposerShortcutSettings() {
         ).map((option) => (
           <label
             key={option.value}
-            className="flex min-h-11 items-start gap-3 rounded-md border border-[var(--theme-border)] p-3"
+            className="settings-choice flex min-h-11 items-start gap-3 rounded-md border border-[var(--theme-border)] p-3"
           >
             <input
               type="radio"
@@ -45,14 +45,14 @@ export function ComposerShortcutSettings() {
             />
             <span>
               <span className="block text-sm font-medium">{option.label}</span>
-              <span className="mt-1 block text-xs text-[var(--theme-fg-muted)]">
+              <span className="settings-hint mt-1 block text-xs text-[var(--theme-fg-muted)]">
                 {option.description}
               </span>
             </span>
           </label>
         ))}
       </div>
-      <p className="mt-2 text-xs text-[var(--theme-fg-muted)]">
+      <p className={`${nav?.setSendShortcut && !nav.sendShortcutSaving && !nav.sendShortcutLoading ? 'settings-hint ' : ''}mt-2 text-xs text-[var(--theme-fg-muted)]`}>
         {nav?.sendShortcutSaving
           ? translate("settings.saving")
           : nav?.sendShortcutLoading

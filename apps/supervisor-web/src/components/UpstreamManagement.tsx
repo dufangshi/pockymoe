@@ -302,7 +302,7 @@ export function UpstreamManagement({
                   : translate('settings.upstreams_8b39d6')}
               </h3>
               {appearance !== 'switch' && (
-                <p className="mt-1 text-xs text-[var(--theme-fg-muted)]">
+                <p className="settings-hint mt-1 text-xs text-[var(--theme-fg-muted)]">
                   {translate(
                     'settings.savedOnThisDeviceSwitchProvidersWithout',
                   )}
@@ -384,7 +384,7 @@ export function UpstreamManagement({
                     </option>
                   </select>
                 </label>
-                <span className="hidden sm:inline">
+                <span className="settings-hint hidden sm:inline">
                   {translate('settings.upstreamsDirectHint')}
                 </span>
               </div>
@@ -566,7 +566,7 @@ export function UpstreamManagement({
               ),
             )}
           </div>
-          <p className="mt-3 text-xs leading-5 text-[var(--theme-fg-muted)]">
+          <p className="settings-hint mt-3 text-xs leading-5 text-[var(--theme-fg-muted)]">
             {translate('settings.switchAfterCurrentTasksFinishExistingMCP')}
           </p>
           {!!data.backups.length && (
@@ -624,7 +624,7 @@ export function UpstreamManagement({
             <h3 className="text-sm font-semibold">
               {translate('settings.deviceTemplates')}
             </h3>
-            <p className="mt-1 text-xs text-[var(--theme-fg-muted)]">
+            <p className="settings-hint mt-1 text-xs text-[var(--theme-fg-muted)]">
               {translate(
                 'settings.installHarnessesAndConfigureTheirUpstreamsTogether',
               )}

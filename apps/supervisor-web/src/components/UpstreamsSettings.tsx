@@ -82,7 +82,7 @@ function DeviceUpstreams({ apiRoot }: { apiRoot: string }) {
     >
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div
-          className="flex min-w-0 flex-wrap gap-1 rounded-xl bg-[var(--theme-hover)] p-1"
+          className="settings-harness-switch flex min-w-0 flex-wrap gap-1 rounded-xl bg-[var(--theme-hover)] p-1"
           role="group"
           aria-label={translate('devices.chooseHarness')}
         >

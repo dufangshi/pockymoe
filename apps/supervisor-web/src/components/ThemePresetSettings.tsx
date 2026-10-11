@@ -13,7 +13,7 @@ export function ThemePresetSettings() {
   return (
     <div className="mt-4">
       <p className="text-xs font-semibold text-[var(--theme-fg)]">{translate('files.themePreset')}</p>
-      <p className="mt-1 text-xs leading-5 text-[var(--theme-fg-muted)]">{translate('files.themePresetDescription')}</p>
+      <p className="settings-hint mt-1 text-xs leading-5 text-[var(--theme-fg-muted)]">{translate('files.themePresetDescription')}</p>
       <div role="radiogroup" aria-label={translate('files.themePreset')} className="mt-3 grid grid-cols-2 gap-2 sm:max-w-lg">
         {presets.map((preset) => (
           <label key={preset.id} className="theme-preset-option" data-preset={preset.id}>
