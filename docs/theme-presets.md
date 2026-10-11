@@ -43,6 +43,15 @@ modes.
   Home, Chat and the device monitor into the thread drawer (`matter-drawer-tools`).
   The workbench checks the preset with `useDocumentThemePreset()`; Classic keeps
   them in the top bar.
+- The chat composer form carries `data-agent` (derived from the harness label) and
+  `data-composer-busy` while a turn runs, and the toolbox rows carry
+  `data-toolbox-action`. Classic ignores them. Plum Pocket uses them for the
+  mascot that peeks over the composer (`composer-peek-*.webp`), the busy seam and
+  the toolbox icons; its extra composer markup (mascot on the model chip, menu
+  icons, per-intent send icons) renders only when `useDocumentThemePreset()` is
+  `plum-pocket`.
+- Transcript turns carry `data-turn-status`, and under Plum Pocket each reply opens
+  with the replying agent's avatar and name (`graph-chat/TranscriptAgent.tsx`).
 
 ## Adding a preset
 
