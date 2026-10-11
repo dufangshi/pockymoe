@@ -32,10 +32,12 @@ export function WorkbenchReferencePane({
       getImageAssetUrl: ({
         threadId,
         path,
+        variant,
       }: {
         threadId: string;
         path: string;
-      }) => buildThreadImageAssetUrl(threadId, { path }, controller.deviceId),
+        variant?: 'thumbnail';
+      }) => buildThreadImageAssetUrl(threadId, { path, variant }, controller.deviceId),
       onLoadHistoryItemDetail: (itemId: string) =>
         fetchThreadHistoryItemDetail(threadId!, itemId, controller.deviceId),
       onLoadTurnDetail: (turnId: string) =>

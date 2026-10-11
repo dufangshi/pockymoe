@@ -1180,10 +1180,12 @@ export function buildWorkspaceRawFileUrl(
 
 export function buildThreadImageAssetUrl(
   threadId: string,
-  input: { path: string },
+  input: { path: string; variant?: 'thumbnail' | undefined },
   deviceId?: string | null,
 ) {
   const params = new URLSearchParams({ path: input.path });
+  // Older Supervisors ignore the variant and send the original.
+  if (input.variant) params.set('variant', input.variant);
   return buildDeviceMediaUrl(deviceId,
     `/api/threads/${encodeURIComponent(threadId)}/assets/image?${params.toString()}`,
   );

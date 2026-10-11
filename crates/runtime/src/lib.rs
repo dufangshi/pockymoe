@@ -15,6 +15,7 @@ pub mod management;
 mod node_runtime;
 pub mod publications;
 pub mod service;
+pub mod thread_images;
 pub mod upstreams;
 
 pub use actor::{EventBus, SharedRuntime};

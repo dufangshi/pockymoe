@@ -1,7 +1,7 @@
 use std::ffi::OsString;
 use std::fs::File;
 use std::io::ErrorKind;
-use std::io::{self, Read};
+use std::io::{self, Read, Seek};
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{bail, Result};
@@ -380,6 +380,46 @@ pub fn read_thread_image(
     thread_id: &str,
     rel: &str,
 ) -> Result<(Vec<u8>, &'static str)> {
+    let mut image = open_thread_image(root, thread_id, rel)?;
+    Ok((image.read_all()?, image.mime))
+}
+
+const THREAD_IMAGE_MAX_BYTES: u64 = 25 * 1024 * 1024;
+
+/// A validated, opened thread image attachment. The checks are done once, on
+/// the open handle, so serving the original, a thumbnail or a 304 all share them.
+#[derive(Debug)]
+pub struct ThreadImageFile {
+    file: File,
+    /// Canonical path, inside `<workspace>/.temp/threads/<thread>/`.
+    pub path: PathBuf,
+    pub len: u64,
+    pub modified: Option<std::time::SystemTime>,
+    pub mime: &'static str,
+    /// The file name carries the random suffix given to uploads, directly in
+    /// the thread's attachment directory, so its content never changes.
+    pub immutable_name: bool,
+}
+
+impl ThreadImageFile {
+    pub fn read_all(&mut self) -> Result<Vec<u8>> {
+        self.file.seek(std::io::SeekFrom::Start(0))?;
+        let mut bytes = Vec::new();
+        self.file
+            .by_ref()
+            .take(THREAD_IMAGE_MAX_BYTES + 1)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > THREAD_IMAGE_MAX_BYTES {
+            bail!("image attachment is too large");
+        }
+        if raster_image_mime(&bytes) != Some(self.mime) {
+            bail!("attachment changed while it was read");
+        }
+        Ok(bytes)
+    }
+}
+
+pub fn open_thread_image(root: &Path, thread_id: &str, rel: &str) -> Result<ThreadImageFile> {
     let path = assert_within(root, Path::new(rel))?;
     // Historical uploads already use this per-thread namespace. Resolve symlinks
     // before checking ownership, so a link to another thread/private file fails.
@@ -390,20 +430,49 @@ pub fn read_thread_image(
     if !path.starts_with(&attachment_root) || path == attachment_root {
         bail!("image is not an attachment of this thread");
     }
-    let mut file = File::open(path)?;
-    if file.metadata()?.len() > 25 * 1024 * 1024 {
+    let mut file = File::open(&path)?;
+    let metadata = file.metadata()?;
+    if metadata.len() > THREAD_IMAGE_MAX_BYTES {
         bail!("image attachment is too large");
     }
-    let mut bytes = Vec::new();
-    file.by_ref()
-        .take(25 * 1024 * 1024 + 1)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() > 25 * 1024 * 1024 {
-        bail!("image attachment is too large");
-    }
-    let mime = raster_image_mime(&bytes)
+    // Every signature raster_image_mime knows fits in the first 12 bytes.
+    let mut head = Vec::with_capacity(16);
+    file.by_ref().take(16).read_to_end(&mut head)?;
+    let mime = raster_image_mime(&head)
         .ok_or_else(|| anyhow::anyhow!("attachment is not a supported raster image"))?;
-    Ok((bytes, mime))
+    let immutable_name = path.parent() == Some(attachment_root.as_path())
+        && path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(has_upload_suffix);
+    Ok(ThreadImageFile {
+        file,
+        len: metadata.len(),
+        modified: metadata.modified().ok(),
+        mime,
+        immutable_name,
+        path,
+    })
+}
+
+/// `sanitize_file_name` in service.rs names uploads `<stem>-<8 hex>[.<ext>]`.
+fn has_upload_suffix(name: &str) -> bool {
+    let stem = match name.rsplit_once('.') {
+        Some((stem, extension))
+            if !extension.is_empty() && extension.chars().all(|c| c.is_ascii_alphanumeric()) =>
+        {
+            stem
+        }
+        _ => name,
+    };
+    stem.len() > 9
+        && stem.rsplit_once('-').is_some_and(|(prefix, suffix)| {
+            !prefix.is_empty()
+                && suffix.len() == 8
+                && suffix
+                    .chars()
+                    .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c))
+        })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -1562,3 +1562,211 @@ async fn file_document_http_conditional_save_conflict_and_receipt_use_real_disk(
         "my draft"
     );
 }
+
+fn noisy_jpeg(width: u32, height: u32) -> Vec<u8> {
+    use image::ImageEncoder;
+    let pixels = image::ImageBuffer::from_fn(width, height, |x, y| {
+        image::Rgb([(x * 7 ^ y * 13) as u8, (x * y) as u8, (x + y * 3) as u8])
+    });
+    let mut bytes = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, 90)
+        .write_image(
+            pixels.as_raw(),
+            width,
+            height,
+            image::ExtendedColorType::Rgb8,
+        )
+        .unwrap();
+    bytes
+}
+
+#[tokio::test]
+async fn thread_image_thumbnails_are_cached_validated_and_revalidated() {
+    let (dir, port, ws_root) = spawn_supervisor(vec![Provider::Codex]).await;
+    let base = format!("http://127.0.0.1:{port}");
+    let client = reqwest::Client::new();
+    let proj = ws_root.join("photos");
+    std::fs::create_dir_all(&proj).unwrap();
+    std::fs::write(ws_root.join("secret.jpg"), noisy_jpeg(900, 900)).unwrap();
+    let workspace = json(
+        &client,
+        client
+            .post(format!("{base}/api/workspaces"))
+            .json(&json!({"absPath": proj, "label": "photos"})),
+    )
+    .await;
+    let start = json!({"workspaceId": workspace["id"], "provider": "codex", "model": "ios-e2e-stream", "approvalMode": "yolo"});
+    let thread = json(
+        &client,
+        client
+            .post(format!("{base}/api/threads/start"))
+            .json(&start),
+    )
+    .await;
+    let other = json(
+        &client,
+        client
+            .post(format!("{base}/api/threads/start"))
+            .json(&start),
+    )
+    .await;
+    let (tid, other) = (
+        thread["id"].as_str().unwrap(),
+        other["id"].as_str().unwrap(),
+    );
+    let attachments = proj.join(".temp/threads").join(tid);
+    std::fs::create_dir_all(&attachments).unwrap();
+    std::fs::create_dir_all(proj.join(".temp/threads").join(other)).unwrap();
+    let photo = noisy_jpeg(1264, 2780);
+    std::fs::write(attachments.join("shot-0a1b2c3d.jpg"), &photo).unwrap();
+    std::fs::write(attachments.join("anim.gif"), b"GIF89a\x01\x00\x01\x00").unwrap();
+    std::fs::write(
+        proj.join(".temp/threads")
+            .join(other)
+            .join("x-0a1b2c3d.jpg"),
+        &photo,
+    )
+    .unwrap();
+    let url = |path: &str, variant: &str| {
+        format!(
+            "{base}/api/threads/{tid}/assets/image?path={}{variant}",
+            url::form_urlencoded::byte_serialize(path.as_bytes()).collect::<String>()
+        )
+    };
+    let shot = format!("./.temp/threads/{tid}/shot-0a1b2c3d.jpg");
+    let get = |url: String, etag: Option<String>| {
+        let mut request = client.get(url);
+        if let Some(etag) = etag {
+            request = request.header("if-none-match", etag);
+        }
+        request.send()
+    };
+
+    let original = get(url(&shot, ""), None).await.unwrap();
+    assert_eq!(original.status(), 200);
+    assert_eq!(original.headers()["content-type"], "image/jpeg");
+    assert_eq!(
+        original.headers()["cache-control"],
+        "private, max-age=31536000, immutable"
+    );
+    let original_etag = original.headers()["etag"].to_str().unwrap().to_owned();
+    assert_eq!(original.bytes().await.unwrap(), photo);
+
+    let thumb = get(url(&shot, "&variant=thumbnail"), None).await.unwrap();
+    assert_eq!(thumb.status(), 200);
+    assert_eq!(thumb.headers()["content-type"], "image/jpeg");
+    assert_eq!(
+        thumb.headers()["cache-control"],
+        "private, max-age=31536000, immutable"
+    );
+    assert_eq!(
+        thumb.headers()["content-security-policy"],
+        "sandbox; default-src 'none'"
+    );
+    let thumb_etag = thumb.headers()["etag"].to_str().unwrap().to_owned();
+    assert_ne!(thumb_etag, original_etag);
+    let thumb = thumb.bytes().await.unwrap();
+    assert!(
+        thumb.len() * 5 < photo.len(),
+        "{} vs {}",
+        thumb.len(),
+        photo.len()
+    );
+    let decoded = image::load_from_memory(&thumb).unwrap();
+    assert_eq!((decoded.width(), decoded.height()), (218, 480));
+    // Cached in the data directory, not in the workspace.
+    let cache = dir.path().join("cache/thread-thumbnails");
+    assert_eq!(std::fs::read_dir(&cache).unwrap().count(), 1);
+    assert_eq!(std::fs::read_dir(&attachments).unwrap().count(), 2);
+    let again = get(url(&shot, "&variant=thumbnail"), None).await.unwrap();
+    assert_eq!(again.bytes().await.unwrap(), thumb);
+
+    for (variant, etag) in [("", &original_etag), ("&variant=thumbnail", &thumb_etag)] {
+        let response = get(url(&shot, variant), Some(format!("\"other\", {etag}")))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 304, "{variant}");
+        assert_eq!(response.headers()["etag"], etag.as_str());
+        assert!(response.headers()["cache-control"]
+            .to_str()
+            .unwrap()
+            .contains("immutable"));
+        assert!(response.bytes().await.unwrap().is_empty());
+    }
+    let stale = get(
+        url(&shot, "&variant=thumbnail"),
+        Some(original_etag.clone()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(stale.status(), 200);
+
+    // GIFs, unknown variants and names that may be rewritten.
+    let gif = get(
+        url(
+            &format!(".temp/threads/{tid}/anim.gif"),
+            "&variant=thumbnail",
+        ),
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(gif.headers()["content-type"], "image/gif");
+    assert_eq!(gif.headers()["cache-control"], "private, no-cache");
+    assert_eq!(
+        gif.bytes().await.unwrap().as_ref(),
+        b"GIF89a\x01\x00\x01\x00"
+    );
+    let unknown = get(url(&shot, "&variant=huge"), None).await.unwrap();
+    assert_eq!(unknown.bytes().await.unwrap(), photo);
+
+    // The thumbnail variant validates paths exactly like the original.
+    for path in [
+        "../secret.jpg".to_owned(),
+        format!(".temp/threads/{tid}/../../../../secret.jpg"),
+        format!(".temp/threads/{other}/x-0a1b2c3d.jpg"),
+        format!(".temp/threads/{tid}"),
+        "/etc/passwd".to_owned(),
+    ] {
+        for variant in ["", "&variant=thumbnail"] {
+            let response = get(url(&path, variant), Some("*".into())).await.unwrap();
+            assert!(
+                response.status().is_client_error(),
+                "{path}{variant}: {}",
+                response.status()
+            );
+        }
+    }
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(
+            ws_root.join("secret.jpg"),
+            attachments.join("link-0a1b2c3d.jpg"),
+        )
+        .unwrap();
+        let link = format!(".temp/threads/{tid}/link-0a1b2c3d.jpg");
+        for variant in ["", "&variant=thumbnail"] {
+            assert_eq!(get(url(&link, variant), None).await.unwrap().status(), 400);
+        }
+    }
+
+    // Workspace files revalidate instead of being cached as immutable.
+    let workspace_id = workspace["id"].as_str().unwrap();
+    std::fs::write(proj.join("diagram.png"), b"\x89PNG\r\n\x1a\nfirst").unwrap();
+    let raw_url = format!("{base}/api/workspaces/{workspace_id}/files/raw?path=diagram.png");
+    let raw = get(raw_url.clone(), None).await.unwrap();
+    assert_eq!(raw.status(), 200);
+    assert_eq!(raw.headers()["cache-control"], "private, no-cache");
+    let raw_etag = raw.headers()["etag"].to_str().unwrap().to_owned();
+    let cached = get(raw_url.clone(), Some(raw_etag.clone())).await.unwrap();
+    assert_eq!(cached.status(), 304);
+    std::thread::sleep(Duration::from_millis(20));
+    std::fs::write(proj.join("diagram.png"), b"\x89PNG\r\n\x1a\nsecond!").unwrap();
+    let changed = get(raw_url, Some(raw_etag.clone())).await.unwrap();
+    assert_eq!(changed.status(), 200);
+    assert_ne!(changed.headers()["etag"].to_str().unwrap(), raw_etag);
+    assert_eq!(
+        changed.bytes().await.unwrap().as_ref(),
+        b"\x89PNG\r\n\x1a\nsecond!"
+    );
+}

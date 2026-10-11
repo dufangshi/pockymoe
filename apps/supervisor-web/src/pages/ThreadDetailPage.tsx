@@ -614,8 +614,8 @@ export function ThreadDetailPage() {
     [navigate],
   );
   const getThreadImageAssetUrl = useCallback(
-    ({ threadId, path }: { threadId: string; path: string }) =>
-      buildThreadImageAssetUrl(threadId, { path }),
+    ({ threadId, path, variant }: { threadId: string; path: string; variant?: 'thumbnail' }) =>
+      buildThreadImageAssetUrl(threadId, { path, variant }),
     [],
   );
   const [nativeResult, setNativeResult] = useScopedState<{ title: string; text: string } | null>(routeKey, null);
@@ -3828,9 +3828,9 @@ export function ThreadDetailPage() {
       } satisfies Omit<ThreadComposerProps, 'activeView' | 'onSubmit'>)
     : null;
   const getCurrentThreadImageAssetUrl = useCallback(
-    (path: string) =>
+    (path: string, variant?: 'thumbnail') =>
       detail
-        ? getThreadImageAssetUrl({ threadId: detail.thread.id, path })
+        ? getThreadImageAssetUrl({ threadId: detail.thread.id, path, ...(variant ? { variant } : {}) })
         : '',
     [detail?.thread.id, getThreadImageAssetUrl],
   );

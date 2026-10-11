@@ -36,6 +36,9 @@ tempfile = "3"
 sysinfo = { version = "=0.36.1", default-features = false, features = ["system", "component"] }
 csv = "1"
 plist = "=1.7.0"
+# Decoders for chat-photo thumbnails plus the JPEG/PNG encoders; no rayon, no
+# AVIF/TIFF/EXR, no native libraries.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

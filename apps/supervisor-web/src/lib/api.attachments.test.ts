@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { downloadThreadImage, setSelectedRelayDeviceId } from './api';
+import { buildThreadImageAssetUrl, downloadThreadImage, setSelectedRelayDeviceId } from './api';
 import { encryptedBrowserFetch } from './relayTransport';
 vi.mock('./relayTransport', () => ({ encryptedBrowserFetch: vi.fn(), encryptedRelaySocket: vi.fn() }));
 afterEach(() => { localStorage.clear(); vi.unstubAllGlobals(); });
@@ -13,4 +13,8 @@ it('downloads shared images through encrypted transport without relying on a ser
   expect(encryptedBrowserFetch).toHaveBeenCalledWith('/relay/devices/mac/api/threads/thread/assets/image?path=.%2Fphoto.png', expect.objectContaining({ credentials: 'same-origin' }), undefined);
   expect(blob.size).toBe(5);
   expect(plain).not.toHaveBeenCalled();
+});
+it('asks for the thumbnail variant only when requested', () => {
+  expect(buildThreadImageAssetUrl('t 1', { path: './a.jpg' })).toBe('/api/threads/t%201/assets/image?path=.%2Fa.jpg');
+  expect(buildThreadImageAssetUrl('t 1', { path: './a.jpg', variant: 'thumbnail' })).toBe('/api/threads/t%201/assets/image?path=.%2Fa.jpg&variant=thumbnail');
 });

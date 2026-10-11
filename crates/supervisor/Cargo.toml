@@ -35,6 +35,7 @@ aes-gcm = "0.10"
 p256 = { version = "0.13", features = ["ecdsa"] }
 
 [dev-dependencies]
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 tempfile = "3"
 tokio = { workspace = true, features = ["full", "macros", "rt-multi-thread"] }
 zip.workspace = true

@@ -2168,6 +2168,18 @@ impl Supervisor {
         files::read_thread_image(Path::new(&workspace.abs_path), id, rel)
     }
 
+    /// Validate and open a thread image without reading it, with the same
+    /// checks as [`Self::thread_image`].
+    pub fn open_thread_image(&self, id: &str, rel: &str) -> Result<files::ThreadImageFile> {
+        let thread = self.get_thread(id)?;
+        let workspace = self.get_workspace(&thread.workspace_id)?;
+        files::open_thread_image(Path::new(&workspace.abs_path), id, rel)
+    }
+
+    pub fn thread_thumbnail_cache_dir(&self) -> PathBuf {
+        crate::thread_images::cache_dir(&self.config.database_url)
+    }
+
     fn load_steers(&self, thread_id: &str) -> Result<Vec<ThreadPendingSteerDto>> {
         self.db.with(|conn| {
             let mut stmt = conn.prepare(

@@ -18,8 +18,8 @@ export function ThreadTimeline({
   ...props
 }: ThreadTimelineProps) {
   const localAdapter: ThreadTimelineAdapter = {
-    getImageAssetUrl: ({ threadId, path }) =>
-      buildThreadImageAssetUrl(threadId, { path }),
+    getImageAssetUrl: ({ threadId, path, variant }) =>
+      buildThreadImageAssetUrl(threadId, { path, variant }),
     onOpenLinkedThread:
       onOpenThread ??
       ((threadId) => {

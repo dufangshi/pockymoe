@@ -960,6 +960,7 @@ async fn workspace_raw(
     Path(id): Path<String>,
     Query(query): Query<PathQuery>,
     State(state): State<AppState>,
+    headers: HeaderMap,
 ) -> Result<Response, ApiErr> {
     let path = query
         .path
@@ -981,8 +982,15 @@ async fn workspace_raw(
             "Path must point to a file",
         ));
     }
+    // Workspace files change, so they revalidate on every use; chat markdown
+    // images then cost a 304 instead of the whole file on each reload.
+    let etag = file_etag(&metadata);
+    if if_none_match(&headers, &etag) {
+        return Ok(not_modified(&etag, "private, no-cache"));
+    }
     Response::builder()
         .status(StatusCode::OK)
+        .header(header::ETAG, etag)
         .header(header::CONTENT_LENGTH, metadata.len())
         .header(
             header::CONTENT_TYPE,
@@ -1001,7 +1009,7 @@ async fn workspace_raw(
             "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data: blob:",
         )
         .header("referrer-policy", "no-referrer")
-        .header(header::CACHE_CONTROL, "private, no-store")
+        .header(header::CACHE_CONTROL, "private, no-cache")
         .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
         .body(stream_file(file, ()))
         .map_err(|error| map_err(error.into()))
@@ -1364,19 +1372,56 @@ async fn thread_subagent_detail(
 #[derive(Deserialize)]
 struct ImageQuery {
     path: String,
+    /// `thumbnail` asks for a downscaled preview; anything else is the original.
+    variant: Option<String>,
 }
+
+/// Thumbnails decode whole photos; bound how many are built at once.
+static THUMBNAIL_BUILDS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
 
 async fn thread_image(
     Path(id): Path<String>,
     Query(query): Query<ImageQuery>,
     State(state): State<AppState>,
+    headers: HeaderMap,
 ) -> Result<Response, ApiErr> {
-    let (bytes, mime) = state.thread_image(&id, &query.path).map_err(map_err)?;
+    let mut image = state.open_thread_image(&id, &query.path).map_err(map_err)?;
+    let thumbnail = query.variant.as_deref() == Some("thumbnail");
+    let etag = pockymoe_runtime::thread_images::etag(
+        &image,
+        if thumbnail { "thumbnail" } else { "original" },
+    );
+    // Upload names carry a random suffix and are never rewritten.
+    let cache_control = if image.immutable_name {
+        "private, max-age=31536000, immutable"
+    } else {
+        "private, no-cache"
+    };
+    if if_none_match(&headers, &etag) {
+        return Ok(not_modified(&etag, cache_control));
+    }
+    let dir = state.thread_thumbnail_cache_dir();
+    let _build = if thumbnail && !pockymoe_runtime::thread_images::is_cached(&image, &dir) {
+        THUMBNAIL_BUILDS.acquire().await.ok()
+    } else {
+        None
+    };
+    let (bytes, mime) = tokio::task::spawn_blocking(move || {
+        if thumbnail {
+            pockymoe_runtime::thread_images::thumbnail_or_original(&mut image, &dir)
+        } else {
+            image.read_all().map(|bytes| (bytes, image.mime))
+        }
+    })
+    .await
+    .map_err(|error| map_err(error.into()))?
+    .map_err(map_err)?;
     Ok((
         StatusCode::OK,
         [
             (header::CONTENT_TYPE, mime),
-            (header::CACHE_CONTROL, "private, max-age=60"),
+            (header::CACHE_CONTROL, cache_control),
+            (header::ETAG, etag.as_str()),
             (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
             (
                 header::CONTENT_SECURITY_POLICY,
@@ -1386,6 +1431,37 @@ async fn thread_image(
         bytes,
     )
         .into_response())
+}
+
+/// Weak comparison, as RFC 9110 requires for If-None-Match.
+fn if_none_match(headers: &HeaderMap, etag: &str) -> bool {
+    let opaque = |tag: &str| tag.trim().trim_start_matches("W/").to_owned();
+    let wanted = opaque(etag);
+    headers
+        .get_all(header::IF_NONE_MATCH)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .any(|tag| tag.trim() == "*" || opaque(tag) == wanted)
+}
+
+fn file_etag(metadata: &std::fs::Metadata) -> String {
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|elapsed| elapsed.as_nanos())
+        .unwrap_or(0);
+    format!("W/\"{:x}-{modified:x}\"", metadata.len())
+}
+
+fn not_modified(etag: &str, cache_control: &'static str) -> Response {
+    Response::builder()
+        .status(StatusCode::NOT_MODIFIED)
+        .header(header::ETAG, etag)
+        .header(header::CACHE_CONTROL, cache_control)
+        .body(Body::empty())
+        .unwrap_or_else(|_| StatusCode::NOT_MODIFIED.into_response())
 }
 
 #[derive(Deserialize)]
