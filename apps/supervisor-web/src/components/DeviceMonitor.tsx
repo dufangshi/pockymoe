@@ -1,74 +1,102 @@
-import { getLocale } from '@pockymoe/thread-ui/i18n';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
-import { type CSSProperties, useEffect, useState } from 'react';
-import type { DeviceMetricsDto, PowerReadingDto, TemperatureReadingDto } from '@pockymoe/shared';
+import { type CSSProperties, type ReactNode, useEffect, useId, useState } from 'react';
+import { ArrowLeftRight, Ban, ChevronDown, Container, Cpu, Gpu, Info, MemoryStick, Thermometer, TriangleAlert, Zap } from 'lucide-react';
+import type { DeviceMetricsDto, TemperatureReadingDto } from '@pockymoe/shared';
 import { ApiError, request } from '../lib/api';
 import { FormDialog } from './FormDialog';
 import './device-monitor.css';
 
 const pct = (value: number | null | undefined) =>
   value == null ? '—' : `${Math.round(value)}%`;
-// Exposes a live reading as --load (0–100) so a theme can color it by load.
+const clampLoad = (value: number) => Math.min(100, Math.max(0, Math.round(value)));
+// Exposes a live reading as --load (0–100) so the meters and themes can color it
+// by load.
 const load = (value: number | null | undefined) =>
-  value == null ? undefined : ({ '--load': Math.min(100, Math.max(0, Math.round(value))) } as CSSProperties);
+  value == null ? undefined : ({ '--load': clampLoad(value) } as CSSProperties);
 const gib = (bytes: number) => `${(bytes / 2 ** 30).toFixed(1)} GiB`;
-function Power({
-  label,
-  reading,
-}: {
-  label: string;
-  reading: PowerReadingDto;
-}) {
-  const { locale: i18nLocale } = useI18n();
+const SENSOR_SETUP = 'https://github.com/dufangshi/pockymoe/blob/main/docs/device-monitor.md#linux-sensor-access';
+/** Samples kept for the CPU charts: about a minute while the dialog polls. */
+const HISTORY = 30;
+type CpuSample = { at: string; total: number | null; cores: Array<number | null> };
+
+function Meter({ value, label, thin = false }: { value: number | null; label: string; thin?: boolean }) {
   return (
-    <>
-    <div className="device-monitor-reading">
-      <span title={reading.source ?? undefined}>{label}</span>
-      <span title={reading.reason ?? reading.source ?? undefined}>
-        {reading.watts == null
-          ? translate("devices.unavailable")
-          : `${reading.watts.toFixed(1)} W`}
-      </span>
+    <div
+      className={`dm-meter${thin ? ' is-thin' : ''}`}
+      role="meter"
+      aria-label={label}
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={value == null ? undefined : clampLoad(value)}
+      style={load(value)}
+    >
+      <i style={{ width: `${value == null ? 0 : clampLoad(value)}%` }} />
     </div>
-      {reading.watts == null && reading.reason && (
-        <p className="device-monitor-caption">
-          {reading.reason}{' '}
-          {reading.reason.includes('RAPL') && (
-            <a href="https://github.com/dufangshi/pockymoe/blob/main/docs/device-monitor.md#linux-sensor-access" target="_blank" rel="noreferrer">
-              {translate("devices.sensorAccessSetup")}</a>
-          )}
-        </p>
-      )}
-    </>
   );
 }
 
-function Temperature({ reading }: { reading: TemperatureReadingDto | undefined }) {
-  const { locale: i18nLocale } = useI18n();
+/** A small "not available" mark; the reason stays in its tooltip and name. */
+function Unavailable({ reason }: { reason?: string | null | undefined }) {
+  const text = reason ? `${translate('devices.unavailable')}: ${reason}` : translate('devices.unavailable');
+  return reason?.includes('RAPL') ? (
+    <a className="dm-na" href={SENSOR_SETUP} target="_blank" rel="noreferrer" title={text} aria-label={text}>
+      <Ban aria-hidden />
+    </a>
+  ) : (
+    <span className="dm-na" role="img" title={text} aria-label={text}>
+      <Ban aria-hidden />
+    </span>
+  );
+}
+
+function Chip({ icon, label, value, reason }: { icon: ReactNode; label: string; value: string | null; reason?: string | null | undefined }) {
   return (
-    <>
-      <div className="device-monitor-reading">
-        <span>{translate("devices.cPUTemperature")}</span>
-        <span title={reading?.source ?? undefined}>
-          {reading?.celsius == null ? translate("devices.unavailable") : `${reading.celsius.toFixed(1)} °C`}
-        </span>
+    <span className="dm-chip" title={value == null ? undefined : label}>
+      {icon}
+      <span className="sr-only">{label}</span>
+      {value == null ? <Unavailable reason={reason} /> : <b>{value}</b>}
+    </span>
+  );
+}
+
+/** A 0–100% line over the last HISTORY samples, newest at the right. */
+function Spark({ points, label }: { points: Array<number | null>; label: string }) {
+  const step = 100 / (HISTORY - 1);
+  const offset = HISTORY - points.length;
+  const runs: Array<Array<[number, number]>> = [];
+  let run: Array<[number, number]> = [];
+  points.forEach((value, index) => {
+    if (value == null) {
+      if (run.length) runs.push(run);
+      run = [];
+    } else run.push([(offset + index) * step, 40 - (clampLoad(value) / 100) * 38]);
+  });
+  if (run.length) runs.push(run);
+  const line = runs.map(r => `M${r.map(([x, y]) => `${x.toFixed(2)},${y.toFixed(2)}`).join('L')}`).join('');
+  const area = runs.filter(r => r.length > 1).map(r => `M${r[0]![0].toFixed(2)},40L${r.map(([x, y]) => `${x.toFixed(2)},${y.toFixed(2)}`).join('L')}L${r[r.length - 1]![0].toFixed(2)},40Z`).join('');
+  return (
+    <svg className="dm-spark" viewBox="0 0 100 40" preserveAspectRatio="none" role="img" aria-label={label}>
+      <path className="dm-spark-grid" d="M0,21H100" vectorEffect="non-scaling-stroke" />
+      <path className="dm-spark-area" d={area} />
+      <path className="dm-spark-line" d={line} vectorEffect="non-scaling-stroke" />
+    </svg>
+  );
+}
+
+function Sensors({ reading }: { reading: TemperatureReadingDto | undefined }) {
+  if (!reading?.sensors.length) return null;
+  return (
+    <details className="dm-sensors">
+      <summary>{translate('devices.cPUTemperatureSensors')}{reading.sensors.length})</summary>
+      <div>
+        {reading.sensors.map((sensor, index) => (
+          <span key={`${sensor.label}-${index}`}>
+            <span>{sensor.label}</span>
+            <b>{sensor.celsius.toFixed(1)} °C</b>
+          </span>
+        ))}
       </div>
-      {reading?.celsius == null && (
-        <p className="device-monitor-caption">
-          {reading?.reason ?? translate("devices.updateThisDeviceSSupervisorToCollect")}
-        </p>
-      )}
-      {Boolean(reading?.sensors.length) && (
-        <details className="device-monitor-sensors">
-          <summary>{translate("devices.cPUTemperatureSensors")}{reading!.sensors.length})</summary>
-          {reading!.sensors.map((sensor, index) => (
-            <div className="device-monitor-reading" key={`${sensor.label}-${index}`}>
-              <span>{sensor.label}</span><span>{sensor.celsius.toFixed(1)} °C</span>
-            </div>
-          ))}
-        </details>
-      )}
-    </>
+    </details>
   );
 }
 
@@ -79,6 +107,9 @@ export function DeviceMonitor() {
   const [error, setError] = useState<string | null>(null);
   const [forbidden, setForbidden] = useState(false);
   const [now, setNow] = useState(Date.now);
+  const [history, setHistory] = useState<CpuSample[]>([]);
+  const [coresOpen, setCoresOpen] = useState(false);
+  const coresId = useId();
   useEffect(() => {
     let disposed = false;
     let busy = false;
@@ -103,6 +134,10 @@ export function DeviceMonitor() {
         if (!disposed) {
           setData(sample);
           setError(null);
+          setHistory(current => current.at(-1)?.at === sample.sampledAt ? current : [
+            ...current.slice(1 - HISTORY),
+            { at: sample.sampledAt, total: sample.cpu.usagePercent, cores: sample.cpu.cores.map(core => core.usagePercent) },
+          ]);
         }
       } catch (cause) {
         if (!disposed) {
@@ -172,130 +207,147 @@ export function DeviceMonitor() {
         <FormDialog
           title={translate("devices.deviceMonitor")}
           onClose={() => setOpen(false)}
-          description={
-            data?.environment === 'wsl'
-              ? translate("devices.wSLEnvironmentCPUAndMemoryDescribeThe")
-              : data?.environment === 'container'
-                ? translate("devices.containerEnvironmentSystemCPUAndMemoryWith")
-                : translate("devices.currentSystemCPUMemoryAndAvailableHardware")
-          }
+          className="device-monitor-dialog"
+          meta={data && (
+            <span className="dm-meta" data-stale={stale || undefined}>
+              <i aria-hidden />
+              {translate('devices.secondsAgo', { value1: age ?? 0 })} · {data.platform}
+              {data.environment !== 'native' && data.environment !== 'linux' && data.environment !== data.platform ? (
+                <abbr
+                  title={data.environment === 'wsl'
+                    ? translate("devices.wSLEnvironmentCPUAndMemoryDescribeThe")
+                    : data.environment === 'container'
+                      ? translate("devices.containerEnvironmentSystemCPUAndMemoryWith")
+                      : translate("devices.currentSystemCPUMemoryAndAvailableHardware")}
+                >{data.environment === 'wsl' ? 'WSL' : data.environment}</abbr>
+              ) : null}
+              {data.hardwareNotes.length ? (
+                <span className="dm-info" role="img" title={data.hardwareNotes.join('\n')} aria-label={data.hardwareNotes.join(' ')}><Info aria-hidden /></span>
+              ) : null}
+            </span>
+          )}
         >
           <div className="device-monitor-details">
             {error && (
-              <p role="status" className="device-monitor-notice">
+              <p role="status" className="dm-notice">
+                <TriangleAlert aria-hidden />
                 {error}
               </p>
             )}
             {!data && !error && (
-              <p role="status">{translate("devices.collectingTheFirstCPUSample")}</p>
+              <p role="status" className="dm-notice">{translate("devices.collectingTheFirstCPUSample")}</p>
             )}
             {data && (
               <>
-                <p className="device-monitor-caption">
-                  {stale ? translate("devices.lastSample") : translate("devices.updated")} {age}{translate("devices.sAgo")}{' '}
-                  {data.platform}
-                  <br />
-                  {translate("devices.cPUSampleWindow")} {(data.sampleWindowMs / 1000).toFixed(1)}{translate("devices.s")}</p>
-                <section aria-label={translate("devices.cPUUtilization")}>
-                  <div className="device-monitor-heading">
-                    <h3>CPU</h3>
-                    <strong>{pct(data.cpu.usagePercent)}</strong>
+                <section className="dm-row" aria-label={translate("devices.cPUUtilization")} style={load(data.cpu.usagePercent)}>
+                  <button type="button" className="dm-head" aria-expanded={coresOpen} aria-controls={coresId} onClick={() => setCoresOpen(value => !value)}>
+                    <Cpu className="dm-icon" aria-hidden />
+                    <span className="dm-name">CPU</span>
+                    <span className="dm-sub" title={data.cpu.model}>{data.cpu.logicalCoreCount} {translate("devices.cores")}</span>
+                    <span className="dm-value">{pct(data.cpu.usagePercent)}</span>
+                    <ChevronDown className="dm-chevron" aria-hidden />
+                  </button>
+                  <Meter value={data.cpu.usagePercent} label={translate("devices.cPUUtilization")} />
+                  <div className="dm-chips">
+                    <Chip
+                      icon={<Thermometer aria-hidden />}
+                      label={translate("devices.cPUTemperature")}
+                      value={data.cpuTemperature?.celsius == null ? null : `${data.cpuTemperature.celsius.toFixed(1)} °C`}
+                      reason={data.cpuTemperature ? data.cpuTemperature.reason : translate("devices.updateThisDeviceSSupervisorToCollect")}
+                    />
+                    <Chip
+                      icon={<Zap aria-hidden />}
+                      label={translate("devices.cPUPower")}
+                      value={data.cpuPower.watts == null ? null : `${data.cpuPower.watts.toFixed(1)} W`}
+                      reason={data.cpuPower.reason}
+                    />
                   </div>
-                  <p className="device-monitor-caption">
-                    {data.cpu.model} · {data.cpu.logicalCoreCount} {translate("devices.logicalCores")}</p>
-                  <div className="device-monitor-cores">
-                    {data.cpu.cores.map((core) => (
-                      <div key={core.index} className="device-monitor-core">
-                        <span>
-                          {translate("devices.core")} {core.index + 1}
-                          <b>{pct(core.usagePercent)}</b>
-                        </span>
-                        <progress
-                          aria-label={translate("devices.coreUtilization", { value1: core.index + 1 })}
-                          max={100}
-                          value={core.usagePercent ?? undefined}
-                        />
+                  {coresOpen && (
+                    <div id={coresId} className="dm-cores-panel">
+                      <p className="dm-model">{data.cpu.model}</p>
+                      <div className="dm-chart" style={load(data.cpu.usagePercent)}>
+                        <Spark points={history.map(sample => sample.total)} label={translate("devices.cPUUtilization")} />
                       </div>
-                    ))}
-                  </div>
-                  <Power label={translate("devices.cPUPower")} reading={data.cpuPower} />
-                  <Temperature reading={data.cpuTemperature} />
-                </section>
-                <section aria-label={translate("devices.memoryUtilization")}>
-                  <div className="device-monitor-heading">
-                    <h3>{translate("devices.memory")}</h3>
-                    <strong>{pct(data.memory.usagePercent)}</strong>
-                  </div>
-                  <div className="device-monitor-reading">
-                    <span>{translate("devices.usedTotal")}</span>
-                    <span>
-                      {gib(data.memory.usedBytes)} /{' '}
-                      {gib(data.memory.totalBytes)}
-                    </span>
-                  </div>
-                  <div className="device-monitor-reading">
-                    <span>{translate("devices.available")}</span>
-                    <span>{gib(data.memory.availableBytes)}</span>
-                  </div>
-                  {data.swap.totalBytes > 0 && (
-                    <div className="device-monitor-reading">
-                      <span>{translate("devices.swapPageFile")}</span>
-                      <span>
-                        {gib(data.swap.usedBytes)} / {gib(data.swap.totalBytes)}
-                      </span>
+                      <div className="dm-cores">
+                        {data.cpu.cores.map((core, position) => {
+                          const name = `${translate("devices.core")} ${core.index + 1}`;
+                          return (
+                            <div key={core.index} className="dm-core" style={load(core.usagePercent)} title={`${name} · ${pct(core.usagePercent)}`}>
+                              <Spark points={history.map(sample => sample.cores[position] ?? null)} label={translate("devices.coreUtilization", { value1: core.index + 1 })} />
+                              <span className="dm-core-label">{core.index + 1}</span>
+                              <span className="dm-core-value">{pct(core.usagePercent)}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                      <Sensors reading={data.cpuTemperature} />
                     </div>
                   )}
                 </section>
-                {data.limits && (
-                  <section aria-label={translate("devices.containerLimits")}>
-                    <h3>{translate("devices.containerLimits")}</h3>
-                    {data.limits.cpuCores != null && (
-                      <div className="device-monitor-reading">
-                        <span>{translate("devices.cPUQuota")}</span>
-                        <span>{data.limits.cpuCores} {translate("devices.cores")}</span>
-                      </div>
-                    )}
-                    {data.limits.memoryTotalBytes != null && (
-                      <div className="device-monitor-reading">
-                        <span>{translate("devices.memory")}</span>
-                        <span>
-                          {data.limits.memoryUsedBytes == null
-                            ? '—'
-                            : gib(data.limits.memoryUsedBytes)}{' '}
-                          / {gib(data.limits.memoryTotalBytes)}
-                        </span>
-                      </div>
-                    )}
+                <section className="dm-row" aria-label={translate("devices.memoryUtilization")} style={load(data.memory.usagePercent)}>
+                  <div className="dm-head">
+                    <MemoryStick className="dm-icon" aria-hidden />
+                    <span className="dm-name">{translate("devices.memory")}</span>
+                    <span className="dm-sub" title={`${translate("devices.available")} ${gib(data.memory.availableBytes)}`}>
+                      {gib(data.memory.usedBytes)} / {gib(data.memory.totalBytes)}
+                    </span>
+                    <span className="dm-value">{pct(data.memory.usagePercent)}</span>
+                  </div>
+                  <Meter value={data.memory.usagePercent} label={translate("devices.memoryUtilization")} />
+                  {data.swap.totalBytes > 0 && (
+                    <div className="dm-subrow" style={load(data.swap.usagePercent)}>
+                      <ArrowLeftRight className="dm-icon" aria-hidden />
+                      <span className="dm-name">{translate("devices.swap")}</span>
+                      <span className="dm-sub" title={translate("devices.swapPageFile")}>
+                        {gib(data.swap.usedBytes)} / {gib(data.swap.totalBytes)}
+                      </span>
+                      <Meter value={data.swap.usagePercent} label={translate("devices.swapPageFile")} thin />
+                    </div>
+                  )}
+                </section>
+                {data.limits && (data.limits.cpuCores != null || data.limits.memoryTotalBytes != null) && (
+                  <section className="dm-row" aria-label={translate("devices.containerLimits")}>
+                    <div className="dm-head">
+                      <Container className="dm-icon" aria-hidden />
+                      <span className="dm-name">{translate("devices.containerLimits")}</span>
+                    </div>
+                    <div className="dm-chips">
+                      {data.limits.cpuCores != null && (
+                        <Chip icon={<Cpu aria-hidden />} label={translate("devices.cPUQuota")} value={`${data.limits.cpuCores} ${translate("devices.cores")}`} />
+                      )}
+                      {data.limits.memoryTotalBytes != null && (
+                        <Chip
+                          icon={<MemoryStick aria-hidden />}
+                          label={translate("devices.memory")}
+                          value={`${data.limits.memoryUsedBytes == null ? '—' : gib(data.limits.memoryUsedBytes)} / ${gib(data.limits.memoryTotalBytes)}`}
+                        />
+                      )}
+                    </div>
                   </section>
                 )}
                 {data.gpus.map((gpu) => (
-                  <section key={gpu.id} aria-label={`GPU ${gpu.name}`}>
-                    <div className="device-monitor-heading">
-                      <h3>{gpu.name}</h3>
-                      <strong>{pct(gpu.usagePercent)}</strong>
-                    </div>
-                    {gpu.totalMemoryBytes != null && (
-                      <div className="device-monitor-reading">
-                        <span>{translate("devices.gPUMemory")}</span>
-                        <span>
-                          {gpu.usedMemoryBytes == null
-                            ? '—'
-                            : gib(gpu.usedMemoryBytes)}{' '}
-                          / {gib(gpu.totalMemoryBytes)}
+                  <section key={gpu.id} className="dm-row" aria-label={`GPU ${gpu.name}`} style={load(gpu.usagePercent)}>
+                    <div className="dm-head">
+                      <Gpu className="dm-icon" aria-hidden />
+                      <span className="dm-name" title={gpu.name}>{gpu.name}</span>
+                      {gpu.totalMemoryBytes != null && (
+                        <span className="dm-sub" title={translate("devices.gPUMemory")}>
+                          {gpu.usedMemoryBytes == null ? '—' : gib(gpu.usedMemoryBytes)} / {gib(gpu.totalMemoryBytes)}
                         </span>
-                      </div>
-                    )}
-                    <Power label={translate("devices.gPUPower")} reading={gpu.power} />
+                      )}
+                      <span className="dm-value">{gpu.usagePercent == null ? <Unavailable /> : pct(gpu.usagePercent)}</span>
+                    </div>
+                    {gpu.usagePercent != null && <Meter value={gpu.usagePercent} label={`GPU ${gpu.name}`} />}
+                    <div className="dm-chips">
+                      <Chip
+                        icon={<Zap aria-hidden />}
+                        label={translate("devices.gPUPower")}
+                        value={gpu.power.watts == null ? null : `${gpu.power.watts.toFixed(1)} W`}
+                        reason={gpu.power.reason}
+                      />
+                    </div>
                   </section>
                 ))}
-                {data.hardwareNotes.map((note) => (
-                  <p key={note} className="device-monitor-caption">
-                    {note}
-                  </p>
-                ))}
-                <p className="device-monitor-caption">
-                  {translate("devices.hardwareSensorsSampledAt")}{' '}
-                  {new Date(data.hardwareSampledAt).toLocaleTimeString(getLocale())}{translate("devices.powerRequiresSupportedHardwareAndSensorAccess")}</p>
               </>
             )}
           </div>

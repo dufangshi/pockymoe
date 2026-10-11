@@ -33,80 +33,203 @@
   width: 41px;
   height: 40px;
 }
+/* Monitor dialog: one row per resource (icon, name, value, load meter); the CPU
+   row expands into a history chart and per-core charts. Readings with --load
+   (0–100) take a hue from green through amber to red. */
 .device-monitor-details {
+  --dm-l: 0.6;
+  display: grid;
   min-width: 0;
   color: var(--theme-fg);
   font-size: 12px;
 }
-.device-monitor-details section {
-  margin-top: 16px;
-  border-top: 1px solid var(--theme-border);
-  padding-top: 12px;
+:root[data-theme-effective='dark'] .device-monitor-details { --dm-l: 0.76; }
+.device-monitor-details [style*='--load'] {
+  --dm-color: oklch(var(--dm-l) calc(0.14 + var(--load) * 0.0005) calc(150 - var(--load) * 1.25));
 }
-.device-monitor-heading,
-.device-monitor-reading {
+.device-monitor-dialog .form-dialog-title-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-  margin: 8px 0;
+  column-gap: 10px;
+  row-gap: 2px;
+  padding-right: 28px;
 }
-.device-monitor-heading h3,
-.device-monitor-details h3 {
-  font-size: 14px;
-  font-weight: 600;
-  overflow-wrap: anywhere;
-}
-.device-monitor-heading strong {
-  color: var(--theme-accent-strong);
-  font-size: 18px;
-}
-.device-monitor-caption {
+.dm-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--theme-fg-muted);
   font-size: 11px;
-  color: var(--theme-fg-muted);
-  overflow-wrap: anywhere;
-  line-height: 1.6;
-}
-.device-monitor-reading > span:first-child {
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-.device-monitor-reading > span:last-child {
-  flex-shrink: 0;
-}
-.device-monitor-sensors summary {
-  cursor: pointer;
-  color: var(--theme-fg-muted);
-  margin-top: 10px;
-}
-.device-monitor-notice {
-  border: 1px solid var(--theme-border);
-  padding: 8px;
-  border-radius: 6px;
-}
-.device-monitor-cores {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
-  gap: 8px;
-  margin: 12px 0;
-}
-.device-monitor-core {
-  min-width: 0;
-}
-.device-monitor-core span {
-  display: flex;
-  justify-content: space-between;
-  font-size: 10px;
-}
-.device-monitor-core b {
   font-weight: 500;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
-.device-monitor-core progress {
-  width: 100%;
+.dm-meta > i {
+  width: 6px;
   height: 6px;
-  display: block;
-  margin-top: 4px;
-  accent-color: var(--theme-accent-solid);
+  border-radius: 50%;
+  background: oklch(0.68 0.16 150);
+  box-shadow: 0 0 0 3px oklch(0.68 0.16 150 / 18%);
+}
+.dm-meta[data-stale] > i { background: var(--theme-fg-muted); box-shadow: none; }
+.dm-meta abbr {
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: var(--theme-muted);
+  color: var(--theme-fg-soft);
+  font-size: 10px;
+  font-weight: 600;
+  text-decoration: none;
+  cursor: help;
+}
+.dm-info { display: inline-flex; cursor: help; }
+.dm-info svg { width: 12px; height: 12px; }
+.dm-notice {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0 8px;
+  color: var(--theme-fg-muted);
+  font-size: 11.5px;
+}
+.dm-notice svg { flex: none; width: 14px; height: 14px; color: oklch(0.7 0.15 70); }
+.dm-row {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 12px 0;
+  border-top: 1px solid var(--theme-border);
+}
+.device-monitor-details > .dm-row:first-of-type { padding-top: 4px; border-top: 0; }
+.dm-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  min-height: 28px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+button.dm-head { cursor: pointer; border-radius: 8px; }
+button.dm-head:focus-visible { outline: 2px solid var(--theme-accent-solid); outline-offset: 2px; }
+.dm-icon { flex: none; width: 16px; height: 16px; color: var(--dm-color, var(--theme-fg-muted)); }
+.dm-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dm-sub {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--theme-fg-muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.dm-value {
+  display: inline-flex;
+  flex: none;
+  margin-left: auto;
+  font-size: 15px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.dm-chevron { flex: none; width: 14px; height: 14px; color: var(--theme-fg-muted); transition: transform 180ms ease; }
+.dm-head[aria-expanded='true'] .dm-chevron { transform: rotate(180deg); }
+.dm-meter {
+  position: relative;
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in oklch, var(--dm-color, var(--theme-fg-muted)) 16%, transparent);
+}
+.dm-meter.is-thin { height: 4px; }
+.dm-meter > i {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: inherit;
+  background: var(--dm-color, var(--theme-fg-muted));
+  transition: width 400ms ease, background-color 400ms ease;
+}
+.dm-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.dm-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: var(--theme-muted);
+  color: var(--theme-fg-soft);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.dm-chip > svg { width: 12px; height: 12px; color: var(--theme-fg-muted); }
+.dm-chip b { color: var(--theme-fg); font-weight: 600; font-variant-numeric: tabular-nums; }
+.dm-na { display: inline-flex; color: var(--theme-fg-muted); cursor: help; }
+.dm-na svg { width: 13px; height: 13px; }
+.dm-value .dm-na svg { width: 15px; height: 15px; }
+a.dm-na { cursor: pointer; }
+a.dm-na:hover { color: var(--theme-accent-strong); }
+.dm-subrow { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.dm-subrow .dm-icon { width: 13px; height: 13px; }
+.dm-subrow .dm-name { font-size: 11.5px; font-weight: 500; }
+.dm-subrow .dm-sub { flex: none; }
+.dm-subrow .dm-meter { flex: 1 1 60px; }
+.dm-cores-panel { display: grid; gap: 8px; padding-top: 2px; }
+.dm-model { color: var(--theme-fg-muted); font-size: 11px; overflow-wrap: anywhere; }
+.dm-chart,
+.dm-core {
+  position: relative;
+  overflow: hidden;
+  border-radius: 10px;
+  background: color-mix(in oklch, var(--theme-fg) 4%, transparent);
+}
+.dm-chart { height: 64px; padding-top: 4px; }
+.dm-spark { display: block; width: 100%; height: 100%; }
+.dm-spark-grid { stroke: var(--theme-border); stroke-width: 1; }
+.dm-spark-area { fill: var(--dm-color, var(--theme-fg-muted)); opacity: 0.14; }
+.dm-spark-line {
+  fill: none;
+  stroke: var(--dm-color, var(--theme-fg-muted));
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.dm-cores { display: grid; grid-template-columns: repeat(auto-fill, minmax(64px, 1fr)); gap: 6px; }
+.dm-core { height: 42px; border-radius: 8px; }
+.dm-core .dm-spark { position: absolute; inset: 14px 0 0; width: 100%; height: calc(100% - 14px); }
+.dm-core .dm-spark-line { stroke-width: 1.5; }
+.dm-core-label,
+.dm-core-value { position: absolute; top: 4px; font-size: 9.5px; line-height: 1; font-variant-numeric: tabular-nums; }
+.dm-core-label { left: 6px; color: var(--theme-fg-muted); }
+.dm-core-value { right: 6px; color: var(--theme-fg-soft); font-weight: 600; }
+.dm-sensors summary { color: var(--theme-fg-muted); font-size: 11px; cursor: pointer; }
+.dm-sensors > div {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 3px 14px;
+  margin-top: 6px;
+  font-size: 11px;
+}
+.dm-sensors > div > span { display: flex; justify-content: space-between; gap: 6px; min-width: 0; }
+.dm-sensors > div > span > span { overflow: hidden; color: var(--theme-fg-soft); text-overflow: ellipsis; white-space: nowrap; }
+.dm-sensors b { flex: none; font-weight: 500; font-variant-numeric: tabular-nums; }
+@media (prefers-reduced-motion: reduce) {
+  .dm-meter > i,
+  .dm-chevron { transition: none; }
 }
 /* Very narrow phones: every top-bar icon gets 29px so the bar, with the monitor,
    fits 320px. The end buttons need the stronger selector to beat their 34px phone

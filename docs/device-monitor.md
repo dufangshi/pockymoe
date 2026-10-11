@@ -43,7 +43,9 @@ thermal zones are excluded. macOS uses sysinfo’s native Intel SMC / Apple Sili
 IOHID reader, with Intel powermetrics SMC temperatures as a fallback. Windows
 uses CPU Package/Tdie temperatures from LibreHardwareMonitor when installed.
 `cpuTemperature` includes Celsius, source/reason and individually labeled sensors;
-the UI collapses these details and shows unavailable reasons without requiring hover.
+the UI lists the sensors under the expanded CPU row. An unavailable reading shows
+a small "not available" mark whose tooltip and accessible name carry the reason;
+a missing RAPL permission links the mark to the setup below.
 
 ## Linux sensor access
 
@@ -93,10 +95,13 @@ References: [kernel powercap/RAPL](https://www.kernel.org/doc/html/latest/power/
 [Netdata macOS sensor sources and privilege requirements](https://learn.netdata.cloud/docs/collecting-metrics/collectors/operating-systems/macos).
 
 The Web button appears in the mobile topbar and desktop icon rail above Settings,
-remaining visible when the chat sidebar is collapsed. Opening it shows
-per-core bars, used/total RAM, swap and available GPU/power readings. A failed or
-stale sample replaces button percentages with dashes; the details retain the last
-sample with its age. Hidden browser tabs pause polling. Older Supervisors display
+remaining visible when the chat sidebar is collapsed. Opening it shows the sample
+age and platform beside the title, then one row per resource (CPU, memory with
+swap, each GPU, container limits): an icon, the value and a meter colored from
+green to red by load, with temperature and power as small chips. The CPU row
+expands into a usage chart and a per-core chart grid, drawn from about the last
+30 samples the page has polled. A failed or stale sample replaces button
+percentages with dashes; the details retain the last sample with its age. Hidden browser tabs pause polling. Older Supervisors display
 an update instruction instead of fabricated zeroes.
 
 Validation covers Linux native samples against `/proc/stat` and `/proc/meminfo`,

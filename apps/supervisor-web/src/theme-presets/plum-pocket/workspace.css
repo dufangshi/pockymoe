@@ -360,25 +360,14 @@
 }
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell .terminal-icon-button:is(:hover, :focus-visible) { background: var(--theme-hover); color: var(--theme-fg); }
 
-/* ── Device monitor ──────────────────────────────────────────────────────── */
-:root[data-theme-preset='plum-pocket'] [role='dialog']:has(> .device-monitor-details) > div:first-child > p { display: none; }
-:root[data-theme-preset='plum-pocket'] [role='dialog']:has(> .device-monitor-details) h2 { font-family: var(--plum-display); font-weight: 600; }
-:root[data-theme-preset='plum-pocket'] .device-monitor-heading h3 { font-family: var(--plum-display); font-weight: 600; }
-:root[data-theme-preset='plum-pocket'] .device-monitor-heading strong { color: var(--theme-accent-strong); font-family: var(--plum-display); }
-:root[data-theme-preset='plum-pocket'] .device-monitor-caption { font-size: 11px; color: var(--theme-fg-muted); }
-:root[data-theme-preset='plum-pocket'] .device-monitor-core progress {
-  appearance: none;
-  height: 6px;
-  border: 0;
-  border-radius: 999px;
-  overflow: hidden;
-  background: var(--theme-muted);
-}
-:root[data-theme-preset='plum-pocket'] .device-monitor-core progress::-webkit-progress-bar { background: var(--theme-muted); border-radius: 999px; }
-:root[data-theme-preset='plum-pocket'] .device-monitor-core progress::-webkit-progress-value { background: var(--theme-accent-solid); border-radius: 999px; }
-:root[data-theme-preset='plum-pocket'] .device-monitor-core progress::-moz-progress-bar { background: var(--theme-accent-solid); border-radius: 999px; }
-:root[data-theme-preset='plum-pocket'] .device-monitor-core b { color: var(--theme-fg-soft); }
-:root[data-theme-preset='plum-pocket'] .device-monitor-sensors summary { color: var(--theme-fg-soft); }
+/* ── Device monitor: Fredoka names and values, dashed dividers, felt chips ── */
+:root[data-theme-preset='plum-pocket'] .device-monitor-dialog h2 { font-family: var(--plum-display); font-weight: 600; }
+:root[data-theme-preset='plum-pocket'] .device-monitor-details :is(.dm-name, .dm-value) { font-family: var(--plum-display); letter-spacing: 0; }
+:root[data-theme-preset='plum-pocket'] .device-monitor-details .dm-value { font-size: 16px; font-weight: 600; }
+:root[data-theme-preset='plum-pocket'] .device-monitor-details .dm-row { border-top-style: dashed; border-top-color: var(--theme-border-strong); }
+:root[data-theme-preset='plum-pocket'] .device-monitor-details :is(.dm-chart, .dm-core) { background: color-mix(in oklch, var(--theme-accent-solid) 7%, var(--theme-panel)); }
+:root[data-theme-preset='plum-pocket'] .device-monitor-details .dm-chip { background: color-mix(in oklch, var(--theme-accent-solid) 12%, var(--theme-panel)); }
+:root[data-theme-preset='plum-pocket'] .device-monitor-dialog .dm-meta abbr { background: color-mix(in oklch, var(--theme-accent-solid) 16%, var(--theme-panel)); }
 
 /* ── Automations: a plain strip of totals and divided rules, no nested cards ─ */
 :root[data-theme-preset='plum-pocket'] .automation-heading-copy h2 { font-family: var(--plum-display); font-weight: 600; letter-spacing: 0; }

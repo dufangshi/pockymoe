@@ -110,20 +110,31 @@ test('device monitor shows cores, memory and real watts, and marks failed sample
   }
   await monitor.click();
   const dialog = page.getByRole('dialog', { name: 'Device monitor' });
-  await expect(dialog).toContainText('WSL environment');
-  await expect(dialog.locator('progress')).toHaveCount(4);
-  await expect(
-    dialog.getByRole('progressbar', { name: 'Core 1 utilization' }),
-  ).toHaveAttribute('value', '0');
+  // Freshness, platform and environment fit beside the title; the environment's
+  // explanation lives in its tooltip.
+  await expect(dialog.locator('.dm-meta')).toContainText(/\ds ago · linux/);
+  await expect(dialog.locator('.dm-meta abbr')).toHaveAttribute('title', /WSL environment/);
+  await expect(dialog.getByRole('meter', { name: 'CPU utilization' })).toHaveAttribute('aria-valuenow', '37');
+  await expect(dialog.getByRole('meter', { name: 'Memory utilization' })).toHaveAttribute('aria-valuenow', '50');
   await expect(dialog).toContainText('8.0 GiB / 16.0 GiB');
   await expect(dialog).toContainText('24.5 W');
   await expect(dialog).toContainText('97.5 °C');
-  await expect(dialog).toContainText('GPU power sensor is not exposed by this driver');
+  // Unavailable readings are a small mark whose name carries the reason.
+  await expect(dialog.getByRole('img', { name: /GPU power sensor is not exposed by this driver/ })).toBeVisible();
+  await expect(dialog).not.toContainText('GPU power sensor is not exposed');
+  // Cores, their charts and the temperature sensors open from the CPU row.
+  await expect(dialog.locator('.dm-core')).toHaveCount(0);
+  const cpu = dialog.getByRole('button', { name: /CPU/ });
+  await cpu.click();
+  await expect(cpu).toHaveAttribute('aria-expanded', 'true');
+  await expect(dialog.locator('.dm-core')).toHaveCount(4);
+  await expect(dialog.getByRole('img', { name: 'Core 1 utilization' })).toBeVisible();
+  await expect(dialog.locator('.dm-core').first()).toHaveAttribute('title', 'Core 1 · 0%');
+  await expect(dialog.locator('.dm-core').nth(3)).toHaveAttribute('style', /--load: 68/);
   await expect(dialog.getByText('Core 0', { exact: true })).not.toBeVisible();
   await dialog.getByText('CPU temperature sensors (2)').click();
   await expect(dialog.getByText('Core 0', { exact: true })).toBeVisible();
   await expect(dialog).toContainText('94.0 °C');
-  await expect(dialog).toContainText('Unavailable');
   fail = true;
   await expect(dialog.getByRole('status')).toContainText(
     'Device metrics unavailable',

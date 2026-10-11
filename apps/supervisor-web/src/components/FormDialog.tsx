@@ -13,9 +13,14 @@ export function FormDialog({
   children,
   onClose,
   busy = false,
+  meta,
+  className,
 }: {
   title: string;
   description?: string;
+  /** Small inline details shown beside the title. */
+  meta?: ReactNode;
+  className?: string;
   children: ReactNode;
   onClose: () => void;
   busy?: boolean;
@@ -28,7 +33,7 @@ export function FormDialog({
       }}
     >
       <DialogContent
-        className="host-dialog !z-[130] !max-h-[calc(100dvh-2rem)] !overflow-y-auto !overscroll-contain"
+        className={`host-dialog ${className ?? ''} !z-[130] !max-h-[calc(100dvh-2rem)] !overflow-y-auto !overscroll-contain`}
         overlayClassName="!z-[129]"
         {...(!description ? { 'aria-describedby': undefined } : {})}
         onPointerDownOutside={(event) => {
@@ -38,8 +43,15 @@ export function FormDialog({
           if (busy) event.preventDefault();
         }}
       >
-        <DialogHeader>
-          <DialogTitle>{title}</DialogTitle>
+        <DialogHeader className={meta ? 'text-left' : undefined}>
+          {meta ? (
+            <div className="form-dialog-title-row">
+              <DialogTitle>{title}</DialogTitle>
+              {meta}
+            </div>
+          ) : (
+            <DialogTitle>{title}</DialogTitle>
+          )}
           {description && <DialogDescription>{description}</DialogDescription>}
         </DialogHeader>
         {children}
