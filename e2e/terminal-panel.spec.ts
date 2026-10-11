@@ -267,3 +267,62 @@ test('phone terminal reserves space for a visual-only keyboard without relying o
   await expect.poll(async () => (await panel.boundingBox())!.height).toBeCloseTo(before.height, 0);
   await expect.poll(async () => (await panel.boundingBox())!.y).toBeCloseTo(before.y, 0);
 });
+
+test('dragging the terminal panel keeps the buffer steady and resizes the shell once', async ({ page, request }, testInfo) => {
+  test.skip(testInfo.project.name !== 'desktop-chromium', 'Desktop panel sash');
+  await page.addInitScript(() => localStorage.setItem('remote-codex.locale', 'en'));
+  await page.setViewportSize({ width: 1280, height: 860 });
+  const [id] = await workspaceThreads(request, ['Terminal drag']);
+  const resizes: string[] = [];
+  page.on('websocket', socket => socket.on('framesent', frame => {
+    const text = String(frame.payload);
+    if (text.includes('"shell.resize"')) resizes.push(text);
+  }));
+  await page.goto(`/threads/${id}`);
+  const later = page.getByRole('button', { name: 'Later', exact: true });
+  await later.waitFor({ timeout: 3_000 }).catch(() => {});
+  if (await later.isVisible()) await later.click();
+  await page.getByRole('navigation', { name: 'Workspace tools', exact: true }).getByRole('button', { name: 'Terminal', exact: true }).click();
+  const panel = page.getByTestId('workbench-bottom-panel');
+  await expect(visibleRows(page)).toContainText('$', { timeout: 20_000 });
+  await page.keyboard.type('echo drag-marker');
+  await page.keyboard.press('Enter');
+  await expect(visibleRows(page)).toContainText('drag-marker\n');
+  await page.waitForTimeout(500);
+  const lines = async () => (await visibleRows(page).innerText()).split('\n').filter(line => line.trim()).length;
+  const linesBefore = await lines();
+  resizes.length = 0;
+  // Count frames in which the terminal shows no text while the panel moves.
+  await page.evaluate(() => {
+    const state = window as unknown as { blankFrames: number; watching: boolean };
+    state.blankFrames = 0;
+    state.watching = true;
+    const tick = () => {
+      if (!state.watching) return;
+      const rows = document.querySelector('[data-testid="workbench-terminal-target"] [data-testid="terminal-pane"] .xterm-rows');
+      if (!rows?.textContent?.trim()) state.blankFrames += 1;
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  });
+  const sash = (await page.getByTestId('workbench-panel-sash').boundingBox())!;
+  const x = sash.x + sash.width / 2;
+  const y = sash.y + sash.height / 2;
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  for (const offset of [-60, -120, -180, -90, 0, 60, -40, -150]) {
+    await page.mouse.move(x, y + offset, { steps: 6 });
+  }
+  await page.mouse.up();
+  await page.waitForTimeout(800);
+  const blankFrames = await page.evaluate(() => {
+    const state = window as unknown as { blankFrames: number; watching: boolean };
+    state.watching = false;
+    return state.blankFrames;
+  });
+  expect(blankFrames).toBe(0);
+  expect(resizes.length).toBeLessThanOrEqual(2);
+  expect((await panel.boundingBox())!.height).toBeGreaterThan(200);
+  await expect(visibleRows(page)).toContainText('drag-marker\n');
+  expect(await lines()).toBeLessThanOrEqual(linesBefore);
+});
