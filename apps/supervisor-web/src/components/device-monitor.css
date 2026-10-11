@@ -197,7 +197,7 @@ a.dm-na:hover { color: var(--theme-accent-strong); }
   border-radius: 10px;
   background: color-mix(in oklch, var(--theme-fg) 4%, transparent);
 }
-.dm-chart { height: 64px; padding-top: 4px; }
+.dm-chart { height: 76px; padding: 0 0 0 30px; }
 .dm-spark { display: block; width: 100%; height: 100%; }
 .dm-spark-grid { stroke: var(--theme-border); stroke-width: 1; }
 .dm-spark-area { fill: var(--dm-color, var(--theme-fg-muted)); opacity: 0.14; }
@@ -214,8 +214,46 @@ a.dm-na:hover { color: var(--theme-accent-strong); }
 .dm-core .dm-spark-line { stroke-width: 1.5; }
 .dm-core-label,
 .dm-core-value { position: absolute; top: 4px; font-size: 9.5px; line-height: 1; font-variant-numeric: tabular-nums; }
-.dm-core-label { left: 6px; color: var(--theme-fg-muted); }
-.dm-core-value { right: 6px; color: var(--theme-fg-soft); font-weight: 600; }
+.dm-core-label { left: 5px; display: inline-flex; align-items: center; gap: 3px; color: var(--theme-fg-muted); }
+.dm-core-temp { display: inline-flex; align-items: center; gap: 2px; color: var(--theme-fg-soft); font-size: 8.5px; }
+.dm-core-temp::before { content: ''; width: 4px; height: 4px; border-radius: 50%; background: var(--dm-color, var(--theme-fg-muted)); }
+.dm-axis > i {
+  position: absolute;
+  left: 6px;
+  transform: translateY(-50%);
+  color: var(--theme-fg-muted);
+  font-size: 9px;
+  font-style: normal;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.dm-axis > i:last-child { transform: translateY(-110%); }
+.dm-now {
+  position: absolute;
+  right: 6px;
+  transform: translateY(-130%);
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: var(--theme-panel);
+  color: var(--theme-fg);
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 1.3;
+  font-variant-numeric: tabular-nums;
+  box-shadow: 0 0 0 1px color-mix(in oklch, var(--dm-color, var(--theme-fg-muted)) 45%, transparent);
+}
+.dm-now::after {
+  content: '';
+  position: absolute;
+  right: -2px;
+  bottom: -7px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--dm-color, var(--theme-fg-muted));
+  box-shadow: 0 0 0 2px var(--theme-panel);
+}
+.dm-core-value { right: 5px; color: var(--theme-fg-soft); font-weight: 600; }
 .dm-sensors summary { color: var(--theme-fg-muted); font-size: 11px; cursor: pointer; }
 .dm-sensors > div {
   display: grid;

@@ -186,6 +186,7 @@ fn hwmon_power(root: &Path) -> Option<PowerReadingDto> {
 pub(super) fn temperature(root: &Path, thermal: &Path) -> TemperatureReadingDto {
     let mut sensors = vec![];
     let mut package = vec![];
+    let mut cores = std::collections::BTreeMap::new();
     for entry in std::fs::read_dir(root)
         .ok()
         .into_iter()
@@ -200,6 +201,10 @@ pub(super) fn temperature(root: &Path, thermal: &Path) -> TemperatureReadingDto 
         ) {
             continue;
         }
+        // coretemp has one hwmon per package, labelled "Package id N", with
+        // "Core <physical core id>" inputs.
+        let mut package_id = 0;
+        let mut core_readings = vec![];
         for e in std::fs::read_dir(&path)
             .ok()
             .into_iter()
@@ -229,11 +234,28 @@ pub(super) fn temperature(root: &Path, thermal: &Path) -> TemperatureReadingDto 
             if label.starts_with("Package id") || label == "Tdie" || label == "cpu_thermal" {
                 package.push(celsius);
             }
+            if let Some(id) = label
+                .strip_prefix("Package id ")
+                .and_then(|n| n.trim().parse().ok())
+            {
+                package_id = id;
+            }
+            if let Some(core) = label
+                .strip_prefix("Core ")
+                .and_then(|n| n.trim().parse::<u32>().ok())
+            {
+                core_readings.push((core, celsius));
+            }
             sensors.push(TemperatureSensorDto {
                 label: format!("{} · {label}", driver.trim()),
                 celsius,
             });
         }
+        cores.extend(
+            core_readings
+                .into_iter()
+                .map(|(core, celsius)| ((package_id, core), celsius)),
+        );
     }
     if sensors.is_empty() {
         for e in std::fs::read_dir(thermal)
@@ -267,6 +289,31 @@ pub(super) fn temperature(root: &Path, thermal: &Path) -> TemperatureReadingDto 
     TemperatureReadingDto {
         celsius, source: celsius.map(|_| "Linux hwmon / thermal · hottest CPU package or CPU sensor".into()),
         reason: celsius.is_none().then(|| "No readable CPU temperature sensor; the kernel must expose coretemp/k10temp or a CPU thermal zone".into()), sensors,
+        cores,
+    }
+}
+
+/// Gives each logical CPU the reading of the physical core it runs on, using
+/// `cpu<N>/topology/{physical_package_id,core_id}`.
+pub(super) fn attach_core_temperatures(
+    cpu_root: &Path,
+    readings: &std::collections::BTreeMap<(u32, u32), f64>,
+    cores: &mut [CpuCoreMetricsDto],
+) {
+    if readings.is_empty() {
+        return;
+    }
+    let read = |index: usize, name: &str| {
+        std::fs::read_to_string(cpu_root.join(format!("cpu{index}/topology/{name}")))
+            .ok()
+            .and_then(|s| s.trim().parse::<u32>().ok())
+    };
+    for core in cores {
+        let Some(core_id) = read(core.index, "core_id") else {
+            continue;
+        };
+        let package = read(core.index, "physical_package_id").unwrap_or(0);
+        core.celsius = readings.get(&(package, core_id)).copied();
     }
 }
 
@@ -308,6 +355,41 @@ mod tests {
         let result = collector.power(root, &root.join("no-hwmon")).await;
         assert_eq!(result.watts, Some(0.0));
         assert_eq!(collector.energy.len(), 1);
+    }
+    #[test]
+    fn device_metrics_linux_attaches_physical_core_temperatures_to_logical_cpus() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        file(root, "hwmon/hwmon1/name", "coretemp");
+        file(root, "hwmon/hwmon1/temp1_label", "Package id 0");
+        file(root, "hwmon/hwmon1/temp1_input", "80000");
+        file(root, "hwmon/hwmon1/temp2_label", "Core 0");
+        file(root, "hwmon/hwmon1/temp2_input", "70000");
+        file(root, "hwmon/hwmon1/temp6_label", "Core 4");
+        file(root, "hwmon/hwmon1/temp6_input", "84000");
+        // Hybrid parts number physical cores sparsely: cpu1 runs on core 4.
+        for (cpu, core) in [(0, "0"), (1, "4"), (2, "9")] {
+            file(root, &format!("cpu/cpu{cpu}/topology/core_id"), core);
+            file(
+                root,
+                &format!("cpu/cpu{cpu}/topology/physical_package_id"),
+                "0",
+            );
+        }
+        let reading = temperature(&root.join("hwmon"), &root.join("thermal"));
+        let mut cores = (0..4)
+            .map(|index| CpuCoreMetricsDto {
+                index,
+                usage_percent: None,
+                celsius: None,
+            })
+            .collect::<Vec<_>>();
+        attach_core_temperatures(&root.join("cpu"), &reading.cores, &mut cores);
+        let celsius = cores.iter().map(|core| core.celsius).collect::<Vec<_>>();
+        assert_eq!(celsius, [Some(70.0), Some(84.0), None, None]);
+        // The field is omitted, not null, when a core has no reading.
+        let json = serde_json::to_value(&cores[2]).unwrap();
+        assert!(json.get("celsius").is_none());
     }
     #[test]
     fn device_metrics_linux_temperature_uses_package_not_ssd_or_acpi() {

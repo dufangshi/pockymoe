@@ -33,7 +33,8 @@ export interface DeviceMetricsDto {
     model: string;
     usagePercent: number | null;
     logicalCoreCount: number;
-    cores: Array<{ index: number; usagePercent: number | null }>;
+    /** `celsius` is the physical core's temperature, when the platform reports one. */
+    cores: Array<{ index: number; usagePercent: number | null; celsius?: number | null }>;
   };
   memory: MemoryMetricsDto;
   swap: MemoryMetricsDto;

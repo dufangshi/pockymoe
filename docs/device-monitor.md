@@ -42,8 +42,13 @@ package/Tdie values take precedence over core values. SSD, Wi-Fi and generic ACP
 thermal zones are excluded. macOS uses sysinfo’s native Intel SMC / Apple Silicon
 IOHID reader, with Intel powermetrics SMC temperatures as a fallback. Windows
 uses CPU Package/Tdie temperatures from LibreHardwareMonitor when installed.
-`cpuTemperature` includes Celsius, source/reason and individually labeled sensors;
-the UI lists the sensors under the expanded CPU row. An unavailable reading shows
+`cpuTemperature` includes Celsius, source/reason and individually labeled sensors.
+On Linux, coretemp's `Core <id>` readings are matched to logical CPUs through
+`/sys/devices/system/cpu/cpu<N>/topology/{physical_package_id,core_id}` and sent as
+`cpu.cores[].celsius`; hybrid Intel parts number physical cores sparsely, so the
+order of the sensors is not the order of the CPUs. Each core chart shows its
+temperature; without per-core readings the UI lists the sensors under the
+expanded CPU row instead. An unavailable reading shows
 a small "not available" mark whose tooltip and accessible name carry the reason;
 a missing RAPL permission links the mark to the setup below.
 
@@ -99,8 +104,8 @@ remaining visible when the chat sidebar is collapsed. Opening it shows the sampl
 age and platform beside the title, then one row per resource (CPU, memory with
 swap, each GPU, container limits): an icon, the value and a meter colored from
 green to red by load, with temperature and power as small chips. The CPU row
-expands into a usage chart and a per-core chart grid, drawn from about the last
-30 samples the page has polled. A failed or stale sample replaces button
+expands into a usage chart with a 0–100% scale and the current reading, and a
+per-core chart grid, drawn from about the last 30 samples the page has polled. A failed or stale sample replaces button
 percentages with dashes; the details retain the last sample with its age. Hidden browser tabs pause polling. Older Supervisors display
 an update instruction instead of fabricated zeroes.
 

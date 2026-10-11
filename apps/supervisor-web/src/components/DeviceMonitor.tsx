@@ -60,7 +60,7 @@ function Chip({ icon, label, value, reason }: { icon: ReactNode; label: string; 
 }
 
 /** A 0–100% line over the last HISTORY samples, newest at the right. */
-function Spark({ points, label }: { points: Array<number | null>; label: string }) {
+function Spark({ points, label, axis = false }: { points: Array<number | null>; label: string; axis?: boolean }) {
   const step = 100 / (HISTORY - 1);
   const offset = HISTORY - points.length;
   const runs: Array<Array<[number, number]>> = [];
@@ -76,7 +76,7 @@ function Spark({ points, label }: { points: Array<number | null>; label: string 
   const area = runs.filter(r => r.length > 1).map(r => `M${r[0]![0].toFixed(2)},40L${r.map(([x, y]) => `${x.toFixed(2)},${y.toFixed(2)}`).join('L')}L${r[r.length - 1]![0].toFixed(2)},40Z`).join('');
   return (
     <svg className="dm-spark" viewBox="0 0 100 40" preserveAspectRatio="none" role="img" aria-label={label}>
-      <path className="dm-spark-grid" d="M0,21H100" vectorEffect="non-scaling-stroke" />
+      <path className="dm-spark-grid" d={axis ? 'M0,2H100M0,21H100M0,40H100' : 'M0,21H100'} vectorEffect="non-scaling-stroke" />
       <path className="dm-spark-area" d={area} />
       <path className="dm-spark-line" d={line} vectorEffect="non-scaling-stroke" />
     </svg>
@@ -266,21 +266,39 @@ export function DeviceMonitor() {
                     <div id={coresId} className="dm-cores-panel">
                       <p className="dm-model">{data.cpu.model}</p>
                       <div className="dm-chart" style={load(data.cpu.usagePercent)}>
-                        <Spark points={history.map(sample => sample.total)} label={translate("devices.cPUUtilization")} />
+                        <Spark points={history.map(sample => sample.total)} label={translate("devices.cPUUtilization")} axis />
+                        <span className="dm-axis" aria-hidden>
+                          <i style={{ top: `${(2 / 40) * 100}%` }}>100%</i>
+                          <i style={{ top: '52.5%' }}>50%</i>
+                          <i style={{ top: '100%' }}>0</i>
+                        </span>
+                        {data.cpu.usagePercent != null && (
+                          <span className="dm-now" aria-hidden style={{ top: `${((40 - clampLoad(data.cpu.usagePercent) * 0.38) / 40) * 100}%` }}>
+                            {pct(data.cpu.usagePercent)}
+                          </span>
+                        )}
                       </div>
                       <div className="dm-cores">
                         {data.cpu.cores.map((core, position) => {
                           const name = `${translate("devices.core")} ${core.index + 1}`;
+                          const temperature = core.celsius == null ? '' : ` · ${core.celsius.toFixed(0)} °C`;
                           return (
-                            <div key={core.index} className="dm-core" style={load(core.usagePercent)} title={`${name} · ${pct(core.usagePercent)}`}>
+                            <div key={core.index} className="dm-core" style={load(core.usagePercent)} title={`${name} · ${pct(core.usagePercent)}${temperature}`}>
                               <Spark points={history.map(sample => sample.cores[position] ?? null)} label={translate("devices.coreUtilization", { value1: core.index + 1 })} />
-                              <span className="dm-core-label">{core.index + 1}</span>
+                              <span className="dm-core-label">
+                                {core.index + 1}
+                                {core.celsius != null && (
+                                  // 40 °C reads green and 100 °C red, on the same scale as load.
+                                  <span className="dm-core-temp" style={load(((core.celsius - 40) / 60) * 100)}>{core.celsius.toFixed(0)}°</span>
+                                )}
+                              </span>
                               <span className="dm-core-value">{pct(core.usagePercent)}</span>
                             </div>
                           );
                         })}
                       </div>
-                      <Sensors reading={data.cpuTemperature} />
+                      {/* Per-core readings sit on the core charts; older Supervisors list sensors. */}
+                      {!data.cpu.cores.some(core => core.celsius != null) && <Sensors reading={data.cpuTemperature} />}
                     </div>
                   )}
                 </section>

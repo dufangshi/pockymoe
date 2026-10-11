@@ -82,6 +82,7 @@ impl BasicCollector {
             .map(|(index, cpu)| CpuCoreMetricsDto {
                 index,
                 usage_percent: percent(cpu.cpu_usage() as f64),
+                celsius: None,
             })
             .collect::<Vec<_>>();
         let data = DeviceMetricsDto {
@@ -151,6 +152,13 @@ impl DeviceMonitor {
         let (basic, hardware) = tokio::join!(basic_task, hardware_task);
         let mut basic = basic??;
         basic.cpu_power = hardware.cpu_power;
+        if cfg!(target_os = "linux") {
+            linux::attach_core_temperatures(
+                std::path::Path::new("/sys/devices/system/cpu"),
+                &hardware.cpu_temperature.cores,
+                &mut basic.cpu.cores,
+            );
+        }
         basic.cpu_temperature = hardware.cpu_temperature;
         basic.gpus = hardware.gpus;
         basic.hardware_sampled_at = hardware.sampled_at;

@@ -43,6 +43,7 @@ test('device monitor shows cores, memory and real watts, and marks failed sample
               cores: [0, 20, 60, 68].map((usagePercent, index) => ({
                 index,
                 usagePercent,
+                ...(index < 3 ? { celsius: 70 + index } : {}),
               })),
             },
             memory: {
@@ -129,12 +130,16 @@ test('device monitor shows cores, memory and real watts, and marks failed sample
   await expect(cpu).toHaveAttribute('aria-expanded', 'true');
   await expect(dialog.locator('.dm-core')).toHaveCount(4);
   await expect(dialog.getByRole('img', { name: 'Core 1 utilization' })).toBeVisible();
-  await expect(dialog.locator('.dm-core').first()).toHaveAttribute('title', 'Core 1 · 0%');
+  // Each core chart carries its physical core's temperature, so the sensor list
+  // is left out; the last core has no reading.
+  await expect(dialog.locator('.dm-core').first()).toHaveAttribute('title', 'Core 1 · 0% · 70 °C');
+  await expect(dialog.locator('.dm-core').first().locator('.dm-core-temp')).toHaveText('70°');
+  await expect(dialog.locator('.dm-core').nth(3)).toHaveAttribute('title', 'Core 4 · 68%');
   await expect(dialog.locator('.dm-core').nth(3)).toHaveAttribute('style', /--load: 68/);
-  await expect(dialog.getByText('Core 0', { exact: true })).not.toBeVisible();
-  await dialog.getByText('CPU temperature sensors (2)').click();
-  await expect(dialog.getByText('Core 0', { exact: true })).toBeVisible();
-  await expect(dialog).toContainText('94.0 °C');
+  await expect(dialog.getByText('CPU temperature sensors (2)')).toHaveCount(0);
+  // The usage chart has a 0–100% scale and labels the current reading.
+  await expect(dialog.locator('.dm-axis')).toContainText('100%');
+  await expect(dialog.locator('.dm-now')).toHaveText('37%');
   fail = true;
   await expect(dialog.getByRole('status')).toContainText(
     'Device metrics unavailable',

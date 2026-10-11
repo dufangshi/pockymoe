@@ -79,6 +79,7 @@ fn native_temperature() -> TemperatureReadingDto {
             .is_none()
             .then(|| "No CPU temperature exposed by the native SMC / IOHID sensors".into()),
         sensors,
+        ..Default::default()
     }
 }
 
@@ -468,6 +469,7 @@ async fn mac_sensors() -> (PowerReadingDto, TemperatureReadingDto, Vec<GpuMetric
                 source: Some("macOS powermetrics · CPU die".into()),
                 reason: None,
                 sensors: vec![],
+                ..Default::default()
             };
         }
     }
@@ -523,6 +525,7 @@ pub(super) fn parse_windows(
             .is_none()
             .then(|| "CPU temperature needs a hardware sensor provider".into()),
         sensors: vec![],
+        ..Default::default()
     };
     (cpu, temperature, gpus)
 }

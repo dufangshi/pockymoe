@@ -16,6 +16,10 @@ pub struct TemperatureReadingDto {
     pub reason: Option<String>,
     #[serde(default)]
     pub sensors: Vec<TemperatureSensorDto>,
+    /// Per-core readings keyed by (CPU package, physical core id), used to
+    /// attach a temperature to each logical CPU.
+    #[serde(skip)]
+    pub cores: std::collections::BTreeMap<(u32, u32), f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -30,6 +34,10 @@ pub struct TemperatureSensorDto {
 pub struct CpuCoreMetricsDto {
     pub index: usize,
     pub usage_percent: Option<f64>,
+    /// The temperature of the physical core this logical CPU runs on, when the
+    /// platform reports per-core sensors.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub celsius: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
