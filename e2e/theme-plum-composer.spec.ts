@@ -26,6 +26,13 @@ async function openPlum(page: Page, request: APIRequestContext, mode: 'light' | 
   return { composer, editor: composer.getByRole('textbox', { name: 'Prompt', exact: true }) };
 }
 
+// Close an open menu with an outside click on the empty conversation; the page corner
+// holds the phone drawer button in the Plum shell.
+async function dismiss(page: Page) {
+  const viewport = page.viewportSize()!;
+  await page.mouse.click(viewport.width / 2, viewport.height / 3);
+}
+
 test('plum composer keeps compact geometry, touch targets and the mascot', async ({ page, request }, info) => {
   const mobile = info.project.name === 'mobile-chromium';
   const { composer } = await openPlum(page, request);
@@ -67,21 +74,21 @@ test('plum menus open by pointer and keyboard and keep their items', async ({ pa
   await expect(goal.locator('.composer-toolbox-icon')).toBeVisible();
   await expect(page.locator('[data-toolbox-action="plan"] .composer-toolbox-status')).toHaveText(/off/i);
   await page.keyboard.press('Escape');
-  await page.mouse.click(5, 5);
+  await expect(goal).toBeHidden();
 
   const attach = composer.getByRole('button', { name: 'Add attachment', exact: true });
   await attach.focus();
   await page.keyboard.press('Enter');
   await expect(page.getByRole('button', { name: 'Photo' })).toBeVisible();
   await expect(page.locator('.composer-attach-icon')).toHaveCount(2);
-  await page.mouse.click(5, 5);
+  await dismiss(page);
 
   const model = composer.getByTestId('composer-model-label');
   await model.click();
   await expect(model).toHaveAttribute('aria-expanded', 'true');
   await expect(page.locator('.composer-reasoning')).toHaveAttribute('data-effort', 'medium');
   await expect(page.getByRole('menuitemradio', { checked: true })).toBeVisible();
-  await page.mouse.click(5, 5);
+  await dismiss(page);
 
   await editor.click();
   await page.keyboard.type('hello from plum');
