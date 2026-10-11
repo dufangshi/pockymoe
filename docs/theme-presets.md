@@ -49,7 +49,16 @@ modes.
   mascot that peeks over the composer (`composer-peek-*.webp`), the busy seam and
   the toolbox icons; its extra composer markup (mascot on the model chip, menu
   icons, per-intent send icons) renders only when `useDocumentThemePreset()` is
-  `plum-pocket`.
+  `plum-pocket`. Under Plum Pocket the 5h / 7d usage meter moves from the row
+  below the composer into the shell (`thread-composer-usage-tag`). The send button carries
+  `data-send-intent` (`send`, `queue` while a turn runs, `goal`); Plum Pocket
+  labels the queue state "Send after this turn".
+- Settings help text carries the neutral class `settings-hint`, and a few settings
+  groups carry `settings-choice-group`, `settings-harness-picker`,
+  `settings-harness-switch` and `settings-harness-row`. Plum Pocket
+  (`plum-pocket/controls.css`) hides hints visually but keeps them for screen
+  readers, gives each settings tab an icon (icons only on phones), and styles the
+  shared buttons, inputs, switches, segmented controls, dialogs and menus.
 - Transcript turns carry `data-turn-status`, and under Plum Pocket each reply opens
   with the replying agent's avatar and name (`graph-chat/TranscriptAgent.tsx`).
 - Outer pages (workspaces, devices, relay home, sign-in, account, admin, guide,

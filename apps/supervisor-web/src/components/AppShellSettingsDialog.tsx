@@ -703,10 +703,10 @@ export function AppShellSettingsDialog({
               <span className="block text-sm font-medium text-[var(--theme-fg)]">
                 {plugin.name}
               </span>
-              <span className="mt-1 block text-xs leading-5 text-[var(--theme-fg-muted)]">
+              <span className="settings-hint mt-1 block text-xs leading-5 text-[var(--theme-fg-muted)]">
                 {plugin.description}
               </span>
-              <span className="mt-2 block text-[11px] leading-5 text-[var(--theme-fg-muted)]">
+              <span className="settings-hint mt-2 block text-[11px] leading-5 text-[var(--theme-fg-muted)]">
                 {[
                   ...plugin.capabilities.artifactTypes.map((type) => type.type),
                   ...plugin.capabilities.threadPanels.map(
@@ -714,7 +714,7 @@ export function AppShellSettingsDialog({
                   ),
                 ].join(', ') || translate("files.utility")}
               </span>
-              <span className="mt-0.5 block text-[11px] leading-5 text-[var(--theme-fg-muted)]">
+              <span className="settings-hint mt-0.5 block text-[11px] leading-5 text-[var(--theme-fg-muted)]">
                 {plugin.source === 'imported'
                   ? translate("files.importedManifest")
                   : translate("files.builtInModule")}
@@ -766,7 +766,7 @@ export function AppShellSettingsDialog({
           className="mt-2 min-h-28 w-full resize-y rounded-md border border-[var(--theme-border-strong)] bg-[var(--theme-surface-strong)] px-3 py-2 font-mono text-xs leading-5 text-[var(--theme-fg)] outline-none transition placeholder:text-[var(--theme-fg-muted)] focus-visible:border-[var(--theme-accent-border)] focus-visible:ring-2 focus-visible:ring-[var(--theme-accent-ring)] disabled:cursor-wait disabled:opacity-60"
         />
         <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
-          <p className="max-w-[42rem] text-xs leading-5 text-[var(--theme-fg-muted)]">
+          <p className="settings-hint max-w-[42rem] text-xs leading-5 text-[var(--theme-fg-muted)]">
             {translate("files.importsRegisterManifestDeclaredArtifactTypesRendering")}</p>
           <button
             type="button"
@@ -811,7 +811,7 @@ export function AppShellSettingsDialog({
         className={`min-h-0 flex-1 overflow-y-auto ${embedded ? '!overflow-visible !flex-none p-0' : 'px-4 pb-[max(1.5rem,env(safe-area-inset-bottom))] sm:px-5'}`}
       >
         <div className="divide-y divide-[var(--theme-border)]">
-          {section === 'preferences' && <fieldset className="py-5"><LanguageSwitcher /><p className="mt-1 text-xs text-[var(--theme-fg-muted)]">{translate("files.chooseTheInterfaceLanguageForThisBrowser")}</p></fieldset>}
+          {section === 'preferences' && <fieldset className="py-5"><LanguageSwitcher /><p className="settings-hint mt-1 text-xs text-[var(--theme-fg-muted)]">{translate("files.chooseTheInterfaceLanguageForThisBrowser")}</p></fieldset>}
           {section === 'preferences' && <ComposerShortcutSettings />}
           {section === 'preferences' && <TourSettingsEntry />}
           {section === 'preferences' ? (
@@ -820,7 +820,7 @@ export function AppShellSettingsDialog({
                 {translate("files.appearance")}</legend>
               <ThemePresetSettings />
               <p className="mt-5 text-xs font-semibold text-[var(--theme-fg)]">{translate("files.colorMode")}</p>
-              <p className="mt-1 text-xs leading-5 text-[var(--theme-fg-muted)]">
+              <p className="settings-hint mt-1 text-xs leading-5 text-[var(--theme-fg-muted)]">
                 {translate("files.chooseAThemeForThisBrowserThe")}{' '}
                 {effectiveTheme}.
               </p>
@@ -844,7 +844,7 @@ export function AppShellSettingsDialog({
                   );
                 })}
               </div>
-              <p className="mt-2 text-xs leading-5 text-[var(--theme-fg-muted)]">
+              <p className="settings-hint mt-2 text-xs leading-5 text-[var(--theme-fg-muted)]">
                 {
                   themeOptions.find(
                     (option) => option.value === selectedThemeMode,
@@ -857,7 +857,7 @@ export function AppShellSettingsDialog({
           {section === 'preferences' && (
             <section className="py-5">
               <label htmlFor="settings-font-size" className="block text-sm font-semibold">{translate("files.textSize")}</label>
-              <p className="mt-1 text-xs text-[var(--theme-fg-muted)]">{translate("files.adjustConversationComposerAndActivityTextChanges")}</p>
+              <p className="settings-hint mt-1 text-xs text-[var(--theme-fg-muted)]">{translate("files.adjustConversationComposerAndActivityTextChanges")}</p>
               <div className="mt-3 flex items-center gap-4">
                 <input id="settings-font-size" aria-label={translate("files.textSize")} type="range" min="12" max="22" step="1" value={fontSize} onChange={(event) => setFontSize(Number(event.currentTarget.value))} className="w-48 accent-[var(--theme-accent-solid)]" />
                 <output htmlFor="settings-font-size" className="text-sm tabular-nums">{fontSize}px</output>
@@ -872,7 +872,7 @@ export function AppShellSettingsDialog({
                   <span>
                     <span className="block text-sm font-semibold">
                       {translate("files.threadTimeline")}</span>
-                    <span className="mt-1 block text-xs text-[var(--theme-fg-muted)]">
+                    <span className="settings-hint mt-1 block text-xs text-[var(--theme-fg-muted)]">
                       {translate("files.collapseCompletedTurnsToKeepConversationsEasy")}</span>
                   </span>
                   <input
@@ -908,7 +908,7 @@ export function AppShellSettingsDialog({
                 <span>
                   <span className="block text-sm font-semibold">
                     {translate("files.showAgentStatusSummaries")}</span>
-                  <span className="mt-1 block text-xs text-[var(--theme-fg-muted)]">
+                  <span className="settings-hint mt-1 block text-xs text-[var(--theme-fg-muted)]">
                     {translate("files.showIntermediateThinkingSummariesWithTheirOwn")}</span>
                 </span>
                 <input
@@ -939,7 +939,7 @@ export function AppShellSettingsDialog({
                 <div className="min-w-0">
                   <h3 className="text-sm font-semibold text-[var(--theme-fg)]">
                     {translate("files.workspaceDefaults")}</h3>
-                  <p className="mt-1 text-xs leading-5 text-[var(--theme-fg-muted)]">
+                  <p className="settings-hint mt-1 text-xs leading-5 text-[var(--theme-fg-muted)]">
                     {translate("files.gitProjectsCloneIntoDevHomeNew")}</p>
                 </div>
               </div>
@@ -1048,7 +1048,7 @@ export function AppShellSettingsDialog({
                   <div className="min-w-0">
                     <h3 className="text-sm font-semibold text-[var(--theme-fg)]">
                       {translate("files.providerHostFiles")}</h3>
-                    <p className="mt-1 text-xs leading-5 text-[var(--theme-fg-muted)]">
+                    <p className="settings-hint mt-1 text-xs leading-5 text-[var(--theme-fg-muted)]">
                       {activeBackend.displayName} {translate("files.exposesTheseEditableFilesThroughItsBackend")}</p>
                   </div>
                 </div>
@@ -1078,7 +1078,7 @@ export function AppShellSettingsDialog({
                             <p className="truncate text-sm font-medium text-[var(--theme-fg)]">
                               {file.label}
                             </p>
-                            <p className="mt-1 text-xs leading-5 text-[var(--theme-fg-muted)]">
+                            <p className="settings-hint mt-1 text-xs leading-5 text-[var(--theme-fg-muted)]">
                               {file.description}
                             </p>
                             {state.error ? (
@@ -1124,7 +1124,7 @@ export function AppShellSettingsDialog({
                       <div className="min-w-0">
                         <h3 className="text-sm font-semibold text-[var(--theme-fg)]">
                           {translate("files.configArchives")}</h3>
-                        <p className="mt-1 text-xs leading-5 text-[var(--theme-fg-muted)]">
+                        <p className="settings-hint mt-1 text-xs leading-5 text-[var(--theme-fg-muted)]">
                           {translate("files.backupTheSelectedBackendHostFilesThen")}</p>
                       </div>
                       <button

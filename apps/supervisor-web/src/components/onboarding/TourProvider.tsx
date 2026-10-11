@@ -676,7 +676,7 @@ export function TourSettingsEntry() {
   return (
     <fieldset className="py-5">
       <legend className="text-sm font-semibold text-[var(--theme-fg)]">{translate('tour.entry')}</legend>
-      <p className="mt-1 text-xs leading-5 text-[var(--theme-fg-muted)]">{translate('tour.settingsHint')}</p>
+      <p className="settings-hint mt-1 text-xs leading-5 text-[var(--theme-fg-muted)]">{translate('tour.settingsHint')}</p>
       <button
         type="button"
         className="relay-button-secondary mt-3 inline-flex min-h-10 items-center gap-2 px-3"

@@ -414,7 +414,7 @@ function DeviceRuntimeManagement({
     return (
       <div
         key={h.id}
-        className="min-w-0 border-t border-[var(--theme-border)] py-3"
+        className="settings-harness-row min-w-0 border-t border-[var(--theme-border)] py-3"
       >
         <div className="flex items-center justify-between gap-2">
           <div className="min-w-0">
@@ -604,7 +604,7 @@ function DeviceRuntimeManagement({
       {view !== 'device' && (
         <>
           <div
-            className="flex flex-wrap gap-2 pb-4"
+            className="settings-harness-picker flex flex-wrap gap-2 pb-4"
             role="group"
             aria-label={translate("devices.chooseHarness")}
           >
