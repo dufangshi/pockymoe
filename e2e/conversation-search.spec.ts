@@ -6,7 +6,8 @@ import path from 'node:path';
 
 const base = `http://127.0.0.1:${process.env.E2E_API_PORT ?? 8787}`;
 
-test('topbar search queries excerpts lazily and opens only the selected older turn', async ({ page, request }, testInfo) => {
+for (const preset of ['classic', 'plum-pocket'] as const) test(`topbar search queries excerpts lazily and opens only the selected older turn (${preset})`, async ({ page, request }, testInfo) => {
+  await page.addInitScript(value => localStorage.setItem('pockymoe-theme-preset', value), preset);
   const absPath = path.resolve(process.env.E2E_WORKSPACE_ROOT!, `search-${randomUUID()}`);
   await mkdir(absPath, { recursive: true });
   const workspace = await (await request.post(`${base}/api/workspaces`, { data: { absPath, label: 'Search review' } })).json();
@@ -14,6 +15,9 @@ test('topbar search queries excerpts lazily and opens only the selected older tu
   const id = started.id ?? started.thread.id;
   const db = new DatabaseSync(path.resolve(process.env.E2E_DATABASE_URL!));
   try {
+    // The history triggers call the Supervisor's search functions.
+    db.function('search_body', { deterministic: true }, (text: unknown, _kind: unknown, _source: unknown) => (text as string | null) ?? '');
+    db.function('search_fold', { deterministic: true }, (text: unknown) => ((text as string | null) ?? '').toLowerCase());
     const addTurn = db.prepare("INSERT INTO thread_turns(id,thread_id,status,started_at,completed_at,ordinal) VALUES(?,?,'completed',?,?,?)");
     const addItem = db.prepare('INSERT INTO thread_history_items(id,thread_id,turn_id,item_id,item_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?)');
     for (let n = 0; n < 6; n++) {
@@ -39,6 +43,8 @@ test('topbar search queries excerpts lazily and opens only the selected older tu
     if (url.pathname === `/api/threads/${id}` && url.searchParams.get('view') === 'full') fullPages.push(req.url());
   });
   await page.goto(`/threads/${id}`);
+  const later = page.getByRole('button', { name: 'Later' });
+  if (await later.isVisible({ timeout: 3000 }).catch(() => false)) await later.click();
   await expect(page.locator(`[data-turn-id="${id}-search-0"]`)).toHaveCount(0);
   if (testInfo.project.name === 'mobile-chromium') await page.setViewportSize({ width: 320, height: 720 });
   await page.getByRole('button', { name: 'Search conversation', exact: true }).click();
@@ -62,7 +68,11 @@ test('topbar search queries excerpts lazily and opens only the selected older tu
   expect(dropdown.x).toBeGreaterThanOrEqual(0);
   expect(dropdown.x + dropdown.width).toBeLessThanOrEqual(page.viewportSize()!.width);
   expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
-  await page.screenshot({ path: testInfo.outputPath('topbar-search.png') });
+  // Results span the dropdown: top-bar icon-button sizing must not reach them.
+  const option = (await result.boundingBox())!;
+  expect(option.width).toBeGreaterThan(dropdown.width * 0.85);
+  expect(option.height).toBeLessThan(120);
+  await page.screenshot({ path: testInfo.outputPath(`topbar-search-${preset}.png`) });
   await input.press('Escape');
   await expect(page.getByRole('button', { name: 'Search conversation', exact: true })).toBeFocused();
   await page.getByRole('button', { name: 'Search conversation', exact: true }).click();

@@ -47,15 +47,15 @@
 :root[data-theme-preset='plum-pocket'] .product-topbar.product-topbar.product-navigation { background: var(--plum-chrome); color: var(--plum-chrome-fg); border-color: var(--plum-chrome-border); }
 
 /* Chrome buttons: soft rounded squares that light up like felt under a lamp. */
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench :is(.matter-rail, .matter-topbar, .matter-sidebar-heading) :where(button, a) {
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench :is(.matter-rail, .matter-topbar, .matter-sidebar-heading) :where(button, a):not(:is(.workbench-search-field, .workbench-search-dropdown) *) {
   border-radius: 11px;
   color: var(--plum-chrome-soft);
 }
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench :is(.matter-rail, .matter-topbar, .matter-sidebar-heading) :where(button, a):hover {
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench :is(.matter-rail, .matter-topbar, .matter-sidebar-heading) :where(button, a):not(:is(.workbench-search-field, .workbench-search-dropdown) *):hover {
   background: var(--plum-chrome-hover);
   color: var(--plum-chrome-fg);
 }
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench :is(.matter-rail, .matter-topbar) svg { width: 17px; height: 17px; stroke-width: 1.85; }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench :is(.matter-rail, .matter-topbar) svg:not(:is(.workbench-search-field, .workbench-search-dropdown) *) { width: 17px; height: 17px; stroke-width: 1.85; }
 
 /* Rail: the pocket icon, then chunky mustard "felt buttons" for the active tool. */
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench .matter-rail { gap: 6px; padding: 5px 0 10px; }
@@ -88,9 +88,11 @@
 }
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench .device-monitor-button b { color: #f2c15c; }
 
-/* Top bar: rounded brand, back/forward/home, and a pill search field. */
+/* Top bar: rounded brand, back/forward/home, and a pill search field. The
+   conversation search field and its results render inside the top bar, so the
+   icon-button rules here leave them alone. */
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench .matter-topbar { gap: 4px; padding: 0 12px 0 8px; }
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench .matter-topbar :where(button, a) { width: 32px; height: 32px; }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench .matter-topbar :where(button, a):not(:is(.workbench-search-field, .workbench-search-dropdown) *) { width: 32px; height: 32px; }
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench .matter-topbar-brand {
   margin: 0 8px 0 6px;
   font-size: 16px;
@@ -676,7 +678,7 @@
   :root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench.is-sidebar-hidden { grid-template-columns: minmax(0, 1fr); grid-template-rows: calc(44px + env(safe-area-inset-top)) minmax(0, 1fr); }
   /* Seven 44px targets fit a 360px phone; Home, Chat and the monitor live in the drawer. */
   :root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench .matter-topbar { padding: env(safe-area-inset-top) 2px 0; gap: 0; }
-  :root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench .matter-topbar :where(button, a),
+  :root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench .matter-topbar :where(button, a):not(:is(.workbench-search-field, .workbench-search-dropdown) *),
   :root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench .matter-topbar .matter-search-trigger,
   :root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench .matter-topbar-end > :is(button, [data-slot='dialog-trigger']) {
     width: 44px;
@@ -689,10 +691,10 @@
     background: transparent;
     justify-content: center;
   }
-  :root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench .matter-topbar svg,
+  :root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench .matter-topbar svg:not(:is(.workbench-search-field, .workbench-search-dropdown) *),
   :root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench .matter-topbar .matter-search-trigger svg { width: 20px; height: 20px; color: inherit; }
-  :root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench .matter-topbar :is(button, a)[aria-pressed='true'] { color: #f6cf7c; }
-  :root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench .matter-topbar :is(button, a)[aria-pressed='true']::after {
+  :root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench .matter-topbar :is(button, a)[aria-pressed='true']:not(:is(.workbench-search-field, .workbench-search-dropdown) *) { color: #f6cf7c; }
+  :root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench .matter-topbar :is(button, a)[aria-pressed='true']:not(:is(.workbench-search-field, .workbench-search-dropdown) *)::after {
     content: '';
     position: absolute;
     bottom: 6px;
@@ -701,7 +703,7 @@
     border-radius: 2px;
     background: var(--theme-accent-solid);
   }
-  :root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench .matter-topbar :is(button, a) { position: relative; }
+  :root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench .matter-topbar :is(button, a):not(:is(.workbench-search-field, .workbench-search-dropdown) *) { position: relative; }
   :root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench .matter-unread { top: 9px; right: 9px; }
 
   /* The drawer is a pocket sliding over everything, full height. */
