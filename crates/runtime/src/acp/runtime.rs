@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use anyhow::{anyhow, bail, ensure, Result};
 use async_trait::async_trait;
+use futures_util::{future::BoxFuture, stream::FuturesUnordered, StreamExt};
 use pockymoe_protocol::{
     now_rfc3339, toolbox_from_capabilities, AgentBackendDto, AgentBackendInstallationDto,
     AgentBackendManagementSchemaDto, AgentCapabilitySnapshotDto, AgentProviderCapabilitiesDto,
@@ -64,6 +65,10 @@ struct ActiveTurn {
     thread_id: String,
     turn_id: String,
     bus: EventBus,
+    background_owned: bool,
+    cancel: CancellationToken,
+    pending_prompts: usize,
+    continuations: mpsc::UnboundedSender<BoxFuture<'static, Result<Value>>>,
 }
 
 enum TurnOutcome {
@@ -1991,6 +1996,7 @@ impl AgentRuntime for AcpRuntime {
             });
         }
         let mut updates = self.inner.updates.subscribe();
+        let (continuation_tx, mut continuation_rx) = mpsc::unbounded_channel();
         let claude_sequence = {
             let mut sessions = self.inner.sessions.lock().await;
             let live = sessions
@@ -2003,6 +2009,10 @@ impl AgentRuntime for AcpRuntime {
                 thread_id: input.thread_id.clone(),
                 turn_id: input.turn_id.clone(),
                 bus: bus.clone(),
+                background_owned: false,
+                cancel: cancel.clone(),
+                pending_prompts: 0,
+                continuations: continuation_tx,
             });
             live.active_subagents.clear();
             if let Some(meta) = live.dsh_session.as_object_mut() {
@@ -2052,7 +2062,11 @@ impl AgentRuntime for AcpRuntime {
                 payload: json!({ "turnId": input.turn_id }),
             });
         }
-        tokio::pin!(prompt_rpc);
+        let mut prompt_requests = FuturesUnordered::new();
+        prompt_requests.push(Box::pin(async move { (false, prompt_rpc.await) })
+            as std::pin::Pin<
+                Box<dyn std::future::Future<Output = (bool, Result<Value>)> + Send + '_>,
+            >);
         let mut prompt_done = false;
         let mut cancel_sent = false;
         let mut cancel_deadline = tokio::time::Instant::now();
@@ -2061,21 +2075,29 @@ impl AgentRuntime for AcpRuntime {
         let mut coalesced_ready_since = None;
         let mut draining_coalesced = false;
         let mut outcome = loop {
-            let (sdk_pending, sdk_waiting) = if adapter_id == "claude" {
-                self.inner
-                    .sessions
-                    .lock()
-                    .await
-                    .get(&input.provider_session_id)
+            let (sdk_pending, sdk_waiting, pending_prompts) = if adapter_id == "claude" {
+                let mut sessions = self.inner.sessions.lock().await;
+                sessions
+                    .get_mut(&input.provider_session_id)
                     .map(|live| {
+                        let sdk_pending = live.claude_lifecycle.background_pending();
+                        if let Some(active) = live.active.as_mut() {
+                            active.background_owned = sdk_pending
+                                || claude_usage_reader
+                                    .as_ref()
+                                    .is_some_and(|reader| reader.background_pending());
+                        }
                         (
-                            live.claude_lifecycle.background_pending(),
+                            sdk_pending,
                             live.claude_lifecycle.waiting_count(),
+                            live.active
+                                .as_ref()
+                                .map_or(0, |active| active.pending_prompts),
                         )
                     })
                     .unwrap_or_default()
             } else {
-                (false, 0)
+                (false, 0, 0)
             };
             let native_pending = claude_usage_reader
                 .as_ref()
@@ -2109,7 +2131,20 @@ impl AgentRuntime for AcpRuntime {
                     discard_session = true;
                     break TurnOutcome::Interrupted;
                 }
-                result = &mut prompt_rpc, if !prompt_done => {
+                continuation = continuation_rx.recv(), if adapter_id == "claude" && !cancel_sent => {
+                    if let Some(response) = continuation {
+                        prompt_requests.push(Box::pin(async move { (true, response.await) }));
+                        prompt_done = false;
+                    }
+                }
+                result = prompt_requests.next(), if !prompt_requests.is_empty() => {
+                    let (continuation, result) = result.expect("nonempty prompt response queue");
+                    if continuation {
+                        let mut sessions = self.inner.sessions.lock().await;
+                        if let Some(active) = sessions.get_mut(&input.provider_session_id).and_then(|live| live.active.as_mut()) {
+                            active.pending_prompts = active.pending_prompts.saturating_sub(1);
+                        }
+                    }
                     match result {
                         Ok(response) => {
                             if let Some(usage) = adapter.billing_usage(&response).and_then(|usage| adapter_usage.apply(usage)) {
@@ -2135,10 +2170,10 @@ impl AgentRuntime for AcpRuntime {
                                 cancel_sent = true;
                             }
                             if cancel_sent {
-                                prompt_done = true;
+                                prompt_done = prompt_requests.is_empty();
                                 continue;
                             }
-                            prompt_done = true;
+                            prompt_done = prompt_requests.is_empty();
                         },
                         Err(err) => {
                             if cancel_sent || cancel.is_cancelled() {
@@ -2147,7 +2182,7 @@ impl AgentRuntime for AcpRuntime {
                             }
                             if draining_coalesced && serde_json::from_str::<Value>(&err.to_string()).ok()
                                 .is_some_and(|error| error["code"] == -32800) {
-                                prompt_done = true;
+                                prompt_done = prompt_requests.is_empty();
                                 continue;
                             }
                             if adapter_id == "claude"
@@ -2157,7 +2192,7 @@ impl AgentRuntime for AcpRuntime {
                                 // Drain queued final text/tool updates before comparing
                                 // against the native transcript. This is not a retry.
                                 pending_claude_error = Some(err);
-                                prompt_done = true;
+                                prompt_done = prompt_requests.is_empty();
                                 continue;
                             }
                             tracing::warn!(
@@ -2355,7 +2390,17 @@ impl AgentRuntime for AcpRuntime {
                 // not discard that output. An active DSH goal gets time for
                 // its driver to admit the next round.
                 _ = tokio::time::sleep(Duration::from_millis(if dsh_goal_active { 3000 } else { 250 })),
-                    if prompt_done && ((!dsh_running && !claude_background_pending) || cancel.is_cancelled()) => {
+                    if prompt_done && (pending_prompts == 0 || cancel.is_cancelled()) && ((!dsh_running && !claude_background_pending) || cancel.is_cancelled()) => {
+                    // A waiting steer may have been admitted while this timer
+                    // was armed. Check under the delivery lock before retiring
+                    // the output owner, then prevent further handoffs.
+                    let sessions = self.inner.sessions.lock().await;
+                    if !cancel.is_cancelled() && sessions.get(&input.provider_session_id)
+                        .and_then(|live| live.active.as_ref())
+                        .is_some_and(|active| active.pending_prompts > 0) {
+                        continue;
+                    }
+                    continuation_rx.close();
                     break if cancel.is_cancelled() { TurnOutcome::Interrupted } else { TurnOutcome::Completed };
                 }
                 _ = tokio::time::sleep(Duration::from_millis(500)), if !prompt_done || claude_background_pending => {
@@ -2372,6 +2417,7 @@ impl AgentRuntime for AcpRuntime {
                 }
             }
         };
+        continuation_rx.close();
         if let Some(reader) = claude_usage_reader.as_mut() {
             for usage in reader.poll_final() {
                 emit_usage(&bus, &input.thread_id, &input.turn_id, usage, input.hidden);
@@ -2835,7 +2881,7 @@ impl AgentRuntime for AcpRuntime {
     }
 
     async fn send_input(&self, session_id: &str, turn_id: &str, prompt: &str) -> Result<()> {
-        let (process, provider_session_id) = {
+        let (process, provider_session_id, background_owned) = {
             let mut sessions = self.inner.sessions.lock().await;
             let live = sessions
                 .get_mut(session_id)
@@ -2843,17 +2889,26 @@ impl AgentRuntime for AcpRuntime {
             if !live.negotiated.steer {
                 bail!("this harness does not support steering");
             }
-            if !live
-                .active
-                .as_ref()
-                .is_some_and(|active| active.turn_id == turn_id)
-            {
+            if !live.active.as_ref().is_some_and(|active| {
+                active.turn_id == turn_id
+                    && !active.cancel.is_cancelled()
+                    && !active.continuations.is_closed()
+            }) {
                 bail!("conflict: The active turn finished before this prompt could be steered.");
             }
+            let background_owned = live.adapter_id == "claude"
+                && live
+                    .active
+                    .as_ref()
+                    .is_some_and(|active| active.background_owned);
             if live.adapter_id == "claude" && !live.claude_lifecycle.steering_started() {
                 bail!("conflict: The active turn is finishing; send this prompt as a new turn.");
             }
-            (live.process.clone(), live.session_id.clone())
+            (
+                live.process.clone(),
+                live.session_id.clone(),
+                background_owned,
+            )
         };
         // Steering is an extension request, not a notification. Only acknowledge
         // delivery after the harness confirms it; never silently queue a prompt.
@@ -2872,6 +2927,40 @@ impl AgentRuntime for AcpRuntime {
             .await?;
         match result.get("outcome").and_then(Value::as_str) {
             Some("injected") => Ok(()),
+            Some("promptRequired") if background_owned && result["reason"] == "noRunningTurn" => {
+                // Claude's foreground is idle while native tasks still belong to
+                // this product turn. Submit a normal prompt and hand its response
+                // to that turn's existing loop; never start a detached SDK cycle.
+                let mut sessions = self.inner.sessions.lock().await;
+                let live = sessions
+                    .get_mut(session_id)
+                    .ok_or_else(|| anyhow!("ACP session is not running"))?;
+                let active = live
+                    .active
+                    .as_mut()
+                    .filter(|active| active.turn_id == turn_id && !active.cancel.is_cancelled())
+                    .ok_or_else(|| {
+                        anyhow!("conflict: The active turn finished before delivery.")
+                    })?;
+                if !process.connection_open().await || active.continuations.is_closed() {
+                    bail!("ACP turn output owner is unavailable");
+                }
+                let response = process
+                    .begin_request(
+                        "session/prompt",
+                        json!({
+                            "sessionId": provider_session_id,
+                            "prompt": [{"type":"text", "text":prompt}]
+                        }),
+                    )
+                    .await?;
+                active.pending_prompts += 1;
+                active
+                    .continuations
+                    .send(response)
+                    .map_err(|_| anyhow!("ACP turn output owner closed during delivery"))?;
+                Ok(())
+            }
             _ => bail!("ACP harness did not confirm steering delivery: {result}"),
         }
     }

@@ -151,7 +151,7 @@ describe('hierarchical split picker', () => {
         .mock.calls.every(([path]) => String(path).startsWith('/api/')),
     ).toBe(true);
   });
-  it('offers compact restore and close actions without replacing membership', async () => {
+  it('keeps one toolbar trigger and places restore and close inside its menu', async () => {
     vi.mocked(request).mockResolvedValue([]);
     const restore = vi.fn(),
       close = vi.fn();
@@ -168,11 +168,17 @@ describe('hierarchical split picker', () => {
     const { rerender } = render(
       <WorkbenchThreadPicker {...props} splitActive={false} />,
     );
+    expect(document.querySelector('.workbench-thread-picker-actions')!.querySelectorAll('button')).toHaveLength(1);
+    expect(screen.queryByRole('button', { name: 'Restore split' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Split conversation' }));
     fireEvent.click(screen.getByRole('button', { name: 'Restore split' }));
     expect(restore).toHaveBeenCalledOnce();
     rerender(<WorkbenchThreadPicker {...props} splitActive />);
+    expect(document.querySelector('.workbench-thread-picker-actions')!.querySelectorAll('button')).toHaveLength(1);
+    expect(screen.queryByRole('button', { name: 'Close split' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Split conversation' }));
     fireEvent.click(screen.getByRole('button', { name: 'Close split' }));
     expect(close).toHaveBeenCalledOnce();
-    await waitFor(() => expect(request).not.toHaveBeenCalled());
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 });

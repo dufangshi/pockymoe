@@ -12,6 +12,14 @@ follow it. Repeated delivery of a terminal notice does not create another row.
 Monitor progress events are distinct from terminal completion notices. A user
 steer can temporarily resume work without consuming the eventual wake anchor.
 
+When Claude's foreground is already idle, `_session/steering` may return
+`promptRequired` / `noRunningTurn` without consuming the message. For a turn
+that still owns background work, Pockymoe immediately sends `session/prompt`
+instead. Its response future belongs to the existing turn loop: delivery does
+not wait for generation, and subsequent output, usage, cancellation and native
+wakes retain the original turn. Other steering failures are not retried as
+prompts, to avoid duplicate delivery.
+
 SDK task snapshots and session state are the primary lifecycle evidence. SDK
 `init` also occurs during autonomous cycles and must not reset task ownership.
 When an adapter lacks these task bookends, native launch receipts and trusted

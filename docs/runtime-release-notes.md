@@ -1,7 +1,7 @@
-Claude cache writes now use the duration reported by Claude Code, and token details distinguish total input from uncached input.
+Claude can now receive a Steer message while waiting for a native background task.
 
-- Native Claude usage reports include separate five-minute and one-hour cache-write counts. Previously the duration was dropped and every cache write used the five-minute rate. The Supervisor now preserves the one-hour subset through accumulation, saved usage and public history, and charges mixed-duration writes at their respective rates. Settings → Model pricing includes a separate one-hour write rate.
-- The audited image turn contained 15,121,954 input tokens across 69 responses: 138 uncached, 14,045,452 cache-read and 1,076,364 one-hour cache-write tokens. At the configured Opus 5.5 API rates its estimate should be $12.5424544; the previous five-minute assumption produced $9.3133624.
-- The cost popover now shows total input and visible category labels. One-hour-only writes carry a small 1h marker. Existing records without saved duration information retain the previous five-minute fallback; this release does not scan or rewrite old records.
+- When Claude has no foreground response running, ACP asks the host to submit a normal prompt. Pockymoe now does so immediately instead of reporting `promptRequired / noRunningTurn`. The existing turn retains ownership of the response, tool events, usage and cancellation; the original background task can still wake it later.
+- Input delivery returns after the prompt is written, without waiting for the model to finish. Unrelated steering errors are not retried, and cancelled or retired turns reject new input.
+- The workbench always has one split button. Its menu offers closing the active split or restoring the previous split, alongside selecting another conversation. Entering or leaving split mode no longer adds a separate restore button to the toolbar.
 
-This release includes the 0.12.81 shell PATH and Harness settings fixes. The Windows Device Manager remains independently released.
+Validation includes durable-history protocol regressions, an isolated real Claude waiting/steering/wake cycle, and desktop/mobile split-menu checks in the classic and Plum Pocket themes. This runtime release includes the current main-branch Web UI. Windows Device Manager remains independently released.

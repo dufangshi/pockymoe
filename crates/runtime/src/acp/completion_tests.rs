@@ -25,6 +25,9 @@ async fn claude_background_wake_output_stays_live_and_persists_after_foreground_
 
     for scenario in [
         "normal",
+        "idle-steer",
+        "idle-native",
+        "idle-steer-cancel",
         "silent",
         "merged",
         "cancel",
@@ -175,7 +178,45 @@ async fn claude_background_wake_output_stays_live_and_persists_after_foreground_
                 .any(|i| i.extra.get("origin") == Some(&json!("nativeBackgroundWait"))),
             "{scenario}: lightweight reload must retain waiting anchor"
         );
-        if scenario == "cancel" {
+        if scenario.starts_with("idle-") {
+            runtime
+                .send_input(&session, "wrong-turn", "do not deliver")
+                .await
+                .unwrap_err();
+            runtime
+                .send_input(&session, turn_id, "reject-waiting-steer")
+                .await
+                .unwrap_err();
+            tokio::time::timeout(
+                Duration::from_secs(2),
+                runtime.send_input(&session, turn_id, "correct the waiting work"),
+            )
+            .await
+            .expect("waiting delivery must not wait for the response to finish")
+            .unwrap();
+            assert!(tokio::time::timeout(Duration::from_millis(400), &mut turn)
+                .await
+                .is_err());
+            assert!(dir.path().join("idle-steering-started").exists());
+            let correction = supervisor
+                .get_thread_turn_detail(&thread.id, turn_id)
+                .await
+                .unwrap();
+            assert!(correction
+                .items
+                .iter()
+                .any(|item| item.text == "Waiting correction processed."));
+            if scenario != "idle-steer-cancel" {
+                std::fs::write(dir.path().join("finish-correction"), "").unwrap();
+            }
+            assert!(
+                tokio::time::timeout(Duration::from_millis(400), &mut turn)
+                    .await
+                    .is_err(),
+                "the original native task still owns the later wake"
+            );
+        }
+        if matches!(scenario, "cancel" | "idle-steer-cancel") {
             cancel.cancel();
         } else {
             std::fs::write(dir.path().join("release"), "").unwrap();
@@ -230,7 +271,7 @@ async fn claude_background_wake_output_stays_live_and_persists_after_foreground_
             .await
             .unwrap();
         let expected = match scenario {
-            "cancel" => "interrupted",
+            "cancel" | "idle-steer-cancel" => "interrupted",
             "disconnect" => "recovering",
             _ => "completed",
         };
@@ -246,7 +287,7 @@ async fn claude_background_wake_output_stays_live_and_persists_after_foreground_
                 .any(|i| i.extra.get("origin").is_some()),
             "{scenario}: completed/interrupted reload retains the anchor"
         );
-        if scenario != "cancel" {
+        if !matches!(scenario, "cancel" | "idle-steer-cancel") {
             assert!(
                 summary.turns[0]
                     .items
@@ -267,7 +308,7 @@ async fn claude_background_wake_output_stays_live_and_persists_after_foreground_
         } else {
             result.unwrap();
         }
-        if scenario != "cancel" {
+        if !matches!(scenario, "cancel" | "idle-steer-cancel") {
             assert_eq!(
                 detail
                     .items

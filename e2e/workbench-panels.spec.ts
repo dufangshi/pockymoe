@@ -8,11 +8,10 @@ test.use({ actionTimeout: 15_000 });
 
 const base = `http://127.0.0.1:${process.env.E2E_API_PORT ?? 8787}`;
 const screenshotRoot = process.env.WORKBENCH_SCREENSHOT_DIR;
-// A lit split trigger closes the split; reopening it chooses another conversation.
+// One fixed split trigger opens the picker in every arrangement.
 async function openSplitPicker(page: Page) {
   const trigger = page.getByTestId('workbench-split-trigger');
-  if ((await trigger.getAttribute('aria-pressed')) === 'true') await trigger.click();
-  await trigger.click();
+  if ((await trigger.getAttribute('aria-expanded')) !== 'true') await trigger.click();
 }
 
 async function selectSplit(page: Page, id: string) {
@@ -156,12 +155,13 @@ async function fixture(request: APIRequestContext) {
 test('dual conversations send concurrently to real thread IDs with independent drafts and recoverable views', async ({ page, request }, testInfo) => {
   const mobile = testInfo.project.name === 'mobile-chromium';
   await page.setViewportSize(mobile ? { width: 390, height: 844 } : { width: 1440, height: 1000 });
-  await page.addInitScript(() => {
+  await page.addInitScript((preset) => {
     localStorage.setItem('remote-codex.locale', 'zh-CN');
     localStorage.setItem('remote-codex-theme-mode', 'light');
+    if (preset) localStorage.setItem('pockymoe-theme-preset', preset);
     // The onboarding welcome card would cover the workbench.
     localStorage.setItem('pockymoe.onboarding.v1:'+JSON.stringify([location.origin,'local:owner']),JSON.stringify({welcomeDismissed:true,completed:[],resume:{}}));
-  });
+  }, process.env.WORKBENCH_THEME_PRESET);
   const { a, b, c } = await fixture(request);
   await page.goto(`/threads/${a.id}`);
   const primary = page.getByTestId('primary-pane');
@@ -257,8 +257,20 @@ test('dual conversations send concurrently to real thread IDs with independent d
   await showRight();
   const trigger = page.getByTestId('workbench-split-trigger');
   await expect(trigger).toHaveAttribute('aria-pressed', 'true');
+  const toolbarCount = await page.locator('.matter-tabs-row > button, .matter-tabs-row > span > button').count();
   await trigger.click();
+  await expect(page.getByTestId('workbench-thread-picker')).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath('split-menu.png'), scale: 'css', animations: 'disabled' });
+  await page.getByTestId('workbench-thread-picker').getByRole('button', { name: '关闭分屏', exact: true }).click();
   await expect(reference).not.toBeVisible();
+  expect(await page.locator('.matter-tabs-row > button, .matter-tabs-row > span > button').count()).toBe(toolbarCount);
+  await trigger.click();
+  await page.getByTestId('workbench-thread-picker').getByRole('button', { name: '恢复分屏', exact: true }).click();
+  await showRight();
+  await expect(reference).toBeVisible();
+  expect(await page.locator('.matter-tabs-row > button, .matter-tabs-row > span > button').count()).toBe(toolbarCount);
+  await trigger.click();
+  await page.getByTestId('workbench-thread-picker').getByRole('button', { name: '关闭分屏', exact: true }).click();
   await expect(trigger).toHaveAttribute('aria-pressed', 'false');
   await selectSplit(page, b.id);
   await expect(right).toHaveText('切换后仍属于右侧');
