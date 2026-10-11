@@ -37,7 +37,7 @@ export function RecentThreadMenu({ thread, onFavorite, onRenamed, onRemoved, onN
     let active = true;
     setNotice(''); setDetail(null); setOwner(false);
     void Promise.all([
-      request<ThreadDetailDto>(`${base}?view=summary&limit=1`),
+      request<ThreadDetailDto>(`${base}?view=summary&limit=1&compact=1`),
       device === 'local' ? Promise.resolve({ kind: 'owner' }) : fetchRelayAccess({ deviceId: device, threadId: id }),
     ]).then(([value, access]) => { if (active) { setDetail(value); setOwner(access.kind === 'owner'); } })
       .catch(() => { if (active) setNotice(translate("workbench.deviceUnavailableYouCanStillManageThis")); });

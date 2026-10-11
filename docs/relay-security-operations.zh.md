@@ -47,6 +47,8 @@ HTTP 方法、授权路径和资源 ID 是可见且经过 AEAD 绑定的路由�
 
 WebSocket 一次握手后复用分方向 AES-GCM 密钥，以单调序号构造 nonce，认证 type／thread／shell 路由字段；terminal 按键和 agent 流式事件不重复执行非对称运算。Service Worker 覆盖图片、raw 文件和下载，普通 API fetch 和 WebSocket 使用同一协议。
 
+密文无法被 relay 或 CDN 压缩，因此在加密前协商压缩：浏览器支持 `DecompressionStream` 时在加密 metadata 内声明 `accept-encoding: gzip`；Supervisor 对至少 1 KB 的文本／JSON 响应先 gzip 再加密，并在加密 metadata 中标 `"encoding":"gzip"`，图片、压缩包等二进制类型、分片下载（`streamNext`）和 204／304 不压缩。建立 WebSocket 会话的加密请求同样携带声明；该会话内至少 1 KB 的服务端事件先 gzip，外层 `encrypted.encoding` 设为 `gzip`，并改用 AAD 标签 `rcd-ws-gzip-v1`，relay 去掉或添加该标记都会导致认证失败。旧浏览器不声明、旧 Supervisor 不标记，双方都退回未压缩，互相兼容。
+
 大响应按 1 MiB 拉取分片，最多 16 个活动流；每流最多缓存一个可重试分片，120 秒空闲后释放，文件通过流读取，避免将整个下载读进内存。继续下载 URL 绑定原 thread／workspace 权限，分片同样加密。单连接消息队列 64 条，单设备并行转发 32 个，relay 待响应请求总数有界；超载明确断连／报错，不静默丢消息。AES-GCM 每加密包附 16 字节认证标签；HTTP HPKE encapsulated key 为 65 字节，另有固定头／metadata。内部 JSON 隧道仍有原本的 Base64 编码开销，不能把本机 CPU 测试当成公网吞吐保证。
 
 ## 兼容和真实安全边界

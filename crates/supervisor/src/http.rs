@@ -22,6 +22,8 @@ use pockymoe_runtime::{Supervisor, UploadedPromptAttachment};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::io::AsyncReadExt;
+use tower_http::compression::predicate::{Predicate, SizeAbove};
+use tower_http::compression::{CompressionLayer, CompressionLevel};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
 pub(crate) type AppState = Arc<Supervisor>;
@@ -333,11 +335,57 @@ pub fn router(state: AppState) -> Router {
             state.clone(),
             crate::auth::require_auth,
         ))
-        .with_state(state);
+        .with_state(state)
+        .layer(compression_layer());
     match webview_cors_layer() {
         Some(layer) => router.layer(layer),
         None => router,
     }
+}
+
+/// Text and JSON bodies are compressed for clients that send Accept-Encoding.
+/// WebSocket upgrades, SSE, images, archives and ranges stay identity. Relay
+/// requests are dispatched in-process without Accept-Encoding and compressed
+/// inside the encrypted envelope instead (secure_transport.rs).
+pub(crate) fn compression_layer() -> CompressionLayer<impl Predicate> {
+    CompressionLayer::new()
+        .no_deflate()
+        .no_zstd()
+        // Brotli's default quality 11 costs ~100 ms per MB; 4 compresses JSON
+        // about as well as gzip -6 in a fraction of the time.
+        .quality(CompressionLevel::Precise(4))
+        .compress_when(SizeAbove::new(1024).and(
+            |status: StatusCode,
+             _: axum::http::Version,
+             headers: &HeaderMap,
+             _: &axum::http::Extensions| {
+                status != StatusCode::SWITCHING_PROTOCOLS
+                    && headers
+                        .get(header::CONTENT_TYPE)
+                        .and_then(|value| value.to_str().ok())
+                        .is_some_and(compressible_content_type)
+            },
+        ))
+}
+
+pub(crate) fn compressible_content_type(content_type: &str) -> bool {
+    let essence = content_type
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    (essence.starts_with("text/") && essence != "text/event-stream")
+        || matches!(
+            essence.as_str(),
+            "application/json"
+                | "application/javascript"
+                | "application/xml"
+                | "application/manifest+json"
+                | "image/svg+xml"
+        )
+        || essence.ends_with("+json")
+        || essence.ends_with("+xml")
 }
 
 fn webview_cors_layer() -> Option<CorsLayer> {
@@ -1175,6 +1223,17 @@ struct DetailQuery {
     #[serde(rename = "beforeTurnId")]
     before_turn_id: Option<String>,
     view: Option<String>,
+    compact: Option<String>,
+}
+
+/// `compact=1` opts into `history::compact_turn` (docs/architecture.md, History payloads).
+#[derive(Deserialize)]
+struct CompactQuery {
+    compact: Option<String>,
+}
+
+fn compact_requested(value: Option<&str>) -> bool {
+    matches!(value, Some("1" | "true"))
 }
 
 async fn get_thread(
@@ -1215,18 +1274,22 @@ async fn get_thread(
         return Ok(Json(state.thread_delivery(&id).await.map_err(map_err)?));
     }
     let summary_only = query.view.as_deref() == Some("summary");
-    let mut value = serde_json::to_value(
-        state
-            .get_thread_detail_page(
-                &id,
-                query.limit.or(Some(if summary_only { 3 } else { 10 })),
-                query.before_turn_id.as_deref(),
-                summary_only,
-            )
-            .await
-            .map_err(map_err)?,
-    )
-    .unwrap();
+    let mut detail = state
+        .get_thread_detail_page(
+            &id,
+            query.limit.or(Some(if summary_only { 3 } else { 10 })),
+            query.before_turn_id.as_deref(),
+            summary_only,
+        )
+        .await
+        .map_err(map_err)?;
+    if compact_requested(query.compact.as_deref()) {
+        detail
+            .turns
+            .iter_mut()
+            .for_each(pockymoe_runtime::history::compact_turn);
+    }
+    let mut value = serde_json::to_value(detail).unwrap();
     pockymoe_runtime::history::defer_tool_details(&mut value);
     Ok(Json(value))
 }
@@ -1316,15 +1379,17 @@ async fn thread_search(
 
 async fn thread_turn_detail(
     Path((id, turn_id)): Path<(String, String)>,
+    Query(query): Query<CompactQuery>,
     State(state): State<AppState>,
 ) -> Result<Json<Value>, ApiErr> {
-    let mut value = serde_json::to_value(
-        state
-            .get_thread_turn_detail(&id, &turn_id)
-            .await
-            .map_err(map_err)?,
-    )
-    .unwrap();
+    let mut turn = state
+        .get_thread_turn_detail(&id, &turn_id)
+        .await
+        .map_err(map_err)?;
+    if compact_requested(query.compact.as_deref()) {
+        pockymoe_runtime::history::compact_turn(&mut turn);
+    }
+    let mut value = serde_json::to_value(turn).unwrap();
     pockymoe_runtime::history::defer_tool_details(&mut value);
     Ok(Json(value))
 }
@@ -2559,4 +2624,105 @@ async fn subscription_usage(
         &provider
     });
     Json(json!(state.subscription_usage.read(agent).await))
+}
+
+#[cfg(test)]
+mod compression_tests {
+    use super::*;
+    use tower::ServiceExt;
+
+    #[test]
+    fn only_text_like_bodies_are_compressible() {
+        for compressible in [
+            "application/json",
+            "application/json; charset=utf-8",
+            "text/html",
+            "text/plain;charset=utf-8",
+            "application/javascript",
+            "image/svg+xml",
+            "application/problem+json",
+        ] {
+            assert!(compressible_content_type(compressible), "{compressible}");
+        }
+        for identity in [
+            "text/event-stream",
+            "image/png",
+            "image/jpeg",
+            "image/webp",
+            "application/octet-stream",
+            "application/zip",
+            "application/gzip",
+            "video/mp4",
+            "font/woff2",
+            "",
+        ] {
+            assert!(!compressible_content_type(identity), "{identity}");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_layer_skips_images_upgrades_and_small_bodies() {
+        let app = Router::new()
+            .route(
+                "/png",
+                get(|| async { ([(header::CONTENT_TYPE, "image/png")], vec![7u8; 8192]) }),
+            )
+            .route(
+                "/json",
+                get(|| async {
+                    (
+                        [(header::CONTENT_TYPE, "application/json")],
+                        "[1]".repeat(2048),
+                    )
+                }),
+            )
+            .route(
+                "/tiny",
+                get(|| async { ([(header::CONTENT_TYPE, "application/json")], "[1]") }),
+            )
+            .route(
+                "/sse",
+                get(|| async {
+                    (
+                        [(header::CONTENT_TYPE, "text/event-stream")],
+                        "data: x\n\n".repeat(500),
+                    )
+                }),
+            )
+            .route(
+                "/upgrade",
+                get(|| async {
+                    (
+                        StatusCode::SWITCHING_PROTOCOLS,
+                        [(header::CONTENT_TYPE, "text/plain")],
+                        "x".repeat(4096),
+                    )
+                }),
+            )
+            .layer(compression_layer());
+        for (path, compressed) in [
+            ("/png", false),
+            ("/json", true),
+            ("/tiny", false),
+            ("/sse", false),
+            ("/upgrade", false),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(path)
+                        .header(header::ACCEPT_ENCODING, "gzip, br")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.headers().get(header::CONTENT_ENCODING).is_some(),
+                compressed,
+                "{path}"
+            );
+        }
+    }
 }

@@ -115,7 +115,7 @@ test('search reveals an older collapsed message, Explorer resizes and connection
     const limit = Number(new URL(route.request().url()).searchParams.get('limit') ?? 3);
     return route.fulfill({ json: { ...detail, thread: { ...detail.thread, ...(running ? { status: 'running', activeTurnId: 'search-turn-5' } : {}) }, totalTurnCount: turns.length, turns: turns.slice(-limit).map(turn => ({ ...turn, ...(running && turn.id === 'search-turn-5' ? { status: 'inProgress', completedAt: null } : {}), hasDeferredItems: true, deferredItemCount: 2, items: [turn.items[0], turn.items[3]] })) } });
   });
-  await page.route(`**/api/threads/${id}/turns/*/detail`, route => route.fulfill({ json: turns.find(turn => route.request().url().includes(`/${turn.id}/`)) }));
+  await page.route(`**/api/threads/${id}/turns/*/detail*`, route => route.fulfill({ json: turns.find(turn => route.request().url().includes(`/${turn.id}/`)) }));
   await page.route(`**/api/threads/${id}/search?**`, route => route.fulfill({ json: { matches: [{ turnId: turns[0].id, itemId: 'progress-0', role: 'Assistant', text: turns[0].items[1].text }], hasMore: false } }));
   await page.addInitScript(() => localStorage.setItem('remote-codex-theme-mode', 'light'));
   await page.goto(`/threads/${id}`);

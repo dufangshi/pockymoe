@@ -290,12 +290,41 @@ async function keyFor(
     throw e;
   }
 }
+// Sealed bodies cannot be compressed by the relay or the CDN. Announcing gzip
+// inside the sealed metadata lets the Supervisor compress before sealing; an
+// older Supervisor ignores the announcement and replies uncompressed.
+const canGunzip = typeof DecompressionStream === 'function';
+export async function gunzip(data: ArrayBuffer | Uint8Array, max: number) {
+  const reader = new Response(data instanceof Uint8Array ? buffer(data) : data)
+    .body!.pipeThrough(new DecompressionStream('gzip'))
+    .getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > max) {
+      await reader.cancel();
+      throw new Error(translate("workbench.theEncryptedResponseIsTooLarge"));
+    }
+    chunks.push(value);
+  }
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out.buffer;
+}
 function packet(headers: Headers, body: Uint8Array, query = '') {
   const metadata: Record<string, string> = {};
   for (const name of ['content-type', 'accept', 'range', 'if-none-match']) {
     const value = headers.get(name);
     if (value) metadata[name] = value;
   }
+  if (canGunzip) metadata['accept-encoding'] = 'gzip';
   const prefix = encoder.encode(JSON.stringify({ headers: metadata, query }));
   const out = new Uint8Array(4 + prefix.length + body.length);
   new DataView(out.buffer).setUint32(0, prefix.length);
@@ -313,11 +342,15 @@ function unpack(clear: ArrayBuffer) {
     headers: Record<string, string>;
     status: number;
     streamNext?: string | null;
+    encoding?: string;
   };
+  if (meta.encoding !== undefined && meta.encoding !== 'gzip')
+    throw new Error(translate("workbench.invalidEncryptedResponseMetadata"));
   return {
     headers: meta.headers,
     status: meta.status,
     streamNext: meta.streamNext,
+    encoding: meta.encoding,
     body: clear.slice(4 + length),
   };
 }
@@ -474,6 +507,7 @@ export async function exchange(
     ciphertext,
   );
   const data = unpack(opened);
+  if (data.encoding === 'gzip') data.body = await gunzip(data.body, limit);
   reportTransport({
     deviceId: route.deviceId,
     state: 'encrypted',
@@ -565,12 +599,14 @@ export type WireMessage = {
     channelId: string;
     sequence: number;
     body: string;
+    // Set on gzipped server events; bound through the distinct AAD label.
+    encoding?: 'gzip';
   };
   [key: string]: unknown;
 };
-function wsAad(id: string, sequence: number, message: WireMessage) {
+function wsAad(id: string, sequence: number, message: WireMessage, label = 'rcd-ws-v1') {
   return encoder.encode(
-    `rcd-ws-v1\n${id}\n${sequence}\n${message.type ?? ''}\n${message.threadId ?? ''}\n${message.shellId ?? ''}`,
+    `${label}\n${id}\n${sequence}\n${message.type ?? ''}\n${message.threadId ?? ''}\n${message.shellId ?? ''}`,
   );
 }
 function nonce(sequence: number) {
@@ -613,19 +649,22 @@ export class SocketCipher {
       encrypted.version !== 1 ||
       encrypted.channelId !== this.id ||
       !Number.isSafeInteger(encrypted.sequence) ||
-      encrypted.sequence <= this.received
+      encrypted.sequence <= this.received ||
+      (encrypted.encoding !== undefined && encrypted.encoding !== 'gzip')
     )
       throw new Error(translate("workbench.encryptedEventReplayOrWrongChannel"));
+    const gzipped = encrypted.encoding === 'gzip';
     // Relay scope filtering may omit unrelated events; monotonic gaps are valid.
-    const clear = await crypto.subtle.decrypt(
+    const sealed = await crypto.subtle.decrypt(
       {
         name: 'AES-GCM',
         iv: nonce(encrypted.sequence),
-        additionalData: wsAad(this.id, encrypted.sequence, message),
+        additionalData: wsAad(this.id, encrypted.sequence, message, gzipped ? 'rcd-ws-gzip-v1' : 'rcd-ws-v1'),
       },
       this.receiveKey,
       buffer(unb64(encrypted.body)),
     );
+    const clear = gzipped ? await gunzip(sealed, limit) : sealed;
     const parsed = JSON.parse(decoder.decode(clear)) as WireMessage;
     if (
       decoder.decode(wsAad(this.id, encrypted.sequence, parsed)) !==

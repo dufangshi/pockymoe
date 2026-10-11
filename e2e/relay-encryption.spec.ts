@@ -271,9 +271,12 @@ async function encryptedRelayScenario(browser: Browser, context: BrowserContext,
 import sqlite3,json,sys
 db,thread,turn=sys.argv[1:]
 with sqlite3.connect(db) as conn:
+    # The history search triggers call functions the Supervisor registers.
+    conn.create_function('search_body',3,lambda text,kind,source:text or '',deterministic=True)
+    conn.create_function('search_fold',1,lambda text:(text or '').lower(),deterministic=True)
     at='2030-01-01T00:00:00Z'
     conn.execute("INSERT INTO thread_turns(id,thread_id,status,model,started_at,completed_at,ordinal) VALUES(?,?,'completed','fake',?,?,99)",(turn,thread,at,at))
-    for n,(kind,text) in enumerate([('userMessage','SCHEDULED_HISTORY_PROMPT'),('commandExecution','echo HISTORY_STEP_MARKER'),('agentMessage','SCHEDULED_HISTORY_REPLY')]):
+    for n,(kind,text) in enumerate([('userMessage','SCHEDULED_HISTORY_PROMPT'),('commandExecution','echo HISTORY_STEP_MARKER'),('reasoning','HISTORY_REASONING '+'compressible reasoning text '*1500),('agentMessage','SCHEDULED_HISTORY_REPLY')]):
         item={'id':turn+':'+str(n),'sourceTurnId':turn,'kind':kind,'text':text,'status':'completed','createdAt':at,'sequence':n}
         if kind=='commandExecution': item['detailText']='HISTORY_STEP_MARKER'
         conn.execute('INSERT INTO thread_history_items(id,thread_id,turn_id,item_id,item_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?)',(item['id'],thread,turn,item['id'],json.dumps(item),at,at))
@@ -295,6 +298,8 @@ with sqlite3.connect(db) as conn:
           const response = await detailResponse;
           expect(response.status()).toBe(200);
           expect(response.headers()['x-rcd-encrypted']).toBeTruthy();
+          // ~42 KB of JSON travels gzipped inside the sealed envelope.
+          expect((await response.body()).length).toBeLessThan(10_000);
           await expect(page.getByRole('button', { name: /Collapse turn 2$/ })).toBeVisible();
           await expect(page.getByText('History unavailable, retry', { exact: true })).toHaveCount(0);
           await expect(page.locator('.thread-execution-timeline')).toContainText('HISTORY_STEP_MARKER');

@@ -1269,6 +1269,8 @@ export function fetchThreadDetail(
   const params = new URLSearchParams();
   params.set('view', 'summary');
   params.set('limit', String(options.limit ?? 3));
+  // Compact items: tool detail loads on expand; older Supervisors ignore it.
+  params.set('compact', '1');
   if (options.beforeTurnId) {
     params.set('beforeTurnId', options.beforeTurnId);
   }
@@ -1324,7 +1326,7 @@ export function searchThreadMessages(id: string, query: string, signal?: AbortSi
 // Older Supervisors have no search endpoint. A full conversation page avoids
 // the old summary + one detail request per turn; fetch only after a query.
 export function fetchThreadConversationPage(id: string, beforeTurnId?: string, signal?: AbortSignal) {
-  const params = new URLSearchParams({ view: 'full', limit: '100' });
+  const params = new URLSearchParams({ view: 'full', limit: '100', compact: '1' });
   if (beforeTurnId) params.set('beforeTurnId', beforeTurnId);
   return request<ThreadDetailDto>(`/api/threads/${encodeURIComponent(id)}?${params}`, { signal: signal ?? null });
 }
@@ -1341,7 +1343,7 @@ export function fetchThreadTurnDetail(id: string, turnId: string,
   deviceId?: string | null,
 ) {
   return deviceRequest<ThreadTurnDto>(deviceId,
-    `/api/threads/${id}/turns/${encodeURIComponent(turnId)}/detail`,
+    `/api/threads/${id}/turns/${encodeURIComponent(turnId)}/detail?compact=1`,
   );
 }
 

@@ -144,7 +144,7 @@ export function useWorkbenchNavigation(
                 try {
                   const listed = deviceSnapshots.get(r.deviceId!)?.find(thread => thread.id === r.threadId);
                   const value = listed ? { thread: listed } : await request<ThreadDetailDto>(
-                    `/relay/devices/${encodeURIComponent(r.deviceId!)}/api/threads/${encodeURIComponent(r.threadId)}?view=summary&limit=1`,
+                    `/relay/devices/${encodeURIComponent(r.deviceId!)}/api/threads/${encodeURIComponent(r.threadId)}?view=summary&limit=1&compact=1`,
                     {
                       signal: AbortSignal.any([
                         controller.signal,
@@ -363,7 +363,7 @@ export function useWorkbenchNavigation(
         const base = match ? `/relay/devices/${match[1]}/api/threads/${match[2]}` : local && !relay ? `/api/threads/${local[1]}` : null;
         if (!base) continue;
         try {
-          const value = await request<ThreadDetailDto>(`${base}?view=summary&limit=10`, { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(5000)]) });
+          const value = await request<ThreadDetailDto>(`${base}?view=summary&limit=10&compact=1`, { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(5000)]) });
           const eventTime = Date.parse(notification.occurredAt);
           const turn = value.turns.filter(t => t.completedAt && Math.abs(Date.parse(t.completedAt) - eventTime) < 60_000)
             .sort((a, b) => Math.abs(Date.parse(a.completedAt!) - eventTime) - Math.abs(Date.parse(b.completedAt!) - eventTime))[0];

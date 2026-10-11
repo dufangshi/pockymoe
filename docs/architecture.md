@@ -49,3 +49,34 @@ The native macOS/iOS/Android client apps live in a separate repository
 (`remote-codex-app`), not in this tree — `apps/ios` and `apps/android` here hold
 only built web bundles and packaging inputs. `apps/windows-device-manager` is an
 independently released bootstrap; see AGENTS.md for its release boundary.
+
+## History payloads and compression
+
+Thread history is served in three shapes: `GET /api/threads/{id}?view=summary`
+(user messages, the final reply and background anchors per completed turn),
+`?view=full` and `GET /api/threads/{id}/turns/{turnId}/detail`. Every shape
+defers `commandExecution` and `fileChange` output: the item carries
+`hasDeferredDetail: true` instead of `detailText`, and the UI loads it from
+`GET /api/threads/{id}/items/{itemId}/detail` (`{id, kind, title, text}`) when
+the item is opened. WebSocket item events use the same deferral.
+
+Clients that send `compact=1` on those three endpoints get compact items
+(`history::compact_turn`):
+
+- `detailText` is deferred for every tool kind (`commandExecution`,
+  `fileChange`, `fileRead`, `webSearch`, `toolCall`, `agentToolCall`,
+  `skillToolCall`); other kinds (reasoning, images, notices) keep it;
+- `previewText` is omitted when it equals `text`, except for `fileChange`,
+  whose summary badges read `previewText`; readers fall back to `text`;
+- `sourceTurnId` is omitted when it equals the parent turn's `id`; readers
+  fall back to the turn. Live items outside a turn keep it.
+
+The Web sends `compact=1`; native apps, the CLI and older Web builds do not and
+keep the full encoding. Older Supervisors ignore the parameter.
+
+HTTP responses are compressed (gzip or brotli, by `Accept-Encoding`) when the
+body is at least 1 KB of text, JSON, JavaScript, XML or SVG. SSE, WebSocket
+upgrades, images, archives, other binary types and range responses stay
+identity. Relay requests are dispatched in-process without `Accept-Encoding`;
+their bodies are compressed inside the encrypted envelope instead, see
+[relay-security-operations.zh.md](relay-security-operations.zh.md).

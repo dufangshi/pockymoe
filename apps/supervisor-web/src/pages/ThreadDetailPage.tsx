@@ -4005,11 +4005,14 @@ export function ThreadDetailPage() {
         referenceContent: referenceId ? <WorkbenchReferencePane key={`${referenceDevice}:${referenceId}`} controller={referenceController} onOpenThread={openReferenceThread} onOpenWorkspaceFile={openReferenceFile} onOpenHarness={composerFocusOwner => setHarnessSettingsTarget({pane:'reference',deviceId:referenceDevice,threadId:referenceId,...(composerFocusOwner ? {composerFocusOwner} : {})})} draft={referenceDraft} onDraftChange={setReferenceDraft} sendShortcut={shellNav?.sendShortcut ?? 'ctrlEnter'} /> : null,
         collaborationContent: <WorkbenchCollaboration detail={detail} threads={threads} onCompare={onCompareThread} onOpen={openThread} sourceKey={routeKey} visible={workbenchPresentation.value.mode === 'collaboration'} liveItems={liveItems} onNativeResult={target => {
           const source = routeKey;
-          void fetchThreadTurnDetail(id, target.turnId).then(turn => {
+          void fetchThreadTurnDetail(id, target.turnId).then(async turn => {
             if (activeRouteRef.current !== source) return;
             setDetail(current => current ? { ...current, turns: prependTurns(current.turns.map(existing => existing.id === turn.id ? turn : existing), [turn]) } : current);
             const item = turn.items.find(item => item.id === target.itemId);
-            if (item) setNativeResult({ title: item.text, text: item.detailText ?? item.text });
+            // Compact turn details defer tool output to the item-detail endpoint.
+            const text = item?.hasDeferredDetail ? (await fetchThreadHistoryItemDetail(id, item.id)).text : item?.detailText;
+            if (activeRouteRef.current !== source) return;
+            if (item) setNativeResult({ title: item.text, text: text ?? item.text });
             workbenchPresentation.update({ mode: 'focus' });
             setSearchTarget({ ...target, key: Date.now() });
           }).catch(caught => { if (activeRouteRef.current === source) setError(actionErrorMessage(caught, translate('workbench.statusUnavailable'))); });

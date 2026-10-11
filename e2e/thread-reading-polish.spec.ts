@@ -188,7 +188,7 @@ test('overlapping live steps stay stable on expansion and idle output keeps fres
     thread: { ...detail.thread, status: completed ? 'idle' : 'running', activeTurnId: completed ? null : turn.id },
     turns: [{ ...turn, status: completed ? 'completed' : 'inProgress', hasDeferredItems: true, deferredItemCount: count }],
   } }));
-  await page.route(`**/api/threads/${id}/turns/${turn.id}/detail`, route => route.fulfill({ json: {
+  await page.route(`**/api/threads/${id}/turns/${turn.id}/detail*`, route => route.fulfill({ json: {
     ...turn, items: [prompt, ...commands.slice(0, count), reply], hasDeferredItems: false, deferredItemCount: 0,
   } }));
   const emit = (type: string, payload = {}) => socket!.send(JSON.stringify({ type, threadId: id, timestamp: startedAt, payload }));
@@ -339,7 +339,7 @@ test('completed work agrees with the composer and the price tooltip has a matchi
     thread: { ...detail.thread, status: completed ? 'idle' : 'running', activeTurnId: completed ? null : turn.id },
     turns: [{ ...turn, status: completed ? 'completed' : 'inProgress', completedAt: completed ? '2026-10-05T17:01:12Z' : null }],
   } }));
-  await page.route(`**/api/threads/${id}/turns/${turn.id}/detail`, route => route.fulfill({ json: {
+  await page.route(`**/api/threads/${id}/turns/${turn.id}/detail*`, route => route.fulfill({ json: {
     ...turn, items, hasDeferredItems: false, deferredItemCount: 0,
   } }));
   await page.goto(`/threads/${id}`);
@@ -400,7 +400,7 @@ test('mobile work summary keeps its step count and cannot scroll the conversatio
   };
   let priceAvailable = true;
   await page.route(`**/api/threads/${id}?**`, route => route.fulfill({ json: { ...detail, turns: [{ ...turn, priceEstimate: priceAvailable ? turn.priceEstimate : null }], totalTurnCount: 1 } }));
-  await page.route(`**/api/threads/${id}/turns/mobile-work-turn/detail`, route => route.fulfill({ json: { ...turn, items, hasDeferredItems: false, deferredItemCount: 0 } }));
+  await page.route(`**/api/threads/${id}/turns/mobile-work-turn/detail*`, route => route.fulfill({ json: { ...turn, items, hasDeferredItems: false, deferredItemCount: 0 } }));
   await page.goto(`/threads/${id}`);
   await expect(page.getByRole('textbox', { name: 'Prompt' })).toBeVisible();
   await page.getByRole('button', { name: 'Jump to previous turn' }).click();
@@ -525,7 +525,7 @@ test('background wake replaces its waiting anchor and continues within the same 
     thread:{...detail.thread,status:completed?'idle':'running',activeTurnId:completed?null:turnId},
     turns:[{id:turnId,status:completed?'completed':'inProgress',startedAt,completedAt:completed?new Date().toISOString():null,model:'claude-opus-5-5',hasDeferredItems:completed,deferredItemCount:completed?1:0,items:completed?items.filter(item=>(item as {kind:string}).kind!=='commandExecution'):items}]});
   let detailLoads=0;
-  await page.route(`**/api/threads/${id}/turns/${turnId}/detail`,route=>{
+  await page.route(`**/api/threads/${id}/turns/${turnId}/detail*`,route=>{
     detailLoads++;
     return route.fulfill({json:{...response().turns[0],items,hasDeferredItems:false,deferredItemCount:0}});
   });
@@ -753,7 +753,7 @@ test('live narration replaces its outside preview during tools and wake, with co
     turns: [{ id: turnId, status: completed ? 'completed' : 'inProgress', startedAt, items }],
   });
   await page.route(`**/api/threads/${id}?**`, route => route.fulfill({ json: response() }));
-  await page.route(`**/api/threads/${id}/turns/${turnId}/detail`, route => route.fulfill({ json: { ...response().turns[0], hasDeferredItems: false } }));
+  await page.route(`**/api/threads/${id}/turns/${turnId}/detail*`, route => route.fulfill({ json: { ...response().turns[0], hasDeferredItems: false } }));
   const emit = (type: string, payload: object) => socket!.send(JSON.stringify({ type, threadId: id, timestamp: new Date().toISOString(), payload }));
   await page.goto(`/threads/${id}`);
   const turn = page.getByTestId('chat-turn');

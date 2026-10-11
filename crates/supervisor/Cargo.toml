@@ -24,7 +24,8 @@ sha2.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-tungstenite.workspace = true
-tower-http.workspace = true
+tower-http = { workspace = true, features = ["compression-br", "compression-gzip"] }
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 tower = { version = "0.5", features = ["util"] }
 tracing.workspace = true
 url.workspace = true

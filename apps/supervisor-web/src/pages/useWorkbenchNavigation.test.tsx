@@ -189,7 +189,7 @@ describe('account thread navigation', () => {
     const snapshot = { threads: [], notifications: [{ id: 'event', title: '1 completed', href: '/devices/mac/threads/review', occurredAt: completed }] };
     vi.mocked(request).mockImplementation(async url => {
       if (url === '/relay/account/workbench') return snapshot;
-      if (url === '/relay/devices/mac/api/threads/review?view=summary&limit=10') return {
+      if (url === '/relay/devices/mac/api/threads/review?view=summary&limit=10&compact=1') return {
         thread: { title: 'Fix the image preview' }, turns: [{ status: 'completed', completedAt: completed, items: [{ kind: 'agentMessage', text: 'The image now loads correctly. ' + 'Details '.repeat(50) }] }],
       };
       throw new Error(`Unexpected URL: ${url}`);
@@ -319,7 +319,7 @@ describe('account thread navigation', () => {
     act(() => result.current.onToggleFavorite());
     await waitFor(() => expect(result.current.favorite).toBe(true));
     expect(request).toHaveBeenCalledWith(
-      '/relay/devices/shared-device/api/threads/shared-thread?view=summary&limit=1',
+      '/relay/devices/shared-device/api/threads/shared-thread?view=summary&limit=1&compact=1',
       expect.anything(),
     );
     const writes = vi

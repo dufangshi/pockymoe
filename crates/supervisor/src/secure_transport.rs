@@ -26,6 +26,38 @@ use uuid::Uuid;
 
 const INFO: &[u8] = b"remote-codex/relay/v1";
 const LIMIT: usize = 64 * 1024 * 1024;
+/// Smaller bodies and events gain too little from gzip to pay for its header.
+const COMPRESS_MIN: usize = 1024;
+/// The relay can neither see nor compress sealed bodies, so the Supervisor
+/// gzips them before sealing when the browser announced
+/// `accept-encoding: gzip` inside the sealed request metadata.
+fn accepts_gzip(metadata: &Value) -> bool {
+    metadata["headers"]["accept-encoding"]
+        .as_str()
+        .is_some_and(|value| {
+            value
+                .split(',')
+                .any(|coding| coding.split(';').next().unwrap_or("").trim() == "gzip")
+        })
+}
+fn gunzip(data: &[u8], limit: usize) -> Result<Vec<u8>> {
+    use std::io::Read;
+    let mut out = Vec::new();
+    flate2::read::GzDecoder::new(data)
+        .take(limit as u64 + 1)
+        .read_to_end(&mut out)?;
+    if out.len() > limit {
+        bail!("decompressed event too large");
+    }
+    Ok(out)
+}
+fn gzip(data: &[u8]) -> Option<Vec<u8>> {
+    use flate2::{write::GzEncoder, Compression};
+    let mut encoder = GzEncoder::new(Vec::with_capacity(data.len() / 4), Compression::default());
+    encoder.write_all(data).ok()?;
+    let compressed = encoder.finish().ok()?;
+    (compressed.len() < data.len()).then_some(compressed)
+}
 fn now() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
@@ -227,6 +259,7 @@ impl Transport {
         request["body"] = Value::String(base64::engine::general_purpose::STANDARD.encode(body));
         request["bodyEncoding"] = json!("base64");
         Ok(OpenedRequest {
+            gzip: accepts_gzip(&metadata),
             request,
             response_key,
             client_key,
@@ -262,6 +295,7 @@ impl Transport {
                 expires,
                 receive_key: request.client_key,
                 send_key: request.server_key,
+                gzip: request.gzip,
                 send_sequence: Mutex::new(0),
                 receive_sequence: Mutex::new(0),
             }),
@@ -271,6 +305,8 @@ impl Transport {
 }
 pub(crate) struct OpenedRequest {
     pub request: Value,
+    /// The browser can decompress gzip bodies and events (see `accepts_gzip`).
+    gzip: bool,
     response_key: [u8; 32],
     client_key: [u8; 32],
     server_key: [u8; 32],
@@ -285,10 +321,23 @@ impl OpenedRequest {
         } else {
             response["body"].as_str().unwrap_or("").as_bytes().to_vec()
         };
-        let clear = pack(
-            &json!({"headers":response["headers"],"status":status,"streamNext":response["streamNext"]}),
-            &body,
-        )?;
+        let mut metadata = json!({"headers":response["headers"],"status":status,"streamNext":response["streamNext"]});
+        // Streamed downloads continue in later chunks; they stay identity.
+        let compressed = (self.gzip
+            && body.len() >= COMPRESS_MIN
+            && response["streamNext"].is_null()
+            && !matches!(status, 204 | 205 | 304)
+            && response["headers"]["content-encoding"].is_null()
+            && response["headers"]["content-type"]
+                .as_str()
+                .is_some_and(crate::http::compressible_content_type))
+        .then(|| gzip(&body))
+        .flatten();
+        if compressed.is_some() {
+            // Inside the ciphertext, so the relay can neither add nor strip it.
+            metadata["encoding"] = json!("gzip");
+        }
+        let clear = pack(&metadata, compressed.as_deref().unwrap_or(&body))?;
         // Each HPKE context has a unique exporter key and exactly one response.
         let cipher = Aes256Gcm::new_from_slice(&self.response_key)
             .map_err(|_| anyhow!("invalid response key"))?;
@@ -335,10 +384,17 @@ pub(crate) struct Session {
     send_key: [u8; 32],
     send_sequence: Mutex<u64>,
     receive_sequence: Mutex<u64>,
+    /// Large server events are gzipped; negotiated when the session was created.
+    gzip: bool,
 }
 fn ws_aad(id: &str, seq: u64, message: &Value) -> String {
+    ws_aad_for("rcd-ws-v1", id, seq, message)
+}
+/// Gzipped events use their own AAD label, which binds the outer `encoding`
+/// marker: stripping or adding it makes authentication fail.
+fn ws_aad_for(label: &str, id: &str, seq: u64, message: &Value) -> String {
     format!(
-        "rcd-ws-v1\n{id}\n{seq}\n{}\n{}\n{}",
+        "{label}\n{id}\n{seq}\n{}\n{}\n{}",
         message["type"].as_str().unwrap_or(""),
         message["threadId"].as_str().unwrap_or(""),
         message["shellId"].as_str().unwrap_or("")
@@ -361,17 +417,30 @@ impl Session {
             .send_sequence
             .lock()
             .map_err(|_| anyhow!("sequence lock failed"))?;
+        let clear = serde_json::to_vec(message)?;
+        let compressed = (self.gzip && clear.len() >= COMPRESS_MIN)
+            .then(|| gzip(&clear))
+            .flatten();
+        let label = if compressed.is_some() {
+            "rcd-ws-gzip-v1"
+        } else {
+            "rcd-ws-v1"
+        };
+        let aad = ws_aad_for(label, &self.id, *seq, message);
         let ciphertext = Aes256Gcm::new_from_slice(&self.send_key)
             .map_err(|_| anyhow!("invalid key"))?
             .encrypt(
                 Nonce::from_slice(&nonce(*seq)),
                 Payload {
-                    msg: &serde_json::to_vec(message)?,
-                    aad: ws_aad(&self.id, *seq, message).as_bytes(),
+                    msg: compressed.as_deref().unwrap_or(&clear),
+                    aad: aad.as_bytes(),
                 },
             )
             .map_err(|_| anyhow!("event encryption failed"))?;
-        let result = json!({"type":message["type"],"threadId":message["threadId"],"shellId":message["shellId"],"encrypted":{"version":1,"channelId":self.id,"sequence":*seq,"body":B64.encode(ciphertext)}});
+        let mut result = json!({"type":message["type"],"threadId":message["threadId"],"shellId":message["shellId"],"encrypted":{"version":1,"channelId":self.id,"sequence":*seq,"body":B64.encode(ciphertext)}});
+        if compressed.is_some() {
+            result["encrypted"]["encoding"] = json!("gzip");
+        }
         *seq = seq
             .checked_add(1)
             .ok_or_else(|| anyhow!("sequence exhausted"))?;
@@ -393,16 +462,31 @@ impl Session {
         if body.len() > 4 * 1024 * 1024 {
             bail!("event too large");
         }
+        let compressed = match &e["encoding"] {
+            Value::Null => false,
+            value if value == "gzip" => true,
+            _ => bail!("unsupported event encoding"),
+        };
+        let label = if compressed {
+            "rcd-ws-gzip-v1"
+        } else {
+            "rcd-ws-v1"
+        };
         let clear = Aes256Gcm::new_from_slice(&self.receive_key)
             .map_err(|_| anyhow!("invalid key"))?
             .decrypt(
                 Nonce::from_slice(&nonce(*seq)),
                 Payload {
                     msg: &body,
-                    aad: ws_aad(&self.id, *seq, message).as_bytes(),
+                    aad: ws_aad_for(label, &self.id, *seq, message).as_bytes(),
                 },
             )
             .map_err(|_| anyhow!("event authentication failed"))?;
+        let clear = if compressed {
+            gunzip(&clear, 4 * 1024 * 1024)?
+        } else {
+            clear
+        };
         let clear: Value = serde_json::from_slice(&clear)?;
         if ws_aad(&self.id, *seq, &clear) != ws_aad(&self.id, *seq, message) {
             bail!("event routing mismatch");
@@ -427,6 +511,23 @@ mod tests {
         }
     }
     fn request(device: &Transport, method: &str, path: &str, body: &[u8], resource: &str) -> Value {
+        request_with(
+            device,
+            method,
+            path,
+            body,
+            resource,
+            json!({"content-type":"application/json"}),
+        )
+    }
+    fn request_with(
+        device: &Transport,
+        method: &str,
+        path: &str,
+        body: &[u8],
+        resource: &str,
+        headers: Value,
+    ) -> Value {
         let descriptor = device.descriptor("").unwrap();
         let public = <Kem as KemTrait>::PublicKey::from_bytes(
             &B64.decode(descriptor["publicKey"].as_str().unwrap())
@@ -445,11 +546,7 @@ mod tests {
         let id = format!("{}.{}", Uuid::new_v4(), now());
         let key = descriptor["keyId"].as_str().unwrap();
         let aad = format!("rcd-http-v1\n{key}\n{id}\n{method}\n{path}\n{resource}");
-        let clear = pack(
-            &json!({"headers":{"content-type":"application/json"}}),
-            body,
-        )
-        .unwrap();
+        let clear = pack(&json!({ "headers": headers }), body).unwrap();
         let sealed = sender.seal(&clear, aad.as_bytes()).unwrap();
         json!({"method":method,"path":path,"headers":{"x-rcd-key":key,"x-rcd-request":id,"x-rcd-enc":B64.encode(enc.to_bytes()),"x-rcd-sealed":B64.encode(sealed),"x-rcd-resource":resource}})
     }
@@ -499,6 +596,7 @@ mod tests {
             send_key: other,
             send_sequence: Mutex::new(0),
             receive_sequence: Mutex::new(0),
+            gzip: false,
         };
         let client = Session {
             id: "channel".into(),
@@ -507,6 +605,7 @@ mod tests {
             send_key: key,
             send_sequence: Mutex::new(0),
             receive_sequence: Mutex::new(0),
+            gzip: false,
         };
         let clear = json!({"type":"shell.input","threadId":"t","shellId":"s","data":"secret"});
         let message = client.seal(&clear).unwrap();
@@ -562,5 +661,157 @@ mod tests {
         assert_eq!(old["identityKey"], new["identityKey"]);
         assert_ne!(old["keyId"], new["keyId"]);
         assert!(device.open(&request).is_err());
+    }
+    /// Decrypts a sealed response the way the browser does.
+    fn open_response(opened: &OpenedRequest, sealed: &Value) -> (Value, Vec<u8>) {
+        let ciphertext = base64::engine::general_purpose::STANDARD
+            .decode(sealed["body"].as_str().unwrap())
+            .unwrap();
+        let clear = Aes256Gcm::new_from_slice(&opened.response_key)
+            .unwrap()
+            .decrypt(
+                Nonce::from_slice(&[0u8; 12]),
+                Payload {
+                    msg: &ciphertext,
+                    aad: format!("{}\nresponse", opened.aad).as_bytes(),
+                },
+            )
+            .unwrap();
+        let (metadata, body) = unpack(&clear).unwrap();
+        let body = if metadata["encoding"] == "gzip" {
+            gunzip(body, LIMIT).unwrap()
+        } else {
+            body.to_vec()
+        };
+        (metadata, body)
+    }
+    fn opened(device: &Transport, accept_encoding: Option<&str>) -> OpenedRequest {
+        let mut headers = json!({"accept":"application/json"});
+        if let Some(value) = accept_encoding {
+            headers["accept-encoding"] = json!(value);
+        }
+        device
+            .open(&request_with(
+                device,
+                "GET",
+                "/api/threads",
+                b"",
+                "",
+                headers,
+            ))
+            .unwrap()
+    }
+    #[test]
+    fn sealed_responses_are_gzipped_only_when_the_browser_announces_it() {
+        let device = device();
+        let json_body = json!({"items": vec!["repeated tool output line"; 200]}).to_string();
+        let response = |content_type: &str, body: &str, next: Value| json!({"statusCode":200,"headers":{"content-type":content_type,"content-length":body.len().to_string()},"body":body,"streamNext":next});
+        // Old browsers send no announcement and receive the identity body.
+        let legacy = opened(&device, None);
+        let sealed = legacy
+            .response(response("application/json", &json_body, Value::Null))
+            .unwrap();
+        let (metadata, body) = open_response(&legacy, &sealed);
+        assert!(metadata.get("encoding").is_none());
+        assert_eq!(body, json_body.as_bytes());
+
+        let modern = opened(&device, Some("gzip, deflate"));
+        let sealed = modern
+            .response(response(
+                "application/json; charset=utf-8",
+                &json_body,
+                Value::Null,
+            ))
+            .unwrap();
+        let ciphertext_len = sealed["body"].as_str().unwrap().len();
+        let (metadata, body) = open_response(&modern, &sealed);
+        assert_eq!(metadata["encoding"], "gzip");
+        assert_eq!(body, json_body.as_bytes());
+        // Content-Length still describes the decoded body the browser exposes.
+        assert_eq!(
+            metadata["headers"]["content-length"],
+            json_body.len().to_string()
+        );
+        assert!(ciphertext_len * 5 < json_body.len(), "{ciphertext_len}");
+
+        for (content_type, body, next) in [
+            (
+                "application/json",
+                "{\"small\":true}".to_string(),
+                Value::Null,
+            ),
+            ("image/png", "p".repeat(4096), Value::Null),
+            ("application/zip", "z".repeat(4096), Value::Null),
+            ("text/event-stream", "data: x\n\n".repeat(400), Value::Null),
+            (
+                "text/plain",
+                "t".repeat(4096),
+                json!("/api/transport/stream/x?chunk=1"),
+            ),
+        ] {
+            let opened = opened(&device, Some("gzip"));
+            let sealed = opened
+                .response(response(content_type, &body, next))
+                .unwrap();
+            let (metadata, clear) = open_response(&opened, &sealed);
+            assert!(metadata.get("encoding").is_none(), "{content_type}");
+            assert_eq!(clear, body.as_bytes(), "{content_type}");
+        }
+        assert!(!accepts_gzip(
+            &json!({"headers":{"accept-encoding":"br, gzipx"}})
+        ));
+        assert!(accepts_gzip(
+            &json!({"headers":{"accept-encoding":"br, gzip;q=1"}})
+        ));
+    }
+    #[test]
+    fn negotiated_sessions_gzip_large_events_and_bind_the_marker() {
+        let device = device();
+        let session = device
+            .create_session(&opened(&device, Some("gzip")))
+            .unwrap();
+        let server = device
+            .session(session["channelId"].as_str().unwrap())
+            .unwrap();
+        assert!(server.gzip);
+        assert!(
+            !device
+                .session(
+                    device.create_session(&opened(&device, None)).unwrap()["channelId"]
+                        .as_str()
+                        .unwrap()
+                )
+                .unwrap()
+                .gzip
+        );
+        // A client view of the same channel: it opens what the server seals.
+        let client = Session {
+            id: server.id.clone(),
+            expires: now() + 60_000,
+            receive_key: server.send_key,
+            send_key: server.receive_key,
+            send_sequence: Mutex::new(0),
+            receive_sequence: Mutex::new(0),
+            gzip: false,
+        };
+        let large = json!({"type":"thread.item.completed","threadId":"t","payload":{"text":"output ".repeat(1000)}});
+        let sealed = server.seal(&large).unwrap();
+        assert_eq!(sealed["encrypted"]["encoding"], "gzip");
+        assert!(sealed["encrypted"]["body"].as_str().unwrap().len() < 1000);
+        let mut stripped = sealed.clone();
+        stripped["encrypted"]
+            .as_object_mut()
+            .unwrap()
+            .remove("encoding");
+        assert!(client.open(&stripped).is_err());
+        assert_eq!(client.open(&sealed).unwrap(), large);
+        let small = json!({"type":"supervisor.pong","payload":{}});
+        let sealed = server.seal(&small).unwrap();
+        assert!(sealed["encrypted"].get("encoding").is_none());
+        let mut marked = sealed.clone();
+        marked["encrypted"]["encoding"] = json!("gzip");
+        assert!(client.open(&marked).is_err());
+        // A rejected forgery does not advance the sequence.
+        assert_eq!(client.open(&sealed).unwrap(), small);
     }
 }

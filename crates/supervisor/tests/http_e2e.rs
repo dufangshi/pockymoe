@@ -1770,3 +1770,190 @@ async fn thread_image_thumbnails_are_cached_validated_and_revalidated() {
         b"\x89PNG\r\n\x1a\nsecond!"
     );
 }
+
+async fn seed_tool_history(
+    state: &Supervisor,
+    client: &reqwest::Client,
+    base: &str,
+    root: &std::path::Path,
+) -> String {
+    let workspace = json(
+        client,
+        client
+            .post(format!("{base}/api/workspaces"))
+            .json(&json!({"absPath":root,"label":"Compact"})),
+    )
+    .await;
+    let thread = json(client, client.post(format!("{base}/api/threads/start"))
+        .json(&json!({"workspaceId":workspace["id"],"title":"Compact","provider":"codex","model":"ios-e2e-stream","approvalMode":"yolo"}))).await;
+    let id = thread["id"].as_str().unwrap().to_owned();
+    state.db.with(|conn| {
+        conn.execute("INSERT INTO thread_turns(id,thread_id,status,ordinal) VALUES('compact-turn',?1,'completed',0)", [&id])?;
+        let mut items = vec![
+            json!({"id":"user","kind":"userMessage","text":"inspect","sourceTurnId":"compact-turn"}),
+            json!({"id":"reply","kind":"agentMessage","text":"done","sourceTurnId":"compact-turn"}),
+            json!({"id":"note","kind":"reasoning","text":"thinking","detailText":"reasoning detail","sourceTurnId":"compact-turn"}),
+        ];
+        for kind in pockymoe_runtime::history::TOOL_ITEM_KINDS {
+            items.push(json!({"id":format!("{kind}-1"),"kind":kind,"text":format!("{kind} title"),"previewText":format!("{kind} title"),"detailText":format!("{kind} full detail {}", "line\n".repeat(400)),"status":"completed","sourceTurnId":"compact-turn"}));
+        }
+        for (n, item) in items.iter().enumerate() {
+            conn.execute("INSERT INTO thread_history_items(id,thread_id,turn_id,item_id,item_json,created_at,updated_at) VALUES(?1,?2,'compact-turn',?3,?4,?5,?5)",
+                (format!("row-{n}"), &id, item["id"].as_str().unwrap(), item.to_string(), format!("2030-01-01T00:00:{n:02}Z")))?;
+        }
+        Ok(())
+    }).unwrap();
+    id
+}
+
+#[tokio::test]
+async fn compact_history_defers_every_tool_kind_only_when_requested() {
+    let (_dir, port, root, state) = spawn_supervisor_state(vec![Provider::Codex], |_| {}).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://127.0.0.1:{port}");
+    let id = seed_tool_history(&state, &client, &base, &root).await;
+    let item = |turn: &Value, id: &str| {
+        turn["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["id"] == id)
+            .cloned()
+            .unwrap()
+    };
+    // Old Web, CLI and native clients: unchanged legacy encoding.
+    let legacy = json(
+        &client,
+        client.get(format!("{base}/api/threads/{id}/turns/compact-turn/detail")),
+    )
+    .await;
+    assert_eq!(
+        item(&legacy, "commandExecution-1")["hasDeferredDetail"],
+        true
+    );
+    assert!(item(&legacy, "commandExecution-1")
+        .get("detailText")
+        .is_none());
+    assert!(item(&legacy, "fileRead-1")["detailText"]
+        .as_str()
+        .unwrap()
+        .starts_with("fileRead full detail"));
+    assert_eq!(item(&legacy, "toolCall-1")["previewText"], "toolCall title");
+    assert_eq!(item(&legacy, "user")["sourceTurnId"], "compact-turn");
+
+    let compact = json(
+        &client,
+        client.get(format!(
+            "{base}/api/threads/{id}/turns/compact-turn/detail?compact=1"
+        )),
+    )
+    .await;
+    for kind in pockymoe_runtime::history::TOOL_ITEM_KINDS {
+        let value = item(&compact, &format!("{kind}-1"));
+        assert!(value.get("detailText").is_none(), "{value}");
+        assert_eq!(value["hasDeferredDetail"], true, "{value}");
+        assert!(value.get("sourceTurnId").is_none(), "{value}");
+        assert_eq!(
+            value.get("previewText").is_some(),
+            *kind == "fileChange",
+            "{value}"
+        );
+        // Expanding the item loads the full detail through the existing endpoint.
+        let detail = json(
+            &client,
+            client.get(format!("{base}/api/threads/{id}/items/{kind}-1/detail")),
+        )
+        .await;
+        assert!(
+            detail["text"]
+                .as_str()
+                .unwrap()
+                .starts_with(&format!("{kind} full detail")),
+            "{detail}"
+        );
+        assert_eq!(detail["title"], format!("{kind} title"));
+    }
+    assert_eq!(item(&compact, "note")["detailText"], "reasoning detail");
+    assert!(item(&compact, "user").get("sourceTurnId").is_none());
+
+    let summary = json(
+        &client,
+        client.get(format!(
+            "{base}/api/threads/{id}?view=summary&limit=3&compact=1"
+        )),
+    )
+    .await;
+    let turn = &summary["turns"][0];
+    assert_eq!(turn["hasDeferredItems"], true);
+    assert!(item(turn, "user").get("sourceTurnId").is_none());
+    let full = json(
+        &client,
+        client.get(format!("{base}/api/threads/{id}?view=full&compact=1")),
+    )
+    .await;
+    assert!(item(&full["turns"][0], "webSearch-1")
+        .get("detailText")
+        .is_none());
+    let full = json(
+        &client,
+        client.get(format!("{base}/api/threads/{id}?view=full")),
+    )
+    .await;
+    assert!(item(&full["turns"][0], "webSearch-1")["detailText"].is_string());
+}
+
+#[tokio::test]
+async fn direct_http_compresses_large_text_for_clients_that_accept_it() {
+    use std::io::Read;
+    let (_dir, port, root, state) = spawn_supervisor_state(vec![Provider::Codex], |_| {}).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://127.0.0.1:{port}");
+    let id = seed_tool_history(&state, &client, &base, &root).await;
+    let url = format!("{base}/api/threads/{id}/turns/compact-turn/detail");
+    let plain = client.get(&url).send().await.unwrap();
+    assert!(plain.headers().get("content-encoding").is_none());
+    let plain = plain.bytes().await.unwrap();
+    assert!(plain.len() > 8 * 1024);
+
+    let gzip = client
+        .get(&url)
+        .header("accept-encoding", "gzip")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(gzip.headers()["content-encoding"], "gzip");
+    assert!(gzip.headers()["vary"]
+        .to_str()
+        .unwrap()
+        .contains("accept-encoding"));
+    let body = gzip.bytes().await.unwrap();
+    assert!(
+        body.len() * 5 < plain.len(),
+        "{} vs {}",
+        body.len(),
+        plain.len()
+    );
+    let mut decoded = Vec::new();
+    flate2::read::GzDecoder::new(&body[..])
+        .read_to_end(&mut decoded)
+        .unwrap();
+    assert_eq!(decoded, plain);
+
+    let br = client
+        .get(&url)
+        .header("accept-encoding", "br")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(br.headers()["content-encoding"], "br");
+    assert!(br.bytes().await.unwrap().len() * 5 < plain.len());
+
+    // Small bodies stay identity even when the client accepts gzip.
+    let health = client
+        .get(format!("{base}/healthz"))
+        .header("accept-encoding", "gzip")
+        .send()
+        .await
+        .unwrap();
+    assert!(health.headers().get("content-encoding").is_none());
+}

@@ -48,6 +48,51 @@ pub fn normalize_legacy_file_change(item: &mut ThreadHistoryItemDto) {
     item.extra.insert("removedLines".into(), removed.into());
 }
 
+/// Tool kinds whose `detailText` (output, file contents, results) is served
+/// through `/items/{id}/detail` in compact history responses.
+pub const TOOL_ITEM_KINDS: &[&str] = &[
+    "commandExecution",
+    "fileChange",
+    "fileRead",
+    "webSearch",
+    "toolCall",
+    "agentToolCall",
+    "skillToolCall",
+];
+
+/// Kinds whose readers all treat a missing `previewText` as `text`. fileChange
+/// derives its summary badges from `previewText`, so it keeps the field.
+const PREVIEW_FALLBACK_KINDS: &[&str] = &[
+    "commandExecution",
+    "fileRead",
+    "webSearch",
+    "toolCall",
+    "agentToolCall",
+    "skillToolCall",
+];
+
+/// Compact item encoding, opted into by clients that send `compact=1`:
+/// every tool kind defers `detailText`, `previewText` equal to `text` and
+/// `sourceTurnId` equal to the parent turn are omitted. Older clients and
+/// the WebSocket stream keep the legacy encoding of `defer_tool_details`.
+pub fn compact_turn(turn: &mut ThreadTurnDto) {
+    for item in &mut turn.items {
+        if TOOL_ITEM_KINDS.contains(&item.kind.as_str())
+            && item.detail_text.take().is_some_and(|text| !text.is_empty())
+        {
+            item.extra.insert("hasDeferredDetail".into(), true.into());
+        }
+        if PREVIEW_FALLBACK_KINDS.contains(&item.kind.as_str())
+            && item.preview_text.as_deref() == Some(item.text.as_str())
+        {
+            item.preview_text = None;
+        }
+        if item.source_turn_id.as_deref() == Some(turn.id.as_str()) {
+            item.source_turn_id = None;
+        }
+    }
+}
+
 /// Apply only at the transport boundary, after the complete item is durable.
 pub fn defer_tool_details(value: &mut serde_json::Value) {
     match value {
@@ -117,4 +162,89 @@ pub fn summarize_completed_turn(mut turn: ThreadTurnDto) -> ThreadTurnDto {
     turn.has_deferred_items = Some(true);
     turn.deferred_item_count = Some(deferred as u32);
     turn
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn turn(items: serde_json::Value) -> ThreadTurnDto {
+        serde_json::from_value(json!({
+            "id": "turn-1",
+            "startedAt": null,
+            "status": "completed",
+            "error": null,
+            "items": items,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn compact_turn_defers_detail_for_every_tool_kind() {
+        let mut items = TOOL_ITEM_KINDS
+            .iter()
+            .map(|kind| json!({"id": kind, "kind": kind, "text": "t", "detailText": "full output"}))
+            .collect::<Vec<_>>();
+        items.push(json!({"id":"empty","kind":"fileRead","text":"t","detailText":""}));
+        for kind in [
+            "reasoning",
+            "image",
+            "contextCompaction",
+            "agentMessage",
+            "hook",
+        ] {
+            items.push(json!({"id": kind, "kind": kind, "text": "t", "detailText": "kept"}));
+        }
+        let mut turn = turn(json!(items));
+        compact_turn(&mut turn);
+        let value = serde_json::to_value(&turn).unwrap();
+        for item in value["items"].as_array().unwrap() {
+            let kind = item["kind"].as_str().unwrap();
+            if item["id"] == "empty" {
+                assert!(
+                    item.get("detailText").is_none() && item.get("hasDeferredDetail").is_none()
+                );
+            } else if TOOL_ITEM_KINDS.contains(&kind) {
+                assert!(item.get("detailText").is_none(), "{item}");
+                assert_eq!(item["hasDeferredDetail"], true, "{item}");
+            } else {
+                assert_eq!(item["detailText"], "kept", "{item}");
+                assert!(item.get("hasDeferredDetail").is_none(), "{item}");
+            }
+        }
+    }
+
+    #[test]
+    fn compact_turn_drops_redundant_preview_and_source_turn() {
+        let mut turn = turn(json!([
+            {"id":"a","kind":"commandExecution","text":"ls","previewText":"ls","sourceTurnId":"turn-1"},
+            {"id":"b","kind":"commandExecution","text":"ls -la","previewText":"ls","sourceTurnId":"turn-0"},
+            {"id":"c","kind":"fileChange","text":"a.rs","previewText":"a.rs","sourceTurnId":"turn-1"},
+            {"id":"d","kind":"artifact","text":"x","previewText":"x"},
+        ]));
+        compact_turn(&mut turn);
+        let value = serde_json::to_value(&turn).unwrap();
+        let items = value["items"].as_array().unwrap();
+        assert!(items[0].get("previewText").is_none());
+        assert!(items[0].get("sourceTurnId").is_none());
+        assert_eq!(items[1]["previewText"], "ls");
+        assert_eq!(items[1]["sourceTurnId"], "turn-0");
+        // fileChange badges and artifact titles read previewText directly.
+        assert_eq!(items[2]["previewText"], "a.rs");
+        assert!(items[2].get("sourceTurnId").is_none());
+        assert_eq!(items[3]["previewText"], "x");
+    }
+
+    #[test]
+    fn legacy_deferral_keeps_other_tool_details() {
+        let mut value = json!({"turns":[{"items":[
+            {"id":"a","kind":"commandExecution","text":"ls","detailText":"out"},
+            {"id":"b","kind":"fileRead","text":"a.rs","detailText":"contents"},
+        ]}]});
+        defer_tool_details(&mut value);
+        assert!(value["turns"][0]["items"][0].get("detailText").is_none());
+        assert_eq!(value["turns"][0]["items"][0]["hasDeferredDetail"], true);
+        assert_eq!(value["turns"][0]["items"][1]["detailText"], "contents");
+    }
 }
