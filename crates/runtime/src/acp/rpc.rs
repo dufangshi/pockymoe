@@ -197,12 +197,34 @@ impl AcpProcess {
             .await
     }
 
+    /// Writes the request before returning its owned response future. The active
+    /// turn can then own completion without blocking an input-delivery endpoint.
+    pub async fn begin_request(
+        &self,
+        method: &str,
+        params: Value,
+    ) -> Result<futures_util::future::BoxFuture<'static, Result<Value>>> {
+        self.begin_request_with_timeout(method, params, timeout_for_method(method))
+            .await
+    }
+
     pub async fn request_with_timeout(
         &self,
         method: &str,
         params: Value,
         wait: Option<Duration>,
     ) -> Result<Value> {
+        self.begin_request_with_timeout(method, params, wait)
+            .await?
+            .await
+    }
+
+    async fn begin_request_with_timeout(
+        &self,
+        method: &str,
+        params: Value,
+        wait: Option<Duration>,
+    ) -> Result<futures_util::future::BoxFuture<'static, Result<Value>>> {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let (tx, rx) = oneshot::channel();
         {
@@ -229,19 +251,22 @@ impl AcpProcess {
                 return Err(err);
             }
         }
-        let result = if let Some(wait) = wait {
-            match timeout(wait, rx).await {
-                Ok(result) => result,
-                Err(_) => {
-                    guard.remove().await;
-                    return Err(anyhow!("ACP request timeout ({method})"));
+        let method = method.to_owned();
+        Ok(Box::pin(async move {
+            let result = if let Some(wait) = wait {
+                match timeout(wait, rx).await {
+                    Ok(result) => result,
+                    Err(_) => {
+                        guard.remove().await;
+                        return Err(anyhow!("ACP request timeout ({method})"));
+                    }
                 }
-            }
-        } else {
-            rx.await
-        };
-        guard.disarm();
-        result.map_err(|_| anyhow!("ACP request dropped"))?
+            } else {
+                rx.await
+            };
+            guard.disarm();
+            result.map_err(|_| anyhow!("ACP request dropped"))?
+        }))
     }
 
     pub async fn respond(&self, id: i64, result: Value) -> Result<()> {

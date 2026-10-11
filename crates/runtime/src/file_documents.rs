@@ -160,7 +160,21 @@ fn open_document(root: &Path, rel: &str) -> Result<(File, File, std::ffi::CStrin
             | if directory { libc::O_DIRECTORY } else { 0 };
         let fd = unsafe { libc::openat(parent.as_raw_fd(), name.as_ptr(), flags) };
         if fd < 0 {
-            return Err(std::io::Error::last_os_error().into());
+            let error = std::io::Error::last_os_error();
+            // O_NOFOLLOW refuses a symbolic link: ELOOP for the file itself,
+            // ENOTDIR for a linked directory on the way.
+            let mut stat: libc::stat = unsafe { std::mem::zeroed() };
+            let is_link = unsafe {
+                libc::fstatat(
+                    parent.as_raw_fd(),
+                    name.as_ptr(),
+                    &mut stat,
+                    libc::AT_SYMLINK_NOFOLLOW,
+                )
+            } == 0
+                && stat.st_mode & libc::S_IFMT == libc::S_IFLNK;
+            ensure!(!is_link, "symbolicLink");
+            return Err(error.into());
         }
         let file = unsafe { File::from_raw_fd(fd) };
         if !directory {
@@ -512,5 +526,24 @@ impl Supervisor {
         }
         #[cfg(not(target_os = "linux"))]
         bail!("unsupportedPlatform")
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn symbolic_links_are_reported_instead_of_followed() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("real")).unwrap();
+        std::fs::write(dir.path().join("real/a.txt"), "a").unwrap();
+        std::os::unix::fs::symlink("real", dir.path().join("alias")).unwrap();
+        std::os::unix::fs::symlink("loop", dir.path().join("loop")).unwrap();
+        for rel in ["loop", "alias/a.txt"] {
+            let error = read_document(dir.path(), rel).map(|_| ()).unwrap_err();
+            assert_eq!(error.to_string(), "symbolicLink", "{rel}");
+        }
+        assert!(read_document(dir.path(), "real/a.txt").is_ok());
     }
 }

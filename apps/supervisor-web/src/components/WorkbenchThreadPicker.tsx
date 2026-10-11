@@ -287,20 +287,14 @@ export function WorkbenchThreadPicker(props: WorkbenchThreadPickerProps) {
         type="button"
         ref={trigger}
         className={`workbench-thread-picker-trigger ${splitActive ? 'is-active' : ''}`}
-        // While split, the lit trigger closes the split; otherwise it picks a conversation.
-        title={splitActive && props.onClose ? t('workbench.closeSplit') : t('workbench.splitSession')}
-        aria-label={splitActive && props.onClose ? t('workbench.closeSplit') : t('workbench.splitSession')}
+        title={t('workbench.splitSession')}
+        aria-label={t('workbench.splitSession')}
         aria-pressed={splitActive}
-        aria-haspopup={splitActive && props.onClose ? undefined : 'dialog'}
-        aria-expanded={splitActive && props.onClose ? undefined : open}
+        aria-haspopup="dialog"
+        aria-expanded={open}
         aria-controls={open ? titleId + '-panel' : undefined}
         disabled={props.disabled}
         onClick={() => {
-          if (splitActive && props.onClose) {
-            setOpen(false);
-            props.onClose();
-            return;
-          }
           setLocation(null);
           setOpen((value) => !value);
         }}
@@ -308,17 +302,6 @@ export function WorkbenchThreadPicker(props: WorkbenchThreadPickerProps) {
       >
         <Columns2 size={16} />
       </button>
-      {reference && !splitActive && props.onRestore && (
-        <button
-          type="button"
-          className="workbench-thread-picker-trigger"
-          aria-label={t('workbench.restoreSplit')}
-          title={t('workbench.restoreSplit')}
-          onClick={props.onRestore}
-        >
-          <RotateCcw size={14} />
-        </button>
-      )}
       {open &&
         createPortal(
           <div
@@ -399,6 +382,24 @@ export function WorkbenchThreadPicker(props: WorkbenchThreadPickerProps) {
                 <X size={16} />
               </button>
             </header>
+            {splitActive && props.onClose && (
+              <button
+                type="button"
+                className="workbench-thread-picker-row"
+                onClick={() => { props.onClose?.(); close(); }}
+              >
+                <X size={16} /><span>{t('workbench.closeSplit')}</span>
+              </button>
+            )}
+            {reference && !splitActive && props.onRestore && (
+              <button
+                type="button"
+                className="workbench-thread-picker-row"
+                onClick={() => { props.onRestore?.(); close(); }}
+              >
+                <RotateCcw size={16} /><span>{t('workbench.restoreSplit')}</span>
+              </button>
+            )}
             <div className="workbench-thread-picker-scroll">
               {!location ? (
                 <>

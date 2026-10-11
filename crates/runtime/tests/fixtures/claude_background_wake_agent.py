@@ -12,6 +12,8 @@ session = str(uuid.uuid4())
 root = Path.cwd()
 lock = threading.Lock()
 cancelled = threading.Event()
+foreground_done = False
+correction_request = None
 rollout = Path(os.environ["CLAUDE_CONFIG_DIR"]) / "projects" / "wake-fixture" / (session + ".jsonl")
 rollout.parent.mkdir(parents=True, exist_ok=True)
 rollout.touch()
@@ -56,7 +58,7 @@ def background(scenario):
     notification = {"type": "system", "subtype": "task_notification", "task_id": "release-watch",
                     "tool_use_id": "watch-tool", "status": "completed", "summary": "GitHub release finished"}
     raw(notification, "other-session")
-    if scenario in ("native", "monitor"):
+    if scenario in ("native", "monitor", "idle-native"):
         tag = "<summary>Monitor event: GitHub progress</summary><event>Linux completed</event>" if scenario == "monitor" else "<status>completed</status><summary>GitHub release finished</summary>"
         notice = {"type": "user", "uuid": str(uuid.uuid4()), "origin": {"kind": "task-notification"}, "message": {"content":
             "<task-notification><task-id>release-watch</task-id>" + tag + "</task-notification>"}}
@@ -68,7 +70,7 @@ def background(scenario):
     # Real SDK repeats init at the beginning of autonomous cycles.
     raw({"type": "system", "subtype": "session_state_changed", "state": "running"})
     raw({"type": "system", "subtype": "init"})
-    if scenario not in ("native", "monitor"):
+    if scenario not in ("native", "monitor", "idle-native"):
         raw({"type": "system", "subtype": "background_tasks_changed", "tasks": []})
     usage("followup", 1)
     usage("followup", 5)  # Snapshots of one model request count only once.
@@ -90,7 +92,7 @@ def background(scenario):
         native({"type":"assistant","message":{"stop_reason":"end_turn","content":[{"type":"text","text":"Release verified."}]}})
         update({"sessionUpdate": "agent_message_chunk", "messageId": "final", "content": {
             "type": "text", "text": "Release verified."}})
-    if scenario in ("native", "monitor"):
+    if scenario in ("native", "monitor", "idle-native"):
         return
     raw({"type": "result", "subtype": "success", "is_error": False, "num_turns": 1,
          "origin": {"kind": "task-notification"}})
@@ -107,9 +109,23 @@ for line in sys.stdin:
     elif method in ("session/new", "session/load"):
         send({"id": ident, "result": {"sessionId": session}})
     elif method == "session/prompt":
+        if foreground_done:
+            correction_request = ident
+            text = request["params"]["prompt"][0]["text"]
+            native({"type":"user","message":{"content":text}})
+            raw({"type":"system","subtype":"session_state_changed","state":"running"})
+            update({"sessionUpdate":"agent_message_chunk","messageId":"idle-steering","content":{"type":"text","text":"Waiting correction processed."}})
+            (root / "idle-steering-started").touch()
+            def finish_correction(request_id):
+                if not wait_for("finish-correction"):
+                    return
+                raw({"type":"system","subtype":"session_state_changed","state":"idle"})
+                send({"id":request_id,"result":{"stopReason":"end_turn"}})
+            threading.Thread(target=finish_correction, args=(ident,), daemon=True).start()
+            continue
         scenario = request["params"]["prompt"][0]["text"]
         raw({"type": "system", "subtype": "init"})
-        if scenario in ("native", "monitor"):
+        if scenario in ("native", "monitor", "idle-native"):
             name = "Monitor" if scenario == "monitor" else "Bash"
             receipt = {"taskId":"release-watch"} if name == "Monitor" else {"backgroundTaskId":"release-watch"}
             native({"type":"assistant","message":{"content":[{"type":"tool_use","name":name,"id":"launch"}]}})
@@ -122,14 +138,23 @@ for line in sys.stdin:
             "type": "text", "text": "Waiting for GitHub."}})
         raw({"type": "system", "subtype": "session_state_changed", "state": "idle"})
         send({"id": ident, "result": {"stopReason": "end_turn"}})
+        foreground_done = True
         (root / "foreground-returned").touch()
         threading.Thread(target=background, args=(scenario,), daemon=True).start()
     elif method == "_session/steering":
+        if request["params"]["prompt"][0]["text"] == "reject-waiting-steer":
+            send({"id":ident,"error":{"code":-32602,"message":"invalid steering input"}})
+            continue
+        if not (root / "followup-started").exists():
+            send({"id":ident,"result":{"outcome":"promptRequired","reason":"noRunningTurn"}})
+            continue
         update({"sessionUpdate": "agent_message_chunk", "messageId": "steering", "content": {
             "type": "text", "text": "User correction processed."}})
         send({"id": ident, "result": {"outcome": "injected"}})
     elif method == "session/cancel":
         cancelled.set()
         (root / "cancelled").touch()
+        if correction_request is not None:
+            send({"id":correction_request,"result":{"stopReason":"cancelled"}})
     elif ident is not None:
         send({"id": ident, "result": {}})

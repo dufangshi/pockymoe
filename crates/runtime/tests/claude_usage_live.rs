@@ -140,7 +140,17 @@ async fn haiku_reports_native_tokens_and_speed_during_first_tool_wait() {
 async fn haiku_native_background_wake_stays_in_one_durable_turn() {
     native_background_wake_acceptance(
         "Isolated background-wake regression probe. Do not edit files, create agents or run pockymoe. Launch exactly one background Bash task with command sleep 15; printf WAKE_ACCEPTANCE_EVENT using run_in_background=true. Then reply WAKE_ACCEPTANCE_WAITING and end your foreground response. Do not poll, wait or run other commands. When its native task completion notification arrives, run Bash printf WAKE_ACCEPTANCE_VERIFIED once and finally reply WAKE_ACCEPTANCE_DONE. Keep all replies very short.",
-        "WAKE_ACCEPTANCE_DONE", "WAKE_ACCEPTANCE_VERIFIED", 1,
+        "WAKE_ACCEPTANCE_DONE", "WAKE_ACCEPTANCE_VERIFIED", 1, None,
+    ).await;
+}
+
+#[tokio::test]
+#[ignore = "uses real Claude authentication and tokens in an isolated session"]
+async fn haiku_steer_during_background_wait_keeps_output_in_same_turn() {
+    native_background_wake_acceptance(
+        "Isolated waiting-steer acceptance. Do not edit files, create agents or run pockymoe. Launch exactly one background Bash task with command sleep 30; printf WAIT_STEER_EVENT using run_in_background=true. Then reply WAIT_STEER_WAITING and end your foreground response. Do not poll, wait or run other commands. If a user correction arrives while waiting, reply WAIT_STEER_RECEIVED immediately without interrupting the background task. When its native completion notification arrives, run Bash printf WAIT_STEER_VERIFIED once and finally reply WAIT_STEER_DONE. Keep all replies very short.",
+        "WAIT_STEER_DONE", "WAIT_STEER_VERIFIED", 1,
+        Some(("Please acknowledge this correction with WAIT_STEER_RECEIVED now; keep the existing background task running and report its completion later.", "WAIT_STEER_RECEIVED")),
     ).await;
 }
 
@@ -149,7 +159,7 @@ async fn haiku_native_background_wake_stays_in_one_durable_turn() {
 async fn haiku_monitor_events_and_final_report_stay_in_one_durable_turn() {
     native_background_wake_acceptance(
         "Isolated Monitor wake acceptance test. Do not edit files, create agents, poll or run pockymoe. Use exactly one Monitor tool with command sleep 10; echo MONITOR_ACCEPTANCE_EVENT; sleep 10; echo MONITOR_ACCEPTANCE_FINISHED. It exits by itself. End the foreground response with MONITOR_ACCEPTANCE_WAITING. When the first monitor event arrives, run exactly one Bash command printf MONITOR_ACCEPTANCE_VERIFIED, then reply MONITOR_ACCEPTANCE_PROGRESS and wait for the next notification. When the monitor stream finishes, finally reply MONITOR_ACCEPTANCE_DONE. ToolSearch may be used to enable Monitor. No other tools or commands. Keep replies very short.",
-        "MONITOR_ACCEPTANCE_DONE", "MONITOR_ACCEPTANCE_VERIFIED", 2,
+        "MONITOR_ACCEPTANCE_DONE", "MONITOR_ACCEPTANCE_VERIFIED", 2, None,
     ).await;
 }
 
@@ -158,6 +168,7 @@ async fn native_background_wake_acceptance(
     final_marker: &str,
     command_marker: &str,
     expected_wakes: usize,
+    correction: Option<(&str, &str)>,
 ) {
     let dir = tempfile::tempdir().unwrap();
     let runtime = Arc::new(AcpRuntime::bound(Provider::Claude, "claude", 60000));
@@ -236,19 +247,60 @@ async fn native_background_wake_acceptance(
     let observed = tokio::time::timeout(Duration::from_secs(180), async {
         let mut wait_ids = std::collections::HashSet::new();
         let mut wake_ids = std::collections::HashSet::new();
+        let mut steered = false;
+        let mut correction_seen = correction.is_none();
+        let mut streamed_text = std::collections::HashMap::<String, String>::new();
         loop {
             let event = events.recv().await.map_err(|error| error.to_string())?;
             let item = &event.payload["item"];
+            if event.event_type == "thread.output.delta" {
+                let text = streamed_text
+                    .entry(event.payload["itemId"].as_str().unwrap().into())
+                    .or_default();
+                text.push_str(event.payload["delta"].as_str().unwrap());
+                if correction.is_some_and(|(_, marker)| text.contains(marker)) {
+                    correction_seen = true;
+                }
+            }
             if item["origin"] == "nativeBackgroundWait" && item["status"] == "waiting" {
                 wait_ids.insert(item["id"].as_str().unwrap().to_owned());
+                if let Some((prompt, _)) = correction.filter(|_| !steered) {
+                    tokio::time::timeout(
+                        Duration::from_secs(10),
+                        runtime.send_input(
+                            thread.provider_session_id.as_deref().unwrap(),
+                            &turn_id,
+                            prompt,
+                        ),
+                    )
+                    .await
+                    .map_err(|_| "waiting steer blocked on completion".to_owned())?
+                    .map_err(|error| error.to_string())?;
+                    steered = true;
+                }
+            }
+            if correction.is_some_and(|(_, marker)| {
+                item["text"]
+                    .as_str()
+                    .is_some_and(|text| text.contains(marker))
+            }) {
+                correction_seen = true;
             }
             if item["origin"] == "nativeTaskNotification" {
+                if !correction_seen {
+                    return Err(
+                        "user correction was not answered before the native task wake".to_owned(),
+                    );
+                }
                 if !wait_ids.contains(item["id"].as_str().unwrap()) {
                     return Err("wake must update the durable waiting anchor".to_owned());
                 }
                 wake_ids.insert(item["id"].as_str().unwrap().to_owned());
             }
             if event.event_type == "thread.turn.completed" {
+                if !correction_seen {
+                    return Err("waiting steer response missing".to_owned());
+                }
                 if wake_ids.len() != expected_wakes {
                     return Err("completed without the waiting-to-wake transition".to_owned());
                 }
@@ -291,6 +343,15 @@ async fn native_background_wake_acceptance(
         .get_thread_turn_detail(&thread.id, &turn_id)
         .await
         .unwrap();
+    if let Some((_, marker)) = correction {
+        assert!(
+            detail
+                .items
+                .iter()
+                .any(|item| item.kind == "agentMessage" && item.text.contains(marker)),
+            "waiting correction response persisted in original turn"
+        );
+    }
     assert_eq!(detail.status, "completed");
     assert!(
         detail.items.iter().any(|i| i.text.contains(final_marker)),

@@ -183,7 +183,16 @@ pub fn list_tree(root: &Path, rel: &str) -> Result<Vec<ThreadWorkspaceTreeNodeDt
         let entry = entry?;
         let name = entry.file_name().to_string_lossy().into_owned();
         let path = PathBuf::from(rel).join(&name);
-        let meta = entry.metadata()?;
+        let mut meta = entry.metadata()?;
+        // List a symbolic link as what it points to when that stays inside the
+        // workspace; others (outside, missing or looping) stay plain entries.
+        if meta.file_type().is_symlink() {
+            if let Ok(target) = assert_within(root, &path) {
+                if let Ok(resolved) = std::fs::metadata(&target) {
+                    meta = resolved;
+                }
+            }
+        }
         let kind = if meta.is_dir() { "directory" } else { "file" };
         nodes.push(ThreadWorkspaceTreeNodeDto {
             name,
@@ -537,6 +546,25 @@ mod tests {
             assert!(assert_mutation_within(&root, Path::new("alias.txt")).is_err());
         }
         assert_eq!(fs::read_to_string(root.join("keep.txt")).unwrap(), "keep");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn listing_shows_symlinks_as_their_target_inside_the_workspace() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("ws");
+        fs::create_dir_all(root.join("real")).unwrap();
+        symlink("real", root.join("alias")).unwrap();
+        symlink("loop", root.join("loop")).unwrap();
+        symlink(dir.path(), root.join("outside")).unwrap();
+
+        let nodes = list_tree(&root, "").unwrap();
+        let kind = |name: &str| nodes.iter().find(|n| n.name == name).unwrap().kind.clone();
+        assert_eq!(kind("alias"), "directory");
+        assert_eq!(kind("loop"), "file");
+        assert_eq!(kind("outside"), "file");
     }
 
     #[cfg(unix)]
