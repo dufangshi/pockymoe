@@ -36,6 +36,13 @@ modes.
 - Thread rows and tabs carry `<span class="matter-thread-avatar" data-agent="…">`,
   hidden by default. A preset can show it with a background image per agent.
   Plum Pocket's images are in `apps/supervisor-web/public/theme/plum-pocket/`.
+- Agent-thread groups carry neutral class hooks (`matter-agent-threads`,
+  `matter-agent-threads-summary`, `matter-agent-threads-menu`,
+  `matter-agent-threads-item`) that only a preset styles.
+- On phones, Plum Pocket keeps the workbench top bar to 44px controls and moves
+  Home, Chat and the device monitor into the thread drawer (`matter-drawer-tools`).
+  The workbench checks the preset with `useDocumentThemePreset()`; Classic keeps
+  them in the top bar.
 
 ## Adding a preset
 
