@@ -1,6 +1,6 @@
 import { getLocale } from '@pockymoe/thread-ui/i18n';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
-import { useEffect, useState } from 'react';
+import { type CSSProperties, useEffect, useState } from 'react';
 import type { DeviceMetricsDto, PowerReadingDto, TemperatureReadingDto } from '@pockymoe/shared';
 import { ApiError, request } from '../lib/api';
 import { FormDialog } from './FormDialog';
@@ -8,6 +8,9 @@ import './device-monitor.css';
 
 const pct = (value: number | null | undefined) =>
   value == null ? '—' : `${Math.round(value)}%`;
+// Exposes a live reading as --load (0–100) so a theme can color it by load.
+const load = (value: number | null | undefined) =>
+  value == null ? undefined : ({ '--load': Math.min(100, Math.max(0, Math.round(value))) } as CSSProperties);
 const gib = (bytes: number) => `${(bytes / 2 ** 30).toFixed(1)} GiB`;
 function Power({
   label,
@@ -154,14 +157,14 @@ export function DeviceMonitor() {
         onClick={() => setOpen(true)}
       >
         <span>
-          CPU <b>{pct(stale ? null : data?.cpu.usagePercent)}</b>
+          CPU <b style={load(stale ? null : data?.cpu.usagePercent)}>{pct(stale ? null : data?.cpu.usagePercent)}</b>
         </span>
         <span>
-          RAM <b>{pct(stale ? null : data?.memory.usagePercent)}</b>
+          RAM <b style={load(stale ? null : data?.memory.usagePercent)}>{pct(stale ? null : data?.memory.usagePercent)}</b>
         </span>
         {gpu && (
           <span>
-            GPU <b>{pct(stale ? null : gpu.usagePercent)}</b>
+            GPU <b style={load(stale ? null : gpu.usagePercent)}>{pct(stale ? null : gpu.usagePercent)}</b>
           </span>
         )}
       </button>

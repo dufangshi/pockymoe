@@ -15,7 +15,8 @@ async function expectUncovered(control: Locator) {
   })).toBe(true);
 }
 
-test('thread tools open as a row and leave the file panel controls reachable', async ({ page, request }, testInfo) => {
+for (const preset of ['classic', 'plum-pocket'] as const) test(`thread tools open as a row and leave the file panel controls reachable (${preset})`, async ({ page, request }, testInfo) => {
+  await page.addInitScript(value => localStorage.setItem('pockymoe-theme-preset', value), preset);
   const mobile = testInfo.project.name === 'mobile-chromium';
   const base = `http://127.0.0.1:${process.env.E2E_API_PORT ?? 8787}`;
   const absPath = path.resolve(process.env.E2E_WORKSPACE_ROOT!, randomUUID());
@@ -34,8 +35,13 @@ test('thread tools open as a row and leave the file panel controls reachable', a
   const tabs = await page.locator('.matter-thread-tabs').boundingBox();
   const bar = (await tools.boundingBox())!;
   expect(bar.y).toBeGreaterThanOrEqual(tabs!.y + tabs!.height - 1);
+  expect(bar.x + bar.width).toBeLessThanOrEqual(page.viewportSize()!.width + 1);
+  // The row pushes the conversation down rather than opening under it.
+  await expectUncovered(tools.getByRole('button').first());
 
-  if (mobile) {
+  if (mobile && preset === 'plum-pocket') {
+    await page.locator('header.matter-topbar').getByRole('button', { name: 'Toggle Explorer', exact: true }).click();
+  } else if (mobile) {
     await page.getByRole('button', { name: 'Toggle shortcuts sidebar', exact: true }).click();
     await page.getByRole('button', { name: 'Open Explorer', exact: true }).click();
   } else {
@@ -43,6 +49,6 @@ test('thread tools open as a row and leave the file panel controls reachable', a
   }
   await page.getByRole('treeitem', { name: 'notes.txt', exact: true }).click();
   await expectUncovered(page.getByRole('button', { name: 'File actions' }).first());
-  await page.screenshot({ path: testInfo.outputPath('tools-and-file.png') });
+  await page.screenshot({ path: testInfo.outputPath(`tools-and-file-${preset}.png`) });
   await expectUncovered(tools.getByRole('button').first());
 });

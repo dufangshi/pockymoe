@@ -82,6 +82,16 @@ for (const [preset, width] of [['plum-pocket', 360], ['plum-pocket', 320], ['cla
       return [...button.querySelectorAll('span')].map(row => row.scrollWidth - row.clientWidth);
     });
     for (const overflow of rows) expect(overflow).toBeLessThanOrEqual(0);
+    // Readings shade from green when idle to red when busy.
+    const hues = await monitor.evaluate(button => {
+      const value = button.querySelector('b')!;
+      return [5, 95].map(load => {
+        value.style.setProperty('--load', String(load));
+        return Number(/oklch\([\d.]+ [\d.]+ ([\d.]+)/.exec(getComputedStyle(value).color)![1]);
+      });
+    });
+    expect(hues[0]).toBeGreaterThan(130);
+    expect(hues[1]).toBeLessThan(40);
   }
   const items = await topbar.evaluate(header => [...header.querySelectorAll('button, a')]
     .filter(item => item.getClientRects().length && getComputedStyle(item).visibility !== 'hidden')
@@ -91,7 +101,7 @@ for (const [preset, width] of [['plum-pocket', 360], ['plum-pocket', 320], ['cla
   for (const [index, item] of items.entries()) {
     expect(item.left, item.name).toBeGreaterThanOrEqual(0);
     expect(item.right, item.name).toBeLessThanOrEqual(width);
-    if (preset === 'plum-pocket') expect(item.height, item.name).toBeGreaterThanOrEqual(44);
+    if (preset === 'plum-pocket') expect(item.height, item.name).toBeGreaterThanOrEqual(40);
     expect(item.clipped, item.name).toBe(false);
     if (index) expect(item.left, `${item.name} overlaps ${items[index - 1]!.name}`).toBeGreaterThanOrEqual(items[index - 1]!.right - 0.5);
   }

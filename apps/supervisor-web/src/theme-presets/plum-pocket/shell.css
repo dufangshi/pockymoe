@@ -87,6 +87,11 @@
   color: var(--plum-chrome-muted);
 }
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench .device-monitor-button b { color: #f2c15c; }
+/* DeviceMonitor sets --load (0–100) on each live value: green when idle, amber
+   halfway, red when busy. Every step stays at least 4.5:1 on the plum chrome. */
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench .device-monitor-button b[style*='--load'] {
+  color: oklch(calc(0.84 - var(--load) * 0.0012) calc(0.15 + var(--load) * 0.0004) calc(150 - var(--load) * 1.25));
+}
 
 /* Top bar: rounded brand, back/forward/home, and a pill search field. The
    conversation search field and its results render inside the top bar, so the
@@ -389,7 +394,9 @@
   --theme-accent-soft: rgb(240 181 74 / 18%);
   --theme-accent-strong: #f2c15c;
   align-items: flex-end;
-  height: 40px;
+  /* The thread tools open as a second line, so the row grows with them; the tab
+     strip keeps the first line 40px tall. */
+  height: auto;
   border: 0;
   background: transparent;
   color: var(--plum-chrome-fg);
@@ -411,7 +418,7 @@
   color: var(--theme-fg);
 }
 :root[data-theme-preset='plum-pocket'][data-theme-effective='dark'] .thread-ui-shell .matter-workbench .matter-tabs-row > :not(.matter-tab-scroll, button, .workbench-thread-picker-actions) { --plum-shell-focus: #f2c15c; --plum-status-running: #8fc3ff; }
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench .matter-tab-scroll { z-index: 1; height: 100%; align-items: flex-end; box-shadow: none; }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench .matter-tab-scroll { z-index: 1; height: 40px; align-items: flex-end; box-shadow: none; }
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench .matter-tab-scroll::before { background: linear-gradient(to right, var(--plum-chrome) 30%, transparent); text-shadow: none; color: var(--plum-chrome-soft); }
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench .matter-tab-scroll::after { background: linear-gradient(to left, var(--plum-chrome) 30%, transparent); text-shadow: none; color: var(--plum-chrome-soft); }
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench .matter-thread-tabs {
@@ -563,7 +570,8 @@
 
 /* Thread tools: a cream shelf under the tabs with the path on a small tag. */
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench .matter-breadcrumb {
-  right: var(--plum-shell-gap);
+  min-width: 0;
+  overflow: hidden;
   height: 44px;
   padding: 0 10px 0 14px;
   border-bottom: 1.5px dashed var(--theme-border-strong);
@@ -729,9 +737,9 @@
 
 @media (max-width: 639px) {
   :root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench,
-  :root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench.is-sidebar-hidden { grid-template-columns: minmax(0, 1fr); grid-template-rows: calc(44px + env(safe-area-inset-top)) minmax(0, 1fr); }
-  /* Seven 44px targets and the 48px device meter fit a 360px phone with no gaps;
-     Home and Chat live in the drawer. Slots keep a 44px tap height and narrow (to
+  :root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench.is-sidebar-hidden { grid-template-columns: minmax(0, 1fr); grid-template-rows: calc(40px + env(safe-area-inset-top)) minmax(0, 1fr); }
+  /* Seven 44px-wide targets and the 44px device meter fit a 360px phone with no
+     gaps; Home and Chat live in the drawer. Slots fill the 40px bar and narrow (to
      36px, search keeps 44px) on 320px phones or when a device adds more tools. */
   :root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench .matter-topbar { padding: env(safe-area-inset-top) 2px 0; gap: 0; }
   :root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench .matter-topbar-end { gap: 0; min-width: 0; flex-shrink: 1; }
@@ -742,7 +750,7 @@
     flex: 0 1 44px;
     width: 44px;
     min-width: 36px;
-    height: 44px;
+    height: 40px;
     margin: 0;
     padding: 0;
     border: 0;
@@ -764,17 +772,17 @@
   }
   :root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench .matter-topbar :is(button, a):not(:is(.workbench-search-field, .workbench-search-dropdown) *) { position: relative; }
   :root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench .matter-unread { top: 9px; right: 9px; }
-  /* Device meter: a narrow stacked CPU/RAM tag in one slot, values in mustard. */
+  /* Device meter: a small stacked CPU/RAM tag in one slot. */
   :root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench .matter-topbar-end > .device-monitor-button {
-    flex: 0 0 48px;
-    width: 48px;
-    min-width: 48px;
-    height: 44px;
+    flex: 0 0 44px;
+    width: 44px;
+    min-width: 44px;
+    height: 40px;
     flex-direction: column;
     align-items: stretch;
     justify-content: center;
-    gap: 1px;
-    padding: 4px 2px;
+    gap: 0;
+    padding: 7px 2px;
     border-radius: 12px;
     background: rgb(255 255 255 / 7%) content-box;
     color: var(--plum-chrome-muted);
@@ -789,18 +797,17 @@
     align-items: baseline;
     justify-content: space-between;
     gap: 1px;
-    padding-inline: 3px;
+    padding-inline: 2px;
     font-size: 0;
-    line-height: 14px;
+    line-height: 12px;
     white-space: nowrap;
   }
-  :root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench .matter-topbar-end > .device-monitor-button > span::before { content: 'C'; font-size: 9px; font-weight: 800; }
+  :root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench .matter-topbar-end > .device-monitor-button > span::before { content: 'C'; font-size: 8px; font-weight: 800; }
   :root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench .matter-topbar-end > .device-monitor-button > span + span::before { content: 'M'; }
   :root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench .matter-topbar-end > .device-monitor-button b {
-    color: #f6cf7c;
-    font-size: 10.5px;
+    font-size: 10px;
     font-weight: 800;
-    line-height: 14px;
+    line-height: 12px;
     letter-spacing: -.02em;
     font-variant-numeric: tabular-nums;
   }
@@ -864,7 +871,7 @@
 
   /* Tabs and card: the card runs edge to edge under taller folder tabs. */
   :root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench .matter-main > :is(.workbench-panels, .matter-content) { margin: 0; border-radius: 16px 16px 0 0; box-shadow: 0 0 0 1px var(--plum-shell-card-edge); }
-  :root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench .matter-tabs-row { height: 46px; }
+  :root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench .matter-tab-scroll { height: 42px; }
   :root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench .matter-thread-tabs { height: 100%; padding-left: 4px; }
   :root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench :is(.matter-thread-group, .matter-thread-tabs > a, .matter-group-tab) { height: 40px; }
   :root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench :is(.matter-thread-tabs > a, .matter-group-tab) { max-width: 160px; padding-inline: 8px 12px; font-size: 13px; }
