@@ -4,6 +4,7 @@
 @import "./theme-presets/plum-pocket/tokens.css";
 @import "./theme-presets/plum-pocket/shell.css";
 @import "./theme-presets/plum-pocket/transcript.css";
+@import "./theme-presets/plum-pocket/workspace.css";
 @import "./theme-presets/plum-pocket/composer.css";
 @import "./theme-presets/plum-pocket/pages.css";
 @import "@pockymoe/thread-ui/settings.css";
