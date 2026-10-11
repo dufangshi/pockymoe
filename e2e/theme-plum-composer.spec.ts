@@ -7,7 +7,7 @@ const api = `http://127.0.0.1:${process.env.E2E_API_PORT ?? 8787}`;
 
 test.afterEach(async ({ page }) => { await page.unrouteAll({ behavior: 'ignoreErrors' }); });
 
-async function openPlum(page: Page, request: APIRequestContext, mode: 'light' | 'dark' = 'light') {
+async function openPlum(page: Page, request: APIRequestContext, mode: 'light' | 'dark' = 'light', running = false) {
   // A subscription and a reported context window, so the usage meter and the bar render.
   await page.route('**/api/agent-runtimes/*/subscription-usage*', (route) => route.fulfill({ json: { usage: {
     provider: 'claude', authKind: 'subscription', observedAt: new Date().toISOString(), stale: false,
@@ -19,6 +19,7 @@ async function openPlum(page: Page, request: APIRequestContext, mode: 'light' | 
     const response = await route.fetch();
     const detail = await response.json();
     detail.thread.contextUsage = { availability: 'available', remainingPercent: 60, tokensInContextWindow: 1000, modelContextWindow: 2500, updatedAt: new Date().toISOString() };
+    if (running) Object.assign(detail.thread, { status: 'running', activeTurnId: 'turn-running' });
     await route.fulfill({ response, json: detail });
   });
   const absPath = path.resolve(process.env.E2E_WORKSPACE_ROOT!, `plum-${randomUUID()}`);
@@ -163,4 +164,33 @@ test('plum settings fit every tab on one line and keep hints for screen readers'
   const wrapped = await dialog.locator('.settings-panel').evaluate((panel) => [...panel.querySelectorAll('button')]
     .filter((b) => b.offsetParent && b.textContent!.trim() && b.scrollWidth > b.clientWidth + 1).map((b) => b.textContent));
   expect(wrapped).toEqual([]);
+});
+
+test('plum composer shows a quiet stop ring and a labelled send-after-turn key while a turn runs', async ({ page, request }, info) => {
+  const mobile = info.project.name === 'mobile-chromium';
+  const { composer } = await openPlum(page, request, 'light', true);
+  const stop = composer.getByRole('button', { name: 'Stop current turn' });
+  const queue = composer.getByRole('button', { name: 'Send after this turn', exact: true });
+  await expect(stop).toBeVisible();
+  await expect(queue).toHaveAttribute('title', 'Send after this turn');
+  await expect(queue).toHaveAttribute('data-send-intent', 'queue');
+  await expect(queue.locator('.composer-send-later')).toBeVisible();
+  await expect(stop).toHaveCSS('border-top-left-radius', '50%');
+  const g = await composer.evaluate((node) => {
+    const r = (s: string) => node.querySelector(s)!.getBoundingClientRect();
+    const stopEl = node.querySelector('.thread-graph-composer-stop-button')!;
+    const after = getComputedStyle(stopEl, '::after');
+    return { stop: r('.thread-graph-composer-stop-button'), queue: r('.thread-graph-composer-send-button'), chip: r('.composer-model-label'), hit: after.inset };
+  });
+  // Neither key outweighs the model chip; stop is the smallest, before queue.
+  expect(g.stop.width).toBeLessThan(g.queue.width);
+  expect(g.queue.height).toBeLessThanOrEqual(g.chip.height + 1);
+  expect(g.stop.right).toBeLessThanOrEqual(g.queue.left);
+  expect(g.chip.right).toBeLessThanOrEqual(g.stop.left);
+  if (mobile) {
+    expect(g.stop.width).toBeLessThanOrEqual(32);
+    expect(g.hit).toBe('-6px');
+  } else {
+    expect(g.stop.width).toBeLessThanOrEqual(28);
+  }
 });

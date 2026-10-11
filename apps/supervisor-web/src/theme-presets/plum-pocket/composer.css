@@ -24,6 +24,7 @@
   --pc-stop-hover: #f7d3d8;
   --pc-stop-lip: #edbcc4;
   --pc-stop-fg: #a62e3d;
+  --pc-stop-ring: color-mix(in srgb, #a62e3d 70%, transparent);
   --pc-focus: var(--theme-accent-strong);
   --pc-edge-focus: #b67a1c;
   --pc-shadow: 0 14px 34px rgb(61 35 73 / 13%), 0 3px 8px rgb(61 35 73 / 7%);
@@ -47,6 +48,7 @@
   --pc-stop-hover: #5a2639;
   --pc-stop-lip: #2a1019;
   --pc-stop-fg: #ffb4bd;
+  --pc-stop-ring: color-mix(in srgb, #ffb4bd 65%, transparent);
   --pc-focus: var(--theme-accent-solid);
   --pc-edge-focus: var(--theme-accent-solid);
   --pc-shadow: 0 18px 44px rgb(8 3 12 / 48%), 0 4px 12px rgb(8 3 12 / 28%);
@@ -195,17 +197,27 @@
 }
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell [data-composer-layout] .composer-send-plane { transform: translate(-1px, 1px) rotate(4deg); }
 
-/* Stop: a soft rose key with a rounded square. */
+/* While a turn runs: Stop is a quiet rose ring with a small square, and Send
+   becomes "send after this turn", Send's shape in a secondary style. Neither
+   outweighs the model chip. */
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell [data-composer-layout] .thread-graph-composer-stop-button {
-  background: var(--pc-stop) !important;
+  width: 28px !important;
+  height: 28px !important;
+  min-width: 28px !important;
+  min-height: 28px !important;
+  border-radius: 50% !important;
+  background: transparent !important;
   color: var(--pc-stop-fg) !important;
-  box-shadow: inset 0 -2px 0 var(--pc-stop-lip) !important;
+  box-shadow: inset 0 0 0 1.5px var(--pc-stop-ring) !important;
 }
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell [data-composer-layout] .thread-graph-composer-stop-button:hover { background: var(--pc-stop-hover) !important; }
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell [data-composer-layout] .thread-graph-composer-stop-button > span { width: 10px; height: 10px; border-radius: 3px; }
-
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell [data-composer-layout] .thread-graph-composer-icon-button > svg { width: 15px; height: 15px; }
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell [data-composer-layout] .thread-graph-composer-send-button > svg { width: 16px; height: 16px; }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell [data-composer-layout] .thread-graph-composer-stop-button:hover { background: var(--pc-stop) !important; }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell [data-composer-layout] .thread-graph-composer-stop-button > span { width: 8px; height: 8px; border-radius: 2px; }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell [data-composer-layout] .thread-graph-composer-send-button[data-send-intent='queue']:not(:disabled) {
+  background: color-mix(in srgb, var(--theme-accent-soft) 85%, transparent) !important;
+  color: var(--theme-accent-strong) !important;
+  box-shadow: inset 0 0 0 1.5px var(--theme-accent-border) !important;
+}
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell [data-composer-layout] .thread-graph-composer-send-button[data-send-intent='queue']:hover:not(:disabled) { background: var(--theme-accent-soft) !important; }
 
 /* Pressing a key pushes it into the felt. */
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell [data-composer-layout] :is(.thread-graph-composer-icon-button, .thread-graph-composer-stop-button, .thread-graph-composer-send-button):active:not(:disabled) {
@@ -650,6 +662,8 @@
     inset: -4px;
   }
   :root[data-theme-preset='plum-pocket'] .thread-ui-shell [data-composer-layout] .composer-model-label::after { inset: -4px 0; }
+  :root[data-theme-preset='plum-pocket'] .thread-ui-shell [data-composer-layout] .thread-graph-composer-stop-button { width: 32px !important; height: 32px !important; min-width: 32px !important; min-height: 32px !important; border-radius: 50% !important; }
+  :root[data-theme-preset='plum-pocket'] .thread-ui-shell [data-composer-layout] .thread-graph-composer-stop-button::after { inset: -6px; border-radius: 50%; }
   :root[data-theme-preset='plum-pocket'] .thread-ui-shell [data-composer-layout] :is(.composer-tools, .composer-settings, .thread-graph-composer-toolbar) { gap: 6px !important; }
   :root[data-theme-preset='plum-pocket'] .thread-ui-shell [data-composer-layout] .composer-model-label { position: relative; min-height: 36px; }
   :root[data-theme-preset='plum-pocket'] .thread-ui-shell [data-composer-menu-surface='true'] :is(.thread-graph-composer-menu-item, [role='menuitemradio'], button[data-toolbox-action], [data-toolbox-action] > button) { min-height: 44px; }

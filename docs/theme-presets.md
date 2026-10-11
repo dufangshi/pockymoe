@@ -50,7 +50,9 @@ modes.
   the toolbox icons; its extra composer markup (mascot on the model chip, menu
   icons, per-intent send icons) renders only when `useDocumentThemePreset()` is
   `plum-pocket`. Under Plum Pocket the 5h / 7d usage meter moves from the row
-  below the composer into the shell (`thread-composer-usage-tag`).
+  below the composer into the shell (`thread-composer-usage-tag`). The send button carries
+  `data-send-intent` (`send`, `queue` while a turn runs, `goal`); Plum Pocket
+  labels the queue state "Send after this turn".
 - Settings help text carries the neutral class `settings-hint`, and a few settings
   groups carry `settings-choice-group`, `settings-harness-picker`,
   `settings-harness-switch` and `settings-harness-row`. Plum Pocket
