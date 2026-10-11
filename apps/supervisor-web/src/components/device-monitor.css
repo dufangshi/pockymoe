@@ -108,14 +108,20 @@
   margin-top: 4px;
   accent-color: var(--theme-accent-solid);
 }
+/* Very narrow phones: every top-bar icon gets 29px so the bar, with the monitor,
+   fits 320px. The end buttons need the stronger selector to beat their 34px phone
+   size; search results inside the top bar keep their own layout. */
 @media (max-width: 359px) {
-  .thread-ui-shell .matter-workbench .matter-topbar :where(button, a) {
+  .thread-ui-shell .matter-workbench .matter-topbar :where(button, a):not(:is(.workbench-search-field, .workbench-search-dropdown) *),
+  .thread-ui-shell .matter-workbench .matter-topbar-end.matter-topbar-end > :is(button, [data-slot='dialog-trigger']) {
     width: 29px;
+    min-width: 29px;
   }
-  .thread-ui-shell .matter-workbench .matter-topbar .device-monitor-button {
+  .thread-ui-shell .matter-workbench .matter-topbar-end.matter-topbar-end > button.device-monitor-button {
     width: 48px;
+    min-width: 48px;
   }
-  .thread-ui-shell .matter-workbench .matter-topbar .matter-search-trigger {
+  .thread-ui-shell .matter-workbench .matter-topbar .matter-search-trigger.matter-search-trigger {
     width: 29px;
   }
 }

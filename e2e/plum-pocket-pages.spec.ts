@@ -61,33 +61,43 @@ test('Plum Pocket outer pages show one title, no help paragraphs and unwrapped b
   }
 });
 
-test('Plum Pocket keeps the device monitor in the phone top bar without overflow at 360px', async ({ page, request }, testInfo) => {
+// The phone top bar holds the device monitor and every tool without overlap or
+// overflow, in Plum (44px-tall slots) and in Classic, down to 320px.
+for (const [preset, width] of [['plum-pocket', 360], ['plum-pocket', 320], ['classic', 320]] as const) test(`phone top bar keeps the device monitor and fits ${width}px (${preset})`, async ({ page, request }, testInfo) => {
   test.skip(testInfo.project.name !== 'mobile-chromium', 'Phone top bar');
-  await page.setViewportSize({ width: 360, height: 780 });
+  await page.setViewportSize({ width, height: 780 });
   const absPath = path.resolve(process.env.E2E_WORKSPACE_ROOT!, `plum-${randomUUID()}`);
   await mkdir(absPath, { recursive: true });
-  const workspace = await (await request.post(`${base}/api/workspaces`, { data: { absPath, label: 'Plum monitor' } })).json();
+  const workspace = await (await request.post(`${base}/api/workspaces`, { data: { absPath, label: 'Top bar fit' } })).json();
   const started = await (await request.post(`${base}/api/threads/start`, { data: { workspaceId: workspace.id, provider: 'acp', agentId: 'codex', model: 'ios-e2e-stream', approvalMode: 'yolo' } })).json();
-  await open(page, `/threads/${started.thread?.id ?? started.id}`, 'plum-pocket');
+  await open(page, `/threads/${started.thread?.id ?? started.id}`, preset);
   const topbar = page.locator('header.matter-topbar');
   const monitor = topbar.getByRole('button', { name: 'Device monitor' });
   await expect(monitor).toBeVisible();
   await expect(page.locator('.matter-drawer-tools .device-monitor-button')).toHaveCount(0);
-  // Worst-case readings still fit their rows.
-  const rows = await monitor.evaluate(button => {
-    for (const value of button.querySelectorAll('b')) value.textContent = '100%';
-    return [...button.querySelectorAll('span')].map(row => row.scrollWidth - row.clientWidth);
-  });
-  for (const overflow of rows) expect(overflow).toBeLessThanOrEqual(0);
+  if (preset === 'plum-pocket') {
+    // Worst-case readings still fit their rows.
+    const rows = await monitor.evaluate(button => {
+      for (const value of button.querySelectorAll('b')) value.textContent = '100%';
+      return [...button.querySelectorAll('span')].map(row => row.scrollWidth - row.clientWidth);
+    });
+    for (const overflow of rows) expect(overflow).toBeLessThanOrEqual(0);
+  }
   const items = await topbar.evaluate(header => [...header.querySelectorAll('button, a')]
     .filter(item => item.getClientRects().length && getComputedStyle(item).visibility !== 'hidden')
-    .map(item => { const box = item.getBoundingClientRect(); return { name: item.getAttribute('aria-label') ?? item.textContent, left: box.left, right: box.right, height: box.height, clipped: item.scrollWidth > item.clientWidth + 1 }; }));
+    .map(item => { const box = item.getBoundingClientRect(); return { name: item.getAttribute('aria-label') ?? item.textContent ?? '', left: box.left, right: box.right, height: box.height, clipped: item.scrollWidth > item.clientWidth + 1 }; })
+    .sort((a, b) => a.left - b.left));
   expect(items.length).toBeGreaterThanOrEqual(8);
-  for (const item of items) {
-    expect(item.left, item.name!).toBeGreaterThanOrEqual(0);
-    expect(item.right, item.name!).toBeLessThanOrEqual(360);
-    expect(item.height, item.name!).toBeGreaterThanOrEqual(44);
-    expect(item.clipped, item.name!).toBe(false);
+  for (const [index, item] of items.entries()) {
+    expect(item.left, item.name).toBeGreaterThanOrEqual(0);
+    expect(item.right, item.name).toBeLessThanOrEqual(width);
+    if (preset === 'plum-pocket') expect(item.height, item.name).toBeGreaterThanOrEqual(44);
+    expect(item.clipped, item.name).toBe(false);
+    if (index) expect(item.left, `${item.name} overlaps ${items[index - 1]!.name}`).toBeGreaterThanOrEqual(items[index - 1]!.right - 0.5);
   }
   expect(await topbar.evaluate(header => header.scrollWidth <= header.clientWidth)).toBe(true);
+  // The search trigger receives its own clicks.
+  const search = topbar.getByRole('button', { name: 'Search conversation' });
+  const box = (await search.boundingBox())!;
+  expect(await page.evaluate(([x, y]) => document.elementFromPoint(x, y)?.closest('.matter-search-trigger') !== null, [box.x + box.width / 2, box.y + box.height / 2])).toBe(true);
 });

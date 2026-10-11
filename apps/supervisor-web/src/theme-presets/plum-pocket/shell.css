@@ -731,10 +731,11 @@
   :root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench,
   :root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench.is-sidebar-hidden { grid-template-columns: minmax(0, 1fr); grid-template-rows: calc(44px + env(safe-area-inset-top)) minmax(0, 1fr); }
   /* Seven 44px targets and the 48px device meter fit a 360px phone with no gaps;
-     Home and Chat live in the drawer. Slots keep a 44px tap height and only narrow
-     (to 36px) when a device adds more tools. */
+     Home and Chat live in the drawer. Slots keep a 44px tap height and narrow (to
+     36px, search keeps 44px) on 320px phones or when a device adds more tools. */
   :root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench .matter-topbar { padding: env(safe-area-inset-top) 2px 0; gap: 0; }
-  :root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench :is(.matter-topbar-end, .matter-topbar-search) { gap: 0; min-width: 0; flex-shrink: 1; }
+  :root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench .matter-topbar-end { gap: 0; min-width: 0; flex-shrink: 1; }
+  :root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench .matter-topbar-search { flex-shrink: 0; }
   :root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench .matter-topbar :where(button, a):not(:is(.workbench-search-field, .workbench-search-dropdown) *),
   :root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench .matter-topbar .matter-search-trigger,
   :root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench .matter-topbar-end > :is(button, [data-slot='dialog-trigger']) {
