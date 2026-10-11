@@ -18,14 +18,14 @@ modes.
 - **Classic** is the base styling: `apps/supervisor-web/src/matter-theme.css` for the
   outer pages and the shared UI's `styles/matter-workbench.css` for the workbench and
   dialogs.
-- A preset is one stylesheet under `apps/supervisor-web/src/theme-presets/`, imported
+- A preset is a stylesheet (or a folder of them) under `apps/supervisor-web/src/theme-presets/`, imported
   from `index.css`. It overrides the same tokens one step more specifically:
   - main app tokens (`--app-*`, `--theme-*`) on `:root:root:root[data-theme-preset='…']`,
     with a `[data-theme-effective='light']` variant;
   - shared UI tokens (`--thread-gc-*`, `--matter-*`) on `.thread-ui-shell` and
     `.thread-graph-dialog` under the preset attribute, with a dark variant.
 - Some shared UI rules hard-code Classic's slate neutrals. A preset that changes the
-  neutrals overrides those rules too; `plum-pocket.css` has the current list.
+  neutrals overrides those rules too; `plum-pocket/tokens.css` has the current list.
 - The terminal (xterm) and the file editor and diff view (Monaco) paint with
   JavaScript palettes. They read optional hex colors from CSS, `--terminal-bg`,
   `--terminal-fg`, `--terminal-cursor`, `--terminal-selection` on `.terminal-panel`

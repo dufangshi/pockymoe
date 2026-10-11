@@ -1,0 +1,17 @@
+/* Plum Pocket: conversation transcript. Every rule is scoped to :root[data-theme-preset='plum-pocket']. */
+
+/* Lilac user bubbles with a soft tail. */
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-message-bubble.is-user {
+  background: var(--plum-user-bubble);
+  color: var(--plum-user-bubble-fg);
+  border-radius: 18px 18px 6px 18px;
+}
+
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-code-block { border-color: var(--theme-border); background: var(--plum-code-bg); }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-inline-code { background: var(--theme-muted); }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-code-copy { background: color-mix(in srgb, var(--theme-surface) 85%, transparent); }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-code-copy:hover { background: var(--theme-hover); }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-tool-badge.is-neutral { background: var(--theme-muted); color: var(--theme-fg-muted); }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell :is(.thread-graph-thinking-body, .thread-graph-plan-card) { border-color: var(--theme-border); background: var(--theme-surface); }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-plan-step { border-color: var(--theme-border); }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-plan-status:is(.is-pending, .is-unknown) { background: var(--theme-muted); }

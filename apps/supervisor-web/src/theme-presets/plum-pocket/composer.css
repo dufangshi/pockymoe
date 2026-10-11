@@ -1,0 +1,35 @@
+/* Plum Pocket: composer and its menus. Every rule is scoped to :root[data-theme-preset='plum-pocket']. */
+
+/* Felt-stitched composer. */
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench .thread-graph-composer-shell {
+  border: 1.5px dashed color-mix(in srgb, var(--plum-stitch) 80%, transparent);
+  background: color-mix(in srgb, var(--theme-panel) 94%, transparent);
+}
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench .thread-graph-composer-shell:focus-within {
+  border-style: solid;
+  border-color: var(--theme-accent-solid);
+}
+
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-composer-shell { border-color: var(--theme-border); background: var(--theme-panel); }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-composer-toolbar { border-color: var(--theme-border) !important; }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-composer-toolbar { color: var(--theme-fg-muted); }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-composer-host { border-top-color: var(--theme-border); }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell :is(.thread-composer-icon-button, .thread-graph-composer-icon-button) {
+  border-color: var(--theme-border-strong) !important;
+  background: var(--theme-muted) !important;
+  color: var(--theme-fg-soft) !important;
+}
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell :is(.thread-composer-icon-button, .thread-graph-composer-icon-button):hover {
+  background: var(--theme-hover) !important;
+  color: var(--theme-fg) !important;
+}
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell :is(.thread-composer-send-button, .thread-graph-composer-send-button).ui-action-danger {
+  border-color: var(--theme-border-strong) !important;
+  background: var(--theme-muted) !important;
+}
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell :where(.thread-composer-menu, .thread-graph-composer-menu, [data-composer-menu-surface='true']) :where(input, textarea, select) {
+  border-color: var(--theme-border) !important;
+  background: var(--theme-panel) !important;
+  color: var(--theme-fg) !important;
+}
+:root[data-theme-preset='plum-pocket'][data-theme-effective='dark'] .thread-ui-shell :is(.thread-composer-menu, .thread-graph-composer-menu) { box-shadow: 0 18px 48px rgb(8 3 12 / 45%) !important; }

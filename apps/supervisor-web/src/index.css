@@ -1,7 +1,10 @@
 @import "tailwindcss";
 @import "./matter-theme.css";
 @import "./theme-presets/picker.css";
-@import "./theme-presets/plum-pocket.css";
+@import "./theme-presets/plum-pocket/tokens.css";
+@import "./theme-presets/plum-pocket/shell.css";
+@import "./theme-presets/plum-pocket/transcript.css";
+@import "./theme-presets/plum-pocket/composer.css";
 @import "@pockymoe/thread-ui/settings.css";
 .device-presence-dot { display: inline-block; width: 10px; height: 10px; flex-shrink: 0; border-radius: 50%; }
 .device-presence-dot.is-online { background: oklch(0.48 0.13 155); box-shadow: 0 0 0 3px oklch(0.48 0.13 155 / 14%); }
