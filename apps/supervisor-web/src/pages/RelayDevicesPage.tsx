@@ -676,7 +676,7 @@ export function RelayDevicesPage() {
 
   return (
     <div>
-      <div className="product-page space-y-6">
+      <div className="product-page space-y-6" data-page="devices">
         <ProductHeader title={translate("devices.devices")} backHref="/" backLabel={translate("devices.relayHome")} actions={<TourLauncherButton showLabel />} />
 
         <section className="product-page-header">

@@ -52,6 +52,13 @@ modes.
   `plum-pocket`.
 - Transcript turns carry `data-turn-status`, and under Plum Pocket each reply opens
   with the replying agent's avatar and name (`graph-chat/TranscriptAgent.tsx`).
+- Outer pages (workspaces, devices, relay home, sign-in, account, admin, guide,
+  import, port preview) carry a neutral `data-page` attribute on their root.
+  `plum-pocket/pages.css` uses it to hide help paragraphs and eyebrows, turn boxed
+  lists into plain rows and size buttons so their labels never wrap.
+- Plum Pocket redraws the thread tab bar's tools (thread tools, subagents,
+  automations, split) as CSS masks over the existing buttons, keyed on the lucide
+  icon classes. Labels, titles and badges stay as they are.
 
 ## Adding a preset
 

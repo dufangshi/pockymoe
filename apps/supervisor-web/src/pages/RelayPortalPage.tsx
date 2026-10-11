@@ -514,7 +514,7 @@ function RelayAuthPanel({
 function RelayFrame({ children }: { children: React.ReactNode }) {
   const { locale: i18nLocale } = useI18n();
   return (
-    <main className="min-h-screen bg-[var(--app-bg)] px-4 py-5 text-[var(--app-fg)] sm:px-6 sm:py-6">
+    <main className="min-h-screen bg-[var(--app-bg)] px-4 py-5 text-[var(--app-fg)] sm:px-6 sm:py-6" data-page="relay-portal">
       <header className="mx-auto flex w-full max-w-5xl items-center justify-between gap-3 border-b border-[var(--theme-border)] pb-4">
         <Link
           className="flex min-h-11 min-w-0 items-center gap-2 text-sm font-semibold text-[var(--theme-fg)]"

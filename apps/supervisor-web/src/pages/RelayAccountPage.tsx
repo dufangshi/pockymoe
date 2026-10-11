@@ -395,7 +395,7 @@ export function RelayAccountSettingsPanel({
 export function RelayAccountPage() {
   const { locale: i18nLocale } = useI18n();
   return (
-    <div className="product-page !max-w-3xl">
+    <div className="product-page !max-w-3xl" data-page="account">
       <ProductHeader title={translate('auth.accountSettings')} backHref="/relay-devices" backLabel={translate('auth.devices')} />
       <p className="my-5 text-sm text-[var(--theme-fg-muted)]">{translate('auth.manageTheIdentityAndPasswordUsedTo')}</p>
       <div className="py-2">

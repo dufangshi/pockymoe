@@ -42,7 +42,7 @@ export function LoginPage({
   }
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-[var(--app-bg)] px-4 py-8 text-[var(--app-fg)]">
+    <main className="flex min-h-screen items-center justify-center bg-[var(--app-bg)] px-4 py-8 text-[var(--app-fg)]" data-page="login">
       <section className="w-full max-w-sm rounded-lg border border-[var(--theme-border)] bg-[var(--theme-panel)] p-5 shadow-[var(--theme-shadow)] sm:p-6">
         <div className="mb-5"><LanguageSwitcher className="mb-4" />
           <div className="mb-5 flex items-center gap-3 border-b border-[var(--theme-border)] pb-4">

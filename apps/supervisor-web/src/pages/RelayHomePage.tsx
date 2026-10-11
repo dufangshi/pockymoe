@@ -51,7 +51,7 @@ export function RelayHomePage() {
         : translate("auth.signInToYourRelayWorkspace");
 
   return (
-    <main className="min-h-screen bg-[var(--app-bg)] px-4 py-5 text-[var(--app-fg)] sm:px-6 sm:py-6">
+    <main className="min-h-screen bg-[var(--app-bg)] px-4 py-5 text-[var(--app-fg)] sm:px-6 sm:py-6" data-page="relay-home">
       <div className="mx-auto w-full max-w-5xl">
         <ProductHeader title="Pockymoe" actions={<Link className="product-icon-button" to="/relay-guide" aria-label={translate("auth.guide")} title={translate("auth.guide")}><BookOpen size={18} /></Link>} />
 

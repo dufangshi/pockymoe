@@ -59,7 +59,7 @@ export function RelayGuidePage() {
   }, []);
 
   return (
-    <main className="min-h-screen overflow-x-hidden bg-[var(--app-bg)] px-4 py-5 text-[var(--app-fg)] sm:px-6 sm:py-6">
+    <main className="min-h-screen overflow-x-hidden bg-[var(--app-bg)] px-4 py-5 text-[var(--app-fg)] sm:px-6 sm:py-6" data-page="relay-guide">
       <article className="mx-auto w-full min-w-0 max-w-3xl">
         <header className="border-b border-[var(--theme-border)] pb-6">
           <Link className="relay-button-secondary mb-6 inline-flex h-11 items-center gap-2" to="/">

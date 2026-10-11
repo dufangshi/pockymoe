@@ -22,7 +22,7 @@ export function PortPreviewPage() {
     });
     return () => controller.abort();
   }, [deviceId, mappingId, location.search]);
-  return <main className="flex min-h-screen items-center justify-center bg-[var(--app-bg)] p-6 text-[var(--theme-fg)]">
+  return <main className="flex min-h-screen items-center justify-center bg-[var(--app-bg)] p-6 text-[var(--theme-fg)]" data-page="port-preview">
     <section className="max-w-lg space-y-4">
       <h1 className="text-xl font-semibold">{translate('devices.portMappings')}</h1>
       {error ? <p role="alert">{error}</p> : <p role="status">{translate('devices.opening')}</p>}

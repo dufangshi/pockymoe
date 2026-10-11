@@ -192,7 +192,7 @@ export function WorkspacesPage() {
     : runtimeError ?? translate("files.checkingRuntime");
 
   return (
-    <div className="product-page space-y-4">
+    <div className="product-page space-y-4" data-page="workspaces">
       <ProductHeader title={translate("files.workspaces")} {...(relayDeviceId ? {backHref: '/relay-devices', backLabel: translate("files.backToDevices")} : {})} actions={<>
         {!relayDeviceId && <TourLauncherButton showLabel />}
         <Link to={currentRelayScopedPath('/threads/import')} aria-label={translate("files.importSession")} title={translate("files.importSession")} className="product-icon-button"><FileInput size={19} /></Link>

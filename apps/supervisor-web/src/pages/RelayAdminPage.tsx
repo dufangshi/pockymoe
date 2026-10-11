@@ -397,7 +397,7 @@ export function RelayAdminPage() {
   }
 
   return (
-    <main className="min-h-screen bg-[var(--app-bg)] px-4 pt-[env(safe-area-inset-top)] text-[var(--app-fg)] sm:px-6">
+    <main className="min-h-screen bg-[var(--app-bg)] px-4 pt-[env(safe-area-inset-top)] text-[var(--app-fg)] sm:px-6" data-page="admin">
       <div className="product-page product-page-wide flex flex-col gap-5">
         <header className="product-page-header !items-start max-lg:flex-col">
           <div>

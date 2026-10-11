@@ -242,7 +242,7 @@ export function ThreadImportPage() {
   }
 
   return (
-    <div className="product-page">
+    <div className="product-page" data-page="thread-import">
       <ProductHeader title={translate("workbench.importThreads")} backHref={currentWorkspacesHref()} backLabel={translate("workbench.backToWorkspaces")} />
 
       <header className="product-page-header">
