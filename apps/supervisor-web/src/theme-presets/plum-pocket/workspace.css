@@ -1,0 +1,434 @@
+/* Plum Pocket: workspace panels (Explorer, files, editor, diffs, terminal) and the
+   conversation search, device monitor and automations panels.
+   Every rule is scoped to :root[data-theme-preset='plum-pocket'].
+
+   One quiet palette runs through code everywhere: Shiki previews and chat code
+   blocks read `--shiki-*`, Monaco reads `--editor-*` (hex, see
+   GraphWorkspaceMonacoEditor.tsx) and the terminal reads `--terminal-*`. Light mode
+   is warm paper instead of white; dark mode is deep plum, never black. */
+
+/* ── Code palette ────────────────────────────────────────────────────────── */
+:root[data-theme-preset='plum-pocket'][data-theme-effective='light'] {
+  --code-bg: #f7f0e4;
+  --code-line: #efe5d4;
+  --code-fg: #3a2742;
+  --code-keyword: #8e3b78;
+  --code-string: #4b7134;
+  --code-constant: #a2501a;
+  --code-comment: #6f5f73;
+  --code-function: #2c6585;
+  --code-type: #7d5800;
+  --code-punctuation: #6e5875;
+  --code-line-number: #8a7a80;
+  --code-gutter: #e6d9c4;
+
+  --editor-bg: #f7f0e4;
+  --editor-fg: #3a2742;
+  --editor-line-number: #8a7a80;
+  --editor-line-highlight: #efe5d4;
+  --editor-selection: #ecd6ef;
+  --editor-selection-inactive: #efe2f0;
+  --editor-cursor: #8e3b78;
+  --editor-indent: #e8dcc8;
+  --editor-indent-active: #c9b39a;
+  --editor-token-keyword: #8e3b78;
+  --editor-token-string: #4b7134;
+  --editor-token-constant: #a2501a;
+  --editor-token-comment: #6f5f73;
+  --editor-token-type: #7d5800;
+  --editor-token-punctuation: #6e5875;
+  --editor-bracket-1: #6e5875;
+  --editor-bracket-2: #8e3b78;
+  --editor-bracket-3: #7d5800;
+  --editor-diff-inserted: #4b713433;
+  --editor-diff-removed: #b0304a2e;
+  --editor-diff-inserted-line: #4b71341a;
+  --editor-diff-removed-line: #b0304a17;
+}
+:root[data-theme-preset='plum-pocket'][data-theme-effective='dark'] {
+  --code-bg: #1a1020;
+  --code-line: #24172c;
+  --code-fg: #e6d8c5;
+  --code-keyword: #e7a3d3;
+  --code-string: #b8d48e;
+  --code-constant: #f3b47e;
+  --code-comment: #9a88a3;
+  --code-function: #93c8de;
+  --code-type: #f2ca72;
+  --code-punctuation: #bba7c3;
+  --code-line-number: #8a7893;
+  --code-gutter: #2e1d38;
+
+  --editor-bg: #1a1020;
+  --editor-fg: #e6d8c5;
+  --editor-line-number: #8a7893;
+  --editor-line-highlight: #24172c;
+  --editor-selection: #4a2c5c;
+  --editor-selection-inactive: #35213f;
+  --editor-cursor: #f2ca72;
+  --editor-indent: #2a1a33;
+  --editor-indent-active: #5c4069;
+  --editor-token-keyword: #e7a3d3;
+  --editor-token-string: #b8d48e;
+  --editor-token-constant: #f3b47e;
+  --editor-token-comment: #9a88a3;
+  --editor-token-type: #f2ca72;
+  --editor-token-punctuation: #bba7c3;
+  --editor-bracket-1: #bba7c3;
+  --editor-bracket-2: #e7a3d3;
+  --editor-bracket-3: #f2ca72;
+  --editor-diff-inserted: #a8d68a33;
+  --editor-diff-removed: #ff8fa32e;
+  --editor-diff-inserted-line: #a8d68a14;
+  --editor-diff-removed-line: #ff8fa314;
+}
+:root[data-theme-preset='plum-pocket'] {
+  --shiki-foreground: var(--code-fg);
+  --shiki-background: transparent;
+  --shiki-token-keyword: var(--code-keyword);
+  --shiki-token-string: var(--code-string);
+  --shiki-token-string-expression: var(--code-string);
+  --shiki-token-constant: var(--code-constant);
+  --shiki-token-comment: var(--code-comment);
+  --shiki-token-function: var(--code-function);
+  --shiki-token-parameter: var(--code-type);
+  --shiki-token-punctuation: var(--code-punctuation);
+  --shiki-token-link: var(--code-keyword);
+}
+
+/* Code blocks in replies and file previews share the paper. */
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell.thread-ui-shell .thread-graph-code-block {
+  background: var(--code-bg);
+  color: var(--code-fg);
+}
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell :is(.thread-graph-code-preview, .thread-graph-plain-code-preview) {
+  background: var(--code-bg);
+  color: var(--code-fg);
+}
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-highlighted-code-preview .line::before { color: var(--code-line-number); border-color: var(--code-gutter); }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-highlighted-code-preview .line.is-focused-line { background: var(--code-line); }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-monaco-editor { background: var(--editor-bg); }
+
+/* ── Terminal: same palette, ANSI included ───────────────────────────────── */
+:root[data-theme-preset='plum-pocket'] .terminal-panel {
+  --terminal-bg: #1a1020;
+  --terminal-fg: #e6d8c5;
+  --terminal-cursor: #f2ca72;
+  --terminal-selection: #f2ca7240;
+  --terminal-black: #2e1d38;
+  --terminal-bright-black: #9a88a3;
+  --terminal-red: #ff8fa3;
+  --terminal-bright-red: #ffa8b8;
+  --terminal-green: #a8d68a;
+  --terminal-bright-green: #c2e3a8;
+  --terminal-yellow: #f2ca72;
+  --terminal-bright-yellow: #f7da98;
+  --terminal-blue: #93b8ee;
+  --terminal-bright-blue: #b3cdf4;
+  --terminal-magenta: #e7a3d3;
+  --terminal-bright-magenta: #f0bfe2;
+  --terminal-cyan: #86d4cc;
+  --terminal-bright-cyan: #a8e2dc;
+  --terminal-white: #e2d3c0;
+  --terminal-bright-white: #fbf2e4;
+}
+:root[data-theme-preset='plum-pocket'] .terminal-panel[data-terminal-theme='light'] {
+  --terminal-bg: #f7f0e4;
+  --terminal-fg: #3a2742;
+  --terminal-cursor: #8e3b78;
+  --terminal-selection: #8e3b7833;
+  --terminal-black: #d9cbb6;
+  --terminal-bright-black: #6f5f73;
+  --terminal-red: #b0304a;
+  --terminal-bright-red: #9a2540;
+  --terminal-green: #376b28;
+  --terminal-bright-green: #2f5c22;
+  --terminal-yellow: #8a5d00;
+  --terminal-bright-yellow: #774f00;
+  --terminal-blue: #2d5f8f;
+  --terminal-bright-blue: #24507a;
+  --terminal-magenta: #8e3b78;
+  --terminal-bright-magenta: #7a2f66;
+  --terminal-cyan: #1f6b6b;
+  --terminal-bright-cyan: #185a5a;
+  --terminal-white: #5a4862;
+  --terminal-bright-white: #2a1a30;
+}
+
+/* ── Explorer ────────────────────────────────────────────────────────────── */
+:root[data-theme-preset='plum-pocket'] {
+  --ws-folder: #9a640c;
+  --ws-code: #7a4f96;
+  --ws-image: #1f6b6b;
+  --ws-archive: #b0304a;
+  --ws-selected: #f1e1f5;
+  --ws-selected-fg: #3b1f4a;
+}
+:root[data-theme-preset='plum-pocket'][data-theme-effective='dark'] {
+  --ws-folder: #f0b54a;
+  --ws-code: #d4b0ee;
+  --ws-image: #86d4cc;
+  --ws-archive: #ff8fa3;
+  --ws-selected: #3a2349;
+  --ws-selected-fg: #f7e6ff;
+}
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell :is(.thread-graph-explorer, .thread-graph-explorer-header) {
+  border-color: var(--theme-border);
+  background: var(--theme-panel);
+}
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-explorer-header :is(.thread-graph-explorer-icon-button, .thread-graph-explorer-collapse-button) {
+  border-radius: 999px;
+  background: transparent;
+  color: var(--theme-fg-muted);
+}
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-explorer-header :is(.thread-graph-explorer-icon-button, .thread-graph-explorer-collapse-button):is(:hover, :focus-visible, [aria-pressed='true']) {
+  background: var(--theme-hover);
+  color: var(--theme-fg);
+}
+
+/* Rows: soft hover, lilac selection, a focus ring only for keyboard focus. */
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-tree-row {
+  border-radius: 8px;
+  color: var(--theme-fg-soft);
+}
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-tree-row:is(:hover, :focus-within) {
+  --thread-graph-tree-row-background: var(--tx-row-hover);
+  background: var(--tx-row-hover);
+  color: var(--theme-fg);
+}
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-tree-row.is-selected {
+  --thread-graph-tree-row-background: var(--ws-selected);
+  background: var(--ws-selected);
+  color: var(--ws-selected-fg);
+}
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-tree-row.is-focused { outline: none; }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-tree-row.is-focused:focus-visible {
+  outline: 2px solid var(--theme-accent-solid);
+  outline-offset: -2px;
+}
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-tree-indent-guides span { border-left: 1px dotted var(--theme-border-strong); }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-tree-row :is(.lucide-chevron-right, .lucide-chevron-down, .lucide-loader-circle) { color: var(--theme-fg-muted); }
+
+/* Icons by kind; they keep their color on the selected row. */
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-tree-row .workspace-node-icon { color: var(--theme-fg-muted); }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-tree-row .workspace-node-icon.is-folder { color: var(--ws-folder); }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-tree-row .workspace-node-icon.is-code { color: var(--ws-code); }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-tree-row .workspace-node-icon.is-image { color: var(--ws-image); }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-tree-row .workspace-node-icon.is-archive { color: var(--ws-archive); }
+
+/* Row actions: bare icons, no boxes. */
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-tree-action {
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--theme-fg-muted);
+}
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-tree-action:is(:hover, :focus-visible),
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-tree-row.is-selected .thread-graph-tree-action:hover {
+  background: color-mix(in srgb, var(--theme-fg) 8%, transparent);
+  color: var(--theme-fg);
+}
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-tree-row.is-selected .thread-graph-tree-action { color: color-mix(in srgb, var(--ws-selected-fg) 70%, transparent); }
+
+/* The row menu: short labels on a felt panel (its surface is set inline). */
+:root[data-theme-preset='plum-pocket'] .workspace-node-menu {
+  border: 1px solid var(--theme-border-strong) !important;
+  border-radius: 14px !important;
+  padding: 5px !important;
+  box-shadow: var(--theme-shadow) !important;
+  font-size: 13px;
+}
+:root[data-theme-preset='plum-pocket'] .workspace-node-menu button {
+  min-height: 34px;
+  padding: 6px 10px;
+  border-radius: 9px;
+  white-space: nowrap;
+  color: var(--theme-fg-soft);
+}
+:root[data-theme-preset='plum-pocket'] .workspace-node-menu button svg { width: 15px; height: 15px; flex: none; color: var(--theme-fg-muted); }
+:root[data-theme-preset='plum-pocket'] .workspace-node-menu button:is(:hover, :focus-visible) { background: var(--theme-hover); color: var(--theme-fg); outline: none; }
+:root[data-theme-preset='plum-pocket'] .workspace-node-menu button:has(.lucide-trash-2),
+:root[data-theme-preset='plum-pocket'] .workspace-node-menu button:has(.lucide-trash-2) svg { color: var(--tx-fail); }
+:root[data-theme-preset='plum-pocket'] .workspace-node-menu button:has(.lucide-trash-2) {
+  margin-top: 4px;
+  border-top: 1px solid var(--theme-border);
+  border-radius: 0 0 9px 9px;
+}
+
+/* ── File view: tabs, toolbar and the error banner ──────────────────────── */
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .workspace-file-alert {
+  border-color: color-mix(in srgb, var(--tx-fail) 25%, transparent);
+  border-left: 3px solid var(--tx-fail);
+  background: color-mix(in srgb, var(--tx-fail) 10%, var(--theme-panel));
+  color: var(--theme-fg);
+}
+
+@media (max-width: 639px) {
+  :root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-explorer-header :is(.thread-graph-explorer-icon-button, .thread-graph-explorer-collapse-button) { width: 40px; height: 44px; }
+  /* The whole row is the 44px target; the menu dot needs no box. */
+  :root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-tree-action {
+    width: 36px;
+    height: 44px;
+    border-radius: 12px;
+    color: color-mix(in srgb, var(--theme-fg-muted) 75%, transparent);
+  }
+  :root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-tree-row { border-radius: 10px; }
+  :root[data-theme-preset='plum-pocket'] .workspace-node-menu button { min-height: 44px; white-space: nowrap; }
+}
+
+/* ── Conversation search ─────────────────────────────────────────────────── */
+/* The results drop over the content, so they take the content surface rather
+   than the plum chrome they live in (custom properties resolve at :root). */
+:root[data-theme-preset='plum-pocket'] {
+  --ws-content-panel: var(--theme-panel);
+  --ws-content-fg: var(--theme-fg);
+  --ws-content-muted: var(--theme-fg-muted);
+  --ws-content-hover: var(--theme-hover);
+  --ws-content-border: var(--theme-border-strong);
+}
+:root[data-theme-preset='plum-pocket'] .workbench-search-dropdown {
+  padding: 6px;
+  border: 1px solid var(--ws-content-border);
+  border-radius: 16px;
+  background: var(--ws-content-panel);
+  color: var(--ws-content-fg);
+  box-shadow: var(--theme-shadow);
+}
+:root[data-theme-preset='plum-pocket'] .workbench-search-dropdown > p { margin: 4px 8px 6px; font-size: 11px; color: var(--ws-content-muted); }
+/* "0 matches" repeats the empty message; keep it for screen readers only. */
+:root[data-theme-preset='plum-pocket'] .workbench-search-dropdown:has(.workbench-search-results:empty) > p[role='status'] {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+/* Result rows are full-width, not the chrome's round icon buttons. */
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench .matter-topbar .workbench-search-results > button {
+  display: block;
+  width: 100%;
+  height: auto;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--ws-content-fg);
+  font-size: 13px;
+  line-height: 1.5;
+  text-align: left;
+}
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench .matter-topbar .workbench-search-results > :is(button:hover, button[aria-selected='true']) { background: var(--ws-content-hover); }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench .matter-topbar .workbench-search-results > button + button { margin-top: 2px; }
+:root[data-theme-preset='plum-pocket'] .workbench-search-results strong {
+  font-family: var(--plum-display);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ws-content-muted);
+}
+:root[data-theme-preset='plum-pocket'] .workbench-search-results p { margin-top: 1px; }
+:root[data-theme-preset='plum-pocket'] .workbench-search-results mark {
+  padding: 0 2px;
+  border-radius: 4px;
+  background: var(--tx-code-chip);
+  color: var(--tx-code-chip-fg);
+}
+
+/* ── Terminal header: the tab name says enough ───────────────────────────── */
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .terminal-header {
+  border-color: var(--theme-border);
+  background: var(--theme-panel);
+}
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .terminal-title {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .terminal-header-active {
+  font-family: var(--plum-display);
+  font-weight: 600;
+  color: var(--theme-fg);
+}
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .terminal-target { color: var(--theme-fg-muted); font-size: 11px; }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .terminal-icon-button {
+  border-radius: 999px;
+  color: var(--theme-fg-muted);
+}
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .terminal-icon-button:is(:hover, :focus-visible) { background: var(--theme-hover); color: var(--theme-fg); }
+
+/* ── Device monitor ──────────────────────────────────────────────────────── */
+:root[data-theme-preset='plum-pocket'] [role='dialog']:has(> .device-monitor-details) > div:first-child > p { display: none; }
+:root[data-theme-preset='plum-pocket'] [role='dialog']:has(> .device-monitor-details) h2 { font-family: var(--plum-display); font-weight: 600; }
+:root[data-theme-preset='plum-pocket'] .device-monitor-heading h3 { font-family: var(--plum-display); font-weight: 600; }
+:root[data-theme-preset='plum-pocket'] .device-monitor-heading strong { color: var(--theme-accent-strong); font-family: var(--plum-display); }
+:root[data-theme-preset='plum-pocket'] .device-monitor-caption { font-size: 11px; color: var(--theme-fg-muted); }
+:root[data-theme-preset='plum-pocket'] .device-monitor-core progress {
+  appearance: none;
+  height: 6px;
+  border: 0;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--theme-muted);
+}
+:root[data-theme-preset='plum-pocket'] .device-monitor-core progress::-webkit-progress-bar { background: var(--theme-muted); border-radius: 999px; }
+:root[data-theme-preset='plum-pocket'] .device-monitor-core progress::-webkit-progress-value { background: var(--theme-accent-solid); border-radius: 999px; }
+:root[data-theme-preset='plum-pocket'] .device-monitor-core progress::-moz-progress-bar { background: var(--theme-accent-solid); border-radius: 999px; }
+:root[data-theme-preset='plum-pocket'] .device-monitor-core b { color: var(--theme-fg-soft); }
+:root[data-theme-preset='plum-pocket'] .device-monitor-sensors summary { color: var(--theme-fg-soft); }
+
+/* ── Automations: a plain strip of totals and divided rules, no nested cards ─ */
+:root[data-theme-preset='plum-pocket'] .automation-heading-copy h2 { font-family: var(--plum-display); font-weight: 600; letter-spacing: 0; }
+:root[data-theme-preset='plum-pocket'] .automation-heading-copy p { display: none; }
+:root[data-theme-preset='plum-pocket'] :is(.automation-heading-icon, .automation-empty-icon) {
+  border: 0;
+  border-radius: 50%;
+  background: var(--tx-badge);
+  color: var(--tx-badge-fg);
+}
+:root[data-theme-preset='plum-pocket'] .automation-refresh { border-radius: 999px; }
+:root[data-theme-preset='plum-pocket'] .automation-metrics {
+  padding: 4px 0 14px;
+  margin-bottom: 14px;
+  border: 0;
+  border-bottom: 1px solid var(--theme-border);
+  border-radius: 0;
+  background: transparent;
+}
+:root[data-theme-preset='plum-pocket'] .automation-metric:first-child { padding-left: 0; }
+:root[data-theme-preset='plum-pocket'] .automation-metric > strong {
+  margin-top: 4px;
+  font-family: var(--plum-display);
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+:root[data-theme-preset='plum-pocket'] .automation-metric > strong.is-accent { color: var(--theme-accent-strong); }
+:root[data-theme-preset='plum-pocket'] .automation-metric-quality { height: auto; min-height: 0; margin-top: 2px; }
+:root[data-theme-preset='plum-pocket'] .automation-section-heading h3 { font-family: var(--plum-display); font-weight: 600; }
+:root[data-theme-preset='plum-pocket'] .automation-rule {
+  margin: 0;
+  padding: 12px 2px;
+  border: 0;
+  border-bottom: 1px solid var(--theme-border);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+:root[data-theme-preset='plum-pocket'] .automation-rule:last-child { border-bottom: 0; }
+:root[data-theme-preset='plum-pocket'] .automation-rule-heading strong { font-weight: 700; }
+:root[data-theme-preset='plum-pocket'] .automation-state.is-enabled { color: var(--tx-ok); }
+:root[data-theme-preset='plum-pocket'] .automation-state.is-enabled i { background: var(--tx-ok); }
+:root[data-theme-preset='plum-pocket'] :is(.automation-rule-meta, .automation-rule-usage) { font-size: 11.5px; color: var(--theme-fg-muted); }
+:root[data-theme-preset='plum-pocket'] .automation-footer { border-color: var(--theme-border); color: var(--theme-fg-muted); }
+:root[data-theme-preset='plum-pocket'] .automation-list { gap: 0; }
+:root[data-theme-preset='plum-pocket'] .automation-rule-meta { margin-top: 6px; gap: 4px 12px; }
+:root[data-theme-preset='plum-pocket'] .automation-state:is(.is-failed, .is-interrupted, .is-timedOut) { color: var(--tx-fail); }
+:root[data-theme-preset='plum-pocket'] .automation-section-heading > span { border: 0; border-radius: 999px; background: var(--theme-muted); }
+@media (max-width: 639px) {
+  :root[data-theme-preset='plum-pocket'] .automation-metric:nth-child(odd) { padding-left: 0; }
+  :root[data-theme-preset='plum-pocket'] .automation-metric:nth-child(odd) + .automation-metric { border-left: 1px solid var(--theme-border); }
+}
