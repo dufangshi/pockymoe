@@ -716,3 +716,98 @@ test('split conversations keep identical composer geometry and surfaces while sw
     }
   }
 });
+
+
+test('live narration replaces its outside preview during tools and wake, with compact nested steps', async ({ page, request, isMobile }, testInfo) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('remote-codex.locale', 'zh-CN');
+    localStorage.setItem('remote-codex-theme-mode', 'light');
+    localStorage.setItem('pockymoe-theme-preset', 'plum-pocket');
+    localStorage.setItem(`pockymoe.onboarding.v1:${JSON.stringify([location.origin, 'local:owner'])}`, JSON.stringify({ welcomeDismissed: true, completed: [] }));
+  });
+  const id = await createThread(request);
+  const detail = await (await request.get(`${base}/api/threads/${id}`)).json();
+  const startedAt = new Date(Date.now() - 60_000).toISOString();
+  const turnId = 'live-preview';
+  const prompt = { id: 'prompt', kind: 'userMessage', text: '检查代码并运行验证。', sequence: 1 };
+  const first = { id: 'first', kind: 'agentMessage', text: '我先检查实现，再运行相关验证。', responsePhase: 'commentary', status: 'completed', sequence: 2 };
+  const operations = [
+    { id: 'skill', kind: 'skillToolCall', text: 'focused-e2e', status: 'completed' },
+    ...['rg -n progress src', 'pnpm typecheck', 'pnpm test'].map((text, i) => ({ id: `cmd-${i}`, kind: 'commandExecution', text, status: 'completed' })),
+    ...['ThreadTimeline.tsx', 'TimelineTurnRows.tsx', 'history-markdown.css', 'transcript.css'].map((text, i) => ({ id: `read-${i}`, kind: 'fileRead', text: `src/${text}`, status: 'completed' })),
+  ].map((item, i) => ({ ...item, sequence: i + 3, createdAt: new Date(Date.parse(startedAt) + (i + 1) * 1000).toISOString() }));
+  let items: object[] = [prompt, first, ...operations];
+  let completed = false;
+  let socket: WebSocketRoute | undefined;
+  await page.routeWebSocket(/\/ws(?:\?.*)?$/, current => {
+    socket = current;
+    current.send(JSON.stringify({ type: 'supervisor.connected' }));
+    current.onMessage(() => current.send(JSON.stringify({ type: 'supervisor.pong' })));
+  });
+  const response = () => ({ ...detail, totalTurnCount: 1, activeSubagents: [],
+    thread: { ...detail.thread, status: completed ? 'idle' : 'running', activeTurnId: completed ? null : turnId },
+    turns: [{ id: turnId, status: completed ? 'completed' : 'inProgress', startedAt, items }],
+  });
+  await page.route(`**/api/threads/${id}?**`, route => route.fulfill({ json: response() }));
+  await page.route(`**/api/threads/${id}/turns/${turnId}/detail`, route => route.fulfill({ json: { ...response().turns[0], hasDeferredItems: false } }));
+  const emit = (type: string, payload: object) => socket!.send(JSON.stringify({ type, threadId: id, timestamp: new Date().toISOString(), payload }));
+  await page.goto(`/threads/${id}`);
+  const turn = page.getByTestId('chat-turn');
+  const toggle = turn.locator('.thread-graph-worked-summary button[aria-expanded]');
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await expect(page.getByText(first.text, { exact: true })).toBeVisible();
+  const next = { id: 'next', kind: 'agentMessage', text: '', responsePhase: 'commentary', status: 'inProgress', sequence: 11 };
+  emit('thread.item.started', { turnId, item: next });
+  await expect(page.getByText(first.text, { exact: true })).toBeVisible();
+  emit('thread.output.delta', { turnId, itemId: next.id, sequence: 11, delta: '已定位问题，' });
+  await expect(page.getByText('已定位问题，', { exact: true })).toBeVisible();
+  await expect(page.getByText(first.text, { exact: true })).toHaveCount(0);
+  const progress = { ...next, text: '已定位问题，正在验证修复。', status: 'completed' };
+  emit('thread.output.delta', { turnId, itemId: next.id, sequence: 11, delta: '正在验证修复。' });
+  emit('thread.item.completed', { turnId, item: progress });
+  items = [...items, progress];
+  await expect(page.getByText(progress.text, { exact: true })).toHaveCount(1);
+  await toggle.click();
+  const batch = turn.locator('.thread-graph-history-group-activity').first();
+  await batch.locator(':scope > .thread-graph-history-group-card > button').click();
+  const children = batch.locator(':scope > .thread-graph-history-group-card > .thread-graph-history-group-list');
+  await expect(children).toBeVisible();
+  const parentBox = (await batch.boundingBox())!;
+  const childrenBox = (await children.boundingBox())!;
+  expect(childrenBox.x - parentBox.x).toBeGreaterThanOrEqual(6);
+  expect(await children.evaluate(el => parseFloat(getComputedStyle(el).borderLeftWidth))).toBe(1);
+  const rows = children.locator(':scope > *');
+  await expect(rows).toHaveCount(3);
+  const boxes = await rows.evaluateAll(els => els.map(el => { const r = el.getBoundingClientRect(); return { y: r.y, bottom: r.bottom }; }));
+  for (let i = 1; i < boxes.length; i++) expect(boxes[i]!.y - boxes[i - 1]!.bottom).toBeLessThanOrEqual(4);
+  const subgroupToggle = children.locator('.thread-graph-history-group-toggle').first();
+  if (isMobile) expect((await subgroupToggle.boundingBox())!.height).toBeLessThanOrEqual(36);
+  await expect(page.getByText(progress.text, { exact: true })).toHaveCount(1);
+  expect(await page.getByTestId('thread-scroll-container').evaluate(el => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
+  await batch.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: testInfo.outputPath('compact-nested-steps.png'), scale: 'css' });
+  await subgroupToggle.click();
+  await expect(children.locator('.matter-command-step').first()).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath('nested-command-details.png'), scale: 'css' });
+  await toggle.click();
+  await expect(page.getByText(first.text, { exact: true })).toHaveCount(0);
+  await expect(page.getByText(progress.text, { exact: true })).toBeVisible();
+  const later = { id: 'later', kind: 'commandExecution', text: 'run further checks', status: 'running', sequence: 12 };
+  emit('thread.item.started', { turnId, item: later });
+  await expect(page.getByText(progress.text, { exact: true })).toBeVisible();
+  const wait = { id: 'wait', kind: 'other', origin: 'nativeBackgroundWait', status: 'waiting', text: '', sequence: 13 };
+  emit('thread.item.completed', { turnId, item: wait });
+  await expect(turn.locator('.thread-graph-turn-footer')).toContainText('等待唤醒');
+  await expect(page.getByText(progress.text, { exact: true })).toBeVisible();
+  emit('thread.item.completed', { turnId, item: { ...wait, origin: 'nativeTaskNotification', taskStatus: 'completed', status: 'completed', text: '验证已完成' } });
+  const final = { id: 'final', kind: 'agentMessage', responsePhase: 'final', text: '修复验证通过。', status: 'completed', sequence: 14 };
+  emit('thread.item.completed', { turnId, item: final });
+  await expect(page.getByText(progress.text, { exact: true })).toHaveCount(0);
+  await expect(page.getByText(final.text, { exact: true })).toBeVisible();
+  completed = true;
+  items = [prompt, first, ...operations, progress, later, { ...wait, origin: 'nativeTaskNotification', taskStatus: 'completed', status: 'completed', text: '验证已完成' }, final];
+  emit('thread.turn.completed', { turnId, status: 'completed' });
+  await page.reload();
+  await expect(page.getByText(final.text, { exact: true })).toBeVisible();
+  await expect(page.getByText(progress.text, { exact: true })).toHaveCount(0);
+});

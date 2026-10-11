@@ -65,6 +65,9 @@ modes.
   shared buttons, inputs, switches, segmented controls, dialogs and menus.
 - Transcript turns carry `data-turn-status`, and under Plum Pocket each reply opens
   with the replying agent's avatar and name (`graph-chat/TranscriptAgent.tsx`).
+- Expanded step batches keep their child tools and subgroups indented behind a
+  vertical guide in both presets. Plum Pocket uses contiguous 36px nested rows on
+  phones; the outer work and batch disclosures retain 44px touch targets.
 - Outer pages (workspaces, devices, relay home, sign-in, account, admin, guide,
   import, port preview) carry a neutral `data-page` attribute on their root.
   `plum-pocket/pages.css` uses it to hide help paragraphs and eyebrows, turn boxed

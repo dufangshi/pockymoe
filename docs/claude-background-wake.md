@@ -28,7 +28,10 @@ at the current file tail and excludes older turns, other sessions, sidechains,
 and human-quoted task XML. This change does not backfill old history.
 
 Lightweight history responses retain waiting/wake anchors and narrative for
-expansion. Collapsed turns show the final reply and an active waiting footer;
+expansion. While a turn is active, its folded view shows the latest nonempty
+agent text, even if tools or a background wait follow it. The next text message
+replaces this preview; earlier narration remains in expandable history. A
+completed folded turn shows its final reply. Active waits have a waiting footer;
 intermediate events and progress remain expandable. After cancellation or disconnection the marker must
 not keep claiming that the turn is waiting.
 
@@ -44,7 +47,7 @@ checks intermediate Monitor wakes as well as completion.
 
 ## Folding progress and final replies
 
-Background waits, wakes and progress stay inside the same expandable execution history. A folded turn exposes only its native-confirmed final reply. The runtime writes `responsePhase: commentary | final` on background-turn agent messages: only the last delivered reply matching a complete native `end_turn`, with no pending tools/background tasks, receives `final`; cancellation, incomplete tails and unmatched text remain commentary.
+Background waits, wakes and progress stay inside the same expandable execution history. During execution, the latest nonempty agent text is also shown outside the fold and replaced by the next text message. After the turn ends, a folded background turn exposes only its native-confirmed final reply. The runtime writes `responsePhase: commentary | final` on background-turn agent messages: only the last delivered reply matching a complete native `end_turn`, with no pending tools/background tasks, receives `final`; cancellation, incomplete tails and unmatched text remain commentary.
 
 For completed Claude background turns saved before this field existed, history
 reads project the phase from the original native session within that turn's
