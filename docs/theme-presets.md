@@ -35,7 +35,11 @@ modes.
   palette.
 - Thread rows and tabs carry `<span class="matter-thread-avatar" data-agent="…">`,
   hidden by default. A preset can show it with a background image per agent.
-  Plum Pocket's images are in `apps/supervisor-web/public/theme/plum-pocket/`.
+  Plum Pocket's images are in `apps/supervisor-web/public/theme/plum-pocket/`: an
+  avatar (`<agent>.webp`) and a composer mascot (`composer-peek-<agent>.webp`) for
+  claude, codex, deepseek, gemini, grok, cursor, copilot and opencode; other
+  harnesses get `agent.webp`. A new harness needs both images and their rules in
+  `shell.css` and `composer.css`.
 - Agent-thread groups carry neutral class hooks (`matter-agent-threads`,
   `matter-agent-threads-summary`, `matter-agent-threads-menu`,
   `matter-agent-threads-item`) that only a preset styles.

@@ -322,6 +322,11 @@
 :root[data-theme-preset='plum-pocket'] .matter-thread-avatar[data-agent='codex'] { background-image: url('/theme/plum-pocket/codex.webp'); }
 :root[data-theme-preset='plum-pocket'] .matter-thread-avatar[data-agent^='claude'] { background-image: url('/theme/plum-pocket/claude.webp'); }
 :root[data-theme-preset='plum-pocket'] .matter-thread-avatar:is([data-agent='deepseek'], [data-agent='dsh']) { background-image: url('/theme/plum-pocket/deepseek.webp'); }
+:root[data-theme-preset='plum-pocket'] .matter-thread-avatar[data-agent='gemini'] { background-image: url('/theme/plum-pocket/gemini.webp'); }
+:root[data-theme-preset='plum-pocket'] .matter-thread-avatar[data-agent='grok'] { background-image: url('/theme/plum-pocket/grok.webp'); }
+:root[data-theme-preset='plum-pocket'] .matter-thread-avatar[data-agent='cursor'] { background-image: url('/theme/plum-pocket/cursor.webp'); }
+:root[data-theme-preset='plum-pocket'] .matter-thread-avatar[data-agent='copilot'] { background-image: url('/theme/plum-pocket/copilot.webp'); }
+:root[data-theme-preset='plum-pocket'] .matter-thread-avatar[data-agent='opencode'] { background-image: url('/theme/plum-pocket/opencode.webp'); }
 
 /* Status dots keep their role and label. Their colors follow the surface. */
 :root[data-theme-preset='plum-pocket'] .matter-status-dot { border-color: var(--plum-status-idle); }

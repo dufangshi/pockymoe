@@ -121,7 +121,7 @@
 
 /* The thread's harness mascot sits inside the pocket, behind the shell. She
    looks out while the thread waits for you and ducks in while a turn runs. */
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell form[data-composer-layout]:is([data-agent='claude'], [data-agent='codex'], [data-agent='deepseek'])::before {
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell form[data-composer-layout]:is([data-agent='claude'], [data-agent='codex'], [data-agent='deepseek'], [data-agent='gemini'], [data-agent='grok'], [data-agent='cursor'], [data-agent='copilot'], [data-agent='opencode'])::before {
   content: '';
   position: absolute;
   z-index: 0;
@@ -136,6 +136,11 @@
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell form[data-agent='claude'] { --pc-peek: url('/theme/plum-pocket/composer-peek-claude.webp'); }
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell form[data-agent='codex'] { --pc-peek: url('/theme/plum-pocket/composer-peek-codex.webp'); --pc-peek-ratio: 160 / 130; }
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell form[data-agent='deepseek'] { --pc-peek: url('/theme/plum-pocket/composer-peek-deepseek.webp'); --pc-peek-ratio: 160 / 189; --pc-peek-w: 46px; }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell form[data-agent='gemini'] { --pc-peek: url('/theme/plum-pocket/composer-peek-gemini.webp'); --pc-peek-ratio: 160 / 120; }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell form[data-agent='grok'] { --pc-peek: url('/theme/plum-pocket/composer-peek-grok.webp'); --pc-peek-ratio: 160 / 118; }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell form[data-agent='cursor'] { --pc-peek: url('/theme/plum-pocket/composer-peek-cursor.webp'); --pc-peek-ratio: 160 / 149; --pc-peek-w: 50px; }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell form[data-agent='copilot'] { --pc-peek: url('/theme/plum-pocket/composer-peek-copilot.webp'); --pc-peek-ratio: 160 / 146; --pc-peek-w: 50px; }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell form[data-agent='opencode'] { --pc-peek: url('/theme/plum-pocket/composer-peek-opencode.webp'); --pc-peek-ratio: 160 / 155; --pc-peek-w: 50px; }
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell form[data-composer-layout][data-agent]:focus-within::before { transform: translateY(-3px); }
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell form[data-composer-layout][data-agent][data-composer-busy]::before { transform: translateY(58%); }
 /* Queued slips and the phone pane switch take the space above the pocket. */
@@ -642,6 +647,7 @@
   :root[data-theme-preset='plum-pocket'] .thread-ui-shell [data-composer-layout] .thread-graph-composer-input { font-size: 16px; }
   :root[data-theme-preset='plum-pocket'] .thread-ui-shell form[data-composer-layout][data-agent]::before { left: 20px; --pc-peek-w: 42px; }
   :root[data-theme-preset='plum-pocket'] .thread-ui-shell form[data-agent='deepseek']::before { --pc-peek-w: 37px; }
+  :root[data-theme-preset='plum-pocket'] .thread-ui-shell form:is([data-agent='cursor'], [data-agent='copilot'], [data-agent='opencode'])::before { --pc-peek-w: 39px; }
   :root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench .thread-composer-pending-queue { width: auto; margin: 0 9px 8px; border-radius: 16px; }
   :root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-composer-pending-row :is(.thread-composer-steer-button, .thread-composer-queue-remove) { height: 40px; }
   :root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-composer-pending-row .thread-composer-queue-remove { width: 40px; }
