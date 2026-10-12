@@ -26,7 +26,7 @@ A 上的 agent ── pockymoe CLI ── loopback /api/cli (A supervisor)
 - **relay device ID**：relay 在 `relay.connected` 中发送 `deviceId` 和（新增）`deviceName`。supervisor 记录在 `peer_link`，`relay_identity()` 返回。本地 `hosts.id` 保持不变；`/api/cli` 的 `info` 增加 `relayDeviceId`、`deviceName`。
 - **PeerCaller**（`crates/supervisor/src/auth.rs`）：`{device_id, device_name, user_id}`，只能由隧道根据 relay 写入的 `peer` 对象构造，作为请求 extension，与 `TrustedRelayForward` 同时存在。
 - **开关**：每台 device 独立，默认关闭。`Supervisor::peer_access_enabled()` / `set_peer_access(bool)`（已实现，KV `peer:settings`）。发出和接收都要求本机开启。Web/本机 owner 通过 `GET|PATCH /api/config/peer-access`（`{"enabled":bool}`）设置；CLI `pockymoe device access on|off` 只接受本机 machine credential（`CliCaller(None)`），thread 凭据只能查看。远端 device 无法修改开关（PeerCaller 只能访问 `/api/peer/*`）。
-- **身份钉扎**：A 首次与 B 握手时 TOFU 钉住 B 的 identity key（runtime KV `peer:pin:{relayDeviceId}` = `{"identityKey","fingerprint","pinnedAt"}`），之后变化即 `PeerError::IdentityChanged`。`pockymoe device trust DEVICE --reset`（machine credential）清除。
+- **身份钉扎**：未绑定账户密钥的 A 首次与 B 握手时 TOFU 钉住 B 的 identity key（runtime KV `peer:pin:{relayDeviceId}` = `{"identityKey","fingerprint","pinnedAt"}`），之后变化即 `PeerError::IdentityChanged`。`pockymoe device trust DEVICE --reset`（machine credential）清除。已绑定的 A 改用设备证书核对 B，见 §17。
 
 ## 4. 隧道帧（relay ↔ supervisor）
 
@@ -69,7 +69,7 @@ relay → 目标（沿用 `relay.request`，多一个只由 relay 写入的 `pee
 1. 发起方 device = 该隧道 socket 已认证的 device；绝不取自帧内容。目标必须存在、`owner_user_id` 相同、owner 用户 enabled，且目标 ≠ 发起方。
 2. `payload.path`（去掉 query）必须以 `/api/peer/` 开头；method ∈ GET/POST/PUT。
 3. 除 `GET .../transport/key` 握手外必须带 `x-rcd-key`（即密文）；否则 403。
-4. 只转发这些 header：`content-type`、`accept`、`x-rcd-key`、`x-rcd-request`、`x-rcd-enc`、`x-rcd-sealed`。丢弃 `x-rcd-resource` 等策略头。`peer` 对象只由 relay 构造；浏览器路径永远不带 `peer`。
+4. 只转发这些 header：`content-type`、`accept`、`x-rcd-key`、`x-rcd-request`、`x-rcd-enc`、`x-rcd-sealed`、`x-rcd-peer-device`、`x-rcd-peer-signature`。丢弃 `x-rcd-resource`、浏览器签名头 `x-rcd-session`／`x-rcd-signature` 等其他头；两个 peer 头也只在 peer 帧上转发。`peer` 对象只由 relay 构造；浏览器路径永远不带 `peer`。
 5. `payload.body` 字符串 ≤ 8 MiB；每个发起方同时在途 ≤ 32；沿用全局 pending 上限。
 6. 目录：同 owner 的全部 device（含自己 `self:true`），`online` 取当前隧道连接。
 7. `/supervisor/tunnel` 升级时把 WebSocket message/frame 上限提到 128 MiB。
@@ -79,6 +79,7 @@ relay → 目标（沿用 `relay.request`，多一个只由 relay 写入的 `pee
 - `relay.request` 带 `peer` 时，`forward_local` / `dispatch_*` 在 `TrustedRelayForward` 之外注入 `PeerCaller`。
 - `require_auth`：带 `PeerCaller` 的请求只能访问 `/api/peer/` 前缀；`/api/peer/` 前缀的请求必须带 `PeerCaller`（否则 403，包括 owner 浏览器）。`/api/cli` 规则不变。
 - 带 `PeerCaller` 的请求，除 `.../transport/key` 和 `.../transport/stream/...` 外必须是密文，否则 400。
+- 绑定了账户密钥（严格模式）的 B 还要求有效的设备证书登记和 peer 签名，否则 401 `peer_certificate_required`；没有 relay peer 身份的 `/api/peer/*` 请求返回 403 `device_strict_mode`。见 §17。
 - 加密下载流对 `/api/peer/...` 路径的作用域是 `/api/peer`，续读路径为 `/api/peer/transport/stream/{id}?chunk=N`，从而仍满足 relay 的前缀规则。
 - 隧道客户端连接时同样把 message/frame 上限提到 128 MiB（`connect_async_with_config`）。
 
@@ -86,7 +87,7 @@ relay → 目标（沿用 `relay.request`，多一个只由 relay 写入的 `pee
 
 与 `secure_transport.rs` 服务端逐字节兼容：
 
-- 握手：`GET /api/peer/transport/key?challenge=<随机 [A-Za-z0-9-]{≤128}>`（明文 peer 请求）。校验 identity key 对 `rcd-key-v1\n{challenge}\n{keyId}\n{expiresAt}\n{serverTime}\n{publicKey}` 的 P-256 签名、challenge 一致、`expiresAt` 未过期；TOFU 钉扎（§3）。按 `serverTime` 计算时钟偏移，请求 ID 时间戳使用对端时钟（服务端只接受 ±120 s）。描述符缓存到 `expiresAt` 前 5 分钟；收到 409 `transport_reconnect_required` 时刷新并重试一次。
+- 握手：`GET /api/peer/transport/key?challenge=<随机值>`（明文 peer 请求；调用方用 UUID，目标端只接受 8–128 个 `[A-Za-z0-9_-]` 字符，否则 400）。校验 identity key 对 `rcd-key-v1\n{challenge}\n{keyId}\n{expiresAt}\n{serverTime}\n{publicKey}` 的 P-256 签名、challenge 一致、`expiresAt` 未过期；未绑定时 TOFU 钉扎（§3），已绑定时核对设备证书（§17）。按 `serverTime` 计算时钟偏移，请求 ID 时间戳使用对端时钟（服务端只接受 ±120 s）。未绑定的 A 把描述符缓存到 `expiresAt` 前 5 分钟，已绑定的 A 每个请求都重新握手；收到 409 `transport_reconnect_required` 时刷新并重试一次。
 - 请求：`x-rcd-request = "{uuid}.{ms}"`，AAD `rcd-http-v1\n{keyId}\n{requestId}\n{method}\n{path}\n`（resource 为空串），明文 `pack({"query":"?...","headers":{"content-type":...}}, body)`，密文放 body（base64），header 带 `x-rcd-key`、`x-rcd-request`、`x-rcd-enc`。
 - 响应：`x-rcd-encrypted: 1` 时用 exporter `remote-codex/http-response/v1` 派生的 AES-256-GCM（零 nonce，AAD `{请求 AAD}\nresponse`）解密并 unpack，得到 `{headers,status,streamNext}` + body；有 `streamNext` 时继续加密 GET 拼接（总量 ≤ 64 MiB）。
 - relay 产生的明文错误按 §4 表映射：503→`Offline`，504→`Timeout`，其余→`Remote`；隧道未连接→`RelayUnavailable`。
@@ -175,7 +176,8 @@ KV `peer:outbox:{id}`：
 
 - relay：同 owner、前缀、密文、header 白名单、不信任设备提供的 `peer`、体积与并发上限。
 - supervisor：`PeerCaller` 只来自 relay 帧；`PeerCaller` ⇔ `/api/peer/*`；两端开关；操作白名单；路径限定 workspace；上传只落在 thread incoming 目录；大小与哈希校验；远程发件人由服务端填写；prompt 头标明远程来源。
-- 钉扎 TOFU；身份变化即失败，只有 machine credential 能重置。
+- 未绑定：钉扎 TOFU；身份变化即失败，只有 machine credential 能重置。
+- 已绑定：双方用同一账户密钥签名的设备证书互相认证（§17），relay 无法冒充任何一方。
 
 ## 15. 测试与验收
 
@@ -192,3 +194,15 @@ KV `peer:outbox:{id}`：
 - relay 与 supervisor 都拒绝非字面的 peer 路径：`.`、`..` 或空段，以及 `%`、`\`。两端各自检查，不依赖对方规范化路径。
 - 附件发送的回执带 `attachments`（每个文件在目标端的路径、大小与 sha256）。
 - 发布版二进制带平台后缀（如 `remote-codex-linux-x64-gnu`），受管 agent 的 `pockymoe` 曾落到 PATH 上更旧的全局安装。supervisor 现在在 `<数据库>.cli-bin/` 中链接 `pockymoe`（Unix 用 symlink，Windows 用硬链接或复制），并把该目录放在受管 PATH 的最前面。
+
+## 17. 绑定账户密钥的设备：设备证书
+
+绑定到账户密钥的 device（`pockymoe bind` 或带绑定参数的安装命令，见 [Account key trust](account-key-trust.md)）进入严格模式，不再单凭 relay 写入的 `PeerCaller` 认定调用方，也不再对目标 TOFU。每台完成注册（enrollment）的 device 在本机保存自己的设备证书：由账户密钥签名，绑定 relay device ID 和 identity key。
+
+- **A 核对 B（调用方）**：B 返回的 `GET /api/peer/transport/key` 描述符带 `certificate`（B 的设备证书，没有时为 `null`）。已绑定的 A 每个请求都重新取描述符，要求证书能用 **A 自己钉住的** 账户公钥验证，device ID 与 identity key 都与描述符一致，且 B 没有被撤销；通过后更新 B 的钉扎。否则请求失败：`peer_target_unverified: cannot verify device …; bind the target device to the same account key`。已绑定但还没有自己证书的 A 不能发出任何 peer 请求。
+- **B 核对 A（目标端）**：严格模式的 B 只接受同时满足以下条件的 peer 请求：`x-rcd-peer-device` 等于 relay 写入的 `PeerCaller.device_id`；B 存有该 device 在 B 钉住的账户密钥下的登记，且该 device 没有被撤销；`x-rcd-peer-signature` 能用登记的 identity key 验证。签名是 A 的 identity key 对 `pockymoe-peer-request-v1\n{A 的 device ID}\n{aad}\n{B64(SHA256(密文))}` 的 P-256 签名（raw r‖s）。不满足时返回 401 `peer_certificate_required`。已绑定的 A 收到后用加密的 `POST /api/peer/transport/certificate`（请求体为 A 的设备证书）登记一次并重试；B 用自己钉住的账户公钥验证证书。未绑定的 A 无法登记。
+- 未绑定的 B 忽略这两个 header，行为不变；它收到登记请求时直接返回 `{}`。两端仍需开启 peer 开关（`pockymoe device access on`）。
+- 账户的 device 撤销（在网页「Remove device」）到达 B 后，B 删除该 device 的登记并拒绝它。B 逐条验证撤销记录，只接受自己钉住的账户密钥签名的 device 撤销，其他条目忽略。`pockymoe bind --reset` 删除 B 上的全部登记，但保留撤销记录，被移除的 device 在 B 重新绑定到同一密钥后仍被拒绝。
+- 这两个错误都不可重试，不会进入 outbox。
+
+两个错误的原因相同：两台 device 没有绑定到同一个账户密钥，或其中一台还没完成注册。只有一台绑定时，另一台也必须绑定：已绑定的调用方拒绝未绑定的目标，严格模式的目标拒绝未绑定的调用方。

@@ -35,6 +35,6 @@ gh run watch RUN_ID --interval 30 --exit-status
 
 verify、四平台 native、固定 UI 的 Web 构建并行，package 依赖全部成功后才能 release。核对 GitHub 版本、四平台资产、Web ZIP、runtime-version.txt 和 SHA256SUMS，下载代表平台验证真实版本。GitHub 查询失败不等于尚未发布。没有 npm publish job。
 
-公开网页及 setup 脚本由远端 Relay 提供：在主仓 main 和共享 UI 都已推送、Release 资产可用后，dispatch `relay-deploy.yml`，传入同一完整 `thread_ui_sha`。重启设备 Supervisor 不会更新公开网页。按用户已有授权执行发布/部署，技能不额外扩大授权。
+公开网页及 setup 脚本是 GitHub Pages 静态站点（https://app.lnz-study.com）：main 上 Web 路径、setup 脚本或 `thread-ui.sha` 的推送（或手动 dispatch）触发 `pages-deploy.yml`，用 `thread-ui.sha` 中的共享 UI 完整 SHA 构建并部署。共享 UI 提交须先推送到其 main；Release 资产可用后，确认主仓 main 的 `thread-ui.sha` 是同一完整 SHA，不是则提交并推送。Relay（https://remote.lnz-study.com）只提供 API；Relay 代码有变更时从 main dispatch `relay-deploy.yml`，它只部署 Relay，没有 `thread_ui_sha` 输入。重启设备 Supervisor 不会更新公开网页。按用户已有授权执行发布/部署，技能不额外扩大授权。
 
 需要当前设备更新时通过设备管理 API，或旧版迁移所需的 setup 兼容桥。核对 job completed、运行版本/PID/Relay 重连和受维护线程恢复。交付提交、版本、run 链接、相关验证及真实限制；不要把安装成功等同于后台已更新。

@@ -75,8 +75,11 @@ POCKYMOE_RELAY_AGENT_TOKEN=rcd_REPLACE_ME
 
 Relay mode still requires the local supervisor admin configuration, but public
 clients authenticate against the relay user system. Requests forwarded over the
-supervisor-initiated tunnel are trusted as relay-authorized requests and are not
-asked to send the private supervisor admin password over the public edge.
+supervisor-initiated tunnel are not asked to send the private supervisor admin
+password over the public edge. A supervisor that is not bound to an account key
+trusts them as relay-authorized requests. A bound supervisor accepts only
+encrypted requests signed by a browser certified by its owner's account key; see
+[account key trust](account-key-trust.md).
 
 The public relay server is packaged in the main `pockymoe` npm package and
 is started with `pockymoe relay`.
@@ -172,7 +175,10 @@ The relay server also serves the built web frontend when
 `apps/supervisor-web/dist/index.html` is present in the installed package or
 source checkout. `POCKYMOE_RELAY_WEB_DIST_DIR` can override that path. The
 relay injects a bootstrap config into `index.html` so the browser uses
-`/relay/...` APIs instead of trying to contact a local supervisor directly.
+`/relay/...` APIs instead of trying to contact a local supervisor directly. When
+`POCKYMOE_WEB_ORIGIN` names a different origin, the relay serves only its API and
+the Web UI is hosted separately; see
+[self-hosting a relay](self-host-relay.md#separate-web-origin).
 
 Relay mode is a separate transport layer from the normal supervisor API. The relay should:
 
@@ -223,8 +229,13 @@ is seeded from `POCKYMOE_ADMIN_USERNAME`,
 Relay portal:
 
 - `/relay-portal` lets users log in or register with email, username, and password.
+  The browser derives an authentication key and an encrypted account vault from
+  the password, so the relay never receives it; registration also shows a
+  one-time account recovery code. An account created before account keys signs
+  in once with the explicit **First sign-in since the security upgrade** choice,
+  which sends its password, and then secures the account.
 - registered users can create multiple devices.
-- creating a device returns a permanent `rcd_...` device token; it can be copied again by the device owner and is revoked only when replaced or the device is deleted.
+- creating a device returns a permanent `rcd_...` device token; it can be copied again by the device owner and is revoked only when replaced or the device is deleted. Creating a device and fetching, issuing or replacing its token need a sign-in or verification within the last 10 minutes.
 - each device token maps one running private Pockymoe supervisor to that user.
 - users can share a single `threadId` on one device with another username.
 - invited users see those entries under Shared With Me and can continue the shared thread.
@@ -239,7 +250,8 @@ Relay admin:
 Shared session access is intentionally narrower than owner access. Device owners
 can access their device's full allowed relay API surface. Invited users can only
 use the shared thread routes and the websocket stream is scoped to the shared
-thread.
+thread. A device bound to an account key enforces the same rules itself from
+owner-signed grants, and recipients use their own browser certificates.
 
 The first relay forwarding layer is intentionally narrow:
 
@@ -259,4 +271,4 @@ Those capabilities should be added on top of the same outbound tunnel rather tha
 - Keep destructive actions behind existing confirmation flows even after login.
 - For mobile apps, store tokens in Keychain or Android Keystore.
 
-Relay MFA, trusted browsers, device fingerprints, encrypted transport, and upgrade recovery are described in the [security operations guide](./relay-security-operations.zh.md). Persist the relay session secret alongside a secure database backup: it also derives the key protecting authenticator secrets.
+Relay MFA, trusted browsers, device fingerprints, encrypted transport, and upgrade recovery are described in the [security operations guide](./relay-security-operations.zh.md); account keys and device binding in [account key trust](./account-key-trust.md). Persist the relay session secret alongside a secure database backup: it also derives the key protecting authenticator secrets.

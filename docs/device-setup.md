@@ -2,7 +2,10 @@
 
 On the relay Devices page, create a device and copy its setup command: SH for
 macOS and Linux, PowerShell for Windows. The command downloads `/setup.sh` or
-`/setup.ps1` from that relay and carries the device's permanent token. It
+`/setup.ps1` from the Web origin (the relay itself unless the Web UI is
+[hosted separately](self-host-relay.md#separate-web-origin)) and carries the
+relay URL, the device's permanent token, the Web origin and the values that bind
+the device to your account key (see below). It
 installs the native runtime from GitHub Releases, verifies its checksum and
 version, and starts the device; see
 [native installation and releases](github-runtime.md) for the details,
@@ -29,6 +32,58 @@ left running; setup does not rewrite or restart its service just for this repair
 The parser regression can be run in an isolated Linux environment with Node and
 systemd installed: `POCKYMOE_TEST_SYSTEMD=1 node --test scripts/setup.test.mjs`.
 It verifies generated units without starting a Supervisor or contacting a relay.
+
+## Binding to your account key
+
+A bound device accepts only requests signed by browsers of your account, so the
+relay cannot command it ([account key trust](account-key-trust.md)). Copying a
+setup command needs your password if this browser has not unlocked the account key
+in the last 10 minutes, and a sign-in or verification within the last 10 minutes
+for the device token. The command passes `--account-key` (`-AccountKey` in
+PowerShell) and a one-time enrollment secret in the `POCKYMOE_ENROLL_SECRET`
+environment variable, never as an argument; setup binds the device before
+starting it, and the Supervisor does not inherit the secret. The Web refuses to
+build a command from a malformed device token. When the device first connects,
+the browser that copied the command finishes enrollment by itself while it stays
+open; the device then shows **Protected**. That browser keeps the enrollment for 7
+days; after that, copy the setup command again and rerun it on the device. On an
+installed device, rerunning a setup command binds the existing installation and
+keeps its registration, provided the Web origin saved at installation matches
+the command's.
+
+Devices installed without the binding flags show **Not protected · Relay
+trusted**. **Protect all devices** on the Devices page binds them from the browser
+in one step and offers **Update and protect** for older runtimes; it trusts the
+relay at the moment of binding ([one-click protection](account-key-trust.md#protect-all-devices)).
+**Protect this device** offers the same for one device, or **Show local bind
+command**, the most secure option, a command to run on the device:
+
+```sh
+POCKYMOE_ENROLL_SECRET='<secret>' pockymoe bind --account-key '<key>' --web-origin 'https://app.example.com'
+```
+
+The PowerShell form sets `$env:POCKYMOE_ENROLL_SECRET` and removes it after the
+command. `pockymoe bind --enroll-stdin` reads the secret from standard input
+instead.
+
+It writes the Supervisor database directly, needs no network access and works
+whether or not the Supervisor is running. `pockymoe bind --status` prints the
+device identity fingerprint and the bound account fingerprint, and `pockymoe bind --reset` (`--yes` skips the prompt)
+removes the binding and every browser registration, grant and browser-created
+port mapping, restoring relay trust; removed browsers stay removed if the device
+is bound to the same key again. Use it before binding to a new account key after
+**Start over**, or before attaching the device to a different relay device; until
+then a bound device that the relay greets with a different device ID retries with
+backoff and reports `device_id_mismatch` in `/healthz` and `pockymoe bind
+--status`. **Remove device** in the Web deletes the device's relay registration
+but leaves its local binding in place.
+
+A device whose identity file or certificate was lost shows **Certificate
+missing**. **Repair device binding** gives a new bind command; after it runs, the
+browser completes enrollment and, if the device's identity changed, asks you to
+confirm the reinstalled device before trusting it.
+
+## Settings and upstreams
 
 Open a device's Settings to manage its Supervisor, harnesses and upstreams.
 Only the device owner can change these settings. Install/Update jobs keep running
