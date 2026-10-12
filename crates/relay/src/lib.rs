@@ -1582,36 +1582,7 @@ impl AccessQuery {
     }
 }
 
-#[derive(Clone, Debug)]
-struct EffectiveAccess {
-    kind: &'static str,
-    grant_id: Option<String>,
-    share_id: Option<String>,
-    scope: String,
-    thread_id: Option<String>,
-    thread_access: String,
-    workspace_access: String,
-    workspace_id: Option<String>,
-    workspace_scope: Option<String>,
-    workspace_ids: Vec<String>,
-    can_create_threads: bool,
-}
-
-fn owner_access() -> EffectiveAccess {
-    EffectiveAccess {
-        kind: "owner",
-        grant_id: None,
-        share_id: None,
-        scope: "owner".to_string(),
-        thread_id: None,
-        thread_access: "control".to_string(),
-        workspace_access: "write".to_string(),
-        workspace_id: None,
-        workspace_scope: None,
-        workspace_ids: Vec::new(),
-        can_create_threads: true,
-    }
-}
+use pockymoe_protocol::access::{owner_access, EffectiveAccess};
 
 fn access_json(access: &EffectiveAccess) -> Value {
     json!({
@@ -1715,11 +1686,14 @@ fn effective_access(
         None
     };
     if let Some(share) = share {
-        let workspace_matches = workspace_id.is_none_or(|workspace_id| {
-            share.workspace_id.as_deref() == Some(workspace_id) && share.workspace_access != "none"
-        });
-        if workspace_matches {
-            return Some(share);
+        if let Some(access) = pockymoe_protocol::access::merge_access(
+            false,
+            Some(share),
+            &[],
+            thread_id,
+            workspace_id,
+        ) {
+            return Some(access);
         }
     }
 
@@ -1763,80 +1737,34 @@ fn effective_access(
             can_create_threads,
         ) = row;
         let selected: Vec<String> = serde_json::from_str(&workspace_ids).unwrap_or_default();
-        let matches = match scope.as_str() {
-            "device" => workspace_id.is_none() || workspace_access != "none",
-            "thread" => thread_id.is_some_and(|value| {
-                grant_thread
-                    .as_deref()
-                    .is_some_and(|parent| thread_groups::contains(conn, device_id, parent, value))
-            }),
-            "workspace" => {
-                workspace_access != "none"
-                    && workspace_id.is_some_and(|value| Some(value) == grant_workspace.as_deref())
-            }
-            _ => false,
+        let grant = EffectiveAccess {
+            kind: "shared",
+            grant_id: Some(id),
+            share_id: None,
+            scope,
+            thread_id: grant_thread,
+            thread_access,
+            workspace_access,
+            workspace_id: grant_workspace,
+            workspace_scope: Some(workspace_scope),
+            workspace_ids: selected,
+            can_create_threads: can_create_threads == 1,
         };
-        if matches {
-            matching.push(EffectiveAccess {
-                kind: "shared",
-                grant_id: Some(id),
-                share_id: None,
-                scope,
-                thread_id: grant_thread,
-                thread_access,
-                workspace_access,
-                workspace_id: grant_workspace,
-                workspace_scope: Some(workspace_scope),
-                workspace_ids: selected,
-                can_create_threads: can_create_threads == 1,
-            });
+        // Database lookup supplies lineage evidence; the matching rule is shared.
+        let lineage = grant
+            .thread_id
+            .as_deref()
+            .filter(|parent| {
+                thread_id
+                    .is_some_and(|target| thread_groups::contains(conn, device_id, parent, target))
+            })
+            .map(|parent| vec![parent.to_owned()])
+            .unwrap_or_default();
+        if pockymoe_protocol::access::grant_matches(&grant, thread_id, workspace_id, &lineage) {
+            matching.push(grant);
         }
     }
-    let representative = matching.first()?.clone();
-    let merged_scope = if matching.iter().any(|grant| grant.scope == "device") {
-        "device"
-    } else if matching.iter().any(|grant| grant.scope == "workspace") {
-        "workspace"
-    } else {
-        "thread"
-    };
-    let thread_access = if matching
-        .iter()
-        .any(|grant| grant.thread_access == "control")
-    {
-        "control"
-    } else {
-        "read"
-    };
-    let workspace_access = if matching
-        .iter()
-        .any(|grant| grant.workspace_access == "write")
-    {
-        "write"
-    } else if matching
-        .iter()
-        .any(|grant| grant.workspace_access == "read")
-    {
-        "read"
-    } else {
-        "none"
-    };
-    let mut merged = representative;
-    merged.scope = merged_scope.to_string();
-    merged.thread_id = if merged_scope == "thread" {
-        thread_id.map(str::to_string).or(merged.thread_id)
-    } else {
-        None
-    };
-    merged.thread_access = thread_access.to_string();
-    merged.workspace_access = workspace_access.to_string();
-    merged.workspace_id = if merged_scope == "workspace" {
-        workspace_id.map(str::to_string).or(merged.workspace_id)
-    } else {
-        None
-    };
-    merged.can_create_threads = matching.iter().any(|grant| grant.can_create_threads);
-    Some(merged)
+    pockymoe_protocol::access::merge_access(false, None, &matching, thread_id, workspace_id)
 }
 
 async fn relay_access(
@@ -3716,7 +3644,7 @@ async fn handle_client_socket(
                         let message_thread = payload.get("threadId").and_then(Value::as_str);
                         if thread_id.as_deref().zip(message_thread).is_some_and(|(a,b)| a != b) { break; }
                         let kind = payload.get("type").and_then(Value::as_str).unwrap_or_default();
-                        if !matches!(kind, "supervisor.ping" | "shell.attach" | "shell.detach" | "shell.input" | "shell.resize" | "shell.clear") { break; }
+                        if !pockymoe_protocol::access::client_message_allowed(&owner_access(), kind) { break; }
                         let fresh_access = {
                             let conn = state.store.conn.lock().await;
                             if load_user_by_session(&conn, &state.store.session_secret, &session_token).is_none() { break; }
@@ -3731,7 +3659,7 @@ async fn handle_client_socket(
                         let Some(fresh_access) = fresh_access else {
                             break;
                         };
-                        if kind != "supervisor.ping" && fresh_access.kind == "shared" && fresh_access.thread_access != "control" {
+                        if !pockymoe_protocol::access::client_message_allowed(&fresh_access, kind) {
                             break;
                         }
                         if kind.starts_with("shell.") {
@@ -3863,17 +3791,12 @@ async fn forward_server_message_to_client(
         return;
     };
     let event_thread = payload.get("threadId").and_then(Value::as_str);
-    let control_event = matches!(
-        payload.get("type").and_then(Value::as_str),
-        Some("supervisor.connected" | "supervisor.pong")
-    );
-    let attached_shell_event = attached_shell
-        .as_deref()
-        .is_some_and(|shell_id| payload.get("shellId").and_then(Value::as_str) == Some(shell_id));
-    if let Some(expected) = configured_thread.as_deref() {
-        if !control_event && !attached_shell_event && event_thread != Some(expected) {
-            return;
-        }
+    if !pockymoe_protocol::access::outbound_event_in_scope(
+        configured_thread.as_deref(),
+        attached_shell.as_deref(),
+        payload,
+    ) {
+        return;
     }
     let authorized = {
         let conn = state.store.conn.lock().await;
