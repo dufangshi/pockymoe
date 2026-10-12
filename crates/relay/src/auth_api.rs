@@ -1,3 +1,4 @@
+mod certificates;
 mod passkeys;
 use super::{auth_factors as factors, security, AppState, TokenQuery, UserRow};
 use axum::{
@@ -69,6 +70,7 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
         .route("/setup.sh", get(setup_script))
         .route("/setup.ps1", get(setup_powershell_script))
         .merge(passkeys::routes())
+        .merge(certificates::routes())
         .route("/relay/devices/{id}/token", post(rotate_device_token))
         .route("/relay/account/security", get(summary))
         .route("/relay/account/security/reauth", post(reauth))

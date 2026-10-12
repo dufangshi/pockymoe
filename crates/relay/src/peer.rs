@@ -582,6 +582,7 @@ mod tests {
             "Content-Type":"application/octet-stream", "Accept":"application/json",
             "X-RCD-Key":"key", "x-rcd-request":"a.0", "x-rcd-enc":"enc", "x-rcd-sealed":"1",
             "x-rcd-resource":"threads/forged",
+            "X-RCD-Session":"forged-session", "x-rcd-signature":"forged-signature",
             "authorization":"forged", "cookie":"forged", "x-peer-device-id":"foreign"
         });
         write(&mut a, first).await;

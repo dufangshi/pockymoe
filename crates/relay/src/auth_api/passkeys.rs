@@ -4,6 +4,13 @@ use sha2::{Digest, Sha256};
 use webauthn_rs::prelude::*;
 
 fn webauthn(state: &AppState) -> Result<Webauthn, Failure> {
+    let (rp, origin) = rp_origin(state)?;
+    WebauthnBuilder::new(&rp, &origin)
+        .and_then(|b| b.rp_name("Pockymoe").build())
+        .map_err(internal)
+}
+
+fn rp_origin(state: &AppState) -> Result<(String, Url), Failure> {
     let base = state
         .oauth
         .public_base_url
@@ -13,12 +20,11 @@ fn webauthn(state: &AppState) -> Result<Webauthn, Failure> {
     let rp = origin
         .host_str()
         .ok_or_else(|| invalid("Invalid public URL"))?;
-    WebauthnBuilder::new(rp, &origin)
-        .and_then(|b| b.rp_name("Pockymoe").build())
-        .map_err(internal)
+    Ok((rp.to_string(), origin))
 }
 pub(super) fn routes() -> Router<Arc<AppState>> {
     Router::new()
+        .route("/relay/account/passkeys/public", get(public))
         .route(
             "/relay/account/security/passkeys/register/start",
             post(register_start),
@@ -33,6 +39,49 @@ pub(super) fn routes() -> Router<Arc<AppState>> {
         )
         .route("/relay/auth/passkey/start", post(authenticate_start))
         .route("/relay/auth/passkey/finish", post(authenticate_finish))
+}
+
+fn public_key_spki(key: &COSEKey) -> Result<String, Failure> {
+    match (&key.type_, &key.key) {
+        (COSEAlgorithm::ES256, COSEKeyType::EC_EC2(ec)) if ec.curve == ECDSACurve::SECP256R1 => {}
+        (COSEAlgorithm::RS256, COSEKeyType::RSA(_)) => {}
+        _ => return Err(internal("Unsupported owner credential algorithm")),
+    }
+    let der = key
+        .get_openssl_pkey()
+        .map_err(internal)?
+        .public_key_to_der()
+        .map_err(internal)?;
+    Ok(URL_SAFE_NO_PAD.encode(der))
+}
+
+async fn public(State(state): State<Arc<AppState>>, headers: HeaderMap) -> ApiResult {
+    let conn = state.store.conn.lock().await;
+    let (user, _) = auth(&conn, &state, &headers)?;
+    let (rp, origin) = rp_origin(&state)?;
+    let origin = origin.origin().ascii_serialization();
+    let mut stmt = conn
+        .prepare("SELECT credential,name FROM relay_passkeys WHERE user_id=?1 ORDER BY created_at DESC,id")
+        .map_err(internal)?;
+    let rows = stmt
+        .query_map(params![user.id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(internal)?;
+    let mut passkeys = Vec::new();
+    for row in rows {
+        let (raw, name) = row.map_err(internal)?;
+        let key: Passkey = serde_json::from_str(&raw).map_err(internal)?;
+        passkeys.push(json!({
+            "credentialId": URL_SAFE_NO_PAD.encode(key.cred_id().as_ref()),
+            "publicKey": public_key_spki(key.get_public_key())?,
+            "algorithm": *key.cred_algorithm() as i32,
+            "rpId": rp,
+            "origin": origin,
+            "name": name,
+        }));
+    }
+    Ok(Json(json!({"passkeys": passkeys})))
 }
 fn keys(conn: &Connection, user: &str) -> Result<Vec<Passkey>, Failure> {
     let mut stmt = conn
@@ -321,4 +370,152 @@ async fn remove(
     )
     .map_err(internal)?;
     Ok(Json(json!({"ok":true})))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use openssl::{
+        bn::{BigNum, BigNumContext},
+        ec::{EcGroup, EcKey},
+        nid::Nid,
+        pkey::{HasPublic, PKey},
+    };
+
+    fn vectors() -> Value {
+        serde_json::from_str(include_str!("../../test-fixtures/owner-trust-v1.json")).unwrap()
+    }
+
+    fn cose_from_ec<T: HasPublic>(key: &EcKey<T>) -> COSEKey {
+        let mut ctx = BigNumContext::new().unwrap();
+        let mut x = BigNum::new().unwrap();
+        let mut y = BigNum::new().unwrap();
+        key.public_key()
+            .affine_coordinates_gfp(key.group(), &mut x, &mut y, &mut ctx)
+            .unwrap();
+        COSEKey {
+            type_: COSEAlgorithm::ES256,
+            key: COSEKeyType::EC_EC2(COSEEC2Key {
+                curve: ECDSACurve::SECP256R1,
+                x: x.to_vec_padded(32).unwrap().into(),
+                y: y.to_vec_padded(32).unwrap().into(),
+            }),
+        }
+    }
+
+    fn vector_key() -> COSEKey {
+        let der = URL_SAFE_NO_PAD
+            .decode(vectors()["credentialRecord"]["publicKey"].as_str().unwrap())
+            .unwrap();
+        let key = PKey::public_key_from_der(&der).unwrap().ec_key().unwrap();
+        cose_from_ec(&key)
+    }
+
+    #[test]
+    fn es256_cose_spki_round_trips_and_matches_interop_vector() {
+        let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).unwrap();
+        let key = EcKey::generate(&group).unwrap();
+        let cose = cose_from_ec(&key);
+        let der = URL_SAFE_NO_PAD
+            .decode(public_key_spki(&cose).unwrap())
+            .unwrap();
+        let decoded = PKey::public_key_from_der(&der).unwrap().ec_key().unwrap();
+        assert_eq!(cose_from_ec(&decoded), cose);
+        assert_eq!(
+            der,
+            PKey::from_ec_key(key).unwrap().public_key_to_der().unwrap()
+        );
+        assert_eq!(
+            public_key_spki(&vector_key()).unwrap(),
+            vectors()["credentialRecord"]["publicKey"]
+        );
+    }
+
+    #[test]
+    fn rs256_cose_exports_spki_and_invalid_keys_are_rejected() {
+        let rsa = openssl::rsa::Rsa::generate(2048).unwrap();
+        let cose = COSEKey {
+            type_: COSEAlgorithm::RS256,
+            key: COSEKeyType::RSA(COSERSAKey {
+                n: rsa.n().to_vec().into(),
+                e: rsa.e().to_vec().try_into().unwrap(),
+            }),
+        };
+        let expected = PKey::from_rsa(rsa).unwrap().public_key_to_der().unwrap();
+        assert_eq!(
+            URL_SAFE_NO_PAD
+                .decode(public_key_spki(&cose).unwrap())
+                .unwrap(),
+            expected
+        );
+        let mut wrong_algorithm = vector_key();
+        wrong_algorithm.type_ = COSEAlgorithm::RS256;
+        assert!(public_key_spki(&wrong_algorithm).is_err());
+        let mut invalid = vector_key();
+        if let COSEKeyType::EC_EC2(ref mut ec) = invalid.key {
+            ec.x = vec![0; 32].into();
+            ec.y = vec![0; 32].into();
+        }
+        assert!(public_key_spki(&invalid).is_err());
+    }
+
+    #[tokio::test]
+    async fn public_directory_uses_account_credential_and_configured_rp_origin() {
+        let fixture = crate::trust_tests::Fixture::new("passkey-public-directory").await;
+        let record = vectors()["credentialRecord"].clone();
+        let passkey: Passkey = serde_json::from_value(json!({"cred": {
+            "cred_id": record["credentialId"], "cred": vector_key(), "counter": 0,
+            "transports": null, "user_verified": true, "backup_eligible": true, "backup_state": true,
+            "registration_policy": "required", "extensions": {},
+            "attestation": { "data": "None", "metadata": "None" }, "attestation_format": "none"
+        }})).unwrap();
+        {
+            let conn = fixture.state.store.conn.lock().await;
+            conn.execute(
+                "INSERT INTO relay_passkeys(id,user_id,credential,name,created_at)
+                          VALUES (?1,'owner',?2,'Owner passkey',0)",
+                params![
+                    record["credentialId"].as_str().unwrap(),
+                    serde_json::to_string(&passkey).unwrap()
+                ],
+            )
+            .unwrap();
+        }
+        let path = "/relay/account/passkeys/public";
+        assert_eq!(
+            fixture
+                .request(axum::http::Method::GET, path, None)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        let other: Value = fixture
+            .request(axum::http::Method::GET, path, Some("stranger"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(other, json!({"passkeys": []}));
+        let response = fixture
+            .request(axum::http::Method::GET, path, Some("owner"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: Value = response.json().await.unwrap();
+        assert_eq!(
+            body,
+            json!({"passkeys": [{
+                "credentialId": record["credentialId"], "publicKey": record["publicKey"], "algorithm": -7,
+                "rpId": "pockymoe.test", "origin": "https://pockymoe.test:8443", "name": "Owner passkey"
+            }]})
+        );
+        // Public records have no registration metadata, counters, or private material.
+        assert_eq!(body["passkeys"][0].as_object().unwrap().len(), 6);
+        webauthn(&fixture.state).unwrap();
+    }
 }
