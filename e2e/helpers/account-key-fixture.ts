@@ -283,8 +283,14 @@ export class Fixture {
     await expect(row.getByText('Not protected · Relay trusted', { exact: true })).toBeVisible();
     if (capture) await screenshot(page, this.info, 'v2-device-unprotected');
     await row.getByRole('button', { name: 'Protect this device', exact: true }).click();
-    await unlock(page, owner.password);
     const dialog = page.getByRole('dialog', { name: 'Protect this device', exact: true });
+    // Runtimes that support remote binding offer it first; this fixture exercises
+    // the local command, which the panel prepares only after an explicit choice.
+    const local = dialog.getByRole('button', { name: 'Show local bind command', exact: true });
+    const unlockDialog = page.getByRole('dialog', { name: 'Unlock this browser', exact: true });
+    await expect(local.or(unlockDialog)).toBeVisible();
+    if (await local.isVisible()) await local.click();
+    await unlock(page, owner.password);
     await expect(dialog.locator('pre')).toBeVisible();
     const command = (await dialog.locator('pre').textContent())!.trim();
     // Section 11's Unix command puts the one-time secret in the CLI child's
