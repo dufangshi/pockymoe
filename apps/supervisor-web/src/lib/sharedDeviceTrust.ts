@@ -136,11 +136,14 @@ export async function verifySharedDevice(deviceId: string, identityKey: string, 
 // Invite checks are unsigned: normal browser registration happens on destination
 // requests. Certificate trust covers the descriptor identity without a passkey.
 export async function checkSharedInviteDevice(deviceId: string, threadId?: string) {
+  const saved = await localOwnerCertificate(deviceId);
+  const expectedOwner = !!saved || (await boundDevices()).includes(deviceId);
   const descriptor = await deviceDescriptor(deviceId, threadId);
   if (!descriptor?.certificate) throw new SharingTrustError('invalid_certificate');
   const own = await currentAccount();
-  if (own && descriptor.certificate.accountKeyId === own.accountKeyId) {
-    if (!(await verifies(descriptor.certificate, own, deviceId, descriptor.identityKey)))
+  if (expectedOwner || (own && descriptor.certificate.accountKeyId === own.accountKeyId)) {
+    if (!own || !(await verifies(descriptor.certificate, own, deviceId, descriptor.identityKey)) ||
+      (saved && saved.identityKey !== descriptor.identityKey))
       throw new SharingTrustError('invalid_certificate');
     await rememberCertifiedDevice(descriptor.certificate, own);
     return;

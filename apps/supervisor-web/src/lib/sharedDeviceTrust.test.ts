@@ -135,6 +135,20 @@ describe('locally certified device inventory and owner invites', () => {
     await trust.pinInviteOwner(certificate.deviceId, vectors.otherAccount.accountKeyId);
     expect(await trust.inviteOwnerPin(certificate.deviceId)).toBeUndefined();
   });
+  it.each(['certificate', 'vault'])('never switches existing %s owner trust to a relay-selected account during invite navigation', async (root) => {
+    state.account.mockResolvedValue({ ...vectors.otherAccount, userId: 'owner' });
+    if (root === 'certificate') {
+      // A local root was already verified. Focus this test on authority selection;
+      // the other tests exercise real certificate signature verification.
+      state.store.set(`device-certificate:${vectors.otherAccount.accountKeyId}:${certificate.deviceId}`, {
+        ...certificate, accountKeyId: vectors.otherAccount.accountKeyId,
+      });
+      state.verify.mockImplementation(async (cert: DeviceCertificate, authority: AccountKeyInfo) => cert.accountKeyId === authority.accountKeyId);
+    } else state.bound.mockResolvedValue([certificate.deviceId]);
+    state.store.set(`invite-owner:${certificate.deviceId}`, account.accountKeyId);
+    await expect(trust.checkSharedInviteDevice(certificate.deviceId)).rejects.toMatchObject({ code: 'invalid_certificate' });
+    expect(state.fetch.mock.calls.some(([url]) => url.endsWith('/owner-account'))).toBe(false);
+  });
   it('copies an owner account id only after the device certificate verifies against the cached owner account', async () => {
     state.account.mockResolvedValue({ ...account, userId: vectors.account.userId });
     expect(await trust.sharingOwnerAccountKeyId(certificate.deviceId)).toBe(account.accountKeyId);
