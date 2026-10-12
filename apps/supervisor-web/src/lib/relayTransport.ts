@@ -4,6 +4,7 @@ import { verifySharedDeviceRole } from './accountTransport';
 import { relayUrl } from './relayOrigin';
 import { getLocale, translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import workerUrl from './relayServiceWorker.ts?worker&url';
+import { relayWorkerRegistration } from './staticWeb';
 import { readAfterOwnerUnlock } from './ownerUnlockRecovery';
 import {
   exchange,
@@ -82,10 +83,8 @@ export async function ensureRelayWorker() {
       translate("workbench.hTTPSAndServiceWorkerSupportAreRequired"),
     );
   workerReady ??= (async () => {
-    await navigator.serviceWorker.register(workerUrl, {
-      scope: '/',
-      type: 'module',
-    });
+    const registration = relayWorkerRegistration(workerUrl, import.meta.env.VITE_POCKYMOE_STATIC_WEB === 'true');
+    await navigator.serviceWorker.register(registration.url, registration.options);
     await navigator.serviceWorker.ready;
     if (!navigator.serviceWorker.controller)
       await new Promise<void>((done, fail) => {

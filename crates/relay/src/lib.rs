@@ -4653,6 +4653,26 @@ async fn spa_fallback(State(state): State<Arc<AppState>>, req: Request) -> Respo
         || path == "/healthz"
         || path == "/supervisor/tunnel";
     if state.oauth.api_only(req.headers()) {
+        // Updating an installed worker must succeed at its original URL rather
+        // than redirecting across origins. This worker retires the old site.
+        let old_worker = (path.starts_with("/assets/relayServiceWorker-")
+            && path.ends_with(".js")
+            && !path.trim_start_matches("/assets/").contains('/'))
+            || matches!(path, "/service-worker.js" | "/relayServiceWorker.js");
+        if old_worker && matches!(*req.method(), Method::GET | Method::HEAD) {
+            return Response::builder()
+                .header(
+                    header::CONTENT_TYPE,
+                    "application/javascript; charset=utf-8",
+                )
+                .header(header::CACHE_CONTROL, "no-store")
+                .body(if req.method() == Method::HEAD {
+                    Body::empty()
+                } else {
+                    Body::from(include_str!("retired_service_worker.js"))
+                })
+                .unwrap();
+        }
         if api {
             return (
                 StatusCode::NOT_FOUND,

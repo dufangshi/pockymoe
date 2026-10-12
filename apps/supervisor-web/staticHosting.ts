@@ -1,7 +1,12 @@
 import type { Plugin } from 'vite';
+import path from 'node:path';
+import { copyFileSync } from 'node:fs';
 
 // Header/rewrite files consumed by static hosts (for example Cloudflare Pages).
-export function staticHosting(relay: string): Plugin {
+export function staticHosting(relay: string, domain: string): Plugin {
+  if (domain.length > 253 || !domain.includes('.') ||
+      !domain.split('.').every(label => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(label)))
+    throw new Error('POCKYMOE_WEB_DOMAIN must be a DNS hostname');
   let origin = '';
   let websocket = '';
   if (relay.trim()) {
@@ -16,10 +21,24 @@ export function staticHosting(relay: string): Plugin {
   return {
     name: 'static-host-security',
     apply: 'build',
+    transformIndexHtml: {
+      order: 'post',
+      handler() {
+        return [{ tag: 'meta', attrs: {
+          'http-equiv': 'Content-Security-Policy',
+          content: csp.replace("; frame-ancestors 'none'", ''),
+        }, injectTo: 'head-prepend' }];
+      },
+    },
     generateBundle() {
-      this.emitFile({ type: 'asset', fileName: '_headers', source: `/*\n  Content-Security-Policy: ${csp}\n  X-Content-Type-Options: nosniff\n  Referrer-Policy: no-referrer\n  X-Frame-Options: DENY\n/assets/*\n  Service-Worker-Allowed: /\n/index.html\n  Cache-Control: no-cache\n` });
+      this.emitFile({ type: 'asset', fileName: 'CNAME', source: `${domain.toLowerCase()}\n` });
+      this.emitFile({ type: 'asset', fileName: '_headers', source: `/*\n  Content-Security-Policy: ${csp}\n  X-Content-Type-Options: nosniff\n  Referrer-Policy: no-referrer\n  X-Frame-Options: DENY\n/relayServiceWorker.js\n  Cache-Control: no-cache\n/index.html\n  Cache-Control: no-cache\n` });
       this.emitFile({ type: 'asset', fileName: '_redirects', source: '/* /index.html 200\n' });
-      this.emitFile({ type: 'asset', fileName: 'STATIC_HOSTING.txt', source: `Serve this directory over HTTPS on the trusted Web origin.\nApply _headers as HTTP response headers, including the CSP; do not serve these rules as ordinary public files.\nApply _redirects as a fallback rewrite to index.html only when no static file exists.\nIf the host does not support these files, translate them into its response-header and SPA-rewrite configuration.\nService-Worker-Allowed: / is required on the built relayServiceWorker asset.\nNo inline script is needed: this build selects relay mode at compile time.\nRelay API origin: ${origin || '(same origin)'}\nSet POCKYMOE_WEB_ORIGIN on the relay to the trusted Web origin. Both origins must share the same registrable domain (same site) because relay cookies remain host-only, Secure, SameSite=Lax. Localhost with different ports is suitable for local development.\nKeep the old device /supervisor/tunnel route reachable when moving an existing installation. Deployment, DNS, CDN rules and workflows are intentionally separate.\n` });
+      this.emitFile({ type: 'asset', fileName: 'STATIC_HOSTING.txt', source: `Serve this directory over HTTPS on the trusted Web origin.\nGitHub Pages uses CNAME and 404.html (a copy of index.html) for the domain and SPA fallback.\nThe HTML meta CSP applies on hosts without response headers; the app refuses to initialize in a frame. No inline script is needed.\nOn other hosts apply _headers as response headers and _redirects as a fallback rewrite only when no static file exists.\nThe service worker is /relayServiceWorker.js with scope /; no Service-Worker-Allowed header is needed.\nBuild CNAME: ${domain.toLowerCase()}\nRelay API origin: ${origin || '(same origin)'}\nSet POCKYMOE_WEB_ORIGIN on the relay to the trusted Web origin. Both origins must share the same registrable domain (same site) because relay cookies remain host-only, Secure, SameSite=Lax. Localhost with different ports is suitable for local development.\nKeep the old device /supervisor/tunnel route reachable when moving an existing installation.\n` });
+    },
+    writeBundle(options) {
+      const output = options.dir ?? path.resolve('dist');
+      copyFileSync(path.join(output, 'index.html'), path.join(output, '404.html'));
     },
   };
 }
