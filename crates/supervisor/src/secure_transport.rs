@@ -20,7 +20,10 @@ use std::{
     collections::HashMap,
     io::Write,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, OnceLock},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex, OnceLock,
+    },
 };
 pub(crate) use streams::StreamPrincipal;
 use uuid::Uuid;
@@ -81,6 +84,32 @@ pub(crate) struct Transport {
     sessions: Mutex<HashMap<String, Arc<Session>>>,
 }
 static TRANSPORTS: OnceLock<Mutex<HashMap<PathBuf, Arc<Transport>>>> = OnceLock::new();
+pub(crate) fn invalidate_unauthorized_channels(state: &Supervisor) {
+    let Some(transports) = TRANSPORTS.get() else {
+        return;
+    };
+    let transport = transports.lock().ok().and_then(|t| {
+        t.get(
+            &state
+                .config
+                .database_url
+                .with_extension("transport-identity"),
+        )
+        .cloned()
+    });
+    if let Some(transport) = transport {
+        if let Ok(mut sessions) = transport.sessions.lock() {
+            sessions.retain(|_, s| {
+                if s.principal.as_ref().is_some_and(|p| !p.valid(state)) {
+                    s.revoked.store(true, Ordering::Release);
+                    false
+                } else {
+                    true
+                }
+            });
+        }
+    }
+}
 pub(crate) fn transport(state: &Supervisor) -> Result<Arc<Transport>> {
     let path = state
         .config
@@ -308,7 +337,7 @@ impl Transport {
     }
     pub fn session(&self, id: &str) -> Option<Arc<Session>> {
         let mut sessions = self.sessions.lock().ok()?;
-        sessions.retain(|_, s| s.expires > now());
+        sessions.retain(|_, s| s.alive());
         sessions.get(id).cloned()
     }
     pub fn create_session(&self, request: &OpenedRequest) -> Result<Value> {
@@ -316,7 +345,7 @@ impl Transport {
             .sessions
             .lock()
             .map_err(|_| anyhow!("session lock failed"))?;
-        sessions.retain(|_, s| s.expires > now());
+        sessions.retain(|_, s| s.alive());
         if sessions.len() >= 128 {
             bail!("too many encrypted sessions");
         }
@@ -325,6 +354,7 @@ impl Transport {
         sessions.insert(
             id.clone(),
             Arc::new(Session {
+                revoked: AtomicBool::new(false),
                 id: id.clone(),
                 expires,
                 receive_key: request.client_key,
@@ -351,7 +381,7 @@ pub(crate) struct OpenedRequest {
     server_key: [u8; 32],
     pub aad: String,
     pub sealed: Vec<u8>,
-    pub principal: Option<crate::owner_trust::OwnerPrincipal>,
+    pub principal: Option<crate::owner_trust::BrowserPrincipal>,
 }
 impl OpenedRequest {
     pub fn response(&self, response: Value) -> Result<Value> {
@@ -419,6 +449,7 @@ fn unpack(clear: &[u8]) -> Result<(Value, &[u8])> {
     Ok((serde_json::from_slice(&clear[4..4 + n])?, &clear[4 + n..]))
 }
 pub(crate) struct Session {
+    revoked: AtomicBool,
     id: String,
     expires: i64,
     receive_key: [u8; 32],
@@ -427,7 +458,7 @@ pub(crate) struct Session {
     receive_sequence: Mutex<u64>,
     /// Large server events are gzipped; negotiated when the session was created.
     gzip: bool,
-    pub principal: Option<crate::owner_trust::OwnerPrincipal>,
+    pub principal: Option<crate::owner_trust::BrowserPrincipal>,
     pub thread_id: Option<String>,
 }
 fn ws_aad(id: &str, seq: u64, message: &Value) -> String {
@@ -450,13 +481,13 @@ fn nonce(sequence: u64) -> [u8; 12] {
 }
 impl Session {
     pub fn alive(&self) -> bool {
-        self.expires > now()
+        !self.revoked.load(Ordering::Acquire) && self.expires > now()
     }
     pub fn id(&self) -> &str {
         &self.id
     }
     pub fn seal(&self, message: &Value) -> Result<Value> {
-        if self.expires <= now() {
+        if !self.alive() {
             bail!("encrypted channel expired");
         }
         let mut seq = self
@@ -493,7 +524,7 @@ impl Session {
         Ok(result)
     }
     pub fn open(&self, message: &Value) -> Result<Value> {
-        if self.expires <= now() {
+        if !self.alive() {
             bail!("encrypted channel expired");
         }
         let mut seq = self
@@ -693,6 +724,7 @@ mod tests {
         let key = random();
         let other = random();
         let server = Session {
+            revoked: AtomicBool::new(false),
             id: "channel".into(),
             principal: None,
             thread_id: None,
@@ -704,6 +736,7 @@ mod tests {
             gzip: false,
         };
         let client = Session {
+            revoked: AtomicBool::new(false),
             id: "channel".into(),
             principal: None,
             thread_id: None,
@@ -893,6 +926,7 @@ mod tests {
         );
         // A client view of the same channel: it opens what the server seals.
         let client = Session {
+            revoked: AtomicBool::new(false),
             id: server.id.clone(),
             principal: None,
             thread_id: None,

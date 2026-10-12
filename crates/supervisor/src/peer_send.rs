@@ -1058,7 +1058,7 @@ mod tests {
     #[tokio::test]
     async fn strict_peers_send_read_files_and_deliver_offline_outbox_with_fresh_signatures() {
         use crate::{
-            auth::PeerCaller, owner_trust::tests::paired_peer, peer_link::tests::connected,
+            auth::PeerCaller, owner_trust::tests::bound_peer, peer_link::tests::connected,
             tunnel::forward_local,
         };
         use std::sync::atomic::{AtomicBool, Ordering};
@@ -1066,7 +1066,7 @@ mod tests {
         let (_b_dir, b) = test_state();
         for (state, id) in [(&a, "caller"), (&b, "target")] {
             state.set_peer_access(true).unwrap();
-            paired_peer(state, id);
+            bound_peer(state, id);
         }
         let a_thread = caller_thread(&a).await;
         let b_thread = caller_thread(&b).await;

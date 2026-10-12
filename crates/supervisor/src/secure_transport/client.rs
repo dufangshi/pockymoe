@@ -1,4 +1,4 @@
-//! Peer HTTP uses the browser packets, owner certificates when paired, and TOFU otherwise.
+//! Peer HTTP uses the browser packets, account certificates when bound, and TOFU otherwise.
 use super::{now, pack, random, unpack, Kem, INFO, LIMIT};
 use crate::peer_link::{relay_request, PeerError, PeerResponse};
 use aes_gcm::{
@@ -135,18 +135,18 @@ impl Client {
         let value: Value = serde_json::from_slice(&response.body)?;
         let (descriptor, identity) = verify_descriptor(&value, &challenge, started, received)?;
         verify_target(state, device_id, &descriptor)?;
-        let paired = crate::owner_trust::paired(state);
+        let bound = crate::owner_trust::bound(state);
         // Pin and publish under one lock, so a trust reset also invalidates the cache.
         let mut cached = device.descriptor.lock().unwrap();
         let pin_key = format!("peer:pin:{device_id}");
         if let Some(pin) = state.db.get_kv(&pin_key)? {
             let pin: Value = serde_json::from_str(&pin)?;
             ensure!(pin["identityKey"].is_string(), "invalid peer identity pin");
-            if pin["identityKey"] != identity && !paired {
+            if pin["identityKey"] != identity && !bound {
                 return Err(PeerError::IdentityChanged(device_id.into()).into());
             }
         }
-        if paired || state.db.get_kv(&pin_key)?.is_none() {
+        if bound || state.db.get_kv(&pin_key)?.is_none() {
             state.db.set_kv(
                 &pin_key,
                 &json!({"identityKey":identity,"fingerprint":B64.encode(Sha256::digest(B64.decode(&identity)?)),"pinnedAt":now_rfc3339()}).to_string(),
@@ -189,10 +189,10 @@ impl Client {
                 continue;
             }
             if !registered
-                && crate::owner_trust::paired(state)
+                && crate::owner_trust::bound(state)
                 && matches!(&error, PeerError::Remote { status: 401, code, .. } if code == "peer_certificate_required")
             {
-                let bundle = crate::owner_trust::certificate_bundle(state)?
+                let bundle = crate::owner_trust::device_certificate(state)?
                     .ok_or_else(|| anyhow!("missing local peer certificate bundle"))?;
                 let body = serde_json::to_vec(&bundle)?;
                 let mut registration = seal(
@@ -344,8 +344,8 @@ fn verify_descriptor(
     ))
 }
 fn verify_target(state: &Supervisor, device: &str, descriptor: &Descriptor) -> Result<()> {
-    if crate::owner_trust::paired(state) {
-        crate::owner_trust::verify_peer_bundle(
+    if crate::owner_trust::bound(state) {
+        crate::owner_trust::verify_peer_certificate(
             state,
             descriptor.certificate.clone(),
             device,
@@ -356,10 +356,10 @@ fn verify_target(state: &Supervisor, device: &str, descriptor: &Descriptor) -> R
     Ok(())
 }
 fn sign_peer(state: &Supervisor, sealed: &mut Sealed) -> Result<()> {
-    if !crate::owner_trust::paired(state) {
+    if !crate::owner_trust::bound(state) {
         return Ok(());
     }
-    let bundle = crate::owner_trust::certificate_bundle(state)?
+    let bundle = crate::owner_trust::device_certificate(state)?
         .ok_or_else(|| anyhow!("missing local peer certificate bundle"))?;
     let ciphertext = STANDARD.decode(sealed.payload["body"].as_str().unwrap())?;
     let input = crate::owner_trust::peer_signing_input(&bundle.device_id, &sealed.aad, &ciphertext);
@@ -1093,14 +1093,14 @@ mod tests {
         ));
     }
     #[tokio::test]
-    async fn paired_client_verifies_target_replaces_tofu_and_rechecks_cached_owner() {
-        use crate::owner_trust::{self, tests::paired_peer};
+    async fn bound_client_verifies_target_replaces_tofu_and_rechecks_cached_account() {
+        use crate::owner_trust::{self, tests::bound_peer};
         let (_caller_dir, caller) = state_with_relay_url("http://127.0.0.1:1");
         let (_target_dir, target) = state_with_relay_url("http://127.0.0.1:1");
         for state in [&caller, &target] {
             state.set_peer_access(true).unwrap();
         }
-        paired_peer(&caller, "caller");
+        bound_peer(&caller, "caller");
         let (task, _) = serve(
             &caller,
             target.clone(),
@@ -1115,8 +1115,8 @@ mod tests {
         );
         assert!(error
             .to_string()
-            .contains("pair the target device with the same passkey"));
-        paired_peer(&target, "target");
+            .contains("bind the target device to the same account key"));
+        bound_peer(&target, "target");
         caller
             .db
             .set_kv(
@@ -1131,22 +1131,15 @@ mod tests {
             pin["identityKey"],
             super::super::transport(&target).unwrap().identity_key()
         );
-        caller
-            .db
-            .with(|c| {
-                let mut other = owner_trust::tests::vectors()["credentialRecord"].clone();
-                other["credentialId"] = json!("other");
-                c.execute(
-                    "INSERT INTO owner_credentials(credential_id,record_json) VALUES('other',?1)",
-                    [other.to_string()],
-                )?;
-                c.execute(
-                    "DELETE FROM owner_credentials WHERE credential_id != 'other'",
-                    [],
-                )?;
-                Ok(())
-            })
-            .unwrap();
+        let mut revocation: owner_trust::Revocation =
+            serde_json::from_value(owner_trust::tests::vectors()["revocations"]["device"].clone())
+                .unwrap();
+        revocation.subject_id = "target".into();
+        use p256::ecdsa::{signature::Signer, Signature};
+        let sig: Signature = owner_trust::tests::account_key()
+            .sign(owner_trust::revocation_signing_input(&revocation).as_bytes());
+        revocation.signature = B64.encode(sig.to_bytes());
+        owner_trust::apply_revocations(&caller, &[revocation]).unwrap();
         assert!(matches!(
             call(&caller).await.unwrap_err().downcast_ref(),
             Some(PeerError::TargetUnverified(_))
@@ -1154,14 +1147,14 @@ mod tests {
         stop(task).await;
     }
     #[tokio::test]
-    async fn strict_target_refuses_unpaired_caller_and_certificate_retry_is_once() {
-        use crate::owner_trust::tests::paired_peer;
+    async fn strict_target_refuses_unbound_caller_and_certificate_retry_is_once() {
+        use crate::owner_trust::tests::bound_peer;
         let (_caller_dir, caller) = state_with_relay_url("http://127.0.0.1:1");
         let (_target_dir, target) = state_with_relay_url("http://127.0.0.1:1");
         for state in [&caller, &target] {
             state.set_peer_access(true).unwrap();
         }
-        paired_peer(&target, "target");
+        bound_peer(&target, "target");
         let (task, frames) = serve(
             &caller,
             target.clone(),
@@ -1176,9 +1169,9 @@ mod tests {
             serde_json::from_slice::<Value>(&response.body).unwrap()["code"],
             "peer_certificate_required"
         );
-        assert_eq!(frames.lock().unwrap().len(), 2); // unpaired callers do not register
+        assert_eq!(frames.lock().unwrap().len(), 2); // unbound callers do not register
         stop(task).await;
-        paired_peer(&caller, "caller");
+        bound_peer(&caller, "caller");
         peer_link::reset_pin(&caller, "target").unwrap();
         let (task, frames) = serve(
             &caller,
@@ -1206,7 +1199,7 @@ mod tests {
         let (_target_dir, target) = state_with_relay_url("http://127.0.0.1:1");
         for (state, id) in [(&caller, "caller"), (&target, "target")] {
             state.set_peer_access(true).unwrap();
-            crate::owner_trust::tests::paired_peer(state, id);
+            crate::owner_trust::tests::bound_peer(state, id);
         }
         let (task, frames) = serve(
             &caller,

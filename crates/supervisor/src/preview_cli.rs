@@ -321,21 +321,9 @@ mod tests {
             );
         }
         assert_eq!(crate::ports::snapshot(&state).len(), 2);
-        state
-            .db
-            .with(|c| {
-                c.execute("UPDATE owner_sessions SET expires_at=0", [])?;
-                Ok(())
-            })
-            .unwrap();
-        assert_eq!(crate::ports::snapshot(&state).len(), 2);
-        state
-            .db
-            .with(|c| {
-                c.execute("DELETE FROM owner_credentials", [])?;
-                Ok(())
-            })
-            .unwrap();
+        let v = crate::owner_trust::tests::vectors();
+        let revocation = serde_json::from_value(v["revocations"]["browser"].clone()).unwrap();
+        crate::owner_trust::apply_revocations(&state, &[revocation]).unwrap();
         assert!(crate::owner_trust::strict(&state));
         assert_eq!(crate::ports::snapshot(&state).len(), 2);
     }

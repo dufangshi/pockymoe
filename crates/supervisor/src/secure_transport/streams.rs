@@ -9,17 +9,17 @@ const CHUNK: usize = 1024 * 1024;
 pub(crate) struct Streams(Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<Entry>>>>>);
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum StreamPrincipal {
-    Session(String),
+    Browser(crate::owner_trust::BrowserPrincipal),
     Peer(crate::owner_trust::PeerPrincipal),
     Unauthenticated,
 }
 impl StreamPrincipal {
     pub fn new(
-        owner: Option<&crate::owner_trust::OwnerPrincipal>,
+        browser: Option<&crate::owner_trust::BrowserPrincipal>,
         peer: Option<&crate::owner_trust::PeerPrincipal>,
     ) -> Self {
-        match (owner, peer) {
-            (Some(owner), _) => Self::Session(owner.session_id.clone()),
+        match (browser, peer) {
+            (Some(browser), _) => Self::Browser(browser.clone()),
             (_, Some(peer)) => Self::Peer(peer.clone()),
             _ => Self::Unauthenticated,
         }
@@ -211,9 +211,16 @@ impl Streams {
 mod tests {
     use super::*;
     #[tokio::test]
-    async fn continuations_require_the_starting_session_and_literal_scope() {
+    async fn continuations_require_the_starting_browser_and_literal_scope() {
+        let browser = |id: &str, grantee: Option<&str>| {
+            StreamPrincipal::Browser(crate::owner_trust::BrowserPrincipal {
+                browser_id: id.into(),
+                account_key_id: "account".into(),
+                grantee_user_id: grantee.map(Into::into),
+            })
+        };
         let streams = Streams::default();
-        let owner = StreamPrincipal::Session("owner-session".into());
+        let owner = browser("owner-browser", None);
         let (_, next) = streams
             .begin(
                 "/api/threads/import-candidates",
@@ -224,8 +231,9 @@ mod tests {
             .unwrap();
         let next = next.unwrap();
         for other in [
-            StreamPrincipal::Session("grantee-session".into()),
-            StreamPrincipal::Session("another-owner-session".into()),
+            browser("grantee-browser", Some("grantee")),
+            browser("owner-browser", Some("grantee")),
+            browser("another-owner-browser", None),
             StreamPrincipal::Unauthenticated,
         ] {
             assert!(streams.read(&next, &other).await.is_err());

@@ -46,7 +46,7 @@ pub(crate) enum PeerError {
     Timeout(String),
     #[error("device identity changed for {0}; check `pockymoe relay-fingerprint` on that device, then run `pockymoe device trust {0} --reset`")]
     IdentityChanged(String),
-    #[error("peer_target_unverified: cannot verify device {0}; pair the target device with the same passkey")]
+    #[error("peer_target_unverified: cannot verify device {0}; bind the target device to the same account key")]
     TargetUnverified(String),
     #[error("{code}: {message}")]
     Remote {

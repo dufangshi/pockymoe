@@ -34,7 +34,6 @@ zip.workspace = true
 hpke = { version = "0.13", default-features = false, features = ["std", "p256"] }
 aes-gcm = "0.10"
 p256 = { version = "0.13", features = ["ecdsa"] }
-rsa = { version = "0.9", features = ["sha2"] }
 rusqlite.workspace = true
 
 [dev-dependencies]

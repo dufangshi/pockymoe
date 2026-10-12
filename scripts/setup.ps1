@@ -4,11 +4,14 @@ param(
     [string]$Token,
     [string]$Code,
     [string]$WebOrigin,
+    [string]$AccountKey,
+    [string]$Enroll,
     [ValidateRange(1, 65535)][int]$Port = 8787
 )
 $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 if (([bool]$Token) -eq ([bool]$Code)) { throw 'Provide exactly one device token or setup code.' }
+if (([bool]$AccountKey) -ne ([bool]$Enroll)) { throw 'Provide both -AccountKey and -Enroll.' }
 if ($env:PROCESSOR_ARCHITECTURE -ne 'AMD64' -and $env:PROCESSOR_ARCHITEW6432 -ne 'AMD64') { throw 'The Windows runtime currently requires x64.' }
 $repo = 'https://github.com/dufangshi/pockymoe'
 $stage = Join-Path ([IO.Path]::GetTempPath()) ('pockymoe-bootstrap-' + [guid]::NewGuid().ToString('N'))
@@ -30,6 +33,7 @@ try {
     $actual = & $binary version
     if ($LASTEXITCODE -ne 0 -or $actual.Trim() -ne $version) { throw 'Downloaded runtime version verification failed.' }
     $arguments = @('setup', '--relay', $Relay, '--port', "$Port")
+    if ($AccountKey) { $arguments += @('--account-key', $AccountKey, '--enroll', $Enroll) }
     if ($WebOrigin) { $arguments += @('--web-origin', $WebOrigin) }
     if ($Token) { $arguments += @('--token', $Token) } else { $arguments += @('--code', $Code) }
     & $binary @arguments

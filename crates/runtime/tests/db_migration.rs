@@ -749,7 +749,7 @@ fn migration_10_reapplies_over_columns_left_by_a_downgrade() {
 }
 
 #[test]
-fn device_owner_trust_migration_defaults_persists_and_revokes_sessions() {
+fn device_owner_trust_v2_migration_defaults_and_persists_account_registrations() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("trust.sqlite");
     let db = Database::open(&path).unwrap();
@@ -771,11 +771,12 @@ fn device_owner_trust_migration_defaults_persists_and_revokes_sessions() {
             "UPDATE device_owner_trust SET relay_device_id='relay-device', strict=1",
             [],
         )?;
-        c.execute("INSERT INTO owner_credentials VALUES('owner','{}')", [])?;
-        c.execute(
-            "INSERT INTO owner_sessions VALUES('session','public-key','owner',42)",
-            [],
-        )?;
+        c.execute("UPDATE device_owner_trust SET account_key_id='account',account_public_key='spki',enroll_secret=?1",[vec![7u8;32]])?;
+        c.execute("INSERT INTO browser_registrations VALUES('browser','public-key','owner','account',NULL,42,43)",[])?;
+        c.execute("INSERT INTO account_revocations VALUES('account','browser','revoked','{}')",[])?;
+        for old in ["owner_credentials","owner_sessions","grantee_sessions","pairing_offers"] {
+            assert_eq!(c.query_row("SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?1",[old],|r|r.get::<_,u32>(0))?,0);
+        }
         Ok(())
     })
     .unwrap();
@@ -790,11 +791,21 @@ fn device_owner_trust_migration_defaults_persists_and_revokes_sessions() {
             )?,
             ("relay-device".to_owned(), true)
         );
-        c.execute("DELETE FROM owner_credentials", [])?;
         assert_eq!(
-            c.query_row("SELECT count(*) FROM owner_sessions", [], |r| r
+            c.query_row("SELECT account_key_id FROM device_owner_trust", [], |r| {
+                r.get::<_, String>(0)
+            })?,
+            "account"
+        );
+        assert_eq!(
+            c.query_row("SELECT count(*) FROM browser_registrations", [], |r| r
                 .get::<_, u32>(0))?,
-            0
+            1
+        );
+        assert_eq!(
+            c.query_row("SELECT count(*) FROM account_revocations", [], |r| r
+                .get::<_, u32>(0))?,
+            1
         );
         Ok(())
     })

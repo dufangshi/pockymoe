@@ -293,6 +293,26 @@ fn handle_relay_message(
     message: Value,
 ) {
     match message.get("type").and_then(Value::as_str) {
+        Some("relay.revocations") => {
+            if let Ok(entries) = serde_json::from_value::<crate::owner_trust::Revocations>(message)
+            {
+                if crate::owner_trust::apply_revocations(&state, &entries.revocations).is_ok() {
+                    clients.retain(|id, client| {
+                        if channel_authorized(
+                            &state,
+                            client.crypto.as_ref().map(|(_, s)| s.as_ref()),
+                        ) {
+                            true
+                        } else {
+                            let _ =
+                                outgoing.send(json!({"type":"relay.client.close","clientId":id}));
+                            false
+                        }
+                    });
+                    let _ = outgoing.send(json!({"type":"relay.heartbeat","portMappings":crate::ports::snapshot(&state)}));
+                }
+            }
+        }
         Some("preview.open") => crate::ports::open(state, &message),
         Some("relay.request") => {
             let Some(request_id) = message
@@ -584,11 +604,10 @@ pub(crate) async fn forward_local(
         .next()
         .unwrap_or("");
     let strict = crate::owner_trust::strict(state);
-    let paired = crate::owner_trust::paired(state);
+    let bound = crate::owner_trust::bound(state);
     let method = payload["method"].as_str().unwrap_or("GET");
     let encrypted = payload["headers"]["x-rcd-key"].is_string();
-    let bootstrap =
-        method == "POST" && matches!(path, "/api/transport/pair" | "/api/transport/owner-session");
+    let bootstrap = crate::owner_trust::bootstrap(method, path);
     let public = method == "GET"
         && (path == "/healthz"
             || path.ends_with("/transport/key")
@@ -677,18 +696,13 @@ pub(crate) async fn forward_local(
             return match transport.descriptor(&challenge) {
                 Ok(mut value) => {
                     value["trust"] = crate::owner_trust::hint(state)
-                        .unwrap_or(json!({"paired":true,"strict":true}));
-                    if peer.is_some() {
-                        value["certificate"] = match crate::owner_trust::certificate_bundle(state) {
-                            Ok(bundle) => json!(bundle),
-                            Err(_) => {
-                                return relay_error_response(
-                                    503,
-                                    "Device certificate is unavailable",
-                                )
-                            }
-                        };
-                    }
+                        .unwrap_or(json!({"bound":true,"strict":true,"accountKeyId":null}));
+                    value["certificate"] = match crate::owner_trust::device_certificate(state) {
+                        Ok(certificate) => json!(certificate),
+                        Err(_) => {
+                            return relay_error_response(503, "Device certificate is unavailable")
+                        }
+                    };
                     json_response(value)
                 }
                 Err(_) => relay_error_response(503, "Device encryption is unavailable"),
@@ -735,31 +749,45 @@ pub(crate) async fn forward_local(
         } else {
             None
         };
-        let principal = if paired && peer.is_none() {
-            crate::owner_trust::authorize(state, &payload, &opened.aad, &opened.sealed).ok()
+        let authorization = if bound && peer.is_none() && !bootstrap {
+            Some(crate::owner_trust::authorize(
+                state,
+                &payload,
+                &opened.aad,
+                &opened.sealed,
+            ))
         } else {
             None
         };
+        let principal = authorization
+            .as_ref()
+            .and_then(|r| r.as_ref().ok())
+            .cloned();
         let owner_endpoint = path == "/api/transport/trust"
-            || path == "/api/transport/credentials"
-            || path.starts_with("/api/transport/credentials/")
-            || path.starts_with("/api/transport/sessions/")
+            || path == "/api/transport/device-certificate"
             || path == "/api/transport/grants"
             || path.starts_with("/api/transport/grants/");
         let signature_supplied = payload["headers"]["x-rcd-session"].is_string()
             || payload["headers"]["x-rcd-signature"].is_string();
         if peer.is_none()
             && principal.is_none()
-            && ((!public && !bootstrap && (strict || (paired && signature_supplied)))
+            && ((!public && !bootstrap && (strict || (bound && signature_supplied)))
                 || owner_endpoint)
         {
             return opened
-                .response(crate::owner_trust::error(401, "owner_session_required"))
+                .response({
+                    let (status, code) = authorization
+                        .as_ref()
+                        .and_then(|r| r.as_ref().err())
+                        .map(crate::owner_trust::rejection_code)
+                        .unwrap_or((401, "browser_registration_required"));
+                    crate::owner_trust::error(status, code)
+                })
                 .unwrap_or_else(|_| {
                     relay_error_response(502, "Device response encryption failed")
                 });
         }
-        if let Some(p) = &principal {
+        if let Some(p) = principal.as_ref().filter(|_| !bootstrap) {
             if let Err(error) = crate::grants::authorize_path(
                 state,
                 p,
@@ -835,7 +863,7 @@ async fn dispatch_raw(
     payload: Value,
     peer: Option<PeerCaller>,
     encrypted: bool,
-    principal: Option<crate::owner_trust::OwnerPrincipal>,
+    principal: Option<crate::owner_trust::BrowserPrincipal>,
     peer_principal: Option<crate::owner_trust::PeerPrincipal>,
 ) -> Result<axum::response::Response, Value> {
     let method = payload
@@ -895,7 +923,7 @@ async fn dispatch_streaming(
     payload: Value,
     transport: &crate::secure_transport::Transport,
     peer: Option<PeerCaller>,
-    principal: Option<crate::owner_trust::OwnerPrincipal>,
+    principal: Option<crate::owner_trust::BrowserPrincipal>,
     peer_principal: Option<crate::owner_trust::PeerPrincipal>,
 ) -> Value {
     let path = payload["path"].as_str().unwrap_or("").to_string();
@@ -1535,7 +1563,29 @@ mod owner_channel_tests {
             Some(signed_id),
         );
         assert!(clients.contains_key("signed"));
-        // Even a legacy client connected before pairing cannot send plaintext input.
+        let (request, key, aad) = encrypted(
+            &state,
+            "POST",
+            "/api/port-mappings",
+            json!({"port":3009}),
+            Some(&owner),
+        );
+        assert_eq!(
+            decoded(forward_local(&state, request, None).await, &key, &aad).0,
+            200
+        );
+        assert_eq!(crate::ports::snapshot(&state).len(), 1);
+        let mut invalid = crate::owner_trust::tests::browser_revocation(&owner);
+        invalid.kind = "device".into();
+        handle_relay_message(
+            state.clone(),
+            &mut clients,
+            &outgoing,
+            json!({"type":"relay.revocations","revocations":[invalid]}),
+        );
+        assert!(channel.alive());
+        assert!(clients.contains_key("signed"));
+        // Even a legacy client connected before binding cannot send plaintext input.
         handle_relay_message(
             state.clone(),
             &mut clients,
@@ -1543,13 +1593,15 @@ mod owner_channel_tests {
             json!({"type":"relay.client.message","clientId":"legacy","payload":{"type":"shell.input","shellId":"unused","data":"x"}}),
         );
         assert!(!clients.contains_key("legacy"));
-        state
-            .db
-            .with(|c| {
-                c.execute("DELETE FROM owner_sessions", [])?;
-                Ok(())
-            })
-            .unwrap();
+        handle_relay_message(
+            state.clone(),
+            &mut clients,
+            &outgoing,
+            json!({"type":"relay.revocations","revocations":[crate::owner_trust::tests::browser_revocation(&owner)]}),
+        );
+        assert!(!channel.alive());
+        assert!(!clients.contains_key("signed"));
+        assert!(crate::ports::snapshot(&state).is_empty());
         assert!(!channel_authorized(&state, Some(&channel)));
         handle_relay_message(
             state.clone(),
