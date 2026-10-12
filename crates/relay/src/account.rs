@@ -475,6 +475,7 @@ struct VaultWrite {
     expected_revision: u64,
     auth_key: Option<String>,
     current_auth_key: Option<String>,
+    current_recovery_auth_key: Option<String>,
     recovery_auth_key: Option<String>,
 }
 async fn write_vault(
@@ -538,22 +539,39 @@ async fn write_vault(
     let permit = VAULT_PASSWORD_WORK.acquire().await.map_err(internal)?;
     let credentials = before.credentials.clone();
     let current = body.current_auth_key.clone();
-    let recovery = body.recovery_auth_key.clone();
-    let (auth_ok, recovery_ok, permit) = tokio::task::spawn_blocking(move || {
-        let auth_ok = credentials
-            .as_ref()
-            .is_some_and(|c| c.auth(current.as_deref()));
-        let recovery_ok = credentials
-            .as_ref()
-            .is_some_and(|c| c.recovery(recovery.as_deref()));
-        (auth_ok, recovery_ok, permit)
-    })
-    .await
-    .map_err(internal)?;
+    let current_recovery = body.current_recovery_auth_key.clone();
+    let unchanged_recovery = body.recovery_auth_key.clone().filter(|_| !recovery_changed);
+    let (auth_ok, current_recovery_ok, unchanged_recovery_ok, permit) =
+        tokio::task::spawn_blocking(move || {
+            let auth_ok = credentials
+                .as_ref()
+                .is_some_and(|c| c.auth(current.as_deref()));
+            let current_recovery_ok = credentials
+                .as_ref()
+                .is_some_and(|c| c.recovery(current_recovery.as_deref()));
+            let unchanged_recovery_ok = if current_recovery == unchanged_recovery {
+                current_recovery_ok
+            } else {
+                credentials
+                    .as_ref()
+                    .is_some_and(|c| c.recovery(unchanged_recovery.as_deref()))
+            };
+            (auth_ok, current_recovery_ok, unchanged_recovery_ok, permit)
+        })
+        .await
+        .map_err(internal)?;
+    // New recoveryAuthKey values never prove a write. Keep the old spelling
+    // only for body-only writes with unchanged slots and KDF parameters.
+    let recovery_ok =
+        current_recovery_ok || (!password_changed && !recovery_changed && unchanged_recovery_ok);
     if old.is_some() && body.auth_key.is_some() && !password_changed {
         return Err(invalid("A new authKey requires a changed password slot"));
     }
-    if old.is_some() && body.recovery_auth_key.is_some() && !recovery_changed && !recovery_ok {
+    if old.is_some()
+        && body.recovery_auth_key.is_some()
+        && !recovery_changed
+        && !unchanged_recovery_ok
+    {
         return Err(invalid(
             "Unchanged recovery slot requires the existing recoveryAuthKey",
         ));

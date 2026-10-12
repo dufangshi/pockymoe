@@ -2445,7 +2445,7 @@ async fn security_revision_recovery_proof_can_update_vault_and_recover_interrupt
     let mut v = test_vault(ACCOUNT_USER, 2);
     v["slots"]["password"]["iv"] = json!("AAAAAAAAAAAAAAAA");
     let next_key = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([6; 32]);
-    assert_eq!(f.json(Method::PUT,"/relay/account/vault",Some(&token),json!({"vault":v,"expectedRevision":1,"authKey":next_key,"recoveryAuthKey":recovery_key()})).await.0,StatusCode::OK);
+    assert_eq!(f.json(Method::PUT,"/relay/account/vault",Some(&token),json!({"vault":v,"expectedRevision":1,"authKey":next_key,"currentRecoveryAuthKey":recovery_key()})).await.0,StatusCode::OK);
     let (s, value) = f
         .json(
             Method::POST,
@@ -3569,6 +3569,79 @@ async fn documentation_admin_reset_without_vault_keeps_mfa_and_one_time_consumpt
         .await
         .0,
         StatusCode::UNAUTHORIZED
+    );
+}
+
+#[tokio::test]
+async fn documentation_recovery_proof_is_separate_from_new_recovery_key() {
+    let f = Fixture::new("doc-current-recovery").await;
+    let token = f.register().await;
+    let next_key = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([227; 32]);
+    let mut vault = test_vault(ACCOUNT_USER, 2);
+    vault["slots"]["recovery"]["iv"] = json!("AAAAAAAAAAAAAAAA");
+    assert_eq!(f.json(Method::PUT,"/relay/account/vault",Some(&token),json!({"vault":vault,"expectedRevision":1,"currentRecoveryAuthKey":recovery_key(),"recoveryAuthKey":next_key})).await.0,StatusCode::OK);
+    assert_eq!(
+        f.json(
+            Method::POST,
+            "/relay/auth/recover",
+            None,
+            json!({"login":"vector-user","recoveryAuthKey":recovery_key()})
+        )
+        .await
+        .0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        f.json(
+            Method::POST,
+            "/relay/auth/recover",
+            None,
+            json!({"login":"vector-user","recoveryAuthKey":next_key})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    vault["revision"] = json!(3);
+    assert_eq!(
+        f.json(
+            Method::PUT,
+            "/relay/account/vault",
+            Some(&token),
+            json!({"vault":vault,"expectedRevision":2,"currentRecoveryAuthKey":next_key})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn documentation_recovery_new_key_is_not_a_proof_but_body_only_compatibility_remains() {
+    let f = Fixture::new("doc-recovery-field-rules").await;
+    let token = f.register().await;
+    let mut vault = test_vault(ACCOUNT_USER, 2);
+    vault["slots"]["recovery"]["iv"] = json!("AAAAAAAAAAAAAAAA");
+    for proof in [
+        Value::Null,
+        json!(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([228; 32])),
+    ] {
+        assert_eq!(f.json(Method::PUT,"/relay/account/vault",Some(&token),json!({"vault":vault,"expectedRevision":1,"currentRecoveryAuthKey":proof,"recoveryAuthKey":recovery_key()})).await.0,StatusCode::FORBIDDEN);
+    }
+    vault = test_vault(ACCOUNT_USER, 2);
+    vault["slots"]["password"]["iv"] = json!("AAAAAAAAAAAAAAAA");
+    assert_eq!(f.json(Method::PUT,"/relay/account/vault",Some(&token),json!({"vault":vault,"expectedRevision":1,"authKey":auth_key(),"recoveryAuthKey":recovery_key()})).await.0,StatusCode::FORBIDDEN,"compatibility recoveryAuthKey proofs only apply to body-only writes");
+    vault = test_vault(ACCOUNT_USER, 2);
+    assert_eq!(
+        f.json(
+            Method::PUT,
+            "/relay/account/vault",
+            Some(&token),
+            json!({"vault":vault,"expectedRevision":1,"recoveryAuthKey":recovery_key()})
+        )
+        .await
+        .0,
+        StatusCode::OK
     );
 }
 
