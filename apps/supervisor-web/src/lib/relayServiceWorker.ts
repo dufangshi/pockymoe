@@ -5,6 +5,7 @@ import { relayWorkerFetch } from './relayServiceWorkerFetch';
 import { installPushHandlers } from './notificationWorker';
 import {
   clearTransportKeyCache,
+  clearAllTransportKeys,
   setTransportReporter,
 } from './relayTransportCrypto';
 const worker = self as unknown as ServiceWorkerGlobalScope;
@@ -22,6 +23,7 @@ setTransportReporter((status) => {
   });
 });
 worker.addEventListener('message', (event) => {
+  if (event.data?.type === 'pockymoe-account-reset') clearAllTransportKeys();
   if (event.data?.type === 'remote-codex-locale' && typeof event.data.locale === 'string')
     setLocale(event.data.locale, false);
   if (

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { notifyOwnerUnlocked, readAfterOwnerUnlock } from './ownerUnlockRecovery';
 afterEach(() => vi.restoreAllMocks());
 describe('device-scoped owner unlock read recovery', () => {
-  it.each(['owner_session_required', 'owner_session_revoked', 'device_strict_mode'])('waits after %s and resumes only for the matching device', async (code) => {
+  it.each(['browser_registration_required', 'browser_revoked', 'device_strict_mode'])('waits after %s and resumes only for the matching device', async (code) => {
     const read = vi.fn().mockResolvedValueOnce({ response: Response.json({ code }, { status: 401 }) })
       .mockResolvedValue({ response: Response.json({ ok: true }) });
     const pending = readAfterOwnerUnlock('a', read);
@@ -21,7 +21,7 @@ describe('device-scoped owner unlock read recovery', () => {
       .mockResolvedValue({ response: Response.json({ ok: true }) });
     const pending = readAfterOwnerUnlock('a', read);
     notifyOwnerUnlocked(['a']);
-    fail({ code: 'owner_session_required' });
+    fail({ code: 'browser_registration_required' });
     expect((await pending).response.ok).toBe(true);
     expect(read).toHaveBeenCalledTimes(2);
   });
@@ -36,7 +36,7 @@ describe('device-scoped owner unlock read recovery', () => {
   it('cancels a waiting read and removes its event subscription', async () => {
     const controller = new AbortController();
     const remove = vi.spyOn(window, 'removeEventListener');
-    const read = vi.fn().mockRejectedValue({ code: 'owner_session_required' });
+    const read = vi.fn().mockRejectedValue({ code: 'browser_registration_required' });
     const pending = readAfterOwnerUnlock('a', read, controller.signal);
     await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(1));
     controller.abort();

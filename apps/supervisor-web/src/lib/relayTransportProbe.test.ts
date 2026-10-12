@@ -1,6 +1,6 @@
 import { beforeEach, expect, it, vi } from 'vitest';
 const state = vi.hoisted(() => ({ recipient: vi.fn(), exchange: vi.fn() }));
-vi.mock('./ownerDeviceTrust', () => ({ isRecipientDevice: state.recipient }));
+vi.mock('./accountTransport', () => ({ verifySharedDeviceRole: state.recipient }));
 vi.mock('./relayTransportCrypto', () => ({
   exchange: state.exchange,
   setTransportReporter: vi.fn(),
