@@ -7,14 +7,15 @@ const api = `http://127.0.0.1:${process.env.E2E_API_PORT ?? 8787}`;
 
 test.afterEach(async ({ page }) => { await page.unrouteAll({ behavior: 'ignoreErrors' }); });
 
-async function openPlum(page: Page, request: APIRequestContext, mode: 'light' | 'dark' = 'light', running = false) {
+async function openPlum(page: Page, request: APIRequestContext, mode: 'light' | 'dark' = 'light', running = false, preset: 'classic' | 'plum-pocket' = 'plum-pocket') {
   // A subscription and a reported context window, so the usage meter and the bar render.
-  await page.route('**/api/agent-runtimes/*/subscription-usage*', (route) => route.fulfill({ json: { usage: {
+  let usageAvailable = true;
+  await page.route('**/api/agent-runtimes/*/subscription-usage*', (route) => route.fulfill({ json: { usage: usageAvailable ? {
     provider: 'claude', authKind: 'subscription', observedAt: new Date().toISOString(), stale: false,
     windows: [
       { id: '5h', durationMinutes: 300, label: '5h', usedPercent: 20, resetsAt: new Date(Date.now() + 3_600_000).toISOString() },
       { id: '7d', durationMinutes: 10_080, label: '7d', usedPercent: 40, resetsAt: new Date(Date.now() + 86_400_000).toISOString() },
-    ] } } }));
+    ] } : null } }));
   await page.route(/\/api\/threads\/[0-9a-f-]+\?/, async (route) => {
     const response = await route.fetch();
     const detail = await response.json();
@@ -29,18 +30,18 @@ async function openPlum(page: Page, request: APIRequestContext, mode: 'light' | 
     data: { workspaceId: workspace.id, title: 'Plum composer', provider: 'acp', agentId: 'claude', model: 'ios-e2e-stream', approvalMode: 'yolo' },
   })).json();
   const thread = started.thread ?? started;
-  await page.addInitScript((m) => {
-    localStorage.setItem('pockymoe-theme-preset', 'plum-pocket');
-    localStorage.setItem('remote-codex-theme-mode', m);
+  await page.addInitScript(({ mode, preset }) => {
+    localStorage.setItem('pockymoe-theme-preset', preset);
+    localStorage.setItem('remote-codex-theme-mode', mode);
     localStorage.setItem('remote-codex.locale', 'en');
     localStorage.setItem(`pockymoe.onboarding.v1:${JSON.stringify([window.location.origin, 'local:owner'])}`, JSON.stringify({ welcomeDismissed: true, completed: [], resume: {} }));
-  }, mode);
+  }, { mode, preset });
   await page.goto(`/threads/${thread.id}`);
   const later = page.getByRole('button', { name: 'Later' });
   if (await later.isVisible({ timeout: 3000 }).catch(() => false)) await later.click();
   const composer = page.getByTestId('chat-composer');
   await expect(composer).toBeVisible();
-  return { composer, editor: composer.getByRole('textbox', { name: 'Prompt', exact: true }) };
+  return { composer, editor: composer.getByRole('textbox', { name: 'Prompt', exact: true }), hideUsage: async () => { usageAvailable = false; await page.reload(); await expect(composer).toBeVisible(); await expect(composer.locator('.thread-composer-usage-tag')).toHaveCount(0); } };
 }
 
 // Close an open menu with an outside click on the empty conversation; the page corner
@@ -123,8 +124,9 @@ test('plum composer respects reduced motion', async ({ page, request }) => {
   expect(await composer.evaluate((node) => getComputedStyle(node, '::before').transitionDuration)).toBe('0s');
 });
 
-for (const mode of ['light', 'dark'] as const) test(`plum usage meter sits inside its seam and shows opaque top-layer details (${mode})`, async ({ page, request }, info) => {
-  const { composer, editor } = await openPlum(page, request, mode);
+for (const preset of ['classic', 'plum-pocket'] as const)
+for (const mode of ['light', 'dark'] as const) test(`${preset} usage meter replaces the border without shifting controls (${mode})`, async ({ page, request }, info) => {
+  const { composer, editor, hideUsage } = await openPlum(page, request, mode, false, preset);
   const usage = composer.locator('.thread-graph-composer-shell .thread-composer-usage-tag .thread-subscription-usage');
   await expect(usage).toBeVisible();
   await expect(composer.locator('.thread-composer-usage-footer')).toHaveCount(0);
@@ -132,15 +134,20 @@ for (const mode of ['light', 'dark'] as const) test(`plum usage meter sits insid
     const r = (s: string) => node.querySelector(s)!.getBoundingClientRect();
     return { shell: r('.thread-graph-composer-shell'), usage: r('.thread-subscription-usage'), chip: r('.composer-model-label'), bar: r('.thread-context-progress-track'), size: getComputedStyle(node.querySelector('.thread-subscription-usage')!).fontSize };
   });
-  // The meter is inside the shell, with no second pill overlapping its edge.
-  expect(g.usage.top).toBeLessThan(g.shell.bottom);
-  expect(g.usage.bottom).toBeLessThan(g.shell.bottom);
-  expect(g.shell.bottom - g.usage.bottom).toBeLessThanOrEqual(8);
+  // A legend centred on the bottom border, with no separate row or pill.
+  expect(Math.abs((g.usage.top + g.usage.bottom) / 2 - g.shell.bottom)).toBeLessThanOrEqual(1.5);
+  expect(g.usage.bottom).toBeLessThan(page.viewportSize()!.height - 4);
+  expect(g.usage.right).toBeLessThan(g.shell.right - 15);
+  expect(g.usage.left).toBeGreaterThan(g.shell.left + 15);
   await expect(usage).toHaveCSS('border-top-width', '0px');
+  await expect(usage).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+  expect(await usage.evaluate((el) => getComputedStyle(el).backgroundImage)).toContain('rgba(0, 0, 0, 0)');
   expect(parseFloat(g.size)).toBeLessThanOrEqual(9);
-  // The context bar sits inside the chip with equal insets.
-  expect(Math.abs((g.bar.left - g.chip.left) - (g.chip.right - g.bar.right))).toBeLessThanOrEqual(1);
-  expect(g.bar.bottom).toBeLessThanOrEqual(g.chip.bottom);
+  if (preset === 'plum-pocket') {
+    // The context bar sits inside the chip with equal insets.
+    expect(Math.abs((g.bar.left - g.chip.left) - (g.chip.right - g.bar.right))).toBeLessThanOrEqual(1);
+    expect(g.bar.bottom).toBeLessThanOrEqual(g.chip.bottom);
+  }
   await editor.click();
   const focused = await composer.locator('.thread-graph-composer-shell').boundingBox();
   await usage.click();
@@ -164,11 +171,20 @@ for (const mode of ['light', 'dark'] as const) test(`plum usage meter sits insid
   expect(surface.bounds.bottom).toBeLessThan(focused!.y);
   // Opening the usage panel keeps the prompt geometry stable.
   expect(await composer.locator('.thread-graph-composer-shell').boundingBox()).toEqual(focused);
-  await page.screenshot({ path: info.outputPath(`usage-${mode}-open.png`), scale: 'css' });
+  await page.screenshot({ path: info.outputPath(`usage-${preset}-${mode}-open.png`), scale: 'css' });
   await page.keyboard.press('Escape');
   await expect(details).toHaveCount(0);
   await expect(usage).toHaveAttribute('aria-expanded', 'false');
-  await page.screenshot({ path: info.outputPath(`usage-${mode}-closed.png`), scale: 'css' });
+  await dismiss(page);
+  await expect(composer).toHaveAttribute('data-composer-layout', 'collapsed');
+  await page.screenshot({ path: info.outputPath(`usage-${preset}-${mode}-closed.png`), scale: 'css' });
+  const geometry = () => composer.evaluate((node) =>
+    ['.thread-graph-composer-shell', '.thread-graph-composer-toolbar', '.composer-model-label', '.thread-graph-composer-send-button']
+      .map((selector) => node.querySelector(selector)!.getBoundingClientRect().toJSON()));
+  const withUsage = await geometry();
+  await hideUsage();
+  // Adding allowance data must never add padding, raise buttons, or move a pane.
+  expect(await geometry()).toEqual(withUsage);
 });
 
 test('plum settings fit every tab on one line and keep hints for screen readers', async ({ page, request }, info) => {

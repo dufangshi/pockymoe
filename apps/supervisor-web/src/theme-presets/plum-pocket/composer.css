@@ -308,37 +308,13 @@
    the warning colours and swap only the healthy sky for mustard. */
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell .composer-model-control .thread-context-progress-fill[style*='125, 211, 252'] { background-color: var(--theme-accent-solid) !important; }
 
-/* Usage meter: quiet markings inside the bottom seam, on the same felt. */
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell [data-composer-layout] .thread-graph-composer-shell:has(.thread-composer-usage-tag) { padding-bottom: 18px; background: var(--pc-felt); }
-
+/* The shared border legend replaces a short stretch of edge and stitching.
+   Theme only its felt/ink; never add padding or move the composer. */
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-composer-usage-tag {
-  position: absolute;
-  z-index: 2;
-  right: 18px;
-  bottom: 4px;
-  display: flex;
-  height: 13px;
-  pointer-events: none;
+  --composer-seam-surface: color-mix(in srgb, var(--pc-felt) 96%, var(--theme-bg));
 }
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-composer-usage-tag .thread-subscription-usage {
-  position: relative;
-  inset: auto;
-  height: 13px;
-  gap: 6px;
-  padding: 0 6px;
-  border: 0;
-  border-radius: 0;
-  background: var(--pc-felt);
-  color: var(--theme-fg-muted);
-  font-size: 9px;
-  font-weight: 700;
-  line-height: 11px;
-  opacity: 1;
-  pointer-events: auto;
-}
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-composer-usage-tag .thread-subscription-usage:hover { color: var(--theme-fg); }
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-composer-usage-tag .thread-subscription-usage:focus-visible { outline: 1.5px solid var(--pc-focus) !important; outline-offset: 2px; border-radius: 3px; }
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-composer-usage-tag [data-subscription-window-track] { width: 16px; height: 3px; background: color-mix(in srgb, var(--pc-key-lip) 85%, transparent); }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-composer-usage-tag .thread-subscription-usage { font-weight: 700; }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-composer-usage-tag [data-subscription-window-track] { background: color-mix(in srgb, var(--pc-key-lip) 85%, transparent); }
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-subscription-usage-details {
   --subscription-details-bg: var(--pc-felt);
   border-color: var(--pc-edge);
@@ -349,11 +325,6 @@
   font-size: 10.5px;
   white-space: normal;
 }
-/* Its row below the composer is gone, so the pocket sits a little lower. */
-@media (min-width: 640px) {
-  :root[data-theme-preset='plum-pocket'] .thread-ui-shell .matter-workbench .thread-graph-composer-host:has(.thread-composer-usage-tag) { bottom: 22px; }
-}
-
 /* ── Menus: one felt card style for model, slash toolbox and attachments ──── */
 
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell [data-composer-menu-surface='true'] {
@@ -783,4 +754,8 @@
   border-color: var(--theme-border) !important;
   background: var(--theme-panel) !important;
   color: var(--theme-fg) !important;
+}
+
+@media (max-width: 639px) {
+  :root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-composer-usage-tag { --composer-seam-surface: var(--pc-felt); }
 }
