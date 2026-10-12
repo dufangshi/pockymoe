@@ -4,6 +4,7 @@ mod child_delete;
 mod claude_history;
 mod claude_reply_phases;
 mod generation;
+pub(crate) mod peer_work;
 mod reliability;
 mod search;
 mod update;
@@ -1977,7 +1978,7 @@ impl Supervisor {
                  WHERE thread_id=?1 AND turn_id=?2
                  ORDER BY created_at ASC, rowid ASC",
             )?;
-            let items = stmt
+            let mut items = stmt
                 .query_map(params![thread_id, turn_id], |row| row.get::<_, String>(0))?
                 .filter_map(|r| r.ok())
                 .filter_map(|raw| serde_json::from_str::<ThreadHistoryItemDto>(&raw).ok())
@@ -1985,7 +1986,8 @@ impl Supervisor {
                     crate::history::normalize_legacy_file_change(&mut item);
                     item
                 })
-                .collect();
+                .collect::<Vec<_>>();
+            peer_work::annotate(conn, thread_id, turn_id, &mut items, true)?;
             Ok(items)
         })
     }
@@ -2038,11 +2040,12 @@ impl Supervisor {
                      OR json_extract(item_json, '$.origin') IN ('nativeBackgroundWait', 'nativeTaskNotification'))
                  ORDER BY created_at ASC, rowid ASC",
             )?;
-            let items = stmt
+            let mut items = stmt
                 .query_map(params![thread_id, turn_id], |row| row.get::<_, String>(0))?
                 .filter_map(|row| row.ok())
                 .filter_map(|raw| serde_json::from_str::<ThreadHistoryItemDto>(&raw).ok())
-                .collect();
+                .collect::<Vec<_>>();
+            peer_work::annotate(conn, thread_id, turn_id, &mut items, false)?;
             Ok((
                 items,
                 usize::try_from(total_item_count).unwrap_or(usize::MAX),
@@ -2731,8 +2734,11 @@ impl Supervisor {
             )?;
             if removed > 0 {
                 tx.execute(
-                    "DELETE FROM kv WHERE key=?1",
-                    [format!("cli:notify:pending:{pending_steer_id}")],
+                    "DELETE FROM kv WHERE key IN (?1,?2)",
+                    params![
+                        format!("cli:notify:pending:{pending_steer_id}"),
+                        format!("cli:peer-work:pending:{pending_steer_id}")
+                    ],
                 )?;
             }
             tx.commit()?;

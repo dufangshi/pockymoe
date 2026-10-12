@@ -667,6 +667,107 @@ async fn a_wake_queues_one_turn_on_the_parent_once_delegates_settle() {
 }
 
 #[tokio::test]
+async fn peer_work_wake_persists_the_question_and_causal_task_through_queue_acceptance() {
+    let (_dir, s) = setup();
+    let ws = workspace(&s);
+    let lead = s.create_thread(input(&ws, None)).await.unwrap().id;
+    let asker = named(&s, &ws, &lead, "reviewer").await;
+    // Register while the parent owns a task, then end that foreground task.
+    s.db.with(|c| {
+        c.execute("INSERT INTO thread_turns(id,thread_id,status,ordinal,display_prompt) VALUES('original-task',?1,'inProgress',1,'Implement pairing')", [&lead])?;
+        c.execute("INSERT INTO thread_turns(id,thread_id,status,ordinal) VALUES('asker-task',?1,'inProgress',1)", [&asker])?;
+        Ok(())
+    }).unwrap();
+    let mut question = mail(
+        &asker,
+        "inbox",
+        "question",
+        "May a registration expire tomorrow?\n\nWhich scope should I use?",
+    );
+    question.subject = Some("Session lifetime".into());
+    let receipt = s.send_to_thread(&lead, question).unwrap();
+    s.register_wake(&lead, &[asker.clone()]).unwrap();
+    s.db.with(|c| {
+        c.execute(
+            "UPDATE thread_turns SET status='completed' WHERE id='original-task'",
+            [],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    s.start_interaction_worker();
+    until(|| {
+        s.db.with(|c| {
+            Ok(c.query_row(
+                "SELECT COUNT(*) FROM thread_turns WHERE thread_id=?1",
+                [&lead],
+                |r| r.get::<_, i64>(0),
+            )?)
+        })
+        .unwrap()
+            == 2
+    })
+    .await;
+    let turn: String =
+        s.db.with(|c| {
+            Ok(c.query_row(
+                "SELECT id FROM thread_turns WHERE thread_id=?1 AND ordinal=2",
+                [&lead],
+                |r| r.get(0),
+            )?)
+        })
+        .unwrap();
+    let metadata: serde_json::Value =
+        s.db.with(|c| {
+            let raw: String = c.query_row(
+                "SELECT value FROM kv WHERE key=?1",
+                [format!("cli:peer-work:turn:{turn}")],
+                |r| r.get(0),
+            )?;
+            Ok(serde_json::from_str(&raw)?)
+        })
+        .unwrap();
+    assert_eq!(metadata["taskTurnId"], "original-task");
+    assert_eq!(metadata["messages"][0]["id"], receipt["messageId"]);
+    assert_eq!(metadata["messages"][0]["name"], "reviewer");
+    let summary = s.get_thread_detail_view(&lead, None, true).await.unwrap();
+    let item = summary
+        .turns
+        .iter()
+        .find(|t| t.id == turn)
+        .unwrap()
+        .items
+        .iter()
+        .find(|i| i.kind == "userMessage")
+        .unwrap();
+    assert!(item.extra["peerWork"]["messages"][0].get("text").is_none());
+    let detail = s.get_thread_turn_detail(&lead, &turn).await.unwrap();
+    let item = detail
+        .items
+        .iter()
+        .find(|i| i.kind == "userMessage")
+        .unwrap();
+    assert_eq!(
+        item.extra["peerWork"]["messages"][0]["text"],
+        "May a registration expire tomorrow?\n\nWhich scope should I use?"
+    );
+    // Reading the browser history never answers/acknowledges the agent's question.
+    let acknowledged: Option<String> =
+        s.db.with(|c| {
+            Ok(c.query_row(
+                "SELECT json_extract(value,'$.acknowledgedAt') FROM kv WHERE key=?1",
+                [format!(
+                    "cli:inbox:{lead}:{}",
+                    receipt["messageId"].as_str().unwrap()
+                )],
+                |r| r.get(0),
+            )?)
+        })
+        .unwrap();
+    assert!(acknowledged.is_none());
+}
+
+#[tokio::test]
 async fn roles_supply_defaults_and_prefix_only_the_first_turn() {
     let (dir, s) = setup();
     let agents = dir.path().join(".pockymoe/agents");
