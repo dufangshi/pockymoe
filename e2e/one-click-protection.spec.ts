@@ -24,6 +24,11 @@ async function protectAll(page: Page, password: string, label: string) {
   // and the following state/certificate assertions still run independently.
   if (offered) {
     await action.click();
+    const confirmation = page.getByRole('dialog', { name: 'Protect all devices', exact: true });
+    await expect(confirmation, `${label}_CONFIRMATION: bulk protection first explains the trust decision`).toBeVisible();
+    await expect(confirmation.getByText(/Remote protection trusts the relay at the moment of binding\./),
+      `${label}_TRADEOFF: the user sees that the relay is trusted during the first bind`).toBeVisible();
+    await confirmation.getByRole('button', { name: 'Protect devices', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: 'Unlock this browser', exact: true });
     await expect.soft(dialog, `${label}_UNLOCK: a locked page must request one account unlock for the whole batch`).toBeVisible({ timeout: 5_000 });
     if (await dialog.isVisible()) await unlock(page, password);

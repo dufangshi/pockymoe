@@ -1,6 +1,7 @@
 import { expect, type Browser, type BrowserContext, type Page, type TestInfo } from '@playwright/test';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { createHash, createPublicKey, verify, randomBytes } from 'node:crypto';
+import { createHash, createPublicKey, verify, randomBytes, randomUUID } from 'node:crypto';
+import { createRequire } from 'node:module';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 
@@ -10,6 +11,65 @@ process.env.PLAYWRIGHT_NO_COPY_PROMPT = '1';
 export type Result = { status: number; data: any; encrypted?: boolean };
 export type Device = { id: string; db: string; cli: string; api: string; thread: string; url: string };
 export type Account = { page: Page; context: BrowserContext; cookie: string; cookies: Awaited<ReturnType<BrowserContext['cookies']>>; code: string; userId: string; recovery: string; accountKeyId: string; publicKey: string; password: string; browserId: string; username?: string };
+
+export async function retainBrowserRequest(f: Fixture, account: Account) {
+  // This same-origin page runs no product JS. Retain the non-extractable key in
+  // its browser realm before the UI removes its IndexedDB reference on revoke.
+  const page = await account.context.newPage();
+  await page.goto(f.base + '/healthz');
+  const browser = await page.evaluateHandle(async ({ origin, userId }) => {
+    const db = await new Promise<IDBDatabase>((done, fail) => {
+      const request = indexedDB.open('pockymoe-account-v2');
+      request.onsuccess = () => done(request.result); request.onerror = () => fail(request.error);
+    });
+    try {
+      return await new Promise<any>((done, fail) => {
+        const request = db.transaction('account').objectStore('account').get(`${origin}\nbrowser:${userId}`);
+        request.onsuccess = () => done(request.result); request.onerror = () => fail(request.error);
+      });
+    } finally { db.close(); }
+  }, { origin: f.base, userId: account.userId });
+  expect(await browser.evaluate((value, id) => value?.browserId === id && value.privateKey?.type === 'private' && value.privateKey.extractable === false, account.browserId),
+    'Retain the actual non-extractable browser key before revocation').toBe(true);
+  // Resolve the existing Web workspace dependency without changing package or
+  // product code. The request goes through native Node fetch, bypassing both the
+  // product's local revocation guard and the browser's Service Worker.
+  const { CipherSuite, DhkemP256HkdfSha256, HkdfSha256, Aes256Gcm } = createRequire(resolve('apps/supervisor-web/package.json'))('@hpke/core');
+  const suite = new CipherSuite({ kem: new DhkemP256HkdfSha256(), kdf: new HkdfSha256(), aead: new Aes256Gcm() });
+  return async (device: Device, path: string, liveRelayCookie: string): Promise<Result> => {
+    const descriptor = ok(await f.api(device.api + '/transport/key?challenge=' + randomUUID(), 'GET', undefined, liveRelayCookie), 'Retained-key target descriptor');
+    const wirePath = '/api' + path;
+    const requestId = `${randomUUID()}.${Date.now()}`;
+    const aad = `rcd-http-v1\n${descriptor.keyId}\n${requestId}\nGET\n${wirePath}\n`;
+    const sender = await suite.createSenderContext({
+      recipientPublicKey: await suite.kem.deserializePublicKey(Buffer.from(descriptor.publicKey, 'base64url')),
+      info: Buffer.from('remote-codex/relay/v1'),
+    });
+    const metadata = Buffer.from(JSON.stringify({ headers: {}, query: '' }));
+    const packet = Buffer.alloc(4 + metadata.length); packet.writeUInt32BE(metadata.length); metadata.copy(packet, 4);
+    const sealed = Buffer.from(await sender.seal(packet, Buffer.from(aad)));
+    const input = `pockymoe-request-v1\n${aad}\n${createHash('sha256').update(sealed).digest('base64url')}`;
+    const signature = await browser.evaluate(async (value, input) => {
+      const signature = new Uint8Array(await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, value.privateKey, new TextEncoder().encode(input)));
+      return btoa(String.fromCharCode(...signature)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    }, input);
+    const response = await fetch(f.base + device.api + path, { headers: {
+      cookie: liveRelayCookie, 'x-rcd-key': descriptor.keyId, 'x-rcd-request': requestId,
+      'x-rcd-enc': Buffer.from(sender.enc).toString('base64url'), 'x-rcd-sealed': sealed.toString('base64url'),
+      'x-rcd-session': account.browserId, 'x-rcd-signature': signature,
+    }, signal: AbortSignal.timeout(10_000) });
+    const ciphertext = await response.arrayBuffer();
+    if (response.headers.get('x-rcd-encrypted') !== '1') {
+      return { status: response.status, data: JSON.parse(Buffer.from(ciphertext).toString()), encrypted: false };
+    }
+    const responseKey = await crypto.subtle.importKey('raw', new Uint8Array(await sender.export(Buffer.from('remote-codex/http-response/v1'), 32)).buffer, 'AES-GCM', false, ['decrypt']);
+    const clear = Buffer.from(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: new Uint8Array(12), additionalData: new TextEncoder().encode(aad + '\nresponse') }, responseKey, ciphertext));
+    const length = clear.readUInt32BE(0), result = JSON.parse(clear.subarray(4, 4 + length).toString());
+    const data = JSON.parse(clear.subarray(4 + length).toString());
+    f.events.push(`retained browser request status=${result.status} code=${data?.code ?? 'none'} encrypted=true`);
+    return { status: result.status, data, encrypted: true };
+  };
+}
 
 export async function browserRequest(page: Page, path: string, method = 'GET', body?: unknown): Promise<Result> {
   // Use the real Service Worker and the browser's real certificate and signature.

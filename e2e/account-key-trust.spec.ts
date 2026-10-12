@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { createServer } from 'node:http';
 import { randomBytes } from 'node:crypto';
-import { fixture, browserRequest, ok, sendPrompt, sockets, screenshot, unlock } from './helpers/account-key-fixture';
+import { fixture, browserRequest, retainBrowserRequest, ok, sendPrompt, sockets, screenshot, unlock } from './helpers/account-key-fixture';
 
 // Passwords, recovery codes, binding commands and relay cookies stay in memory.
 test.use({ trace: 'off', video: 'off', screenshot: 'off', actionTimeout: 15_000 });
@@ -200,13 +200,6 @@ test('account key registration, enrollment, browser trust and recovery', async (
     await sendPrompt(owner.page, 'ACCOUNT_KEY_HISTORY');
     const second = await f.login(owner);
     const channels = sockets(second.page);
-    await second.page.addInitScript(() => {
-      (window as any).__accountTrustEvents = [];
-      window.addEventListener('remote-codex-transport', event => {
-        const status = (event as CustomEvent).detail;
-        if (status?.unlockReason) (window as any).__accountTrustEvents.push(status.unlockReason);
-      });
-    });
     await second.page.goto(d1.url);
     await expect(second.page.getByText('ACCOUNT_KEY_HISTORY', { exact: true })).toBeVisible();
     await sendPrompt(second.page, 'SECOND_BROWSER_ENCRYPTED_REPLY');
@@ -246,6 +239,11 @@ test('account key registration, enrollment, browser trust and recovery', async (
 
     await owner.page.goto(f.base + '/relay-account');
     const secondId = second.browserId;
+    const retainedRequest = await retainBrowserRequest(f, second);
+    const retainedBefore = await retainedRequest(d1, `/threads/${d1.thread}`, owner.cookie);
+    expect(retainedBefore.status, 'Retained real browser key can read before revocation').toBe(200);
+    expect(retainedBefore.encrypted, 'Retained-key preflight verifies an encrypted device response').toBe(true);
+    expect(retainedBefore.data.thread.id).toBe(d1.thread);
     const row = owner.page.locator('.owner-trust-row').filter({ has: owner.page.locator(`[title="${secondId}"]`) });
     const active = channels.filter(c => !c.closed).at(-1);
     expect.soft(!!active, 'BROWSER_REVOCATION_WS_SETUP: no open secure channel exists before revocation').toBe(true);
@@ -262,16 +260,22 @@ test('account key registration, enrollment, browser trust and recovery', async (
     if (active) expect.soft(active.closedAt !== undefined && active.closedAt - revokedAt <= 5_000, 'BROWSER_REVOCATION_WS_DEADLINE: channel closes within 5 s of UI revocation').toBe(true);
     // Enforcement must not depend on the relay ending that session. Give the
     // removed browser a live relay session that is not bound to it (a relay
-    // that keeps serving it); its retained key must still be refused.
+    // that keeps serving it). The UI may learn removal from the account-signed
+    // revocation list before contacting the device and discard the old key.
     await second.context.addCookies(owner.cookies);
     await second.page.goto(d1.url);
-    await expect.configure({ soft: true }).poll(() => second.page.evaluate(() => (window as any).__accountTrustEvents.includes('browser_revoked')),
-      { timeout: 10_000, message: 'BROWSER_REVOCATION: first authenticated refusal of the retained browser key must be browser_revoked' }).toBe(true);
+    await expect.soft(second.page.getByText('This browser was removed. Enter your password to reconnect.', { exact: true }).first(), 'BROWSER_REMOVED_UI: verified account revocation or authenticated device refusal must show the reconnect state').toBeVisible({ timeout: 10_000 });
+    // Independently use the retained key for a fresh encrypted, signed request.
+    // A live owner relay session prevents relay session invalidation alone from
+    // explaining this refusal. Never depend on the UI's first refusal source.
+    const retainedAfter = await retainedRequest(d1, `/threads/${d1.thread}`, owner.cookie);
+    expect.soft(retainedAfter.encrypted, 'BROWSER_REVOCATION_DEVICE_AUTHENTICATED: old-key refusal must be an authenticated encrypted device response').toBe(true);
+    expect.soft(retainedAfter.status, 'BROWSER_REVOCATION: device must refuse the old browser key directly after removal').toBe(401);
+    expect.soft(retainedAfter.data?.code, 'BROWSER_REVOCATION_DEVICE_CODE: fresh request signed with the old key must return browser_revoked').toBe('browser_revoked');
     const followup = await browserRequest(second.page, d1.api + `/threads/${d1.thread}`);
     expect.soft(['browser_revoked', 'accountUnlockRequired'].includes(followup.data?.code), `BROWSER_REVOCATION_FOLLOWUP: a removed browser cannot issue a further signed read (code ${followup.data?.code})`).toBe(true);
-    await expect.soft(second.page.getByText('This browser was removed. Enter your password to reconnect.', { exact: true }).first(), 'BROWSER_REMOVED_UI: revoked certificate has a visible reconnect state').toBeVisible({ timeout: 5_000 });
     expect.soft(await second.page.getByText('ACCOUNT_KEY_HISTORY', { exact: true }).count(), 'BROWSER_REMOVED_HISTORY: removed browser cannot load thread history').toBe(0);
-    f.events.push(`browser revoked relay=${removed.status}/${removed.data?.code} next=${followup.data?.code} channelClosed=${active?.closed ?? 'no-active-channel'} elapsedMs=${Date.now() - revokedAt}`);
+    f.events.push(`browser revoked relay=${removed.status}/${removed.data?.code} directOldKey=${retainedAfter.status}/${retainedAfter.data?.code} directEncrypted=${retainedAfter.encrypted} next=${followup.data?.code} channelClosed=${active?.closed ?? 'no-active-channel'} elapsedMs=${Date.now() - revokedAt}`);
 
     await owner.page.getByRole('button', { name: 'Change password', exact: true }).click();
     const changing = owner.page.getByRole('dialog', { name: 'Change password', exact: true });
