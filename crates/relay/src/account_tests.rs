@@ -1761,17 +1761,19 @@ async fn temporary_reset_password_requires_second_factor_and_preserves_recovery_
             auth_factors::trust(&conn, ACCOUNT_USER, &HeaderMap::new()).unwrap(),
         )
     };
-    let response = f
-        .req(Method::POST, "/relay/auth/login", None)
-        .header(
-            header::COOKIE,
-            format!("remote_codex_trusted_browser={trusted}"),
-        )
-        .header(header::ORIGIN, &f.base)
-        .json(&json!({"login":"vector-user","password":PASSWORD}))
-        .send()
-        .await
-        .unwrap();
+    let response = {
+        let _gate = LOGIN_TESTS.acquire().await.unwrap();
+        f.req(Method::POST, "/relay/auth/login", None)
+            .header(
+                header::COOKIE,
+                format!("remote_codex_trusted_browser={trusted}"),
+            )
+            .header(header::ORIGIN, &f.base)
+            .json(&json!({"login":"vector-user","password":PASSWORD}))
+            .send()
+            .await
+            .unwrap()
+    };
     assert_eq!(response.status(), StatusCode::OK);
     let cookie = response
         .headers()

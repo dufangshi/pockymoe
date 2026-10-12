@@ -4645,6 +4645,12 @@ fn safe_dist_path(dist: &FsPath, url_path: &str) -> Option<PathBuf> {
     Some(dist.join(rel))
 }
 
+fn retired_worker_asset_path(path: &str) -> bool {
+    path.starts_with("/assets/relayServiceWorker-")
+        && path.ends_with(".js")
+        && !path.trim_start_matches("/assets/").contains('/')
+}
+
 async fn spa_fallback(State(state): State<Arc<AppState>>, req: Request) -> Response {
     // API-only relays cannot supply executable content to the trusted Web origin.
     let path = req.uri().path();
@@ -4655,17 +4661,22 @@ async fn spa_fallback(State(state): State<Arc<AppState>>, req: Request) -> Respo
     if state.oauth.api_only(req.headers()) {
         // Updating an installed worker must succeed at its original URL rather
         // than redirecting across origins. This worker retires the old site.
-        let old_worker = (path.starts_with("/assets/relayServiceWorker-")
-            && path.ends_with(".js")
-            && !path.trim_start_matches("/assets/").contains('/'))
-            || matches!(path, "/service-worker.js" | "/relayServiceWorker.js");
+        let retired_asset = retired_worker_asset_path(path);
+        let old_worker =
+            retired_asset || matches!(path, "/service-worker.js" | "/relayServiceWorker.js");
         if old_worker && matches!(*req.method(), Method::GET | Method::HEAD) {
-            return Response::builder()
+            let mut response = Response::builder()
                 .header(
                     header::CONTENT_TYPE,
                     "application/javascript; charset=utf-8",
                 )
-                .header(header::CACHE_CONTROL, "no-store")
+                .header(header::CACHE_CONTROL, "no-store");
+            // The installed asset worker already has scope /. Its replacement
+            // needs the same maximum scope for the browser's update check.
+            if retired_asset {
+                response = response.header("service-worker-allowed", "/");
+            }
+            return response
                 .body(if req.method() == Method::HEAD {
                     Body::empty()
                 } else {

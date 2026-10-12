@@ -63,12 +63,16 @@ impl WebFixture {
                 .headers_mut()
                 .insert("access-control-allow-origin", "*".parse().unwrap());
             response
+                .headers_mut()
+                .insert("service-worker-allowed", "/".parse().unwrap());
+            response
         }
         let app = Router::new()
             .merge(auth_api::routes())
             .route("/relay/auth/session", get(session))
             .route("/relay/probe", get(echo).post(echo))
             .route("/relay/ws-probe", get(echo))
+            .route("/relay/assets/relayServiceWorker-probe.js", get(echo))
             .route("/relay/auth/oauth/{provider}/callback", get(oauth_callback))
             .fallback(spa_fallback)
             .layer(axum::middleware::from_fn_with_state(
@@ -333,7 +337,7 @@ fn web_origin_validation_and_callback_addressing_are_separate() {
 }
 
 #[tokio::test]
-async fn api_only_retires_old_workers_without_redirecting_or_granting_scope() {
+async fn api_only_retires_old_workers_and_preserves_their_original_scope() {
     let f = WebFixture::new(true).await;
     for path in [
         "/assets/relayServiceWorker-oldHash.js",
@@ -354,7 +358,11 @@ async fn api_only_retires_old_workers_without_redirecting_or_granting_scope() {
                 response.headers()[header::CONTENT_TYPE],
                 "application/javascript; charset=utf-8"
             );
-            assert!(!response.headers().contains_key("service-worker-allowed"));
+            if path.starts_with("/assets/") {
+                assert_eq!(response.headers()["service-worker-allowed"], "/");
+            } else {
+                assert!(!response.headers().contains_key("service-worker-allowed"));
+            }
             assert!(!response.headers().contains_key(header::LOCATION));
             let body = response.text().await.unwrap();
             if method == Method::HEAD {
@@ -385,6 +393,29 @@ async fn api_only_retires_old_workers_without_redirecting_or_granting_scope() {
             f.request(Method::GET, path).send().await.unwrap().status(),
             StatusCode::TEMPORARY_REDIRECT
         );
+    }
+}
+
+#[tokio::test]
+async fn api_only_other_responses_cannot_grant_service_worker_scope() {
+    let f = WebFixture::new(true).await;
+    for path in [
+        "/relay/probe",
+        "/relay/assets/relayServiceWorker-probe.js",
+        "/relay/missing",
+        "/",
+        "/assets/index-old.js",
+        "/assets/relayServiceWorker-oldHash.js/map.js",
+        "/service-worker.js",
+        "/relayServiceWorker.js",
+    ] {
+        for method in [Method::GET, Method::HEAD, Method::POST] {
+            let response = f.request(method, path).send().await.unwrap();
+            assert!(
+                !response.headers().contains_key("service-worker-allowed"),
+                "scope leaked on {path}"
+            );
+        }
     }
 }
 

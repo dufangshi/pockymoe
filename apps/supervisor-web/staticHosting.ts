@@ -27,7 +27,9 @@ export function staticHosting(relay: string, domain: string): Plugin {
         return [{ tag: 'meta', attrs: {
           'http-equiv': 'Content-Security-Policy',
           content: csp.replace("; frame-ancestors 'none'", ''),
-        }, injectTo: 'head-prepend' }];
+        }, injectTo: 'head-prepend' }, {
+          tag: 'meta', attrs: { name: 'referrer', content: 'no-referrer' }, injectTo: 'head-prepend',
+        }];
       },
     },
     generateBundle() {

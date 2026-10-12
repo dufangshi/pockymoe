@@ -9,6 +9,10 @@ const domain = process.env.POCKYMOE_WEB_DOMAIN;
 assert.ok(domain, 'POCKYMOE_WEB_DOMAIN must be set');
 const read = name => readFile(path.join(root, name), 'utf8');
 const html = await read('index.html');
+const referrer = html.match(/<meta\b[^>]*name="referrer"[^>]*content="no-referrer"[^>]*>/i)?.[0];
+assert.ok(referrer, 'index.html must carry the no-referrer meta policy');
+assert.ok(html.indexOf(referrer) < html.indexOf('<script'), 'referrer policy must precede executable scripts');
+assert.ok(html.indexOf(referrer) < html.indexOf('<link'), 'referrer policy must precede resource links');
 const meta = html.match(/<meta\b[^>]*http-equiv="Content-Security-Policy"[^>]*>/i)?.[0];
 assert.ok(meta, 'index.html must carry the meta CSP');
 const encodedCsp = meta.match(/content="([^"]+)"/)?.[1];
@@ -38,4 +42,4 @@ const scripts = await Promise.all((await readdir(path.join(root, 'assets')))
   .filter(name => name.endsWith('.js')).map(name => read(`assets/${name}`)));
 assert.ok(scripts.some(script => script.includes('/relayServiceWorker.js')), 'static bundle must register the root worker');
 assert.ok(scripts.some(script => script.includes('The account Web app requires a top-level window')), 'static bundle must enforce frame protection');
-console.log('PASS: meta CSP, external scripts, 404 fallback, CNAME, root service worker and frame protection');
+console.log('PASS: meta CSP, no-referrer policy, external scripts, 404 fallback, CNAME, root service worker and frame protection');

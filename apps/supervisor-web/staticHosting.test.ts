@@ -24,6 +24,7 @@ describe('static host WebAssembly policy', () => {
     } });
     expect(tags[0].attrs.content).not.toContain('frame-ancestors');
     expect(tags[0].attrs.content).toContain("script-src 'self' 'wasm-unsafe-eval';");
+    expect(tags[1]).toEqual({ tag: 'meta', attrs: { name: 'referrer', content: 'no-referrer' }, injectTo: 'head-prepend' });
     const assets: Array<{ fileName: string; source: string }> = [];
     (plugin.generateBundle as Function).call({ emitFile: (asset: { fileName: string; source: string }) => assets.push(asset) });
     const headerCsp = assets.find(asset => asset.fileName === '_headers')!.source.match(/Content-Security-Policy: ([^\n]+)/)![1];

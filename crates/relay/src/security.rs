@@ -360,9 +360,13 @@ async fn browser_security_response(
         .path()
         .starts_with("/assets/relayServiceWorker-");
     let api_only = state.oauth.api_only(request.headers());
+    let retired_worker = api_only
+        && matches!(*request.method(), Method::GET | Method::HEAD)
+        && super::retired_worker_asset_path(request.uri().path());
     let mut response = next.run(request).await;
+    let retirement_response = retired_worker && response.status() == StatusCode::OK;
     let h = response.headers_mut();
-    if api_only {
+    if api_only && !retirement_response {
         h.remove("service-worker-allowed");
     }
     if transport_worker && !api_only {
