@@ -56,7 +56,7 @@ test('signed sharing, invite pins, revocation and account-certified peers', asyn
     await expect.poll(() => recipientChannels.some(c => c.frames.some(frame => frame.includes('"encrypted"')))).toBe(true);
     await expect(recipient.page.getByRole('button', { name: /Encrypted shared connection · owner account trusted on first use$/ }).first()).toBeVisible();
     const read = await browserRequest(recipient.page, d1.api + `/threads/${d1.thread}`);
-    expect(read.status).toBe(200); expect(read.data.thread.id).toBe(d1.thread);
+    expect(read.status, `Recipient signed read (code ${read.data?.code}: ${read.data?.message})`).toBe(200); expect(read.data.thread.id).toBe(d1.thread);
 
     // Fresh browser opens the owner-copied invitation before its first handshake.
     const fresh = await f.login(recipient);

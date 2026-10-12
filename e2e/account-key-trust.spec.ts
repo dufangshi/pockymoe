@@ -55,7 +55,7 @@ test('account key registration, enrollment, browser trust and recovery', async (
       } finally { db.close(); }
     }, owner.userId);
     expect.soft(cachedBoundDevices.some((entry: any) => entry?.deviceId === d1.id && entry.identityKey === trust.certificate.identityKey),
-      'BOUND_DEVICE_IDENTITY: vault cache must preserve {deviceId,identityKey}, rather than deviceId alone. Security-review integration fix pending.').toBe(true);
+      'BOUND_DEVICE_IDENTITY: vault cache must preserve {deviceId,identityKey}, rather than deviceId alone').toBe(true);
     const strict = await f.api(d1.api + `/threads/${d1.thread}`, 'GET', undefined, owner.cookie);
     expect(strict.status).toBe(403); expect(strict.data.code).toBe('device_strict_mode');
     await sendPrompt(owner.page, 'ACCOUNT_KEY_HISTORY');
@@ -115,16 +115,24 @@ test('account key registration, enrollment, browser trust and recovery', async (
     await row.getByRole('button', { name: 'Remove browser', exact: true }).click();
     await unlock(owner.page, owner.password);
     await expect(row).toHaveCount(0);
+    // Section 11: a browser revocation ends the relay sessions bound to that
+    // browser, so the relay refuses it before any device dispatch.
     const removed = await browserRequest(second.page, d1.api + `/threads/${d1.thread}`);
-    // The UI can send the first revoked request before this explicit fetch;
-    // after authenticating browser_revoked it deliberately deletes its key.
-    await expect.configure({ soft: true }).poll(() => second.page.evaluate(() => (window as any).__accountTrustEvents.includes('browser_revoked')),
-      { timeout: 5_000, message: 'BROWSER_REVOCATION: first authenticated device refusal must be browser_revoked' }).toBe(true);
-    expect.soft(['browser_revoked', 'accountUnlockRequired'].includes(removed.data.code), 'BROWSER_REVOCATION_FOLLOWUP: a removed browser cannot issue a further signed read').toBe(true);
-    await expect.soft(second.page.getByText('This browser was removed. Enter your password to reconnect.', { exact: true }).first(), 'BROWSER_REMOVED_UI: revoked certificate has a visible reconnect state').toBeVisible({ timeout: 5_000 });
+    expect.soft(removed.status, `BROWSER_REVOCATION_RELAY_SESSION: relay ends the removed browser's bound session (code ${removed.data?.code})`).toBe(401);
     if (active) await expect.configure({ soft: true }).poll(() => active.closed, { timeout: 5_000, message: 'BROWSER_REVOCATION_WS: open channel stops within 5 s' }).toBe(true);
     if (active) expect.soft(active.closedAt !== undefined && active.closedAt - revokedAt <= 5_000, 'BROWSER_REVOCATION_WS_DEADLINE: channel closes within 5 s of UI revocation').toBe(true);
-    f.events.push(`browser revoked authenticatedReason=browser_revoked next=${removed.data.code} channelClosed=${active?.closed ?? 'no-active-channel'} elapsedMs=${Date.now() - revokedAt}`);
+    // Enforcement must not depend on the relay ending that session. Give the
+    // removed browser a live relay session that is not bound to it (a relay
+    // that keeps serving it); its retained key must still be refused.
+    await second.context.addCookies(owner.cookies);
+    await second.page.goto(d1.url);
+    await expect.configure({ soft: true }).poll(() => second.page.evaluate(() => (window as any).__accountTrustEvents.includes('browser_revoked')),
+      { timeout: 10_000, message: 'BROWSER_REVOCATION: first authenticated refusal of the retained browser key must be browser_revoked' }).toBe(true);
+    const followup = await browserRequest(second.page, d1.api + `/threads/${d1.thread}`);
+    expect.soft(['browser_revoked', 'accountUnlockRequired'].includes(followup.data?.code), `BROWSER_REVOCATION_FOLLOWUP: a removed browser cannot issue a further signed read (code ${followup.data?.code})`).toBe(true);
+    await expect.soft(second.page.getByText('This browser was removed. Enter your password to reconnect.', { exact: true }).first(), 'BROWSER_REMOVED_UI: revoked certificate has a visible reconnect state').toBeVisible({ timeout: 5_000 });
+    expect.soft(await second.page.getByText('ACCOUNT_KEY_HISTORY', { exact: true }).count(), 'BROWSER_REMOVED_HISTORY: removed browser cannot load thread history').toBe(0);
+    f.events.push(`browser revoked relay=${removed.status}/${removed.data?.code} next=${followup.data?.code} channelClosed=${active?.closed ?? 'no-active-channel'} elapsedMs=${Date.now() - revokedAt}`);
 
     await owner.page.getByRole('button', { name: 'Change password', exact: true }).click();
     const changing = owner.page.getByRole('dialog', { name: 'Change password', exact: true });
@@ -160,19 +168,17 @@ test('account key registration, enrollment, browser trust and recovery', async (
     const legacy = await f.context();
     await legacy.page.goto(f.base + '/relay-portal?returnTo=%2Frelay-account');
     const upgrade = legacy.page.getByRole('button', { name: 'First sign-in since the security upgrade', exact: true });
-    expect.soft(await upgrade.count() === 1, 'LEGACY_EXPLICIT_UPGRADE: security review requires an explicit legacy choice; /auth/kdf must never trigger plaintext password fallback. Pending integration fix.').toBe(true);
-    if (await upgrade.count()) await upgrade.click();
+    await expect.soft(upgrade, 'LEGACY_EXPLICIT_UPGRADE: security review requires an explicit legacy choice; /auth/kdf must never trigger plaintext password fallback').toBeVisible();
+    await upgrade.click();
     const kdf = await f.api('/relay/auth/kdf?login=legacy-user');
-    expect.soft(kdf.data.mode, 'KDF_NO_LEGACY_DOWNGRADE: relay must never request automatic plaintext fallback. Pending integration fix.').not.toBe('legacy');
-    let explicitProof = false;
-    legacy.page.on('request', request => {
-      if (new URL(request.url()).pathname !== '/relay/auth/login' || !request.postData()) return;
-      const body = request.postDataJSON(); explicitProof = body.upgrade === true && body.login === 'legacy-user' && body.password === legacyPassword;
-    });
+    expect.soft(kdf.data.mode, 'KDF_NO_LEGACY_DOWNGRADE: relay must never request automatic plaintext fallback').not.toBe('legacy');
     await legacy.page.getByLabel('Email or username', { exact: true }).fill('legacy-user');
     await legacy.page.getByLabel('Password', { exact: true }).fill(legacyPassword);
+    const upgradeLogin = legacy.page.waitForRequest(request => new URL(request.url()).pathname === '/relay/auth/login' && request.method() === 'POST');
     await legacy.page.locator('form button[type="submit"]').click();
-    expect.soft(explicitProof, 'LEGACY_UPGRADE_PROOF: deliberate legacy submit must send {login,password,upgrade:true}. Pending integration fix.').toBe(true);
+    const upgradeBody = (await upgradeLogin).postDataJSON();
+    const explicitProof = upgradeBody?.upgrade === true && upgradeBody?.login === 'legacy-user' && upgradeBody?.password === legacyPassword;
+    expect.soft(explicitProof, 'LEGACY_UPGRADE_PROOF: deliberate legacy submit must send {login,password,upgrade:true}').toBe(true);
     const secure = legacy.page.getByRole('dialog', { name: 'Secure your account', exact: true });
     await expect(secure).toBeVisible();
     const passwordInput = secure.getByLabel('Password', { exact: true });

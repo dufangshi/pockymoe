@@ -59,18 +59,10 @@ export async function unlock(page: Page, password: string) {
     const hit = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
     return hit !== button && !button.contains(hit);
   });
-  if (blocked) {
-    // A custom account portal currently sits outside the underlying Radix
-    // focus scope. Record the defect, then dispatch a normal input event so
-    // protocol coverage can continue without patching application code.
-    expect.soft(false, 'ACCOUNT_UNLOCK_MODAL: underlying Radix dialog traps focus and prevents the separate account unlock portal from accepting a password. Test-only native input and click dispatch follow.').toBe(true);
-    await dialog.getByLabel('Password', { exact: true }).evaluate((input, value) => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value);
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-    }, password);
-  }
-  if (blocked) await button.evaluate(button => (button as HTMLButtonElement).click());
-  else await button.click();
+  // The account unlock portal must accept real typing and clicks even above
+  // another open Radix dialog; no synthetic input dispatch is used.
+  expect.soft(blocked, 'ACCOUNT_UNLOCK_MODAL: an underlying Radix dialog must not block the account unlock portal').toBe(false);
+  await button.click();
   await expect(dialog).toHaveCount(0);
 }
 export async function approveGrant(page: Page, password: string, unverified = false) {
@@ -136,23 +128,10 @@ export class Fixture {
   async context(account?: Account) {
     const context = await this.browser.newContext(this.info.project.use);
     // Chromium's local-network permission also guards ws://localhost on the
-    // assigned relay port, including documents fulfilled through route.fetch.
+    // assigned relay port.
     await context.grantPermissions(['local-network-access'], { origin: this.base });
     this.contexts.push(context);
-    // Work around only the diagnosed Argon2 CSP blocker; all application and
-    // protocol responses still come from the real relay and Supervisors.
-    await context.route('**/*', async route => {
-      if (!route.request().isNavigationRequest()) return route.continue();
-      try {
-        const response = await route.fetch();
-        const headers = response.headers(), csp = headers['content-security-policy'];
-        if (csp && !csp.includes("'wasm-unsafe-eval'")) headers['content-security-policy'] = csp.replace('script-src ', "script-src 'wasm-unsafe-eval' ");
-        await route.fulfill({ response, headers });
-      } catch {
-        // Raw route.fetch errors contain cookie headers. Preserve a safe error.
-        if (context.pages().some(page => !page.isClosed())) throw new Error('Test document interception failed');
-      }
-    });
+    // Documents keep the relay's real CSP; Argon2id WebAssembly must run under it.
     await context.addInitScript(() => localStorage.setItem('remote-codex.locale', 'en'));
     if (account) await context.addCookies(account.cookies);
     context.on('response', response => {
@@ -252,31 +231,25 @@ export class Fixture {
     // environment. Parse its quoted arguments without running an arbitrary
     // shell or inheriting that secret into either Supervisor process.
     const prefix = /^POCKYMOE_ENROLL_SECRET='([A-Za-z0-9_-]{43})'\s+/.exec(command);
-    const executable = prefix ? command.slice(prefix[0].length) : command;
+    expect(!!prefix, 'ENROLLMENT_SECRET_ARGV: displayed bind command passes the secret only through POCKYMOE_ENROLL_SECRET').toBe(true);
+    this.secrets.push(prefix![1]);
+    const executable = command.slice(prefix![0].length);
     expect(/^pockymoe\s+bind\s/.test(executable), 'Devices displays a local bind command').toBe(true);
     const args = (executable.match(/'[^']*'|"[^"]*"|\S+/g) ?? []).slice(1)
       .map(argument => argument.replace(/^(['"])(.*)\1$/, '$2'));
-    const commandEnv: Record<string, string> = prefix ? { POCKYMOE_ENROLL_SECRET: prefix[1] } : {};
-    if (prefix) this.secrets.push(prefix[1]);
-    else {
-      this.secrets.push(args[args.indexOf('--enroll') + 1]);
-      expect.soft(false, 'ENROLLMENT_SECRET_ARGV: displayed bind command must use POCKYMOE_ENROLL_SECRET instead of --enroll. Section 11 CLI/UI integration fix pending; execute the baseline command only to cover enrollment.').toBe(true);
-    }
+    expect(args.some(argument => argument.startsWith('--enroll')), 'Enrollment secret is never a process argument').toBe(false);
     if (capture) await screenshot(page, this.info, 'v2-device-enrolling');
-    expect((await this.cli([...args, '--database', device.db], commandEnv)).code, 'Run real UI bind command on isolated DB').toBe(0);
+    expect((await this.cli([...args, '--database', device.db], { POCKYMOE_ENROLL_SECRET: prefix![1] })).code, 'Run real UI bind command on isolated DB').toBe(0);
     await dialog.getByRole('button', { name: 'Close', exact: true }).click();
-    // Monitor runs before an already-online device has executed the command.
-    // Record a premature pause and use the real Retry enrollment action.
+    // The monitor keeps polling an already-online device until the command runs,
+    // then completes enrollment without a reload or a second password entry.
     await page.bringToFront();
     const retry = page.getByRole('button', { name: 'Retry enrollment', exact: true });
     await expect.poll(async () => await row.getByText('Protected', { exact: true }).isVisible() || await retry.isVisible(), { timeout: 40_000 }).toBe(true);
     if (await retry.isVisible()) {
       const diagnosis = await page.getByRole('alert').allTextContents();
       this.events.push('enrollment premature pause: ' + diagnosis.join(' '));
-      expect.soft(false, 'ENROLLMENT_AUTOMATIC: monitor pauses before the Protect command is executed on an online device; Enrollment requires a reload and password re-entry. ' + diagnosis.join(' ')).toBe(true);
-      // Reload resets the stale pre-bind descriptor and the paused monitor.
-      await page.reload();
-      await unlock(page, owner.password);
+      expect.soft(false, 'ENROLLMENT_AUTOMATIC: monitor paused before the Protect command was executed on an online device. ' + diagnosis.join(' ')).toBe(true);
     }
     await expect(row.getByText('Protected', { exact: true })).toBeVisible({ timeout: 40_000 });
     if (capture) await screenshot(page, this.info, 'v2-device-protected');
@@ -344,7 +317,8 @@ export async function fixture(browser: Browser, info: TestInfo) {
   await expect.poll(() => fetch(f.base + '/healthz').then(r => r.status).catch(() => 0)).toBe(200);
   const response = await fetch(f.base);
   const csp = response.headers.get('content-security-policy') ?? '';
-  expect.soft(csp.includes("'wasm-unsafe-eval'") || csp.includes("'unsafe-eval'"),
-    'ACCOUNT_KDF_CSP: real relay CSP blocks Argon2 WebAssembly and registration. Fixture adds only wasm-unsafe-eval to document headers so independent trust scenarios can run.').toBe(true);
+  expect.soft(csp.includes("'wasm-unsafe-eval'"),
+    'ACCOUNT_KDF_CSP: the real relay CSP must permit Argon2id WebAssembly for registration and login').toBe(true);
+  expect(csp, 'Relay CSP relaxes only WebAssembly compilation').not.toMatch(/script-src[^;]*'unsafe-(eval|inline)'/);
   return f;
 }
