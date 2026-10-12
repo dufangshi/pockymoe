@@ -15,9 +15,9 @@ export function AccountSecurityPanel() {
   const [code, setCode] = useState(''), [error, setError] = useState<string>(), [busy, setBusy] = useState(false);
   const [action, setAction] = useState<'password' | 'reset' | 'recovery'>(), [password, setPassword] = useState('');
   const [recovery, setRecovery] = useState<string>(), [message, setMessage] = useState<string>();
-  const [canStartOver, setCanStartOver] = useState(false);
+  const [recoverySession, setRecoverySession] = useState(false);
   async function load() {
-    setCanStartOver(!!(await accountSessionState())?.recovery);
+    setRecoverySession(!!(await accountSessionState())?.recovery);
     const account = await currentAccount(); if (!account) return;
     const data = await accountRequest<{ browsers: BrowserRow[] }>('/relay/account/browsers');
     if (!Array.isArray(data.browsers)) throw new Error(translate('auth.accountCertificateInvalid'));
@@ -62,7 +62,7 @@ export function AccountSecurityPanel() {
     <div className="flex flex-wrap gap-2">
       <button className="relay-button-secondary min-h-11 px-3" disabled={busy} onClick={() => setAction('password')}>{translate('auth.changePassword')}</button>
       <button className="relay-button-secondary min-h-11 px-3" disabled={busy} onClick={() => setAction('recovery')}>{translate('auth.accountRegenerateRecovery')}</button>
-      {canStartOver && <button className="relay-button-secondary min-h-11 px-3" disabled={busy} onClick={() => setAction('reset')}>{translate('auth.accountStartOver')}</button>}
+      <button className="relay-button-secondary min-h-11 px-3" disabled={busy} onClick={() => setAction('reset')}>{translate('auth.accountStartOver')}</button>
     </div>
     {verification && <SecurityVerification status={verification} onCancel={() => { retry.current = null; setVerification(undefined); }} onVerified={async () => { const work = retry.current; retry.current = null; setVerification(undefined); if (work) await run(work, true); }} />}
     {action && !verification && <FormDialog title={translate(action === 'password' ? 'auth.changePassword' : action === 'reset' ? 'auth.accountStartOver' : 'auth.accountRegenerateRecovery')} busy={busy} onClose={() => { setAction(undefined); setPassword(''); }}>
@@ -70,11 +70,12 @@ export function AccountSecurityPanel() {
       {action !== 'reset' && <p className="text-sm text-[var(--theme-fg-muted)]">{translate('auth.accountSecretRotationWarning')}</p>}
       <form className="space-y-4" onSubmit={e => { e.preventDefault(); void run(async () => {
         if (action === 'password') { await changeAccountPassword(password, await isOAuthAccount()); setMessage(translate('auth.passwordChanged')); }
-        else if (action === 'reset') { await startAccountOver(); location.assign('/relay-portal'); }
+        else if (action === 'reset') { await startAccountOver(recoverySession ? undefined : password); location.assign('/relay-portal'); }
         else setRecovery(await regenerateRecoveryCode());
         setAction(undefined);
       }); }}>
         {action === 'password' && <label className="block">{translate('auth.newPassword')}<input type="password" autoComplete="new-password" minLength={12} className="relay-input mt-2 w-full" value={password} required onChange={e => setPassword(e.target.value)} disabled={busy} /></label>}
+        {action === 'reset' && !recoverySession && <label className="block">{translate('auth.currentPassword')}<input type="password" autoComplete="current-password" className="relay-input mt-2 w-full" value={password} required onChange={e => setPassword(e.target.value)} disabled={busy} /></label>}
         {error && <p role="alert">{error}</p>}
         <button className="relay-button-primary min-h-11 px-4" disabled={busy}>{translate('auth.continue')}</button>
       </form>

@@ -191,7 +191,7 @@ async function saveWindow(w: WindowState, body: Body, extra: Record<string, unkn
   const vault: Vault = { ...w.vault, ...fields, revision: w.vault.revision + 1 };
   vault.body = await c.seal(w.vdk, c.utf8(JSON.stringify(body)), bodyAad(vault));
   if (windowState() !== w) throw new AccountTrustError('accountUnlockExpired');
-  await accountRequest('/relay/account/vault', 'PUT', { vault, expectedRevision: w.vault.revision, ...(w.authKey ? { currentAuthKey: w.authKey } : {}), ...extra });
+  await accountRequest('/relay/account/vault', 'PUT', { vault, expectedRevision: w.vault.revision, ...(w.authKey ? { currentAuthKey: w.authKey } : w.recoveryAuthKey ? { currentRecoveryAuthKey: w.recoveryAuthKey } : {}), ...extra });
   if (windowState() !== w) throw new AccountTrustError('accountUnlockExpired');
   w.vault = vault; w.body = body; await cacheVault(vault, body);
 }
@@ -260,7 +260,7 @@ export async function changeAccountPassword(password: string, oauthOnly = false)
   try {
     const slots = { ...w.vault.slots, password: await c.seal(keys.wrapKey, w.vdk, slotAad(w.vault, 'password')) };
     await saveWindow(w, { ...w.body, updatedAt: Date.now() }, oauthOnly ? {} : {
-      authKey: keys.authKey, ...(w.authKey ? { currentAuthKey: w.authKey } : w.recoveryAuthKey ? { recoveryAuthKey: w.recoveryAuthKey } : {}) }, { kdf, slots });
+      authKey: keys.authKey }, { kdf, slots });
     if (oauthOnly) delete w.authKey;
     else w.authKey = keys.authKey;
     delete w.recoveryAuthKey;
@@ -269,14 +269,25 @@ export async function changeAccountPassword(password: string, oauthOnly = false)
 export async function regenerateRecoveryCode() {
   await requireUnlock('recovery-code'); const w = windowState();
   const code = c.recoveryDisplay(c.random(20)), keys = await c.recoveryKeys(code);
-  try { await saveWindow(w, { ...w.body, updatedAt: Date.now() }, { recoveryAuthKey: keys.recoveryAuthKey, ...(w.authKey ? { currentAuthKey: w.authKey } : {}) },
-    { slots: { ...w.vault.slots, recovery: await c.seal(keys.recoveryKey, w.vdk, slotAad(w.vault, 'recovery')) } }); return code; }
+  try { await saveWindow(w, { ...w.body, updatedAt: Date.now() }, { recoveryAuthKey: keys.recoveryAuthKey },
+    { slots: { ...w.vault.slots, recovery: await c.seal(keys.recoveryKey, w.vdk, slotAad(w.vault, 'recovery')) } });
+    if (w.recoveryAuthKey) w.recoveryAuthKey = keys.recoveryAuthKey;
+    return code; }
   finally { keys.recoveryKey.fill(0); }
 }
-export async function startAccountOver() {
+export async function startAccountOver(password?: string) {
   const id = await accountStore<string>('active'); if (!id) throw new AccountTrustError('accountUnlockRequired');
   const state = await accountStore<{ recovery?: boolean }>(`session:${id}`);
-  if (!state?.recovery) throw new AccountTrustError('accountRecoverySessionRequired');
-  await accountRequest('/relay/account/vault', 'DELETE', {});
+  let proof = {};
+  if (!state?.recovery) {
+    if (!password) throw new AccountTrustError('accountPasswordConfirmationRequired');
+    // Always verify a fresh confirmation locally, including OAuth-only accounts
+    // whose unlock password never leaves this browser.
+    await unlockAccount(password);
+    const w = windowState();
+    if (w.authKey) proof = { currentAuthKey: w.authKey };
+  }
+  if (await accountStore<string>('active') !== id) throw new AccountTrustError('accountUnlockRequired');
+  await accountRequest('/relay/account/vault', 'DELETE', proof);
   await logoutAccount(); await accountStore(`cache:${id}`, null); await accountStore(`revocations:${id}`, null);
 }
