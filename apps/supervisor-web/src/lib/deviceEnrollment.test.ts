@@ -358,6 +358,24 @@ describe('remove device', () => {
     expect(update.mock.calls[0]![0]([deviceId, 'other'])).toEqual(['other']);
     expect(data.has(deviceId)).toBe(false);
   });
+  it('invalidates trust after the signed tombstone is posted even when the vault CAS fails', async () => {
+    const dispatchEvent = vi.fn();
+    vi.stubGlobal('window', { dispatchEvent });
+    update.mockRejectedValueOnce(new Error('vault_conflict'));
+    try {
+      await expect(revokeDevice(deviceId)).rejects.toThrow('vault_conflict');
+      expect(clearTransportKeyCache).toHaveBeenCalledWith(deviceId);
+      const event = dispatchEvent.mock.calls[0]![0] as CustomEvent;
+      expect(event.type).toBe('pockymoe-account-revocations-changed');
+      expect(event.detail.revocation).toMatchObject({
+        kind: 'device',
+        subjectId: deviceId,
+      });
+      expect(data.has(deviceId)).toBe(true);
+    } finally {
+      vi.stubGlobal('window', undefined);
+    }
+  });
   it('does not remove local trust when the relay refuses revocation', async () => {
     relayFetch.mockResolvedValue(Response.json({}, { status: 403 }));
     await expect(revokeDevice(deviceId)).rejects.toThrow();
