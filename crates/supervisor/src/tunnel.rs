@@ -87,7 +87,11 @@ pub async fn run_relay_tunnel(state: Arc<Supervisor>) -> Result<()> {
                 if let Err(error) = run_connected_tunnel(state.clone(), socket).await {
                     tracing::warn!(%error, "relay tunnel connection ended");
                     if error.is::<crate::owner_trust::DeviceIdMismatch>() {
-                        crate::owner_trust::mismatch_retry(&state, mismatch_delay)?;
+                        if let Err(error) =
+                            crate::owner_trust::mismatch_retry(&state, mismatch_delay)
+                        {
+                            tracing::warn!(%error, "could not persist device-id mismatch retry status");
+                        }
                         tokio::time::sleep(mismatch_delay).await;
                         mismatch_delay = (mismatch_delay * 2).min(Duration::from_secs(300));
                         continue;

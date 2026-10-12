@@ -518,7 +518,7 @@ async fn migrates_node_0030_history_and_policies_idempotently() {
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )?;
-            assert_eq!(runtime_migration_count, 15);
+            assert_eq!(runtime_migration_count, 16);
             assert_eq!(legacy_metadata_count, 2);
             assert_eq!(
                 migrated_metadata.0,
@@ -543,7 +543,7 @@ async fn migrates_node_0030_history_and_policies_idempotently() {
                 |row| row.get(0),
             )?;
             assert_eq!(turns, 3);
-            assert_eq!(migrations, 15);
+            assert_eq!(migrations, 16);
             Ok(())
         })
         .unwrap();
@@ -836,4 +836,57 @@ fn newly_created_database_is_private() {
         std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
         0o600
     );
+}
+#[test]
+fn second_review_existing_trust_schema_gains_subject_index_without_losing_tombstones() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("index.sqlite");
+    let db = Database::open(&path).unwrap();
+    db.with(|c| {
+        c.execute_batch("DROP INDEX IF EXISTS account_revocations_subject_idx; DELETE FROM __remote_codex_runtime_migrations WHERE version>=16; INSERT INTO account_revocations VALUES('account','browser','subject','{}');")?;
+        Ok(())
+    }).unwrap();
+    drop(db);
+    let db = Database::open(&path).unwrap();
+    db.with(|c| {
+        let columns = c.prepare("SELECT name FROM pragma_index_info('account_revocations_subject_idx') ORDER BY seqno")?
+            .query_map([],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        assert_eq!(columns, vec!["kind", "subject_id"]);
+        assert_eq!(c.query_row("SELECT count(*) FROM account_revocations",[],|r|r.get::<_,u64>(0))?,1);
+        Ok(())
+    }).unwrap();
+}
+#[cfg(unix)]
+#[test]
+fn second_review_open_restricts_existing_wal_and_shm_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("journal.sqlite");
+    drop(Database::open(&path).unwrap());
+    let keeper = Connection::open(&path).unwrap();
+    keeper
+        .execute_batch(
+            "PRAGMA journal_mode=WAL; INSERT INTO kv(key,value) VALUES('synthetic','preserved');",
+        )
+        .unwrap();
+    let files = [
+        path.clone(),
+        std::path::PathBuf::from(format!("{}-wal", path.display())),
+        std::path::PathBuf::from(format!("{}-shm", path.display())),
+    ];
+    for file in &files {
+        std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o644)).unwrap();
+    }
+    let db = Database::open(&path).unwrap();
+    for file in &files {
+        assert_eq!(
+            std::fs::metadata(file).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+    assert_eq!(
+        db.get_kv("synthetic").unwrap().as_deref(),
+        Some("preserved")
+    );
+    drop(keeper);
 }

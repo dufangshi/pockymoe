@@ -904,7 +904,7 @@ fn bind_prepares_version_13_before_setup_restarts_its_runtime() {
             |r| r.get::<_, u32>(0)
         )?))
         .unwrap(),
-        15
+        16
     );
 }
 
@@ -980,7 +980,21 @@ fn binding_restricts_existing_database_permissions() {
         std::fs::Permissions::from_mode(0o644),
     )
     .unwrap();
+    for suffix in ["-wal", "-shm"] {
+        let file =
+            std::path::PathBuf::from(format!("{}{suffix}", state.config.database_url.display()));
+        assert!(file.exists());
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+    }
     live_owner(&state);
+    for suffix in ["-wal", "-shm"] {
+        let file =
+            std::path::PathBuf::from(format!("{}{suffix}", state.config.database_url.display()));
+        assert_eq!(
+            std::fs::metadata(file).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
     assert_eq!(
         std::fs::metadata(&state.config.database_url)
             .unwrap()
@@ -989,6 +1003,44 @@ fn binding_restricts_existing_database_permissions() {
             & 0o777,
         0o600
     );
+}
+#[tokio::test]
+async fn second_review_mismatch_status_write_failure_keeps_tunnel_retrying() {
+    use futures_util::SinkExt;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let (_dir, state) = crate::tunnel::tests::state_with_relay_url(&format!(
+        "http://{}",
+        listener.local_addr().unwrap()
+    ));
+    live_owner(&state);
+    state.db.with(|c| {
+        c.execute_batch("CREATE TRIGGER fail_retry_status BEFORE UPDATE ON kv WHEN NEW.key='relayTrustStatus' AND json_extract(NEW.value,'$.retryAt') IS NOT NULL BEGIN SELECT RAISE(FAIL,'synthetic retry status write failure'); END;")?;
+        Ok(())
+    }).unwrap();
+    let tunnel = tokio::spawn(crate::tunnel::run_relay_tunnel(state.clone()));
+    let mut times = Vec::new();
+    for _ in 0..3 {
+        let accepted =
+            tokio::time::timeout(std::time::Duration::from_secs(4), listener.accept()).await;
+        if accepted.is_err() {
+            tunnel.abort();
+            panic!("tunnel stopped retrying after status persistence failed");
+        }
+        let (socket, _) = accepted.unwrap().unwrap();
+        times.push(tokio::time::Instant::now());
+        let mut relay = tokio_tungstenite::accept_async(socket).await.unwrap();
+        relay
+            .send(tokio_tungstenite::tungstenite::Message::Text(
+                json!({"type":"relay.connected","deviceId":"different-device"})
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+    }
+    tunnel.abort();
+    assert!(times[1].duration_since(times[0]) >= std::time::Duration::from_secs(1));
+    assert!(times[2].duration_since(times[1]) >= std::time::Duration::from_secs(2));
 }
 
 #[tokio::test]

@@ -109,6 +109,201 @@ fn error_status(result: Result<Value>) -> u16 {
     owner_trust::response(result).status().as_u16()
 }
 #[tokio::test]
+async fn second_review_grantee_tombstones_are_capped_and_idempotent() {
+    use p256::ecdsa::{signature::Signer, Signature};
+    let (_dir, state, owner, _grant, _cert, _key, principal, account) =
+        fixture_with_account().await;
+    state
+        .db
+        .with(|c| {
+            for n in 0..1023 {
+                c.execute(
+                    "INSERT INTO account_revocations VALUES(?1,'browser',?2,'{}')",
+                    rusqlite::params![principal.account_key_id, format!("seed-{n}")],
+                )?;
+            }
+            Ok(())
+        })
+        .unwrap();
+    let mut r = crate::owner_trust::tests::browser_revocation(&principal);
+    r.subject_id = "last-grantee-tombstone".into();
+    let signature: Signature = account.sign(owner_trust::revocation_signing_input(&r).as_bytes());
+    r.signature = B64.encode(signature.to_bytes());
+    let body = json!({"revocations":[r]});
+    for _ in 0..2 {
+        assert_eq!(
+            request(
+                &state,
+                None,
+                &crate::owner_trust::tests::session_key(),
+                "PUT",
+                "/api/transport/revocations",
+                body.clone()
+            )
+            .await
+            .0,
+            200
+        );
+    }
+    r.subject_id = "overflow-grantee-tombstone".into();
+    let signature: Signature = account.sign(owner_trust::revocation_signing_input(&r).as_bytes());
+    r.signature = B64.encode(signature.to_bytes());
+    assert_eq!(
+        request(
+            &state,
+            None,
+            &crate::owner_trust::tests::session_key(),
+            "PUT",
+            "/api/transport/revocations",
+            json!({"revocations":[r]})
+        )
+        .await,
+        (429, json!({"code":"revocation_limit"}))
+    );
+    state
+        .db
+        .with(|c| {
+            assert_eq!(
+                c.query_row(
+                    "SELECT count(*) FROM account_revocations WHERE account_key_id=?1",
+                    [&principal.account_key_id],
+                    |r| r.get::<_, u64>(0)
+                )?,
+                1024
+            );
+            Ok(())
+        })
+        .unwrap();
+    assert!(principal.valid(&state));
+    let (second_pin, second_account, _certificate, _browser) = grantee_material();
+    let mut second_grant = grant(second_pin);
+    second_grant.grant_id = B64.encode([2; 16]);
+    second_grant.grantee.user_id = "second-recipient".into();
+    put(
+        &state.db,
+        &second_grant.grant_id,
+        &second_grant,
+        &owner,
+        owner_trust::now(),
+    )
+    .unwrap();
+    r.account_key_id = second_grant.grantee.account_key_id;
+    let signature: Signature =
+        second_account.sign(owner_trust::revocation_signing_input(&r).as_bytes());
+    r.signature = B64.encode(signature.to_bytes());
+    owner_trust::apply_revocations(&state, &[r]).unwrap();
+    // The recipient's cap does not block owner-signed tombstones.
+    owner_trust::apply_revocations(
+        &state,
+        &[crate::owner_trust::tests::browser_revocation(&owner)],
+    )
+    .unwrap();
+}
+#[tokio::test]
+async fn second_review_missing_registration_only_owner_tombstone_is_revoked() {
+    use p256::ecdsa::{signature::Signer, Signature};
+    let (_dir, state, owner, _grant, _cert, _key, principal, account) =
+        fixture_with_account().await;
+    let mut r = crate::owner_trust::tests::browser_revocation(&principal);
+    r.subject_id = owner.browser_id.clone();
+    let signature: Signature = account.sign(owner_trust::revocation_signing_input(&r).as_bytes());
+    r.signature = B64.encode(signature.to_bytes());
+    owner_trust::apply_revocations(&state, &[r]).unwrap();
+    state
+        .db
+        .with(|c| {
+            c.execute(
+                "DELETE FROM browser_registrations WHERE browser_id=?1",
+                [&owner.browser_id],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        request(
+            &state,
+            Some(&owner),
+            &crate::owner_trust::tests::session_key(),
+            "GET",
+            "/api/transport/trust",
+            Value::Null
+        )
+        .await,
+        (401, json!({"code":"browser_registration_required"}))
+    );
+    owner_trust::apply_revocations(
+        &state,
+        &[crate::owner_trust::tests::browser_revocation(&owner)],
+    )
+    .unwrap();
+    assert_eq!(
+        request(
+            &state,
+            Some(&owner),
+            &crate::owner_trust::tests::session_key(),
+            "GET",
+            "/api/transport/trust",
+            Value::Null
+        )
+        .await,
+        (401, json!({"code":"browser_revoked"}))
+    );
+}
+#[tokio::test]
+async fn second_review_verified_owner_replaces_grantee_registration_and_channels() {
+    let (_dir, state, owner, _grant, _cert, _key, _principal, account) =
+        fixture_with_account().await;
+    state
+        .db
+        .with(|c| {
+            c.execute(
+                "DELETE FROM browser_registrations WHERE browser_id=?1",
+                [&owner.browser_id],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let key = crate::owner_trust::tests::session_key();
+    let grantee_cert = crate::owner_trust::tests::browser_certificate(&account, &key);
+    assert_eq!(register(&state, &grantee_cert).await.1["role"], "grantee");
+    let old = BrowserPrincipal {
+        browser_id: owner.browser_id.clone(),
+        account_key_id: grantee_cert.account_key_id.clone(),
+        grantee_user_id: Some("recipient".into()),
+    };
+    let (status, body) = request(
+        &state,
+        Some(&old),
+        &key,
+        "POST",
+        "/api/threads/root/transport/session",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, 200);
+    let channel = crate::secure_transport::transport(&state)
+        .unwrap()
+        .session(body["channelId"].as_str().unwrap())
+        .unwrap();
+    let owner_cert = crate::owner_trust::tests::browser_certificate(
+        &crate::owner_trust::tests::account_key(),
+        &key,
+    );
+    let mut invalid = owner_cert.clone();
+    invalid.signature = B64.encode([0; 64]);
+    assert_eq!(register(&state, &invalid).await.0, 400);
+    assert!(old.valid(&state));
+    assert_eq!(register(&state, &owner_cert).await.1["role"], "owner");
+    assert!(owner.valid(&state));
+    assert!(!old.valid(&state));
+    assert!(!channel.alive());
+    // Recipients cannot displace the verified owner on subsequent registration.
+    assert_eq!(
+        register(&state, &grantee_cert).await,
+        (403, json!({"code":"account_mismatch"}))
+    );
+}
+#[tokio::test]
 async fn grant_crud_validation_limits_and_owner_enforcement() {
     let (_dir, state, owner, mut g, _r, key, p) = fixture().await;
     let owner_key = crate::owner_trust::tests::session_key();
