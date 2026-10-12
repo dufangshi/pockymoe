@@ -14,7 +14,7 @@ import {
   probeDeviceEncryption,
   trustDeviceIdentity,
 } from '../lib/relayTransport';
-import { inviteIdentityPin, forgetInviteIdentity } from '../lib/ownerDeviceTrust';
+import { inviteOwnerPin, forgetInviteOwner } from '../lib/sharedDeviceTrust';
 import { resetPinnedDevice, clearTransportKeyCache, type TransportStatus } from '../lib/relayTransportCrypto';
 import { DeviceTrustPanel } from './DeviceTrustPanel';
 import { FormDialog } from './FormDialog';
@@ -47,7 +47,7 @@ export function DeviceEncryptionStatus({
   useEffect(() => {
     let active = true;
     setHasInvitePin(false);
-    if (deviceId) void inviteIdentityPin(deviceId).then((pin) => { if (active) setHasInvitePin(!!pin); }).catch(() => {});
+    if (deviceId) void inviteOwnerPin(deviceId).then((pin) => { if (active) setHasInvitePin(!!pin); }).catch(() => {});
     return () => { active = false; };
   }, [deviceId, status]);
   const [open, setOpen] = useState(false),
@@ -235,7 +235,7 @@ export function DeviceEncryptionStatus({
               {status?.role !== 'grantee' && <button className="relay-button-secondary px-3 py-2" onClick={() => { setOpen(false); setManage(true); }}>{translate('auth.ownerManage')}</button>}
             </span>}
             {deviceId && hasInvitePin && !status?.certificateVerified && <button className="relay-button-secondary px-3 py-2" onClick={() => {
-              void forgetInviteIdentity(deviceId).then(() => resetPinnedDevice(deviceId)).then(() => {
+              void forgetInviteOwner(deviceId).then(() => resetPinnedDevice(deviceId)).then(() => {
                 clearTransportKeyCache(deviceId);
                 navigator.serviceWorker?.controller?.postMessage({ type: 'remote-codex-reset-transport', deviceId });
                 setHasInvitePin(false);

@@ -5,8 +5,8 @@ import { enableRelayMode, fetchRelaySession, fetchRelayPortal } from '../lib/api
 import { acceptSharedInvite, parseSharedInvite } from '../lib/sharedInvite';
 import {
   clearTransportKeyCache,
-  checkSharedInviteDevice,
 } from '../lib/relayTransportCrypto';
+import { checkSharedInviteDevice } from '../lib/sharedDeviceTrust';
 export function SharedInvitePage() {
   useI18n();
   const navigate = useNavigate();
@@ -74,7 +74,7 @@ export function SharedInvitePage() {
         type: 'remote-codex-reset-transport',
         deviceId: input.invite.deviceId,
       });
-      // Check the signed descriptor before navigating. No passkey assertion is
+      // Check the signed descriptor before navigating. No browser registration is
       // needed for this identity check; unlock happens on the destination page.
       await checkSharedInviteDevice(input.invite.deviceId, input.invite.threadId);
       if (active) {
@@ -113,7 +113,7 @@ export function SharedInvitePage() {
               ? `${deviceName} (${input.invite.deviceId})`
               : input.invite.deviceId,
           })}</p>
-          <code className="block break-all">SHA-256 {input.invite.identity}</code>
+          <code className="block break-all">{translate('sharing.inviteOwnerKey', { value1: input.invite.ownerAccountKeyId })}</code>
           <button className="relay-button-primary px-3 py-2" onClick={() => setConfirmed(true)}>
             {translate('sharing.confirmInvite')}
           </button>

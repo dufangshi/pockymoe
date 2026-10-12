@@ -9,11 +9,15 @@ import type {
 import { request } from './api';
 import { requestGrantReview } from './sharingApproval';
 import {
-  hasDeviceCertificate,
+  isProtectedSharingDevice,
   locallyCertifiedDevices,
-} from './ownerDeviceTrust';
-import { encode64, hash64, type OwnerCredential } from './ownerTrustCrypto';
-import { trustStore } from './ownerTrustStore';
+  validatePublicAccount,
+  encode64,
+  type PublicAccount,
+} from './sharedDeviceTrust';
+import { safetyCode } from './accountVault';
+import { sharingTrustStore } from './sharingTrustStore';
+export { safetyCode } from './accountVault';
 
 export type ShareKind = 'share' | 'grant';
 export type ShareRow = RelaySessionShareDto | RelayAccessGrantDto;
@@ -21,7 +25,7 @@ export interface DeviceGrant {
   version: 1;
   grantId: string;
   relayRef: { kind: ShareKind; id: string };
-  grantee: { userId: string; label: string; credentials: OwnerCredential[] };
+  grantee: { userId: string; label: string; accountKeyId: string; accountPublicKey: string };
   scope: 'thread' | 'workspace' | 'device';
   threadId: string | null;
   workspaceId: string | null;
@@ -34,10 +38,14 @@ export interface DeviceGrant {
 }
 const collection = (kind: ShareKind) =>
   kind === 'share' ? 'shares' : 'grants';
-export const recipientPasskeys = (kind: ShareKind, id: string) =>
-  request<{ passkeys: OwnerCredential[] }>(
-    `/relay/${collection(kind)}/${encodeURIComponent(id)}/recipient-passkeys`,
-  ).then((r) => r.passkeys);
+export const recipientAccount = (kind: ShareKind, id: string) =>
+  request<PublicAccount>(
+    `/relay/${collection(kind)}/${encodeURIComponent(id)}/recipient-account`,
+  ).then(validatePublicAccount).catch((error: unknown) => {
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'recipient_account_missing')
+      throw new Error(translate('sharing.recipientNeedsAccount'));
+    throw error;
+  });
 export const deviceGrants = (deviceId: string) =>
   deviceRequest<{ grants: DeviceGrant[] }>(
     deviceId,
@@ -67,44 +75,17 @@ async function deviceRequest<T>(
             String(error.code),
           )))
     )
-      throw new Error(translate('sharing.pairedOnline'));
+      throw new Error(translate('sharing.protectedOnline'));
     throw error;
   }
 }
-export async function safetyCode(
-  credentials: Pick<OwnerCredential, 'credentialId'>[],
-) {
-  const digest = await hash64(
-    new TextEncoder().encode(
-      'pockymoe-grantee-v1\n' +
-        credentials
-          .map((c) => c.credentialId)
-          .sort()
-          .join('\n'),
-    ),
-  );
-  return digest.slice(0, 12).match(/.{4}/g)!.join(' ');
+export async function recipientVerified(account: PublicAccount) {
+  const checked = await validatePublicAccount(account);
+  return !!(await sharingTrustStore<boolean>('recipient-confirmed:' + checked.accountKeyId));
 }
-export function credentialSet(credentials: OwnerCredential[]) {
-  return JSON.stringify(
-    credentials
-      .map((c) => [c.credentialId, c.publicKey, c.algorithm, c.rpId, c.origin])
-      .sort((a, b) =>
-        String(a[0]) < String(b[0]) ? -1 : String(a[0]) > String(b[0]) ? 1 : 0,
-      ),
-  );
-}
-async function confirmationKey(credentials: OwnerCredential[]) {
-  return (
-    'grantee-confirmed:' +
-    (await hash64(new TextEncoder().encode(credentialSet(credentials))))
-  );
-}
-export async function recipientVerified(credentials: OwnerCredential[]) {
-  return !!(await trustStore<boolean>(await confirmationKey(credentials)));
-}
-export async function confirmRecipient(credentials: OwnerCredential[]) {
-  await trustStore(await confirmationKey(credentials), true);
+export async function confirmRecipient(account: PublicAccount) {
+  const checked = await validatePublicAccount(account);
+  await sharingTrustStore('recipient-confirmed:' + checked.accountKeyId, true);
 }
 export async function findRelayRow(kind: ShareKind, id: string) {
   const portal = await request<RelayPortalSummaryDto>('/relay/portal');
@@ -114,12 +95,12 @@ export async function findRelayRow(kind: ShareKind, id: string) {
   if (!row) throw new Error(translate('sharing.rowUnavailable'));
   return row;
 }
-async function pairedForSharing(row: ShareRow) {
+async function protectedForSharing(row: ShareRow) {
   // Certificates remain available while the device is offline. A saved certificate
   // prevents a relay omission from downgrading an owner to legacy sharing.
-  if (await hasDeviceCertificate(row.deviceId)) {
+  if (await isProtectedSharingDevice(row.deviceId)) {
     if (row.deviceConnected === false)
-      throw new Error(translate('sharing.pairedOnline'));
+      throw new Error(translate('sharing.protectedOnline'));
     return true;
   }
   return false;
@@ -127,7 +108,7 @@ async function pairedForSharing(row: ShareRow) {
 export function grantForRow(
   kind: ShareKind,
   row: ShareRow,
-  credentials: OwnerCredential[],
+  account: PublicAccount,
   grantId = encode64(crypto.getRandomValues(new Uint8Array(16))),
 ): DeviceGrant {
   const grant = kind === 'grant' ? (row as RelayAccessGrantDto) : undefined;
@@ -138,7 +119,8 @@ export function grantForRow(
     grantee: {
       userId: row.targetUserId,
       label: row.targetUsername,
-      credentials,
+      accountKeyId: account.accountKeyId,
+      accountPublicKey: account.accountPublicKey,
     },
     scope: grant?.scope ?? 'thread',
     threadId: row.threadId ?? null,
@@ -165,10 +147,10 @@ async function approveDeviceGrant(
   deviceName: string,
   grant: DeviceGrant,
 ) {
-  const verified = await recipientVerified(grant.grantee.credentials);
-  const code = await safetyCode(grant.grantee.credentials);
+  const verified = await recipientVerified(grant.grantee);
+  const code = await safetyCode(grant.grantee.accountKeyId);
   // An unlocked session and the reconciliation button never authorize a PUT.
-  // Wait for explicit review of this exact snapshot and recipient key set.
+  // Wait for explicit review of this exact snapshot and recipient account key.
   const fields = translate('sharing.reviewGrant', {
     value1: JSON.stringify({ name: deviceName, id: deviceId }),
     value2: JSON.stringify({
@@ -197,15 +179,13 @@ async function approveDeviceGrant(
 }
 export async function syncDeviceGrant(kind: ShareKind, source: ShareRow) {
   const row = structuredClone(source);
-  if (!(await pairedForSharing(row))) return;
-  const credentials = await recipientPasskeys(kind, row.id);
-  if (!credentials.length)
-    throw new Error(translate('sharing.recipientNeedsPasskey'));
+  if (!(await protectedForSharing(row))) return;
+  const account = await recipientAccount(kind, row.id);
   const grants = await deviceGrants(row.deviceId);
   const existing = grants.find(
     (g) => g.relayRef.kind === kind && g.relayRef.id === row.id,
   );
-  const grant = grantForRow(kind, row, credentials, existing?.grantId);
+  const grant = grantForRow(kind, row, account, existing?.grantId);
   if (grant.expiresAt !== null && !Number.isFinite(grant.expiresAt))
     throw new Error(translate('sharing.rowAltered'));
   await approveDeviceGrant(row.deviceId, row.deviceName, grant);
@@ -219,8 +199,8 @@ export async function syncDeviceGrant(kind: ShareKind, source: ShareRow) {
 function sameIntent(kind: ShareKind, expected: ShareRow, returned: ShareRow) {
   return (
     expected.deviceId === returned.deviceId &&
-    grantPermissions(grantForRow(kind, expected, [], 'compare')) ===
-      grantPermissions(grantForRow(kind, returned, [], 'compare'))
+    grantPermissions(grantForRow(kind, expected, { accountKeyId: '', accountPublicKey: '' }, 'compare')) ===
+      grantPermissions(grantForRow(kind, returned, { accountKeyId: '', accountPublicKey: '' }, 'compare'))
   );
 }
 export async function sharingMutation<T>(
@@ -297,7 +277,7 @@ export async function sharingMutation<T>(
       throw new Error(translate('sharing.rollbackFailed'));
     }
     throw new Error(translate('sharing.rolledBack', {
-      value1: error instanceof Error ? error.message : translate('sharing.pairedOnline'),
+      value1: error instanceof Error ? error.message : translate('sharing.protectedOnline'),
     }));
   }
   return result;
@@ -306,7 +286,7 @@ export interface Reconciliation {
   row?: ShareRow;
   grant?: DeviceGrant | undefined;
   state: 'active' | 'missing' | 'orphan' | 'changed' | 'different';
-  credentials: OwnerCredential[];
+  account: PublicAccount;
 }
 function grantPermissions(grant: DeviceGrant) {
   return JSON.stringify([
@@ -323,28 +303,28 @@ function grantPermissions(grant: DeviceGrant) {
   ]);
 }
 export function reconcileGrants(
-  rows: { kind: ShareKind; row: ShareRow; credentials: OwnerCredential[] }[],
+  rows: { kind: ShareKind; row: ShareRow; account: PublicAccount }[],
   grants: DeviceGrant[],
 ): Reconciliation[] {
   grants = grants.filter(
     (g) => g.expiresAt === null || g.expiresAt > Date.now(),
   );
-  const entries: Reconciliation[] = rows.map(({ kind, row, credentials }) => {
+  const entries: Reconciliation[] = rows.map(({ kind, row, account }) => {
     const grant = grants.find(
       (g) => g.relayRef.kind === kind && g.relayRef.id === row.id,
     );
     return {
       row,
       grant,
-      credentials,
+      account,
       state: !grant
         ? 'missing'
-        : credentialSet(credentials) !==
-            credentialSet(grant.grantee.credentials)
+        : account.accountKeyId !== grant.grantee.accountKeyId ||
+            account.accountPublicKey !== grant.grantee.accountPublicKey
           ? 'changed'
           : grantPermissions(grant) !==
               grantPermissions(
-                grantForRow(kind, row, credentials, grant.grantId),
+                grantForRow(kind, row, account, grant.grantId),
               )
             ? 'different'
             : 'active',
@@ -359,7 +339,7 @@ export function reconcileGrants(
       entries.push({
         grant,
         state: 'orphan',
-        credentials: grant.grantee.credentials,
+        account: { accountKeyId: grant.grantee.accountKeyId, accountPublicKey: grant.grantee.accountPublicKey },
       });
   }
   return entries;
