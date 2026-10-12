@@ -116,10 +116,10 @@ export class Fixture {
     child.stderr?.on('data', data => this.logs.push(`[${mode}] ${String(data)}`));
     this.processes.push(child);
   }
-  async cli(args: string[]) {
+  async cli(args: string[], commandEnv: Record<string, string> = {}) {
     return new Promise<{ code: number | null; output: string; data: any }>((done, fail) => {
       let output = '';
-      const child = spawn(this.binary, args, { env: { ...this.env, HOME: join(this.root, 'home') }, stdio: ['ignore', 'pipe', 'pipe'] });
+      const child = spawn(this.binary, args, { env: { ...this.env, HOME: join(this.root, 'home'), ...commandEnv }, stdio: ['ignore', 'pipe', 'pipe'] });
       child.stdout.on('data', data => { output += String(data); });
       child.stderr.on('data', data => { output += String(data); });
       child.once('error', () => fail(new Error('Isolated CLI failed to start')));
@@ -248,10 +248,22 @@ export class Fixture {
     const dialog = page.getByRole('dialog', { name: 'Protect this device', exact: true });
     await expect(dialog.locator('pre')).toBeVisible();
     const command = (await dialog.locator('pre').textContent())!.trim();
-    const args = command.split(/\s+/).slice(1);
-    this.secrets.push(args[args.indexOf('--enroll') + 1]);
+    // Section 11's Unix command puts the one-time secret in the CLI child's
+    // environment. Parse its quoted arguments without running an arbitrary
+    // shell or inheriting that secret into either Supervisor process.
+    const prefix = /^POCKYMOE_ENROLL_SECRET='([A-Za-z0-9_-]{43})'\s+/.exec(command);
+    const executable = prefix ? command.slice(prefix[0].length) : command;
+    expect(/^pockymoe\s+bind\s/.test(executable), 'Devices displays a local bind command').toBe(true);
+    const args = (executable.match(/'[^']*'|"[^"]*"|\S+/g) ?? []).slice(1)
+      .map(argument => argument.replace(/^(['"])(.*)\1$/, '$2'));
+    const commandEnv: Record<string, string> = prefix ? { POCKYMOE_ENROLL_SECRET: prefix[1] } : {};
+    if (prefix) this.secrets.push(prefix[1]);
+    else {
+      this.secrets.push(args[args.indexOf('--enroll') + 1]);
+      expect.soft(false, 'ENROLLMENT_SECRET_ARGV: displayed bind command must use POCKYMOE_ENROLL_SECRET instead of --enroll. Section 11 CLI/UI integration fix pending; execute the baseline command only to cover enrollment.').toBe(true);
+    }
     if (capture) await screenshot(page, this.info, 'v2-device-enrolling');
-    expect((await this.cli([...args, '--database', device.db])).code, 'Run real UI bind command on isolated DB').toBe(0);
+    expect((await this.cli([...args, '--database', device.db], commandEnv)).code, 'Run real UI bind command on isolated DB').toBe(0);
     await dialog.getByRole('button', { name: 'Close', exact: true }).click();
     // Monitor runs before an already-online device has executed the command.
     // Record a premature pause and use the real Retry enrollment action.
