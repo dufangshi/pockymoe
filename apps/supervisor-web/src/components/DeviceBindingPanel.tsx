@@ -7,7 +7,13 @@ import {
 } from '../lib/deviceSetupCommands';
 
 /** Binding is a local command and must also be available while the device is offline. */
-export function DeviceBindingPanel({ deviceId }: { deviceId: string }) {
+export function DeviceBindingPanel({
+  deviceId,
+  repair = false,
+}: {
+  deviceId: string;
+  repair?: boolean;
+}) {
   useI18n();
   const [commands, setCommands] =
     useState<Record<SupervisorPlatform, string>>();
@@ -20,7 +26,10 @@ export function DeviceBindingPanel({ deviceId }: { deviceId: string }) {
     setCommands(undefined);
     setCopied(false);
     setError(undefined);
-    void prepareDeviceEnrollment(deviceId)
+    const preparing = repair
+      ? prepareDeviceEnrollment(deviceId, { fresh: true })
+      : prepareDeviceEnrollment(deviceId);
+    void preparing
       .then((binding) => {
         if (active)
           setCommands({
@@ -39,7 +48,7 @@ export function DeviceBindingPanel({ deviceId }: { deviceId: string }) {
     return () => {
       active = false;
     };
-  }, [deviceId]);
+  }, [deviceId, repair]);
   return (
     <div className="space-y-3 text-sm">
       <p>{translate('devices.protectDeviceHelp')}</p>

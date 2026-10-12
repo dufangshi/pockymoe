@@ -2112,7 +2112,10 @@ function DeviceRow({
             title={translate(protection === 'certificate-missing' ? 'devices.repairDevice' : 'devices.protectDevice')}
             onClose={() => setProtectOpen(false)}
           >
-            <DeviceBindingPanel deviceId={device.id} />
+            <DeviceBindingPanel
+              deviceId={device.id}
+              repair={protection === 'certificate-missing'}
+            />
           </FormDialog>
         )}
 

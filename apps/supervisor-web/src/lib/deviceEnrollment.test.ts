@@ -94,6 +94,14 @@ beforeEach(() => {
         transaction: () => {
           const tx: Record<string, any> = {};
           tx.objectStore = () => ({
+            get: (id: string) => {
+              const get: Record<string, any> = {};
+              queueMicrotask(() => {
+                get.result = structuredClone(data.get(id));
+                get.onsuccess?.();
+              });
+              return get;
+            },
             put: (record: PendingEnrollment) =>
               data.set(record.deviceId, structuredClone(record)),
             delete: (id: string) => data.delete(id),
@@ -194,8 +202,70 @@ describe('pending enrollment lifecycle', () => {
     expect(binding.accountPublicKey).toBe(account.accountPublicKey);
     expect(requireUnlock).toHaveBeenCalledWith('bind-device');
   });
+  it('creates a fresh repair enrollment instead of reusing a possibly consumed command secret', async () => {
+    data.set(deviceId, {
+      ...pending,
+      certificate: vectors.deviceCertificate as never,
+    });
+    const binding = await prepareDeviceEnrollment(deviceId, { fresh: true });
+    expect(requireUnlock).toHaveBeenCalledWith('bind-device');
+    expect(binding.enrollSecret).not.toBe(pending.enrollSecret);
+    expect(binding.certificate).toBeUndefined();
+    expect(data.get(deviceId)?.enrollSecret).toBe(binding.enrollSecret);
+    expect(confirmBoundDeviceIdentity).not.toHaveBeenCalled();
+  });
 });
 describe('enrollment protocol', () => {
+  it('stops an in-flight enrollment if its pending record is removed before certificate signing', async () => {
+    vi.mocked(requireUnlock).mockImplementationOnce(async () => {
+      data.delete(deviceId);
+      return { ...account, sign, updateBoundDevices: update };
+    });
+    expect(await completeDeviceEnrollment(pending, true)).toBe(false);
+    expect(sign).not.toHaveBeenCalled();
+    expect(relayFetch).not.toHaveBeenCalled();
+    expect(confirmBoundDeviceIdentity).not.toHaveBeenCalled();
+  });
+  it('does not overwrite a fresh repair enrollment if the previous attempt finishes signing late', async () => {
+    const repair = { ...pending, enrollSecret: 'fresh-secret' };
+    sign.mockImplementationOnce(async () => {
+      data.set(deviceId, repair);
+      return 'signature';
+    });
+    expect(await completeDeviceEnrollment(pending, true)).toBe(false);
+    expect(data.get(deviceId)).toEqual(repair);
+    expect(deviceTrustRequest).toHaveBeenCalledExactlyOnceWith(
+      deviceId,
+      'enrollment',
+    );
+    expect(relayFetch).not.toHaveBeenCalled();
+  });
+  it('does not delete a fresh repair enrollment when the previous owner response arrives late', async () => {
+    const repair = { ...pending, enrollSecret: 'fresh-secret' };
+    vi.mocked(deviceTrustRequest).mockImplementation(
+      async (_id, path, _method, body) => {
+        if (path === 'enrollment') return enrollment as never;
+        if (path === 'trust') {
+          data.set(deviceId, repair);
+          return {} as never;
+        }
+        return { certificate: body } as never;
+      },
+    );
+    expect(await completeDeviceEnrollment(pending, true)).toBe(false);
+    expect(data.get(deviceId)).toEqual(repair);
+  });
+  it('does not let an expired attempt delete a newer repair enrollment', async () => {
+    const expired = {
+      ...pending,
+      createdAt: Date.now() - ENROLLMENT_LIFETIME_MS,
+    };
+    const repair = { ...pending, enrollSecret: 'fresh-secret' };
+    data.set(deviceId, repair);
+    expect(await completeDeviceEnrollment(expired, true)).toBe(false);
+    expect(data.get(deviceId)).toEqual(repair);
+    expect(inspectEnrollmentDevice).not.toHaveBeenCalled();
+  });
   it('passes the authoritative HMAC vector and rejects its negative identity vector', async () => {
     expect(await verifyEnrollmentMac(pending, enrollment)).toBe(true);
     expect(
@@ -530,7 +600,7 @@ describe('remove device', () => {
         kind: 'device',
         subjectId: deviceId,
       });
-      expect(data.has(deviceId)).toBe(true);
+      expect(data.has(deviceId)).toBe(false);
     } finally {
       vi.stubGlobal('window', undefined);
     }

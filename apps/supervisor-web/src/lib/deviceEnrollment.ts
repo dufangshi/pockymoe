@@ -92,19 +92,59 @@ export async function createPendingEnrollment(
   await savePending(pending);
   return pending;
 }
-async function savePending(pending: PendingEnrollment) {
-  await store<void>((s, done) => {
-    s.put(pending);
-    done(undefined);
-  });
-  changed();
+const sameEnrollment = (
+  a: PendingEnrollment | undefined,
+  b: PendingEnrollment,
+) =>
+  a?.deviceId === b.deviceId &&
+  a.userId === b.userId &&
+  a.accountKeyId === b.accountKeyId &&
+  a.createdAt === b.createdAt &&
+  a.enrollSecret === b.enrollSecret;
+async function pendingIsCurrent(pending: PendingEnrollment) {
+  return (await listPendingEnrollments()).some((p) =>
+    sameEnrollment(p, pending),
+  );
 }
-export async function deletePendingEnrollment(deviceId: string) {
-  await store<void>((s, done) => {
-    s.delete(deviceId);
-    done(undefined);
+async function savePending(
+  pending: PendingEnrollment,
+  expected?: PendingEnrollment,
+) {
+  const saved = await store<boolean>((s, done) => {
+    if (!expected) {
+      s.put(pending);
+      done(true);
+      return;
+    }
+    const request = s.get(pending.deviceId);
+    request.onsuccess = () => {
+      const current = sameEnrollment(request.result, expected);
+      if (current) s.put(pending);
+      done(current);
+    };
   });
-  changed();
+  if (saved) changed();
+  return saved;
+}
+export async function deletePendingEnrollment(
+  deviceId: string,
+  expected?: PendingEnrollment,
+) {
+  const deleted = await store<boolean>((s, done) => {
+    if (!expected) {
+      s.delete(deviceId);
+      done(true);
+      return;
+    }
+    const request = s.get(deviceId);
+    request.onsuccess = () => {
+      const current = sameEnrollment(request.result, expected);
+      if (current) s.delete(deviceId);
+      done(current);
+    };
+  });
+  if (deleted) changed();
+  return deleted;
 }
 export async function listPendingEnrollments(
   account?: AccountKeyInfo | null,
@@ -128,14 +168,19 @@ export async function listPendingEnrollments(
     };
   });
 }
-export async function prepareDeviceEnrollment(deviceId: string) {
+export async function prepareDeviceEnrollment(
+  deviceId: string,
+  options?: { fresh?: boolean },
+) {
   const account = await requireUnlock('bind-device');
   const existing = (await listPendingEnrollments(account)).find(
     (p) => p.deviceId === deviceId,
   );
   return {
     accountPublicKey: account.accountPublicKey,
-    ...(existing ?? (await createPendingEnrollment(deviceId, account))),
+    ...(!options?.fresh && existing
+      ? existing
+      : await createPendingEnrollment(deviceId, account)),
   };
 }
 
@@ -221,7 +266,7 @@ async function complete(
   confirmedReplacement?: EnrollmentIdentityReplacement,
 ) {
   if (Date.now() - pending.createdAt >= ENROLLMENT_LIFETIME_MS) {
-    await deletePendingEnrollment(pending.deviceId);
+    await deletePendingEnrollment(pending.deviceId, pending);
     return false;
   }
   const account = await currentAccount();
@@ -241,9 +286,10 @@ async function complete(
         r.subjectId === pending.deviceId,
     )
   ) {
-    await deletePendingEnrollment(pending.deviceId);
+    await deletePendingEnrollment(pending.deviceId, pending);
     return false;
   }
+  if (!(await pendingIsCurrent(pending))) return false;
   const descriptor = await inspectEnrollmentDevice(pending.deviceId);
   const previous = (await boundDeviceIdentities()).find(
     (d) => d.deviceId === pending.deviceId,
@@ -287,9 +333,11 @@ async function complete(
       !(await verifyEnrollmentMac(pending, enrollment))
     )
       throw new Error(translate('devices.enrollmentMismatch'));
+    if (!(await pendingIsCurrent(pending))) return false;
     // Authenticate the enrollment before offering any identity replacement.
     await confirmReplacement();
     unlocked = await requireUnlock('certify-device');
+    if (!(await pendingIsCurrent(pending))) return false;
     if (
       unlocked.accountKeyId !== pending.accountKeyId ||
       unlocked.userId !== pending.userId
@@ -306,7 +354,8 @@ async function complete(
       ...fields,
       signature: await unlocked.sign(signingInput.device(fields)),
     };
-    await savePending({ ...pending, certificate });
+    if (!(await savePending({ ...pending, certificate }, pending)))
+      return false;
     const installed = await deviceTrustRequest<{
       certificate: DeviceCertificate;
     }>(pending.deviceId, 'device-certificate', 'PUT', certificate);
@@ -321,12 +370,14 @@ async function complete(
       throw new Error(translate('devices.enrollmentMismatch'));
     certificate = installed.certificate;
   } else await confirmReplacement();
+  if (!(await pendingIsCurrent(pending))) return false;
   unlocked ??= await requireUnlock('certify-device');
   if (
     unlocked.accountKeyId !== account.accountKeyId ||
     unlocked.userId !== account.userId
   )
     throw new Error(translate('devices.enrollmentMismatch'));
+  if (!(await pendingIsCurrent(pending))) return false;
   const response = await fetch(
     relayUrl(
       `/relay/devices/${encodeURIComponent(pending.deviceId)}/certificate`,
@@ -342,6 +393,7 @@ async function complete(
     const error = new Error(translate('devices.enrollmentUploadFailed'));
     throw Object.assign(error, { status: response.status });
   }
+  if (!(await pendingIsCurrent(pending))) return false;
   if (!replacing)
     await confirmBoundDeviceIdentity(
       pending.deviceId,
@@ -351,8 +403,7 @@ async function complete(
   transport.clearTransportKeyCache(pending.deviceId);
   // Only a live owner response may establish Protected in the transport status.
   await deviceTrustRequest(pending.deviceId, 'trust');
-  await deletePendingEnrollment(pending.deviceId);
-  return true;
+  return deletePendingEnrollment(pending.deviceId, pending);
 }
 
 export type DeviceProtectionState =
@@ -432,8 +483,9 @@ export async function revokeDevice(deviceId: string) {
       }),
     );
   }
+  // A committed revocation ends enrollment even if the subsequent vault CAS fails.
+  await deletePendingEnrollment(deviceId);
   await account.updateBoundDevices((ids) =>
     ids.filter((id) => id !== deviceId),
   );
-  await deletePendingEnrollment(deviceId);
 }
