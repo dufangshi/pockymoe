@@ -666,7 +666,7 @@ async fn open_stream(state: &AppState, mapping: &Mapping, grant: &Grant) -> Resu
             .filter(|s| s.connection_id == mapping.connection)
             .ok_or_else(|| anyhow::anyhow!("Device offline"))?;
         socket.tx.try_send(
-            json!({"type":"preview.open","mappingId":mapping.id,"ticket":ticket,"leaseId":grant.lease}).to_string(),
+            json!({"type":"relay.port.open","mappingId":mapping.id,"ticket":ticket,"leaseId":grant.lease}).to_string(),
         )?;
     }
     let stream = tokio::time::timeout(Duration::from_secs(10), rx).await??;
@@ -1017,7 +1017,7 @@ mod tests {
         let caller = state.clone();
         let task = tokio::spawn(async move { open_stream(&caller, &mapping, &grant).await });
         let frame: Value = serde_json::from_str(&rx.recv().await.unwrap()).unwrap();
-        assert_eq!(frame["type"], "preview.open");
+        assert_eq!(frame["type"], "relay.port.open");
         assert_eq!(frame["leaseId"], lease);
         let ticket = frame["ticket"].as_str().unwrap();
         let tx = state
