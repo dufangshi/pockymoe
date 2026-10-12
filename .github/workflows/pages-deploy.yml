@@ -6,6 +6,7 @@ on:
     paths:
       - 'apps/supervisor-web/**'
       - 'packages/**'
+      - 'themes/**'
       - 'thread-ui.sha'
       - 'package.json'
       - 'pnpm-lock.yaml'
