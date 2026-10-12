@@ -171,22 +171,32 @@ test('signed sharing, invite pins, revocation and account-certified peers', asyn
     await f.bind(owner, d3);
     expect((await f.cli(['--cli-config', d3.cli, 'device', 'access', 'on'])).code).toBe(0);
     await owner.page.goto(f.base + '/relay-devices');
-    // A compromised relay may pretend to delete registration but retain it.
-    // Keep the real tunnel live so the signed device tombstone must enforce
-    // revocation at D1, rather than a missing directory row doing the work.
-    await owner.context.route(`**/relay/devices/${d3.id}`, async route => {
-      if (route.request().method() !== 'DELETE') return route.fallback();
-      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ id: d3.id }) });
-    });
+    // Save registration privately: browser routing cannot intercept a DELETE
+    // handled by the Service Worker. Let the real UI revoke and delete D3.
+    const registration = await f.sql(`
+row=c.execute("SELECT id,owner_user_id,name,token,token_hash,token_preview,created_at FROM relay_devices WHERE id=?",(p["id"],)).fetchone()
+assert row is not None
+print(json.dumps(row))`, { id: d3.id });
     await owner.page.getByRole('button', { name: 'More actions for Signed device 3', exact: true }).click();
     await owner.page.getByRole('menuitem', { name: 'Remove device', exact: true }).click();
     const removal = owner.page.getByRole('dialog', { name: 'Remove device', exact: true });
     await removal.getByRole('button', { name: 'Remove device', exact: true }).click();
     await unlock(owner.page, owner.password);
     await expect(removal).toHaveCount(0);
+    expect(await f.sql('print(json.dumps(c.execute("SELECT COUNT(*) FROM relay_devices WHERE id=?",(p["id"],)).fetchone()[0]))', { id: d3.id }),
+      'Real UI removal deletes the relay registration').toBe(0);
+    // Simulate a compromised relay restoring registration, without changing
+    // the signed tombstone or either device's trust state. The same Supervisor
+    // reconnects with its original token once the relay row is restored.
+    await f.sql('c.execute("INSERT INTO relay_devices(id,owner_user_id,name,token,token_hash,token_preview,created_at) VALUES(?,?,?,?,?,?,?)",p["row"])', { row: registration });
+    await expect.poll(async () => (await f.api(`/relay/devices/${d3.id}/presence`, 'GET', undefined, owner.cookie)).data?.connected,
+      { timeout: 15_000, message: 'Restored D3 registration has a live, responding relay tunnel' }).toBe(true);
+    const restored = ok(await f.api(d3.api + '/transport/key?challenge=revoked-peer-fixture', 'GET', undefined, owner.cookie), 'Restored target key handshake');
+    expect(restored.certificate, 'Reachable revoked target still presents its account-signed certificate').toMatchObject({ deviceId: d3.id, accountKeyId: owner.accountKeyId });
     const revokedPeer = await f.cli(args(d1, d3, 'REVOKED_DEVICE_REFUSAL'));
     expect.soft(revokedPeer.code, 'PEER_REVOKED: account-revoked target cannot receive a peer send even when relay retains its tunnel').not.toBe(0);
     expect.soft(revokedPeer.output.includes('peer_target_unverified'), 'PEER_REVOKED_CERTIFICATE: D1 independently refuses the revoked target certificate').toBe(true);
+    f.events.push(`revoked peer exit=${revokedPeer.code} peer_target_unverified=${revokedPeer.output.includes('peer_target_unverified')} device_not_found=${revokedPeer.output.includes('device_not_found')}`);
     const revocations = ok(await f.api('/relay/account/browsers', 'GET', undefined, owner.cookie), 'Signed device revocation').revocations;
     expect(revocations.some((r: any) => r.kind === 'device' && r.subjectId === d3.id)).toBe(true);
     expect((await f.cli(['bind', '--database', d2.db, '--reset', '--yes'])).code).toBe(0);
