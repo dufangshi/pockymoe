@@ -1,27 +1,38 @@
 // @vitest-environment node
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { setLocale, translate } from '@pockymoe/thread-ui/i18n';
 import { exchange } from './relayTransportCrypto';
 import { deviceTrustRequest } from './deviceTrust';
 vi.mock('./relayTransportCrypto', () => ({ exchange: vi.fn() }));
 vi.stubGlobal('location', new URL('https://pockymoe.test'));
 beforeEach(() => {
   vi.clearAllMocks();
-  setLocale('en');
 });
-describe('device trust errors', () => {
-  it.each(['en', 'zh-CN'] as const)('maps the device origin/RP mismatch to clear %s add-passkey guidance', async (locale) => {
-    setLocale(locale);
-    vi.mocked(exchange).mockResolvedValue({ response: Response.json({ code: 'owner_origin_mismatch' }, { status: 400 }) });
-    await expect(deviceTrustRequest('d', 'credentials', 'POST', { credential: {} })).rejects.toMatchObject({
-      code: 'owner_origin_mismatch', message: translate('auth.owner_origin_mismatch'),
+describe('v2 device trust transport', () => {
+  it.each([
+    'enrollment_missing',
+    'browser_revoked',
+    'account_mismatch',
+    'invalid_certificate',
+  ])('preserves %s for enrollment and trust callers', async (code) => {
+    vi.mocked(exchange).mockResolvedValue({
+      response: Response.json({ code }, { status: 403 }),
     });
-    expect(vi.mocked(exchange).mock.calls[0]![0].url).toBe('https://pockymoe.test/relay/devices/d/api/transport/credentials');
+    await expect(deviceTrustRequest('d', 'enrollment')).rejects.toMatchObject({
+      code,
+      status: 403,
+    });
+    expect(vi.mocked(exchange).mock.calls[0]![0].url).toBe(
+      'https://pockymoe.test/relay/devices/d/api/transport/enrollment',
+    );
   });
-  it('preserves session revocation instead of presenting a generic trust failure', async () => {
-    vi.mocked(exchange).mockResolvedValue({ response: Response.json({ code: 'owner_session_revoked' }, { status: 401 }) });
-    await expect(deviceTrustRequest('d', 'sessions/s', 'DELETE')).rejects.toMatchObject({
-      code: 'owner_session_revoked', message: translate('auth.owner_session_revoked'),
+  it('sends certificate installation through encrypted exchange', async () => {
+    vi.mocked(exchange).mockResolvedValue({
+      response: Response.json({ certificate: {} }),
     });
+    await deviceTrustRequest('d', 'device-certificate', 'PUT', { version: 1 });
+    const request = vi.mocked(exchange).mock.calls[0]![0];
+    expect(request.method).toBe('PUT');
+    expect(await request.json()).toEqual({ version: 1 });
+    expect(request.credentials).toBe('include');
   });
 });
