@@ -25,7 +25,12 @@ export function useDeviceProtection(
       const next =
         status?.state === 'identity-changed' && status.certificateVerified
           ? 'certificate-missing'
-          : status?.certificateVerified
+          : account &&
+              status?.deviceId === deviceId &&
+              status.state === 'encrypted' &&
+              status.certificateVerified === true &&
+              status.role === 'owner' &&
+              status.accountKeyId === account.accountKeyId
             ? 'protected'
             : await deviceProtectionState(
                 deviceId,

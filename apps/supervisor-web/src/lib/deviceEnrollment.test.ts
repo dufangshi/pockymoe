@@ -27,6 +27,10 @@ import {
   type EnrollmentResponse,
 } from './deviceEnrollment';
 import vectors from './fixtures/deviceEnrollmentVectors.json';
+import { accountStore } from './accountStore';
+import { sharingTrustStore } from './sharingTrustStore';
+vi.mock('./accountStore', () => ({ accountStore: vi.fn() }));
+vi.mock('./sharingTrustStore', () => ({ sharingTrustStore: vi.fn() }));
 vi.mock('./accountVault', async (original) => ({
   ...(await original<typeof import('./accountVault')>()),
   currentAccount: vi.fn(),
@@ -46,6 +50,8 @@ const sign = vi.fn(),
   update = vi.fn(),
   relayFetch = vi.fn();
 const data = new Map<string, PendingEnrollment>();
+const trustData = new Map<string, unknown>();
+const sharingData = new Map<string, unknown>();
 const account = vectors.account;
 const deviceId = vectors.deviceCertificate.deviceId;
 let pending: PendingEnrollment;
@@ -59,6 +65,16 @@ const enrollment: EnrollmentResponse = {
 beforeEach(() => {
   vi.clearAllMocks();
   data.clear();
+  trustData.clear();
+  sharingData.clear();
+  for (const [mock, records] of [[accountStore, trustData], [sharingTrustStore, sharingData]] as const) {
+    vi.mocked(mock).mockImplementation(async (key: string, ...write: [unknown?]) => {
+      if (!write.length) return records.get(key) as never;
+      if (write[0] === null) records.delete(key);
+      else records.set(key, structuredClone(write[0]));
+      return undefined;
+    });
+  }
   vi.stubGlobal('crypto', webcrypto);
   vi.stubGlobal('fetch', relayFetch);
   vi.stubGlobal('indexedDB', {
@@ -340,6 +356,30 @@ describe('device protection states', () => {
   });
 });
 describe('remove device', () => {
+  it.each([false, true])('persists local revocation and deletes certificate caches before vault CAS (fails: %s)', async (fails) => {
+    const certificateKey = `device-certificate:${account.accountKeyId}:${deviceId}`;
+    const protectedKey = `protected-device:${account.accountKeyId}:${deviceId}`;
+    const otherKey = `device-certificate:${account.accountKeyId}:other`;
+    trustData.set(certificateKey, vectors.deviceCertificate);
+    trustData.set(protectedKey, true);
+    sharingData.set(certificateKey, vectors.deviceCertificate);
+    sharingData.set(otherKey, { other: true });
+    const oldRevocation = { kind: 'device', subjectId: 'other', accountKeyId: account.accountKeyId };
+    trustData.set(`revocations:${account.userId}`, [oldRevocation]);
+    update.mockImplementationOnce(async () => {
+      expect(trustData.has(certificateKey)).toBe(false);
+      expect(trustData.has(protectedKey)).toBe(false);
+      expect(sharingData.has(certificateKey)).toBe(false);
+      expect(trustData.get(`revocations:${account.userId}`)).toEqual([
+        oldRevocation,
+        expect.objectContaining({ kind: 'device', subjectId: deviceId, signature: 'signature' }),
+      ]);
+      if (fails) throw new Error('vault_conflict');
+    });
+    if (fails) await expect(revokeDevice(deviceId)).rejects.toThrow('vault_conflict');
+    else await revokeDevice(deviceId);
+    expect(sharingData.get(otherKey)).toEqual({ other: true });
+  });
   it('signs device revocation, posts it and removes only that bound id', async () => {
     await revokeDevice(deviceId);
     expect(requireUnlock).toHaveBeenCalledWith('revoke');
