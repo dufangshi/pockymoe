@@ -14,7 +14,7 @@ pub(super) fn routes() -> Router<Arc<AppState>> {
 
 // A certificate is needed even for a browser with only a thread/workspace grant.
 // Resolve those contexts through the same access rules as the device API.
-fn can_read(conn: &Connection, user: &str, device: &str) -> Result<bool, Failure> {
+pub(crate) fn can_read(conn: &Connection, user: &str, device: &str) -> Result<bool, Failure> {
     use crate::effective_access;
     if effective_access(conn, user, device, None, None).is_some() {
         return Ok(true);
@@ -117,6 +117,14 @@ async fn write(
     if !certificate.is_object()
         || certificate["version"].as_u64() != Some(1)
         || certificate["deviceId"].as_str() != Some(&id)
+        || certificate["accountKeyId"]
+            .as_str()
+            .is_none_or(str::is_empty)
+        || certificate["identityKey"]
+            .as_str()
+            .is_none_or(str::is_empty)
+        || certificate["signature"].as_str().is_none_or(str::is_empty)
+        || certificate["createdAt"].as_u64().is_none()
     {
         return Err(invalid(
             "Device certificate must have version 1 and a matching deviceId",

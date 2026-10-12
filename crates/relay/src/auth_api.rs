@@ -1,4 +1,4 @@
-mod certificates;
+pub(crate) mod certificates;
 mod passkeys;
 use super::{auth_factors as factors, security, AppState, TokenQuery, UserRow};
 use axum::{
@@ -13,22 +13,22 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
-type Failure = (StatusCode, Json<Value>);
-type ApiResult = Result<Json<Value>, Failure>;
-fn failure(status: StatusCode, code: &str, message: &str) -> Failure {
+pub(crate) type Failure = (StatusCode, Json<Value>);
+pub(crate) type ApiResult = Result<Json<Value>, Failure>;
+pub(crate) fn failure(status: StatusCode, code: &str, message: &str) -> Failure {
     (status, Json(json!({"code":code,"message":message})))
 }
-fn invalid(message: &str) -> Failure {
+pub(crate) fn invalid(message: &str) -> Failure {
     failure(StatusCode::BAD_REQUEST, "bad_request", message)
 }
-fn internal(_: impl std::fmt::Display) -> Failure {
+pub(crate) fn internal(_: impl std::fmt::Display) -> Failure {
     failure(
         StatusCode::INTERNAL_SERVER_ERROR,
         "internal",
         "Security operation failed",
     )
 }
-fn auth(
+pub(crate) fn auth(
     conn: &Connection,
     state: &AppState,
     headers: &HeaderMap,
@@ -71,6 +71,7 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
         .route("/setup.ps1", get(setup_powershell_script))
         .merge(passkeys::routes())
         .merge(certificates::routes())
+        .merge(crate::account::routes())
         .route("/relay/devices/{id}/token", post(rotate_device_token))
         .route("/relay/account/security", get(summary))
         .route("/relay/account/security/reauth", post(reauth))
@@ -111,6 +112,28 @@ pub(crate) fn login_response(
     strong: bool,
     remember: bool,
 ) -> Result<Response, Failure> {
+    login_response_mode(
+        conn,
+        state,
+        user,
+        headers,
+        strong,
+        remember,
+        crate::account::login_mode(conn, user),
+    )
+}
+
+pub(crate) fn login_response_mode(
+    conn: &Connection,
+    state: &AppState,
+    user: &UserRow,
+    headers: &HeaderMap,
+    strong: bool,
+    remember: bool,
+    mode: &str,
+) -> Result<Response, Failure> {
+    let tx = conn.unchecked_transaction().map_err(internal)?;
+    let conn = &tx;
     security::audit(
         conn,
         Some(&user.id),
@@ -121,9 +144,17 @@ pub(crate) fn login_response(
         },
         None,
     );
+    if mode == crate::account::RESET {
+        crate::account::consume_reset(conn, &user.id)?;
+    }
     let token =
         super::create_session(conn, &state.store.session_secret, &user.id).map_err(internal)?;
-    if strong {
+    crate::account::mark_session(conn, &token, mode)?;
+    // OAuth vault mutations require a fresh provider login or actual second
+    // factor; a recovery key / temporary password alone is not that proof.
+    let oauth_recovery = crate::account::oauth_only(conn, &user.id)
+        && matches!(mode, crate::account::RECOVERY | crate::account::RESET);
+    if strong && (!oauth_recovery || factors::has_factors(conn, &user.id)) {
         factors::mark_strong(conn, &token).map_err(internal)?;
     }
     let trust = if remember {
@@ -144,9 +175,9 @@ pub(crate) fn login_response(
         ],
     )
     .map_err(internal)?;
+    let session = crate::account::session_json(conn, user, &state.oauth, &token);
     let mut response = super::with_session_cookie(
-        Json(json!({"token":token,"session":super::session_json(conn,Some(user),&state.oauth)}))
-            .into_response(),
+        Json(json!({"token":token,"account":session["account"],"session":session})).into_response(),
         &token,
     );
     if user.role == "admin" {
@@ -156,6 +187,7 @@ pub(crate) fn login_response(
         response.headers_mut().append(header::SET_COOKIE,format!("remote_codex_trusted_browser={trust}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=2592000").parse().unwrap());
     }
     response.headers_mut().append(header::SET_COOKIE,"remote_codex_factor_challenge=; HttpOnly; Secure; SameSite=Lax; Path=/relay/auth; Max-Age=0".parse().unwrap());
+    tx.commit().map_err(internal)?;
     Ok(response)
 }
 
@@ -164,9 +196,24 @@ pub(crate) fn challenge_response(
     user: &UserRow,
     headers: &HeaderMap,
 ) -> Result<Response, Failure> {
+    challenge_response_mode(conn, user, headers, crate::account::login_mode(conn, user))
+}
+pub(crate) fn challenge_response_mode(
+    conn: &Connection,
+    user: &UserRow,
+    headers: &HeaderMap,
+    mode: &str,
+) -> Result<Response, Failure> {
     security::audit(conn, Some(&user.id), "login.challenge", None);
-    let id =
-        factors::challenge(conn, &user.id, "login", headers, None, json!({})).map_err(internal)?;
+    let id = factors::challenge(
+        conn,
+        &user.id,
+        "login",
+        headers,
+        None,
+        json!({"accountMode":mode}),
+    )
+    .map_err(internal)?;
     let mut response = Json(json!({"challengeRequired":true,"authenticator":factors::has_totp(conn,&user.id),"passkey":has_passkey(conn,&user.id),"session":{"authenticated":false,"user":null}})).into_response();
     response.headers_mut().insert(header::SET_COOKIE,format!("remote_codex_factor_challenge={id}; HttpOnly; Secure; SameSite=Lax; Path=/relay/auth; Max-Age=600").parse().unwrap());
     Ok(response)
@@ -198,6 +245,20 @@ fn pending(
     }
     Ok((hash, user))
 }
+fn challenge_mode(conn: &Connection, challenge: &str) -> Result<String, Failure> {
+    let data: String = conn
+        .query_row(
+            "SELECT data FROM relay_factor_challenges WHERE id_hash=?1",
+            [challenge],
+            |r| r.get(0),
+        )
+        .map_err(internal)?;
+    let data: Value = serde_json::from_str(&data).map_err(internal)?;
+    Ok(data["accountMode"]
+        .as_str()
+        .unwrap_or(crate::account::FULL)
+        .to_owned())
+}
 async fn challenge_status(State(state): State<Arc<AppState>>, headers: HeaderMap) -> ApiResult {
     let conn = state.store.conn.lock().await;
     let (_, user) = pending(&conn, &headers, false)?;
@@ -226,6 +287,7 @@ async fn complete_challenge(
             "Too many attempts. Try again later.",
         ));
     }
+    let mode = challenge_mode(&conn, &challenge)?;
     let recovery = factors::verify_code(
         &conn,
         &state.store.session_secret,
@@ -253,13 +315,14 @@ async fn complete_challenge(
     }
     let user =
         super::load_user_by_id(&conn, &user_id).ok_or_else(|| invalid("Account unavailable"))?;
-    login_response(
+    login_response_mode(
         &conn,
         &state,
         &user,
         &headers,
         true,
         body.remember_browser && !recovery,
+        &mode,
     )
 }
 
@@ -287,6 +350,8 @@ async fn summary(State(state): State<Arc<AppState>>, headers: HeaderMap) -> ApiR
 #[derive(Deserialize)]
 struct ReauthInput {
     password: Option<String>,
+    #[serde(rename = "authKey")]
+    auth_key: Option<String>,
     code: Option<String>,
 }
 async fn reauth(
@@ -325,15 +390,35 @@ async fn reauth(
             .map_err(internal)?;
         }
     } else {
+        if crate::account::oauth_only(&conn, &user.id) {
+            return Err(failure(
+                StatusCode::FORBIDDEN,
+                "reauthentication_required",
+                "Sign in with OAuth again or use a second factor",
+            ));
+        }
+        let has_vault = user.role != "admin" && crate::account::has_vault(&conn, &user.id);
         let (salt, hash): (String, String) = conn
             .query_row(
-                "SELECT password_salt,password_hash FROM relay_users WHERE id=?1",
+                if has_vault {
+                    "SELECT auth_salt,auth_hash FROM relay_account_auth WHERE user_id=?1"
+                } else {
+                    "SELECT password_salt,password_hash FROM relay_users WHERE id=?1"
+                },
                 params![user.id],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .map_err(internal)?;
-        let password = body.password.as_deref().unwrap_or_default();
-        if password.len() > 1024 || !super::verify_password(password, &salt, &hash) {
+        let password = if has_vault {
+            body.auth_key.as_deref()
+        } else {
+            body.password.as_deref()
+        }
+        .unwrap_or_default();
+        if password.len() > 1024
+            || (has_vault && !crate::account::valid_key(password))
+            || !super::verify_password(password, &salt, &hash)
+        {
             return Err(invalid("Password is incorrect"));
         }
     }

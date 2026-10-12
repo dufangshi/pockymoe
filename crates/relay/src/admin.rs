@@ -401,12 +401,12 @@ pub(crate) async fn admin_reset_password(
         )
             .into_response();
     };
-    if user.role == "admin" || body.password.len() < 8 {
+    if user.role == "admin" || body.password.len() < 12 || body.password.len() > 1024 {
         return (
             StatusCode::BAD_REQUEST,
             Json(ApiError::new(
                 "bad_request",
-                "Only non-admin users can be reset to a password of at least 8 characters",
+                "Only non-admin users can be reset to a password of at least 12 characters",
             )),
         )
             .into_response();
@@ -414,13 +414,22 @@ pub(crate) async fn admin_reset_password(
     let Ok((salt, hash)) = hash_password(&body.password) else {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
-    if conn
-        .execute(
+    let result = (|| -> Result<()> {
+        let tx = conn.unchecked_transaction()?;
+        tx.execute(
             "UPDATE relay_users SET password_salt=?1,password_hash=?2 WHERE id=?3",
             params![salt, hash, user_id],
-        )
-        .is_err()
-    {
+        )?;
+        if crate::account::has_vault(&tx, &user_id) {
+            tx.execute("INSERT INTO relay_account_auth(user_id,reset_pending,reset_consumed) VALUES (?1,1,0)
+                ON CONFLICT(user_id) DO UPDATE SET reset_pending=1,reset_consumed=0,auth_salt=NULL,auth_hash=NULL",[&user_id])?;
+        } else {
+            tx.execute("UPDATE relay_account_auth SET reset_pending=0,reset_consumed=0,auth_salt=NULL,auth_hash=NULL WHERE user_id=?1",[&user_id])?;
+        }
+        tx.commit()?;
+        Ok(())
+    })();
+    if result.is_err() {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
     Json(user_json(&user)).into_response()
@@ -487,7 +496,12 @@ pub(crate) async fn approve_registration(
         )
             .into_response();
     }
-    let user_id = Uuid::new_v4().to_string();
+    let pending_vault: Option<(String,String,String,String)> = conn.query_row(
+        "SELECT user_id,vault_json,recovery_salt,recovery_hash FROM relay_pending_account_vaults WHERE request_id=?1",[&request_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional().ok().flatten();
+    let user_id = pending_vault
+        .as_ref()
+        .map(|p| p.0.clone())
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
     let now = now_rfc3339();
     let result = (|| -> Result<()> {
         let tx = conn.unchecked_transaction()?;
@@ -514,6 +528,21 @@ pub(crate) async fn approve_registration(
                 )?;
             }
         }
+        if let Some((_, raw, recovery_salt, recovery_hash)) = &pending_vault {
+            let vault: Value = serde_json::from_str(raw)?;
+            crate::account::store_vault(&tx, &user_id, &vault)
+                .map_err(|_| anyhow::anyhow!("Invalid pending vault"))?;
+            tx.execute("INSERT INTO relay_account_auth(user_id,auth_salt,auth_hash,recovery_salt,recovery_hash) VALUES (?1,?2,?3,?4,?5)",params![user_id,salt,hash,recovery_salt,recovery_hash])?;
+        } else if matches!(provider.as_str(), "google" | "github") {
+            tx.execute(
+                "INSERT INTO relay_account_auth(user_id,oauth_only) VALUES (?1,1)",
+                [&user_id],
+            )?;
+        }
+        tx.execute(
+            "DELETE FROM relay_pending_account_vaults WHERE request_id=?1",
+            [&request_id],
+        )?;
         tx.execute(
             "UPDATE relay_pending_registrations
              SET status='approved',reviewed_at=?1,reviewed_by_user_id=?2 WHERE id=?3",
