@@ -13,7 +13,7 @@ function fixture(t, { version = '9.1.0', corrupt = false, failVersion = false, p
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const bin = path.join(root, 'bin'); fs.mkdirSync(bin);
   const asset = platform === 'Darwin' ? 'remote-codex-darwin-arm64' : `remote-codex-linux-${arch === 'aarch64' ? 'arm64' : 'x64'}-gnu`;
-  const native = '#!/bin/sh\nif [ "$1" = version ]; then printf "%s\\n" "$TEST_VERSION"; else printf "%s\\n" "$@" > "$TEST_ARGUMENTS"; fi\n';
+  const native = '#!/bin/sh\nif [ "$1" = version ]; then printf "%s\\n" "$TEST_VERSION"; else printf "%s\\n" "$@" > "$TEST_ARGUMENTS"; printf "%s\\n%s\\n%s\\n" "$POCKYMOE_WEB_ORIGIN" "$POCKYMOE_ACCOUNT_KEY" "$POCKYMOE_ENROLL" > "$TEST_BINDING"; fi\n';
   const sums = `${corrupt ? 'a'.repeat(64) : crypto.createHash('sha256').update(native).digest('hex')}  ${asset}\n`;
   fs.writeFileSync(path.join(root, 'binary'), native);
   fs.writeFileSync(path.join(root, 'sums'), sums);
@@ -28,7 +28,7 @@ fs.copyFileSync(path.join(process.env.TEST_ROOT,file),args[args.indexOf('-o')+1]
 `, { mode: 0o755 });
   for (const name of ['node', 'npm']) fs.writeFileSync(path.join(bin, name), '#!/bin/sh\necho "Unexpected Node/npm invocation" >&2\nexit 99\n', { mode: 0o755 });
   const run = (extra = []) => spawnSync('/bin/sh', [script, '--relay', 'https://relay.example.test', '--token', 'synthetic-token', '--port', '45679', ...extra], {
-    encoding: 'utf8', env: { HOME: root, PATH: `${bin}:/usr/bin:/bin`, TEST_ROOT: root, TEST_VERSION: version, TEST_FAIL_VERSION: failVersion ? '1' : '0', TEST_CALLS: path.join(root, 'calls'), TEST_ARGUMENTS: path.join(root, 'arguments') },
+    encoding: 'utf8', env: { HOME: root, PATH: `${bin}:/usr/bin:/bin`, TEST_ROOT: root, TEST_VERSION: version, TEST_FAIL_VERSION: failVersion ? '1' : '0', TEST_CALLS: path.join(root, 'calls'), TEST_ARGUMENTS: path.join(root, 'arguments'), TEST_BINDING: path.join(root, 'binding') },
   });
   return { root, run };
 }
@@ -52,5 +52,19 @@ test('failed metadata, invalid versions and corrupt assets stop before native se
     assert.match(result.stderr, error);
     assert(!fs.existsSync(path.join(f.root, 'arguments')));
     assert.deepEqual(fs.readdirSync(path.join(f.root, '.local/share/remote-codex')), []);
+  }
+});
+
+test('native SH bootstrap forwards both binding flags privately and rejects incomplete binding before download', t => {
+  const f = fixture(t);
+  const result = f.run(['--web-origin', 'https://web.test', '--account-key', 'synthetic-public', '--enroll', 'synthetic-enrollment']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(fs.readFileSync(path.join(f.root, 'binding'), 'utf8').trim().split('\n'), ['https://web.test', 'synthetic-public', 'synthetic-enrollment']);
+  assert(!result.stdout.includes('synthetic-enrollment'));
+  assert(!result.stderr.includes('synthetic-enrollment'));
+  for (const args of [['--account-key', 'synthetic-public'], ['--enroll', 'synthetic-enrollment']]) {
+    const incomplete = fixture(t); const refused = incomplete.run(args);
+    assert.notEqual(refused.status, 0); assert.match(refused.stderr, /Provide both/);
+    assert(!fs.existsSync(path.join(incomplete.root, 'calls')));
   }
 });
