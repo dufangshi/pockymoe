@@ -87,7 +87,7 @@ relay → 目标（沿用 `relay.request`，多一个只由 relay 写入的 `pee
 
 与 `secure_transport.rs` 服务端逐字节兼容：
 
-- 握手：`GET /api/peer/transport/key?challenge=<随机 [A-Za-z0-9-]{≤128}>`（明文 peer 请求）。校验 identity key 对 `rcd-key-v1\n{challenge}\n{keyId}\n{expiresAt}\n{serverTime}\n{publicKey}` 的 P-256 签名、challenge 一致、`expiresAt` 未过期；未绑定时 TOFU 钉扎（§3），已绑定时核对设备证书（§17）。按 `serverTime` 计算时钟偏移，请求 ID 时间戳使用对端时钟（服务端只接受 ±120 s）。未绑定的 A 把描述符缓存到 `expiresAt` 前 5 分钟，已绑定的 A 每个请求都重新握手；收到 409 `transport_reconnect_required` 时刷新并重试一次。
+- 握手：`GET /api/peer/transport/key?challenge=<随机值>`（明文 peer 请求；调用方用 UUID，目标端只接受 8–128 个 `[A-Za-z0-9_-]` 字符，否则 400）。校验 identity key 对 `rcd-key-v1\n{challenge}\n{keyId}\n{expiresAt}\n{serverTime}\n{publicKey}` 的 P-256 签名、challenge 一致、`expiresAt` 未过期；未绑定时 TOFU 钉扎（§3），已绑定时核对设备证书（§17）。按 `serverTime` 计算时钟偏移，请求 ID 时间戳使用对端时钟（服务端只接受 ±120 s）。未绑定的 A 把描述符缓存到 `expiresAt` 前 5 分钟，已绑定的 A 每个请求都重新握手；收到 409 `transport_reconnect_required` 时刷新并重试一次。
 - 请求：`x-rcd-request = "{uuid}.{ms}"`，AAD `rcd-http-v1\n{keyId}\n{requestId}\n{method}\n{path}\n`（resource 为空串），明文 `pack({"query":"?...","headers":{"content-type":...}}, body)`，密文放 body（base64），header 带 `x-rcd-key`、`x-rcd-request`、`x-rcd-enc`。
 - 响应：`x-rcd-encrypted: 1` 时用 exporter `remote-codex/http-response/v1` 派生的 AES-256-GCM（零 nonce，AAD `{请求 AAD}\nresponse`）解密并 unpack，得到 `{headers,status,streamNext}` + body；有 `streamNext` 时继续加密 GET 拼接（总量 ≤ 64 MiB）。
 - relay 产生的明文错误按 §4 表映射：503→`Offline`，504→`Timeout`，其余→`Remote`；隧道未连接→`RelayUnavailable`。
@@ -202,7 +202,7 @@ KV `peer:outbox:{id}`：
 - **A 核对 B（调用方）**：B 返回的 `GET /api/peer/transport/key` 描述符带 `certificate`（B 的设备证书，没有时为 `null`）。已绑定的 A 每个请求都重新取描述符，要求证书能用 **A 自己钉住的** 账户公钥验证，device ID 与 identity key 都与描述符一致，且 B 没有被撤销；通过后更新 B 的钉扎。否则请求失败：`peer_target_unverified: cannot verify device …; bind the target device to the same account key`。已绑定但还没有自己证书的 A 不能发出任何 peer 请求。
 - **B 核对 A（目标端）**：严格模式的 B 只接受同时满足以下条件的 peer 请求：`x-rcd-peer-device` 等于 relay 写入的 `PeerCaller.device_id`；B 存有该 device 在 B 钉住的账户密钥下的登记，且该 device 没有被撤销；`x-rcd-peer-signature` 能用登记的 identity key 验证。签名是 A 的 identity key 对 `pockymoe-peer-request-v1\n{A 的 device ID}\n{aad}\n{B64(SHA256(密文))}` 的 P-256 签名（raw r‖s）。不满足时返回 401 `peer_certificate_required`。已绑定的 A 收到后用加密的 `POST /api/peer/transport/certificate`（请求体为 A 的设备证书）登记一次并重试；B 用自己钉住的账户公钥验证证书。未绑定的 A 无法登记。
 - 未绑定的 B 忽略这两个 header，行为不变；它收到登记请求时直接返回 `{}`。两端仍需开启 peer 开关（`pockymoe device access on`）。
-- 账户的 device 撤销（在网页「Remove device」）到达 B 后，B 删除该 device 的登记并拒绝它；`pockymoe bind --reset` 删除 B 上的全部登记。
+- 账户的 device 撤销（在网页「Remove device」）到达 B 后，B 删除该 device 的登记并拒绝它。B 逐条验证撤销记录，只接受自己钉住的账户密钥签名的 device 撤销，其他条目忽略。`pockymoe bind --reset` 删除 B 上的全部登记，但保留撤销记录，被移除的 device 在 B 重新绑定到同一密钥后仍被拒绝。
 - 这两个错误都不可重试，不会进入 outbox。
 
 两个错误的原因相同：两台 device 没有绑定到同一个账户密钥，或其中一台还没完成注册。只有一台绑定时，另一台也必须绑定：已绑定的调用方拒绝未绑定的目标，严格模式的目标拒绝未绑定的调用方。

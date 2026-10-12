@@ -111,23 +111,25 @@ docker run -d --name pockymoe-relay --restart unless-stopped \
 
 用新版本重复第 1 步，然后重启服务。设备在网页的设置里自行更新；Relay 提供的是与它自身版本一致的安装命令。
 
-### 旧账户和未绑定的设备
+### 尚无账户密钥的账户和未绑定的设备
 
-还没有账户密钥的账户（旧账户）照常可用。它用密码登录一次后，必须完成「Secure your account」：设置一个至少 12 个字符的密码并保存恢复码。完成之前，Relay 只允许会话、退出登录和设备相关的请求。使用 Google 或 GitHub 登录的账户改为设置一个解锁密码。Relay 管理员账户用配置的密码登录，没有账户密钥。
+账户、二步验证、设备、共享和 thread 都会保留。还没有账户密钥的账户在登录页选择「First sign-in since the security upgrade」登录一次（这是密码唯一一次发给 Relay），然后在 10 分钟内完成「Secure your account」：设置一个至少 12 个字符的密码并保存恢复码。完成之前，Relay 只允许会话、退出登录和设备相关的请求；升级前已有的会话也受同样限制。创建 vault 时 Relay 会删除旧的密码哈希。使用 Google 或 GitHub 登录的账户照常登录，然后设置一个解锁密码。Relay 管理员账户在 `/relay-admin` 用配置的密码登录，没有账户密钥。
 
-未绑定的设备照常可用，但不受保护（「Not protected · Relay trusted」），直到所有者点「Protect this device」并在设备上运行显示的 `pockymoe bind` 命令。设备需要运行支持绑定的版本。
+未绑定的设备照常可用，但不受保护（「Not protected · Relay trusted」），直到所有者点「Protect this device」并在设备上运行显示的 `pockymoe bind` 命令，或重新运行它的安装命令。设备需要运行支持绑定的版本。逐步说明见 [Migration](account-key-trust.md#migration)。
+
+发布的 `remote-codex-web.zip` 带有这个升级入口。所有账户都完成保护后，设置 `VITE_POCKYMOE_LEGACY_UPGRADE=0` 从源码构建网页（例如下面的[静态构建](#构建静态网页)）即可去掉它。此后仍没有 vault 的账户（包括在完成保护之前被你重置过密码的账户）无法再用密码登录。
 
 ## 重置密码
 
 Relay 只把每个用户的账户密钥保存在用其密码和恢复码加密的 vault 里。任何能访问服务器的人（包括你）都无法恢复它。
 
-在管理面板重置用户密码，会设置一个至少 12 个字符的临时密码。它只能使用一次，用户若设置了二步验证仍需通过，并且旧密码不能再登录。用户在登录页选择「Use an admin reset password」，然后输入恢复码和新密码。没有恢复码时只能用新账户密钥重新开始，并在每台设备本机重新绑定（先 `pockymoe bind --reset`，再「Protect this device」）。对尚未完成保护的账户，重置设置的是普通密码，用户随后用它完成账户保护。
+在管理面板重置用户密码，会设置一个至少 12 个字符的临时密码。它只能使用一次，用户若设置了二步验证仍需通过，并且旧密码不能再登录。用户在登录页选择「Use an admin reset password」，然后输入恢复码和新密码。没有恢复码时只能用新账户密钥重新开始，并在每台设备本机重新绑定（先 `pockymoe bind --reset`，再「Protect this device」）。对尚未完成保护的账户，重置设置的是普通密码，用户随后在「First sign-in since the security upgrade」中用它登录并完成账户保护。
 
 ## 备份
 
 备份整个数据目录，里面有 `relay-store.sqlite` 和 `session-secret`。这个 secret 还用来加密已保存的二步验证和设备凭据，丢失或替换后这些数据就无法解密。SQLite 请用一致性备份，不要直接复制正在写入的数据库。
 
-数据库里还有加密的账户 vault。数据库丢失后，用户必须重新开始，并重新绑定所有设备。恢复的备份可能包含较旧的 vault，已经见过更新 vault 的浏览器会拒绝它（「The relay served an older account vault」）。更多说明见 [Relay 安全运维](relay-security-operations.zh.md)。
+数据库里还有加密的账户 vault 及其上一个版本。数据库丢失后，用户必须重新开始，并重新绑定所有设备。恢复的备份可能包含较旧的 vault，已经见过更新 vault 的浏览器会拒绝它（「The relay served an older account vault」）。更多说明见 [Relay 安全运维](relay-security-operations.zh.md)。
 
 ## 独立的 Web origin
 
@@ -159,9 +161,9 @@ VITE_POCKYMOE_RELAY_ORIGIN=https://relay.example.com \
   pnpm --filter @pockymoe/supervisor-web build:static
 ```
 
-这个构建在编译时选定 relay 模式，不需要内联脚本。`apps/supervisor-web/dist/` 中除了网页本身还有：
+这个构建在编译时选定 relay 模式，不需要内联脚本。加上 `VITE_POCKYMOE_LEGACY_UPGRADE=0` 可去掉「First sign-in since the security upgrade」入口。`apps/supervisor-web/dist/` 中除了网页本身还有：
 
-- `_headers`：CSP 的 `connect-src` 只允许 Web origin、Relay origin 及其 `wss:` 主机；`/assets/*` 带 `Service-Worker-Allowed: /`，`index.html` 带 `no-cache`；
+- `_headers`：CSP 的 `connect-src` 只允许 Web origin、Relay origin 及其 `wss:` 主机，`script-src` 只额外允许 `'wasm-unsafe-eval'`（密码派生用 WebAssembly 运行 Argon2id）；`/assets/*` 带 `Service-Worker-Allowed: /`，`index.html` 带 `no-cache`；
 - `_redirects`：SPA 回退规则 `/* /index.html 200`；
 - `setup.sh` 和 `setup.ps1`，因为设备安装命令从 Web origin 下载它们；
 - `STATIC_HOSTING.txt`，上述要求的摘要。

@@ -122,19 +122,31 @@ In the container, leave out `POCKYMOE_RELAY_HOST`, `POCKYMOE_RELAY_DATA_DIR` and
 Repeat step 1 with the new version and restart the service. Devices update
 themselves from Settings; the relay serves setup commands for its own version.
 
-### Legacy accounts and unbound devices
+### Accounts without an account key and unbound devices
 
-An account that has no account key yet (a legacy account) keeps working. It signs
-in with its password once and must then **Secure your account**: choose a
-password of at least 12 characters and save the recovery code. Until then the
-relay allows only the session, sign-out and device requests. Accounts that use
-Google or GitHub choose an unlock password instead. The relay administrator
-account signs in with its configured password and has no account key.
+Accounts, factors, devices, shares and threads are kept. An account that has no
+account key yet signs in once with **First sign-in since the security upgrade**
+on the sign-in page, the only time its password reaches the relay, and then
+within 10 minutes **Secure your account**: a password of at least 12 characters
+and the recovery code. Until then the relay allows only the session, sign-out and
+device requests; sessions from before the upgrade are restricted the same way.
+Creating the vault deletes the relay's old password hash. Accounts that use
+Google or GitHub sign in as usual and choose an unlock password. The relay
+administrator account signs in at `/relay-admin` with its configured password and
+has no account key.
 
 A device that is not bound keeps working without protection (**Not protected ·
 Relay trusted**) until its owner chooses **Protect this device** and runs the
-shown `pockymoe bind` command on the device. The device must run a runtime
-version that supports binding.
+shown `pockymoe bind` command on the device, or reruns its setup command. The
+device must run a runtime version that supports binding. Step-by-step:
+[migration](account-key-trust.md#migration).
+
+The released `remote-codex-web.zip` offers the upgrade choice. When every account
+has been secured, build the Web UI from source with
+`VITE_POCKYMOE_LEGACY_UPGRADE=0` set (for example the
+[static build](#building-the-static-web-ui)) to remove it. Accounts that still have
+no vault, including those reset by you before they were secured, then cannot sign
+in with a password.
 
 ## Password resets
 
@@ -149,7 +161,8 @@ they have one, and stops the old password from signing in. The user chooses
 code and a new password. Without the recovery code they can only start over with
 a new account key and bind each device again locally (`pockymoe bind --reset`,
 then **Protect this device**). For an account that was not yet secured, the reset
-sets an ordinary password that the user then secures the account with.
+sets an ordinary password that the user enters with **First sign-in since the
+security upgrade** to secure the account.
 
 ## Backups
 
@@ -158,10 +171,10 @@ Back up the whole data directory. It holds `relay-store.sqlite` and
 credentials: if it is lost or replaced, those can no longer be decrypted. Use a
 consistent SQLite backup rather than copying a database that is being written.
 
-The database also holds the encrypted account vaults. If it is lost, users must
-start over and bind every device again. A restored backup can contain older
-vaults, which browsers that have already seen a newer vault refuse ("The relay
-served an older account vault").
+The database also holds the encrypted account vaults, each with its previous
+revision. If it is lost, users must start over and bind every device again. A
+restored backup can contain older vaults, which browsers that have already seen a
+newer vault refuse ("The relay served an older account vault").
 More detail: [relay security operations](relay-security-operations.zh.md).
 
 ## Separate Web origin
@@ -216,12 +229,14 @@ VITE_POCKYMOE_RELAY_ORIGIN=https://relay.example.com \
   pnpm --filter @pockymoe/supervisor-web build:static
 ```
 
-The build selects relay mode at compile time, so it needs no inline script.
-Besides the app, `apps/supervisor-web/dist/` contains:
+The build selects relay mode at compile time, so it needs no inline script. Add
+`VITE_POCKYMOE_LEGACY_UPGRADE=0` to leave out the **First sign-in since the
+security upgrade** choice. Besides the app, `apps/supervisor-web/dist/` contains:
 
 - `_headers`: a CSP whose `connect-src` allows only the Web origin, the relay
-  origin and its `wss:` host, plus `Service-Worker-Allowed: /` for `/assets/*`
-  and `no-cache` for `index.html`;
+  origin and its `wss:` host and whose `script-src` adds only
+  `'wasm-unsafe-eval'` (password derivation runs Argon2id as WebAssembly), plus
+  `Service-Worker-Allowed: /` for `/assets/*` and `no-cache` for `index.html`;
 - `_redirects`: the SPA fallback `/* /index.html 200`;
 - `setup.sh` and `setup.ps1`, because device setup commands download them from
   the Web origin;

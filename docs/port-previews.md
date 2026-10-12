@@ -169,8 +169,7 @@ the ordinary JSON API response deadline.
 ## Bound devices
 
 On a device bound to an account key ([account key trust](account-key-trust.md)),
-strict mode decides which mappings the device reports to the Relay and accepts
-`preview.open` for:
+strict mode decides which mappings the device reports to the Relay and serves:
 
 - **Local mappings**, made through the authenticated local API, such as
   `pockymoe preview create` or the Supervisor's own Web UI. They survive browser
@@ -184,9 +183,32 @@ strict mode decides which mappings the device reports to the Relay and accepts
 - Mappings created through the Relay before binding are not served while the
   device is bound, until an owner browser enables that port again.
 
-The Relay still terminates preview HTTPS, sees all preview traffic and can open
-any served mapping without a browser signature. Enable only ports whose service
-you are willing to expose to the Relay operator.
+A strict device also opens a data channel only under a live **lease** for that
+mapping:
+
+- **Open** first asks the device for a lease with a signed owner request,
+  `POST /api/port-mappings/{id}/lease` → `{leaseId, expiresAt}`, then calls
+  `POST /relay/devices/{deviceId}/port-mappings/{mappingId}/open?lease=<leaseId>`.
+  The Relay keeps the lease with the preview session and adds `leaseId` to every
+  `preview.open` frame it sends for that session.
+- A lease lasts 8 hours. Asking again from the same browser renews the same lease.
+  Stopping the mapping or removing the browser ends it early, and the device closes
+  connections whose lease has expired or ended.
+- `pockymoe preview create` creates a local lease with the mapping (creating the
+  same port again renews it). `preview create`, `preview list` and `preview check`
+  report `leaseId` and `expiresAt` and add `lease=` to `openUrl` while it is live.
+  Local leases survive browser removal and `pockymoe bind --reset`.
+- The signed DSH console request returns a lease for the console mapping.
+
+Without a lease, the Relay refuses an open with 403 `preview_lease_required` unless
+the device reports that it is not strict, and the device ignores a `preview.open`
+without a live lease. Unbound devices do not use leases; the Web opens without one
+only when an unbound device's Supervisor has no lease route.
+
+The Relay still terminates preview HTTPS and sees all preview traffic. It also sees
+each lease ID it forwards and can open further connections to that mapping until
+the lease ends. Enable only ports whose service you are willing to expose to the
+Relay operator.
 
 A Relay whose Web UI is on a separate origin
 ([self-hosting](self-host-relay.md#separate-web-origin)) still accepts the device
@@ -250,9 +272,10 @@ tests cover local link parsing, confirmation and unavailable configuration.
 
 `pockymoe preview create --port 4013 --label "App preview"` reserves a
 persistent address without requiring a listening service. Its JSON includes
-`id`, `port`, exact `hostname`, `origin`, stable `url`, and `openUrl`. The last
-URL enters the owner's browser login/open flow; it contains no account session
-or launch ticket. Creation for an existing port is idempotent. The CLI uses its
+`id`, `port`, exact `hostname`, `origin`, stable `url`, `openUrl`, and the local
+preview lease (`leaseId`, `expiresAt`, see [bound devices](#bound-devices)). The
+`openUrl` enters the owner's browser login/open flow; it contains no account
+session or launch ticket. Creation for an existing port is idempotent. The CLI uses its
 normal local Supervisor credential and obtains the configured base domain from
 the authenticated Relay connection, rather than guessing a hostname.
 
