@@ -166,6 +166,32 @@ Connecting a data channel has a 10-second deadline; response headers have a
 30-second deadline. A successful streaming body/WebSocket can continue beyond
 the ordinary JSON API response deadline.
 
+## Bound devices
+
+On a device bound to an account key ([account key trust](account-key-trust.md)),
+strict mode decides which mappings the device reports to the Relay and accepts
+`preview.open` for:
+
+- **Local mappings**, made through the authenticated local API, such as
+  `pockymoe preview create` or the Supervisor's own Web UI. They survive browser
+  removal and `pockymoe bind --reset`. An owner browser that enables the same port
+  keeps the mapping local.
+- **Owner mappings**, made from the Web through the Relay. Creating one needs a
+  signed request from a registered owner browser; share recipients get 403
+  `owner_required`. The mapping stays served while that browser's registration
+  exists. Removing the browser deletes the mapping and closes its connections, and
+  `pockymoe bind --reset` deletes it.
+- Mappings created through the Relay before binding are not served while the
+  device is bound, until an owner browser enables that port again.
+
+The Relay still terminates preview HTTPS, sees all preview traffic and can open
+any served mapping without a browser signature. Enable only ports whose service
+you are willing to expose to the Relay operator.
+
+A Relay whose Web UI is on a separate origin
+([self-hosting](self-host-relay.md#separate-web-origin)) still accepts the device
+data channel at `/supervisor/port-stream/{ticket}`, so previews work there too.
+
 ## Compatibility and limits
 
 The same Rust loopback transport works on macOS, Windows and Linux. On WSL or

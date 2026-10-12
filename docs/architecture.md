@@ -18,8 +18,8 @@ Browser / mobile WebView / native macOS app
 | --- | --- |
 | `crates/protocol` | JSON DTOs shared with the React client |
 | `crates/runtime` | SQLite journal, workspace files, ACP catalog, fake runtime, thread service |
-| `crates/supervisor` | HTTP + WebSocket + relay tunnel client |
-| `crates/relay` | Public accounts, devices, shares |
+| `crates/supervisor` | HTTP + WebSocket + relay tunnel client, device side of [account key trust](account-key-trust.md) |
+| `crates/relay` | Public accounts and encrypted account vaults, devices, shares |
 | `crates/cli` | `pockymoe` binary |
 
 ## Module layout
