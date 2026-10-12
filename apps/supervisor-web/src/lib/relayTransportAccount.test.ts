@@ -97,6 +97,17 @@ it('syncs signed revocations and registers once before signing encrypted request
   expect(wires.map(w => w.path)).toEqual(['/api/transport/revocations', '/api/transport/browser', '/api/version', '/api/workspaces']);
   expect(wires[1]!.body).toEqual(browser.certificate); await verifyWires();
 });
+it('never sends a remote-bind enrollment secret through the legacy plaintext fallback', async () => {
+  state.store.clear(); state.identities.clear();
+  state.fetch.mockResolvedValue(new Response(null, { status: 404 }));
+  const body = JSON.stringify({ accountPublicKey: 'test-public', enrollSecret: 'test-secret' });
+  await expect(transport.exchange(new Request(endpoint('transport/bind'), { method: 'POST', body })))
+    .rejects.toMatchObject({ code: 'transport_unavailable' });
+  expect(state.fetch).toHaveBeenCalledTimes(1);
+  const target = String(state.fetch.mock.calls[0]![0]);
+  expect(target).toContain('/transport/key');
+  expect(target).not.toContain('test-secret');
+});
 it('service-worker fetch reads the same non-extractable key and signs file requests', async () => {
   expect((await relayWorkerFetch(new Request(endpoint('files/content')), 'https://pockymoe.test/devices/device-1/workspaces')).ok).toBe(true); await verifyWires();
 });
