@@ -188,7 +188,11 @@ export async function renderStandaloneTranscript(
       button.append(img);
     });
     const theme = snapshot.theme ?? 'dark';
-    return `<!doctype html><html lang="${getLocale()}" class="${theme}" data-theme-effective="${theme}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="${theme}"><title>${escape(snapshot.title)}</title><style>${css.replaceAll('</style', '<\\/style')}</style><style>html,body{margin:0;background:${theme === 'dark' ? '#11110d' : '#f5f6f5'}}a{overflow-wrap:anywhere}</style></head><body>${clone.outerHTML}${standaloneImageViewer()}</body></html>`;
+    // The applied theme pack is the only one in the document's stylesheets (its
+    // assets are inlined above); the export keeps its look and flags.
+    const { themePreset, themeFeatures } = document.documentElement.dataset;
+    const pack = themePreset ? ` data-theme-preset="${escape(themePreset)}" data-theme-features="${escape(themeFeatures ?? '')}"` : '';
+    return `<!doctype html><html lang="${getLocale()}" class="${theme}" data-theme-effective="${theme}"${pack}><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="${theme}"><title>${escape(snapshot.title)}</title><style>${css.replaceAll('</style', '<\\/style')}</style><style>html,body{margin:0;background:${theme === 'dark' ? '#11110d' : '#f5f6f5'}}a{overflow-wrap:anywhere}</style></head><body>${clone.outerHTML}${standaloneImageViewer()}</body></html>`;
   } finally {
     root.unmount();
     host.remove();

@@ -45,7 +45,7 @@ test('Plum Pocket outer pages show one title, no help paragraphs and unwrapped b
   await open(page, '/workspaces', 'plum-pocket');
   const title = page.locator('.product-navigation h1');
   await expect(title).toHaveText('Workspaces');
-  expect(await title.evaluate(element => getComputedStyle(element, '::before').backgroundImage)).toContain('icon-192');
+  expect(await title.evaluate(element => getComputedStyle(element, '::before').backgroundImage)).toContain('pockymoe-icon.png');
   for (const url of ['/workspaces/new', '/threads/import']) {
     await page.goto(url);
     await expect(page.locator('.product-page')).toBeVisible();

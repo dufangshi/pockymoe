@@ -1,0 +1,50 @@
+{
+  "schema": 1,
+  "id": "plum-pocket",
+  "name": { "en": "Plum Pocket", "zh-CN": "梅子口袋" },
+  "description": {
+    "en": "Plum, mustard felt and cream, with the pocket mascots as agent avatars.",
+    "zh-CN": "梅子紫、芥末黄毛毡和奶油色，口袋里的看板娘会作为 agent 头像出现。"
+  },
+  "version": "1.0.0",
+  "author": "Pockymoe",
+  "license": "MIT; fonts OFL-1.1",
+  "engine": ">=0.12.89",
+  "modes": ["light", "dark"],
+  "swatches": ["#2f1a3b", "#fbf4e8", "#e8a93a", "#f0e0f4"],
+  "chrome": { "light": "#2f1a3b", "dark": "#170d1d" },
+  "styles": [
+    "styles/tokens.css",
+    "styles/shell.css",
+    "styles/transcript.css",
+    "styles/workspace.css",
+    "styles/composer.css",
+    "styles/pages.css",
+    "styles/controls.css"
+  ],
+  "fonts": [
+    { "family": "Nunito", "src": "assets/fonts/nunito-latin.woff2", "weight": "400 800" },
+    { "family": "Fredoka", "src": "assets/fonts/fredoka-latin.woff2", "weight": "500 600" }
+  ],
+  "agents": {
+    "default": { "avatar": "assets/agents/agent.webp" },
+    "claude": { "avatar": "assets/agents/claude.webp", "peek": "assets/agents/composer-peek-claude.webp" },
+    "codex": { "avatar": "assets/agents/codex.webp", "peek": "assets/agents/composer-peek-codex.webp" },
+    "deepseek": { "avatar": "assets/agents/deepseek.webp", "peek": "assets/agents/composer-peek-deepseek.webp" },
+    "gemini": { "avatar": "assets/agents/gemini.webp", "peek": "assets/agents/composer-peek-gemini.webp" },
+    "grok": { "avatar": "assets/agents/grok.webp", "peek": "assets/agents/composer-peek-grok.webp" },
+    "cursor": { "avatar": "assets/agents/cursor.webp", "peek": "assets/agents/composer-peek-cursor.webp" },
+    "copilot": { "avatar": "assets/agents/copilot.webp", "peek": "assets/agents/composer-peek-copilot.webp" },
+    "opencode": { "avatar": "assets/agents/opencode.webp", "peek": "assets/agents/composer-peek-opencode.webp" }
+  },
+  "features": [
+    "workbench.phoneDrawerTools",
+    "composer.usageInShell",
+    "composer.modelAvatar",
+    "composer.richMenus",
+    "composer.intentIcons",
+    "transcript.agentByline",
+    "explorer.shortMenuLabels",
+    "code.cssSyntaxPalette"
+  ]
+}

@@ -1,0 +1,380 @@
+/* Plum Pocket: settings, dialogs, menus and form controls used across the app.
+   Every rule is scoped to :theme. The composer palette (--pc-*) is
+   defined in composer.css.
+
+   Rules from the owner: little text, controls sized to their content (never
+   wrapping), few cards. Settings rows are "label … control" lines on plain
+   dividers; help paragraphs carry the neutral `settings-hint` class and are
+   hidden visually here while staying available to screen readers. */
+
+/* ── Action tokens: mustard primary, plum info ────────────────────────────── */
+
+:theme {
+  --action-primary-bg: #e8a93a;
+  --action-primary-bg-hover: #efb54f;
+  --action-primary-fg: #2e1a35;
+  --action-info-bg: #6b4a8a;
+  --action-info-bg-hover: #7a5899;
+  --action-info-fg: #fffaf1;
+  --action-success-bg: #e8a93a;
+  --action-success-bg-hover: #efb54f;
+  --action-success-fg: #2e1a35;
+  --pc-control-h: 36px;
+}
+:theme[data-theme-effective='dark'] {
+  --action-primary-bg: #f0b54a;
+  --action-primary-bg-hover: #f6c66a;
+  --action-primary-fg: #2a1530;
+  --action-info-bg: #b79cdf;
+  --action-info-bg-hover: #c7b0ea;
+  --action-info-fg: #22152b;
+  --action-success-bg: #f0b54a;
+  --action-success-bg-hover: #f6c66a;
+  --action-success-fg: #2a1530;
+}
+@media (pointer: coarse) {
+  :theme { --pc-control-h: 44px; }
+}
+
+/* ── Help text: hidden visually, kept for assistive technology ────────────── */
+
+:theme :is(.settings-hint, .settings-panel-heading p, .thread-graph-settings-dialog > [data-slot='dialog-header'] [data-slot='dialog-description'], .theme-preset-description) {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  margin: -1px !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+  clip-path: inset(50%) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
+}
+
+/* ── Settings dialog ──────────────────────────────────────────────────────── */
+
+/* Same outer box as Classic (size and position never move); felt inside. */
+:theme .thread-graph-dialog.thread-graph-settings-dialog[data-slot='dialog-content'] {
+  border-color: var(--pc-edge);
+  border-radius: 22px;
+  background: var(--pc-felt);
+  box-shadow: var(--pc-menu-shadow);
+}
+:theme .thread-graph-dialog.thread-graph-settings-dialog > [data-slot='dialog-header'] { padding: 16px 54px 14px 22px; border-bottom: 1px dashed var(--theme-border-strong); }
+:theme .thread-graph-dialog.thread-graph-settings-dialog [data-slot='dialog-title'] { font-family: var(--plum-display); font-size: 18px; font-weight: 600; letter-spacing: 0; }
+:theme .thread-graph-dialog.thread-graph-settings-dialog > [data-slot='dialog-close'] {
+  top: 12px;
+  right: 12px;
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--pc-key) 60%, transparent);
+  opacity: 1;
+  color: var(--theme-fg-soft);
+}
+:theme .thread-graph-dialog.thread-graph-settings-dialog > [data-slot='dialog-close']:hover { background: var(--pc-key-hover); color: var(--theme-fg); }
+:theme .thread-graph-dialog.thread-graph-settings-dialog > [data-slot='dialog-close']:focus-visible { outline: 2px solid var(--pc-focus); outline-offset: 2px; box-shadow: none; }
+
+/* Tabs: icon and label on desktop, icons only on phones so all fit on one line. */
+:theme .settings-navigation [role='tab'][id$='-session'] { --settings-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z'/%3E%3C/svg%3E"); }
+:theme .settings-navigation [role='tab'][id$='-preferences'] { --settings-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M21 4h-7M10 4H3M21 12h-9M8 12H3M21 20h-5M12 20H3M14 2v4M8 10v4M16 18v4'/%3E%3C/svg%3E"); }
+:theme .settings-navigation [role='tab'][id$='-harnesses'] { --settings-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 8V4H8'/%3E%3Crect width='16' height='12' x='4' y='8' rx='2'/%3E%3Cpath d='M2 14h2M20 14h2M15 13v2M9 13v2'/%3E%3C/svg%3E"); }
+:theme .settings-navigation [role='tab'][id$='-upstreams'] { --settings-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z'/%3E%3C/svg%3E"); }
+:theme .settings-navigation [role='tab'][id$='-device'] { --settings-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect width='20' height='8' x='2' y='2' rx='2'/%3E%3Crect width='20' height='8' x='2' y='14' rx='2'/%3E%3Cpath d='M6 6h.01M6 18h.01'/%3E%3C/svg%3E"); }
+:theme .settings-navigation [role='tab'][id$='-workspace'] { --settings-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z'/%3E%3C/svg%3E"); }
+:theme .settings-navigation [role='tab'][id$='-plugins'] { --settings-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M15.39 4.39a1 1 0 0 0 1.68-.474 2.5 2.5 0 1 1 3.014 3.015 1 1 0 0 0-.474 1.68l1.683 1.682a2.414 2.414 0 0 1 0 3.414L19.61 15.39a1 1 0 0 1-1.68-.474 2.5 2.5 0 1 0-3.014 3.015 1 1 0 0 1 .474 1.68l-1.683 1.682a2.414 2.414 0 0 1-3.414 0L8.61 19.61a1 1 0 0 0-1.68.474 2.5 2.5 0 1 1-3.014-3.015 1 1 0 0 0 .474-1.68l-1.683-1.682a2.414 2.414 0 0 1 0-3.414L4.39 8.61a1 1 0 0 1 1.68.474 2.5 2.5 0 1 0 3.014-3.015 1 1 0 0 1-.474-1.68l1.683-1.682a2.414 2.414 0 0 1 3.414 0z'/%3E%3C/svg%3E"); }
+:theme .settings-navigation [role='tab'][id$='-advanced'] { --settings-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z'/%3E%3C/svg%3E"); }
+:theme .settings-navigation { gap: 2px; padding: 14px 10px; border-color: var(--theme-border); background: transparent; }
+:theme .settings-navigation [role='tab'] {
+  gap: 10px;
+  min-height: 36px;
+  padding: 7px 10px;
+  border-radius: 10px;
+  color: var(--theme-fg-soft);
+  font-size: 13px;
+  font-weight: 600;
+}
+:theme .settings-navigation [role='tab']::before {
+  content: '';
+  flex: none;
+  width: 16px;
+  height: 16px;
+  background: currentColor;
+  -webkit-mask: var(--settings-icon) center / contain no-repeat;
+  mask: var(--settings-icon) center / contain no-repeat;
+  opacity: 0.85;
+}
+:theme .settings-navigation [role='tab']:hover { background: color-mix(in srgb, var(--pc-key) 70%, transparent); color: var(--theme-fg); }
+:theme .settings-navigation [role='tab'][aria-selected='true'] {
+  background: var(--theme-accent-soft);
+  color: var(--theme-accent-strong);
+  box-shadow: none;
+}
+:theme .settings-navigation [role='tab'][aria-selected='true']::before { opacity: 1; }
+:theme .settings-navigation [role='tab']:focus-visible { outline: 2px solid var(--pc-focus); outline-offset: -2px; }
+
+:theme .settings-panel { padding: 18px 24px 24px; font-size: 13px; }
+/* Buttons inherit their size (an unlayered `font: inherit` beats Tailwind's
+   text-xs), which made settings buttons 16px on phones. */
+:theme .settings-panel :is(button, summary, select, input, textarea) { font-size: 12.5px; }
+:theme .settings-panel .font-mono { font-size: 11.5px; }
+/* A primary action that stacks on phones keeps its own width. */
+:theme .settings-panel .flex-col > :is(.relay-button-primary, .ui-action-primary) { align-self: flex-end; padding-inline: 18px; }
+:theme .settings-panel-heading { margin-bottom: 6px; }
+:theme .settings-panel-heading h3 { font-family: var(--plum-display); font-size: 16px; font-weight: 600; letter-spacing: 0; }
+
+/* Rows: tighter rhythm, one weight for row titles, dashed dividers. */
+:theme .settings-panel :is(fieldset, section, div).py-5 { padding-block: 12px; }
+:theme .settings-panel :is(.divide-y > * + *, .border-t, .border-y) { border-color: color-mix(in srgb, var(--theme-border-strong) 70%, transparent); border-style: dashed; }
+:theme .settings-panel :is(legend, h4, .text-sm.font-semibold, .text-sm.font-medium) { font-size: 13px; font-weight: 700; }
+:theme .settings-panel .text-xs.font-semibold { font-size: 12px; font-weight: 700; }
+
+/* Send shortcut: a two-way segmented choice instead of two cards. */
+:theme .settings-choice-group {
+  display: inline-flex;
+  max-width: 100%;
+  gap: 2px;
+  margin-top: 8px;
+  padding: 3px;
+  overflow-x: auto;
+  border-radius: 12px;
+  background: var(--pc-key);
+  scrollbar-width: none;
+}
+:theme .settings-choice-group > .settings-choice {
+  position: relative;
+  flex: none;
+  align-items: center;
+  min-height: calc(var(--pc-control-h) - 6px);
+  margin: 0 !important;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 9px;
+  color: var(--theme-fg-soft);
+  cursor: pointer;
+  white-space: nowrap;
+}
+:theme .settings-choice > input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+:theme .settings-choice .text-sm { font-size: 12.5px; font-weight: 600; }
+:theme .settings-choice:has(input:checked) { background: var(--pc-felt); color: var(--theme-accent-strong); box-shadow: 0 1px 3px rgb(61 35 73 / 14%); }
+:theme .settings-choice:has(input:focus-visible) { outline: 2px solid var(--pc-focus); outline-offset: 1px; }
+:theme .settings-choice:has(input:disabled) { cursor: not-allowed; opacity: 0.55; }
+
+/* Theme cards: swatches and name only. */
+:theme .theme-preset-option { border-radius: 14px; }
+
+/* Harness pickers: one scrolling line of chips, never wrapping. */
+:theme :is(.settings-harness-picker, .settings-harness-switch) {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  scrollbar-width: none;
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 20px), transparent);
+  mask-image: linear-gradient(to right, #000 calc(100% - 20px), transparent);
+}
+:theme :is(.settings-harness-picker, .settings-harness-switch)::-webkit-scrollbar { display: none; }
+:theme .settings-harness-picker { gap: 6px; padding-bottom: 10px; }
+:theme .settings-harness-picker > button { flex: none; min-height: 32px; border-radius: 999px; white-space: nowrap; }
+:theme .settings-harness-picker > button[aria-pressed='true'] { border-color: var(--theme-accent-border); background: var(--theme-accent-soft); color: var(--theme-accent-strong); font-weight: 700; }
+:theme .settings-harness-switch { flex: 0 1 auto; padding: 3px; border-radius: 12px; background: var(--pc-key); }
+:theme .settings-harness-switch > button { flex: none; min-height: calc(var(--pc-control-h) - 6px); border-radius: 9px; white-space: nowrap; }
+:theme .settings-harness-switch > button[aria-pressed='true'] { background: var(--pc-felt); color: var(--theme-accent-strong); }
+/* Installed components: plain lines under the harness, not a box. */
+:theme .settings-harness-row { border-top: 0; padding-top: 4px; }
+:theme .settings-harness-row > ul { margin-top: 6px; padding: 0; border: 0; border-radius: 0; }
+:theme .settings-harness-row > ul > li { border-color: color-mix(in srgb, var(--theme-border-strong) 70%, transparent); border-top-style: dashed; }
+
+/* Disclosure rows (session details, model pricing, backups). */
+:theme :is(.settings-detail, .settings-panel details) { margin-top: 0; border: 0; border-radius: 0; }
+:theme .settings-panel :is(fieldset, section, div).py-5 + :is(.settings-detail, details) { margin-top: 0; }
+:theme :is(.settings-detail, .settings-panel details) > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: var(--pc-control-h);
+  padding: 0 2px;
+  list-style: none;
+  color: var(--theme-fg-soft);
+  font-size: 12.5px;
+  font-weight: 700;
+}
+:theme :is(.settings-detail, .settings-panel details) > summary::-webkit-details-marker { display: none; }
+:theme :is(.settings-detail, .settings-panel details) > summary::after {
+  content: '';
+  width: 14px;
+  height: 14px;
+  background: currentColor;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") center / contain no-repeat;
+  transition: transform 160ms ease;
+}
+:theme :is(.settings-detail, .settings-panel details)[open] > summary::after { transform: rotate(180deg); }
+:theme .settings-detail > div { padding: 0 2px 12px; }
+
+/* ── Switches: every settings and dialog checkbox ─────────────────────────── */
+
+:theme :is(.settings-panel, .host-dialog, .thread-graph-dialog) input[type='checkbox']:not(.sr-only) {
+  -webkit-appearance: none;
+  appearance: none;
+  flex: none;
+  width: 34px !important;
+  height: 20px !important;
+  margin: 0;
+  border-radius: 999px;
+  background: var(--pc-key) radial-gradient(circle at 10px 50%, var(--theme-fg-muted) 0 6px, transparent 6.5px) no-repeat;
+  box-shadow: inset 0 0 0 1.5px var(--pc-edge);
+  cursor: pointer;
+  transition: background-color 150ms ease, background-image 150ms ease;
+}
+:theme :is(.settings-panel, .host-dialog, .thread-graph-dialog) input[type='checkbox']:not(.sr-only):checked {
+  background: var(--theme-accent-solid) radial-gradient(circle at 24px 50%, var(--theme-accent-solid-fg) 0 6px, transparent 6.5px) no-repeat;
+  box-shadow: none;
+}
+:theme :is(.settings-panel, .host-dialog, .thread-graph-dialog) input[type='checkbox']:not(.sr-only):focus-visible { outline: 2px solid var(--pc-focus); outline-offset: 2px; }
+:theme :is(.settings-panel, .host-dialog, .thread-graph-dialog) input[type='checkbox']:not(.sr-only):disabled { cursor: not-allowed; opacity: 0.45; }
+/* A row with a switch centres it on the title line. */
+:theme .settings-panel label:has(> input[type='checkbox']) { align-items: center; }
+:theme .settings-panel label:has(> input[type='checkbox']) > input { margin-top: 0 !important; }
+
+:theme :is(.settings-panel, .host-dialog, .thread-graph-dialog) input[type='radio']:not(.sr-only) {
+  -webkit-appearance: none;
+  appearance: none;
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--pc-felt);
+  box-shadow: inset 0 0 0 1.5px var(--theme-border-contrast);
+}
+:theme :is(.settings-panel, .host-dialog, .thread-graph-dialog) input[type='radio']:not(.sr-only):checked { background: radial-gradient(circle, var(--theme-accent-strong) 0 4px, var(--pc-felt) 4.5px); box-shadow: inset 0 0 0 1.5px var(--theme-accent-strong); }
+:theme :is(.settings-panel, .host-dialog, .thread-graph-dialog) input[type='range'] { accent-color: var(--theme-accent-solid); }
+
+/* ── Inputs, selects and text areas ───────────────────────────────────────── */
+
+:theme :is(.relay-input, .host-form-control, .host-input),
+:theme :is(.settings-panel, .host-dialog, .thread-graph-dialog) :is(select, textarea, input:is([type='text'], [type='search'], [type='url'], [type='number'], [type='password'], [type='email'], :not([type]))) {
+  min-height: var(--pc-control-h);
+  border: 1px solid var(--pc-edge) !important;
+  border-radius: 10px !important;
+  background-color: var(--pc-slip) !important;
+  color: var(--theme-fg) !important;
+  font-size: 13px;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+:theme :is(.relay-input, .host-form-control, .host-input):focus-visible,
+:theme :is(.settings-panel, .host-dialog, .thread-graph-dialog) :is(select, textarea, input:is([type='text'], [type='search'], [type='url'], [type='number'], [type='password'], [type='email'], :not([type]))):focus-visible {
+  border-color: var(--pc-edge-focus) !important;
+  outline: none;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--theme-accent-solid) 20%, transparent) !important;
+}
+:theme :is(.settings-panel, .host-dialog, .thread-graph-dialog) select {
+  -webkit-appearance: none;
+  appearance: none;
+  padding: 0 30px 0 10px !important;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238f7499' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") !important;
+  background-position: right 9px center !important;
+  background-repeat: no-repeat !important;
+  background-size: 14px !important;
+}
+:theme :is(.settings-panel, .host-dialog, .thread-graph-dialog) textarea { padding: 8px 10px; }
+:theme :is(.relay-input, .host-form-control, .host-input, .settings-panel :is(input, textarea))::placeholder { color: var(--theme-fg-muted); }
+
+/* ── Buttons: small felt keys, sized to their label ───────────────────────── */
+
+:theme :is(.relay-button-primary, .relay-button-secondary, .host-secondary-button, .host-icon-button, .ui-action-primary, .ui-action-info, .ui-action-success, .ui-action-danger) {
+  border-radius: 10px;
+  white-space: nowrap;
+}
+:theme :is(.relay-button-primary, .ui-action-primary, .ui-action-success) {
+  border-color: transparent;
+  background: var(--action-primary-bg);
+  color: var(--action-primary-fg);
+  box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--action-primary-bg) 70%, #5a3a10);
+  font-weight: 700;
+}
+:theme :is(.relay-button-primary, .ui-action-primary, .ui-action-success):hover:not(:disabled) { background: var(--action-primary-bg-hover); }
+:theme :is(.relay-button-primary, .ui-action-primary, .ui-action-success):disabled { box-shadow: none; }
+:theme :is(.relay-button-secondary, .host-secondary-button, .host-icon-button) {
+  border-color: transparent !important;
+  background: color-mix(in srgb, var(--pc-key) 65%, transparent);
+  color: var(--theme-fg-soft);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--pc-edge) 80%, transparent);
+}
+:theme :is(.relay-button-secondary, .host-secondary-button, .host-icon-button):hover:not(:disabled) { background: var(--pc-key-hover); color: var(--theme-fg); }
+:theme :is(.relay-button-primary, .relay-button-secondary, .host-secondary-button, .host-icon-button, .ui-action-primary, .ui-action-info, .ui-action-success, .ui-action-danger):focus-visible { outline: 2px solid var(--pc-focus); outline-offset: 2px; }
+/* Lighter controls on desktop; touch keeps 44px. */
+@media (pointer: fine) {
+  :theme :is(.settings-panel, .host-dialog, .thread-graph-dialog) :is(.min-h-11, .min-h-10, .relay-button-primary, .relay-button-secondary, .relay-input) { min-height: 34px; }
+  :theme :is(.settings-panel, .host-dialog, .thread-graph-dialog) .min-h-9 { min-height: 30px; }
+  :theme :is(.settings-panel, .host-dialog, .thread-graph-dialog) :is(.relay-button-primary, .relay-button-secondary) { padding-inline: 12px; font-size: 12.5px; }
+}
+
+/* Segmented controls (color mode and similar). */
+:theme .product-segmented { gap: 2px; padding: 3px; border: 0; border-radius: 12px; background: var(--pc-key); }
+:theme .product-segment { min-height: calc(var(--pc-control-h) - 6px); border-radius: 9px; color: var(--theme-fg-soft); font-size: 12.5px; }
+:theme .product-segment:is([aria-selected='true'], [aria-pressed='true'], :has(input:checked)) { background: var(--pc-felt); color: var(--theme-accent-strong); box-shadow: 0 1px 3px rgb(61 35 73 / 14%); }
+:theme .product-segment:has(input:focus-visible) { outline-color: var(--pc-focus); }
+
+/* Empty states: a short line, not a dashed box. */
+:theme .settings-panel p.border-dashed { margin-block: 10px; padding: 10px 0; border: 0; color: var(--theme-fg-muted); font-size: 12.5px; }
+
+/* ── Dialogs and menus across the app ─────────────────────────────────────── */
+
+:theme .thread-graph-dialog[data-slot='dialog-content']:not(.thread-graph-settings-dialog) {
+  border-color: var(--pc-edge);
+  border-radius: 20px;
+  background: var(--pc-felt);
+  box-shadow: var(--pc-menu-shadow);
+}
+:theme .thread-graph-dialog [data-slot='dialog-title'] { font-family: var(--plum-display); font-weight: 600; letter-spacing: 0; }
+:theme .thread-graph-dialog:not(.thread-graph-settings-dialog) > [data-slot='dialog-close'] { border-radius: 10px; opacity: 0.8; }
+:theme :is(.recent-thread-menu, .thread-workspace-link-menu, .device-connection-popover) {
+  border: 1px solid var(--pc-edge);
+  border-radius: 14px;
+  background: var(--pc-felt);
+  color: var(--theme-fg);
+  box-shadow: var(--pc-menu-shadow);
+}
+:theme :is(.recent-thread-menu, .thread-workspace-link-menu) button { border-radius: 9px; }
+:theme :is(.recent-thread-menu, .thread-workspace-link-menu) button:hover:not(:disabled) { background: var(--pc-key); }
+:theme .recent-thread-menu .recent-thread-delete { color: var(--pc-stop-fg); }
+:theme .recent-thread-menu .recent-thread-delete:hover { background: var(--pc-stop); }
+
+/* ── Phones ───────────────────────────────────────────────────────────────── */
+
+@media (max-width: 639px) {
+  :theme .thread-graph-dialog.thread-graph-settings-dialog > [data-slot='dialog-header'] { padding: 14px 54px 12px 18px; }
+  :theme .settings-navigation { gap: 0; padding: 4px 8px; overflow-x: hidden; }
+  :theme .settings-navigation [role='tab'] {
+    position: relative;
+    flex: 1 1 0;
+    justify-content: center;
+    min-width: 0;
+    min-height: 44px;
+    padding: 0;
+  }
+  :theme .settings-navigation [role='tab'] > span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  :theme .settings-navigation [role='tab']::before { width: 18px; height: 18px; }
+  :theme .settings-navigation [role='tab'][aria-selected='true'] { background: transparent; }
+  :theme .settings-navigation [role='tab'][aria-selected='true']::after {
+    content: '';
+    position: absolute;
+    left: 50%;
+    bottom: 5px;
+    width: 14px;
+    height: 3px;
+    border-radius: 999px;
+    background: var(--theme-accent-solid);
+    transform: translateX(-50%);
+  }
+  :theme .settings-panel { padding: 14px 16px max(18px, env(safe-area-inset-bottom)); }
+}
+@media (prefers-reduced-motion: reduce) {
+  :theme :is(.settings-detail, .settings-panel details) > summary::after,
+  :theme :is(.settings-panel, .host-dialog, .thread-graph-dialog) input { transition: none; }
+}

@@ -1,14 +1,12 @@
-/* Plum Pocket theme preset: plum chrome, mustard felt accents and cream content,
-   from the Pockymoe icon. Active with `:root[data-theme-preset='plum-pocket']`
-   (see lib/themePreset.ts) in both color modes. The Classic preset is
-   matter-theme.css plus the shared UI's matter-workbench.css; selectors here
-   are one step more specific than theirs. */
-
-@font-face { font-family: 'Nunito'; font-style: normal; font-weight: 400 800; font-display: swap; src: url('/fonts/nunito-latin.woff2') format('woff2'); }
-@font-face { font-family: 'Fredoka'; font-style: normal; font-weight: 500 600; font-display: swap; src: url('/fonts/fredoka-latin.woff2') format('woff2'); }
+/* Plum Pocket theme pack: plum chrome, mustard felt accents and cream content,
+   from the Pockymoe icon, in both color modes. The loader rewrites `:theme` to
+   `:root[data-theme-preset="plum-pocket"]` (docs/theme-packs.md). Classic is the
+   host's matter-theme.css plus the shared UI's matter-workbench.css; selectors
+   here are one step more specific than theirs. Nunito and Fredoka come from the
+   `fonts` in theme.json. */
 
 /* Main app tokens: dark mode (the root default) … */
-:root:root:root[data-theme-preset='plum-pocket'] {
+:root:root:theme {
   --plum-font: 'Nunito', 'DM Sans', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif;
   --plum-display: 'Fredoka', var(--plum-font);
   --plum-stitch: #c98f2a;
@@ -49,7 +47,7 @@
   --plum-chrome-border: #33203f;
 }
 /* … and light mode. */
-:root:root:root[data-theme-preset='plum-pocket'][data-theme-effective='light'] {
+:root:root:theme[data-theme-effective='light'] {
   --plum-stitch: #d29523;
   --plum-user-bubble: #f1e1f5;
   --plum-user-bubble-fg: #3b1f4a;
@@ -88,7 +86,7 @@
 
 /* Shared UI tokens. The workbench and dialogs set their own palette, so the
    preset sets it again on them. */
-:root[data-theme-preset='plum-pocket'] :is(.thread-ui-shell, .thread-graph-dialog) {
+:theme :is(.thread-ui-shell, .thread-graph-dialog) {
   font-family: var(--plum-font);
   --thread-gc-bg: #fbf4e8;
   --thread-gc-panel: #fffaf1;
@@ -113,8 +111,8 @@
   --matter-composer-shadow: 0 16px 40px rgb(61 35 73 / 18%), 0 4px 12px rgb(61 35 73 / 8%);
   --matter-glass-highlight: rgb(255 250 241 / 70%);
 }
-:root[data-theme-preset='plum-pocket'] :is(.thread-ui-shell, .thread-graph-dialog):is([data-theme-effective='dark'], .thread-ui-theme-dark, .dark),
-:root[data-theme-preset='plum-pocket'][data-theme-effective='dark'] :is(.thread-ui-shell, .thread-graph-dialog):not([data-theme-effective='light']) {
+:theme :is(.thread-ui-shell, .thread-graph-dialog):is([data-theme-effective='dark'], .thread-ui-theme-dark, .dark),
+:theme[data-theme-effective='dark'] :is(.thread-ui-shell, .thread-graph-dialog):not([data-theme-effective='light']) {
   --thread-gc-bg: #1b1022;
   --thread-gc-panel: #22152b;
   --thread-gc-workspace: #2a1a35;
@@ -141,7 +139,7 @@
 
 /* Plum chrome: rail, top bars and sidebar use light text on plum in both modes.
    Tokens are set directly on these containers so everything inside follows. */
-:root[data-theme-preset='plum-pocket'] :is(.matter-rail, .matter-topbar, .matter-sidebar, .product-topbar) {
+:theme :is(.matter-rail, .matter-topbar, .matter-sidebar, .product-topbar) {
   --theme-bg: var(--plum-chrome);
   --theme-panel: var(--plum-chrome-panel);
   --theme-surface: var(--plum-chrome-panel);
@@ -164,46 +162,46 @@
 }
 
 /* Rounder buttons and display type. */
-:root[data-theme-preset='plum-pocket'] :is(.relay-button-primary, .relay-button-secondary, .host-secondary-button) { border-radius: 12px; }
-:root[data-theme-preset='plum-pocket'] :is(.product-title, .matter-topbar-brand, .theme-preset-name) { font-family: var(--plum-display); font-weight: 600; letter-spacing: 0; }
+:theme :is(.relay-button-primary, .relay-button-secondary, .host-secondary-button) { border-radius: 12px; }
+:theme :is(.product-title, .matter-topbar-brand, .theme-preset-name) { font-family: var(--plum-display); font-weight: 600; letter-spacing: 0; }
 
 /* Shared UI parts that hard-code slate neutrals for the Classic palette. */
-:root[data-theme-preset='plum-pocket'] {
+:theme {
   --plum-code-bg: #fdf6ea;
 }
-:root[data-theme-preset='plum-pocket'][data-theme-effective='dark'] {
+:theme[data-theme-effective='dark'] {
   --plum-code-bg: #150b1a;
 }
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-new-room-button { border-color: var(--theme-border-strong); background: var(--theme-surface); }
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-new-room-button:hover { border-color: var(--theme-border-contrast); background: var(--theme-hover); }
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell .ui-status-neutral { border-color: var(--theme-border); }
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-room-card.is-active .ui-status-neutral { border-color: var(--theme-border-strong); background: var(--theme-muted); }
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-goal-compose-cancel { border-color: var(--theme-border-strong); background: var(--theme-surface); }
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-goal-compose-cancel:hover { background: var(--theme-hover); }
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-chat-usage-footer { color: var(--theme-fg-muted); }
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-graph-scroll-container { scrollbar-color: var(--scrollbar-thumb) transparent; }
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-token-popover { border-color: var(--theme-border); background: var(--theme-panel); }
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-token-popover-row { border-color: var(--theme-border); background: var(--theme-surface); }
-:root[data-theme-preset='plum-pocket'] .thread-workspace-link-menu { background: var(--theme-panel); border-color: var(--theme-border-strong); }
-:root[data-theme-preset='plum-pocket'] .thread-workspace-link-menu button:hover { background: var(--theme-hover); }
-:root[data-theme-preset='plum-pocket'] .device-connection-popover { background: var(--theme-panel); color: var(--theme-fg); border-color: var(--theme-border-strong); }
-:root[data-theme-preset='plum-pocket'] .device-connection-popover > span { color: var(--theme-fg-muted); }
+:theme .thread-ui-shell .thread-graph-new-room-button { border-color: var(--theme-border-strong); background: var(--theme-surface); }
+:theme .thread-ui-shell .thread-graph-new-room-button:hover { border-color: var(--theme-border-contrast); background: var(--theme-hover); }
+:theme .thread-ui-shell .ui-status-neutral { border-color: var(--theme-border); }
+:theme .thread-ui-shell .thread-graph-room-card.is-active .ui-status-neutral { border-color: var(--theme-border-strong); background: var(--theme-muted); }
+:theme .thread-ui-shell .thread-goal-compose-cancel { border-color: var(--theme-border-strong); background: var(--theme-surface); }
+:theme .thread-ui-shell .thread-goal-compose-cancel:hover { background: var(--theme-hover); }
+:theme .thread-ui-shell .thread-chat-usage-footer { color: var(--theme-fg-muted); }
+:theme .thread-ui-shell .thread-graph-scroll-container { scrollbar-color: var(--scrollbar-thumb) transparent; }
+:theme .thread-ui-shell .thread-token-popover { border-color: var(--theme-border); background: var(--theme-panel); }
+:theme .thread-ui-shell .thread-token-popover-row { border-color: var(--theme-border); background: var(--theme-surface); }
+:theme .thread-workspace-link-menu { background: var(--theme-panel); border-color: var(--theme-border-strong); }
+:theme .thread-workspace-link-menu button:hover { background: var(--theme-hover); }
+:theme .device-connection-popover { background: var(--theme-panel); color: var(--theme-fg); border-color: var(--theme-border-strong); }
+:theme .device-connection-popover > span { color: var(--theme-fg-muted); }
 
 /* Terminal (xterm) and editor (Monaco) paint with JavaScript palettes; the shared UI
    reads these hex colors from their containers (see components/themeHooks.ts). */
-:root[data-theme-preset='plum-pocket'] .terminal-panel {
+:theme .terminal-panel {
   --terminal-bg: #150b1a;
   --terminal-fg: #f1e4cf;
   --terminal-cursor: #f0b54a;
   --terminal-selection: #f0b54a47;
 }
-:root[data-theme-preset='plum-pocket'] .terminal-panel[data-terminal-theme='light'] {
+:theme .terminal-panel[data-terminal-theme='light'] {
   --terminal-bg: #fdf6ea;
   --terminal-fg: #2e1a35;
   --terminal-cursor: #845400;
   --terminal-selection: #e8a93a4d;
 }
-:root[data-theme-preset='plum-pocket'] {
+:theme {
   --editor-bg: #150b1a;
   --editor-fg: #f1e4cf;
   --editor-line-number: #8f7499;
@@ -214,7 +212,7 @@
   --editor-indent: #2e1b3b;
   --editor-indent-active: #6a4682;
 }
-:root[data-theme-preset='plum-pocket'][data-theme-effective='light'] {
+:theme[data-theme-effective='light'] {
   --editor-bg: #fffaf1;
   --editor-fg: #2e1a35;
   --editor-line-number: #9b8470;
