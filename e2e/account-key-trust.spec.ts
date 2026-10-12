@@ -1,8 +1,147 @@
 import { test, expect } from '@playwright/test';
+import { createServer } from 'node:http';
+import { randomBytes } from 'node:crypto';
 import { fixture, browserRequest, ok, sendPrompt, sockets, screenshot, unlock } from './helpers/account-key-fixture';
 
 // Passwords, recovery codes, binding commands and relay cookies stay in memory.
 test.use({ trace: 'off', video: 'off', screenshot: 'off', actionTimeout: 15_000 });
+
+test('preview leases authorize bound Web and CLI previews while unbound previews stay compatible', async ({ browser }, info) => {
+  test.skip(info.project.name !== 'desktop-chromium', 'Preview protocol coverage runs on desktop only');
+  test.setTimeout(180_000);
+  const f = await fixture(browser, info, { previews: true });
+  const requests: { path: string; lease: boolean; app: string | null }[] = [];
+  const service = createServer((request, response) => {
+    const url = new URL(request.url ?? '/', 'http://127.0.0.1:16275');
+    // Keep only safe facts: lease ids and preview cookies never enter evidence.
+    requests.push({ path: url.pathname, lease: url.searchParams.has('lease'), app: url.searchParams.get('app') });
+    response.writeHead(200, { 'content-type': 'text/html', 'cache-control': 'no-store' });
+    response.end('<!doctype html><html><body><h1>ACCOUNT_KEY_PREVIEW</h1></body></html>');
+  });
+  // Navigation errors can include the lease and one-time login ticket in their
+  // URLs. Retain only a status, and diagnose failures with the labeled assertions.
+  const navigate = async (page: import('@playwright/test').Page, url: string) => {
+    try { return (await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20_000 }))?.status() ?? 0; }
+    catch { return 0; }
+  };
+  try {
+    await new Promise<void>((done, fail) => { service.once('error', fail); service.listen(16275, '127.0.0.1', done); });
+    const owner = await f.account('preview-owner');
+    const bound = await f.device(owner, 1);
+    await f.bind(owner, bound);
+    await owner.page.locator('[aria-controls="matter-thread-tools"]').click();
+    await owner.page.getByRole('button', { name: 'Port mappings', exact: true }).click();
+    const manager = owner.page.getByRole('dialog', { name: 'Port mappings', exact: true });
+    await expect(manager.getByRole('button', { name: 'Enable', exact: true })).toBeEnabled();
+    await manager.getByRole('spinbutton', { name: 'HTTP port', exact: true }).fill('16275');
+    await manager.getByRole('textbox', { name: 'Port label', exact: true }).fill('Lease test app');
+    await manager.getByRole('button', { name: 'Enable', exact: true }).click();
+    await expect(manager.getByText('Lease test app · 127.0.0.1:16275', { exact: true })).toBeVisible();
+    const mappings = ok(await browserRequest(owner.page, bound.api + '/port-mappings'), 'Real UI port mapping').mappings;
+    const mapping = mappings.find((row: any) => row.port === 16275);
+    expect(!!mapping, 'Real Web UI created the bound device mapping').toBe(true);
+    const openPath = `/relay/devices/${bound.id}/port-mappings/${mapping.id}/open`;
+    const expectedHost = `p-${mapping.id}.preview.localhost`;
+    let webLease: string | null = null, webLeaseStatus = 0, webOpenStatus = 0;
+    owner.page.on('request', request => {
+      const url = new URL(request.url());
+      if (url.pathname === openPath && request.method() === 'POST') {
+        webLease = url.searchParams.get('lease');
+        if (webLease) f.secrets.push(webLease);
+      }
+    });
+    owner.page.on('response', response => {
+      const path = new URL(response.url()).pathname;
+      if (path === bound.api + `/port-mappings/${mapping.id}/lease`) webLeaseStatus = response.status();
+      if (path === openPath) webOpenStatus = response.status();
+    });
+    const popup = owner.page.waitForEvent('popup');
+    await manager.getByRole('button', { name: 'Open', exact: true }).click();
+    const web = await popup;
+    await expect.poll(() => webLeaseStatus, { timeout: 5_000, message: 'Real UI obtains an owner-signed lease from the strict device' }).toBe(200);
+    expect(typeof webLease === 'string' && /^[A-Za-z0-9_-]{43}$/.test(webLease), 'Device lease uses the specified base64url format').toBe(true);
+    await expect.configure({ soft: true }).poll(() => webOpenStatus, { timeout: 5_000,
+      message: 'PREVIEW_WEB_LEASE_FORMAT: relay must accept the device-issued 43-character base64url lease, rather than require a UUID' }).toBe(200);
+    await expect.configure({ soft: true }).poll(() => web.getByRole('heading', { name: 'ACCOUNT_KEY_PREVIEW', exact: true }).isVisible().catch(() => false),
+      { timeout: 5_000, message: 'PREVIEW_WEB_LOAD: owner-signed Web preview must reach the local HTTP app through the relay preview origin; a closed failure popup is not a loaded app' }).toBe(true);
+    expect.soft(!web.isClosed() && new URL(web.url()).hostname === expectedHost,
+      'PREVIEW_WEB_ORIGIN: Web preview must load on the mapping-specific relay origin').toBe(true);
+    const webRequests = requests.filter(request => request.path === '/');
+    expect.soft(webRequests.length > 0 && webRequests.every(request => !request.lease),
+      'PREVIEW_WEB_QUERY_STRIPPED: bound Web preview must reach the app without a lease query parameter; blocked launch also fails this check').toBe(true);
+    f.events.push(`preview Web leaseStatus=${webLeaseStatus} openStatus=${webOpenStatus} upstreamRequests=${webRequests.length}`);
+
+    const cli = await f.cli(['--cli-config', bound.cli, 'preview', 'create', '--port', '16275', '--path', '/cli-preview?app=cli']);
+    expect(cli.code, 'Local agent CLI reserves a preview on the bound device').toBe(0);
+    const cliLease = cli.data?.leaseId;
+    expect(typeof cliLease === 'string' && /^[A-Za-z0-9_-]{43}$/.test(cliLease), 'Local CLI creates its own live device lease').toBe(true);
+    f.secrets.push(cliLease);
+    expect(cliLease === webLease, 'Local CLI and owner browser leases are distinct').toBe(false);
+    const cliURL = new URL(cli.data.openUrl);
+    expect(cliURL.searchParams.get('lease') === cliLease, 'Agent-facing CLI openUrl carries its local lease').toBe(true);
+    const cliPage = await owner.context.newPage();
+    let cliLeaseRequests = 0, cliOpenedWithOwnLease = false, cliOpenStatus = 0;
+    cliPage.on('request', request => {
+      const url = new URL(request.url());
+      if (url.pathname === bound.api + `/port-mappings/${mapping.id}/lease`) cliLeaseRequests++;
+      if (url.pathname === openPath) {
+        const lease = url.searchParams.get('lease');
+        if (lease) f.secrets.push(lease);
+        cliOpenedWithOwnLease = lease === cliLease;
+      }
+    });
+    cliPage.on('response', response => { if (new URL(response.url()).pathname === openPath) cliOpenStatus = response.status(); });
+    await navigate(cliPage, cliURL.href);
+    await expect.soft(cliPage.getByRole('heading', { name: 'ACCOUNT_KEY_PREVIEW', exact: true }),
+      'PREVIEW_CLI_LOAD: agent CLI openUrl must load the app through its own lease').toBeVisible({ timeout: 5_000 });
+    expect.soft(cliOpenedWithOwnLease && cliLeaseRequests === 0,
+      'PREVIEW_CLI_LEASE_REUSED: preview page must use the supplied local CLI lease without requesting a browser lease').toBe(true);
+    expect.soft(new URL(cliPage.url()).hostname === expectedHost,
+      'PREVIEW_CLI_ORIGIN: CLI preview must load on the mapping-specific relay origin').toBe(true);
+    const cliRequests = requests.filter(request => request.path === '/cli-preview');
+    expect.soft(cliRequests.length > 0 && cliRequests.every(request => !request.lease && request.app === 'cli'),
+      'PREVIEW_CLI_QUERY_STRIPPED: relay must strip lease while preserving the application query; blocked launch also fails this check').toBe(true);
+    f.events.push(`preview CLI openStatus=${cliOpenStatus} usedOwnLease=${cliOpenedWithOwnLease} browserLeaseRequests=${cliLeaseRequests} upstreamRequests=${cliRequests.length}`);
+
+    // Bypass all browser signing and call only the relay's preview-open API.
+    const missing = await f.api(openPath, 'POST', { path: '/missing-lease' }, owner.cookie);
+    expect.soft(missing.status, 'PREVIEW_MISSING_LEASE: relay-only request cannot open a strict-device mapping without a lease').toBe(403);
+    expect.soft(missing.data?.code, 'PREVIEW_MISSING_LEASE_CODE: no-lease request must require device authorization').toBe('preview_lease_required');
+    const foreignLease = randomBytes(32).toString('base64url'); f.secrets.push(foreignLease);
+    const foreign = await f.api(openPath + '?lease=' + foreignLease, 'POST', { path: '/foreign-lease' }, owner.cookie);
+    expect.soft(foreign.status,
+      'PREVIEW_FOREIGN_LEASE_ROUTED: syntactically valid unissued lease must reach device enforcement, rather than fail relay UUID validation').toBe(200);
+    if (foreign.status === 200) {
+      const foreignPage = await owner.context.newPage();
+      const status = await navigate(foreignPage, foreign.data.url);
+      expect.soft(status >= 400 && status < 600, 'PREVIEW_FOREIGN_LEASE_DENIED: device refuses the relay open frame without a live mapping lease').toBe(true);
+      expect(requests.some(request => request.path === '/foreign-lease'), 'Unissued lease never reaches the previewed app').toBe(false);
+      f.events.push(`preview unissued lease upstreamStatus=${status}`);
+    }
+    expect(requests.some(request => request.path === '/missing-lease'), 'Missing lease never reaches the previewed app').toBe(false);
+
+    // A second real Supervisor stays unbound and accepts the legacy no-lease
+    // relay path. It shares only the tiny local service, never trust state.
+    const unbound = await f.device(owner, 2);
+    const legacy = ok(await f.api(unbound.api + '/port-mappings', 'POST', { port: 16275, label: 'Unbound app' }, owner.cookie), 'Unbound mapping');
+    const legacyOpen = `/relay/devices/${unbound.id}/port-mappings/${legacy.id}/open`;
+    await expect.poll(async () => (await f.api(legacyOpen, 'POST', { path: '/unbound-preview?app=legacy' }, owner.cookie)).status,
+      { message: 'Wait for the unbound mapping heartbeat to reach the relay' }).toBe(200);
+    const legacyLaunch = ok(await f.api(legacyOpen, 'POST', { path: '/unbound-preview?app=legacy' }, owner.cookie), 'Unbound preview without lease');
+    expect(new URL(legacyLaunch.url).searchParams.has('lease'), 'Unbound launch needs no lease').toBe(false);
+    const legacyPage = await owner.context.newPage();
+    expect(await navigate(legacyPage, legacyLaunch.url), 'Legacy unbound preview loads without any lease').toBe(200);
+    await expect(legacyPage.getByRole('heading', { name: 'ACCOUNT_KEY_PREVIEW', exact: true })).toBeVisible();
+    expect(new URL(legacyPage.url()).hostname).toBe(`p-${legacy.id}.preview.localhost`);
+    expect(requests.some(request => request.path === '/unbound-preview' && request.app === 'legacy' && !request.lease)).toBe(true);
+    expect.soft(requests.some(request => request.lease), 'PREVIEW_LEASE_NOT_FORWARDED: no previewed-app request may receive the lease query parameter').toBe(false);
+    f.events.push(`preview missingLease=${missing.status}/${missing.data?.code} unissuedLeaseOpen=${foreign.status} unboundWithoutLease=200 appReceivedLease=${requests.some(request => request.lease)}`);
+  } finally {
+    await f.close();
+    service.closeAllConnections();
+    await new Promise<void>(done => service.close(() => done()));
+  }
+});
 
 test('account key registration, enrollment, browser trust and recovery', async ({ browser }, info) => {
   test.setTimeout(300_000);
