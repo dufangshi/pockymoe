@@ -867,3 +867,270 @@ async fn direct_rejects_unavailable_state_and_unsupported_steering_without_queue
         );
     }
 }
+
+fn reminder_mail(state: &Supervisor, from: &str, to: &str, key: &str) -> String {
+    let mut input = send(from, key, false, key);
+    input.delivery = "inbox".into();
+    input.kind = Some("question".into());
+    input.subject = Some(key.into());
+    state.send_to_thread(to, input).unwrap()["messageId"]
+        .as_str()
+        .unwrap()
+        .into()
+}
+fn reminder_time(state: &Supervisor, thread: &str, minutes: i64) -> String {
+    let list = state.inbox_list(thread, &json!({"all":true})).unwrap();
+    let created = list["messages"][0]["createdAt"].as_str().unwrap();
+    (chrono::DateTime::parse_from_rfc3339(created).unwrap()
+        + chrono::Duration::minutes(minutes)
+        + chrono::Duration::seconds(1))
+    .to_rfc3339()
+}
+fn reminder_queue_count(state: &Supervisor, thread: &str) -> i64 {
+    state
+        .db
+        .with(|c| {
+            Ok(c.query_row(
+                "SELECT count(*) FROM thread_pending_steers WHERE thread_id=?1",
+                [thread],
+                |r| r.get(0),
+            )?)
+        })
+        .unwrap()
+}
+
+#[tokio::test]
+async fn inbox_reminder_batches_after_ten_minutes_and_survives_restart_once() {
+    let (_dir, state) = setup();
+    let a = thread(&state, Provider::Codex).await;
+    let b = thread(&state, Provider::Acp).await;
+    reminder_mail(&state, &a, &b, "first-question");
+    reminder_mail(&state, &a, &b, "second-question");
+    state
+        .inbox_reminder_tick(&reminder_time(&state, &b, 9))
+        .await
+        .unwrap();
+    assert_eq!(reminder_queue_count(&state, &b), 0);
+    state
+        .inbox_reminder_tick(&reminder_time(&state, &b, 10))
+        .await
+        .unwrap();
+    assert_eq!(reminder_queue_count(&state, &b), 1);
+    let config = state.config.clone();
+    drop(state);
+    let state = Supervisor::new(
+        config.clone(),
+        Database::open(&config.database_url).unwrap(),
+        vec![
+            Arc::new(FakeRuntime::new(Provider::Codex)),
+            Arc::new(FakeRuntime::new(Provider::Acp)),
+        ],
+    );
+    state
+        .inbox_reminder_tick(&reminder_time(&state, &b, 20))
+        .await
+        .unwrap();
+    assert_eq!(reminder_queue_count(&state, &b), 1);
+    // Simulate consumption of the queued reminder; its persisted batch marker
+    // must also prevent a later reminder once the queue is empty.
+    state
+        .db
+        .with(|c| {
+            c.execute("DELETE FROM thread_pending_steers WHERE thread_id=?1", [&b])?;
+            Ok(())
+        })
+        .unwrap();
+    state
+        .inbox_reminder_tick(&reminder_time(&state, &b, 40))
+        .await
+        .unwrap();
+    assert_eq!(reminder_queue_count(&state, &b), 0);
+    assert_eq!(
+        state.inbox_unread_count(&b).unwrap(),
+        2,
+        "wake never acknowledges mail"
+    );
+}
+
+#[tokio::test]
+async fn inbox_reminder_read_ack_and_wait_cancel_without_losing_history() {
+    let (_dir, state) = setup();
+    let a = thread(&state, Provider::Codex).await;
+    let b = thread(&state, Provider::Acp).await;
+    let read = reminder_mail(&state, &a, &b, "read-question");
+    let ack = reminder_mail(&state, &a, &b, "ack-question");
+    assert!(state.inbox_read(&b, &json!({"messageId":read})).unwrap()["readAt"].is_string());
+    state.inbox_ack(&b, &json!({"messageIds":[ack]})).unwrap();
+    let waited = reminder_mail(&state, &a, &b, "wait-question");
+    let result = state
+        .inbox_wait(&b, &[], &[], false, Duration::from_millis(10))
+        .await
+        .unwrap();
+    assert!(result["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|m| m["id"] == waited && m["readAt"].is_string()));
+    state
+        .inbox_reminder_tick(&reminder_time(&state, &b, 20))
+        .await
+        .unwrap();
+    assert_eq!(reminder_queue_count(&state, &b), 0);
+    assert_eq!(
+        state.inbox_unread_count(&b).unwrap(),
+        2,
+        "reading is not handling"
+    );
+    assert_eq!(
+        state.inbox_read(&b, &json!({"messageId":read})).unwrap()["text"],
+        "read-question"
+    );
+}
+
+#[tokio::test]
+async fn inbox_reminder_defers_active_and_queued_work_and_throttles_new_batches() {
+    let (_dir, state) = setup();
+    let a = thread(&state, Provider::Codex).await;
+    let b = thread(&state, Provider::Codex).await;
+    reminder_mail(&state, &a, &b, "deferred-question");
+    let now = reminder_time(&state, &b, 20);
+    state
+        .db
+        .with(|c| {
+            c.execute(
+                "INSERT INTO thread_turns(id,thread_id,status,ordinal) VALUES('active',?1,'inProgress',0)",
+                [&b],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    state.inbox_reminder_tick(&now).await.unwrap();
+    assert_eq!(reminder_queue_count(&state, &b), 0);
+    state
+        .db
+        .with(|c| {
+            c.execute("UPDATE threads SET status='recovering' WHERE id=?1", [&b])?;
+            c.execute("DELETE FROM thread_turns WHERE id='active'", [])?;
+            Ok(())
+        })
+        .unwrap();
+    state.inbox_reminder_tick(&now).await.unwrap();
+    assert_eq!(reminder_queue_count(&state, &b), 0);
+    state.db.with(|c| {
+        c.execute("UPDATE threads SET status='idle' WHERE id=?1", [&b])?;
+        c.execute("INSERT INTO thread_pending_steers(id,thread_id,turn_id,display_prompt,submitted_prompt,delivery,created_at,updated_at) VALUES('held',?1,'','held','held','held',?2,?2)", params![b,now])?;
+        Ok(())
+    }).unwrap();
+    state.inbox_reminder_tick(&now).await.unwrap();
+    assert_eq!(reminder_queue_count(&state, &b), 1);
+    state
+        .db
+        .with(|c| {
+            c.execute("DELETE FROM thread_pending_steers WHERE thread_id=?1", [&b])?;
+            Ok(())
+        })
+        .unwrap();
+    state.inbox_reminder_tick(&now).await.unwrap();
+    assert_eq!(reminder_queue_count(&state, &b), 1);
+    state
+        .db
+        .with(|c| {
+            c.execute("DELETE FROM thread_pending_steers WHERE thread_id=?1", [&b])?;
+            Ok(())
+        })
+        .unwrap();
+    reminder_mail(&state, &a, &b, "new-batch");
+    state
+        .inbox_reminder_tick(&reminder_time(&state, &b, 25))
+        .await
+        .unwrap();
+    assert_eq!(
+        reminder_queue_count(&state, &b),
+        0,
+        "ten-minute cooldown between batches"
+    );
+    state
+        .inbox_reminder_tick(&reminder_time(&state, &b, 31))
+        .await
+        .unwrap();
+    assert_eq!(reminder_queue_count(&state, &b), 1);
+}
+
+#[tokio::test]
+async fn inbox_reminder_does_not_reopen_closed_threads_or_replay_legacy_mail() {
+    let (_dir, state) = setup();
+    let a = thread(&state, Provider::Codex).await;
+    let b = thread(&state, Provider::Codex).await;
+    let id = reminder_mail(&state, &a, &b, "closed-question");
+    let now = reminder_time(&state, &b, 20);
+    state
+        .db
+        .with(|c| {
+            c.execute(
+                "UPDATE threads SET closed_at=?2 WHERE id=?1",
+                params![b, now],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    state.inbox_reminder_tick(&now).await.unwrap();
+    assert_eq!(reminder_queue_count(&state, &b), 0);
+    state
+        .db
+        .with(|c| {
+            c.execute("UPDATE threads SET closed_at=NULL WHERE id=?1", [&b])?;
+            c.execute(
+                "UPDATE kv SET value=json_remove(value,'$.remindAfter') WHERE key=?1",
+                [format!("cli:inbox:{b}:{id}")],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    state.inbox_reminder_tick(&now).await.unwrap();
+    assert_eq!(reminder_queue_count(&state, &b), 0);
+}
+
+#[tokio::test]
+async fn inbox_reminder_worker_starts_a_recorded_turn_for_due_mail() {
+    let (_dir, state) = setup();
+    let a = thread(&state, Provider::Codex).await;
+    let b = thread(&state, Provider::Acp).await;
+    let id = reminder_mail(&state, &a, &b, "worker-question");
+    state.db.with(|c| {
+        c.execute("UPDATE kv SET value=json_set(value,'$.remindAfter','2020-01-01T00:00:00Z') WHERE key=?1", [format!("cli:inbox:{b}:{id}")])?;
+        Ok(())
+    }).unwrap();
+    state.start_interaction_worker();
+    // FakeRuntime deliberately waits 25 seconds for long prompts.
+    tokio::time::timeout(Duration::from_secs(35), async {
+        loop {
+            let completed = state
+                .db
+                .with(|c| {
+                    Ok(c.query_row(
+                "SELECT count(*) FROM thread_turns WHERE thread_id=?1 AND status='completed'",
+                [&b], |r| r.get::<_, i64>(0),
+            )?)
+                })
+                .unwrap();
+            if completed == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let history = state.get_thread_detail(&b, None).await.unwrap();
+    assert!(history
+        .turns
+        .iter()
+        .flat_map(|t| &t.items)
+        .any(|i| i.kind == "userMessage" && i.text.contains("Pockymoe inbox reminder")));
+    assert!(history
+        .turns
+        .iter()
+        .flat_map(|t| &t.items)
+        .any(|i| i.kind == "agentMessage"));
+    assert_eq!(state.inbox_unread_count(&b).unwrap(), 1);
+}

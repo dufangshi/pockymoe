@@ -17,10 +17,11 @@ test('floating timeline navigation lets transcript clicks through its empty stri
       .thread-jump-latest-badge button { width: 40px; height: 30px; }
       .thread-graph-composer-form { height: 60px; }
       .matter-workbench { position: relative; height: 700px; }
-      #expand { position: absolute; }
+      #expand, #copy { position: absolute; }
     </style>
     <div class="thread-ui-shell"><div class="matter-workbench">
       <button id="expand" onclick="this.textContent='Expanded'">Click to expand</button>
+      <button id="copy" onclick="this.textContent='Copied'">Copy reply</button>
       <div class="thread-graph-composer-host"><div class="thread-graph-composer-layer">
         <div class="navigation-strip pointer-events-none">
           <div class="thread-jump-latest-cluster pointer-events-none">
@@ -40,6 +41,14 @@ test('floating timeline navigation lets transcript clicks through its empty stri
       button.style.left = `${strip.left - parent.left + 4}px`;
       button.style.top = `${strip.top - parent.top + 8}px`;
     });
+    await page.locator('#copy').evaluate(button => {
+      const strip = document.querySelector('.navigation-strip')!.getBoundingClientRect();
+      const parent = button.parentElement!.getBoundingClientRect();
+      button.style.left = `${strip.right - parent.left - button.getBoundingClientRect().width - 4}px`;
+      button.style.top = `${strip.top - parent.top + 8}px`;
+    });
+    await page.getByRole('button', { name: 'Copy reply', exact: true }).click({ timeout: 3000 });
+    await expect(page.locator('#copy')).toHaveText('Copied');
     await page.getByRole('button', { name: 'Click to expand', exact: true }).click({ timeout: 3000 });
     await expect(page.locator('#expand')).toHaveText('Expanded');
     await page.getByRole('button', { name: 'Latest', exact: true }).click();

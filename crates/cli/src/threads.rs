@@ -19,7 +19,7 @@ pub struct Body {
     /// inbox is passive (send default); queue assigns a task (create default); direct/steer require an urgent correction or unblock request plus --interrupt-reason for peer sends.
     #[arg(long, value_parser=["inbox","direct","queue","steer"])]
     pub delivery: Option<String>,
-    /// Completion notifications are passive inbox mail; they never wake or queue the caller.
+    /// Completion notifications are passive inbox mail; they do not immediately wake or queue the caller.
     #[arg(long, default_value="inbox", value_parser=["inbox"], requires="notify_on_complete")]
     pub notify_delivery: String,
     /// One-line summary, shown in `inbox list` and in the unread notice so the
@@ -200,7 +200,7 @@ More: pockymoe guide delegate"#)]
   - Block here when you will act on the result; your shell may return early, so keep
     waiting on the same command.
   - With nothing else to do for a long time, use --wake and end your turn saying what you
-    wait for: exactly one turn is queued on you when they settle. Nothing else wakes you.
+    wait for: exactly one turn is queued on you when they settle. Unread inbox mail has a separate 10-minute idle reminder.
   - `blocked: true` means a delegate waits on an approval or your answer (`waitingOn`).
   - Settled is not success: check the evidence in each closing message.
 

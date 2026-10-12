@@ -45,7 +45,8 @@ Choosing a delivery for an existing peer:
 
 Collaborating:
 
-- Nothing wakes you: delegates and completion notices only file mail. To act on a result,
+- Mail does not immediately wake you. Unread mail can trigger a batched reminder after
+  10 minutes if you are idle. To act promptly on a required result,
   stay in your turn and block with `thread wait NAME...` or
   `inbox wait --kind result --kind question`; to end your turn, first register
   `thread wait NAME... --wake` and say what you are waiting for. Never poll `status` in a

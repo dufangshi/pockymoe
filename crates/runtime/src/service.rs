@@ -4,6 +4,7 @@ mod child_delete;
 mod claude_history;
 mod claude_reply_phases;
 mod generation;
+mod inbox_reminder;
 pub(crate) mod peer_work;
 mod reliability;
 mod search;
