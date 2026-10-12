@@ -80,8 +80,14 @@ fn describe(
     control
         .query_pairs_mut()
         .append_pair("path", requested_path);
+    let lease = crate::ports::local_lease(state, &mapping.id)?;
+    if let Some(lease) = &lease {
+        control
+            .query_pairs_mut()
+            .append_pair("lease", &lease.lease_id);
+    }
     Ok(
-        json!({"id":mapping.id,"port":mapping.port,"label":mapping.label,"createdAt":mapping.created_at,
+        json!({"leaseId":lease.as_ref().map(|l| &l.lease_id),"expiresAt":lease.as_ref().map(|l|l.expires_at),"id":mapping.id,"port":mapping.port,"label":mapping.label,"createdAt":mapping.created_at,
         "url":url.as_str(),"origin":preview_origin,"hostname":hostname,"openUrl":control.as_str(),
         "relayConnected":state.relay_connected.load(Ordering::SeqCst),
         "access":"deviceOwner",
@@ -370,6 +376,9 @@ mod tests {
             first["hostname"],
             format!("p-{}.example.test", first["id"].as_str().unwrap())
         );
+        assert!(first["leaseId"].as_str().is_some_and(|id| id.len() == 43));
+        assert!(first["expiresAt"].as_i64().unwrap() > crate::owner_trust::now());
+        assert!(first["openUrl"].as_str().unwrap().contains("lease="));
         assert!(first["openUrl"]
             .as_str()
             .unwrap()

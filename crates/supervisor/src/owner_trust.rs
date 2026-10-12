@@ -187,6 +187,24 @@ pub(crate) fn device_id(c: &Connection) -> Result<String> {
     .filter(|id| !id.is_empty())
     .context("Device has not connected to the relay yet")
 }
+#[derive(Debug, thiserror::Error)]
+#[error("Bound relay device id changed")]
+pub(crate) struct DeviceIdMismatch;
+pub(crate) fn relay_status(state: &Supervisor) -> Value {
+    state
+        .db
+        .get_kv("relayTrustStatus")
+        .ok()
+        .flatten()
+        .and_then(|v| serde_json::from_str(&v).ok())
+        .unwrap_or(Value::Null)
+}
+pub(crate) fn mismatch_retry(state: &Supervisor, delay: std::time::Duration) -> Result<()> {
+    state.db.set_kv(
+        "relayTrustStatus",
+        &json!({"code":"device_id_mismatch","retryAt":now()+delay.as_millis() as i64}).to_string(),
+    )
+}
 pub(crate) fn remember_device(state: &Supervisor, id: &str) -> Result<()> {
     ensure!(
         !id.is_empty() && id.len() <= 256 && !id.contains(['\n', '\r']),
@@ -198,10 +216,11 @@ pub(crate) fn remember_device(state: &Supervisor, id: &str) -> Result<()> {
             [],
             |r| r.get(0),
         )?;
-        ensure!(
-            pinned_in(c)?.is_none() || previous.as_deref().is_none_or(|old| old == id),
-            "Bound relay device id changed"
-        );
+        if pinned_in(c)?.is_some() && previous.as_deref().is_some_and(|old|old != id) {
+            c.execute("INSERT INTO kv(key,value) VALUES('relayTrustStatus',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [json!({"code":"device_id_mismatch","retryAt":null}).to_string()])?;
+            return Err(DeviceIdMismatch.into());
+        }
+        c.execute("DELETE FROM kv WHERE key='relayTrustStatus'", [])?;
         c.execute(
             "UPDATE device_owner_trust SET relay_device_id=?1 WHERE singleton=1",
             [id],
@@ -350,11 +369,15 @@ pub(crate) fn authorize(
         return reject(401, "browser_registration_required");
     };
     state.db.with(|c| {
-        if let Some(pin) = pinned_in(c)? {
-            if revoked(c, &pin.account_key_id, "browser", id)? {
-                return reject(401, "browser_revoked");
-            }
-        }
+        let registered: Option<String> = c.query_row("SELECT account_key_id FROM browser_registrations WHERE browser_id=?1", [id], |r|r.get(0)).optional()?;
+        let revoked_browser = if let Some(account) = registered {
+            revoked(c, &account, "browser", id)?
+        } else {
+            let accounts = c.prepare("SELECT account_key_id FROM account_revocations WHERE kind='browser' AND subject_id=?1")?.query_map([id], |r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            let owner = pinned_in(c)?;
+            accounts.into_iter().any(|account| owner.as_ref().is_some_and(|p|p.account_key_id == account) || crate::grants::live_account(c, &account, now()).ok().flatten().is_some())
+        };
+        if revoked_browser { return reject(401, "browser_revoked") }
         let Some((key, principal)) = browser(c, id)? else {
             return reject(401, "browser_registration_required");
         };
@@ -382,6 +405,10 @@ fn register(db: &Database, certificate: &BrowserCertificate) -> Result<Value> {
         let role=if user.is_none(){"owner"}else{"grantee"};
         if let Some((existing_account,existing_user))=tx.query_row("SELECT account_key_id,user_id FROM browser_registrations WHERE browser_id=?1",[&certificate.browser_id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,Option<String>>(1)?))).optional()? {
             if existing_account!=account.account_key_id || existing_user!=user {return reject(403,"account_mismatch")}
+        }
+        if user.is_some() && !tx.query_row("SELECT EXISTS(SELECT 1 FROM browser_registrations WHERE browser_id=?1)", [&certificate.browser_id], |r| r.get::<_,bool>(0))? {
+            let count: u64 = tx.query_row("SELECT count(*) FROM browser_registrations WHERE account_key_id=?1 AND role='grantee'", [&account.account_key_id], |r| r.get(0))?;
+            if count >= 32 { return reject(429,"browser_limit") }
         }
         tx.execute("INSERT INTO browser_registrations(browser_id,public_key,role,account_key_id,user_id,registered_at,last_seen_at) VALUES(?1,?2,?3,?4,?5,?6,?6) ON CONFLICT(browser_id) DO UPDATE SET last_seen_at=excluded.last_seen_at",params![certificate.browser_id,certificate.public_key,role,account.account_key_id,user,now()])?;
         tx.commit()?; Ok(json!({"browserId":certificate.browser_id,"role":role}))
@@ -421,19 +448,40 @@ fn install_certificate(state: &Supervisor, cert: &DeviceCertificate) -> Result<V
 }
 #[derive(Deserialize)]
 pub(crate) struct Revocations {
-    pub revocations: Vec<Revocation>,
+    pub revocations: Vec<Value>,
 }
+#[cfg(test)]
 pub(crate) fn apply_revocations(state: &Supervisor, entries: &[Revocation]) -> Result<Value> {
+    let values = entries
+        .iter()
+        .map(serde_json::to_value)
+        .collect::<serde_json::Result<Vec<_>>>()?;
+    apply_revocation_values(state, &values)
+}
+pub(crate) fn apply_revocation_values(state: &Supervisor, entries: &[Value]) -> Result<Value> {
     ensure!(entries.len() <= 4096, "Too many revocations");
     state.db.with(|c| {
         let tx=Transaction::new_unchecked(c,TransactionBehavior::Immediate)?;
         let pin=pinned_in(&tx)?.context("Device is not bound")?;
-        for r in entries {verify_revocation(&pin,r)?;}
-        for r in entries {
-            tx.execute("INSERT INTO account_revocations(account_key_id,kind,subject_id,revocation_json) VALUES(?1,?2,?3,?4) ON CONFLICT DO NOTHING",params![r.account_key_id,r.kind,r.subject_id,serde_json::to_string(r)?])?;
+        for value in entries {
+            let Ok(r) = serde_json::from_value::<Revocation>(value.clone()) else { continue };
+            let account = if r.account_key_id == pin.account_key_id {
+                pin.clone()
+            } else if r.kind == "browser" {
+                let Some((account, _)) = crate::grants::live_account(&tx, &r.account_key_id, now())? else { continue };
+                account
+            } else { continue };
+            if verify_revocation(&account, &r).is_err() { continue }
+
+            tx.execute("INSERT INTO account_revocations(account_key_id,kind,subject_id,revocation_json) VALUES(?1,?2,?3,?4) ON CONFLICT DO NOTHING",params![r.account_key_id,r.kind,r.subject_id,serde_json::to_string(&r)?])?;
             if r.kind=="browser" {
                 tx.execute("DELETE FROM browser_registrations WHERE browser_id=?1 AND account_key_id=?2",params![r.subject_id,r.account_key_id])?;
-                crate::ports::remove_browser_mappings(&tx,&r.subject_id)?;
+                tx.execute("DELETE FROM preview_leases WHERE browser_id=?1 AND account_key_id=?2",params![r.subject_id,r.account_key_id])?;
+                // Port approvals belong to owners; a grantee using the same browser
+                // public key cannot revoke an owner's approvals.
+                if r.account_key_id == pin.account_key_id {
+                    crate::ports::remove_browser_mappings(&tx,&r.subject_id)?;
+                }
             } else {
                 tx.execute("DELETE FROM peer_certificates WHERE device_id=?1",[&r.subject_id])?;
             }
@@ -499,7 +547,7 @@ pub(crate) async fn revocations_endpoint(
     response(
         input
             .map_err(|_| anyhow::anyhow!("Invalid revocations"))
-            .and_then(|Json(r)| apply_revocations(&state, &r.revocations)),
+            .and_then(|Json(r)| apply_revocation_values(&state, &r.revocations)),
     )
 }
 pub(crate) async fn trust_endpoint(
@@ -518,6 +566,7 @@ fn local_connection(path: &Path) -> Result<Connection> {
     if !path.exists() {
         drop(Database::open(path)?);
     }
+    pockymoe_runtime::db::secure_database_file(path)?;
     let c = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
     c.busy_timeout(std::time::Duration::from_secs(5))?;
     pockymoe_runtime::db::ensure_device_owner_trust(&c)?;
@@ -565,6 +614,7 @@ pub fn bind_account(
         );
     }
     tx.execute("UPDATE device_owner_trust SET account_key_id=?1,account_public_key=?2,enroll_secret=?3,bound_at=COALESCE(bound_at,?4),web_origin=COALESCE(?5,web_origin),strict=1 WHERE singleton=1",params![id,account,B64.decode(enroll)?,now(),origin])?;
+    pockymoe_runtime::publications::delete_keyless_publications(&tx)?;
     tx.commit()?;
     Ok(json!({"bound":true,"strict":true,"accountKeyId":id}))
 }
@@ -585,7 +635,19 @@ pub fn binding_status(database: &Path) -> Result<Value> {
         [],
         |r| r.get::<_, bool>(0),
     )?;
-    Ok(json!({"bound":pin.is_some(),"strict":strict,"accountKeyId":pin.map(|p|p.account_key_id)}))
+    let mut status =
+        json!({"bound":pin.is_some(),"strict":strict,"accountKeyId":pin.map(|p|p.account_key_id)});
+    let relay: Option<String> = c
+        .query_row(
+            "SELECT value FROM kv WHERE key='relayTrustStatus'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if let Some(relay) = relay {
+        status["relayStatus"] = serde_json::from_str(&relay)?;
+    }
+    Ok(status)
 }
 pub fn reset_account_trust(database: &Path) -> Result<()> {
     let c = local_connection(database)?;
@@ -612,7 +674,7 @@ pub fn reset_account_trust(database: &Path) -> Result<()> {
             [serde_json::to_string(&mappings)?],
         )?;
     }
-    tx.execute_batch("DELETE FROM browser_registrations; DELETE FROM account_revocations; DELETE FROM device_certificates; DELETE FROM device_grants; DELETE FROM peer_certificates; DELETE FROM owner_port_mappings; UPDATE device_owner_trust SET account_key_id=NULL,account_public_key=NULL,enroll_secret=NULL,bound_at=NULL,web_origin=NULL,strict=0 WHERE singleton=1;")?;
+    tx.execute_batch("DELETE FROM preview_leases WHERE browser_id IS NOT NULL; DELETE FROM browser_registrations; DELETE FROM device_certificates; DELETE FROM device_grants; DELETE FROM peer_certificates; DELETE FROM owner_port_mappings; DELETE FROM kv WHERE key='relayTrustStatus'; UPDATE device_owner_trust SET account_key_id=NULL,account_public_key=NULL,enroll_secret=NULL,bound_at=NULL,web_origin=NULL,strict=0 WHERE singleton=1;")?;
     tx.commit()?;
     Ok(())
 }
