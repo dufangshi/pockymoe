@@ -1,4 +1,6 @@
 mod account;
+#[cfg(test)]
+mod account_tests;
 mod admin;
 mod apns;
 mod auth_api;
