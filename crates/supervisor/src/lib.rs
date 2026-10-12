@@ -73,7 +73,7 @@ pub async fn serve(state: Arc<Supervisor>) -> Result<()> {
     Ok(())
 }
 
-/// Read the public fingerprint without booting a runtime or opening a network listener.
+/// Load or create the identity's public fingerprint without booting a runtime or listener.
 pub fn relay_device_fingerprint(database: &std::path::Path) -> anyhow::Result<String> {
     secure_transport::fingerprint(database)
 }
