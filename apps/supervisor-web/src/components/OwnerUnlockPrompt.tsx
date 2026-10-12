@@ -13,6 +13,7 @@ import {
 } from '../lib/relayTransport';
 import { useDialogLifecycle } from './useDialogLifecycle';
 import { securityError } from '../lib/relaySecurity';
+import { notifyOwnerUnlocked } from '../lib/ownerUnlockRecovery';
 
 export function OwnerUnlockButton({
   onUnlocked,
@@ -154,11 +155,11 @@ export function OwnerUnlockPrompt() {
               await probeDeviceEncryption(id);
               if (getTransportStatus(id)?.state !== 'encrypted')
                 throw new Error(translate('auth.ownerTrustFailed'));
+              notifyOwnerUnlocked([id]);
             }
             setDevices([]);
             setCredentialId(undefined);
             setRevoked(false);
-            window.dispatchEvent(new Event('remote-codex-owner-unlocked'));
           }}
         />
         <div className="flex flex-wrap items-center gap-4 text-sm">

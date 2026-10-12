@@ -20,7 +20,7 @@ describe('device trust errors', () => {
   });
   it('preserves session revocation instead of presenting a generic trust failure', async () => {
     vi.mocked(exchange).mockResolvedValue({ response: Response.json({ code: 'owner_session_revoked' }, { status: 401 }) });
-    await expect(deviceTrustRequest('d')).rejects.toMatchObject({
+    await expect(deviceTrustRequest('d', 'sessions/s', 'DELETE')).rejects.toMatchObject({
       code: 'owner_session_revoked', message: translate('auth.owner_session_revoked'),
     });
   });

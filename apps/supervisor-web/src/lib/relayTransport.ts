@@ -1,5 +1,6 @@
 import { getLocale, translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import workerUrl from './relayServiceWorker.ts?worker&url';
+import { readAfterOwnerUnlock } from './ownerUnlockRecovery';
 import {
   exchange,
   deviceRoute,
@@ -112,13 +113,16 @@ export async function ensureRelayWorker() {
   }
 }
 export async function encryptedBrowserFetch(url: string, init: RequestInit, threadScope?: string) {
-  return (
-    await exchange(
+  const deviceId = deviceRoute(new URL(url, window.location.href))?.deviceId;
+  const read = () => exchange(
       new Request(new URL(url, window.location.href), init),
-      threadScope ?? scopeFromPage(window.location.href, deviceRoute(new URL(url, window.location.href))?.deviceId),
+      threadScope ?? scopeFromPage(window.location.href, deviceId),
       async () => { await ensureRelayWorker(); },
-    )
-  ).response;
+    );
+  const method = (init.method ?? 'GET').toUpperCase();
+  return (await (deviceId && ['GET', 'HEAD'].includes(method)
+    ? readAfterOwnerUnlock(deviceId, read, init.signal ?? undefined)
+    : read())).response;
 }
 
 // Preserve the WebSocket-shaped interface used by the thread and terminal UI.
@@ -130,6 +134,7 @@ class EncryptedRelaySocket extends EventTarget {
   private cipher?: SocketCipher;
   private incoming = Promise.resolve();
   private outgoing = Promise.resolve();
+  private setupAbort = new AbortController();
   constructor(url: string) {
     super();
     this.url = url;
@@ -151,11 +156,16 @@ class EncryptedRelaySocket extends EventTarget {
           body: '{}',
         },
       );
-      const result = await exchange(
-        request,
-        threadId ?? undefined,
-        async () => { await ensureRelayWorker(); },
-        true,
+      // Channel creation is connection setup, not an application mutation.
+      const result = await readAfterOwnerUnlock(
+        decodeURIComponent(deviceId),
+        () => exchange(
+          request.clone(),
+          threadId ?? undefined,
+          async () => { await ensureRelayWorker(); },
+          true,
+        ),
+        this.setupAbort.signal,
       );
       if (result.sendKey && result.receiveKey) {
         if (!result.response.ok)
@@ -226,6 +236,7 @@ class EncryptedRelaySocket extends EventTarget {
       .catch(() => this.fail(translate("workbench.eventSendFailed")));
   }
   close(code = 1000, reason = '') {
+    this.setupAbort.abort();
     if (this.readyState === WebSocket.CLOSED) return;
     this.readyState = WebSocket.CLOSING;
     if (this.socket) this.socket.close(code, reason);

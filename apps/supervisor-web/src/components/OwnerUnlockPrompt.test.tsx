@@ -68,6 +68,8 @@ describe('owner unlock prompt', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
   });
   it('opens on strict/session-required signals, prepares without WebAuthn and invokes the assertion only on click', async () => {
+    const unlocked = vi.fn();
+    window.addEventListener('remote-codex-owner-unlocked', unlocked);
     render(
       <MemoryRouter>
         <OwnerUnlockPrompt />
@@ -86,6 +88,10 @@ describe('owner unlock prompt', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(probeDeviceEncryption).toHaveBeenCalledWith('a');
     expect(probeDeviceEncryption).toHaveBeenCalledWith('b');
+    expect(unlocked.mock.calls.map(([event]) => event.detail)).toEqual([
+      { deviceIds: ['a'] }, { deviceIds: ['b'] },
+    ]);
+    window.removeEventListener('remote-codex-owner-unlocked', unlocked);
   });
   it('keeps a local verification mismatch blocking and never retries the device', async () => {
     start.mockRejectedValue(

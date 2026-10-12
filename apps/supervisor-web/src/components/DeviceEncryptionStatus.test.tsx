@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { DeviceEncryptionStatus } from './DeviceEncryptionStatus';
 import { probeDeviceEncryption } from '../lib/relayTransport';
+import { notifyOwnerUnlocked } from '../lib/ownerUnlockRecovery';
 
 vi.mock('../lib/relayTransport', () => ({
   getTransportStatus: () => undefined,
@@ -18,6 +19,19 @@ function report(state: string, fingerprint?: string) {
 }
 
 describe('combined device connection indicator', () => {
+  it('resumes a detached connection only after its own device unlocks and leaves loaded connections alone', () => {
+    const detached = vi.fn(), loaded = vi.fn();
+    render(<>
+      <DeviceEncryptionStatus deviceId="device-1" connection={{ loaded: false, busy: false, state: 'offline', label: 'Offline', onConnect: detached }} />
+      <DeviceEncryptionStatus deviceId="device-1" connection={{ loaded: true, busy: false, state: 'connected', label: 'Connected', onConnect: loaded }} />
+    </>);
+    act(() => notifyOwnerUnlocked(['other-device']));
+    expect(detached).not.toHaveBeenCalled();
+    expect(loaded).not.toHaveBeenCalled();
+    act(() => notifyOwnerUnlocked(['device-1']));
+    expect(detached).toHaveBeenCalledTimes(1);
+    expect(loaded).not.toHaveBeenCalled();
+  });
   it('hides the healthy thread indicator but retains identity-change warnings', () => {
     render(<DeviceEncryptionStatus hideHealthy deviceId="device-1" connection={{
       loaded: true, busy: false, state: 'connected', label: 'Connected', onConnect: vi.fn(),
