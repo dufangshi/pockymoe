@@ -657,7 +657,7 @@ impl Supervisor {
                 "INSERT INTO kv(key,value) VALUES(?1,?2)",
                 params![
                     format!("cli:wake:{caller}:{id}"),
-                    json!({"members":ids,"createdAt":now_rfc3339()}).to_string()
+                    json!({"members":ids,"createdAt":now_rfc3339(),"taskTurnId":caller_thread.active_turn_id.as_deref().map(|turn| crate::service::peer_work::root_turn(c, caller, turn)).transpose()?}).to_string()
                 ],
             )?;
             Ok(())
@@ -677,6 +677,7 @@ impl Supervisor {
         })?;
         for (key, raw) in wakes {
             let caller = key.split(':').nth(2).unwrap_or_default().to_string();
+            let registered: Value = serde_json::from_str(&raw)?;
             let members: Vec<String> = serde_json::from_str::<Value>(&raw)
                 .ok()
                 .and_then(|v| serde_json::from_value(v["members"].clone()).ok())
@@ -724,7 +725,21 @@ impl Supervisor {
                     .optional()?
                     .is_some();
                 if exists {
-                    enqueue(&tx, &Uuid::new_v4().to_string(), &caller, &text, None, &now)?;
+                    let pending = Uuid::new_v4().to_string();
+                    enqueue(&tx, &pending, &caller, &text, None, &now)?;
+                    if let Some(task) = registered["taskTurnId"].as_str() {
+                        if let Some(context) =
+                            crate::service::peer_work::context(&tx, &caller, task, &text)?
+                        {
+                            tx.execute(
+                                "INSERT INTO kv(key,value) VALUES(?1,?2)",
+                                params![
+                                    format!("cli:peer-work:pending:{pending}"),
+                                    context.to_string()
+                                ],
+                            )?;
+                        }
+                    }
                 }
                 tx.execute("DELETE FROM kv WHERE key=?1", [&key])?;
                 tx.commit()?;

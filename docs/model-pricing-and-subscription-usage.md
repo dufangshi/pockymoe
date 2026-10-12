@@ -46,6 +46,9 @@ updates when those logs are still available. See
 The small composer badge shows actual available windows, with remaining allowance,
 reset time and observation time on hover/tap. Opening a thread reads a shared
 device/harness cache; successful readings refresh about every five minutes.
+In Plum Pocket, the meter sits inside the composer's bottom seam. Its opaque
+detail panel opens above the composer in the browser's top layer, retaining the
+current theme; tap outside or press Escape to dismiss it.
 Switching between parent/child threads, turn completion and WebSocket reconnects
 do not bypass this cache. The Supervisor also shares a five-minute provider cache
 across viewers and serializes refreshes to avoid concurrent upstream requests.

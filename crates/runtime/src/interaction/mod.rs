@@ -568,6 +568,13 @@ pub(crate) fn bind_notification(conn: &Connection, pending_id: &str, turn_id: &s
     conn.execute(
         "UPDATE kv SET key=?1 WHERE key=?2",
         params![
+            format!("cli:peer-work:turn:{turn_id}"),
+            format!("cli:peer-work:pending:{pending_id}")
+        ],
+    )?;
+    conn.execute(
+        "UPDATE kv SET key=?1 WHERE key=?2",
+        params![
             format!("cli:notify:turn:{turn_id}:{pending_id}"),
             format!("cli:notify:pending:{pending_id}")
         ],
