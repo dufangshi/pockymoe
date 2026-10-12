@@ -2383,6 +2383,7 @@ dependencies = [
  "pockymoe-relay",
  "pockymoe-runtime",
  "pockymoe-supervisor",
+ "qrcode",
  "reqwest",
  "serde_json",
  "tokio",
@@ -2501,6 +2502,8 @@ dependencies = [
  "rand 0.8.8",
  "rand 0.9.5",
  "reqwest",
+ "rsa",
+ "rusqlite",
  "serde",
  "serde_json",
  "sha2",
@@ -2618,6 +2621,12 @@ name = "pxfm"
 version = "0.1.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d55d956fa96f5ec02be2e13af0e20391a5aa83d6a074e3ad368959d0fab299ea"
+
+[[package]]
+name = "qrcode"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d68782463e408eb1e668cf6152704bd856c78c5b6417adaee3203d8f4c1fc9ec"
 
 [[package]]
 name = "qrcodegen"

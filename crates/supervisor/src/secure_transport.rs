@@ -132,6 +132,14 @@ pub(crate) fn fingerprint(database: &std::path::Path) -> Result<String> {
     )))
 }
 impl Transport {
+    pub fn identity_key(&self) -> String {
+        B64.encode(
+            self.identity
+                .verifying_key()
+                .to_encoded_point(false)
+                .as_bytes(),
+        )
+    }
     pub fn has_key(&self, id: &str) -> bool {
         self.keys
             .lock()
@@ -265,6 +273,8 @@ impl Transport {
             client_key,
             server_key,
             aad,
+            sealed: ciphertext,
+            principal: None,
         })
     }
     pub fn remove_session(&self, id: &str) {
@@ -298,6 +308,7 @@ impl Transport {
                 gzip: request.gzip,
                 send_sequence: Mutex::new(0),
                 receive_sequence: Mutex::new(0),
+                principal: request.principal.clone(),
             }),
         );
         Ok(json!({"channelId":id,"expiresAt":expires}))
@@ -310,7 +321,9 @@ pub(crate) struct OpenedRequest {
     response_key: [u8; 32],
     client_key: [u8; 32],
     server_key: [u8; 32],
-    aad: String,
+    pub aad: String,
+    pub sealed: Vec<u8>,
+    pub principal: Option<crate::owner_trust::OwnerPrincipal>,
 }
 impl OpenedRequest {
     pub fn response(&self, response: Value) -> Result<Value> {
@@ -386,6 +399,7 @@ pub(crate) struct Session {
     receive_sequence: Mutex<u64>,
     /// Large server events are gzipped; negotiated when the session was created.
     gzip: bool,
+    pub principal: Option<crate::owner_trust::OwnerPrincipal>,
 }
 fn ws_aad(id: &str, seq: u64, message: &Value) -> String {
     ws_aad_for("rcd-ws-v1", id, seq, message)
@@ -406,6 +420,9 @@ fn nonce(sequence: u64) -> [u8; 12] {
     iv
 }
 impl Session {
+    pub fn alive(&self) -> bool {
+        self.expires > now()
+    }
     pub fn id(&self) -> &str {
         &self.id
     }
@@ -591,6 +608,7 @@ mod tests {
         let other = random();
         let server = Session {
             id: "channel".into(),
+            principal: None,
             expires: now() + 60_000,
             receive_key: key,
             send_key: other,
@@ -600,6 +618,7 @@ mod tests {
         };
         let client = Session {
             id: "channel".into(),
+            principal: None,
             expires: now() + 60_000,
             receive_key: other,
             send_key: key,
@@ -787,6 +806,7 @@ mod tests {
         // A client view of the same channel: it opens what the server seals.
         let client = Session {
             id: server.id.clone(),
+            principal: None,
             expires: now() + 60_000,
             receive_key: server.send_key,
             send_key: server.receive_key,

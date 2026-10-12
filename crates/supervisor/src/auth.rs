@@ -83,6 +83,68 @@ pub async fn require_auth(
     mut request: Request,
     next: Next,
 ) -> Response {
+    let path = request.uri().path();
+    let bootstrap = matches!(path, "/api/transport/pair" | "/api/transport/owner-session");
+    let owner_endpoint = path == "/api/transport/trust"
+        || path == "/api/transport/credentials"
+        || path.starts_with("/api/transport/credentials/")
+        || path.starts_with("/api/transport/sessions/");
+    if bootstrap || owner_endpoint {
+        if request
+            .extensions()
+            .get::<crate::owner_trust::EncryptedOwnerRequest>()
+            .is_none()
+        {
+            return (
+                axum::http::StatusCode::FORBIDDEN,
+                Json(serde_json::json!({"code":"device_strict_mode"})),
+            )
+                .into_response();
+        }
+        if owner_endpoint
+            && request
+                .extensions()
+                .get::<crate::owner_trust::OwnerPrincipal>()
+                .is_none_or(|p| !p.valid(&state))
+        {
+            return (
+                axum::http::StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"code":"owner_session_required"})),
+            )
+                .into_response();
+        }
+    }
+    if request.extensions().get::<TrustedRelayForward>().is_some()
+        && crate::owner_trust::strict(&state)
+    {
+        let public = request.method() == axum::http::Method::GET
+            && (path == "/healthz"
+                || path
+                    .strip_prefix("/api/publications/")
+                    .is_some_and(|token| !token.is_empty() && !token.contains('/')));
+        let bootstrap = bootstrap && request.method() == axum::http::Method::POST;
+        if path.starts_with("/api/peer/") {
+            return (
+                axum::http::StatusCode::FORBIDDEN,
+                Json(serde_json::json!({"code":"device_strict_mode"})),
+            )
+                .into_response();
+        }
+        if !public
+            && !bootstrap
+            && request
+                .extensions()
+                .get::<crate::owner_trust::OwnerPrincipal>()
+                .is_none_or(|p| !p.valid(&state))
+        {
+            let encrypted = request
+                .extensions()
+                .get::<crate::owner_trust::EncryptedOwnerRequest>()
+                .is_some();
+            return (if encrypted { axum::http::StatusCode::UNAUTHORIZED } else { axum::http::StatusCode::FORBIDDEN },
+                Json(serde_json::json!({"code":if encrypted {"owner_session_required"} else {"device_strict_mode"}}))).into_response();
+        }
+    }
     let peer_path = request.uri().path().starts_with("/api/peer/");
     let peer = request.extensions().get::<PeerCaller>().is_some();
     if peer || peer_path {

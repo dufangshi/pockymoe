@@ -8,6 +8,7 @@ mod http;
 mod interaction;
 mod linked_files;
 mod management;
+mod owner_trust;
 mod preview_cli;
 // Device-to-device messaging and files (docs/cross-device-peer.zh.md).
 mod peer_api;
@@ -29,6 +30,7 @@ use pockymoe_runtime::Supervisor;
 use tokio::net::TcpListener;
 
 pub use http::router;
+pub use owner_trust::{create_pairing_offer, reset_owner_trust};
 pub use tunnel::run_relay_tunnel;
 
 pub async fn serve(state: Arc<Supervisor>) -> Result<()> {

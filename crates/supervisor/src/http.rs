@@ -61,6 +61,30 @@ pub fn router(state: AppState) -> Router {
     state.start_interaction_worker();
     crate::peer_send::start_outbox_worker(&state);
     let router = Router::new()
+        .route(
+            "/api/transport/pair",
+            post(crate::owner_trust::pair_endpoint),
+        )
+        .route(
+            "/api/transport/owner-session",
+            post(crate::owner_trust::session_endpoint),
+        )
+        .route(
+            "/api/transport/trust",
+            get(crate::owner_trust::trust_endpoint),
+        )
+        .route(
+            "/api/transport/credentials",
+            post(crate::owner_trust::add_endpoint),
+        )
+        .route(
+            "/api/transport/credentials/{credentialId}",
+            delete(crate::owner_trust::remove_endpoint),
+        )
+        .route(
+            "/api/transport/sessions/{sessionId}",
+            delete(crate::owner_trust::revoke_endpoint),
+        )
         .route("/api/cli", post(crate::interaction::command))
         // Other devices of the same owner, through the relay (docs/cross-device-peer.zh.md).
         .route("/api/peer/cli", post(crate::peer_api::cli))
@@ -805,6 +829,7 @@ async fn thread_capabilities(
 async fn thread_harness_action(
     Path(id): Path<String>,
     State(state): State<AppState>,
+    owner: Option<axum::Extension<crate::owner_trust::OwnerPrincipal>>,
     Json(action): Json<Value>,
 ) -> Result<Json<Value>, ApiErr> {
     let console = action["kind"] == "console";
@@ -817,9 +842,10 @@ async fn thread_harness_action(
         .as_u64()
         .and_then(|port| u16::try_from(port).ok());
     if let (true, true, Some(port)) = (console, state.config.relay_server_url.is_some(), port) {
-        let mapping = crate::ports::dsh_console_mapping(&state, &id, port)
-            .await
-            .map_err(map_err)?;
+        let mapping =
+            crate::ports::dsh_console_mapping(&state, &id, port, owner.as_ref().map(|p| &p.0))
+                .await
+                .map_err(map_err)?;
         result["console"]["mappingId"] = json!(mapping.id);
     }
     Ok(Json(result))

@@ -166,6 +166,14 @@ const RUNTIME_MIGRATIONS: &[Migration] = &[
             Ok(())
         },
     },
+    Migration {
+        version: 14,
+        name: "device_owner_trust",
+        apply: |conn| {
+            conn.execute_batch(include_str!("device_owner_trust.sql"))?;
+            Ok(())
+        },
+    },
 ];
 
 const NODE_0030_MIGRATIONS: &[&str] = &[
