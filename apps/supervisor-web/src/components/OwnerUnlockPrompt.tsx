@@ -87,6 +87,7 @@ export function OwnerUnlockPrompt() {
   const [devices, setDevices] = useState<string[]>([]);
   const [credentialId, setCredentialId] = useState<string | string[]>();
   const [dismissed, setDismissed] = useState(false);
+  const [revoked, setRevoked] = useState(false);
   const dialog = useRef<HTMLElement>(null);
   useDialogLifecycle({
     containerRef: dialog,
@@ -99,6 +100,10 @@ export function OwnerUnlockPrompt() {
       if (event.type === 'remote-codex-owner-unlock-request')
         setDismissed(false);
       if (status.state === 'unlock-required') {
+        if (status.unlockReason === 'owner_session_revoked') {
+          setRevoked(true);
+          setDismissed(false);
+        }
         if (status.ownerCredentialId) setCredentialId(status.ownerCredentialId);
         setDevices((current) =>
           current.includes(status.deviceId)
@@ -133,7 +138,9 @@ export function OwnerUnlockPrompt() {
         <h2 id="owner-unlock-title" className="text-lg font-semibold">
           {translate('auth.ownerUnlockTitle')}
         </h2>
-        <p>{translate('auth.ownerUnlockHelp')}</p>
+        <p>
+          {translate(revoked ? 'auth.owner_session_revoked' : 'auth.ownerUnlockHelp')}
+        </p>
         <OwnerUnlockButton
           {...(credentialId ? { credentialId } : {})}
           onUnlocked={async () => {
@@ -150,6 +157,7 @@ export function OwnerUnlockPrompt() {
             }
             setDevices([]);
             setCredentialId(undefined);
+            setRevoked(false);
             window.dispatchEvent(new Event('remote-codex-owner-unlocked'));
           }}
         />

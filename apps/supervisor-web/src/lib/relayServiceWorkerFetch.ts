@@ -34,7 +34,10 @@ export async function relayWorkerFetch(request: Request, clientUrl?: string) {
             : translate('workbench.encryptedConnectionFailed'),
       }),
       {
-        status: code === 'owner_session_required' ? 401 : 502,
+        status:
+          code === 'owner_session_required' || code === 'owner_session_revoked'
+            ? 401
+            : 502,
         headers: {
           'content-type': 'application/json',
           'cache-control': 'no-store',

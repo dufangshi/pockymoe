@@ -42,3 +42,34 @@ export async function trustStore<T>(
     db.close();
   }
 }
+
+// Delete the key and its registration marks in one transaction. An old device
+// response must not discard a newer session unlocked in another tab.
+export async function clearStoredOwnerSession(sessionId?: string) {
+  const db = await database();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction('trust', 'readwrite');
+      const store = tx.objectStore('trust');
+      const session = store.get('session');
+      session.onsuccess = () => {
+        if (!sessionId || session.result?.sessionId === sessionId)
+          store.delete('session');
+      };
+      const prefix = sessionId ? `registration:${sessionId}:` : 'registration:';
+      const request = store.openCursor();
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (!cursor) return;
+        if (typeof cursor.key === 'string' && cursor.key.startsWith(prefix))
+          cursor.delete();
+        cursor.continue();
+      };
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error);
+    });
+  } finally {
+    db.close();
+  }
+}

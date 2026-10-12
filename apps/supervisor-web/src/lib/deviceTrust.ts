@@ -41,6 +41,11 @@ export async function deviceTrustRequest<T>(
     if (data?.code === 'last_owner_credential')
       throw new OwnerTrustError('ownerLastCredential');
     if (
+      data?.code === 'owner_origin_mismatch' ||
+      data?.code === 'owner_session_revoked'
+    )
+      throw new OwnerTrustError(data.code);
+    if (
       data?.code === 'owner_session_required' ||
       data?.code === 'device_strict_mode'
     )

@@ -7,6 +7,7 @@ import {
 } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter } from 'react-router-dom';
+import { setLocale, translate } from '@pockymoe/thread-ui/i18n';
 import { OwnerUnlockButton, OwnerUnlockPrompt } from './OwnerUnlockPrompt';
 import { prepareOwnerUnlock } from '../lib/ownerSession';
 import {
@@ -26,6 +27,7 @@ vi.mock('../lib/relaySecurity', () => ({
 }));
 const start = vi.fn();
 beforeEach(() => {
+  setLocale('en');
   vi.clearAllMocks();
   start.mockReset().mockResolvedValue({});
   vi.mocked(prepareOwnerUnlock).mockResolvedValue(start);
@@ -35,16 +37,36 @@ beforeEach(() => {
     paired: true,
   });
 });
-function report(deviceId = 'a') {
+function report(deviceId = 'a', revoked = false) {
   act(() => {
     window.dispatchEvent(
       new CustomEvent('remote-codex-transport', {
-        detail: { deviceId, state: 'unlock-required' },
+        detail: { deviceId, state: 'unlock-required', ...(revoked ? { unlockReason: 'owner_session_revoked' } : {}) },
       }),
     );
   });
 }
 describe('owner unlock prompt', () => {
+  it.each(['en', 'zh-CN'] as const)('shows the distinct revocation message in %s and requires a fresh click even after dismissal', async (locale) => {
+    setLocale(locale);
+    render(<MemoryRouter><OwnerUnlockPrompt /></MemoryRouter>);
+    report();
+    expect(screen.getByText(translate('auth.ownerUnlockHelp'))).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: translate('auth.ownerLater') }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    report('a', true);
+    expect(screen.getByText(translate('auth.owner_session_revoked'))).toBeVisible();
+    expect(screen.queryByText(translate('auth.ownerUnlockHelp'))).toBeNull();
+    // Subsequent requests can report "required" after the revoked key is removed.
+    report('b');
+    expect(screen.getByText(translate('auth.owner_session_revoked'))).toBeVisible();
+    const button = await screen.findByRole('button', { name: translate('auth.ownerUnlock') });
+    await waitFor(() => expect(button).toBeEnabled());
+    expect(start).not.toHaveBeenCalled();
+    fireEvent.click(button);
+    expect(start).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  });
   it('opens on strict/session-required signals, prepares without WebAuthn and invokes the assertion only on click', async () => {
     render(
       <MemoryRouter>

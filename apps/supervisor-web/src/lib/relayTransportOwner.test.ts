@@ -24,6 +24,13 @@ const state = vi.hoisted(() => ({
   certificate: vi.fn(),
 }));
 vi.mock('./ownerTrustStore', () => ({
+  clearStoredOwnerSession: async (sessionId?: string) => {
+    const current = state.store.get('session') as { sessionId: string } | undefined;
+    if (!sessionId || current?.sessionId === sessionId) state.store.delete('session');
+    const prefix = sessionId ? `registration:${sessionId}:` : 'registration:';
+    for (const key of state.store.keys())
+      if (key.startsWith(prefix)) state.store.delete(key);
+  },
   trustStore: async (key: string, ...write: unknown[]) => {
     if (write.length) {
       if (write[0] === null) state.store.delete(key);
@@ -111,6 +118,8 @@ let wires: {
 }[];
 let rejectRemaining = Infinity;
 let ownerError: 'plain' | 'encrypted' | undefined;
+let registrationRevoked = false;
+let applicationRevoked = false;
 function packet(body: string, status = 200, streamNext?: string) {
   const prefix = utf8(
     JSON.stringify({
@@ -132,6 +141,8 @@ beforeEach(async () => {
   state.certificate.mockReset();
   wires = [];
   ownerError = undefined;
+  registrationRevoked = false;
+  applicationRevoked = false;
   rejectRemaining = Infinity;
   state.certificate.mockResolvedValue(vectors.deviceCertificate.certificate);
   transport.clearTransportKeyCache(device);
@@ -228,7 +239,8 @@ beforeEach(async () => {
         false,
         ['encrypt'],
       );
-      const body = target.pathname.endsWith('/owner-session')
+      const revoked = target.pathname.endsWith('/owner-session') ? registrationRevoked : applicationRevoked;
+      const body = revoked ? '{"code":"owner_session_revoked"}' : target.pathname.endsWith('/owner-session')
         ? JSON.stringify({
             sessionId: vectors.session.sessionId,
             expiresAt: (await sessionManager.currentOwnerSession())!
@@ -239,7 +251,7 @@ beforeEach(async () => {
           : '{"ok":true}';
       const clear = packet(
         body,
-        rejected ? 401 : 200,
+        rejected || revoked ? 401 : 200,
         target.pathname.endsWith('/files/large')
           ? '/api/transport/stream/continuation'
           : undefined,
@@ -385,6 +397,78 @@ describe('signed encrypted requests in main thread and service worker', () => {
     expect(wires).toHaveLength(1);
     expect(wires[0]!.headers.has('x-rcd-session')).toBe(false);
     expect(wires[0]!.headers.has('x-rcd-signature')).toBe(false);
+  });
+  it.each(['main', 'worker'] as const)('discards a tombstoned registration in the %s path and never dispatches the application request', async (path) => {
+    const owner = (await sessionManager.currentOwnerSession())!;
+    await sessionManager.markSessionRegistered(owner, 'other-device');
+    registrationRevoked = true;
+    const report = vi.fn();
+    transport.setTransportReporter(report);
+    if (path === 'main') {
+      await expect(transport.exchange(new Request(url('version')))).rejects.toMatchObject({ code: 'owner_session_revoked' });
+    } else {
+      const response = await relayWorkerFetch(new Request(url('version')));
+      expect(response.status).toBe(401);
+      expect(await response.json()).toMatchObject({ code: 'owner_session_revoked' });
+    }
+    expect(wires).toHaveLength(1);
+    expect(wires[0]!.path.endsWith('/owner-session')).toBe(true);
+    expect(await sessionManager.currentOwnerSession()).toBeUndefined();
+    expect(await sessionManager.isSessionRegistered(owner, 'other-device')).toBe(false);
+    expect(report).toHaveBeenLastCalledWith(expect.objectContaining({
+      state: 'unlock-required', unlockReason: 'owner_session_revoked',
+    }));
+    const locked = await relayWorkerFetch(new Request(url('version')));
+    expect(locked.status).toBe(401);
+    expect(wires).toHaveLength(1);
+  });
+  it('stops unknown-session recovery when registration is revoked, clears all marks and never retries the mutation', async () => {
+    const owner = (await sessionManager.currentOwnerSession())!;
+    await sessionManager.markSessionRegistered(owner, device);
+    await sessionManager.markSessionRegistered(owner, 'other-device');
+    ownerError = 'encrypted';
+    registrationRevoked = true;
+    const report = vi.fn();
+    transport.setTransportReporter(report);
+    const response = await relayWorkerFetch(new Request(url('threads/start'), { method: 'POST', body: '{}' }));
+    expect(response.status).toBe(401);
+    expect(await response.json()).toMatchObject({ code: 'owner_session_revoked' });
+    expect(wires).toHaveLength(2);
+    expect(wires[1]!.path.endsWith('/owner-session')).toBe(true);
+    expect(await sessionManager.currentOwnerSession()).toBeUndefined();
+    expect(await sessionManager.isSessionRegistered(owner, device)).toBe(false);
+    expect(await sessionManager.isSessionRegistered(owner, 'other-device')).toBe(false);
+    expect(report).toHaveBeenLastCalledWith(expect.objectContaining({ unlockReason: 'owner_session_revoked' }));
+  });
+  it('also clears a session when a signed request receives an encrypted revocation, without retrying it', async () => {
+    const owner = (await sessionManager.currentOwnerSession())!;
+    await sessionManager.markSessionRegistered(owner, device);
+    applicationRevoked = true;
+    const response = await relayWorkerFetch(new Request(url('threads/start'), { method: 'POST', body: '{}' }));
+    expect(response.status).toBe(401);
+    expect(await response.json()).toMatchObject({ code: 'owner_session_revoked' });
+    expect(wires).toHaveLength(1);
+    expect(await sessionManager.currentOwnerSession()).toBeUndefined();
+    expect(await sessionManager.isSessionRegistered(owner, device)).toBe(false);
+  });
+  it('does not let a plaintext relay error discard the browser key', async () => {
+    const owner = (await sessionManager.currentOwnerSession())!;
+    await sessionManager.markSessionRegistered(owner, device);
+    const server = state.fetch.getMockImplementation()!;
+    state.fetch.mockImplementation((input, init) => String(input).includes('/transport/key?')
+      ? server(input, init)
+      : Response.json({ code: 'owner_session_revoked' }, { status: 401 }));
+    await relayWorkerFetch(new Request(url('version')));
+    expect((await sessionManager.currentOwnerSession())?.sessionId).toBe(owner.sessionId);
+    expect(await sessionManager.isSessionRegistered(owner, device)).toBe(true);
+  });
+  it('does not let an unpaired device revoke the session used for paired devices', async () => {
+    state.certificate.mockResolvedValue(null);
+    applicationRevoked = true;
+    const owner = (await sessionManager.currentOwnerSession())!;
+    const response = await relayWorkerFetch(new Request(url('version')));
+    expect(response.status).toBe(401);
+    expect((await sessionManager.currentOwnerSession())?.sessionId).toBe(owner.sessionId);
   });
   it('also prompts when a legacy/plaintext response reports strict mode', async () => {
     state.certificate.mockResolvedValue(null);
