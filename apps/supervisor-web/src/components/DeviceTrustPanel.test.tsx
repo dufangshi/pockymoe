@@ -139,7 +139,7 @@ describe('account bound device trust panel', () => {
         ),
       );
       expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
-        expect.stringContaining('--enroll pending-secret --web-origin'),
+        expect.stringContaining("POCKYMOE_ENROLL_SECRET='pending-secret' pockymoe bind --account-key"),
       );
       expect(
         screen.getByText(translate('devices.protectDeviceHelp')),

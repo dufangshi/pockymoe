@@ -17,9 +17,7 @@ export function validateDeviceSetupToken(token: string) {
   return token;
 }
 const shellQuote = (value: string) =>
-  /^[A-Za-z0-9_./:@%+=,~-]+$/.test(printableAscii(value))
-    ? value
-    : `'${value.replace(/'/g, `'\\''`)}'`;
+  `'${printableAscii(value).replace(/'/g, `'\\''`)}'`;
 const powershellQuote = (value: string) =>
   `'${printableAscii(value).replace(/'/g, "''")}'`;
 const powershellEnrollment = (secret: string, command: string) =>

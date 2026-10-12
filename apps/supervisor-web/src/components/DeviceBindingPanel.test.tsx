@@ -28,7 +28,7 @@ it('shows and copies a local command without requesting the offline device', asy
   await waitFor(() =>
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
       expect.stringContaining(
-        'POCKYMOE_ENROLL_SECRET=secret pockymoe bind --account-key public --web-origin',
+        "POCKYMOE_ENROLL_SECRET='secret' pockymoe bind --account-key 'public' --web-origin",
       ),
     ),
   );

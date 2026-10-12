@@ -26,10 +26,10 @@ describe('bound device commands', () => {
       }
       if (platform === 'unix') {
         expect(setup).toContain(
-          '| POCKYMOE_ENROLL_SECRET=enrollment-secret sh -s',
+          "| POCKYMOE_ENROLL_SECRET='enrollment-secret' sh -s",
         );
         expect(bind).toMatch(
-          /^POCKYMOE_ENROLL_SECRET=enrollment-secret pockymoe bind/,
+          /^POCKYMOE_ENROLL_SECRET='enrollment-secret' pockymoe bind/,
         );
       } else {
         expect(setup).toContain(
@@ -51,7 +51,7 @@ describe('bound device commands', () => {
       'https://web.test',
     );
     expect(command).toBe(
-      'curl -fsSL https://web.test/setup.sh | POCKYMOE_ENROLL_SECRET=enrollment-secret sh -s -- --relay https://relay.test --token 0123456789abcdef --port 45679 --web-origin https://web.test --account-key account-public-key',
+      "curl -fsSL 'https://web.test/setup.sh' | POCKYMOE_ENROLL_SECRET='enrollment-secret' sh -s -- --relay 'https://relay.test' --token '0123456789abcdef' --port 45679 --web-origin 'https://web.test' --account-key 'account-public-key'",
     );
   });
   it('passes PowerShell installer parameters on Windows', () => {
@@ -67,7 +67,7 @@ describe('bound device commands', () => {
   });
   it('binds existing devices locally and shell-quotes values', () => {
     expect(deviceBindCommand(binding, 'https://web.test')).toBe(
-      'POCKYMOE_ENROLL_SECRET=enrollment-secret pockymoe bind --account-key account-public-key --web-origin https://web.test',
+      "POCKYMOE_ENROLL_SECRET='enrollment-secret' pockymoe bind --account-key 'account-public-key' --web-origin 'https://web.test'",
     );
     const escaped = deviceBindCommand(
       { ...binding, accountPublicKey: "key'with quote" },
