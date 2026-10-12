@@ -308,13 +308,14 @@
    the warning colours and swap only the healthy sky for mustard. */
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell .composer-model-control .thread-context-progress-fill[style*='125, 211, 252'] { background-color: var(--theme-accent-solid) !important; }
 
-/* ── Usage meter: a small tag sewn onto the bottom seam ───────────────────── */
+/* Usage meter: quiet markings inside the bottom seam, on the same felt. */
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell [data-composer-layout] .thread-graph-composer-shell:has(.thread-composer-usage-tag) { padding-bottom: 18px; background: var(--pc-felt); }
 
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-composer-usage-tag {
   position: absolute;
   z-index: 2;
   right: 18px;
-  bottom: -7px;
+  bottom: 4px;
   display: flex;
   height: 13px;
   pointer-events: none;
@@ -325,8 +326,8 @@
   height: 13px;
   gap: 6px;
   padding: 0 6px;
-  border: 1px solid var(--pc-edge);
-  border-radius: 999px;
+  border: 0;
+  border-radius: 0;
   background: var(--pc-felt);
   color: var(--theme-fg-muted);
   font-size: 9px;
@@ -336,16 +337,17 @@
   pointer-events: auto;
 }
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-composer-usage-tag .thread-subscription-usage:hover { color: var(--theme-fg); }
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-composer-usage-tag .thread-subscription-usage:focus-visible { outline: 2px solid var(--pc-focus); outline-offset: 1px; }
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-composer-usage-tag .thread-subscription-usage:focus-visible { outline: 1.5px solid var(--pc-focus) !important; outline-offset: 2px; border-radius: 3px; }
 :root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-composer-usage-tag [data-subscription-window-track] { width: 16px; height: 3px; background: color-mix(in srgb, var(--pc-key-lip) 85%, transparent); }
-:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-composer-usage-tag [role='tooltip'] {
+:root[data-theme-preset='plum-pocket'] .thread-ui-shell .thread-subscription-usage-details {
+  --subscription-details-bg: var(--pc-felt);
   border-color: var(--pc-edge);
   border-radius: 10px;
   background: var(--pc-felt);
   color: var(--theme-fg);
   box-shadow: var(--pc-menu-shadow);
   font-size: 10.5px;
-  white-space: nowrap;
+  white-space: normal;
 }
 /* Its row below the composer is gone, so the pocket sits a little lower. */
 @media (min-width: 640px) {
