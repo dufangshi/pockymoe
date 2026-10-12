@@ -1,7 +1,9 @@
 import { act, fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { DeviceEncryptionStatus } from './DeviceEncryptionStatus';
 import { probeDeviceEncryption } from '../lib/relayTransport';
+import { currentAccount, boundDevices } from '../lib/accountVault';
+import { listPendingEnrollments } from '../lib/deviceEnrollment';
 import { notifyOwnerUnlocked } from '../lib/ownerUnlockRecovery';
 
 vi.mock('../lib/relayTransport', () => ({
@@ -10,10 +12,18 @@ vi.mock('../lib/relayTransport', () => ({
   trustDeviceIdentity: vi.fn(),
 }));
 
+vi.mock('../lib/accountVault', () => ({ currentAccount: vi.fn(), boundDevices: vi.fn(), verifyDeviceCertificate: vi.fn() }));
+vi.mock('../lib/deviceEnrollment', async original => ({ ...await original<typeof import('../lib/deviceEnrollment')>(), listPendingEnrollments: vi.fn() }));
+beforeEach(() => {
+  vi.mocked(currentAccount).mockResolvedValue({ userId: 'user', accountKeyId: 'account', accountPublicKey: 'public' });
+  vi.mocked(boundDevices).mockResolvedValue([]);
+  vi.mocked(listPendingEnrollments).mockResolvedValue([]);
+});
+
 function report(state: string, fingerprint?: string) {
   act(() => {
     window.dispatchEvent(new CustomEvent('remote-codex-transport', {
-      detail: { deviceId: 'device-1', state, fingerprint, identityKey: 'replacement-key' },
+      detail: { deviceId: 'device-1', state, paired: false, fingerprint, identityKey: 'replacement-key' },
     }));
   });
 }
@@ -32,7 +42,7 @@ describe('combined device connection indicator', () => {
     expect(detached).toHaveBeenCalledTimes(1);
     expect(loaded).not.toHaveBeenCalled();
   });
-  it('hides the healthy thread indicator but retains identity-change warnings', () => {
+  it('hides the healthy thread indicator but retains identity-change warnings', async () => {
     render(<DeviceEncryptionStatus hideHealthy deviceId="device-1" connection={{
       loaded: true, busy: false, state: 'connected', label: 'Connected', onConnect: vi.fn(),
     }} />);
@@ -40,7 +50,7 @@ describe('combined device connection indicator', () => {
     expect(screen.queryByRole('button')).toBeNull();
     report('identity-changed', 'replacement-fingerprint');
     fireEvent.click(screen.getByRole('button', { name: /Device identity changed/ }));
-    expect(screen.getByRole('button', { name: 'Trust replacement identity…' })).toBeVisible();
+    expect(await screen.findByRole('button', { name: 'Trust replacement identity…' })).toBeVisible();
   });
   it('checks each online device without needing a previous thread visit', () => {
     vi.mocked(probeDeviceEncryption).mockClear();
@@ -69,7 +79,7 @@ describe('combined device connection indicator', () => {
     expect(button).toHaveAccessibleName(/not end-to-end encrypted/);
   });
 
-  it('connects a detached thread, but lets a blocked identity be inspected first', () => {
+  it('connects a detached thread, but lets a blocked identity be inspected first', async () => {
     const onConnect = vi.fn();
     render(<DeviceEncryptionStatus deviceId="device-1" connection={{
       loaded: false, busy: false, state: 'offline', label: 'Offline', onConnect,
@@ -79,7 +89,7 @@ describe('combined device connection indicator', () => {
     report('identity-changed', 'replacement-fingerprint');
     fireEvent.click(screen.getByRole('button', { name: /Device identity changed/ }));
     expect(screen.getByLabelText('Device fingerprint')).toHaveTextContent('replacement-fingerprint');
-    expect(screen.getByRole('button', { name: 'Trust replacement identity…' })).toBeVisible();
+    expect(await screen.findByRole('button', { name: 'Trust replacement identity…' })).toBeVisible();
     expect(onConnect).toHaveBeenCalledTimes(1);
   });
   it('keeps recipient trust visible and labels TOFU or invite pins without exposing owner management', () => {

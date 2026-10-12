@@ -14,6 +14,7 @@ import {
   probeDeviceEncryption,
   trustDeviceIdentity,
 } from '../lib/relayTransport';
+import { useDeviceProtection, protectionLabel } from '../lib/useDeviceProtection';
 import { type TransportStatus } from '../lib/relayTransportCrypto';
 import { DeviceTrustPanel } from './DeviceTrustPanel';
 import { FormDialog } from './FormDialog';
@@ -41,6 +42,7 @@ export function DeviceEncryptionStatus({
   const [status, setStatus] = useState<TransportStatus | undefined>(() =>
     deviceId ? getTransportStatus(deviceId) : undefined,
   );
+  const protection = useDeviceProtection(deviceId, status);
   const [manage, setManage] = useState(false);
   const [open, setOpen] = useState(false),
     [confirm, setConfirm] = useState<TransportStatus | null>(null);
@@ -107,7 +109,7 @@ export function DeviceEncryptionStatus({
   const locked = status?.state === 'unlock-required';
   const encrypted = status?.state === 'encrypted',
     changed = status?.state === 'identity-changed';
-  if (hideHealthy && status?.role !== 'grantee' && !changed && !locked && connection?.loaded && connection.state === 'connected') return null;
+  if (hideHealthy && protection !== 'certificate-missing' && protection !== 'pending' && status?.role !== 'grantee' && !changed && !locked && connection?.loaded && connection.state === 'connected') return null;
   const label = !deviceId ? translate("auth.localDeviceConnection") : locked ? translate("auth.ownerUnlock") : encrypted
     ? translate(status?.role === 'grantee' ? status.identityTrust === 'invite' ? 'sharing.granteeConnectionPinned' : 'sharing.granteeConnectionTofu' : 'auth.deviceConnectionEncrypted')
     : changed
@@ -219,15 +221,16 @@ export function DeviceEncryptionStatus({
               </code>
             )}
             {deviceId && <span className="block space-y-2">
-              <span className="block">{translate(status?.paired ? 'auth.ownerPaired' : status?.paired === false || status?.state === 'legacy' ? 'auth.ownerRelayTrusted' : 'auth.deviceEncryptionNotVerified')}</span>
+              <span className="block" role={protection === 'certificate-missing' ? 'alert' : undefined}>{translate(protectionLabel(protection))}</span>
+              {protection === 'certificate-missing' && <span className="block">{translate('devices.certificateMissingHelp')}</span>}
               {locked && <button className="relay-button-primary px-3 py-2" onClick={() => { setOpen(false); window.dispatchEvent(new CustomEvent('remote-codex-owner-unlock-request', { detail: status })); }}>{translate('auth.ownerUnlock')}</button>}
               {status?.role === 'grantee' && <span className="block">{translate(status.identityTrust === 'invite' ? 'sharing.invitePinned' : 'sharing.recipientTofu')}</span>}
               {status?.strict && <span className="block">{translate('auth.ownerStrict')}</span>}
-              {!status?.paired && <span className="block">{translate('auth.ownerPairInstructions')}</span>}
+              {protection === 'not-protected' && <span className="block">{translate('devices.protectDeviceHelp')}</span>}
               {status?.role !== 'grantee' && <button className="relay-button-secondary px-3 py-2" onClick={() => { setOpen(false); setManage(true); }}>{translate('auth.ownerManage')}</button>}
             </span>}
             {trustError && <span role="alert">{trustError}</span>}
-            {changed && !status?.paired && status?.identityKey && (
+            {changed && protection === 'not-protected' && status?.identityKey && (
               <button
                 className="relay-button-secondary px-3 py-2"
                 onClick={() => {

@@ -4,6 +4,7 @@ import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { installNotificationRouteResponder } from './lib/relayPush';
 import { PortPreviewPage } from './pages/PortPreviewPage';
 import { PairPage } from './pages/PairPage';
+import { DeviceEnrollmentMonitor } from './components/DeviceEnrollmentMonitor';
 import { OwnerUnlockPrompt } from './components/OwnerUnlockPrompt';
 import { PublicThreadPage } from './pages/PublicThreadPage';
 import {
@@ -632,6 +633,7 @@ export function App() {
         <WorkspaceDocumentNavigationGuard>
         <DocumentTitleUpdater />
         <OwnerUnlockPrompt />
+        <DeviceEnrollmentMonitor />
         <RoutePluginProvider>
           <Routes>
             <Route path="/pair" element={<PairPage />} />
