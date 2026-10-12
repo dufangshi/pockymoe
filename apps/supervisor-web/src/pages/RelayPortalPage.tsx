@@ -1,4 +1,4 @@
-import { finishAccountLogin, registerAccount, startAccountRecovery, startTemporaryResetLogin, cancelAccountLogin, isOAuthAccount, type PreparedRegistration } from '../lib/accountAuth';
+import { finishAccountLogin, startLegacyUpgrade, legacyUpgradeEnabled, registerAccount, startAccountRecovery, startTemporaryResetLogin, cancelAccountLogin, isOAuthAccount, type PreparedRegistration } from '../lib/accountAuth';
 import { requireUnlock } from '../lib/accountVault';
 import { ensureBrowserAccess, RecoveryConfirmation } from '../components/AccountUnlockPrompt';
 import { createVault, openVault, registerBrowser, changeAccountPassword } from '../lib/accountVaultState';
@@ -26,7 +26,7 @@ import {
   relayLogout,
 } from '../lib/api';
 
-type AuthMode = 'login' | 'register' | 'recover' | 'reset';
+type AuthMode = 'login' | 'register' | 'recover' | 'reset' | 'upgrade';
 
 const DEFAULT_RETURN_TO = '/relay-devices';
 const RETURN_TO_STORAGE_KEY = 'remote-codex-relay-return-to';
@@ -298,6 +298,9 @@ function RelayAuthPanel({
       } else if (mode === 'reset') {
         const result = await startTemporaryResetLogin(identifier, password); setPassword('');
         if (result.challengeRequired) { setChallenge({ challengeRequired: true, authenticator: Boolean(result.authenticator), passkey: Boolean(result.passkey) }); return; }
+      } else if (mode === 'upgrade') {
+        const result = await startLegacyUpgrade(identifier, password); setPassword('');
+        if (result.challengeRequired) { setChallenge({ challengeRequired: true, authenticator: Boolean(result.authenticator), passkey: Boolean(result.passkey) }); return; }
       } else if (mode === 'login') {
         const result = await relayLogin({ identifier, password });
         setPassword('');
@@ -510,6 +513,8 @@ function RelayAuthPanel({
         {mode === 'recover' && <RelayInput autoComplete="new-password" label={translate('auth.newPassword')} name="newPassword" type="password" minLength={12} required value={recoveryNewPassword} onChange={setRecoveryNewPassword} description={translate('auth.accountPasswordHelp')} />}
         {mode !== 'register' && <button type="button" className="owner-trust-account-link" onClick={() => { setMode(mode === 'recover' ? 'login' : 'recover'); setPassword(''); }}>{translate(mode === 'recover' ? 'auth.accountUsePassword' : 'auth.accountUseRecovery')}</button>}
         {mode !== 'register' && <button type="button" className="owner-trust-account-link" onClick={() => { setMode(mode === 'reset' ? 'login' : 'reset'); setPassword(''); }}>{translate(mode === 'reset' ? 'auth.accountUsePassword' : 'auth.accountTemporaryLogin')}</button>}
+        {mode !== 'register' && legacyUpgradeEnabled() && <button type="button" className="owner-trust-account-link" onClick={() => { setMode(mode === 'upgrade' ? 'login' : 'upgrade'); setPassword(''); }}>{translate(mode === 'upgrade' ? 'auth.accountUsePassword' : 'auth.accountLegacyUpgrade')}</button>}
+        {mode === 'upgrade' && <p className="text-sm">{translate('auth.accountLegacyUpgradeHelp')}</p>}
         {mode === 'reset' && <p className="text-sm">{translate('auth.accountTemporaryHelp')}</p>}
         {error ? (
           <RelayNotice tone="danger">
@@ -533,7 +538,7 @@ function RelayAuthPanel({
         >
           {submitting
             ? translate("auth.working")
-            : mode === 'login' || mode === 'reset'
+            : mode === 'login' || mode === 'reset' || mode === 'upgrade'
               ? translate("auth.signIn")
               : translate(mode === 'recover' ? 'auth.accountRecover' : "auth.createAccount")}
         </button>
