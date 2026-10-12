@@ -164,6 +164,26 @@ fn apply_setup_binding(saved: &Value, options: &SetupOptions) -> Result<()> {
     }
     Ok(())
 }
+fn save_setup_web_origin(file: &Path, saved: &mut Value, origin: Option<&str>) -> Result<()> {
+    let Some(origin) = origin else {
+        return Ok(());
+    };
+    if saved["webOrigin"].as_str() == Some(origin) {
+        return Ok(());
+    }
+    let receipt_file = file.with_extension("json.setup.json");
+    let mut receipt = read::<Value>(&receipt_file).unwrap_or(Value::Null);
+    let resume_receipt =
+        receipt["identity"].is_string() && receipt["configHash"] == digest(&std::fs::read(file)?);
+    saved["webOrigin"] = json!(origin);
+    write_device_config(file, saved)?;
+    // Preserve setup-code resumption after adding an origin to an older config.
+    if resume_receipt {
+        receipt["configHash"] = json!(digest(&std::fs::read(file)?));
+        write(&receipt_file, &receipt)?;
+    }
+    Ok(())
+}
 pub async fn setup(options: SetupOptions) -> Result<()> {
     setup_at(options, &config_path()).await
 }
@@ -224,7 +244,7 @@ async fn setup_at(options: SetupOptions, file: &Path) -> Result<()> {
             || saved["webOrigin"]
                 .as_str()
                 .or_else(|| saved["POCKYMOE_WEB_ORIGIN"].as_str())
-                == Some(origin)),
+                .is_none_or(|saved_origin| saved_origin == origin)),
         "The saved Web origin differs; update the local configuration before resuming setup"
     );
     let occupied = TcpListener::bind(("127.0.0.1", options.port)).is_err();
@@ -242,6 +262,7 @@ async fn setup_at(options: SetupOptions, file: &Path) -> Result<()> {
         // binding. Fresh relay setup credentials never replace its registration.
         let status = device_api(options.port, &saved, "/api/management/supervisor", false).await?;
         apply_setup_binding(&saved, &options)?;
+        save_setup_web_origin(file, &mut saved, web_origin.as_deref())?;
         if status["runningVersion"] == version {
             println!("Device is already running Pockymoe {version}.");
             return Ok(());
@@ -313,6 +334,7 @@ async fn setup_at(options: SetupOptions, file: &Path) -> Result<()> {
         )?;
     }
     apply_setup_binding(&saved, &options)?;
+    save_setup_web_origin(file, &mut saved, web_origin.as_deref())?;
     releases::activate(&installed)?;
     let manager = service::detect();
     service::start(&installed, &file, manager.as_deref())?;
@@ -418,15 +440,46 @@ mod tests {
     use super::*;
     #[tokio::test]
     async fn explicit_rebind_of_running_install_preserves_registration_without_installing_again() {
+        assert_running_rebind_web_origin(None, None, false).await;
+    }
+
+    #[tokio::test]
+    async fn existing_install_without_web_origin_saves_supplied_origin_when_rebinding() {
+        assert_running_rebind_web_origin(None, Some("https://web.test"), false).await;
+    }
+
+    #[tokio::test]
+    async fn existing_install_rebind_accepts_same_web_origin_and_refuses_different_origin() {
+        assert_running_rebind_web_origin(Some("https://web.test"), Some("https://web.test"), false)
+            .await;
+        assert_running_rebind_web_origin(
+            Some("https://original.test"),
+            Some("https://web.test"),
+            true,
+        )
+        .await;
+    }
+
+    async fn assert_running_rebind_web_origin(
+        saved_origin: Option<&str>,
+        supplied_origin: Option<&str>,
+        expect_mismatch: bool,
+    ) {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("existing.sqlite");
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let relay = format!("http://127.0.0.1:{port}");
         let config = dir.path().join("device.json");
-        let saved = json!({"POCKYMOE_RELAY_SERVER_URL":relay,"POCKYMOE_RELAY_AGENT_TOKEN":"synthetic-existing-token","POCKYMOE_RELAY_SUPERVISOR_PORT":port.to_string(),"POCKYMOE_DATABASE_PATH":db,"POCKYMOE_ADMIN_USERNAME":"admin","POCKYMOE_ADMIN_PASSWORD":"synthetic-password"});
+        let mut saved = json!({"POCKYMOE_RELAY_SERVER_URL":relay,"POCKYMOE_RELAY_AGENT_TOKEN":"synthetic-existing-token","POCKYMOE_RELAY_SUPERVISOR_PORT":port.to_string(),"POCKYMOE_DATABASE_PATH":db,"POCKYMOE_ADMIN_USERNAME":"admin","POCKYMOE_ADMIN_PASSWORD":"synthetic-password"});
+        if let Some(origin) = saved_origin {
+            saved["webOrigin"] = json!(origin);
+        }
         write_device_config(&config, &saved).unwrap();
         let before = std::fs::read(&config).unwrap();
+        let receipt_file = config.with_extension("json.setup.json");
+        let receipt = json!({"identity":"synthetic-setup-identity","configHash":digest(&before)});
+        write(&receipt_file, &receipt).unwrap();
         async fn login() -> axum::Json<Value> {
             axum::Json(json!({"token":"synthetic-session"}))
         }
@@ -462,7 +515,7 @@ mod tests {
         );
         let options = SetupOptions {
             relay,
-            web_origin: None,
+            web_origin: supplied_origin.map(str::to_owned),
             account_key: Some(v["account"]["accountPublicKey"].as_str().unwrap().into()),
             enroll: Some(base64::Engine::encode(
                 &base64::engine::general_purpose::URL_SAFE_NO_PAD,
@@ -474,8 +527,35 @@ mod tests {
         };
         let result = setup_at(options, &config).await;
         server.abort();
+        if expect_mismatch {
+            assert!(result
+                .unwrap_err()
+                .to_string()
+                .contains("saved Web origin differs"));
+            assert_eq!(std::fs::read(&config).unwrap(), before);
+            assert_eq!(read::<Value>(&receipt_file).unwrap(), receipt);
+            assert_eq!(
+                crate::owner_trust::binding_status(&db).unwrap()["bound"],
+                false
+            );
+            return;
+        }
         result.unwrap();
-        assert_eq!(std::fs::read(&config).unwrap(), before);
+        if let Some(origin) = supplied_origin {
+            saved["webOrigin"] = json!(origin);
+            assert_eq!(
+                load_environment(&config).unwrap()["POCKYMOE_WEB_ORIGIN"],
+                origin
+            );
+        }
+        assert_eq!(read_device_config(&config).unwrap(), saved);
+        let after = std::fs::read(&config).unwrap();
+        let updated_receipt: Value = read(&receipt_file).unwrap();
+        assert_eq!(updated_receipt["identity"], receipt["identity"]);
+        assert_eq!(updated_receipt["configHash"], digest(&after));
+        if supplied_origin == saved_origin {
+            assert_eq!(after, before);
+        }
         assert_eq!(
             crate::owner_trust::binding_status(&db).unwrap()["bound"],
             true
