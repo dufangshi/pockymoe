@@ -1413,6 +1413,87 @@ mod owner_channel_tests {
     use super::*;
     use crate::owner_trust::tests::{decoded, encrypted, live_owner};
     #[tokio::test]
+    async fn relay_device_revocation_drops_peer_registrations_on_every_bound_device() {
+        use crate::owner_trust::{
+            self,
+            tests::{bound_peer, device_revocation, vectors},
+        };
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD as B64, Engine};
+
+        let (_first_dir, first) = super::tests::state_with_relay_url("http://127.0.0.1:1");
+        let (_second_dir, second) = super::tests::state_with_relay_url("http://127.0.0.1:1");
+        let v = vectors();
+        let certificate = v["deviceCertificate"]["certificate"].clone();
+        let peer = &v["peerSignature"];
+        let device = peer["callerDeviceId"].as_str().unwrap();
+        let caller = crate::auth::PeerCaller {
+            device_id: device.into(),
+            device_name: "Peer".into(),
+            user_id: "owner".into(),
+        };
+        let headers = json!({"headers":{"x-rcd-peer-device":device,"x-rcd-peer-signature":peer["signature"]}});
+        let aad = peer["aad"].as_str().unwrap();
+        let sealed = B64.decode(peer["sealed"].as_str().unwrap()).unwrap();
+        let revocation = device_revocation(device);
+        for (state, id) in [(first, "first"), (second, "second")] {
+            bound_peer(&state, id);
+            state.set_peer_access(true).unwrap();
+            let (request, key, request_aad) = encrypted(
+                &state,
+                "POST",
+                "/api/peer/transport/certificate",
+                certificate.clone(),
+                None,
+            );
+            assert_eq!(
+                decoded(
+                    forward_local(&state, request, Some(caller.clone())).await,
+                    &key,
+                    &request_aad
+                )
+                .0,
+                200
+            );
+            let principal =
+                owner_trust::authorize_peer(&state, &caller, &headers, aad, &sealed).unwrap();
+            let (outgoing, _output) = mpsc::channel();
+            handle_relay_message(
+                state.clone(),
+                &mut HashMap::new(),
+                &outgoing,
+                json!({"type":"relay.revocations","revocations":[revocation]}),
+            );
+            assert!(owner_trust::device_revoked(&state, device).unwrap());
+            assert!(!principal.valid(&state, device));
+            assert!(owner_trust::authorize_peer(&state, &caller, &headers, aad, &sealed).is_err());
+            assert_eq!(
+                state
+                    .db
+                    .with(|c| Ok(c.query_row(
+                        "SELECT count(*) FROM peer_certificates",
+                        [],
+                        |r| r.get::<_, i64>(0)
+                    )?))
+                    .unwrap(),
+                0
+            );
+            let (request, key, request_aad) = encrypted(
+                &state,
+                "POST",
+                "/api/peer/transport/certificate",
+                certificate.clone(),
+                None,
+            );
+            let (status, body) = decoded(
+                forward_local(&state, request, Some(caller.clone())).await,
+                &key,
+                &request_aad,
+            );
+            assert_eq!(status, 401);
+            assert_eq!(body["code"], "peer_certificate_required");
+        }
+    }
+    #[tokio::test]
     async fn grantee_open_channels_recheck_deletion_expiry_and_scope_changes() {
         for mutation in ["delete", "expire", "scope"] {
             let (_dir, state, owner, mut grant, _registration, key, p) =

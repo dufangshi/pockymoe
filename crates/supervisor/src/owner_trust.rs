@@ -617,7 +617,7 @@ pub fn reset_account_trust(database: &Path) -> Result<()> {
     Ok(())
 }
 
-// Minimal certificate hooks shared with peer transport; peer-cert extends this workflow.
+// Peer authority is scoped to the locally pinned account and permanent revocations.
 #[derive(Clone, Debug)]
 pub(crate) struct PeerPrincipal {
     device_id: String,
@@ -626,8 +626,35 @@ pub(crate) struct PeerPrincipal {
 }
 impl PeerPrincipal {
     pub(crate) fn valid(&self, state: &Supervisor, device: &str) -> bool {
-        device==self.device_id && !device_revoked(state,device).unwrap_or(true) && state.db.with(|c|Ok(pinned_in(c)?.is_some_and(|p|p.account_key_id==self.account_key_id) && c.query_row("SELECT EXISTS(SELECT 1 FROM peer_certificates WHERE device_id=?1 AND identity_key=?2 AND account_key_id=?3)",params![device,self.identity_key,self.account_key_id],|r|r.get::<_,bool>(0))?)).unwrap_or(false)
+        device == self.device_id && state.db.with(|c| {
+            Ok(pinned_in(c)?.is_some_and(|p| p.account_key_id == self.account_key_id)
+                && !revoked(c, &self.account_key_id, "device", device)?
+                && c.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM peer_certificates WHERE device_id=?1 AND identity_key=?2 AND account_key_id=?3)",
+                    params![device, self.identity_key, self.account_key_id],
+                    |r| r.get::<_, bool>(0),
+                )?)
+        }).unwrap_or(false)
     }
+}
+fn verify_peer_certificate_in(
+    c: &Connection,
+    value: Value,
+    device: &str,
+    identity: Option<&str>,
+) -> Result<PeerPrincipal> {
+    let cert: DeviceCertificate = serde_json::from_value(value)?;
+    let pin = pinned_in(c)?.context("Device is not bound")?;
+    verify_device(&pin, &cert, device, identity.unwrap_or(&cert.identity_key))?;
+    ensure!(
+        !revoked(c, &pin.account_key_id, "device", device)?,
+        "Device is revoked"
+    );
+    Ok(PeerPrincipal {
+        device_id: device.into(),
+        identity_key: cert.identity_key,
+        account_key_id: cert.account_key_id,
+    })
 }
 pub(crate) fn verify_peer_certificate(
     state: &Supervisor,
@@ -695,20 +722,25 @@ pub(crate) async fn peer_certificate_endpoint(
     Extension(caller): Extension<crate::auth::PeerCaller>,
     Json(value): Json<Value>,
 ) -> Response {
-    response((|| {
-        if !bound(&state) {
-            return Ok(json!({}));
-        }
-        let proof =
-            verify_peer_certificate(&state, value, &caller.device_id, None).map_err(|_| {
-                Rejection {
-                    status: 401,
-                    code: "peer_certificate_required",
-                }
-            })?;
-        state.db.with(|c| {c.execute("INSERT INTO peer_certificates(device_id,identity_key,account_key_id) VALUES(?1,?2,?3) ON CONFLICT(device_id) DO UPDATE SET identity_key=excluded.identity_key,account_key_id=excluded.account_key_id",params![proof.device_id,proof.identity_key,proof.account_key_id])?;Ok(json!({}))})
-    })())
+    response(state.db.with(|c| {
+        let tx = Transaction::new_unchecked(c, TransactionBehavior::Immediate)?;
+        if pinned_in(&tx)?.is_none() { return Ok(json!({})); }
+        // Verify and store in one transaction so a concurrent revocation or
+        // account reset cannot leave behind a new, already revoked registration.
+        let proof = verify_peer_certificate_in(&tx, value, &caller.device_id, None)
+            .map_err(|_| Rejection { status: 401, code: "peer_certificate_required" })?;
+        tx.execute(
+            "INSERT INTO peer_certificates(device_id,identity_key,account_key_id) VALUES(?1,?2,?3) ON CONFLICT(device_id) DO UPDATE SET identity_key=excluded.identity_key,account_key_id=excluded.account_key_id",
+            params![proof.device_id, proof.identity_key, proof.account_key_id],
+        )?;
+        tx.commit()?;
+        Ok(json!({}))
+    }))
 }
+#[cfg(test)]
+#[path = "peer_certificate_tests.rs"]
+mod peer_tests;
+
 #[cfg(test)]
 #[path = "owner_trust_tests.rs"]
 pub(crate) mod tests;
