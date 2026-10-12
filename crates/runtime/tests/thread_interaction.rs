@@ -181,6 +181,25 @@ async fn publication_selects_history_and_includes_future_until_revoked() {
     })
     .unwrap();
     assert_eq!(s.read_publication(token).await.unwrap()["turnCount"], 2);
+    // Even a surviving/restored legacy capability cannot leak plaintext once bound.
+    s.db.with(|c| {
+        c.execute(
+            "UPDATE device_owner_trust SET account_key_id='bound',strict=1 WHERE singleton=1",
+            [],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    assert!(s.read_publication(token).await.is_err());
+    s.db.with(|c| {
+        c.execute(
+            "UPDATE device_owner_trust SET account_key_id=NULL,strict=0 WHERE singleton=1",
+            [],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(s.read_publication(token).await.unwrap()["turnCount"], 2);
     s.revoke_publication(token).unwrap();
     assert!(s.read_publication(token).await.is_err());
 }
