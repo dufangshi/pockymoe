@@ -182,6 +182,30 @@ describe('device identity fingerprints', () => {
   });
 });
 describe('pending enrollment lifecycle', () => {
+  it('atomically preserves the first local or remote enrollment choice across concurrent views', async () => {
+    data.clear();
+    const [local, attemptedRemote] = await Promise.all([
+      createPendingEnrollment(deviceId, account, Date.now(), undefined, null),
+      createPendingEnrollment(deviceId, account, Date.now(), { phase: 'queued' }, null),
+    ]);
+    expect(attemptedRemote).toEqual(local);
+    expect(data.get(deviceId)).toEqual(local);
+    expect(local.remoteProtection).toBeUndefined();
+    data.clear();
+    const [remote, attemptedLocal] = await Promise.all([
+      createPendingEnrollment(deviceId, account, Date.now(), { phase: 'queued' }, null),
+      prepareDeviceEnrollment(deviceId),
+    ].map((task) => task.then(value => ({ value }), error => ({ error }))));
+    expect(remote).toHaveProperty('value.remoteProtection.phase', 'queued');
+    expect(attemptedLocal).toHaveProperty('error');
+    expect(data.get(deviceId)?.remoteProtection?.phase).toBe('queued');
+  });
+  it.each([undefined, { fresh: true }])('refuses to copy or repair a command using a remote enrollment secret (options=%s)', async (options) => {
+    const remote = { ...pending, remoteProtection: { phase: 'queued' as const } };
+    data.set(deviceId, remote);
+    await expect(prepareDeviceEnrollment(deviceId, options)).rejects.toThrow('Remote protection is already in progress');
+    expect(data.get(deviceId)).toEqual(remote);
+  });
   it('atomically claims one remote update when concurrent views approve it', async () => {
     data.clear();
     const queued = await createPendingEnrollment('remote-update', account, Date.now(), { phase: 'update-required' });

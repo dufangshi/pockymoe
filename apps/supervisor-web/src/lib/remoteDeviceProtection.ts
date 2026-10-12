@@ -4,6 +4,7 @@ import {
   boundDeviceIdentities,
   currentAccount,
   requireUnlock,
+  verifyDeviceCertificate,
   type AccountKeyInfo,
 } from './accountVault';
 import { request } from './api';
@@ -28,7 +29,14 @@ export const REMOTE_PROTECTION_CHANGED_EVENT =
   'pockymoe-remote-protection-changed';
 export type ProtectionProgress =
   | RemoteProtectionIntent
-  | { phase: 'complete' | 'already-bound' };
+  | {
+      phase:
+        | 'complete'
+        | 'already-bound'
+        | 'identity-changed'
+        | 'certificate-missing'
+        | 'local-command-pending';
+    };
 const terminal = new Map<string, ProtectionProgress>();
 const active = new Map<string, Promise<boolean>>();
 const key = (
@@ -85,13 +93,13 @@ async function progress(
   const current = (await listPendingEnrollments()).find(
     (p) => p.deviceId === pending.deviceId,
   );
-  if (!current || !(await liveAccount(pending))) return false;
+  if (!current?.remoteProtection || !(await liveAccount(pending))) return false;
   return savePending({ ...current, remoteProtection: intent }, pending);
 }
 function finish(
   account: AccountKeyInfo,
   deviceId: string,
-  phase: 'complete' | 'already-bound',
+  phase: Exclude<ProtectionProgress['phase'], RemoteProtectionIntent['phase']>,
 ) {
   terminal.set(key(account, deviceId), { phase });
   notify();
@@ -117,7 +125,9 @@ export async function deviceProtectionProgress(
   const pending = (await listPendingEnrollments(account)).find(
     (p) => p.deviceId === deviceId,
   );
-  return pending?.remoteProtection ?? terminal.get(key(account, deviceId));
+  if (pending)
+    return pending.remoteProtection ?? { phase: 'local-command-pending' };
+  return terminal.get(key(account, deviceId));
 }
 
 /** The user approves remote binding once. Offline intent is durable and account-scoped. */
@@ -125,7 +135,6 @@ export async function protectDevices(devices: readonly RelayDeviceDto[]) {
   const account = await requireUnlock('bind-device');
   const pins = await boundDeviceIdentities();
   const revoked = await accountRevocations();
-  const pending = await listPendingEnrollments(account);
   for (const device of devices) {
     if (device.ownerUserId !== account.userId) continue;
     if (
@@ -137,33 +146,49 @@ export async function protectDevices(devices: readonly RelayDeviceDto[]) {
       )
     )
       continue;
-    if (pins.some((pin) => pin.deviceId === device.id)) {
+    // A local command never becomes a remote bind, including repair enrollments
+    // for pinned devices. Keep its secret off the relay-trusted bootstrap path.
+    const existing = (await listPendingEnrollments(account)).find(
+      (p) => p.deviceId === device.id,
+    );
+    if (existing && !existing.remoteProtection) {
+      notify();
+      continue;
+    }
+    const pin = pins.find((pin) => pin.deviceId === device.id);
+    if (pin) {
       if (device.connected) {
         try {
           const descriptor = await inspectEnrollmentDevice(device.id);
-          if (
-            (descriptor.trust?.bound &&
-              descriptor.trust.accountKeyId !== account.accountKeyId) ||
-            (descriptor.certificate &&
-              descriptor.certificate.accountKeyId !== account.accountKeyId)
-          ) {
-            terminal.set(key(account, device.id), {
-              phase: 'error',
-              error: 'account-mismatch',
-            });
-            notify();
-            continue;
-          }
+          // The hint is unsigned. Only the account certificate and pinned
+          // identity decide whether this previously trusted device is bound.
+          const verified =
+            descriptor.certificate &&
+            (await verifyDeviceCertificate(
+              descriptor.certificate,
+              account,
+              device.id,
+              pin.identityKey,
+            ));
+          finish(
+            account,
+            device.id,
+            verified && descriptor.identityKey === pin.identityKey
+              ? 'already-bound'
+              : descriptor.identityKey !== pin.identityKey
+                ? 'identity-changed'
+                : 'certificate-missing',
+          );
+          continue;
         } catch (error) {
           if (!offlineError(error)) {
-            terminal.set(key(account, device.id), {
-              phase: 'error',
-              error:
-                errorCode(error) === 'account_mismatch'
-                  ? 'account-mismatch'
-                  : 'failed',
-            });
-            notify();
+            finish(
+              account,
+              device.id,
+              errorCode(error) === 'accountDeviceIdentityChanged'
+                ? 'identity-changed'
+                : 'certificate-missing',
+            );
             continue;
           }
         }
@@ -172,12 +197,13 @@ export async function protectDevices(devices: readonly RelayDeviceDto[]) {
       continue;
     }
     terminal.delete(key(account, device.id));
-    const existing = pending.find((p) => p.deviceId === device.id);
     let enrollment: PendingEnrollment;
     if (existing) {
+      // Retry only an already-approved remote enrollment; preserve bindStarted
+      // so a lost bind response resumes certification after reconnect.
       enrollment = {
         ...existing,
-        remoteProtection: { phase: 'queued', resumeEnrollment: true },
+        remoteProtection: { ...existing.remoteProtection, phase: 'queued' },
       };
       if (!(await savePending(enrollment, existing))) continue;
     } else
@@ -186,7 +212,13 @@ export async function protectDevices(devices: readonly RelayDeviceDto[]) {
         account,
         Date.now(),
         { phase: 'queued' },
+        null,
       );
+    // Another tab may have claimed local enrollment after our initial read.
+    if (!enrollment.remoteProtection) {
+      notify();
+      continue;
+    }
     try {
       await runRemoteProtection(enrollment, device.connected);
     } catch (error) {

@@ -126,6 +126,38 @@ describe('remote protection controls', () => {
       screen.getByRole('button', { name: 'Retry enrollment' }),
     ).toBeDisabled();
   });
+  it.each(['certificate-missing', 'identity-changed'] as const)(
+    'shows a pinned-device %s error without reset advice or remote retry',
+    async (phase) => {
+      vi.mocked(deviceProtectionProgress).mockResolvedValue({ phase });
+      render(<RemoteProtectionStatus device={device} />);
+      const alert = await screen.findByRole('alert');
+      expect(alert).toHaveTextContent(
+        translate(
+          phase === 'certificate-missing'
+            ? 'devices.certificateMissingHelp'
+            : 'auth.accountDeviceIdentityChanged',
+        ),
+      );
+      expect(alert).not.toHaveTextContent('pockymoe bind --reset');
+      expect(screen.queryByRole('button')).toBeNull();
+    },
+  );
+  it.each(['en', 'zh-CN'] as const)(
+    'explains a pending local command in %s without offering remote retry',
+    async (locale) => {
+      setLocale(locale);
+      vi.mocked(deviceProtectionProgress).mockResolvedValue({
+        phase: 'local-command-pending',
+      });
+      render(<RemoteProtectionStatus device={device} />);
+      expect(await screen.findByRole('status')).toHaveTextContent(
+        translate('devices.localCommandPending'),
+      );
+      expect(screen.queryByRole('button')).toBeNull();
+      expect(protectDevices).not.toHaveBeenCalled();
+    },
+  );
   it('refreshes per-device progress as durable intent advances', async () => {
     vi.mocked(deviceProtectionProgress).mockResolvedValue({ phase: 'queued' });
     render(<RemoteProtectionStatus device={device} />);

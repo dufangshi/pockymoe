@@ -75,6 +75,7 @@ export async function createPendingEnrollment(
   account: AccountKeyInfo,
   now = Date.now(),
   remoteProtection?: RemoteProtectionIntent,
+  expected?: PendingEnrollment | null,
 ) {
   const pending: PendingEnrollment = {
     deviceId,
@@ -84,7 +85,13 @@ export async function createPendingEnrollment(
     enrollSecret: encode(crypto.getRandomValues(new Uint8Array(32))),
     ...(remoteProtection ? { remoteProtection } : {}),
   };
-  await savePending(pending);
+  if (!(await savePending(pending, expected))) {
+    const existing = (await listPendingEnrollments(account)).find(
+      (p) => p.deviceId === deviceId,
+    );
+    if (!existing) throw new Error(translate('devices.enrollmentFailed'));
+    return existing;
+  }
   return pending;
 }
 export async function prepareDeviceEnrollment(
@@ -95,12 +102,18 @@ export async function prepareDeviceEnrollment(
   const existing = (await listPendingEnrollments(account)).find(
     (p) => p.deviceId === deviceId,
   );
-  return {
-    accountPublicKey: account.accountPublicKey,
-    ...(!options?.fresh && existing
+  if (existing?.remoteProtection)
+    throw new Error(translate('devices.remoteProtectionInProgress'));
+  const pending =
+    !options?.fresh && existing
       ? existing
-      : await createPendingEnrollment(deviceId, account)),
-  };
+      : await createPendingEnrollment(
+          deviceId, account, Date.now(), undefined,
+          options?.fresh ? existing ?? null : null,
+        );
+  if (pending.remoteProtection)
+    throw new Error(translate('devices.remoteProtectionInProgress'));
+  return { accountPublicKey: account.accountPublicKey, ...pending };
 }
 
 /** The transport implementation provides this bootstrap handshake without TOFU. */

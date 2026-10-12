@@ -5,6 +5,7 @@ import {
   boundDeviceIdentities,
   currentAccount,
   requireUnlock,
+  verifyDeviceCertificate,
 } from './accountVault';
 import { request } from './api';
 import {
@@ -32,6 +33,7 @@ vi.mock('./accountVault', () => ({
   boundDeviceIdentities: vi.fn(),
   currentAccount: vi.fn(),
   requireUnlock: vi.fn(),
+  verifyDeviceCertificate: vi.fn(),
 }));
 vi.mock('./api', () => ({ request: vi.fn() }));
 vi.mock('./deviceEnrollment', () => ({
@@ -92,6 +94,7 @@ beforeEach(() => {
   vi.mocked(requireUnlock).mockResolvedValue(account as never);
   vi.mocked(currentAccount).mockResolvedValue(account);
   vi.mocked(accountRevocations).mockResolvedValue([]);
+  vi.mocked(verifyDeviceCertificate).mockResolvedValue(true);
   vi.mocked(boundDeviceIdentities).mockResolvedValue([]);
   vi.mocked(listPendingEnrollments).mockImplementation(async () =>
     [...records.values()].map((p) => structuredClone(p)),
@@ -156,7 +159,7 @@ describe('one-click protection batches', () => {
     supported.add('online');
     supported.add('mismatch');
     vi.mocked(boundDeviceIdentities).mockResolvedValue([
-      { deviceId: 'bound', identityKey: 'pinned' },
+      { deviceId: 'bound', identityKey: 'identity' },
     ]);
     const inspect = vi.mocked(inspectEnrollmentDevice).getMockImplementation()!;
     vi.mocked(inspectEnrollmentDevice).mockImplementation(async (id) =>
@@ -195,7 +198,7 @@ describe('one-click protection batches', () => {
       phase: 'update-required',
     });
     expect(await deviceProtectionProgress('bound')).toEqual({
-      phase: 'already-bound',
+      phase: 'certificate-missing',
     });
     expect(pending('mismatch').remoteProtection).toEqual({
       phase: 'error',
@@ -232,22 +235,170 @@ describe('one-click protection batches', () => {
     expect(deviceTrustRequest).not.toHaveBeenCalled();
     expect(completeDeviceEnrollment).not.toHaveBeenCalled();
   });
-  it('reports a different account key even for a previously pinned device, without rebinding it', async () => {
+  it.each([true, false])(
+    'ignores unsigned foreign-account hints for a pinned device with a verifying certificate (bound=%s)',
+    async (boundHint) => {
+      const certificate = {
+        version: 1 as const,
+        deviceId: 'pinned',
+        accountKeyId: account.accountKeyId,
+        identityKey: 'previous',
+        createdAt: 1,
+        signature: 'signed',
+      };
+      vi.mocked(boundDeviceIdentities).mockResolvedValue([
+        { deviceId: 'pinned', identityKey: 'previous' },
+      ]);
+      vi.mocked(inspectEnrollmentDevice).mockResolvedValue({
+        identityKey: 'previous',
+        certificate,
+        trust: {
+          bound: boundHint,
+          strict: boundHint,
+          accountKeyId: 'other-account',
+        },
+      });
+      await protectDevices([device('pinned')]);
+      expect(await deviceProtectionProgress('pinned')).toEqual({
+        phase: 'already-bound',
+      });
+      expect(verifyDeviceCertificate).toHaveBeenCalledExactlyOnceWith(
+        certificate,
+        account,
+        'pinned',
+        'previous',
+      );
+      expect(createPendingEnrollment).not.toHaveBeenCalled();
+      expect(deviceTrustRequest).not.toHaveBeenCalled();
+    },
+  );
+  it.each([
+    null,
+    {
+      version: 1 as const,
+      deviceId: 'pinned-invalid',
+      accountKeyId: 'other-account',
+      identityKey: 'previous',
+      createdAt: 1,
+      signature: 'forged',
+    },
+  ])(
+    'shows certificate missing for a pinned device with a missing or invalid certificate, never reset advice',
+    async (certificate) => {
+      vi.mocked(boundDeviceIdentities).mockResolvedValue([
+        { deviceId: 'pinned-invalid', identityKey: 'previous' },
+      ]);
+      vi.mocked(verifyDeviceCertificate).mockResolvedValue(false);
+      vi.mocked(inspectEnrollmentDevice).mockResolvedValue({
+        identityKey: 'previous',
+        certificate,
+        trust: { bound: true, strict: true, accountKeyId: 'other-account' },
+      });
+      await protectDevices([device('pinned-invalid')]);
+      expect(await deviceProtectionProgress('pinned-invalid')).toEqual({
+        phase: 'certificate-missing',
+      });
+      expect(createPendingEnrollment).not.toHaveBeenCalled();
+      expect(deviceTrustRequest).not.toHaveBeenCalled();
+    },
+  );
+  it('shows identity changed for a pinned device with a changed descriptor identity', async () => {
     vi.mocked(boundDeviceIdentities).mockResolvedValue([
-      { deviceId: 'pinned-mismatch', identityKey: 'previous' },
+      { deviceId: 'pinned-changed', identityKey: 'previous' },
     ]);
     vi.mocked(inspectEnrollmentDevice).mockResolvedValue({
       identityKey: 'foreign',
       trust: { bound: true, strict: true, accountKeyId: 'other-account' },
     });
-    await protectDevices([device('pinned-mismatch')]);
-    expect(await deviceProtectionProgress('pinned-mismatch')).toEqual({
-      phase: 'error',
-      error: 'account-mismatch',
+    await protectDevices([device('pinned-changed')]);
+    expect(await deviceProtectionProgress('pinned-changed')).toEqual({
+      phase: 'identity-changed',
     });
     expect(createPendingEnrollment).not.toHaveBeenCalled();
     expect(deviceTrustRequest).not.toHaveBeenCalled();
   });
+  it.each([
+    ['account_mismatch', 'certificate-missing'],
+    ['accountCertificateMissing', 'certificate-missing'],
+    ['accountDeviceIdentityChanged', 'identity-changed'],
+  ] as const)(
+    'keeps pinned inspection errors %s on the existing trust-error path',
+    async (code, phase) => {
+      vi.mocked(boundDeviceIdentities).mockResolvedValue([
+        { deviceId: 'pinned-inspection-error', identityKey: 'previous' },
+      ]);
+      vi.mocked(inspectEnrollmentDevice).mockRejectedValue(
+        new DeviceTrustError(code, 403),
+      );
+      await protectDevices([device('pinned-inspection-error')]);
+      expect(await deviceProtectionProgress('pinned-inspection-error')).toEqual(
+        { phase },
+      );
+      expect(deviceTrustRequest).not.toHaveBeenCalled();
+      expect(createPendingEnrollment).not.toHaveBeenCalled();
+    },
+  );
+  it('does not bind when another tab claims local enrollment between the read and atomic create', async () => {
+    const local = {
+      deviceId: 'concurrent-local',
+      userId: account.userId,
+      accountKeyId: account.accountKeyId,
+      enrollSecret: 'local-only-secret',
+      createdAt: Date.now(),
+    };
+    vi.mocked(createPendingEnrollment).mockImplementationOnce(async () => {
+      records.set(local.deviceId, local);
+      return local;
+    });
+    supported.add(local.deviceId);
+    await protectDevices([device(local.deviceId)]);
+    expect(createPendingEnrollment).toHaveBeenCalledExactlyOnceWith(
+      local.deviceId,
+      account,
+      expect.any(Number),
+      { phase: 'queued' },
+      null,
+    );
+    expect(deviceTrustRequest).not.toHaveBeenCalled();
+    expect(inspectEnrollmentDevice).not.toHaveBeenCalled();
+    expect(pending(local.deviceId)).toEqual(local);
+    expect(await deviceProtectionProgress(local.deviceId)).toEqual({
+      phase: 'local-command-pending',
+    });
+  });
+  it.each([true, false])(
+    'leaves a pending local-command enrollment untouched when Protect all runs (online=%s)',
+    async (connected) => {
+      const local = {
+        deviceId: 'local',
+        userId: account.userId,
+        accountKeyId: account.accountKeyId,
+        enrollSecret: 'local-only-secret',
+        createdAt: Date.now(),
+      };
+      records.set('local', local);
+      supported.add('local');
+      supported.add('other');
+      await protectDevices([device('local', connected), device('other')]);
+      expect(pending('local')).toEqual(local);
+      expect(await deviceProtectionProgress('local')).toEqual({
+        phase: 'local-command-pending',
+      });
+      expect(deviceTrustRequest).toHaveBeenCalledTimes(1);
+      expect(deviceTrustRequest).toHaveBeenCalledWith(
+        'other',
+        'bind',
+        'POST',
+        expect.anything(),
+      );
+      expect(inspectEnrollmentDevice).not.toHaveBeenCalledWith('local');
+      expect(completeDeviceEnrollment).toHaveBeenCalledTimes(1);
+      expect(completeDeviceEnrollment).not.toHaveBeenCalledWith(
+        expect.objectContaining({ deviceId: 'local' }),
+        true,
+      );
+    },
+  );
   it('offers the management update, posts it once on approval, and waits for fresh capability after reconnect', async () => {
     await protectDevices([device('upgrade')]);
     expect(request).not.toHaveBeenCalled();

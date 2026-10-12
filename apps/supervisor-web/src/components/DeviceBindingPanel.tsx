@@ -2,7 +2,15 @@ import { useEffect, useState } from 'react';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { prepareDeviceEnrollment } from '../lib/deviceEnrollment';
 import type { RelayDeviceDto } from '@pockymoe/shared';
-import { ProtectDevicesButton, RemoteProtectionStatus } from './RemoteProtectionControls';
+import {
+  deviceProtectionProgress,
+  REMOTE_PROTECTION_CHANGED_EVENT,
+} from '../lib/remoteDeviceProtection';
+import { ENROLLMENT_CHANGED_EVENT } from '../lib/pendingEnrollmentStore';
+import {
+  ProtectDevicesButton,
+  RemoteProtectionStatus,
+} from './RemoteProtectionControls';
 import {
   deviceBindCommand,
   type SupervisorPlatform,
@@ -25,11 +33,57 @@ export function DeviceBindingPanel({
   const command = commands?.[platform];
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string>();
+  const [mode, setMode] = useState<'loading' | 'choice' | 'local' | 'remote'>(
+    'loading',
+  );
+  const [localRequested, setLocalRequested] = useState(false);
+  useEffect(() => {
+    let active = true,
+      generation = 0;
+    const refresh = () => {
+      const current = ++generation;
+      if (!device && !repair) {
+        setMode('local');
+        return;
+      }
+      void deviceProtectionProgress(deviceId)
+        .then((progress) => {
+          if (!active || current !== generation) return;
+          setMode(
+            progress?.phase === 'local-command-pending'
+              ? 'local'
+              : progress &&
+                  ![
+                    'complete',
+                    'already-bound',
+                    'identity-changed',
+                    'certificate-missing',
+                  ].includes(progress.phase)
+                ? 'remote'
+                : repair || localRequested
+                  ? 'local'
+                  : 'choice',
+          );
+        })
+        .catch(() => {
+          if (active && current === generation)
+            setError(translate('devices.enrollmentFailed'));
+        });
+    };
+    refresh();
+    const events = [ENROLLMENT_CHANGED_EVENT, REMOTE_PROTECTION_CHANGED_EVENT];
+    for (const event of events) window.addEventListener(event, refresh);
+    return () => {
+      active = false;
+      for (const event of events) window.removeEventListener(event, refresh);
+    };
+  }, [deviceId, !!device, repair, localRequested]);
   useEffect(() => {
     let active = true;
     setCommands(undefined);
     setCopied(false);
     setError(undefined);
+    if (mode !== 'local') return;
     const preparing = repair
       ? prepareDeviceEnrollment(deviceId, { fresh: true })
       : prepareDeviceEnrollment(deviceId);
@@ -52,16 +106,25 @@ export function DeviceBindingPanel({
     return () => {
       active = false;
     };
-  }, [deviceId, repair]);
+  }, [deviceId, repair, mode]);
   return (
     <div className="space-y-3 text-sm">
       <p>{translate('devices.protectDeviceHelp')}</p>
-      {device && !repair && <>
-        <ProtectDevicesButton devices={[device]} />
-        <RemoteProtectionStatus device={device} />
-      </>}
+      {device && mode === 'choice' && !repair && (
+        <>
+          <ProtectDevicesButton devices={[device]} />
+          <button
+            type="button"
+            className="relay-button-secondary px-3 py-2"
+            onClick={() => setLocalRequested(true)}
+          >
+            {translate('devices.showLocalBindCommand')}
+          </button>
+        </>
+      )}
+      {device && <RemoteProtectionStatus device={device} />}
       {error && <p role="alert">{error}</p>}
-      {!command && !error && (
+      {(mode === 'loading' || mode === 'local') && !command && !error && (
         <p role="status">{translate('auth.ownerPreparing')}</p>
       )}
       {command && (

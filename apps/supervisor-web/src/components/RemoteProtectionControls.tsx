@@ -85,6 +85,9 @@ const phaseLabel = (phase: ProtectionProgress['phase']) =>
       certifying: 'devices.remoteProtectionCertifying',
       complete: 'devices.remoteProtectionComplete',
       'already-bound': 'devices.remoteProtectionAlreadyBound',
+      'identity-changed': 'auth.accountDeviceIdentityChanged',
+      'certificate-missing': 'devices.certificateMissingHelp',
+      'local-command-pending': 'devices.localCommandPending',
       error: 'devices.remoteProtectionFailed',
     }) as const
   )[phase];
@@ -120,6 +123,8 @@ export function RemoteProtectionStatus({ device }: { device: RelayDeviceDto }) {
     };
   }, [device.id]);
   if (!state) return null;
+  const pinnedError =
+    state.phase === 'identity-changed' || state.phase === 'certificate-missing';
   const failed = state.phase === 'error';
   const error = failed ? state.error : undefined;
   const label =
@@ -132,7 +137,9 @@ export function RemoteProtectionStatus({ device }: { device: RelayDeviceDto }) {
     state.phase === 'update-required' || error === 'update-failed';
   return (
     <div className="mt-2 space-y-2 text-sm">
-      <p role={failed ? 'alert' : 'status'}>{translate(label)}</p>
+      <p role={failed || pinnedError ? 'alert' : 'status'}>
+        {translate(label)}
+      </p>
       {actionFailed && (
         <p role="alert">{translate('devices.remoteProtectionFailed')}</p>
       )}

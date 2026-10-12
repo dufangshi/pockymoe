@@ -1,11 +1,23 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from '@testing-library/react';
 import { beforeEach, expect, it, vi } from 'vitest';
 import { DeviceBindingPanel } from './DeviceBindingPanel';
 import { prepareDeviceEnrollment } from '../lib/deviceEnrollment';
-import { protectDevices } from '../lib/remoteDeviceProtection';
+import {
+  protectDevices,
+  deviceProtectionProgress,
+  REMOTE_PROTECTION_CHANGED_EVENT,
+} from '../lib/remoteDeviceProtection';
 import type { RelayDeviceDto } from '@pockymoe/shared';
 vi.mock('../lib/remoteDeviceProtection', () => ({
-  protectDevices: vi.fn(), deviceProtectionProgress: vi.fn(async () => undefined), updateAndProtectDevice: vi.fn(),
+  protectDevices: vi.fn(),
+  deviceProtectionProgress: vi.fn(async () => undefined),
+  updateAndProtectDevice: vi.fn(),
   REMOTE_PROTECTION_CHANGED_EVENT: 'pockymoe-remote-protection-changed',
 }));
 vi.mock('../lib/deviceEnrollment', () => ({
@@ -13,6 +25,7 @@ vi.mock('../lib/deviceEnrollment', () => ({
 }));
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(deviceProtectionProgress).mockResolvedValue(undefined);
   vi.mocked(protectDevices).mockResolvedValue(undefined);
   vi.mocked(prepareDeviceEnrollment).mockResolvedValue({
     deviceId: 'offline',
@@ -27,17 +40,84 @@ beforeEach(() => {
     value: { writeText: vi.fn().mockResolvedValue(undefined) },
   });
 });
-it('offers remote protection beside the local command and retains local repair for bound devices', async () => {
-  const device = { id: 'offline', connected: false, ownerUserId: 'u', name: 'Laptop' } as RelayDeviceDto;
-  const view = render(<DeviceBindingPanel deviceId={device.id} device={device} />);
-  expect(await screen.findByRole('button', { name: 'Copy bind command' })).toBeVisible();
-  fireEvent.click(screen.getByRole('button', { name: 'Protect this device remotely' }));
+const device = {
+  id: 'offline',
+  connected: false,
+  ownerUserId: 'u',
+  name: 'Laptop',
+} as RelayDeviceDto;
+it('offers the remote or local choice without creating an enrollment just by opening the panel', async () => {
+  const view = render(
+    <DeviceBindingPanel deviceId={device.id} device={device} />,
+  );
+  const remote = await screen.findByRole('button', {
+    name: 'Protect this device remotely',
+  });
+  expect(
+    screen.getByRole('button', { name: 'Show local bind command' }),
+  ).toBeVisible();
+  expect(prepareDeviceEnrollment).not.toHaveBeenCalled();
+  expect(
+    screen.queryByRole('button', { name: 'Copy bind command' }),
+  ).toBeNull();
+  fireEvent.click(remote);
   fireEvent.click(screen.getByRole('button', { name: 'Protect devices' }));
-  await waitFor(() => expect(protectDevices).toHaveBeenCalledExactlyOnceWith([device]));
+  await waitFor(() =>
+    expect(protectDevices).toHaveBeenCalledExactlyOnceWith([device]),
+  );
   view.unmount();
   render(<DeviceBindingPanel deviceId={device.id} device={device} repair />);
-  expect(await screen.findByRole('button', { name: 'Copy bind command' })).toBeVisible();
-  expect(screen.queryByRole('button', { name: 'Protect this device remotely' })).toBeNull();
+  expect(
+    await screen.findByRole('button', { name: 'Copy bind command' }),
+  ).toBeVisible();
+  expect(
+    screen.queryByRole('button', { name: 'Protect this device remotely' }),
+  ).toBeNull();
+});
+it('hides remote binding after the user chooses a local command', async () => {
+  render(<DeviceBindingPanel deviceId={device.id} device={device} />);
+  fireEvent.click(
+    await screen.findByRole('button', { name: 'Show local bind command' }),
+  );
+  expect(
+    await screen.findByRole('button', { name: 'Copy bind command' }),
+  ).toBeVisible();
+  expect(prepareDeviceEnrollment).toHaveBeenCalledExactlyOnceWith(device.id);
+  expect(
+    screen.queryByRole('button', { name: 'Protect this device remotely' }),
+  ).toBeNull();
+});
+it('reopens an existing local enrollment with its command and no remote alternative', async () => {
+  vi.mocked(deviceProtectionProgress).mockResolvedValue({
+    phase: 'local-command-pending',
+  });
+  render(<DeviceBindingPanel deviceId={device.id} device={device} />);
+  expect(
+    await screen.findByRole('button', { name: 'Copy bind command' }),
+  ).toBeVisible();
+  expect(
+    await screen.findByText(/Waiting for the local bind command/),
+  ).toBeVisible();
+  expect(
+    screen.queryByRole('button', { name: 'Protect this device remotely' }),
+  ).toBeNull();
+});
+it('keeps a remote enrollment exclusive when a progress event arrives from another view', async () => {
+  render(<DeviceBindingPanel deviceId={device.id} device={device} />);
+  expect(
+    await screen.findByRole('button', { name: 'Show local bind command' }),
+  ).toBeVisible();
+  vi.mocked(deviceProtectionProgress).mockResolvedValue({ phase: 'queued' });
+  act(() => window.dispatchEvent(new Event(REMOTE_PROTECTION_CHANGED_EVENT)));
+  await waitFor(() =>
+    expect(
+      screen.queryByRole('button', { name: 'Show local bind command' }),
+    ).toBeNull(),
+  );
+  expect(prepareDeviceEnrollment).not.toHaveBeenCalled();
+  expect(
+    screen.queryByRole('button', { name: 'Copy bind command' }),
+  ).toBeNull();
 });
 it('shows and copies a local command without requesting the offline device', async () => {
   render(<DeviceBindingPanel deviceId="offline" />);

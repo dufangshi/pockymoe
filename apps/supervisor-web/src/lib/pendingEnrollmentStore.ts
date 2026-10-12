@@ -5,7 +5,12 @@ import type { AccountKeyInfo, DeviceCertificate } from './accountVault';
 export const ENROLLMENT_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000;
 export const ENROLLMENT_CHANGED_EVENT = 'pockymoe-enrollment-changed';
 export type RemoteProtectionPhase =
-  | 'queued' | 'update-required' | 'updating' | 'binding' | 'certifying' | 'error';
+  | 'queued'
+  | 'update-required'
+  | 'updating'
+  | 'binding'
+  | 'certifying'
+  | 'error';
 export interface RemoteProtectionIntent {
   phase: RemoteProtectionPhase;
   updateRequestedAt?: number;
@@ -70,19 +75,26 @@ export async function pendingIsCurrent(pending: PendingEnrollment) {
 }
 export async function savePending(
   pending: PendingEnrollment,
-  expected?: PendingEnrollment,
+  expected?: PendingEnrollment | null,
   expectedRemotePhase?: RemoteProtectionPhase,
 ) {
   const saved = await store<boolean>((s, done) => {
-    if (!expected) {
+    if (expected === undefined) {
       s.put(pending);
       done(true);
       return;
     }
     const request = s.get(pending.deviceId);
     request.onsuccess = () => {
-      const current = sameEnrollment(request.result, expected) &&
-        (expectedRemotePhase === undefined || request.result.remoteProtection?.phase === expectedRemotePhase);
+      // null claims an unused slot atomically. A concurrent local/remote choice
+      // must keep its own secret and enrollment mode, including across tabs.
+      const current =
+        expected === null
+          ? !request.result ||
+            Date.now() - request.result.createdAt >= ENROLLMENT_LIFETIME_MS
+          : sameEnrollment(request.result, expected) &&
+            (expectedRemotePhase === undefined ||
+              request.result.remoteProtection?.phase === expectedRemotePhase);
       if (current) s.put(pending);
       done(current);
     };
