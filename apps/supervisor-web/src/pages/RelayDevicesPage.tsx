@@ -84,6 +84,10 @@ function errorMessage(caught: unknown, fallback: string) {
       : fallback;
 }
 
+function verificationCancelled(caught: unknown) {
+  return caught instanceof DOMException && caught.name === 'AbortError';
+}
+
 export function mergeRelayPortalSummary(
   previous: RelayPortalSummaryDto | null,
   next: RelayPortalSummaryDto,
@@ -199,6 +203,73 @@ export function RelayDevicesPage() {
   const portal = useDevicePresence(rawPortal);
   const [rotatingDevice, setRotatingDevice] = useState<RelayDeviceDto | null>(null);
   const [rotationVerification,setRotationVerification] = useState<SecurityStatus | null>(null);
+  const [setupVerification, setSetupVerification] = useState<SecurityStatus | null>(null);
+  const mountedRef = useRef(true);
+  const pendingVerificationRef = useRef<{
+    promise: Promise<void>;
+    resolve: () => void;
+    reject: (error: unknown) => void;
+  } | null>(null);
+
+  function finishSetupVerification(verified: boolean) {
+    const pending = pendingVerificationRef.current;
+    pendingVerificationRef.current = null;
+    setSetupVerification(null);
+    if (verified) pending?.resolve();
+    else pending?.reject(new DOMException('Aborted', 'AbortError'));
+  }
+
+  function reverifySetup() {
+    if (pendingVerificationRef.current) {
+      return pendingVerificationRef.current.promise;
+    }
+    let resolve!: () => void;
+    let reject!: (error: unknown) => void;
+    const promise = new Promise<void>((accept, decline) => {
+      resolve = accept;
+      reject = decline;
+    });
+    const pending = { promise, resolve, reject };
+    pendingVerificationRef.current = pending;
+    void securityRequest<SecurityStatus>('').then(
+      (status) => {
+        if (pendingVerificationRef.current === pending) setSetupVerification(status);
+      },
+      (error: unknown) => {
+        if (pendingVerificationRef.current === pending) {
+          pendingVerificationRef.current = null;
+          pending.reject(error);
+        }
+      },
+    );
+    return promise;
+  }
+
+  async function withSetupReverification<T>(action: () => Promise<T>): Promise<T> {
+    try {
+      return await action();
+    } catch (caught) {
+      if (
+        !(caught instanceof ApiError) || caught.statusCode !== 403 ||
+        caught.payload.code !== 'reauthentication_required'
+      ) throw caught;
+      if (!mountedRef.current) throw new DOMException('Aborted', 'AbortError');
+      // Keep the original action (and clipboard promise) pending through the
+      // same security verification used for token replacement. Retry only once.
+      await reverifySetup();
+      if (!mountedRef.current) throw new DOMException('Aborted', 'AbortError');
+      return action();
+    }
+  }
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      pendingVerificationRef.current?.reject(new DOMException('Aborted', 'AbortError'));
+      pendingVerificationRef.current = null;
+    };
+  }, []);
   async function rotateDevice(verified=false) {
     if (!rotatingDevice) return;
     try {
@@ -392,7 +463,9 @@ export function RelayDevicesPage() {
     setError(null);
     try {
       await requireUnlock('bind-device');
-      const result = await createRelayDevice({ name: deviceName });
+      const result = await withSetupReverification(() =>
+        createRelayDevice({ name: deviceName }),
+      );
       validateDeviceSetupToken(result.token);
       setCreatedBinding(await prepareDeviceEnrollment(result.device.id));
       setCreatedDevice(result);
@@ -400,7 +473,9 @@ export function RelayDevicesPage() {
       setAddDeviceOpen(false);
       await load({ showLoading: false });
     } catch (caught) {
-      setError(errorMessage(caught, translate("devices.unableToCreateDevice")));
+      if (!verificationCancelled(caught)) {
+        setError(errorMessage(caught, translate("devices.unableToCreateDevice")));
+      }
     } finally {
       setBusy(null);
     }
@@ -600,7 +675,9 @@ export function RelayDevicesPage() {
 
     try {
       const command = prepareDeviceEnrollment(device.id).then(async binding => {
-        const { token } = await request<{ token: string }>(`/relay/devices/${device.id}/setup-token`, { method: 'POST' });
+        const { token } = await withSetupReverification(() =>
+          request<{ token: string }>(`/relay/devices/${device.id}/setup-token`, { method: 'POST' }),
+        );
         return relaySupervisorCommand(token, platform, binding);
       });
       // Start the clipboard operation within the tap gesture, including Safari.
@@ -622,8 +699,9 @@ export function RelayDevicesPage() {
         );
         copiedResetTimeoutRef.current = null;
       }, 1600);
-    } catch {
+    } catch (caught) {
       setCopiedDeviceId(null);
+      if (verificationCancelled(caught)) return;
       setDeviceCopyError({
         deviceId: device.id,
         message:
@@ -996,6 +1074,13 @@ export function RelayDevicesPage() {
       ) : null}
       <ConfirmDialog open={Boolean(rotatingDevice) && !rotationVerification} title={translate("devices.replaceDeviceToken")} description={translate("devices.theCurrentConnectionWillCloseUpdateThe")} confirmLabel={translate("devices.replaceToken")} onConfirm={() => void rotateDevice()} onCancel={() => setRotatingDevice(null)} />
       {rotationVerification && <SecurityVerification status={rotationVerification} onCancel={()=> {setRotationVerification(null);setRotatingDevice(null);}} onVerified={()=>rotateDevice(true)} />}
+      {setupVerification && (
+        <SecurityVerification
+          status={setupVerification}
+          onCancel={() => finishSetupVerification(false)}
+          onVerified={async () => finishSetupVerification(true)}
+        />
+      )}
       <ConfirmDialog
         open={deletingDevice !== null}
         title={translate("devices.removeDevice")}

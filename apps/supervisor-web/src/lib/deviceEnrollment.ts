@@ -54,6 +54,21 @@ const decode = (text: string) =>
   Uint8Array.from(atob(text.replace(/-/g, '+').replace(/_/g, '/')), (c) =>
     c.charCodeAt(0),
   );
+/** Matches pockymoe relay-fingerprint: SHA-256 of the SEC1 point, base64url. */
+export async function deviceIdentityFingerprint(identityKey: string) {
+  const identity = decode(identityKey);
+  if (
+    identity.length !== 65 ||
+    identity[0] !== 4 ||
+    encode(identity) !== identityKey
+  )
+    throw new Error(translate('devices.enrollmentMismatch'));
+  return `SHA-256 ${encode(
+    new Uint8Array(
+      await crypto.subtle.digest('SHA-256', identity.slice().buffer),
+    ),
+  )}`;
+}
 export async function createPendingEnrollment(
   deviceId: string,
   account: AccountKeyInfo,
@@ -191,10 +206,25 @@ async function complete(
     return false;
   }
   if (!(await pendingIsCurrent(pending))) return false;
-  const descriptor = await inspectEnrollmentDevice(pending.deviceId);
   const previous = (await boundDeviceIdentities()).find(
     (d) => d.deviceId === pending.deviceId,
   );
+  // Read the last verified certificate before descriptor inspection can refresh
+  // the transport's certificate cache. Only its authenticated pin is a baseline.
+  const cached = await accountStore<DeviceCertificate>(
+    `device-certificate:${account.accountKeyId}:${pending.deviceId}`,
+  );
+  const pinnedCertificate =
+    cached &&
+    (await verifyDeviceCertificate(
+      cached,
+      account,
+      pending.deviceId,
+      previous?.identityKey || cached.identityKey,
+    ))
+      ? cached
+      : null;
+  const descriptor = await inspectEnrollmentDevice(pending.deviceId);
   const replacing =
     !!previous && previous.identityKey !== descriptor.identityKey;
   const confirmReplacement = async () => {
@@ -216,15 +246,23 @@ async function complete(
   };
   let certificate = descriptor.certificate;
   let unlocked: UnlockedAccount | undefined;
-  if (
-    !certificate ||
-    !(await verifyDeviceCertificate(
+  const certificateValid =
+    !!certificate &&
+    (await verifyDeviceCertificate(
       certificate,
       account,
       pending.deviceId,
       descriptor.identityKey,
-    ))
-  ) {
+    ));
+  if (
+    certificateValid &&
+    pinnedCertificate &&
+    certificate!.createdAt < pinnedCertificate.createdAt
+  )
+    throw new Error(translate('devices.enrollmentCertificateOlder'));
+  // A certificate alone never authorizes replacing a pinned identity. Even an
+  // already certified replacement must prove possession of this pending secret.
+  if (!certificateValid || replacing) {
     const enrollment = await deviceTrustRequest<EnrollmentResponse>(
       pending.deviceId,
       'enrollment',
@@ -248,7 +286,7 @@ async function complete(
       accountKeyId: pending.accountKeyId,
       deviceId: pending.deviceId,
       identityKey: descriptor.identityKey,
-      createdAt: Date.now(),
+      createdAt: Math.max(Date.now(), pinnedCertificate?.createdAt ?? 0),
     };
     certificate = {
       version: 1,
@@ -269,8 +307,13 @@ async function complete(
       ))
     )
       throw new Error(translate('devices.enrollmentMismatch'));
+    if (
+      pinnedCertificate &&
+      installed.certificate.createdAt < pinnedCertificate.createdAt
+    )
+      throw new Error(translate('devices.enrollmentCertificateOlder'));
     certificate = installed.certificate;
-  } else await confirmReplacement();
+  }
   if (!(await pendingIsCurrent(pending))) return false;
   unlocked ??= await requireUnlock('certify-device');
   if (

@@ -368,3 +368,23 @@ it('does not advertise Protected before the encrypted browser registration role 
   await expect(transport.exchange(new Request(endpoint('version')))).rejects.toMatchObject({ code: 'accountCertificateInvalid' });
   expect(reporter).not.toHaveBeenCalledWith(expect.objectContaining({ state: 'encrypted', certificateVerified: true, role: 'owner' }));
 });
+
+it('refuses a certificate older than the verified pin without rolling back the certificate cache', async () => {
+  const a = vectors.account;
+  const pinned = { ...vectors.deviceCertificate.certificate, createdAt: vectors.deviceCertificate.certificate.createdAt + 1 };
+  pinned.signature = await c.sign(await c.importPrivate(a.accountPrivateKeyPkcs8), c.inputs.device(pinned));
+  state.store.set(`device-certificate:${a.accountKeyId}:${device}`, pinned);
+  await expect(transport.exchange(new Request(endpoint('version')))).rejects.toMatchObject({ code: 'accountCertificateInvalid' });
+  expect(state.store.get(`device-certificate:${a.accountKeyId}:${device}`)).toEqual(pinned);
+  expect(wires).toHaveLength(0);
+  transport.clearTransportKeyCache(device);
+  await expect(transport.exchange(new Request(endpoint('version')))).rejects.toMatchObject({ code: 'accountCertificateInvalid' });
+  expect(state.store.get(`device-certificate:${a.accountKeyId}:${device}`)).toEqual(pinned);
+});
+
+it('never treats an unverified cached certificate timestamp as a freshness pin', async () => {
+  const a = vectors.account;
+  state.store.set(`device-certificate:${a.accountKeyId}:${device}`, { ...vectors.deviceCertificate.certificate, createdAt: Date.now() + 60000 });
+  expect((await transport.exchange(new Request(endpoint('version')))).response.ok).toBe(true);
+  expect(state.store.get(`device-certificate:${a.accountKeyId}:${device}`)).toEqual(vectors.deviceCertificate.certificate);
+});
