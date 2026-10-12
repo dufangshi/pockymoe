@@ -1,6 +1,7 @@
 import { sharingMutation } from './signedSharing';
 import { relayOrigin, relayUrl, relaySocketUrl, relayFetchInit } from './relayOrigin';
-import { clearOwnerSession } from './ownerSession';
+import { logoutAccount } from './accountVaultState';
+import { startAccountLogin, setAccountSession, cancelAccountLogin } from './accountAuth';
 import { confirmWorkspaceDocumentLeave, type WorkspaceDocumentSnapshot, type WorkspaceDocumentSaveInput, type WorkspaceSaveReceipt } from "@pockymoe/thread-ui";
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { encryptedBrowserFetch, encryptedRelaySocket } from './relayTransport';
@@ -588,6 +589,7 @@ export async function fetchRelaySession() {
     cache: 'no-store',
   });
   workspaceActorScope = `relay:${result.user?.id??'anonymous'}`;
+  if (result.user?.role !== 'admin') await setAccountSession(result.authenticated ? result.user?.id ?? null : null, Boolean((result as RelaySessionDto & { oauthOnly?: boolean }).oauthOnly));
   return result;
 }
 
@@ -596,14 +598,7 @@ export async function relayLogin(input: {
   password: string;
 }) {
   enableRelayMode();
-  const result = await request<RelayLoginResultDto>(
-    '/relay/auth/login',
-    {
-      method: 'POST',
-      body: JSON.stringify(input),
-    },
-    { auth: 'none' },
-  );
+  const result = await startAccountLogin(input.identifier, input.password);
   setStoredRelayToken(result.token ?? null);
   return result;
 }
@@ -645,31 +640,13 @@ export async function relayAdminLogout() {
   return result;
 }
 
-export async function relayRegister(input: {
-  email: string;
-  username: string;
-  password: string;
-  registrationPassword?: string;
-}) {
-  enableRelayMode();
-  const result = await request<RelayRegisterResultDto>(
-    '/relay/auth/register',
-    {
-      method: 'POST',
-      body: JSON.stringify(input),
-    },
-    { auth: 'none' },
-  );
-  setStoredRelayToken(result.token ?? null);
-  return result;
-}
-
 export async function relayLogout() {
   if (!confirmWorkspaceDocumentLeave()) throw new Error(translate('files.keepEditing'));
   const result = await request<RelaySessionDto>('/relay/auth/logout', {
     method: 'POST',
   });
-  await clearOwnerSession();
+  cancelAccountLogin();
+  await logoutAccount();
   setStoredRelayToken(null);
   setSelectedRelayDeviceId(null);
   setSelectedRelayThreadId(null);
@@ -715,17 +692,6 @@ export function deleteRelayDevice(deviceId: string) {
 
 export function updateRelayAccount(input: { username?: string; avatarUrl?: string | null }) {
   return request<RelayUserDto>('/relay/account', {
-    method: 'PATCH',
-    body: JSON.stringify(input),
-  });
-}
-
-export function updateRelayPassword(input: {
-  currentPassword: string;
-  newPassword: string;
-  verificationToken?: string;
-}) {
-  return request<RelayUserDto>('/relay/account/password', {
     method: 'PATCH',
     body: JSON.stringify(input),
   });

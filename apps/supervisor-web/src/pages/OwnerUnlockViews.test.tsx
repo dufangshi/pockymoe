@@ -17,11 +17,6 @@ vi.mock('../lib/relayTransportCrypto', () => ({
 vi.mock('../components/ProductHeader', () => ({ ProductHeader: () => null }));
 vi.mock('../components/DeviceEncryptionStatus', () => ({ DeviceEncryptionStatus: () => null }));
 vi.mock('../components/onboarding/TourProvider', () => ({ TourLauncherButton: () => null }));
-vi.mock('../components/OwnerUnlockPrompt', () => ({ OwnerUnlockButton: () => null }));
-vi.mock('../lib/ownerSession', async (original) => ({
-  ...await original<typeof import('../lib/ownerSession')>(),
-  fetchOwnerCredentials: vi.fn().mockResolvedValue([]),
-}));
 let unlocked: boolean;
 beforeEach(() => {
   vi.clearAllMocks();
@@ -33,7 +28,7 @@ beforeEach(() => {
     controller: { postMessage: vi.fn() }, addEventListener: vi.fn(),
   } });
   vi.mocked(exchange).mockImplementation(async request => {
-    if (!unlocked) return { response: Response.json({ code: 'owner_session_required' }, { status: 401 }) };
+    if (!unlocked) return { response: Response.json({ code: 'browser_registration_required' }, { status: 401 }) };
     if (request.url.endsWith('/workspaces')) return { response: Response.json([{
       id: 'w', label: 'Recovered workspace', absPath: '/tmp/work', createdAt: '2026-01-01', lastOpenedAt: null,
     }]) };

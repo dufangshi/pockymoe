@@ -1,3 +1,7 @@
+import { finishAccountLogin, registerAccount, startAccountRecovery, cancelAccountLogin, type PreparedRegistration } from '../lib/accountAuth';
+import { requireUnlock } from '../lib/accountVault';
+import { ensureBrowserAccess, RecoveryConfirmation } from '../components/AccountUnlockPrompt';
+import { createVault, openVault, registerBrowser, changeAccountPassword } from '../lib/accountVaultState';
 import { relayUrl } from '../lib/relayOrigin';
 import { LanguageSwitcher } from '@pockymoe/thread-ui/i18n';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
@@ -20,10 +24,9 @@ import {
   fetchRelaySession,
   relayLogin,
   relayLogout,
-  relayRegister,
 } from '../lib/api';
 
-type AuthMode = 'login' | 'register';
+type AuthMode = 'login' | 'register' | 'recover';
 
 const DEFAULT_RETURN_TO = '/relay-devices';
 const RETURN_TO_STORAGE_KEY = 'remote-codex-relay-return-to';
@@ -157,6 +160,9 @@ export function RelayPortalPage() {
       setSession(signedOutSession);
       throw new Error(translate("auth.thisPortalAcceptsRelayUserAccountsOnly"));
     }
+    if (!nextSession.user) throw new Error(translate('auth.accountUnlockRequired'));
+    const flow = await finishAccountLogin(nextSession.user.id);
+    if (flow.recovery) { await requireUnlock('change-password'); }
     continueToRequestedPage();
   }
 
@@ -233,6 +239,8 @@ function RelayAuthPanel({
   const [email, setEmail] = useState('');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [prepared, setPrepared] = useState<PreparedRegistration>();
+  const [recoveryNewPassword, setRecoveryNewPassword] = useState('');
   const [registrationPassword, setRegistrationPassword] = useState('');
   const [error, setError] = useState(initialError ?? oauthError);
   const [notice, setNotice] = useState<string | null>(oauthNotice);
@@ -285,7 +293,10 @@ function RelayAuthPanel({
     setError(null);
     setNotice(null);
     try {
-      if (mode === 'login') {
+      if (mode === 'recover') {
+        const result = await startAccountRecovery(identifier, password);
+        if (result.challengeRequired) { setChallenge({ challengeRequired: true, authenticator: Boolean(result.authenticator), passkey: Boolean(result.passkey) }); return; }
+      } else if (mode === 'login') {
         const result = await relayLogin({ identifier, password });
         setPassword('');
         if (result.challengeRequired) {
@@ -293,22 +304,16 @@ function RelayAuthPanel({
           return;
         }
       } else {
-        if (password.length < 8) {
-          setError(translate("auth.passwordMustBeAtLeast8Characters"));
-          return;
-        }
-        if (username.trim().length < 3) {
-          setError(translate("auth.usernameMustBeAtLeast3Characters"));
+        if (!prepared) {
+          if (username.trim().length < 3) throw new Error(translate('auth.usernameMustBeAtLeast3Characters'));
+          setPrepared(await createVault(crypto.randomUUID(), password));
           return;
         }
         const code = registrationPassword.trim();
-        const result = await relayRegister({
-          email,
-          username,
-          password,
-          ...(code ? { registrationPassword: code } : {}),
-        });
+        const result = await registerAccount({ email, username, ...(code ? { registrationPassword: code } : {}) }, prepared);
+        if (!result.pendingApproval) { await openVault(prepared.vault, password); await registerBrowser(); }
         if (result.pendingApproval) {
+          setPrepared(undefined);
           setNotice(
             translate("auth.registrationRequestSentAnAdminMustApprove"),
           );
@@ -316,7 +321,7 @@ function RelayAuthPanel({
           return;
         }
       }
-      await onAuthenticated();
+      await completeAuthentication();
     } catch (caught) {
       setError(errorMessage(caught, translate("auth.unableToAuthenticateWithTheRelay")));
     } finally {
@@ -324,7 +329,25 @@ function RelayAuthPanel({
     }
   }
 
-  if (challenge) return <LoginVerification challenge={challenge} onSuccess={onAuthenticated} onBack={() => setChallenge(null)} />;
+  async function completeAuthentication() {
+    if (mode === 'recover') {
+      const session = await fetchRelaySession();
+      if (!session.user) throw new Error(translate('auth.accountUnlockRequired'));
+      await finishAccountLogin(session.user.id);
+      await changeAccountPassword(recoveryNewPassword);
+      await registerBrowser();
+      setPassword(''); setRecoveryNewPassword('');
+    }
+    await onAuthenticated();
+  }
+  if (prepared) return <section className="w-full max-w-md space-y-4 rounded-xl border p-5">
+    <RecoveryConfirmation code={prepared.recoveryCode} busy={submitting} onConfirm={() => {
+      void submit({ preventDefault() {} } as FormEvent<HTMLFormElement>);
+    }} />
+    {error && <p role="alert">{error}</p>}
+    <button disabled={submitting} onClick={() => setPrepared(undefined)}>{translate('auth.cancel')}</button>
+  </section>;
+  if (challenge) return <LoginVerification challenge={challenge} onSuccess={completeAuthentication} onBack={() => { cancelAccountLogin(); setChallenge(null); }} />;
 
   return (
     <section className="w-full max-w-md rounded-lg border border-[var(--theme-border)] bg-[var(--theme-panel)] p-5 shadow-[var(--theme-shadow)] sm:p-6">
@@ -414,7 +437,7 @@ function RelayAuthPanel({
         onSubmit={submit}
         role="tabpanel"
       >
-        {mode === 'login' ? (
+        {mode !== 'register' ? (
           <RelayInput
             autoComplete="username"
             disabled={submitting}
@@ -468,19 +491,21 @@ function RelayAuthPanel({
           </>
         )}
         <RelayInput
-          autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
+          autoComplete={mode === 'login' ? 'current-password' : mode === 'recover' ? 'off' : 'new-password'}
           disabled={submitting}
-          label={translate("auth.password")}
+          label={translate(mode === 'recover' ? 'auth.accountRecoveryCode' : 'auth.password')}
           name="password"
           onChange={setPassword}
           required
-          type="password"
+          type={mode === 'recover' ? 'text' : 'password'}
           value={password}
           {...(mode === 'register'
-            ? { description: translate("auth.useAtLeast8Characters"), minLength: 8 }
+            ? { description: translate("auth.accountPasswordHelp"), minLength: 12 }
             : {})}
         />
 
+        {mode === 'recover' && <RelayInput autoComplete="new-password" label={translate('auth.newPassword')} name="newPassword" type="password" minLength={12} required value={recoveryNewPassword} onChange={setRecoveryNewPassword} description={translate('auth.accountPasswordHelp')} />}
+        {mode !== 'register' && <button type="button" className="owner-trust-account-link" onClick={() => { setMode(mode === 'recover' ? 'login' : 'recover'); setPassword(''); }}>{translate(mode === 'recover' ? 'auth.accountUsePassword' : 'auth.accountUseRecovery')}</button>}
         {error ? (
           <RelayNotice tone="danger">
             <p>{error}</p>
@@ -505,7 +530,7 @@ function RelayAuthPanel({
             ? translate("auth.working")
             : mode === 'login'
               ? translate("auth.signIn")
-              : translate("auth.createAccount")}
+              : translate(mode === 'recover' ? 'auth.accountRecover' : "auth.createAccount")}
         </button>
       </form>
     </section>

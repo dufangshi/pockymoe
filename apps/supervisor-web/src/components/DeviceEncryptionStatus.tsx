@@ -118,7 +118,7 @@ export function DeviceEncryptionStatus({
   const encrypted = status?.state === 'encrypted',
     changed = status?.state === 'identity-changed';
   if (hideHealthy && protection !== 'certificate-missing' && protection !== 'pending' && status?.role !== 'grantee' && !changed && !locked && connection?.loaded && connection.state === 'connected') return null;
-  const label = !deviceId ? translate("auth.localDeviceConnection") : locked ? translate("auth.ownerUnlock") : encrypted
+  const label = !deviceId ? translate("auth.localDeviceConnection") : locked ? translate("auth.accountUnlock") : encrypted
     ? translate(status?.role === 'grantee' ? status.identityTrust === 'invite' ? 'sharing.granteeConnectionPinned' : 'sharing.granteeConnectionTofu' : 'auth.deviceConnectionEncrypted')
     : changed
       ? translate("auth.deviceIdentityChanged")
@@ -231,7 +231,7 @@ export function DeviceEncryptionStatus({
             {deviceId && <span className="block space-y-2">
               <span className="block" role={protection === 'certificate-missing' ? 'alert' : undefined}>{translate(protectionLabel(protection))}</span>
               {protection === 'certificate-missing' && <span className="block">{translate('devices.certificateMissingHelp')}</span>}
-              {locked && <button className="relay-button-primary px-3 py-2" onClick={() => { setOpen(false); window.dispatchEvent(new CustomEvent('remote-codex-owner-unlock-request', { detail: status })); }}>{translate('auth.ownerUnlock')}</button>}
+              {locked && <button className="relay-button-primary px-3 py-2" onClick={() => { setOpen(false); window.dispatchEvent(new CustomEvent('remote-codex-owner-unlock-request', { detail: status })); }}>{translate('auth.accountUnlock')}</button>}
               {status?.role === 'grantee' && <span className="block">{translate(status.identityTrust === 'invite' ? 'sharing.invitePinned' : 'sharing.recipientTofu')}</span>}
               {status?.strict && <span className="block">{translate('auth.ownerStrict')}</span>}
               {protection === 'not-protected' && <span className="block">{translate('devices.protectDeviceHelp')}</span>}
