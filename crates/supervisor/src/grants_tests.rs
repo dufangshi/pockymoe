@@ -423,6 +423,7 @@ async fn thread_lineage_and_route_access_are_local_read_and_control() {
     );
     g.relay_ref.kind = "grant".into();
     g.scope = "device".into();
+    g.workspace_scope = "all".into();
     g.thread_id = None;
     g.can_create_threads = true;
     put(&state.db, &g.grant_id, &g, &owner, owner_trust::now()).unwrap();
@@ -699,4 +700,211 @@ async fn grantee_registration_accepts_key_fetched_from_thread_scoped_handshake()
             .actor(),
         "grantee:recipient"
     );
+}
+
+#[tokio::test]
+async fn device_selected_workspaces_are_rejected_and_legacy_rows_fail_closed() {
+    let (_dir, state, owner, g, _r, key, p) = fixture().await;
+    let owner_key = crate::owner_trust::tests::session_key();
+    let mut unsupported = g.clone();
+    unsupported.relay_ref.kind = "grant".into();
+    unsupported.scope = "device".into();
+    unsupported.workspace_ids = vec!["selected-workspace".into()];
+    unsupported.workspace_access = "write".into();
+    unsupported.can_create_threads = true;
+    for level in ["read", "control"] {
+        unsupported.thread_access = level.into();
+        assert_eq!(
+            error_status(
+                state
+                    .db
+                    .with(|c| validate(c, &g.grant_id, &unsupported))
+                    .map(|_| json!({}))
+            ),
+            400
+        );
+        let (status, body) = request(
+            &state,
+            Some(&owner),
+            &owner_key,
+            "PUT",
+            &format!("/api/transport/grants/{}", g.grant_id),
+            serde_json::to_value(&unsupported).unwrap(),
+        )
+        .await;
+        assert_eq!(
+            (status, body["code"].as_str()),
+            (400, Some("invalid_grant"))
+        );
+    }
+    // Keep a valid thread share so this remains an authenticated grantee. Simulate
+    // an unsupported device grant persisted by an older Supervisor version.
+    unsupported.grant_id = B64.encode([9; 16]);
+    state.db.with(|c| {
+        c.execute("INSERT INTO device_grants(grant_id,grant_json,created_at,created_by) VALUES(?1,?2,?3,?4)", params![unsupported.grant_id, serde_json::to_string(&unsupported)?, owner_trust::now(), owner.actor()])?;
+        assert_eq!(live_rows(c, owner_trust::now())?.len(), 1);
+        Ok(())
+    }).unwrap();
+    for (method, path) in [
+        ("GET", "/api/workspaces/selected-workspace/files/raw"),
+        ("GET", "/api/workspaces/other/files/raw"),
+        ("GET", "/api/threads/other"),
+        ("GET", "/api/workspaces/other/search"),
+        ("GET", "/api/search"),
+        ("GET", "/api/threads"),
+        ("GET", "/api/workspaces"),
+        ("POST", "/api/threads/start"),
+    ] {
+        assert!(authorize_path(&state, &p, method, path).is_err());
+        let (status, body) = request(
+            &state,
+            Some(&p),
+            &key,
+            method,
+            path,
+            json!({"workspaceId":"other"}),
+        )
+        .await;
+        assert_eq!(
+            (status, body["code"].as_str()),
+            (403, Some("grant_denied")),
+            "{path}"
+        );
+    }
+    delete(&state.db, &g.grant_id, owner_trust::now()).unwrap();
+    assert!(!p.valid(&state));
+    assert!(state
+        .db
+        .with(|c| live_credential(c, &p.credential_id, owner_trust::now()))
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn device_grantees_cannot_read_host_local_import_candidates() {
+    let (_dir, state, owner, mut g, _r, key, p) = fixture().await;
+    g.relay_ref.kind = "grant".into();
+    g.scope = "device".into();
+    g.workspace_scope = "all".into();
+    for level in ["read", "control"] {
+        g.thread_access = level.into();
+        put(&state.db, &g.grant_id, &g, &owner, owner_trust::now()).unwrap();
+        for literal in ["start", "import", "import-candidates"] {
+            let path = format!("/api/threads/{literal}?view=all");
+            assert!(authorize_path(&state, &p, "GET", &path).is_err());
+            let (status, body) = request(&state, Some(&p), &key, "GET", &path, Value::Null).await;
+            assert_eq!(
+                (status, body["code"].as_str()),
+                (403, Some("grant_denied")),
+                "{path}"
+            );
+        }
+    }
+    assert!(authorize_path(&state, &owner, "GET", "/api/threads/import-candidates").is_ok());
+    assert_eq!(
+        request(
+            &state,
+            Some(&owner),
+            &crate::owner_trust::tests::session_key(),
+            "GET",
+            "/api/threads/import-candidates",
+            Value::Null
+        )
+        .await
+        .0,
+        200
+    );
+}
+
+async fn download_request(
+    state: &Arc<Supervisor>,
+    p: &OwnerPrincipal,
+    key: &SigningKey,
+    path: &str,
+) -> (Value, Vec<u8>) {
+    let (r, response_key, aad) = encrypted_with_key(state, "GET", path, Value::Null, Some(p), key);
+    crate::owner_trust::tests::decoded_parts(
+        crate::tunnel::forward_local(state, r, None).await,
+        &response_key,
+        &aad,
+    )
+}
+
+#[tokio::test]
+async fn encrypted_streams_require_the_starting_principal_and_valid_scoped_ids() {
+    use crate::secure_transport::StreamPrincipal;
+    let (_dir, state, owner, mut g, _r, key, p) = fixture().await;
+    let owner_key = crate::owner_trust::tests::session_key();
+    g.relay_ref.kind = "grant".into();
+    g.scope = "device".into();
+    g.workspace_scope = "all".into();
+    g.workspace_access = "read".into();
+    put(&state.db, &g.grant_id, &g, &owner, owner_trust::now()).unwrap();
+    // Generic owner-only streams must not be accessible through invented thread
+    // or workspace paths, even when the relay exposes the continuation ID.
+    let transport = crate::secure_transport::transport(&state).unwrap();
+    let (_, next) = transport
+        .streams
+        .begin(
+            "/api/threads/import-candidates",
+            axum::body::Body::from(vec![21u8; 1024 * 1024 + 7]),
+            StreamPrincipal::new(Some(&owner), None),
+        )
+        .await
+        .unwrap();
+    let next = next.unwrap();
+    for prefix in ["/api/threads/zzz", "/api/workspaces/zzz"] {
+        let (meta, _) = download_request(&state, &p, &key, &next.replacen("/api", prefix, 1)).await;
+        assert_eq!(meta["status"], 410);
+    }
+    let (meta, bytes) = download_request(&state, &owner, &owner_key, &next).await;
+    assert_eq!(meta["status"], 200);
+    assert_eq!(bytes, vec![21u8; 7]);
+
+    let ws = state
+        .create_workspace(pockymoe_protocol::CreateWorkspaceInput {
+            abs_path: Some(state.config.workspace_root.to_string_lossy().into()),
+            git_url: None,
+            label: Some("Streaming ACL".into()),
+        })
+        .unwrap();
+    std::fs::write(
+        state.config.workspace_root.join("large.bin"),
+        vec![42u8; 1024 * 1024 + 7],
+    )
+    .unwrap();
+    let path = format!("/api/workspaces/{}/files/download?path=large.bin", ws.id);
+    let (meta, bytes) = download_request(&state, &owner, &owner_key, &path).await;
+    assert_eq!(meta["status"], 200);
+    assert_eq!(bytes.len(), 1024 * 1024);
+    let next = meta["streamNext"].as_str().unwrap();
+    assert_eq!(
+        download_request(&state, &p, &key, next).await.0["status"],
+        410
+    );
+    let (meta, bytes) = download_request(&state, &owner, &owner_key, next).await;
+    assert_eq!(meta["status"], 200);
+    assert_eq!(bytes, vec![42u8; 7]);
+    // A different session for the same grantee and credential is also a different
+    // principal. Only the original session can finish its own download.
+    let mut other = p.clone();
+    other.session_id = "another-grantee-session".into();
+    state.db.with(|c| {
+        c.execute("INSERT INTO grantee_sessions(session_id,public_key,credential_id,user_id,expires_at) SELECT ?1,public_key,credential_id,user_id,expires_at FROM grantee_sessions WHERE session_id=?2", params![other.session_id, p.session_id])?;
+        Ok(())
+    }).unwrap();
+    let (meta, _) = download_request(&state, &p, &key, &path).await;
+    assert_eq!(meta["status"], 200);
+    let next = meta["streamNext"].as_str().unwrap();
+    assert_eq!(
+        download_request(&state, &other, &key, next).await.0["status"],
+        410
+    );
+    assert_eq!(
+        download_request(&state, &owner, &owner_key, next).await.0["status"],
+        410
+    );
+    let (meta, bytes) = download_request(&state, &p, &key, next).await;
+    assert_eq!(meta["status"], 200);
+    assert_eq!(bytes, vec![42u8; 7]);
 }

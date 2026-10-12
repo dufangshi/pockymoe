@@ -70,7 +70,10 @@ fn rows(c: &Connection) -> Result<Vec<StoredGrant>> {
 fn live_rows(c: &Connection, time: i64) -> Result<Vec<StoredGrant>> {
     Ok(rows(c)?
         .into_iter()
-        .filter(|r| r.grant.expires_at.is_none_or(|expires| expires > time))
+        .filter(|r| {
+            supported_workspace_scope(&r.grant)
+                && r.grant.expires_at.is_none_or(|expires| expires > time)
+        })
         .collect())
 }
 pub(crate) fn live_credential(
@@ -94,6 +97,11 @@ pub(crate) fn live_credential(
 fn valid_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 256 && !id.contains(['\n', '\r', '/', '?', '#', '%', '\\'])
 }
+fn supported_workspace_scope(g: &Grant) -> bool {
+    // Device collections, search, and thread creation do not yet support a
+    // selected-workspace projection. Reject this combination rather than widen it.
+    g.scope != "device" || g.workspace_scope == "all"
+}
 fn validate(c: &Connection, id: &str, g: &Grant) -> Result<()> {
     let good = g.version == 1
         && id == g.grant_id
@@ -107,6 +115,7 @@ fn validate(c: &Connection, id: &str, g: &Grant) -> Result<()> {
         && g.grantee.credentials.len() <= 16
         && matches!(g.scope.as_str(), "thread" | "workspace" | "device")
         && matches!(g.workspace_scope.as_str(), "all" | "selected")
+        && supported_workspace_scope(g)
         && matches!(g.thread_access.as_str(), "read" | "control")
         && matches!(g.workspace_access.as_str(), "none" | "read" | "write")
         && g.thread_id.as_deref().is_none_or(valid_id)

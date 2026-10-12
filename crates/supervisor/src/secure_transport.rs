@@ -22,6 +22,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex, OnceLock},
 };
+pub(crate) use streams::StreamPrincipal;
 use uuid::Uuid;
 
 const INFO: &[u8] = b"remote-codex/relay/v1";
