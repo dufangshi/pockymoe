@@ -1,9 +1,9 @@
 import { beforeEach, expect, it, vi } from 'vitest';
-const state = vi.hoisted(() => ({ recipient: vi.fn(), exchange: vi.fn() }));
+const state = vi.hoisted(() => ({ recipient: vi.fn(), exchange: vi.fn(), revocations: vi.fn(), report: null as null | ((status: any) => void) }));
 vi.mock('./accountTransport', () => ({ verifySharedDeviceRole: state.recipient }));
 vi.mock('./relayTransportCrypto', () => ({
   exchange: state.exchange,
-  setTransportReporter: vi.fn(),
+  setTransportReporter: (report: (status: any) => void) => { state.report = report; },
   SocketCipher: class {},
   deviceRoute: vi.fn(),
   trustPinnedDevice: vi.fn(),
@@ -14,7 +14,8 @@ vi.mock('./relayTransportCrypto', () => ({
     return match && match[1] === device ? match[2] : undefined;
   },
 }));
-import { probeDeviceEncryption } from './relayTransport';
+vi.mock('./accountVaultState', () => ({ accountRevocations: state.revocations }));
+import { probeDeviceEncryption, getTransportStatus } from './relayTransport';
 beforeEach(() => {
   state.recipient.mockReset().mockResolvedValue(true);
   state.exchange.mockReset().mockResolvedValue({ response: Response.json({}) });
@@ -45,4 +46,11 @@ it('keeps the owner probe and never applies another device thread scope', async 
     'http://localhost:3000/relay/devices/device/api/version',
   );
   expect(scope).toBeUndefined();
+});
+
+it('invalidates a locally revoked device status even when the relay revocation refresh fails', async () => {
+  state.report!({ deviceId: 'removed', state: 'encrypted', paired: true, certificateVerified: true, role: 'owner' });
+  state.revocations.mockImplementation(async (refresh?: boolean) => { if (refresh) throw new Error('offline'); return [{ kind: 'device', subjectId: 'removed' }]; });
+  window.dispatchEvent(new Event('pockymoe-account-revocations-changed'));
+  await vi.waitFor(() => expect(getTransportStatus('removed')).toMatchObject({ state: 'identity-changed', certificateVerified: false }));
 });

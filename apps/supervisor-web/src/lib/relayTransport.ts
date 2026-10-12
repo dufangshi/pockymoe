@@ -280,12 +280,20 @@ window.addEventListener('pockymoe-account-logout', () => {
 });
 const revocationsChanged = () => {
   navigator.serviceWorker?.controller?.postMessage({ type: 'pockymoe-account-reset' });
-  void accountRevocations(true).then(async revocations => {
-    for (const r of revocations) if (r.kind === 'device') report({ deviceId: r.subjectId, state: 'error', bound: true, certificateVerified: false });
-    for (const id of await boundDevices()) {
-      if (revocations.some(r => r.kind === 'device' && r.subjectId === id)) continue;
+  const invalidate = (revocations: Awaited<ReturnType<typeof accountRevocations>>) => {
+    for (const r of revocations) if (r.kind === 'device') report({ deviceId: r.subjectId, state: 'identity-changed', bound: true, certificateVerified: false });
+  };
+  // Local signed tombstones take effect even if the relay is unavailable.
+  void accountRevocations().then(async local => {
+    invalidate(local);
+    const revocations = await accountRevocations(true); invalidate(revocations);
+    const recipients = [...statuses.values()].filter(s => s.role === 'grantee' && s.certificateVerified).map(s => s.deviceId);
+    const owned = await boundDevices();
+    for (const id of new Set([...owned, ...recipients])) {
+      if (owned.includes(id) && revocations.some(r => r.kind === 'device' && r.subjectId === id)) continue;
+      const list = owned.includes(id) ? revocations : revocations.filter(r => r.kind === 'browser');
       // Best effort now; exchange also synchronizes before the next request.
-      void encryptedBrowserFetch(`/relay/devices/${encodeURIComponent(id)}/api/transport/revocations`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ revocations }) }).catch(() => {});
+      void encryptedBrowserFetch(`/relay/devices/${encodeURIComponent(id)}/api/transport/revocations`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ revocations: list }) }).catch(() => {});
     }
   }).catch(() => {});
 };

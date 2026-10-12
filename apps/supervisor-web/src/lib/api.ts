@@ -1,3 +1,4 @@
+import { markOwnedDevices } from './accountTransport';
 import { sharingMutation } from './signedSharing';
 import { relayOrigin, relayUrl, relaySocketUrl, relayFetchInit } from './relayOrigin';
 import { logoutAccount } from './accountVaultState';
@@ -589,7 +590,7 @@ export async function fetchRelaySession() {
     cache: 'no-store',
   });
   workspaceActorScope = `relay:${result.user?.id??'anonymous'}`;
-  if (result.user?.role !== 'admin') await setAccountSession(result.authenticated ? result.user?.id ?? null : null, (result as RelaySessionDto & { account?: AccountSessionState }).account ?? false);
+  await setAccountSession(result.authenticated ? result.user?.id ?? null : null, (result as RelaySessionDto & { account?: AccountSessionState }).account ?? false);
   return result;
 }
 
@@ -650,8 +651,10 @@ export async function relayLogout() {
   }
 }
 
-export function fetchRelayPortal() {
-  return request<RelayPortalSummaryDto>('/relay/portal');
+export async function fetchRelayPortal() {
+  const summary = await request<RelayPortalSummaryDto>('/relay/portal');
+  await markOwnedDevices(summary.devices.filter(d => d.ownerUserId === summary.user.id).map(d => d.id));
+  return summary;
 }
 
 export function fetchRelayAccess(input: {
@@ -977,10 +980,8 @@ export async function dshConsoleUrl(
         body: JSON.stringify({ port: target.port, label }),
       })).id;
   }
-  const { url } = await request<{ url: string }>(`${device}/port-mappings/${mappingId}/open`, {
-    method: 'POST',
-    body: JSON.stringify({ path: target.path }),
-  });
+  const { openDevicePortPreview } = await import('./portPreview');
+  const { url } = await openDevicePortPreview(deviceId, mappingId, target.path);
   return url;
 }
 
