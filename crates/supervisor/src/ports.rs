@@ -32,12 +32,12 @@ const LOCAL_KEY: &str = "deviceLocalPortMappings";
 #[derive(Clone, Copy)]
 pub(crate) enum MappingAuthority<'a> {
     Local,
-    Tunnel(Option<&'a crate::owner_trust::OwnerPrincipal>),
+    Tunnel(Option<&'a crate::owner_trust::BrowserPrincipal>),
 }
 impl<'a> MappingAuthority<'a> {
     pub(crate) fn for_request(
         forwarded: Option<&crate::auth::TrustedRelayForward>,
-        owner: Option<&'a crate::owner_trust::OwnerPrincipal>,
+        owner: Option<&'a crate::owner_trust::BrowserPrincipal>,
     ) -> Self {
         if forwarded.is_some() {
             Self::Tunnel(owner)
@@ -72,7 +72,7 @@ pub(crate) fn snapshot(state: &Supervisor) -> Vec<Mapping> {
                 if local.contains(&mapping.id)
                     || c.query_row(
                         "SELECT EXISTS(SELECT 1 FROM owner_port_mappings m
-                         JOIN owner_credentials c USING(credential_id) WHERE mapping_id=?1)",
+                         JOIN browser_registrations b USING(browser_id) JOIN device_owner_trust t ON t.account_key_id=b.account_key_id WHERE mapping_id=?1 AND b.role='owner')",
                         [&mapping.id],
                         |r| r.get::<_, bool>(0),
                     )?
@@ -107,7 +107,7 @@ pub(crate) struct Create {
 
 pub(crate) async fn create(
     State(state): State<Arc<Supervisor>>,
-    owner: Option<Extension<crate::owner_trust::OwnerPrincipal>>,
+    owner: Option<Extension<crate::owner_trust::BrowserPrincipal>>,
     forwarded: Option<Extension<crate::auth::TrustedRelayForward>>,
     Json(input): Json<Create>,
 ) -> Response {
@@ -152,14 +152,13 @@ fn create_authorized_mapping(
         bail!("Choose an HTTP service port from 1–65535, excluding the Supervisor port. Labels may contain up to 120 bytes.");
     }
     let mapping = state.db.with(|conn| {
-        // Serialize provenance and mapping creation with local pairing/reset writes.
+        // Serialize provenance and mapping creation with local binding/reset writes.
         let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
         let strict: bool = tx.query_row("SELECT strict FROM device_owner_trust WHERE singleton=1", [], |r| r.get(0))?;
         let valid_owner = match authority {
             MappingAuthority::Tunnel(Some(p)) => tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM owner_sessions s JOIN owner_credentials c
-                 USING(credential_id) WHERE session_id=?1 AND credential_id=?2 AND expires_at>?3)",
-                rusqlite::params![p.session_id, p.credential_id, crate::owner_trust::now()],
+                "SELECT EXISTS(SELECT 1 FROM browser_registrations b JOIN device_owner_trust t ON t.account_key_id=b.account_key_id WHERE browser_id=?1 AND b.account_key_id=?2 AND role='owner')",
+                rusqlite::params![p.browser_id, p.account_key_id],
                 |r| r.get::<_,bool>(0),
             )?,
             _ => false,
@@ -169,7 +168,7 @@ fn create_authorized_mapping(
             MappingAuthority::Tunnel(owner) => strict || owner.is_some(),
         };
         if requires_owner && !valid_owner {
-            bail!("An owner session is required to create a port mapping");
+            bail!("An owner browser is required to create a port mapping");
         }
         let saved: String = tx.query_row(
             "SELECT COALESCE((SELECT value FROM kv WHERE key=?1),'[]')", [KEY], |r| r.get(0),
@@ -195,9 +194,9 @@ fn create_authorized_mapping(
             // An owner request reusing a locally approved port cannot demote its provenance.
             if !local.contains(&mapping.id) {
                 tx.execute(
-                    "INSERT INTO owner_port_mappings(mapping_id,credential_id) VALUES(?1,?2)
-                     ON CONFLICT(mapping_id) DO UPDATE SET credential_id=excluded.credential_id",
-                    [&mapping.id, &p.credential_id],
+                    "INSERT INTO owner_port_mappings(mapping_id,browser_id) VALUES(?1,?2)
+                     ON CONFLICT(mapping_id) DO UPDATE SET browser_id=excluded.browser_id",
+                    [&mapping.id, &p.browser_id],
                 )?;
             }
         }
@@ -210,6 +209,26 @@ fn create_authorized_mapping(
     })?;
     changed(state);
     Ok(mapping)
+}
+
+pub(crate) fn remove_browser_mappings(c: &rusqlite::Connection, browser: &str) -> Result<()> {
+    let ids = c
+        .prepare("SELECT mapping_id FROM owner_port_mappings WHERE browser_id=?1")?
+        .query_map([browser], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let saved: String = c.query_row(
+        "SELECT COALESCE((SELECT value FROM kv WHERE key=?1),'[]')",
+        [KEY],
+        |r| r.get(0),
+    )?;
+    let mut mappings: Vec<Mapping> = serde_json::from_str(&saved)?;
+    mappings.retain(|m| !ids.contains(&m.id));
+    c.execute("INSERT INTO kv(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [KEY, &serde_json::to_string(&mappings)?])?;
+    c.execute(
+        "DELETE FROM owner_port_mappings WHERE browser_id=?1",
+        [browser],
+    )?;
+    Ok(())
 }
 
 pub(crate) fn close_unauthorized(state: &Supervisor) {
@@ -472,7 +491,7 @@ mod owner_mapping_tests {
             &aad,
         );
         assert_eq!(status, 401);
-        assert_eq!(body["code"], "owner_session_required");
+        assert_eq!(body["code"], "browser_registration_required");
         assert_eq!(snapshot(&state).len(), 1);
 
         // Signed tunnel requests can reuse local approvals, but cannot demote them.
@@ -502,39 +521,15 @@ mod owner_mapping_tests {
         );
         assert_eq!(snapshot(&state).len(), 2);
 
-        // Keep a second owner so removal of the creating owner is permitted.
-        state
-            .db
-            .with(|c| {
-                let saved: String = c.query_row(
-                    "SELECT record_json FROM owner_credentials WHERE credential_id=?1",
-                    [&owner.credential_id],
-                    |r| r.get(0),
-                )?;
-                let mut record: Value = serde_json::from_str(&saved)?;
-                record["credentialId"] = json!("remaining-owner");
-                c.execute(
-                    "INSERT INTO owner_credentials(credential_id,record_json) VALUES(?1,?2)",
-                    ["remaining-owner", &record.to_string()],
-                )?;
-                Ok(())
-            })
-            .unwrap();
-        let path = format!("/api/transport/credentials/{}", owner.credential_id);
-        let (r, key, aad) = encrypted(&state, "DELETE", &path, Value::Null, Some(&owner));
-        assert_eq!(
-            decoded(
-                crate::tunnel::forward_local(&state, r, None).await,
-                &key,
-                &aad
-            )
-            .0,
-            200
-        );
+        crate::owner_trust::apply_revocations(
+            &state,
+            &[crate::owner_trust::tests::browser_revocation(&owner)],
+        )
+        .unwrap();
         assert!(crate::owner_trust::strict(&state));
         assert_eq!(snapshot(&state).len(), 1);
         assert_eq!(snapshot(&state)[0].id, local_id);
-        crate::owner_trust::reset_owner_trust(&state.config.database_url).unwrap();
+        crate::owner_trust::reset_account_trust(&state.config.database_url).unwrap();
         assert_eq!(snapshot(&state).len(), 1);
         assert_eq!(snapshot(&state)[0].id, local_id);
         let persisted = rusqlite::Connection::open_with_flags(
@@ -572,17 +567,14 @@ mod owner_mapping_tests {
         let console = dsh_console_mapping(&state, "local-thread", 3006, MappingAuthority::Local)
             .await
             .unwrap();
-        state
-            .db
-            .with(|c| {
-                c.execute("UPDATE owner_sessions SET expires_at=0", [])?;
-                c.execute("DELETE FROM owner_credentials", [])?;
-                Ok(())
-            })
-            .unwrap();
+        crate::owner_trust::apply_revocations(
+            &state,
+            &[crate::owner_trust::tests::browser_revocation(&owner)],
+        )
+        .unwrap();
         let ids: Vec<String> = snapshot(&state).into_iter().map(|m| m.id).collect();
         assert_eq!(ids, vec![remote.id, console.id]);
-        crate::owner_trust::reset_owner_trust(&state.config.database_url).unwrap();
+        crate::owner_trust::reset_account_trust(&state.config.database_url).unwrap();
         assert_eq!(
             snapshot(&state)
                 .into_iter()
@@ -593,8 +585,7 @@ mod owner_mapping_tests {
     }
 
     #[tokio::test]
-    async fn mappings_require_owner_and_survive_session_expiry_but_not_credential_removal_or_reset()
-    {
+    async fn mappings_require_owner_and_are_removed_on_browser_revocation_or_reset() {
         let (_dir, state) = crate::tunnel::tests::state_with_relay_url("http://127.0.0.1:1");
         let legacy =
             create_authorized_mapping(&state, 3001, "legacy", MappingAuthority::Tunnel(None))
@@ -617,26 +608,14 @@ mod owner_mapping_tests {
         )
         .unwrap();
         assert_eq!(snapshot(&state).len(), 1);
-        state
-            .db
-            .with(|c| {
-                c.execute("UPDATE owner_sessions SET expires_at=0", [])?;
-                Ok(())
-            })
-            .unwrap();
         assert_eq!(snapshot(&state)[0].id, mapping.id);
-        state
-            .db
-            .with(|c| {
-                c.execute(
-                    "DELETE FROM owner_credentials WHERE credential_id=?1",
-                    [&owner.credential_id],
-                )?;
-                Ok(())
-            })
-            .unwrap();
+        crate::owner_trust::apply_revocations(
+            &state,
+            &[crate::owner_trust::tests::browser_revocation(&owner)],
+        )
+        .unwrap();
         assert!(snapshot(&state).is_empty());
-        crate::owner_trust::reset_owner_trust(&state.config.database_url).unwrap();
+        crate::owner_trust::reset_account_trust(&state.config.database_url).unwrap();
         assert!(!snapshot(&state).iter().any(|m| m.id == mapping.id));
         assert!(snapshot(&state).iter().any(|m| m.id == legacy.id));
     }

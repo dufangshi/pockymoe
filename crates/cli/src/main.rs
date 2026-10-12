@@ -18,50 +18,96 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pair_command_accepts_offline_options_and_requires_explicit_reset_for_yes() {
+    fn bind_command_accepts_offline_options_and_requires_explicit_reset_for_yes() {
         let cli = Cli::try_parse_from([
             "pockymoe",
-            "pair",
+            "bind",
             "--database",
             "/tmp/test.sqlite",
+            "--account-key",
+            "public",
+            "--enroll",
+            "secret",
             "--web-origin",
             "https://pockymoe.test",
         ])
         .unwrap();
-        let Commands::Pair {
+        let Commands::Bind {
             database,
             web_origin,
+            account_key,
+            enroll,
             reset,
             yes,
+            status,
         } = cli.command
         else {
-            panic!("expected pair");
+            panic!("expected bind")
         };
         assert_eq!(
             database.unwrap(),
             std::path::PathBuf::from("/tmp/test.sqlite")
         );
         assert_eq!(web_origin.as_deref(), Some("https://pockymoe.test"));
-        assert!(!reset && !yes);
-        assert!(matches!(
-            Cli::try_parse_from(["pockymoe", "pair", "--reset", "--yes"])
-                .unwrap()
-                .command,
-            Commands::Pair {
-                reset: true,
-                yes: true,
-                ..
-            }
-        ));
-        assert!(Cli::try_parse_from(["pockymoe", "pair", "--yes"]).is_err());
-        assert!(Cli::try_parse_from([
+        assert_eq!(account_key.as_deref(), Some("public"));
+        assert_eq!(enroll.as_deref(), Some("secret"));
+        assert!(!reset && !yes && !status);
+        for args in [
+            vec!["bind", "--status"],
+            vec!["bind", "--reset", "--yes"],
+            vec![
+                "bind",
+                "--reset",
+                "--account-key",
+                "public",
+                "--enroll",
+                "secret",
+            ],
+        ] {
+            assert!(Cli::try_parse_from(std::iter::once("pockymoe").chain(args)).is_ok());
+        }
+        for args in [
+            vec!["pair"],
+            vec!["bind"],
+            vec!["bind", "--yes"],
+            vec!["bind", "--account-key", "public"],
+            vec!["bind", "--enroll", "secret"],
+            vec!["bind", "--status", "--reset"],
+            vec![
+                "bind",
+                "--status",
+                "--account-key",
+                "public",
+                "--enroll",
+                "secret",
+            ],
+        ] {
+            assert!(Cli::try_parse_from(std::iter::once("pockymoe").chain(args)).is_err());
+        }
+    }
+
+    #[test]
+    fn setup_binding_flags_require_both_values() {
+        let prefix = [
             "pockymoe",
-            "pair",
-            "--reset",
-            "--web-origin",
-            "https://pockymoe.test"
-        ])
-        .is_err());
+            "setup",
+            "--relay",
+            "https://relay.test",
+            "--code",
+            "synthetic",
+        ];
+        assert!(Cli::try_parse_from(prefix).is_ok());
+        assert!(Cli::try_parse_from(prefix.into_iter().chain([
+            "--account-key",
+            "public",
+            "--enroll",
+            "secret"
+        ]))
+        .is_ok());
+        assert!(
+            Cli::try_parse_from(prefix.into_iter().chain(["--account-key", "public"])).is_err()
+        );
+        assert!(Cli::try_parse_from(prefix.into_iter().chain(["--enroll", "secret"])).is_err());
     }
 
     #[test]
@@ -389,26 +435,36 @@ More: pockymoe guide tasks"#
         #[arg(long, env = "POCKYMOE_DATABASE_PATH")]
         database: Option<std::path::PathBuf>,
     },
-    /// Pair the device with an owner passkey using a local terminal QR code.
-    Pair {
+    /// Bind this device to an account key using the local database.
+    Bind {
         #[arg(long, env = "POCKYMOE_DATABASE_PATH")]
         database: Option<std::path::PathBuf>,
-        #[arg(long, conflicts_with = "reset")]
+        #[arg(long, requires = "enroll", required_unless_present_any = ["reset", "status"], conflicts_with = "status")]
+        account_key: Option<String>,
+        #[arg(long, requires = "account_key", conflicts_with = "status")]
+        enroll: Option<String>,
+        #[arg(long, requires = "account_key")]
         web_origin: Option<String>,
-        /// Remove owner trust and restore relay trust using local database authority.
-        #[arg(long)]
+        /// Delete all account trust and owner previews, and restore relay trust.
+        #[arg(long, conflicts_with = "status")]
         reset: bool,
-        /// Confirm the reset without an interactive prompt.
         #[arg(long, requires = "reset")]
         yes: bool,
+        /// Print binding state and the account fingerprint.
+        #[arg(long)]
+        status: bool,
     },
     /// Install this device from the official GitHub runtime release.
     Setup {
         #[arg(long)]
         relay: String,
-        /// Trusted Web origin saved locally for passkey pairing.
+        /// Trusted Web origin saved locally for account enrollment.
         #[arg(long, env = "POCKYMOE_WEB_ORIGIN")]
         web_origin: Option<String>,
+        #[arg(long, env = "POCKYMOE_ACCOUNT_KEY", requires = "enroll")]
+        account_key: Option<String>,
+        #[arg(long, env = "POCKYMOE_ENROLL", requires = "account_key")]
+        enroll: Option<String>,
         #[arg(long, conflicts_with = "code", required_unless_present = "code")]
         token: Option<String>,
         #[arg(long, conflicts_with = "token")]
@@ -601,55 +657,71 @@ async fn run() -> Result<()> {
                 pockymoe_supervisor::relay_device_fingerprint(&database)?
             );
         }
-        Commands::Pair {
+        Commands::Bind {
             database,
+            account_key,
+            enroll,
             web_origin,
             reset,
             yes,
+            status,
         } => {
             std::env::set_var("POCKYMOE_MODE", "relay");
             let config = pockymoe_runtime::RuntimeConfig::from_env();
             let database = database.unwrap_or(config.database_url);
+            let web_origin = web_origin
+                .as_deref()
+                .or(config.web_origin.as_deref())
+                .map(pockymoe_supervisor::validate_web_origin)
+                .transpose()?;
+            if let (Some(account), Some(secret)) = (&account_key, &enroll) {
+                pockymoe_supervisor::validate_binding(account, secret)?;
+            }
             if reset {
                 if !yes {
                     use std::io::Write;
-                    eprint!("Remove all owner credentials, sessions, certificates and pairing offers, and restore relay trust? [y/N] ");
+                    eprint!("Delete account trust, browser registrations, certificates, grants and owner previews, and restore relay trust? [y/N] ");
                     std::io::stderr().flush()?;
                     let mut answer = String::new();
                     std::io::stdin().read_line(&mut answer)?;
                     if !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
-                        anyhow::bail!("Pairing reset cancelled");
+                        anyhow::bail!("Binding reset cancelled");
                     }
                 }
-                pockymoe_supervisor::reset_owner_trust(&database)?;
-                println!("Owner trust reset. The device trusts the relay again.");
-            } else {
-                let (saved_web_origin, saved_relay_url) =
-                    if web_origin.is_none() && config.web_origin.is_none() {
-                        pockymoe_supervisor::distribution::pairing_defaults()?
-                    } else {
-                        (None, None)
-                    };
-                let url = pockymoe_supervisor::create_pairing_offer(
+                pockymoe_supervisor::reset_account_trust(&database)?;
+                println!("Account trust reset. The device trusts the relay again.");
+            }
+            if let (Some(account), Some(secret)) = (account_key, enroll) {
+                let result = pockymoe_supervisor::bind_account(
                     &database,
+                    &account,
+                    &secret,
                     web_origin.as_deref(),
-                    config
-                        .relay_server_url
-                        .as_deref()
-                        .or(saved_relay_url.as_deref()),
-                    config.web_origin.as_deref().or(saved_web_origin.as_deref()),
                 )?;
-                let qr = qrcode::QrCode::new(url.as_bytes())?;
-                println!(
-                    "{}",
-                    qr.render::<qrcode::render::unicode::Dense1x2>().build()
-                );
-                println!("{url}");
+                let id = result["accountKeyId"].as_str().unwrap();
+                println!("Bound to account {}. Strict mode is on.", &id[..12]);
+            } else if status {
+                let result = pockymoe_supervisor::binding_status(&database)?;
+                if let Some(id) = result["accountKeyId"].as_str() {
+                    println!(
+                        "Bound to account {}. Strict mode: {}.",
+                        &id[..12],
+                        if result["strict"] == true {
+                            "on"
+                        } else {
+                            "off"
+                        }
+                    );
+                } else {
+                    println!("Not bound. Strict mode: off.");
+                }
             }
         }
         Commands::Setup {
             relay,
             web_origin,
+            account_key,
+            enroll,
             token,
             code,
             port,
@@ -658,6 +730,8 @@ async fn run() -> Result<()> {
                 pockymoe_supervisor::distribution::SetupOptions {
                     relay,
                     web_origin,
+                    account_key,
+                    enroll,
                     token,
                     code,
                     port,

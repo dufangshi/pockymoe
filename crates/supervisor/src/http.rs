@@ -62,33 +62,29 @@ pub fn router(state: AppState) -> Router {
     crate::peer_send::start_outbox_worker(&state);
     let router = Router::new()
         .route(
-            "/api/transport/pair",
-            post(crate::owner_trust::pair_endpoint),
+            "/api/transport/browser",
+            post(crate::owner_trust::browser_endpoint),
         )
         .route(
-            "/api/transport/owner-session",
-            post(crate::owner_trust::session_endpoint),
+            "/api/transport/enrollment",
+            get(crate::owner_trust::enrollment_endpoint),
         )
-        .route("/api/transport/grants", get(crate::grants::list_endpoint))
         .route(
-            "/api/transport/grants/{grantId}",
-            put(crate::grants::put_endpoint).delete(crate::grants::delete_endpoint),
+            "/api/transport/device-certificate",
+            put(crate::owner_trust::certificate_endpoint),
+        )
+        .route(
+            "/api/transport/revocations",
+            put(crate::owner_trust::revocations_endpoint),
         )
         .route(
             "/api/transport/trust",
             get(crate::owner_trust::trust_endpoint),
         )
+        .route("/api/transport/grants", get(crate::grants::list_endpoint))
         .route(
-            "/api/transport/credentials",
-            post(crate::owner_trust::add_endpoint),
-        )
-        .route(
-            "/api/transport/credentials/{credentialId}",
-            delete(crate::owner_trust::remove_endpoint),
-        )
-        .route(
-            "/api/transport/sessions/{sessionId}",
-            delete(crate::owner_trust::revoke_endpoint),
+            "/api/transport/grants/{grantId}",
+            put(crate::grants::put_endpoint).delete(crate::grants::delete_endpoint),
         )
         .route("/api/cli", post(crate::interaction::command))
         // Other devices of the same owner, through the relay (docs/cross-device-peer.zh.md).
@@ -826,7 +822,7 @@ async fn thread_capabilities(
 async fn thread_harness_action(
     Path(id): Path<String>,
     State(state): State<AppState>,
-    owner: Option<axum::Extension<crate::owner_trust::OwnerPrincipal>>,
+    owner: Option<axum::Extension<crate::owner_trust::BrowserPrincipal>>,
     forwarded: Option<axum::Extension<crate::auth::TrustedRelayForward>>,
     Json(action): Json<Value>,
 ) -> Result<Json<Value>, ApiErr> {

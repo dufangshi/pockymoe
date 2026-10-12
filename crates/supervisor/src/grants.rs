@@ -1,5 +1,5 @@
 //! Owner-signed device ACL. All authority and lineage come from the local database.
-use crate::owner_trust::{self, Credential, OwnerPrincipal};
+use crate::owner_trust::{self, BrowserPrincipal, PinnedAccount};
 use anyhow::{Context, Result};
 use axum::{
     extract::{Path, State},
@@ -7,7 +7,6 @@ use axum::{
     Extension, Json,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD as B64, Engine};
-use p256::{ecdsa::VerifyingKey, pkcs8::DecodePublicKey};
 use pockymoe_protocol::access::{self, EffectiveAccess};
 use pockymoe_runtime::{db::Database, Supervisor};
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
@@ -26,7 +25,8 @@ pub(crate) struct RelayRef {
 pub(crate) struct Grantee {
     pub user_id: String,
     pub label: String,
-    pub credentials: Vec<Credential>,
+    pub account_key_id: String,
+    pub account_public_key: String,
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -73,20 +73,21 @@ fn live_rows(c: &Connection, time: i64) -> Result<Vec<StoredGrant>> {
         .filter(|r| r.grant.expires_at.is_none_or(|expires| expires > time))
         .collect())
 }
-pub(crate) fn live_credential(
+pub(crate) fn live_account(
     c: &Connection,
     id: &str,
     time: i64,
-) -> Result<Option<(Credential, String)>> {
+) -> Result<Option<(PinnedAccount, String)>> {
     for row in live_rows(c, time)? {
-        if let Some(record) = row
-            .grant
-            .grantee
-            .credentials
-            .into_iter()
-            .find(|r| r.credential_id == id)
-        {
-            return Ok(Some((record, row.grant.grantee.user_id)));
+        let g = row.grant.grantee;
+        if g.account_key_id == id {
+            return Ok(Some((
+                PinnedAccount {
+                    account_key_id: g.account_key_id,
+                    account_public_key: g.account_public_key,
+                },
+                g.user_id,
+            )));
         }
     }
     Ok(None)
@@ -104,7 +105,6 @@ fn validate(c: &Connection, id: &str, g: &Grant) -> Result<()> {
         && valid_id(&g.relay_ref.id)
         && valid_id(&g.grantee.user_id)
         && g.grantee.label.len() <= 1024
-        && g.grantee.credentials.len() <= 16
         && matches!(g.scope.as_str(), "thread" | "workspace" | "device")
         && matches!(g.workspace_scope.as_str(), "all" | "selected")
         && matches!(g.thread_access.as_str(), "read" | "control")
@@ -119,69 +119,45 @@ fn validate(c: &Connection, id: &str, g: &Grant) -> Result<()> {
     if !good {
         return owner_trust::reject(400, "invalid_grant");
     }
-    let mut ids = std::collections::HashSet::new();
-    for record in &g.grantee.credentials {
-        owner_trust::check_owner_origin(c, record)?;
-        if c.query_row(
-            "SELECT EXISTS(SELECT 1 FROM owner_credentials WHERE credential_id=?1)",
-            [&record.credential_id],
-            |r| r.get::<_, bool>(0),
-        )? {
-            return owner_trust::reject(400, "grantee_is_owner");
-        }
-        let key = B64.decode(&record.public_key).ok();
-        let valid_key = key.is_some_and(|key| match record.algorithm {
-            -7 => VerifyingKey::from_public_key_der(&key).is_ok(),
-            -257 => rsa::RsaPublicKey::from_public_key_der(&key).is_ok(),
-            _ => false,
-        });
-        if !valid_key
-            || !ids.insert(&record.credential_id)
-            || !B64.decode(&record.credential_id).is_ok_and(|b| {
-                !b.is_empty() && b.len() <= 1024 && B64.encode(b) == record.credential_id
-            })
+    if owner_trust::account_key_id(&g.grantee.account_public_key)
+        .ok()
+        .as_deref()
+        != Some(&g.grantee.account_key_id)
+    {
+        return owner_trust::reject(400, "invalid_grant");
+    }
+    let own: Option<String> = c.query_row(
+        "SELECT account_key_id FROM device_owner_trust WHERE singleton=1",
+        [],
+        |r| r.get(0),
+    )?;
+    if own.as_deref() == Some(&g.grantee.account_key_id) {
+        return owner_trust::reject(400, "grantee_is_owner");
+    }
+    for row in rows(c)? {
+        if row.grant.grant_id != id
+            && row.grant.grantee.account_key_id == g.grantee.account_key_id
+            && (row.grant.grantee.user_id != g.grantee.user_id
+                || row.grant.grantee.account_public_key != g.grantee.account_public_key)
         {
             return owner_trust::reject(400, "invalid_grant");
-        }
-        // One passkey identifies one user and one public key across this device's ACL.
-        for row in rows(c)? {
-            if row.grant.grant_id == id {
-                continue;
-            }
-            if let Some(existing) = row
-                .grant
-                .grantee
-                .credentials
-                .iter()
-                .find(|r| r.credential_id == record.credential_id)
-            {
-                if row.grant.grantee.user_id != g.grantee.user_id
-                    || serde_json::to_value(existing)? != serde_json::to_value(record)?
-                {
-                    return owner_trust::reject(400, "invalid_grant");
-                }
-            }
         }
     }
     Ok(())
 }
 fn revoke_orphans(c: &Connection, time: i64) -> Result<()> {
-    let sessions = c
-        .prepare("SELECT session_id,credential_id,expires_at FROM grantee_sessions")?
-        .query_map([], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, i64>(2)?,
-            ))
-        })?
+    let registrations = c
+        .prepare(
+            "SELECT browser_id,account_key_id,user_id FROM browser_registrations WHERE role='grantee'",
+        )?
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?,r.get::<_,Option<String>>(2)?)))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    for (id, credential, expires) in sessions {
-        if live_credential(c, &credential, time)?.is_none() {
-            if expires > time {
-                owner_trust::remember_revocation(c, &id, expires)?;
-            }
-            c.execute("DELETE FROM grantee_sessions WHERE session_id=?1", [id])?;
+    for (id, account, user) in registrations {
+        if live_account(c, &account, time)?.is_none_or(|(_, live_user)| Some(live_user) != user) {
+            c.execute(
+                "DELETE FROM browser_registrations WHERE browser_id=?1",
+                [id],
+            )?;
         }
     }
     Ok(())
@@ -190,7 +166,7 @@ fn put(
     db: &Database,
     id: &str,
     grant: &Grant,
-    principal: &OwnerPrincipal,
+    principal: &BrowserPrincipal,
     time: i64,
 ) -> Result<Value> {
     if !principal.is_owner() {
@@ -241,7 +217,7 @@ fn lineage(c: &Connection, target: Option<&str>) -> Result<Vec<String>> {
 }
 pub(crate) fn effective_access(
     state: &Supervisor,
-    principal: &OwnerPrincipal,
+    principal: &BrowserPrincipal,
     thread: Option<&str>,
     workspace: Option<&str>,
 ) -> Result<Option<EffectiveAccess>> {
@@ -254,11 +230,7 @@ pub(crate) fn effective_access(
             .into_iter()
             .filter(|r| {
                 Some(&r.grant.grantee.user_id) == principal.grantee_user_id.as_ref()
-                    && r.grant
-                        .grantee
-                        .credentials
-                        .iter()
-                        .any(|r| r.credential_id == principal.credential_id)
+                    && r.grant.grantee.account_key_id == principal.account_key_id
             })
             .collect();
         let shares: Vec<_> = rows
@@ -279,9 +251,8 @@ pub(crate) fn effective_access(
 pub(crate) fn owner_only(path: &str) -> bool {
     let path = path.split('?').next().unwrap_or(path);
     path.starts_with("/api/transport/trust")
-        || path.starts_with("/api/transport/credentials")
+        || path.starts_with("/api/transport/device-certificate")
         || path.starts_with("/api/transport/grants")
-        || path.starts_with("/api/transport/sessions")
         || path.starts_with("/api/ports")
         || path.starts_with("/api/port-mappings")
         || path.starts_with("/api/config")
@@ -290,7 +261,7 @@ pub(crate) fn owner_only(path: &str) -> bool {
 }
 pub(crate) fn authorize_path(
     state: &Supervisor,
-    p: &OwnerPrincipal,
+    p: &BrowserPrincipal,
     method: &str,
     path: &str,
 ) -> Result<()> {
@@ -312,7 +283,7 @@ pub(crate) fn authorize_path(
 }
 pub(crate) fn websocket_message_allowed(
     state: &Supervisor,
-    p: &OwnerPrincipal,
+    p: &BrowserPrincipal,
     configured_thread: Option<&str>,
     message: &Value,
 ) -> bool {
@@ -341,7 +312,7 @@ pub(crate) fn websocket_message_allowed(
 }
 pub(crate) fn websocket_event_allowed(
     state: &Supervisor,
-    p: &OwnerPrincipal,
+    p: &BrowserPrincipal,
     configured_thread: Option<&str>,
     event: &Value,
 ) -> bool {
@@ -387,7 +358,7 @@ pub(crate) fn websocket_event_allowed(
 pub(crate) async fn list_endpoint(
     State(state): State<Arc<Supervisor>>,
     Extension(_): Extension<owner_trust::EncryptedOwnerRequest>,
-    Extension(p): Extension<OwnerPrincipal>,
+    Extension(p): Extension<BrowserPrincipal>,
 ) -> Response {
     owner_trust::response(if p.is_owner() {
         state.db.with(|c| Ok(json!({"grants":rows(c)?})))
@@ -398,26 +369,34 @@ pub(crate) async fn list_endpoint(
 pub(crate) async fn put_endpoint(
     State(state): State<Arc<Supervisor>>,
     Extension(_): Extension<owner_trust::EncryptedOwnerRequest>,
-    Extension(p): Extension<OwnerPrincipal>,
+    Extension(p): Extension<BrowserPrincipal>,
     Path(id): Path<String>,
     input: Result<Json<Grant>, axum::extract::rejection::JsonRejection>,
 ) -> Response {
     let Ok(Json(g)) = input else {
         return owner_trust::response(owner_trust::reject(400, "invalid_grant"));
     };
-    owner_trust::response(put(&state.db, &id, &g, &p, owner_trust::now()))
+    let result = put(&state.db, &id, &g, &p, owner_trust::now());
+    if result.is_ok() {
+        crate::secure_transport::invalidate_unauthorized_channels(&state);
+    }
+    owner_trust::response(result)
 }
 pub(crate) async fn delete_endpoint(
     State(state): State<Arc<Supervisor>>,
     Extension(_): Extension<owner_trust::EncryptedOwnerRequest>,
-    Extension(p): Extension<OwnerPrincipal>,
+    Extension(p): Extension<BrowserPrincipal>,
     Path(id): Path<String>,
 ) -> Response {
-    owner_trust::response(if p.is_owner() {
+    let result = if p.is_owner() {
         delete(&state.db, &id, owner_trust::now())
     } else {
         owner_trust::reject(403, "owner_required")
-    })
+    };
+    if result.is_ok() {
+        crate::secure_transport::invalidate_unauthorized_channels(&state);
+    }
+    owner_trust::response(result)
 }
 
 #[cfg(test)]

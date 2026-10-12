@@ -1,0 +1,175 @@
+{
+  "conventions": "See SPEC.md. ECDSA P-256 SHA-256, raw r||s signatures, B64 = base64url without padding.",
+  "account": {
+    "userId": "user-123",
+    "accountPublicKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEttUsslRkjNh1TXjKXbaPzuypehMsqdhdjw1vxLzJYry6JRgCmTlqkHLYCH5GktG-ufqz0PzhyxQyTp_4Ufo7rA",
+    "accountKeyId": "bbNZDxMlJqPBsWsFLvOi-pnS-vAKzGgs9HevaG1vOgY",
+    "accountPrivateKeyPkcs8": "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgk4dZSeiXx6ntSDdLG9_7sGWHJwHRvEj6woyn1LUHBVKhRANCAAS21SyyVGSM2HVNeMpdto_O7Kl6Eyyp2F2PDW_EvMlivLolGAKZOWqQctgIfkaS0b65-rPQ_OHLFDJOn_hR-jus"
+  },
+  "otherAccount": {
+    "accountPublicKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE_5Ey8BN-y7Tesx51aps7lddMmqndStEAgrEl9Osl72Rgb5tEzx0_ZTOKXDJ5OzN9RskwyC7HZj6lAqzMmuc9KA",
+    "accountKeyId": "CHzjAjDQLtX5tQL3aFnmpOVuPJu-41qF1VEGDakiW64"
+  },
+  "derivation": {
+    "master": "AQgPFh0kKzI5QEdOVVxjanF4f4aNlJuiqbC3vsXM09o",
+    "authKey": "qzEiIk_3io3fIeJPGQSoRAXWEyYUhdHrQfZ1r_w3PyE",
+    "wrapKey": "9W0SPKOtwNjJAmjSZk9wxjEJJ7SFl8s0N3xr-N03_9c",
+    "recoveryCodeBytes": "CRAXHiUsMzpBSE9WXWRrcnmAh44",
+    "recoveryCode": "1481E7H55GSKMGA89XB5TS3BE9WR11WE",
+    "recoveryCodeDisplay": "1481-E7H5-5GSK-MGA8-9XB5-TS3B-E9WR-11WE",
+    "recoveryKey": "n6Zh9XNCP_IfbgavMZPTDsS9WbHSMTotMUKbaVqnum8",
+    "recoveryAuthKey": "xbdjwZqhpntfP43YQzvFdag_vz-wR0WdUvjqKgsao-o"
+  },
+  "vault": {
+    "vault": {
+      "version": 1,
+      "userId": "user-123",
+      "accountKeyId": "bbNZDxMlJqPBsWsFLvOi-pnS-vAKzGgs9HevaG1vOgY",
+      "accountPublicKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEttUsslRkjNh1TXjKXbaPzuypehMsqdhdjw1vxLzJYry6JRgCmTlqkHLYCH5GktG-ufqz0PzhyxQyTp_4Ufo7rA",
+      "kdf": {
+        "name": "argon2id",
+        "memoryKiB": 65536,
+        "iterations": 3,
+        "parallelism": 1,
+        "salt": "AwoRGB8mLTQ7QklQV15lbA"
+      },
+      "slots": {
+        "password": {
+          "iv": "MjlAR05VXGNqcXh_",
+          "ciphertext": "xd_0oRDAXGg48nYmYxvfu3L53QlR3mm4WC_5hlKPCHC1uGry3KIq3htd5Z6Gn4mb"
+        },
+        "recovery": {
+          "iv": "Rk1UW2JpcHd-hYyT",
+          "ciphertext": "N94AFh9ZdnkWtTrfPYBYrc9ojf7O7SYGI1EmFAH2B5zGh3cK-09Nd8AXidwlRNuK"
+        }
+      },
+      "body": {
+        "iv": "WmFob3Z9hIuSmaCn",
+        "ciphertext": "qXQQL_G9fXdVcNXiazu7t0f4JA0TKpHwMIzvmJKino7we2k74jBfGmz0G4cxVU15ruIEhD1oRzdIXMrvRMHXdlK-4o7r5kQkpQrTkZIwtHmOlm1nhUfjOXzT_0isrvIUysxtRABLK7MsbOE5KogghEMGeR_NPb6gxXgMaWW7ueTibR5hLYY9_BfFizSUwsqaTWBW2_burLPq2WMhzl9M1z0yZRn7O2yMBE-VUEZyeEES-4K19rkAV5aW6L40hRWg4c0ZMgm3qGSlOcriMGOXlO4tI41R5Yyne-GCyY-NjzBFEDL6jdGWYTk7A68Yo_dmmTtfj4lcyMt53A3XNFYj9e0e0yt8meV6WW09B5gzy1Sn73E8C2xHf5F8KM82LxC3XjE"
+      },
+      "revision": 3
+    },
+    "vdk": "ISgvNj1ES1JZYGdudXyDipGYn6attLvCydDX3uXs8_o",
+    "bodyPlaintext": "{\"version\":1,\"accountPrivateKey\":\"MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgk4dZSeiXx6ntSDdLG9_7sGWHJwHRvEj6woyn1LUHBVKhRANCAAS21SyyVGSM2HVNeMpdto_O7Kl6Eyyp2F2PDW_EvMlivLolGAKZOWqQctgIfkaS0b65-rPQ_OHLFDJOn_hR-jus\",\"boundDevices\":[\"device-1\"],\"updatedAt\":1760000000000}",
+    "slotAadPassword": "pockymoe-vault-slot-v1\nuser-123\nbbNZDxMlJqPBsWsFLvOi-pnS-vAKzGgs9HevaG1vOgY\npassword",
+    "bodyAad": "pockymoe-vault-body-v1\nuser-123\nbbNZDxMlJqPBsWsFLvOi-pnS-vAKzGgs9HevaG1vOgY\n3"
+  },
+  "browserCertificate": {
+    "certificate": {
+      "version": 1,
+      "accountKeyId": "bbNZDxMlJqPBsWsFLvOi-pnS-vAKzGgs9HevaG1vOgY",
+      "browserId": "kHgmSbsZNjsu8hvbX6Ri-v4NeBB_uhmXBbo2d7_n1-4",
+      "publicKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEsSSs4Mkue1KvwCwpmrm3vOjE6prSD58cr0HMS6K_GTZPXkY0hQWumWoMNFNIesw1R-rwOTd8rdnZlsTR2KymNA",
+      "createdAt": 1760000000000,
+      "signature": "ZjBgtZ9qMsCbJ1t4AW9vEnJ7XFul40lXe7JdVpP1mpML-OV_9BwADtAp5CXzr0EEjq5-xSHXAvI6btAYvxiC0A"
+    },
+    "signingInput": "pockymoe-acct-browser-v1\nbbNZDxMlJqPBsWsFLvOi-pnS-vAKzGgs9HevaG1vOgY\nkHgmSbsZNjsu8hvbX6Ri-v4NeBB_uhmXBbo2d7_n1-4\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEsSSs4Mkue1KvwCwpmrm3vOjE6prSD58cr0HMS6K_GTZPXkY0hQWumWoMNFNIesw1R-rwOTd8rdnZlsTR2KymNA\n1760000000000",
+    "browserPrivateKeyPkcs8": "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgEPBrdLNftPqyF-e9SbhM_ZDHbQWgkwpb8aAmkkQbF4ShRANCAASxJKzgyS57Uq_ALCmaube86MTqmtIPnxyvQcxLor8ZNk9eRjSFBa6Zagw0U0h6zDVH6vA5N3yt2dmWxNHYrKY0"
+  },
+  "deviceCertificate": {
+    "certificate": {
+      "version": 1,
+      "accountKeyId": "bbNZDxMlJqPBsWsFLvOi-pnS-vAKzGgs9HevaG1vOgY",
+      "deviceId": "device-1",
+      "identityKey": "BHCCXhqgIPoQJjs-nCol4Dix19YlDenqelnfd826cxjMzkPSaUSV37MFdy91WW18K88YilW3hw6DtZxpluW52Is",
+      "createdAt": 1760000000000,
+      "signature": "aRYslw9S59D2dD01mXXa9-JyK--HdVUpZFQuOwqN_CMtqld1qpNTVmN9pnxvdrZGqB0BJ0AT_nhxD2iyNIq21w"
+    },
+    "signingInput": "pockymoe-acct-device-v1\nbbNZDxMlJqPBsWsFLvOi-pnS-vAKzGgs9HevaG1vOgY\ndevice-1\nBHCCXhqgIPoQJjs-nCol4Dix19YlDenqelnfd826cxjMzkPSaUSV37MFdy91WW18K88YilW3hw6DtZxpluW52Is\n1760000000000",
+    "identityPrivateKeyPkcs8": "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgIf3cN3fVDOETVAi__HAixDSXgLV734y3kJV_MSACNLihRANCAARwgl4aoCD6ECY7PpwqJeA4sdfWJQ3p6npZ33fNunMYzM5D0mlEld-zBXcvdVltfCvPGIpVt4cOg7WcaZbludiL"
+  },
+  "revocations": {
+    "browser": {
+      "version": 1,
+      "accountKeyId": "bbNZDxMlJqPBsWsFLvOi-pnS-vAKzGgs9HevaG1vOgY",
+      "kind": "browser",
+      "subjectId": "kHgmSbsZNjsu8hvbX6Ri-v4NeBB_uhmXBbo2d7_n1-4",
+      "revokedAt": 1760000100000,
+      "signature": "JhZmsDZ_op2DmdMUSvxRDj4LBlxYPwjX6_w-1kbeYgtwv_XWy9lKxIP6ofjRWHEJ6Dwvy4AwCPG7kBlrXEh-ZQ"
+    },
+    "device": {
+      "version": 1,
+      "accountKeyId": "bbNZDxMlJqPBsWsFLvOi-pnS-vAKzGgs9HevaG1vOgY",
+      "kind": "device",
+      "subjectId": "device-1",
+      "revokedAt": 1760000100000,
+      "signature": "cd1Zy7HgrOhDnKAYWVLraEQrs6OrvNdN7NVbL7kd6QWtiZd_PJG0DuhBlL7FWfZFJpu9w6LW_DhUy0l8YTGE-g"
+    }
+  },
+  "enrollment": {
+    "enrollSecret": "ZWxzeoGIj5adpKuyucDHztXc4-rx-P8GDRQbIikwNz4",
+    "signingInput": "pockymoe-acct-enroll-v1\ndevice-1\nBHCCXhqgIPoQJjs-nCol4Dix19YlDenqelnfd826cxjMzkPSaUSV37MFdy91WW18K88YilW3hw6DtZxpluW52Is\nbbNZDxMlJqPBsWsFLvOi-pnS-vAKzGgs9HevaG1vOgY",
+    "mac": "HZ7TGbfATHdQ9DGLv5GElfIWZB5-py7dmKzLJZVDYS0"
+  },
+  "requestSignature": {
+    "aad": "rcd-http-v1\nkey-1\nrequest-1.1760000000000\nGET\n/api/workspaces\n",
+    "sealed": "Bw4VHCMqMTg_Rk1UW2JpcHd-hYyTmqGor7a9xMvS2eDn7vX8AwoRGB8mLTQ7QklQ",
+    "signingInput": "pockymoe-request-v1\nrcd-http-v1\nkey-1\nrequest-1.1760000000000\nGET\n/api/workspaces\n\ndqPP-mqmbI7yHE7WFplyMC0aat1Qow8vTTNs13d1lzw",
+    "sessionHeader": "kHgmSbsZNjsu8hvbX6Ri-v4NeBB_uhmXBbo2d7_n1-4",
+    "signature": "SZ013S_bvS5LW9tPF4HfnDMWR5vSSbE0zNH_Sed7CEv5ro_S1i_eQw1wAb9F3I19hXn2pVcpo2OY36-yPASlIQ"
+  },
+  "peerSignature": {
+    "callerDeviceId": "device-1",
+    "aad": "rcd-http-v1\nkey-1\nrequest-1.1760000000000\nGET\n/api/workspaces\n",
+    "sealed": "Bw4VHCMqMTg_Rk1UW2JpcHd-hYyTmqGor7a9xMvS2eDn7vX8AwoRGB8mLTQ7QklQ",
+    "signingInput": "pockymoe-peer-request-v1\ndevice-1\nrcd-http-v1\nkey-1\nrequest-1.1760000000000\nGET\n/api/workspaces\n\ndqPP-mqmbI7yHE7WFplyMC0aat1Qow8vTTNs13d1lzw",
+    "signature": "KxIHgAZZj2BF8mNa2-lRJAWYT9WuO-7XYjRv4SHROcIEXw6uVt8lmbZPw6hR0NLlxgyNvbScdECkLFCGinxWRw"
+  },
+  "safetyCode": {
+    "accountKeyId": "bbNZDxMlJqPBsWsFLvOi-pnS-vAKzGgs9HevaG1vOgY",
+    "code": "VDNZDB8Z3HKC",
+    "display": "VDNZ DB8Z 3HKC"
+  },
+  "negative": {
+    "browserCertSignedByOtherAccount": {
+      "version": 1,
+      "accountKeyId": "bbNZDxMlJqPBsWsFLvOi-pnS-vAKzGgs9HevaG1vOgY",
+      "browserId": "kHgmSbsZNjsu8hvbX6Ri-v4NeBB_uhmXBbo2d7_n1-4",
+      "publicKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEsSSs4Mkue1KvwCwpmrm3vOjE6prSD58cr0HMS6K_GTZPXkY0hQWumWoMNFNIesw1R-rwOTd8rdnZlsTR2KymNA",
+      "createdAt": 1760000000000,
+      "signature": "tm3UZKTO--8qUaqH-GR3Qyh888l2BQBxx8E9dFh-ZCMK_A6Zz5dJESDOHq586HLa4h_7vYbrU7_UmDEO3O8Elw"
+    },
+    "browserCertWrongBrowserId": {
+      "version": 1,
+      "accountKeyId": "bbNZDxMlJqPBsWsFLvOi-pnS-vAKzGgs9HevaG1vOgY",
+      "browserId": "LXEWQrcmsEQBYnyp-6wy9chTD7GQPMTbAiWHF5IaSIE",
+      "publicKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEsSSs4Mkue1KvwCwpmrm3vOjE6prSD58cr0HMS6K_GTZPXkY0hQWumWoMNFNIesw1R-rwOTd8rdnZlsTR2KymNA",
+      "createdAt": 1760000000000,
+      "signature": "ZjBgtZ9qMsCbJ1t4AW9vEnJ7XFul40lXe7JdVpP1mpML-OV_9BwADtAp5CXzr0EEjq5-xSHXAvI6btAYvxiC0A"
+    },
+    "browserCertTamperedCreatedAt": {
+      "version": 1,
+      "accountKeyId": "bbNZDxMlJqPBsWsFLvOi-pnS-vAKzGgs9HevaG1vOgY",
+      "browserId": "kHgmSbsZNjsu8hvbX6Ri-v4NeBB_uhmXBbo2d7_n1-4",
+      "publicKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEsSSs4Mkue1KvwCwpmrm3vOjE6prSD58cr0HMS6K_GTZPXkY0hQWumWoMNFNIesw1R-rwOTd8rdnZlsTR2KymNA",
+      "createdAt": 1760000000001,
+      "signature": "ZjBgtZ9qMsCbJ1t4AW9vEnJ7XFul40lXe7JdVpP1mpML-OV_9BwADtAp5CXzr0EEjq5-xSHXAvI6btAYvxiC0A"
+    },
+    "deviceCertWrongDevice": {
+      "version": 1,
+      "accountKeyId": "bbNZDxMlJqPBsWsFLvOi-pnS-vAKzGgs9HevaG1vOgY",
+      "deviceId": "device-2",
+      "identityKey": "BHCCXhqgIPoQJjs-nCol4Dix19YlDenqelnfd826cxjMzkPSaUSV37MFdy91WW18K88YilW3hw6DtZxpluW52Is",
+      "createdAt": 1760000000000,
+      "signature": "aRYslw9S59D2dD01mXXa9-JyK--HdVUpZFQuOwqN_CMtqld1qpNTVmN9pnxvdrZGqB0BJ0AT_nhxD2iyNIq21w"
+    },
+    "deviceCertWrongIdentity": {
+      "version": 1,
+      "accountKeyId": "bbNZDxMlJqPBsWsFLvOi-pnS-vAKzGgs9HevaG1vOgY",
+      "deviceId": "device-1",
+      "identityKey": "BP-RMvATfsu03rMedWqbO5XXTJqp3UrRAIKxJfTrJe9kYG-bRM8dP2UzilwyeTszfUbJMMgux2Y-pQKszJrnPSg",
+      "createdAt": 1760000000000,
+      "signature": "aRYslw9S59D2dD01mXXa9-JyK--HdVUpZFQuOwqN_CMtqld1qpNTVmN9pnxvdrZGqB0BJ0AT_nhxD2iyNIq21w"
+    },
+    "revocationWrongKind": {
+      "version": 1,
+      "accountKeyId": "bbNZDxMlJqPBsWsFLvOi-pnS-vAKzGgs9HevaG1vOgY",
+      "kind": "device",
+      "subjectId": "kHgmSbsZNjsu8hvbX6Ri-v4NeBB_uhmXBbo2d7_n1-4",
+      "revokedAt": 1760000100000,
+      "signature": "Zv7Mwg9yvSae9peDl3jWyP4_eT1E2QQ0ziNF0iLheZYcRcmUffEr7sucS_DEFDyrXQUBRf_5_z2lnhh52KMbGg"
+    },
+    "enrollmentMacWrongIdentity": "g4Ic1s-jbkavLcU7EPb2eoXGU6CpK5Ryk4YxzuPWxIE",
+    "vaultBodyWrongRevisionAad": "pockymoe-vault-body-v1\nuser-123\nbbNZDxMlJqPBsWsFLvOi-pnS-vAKzGgs9HevaG1vOgY\n4"
+  }
+}

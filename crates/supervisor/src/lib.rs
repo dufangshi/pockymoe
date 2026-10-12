@@ -31,7 +31,9 @@ use pockymoe_runtime::Supervisor;
 use tokio::net::TcpListener;
 
 pub use http::router;
-pub use owner_trust::{create_pairing_offer, reset_owner_trust};
+pub use owner_trust::{
+    bind_account, binding_status, reset_account_trust, validate_binding, validate_web_origin,
+};
 pub use tunnel::run_relay_tunnel;
 
 pub async fn serve(state: Arc<Supervisor>) -> Result<()> {
