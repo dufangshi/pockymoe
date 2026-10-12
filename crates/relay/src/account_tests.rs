@@ -3617,6 +3617,83 @@ async fn documentation_recovery_proof_is_separate_from_new_recovery_key() {
 }
 
 #[tokio::test]
+async fn documentation_recovery_login_can_regenerate_password_and_recovery_slots() {
+    let f = Fixture::new("doc-recovery-login-regeneration").await;
+    let original = f.register().await;
+    let (status, login) = f
+        .json(
+            Method::POST,
+            "/relay/auth/recover",
+            None,
+            json!({"login":"vector-user","recoveryAuthKey":recovery_key()}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(login["account"]["recovery"], true);
+    let token = login["token"].as_str().unwrap();
+    let next_auth = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([230; 32]);
+    let next_recovery = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([231; 32]);
+    let mut vault = test_vault(ACCOUNT_USER, 2);
+    vault["slots"]["recovery"]["iv"] = json!("AAAAAAAAAAAAAAAA");
+    let mut write = json!({
+        "vault":vault,"expectedRevision":1,
+        "currentRecoveryAuthKey":recovery_key(),"recoveryAuthKey":next_recovery
+    });
+    assert_eq!(
+        f.json(
+            Method::PUT,
+            "/relay/account/vault",
+            Some(token),
+            write.clone()
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN,
+        "a limited recovery session must replace the password slot before promotion"
+    );
+    write["vault"]["slots"]["password"]["iv"] = json!("AAAAAAAAAAAAAAAA");
+    write["authKey"] = json!(next_auth);
+    assert_eq!(
+        f.json(Method::PUT, "/relay/account/vault", Some(token), write)
+            .await
+            .0,
+        StatusCode::OK
+    );
+    let response = f
+        .req(Method::GET, "/relay/auth/session", Some(token))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let session: Value = response.json().await.unwrap();
+    assert_eq!(session["account"]["recovery"], false);
+    assert_eq!(session["account"]["setupRequired"], false);
+    assert_eq!(
+        f.req(Method::GET, "/relay/account/vault", Some(&original))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    for (path, field, old, new) in [
+        ("/relay/auth/login", "authKey", auth_key(), next_auth),
+        (
+            "/relay/auth/recover",
+            "recoveryAuthKey",
+            recovery_key(),
+            next_recovery,
+        ),
+    ] {
+        for (key, expected) in [(old, StatusCode::UNAUTHORIZED), (new, StatusCode::OK)] {
+            let mut body = json!({"login":"vector-user"});
+            body[field] = json!(key);
+            assert_eq!(f.json(Method::POST, path, None, body).await.0, expected);
+        }
+    }
+}
+
+#[tokio::test]
 async fn documentation_recovery_new_key_is_not_a_proof_but_body_only_compatibility_remains() {
     let f = Fixture::new("doc-recovery-field-rules").await;
     let token = f.register().await;
