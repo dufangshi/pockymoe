@@ -1,46 +1,18 @@
 use super::*;
 use crate::owner_trust::{
-    tests::{assertion, decoded, encrypted, encrypted_with_key, live_owner},
-    Registration,
+    tests::{decoded, encrypted, encrypted_with_key, live_owner},
+    BrowserCertificate, BrowserPrincipal,
 };
-use p256::{ecdsa::SigningKey, pkcs8::EncodePublicKey};
+use p256::ecdsa::SigningKey;
 use rand::rngs::OsRng;
-
-fn grantee_material() -> (Credential, SigningKey, Registration, SigningKey) {
-    let passkey = SigningKey::random(&mut OsRng);
-    let session = SigningKey::random(&mut OsRng);
-    let v = crate::owner_trust::tests::vectors();
-    let record = Credential {
-        credential_id: B64.encode([7; 32]),
-        public_key: B64.encode(
-            passkey
-                .verifying_key()
-                .to_public_key_der()
-                .unwrap()
-                .as_bytes(),
-        ),
-        algorithm: -7,
-        origin: v["credentialRecord"]["origin"].as_str().unwrap().into(),
-        rp_id: v["credentialRecord"]["rpId"].as_str().unwrap().into(),
-    };
-    let mut r: Registration = serde_json::from_value(v["session"]["registration"].clone()).unwrap();
-    r.session_public_key = B64.encode(
-        session
-            .verifying_key()
-            .to_public_key_der()
-            .unwrap()
-            .as_bytes(),
-    );
-    r.issued_at = owner_trust::now();
-    r.expires_at = r.issued_at + 60_000;
-    let challenge = sha2::Sha256::digest(format!(
-        "pockymoe-owner-session-v1\n{}\n{}\n{}\n{}",
-        r.session_public_key, r.issued_at, r.expires_at, r.nonce
-    ));
-    r.assertion = assertion(&record, &passkey, &challenge);
-    (record, passkey, r, session)
+fn grantee_material() -> (PinnedAccount, SigningKey, BrowserCertificate, SigningKey) {
+    let account = SigningKey::random(&mut OsRng);
+    let browser = SigningKey::random(&mut OsRng);
+    let pin = crate::owner_trust::tests::account(&account);
+    let cert = crate::owner_trust::tests::browser_certificate(&account, &browser);
+    (pin, account, cert, browser)
 }
-fn grant(record: Credential) -> Grant {
+fn grant(record: PinnedAccount) -> Grant {
     Grant {
         version: 1,
         grant_id: B64.encode([1; 16]),
@@ -51,7 +23,8 @@ fn grant(record: Credential) -> Grant {
         grantee: Grantee {
             user_id: "recipient".into(),
             label: "Recipient".into(),
-            credentials: vec![record],
+            account_key_id: record.account_key_id,
+            account_public_key: record.account_public_key,
         },
         scope: "thread".into(),
         thread_id: Some("root".into()),
@@ -64,10 +37,9 @@ fn grant(record: Credential) -> Grant {
         expires_at: None,
     }
 }
-use sha2::Digest;
 pub(crate) async fn request(
     state: &Arc<Supervisor>,
-    p: Option<&OwnerPrincipal>,
+    p: Option<&BrowserPrincipal>,
     signing: &SigningKey,
     method: &str,
     path: &str,
@@ -80,11 +52,11 @@ pub(crate) async fn request(
         &aad,
     )
 }
-async fn register(state: &Arc<Supervisor>, r: &Registration) -> (u64, Value) {
+async fn register(state: &Arc<Supervisor>, r: &BrowserCertificate) -> (u64, Value) {
     let (request, key, aad) = encrypted(
         state,
         "POST",
-        "/api/transport/owner-session",
+        "/api/transport/browser",
         serde_json::to_value(r).unwrap(),
         None,
     );
@@ -97,26 +69,41 @@ async fn register(state: &Arc<Supervisor>, r: &Registration) -> (u64, Value) {
 pub(crate) async fn fixture() -> (
     tempfile::TempDir,
     Arc<Supervisor>,
-    OwnerPrincipal,
+    BrowserPrincipal,
     Grant,
-    Registration,
+    BrowserCertificate,
     SigningKey,
-    OwnerPrincipal,
+    BrowserPrincipal,
+) {
+    let (dir, state, owner, g, r, key, p, _) = fixture_with_account().await;
+    (dir, state, owner, g, r, key, p)
+}
+/// Same as `fixture`, also returning the grantee's account key so a test can
+/// certify additional browsers for the same recipient.
+async fn fixture_with_account() -> (
+    tempfile::TempDir,
+    Arc<Supervisor>,
+    BrowserPrincipal,
+    Grant,
+    BrowserCertificate,
+    SigningKey,
+    BrowserPrincipal,
+    SigningKey,
 ) {
     let (dir, state) = crate::tunnel::tests::state_with_relay_url("http://127.0.0.1:1");
     let owner = live_owner(&state);
-    let (record, _, r, key) = grantee_material();
+    let (record, account, r, key) = grantee_material();
     let g = grant(record);
     put(&state.db, &g.grant_id, &g, &owner, owner_trust::now()).unwrap();
     let (status, body) = register(&state, &r).await;
     assert_eq!(status, 200);
     assert_eq!(body["role"], "grantee");
-    let p = OwnerPrincipal {
-        credential_id: g.grantee.credentials[0].credential_id.clone(),
-        session_id: body["sessionId"].as_str().unwrap().into(),
+    let p = BrowserPrincipal {
+        account_key_id: g.grantee.account_key_id.clone(),
+        browser_id: body["browserId"].as_str().unwrap().into(),
         grantee_user_id: Some("recipient".into()),
     };
-    (dir, state, owner, g, r, key, p)
+    (dir, state, owner, g, r, key, p, account)
 }
 fn error_status(result: Result<Value>) -> u16 {
     owner_trust::response(result).status().as_u16()
@@ -154,8 +141,7 @@ async fn grant_crud_validation_limits_and_owner_enforcement() {
         ("PUT", path.as_str()),
         ("DELETE", path.as_str()),
         ("GET", "/api/transport/trust"),
-        ("POST", "/api/transport/credentials"),
-        ("DELETE", "/api/transport/sessions/session"),
+        ("PUT", "/api/transport/device-certificate"),
         ("POST", "/api/port-mappings"),
         ("PATCH", "/api/config/workspace-settings"),
     ] {
@@ -179,38 +165,19 @@ async fn grant_crud_validation_limits_and_owner_enforcement() {
         let (status, _) = request(&state, Some(&owner), &owner_key, "PUT", &path, body).await;
         assert_eq!(status, 400, "{field}");
     }
+    for field in ["accountKeyId", "accountPublicKey"] {
+        let mut bad = serde_json::to_value(&g).unwrap();
+        bad["grantee"][field] = json!("invalid");
+        let (status, body) = request(&state, Some(&owner), &owner_key, "PUT", &path, bad).await;
+        assert_eq!(
+            (status, body["code"].as_str()),
+            (400, Some("invalid_grant"))
+        );
+    }
     let mut bad = g.clone();
-    bad.grantee.credentials[0].origin = "https://wrong.test".into();
-    let (status, body) = request(
-        &state,
-        Some(&owner),
-        &owner_key,
-        "PUT",
-        &path,
-        serde_json::to_value(bad).unwrap(),
-    )
-    .await;
-    assert_eq!(
-        (status, body["code"].as_str()),
-        (400, Some("owner_origin_mismatch"))
-    );
-    let mut sixteen = g.clone();
-    sixteen.grantee.credentials = (0..16)
-        .map(|i| {
-            let mut record = g.grantee.credentials[0].clone();
-            record.credential_id = B64.encode([i; 32]);
-            record
-        })
-        .collect();
-    state
-        .db
-        .with(|c| validate(c, &sixteen.grant_id, &sixteen))
-        .unwrap();
-    let mut bad = g.clone();
-    bad.grantee.credentials = vec![serde_json::from_value(
-        crate::owner_trust::tests::vectors()["credentialRecord"].clone(),
-    )
-    .unwrap()];
+    let pin = owner_trust::pinned_account(&state).unwrap().unwrap();
+    bad.grantee.account_key_id = pin.account_key_id;
+    bad.grantee.account_public_key = pin.account_public_key;
     let (status, body) = request(
         &state,
         Some(&owner),
@@ -225,19 +192,8 @@ async fn grant_crud_validation_limits_and_owner_enforcement() {
         (400, Some("grantee_is_owner"))
     );
     let mut bad = g.clone();
-    bad.grantee.credentials = vec![g.grantee.credentials[0].clone(); 17];
-    assert_eq!(
-        error_status(put(
-            &state.db,
-            &bad.grant_id,
-            &bad,
-            &owner,
-            owner_trust::now()
-        )),
-        400
-    );
-    let mut bad = g.clone();
-    bad.grantee.credentials[0].public_key = "invalid".into();
+    bad.grant_id = B64.encode([8; 16]);
+    bad.grantee.user_id = "conflicting-user".into();
     assert_eq!(
         error_status(put(
             &state.db,
@@ -264,13 +220,13 @@ async fn grantee_registration_live_revocation_expiry_and_reset() {
     let owner = live_owner(&state);
     let (record, _, r, key) = grantee_material();
     let mut g = grant(record);
-    assert_eq!(register(&state, &r).await.0, 401);
+    assert_eq!(register(&state, &r).await.0, 403);
     put(&state.db, &g.grant_id, &g, &owner, owner_trust::now()).unwrap();
     let (status, body) = register(&state, &r).await;
     assert_eq!(status, 200);
-    let p = OwnerPrincipal {
-        session_id: body["sessionId"].as_str().unwrap().into(),
-        credential_id: g.grantee.credentials[0].credential_id.clone(),
+    let p = BrowserPrincipal {
+        browser_id: body["browserId"].as_str().unwrap().into(),
+        account_key_id: g.grantee.account_key_id.clone(),
         grantee_user_id: Some("recipient".into()),
     };
     assert!(p.valid(&state));
@@ -282,12 +238,6 @@ async fn grantee_registration_live_revocation_expiry_and_reset() {
     assert!(p.valid(&state));
     delete(&state.db, &g.grant_id, owner_trust::now()).unwrap();
     assert!(!p.valid(&state));
-    put(&state.db, &g.grant_id, &g, &owner, owner_trust::now()).unwrap();
-    let (status, body) = register(&state, &r).await;
-    assert_eq!(
-        (status, body["code"].as_str()),
-        (401, Some("owner_session_revoked"))
-    );
     assert_eq!(
         request(
             &state,
@@ -301,6 +251,9 @@ async fn grantee_registration_live_revocation_expiry_and_reset() {
         .0,
         401
     );
+    // An explicit new grant permits fresh registration with the account's certificate.
+    put(&state.db, &g.grant_id, &g, &owner, owner_trust::now()).unwrap();
+    assert_eq!(register(&state, &r).await.0, 200);
     // Expiry immediately removes authority.
     let (_other, other, other_owner, mut expiring, _r, _key, principal) = fixture().await;
     expiring.expires_at = Some(owner_trust::now() - 1);
@@ -313,13 +266,13 @@ async fn grantee_registration_live_revocation_expiry_and_reset() {
     )
     .unwrap();
     assert!(!principal.valid(&other));
-    owner_trust::reset_owner_trust(&state.config.database_url).unwrap();
+    owner_trust::reset_account_trust(&state.config.database_url).unwrap();
     state
         .db
         .with(|c| {
             assert!(rows(c)?.is_empty());
             assert_eq!(
-                c.query_row("SELECT count(*) FROM grantee_sessions", [], |r| r
+                c.query_row("SELECT count(*) FROM browser_registrations", [], |r| r
                     .get::<_, u64>(0))?,
                 0
             );
@@ -423,6 +376,7 @@ async fn thread_lineage_and_route_access_are_local_read_and_control() {
     );
     g.relay_ref.kind = "grant".into();
     g.scope = "device".into();
+    g.workspace_scope = "all".into();
     g.thread_id = None;
     g.can_create_threads = true;
     put(&state.db, &g.grant_id, &g, &owner, owner_trust::now()).unwrap();
@@ -653,7 +607,7 @@ async fn grantee_registration_accepts_key_fetched_from_thread_scoped_handshake()
     assert_eq!(descriptor["challenge"], "recipient-handshake");
     let (request, key, aad) = crate::owner_trust::tests::encrypted_with_descriptor(
         "POST",
-        "/api/transport/owner-session",
+        "/api/transport/browser",
         serde_json::to_value(&registration).unwrap(),
         None,
         &signing_key,
@@ -667,9 +621,9 @@ async fn grantee_registration_accepts_key_fetched_from_thread_scoped_handshake()
     );
     assert_eq!(status, 200);
     assert_eq!(body["role"], "grantee");
-    let principal = OwnerPrincipal {
-        session_id: body["sessionId"].as_str().unwrap().into(),
-        credential_id: registration.assertion.credential_id,
+    let principal = BrowserPrincipal {
+        browser_id: body["browserId"].as_str().unwrap().into(),
+        account_key_id: registration.account_key_id,
         grantee_user_id: Some(g.grantee.user_id),
     };
     assert!(principal.valid(&state));
@@ -699,4 +653,215 @@ async fn grantee_registration_accepts_key_fetched_from_thread_scoped_handshake()
             .actor(),
         "grantee:recipient"
     );
+}
+
+#[tokio::test]
+async fn device_selected_workspaces_are_rejected_and_legacy_rows_fail_closed() {
+    let (_dir, state, owner, g, _r, key, p) = fixture().await;
+    let owner_key = crate::owner_trust::tests::session_key();
+    let mut unsupported = g.clone();
+    unsupported.relay_ref.kind = "grant".into();
+    unsupported.scope = "device".into();
+    unsupported.workspace_ids = vec!["selected-workspace".into()];
+    unsupported.workspace_access = "write".into();
+    unsupported.can_create_threads = true;
+    for level in ["read", "control"] {
+        unsupported.thread_access = level.into();
+        assert_eq!(
+            error_status(
+                state
+                    .db
+                    .with(|c| validate(c, &g.grant_id, &unsupported))
+                    .map(|_| json!({}))
+            ),
+            400
+        );
+        let (status, body) = request(
+            &state,
+            Some(&owner),
+            &owner_key,
+            "PUT",
+            &format!("/api/transport/grants/{}", g.grant_id),
+            serde_json::to_value(&unsupported).unwrap(),
+        )
+        .await;
+        assert_eq!(
+            (status, body["code"].as_str()),
+            (400, Some("invalid_grant"))
+        );
+    }
+    // Keep a valid thread share so this remains an authenticated grantee. Simulate
+    // an unsupported device grant persisted by an older Supervisor version.
+    unsupported.grant_id = B64.encode([9; 16]);
+    state.db.with(|c| {
+        c.execute("INSERT INTO device_grants(grant_id,grant_json,created_at,created_by) VALUES(?1,?2,?3,?4)", params![unsupported.grant_id, serde_json::to_string(&unsupported)?, owner_trust::now(), owner.actor()])?;
+        assert_eq!(live_rows(c, owner_trust::now())?.len(), 1);
+        Ok(())
+    }).unwrap();
+    for (method, path) in [
+        ("GET", "/api/workspaces/selected-workspace/files/raw"),
+        ("GET", "/api/workspaces/other/files/raw"),
+        ("GET", "/api/threads/other"),
+        ("GET", "/api/workspaces/other/search"),
+        ("GET", "/api/search"),
+        ("GET", "/api/threads"),
+        ("GET", "/api/workspaces"),
+        ("POST", "/api/threads/start"),
+    ] {
+        assert!(authorize_path(&state, &p, method, path).is_err());
+        let (status, body) = request(
+            &state,
+            Some(&p),
+            &key,
+            method,
+            path,
+            json!({"workspaceId":"other"}),
+        )
+        .await;
+        assert_eq!(
+            (status, body["code"].as_str()),
+            (403, Some("grant_denied")),
+            "{path}"
+        );
+    }
+    delete(&state.db, &g.grant_id, owner_trust::now()).unwrap();
+    assert!(!p.valid(&state));
+    assert!(state
+        .db
+        .with(|c| live_account(c, &p.account_key_id, owner_trust::now()))
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn device_grantees_cannot_read_host_local_import_candidates() {
+    let (_dir, state, owner, mut g, _r, key, p) = fixture().await;
+    g.relay_ref.kind = "grant".into();
+    g.scope = "device".into();
+    g.workspace_scope = "all".into();
+    for level in ["read", "control"] {
+        g.thread_access = level.into();
+        put(&state.db, &g.grant_id, &g, &owner, owner_trust::now()).unwrap();
+        for literal in ["start", "import", "import-candidates"] {
+            let path = format!("/api/threads/{literal}?view=all");
+            assert!(authorize_path(&state, &p, "GET", &path).is_err());
+            let (status, body) = request(&state, Some(&p), &key, "GET", &path, Value::Null).await;
+            assert_eq!(
+                (status, body["code"].as_str()),
+                (403, Some("grant_denied")),
+                "{path}"
+            );
+        }
+    }
+    assert!(authorize_path(&state, &owner, "GET", "/api/threads/import-candidates").is_ok());
+    assert_eq!(
+        request(
+            &state,
+            Some(&owner),
+            &crate::owner_trust::tests::session_key(),
+            "GET",
+            "/api/threads/import-candidates",
+            Value::Null
+        )
+        .await
+        .0,
+        200
+    );
+}
+
+async fn download_request(
+    state: &Arc<Supervisor>,
+    p: &BrowserPrincipal,
+    key: &SigningKey,
+    path: &str,
+) -> (Value, Vec<u8>) {
+    let (r, response_key, aad) = encrypted_with_key(state, "GET", path, Value::Null, Some(p), key);
+    crate::owner_trust::tests::decoded_parts(
+        crate::tunnel::forward_local(state, r, None).await,
+        &response_key,
+        &aad,
+    )
+}
+
+#[tokio::test]
+async fn encrypted_streams_require_the_starting_principal_and_valid_scoped_ids() {
+    use crate::secure_transport::StreamPrincipal;
+    let (_dir, state, owner, mut g, _r, key, p, grantee_account) = fixture_with_account().await;
+    let owner_key = crate::owner_trust::tests::session_key();
+    g.relay_ref.kind = "grant".into();
+    g.scope = "device".into();
+    g.workspace_scope = "all".into();
+    g.workspace_access = "read".into();
+    put(&state.db, &g.grant_id, &g, &owner, owner_trust::now()).unwrap();
+    // Generic owner-only streams must not be accessible through invented thread
+    // or workspace paths, even when the relay exposes the continuation ID.
+    let transport = crate::secure_transport::transport(&state).unwrap();
+    let (_, next) = transport
+        .streams
+        .begin(
+            "/api/threads/import-candidates",
+            axum::body::Body::from(vec![21u8; 1024 * 1024 + 7]),
+            StreamPrincipal::new(Some(&owner), None),
+        )
+        .await
+        .unwrap();
+    let next = next.unwrap();
+    for prefix in ["/api/threads/zzz", "/api/workspaces/zzz"] {
+        let (meta, _) = download_request(&state, &p, &key, &next.replacen("/api", prefix, 1)).await;
+        assert_eq!(meta["status"], 410);
+    }
+    let (meta, bytes) = download_request(&state, &owner, &owner_key, &next).await;
+    assert_eq!(meta["status"], 200);
+    assert_eq!(bytes, vec![21u8; 7]);
+
+    let ws = state
+        .create_workspace(pockymoe_protocol::CreateWorkspaceInput {
+            abs_path: Some(state.config.workspace_root.to_string_lossy().into()),
+            git_url: None,
+            label: Some("Streaming ACL".into()),
+        })
+        .unwrap();
+    std::fs::write(
+        state.config.workspace_root.join("large.bin"),
+        vec![42u8; 1024 * 1024 + 7],
+    )
+    .unwrap();
+    let path = format!("/api/workspaces/{}/files/download?path=large.bin", ws.id);
+    let (meta, bytes) = download_request(&state, &owner, &owner_key, &path).await;
+    assert_eq!(meta["status"], 200);
+    assert_eq!(bytes.len(), 1024 * 1024);
+    let next = meta["streamNext"].as_str().unwrap();
+    assert_eq!(
+        download_request(&state, &p, &key, next).await.0["status"],
+        410
+    );
+    let (meta, bytes) = download_request(&state, &owner, &owner_key, next).await;
+    assert_eq!(meta["status"], 200);
+    assert_eq!(bytes, vec![42u8; 7]);
+    // Another browser of the same grantee account is a different principal. Only
+    // the browser that started a download can finish it.
+    let other_key = SigningKey::random(&mut OsRng);
+    let other_cert = crate::owner_trust::tests::browser_certificate(&grantee_account, &other_key);
+    let (status, body) = register(&state, &other_cert).await;
+    assert_eq!((status, body["role"].as_str()), (200, Some("grantee")));
+    let other = BrowserPrincipal {
+        browser_id: other_cert.browser_id.clone(),
+        ..p.clone()
+    };
+    assert_ne!(other.browser_id, p.browser_id);
+    assert!(other.valid(&state));
+    let (meta, _) = download_request(&state, &p, &key, &path).await;
+    assert_eq!(meta["status"], 200);
+    let next = meta["streamNext"].as_str().unwrap();
+    assert_eq!(
+        download_request(&state, &other, &other_key, next).await.0["status"],
+        410
+    );
+    assert_eq!(
+        download_request(&state, &owner, &owner_key, next).await.0["status"],
+        410
+    );
+    let (meta, bytes) = download_request(&state, &p, &key, next).await;
+    assert_eq!(meta["status"], 200);
+    assert_eq!(bytes, vec![42u8; 7]);
 }

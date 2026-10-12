@@ -187,7 +187,7 @@ async fn certificates_preserve_json_and_enforce_access_and_deletion() {
         );
     }
     // Unknown fields, whitespace and unverified assertions are preserved by the relay.
-    let raw = "{\n \"version\": 1, \"deviceId\": \"device\", \"assertion\": {\"signature\": \"unverified\"}, \"future\": [1,2] }\n";
+    let raw = "{\n \"version\": 1, \"deviceId\": \"device\", \"accountKeyId\": \"key\", \"identityKey\": \"identity\", \"createdAt\": 0, \"signature\": \"unverified\", \"future\": [1,2] }\n";
     let response = fixture
         .request(Method::PUT, path, Some("owner"))
         .body(raw)
@@ -276,7 +276,7 @@ async fn certificates_preserve_json_and_enforce_access_and_deletion() {
             "{user}"
         );
     }
-    let updated = "{\"version\":1,\"deviceId\":\"device\",\"replacement\":true}";
+    let updated = "{\"version\":1,\"deviceId\":\"device\",\"accountKeyId\":\"key\",\"identityKey\":\"identity\",\"createdAt\":0,\"signature\":\"unverified\",\"replacement\":true}";
     assert_eq!(
         fixture
             .request(Method::PUT, path, Some("owner"))
@@ -356,7 +356,7 @@ async fn certificate_validation_size_limit_and_browser_origin_protection() {
             StatusCode::BAD_REQUEST
         );
     }
-    let prefix = "{\"version\":1,\"deviceId\":\"device\"}";
+    let prefix = "{\"version\":1,\"deviceId\":\"device\",\"accountKeyId\":\"key\",\"identityKey\":\"identity\",\"createdAt\":0,\"signature\":\"unverified\"}";
     let exact = format!("{prefix}{}", " ".repeat(16 * 1024 - prefix.len()));
     assert_eq!(
         fixture
@@ -440,10 +440,10 @@ async fn certificate_validation_size_limit_and_browser_origin_protection() {
 }
 
 #[tokio::test]
-async fn certificates_store_interop_vectors_without_verifying_assertions() {
+async fn certificates_store_v2_interop_vectors_without_verifying_signatures() {
     let fixture = Fixture::new("certificate-interop-storage").await;
     let vectors: Value =
-        serde_json::from_str(include_str!("../test-fixtures/owner-trust-v1.json")).unwrap();
+        serde_json::from_str(include_str!("../test-fixtures/account-key-v2.json")).unwrap();
     let certificate = &vectors["deviceCertificate"]["certificate"];
     let id = certificate["deviceId"].as_str().unwrap();
     fixture
@@ -460,11 +460,9 @@ async fn certificates_store_interop_vectors_without_verifying_assertions() {
         .unwrap();
     let path = format!("/relay/devices/{id}/certificate");
     let mut certificates = vec![certificate.clone()];
-    for negative in vectors["negative"].as_object().unwrap().values() {
-        let mut certificate = certificate.clone();
-        certificate["assertion"] = negative["assertion"].clone();
-        certificates.push(certificate);
-    }
+    let mut tampered = certificate.clone();
+    tampered["signature"] = json!("invalid");
+    certificates.push(tampered);
     for certificate in certificates {
         let raw = serde_json::to_string_pretty(&certificate).unwrap();
         assert_eq!(
@@ -530,7 +528,7 @@ async fn grantee_registration_routes_any_live_scope_without_resource_ids() {
             let request = fixture
                 .request(
                     Method::POST,
-                    &format!("{prefix}/transport/owner-session"),
+                    &format!("{prefix}/transport/browser"),
                     Some(user),
                 )
                 .header("x-rcd-key", "scoped-key")
@@ -543,7 +541,7 @@ async fn grantee_registration_routes_any_live_scope_without_resource_ids() {
                 .unwrap()
                 .unwrap();
             let frame: Value = serde_json::from_str(&raw).unwrap();
-            assert_eq!(frame["payload"]["path"], "/api/transport/owner-session");
+            assert_eq!(frame["payload"]["path"], "/api/transport/browser");
             assert_eq!(frame["payload"]["method"], "POST");
             assert_eq!(frame["payload"]["headers"]["x-rcd-key"], "scoped-key");
             assert_eq!(frame["payload"]["headers"]["x-rcd-enc"], "encapsulation");
@@ -625,16 +623,17 @@ async fn registration_exception_does_not_open_other_transport_routes_or_plaintex
             "share-guest",
         ] {
             for (method, path) in [
-                (Method::GET, "/transport/owner-session"),
-                (Method::PUT, "/transport/owner-session"),
-                (Method::DELETE, "/transport/owner-session"),
-                (Method::POST, "/transport/owner-session/extra"),
+                (Method::GET, "/transport/browser"),
+                (Method::PUT, "/transport/browser"),
+                (Method::DELETE, "/transport/browser"),
+                (Method::POST, "/transport/browser/extra"),
+                (Method::POST, "/transport/owner-session"),
                 (Method::POST, "/transport/session"),
-                (Method::POST, "/transport/pair"),
+                (Method::POST, "/transport/enrollment"),
                 (Method::GET, "/transport/trust"),
                 (Method::GET, "/transport/grants"),
-                (Method::POST, "/transport/credentials"),
-                (Method::DELETE, "/transport/sessions/id"),
+                (Method::POST, "/transport/device-certificate"),
+                (Method::DELETE, "/transport/revocations"),
             ] {
                 let response = fixture
                     .request(method, &format!("{prefix}{path}"), Some(user))
@@ -661,7 +660,7 @@ async fn registration_exception_does_not_open_other_transport_routes_or_plaintex
             ] {
                 let mut request = fixture.request(
                     Method::POST,
-                    &format!("{prefix}/transport/owner-session"),
+                    &format!("{prefix}/transport/browser"),
                     Some(user),
                 );
                 for name in supplied {
@@ -679,11 +678,7 @@ async fn registration_exception_does_not_open_other_transport_routes_or_plaintex
         }
         for user in [None, Some("stranger")] {
             let response = fixture
-                .request(
-                    Method::POST,
-                    &format!("{prefix}/transport/owner-session"),
-                    user,
-                )
+                .request(Method::POST, &format!("{prefix}/transport/browser"), user)
                 .header("x-rcd-key", "key")
                 .header("x-rcd-request", "request")
                 .header("x-rcd-enc", "enc")
@@ -770,7 +765,7 @@ async fn revoked_expired_disabled_and_other_device_rows_cannot_register() {
             let response = fixture
                 .request(
                     Method::POST,
-                    "/relay/devices/device/api/transport/owner-session",
+                    "/relay/devices/device/api/transport/browser",
                     Some(user),
                 )
                 .header("x-rcd-key", "key")

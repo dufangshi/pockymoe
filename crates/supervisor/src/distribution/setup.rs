@@ -7,28 +7,12 @@ use std::{collections::BTreeMap, net::TcpListener, time::Duration};
 pub struct SetupOptions {
     pub relay: String,
     pub web_origin: Option<String>,
+    pub account_key: Option<String>,
+    pub enroll: Option<String>,
     pub token: Option<String>,
     pub code: Option<String>,
     pub port: u16,
 }
-/// Read only the local saved configuration; relay greetings are never a source of trust.
-pub fn pairing_defaults() -> Result<(Option<String>, Option<String>)> {
-    let file = config_path();
-    if !file.exists() {
-        return Ok((None, None));
-    }
-    let saved = read_device_config(&file)?;
-    Ok((
-        saved["webOrigin"]
-            .as_str()
-            .or_else(|| saved["POCKYMOE_WEB_ORIGIN"].as_str())
-            .map(str::to_owned),
-        saved["POCKYMOE_RELAY_SERVER_URL"]
-            .as_str()
-            .map(str::to_owned),
-    ))
-}
-
 fn digest(value: &[u8]) -> String {
     hex::encode(Sha256::digest(value))
 }
@@ -155,7 +139,33 @@ fn bridge(path: &Path, binary: &Path) -> Result<()> {
     write_bytes(&helper, code.as_bytes())?;
     Ok(())
 }
+fn validate_setup_binding(options: &SetupOptions) -> Result<()> {
+    ensure!(
+        options.account_key.is_some() == options.enroll.is_some(),
+        "Provide both --account-key and --enroll"
+    );
+    if let (Some(account), Some(secret)) = (&options.account_key, &options.enroll) {
+        crate::owner_trust::validate_binding(account, secret)?;
+    }
+    Ok(())
+}
+fn apply_setup_binding(saved: &Value, options: &SetupOptions) -> Result<()> {
+    if let (Some(account), Some(secret)) = (&options.account_key, &options.enroll) {
+        let database = saved["POCKYMOE_DATABASE_PATH"]
+            .as_str()
+            .or_else(|| saved["DATABASE_URL"].as_str())
+            .context("Device database path is missing")?;
+        crate::owner_trust::bind_account(
+            Path::new(database),
+            account,
+            secret,
+            options.web_origin.as_deref(),
+        )?;
+    }
+    Ok(())
+}
 pub async fn setup(options: SetupOptions) -> Result<()> {
+    validate_setup_binding(&options)?;
     ensure!(
         options.port > 0 && options.token.is_some() != options.code.is_some(),
         "Provide one device token or setup code and a valid port"
@@ -178,7 +188,7 @@ pub async fn setup(options: SetupOptions) -> Result<()> {
     let web_origin = options
         .web_origin
         .as_deref()
-        .map(|origin| crate::owner_trust::pairing_web_origin(Some(origin), None, None))
+        .map(|origin| crate::owner_trust::validate_web_origin(origin))
         .transpose()?;
     let file = config_path();
     let mut saved: Value = if file.exists() {
@@ -220,6 +230,7 @@ pub async fn setup(options: SetupOptions) -> Result<()> {
     let version = env!("CARGO_PKG_VERSION");
     let installed = releases::install(version, Some(&std::env::current_exe()?)).await?;
     if occupied {
+        apply_setup_binding(&saved, &options)?;
         let status = device_api(options.port, &saved, "/api/management/supervisor", false).await?;
         if status["runningVersion"] == version {
             println!("Device is already running Pockymoe {version}.");
@@ -289,6 +300,7 @@ pub async fn setup(options: SetupOptions) -> Result<()> {
             &json!({"identity":identity(&origin, &options),"configHash":digest(&std::fs::read(&file)?)}),
         )?;
     }
+    apply_setup_binding(&saved, &options)?;
     releases::activate(&installed)?;
     let manager = service::detect();
     service::start(&installed, &file, manager.as_deref())?;
@@ -308,7 +320,7 @@ pub fn load_environment(config: &Path) -> Result<BTreeMap<String, String>> {
         }
     }
     if let Some(origin) = saved["webOrigin"].as_str() {
-        let origin = crate::owner_trust::pairing_web_origin(Some(origin), None, None)?;
+        let origin = crate::owner_trust::validate_web_origin(origin)?;
         env.insert("POCKYMOE_WEB_ORIGIN".into(), origin);
     }
     env.insert("POCKYMOE_MODE".into(), "relay".into());
@@ -392,6 +404,42 @@ pub async fn run_device(config: PathBuf) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn setup_binds_fresh_database_before_runtime_and_keeps_enrollment_out_of_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("fresh.sqlite");
+        let v = crate::owner_trust::tests::vectors();
+        let mut options = SetupOptions {
+            relay: "https://relay.test".into(),
+            web_origin: Some("https://web.test".into()),
+            account_key: Some(v["account"]["accountPublicKey"].as_str().unwrap().into()),
+            enroll: Some(v["enrollment"]["enrollSecret"].as_str().unwrap().into()),
+            token: Some("synthetic".into()),
+            code: None,
+            port: 8787,
+        };
+        validate_setup_binding(&options).unwrap();
+        let saved = json!({"POCKYMOE_DATABASE_PATH":db});
+        apply_setup_binding(&saved, &options).unwrap();
+        assert_eq!(
+            crate::owner_trust::binding_status(&db).unwrap()["strict"],
+            true
+        );
+        assert!(saved.get("POCKYMOE_ENROLL").is_none());
+        options.account_key = Some(
+            v["otherAccount"]["accountPublicKey"]
+                .as_str()
+                .unwrap()
+                .into(),
+        );
+        assert!(apply_setup_binding(&saved, &options).is_err());
+        options.enroll = None;
+        assert!(validate_setup_binding(&options).is_err());
+        options.account_key = None;
+        validate_setup_binding(&options).unwrap();
+        apply_setup_binding(&json!({}), &options).unwrap();
+    }
+
     #[test]
     fn local_web_origin_survives_config_persistence_and_environment_loading() {
         let root =

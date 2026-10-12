@@ -1,4 +1,4 @@
-import { AccountSafetyCode } from './SignedShareDetails';
+import { accountPasswordProof } from '../lib/accountAuth';
 import { getLocale } from '@pockymoe/thread-ui/i18n';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { FormDialog } from './FormDialog';
@@ -212,7 +212,7 @@ export function SecurityVerification({
         : await securityRequest<{ verificationToken?: string }>(
             '/reauth',
             'POST',
-            factor ? { code: value } : { password: value },
+            factor ? { code: value } : realm === 'relay-admin' ? { password: value } : await accountPasswordProof(value),
             realm,
           );
       await onVerified(result.verificationToken);
@@ -420,7 +420,6 @@ export function RelaySecurityPanel({
           <p role="status" className="text-sm text-[var(--theme-fg-muted)]">
             {translate("auth.loadingSecuritySettings")}</p>
         )}
-        {realm === 'default' && <AccountSafetyCode revision={status} />}
         {status && (
           <>
             <div className="flex flex-wrap items-center justify-between gap-3">

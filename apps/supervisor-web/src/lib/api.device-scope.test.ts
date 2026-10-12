@@ -149,3 +149,23 @@ it('uses the relay origin for device HTTP, media and sockets while keeping stora
     vi.unstubAllEnvs();
   }
 });
+
+it.each([
+  ['grant_denied', /Your shared access does not permit this action.*read-only/],
+  ['owner_required', /Only the device owner/],
+])('reports %s as permission information without asking to unlock or retrying', async (code, message) => {
+  const unlock = vi.fn();
+  window.addEventListener('remote-codex-owner-unlock-request', unlock);
+  window.addEventListener('remote-codex-owner-read-blocked', unlock);
+  try {
+    vi.mocked(encryptedBrowserFetch).mockResolvedValue(Response.json({ code, message: 'denied' }, { status: 403 }));
+    await expect(sendThreadPrompt('peer', { prompt: 'hello' }, 'peer-device')).rejects.toMatchObject({
+      statusCode: 403, payload: { code }, message: expect.stringMatching(message),
+    });
+    expect(encryptedBrowserFetch).toHaveBeenCalledTimes(1);
+    expect(unlock).not.toHaveBeenCalled();
+  } finally {
+    window.removeEventListener('remote-codex-owner-unlock-request', unlock);
+    window.removeEventListener('remote-codex-owner-read-blocked', unlock);
+  }
+});

@@ -175,3 +175,31 @@ Runtime migration 10 (`agent_coordination`) adds `agent_name`, `agent_role`, `wo
 - **Roles.** `--role R` reads `.pockymoe/agents/R.md` from the workspace, then `~/.pockymoe/agents/`; the pre-rename `.remote-codex/agents/` directories are still read after each. Front matter (`model`, `effort`, `agent`, `description`) supplies defaults the caller can override; the body is staged in KV and prefixed to the thread's first turn only.
 - **Worktrees.** `--worktree [--worktree-branch B]` creates `../REPO.worktrees/SLUG` on branch `agent/SLUG` (or `agent/SLUG-N` when that branch already exists; an explicit branch is checked out as is) from committed HEAD before the harness session starts (and removes it if the session fails to start). Session start, resume, goal and capability calls use the worktree as cwd.
 - **Tree.** `thread tree` lists the lineage depth-first with each thread's state, unread count, current task, role and worktree, plus task counts.
+
+## Delegate questions in task history
+
+A registered delegate wake captures the caller's original task turn and any
+questions that caused the wake. That association follows the durable queue
+entry into the accepted execution turn. The Web timeline nests contiguous
+continuations under the original task's steps, with a secondary fold titled by
+the delegate name and question subject. Opening that fold loads the full
+question and that round's execution history; opening the parent task alone does
+not fetch all continuation details. Viewing a question does not acknowledge or
+answer its inbox record.
+
+The physical execution turns and their billing remain separate. The task header
+adds known usage and costs across its visible continuations; an unknown cost is
+not treated as zero. The latest active progress or final reply stays outside the
+fold, while older responses stay with the question that caused them. Pending
+human approvals remain accessible outside the folded history. A new human task
+is a display boundary. If pagination has not loaded the parent, a continuation
+has its own question fold until the parent arrives.
+
+For older registered wakes, history reads can project this association from
+the system wake envelope, saved inbox questions and local delegate lineage.
+This does not import lost messages or rewrite old execution records.
+
+Long human prompts use a six-line text preview, bounded by 600 Unicode
+characters, 160 words or eight explicit lines. Expand/Show less controls reuse
+message disclosure state and keep the scroll position anchored. Attachments
+remain visible in the preview, and Copy always copies the complete prompt.

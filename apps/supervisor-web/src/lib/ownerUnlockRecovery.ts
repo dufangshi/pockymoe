@@ -18,7 +18,7 @@ export function ownerUnlockedDevice(event: Event, deviceId: string) {
 }
 function needsOwnerUnlock(error: unknown) {
   const code = (error as { code?: string } | null)?.code;
-  return code === 'owner_session_required' || code === 'owner_session_revoked' ||
+  return code === 'accountUnlockRequired' || code === 'browser_registration_required' || code === 'browser_revoked' ||
     code === 'device_strict_mode';
 }
 
@@ -50,10 +50,10 @@ export async function readAfterOwnerUnlock<T extends { response: Response }>(
           return result;
         const failure: unknown = await result.response.clone().json().catch(() => null);
         if (!needsOwnerUnlock(failure)) return result;
-        revoked = (failure as { code: string }).code === 'owner_session_revoked';
+        revoked = (failure as { code: string }).code === 'browser_revoked';
       } catch (error) {
         if (!needsOwnerUnlock(error)) throw error;
-        revoked = (error as { code: string }).code === 'owner_session_revoked';
+        revoked = (error as { code: string }).code === 'browser_revoked';
       }
       // The gesture can finish while the encrypted failure is still in flight.
       if (generation !== attempt) continue;

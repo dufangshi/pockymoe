@@ -1,5 +1,16 @@
 import { SignedShareDetails, OrphanDeviceGrants } from '../components/SignedShareDetails';
-import { relayOrigin } from '../lib/relayOrigin';
+import { requireUnlock } from '../lib/accountVault';
+import { removeDeviceFromAccount } from '../lib/deviceRemoval';
+import { prepareDeviceEnrollment } from '../lib/deviceEnrollment';
+import {
+  relaySupervisorCommand,
+  type SupervisorPlatform,
+  type DeviceBindingFlags,
+} from '../lib/deviceSetupCommands';
+import { DeviceBindingPanel } from '../components/DeviceBindingPanel';
+import { FormDialog } from '../components/FormDialog';
+import { useDeviceProtection, protectionLabel } from '../lib/useDeviceProtection';
+import { getTransportStatus } from '../lib/relayTransport';
 import { getLocale } from '@pockymoe/thread-ui/i18n';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { SharedAccessCard } from '../components/SharedAccessCard';
@@ -43,7 +54,6 @@ import {
   ApiError,
   createRelayGrant,
   createRelayDevice,
-  deleteRelayDevice,
   enableRelayMode,
   fetchRelayPortal,
   revokeRelayGrant,
@@ -58,16 +68,11 @@ import { ConfirmDialog } from '../components/ConfirmDialog';
 import { useDevicePresence } from '../lib/useDevicePresence';
 
 const RELAY_PORTAL_REFRESH_INTERVAL_MS = 3000;
-type SupervisorPlatform = 'unix' | 'windows';
 type SharedView =
   | 'incoming-threads'
   | 'incoming-devices'
   | 'outgoing-devices'
   | 'outgoing-threads';
-const RELAY_SUPERVISOR_PORT_BY_PLATFORM: Record<SupervisorPlatform, number> = {
-  unix: 45679,
-  windows: 45680,
-};
 
 function errorMessage(caught: unknown, fallback: string) {
   return caught instanceof ApiError
@@ -196,11 +201,14 @@ export function RelayDevicesPage() {
     if (!rotatingDevice) return;
     try {
       if (!verified) {const status=await securityRequest<SecurityStatus>(''); if (!status.recentlyVerified) {setRotationVerification(status);return;}}
+      const binding = await prepareDeviceEnrollment(rotatingDevice.id);
+      setCreatedBinding(binding);
       const result=await request<RelayCreateDeviceResultDto>(`/relay/devices/${rotatingDevice.id}/token`,{method:'POST'});
       setCreatedDevice(result);setAddDeviceOpen(true);setRotatingDevice(null);setRotationVerification(null);await load({showLoading:false});
     } catch(e) {setError(errorMessage(e,translate("devices.tokenRotationFailed")));}
   }
   const [deviceName, setDeviceName] = useState('');
+  const [createdBinding, setCreatedBinding] = useState<DeviceBindingFlags | null>(null);
   const [createdDevice, setCreatedDevice] =
     useState<RelayCreateDeviceResultDto | null>(null);
   const [copiedDeviceId, setCopiedDeviceId] = useState<string | null>(null);
@@ -380,7 +388,9 @@ export function RelayDevicesPage() {
     setBusy('create');
     setError(null);
     try {
+      await requireUnlock('bind-device');
       const result = await createRelayDevice({ name: deviceName });
+      setCreatedBinding(await prepareDeviceEnrollment(result.device.id));
       setCreatedDevice(result);
       setDeviceName('');
       setAddDeviceOpen(false);
@@ -400,20 +410,16 @@ export function RelayDevicesPage() {
     setBusy(device.id);
     setError(null);
     try {
-      await deleteRelayDevice(device.id);
+      await removeDeviceFromAccount(device.id);
       if (createdDevice?.device.id === device.id) {
         setCreatedDevice(null);
       }
       const reloaded = await load({ showLoading: false });
       if (!reloaded) {
-        setPortal((current) =>
-          current
-            ? {
-                ...current,
-                devices: current.devices.filter((entry) => entry.id !== device.id),
-              }
-            : current,
-        );
+        setPortal(current => current ? {
+          ...current,
+          devices: current.devices.filter(entry => entry.id !== device.id),
+        } : current);
       }
       setDeletingDevice(null);
       window.requestAnimationFrame(() => {
@@ -589,8 +595,10 @@ export function RelayDevicesPage() {
     }
 
     try {
-      const command = request<{ token: string }>(`/relay/devices/${device.id}/setup-token`, { method: 'POST' })
-        .then(({ token }) => relaySupervisorCommand(token, platform));
+      const command = prepareDeviceEnrollment(device.id).then(async binding => {
+        const { token } = await request<{ token: string }>(`/relay/devices/${device.id}/setup-token`, { method: 'POST' });
+        return relaySupervisorCommand(token, platform, binding);
+      });
       // Start the clipboard operation within the tap gesture, including Safari.
       if (typeof ClipboardItem !== 'undefined' && typeof clipboard.write === 'function') {
         await clipboard.write([new ClipboardItem({
@@ -742,7 +750,7 @@ export function RelayDevicesPage() {
             />
           ) : null}
 
-          {createdDevice ? <DeviceTokenPanel result={createdDevice} /> : null}
+          {createdDevice && createdBinding ? <DeviceTokenPanel result={createdDevice} binding={createdBinding} /> : null}
 
           <div className="mt-4 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-panel)]">
             <div className="hidden grid-cols-[minmax(14rem,1fr)_minmax(14rem,0.8fr)_auto] gap-5 border-b border-[var(--theme-border)] px-3 py-2 text-xs font-medium text-[var(--theme-fg-muted)] md:grid">
@@ -986,13 +994,13 @@ export function RelayDevicesPage() {
       {rotationVerification && <SecurityVerification status={rotationVerification} onCancel={()=> {setRotationVerification(null);setRotatingDevice(null);}} onVerified={()=>rotateDevice(true)} />}
       <ConfirmDialog
         open={deletingDevice !== null}
-        title={translate("devices.deleteRelayDevice")}
+        title={translate("devices.removeDevice")}
         description={
           deletingDevice
-            ? translate("devices.deleteItsDeviceTokenWillStopWorking", { value1: deletingDevice.name })
+            ? translate("devices.removeDeviceHelp", { value1: deletingDevice.name })
             : ''
         }
-        confirmLabel={translate("devices.deleteDevice")}
+        confirmLabel={translate("devices.removeDevice")}
         busyLabel={translate("devices.deleting")}
         busy={Boolean(deletingDevice && busy === deletingDevice.id)}
         error={deletingDevice ? error : null}
@@ -1957,6 +1965,19 @@ function DeviceRow({
   onShare: () => void;
 }) {
   const { locale: i18nLocale } = useI18n();
+  const [protectOpen, setProtectOpen] = useState(false);
+  const [transportStatus, setTransportStatus] = useState(() =>
+    getTransportStatus(device.id),
+  );
+  const protection = useDeviceProtection(device.id, transportStatus);
+  useEffect(() => {
+    const update = (event: Event) => {
+      const status = (event as CustomEvent<NonNullable<typeof transportStatus>>).detail;
+      if (status.deviceId === device.id) setTransportStatus(status);
+    };
+    window.addEventListener('remote-codex-transport', update);
+    return () => window.removeEventListener('remote-codex-transport', update);
+  }, [device.id]);
   const [actionsMenuOpen, setActionsMenuOpen] = useState(false);
   const actionsMenuRef = useRef<HTMLDivElement>(null);
   const actionsTriggerRef = useRef<HTMLButtonElement>(null);
@@ -2072,6 +2093,25 @@ function DeviceRow({
       <div className="min-w-0 text-xs text-[var(--theme-fg-muted)]">
         <p>{activityText}</p>
         <DeviceEncryptionStatus deviceId={device.id} online={device.connected} />
+        <p role={protection === 'certificate-missing' ? 'alert' : undefined}>
+          {translate(protectionLabel(protection))}
+        </p>
+        {protection === 'not-protected' && (
+          <button
+            className="relay-button-secondary mt-2 px-3 py-2"
+            onClick={() => setProtectOpen(true)}
+          >
+            {translate('devices.protectDevice')}
+          </button>
+        )}
+        {protectOpen && (
+          <FormDialog
+            title={translate('devices.protectDevice')}
+            onClose={() => setProtectOpen(false)}
+          >
+            <DeviceBindingPanel deviceId={device.id} />
+          </FormDialog>
+        )}
 
         {copiedSetup ? (
           <p
@@ -2169,7 +2209,7 @@ function DeviceRow({
                   type="button"
                 >
                   <Trash2 className="h-4 w-4" />
-                  {translate("devices.deleteDevice")}</button>
+                  {translate("devices.removeDevice")}</button>
               </div>
             </div>
           ) : null}
@@ -2187,10 +2227,13 @@ function DeviceRow({
   );
 }
 
-function DeviceTokenPanel({ result }: { result: RelayCreateDeviceResultDto }) {
+function DeviceTokenPanel({ result, binding }: {
+  result: RelayCreateDeviceResultDto;
+  binding: DeviceBindingFlags;
+}) {
   const { locale: i18nLocale } = useI18n();
   const [platform, setPlatform] = useState<SupervisorPlatform>('unix');
-  const command = relaySupervisorCommand(result.token, platform);
+  const command = relaySupervisorCommand(result.token, platform, binding);
   return (
     <section
       aria-live="polite"
@@ -2350,43 +2393,6 @@ function Notice({ children }: {
       {children}
     </div>
   );
-}
-
-function relaySupervisorCommand(
-  token: string,
-  platform: SupervisorPlatform = 'unix',
-) {
-  const relayUrl = relayWebsocketBaseUrl();
-  const supervisorPort = RELAY_SUPERVISOR_PORT_BY_PLATFORM[platform];
-  const origin = relayUrl.replace(/^ws/, 'http');
-  const webOrigin = window.location.origin;
-  if (platform === 'windows') {
-    return `& ([scriptblock]::Create((Invoke-WebRequest -UseBasicParsing ${powershellQuote(webOrigin + '/setup.ps1')}).Content)) -Relay ${powershellQuote(origin)} -Token ${powershellQuote(token)} -Port ${supervisorPort} -WebOrigin ${powershellQuote(webOrigin)}`;
-  }
-
-  return `curl -fsSL ${shellQuote(webOrigin + '/setup.sh')} | sh -s -- --relay ${shellQuote(origin)} --token ${shellQuote(token)} --port ${supervisorPort} --web-origin ${shellQuote(webOrigin)}`;
-}
-
-function powershellQuote(value: string) {
-  return `'${value.replace(/'/g, "''")}'`;
-}
-
-function shellQuote(value: string) {
-  if (/^[A-Za-z0-9_./:@%+=,~-]+$/.test(value)) {
-    return value;
-  }
-
-  return `'${value.replace(/'/g, `'\\''`)}'`;
-}
-
-function relayWebsocketBaseUrl() {
-  if (typeof window === 'undefined') {
-    return 'wss://relay.example.com';
-  }
-
-  return relayOrigin()
-    .replace(/^https:\/\//, 'wss://')
-    .replace(/^http:\/\//, 'ws://');
 }
 
 function formatRelayTimestamp(value: string | null | undefined) {

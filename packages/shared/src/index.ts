@@ -870,7 +870,22 @@ export interface ThreadDto {
   closedAt?: string | null;
 }
 
+export interface ThreadPeerWorkDto {
+  taskTurnId: string;
+  messages: Array<{
+    id: string;
+    fromThreadId?: string | null;
+    fromDeviceId?: string | null;
+    name?: string | null;
+    kind: 'question' | 'result';
+    subject?: string | null;
+    text?: string | null;
+    createdAt?: string | null;
+  }>;
+}
+
 export interface ThreadHistoryItemDto {
+  peerWork?: ThreadPeerWorkDto | null;
   id: string;
   createdAt?: string | null;
   kind:

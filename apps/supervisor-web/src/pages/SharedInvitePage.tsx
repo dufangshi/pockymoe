@@ -1,12 +1,12 @@
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { enableRelayMode, fetchRelaySession } from '../lib/api';
+import { enableRelayMode, fetchRelaySession, fetchRelayPortal } from '../lib/api';
 import { acceptSharedInvite, parseSharedInvite } from '../lib/sharedInvite';
 import {
   clearTransportKeyCache,
-  sharingFingerprint,
 } from '../lib/relayTransportCrypto';
+import { checkSharedInviteDevice } from '../lib/sharedDeviceTrust';
 export function SharedInvitePage() {
   useI18n();
   const navigate = useNavigate();
@@ -30,28 +30,53 @@ export function SharedInvitePage() {
   });
   const [error, setError] = useState(input.error);
   const [signin, setSignin] = useState(false);
+  const [confirmed, setConfirmed] = useState(false);
+  const [deviceName, setDeviceName] = useState('');
+  const [ready, setReady] = useState(false);
   useEffect(() => {
+    if (!input.invite) return;
     let active = true;
+    enableRelayMode();
     void (async () => {
-      if (!input.invite) return;
-      enableRelayMode();
-      // Persist the pin before sign-in or any device handshake. The fragment is
-      // never included in an API request or returnTo query parameter.
-      const target = await acceptSharedInvite(input.invite);
       const session = await fetchRelaySession();
       if (!active) return;
       if (!session.authenticated) {
         setSignin(true);
         return;
       }
+      const portal = await fetchRelayPortal().catch(() => null);
+      if (!active) return;
+      const id = input.invite!.deviceId;
+      const received = [
+        ...(portal?.sharedWithMe ?? []),
+        ...(portal?.sharedDevicesWithMe ?? []),
+        ...(portal?.sharedThreadsWithMe ?? []),
+      ];
+      setDeviceName(portal?.devices.find((d) => d.id === id)?.name ??
+        received.find((r) => r.deviceId === id)?.deviceName ?? '');
+      setReady(true);
+    })().catch((error: unknown) => {
+      if (active) setError(error instanceof Error ? error.message : translate('sharing.inviteInvalid'));
+    });
+    return () => { active = false; };
+  }, [input]);
+  useEffect(() => {
+    let active = true;
+    void (async () => {
+      if (!input.invite || !confirmed) return;
+      enableRelayMode();
+      // Pin only after the recipient explicitly reviews the device and identity.
+      // The fragment never enters an API request or returnTo parameter.
+      const target = await acceptSharedInvite(input.invite);
+      if (!active) return;
       clearTransportKeyCache(input.invite.deviceId);
       navigator.serviceWorker?.controller?.postMessage({
         type: 'remote-codex-reset-transport',
         deviceId: input.invite.deviceId,
       });
-      // Check the signed descriptor before navigating. No passkey assertion is
+      // Check the signed descriptor before navigating. No browser registration is
       // needed for this identity check; unlock happens on the destination page.
-      await sharingFingerprint(input.invite.deviceId, input.invite.threadId);
+      await checkSharedInviteDevice(input.invite.deviceId, input.invite.threadId);
       if (active) {
         sessionStorage.removeItem('pockymoe-pending-invite');
         navigate(target, { replace: true });
@@ -65,7 +90,7 @@ export function SharedInvitePage() {
     return () => {
       active = false;
     };
-  }, [input, navigate]);
+  }, [input, navigate, confirmed]);
   return (
     <main className="mx-auto max-w-lg space-y-4 p-6">
       <h1 className="text-xl font-semibold">
@@ -79,6 +104,19 @@ export function SharedInvitePage() {
           <Link to="/relay-portal" state={{ returnTo: '/shared' }}>
             {translate('auth.ownerSignInAction')}
           </Link>
+        </>
+      ) : ready && !confirmed && input.invite ? (
+        <>
+          <p>{translate('sharing.confirmInviteHelp')}</p>
+          <p>{translate('sharing.inviteDevice', {
+            value1: deviceName
+              ? `${deviceName} (${input.invite.deviceId})`
+              : input.invite.deviceId,
+          })}</p>
+          <code className="block break-all">{translate('sharing.inviteOwnerKey', { value1: input.invite.ownerAccountKeyId })}</code>
+          <button className="relay-button-primary px-3 py-2" onClick={() => setConfirmed(true)}>
+            {translate('sharing.confirmInvite')}
+          </button>
         </>
       ) : (
         <p role="status">{translate('auth.ownerPreparing')}</p>

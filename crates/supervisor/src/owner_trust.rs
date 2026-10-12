@@ -1,7 +1,7 @@
-//! Device-local owner authority. Relay metadata is never an owner credential.
-use anyhow::{bail, ensure, Context, Result};
+//! Account-key authority pinned locally; relay metadata grants no authority.
+use anyhow::{ensure, Context, Result};
 use axum::{
-    extract::{Path, State},
+    extract::State,
     http::StatusCode,
     response::{IntoResponse, Response},
     Extension, Json,
@@ -16,186 +16,659 @@ use pockymoe_runtime::{
     db::{validate_database_path, Database},
     Supervisor,
 };
-use rand::{rngs::OsRng, RngCore};
 use rusqlite::{
     params, Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::{path::Path as FsPath, sync::Arc};
+use std::{path::Path, sync::Arc};
 
-const CLOCK_WINDOW: u64 = 5 * 60 * 1000;
-const MAX_LIFETIME: i64 = 7 * 24 * 60 * 60 * 1000;
-// Public session IDs and expiry times only; retained independently of credentials.
-const REVOKED_SESSION_PREFIX: &str = "ownerRevokedSession:";
 pub(crate) fn now() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
-fn hash(bytes: impl AsRef<[u8]>) -> String {
+pub(crate) fn hash(bytes: impl AsRef<[u8]>) -> String {
     B64.encode(Sha256::digest(bytes.as_ref()))
 }
-
+pub(crate) fn account_key_id(public_key: &str) -> Result<String> {
+    let key = B64.decode(public_key)?;
+    VerifyingKey::from_public_key_der(&key)?;
+    ensure!(
+        B64.encode(&key) == public_key,
+        "Noncanonical account public key"
+    );
+    Ok(hash(key))
+}
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct Credential {
-    pub credential_id: String,
+pub(crate) struct PinnedAccount {
+    pub account_key_id: String,
+    pub account_public_key: String,
+}
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BrowserCertificate {
+    pub version: u32,
+    pub account_key_id: String,
+    pub browser_id: String,
     pub public_key: String,
-    pub algorithm: i32,
-    pub rp_id: String,
-    pub origin: String,
-}
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct Assertion {
-    pub credential_id: String,
-    pub authenticator_data: String,
-    #[serde(rename = "clientDataJSON")]
-    pub client_data_json: String,
+    pub created_at: i64,
     pub signature: String,
-}
-#[derive(Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct Registration {
-    pub version: u32,
-    pub session_public_key: String,
-    pub issued_at: i64,
-    pub expires_at: i64,
-    pub nonce: String,
-    pub assertion: Assertion,
-}
-#[derive(Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct Pairing {
-    pub version: u32,
-    pub pairing_id: String,
-    pub credential: Credential,
-    pub assertion: Assertion,
-    pub mac: String,
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct DeviceCertificate {
     pub version: u32,
+    pub account_key_id: String,
     pub device_id: String,
     pub identity_key: String,
-    pub pairing_id: String,
-    pub assertion: Assertion,
+    pub created_at: i64,
+    pub signature: String,
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct CertificateBundle {
+pub(crate) struct Revocation {
     pub version: u32,
-    pub device_id: String,
-    pub certificates: Vec<DeviceCertificate>,
+    pub account_key_id: String,
+    pub kind: String,
+    pub subject_id: String,
+    pub revoked_at: i64,
+    pub signature: String,
 }
-impl CertificateBundle {
-    pub(crate) fn parse(value: Value) -> Result<Self> {
-        if value.get("certificates").is_some() {
-            Ok(serde_json::from_value(value)?)
-        } else {
-            let certificate: DeviceCertificate = serde_json::from_value(value)?;
-            Ok(Self {
-                version: certificate.version,
-                device_id: certificate.device_id.clone(),
-                certificates: vec![certificate],
+pub(crate) fn browser_signing_input(c: &BrowserCertificate) -> String {
+    format!(
+        "pockymoe-acct-browser-v1\n{}\n{}\n{}\n{}",
+        c.account_key_id, c.browser_id, c.public_key, c.created_at
+    )
+}
+pub(crate) fn device_signing_input(c: &DeviceCertificate) -> String {
+    format!(
+        "pockymoe-acct-device-v1\n{}\n{}\n{}\n{}",
+        c.account_key_id, c.device_id, c.identity_key, c.created_at
+    )
+}
+pub(crate) fn revocation_signing_input(r: &Revocation) -> String {
+    format!(
+        "pockymoe-acct-revoke-v1\n{}\n{}\n{}\n{}",
+        r.account_key_id, r.kind, r.subject_id, r.revoked_at
+    )
+}
+fn verify_signature(public: &str, input: &str, signature: &str) -> Result<()> {
+    VerifyingKey::from_public_key_der(&B64.decode(public)?)?.verify(
+        input.as_bytes(),
+        &Signature::from_slice(&B64.decode(signature)?)?,
+    )?;
+    Ok(())
+}
+pub(crate) fn verify_browser_certificate(
+    account: &PinnedAccount,
+    c: &BrowserCertificate,
+) -> Result<()> {
+    ensure!(
+        c.version == 1
+            && c.account_key_id == account.account_key_id
+            && account_key_id(&account.account_public_key)? == account.account_key_id
+            && account_key_id(&c.public_key)? == c.browser_id,
+        "Invalid browser certificate"
+    );
+    verify_signature(
+        &account.account_public_key,
+        &browser_signing_input(c),
+        &c.signature,
+    )
+}
+fn verify_device(
+    account: &PinnedAccount,
+    c: &DeviceCertificate,
+    device: &str,
+    identity: &str,
+) -> Result<()> {
+    ensure!(
+        c.version == 1
+            && c.account_key_id == account.account_key_id
+            && account_key_id(&account.account_public_key)? == account.account_key_id
+            && c.device_id == device
+            && c.identity_key == identity,
+        "Invalid device certificate"
+    );
+    VerifyingKey::from_sec1_bytes(&B64.decode(identity)?)?;
+    verify_signature(
+        &account.account_public_key,
+        &device_signing_input(c),
+        &c.signature,
+    )
+}
+fn verify_revocation(account: &PinnedAccount, r: &Revocation) -> Result<()> {
+    ensure!(
+        r.version == 1
+            && r.account_key_id == account.account_key_id
+            && matches!(r.kind.as_str(), "browser" | "device")
+            && !r.subject_id.is_empty()
+            && r.subject_id.len() <= 256
+            && !r.subject_id.contains(['\n', '\r']),
+        "Invalid revocation"
+    );
+    verify_signature(
+        &account.account_public_key,
+        &revocation_signing_input(r),
+        &r.signature,
+    )
+}
+fn pinned_in(c: &Connection) -> Result<Option<PinnedAccount>> {
+    Ok(c.query_row("SELECT account_key_id,account_public_key FROM device_owner_trust WHERE singleton=1 AND account_key_id IS NOT NULL",[],|r|Ok(PinnedAccount{account_key_id:r.get(0)?,account_public_key:r.get(1)?})).optional()?)
+}
+pub(crate) fn pinned_account(state: &Supervisor) -> Result<Option<PinnedAccount>> {
+    state.db.with(pinned_in)
+}
+pub(crate) fn bound(state: &Supervisor) -> bool {
+    pinned_account(state).map(|p| p.is_some()).unwrap_or(true)
+}
+pub(crate) fn strict(state: &Supervisor) -> bool {
+    state
+        .db
+        .with(|c| {
+            Ok(c.query_row(
+                "SELECT strict FROM device_owner_trust WHERE singleton=1",
+                [],
+                |r| r.get::<_, bool>(0),
+            )?)
+        })
+        .unwrap_or(true)
+}
+pub(crate) fn hint(state: &Supervisor) -> Result<Value> {
+    state.db.with(|c| { let pin=pinned_in(c)?; Ok(json!({"bound":pin.is_some(),"strict":c.query_row("SELECT strict FROM device_owner_trust WHERE singleton=1",[],|r|r.get::<_,bool>(0))?,"accountKeyId":pin.map(|p|p.account_key_id)})) })
+}
+pub(crate) fn device_id(c: &Connection) -> Result<String> {
+    c.query_row(
+        "SELECT relay_device_id FROM device_owner_trust WHERE singleton=1",
+        [],
+        |r| r.get::<_, Option<String>>(0),
+    )?
+    .filter(|id| !id.is_empty())
+    .context("Device has not connected to the relay yet")
+}
+pub(crate) fn remember_device(state: &Supervisor, id: &str) -> Result<()> {
+    ensure!(
+        !id.is_empty() && id.len() <= 256 && !id.contains(['\n', '\r']),
+        "Invalid relay device id"
+    );
+    state.db.with(|c| {
+        let previous: Option<String> = c.query_row(
+            "SELECT relay_device_id FROM device_owner_trust WHERE singleton=1",
+            [],
+            |r| r.get(0),
+        )?;
+        ensure!(
+            pinned_in(c)?.is_none() || previous.as_deref().is_none_or(|old| old == id),
+            "Bound relay device id changed"
+        );
+        c.execute(
+            "UPDATE device_owner_trust SET relay_device_id=?1 WHERE singleton=1",
+            [id],
+        )?;
+        Ok(())
+    })
+}
+pub(crate) fn device_certificate(state: &Supervisor) -> Result<Option<DeviceCertificate>> {
+    state.db.with(|c| {
+        let saved: Option<String> = c
+            .query_row(
+                "SELECT certificate_json FROM device_certificates WHERE singleton=1",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?;
+        saved.map(|s| Ok(serde_json::from_str(&s)?)).transpose()
+    })
+}
+fn revoked(c: &Connection, account: &str, kind: &str, id: &str) -> Result<bool> {
+    Ok(c.query_row("SELECT EXISTS(SELECT 1 FROM account_revocations WHERE account_key_id=?1 AND kind=?2 AND subject_id=?3)",params![account,kind,id],|r|r.get(0))?)
+}
+pub(crate) fn device_revoked(state: &Supervisor, id: &str) -> Result<bool> {
+    state.db.with(|c| match pinned_in(c)? {
+        Some(p) => revoked(c, &p.account_key_id, "device", id),
+        None => Ok(false),
+    })
+}
+pub(crate) fn verify_device_certificate(
+    state: &Supervisor,
+    c: &DeviceCertificate,
+    device: &str,
+    identity: &str,
+) -> Result<()> {
+    let account = pinned_account(state)?.context("Device is not bound")?;
+    verify_device(&account, c, device, identity)?;
+    ensure!(!device_revoked(state, device)?, "Device is revoked");
+    Ok(())
+}
+/// Constructed only after a valid signature over the outer HPKE ciphertext.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct BrowserPrincipal {
+    pub browser_id: String,
+    pub account_key_id: String,
+    pub grantee_user_id: Option<String>,
+}
+impl BrowserPrincipal {
+    pub fn actor(&self) -> String {
+        match &self.grantee_user_id {
+            Some(user) => format!("grantee:{user}"),
+            None => format!("owner:{}", self.browser_id),
+        }
+    }
+    pub fn is_owner(&self) -> bool {
+        self.grantee_user_id.is_none()
+    }
+    pub fn valid(&self, state: &Supervisor) -> bool {
+        state
+            .db
+            .with(|c| {
+                Ok(browser(c, &self.browser_id)?.is_some_and(|(_, p)| {
+                    p.account_key_id == self.account_key_id
+                        && p.grantee_user_id == self.grantee_user_id
+                }))
             })
+            .unwrap_or(false)
+    }
+}
+#[derive(Clone)]
+pub(crate) struct EncryptedOwnerRequest;
+#[derive(Debug, thiserror::Error)]
+#[error("{code}")]
+struct Rejection {
+    status: u16,
+    code: &'static str,
+}
+pub(crate) fn reject<T>(status: u16, code: &'static str) -> Result<T> {
+    Err(Rejection { status, code }.into())
+}
+pub(crate) fn rejection_code(error: &anyhow::Error) -> (u16, &'static str) {
+    error
+        .downcast_ref::<Rejection>()
+        .map(|r| (r.status, r.code))
+        .unwrap_or((400, "invalid_certificate"))
+}
+pub(crate) fn error(status: u16, code: &str) -> Value {
+    json!({"statusCode":status,"headers":{"content-type":"application/json","cache-control":"no-store"},"body":json!({"code":code}).to_string()})
+}
+pub(crate) fn response(result: Result<Value>) -> Response {
+    match result {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => {
+            let (status, code) = rejection_code(&e);
+            (
+                StatusCode::from_u16(status).unwrap(),
+                Json(json!({"code":code})),
+            )
+                .into_response()
         }
     }
 }
-fn local_bundle(c: &Connection) -> Result<Option<CertificateBundle>> {
-    let raw: Option<String> = c
+pub(crate) fn verify_request(
+    public_key: &str,
+    aad: &str,
+    sealed: &[u8],
+    signature: &str,
+) -> Result<()> {
+    verify_signature(
+        public_key,
+        &format!("pockymoe-request-v1\n{aad}\n{}", hash(sealed)),
+        signature,
+    )
+}
+fn browser(c: &Connection, id: &str) -> Result<Option<(String, BrowserPrincipal)>> {
+    let row=c.query_row("SELECT public_key,account_key_id,user_id,role FROM browser_registrations WHERE browser_id=?1",[id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<String>>(2)?,r.get::<_,String>(3)?))).optional()?;
+    let Some((key, account, user, role)) = row else {
+        return Ok(None);
+    };
+    if revoked(c, &account, "browser", id)? {
+        return Ok(None);
+    }
+    let valid = if role == "owner" {
+        pinned_in(c)?.is_some_and(|p| p.account_key_id == account) && user.is_none()
+    } else {
+        crate::grants::live_account(c, &account, now())?
+            .is_some_and(|(_, live_user)| Some(live_user) == user)
+    };
+    Ok(valid.then(|| {
+        (
+            key,
+            BrowserPrincipal {
+                browser_id: id.into(),
+                account_key_id: account,
+                grantee_user_id: user,
+            },
+        )
+    }))
+}
+pub(crate) fn authorize(
+    state: &Supervisor,
+    payload: &Value,
+    aad: &str,
+    sealed: &[u8],
+) -> Result<BrowserPrincipal> {
+    let Some(id) = payload["headers"]["x-rcd-session"].as_str() else {
+        return reject(401, "browser_registration_required");
+    };
+    state.db.with(|c| {
+        if let Some(pin) = pinned_in(c)? {
+            if revoked(c, &pin.account_key_id, "browser", id)? {
+                return reject(401, "browser_revoked");
+            }
+        }
+        let Some((key, principal)) = browser(c, id)? else {
+            return reject(401, "browser_registration_required");
+        };
+        let signature = payload["headers"]["x-rcd-signature"].as_str().unwrap_or("");
+        if verify_request(&key, aad, sealed, signature).is_err() {
+            return reject(401, "browser_registration_required");
+        }
+        c.execute(
+            "UPDATE browser_registrations SET last_seen_at=?1 WHERE browser_id=?2",
+            params![now(), id],
+        )?;
+        Ok(principal)
+    })
+}
+fn register(db: &Database, certificate: &BrowserCertificate) -> Result<Value> {
+    db.with(|c| {
+        let tx=Transaction::new_unchecked(c,TransactionBehavior::Immediate)?;
+        let owner=pinned_in(&tx)?.context("Device is not bound")?;
+        let (account,user)=if owner.account_key_id==certificate.account_key_id {(owner,None)} else {
+            let Some((account,user))=crate::grants::live_account(&tx,&certificate.account_key_id,now())? else{return reject(403,"account_mismatch")};
+            (account,Some(user))
+        };
+        if revoked(&tx,&account.account_key_id,"browser",&certificate.browser_id)? {return reject(401,"browser_revoked")}
+        verify_browser_certificate(&account,certificate)?;
+        let role=if user.is_none(){"owner"}else{"grantee"};
+        if let Some((existing_account,existing_user))=tx.query_row("SELECT account_key_id,user_id FROM browser_registrations WHERE browser_id=?1",[&certificate.browser_id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,Option<String>>(1)?))).optional()? {
+            if existing_account!=account.account_key_id || existing_user!=user {return reject(403,"account_mismatch")}
+        }
+        tx.execute("INSERT INTO browser_registrations(browser_id,public_key,role,account_key_id,user_id,registered_at,last_seen_at) VALUES(?1,?2,?3,?4,?5,?6,?6) ON CONFLICT(browser_id) DO UPDATE SET last_seen_at=excluded.last_seen_at",params![certificate.browser_id,certificate.public_key,role,account.account_key_id,user,now()])?;
+        tx.commit()?; Ok(json!({"browserId":certificate.browser_id,"role":role}))
+    })
+}
+pub(crate) fn enrollment_mac(
+    secret: &[u8],
+    device: &str,
+    identity: &str,
+    account: &str,
+) -> Result<String> {
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret)?;
+    mac.update(format!("pockymoe-acct-enroll-v1\n{device}\n{identity}\n{account}").as_bytes());
+    Ok(B64.encode(mac.finalize().into_bytes()))
+}
+fn enrollment(state: &Supervisor) -> Result<Value> {
+    let identity = crate::secure_transport::transport(state)?.identity_key();
+    state.db.with(|c| {
+        let pending:Option<Vec<u8>>=c.query_row("SELECT enroll_secret FROM device_owner_trust WHERE singleton=1",[],|r|r.get(0))?;
+        let Some(secret)=pending else{return reject(404,"enrollment_missing")};
+        let account=pinned_in(c)?.context("Device is not bound")?;
+        let device=device_id(c)?;
+        Ok(json!({"deviceId":device,"identityKey":identity,"accountKeyId":account.account_key_id,"mac":enrollment_mac(&secret,&device,&identity,&account.account_key_id)?}))
+    })
+}
+fn install_certificate(state: &Supervisor, cert: &DeviceCertificate) -> Result<Value> {
+    let identity = crate::secure_transport::transport(state)?.identity_key();
+    state.db.with(|c| {
+        let tx=Transaction::new_unchecked(c,TransactionBehavior::Immediate)?;
+        let pin=pinned_in(&tx)?.context("Device is not bound")?;
+        verify_device(&pin,cert,&device_id(&tx)?,&identity)?;
+        ensure!(!revoked(&tx,&pin.account_key_id,"device",&cert.device_id)?,"Device is revoked");
+        tx.execute("INSERT INTO device_certificates(singleton,certificate_json) VALUES(1,?1) ON CONFLICT(singleton) DO UPDATE SET certificate_json=excluded.certificate_json",[serde_json::to_string(cert)?])?;
+        tx.execute("UPDATE device_owner_trust SET enroll_secret=NULL WHERE singleton=1",[])?;
+        tx.commit()?; Ok(json!({"certificate":cert}))
+    })
+}
+#[derive(Deserialize)]
+pub(crate) struct Revocations {
+    pub revocations: Vec<Revocation>,
+}
+pub(crate) fn apply_revocations(state: &Supervisor, entries: &[Revocation]) -> Result<Value> {
+    ensure!(entries.len() <= 4096, "Too many revocations");
+    state.db.with(|c| {
+        let tx=Transaction::new_unchecked(c,TransactionBehavior::Immediate)?;
+        let pin=pinned_in(&tx)?.context("Device is not bound")?;
+        for r in entries {verify_revocation(&pin,r)?;}
+        for r in entries {
+            tx.execute("INSERT INTO account_revocations(account_key_id,kind,subject_id,revocation_json) VALUES(?1,?2,?3,?4) ON CONFLICT DO NOTHING",params![r.account_key_id,r.kind,r.subject_id,serde_json::to_string(r)?])?;
+            if r.kind=="browser" {
+                tx.execute("DELETE FROM browser_registrations WHERE browser_id=?1 AND account_key_id=?2",params![r.subject_id,r.account_key_id])?;
+                crate::ports::remove_browser_mappings(&tx,&r.subject_id)?;
+            } else {
+                tx.execute("DELETE FROM peer_certificates WHERE device_id=?1",[&r.subject_id])?;
+            }
+        }
+        tx.commit()?; Ok(())
+    })?;
+    crate::ports::refresh_owner_permissions(state);
+    crate::secure_transport::invalidate_unauthorized_channels(state);
+    Ok(json!({}))
+}
+fn trust(state: &Supervisor, current: &str) -> Result<Value> {
+    state.db.with(|c| {
+        let pin=pinned_in(c)?;
+        let browsers=c.prepare("SELECT browser_id,role,user_id,registered_at,last_seen_at FROM browser_registrations ORDER BY registered_at,browser_id")?.query_map([],|r|{let id:String=r.get(0)?;Ok(json!({"browserId":id,"role":r.get::<_,String>(1)?,"userId":r.get::<_,Option<String>>(2)?,"registeredAt":r.get::<_,i64>(3)?,"lastSeenAt":r.get::<_,i64>(4)?,"current":id==current}))})?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let cert:Option<String>=c.query_row("SELECT certificate_json FROM device_certificates WHERE singleton=1",[],|r|r.get(0)).optional()?;
+        Ok(json!({"deviceId":device_id(c)?,"bound":pin.is_some(),"strict":c.query_row("SELECT strict FROM device_owner_trust WHERE singleton=1",[],|r|r.get::<_,bool>(0))?,"accountKeyId":pin.map(|p|p.account_key_id),"certificate":cert.map(|s|serde_json::from_str::<Value>(&s)).transpose()?,"browsers":browsers,"revocations":c.query_row("SELECT count(*) FROM account_revocations",[],|r|r.get::<_,u64>(0))?}))
+    })
+}
+pub(crate) fn bootstrap(method: &str, path: &str) -> bool {
+    matches!(
+        (method, path),
+        ("POST", "/api/transport/browser")
+            | ("GET", "/api/transport/enrollment")
+            | ("PUT", "/api/transport/revocations")
+    )
+}
+pub(crate) async fn browser_endpoint(
+    State(state): State<Arc<Supervisor>>,
+    Extension(_): Extension<EncryptedOwnerRequest>,
+    input: Result<Json<BrowserCertificate>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    response(
+        input
+            .map_err(|_| anyhow::anyhow!("Invalid certificate"))
+            .and_then(|Json(c)| register(&state.db, &c)),
+    )
+}
+pub(crate) async fn enrollment_endpoint(
+    State(state): State<Arc<Supervisor>>,
+    Extension(_): Extension<EncryptedOwnerRequest>,
+) -> Response {
+    response(enrollment(&state))
+}
+pub(crate) async fn certificate_endpoint(
+    State(state): State<Arc<Supervisor>>,
+    Extension(_): Extension<EncryptedOwnerRequest>,
+    Extension(p): Extension<BrowserPrincipal>,
+    input: Result<Json<DeviceCertificate>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    response(if !p.is_owner() {
+        reject(403, "owner_required")
+    } else {
+        input
+            .map_err(|_| anyhow::anyhow!("Invalid certificate"))
+            .and_then(|Json(c)| install_certificate(&state, &c))
+    })
+}
+pub(crate) async fn revocations_endpoint(
+    State(state): State<Arc<Supervisor>>,
+    Extension(_): Extension<EncryptedOwnerRequest>,
+    input: Result<Json<Revocations>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    response(
+        input
+            .map_err(|_| anyhow::anyhow!("Invalid revocations"))
+            .and_then(|Json(r)| apply_revocations(&state, &r.revocations)),
+    )
+}
+pub(crate) async fn trust_endpoint(
+    State(state): State<Arc<Supervisor>>,
+    Extension(_): Extension<EncryptedOwnerRequest>,
+    Extension(p): Extension<BrowserPrincipal>,
+) -> Response {
+    response(if p.is_owner() {
+        trust(&state, &p.browser_id)
+    } else {
+        reject(403, "owner_required")
+    })
+}
+fn local_connection(path: &Path) -> Result<Connection> {
+    validate_database_path(path)?;
+    if !path.exists() {
+        drop(Database::open(path)?);
+    }
+    let c = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+    c.busy_timeout(std::time::Duration::from_secs(5))?;
+    pockymoe_runtime::db::ensure_device_owner_trust(&c)?;
+    c.execute_batch("PRAGMA foreign_keys=ON; PRAGMA synchronous=FULL;")?;
+    Ok(c)
+}
+pub fn validate_web_origin(origin: &str) -> Result<String> {
+    let u = url::Url::parse(origin).map_err(|_| anyhow::anyhow!("Invalid Web origin"))?;
+    ensure!(
+        (u.scheme() == "https" || (u.scheme() == "http" && matches!(u.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"))))
+            && u.host_str().is_some()
+            && u.username().is_empty()
+            && u.password().is_none()
+            && u.path() == "/"
+            && u.query().is_none()
+            && u.fragment().is_none(),
+        "Web origin must use HTTPS (or HTTP on loopback), without credentials, path, query or fragment"
+    );
+    Ok(u.origin().ascii_serialization())
+}
+pub fn validate_binding(account: &str, enroll: &str) -> Result<()> {
+    account_key_id(account).map_err(|_| anyhow::anyhow!("Invalid account public key"))?;
+    ensure!(
+        B64.decode(enroll)
+            .is_ok_and(|b| b.len() == 32 && B64.encode(b) == enroll),
+        "Enrollment secret must be 32 bytes encoded as base64url"
+    );
+    Ok(())
+}
+pub fn bind_account(
+    database: &Path,
+    account: &str,
+    enroll: &str,
+    web_origin: Option<&str>,
+) -> Result<Value> {
+    validate_binding(account, enroll)?;
+    let origin = web_origin.map(validate_web_origin).transpose()?;
+    let c = local_connection(database)?;
+    let tx = Transaction::new_unchecked(&c, TransactionBehavior::Immediate)?;
+    let id = account_key_id(account)?;
+    if let Some(pin) = pinned_in(&tx)? {
+        ensure!(
+            pin.account_key_id == id && pin.account_public_key == account,
+            "Device is bound to another account key; use pockymoe bind --reset to replace it"
+        );
+    }
+    tx.execute("UPDATE device_owner_trust SET account_key_id=?1,account_public_key=?2,enroll_secret=?3,bound_at=COALESCE(bound_at,?4),web_origin=COALESCE(?5,web_origin),strict=1 WHERE singleton=1",params![id,account,B64.decode(enroll)?,now(),origin])?;
+    tx.commit()?;
+    Ok(json!({"bound":true,"strict":true,"accountKeyId":id}))
+}
+pub fn binding_status(database: &Path) -> Result<Value> {
+    validate_database_path(database)?;
+    let unbound = json!({"bound":false,"strict":false,"accountKeyId":null});
+    if !database.exists() {
+        return Ok(unbound);
+    }
+    let c = Connection::open_with_flags(database, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let has_trust: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='device_owner_trust')", [], |r|r.get(0))?;
+    if !has_trust {
+        return Ok(unbound);
+    }
+    let pin = pinned_in(&c)?;
+    let strict = c.query_row(
+        "SELECT strict FROM device_owner_trust WHERE singleton=1",
+        [],
+        |r| r.get::<_, bool>(0),
+    )?;
+    Ok(json!({"bound":pin.is_some(),"strict":strict,"accountKeyId":pin.map(|p|p.account_key_id)}))
+}
+pub fn reset_account_trust(database: &Path) -> Result<()> {
+    let c = local_connection(database)?;
+    let tx = Transaction::new_unchecked(&c, TransactionBehavior::Immediate)?;
+    let saved: Option<String> = tx
         .query_row(
-            "SELECT certificate_json FROM device_certificates WHERE singleton=1",
+            "SELECT value FROM kv WHERE key='devicePortMappings'",
             [],
             |r| r.get(0),
         )
         .optional()?;
-    raw.map(|s| CertificateBundle::parse(serde_json::from_str(&s)?))
-        .transpose()
-}
-pub(crate) fn certificate_bundle(state: &Supervisor) -> Result<Option<CertificateBundle>> {
-    state.db.with(local_bundle)
-}
-fn store_bundle(c: &Connection, bundle: &CertificateBundle) -> Result<()> {
-    c.execute("INSERT INTO device_certificates(singleton,certificate_json) VALUES(1,?1) ON CONFLICT(singleton) DO UPDATE SET certificate_json=excluded.certificate_json", [serde_json::to_string(bundle)?])?;
+    if let Some(saved) = saved {
+        let mut mappings: Vec<Value> = serde_json::from_str(&saved)?;
+        mappings.retain(|m| {
+            !tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM owner_port_mappings WHERE mapping_id=?1)",
+                [m["id"].as_str().unwrap_or("")],
+                |r| r.get::<_, bool>(0),
+            )
+            .unwrap_or(true)
+        });
+        tx.execute(
+            "UPDATE kv SET value=?1 WHERE key='devicePortMappings'",
+            [serde_json::to_string(&mappings)?],
+        )?;
+    }
+    tx.execute_batch("DELETE FROM browser_registrations; DELETE FROM account_revocations; DELETE FROM device_certificates; DELETE FROM device_grants; DELETE FROM peer_certificates; DELETE FROM owner_port_mappings; UPDATE device_owner_trust SET account_key_id=NULL,account_public_key=NULL,enroll_secret=NULL,bound_at=NULL,web_origin=NULL,strict=0 WHERE singleton=1;")?;
+    tx.commit()?;
     Ok(())
 }
-fn append_certificate(c: &Connection, certificate: DeviceCertificate) -> Result<()> {
-    let mut bundle = local_bundle(c)?.unwrap_or(CertificateBundle {
-        version: 1,
-        device_id: certificate.device_id.clone(),
-        certificates: vec![],
-    });
-    ensure!(
-        bundle.version == 1 && bundle.device_id == certificate.device_id,
-        "invalid local certificate bundle"
-    );
-    bundle
-        .certificates
-        .retain(|entry| entry.assertion.credential_id != certificate.assertion.credential_id);
-    bundle.certificates.push(certificate);
-    store_bundle(c, &bundle)
+
+// Peer authority is scoped to the locally pinned account and permanent revocations.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PeerPrincipal {
+    device_id: String,
+    identity_key: String,
+    account_key_id: String,
 }
-/// Only local owner records confer trust; relay hints and grantee records never do.
-pub(crate) fn verify_peer_bundle(
+impl PeerPrincipal {
+    pub(crate) fn valid(&self, state: &Supervisor, device: &str) -> bool {
+        device == self.device_id && state.db.with(|c| {
+            Ok(pinned_in(c)?.is_some_and(|p| p.account_key_id == self.account_key_id)
+                && !revoked(c, &self.account_key_id, "device", device)?
+                && c.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM peer_certificates WHERE device_id=?1 AND identity_key=?2 AND account_key_id=?3)",
+                    params![device, self.identity_key, self.account_key_id],
+                    |r| r.get::<_, bool>(0),
+                )?)
+        }).unwrap_or(false)
+    }
+}
+fn verify_peer_certificate_in(
+    c: &Connection,
+    value: Value,
+    device: &str,
+    identity: Option<&str>,
+) -> Result<PeerPrincipal> {
+    let cert: DeviceCertificate = serde_json::from_value(value)?;
+    let pin = pinned_in(c)?.context("Device is not bound")?;
+    verify_device(&pin, &cert, device, identity.unwrap_or(&cert.identity_key))?;
+    ensure!(
+        !revoked(c, &pin.account_key_id, "device", device)?,
+        "Device is revoked"
+    );
+    Ok(PeerPrincipal {
+        device_id: device.into(),
+        identity_key: cert.identity_key,
+        account_key_id: cert.account_key_id,
+    })
+}
+pub(crate) fn verify_peer_certificate(
     state: &Supervisor,
     value: Value,
     device: &str,
     identity: Option<&str>,
 ) -> Result<PeerPrincipal> {
-    let bundle = CertificateBundle::parse(value)?;
-    ensure!(
-        bundle.version == 1 && bundle.device_id == device,
-        "peer certificate device mismatch"
-    );
-    state.db.with(|c| {
-        for cert in bundle.certificates {
-            if cert.version != 1
-                || cert.device_id != device
-                || identity.is_some_and(|key| key != cert.identity_key)
-            {
-                continue;
-            }
-            let Some(record) = credential(c, &cert.assertion.credential_id)? else {
-                continue;
-            };
-            if verify(
-                &record,
-                &cert.assertion,
-                &certificate_challenge(device, &cert.identity_key, &cert.pairing_id),
-            )
-            .is_err()
-            {
-                continue;
-            }
-            VerifyingKey::from_sec1_bytes(&B64.decode(&cert.identity_key)?)?;
-            return Ok(PeerPrincipal {
-                device_id: device.into(),
-                identity_key: cert.identity_key,
-                credential_id: record.credential_id,
-            });
-        }
-        bail!("no certificate verifies against an owner credential")
+    let cert: DeviceCertificate = serde_json::from_value(value)?;
+    verify_device_certificate(state, &cert, device, identity.unwrap_or(&cert.identity_key))?;
+    Ok(PeerPrincipal {
+        device_id: device.into(),
+        identity_key: cert.identity_key,
+        account_key_id: cert.account_key_id,
     })
-}
-#[derive(Clone, Debug)]
-pub(crate) struct PeerPrincipal {
-    device_id: String,
-    identity_key: String,
-    credential_id: String,
-}
-impl PeerPrincipal {
-    pub(crate) fn valid(&self, state: &Supervisor, device: &str) -> bool {
-        device == self.device_id
-            && state.db.with(|c| {
-                Ok(c.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM peer_certificates p JOIN owner_credentials c USING(credential_id) WHERE device_id=?1 AND identity_key=?2 AND credential_id=?3)",
-                    params![self.device_id, self.identity_key, self.credential_id],
-                    |r| r.get::<_, bool>(0),
-                )?)
-            }).unwrap_or(false)
-    }
 }
 pub(crate) fn peer_signing_input(device: &str, aad: &str, sealed: &[u8]) -> String {
     format!(
@@ -210,25 +683,36 @@ pub(crate) fn authorize_peer(
     aad: &str,
     sealed: &[u8],
 ) -> Result<PeerPrincipal> {
-    let headers = &payload["headers"];
     ensure!(
-        headers["x-rcd-peer-device"].as_str() == Some(caller.device_id.as_str()),
-        "peer caller mismatch"
+        payload["headers"]["x-rcd-peer-device"].as_str() == Some(&caller.device_id),
+        "Peer caller mismatch"
     );
     let principal = state.db.with(|c| {
-        Ok(c.query_row("SELECT p.identity_key,p.credential_id FROM peer_certificates p JOIN owner_credentials c USING(credential_id) WHERE device_id=?1", [&caller.device_id], |r| Ok(PeerPrincipal { device_id: caller.device_id.clone(), identity_key: r.get(0)?, credential_id: r.get(1)? }))?)
+        Ok(c.query_row(
+            "SELECT identity_key,account_key_id FROM peer_certificates WHERE device_id=?1",
+            [&caller.device_id],
+            |r| {
+                Ok(PeerPrincipal {
+                    device_id: caller.device_id.clone(),
+                    identity_key: r.get(0)?,
+                    account_key_id: r.get(1)?,
+                })
+            },
+        )?)
     })?;
-    let key = VerifyingKey::from_sec1_bytes(&B64.decode(&principal.identity_key)?)?;
-    let sig = Signature::from_slice(
-        &B64.decode(
-            headers["x-rcd-peer-signature"]
-                .as_str()
-                .context("missing peer signature")?,
-        )?,
-    )?;
-    key.verify(
+    ensure!(
+        principal.valid(state, &caller.device_id),
+        "Peer is revoked or belongs to another account"
+    );
+    VerifyingKey::from_sec1_bytes(&B64.decode(&principal.identity_key)?)?.verify(
         peer_signing_input(&caller.device_id, aad, sealed).as_bytes(),
-        &sig,
+        &Signature::from_slice(
+            &B64.decode(
+                payload["headers"]["x-rcd-peer-signature"]
+                    .as_str()
+                    .unwrap_or(""),
+            )?,
+        )?,
     )?;
     Ok(principal)
 }
@@ -238,670 +722,24 @@ pub(crate) async fn peer_certificate_endpoint(
     Extension(caller): Extension<crate::auth::PeerCaller>,
     Json(value): Json<Value>,
 ) -> Response {
-    response((|| {
-        if !paired(&state) {
-            return Ok(json!({}));
-        }
-        let proof =
-            verify_peer_bundle(&state, value, &caller.device_id, None).map_err(|_| Rejection {
-                status: 401,
-                code: "peer_certificate_required",
-            })?;
-        state.db.with(|c| {
-            c.execute("INSERT INTO peer_certificates(device_id,identity_key,credential_id) VALUES(?1,?2,?3) ON CONFLICT(device_id) DO UPDATE SET identity_key=excluded.identity_key,credential_id=excluded.credential_id", params![proof.device_id,proof.identity_key,proof.credential_id])?;
-            Ok(json!({}))
-        })
-    })())
-}
-
-/// Constructed only after verifying the signature on the outer HPKE ciphertext.
-#[derive(Clone, Debug)]
-pub(crate) struct OwnerPrincipal {
-    pub credential_id: String,
-    pub session_id: String,
-    pub grantee_user_id: Option<String>,
-}
-impl OwnerPrincipal {
-    pub fn actor(&self) -> String {
-        match &self.grantee_user_id {
-            Some(user) => format!("grantee:{user}"),
-            None => format!("owner:{}", self.credential_id),
-        }
-    }
-    pub fn is_owner(&self) -> bool {
-        self.grantee_user_id.is_none()
-    }
-    pub fn valid(&self, state: &Supervisor) -> bool {
-        session(&state.db, &self.session_id, now()).is_ok_and(|s| {
-            s.is_some_and(|s| {
-                s.credential_id == self.credential_id && s.grantee_user_id == self.grantee_user_id
-            })
-        })
-    }
-}
-#[derive(Clone)]
-pub(crate) struct EncryptedOwnerRequest;
-#[derive(Debug, thiserror::Error)]
-#[error("{code}")]
-struct Rejection {
-    status: u16,
-    code: &'static str,
-}
-pub(crate) fn reject<T>(status: u16, code: &'static str) -> Result<T> {
-    Err(Rejection { status, code }.into())
-}
-pub(crate) fn error(status: u16, code: &str) -> Value {
-    json!({"statusCode":status,"headers":{"content-type":"application/json","cache-control":"no-store"},"body":json!({"code":code}).to_string()})
-}
-pub(crate) fn response(result: Result<Value>) -> Response {
-    match result {
-        Ok(v) => Json(v).into_response(),
-        Err(e) => {
-            let (status, code) = e
-                .downcast_ref::<Rejection>()
-                .map(|r| (r.status, r.code))
-                .unwrap_or((400, "invalid_owner_proof"));
-            (
-                StatusCode::from_u16(status).unwrap(),
-                Json(json!({"code":code})),
-            )
-                .into_response()
-        }
-    }
-}
-
-pub(crate) fn verify(record: &Credential, assertion: &Assertion, challenge: &[u8]) -> Result<()> {
-    ensure!(
-        assertion.credential_id == record.credential_id,
-        "credential mismatch"
-    );
-    let client_bytes = B64.decode(&assertion.client_data_json)?;
-    let client: Value = serde_json::from_slice(&client_bytes)?;
-    ensure!(
-        client["type"] == "webauthn.get"
-            && client["challenge"] == B64.encode(challenge)
-            && client["origin"] == record.origin,
-        "client data mismatch"
-    );
-    ensure!(
-        client.get("crossOrigin").is_none_or(|v| v == false),
-        "cross-origin assertion"
-    );
-    let mut signed = B64.decode(&assertion.authenticator_data)?;
-    ensure!(
-        signed.len() >= 37
-            && signed[..32] == Sha256::digest(record.rp_id.as_bytes())[..]
-            && signed[32] & 0x05 == 0x05,
-        "invalid authenticator data"
-    );
-    signed.extend_from_slice(&Sha256::digest(&client_bytes));
-    let key = B64.decode(&record.public_key)?;
-    let signature = B64.decode(&assertion.signature)?;
-    match record.algorithm {
-        -7 => VerifyingKey::from_public_key_der(&key)?
-            .verify(&signed, &Signature::from_der(&signature)?)?,
-        -257 => {
-            let key = rsa::RsaPublicKey::from_public_key_der(&key)?;
-            rsa::pkcs1v15::VerifyingKey::<Sha256>::new(key).verify(
-                &signed,
-                &rsa::pkcs1v15::Signature::try_from(signature.as_slice())?,
-            )?;
-        }
-        _ => bail!("unsupported credential algorithm"),
-    }
-    Ok(())
-}
-pub(crate) fn session_challenge(r: &Registration) -> Vec<u8> {
-    Sha256::digest(
-        format!(
-            "pockymoe-owner-session-v1\n{}\n{}\n{}\n{}",
-            r.session_public_key, r.issued_at, r.expires_at, r.nonce
-        )
-        .as_bytes(),
-    )
-    .to_vec()
-}
-fn certificate_challenge(device: &str, identity: &str, pairing: &str) -> Vec<u8> {
-    Sha256::digest(format!("pockymoe-device-cert-v1\n{device}\n{identity}\n{pairing}").as_bytes())
-        .to_vec()
-}
-fn pairing_mac_input(device: &str, p: &Pairing) -> Result<String> {
-    let c = &p.credential;
-    Ok(format!(
-        "pockymoe-pair-v1\n{device}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
-        p.pairing_id,
-        c.credential_id,
-        c.public_key,
-        c.algorithm,
-        c.rp_id,
-        c.origin,
-        hash(B64.decode(&p.assertion.client_data_json)?)
-    ))
-}
-fn valid_mac(secret: &[u8], device: &str, p: &Pairing) -> bool {
-    (|| -> Result<()> {
-        let mut mac = Hmac::<Sha256>::new_from_slice(secret)?;
-        mac.update(pairing_mac_input(device, p)?.as_bytes());
-        mac.verify_slice(&B64.decode(&p.mac)?)?;
-        Ok(())
-    })()
-    .is_ok()
-}
-pub(crate) fn verify_request(
-    public_key: &str,
-    aad: &str,
-    sealed: &[u8],
-    signature: &str,
-) -> Result<()> {
-    let input = format!("pockymoe-request-v1\n{aad}\n{}", hash(sealed));
-    VerifyingKey::from_public_key_der(&B64.decode(public_key)?)?.verify(
-        input.as_bytes(),
-        &Signature::from_slice(&B64.decode(signature)?)?,
-    )?;
-    Ok(())
-}
-
-pub(crate) fn strict(state: &Supervisor) -> bool {
-    // Fail closed on a storage error; a failed DB read must not restore relay trust.
-    state
-        .db
-        .with(|c| {
-            Ok(c.query_row(
-                "SELECT strict FROM device_owner_trust WHERE singleton=1",
-                [],
-                |r| r.get::<_, bool>(0),
-            )?)
-        })
-        .unwrap_or(true)
-}
-pub(crate) fn paired(state: &Supervisor) -> bool {
-    state
-        .db
-        .with(|c| {
-            Ok(
-                c.query_row("SELECT EXISTS(SELECT 1 FROM owner_credentials)", [], |r| {
-                    r.get::<_, bool>(0)
-                })?,
-            )
-        })
-        .unwrap_or(true)
-}
-pub(crate) fn hint(state: &Supervisor) -> Result<Value> {
-    state.db.with(|c| Ok(json!({"paired":c.query_row("SELECT EXISTS(SELECT 1 FROM owner_credentials)",[],|r|r.get::<_,bool>(0))?,"strict":c.query_row("SELECT strict FROM device_owner_trust WHERE singleton=1",[],|r|r.get::<_,bool>(0))?})))
-}
-pub(crate) fn remember_device(state: &Supervisor, id: &str) -> Result<()> {
-    ensure!(
-        !id.is_empty() && id.len() <= 256 && !id.contains(['\n', '\r']),
-        "invalid relay device id"
-    );
-    state.db.with(|c| {
-        let previous: Option<String> = c.query_row(
-            "SELECT relay_device_id FROM device_owner_trust WHERE singleton=1",
-            [],
-            |r| r.get(0),
+    response(state.db.with(|c| {
+        let tx = Transaction::new_unchecked(c, TransactionBehavior::Immediate)?;
+        if pinned_in(&tx)?.is_none() { return Ok(json!({})); }
+        // Verify and store in one transaction so a concurrent revocation or
+        // account reset cannot leave behind a new, already revoked registration.
+        let proof = verify_peer_certificate_in(&tx, value, &caller.device_id, None)
+            .map_err(|_| Rejection { status: 401, code: "peer_certificate_required" })?;
+        tx.execute(
+            "INSERT INTO peer_certificates(device_id,identity_key,account_key_id) VALUES(?1,?2,?3) ON CONFLICT(device_id) DO UPDATE SET identity_key=excluded.identity_key,account_key_id=excluded.account_key_id",
+            params![proof.device_id, proof.identity_key, proof.account_key_id],
         )?;
-        // A compromised greeting cannot replace an identity pinned by local pairing.
-        ensure!(
-            !strict_in(c)? || previous.as_deref() == Some(id),
-            "paired relay device id changed"
-        );
-        c.execute(
-            "UPDATE device_owner_trust SET relay_device_id=?1 WHERE singleton=1",
-            [id],
-        )?;
-        Ok(())
-    })
-}
-fn strict_in(c: &Connection) -> Result<bool> {
-    Ok(c.query_row(
-        "SELECT strict FROM device_owner_trust WHERE singleton=1",
-        [],
-        |r| r.get(0),
-    )?)
-}
-fn device_id(c: &Connection) -> Result<String> {
-    c.query_row("SELECT relay_device_id FROM device_owner_trust WHERE singleton=1",[],|r|r.get::<_,Option<String>>(0))?.filter(|id| !id.is_empty()).context("Device has not connected to the relay yet. Connect the Supervisor once before running pockymoe pair.")
-}
-fn credential(c: &Connection, id: &str) -> Result<Option<Credential>> {
-    c.query_row(
-        "SELECT record_json FROM owner_credentials WHERE credential_id=?1",
-        [id],
-        |r| r.get::<_, String>(0),
-    )
-    .optional()?
-    .map(|s| Ok(serde_json::from_str(&s)?))
-    .transpose()
-}
-struct OwnerSession {
-    public_key: String,
-    credential_id: String,
-    grantee_user_id: Option<String>,
-}
-fn session(db: &Database, id: &str, time: i64) -> Result<Option<OwnerSession>> {
-    db.with(|c| {
-        let owner = c.query_row("SELECT s.public_key,s.credential_id FROM owner_sessions s JOIN owner_credentials c USING(credential_id) WHERE session_id=?1 AND expires_at>?2",params![id,time],|r|Ok(OwnerSession {public_key:r.get(0)?,credential_id:r.get(1)?,grantee_user_id:None})).optional()?;
-        if owner.is_some() { return Ok(owner); }
-        let grantee = c.query_row("SELECT public_key,credential_id,user_id FROM grantee_sessions WHERE session_id=?1 AND expires_at>?2",params![id,time],|r|Ok(OwnerSession {public_key:r.get(0)?,credential_id:r.get(1)?,grantee_user_id:Some(r.get(2)?)})).optional()?;
-        Ok(grantee.filter(|s| crate::grants::live_credential(c, &s.credential_id, time).ok().flatten().is_some_and(|(_, user)| Some(user) == s.grantee_user_id)))
-    })
-}
-pub(crate) fn authorize(
-    state: &Supervisor,
-    payload: &Value,
-    aad: &str,
-    sealed: &[u8],
-) -> Result<OwnerPrincipal> {
-    let id = payload["headers"]["x-rcd-session"]
-        .as_str()
-        .context("missing owner session")?;
-    let s = session(&state.db, id, now())?.context("unknown or expired owner session")?;
-    verify_request(
-        &s.public_key,
-        aad,
-        sealed,
-        payload["headers"]["x-rcd-signature"]
-            .as_str()
-            .context("missing owner signature")?,
-    )?;
-    Ok(OwnerPrincipal {
-        session_id: id.into(),
-        credential_id: s.credential_id,
-        grantee_user_id: s.grantee_user_id,
-    })
-}
-pub(crate) fn check_owner_origin(c: &Connection, record: &Credential) -> Result<()> {
-    // All credentials share the origin/RP established by the first pairing.
-    // Checking every existing record also fails closed on previously mixed records.
-    for existing in credentials(c)? {
-        if existing["origin"] != record.origin || existing["rpId"] != record.rp_id {
-            return reject(400, "owner_origin_mismatch");
-        }
-    }
-    Ok(())
-}
-fn store_credential(c: &Connection, record: &Credential) -> Result<()> {
-    if let Some(existing) = credential(c, &record.credential_id)? {
-        ensure!(
-            serde_json::to_value(existing)? == serde_json::to_value(record)?,
-            "owner credential substitution"
-        );
-    } else {
-        c.execute(
-            "INSERT INTO owner_credentials(credential_id,record_json) VALUES(?1,?2)",
-            params![record.credential_id, serde_json::to_string(record)?],
-        )?;
-    }
-    Ok(())
-}
-fn pair(db: &Database, identity: &str, p: &Pairing, time: i64) -> Result<Value> {
-    ensure!(
-        p.version == 1 && B64.decode(&p.pairing_id)?.len() == 16,
-        "invalid pairing version/id"
-    );
-    db.with(|c| {
-        let tx=Transaction::new_unchecked(c,TransactionBehavior::Immediate)?;
-        let device=device_id(&tx)?;
-        let offer=tx.query_row("SELECT secret,web_origin,rp_id,expires_at,used_at,failures FROM pairing_offers WHERE pairing_id=?1",[&p.pairing_id],|r|Ok((r.get::<_,Vec<u8>>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,i64>(3)?,r.get::<_,Option<i64>>(4)?,r.get::<_,u32>(5)?))).optional()?;
-        let Some((secret,origin,rp,expires,used,failures))=offer else { return reject(400,"invalid_pairing_offer"); };
-        if used.is_some() || expires <= time || failures >= 5 { return reject(400,"invalid_pairing_offer"); }
-        if !valid_mac(&secret,&device,p) {
-            tx.execute("UPDATE pairing_offers SET failures=failures+1 WHERE pairing_id=?1",[&p.pairing_id])?;
-            tx.commit()?;
-            return reject(400,"invalid_pairing_mac");
-        }
-        ensure!(p.credential.origin == origin && p.credential.rp_id == rp,"pairing origin/rpId mismatch");
-        check_owner_origin(&tx,&p.credential)?;
-        verify(&p.credential,&p.assertion,&certificate_challenge(&device,identity,&p.pairing_id))?;
-        let certificate=json!({"version":1,"deviceId":device,"identityKey":identity,"pairingId":p.pairing_id,"assertion":p.assertion});
-        store_credential(&tx,&p.credential)?;
-        append_certificate(&tx, serde_json::from_value(certificate.clone())?)?;
-        tx.execute("UPDATE pairing_offers SET used_at=?1 WHERE pairing_id=?2",params![time,p.pairing_id])?;
-        tx.execute("UPDATE device_owner_trust SET strict=1 WHERE singleton=1",[])?;
-        tx.commit()?;
-        Ok(json!({"paired":true,"certificate":certificate}))
-    })
-}
-fn register(db: &Database, r: &Registration, time: i64) -> Result<Value> {
-    // Persist GC even when the registration itself is rejected (e.g. expired).
-    db.with(|c| collect_revoked_sessions(c, time))?;
-    ensure!(
-        r.version == 1
-            && r.issued_at <= time.saturating_add(CLOCK_WINDOW as i64)
-            && r.issued_at < r.expires_at
-            && r.expires_at
-                <= r.issued_at
-                    .checked_add(MAX_LIFETIME)
-                    .context("invalid session time")?
-            && r.expires_at > time,
-        "invalid session lifetime"
-    );
-    ensure!(B64.decode(&r.nonce)?.len() == 16, "invalid session nonce");
-    let key = B64.decode(&r.session_public_key)?;
-    VerifyingKey::from_public_key_der(&key)?;
-    let id = hash(&key);
-    db.with(|c| {
-        let tx = Transaction::new_unchecked(c, TransactionBehavior::Immediate)?;
-        if tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM kv WHERE key=?1 AND CAST(value AS INTEGER)>?2)",
-            params![format!("{REVOKED_SESSION_PREFIX}{id}"), time],
-            |r| r.get::<_, bool>(0),
-        )? {
-            return reject(401, "owner_session_revoked");
-        }
-        let (record, user) = if let Some(record) = credential(&tx, &r.assertion.credential_id)? {
-            (record, None)
-        } else if let Some((record, user)) = crate::grants::live_credential(&tx, &r.assertion.credential_id, time)? {
-            (record, Some(user))
-        } else { return reject(401, "owner_session_required"); };
-        verify(&record, &r.assertion, &session_challenge(r))?;
-        if let Some(user) = &user {
-            tx.execute("INSERT INTO grantee_sessions(session_id,public_key,credential_id,user_id,expires_at) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(session_id) DO UPDATE SET public_key=excluded.public_key,credential_id=excluded.credential_id,user_id=excluded.user_id,expires_at=excluded.expires_at", params![id,r.session_public_key,record.credential_id,user,r.expires_at])?;
-        } else {
-            tx.execute("INSERT INTO owner_sessions(session_id,public_key,credential_id,expires_at) VALUES(?1,?2,?3,?4) ON CONFLICT(session_id) DO UPDATE SET public_key=excluded.public_key,credential_id=excluded.credential_id,expires_at=excluded.expires_at", params![id,r.session_public_key,record.credential_id,r.expires_at])?;
-        }
-        tx.commit()?;
-        Ok(json!({"sessionId":id,"expiresAt":r.expires_at,"role":if user.is_some() {"grantee"} else {"owner"}}))
-    })
-}
-fn credentials(c: &Connection) -> Result<Vec<Value>> {
-    let rows = c
-        .prepare("SELECT record_json FROM owner_credentials ORDER BY credential_id")?
-        .query_map([], |r| r.get::<_, String>(0))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    rows.into_iter()
-        .map(|s| Ok(serde_json::from_str(&s)?))
-        .collect()
-}
-fn trust(db: &Database, principal: &OwnerPrincipal) -> Result<Value> {
-    db.with(|c| {
-        let sessions=c.prepare("SELECT session_id,credential_id,expires_at FROM owner_sessions WHERE expires_at>?1 UNION ALL SELECT session_id,credential_id,expires_at FROM grantee_sessions WHERE expires_at>?1 ORDER BY session_id")?.query_map([now()],|r| {let id:String=r.get(0)?;Ok(json!({"sessionId":id,"credentialId":r.get::<_,String>(1)?,"expiresAt":r.get::<_,i64>(2)?,"current":id==principal.session_id}))})?.collect::<rusqlite::Result<Vec<_>>>()?;
-        let certificate = local_bundle(c)?;
-        let records=credentials(c)?;
-        Ok(json!({"deviceId":device_id(c)?,"paired":!records.is_empty(),"strict":strict_in(c)?,"credentials":records,"sessions":sessions,"certificate":certificate}))
-    })
-}
-#[derive(Deserialize)]
-pub(crate) struct AddCredential {
-    credential: Credential,
-    assertion: Assertion,
-    certificate: Option<Assertion>,
-}
-fn add(db: &Database, input: &AddCredential) -> Result<Value> {
-    db.with(|c| {
-        let tx = Transaction::new_unchecked(c, TransactionBehavior::Immediate)?;
-        check_owner_origin(&tx, &input.credential)?;
-        let challenge = Sha256::digest(
-            format!(
-                "pockymoe-add-credential-v1\n{}\n{}\n{}",
-                device_id(&tx)?,
-                input.credential.credential_id,
-                input.credential.public_key
-            )
-            .as_bytes(),
-        );
-        verify(&input.credential, &input.assertion, &challenge)?;
-        if let Some(assertion) = &input.certificate {
-            let bundle = local_bundle(&tx)?.context("missing local certificate")?;
-            let base = bundle
-                .certificates
-                .first()
-                .context("empty local certificate bundle")?;
-            verify(
-                &input.credential,
-                assertion,
-                &certificate_challenge(&bundle.device_id, &base.identity_key, &base.pairing_id),
-            )?;
-            append_certificate(
-                &tx,
-                DeviceCertificate {
-                    version: 1,
-                    device_id: bundle.device_id,
-                    identity_key: base.identity_key.clone(),
-                    pairing_id: base.pairing_id.clone(),
-                    assertion: assertion.clone(),
-                },
-            )?;
-        }
-        store_credential(&tx, &input.credential)?;
-        let result = json!({"credentials":credentials(&tx)?});
-        tx.commit()?;
-        Ok(result)
-    })
-}
-fn remove_credential(db: &Database, id: &str) -> Result<Value> {
-    db.with(|c| {
-        let tx = Transaction::new_unchecked(c, TransactionBehavior::Immediate)?;
-        if credential(&tx, id)?.is_some()
-            && tx.query_row("SELECT count(*) FROM owner_credentials", [], |r| {
-                r.get::<_, u64>(0)
-            })? <= 1
-        {
-            return reject(409, "last_owner_credential");
-        }
-        let time = now();
-        collect_revoked_sessions(&tx, time)?;
-        let sessions = tx
-            .prepare("SELECT session_id,expires_at FROM owner_sessions WHERE credential_id=?1 AND expires_at>?2")?
-            .query_map(params![id,time], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        for (session, expires) in sessions {
-            remember_revocation(&tx, &session, expires)?;
-        }
-        // Explicit deletion protects against re-addition even if FK enforcement is off.
-        if let Some(mut bundle) = local_bundle(&tx)? {
-            bundle.certificates.retain(|cert| cert.assertion.credential_id != id);
-            store_bundle(&tx, &bundle)?;
-        }
-        tx.execute("DELETE FROM peer_certificates WHERE credential_id=?1", [id])?;
-        tx.execute("DELETE FROM owner_sessions WHERE credential_id=?1", [id])?;
-        tx.execute("DELETE FROM owner_credentials WHERE credential_id=?1", [id])?;
-        let result = json!({"credentials":credentials(&tx)?});
-        tx.commit()?;
-        Ok(result)
-    })
-}
-
-fn collect_revoked_sessions(c: &Connection, time: i64) -> Result<()> {
-    c.execute(
-        "DELETE FROM kv WHERE key GLOB 'ownerRevokedSession:*' AND CAST(value AS INTEGER)<=?1",
-        [time],
-    )?;
-    Ok(())
-}
-pub(crate) fn remember_revocation(c: &Connection, id: &str, expires: i64) -> Result<()> {
-    c.execute(
-        "INSERT INTO kv(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET
-         value=CAST(MAX(CAST(kv.value AS INTEGER),CAST(excluded.value AS INTEGER)) AS TEXT)",
-        params![format!("{REVOKED_SESSION_PREFIX}{id}"), expires.to_string()],
-    )?;
-    Ok(())
-}
-fn revoke_session(db: &Database, id: &str, time: i64) -> Result<Value> {
-    db.with(|c| {
-        let tx = Transaction::new_unchecked(c, TransactionBehavior::Immediate)?;
-        collect_revoked_sessions(&tx, time)?;
-        let expires: Option<i64> = tx
-            .query_row(
-                "SELECT expires_at FROM owner_sessions WHERE session_id=?1 AND expires_at>?2 UNION ALL SELECT expires_at FROM grantee_sessions WHERE session_id=?1 AND expires_at>?2",
-                params![id, time],
-                |r| r.get(0),
-            )
-            .optional()?;
-        if let Some(expires) = expires {
-            remember_revocation(&tx, id, expires)?;
-        }
-        tx.execute("DELETE FROM owner_sessions WHERE session_id=?1", [id])?;
-        tx.execute("DELETE FROM grantee_sessions WHERE session_id=?1", [id])?;
         tx.commit()?;
         Ok(json!({}))
-    })
+    }))
 }
-
-pub(crate) async fn pair_endpoint(
-    State(state): State<Arc<Supervisor>>,
-    Extension(_): Extension<EncryptedOwnerRequest>,
-    Json(p): Json<Pairing>,
-) -> Response {
-    let result = (|| {
-        pair(
-            &state.db,
-            &crate::secure_transport::transport(&state)?.identity_key(),
-            &p,
-            now(),
-        )
-    })();
-    if result.is_ok() {
-        crate::ports::refresh_owner_permissions(&state);
-    }
-    response(result)
-}
-pub(crate) async fn session_endpoint(
-    State(state): State<Arc<Supervisor>>,
-    Extension(_): Extension<EncryptedOwnerRequest>,
-    Json(r): Json<Registration>,
-) -> Response {
-    response(register(&state.db, &r, now()))
-}
-pub(crate) async fn trust_endpoint(
-    State(state): State<Arc<Supervisor>>,
-    Extension(_): Extension<EncryptedOwnerRequest>,
-    Extension(p): Extension<OwnerPrincipal>,
-) -> Response {
-    response(trust(&state.db, &p))
-}
-pub(crate) async fn add_endpoint(
-    State(state): State<Arc<Supervisor>>,
-    Extension(_): Extension<EncryptedOwnerRequest>,
-    Extension(_): Extension<OwnerPrincipal>,
-    Json(input): Json<AddCredential>,
-) -> Response {
-    response(add(&state.db, &input))
-}
-pub(crate) async fn remove_endpoint(
-    State(state): State<Arc<Supervisor>>,
-    Extension(_): Extension<EncryptedOwnerRequest>,
-    Extension(_): Extension<OwnerPrincipal>,
-    Path(id): Path<String>,
-) -> Response {
-    let result = remove_credential(&state.db, &id);
-    if result.is_ok() {
-        crate::ports::refresh_owner_permissions(&state);
-    }
-    response(result)
-}
-pub(crate) async fn revoke_endpoint(
-    State(state): State<Arc<Supervisor>>,
-    Extension(_): Extension<EncryptedOwnerRequest>,
-    Extension(_): Extension<OwnerPrincipal>,
-    Path(id): Path<String>,
-) -> Response {
-    response(revoke_session(&state.db, &id, now()))
-}
-
-fn local_connection(path: &FsPath) -> Result<Connection> {
-    validate_database_path(path)?;
-    // No Supervisor process lock, migrations, runtime boot, or network access.
-    let c = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE).context(
-        "Open the existing Supervisor database; connect an updated Supervisor once first",
-    )?;
-    c.busy_timeout(std::time::Duration::from_secs(5))?;
-    c.execute_batch("PRAGMA foreign_keys=ON; PRAGMA synchronous=FULL;")?;
-    Ok(c)
-}
-/// Local CLI override, then locally configured Web origin, then the legacy relay host.
-pub(crate) fn pairing_web_origin(
-    web_origin: Option<&str>,
-    configured_web_origin: Option<&str>,
-    relay_url: Option<&str>,
-) -> Result<String> {
-    let origin = match web_origin.or(configured_web_origin) {
-        Some(s) => s.to_owned(),
-        None => {
-            let u =
-                url::Url::parse(relay_url.context("Configure the relay URL or pass --web-origin")?)
-                    .map_err(|_| anyhow::anyhow!("Invalid relay URL"))?;
-            format!(
-                "https://{}",
-                u.host_str().context("Relay URL host missing")?
-            )
-        }
-    };
-    let u = url::Url::parse(&origin).map_err(|_| anyhow::anyhow!("Invalid Web origin"))?;
-    ensure!(
-        (u.scheme() == "https"
-            || (u.scheme() == "http"
-                && matches!(u.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"))))
-            && u.host_str().is_some()
-            && u.username().is_empty()
-            && u.password().is_none()
-            && u.path() == "/"
-            && u.query().is_none()
-            && u.fragment().is_none(),
-        "--web-origin must be an HTTP(S) origin without credentials, path, query or fragment"
-    );
-    Ok(u.origin().ascii_serialization())
-}
-
-/// Local database write authority creates the out-of-band pairing capability.
-/// The caller displays the returned URL locally; never send it to a relay or log it.
-pub fn create_pairing_offer(
-    database: &FsPath,
-    web_origin: Option<&str>,
-    relay_url: Option<&str>,
-    configured_web_origin: Option<&str>,
-) -> Result<String> {
-    let c = local_connection(database)?;
-    let device = device_id(&c)?;
-    let origin = pairing_web_origin(web_origin, configured_web_origin, relay_url)?;
-    let u = url::Url::parse(&origin)?;
-    let fingerprint = crate::secure_transport::fingerprint(database)?;
-    let mut id = [0u8; 16];
-    let mut secret = [0u8; 32];
-    OsRng.fill_bytes(&mut id);
-    OsRng.fill_bytes(&mut secret);
-    let pairing = B64.encode(id);
-    let time = now();
-    c.execute("INSERT INTO pairing_offers(pairing_id,secret,web_origin,rp_id,created_at,expires_at) VALUES(?1,?2,?3,?4,?5,?6)",params![pairing,secret.as_slice(),origin,u.host_str().unwrap(),time,time+10*60*1000])?;
-    let fragment = url::form_urlencoded::Serializer::new(String::new())
-        .append_pair("v", "1")
-        .append_pair("device", &device)
-        .append_pair("pairing", &pairing)
-        .append_pair("secret", &B64.encode(secret))
-        .append_pair("identity", &fingerprint)
-        .finish();
-    Ok(format!("{origin}/pair#{fragment}"))
-}
-/// Reset requires local write authority; the CLI owns the confirmation prompt.
-pub fn reset_owner_trust(database: &FsPath) -> Result<()> {
-    let c = local_connection(database)?;
-    let tx = Transaction::new_unchecked(&c, TransactionBehavior::Immediate)?;
-    // Owner-created mappings cannot become legacy relay-trusted mappings on reset.
-    let mappings: Option<String> = tx
-        .query_row(
-            "SELECT value FROM kv WHERE key='devicePortMappings'",
-            [],
-            |r| r.get(0),
-        )
-        .optional()?;
-    if let Some(mappings) = mappings {
-        let mut mappings: Vec<Value> = serde_json::from_str(&mappings)?;
-        mappings.retain(|m| {
-            !tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM owner_port_mappings WHERE mapping_id=?1)",
-                [m["id"].as_str().unwrap_or("")],
-                |r| r.get::<_, bool>(0),
-            )
-            .unwrap_or(true)
-        });
-        tx.execute(
-            "UPDATE kv SET value=?1 WHERE key='devicePortMappings'",
-            [serde_json::to_string(&mappings)?],
-        )?;
-    }
-    tx.execute_batch("DELETE FROM device_grants; DELETE FROM grantee_sessions; DELETE FROM peer_certificates; DELETE FROM owner_port_mappings; DELETE FROM owner_sessions; DELETE FROM owner_credentials; DELETE FROM device_certificates; DELETE FROM pairing_offers; DELETE FROM kv WHERE key GLOB 'ownerRevokedSession:*'; UPDATE device_owner_trust SET strict=0 WHERE singleton=1;")?;
-    tx.commit()?;
-    Ok(())
-}
+#[cfg(test)]
+#[path = "peer_certificate_tests.rs"]
+mod peer_tests;
 
 #[cfg(test)]
 #[path = "owner_trust_tests.rs"]

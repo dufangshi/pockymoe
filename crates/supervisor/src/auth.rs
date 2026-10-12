@@ -84,11 +84,9 @@ pub async fn require_auth(
     next: Next,
 ) -> Response {
     let path = request.uri().path();
-    let bootstrap = matches!(path, "/api/transport/pair" | "/api/transport/owner-session");
+    let bootstrap = crate::owner_trust::bootstrap(request.method().as_str(), path);
     let owner_endpoint = path == "/api/transport/trust"
-        || path == "/api/transport/credentials"
-        || path.starts_with("/api/transport/credentials/")
-        || path.starts_with("/api/transport/sessions/")
+        || path == "/api/transport/device-certificate"
         || path == "/api/transport/grants"
         || path.starts_with("/api/transport/grants/");
     if bootstrap || owner_endpoint {
@@ -106,21 +104,21 @@ pub async fn require_auth(
         if owner_endpoint
             && request
                 .extensions()
-                .get::<crate::owner_trust::OwnerPrincipal>()
+                .get::<crate::owner_trust::BrowserPrincipal>()
                 .is_none_or(|p| !p.valid(&state))
         {
             return (
                 axum::http::StatusCode::UNAUTHORIZED,
-                Json(serde_json::json!({"code":"owner_session_required"})),
+                Json(serde_json::json!({"code":"browser_registration_required"})),
             )
                 .into_response();
         }
     }
     if let Some(p) = request
         .extensions()
-        .get::<crate::owner_trust::OwnerPrincipal>()
+        .get::<crate::owner_trust::BrowserPrincipal>()
     {
-        if p.valid(&state) {
+        if !bootstrap && p.valid(&state) {
             if let Err(error) = crate::grants::authorize_path(
                 &state,
                 p,
@@ -139,13 +137,12 @@ pub async fn require_auth(
                 || path
                     .strip_prefix("/api/publications/")
                     .is_some_and(|token| !token.is_empty() && !token.contains('/')));
-        let bootstrap = bootstrap && request.method() == axum::http::Method::POST;
         if !path.starts_with("/api/peer/")
             && !public
             && !bootstrap
             && request
                 .extensions()
-                .get::<crate::owner_trust::OwnerPrincipal>()
+                .get::<crate::owner_trust::BrowserPrincipal>()
                 .is_none_or(|p| !p.valid(&state))
         {
             let encrypted = request
@@ -153,7 +150,7 @@ pub async fn require_auth(
                 .get::<crate::owner_trust::EncryptedOwnerRequest>()
                 .is_some();
             return (if encrypted { axum::http::StatusCode::UNAUTHORIZED } else { axum::http::StatusCode::FORBIDDEN },
-                Json(serde_json::json!({"code":if encrypted {"owner_session_required"} else {"device_strict_mode"}}))).into_response();
+                Json(serde_json::json!({"code":if encrypted {"browser_registration_required"} else {"device_strict_mode"}}))).into_response();
         }
     }
     let peer_path = request.uri().path().starts_with("/api/peer/");

@@ -1,110 +1,85 @@
 import { getLocale, translate, useI18n } from '@pockymoe/thread-ui/i18n';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
+import { boundDevices, currentAccount } from '../lib/accountVault';
 import {
-  assertOwner,
-  clearOwnerSession,
-  currentOwnerSession,
-  fetchOwnerCredentials,
-  OwnerTrustError,
-} from '../lib/ownerSession';
-import {
-  addCredentialChallenge,
-  certificateChallenge,
-  certificateEntries,
-  type DeviceCertificate,
-  type OwnerCredential,
-} from '../lib/ownerTrustCrypto';
-import { appendDeviceCertificate } from '../lib/ownerDeviceTrust';
+  deviceProtectionState,
+  listPendingEnrollments,
+  prepareDeviceEnrollment,
+} from '../lib/deviceEnrollment';
+import { deviceBindCommand } from '../lib/deviceSetupCommands';
 import { deviceTrustRequest, type DeviceTrust } from '../lib/deviceTrust';
-import { securityError } from '../lib/relaySecurity';
-import { OwnerUnlockButton } from './OwnerUnlockPrompt';
-import { notifyOwnerUnlocked } from '../lib/ownerUnlockRecovery';
+import { protectionLabel } from '../lib/useDeviceProtection';
 
 export function DeviceTrustPanel({ deviceId }: { deviceId: string }) {
   useI18n();
-  const deviceRef = useRef(deviceId);
-  deviceRef.current = deviceId;
-  const revision = useRef(0);
   const [trust, setTrust] = useState<DeviceTrust>();
+  const [state, setState] =
+    useState<Awaited<ReturnType<typeof deviceProtectionState>>>('unknown');
   const [error, setError] = useState<string>();
+  const [command, setCommand] = useState<string>();
+  const [copied, setCopied] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [available, setAvailable] = useState<OwnerCredential[]>([]);
-  const [accountCredentials, setAccountCredentials] = useState<OwnerCredential[]>([]);
-  const [selected, setSelected] = useState('');
-  const [add, setAdd] = useState<() => ReturnType<typeof assertOwner>>();
-  const [certify, setCertify] = useState<() => Promise<DeviceCertificate>>();
-  const [certificateToUpload, setCertificateToUpload] =
-    useState<DeviceCertificate>();
   const [generation, setGeneration] = useState(0);
-  async function load() {
-    const ticket = ++revision.current;
-    const data = await deviceTrustRequest<DeviceTrust>(deviceId);
-    const records = data.paired ? await fetchOwnerCredentials() : [];
-    if (ticket !== revision.current || deviceRef.current !== deviceId) return;
-    setTrust(data);
-    setAccountCredentials(records);
-    setError(undefined);
-    setAvailable(
-      records.filter(
-        (r) => !data.credentials.some((c) => c.credentialId === r.credentialId),
-      ),
-    );
-  }
   useEffect(() => {
     let active = true;
+    const controller = new AbortController();
     setTrust(undefined);
-    void load().catch((e: unknown) => {
-      if (active) setError(securityError(e));
+    setError(undefined);
+    setCommand(undefined);
+    setCopied(false);
+    void (async () => {
+      const data = await deviceTrustRequest<DeviceTrust>(
+        deviceId,
+        '',
+        'GET',
+        undefined,
+        controller.signal,
+      );
+      const account = await currentAccount();
+      const [bound, pending] = await Promise.all([
+        boundDevices(),
+        listPendingEnrollments(account),
+      ]);
+      const next = await deviceProtectionState(
+        deviceId,
+        {
+          identityKey: data.certificate?.identityKey ?? '',
+          certificate: data.certificate,
+          trust: data,
+        },
+        pending,
+        bound,
+        account,
+      );
+      if (active) {
+        setTrust(data);
+        setState(next);
+      }
+    })().catch((e: unknown) => {
+      if (active)
+        setError(
+          e instanceof Error
+            ? e.message
+            : translate('devices.enrollmentFailed'),
+        );
     });
     return () => {
       active = false;
-      revision.current++;
+      controller.abort();
     };
   }, [deviceId, generation]);
-  useEffect(() => {
-    let active = true;
-    setAdd(undefined);
-    const record = available.find((r) => r.credentialId === selected);
-    if (record)
-      void addCredentialChallenge(deviceId, record)
-        .then((challenge) => {
-          if (active) setAdd(() => () => assertOwner([record], challenge));
-        })
-        .catch((e: unknown) => {
-          if (active) setError(securityError(e));
-        });
-    return () => {
-      active = false;
-    };
-  }, [deviceId, selected, available]);
-  async function mutate(path: string, method: string, body?: unknown) {
+  async function protect() {
     setBusy(true);
     setError(undefined);
     try {
-      const owner = await currentOwnerSession();
-      await deviceTrustRequest(deviceId, path, method, body);
-      if (
-        (path === `sessions/${owner?.sessionId}` ||
-          path ===
-            `credentials/${owner?.registration.assertion.credentialId}`) &&
-        method === 'DELETE'
-      )
-        await clearOwnerSession();
-      await load();
+      setCommand(deviceBindCommand(await prepareDeviceEnrollment(deviceId)));
     } catch (e) {
-      setError(securityError(e));
+      setError(
+        e instanceof Error ? e.message : translate('devices.enrollmentFailed'),
+      );
     } finally {
       setBusy(false);
     }
-  }
-  function credentialLabel(record: OwnerCredential) {
-    // Match the public record to the authenticated device's credential before
-    // using its current account name (the device may hold an older name).
-    const account = accountCredentials.find(candidate =>
-      candidate.credentialId === record.credentialId &&
-      candidate.publicKey === record.publicKey && candidate.algorithm === record.algorithm &&
-      candidate.rpId === record.rpId && candidate.origin === record.origin);
-    return account?.name?.trim() || record.name?.trim() || shortId(record.credentialId);
   }
   return (
     <div className="owner-trust-panel space-y-4 text-sm">
@@ -114,222 +89,111 @@ export function DeviceTrustPanel({ deviceId }: { deviceId: string }) {
       )}
       {trust && (
         <>
-          <p className="font-semibold">
-            {translate(
-              trust.paired ? 'auth.ownerPaired' : 'auth.ownerRelayTrusted',
-            )}
+          <p
+            className="font-semibold"
+            role={state === 'certificate-missing' ? 'alert' : undefined}
+          >
+            {translate(protectionLabel(state))}
           </p>
-          {trust.strict && <div className="space-y-1">
-            <p>{translate('auth.ownerStrict')}</p>
-            <p className="text-xs text-[var(--theme-fg-muted)]">{translate('auth.ownerPortVisibility')}</p>
-          </div>}
-          {!trust.paired ? (
-            <p>{translate('auth.ownerPairInstructions')}</p>
-          ) : (
+          {state === 'certificate-missing' && (
+            <p>{translate('devices.certificateMissingHelp')}</p>
+          )}
+          {trust.strict && <p>{translate('auth.ownerStrict')}</p>}
+          {trust.accountKeyId && (
+            <p>
+              {translate('devices.boundAccountFingerprint')}{' '}
+              <code>{trust.accountKeyId.slice(0, 12)}</code>
+            </p>
+          )}
+          {!trust.bound && (
+            <>
+              <p>{translate('devices.protectDeviceHelp')}</p>
+              <button
+                className="relay-button-secondary px-3 py-2"
+                disabled={busy}
+                onClick={() => void protect()}
+              >
+                {translate('devices.protectDevice')}
+              </button>
+            </>
+          )}
+          {command && (
+            <>
+              <pre className="whitespace-pre-wrap break-all text-xs">
+                {command}
+              </pre>
+              <button
+                className="relay-button-secondary px-3 py-2"
+                onClick={() => {
+                  void navigator.clipboard
+                    .writeText(command)
+                    .then(() => setCopied(true))
+                    .catch(() =>
+                      setError(
+                        translate(
+                          'devices.clipboardAccessIsUnavailableCheckBrowserPermissions',
+                        ),
+                      ),
+                    );
+                }}
+              >
+                {translate(
+                  copied
+                    ? 'devices.setupCommandCopied'
+                    : 'devices.copyBindCommand',
+                )}
+              </button>
+              <p>{translate('devices.waitingForConnection')}</p>
+            </>
+          )}
+          {trust.bound && (
             <>
               <h3 className="font-semibold">
-                {translate('auth.ownerCredentials')}
+                {translate('devices.registeredBrowsers')}
               </h3>
               <ul className="space-y-3">
-                {trust.credentials.map((record) => (
-                  <li
-                    key={record.credentialId}
-                    className="owner-trust-row"
-                  >
-                    <span className="min-w-0 break-words" title={record.credentialId}>
-                      {credentialLabel(record)}
-                    </span>
-                    <button
-                      className="relay-button-secondary px-3 py-2"
-                      disabled={busy || trust.credentials.length <= 1}
-                      onClick={() =>
-                        void mutate(
-                          `credentials/${encodeURIComponent(record.credentialId)}`,
-                          'DELETE',
-                        )
-                      }
-                    >
-                      {translate('auth.ownerRemove')}
-                    </button>
-                  </li>
-                ))}
-              </ul>
-              {trust.credentials.length === 1 && (
-                <p className="text-xs text-[var(--theme-fg-muted)]">
-                  {translate('auth.ownerLastCredential')}
-                </p>
-              )}
-              <h3 className="font-semibold">
-                {translate('auth.ownerSessions')}
-              </h3>
-              <ul className="space-y-3">
-                {trust.sessions.map((session) => (
-                  <li
-                    key={session.sessionId}
-                    className="owner-trust-row"
-                  >
+                {trust.browsers.map((browser) => (
+                  <li key={browser.browserId} className="owner-trust-row">
                     <span className="min-w-0">
-                      <span className="flex flex-wrap items-center gap-2">
-                        <code className="text-xs" title={session.sessionId}>
-                          {shortId(session.sessionId)}
-                        </code>
-                        {session.current && (
-                          <span className="owner-trust-browser-badge">
-                            {translate('auth.ownerCurrent')}
-                          </span>
+                      <code title={browser.browserId}>
+                        {browser.browserId.slice(0, 12)}
+                      </code>
+                      {browser.current && (
+                        <span className="owner-trust-browser-badge">
+                          {translate('auth.ownerCurrent')}
+                        </span>
+                      )}
+                      <span className="block">
+                        {translate(
+                          browser.role === 'owner'
+                            ? 'devices.ownerBrowser'
+                            : 'devices.sharedBrowser',
                         )}
                       </span>
-                      <time className="mt-1 block text-xs text-[var(--theme-fg-muted)]" dateTime={new Date(session.expiresAt).toISOString()}>
-                        {translate('auth.ownerExpires', { value1: new Date(session.expiresAt).toLocaleString(getLocale()) })}
-                      </time>
+                      {browser.userId && (
+                        <span className="block">{browser.userId}</span>
+                      )}
+                      <span className="block text-xs">
+                        {translate('devices.browserRegisteredAt', {
+                          value1: new Date(browser.registeredAt).toLocaleString(
+                            getLocale(),
+                          ),
+                        })}
+                      </span>
+                      <span className="block text-xs">
+                        {translate('devices.browserLastSeenAt', {
+                          value1: new Date(browser.lastSeenAt).toLocaleString(
+                            getLocale(),
+                          ),
+                        })}
+                      </span>
                     </span>
-                    <button
-                      className="relay-button-secondary px-3 py-2"
-                      disabled={busy}
-                      onClick={() =>
-                        void mutate(
-                          `sessions/${encodeURIComponent(session.sessionId)}`,
-                          'DELETE',
-                        )
-                      }
-                    >
-                      {translate('auth.ownerRevoke')}
-                    </button>
                   </li>
                 ))}
               </ul>
-              <h3 className="font-semibold">{translate('auth.ownerAdd')}</h3>
-              <p className="text-[var(--theme-fg-muted)]">{translate('auth.ownerRegisterFirst')}</p>
-              <a className="owner-trust-account-link" href="/relay-account">
-                {translate('auth.ownerAccountSecurity')}
-              </a>
-              {available.length ? (
-                <>
-                  <select
-                    className="w-full rounded border border-[var(--theme-border)] bg-[var(--theme-panel)] p-2"
-                    aria-label={translate('auth.ownerSelect')}
-                    value={selected}
-                    onChange={(e) => setSelected(e.target.value)}
-                  >
-                    <option value="">{translate('auth.ownerSelect')}</option>
-                    {available.map((r) => (
-                      <option key={r.credentialId} value={r.credentialId}>
-                        {r.name || shortId(r.credentialId)}
-                      </option>
-                    ))}
-                  </select>
-                  <button
-                    className="relay-button-secondary px-3 py-2"
-                    disabled={!add || busy}
-                    onClick={() => {
-                      if (!add) return;
-                      const proof = add();
-                      setBusy(true);
-                      void proof
-                        .then(async (value) => {
-                          await deviceTrustRequest(
-                            deviceId,
-                            'credentials',
-                            'POST',
-                            value,
-                          );
-                          const base = trust.certificate
-                            ? certificateEntries(trust.certificate)[0]
-                            : undefined;
-                          if (!base)
-                            throw new OwnerTrustError(
-                              'ownerCertificateUnavailable',
-                            );
-                          const challenge = await certificateChallenge(
-                            deviceId,
-                            base.identityKey,
-                            base.pairingId,
-                          );
-                          setCertify(() => async () => {
-                            const { assertion } = await assertOwner(
-                              [value.credential],
-                              challenge,
-                            );
-                            await deviceTrustRequest(
-                              deviceId,
-                              'credentials',
-                              'POST',
-                              { ...value, certificate: assertion },
-                            );
-                            return {
-                              version: 1 as const,
-                              deviceId,
-                              identityKey: base.identityKey,
-                              pairingId: base.pairingId,
-                              assertion,
-                            };
-                          });
-                          await load();
-                        })
-                        .catch((e: unknown) => setError(securityError(e)))
-                        .finally(() => setBusy(false));
-                    }}
-                  >
-                    {translate('auth.ownerAdd')}
-                  </button>
-                </>
-              ) : null}
-              {certify && (
-                <div className="space-y-2">
-                  <p>{translate('auth.ownerCertifyHelp')}</p>
-                  <button
-                    className="relay-button-primary px-3 py-2"
-                    disabled={busy}
-                    onClick={() => {
-                      const proof = certify();
-                      setBusy(true);
-                      setError(undefined);
-                      void proof
-                        .then(async (certificate) => {
-                          setCertificateToUpload(certificate);
-                          await appendDeviceCertificate(certificate);
-                          setCertify(undefined);
-                          setCertificateToUpload(undefined);
-                        })
-                        .catch((e: unknown) => setError(securityError(e)))
-                        .finally(() => setBusy(false));
-                    }}
-                  >
-                    {translate('auth.ownerCertify')}
-                  </button>
-                </div>
-              )}
-              {certificateToUpload && (
-                <button
-                  className="relay-button-secondary px-3 py-2"
-                  disabled={busy}
-                  onClick={() => {
-                    setBusy(true);
-                    setError(undefined);
-                    void appendDeviceCertificate(certificateToUpload)
-                      .then(() => {
-                        setCertificateToUpload(undefined);
-                        setCertify(undefined);
-                      })
-                      .catch((e: unknown) => setError(securityError(e)))
-                      .finally(() => setBusy(false));
-                  }}
-                >
-                  {translate('auth.ownerSaveCertificate')}
-                </button>
-              )}
             </>
           )}
         </>
-      )}
-      {(trust?.paired || error) && (
-        <OwnerUnlockButton
-          renew
-          onUnlocked={() => {
-            setGeneration((g) => g + 1);
-            notifyOwnerUnlocked([deviceId]);
-          }}
-        />
       )}
       <button
         className="relay-button-secondary px-3 py-2"
@@ -340,7 +204,4 @@ export function DeviceTrustPanel({ deviceId }: { deviceId: string }) {
       </button>
     </div>
   );
-}
-function shortId(id: string) {
-  return id.length > 8 ? `${id.slice(0, 8)}…` : id;
 }

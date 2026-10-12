@@ -1,6 +1,7 @@
 import { sharingMutation } from './signedSharing';
 import { relayOrigin, relayUrl, relaySocketUrl, relayFetchInit } from './relayOrigin';
-import { clearOwnerSession } from './ownerSession';
+import { logoutAccount } from './accountVaultState';
+import { startAccountLogin, setAccountSession, cancelAccountLogin, type AccountSessionState } from './accountAuth';
 import { confirmWorkspaceDocumentLeave, type WorkspaceDocumentSnapshot, type WorkspaceDocumentSaveInput, type WorkspaceSaveReceipt } from "@pockymoe/thread-ui";
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { encryptedBrowserFetch, encryptedRelaySocket } from './relayTransport';
@@ -588,6 +589,7 @@ export async function fetchRelaySession() {
     cache: 'no-store',
   });
   workspaceActorScope = `relay:${result.user?.id??'anonymous'}`;
+  if (result.user?.role !== 'admin') await setAccountSession(result.authenticated ? result.user?.id ?? null : null, (result as RelaySessionDto & { account?: AccountSessionState }).account ?? false);
   return result;
 }
 
@@ -596,14 +598,7 @@ export async function relayLogin(input: {
   password: string;
 }) {
   enableRelayMode();
-  const result = await request<RelayLoginResultDto>(
-    '/relay/auth/login',
-    {
-      method: 'POST',
-      body: JSON.stringify(input),
-    },
-    { auth: 'none' },
-  );
+  const result = await startAccountLogin(input.identifier, input.password);
   setStoredRelayToken(result.token ?? null);
   return result;
 }
@@ -645,35 +640,14 @@ export async function relayAdminLogout() {
   return result;
 }
 
-export async function relayRegister(input: {
-  email: string;
-  username: string;
-  password: string;
-  registrationPassword?: string;
-}) {
-  enableRelayMode();
-  const result = await request<RelayRegisterResultDto>(
-    '/relay/auth/register',
-    {
-      method: 'POST',
-      body: JSON.stringify(input),
-    },
-    { auth: 'none' },
-  );
-  setStoredRelayToken(result.token ?? null);
-  return result;
-}
-
 export async function relayLogout() {
   if (!confirmWorkspaceDocumentLeave()) throw new Error(translate('files.keepEditing'));
-  const result = await request<RelaySessionDto>('/relay/auth/logout', {
-    method: 'POST',
-  });
-  await clearOwnerSession();
-  setStoredRelayToken(null);
-  setSelectedRelayDeviceId(null);
-  setSelectedRelayThreadId(null);
-  return result;
+  try {
+    return await request<RelaySessionDto>('/relay/auth/logout', { method: 'POST' });
+  } finally {
+    cancelAccountLogin(); await logoutAccount(); setStoredRelayToken(null);
+    setSelectedRelayDeviceId(null); setSelectedRelayThreadId(null);
+  }
 }
 
 export function fetchRelayPortal() {
@@ -720,22 +694,11 @@ export function updateRelayAccount(input: { username?: string; avatarUrl?: strin
   });
 }
 
-export function updateRelayPassword(input: {
-  currentPassword: string;
-  newPassword: string;
-  verificationToken?: string;
-}) {
-  return request<RelayUserDto>('/relay/account/password', {
-    method: 'PATCH',
-    body: JSON.stringify(input),
-  });
-}
-
 export function createRelayShare(input: CreateRelaySessionShareInput) {
   return sharingMutation('share', 'create', undefined, () => request<RelaySessionShareDto>('/relay/shares', {
     method: 'POST',
     body: JSON.stringify(input),
-  }));
+  }), input);
 }
 
 export function updateRelayShare(
@@ -748,7 +711,7 @@ export function updateRelayShare(
       method: 'PATCH',
       body: JSON.stringify(input),
     },
-  ));
+  ), input);
 }
 
 export function revokeRelayShare(shareId: string) {
@@ -764,7 +727,7 @@ export function createRelayGrant(input: CreateRelayAccessGrantInput) {
   return sharingMutation('grant', 'create', undefined, () => request<RelayAccessGrantDto>('/relay/grants', {
     method: 'POST',
     body: JSON.stringify(input),
-  }));
+  }), input);
 }
 
 export function updateRelayGrant(
@@ -777,7 +740,7 @@ export function updateRelayGrant(
       method: 'PATCH',
       body: JSON.stringify(input),
     },
-  ));
+  ), input);
 }
 
 export function revokeRelayGrant(grantId: string) {

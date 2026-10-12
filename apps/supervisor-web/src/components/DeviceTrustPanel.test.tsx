@@ -1,217 +1,162 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { setLocale, translate } from '@pockymoe/thread-ui/i18n';
 import { DeviceTrustPanel } from './DeviceTrustPanel';
 import { deviceTrustRequest, type DeviceTrust } from '../lib/deviceTrust';
 import {
-  assertOwner,
-  clearOwnerSession,
-  currentOwnerSession,
-  fetchOwnerCredentials,
-  OwnerTrustError,
-} from '../lib/ownerSession';
-import vectors from '../lib/fixtures/ownerTrustVectors.json';
-import { type OwnerCredential } from '../lib/ownerTrustCrypto';
+  currentAccount,
+  boundDevices,
+  requireUnlock,
+  verifyDeviceCertificate,
+} from '../lib/accountVault';
+import {
+  listPendingEnrollments,
+  prepareDeviceEnrollment,
+} from '../lib/deviceEnrollment';
+import vectors from '../lib/fixtures/deviceEnrollmentVectors.json';
 vi.mock('../lib/deviceTrust', () => ({ deviceTrustRequest: vi.fn() }));
-vi.mock('../lib/ownerSession', async (importOriginal) => ({
-  ...await importOriginal<typeof import('../lib/ownerSession')>(),
-  assertOwner: vi.fn(),
-  clearOwnerSession: vi.fn(),
-  currentOwnerSession: vi.fn(),
-  fetchOwnerCredentials: vi.fn(),
+vi.mock('../lib/accountVault', () => ({
+  currentAccount: vi.fn(),
+  boundDevices: vi.fn(),
+  requireUnlock: vi.fn(),
+  verifyDeviceCertificate: vi.fn(),
 }));
-vi.mock('../lib/relaySecurity', () => ({
-  securityError: (e: unknown) => (e instanceof Error ? e.message : 'Failed'),
+vi.mock('../lib/deviceEnrollment', async (original) => ({
+  ...(await original<typeof import('../lib/deviceEnrollment')>()),
+  listPendingEnrollments: vi.fn(),
+  prepareDeviceEnrollment: vi.fn(),
 }));
-vi.mock('../lib/ownerDeviceTrust', () => ({
-  appendDeviceCertificate: vi.fn().mockResolvedValue(undefined),
-}));
-vi.mock('./OwnerUnlockPrompt', () => ({ OwnerUnlockButton: () => null }));
-const credential = vectors.credentialRecord as OwnerCredential;
-const second = { ...credential, credentialId: 'c2', name: 'Second passkey' };
 let trust: DeviceTrust;
 beforeEach(() => {
   setLocale('en');
   vi.clearAllMocks();
   trust = {
-    deviceId: 'd',
-    paired: true,
+    deviceId: 'device-1',
+    bound: true,
     strict: true,
-    credentials: [credential],
-    certificate: {
-      ...vectors.deviceCertificate.certificate,
-      deviceId: 'd',
-      version: 1,
-    },
-    sessions: [
+    accountKeyId: vectors.account.accountKeyId,
+    certificate: { ...vectors.deviceCertificate, version: 1 },
+    revocations: 0,
+    browsers: [
       {
-        sessionId: 's',
-        credentialId: credential.credentialId,
-        expiresAt: Date.now() + 10000,
+        browserId: 'browser-long-id-123',
+        role: 'owner',
+        userId: null,
+        registeredAt: 1760000000000,
+        lastSeenAt: 1760000100000,
         current: true,
       },
     ],
   };
-  vi.mocked(deviceTrustRequest).mockImplementation(
-    async (_deviceId, path = '') => (path ? ({} as never) : (trust as never)),
-  );
-  vi.mocked(fetchOwnerCredentials).mockResolvedValue([credential, second]);
-  vi.mocked(currentOwnerSession).mockResolvedValue({
-    sessionId: 's',
-    registration: { assertion: { credentialId: credential.credentialId } },
-  } as never);
-  vi.mocked(assertOwner).mockResolvedValue({
-    credential: second,
-    assertion: vectors.session.registration.assertion,
+  vi.mocked(deviceTrustRequest).mockImplementation(async () => trust as never);
+  vi.mocked(currentAccount).mockResolvedValue(vectors.account);
+  vi.mocked(boundDevices).mockResolvedValue(['device-1']);
+  vi.mocked(listPendingEnrollments).mockResolvedValue([]);
+  vi.mocked(verifyDeviceCertificate).mockResolvedValue(true);
+  vi.mocked(prepareDeviceEnrollment).mockResolvedValue({
+    deviceId: 'device-1',
+    userId: vectors.account.userId,
+    accountKeyId: vectors.account.accountKeyId,
+    accountPublicKey: vectors.account.accountPublicKey,
+    enrollSecret: 'pending-secret',
+    createdAt: Date.now(),
+  });
+  Object.defineProperty(navigator, 'clipboard', {
+    configurable: true,
+    value: { writeText: vi.fn().mockResolvedValue(undefined) },
   });
 });
-describe('device trust controls', () => {
-  it.each(['en', 'zh-CN'] as const)('shows the paired-origin error in the %s add-passkey flow and does not certify the rejected credential', async (locale) => {
-    setLocale(locale);
-    vi.mocked(deviceTrustRequest).mockImplementation(async (_id, path = '') => {
-      if (path === 'credentials') throw new OwnerTrustError('owner_origin_mismatch');
-      return trust as never;
-    });
-    render(<DeviceTrustPanel deviceId="d" />);
-    fireEvent.change(await screen.findByRole('combobox', { name: translate('auth.ownerSelect') }), { target: { value: 'c2' } });
-    const add = screen.getByRole('button', { name: translate('auth.ownerAdd') });
-    await waitFor(() => expect(add).toBeEnabled());
-    fireEvent.click(add);
-    expect(await screen.findByRole('alert')).toHaveTextContent(translate('auth.owner_origin_mismatch'));
-    expect(screen.queryByRole('button', { name: translate('auth.ownerCertify') })).toBeNull();
-    expect(assertOwner).toHaveBeenCalledTimes(1);
-    const { appendDeviceCertificate } = await import('../lib/ownerDeviceTrust');
-    expect(appendDeviceCertificate).not.toHaveBeenCalled();
-  });
-  it('shows unpaired relay trust and the local pairing command', async () => {
-    trust.paired = false;
-    trust.strict = false;
-    render(<DeviceTrustPanel deviceId="d" />);
-    expect(await screen.findByText('Unpaired · Relay trusted')).toBeVisible();
-    expect(screen.getByText(/Run pockymoe pair on this device/)).toBeVisible();
-    expect(screen.queryByText('Owner passkeys')).toBeNull();
-  });
-  it('shows paired/strict state, credentials, sessions and prevents removing the last credential', async () => {
-    render(<DeviceTrustPanel deviceId="d" />);
-    expect(await screen.findByText('Strict mode enabled')).toBeVisible();
-    expect(screen.getByText('This browser')).toBeVisible();
+describe('account bound device trust panel', () => {
+  it.each(['en', 'zh-CN'] as const)(
+    'shows verified protection, account fingerprint and registered browsers in %s',
+    async (locale) => {
+      setLocale(locale);
+      render(<DeviceTrustPanel deviceId="device-1" />);
+      expect(
+        await screen.findByText(translate('devices.protected')),
+      ).toBeVisible();
+      expect(
+        screen.getByText(vectors.account.accountKeyId.slice(0, 12)),
+      ).toBeVisible();
+      expect(screen.getByTitle('browser-long-id-123')).toHaveTextContent(
+        'browser-long',
+      );
+      expect(screen.getByText(translate('auth.ownerCurrent'))).toBeVisible();
+      expect(
+        screen.getByText(
+          translate('devices.browserRegisteredAt', {
+            value1: new Date(1760000000000).toLocaleString(locale),
+          }),
+        ),
+      ).toBeVisible();
+      expect(
+        screen.getByText(
+          translate('devices.browserLastSeenAt', {
+            value1: new Date(1760000100000).toLocaleString(locale),
+          }),
+        ),
+      ).toBeVisible();
+      expect(screen.queryByText(/passkey|通行密钥/)).toBeNull();
+      expect(requireUnlock).not.toHaveBeenCalled();
+    },
+  );
+  it('never uses the unsigned bound hint as proof', async () => {
+    vi.mocked(verifyDeviceCertificate).mockResolvedValue(false);
+    render(<DeviceTrustPanel deviceId="device-1" />);
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      translate('devices.certificateMissing'),
+    );
     expect(
-      screen.getByRole('button', { name: 'Remove passkey' }),
-    ).toBeDisabled();
-    expect(screen.getByText(/pockymoe pair --reset/)).toBeVisible();
+      screen.getByText(translate('devices.certificateMissingHelp')),
+    ).toBeVisible();
   });
-  it.each(['en', 'zh-CN'] as const)('uses matching account names, abbreviated IDs, localized expiry labels and registration guidance in %s', async (locale) => {
-    setLocale(locale);
-    const named = { ...credential, name: 'Old device name' };
-    const unnamed = { ...credential, credentialId: 'unnamed-credential-long-id' };
-    delete unnamed.name;
-    trust.credentials = [named, unnamed];
-    trust.sessions[0]!.sessionId = 'session-long-id-for-this-browser';
-    vi.mocked(fetchOwnerCredentials).mockResolvedValue([{ ...credential, name: 'Synced owner passkey' }, unnamed]);
-    render(<DeviceTrustPanel deviceId="d" />);
-    const name = await screen.findByText('Synced owner passkey');
-    expect(name).toHaveAttribute('title', credential.credentialId);
-    expect(screen.queryByText('Old device name')).toBeNull();
-    expect(screen.getByText('unnamed-…')).toHaveAttribute('title', unnamed.credentialId);
-    expect(screen.getByText('session-…')).toHaveAttribute('title', trust.sessions[0]!.sessionId);
-    const expiry = new Date(trust.sessions[0]!.expiresAt);
-    expect(screen.getByText(`${locale === 'en' ? 'Expires ' : '到期时间：'}${expiry.toLocaleString(locale)}`))
-      .toHaveAttribute('dateTime', expiry.toISOString());
-    expect(screen.getByText(translate('auth.ownerCurrent'))).toHaveClass('owner-trust-browser-badge');
-    const note = screen.getByText(translate('auth.ownerPortVisibility'));
-    expect(within(note.parentElement!).getByText(translate('auth.ownerStrict'))).toBeVisible();
-    expect(screen.getByText(translate('auth.ownerRegisterFirst'))).toBeVisible();
-    expect(screen.getByRole('link', { name: translate('auth.ownerAccountSecurity') }))
-      .toHaveClass('owner-trust-account-link');
-  });
-  it('does not take a name from a substituted account key', async () => {
-    vi.mocked(fetchOwnerCredentials).mockResolvedValue([{ ...credential, publicKey: 'substituted', name: 'Wrong key name' }]);
-    render(<DeviceTrustPanel deviceId="d" />);
-    expect(await screen.findByTitle(credential.credentialId)).toHaveTextContent(`${credential.credentialId.slice(0, 8)}…`);
-    expect(screen.queryByText('Wrong key name')).toBeNull();
-  });
-  it('revokes the current session and clears the browser key', async () => {
-    render(<DeviceTrustPanel deviceId="d" />);
-    fireEvent.click(
-      await screen.findByRole('button', { name: 'Revoke session' }),
-    );
-    await waitFor(() =>
-      expect(deviceTrustRequest).toHaveBeenCalledWith(
-        'd',
-        'sessions/s',
-        'DELETE',
-        undefined,
-      ),
-    );
-    await waitFor(() => expect(clearOwnerSession).toHaveBeenCalledTimes(1));
-  });
-  it('removes an owner credential with its exact id', async () => {
-    trust.credentials.push(second);
-    render(<DeviceTrustPanel deviceId="d" />);
-    fireEvent.click(
-      (await screen.findAllByRole('button', { name: 'Remove passkey' }))[1]!,
-    );
-    await waitFor(() =>
-      expect(deviceTrustRequest).toHaveBeenCalledWith(
-        'd',
-        'credentials/c2',
-        'DELETE',
-        undefined,
-      ),
-    );
-    expect(clearOwnerSession).not.toHaveBeenCalled();
-  });
-  it('adds the certificate assertion to the device on the existing certify click', async () => {
-    trust.certificate = {
-      version: 1,
-      deviceId: 'd',
-      certificates: [
-        trust.certificate as import('../lib/ownerTrustCrypto').DeviceCertificate,
-      ],
-    };
-    render(<DeviceTrustPanel deviceId="d" />);
-    fireEvent.change(
-      await screen.findByRole('combobox', {
-        name: 'Choose an account passkey',
-      }),
-      { target: { value: 'c2' } },
-    );
-    const add = screen.getByRole('button', { name: 'Add another passkey' });
-    await waitFor(() => expect(add).toBeEnabled());
-    expect(assertOwner).not.toHaveBeenCalled();
-    fireEvent.click(add);
-    await waitFor(() =>
-      expect(deviceTrustRequest).toHaveBeenCalledWith(
-        'd',
-        'credentials',
-        'POST',
-        {
-          credential: second,
-          assertion: vectors.session.registration.assertion,
-        },
-      ),
-    );
-    expect(assertOwner).toHaveBeenCalledWith([second], expect.any(Uint8Array));
-    const certify = await screen.findByRole('button', {
-      name: 'Verify new passkey for other browsers',
-    });
-    expect(assertOwner).toHaveBeenCalledTimes(1);
-    fireEvent.click(certify);
-    const { appendDeviceCertificate } = await import('../lib/ownerDeviceTrust');
-    await waitFor(() =>
-      expect(appendDeviceCertificate).toHaveBeenCalledWith(
-        expect.objectContaining({
-          deviceId: 'd',
-          identityKey: vectors.deviceCertificate.certificate.identityKey,
-          assertion: vectors.session.registration.assertion,
+  it.each(['en', 'zh-CN'] as const)(
+    'prepares and copies a local bind command for an unbound device in %s',
+    async (locale) => {
+      setLocale(locale);
+      trust.bound = false;
+      trust.strict = false;
+      trust.certificate = null;
+      trust.accountKeyId = null;
+      vi.mocked(boundDevices).mockResolvedValue([]);
+      render(<DeviceTrustPanel deviceId="device-1" />);
+      expect(
+        await screen.findByText(translate('devices.notProtected')),
+      ).toBeVisible();
+      fireEvent.click(
+        screen.getByRole('button', {
+          name: translate('devices.protectDevice'),
         }),
-      ),
+      );
+      const copy = await screen.findByRole('button', {
+        name: translate('devices.copyBindCommand'),
+      });
+      expect(prepareDeviceEnrollment).toHaveBeenCalledWith('device-1');
+      fireEvent.click(copy);
+      await waitFor(() =>
+        expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+          expect.stringContaining('pockymoe bind --account-key'),
+        ),
+      );
+      expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+        expect.stringContaining('--enroll pending-secret --web-origin'),
+      );
+      expect(
+        screen.getByText(translate('devices.protectDeviceHelp')),
+      ).toBeVisible();
+    },
+  );
+  it('ignores a late response for the previous device', async () => {
+    let resolve!: (v: DeviceTrust) => void;
+    vi.mocked(deviceTrustRequest).mockReturnValueOnce(
+      new Promise((r) => {
+        resolve = r;
+      }),
     );
-    expect(deviceTrustRequest).toHaveBeenCalledWith('d', 'credentials', 'POST', {
-      credential: second,
-      assertion: vectors.session.registration.assertion,
-      certificate: vectors.session.registration.assertion,
-    });
-    expect(assertOwner).toHaveBeenCalledTimes(2);
+    const { rerender } = render(<DeviceTrustPanel deviceId="old-device" />);
+    rerender(<DeviceTrustPanel deviceId="device-1" />);
+    await screen.findByText(translate('devices.protected'));
+    resolve({ ...trust, accountKeyId: 'old-fingerprint' });
+    await waitFor(() => expect(screen.queryByText('old-fingerpri')).toBeNull());
   });
 });

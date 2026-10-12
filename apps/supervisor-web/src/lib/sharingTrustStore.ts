@@ -1,18 +1,19 @@
-// CryptoKeys are structured-cloned into IDB, never exported or put in localStorage.
+// Public sharing confirmations, owner-account pins and verified certificates only.
+// Account and browser keys are owned exclusively by accountVault.
 async function database() {
   return new Promise<IDBDatabase>((resolve, reject) => {
-    const request = indexedDB.open('pockymoe-owner-trust-v1', 1);
+    const request = indexedDB.open('pockymoe-sharing-trust-v2', 1);
     request.onupgradeneeded = () => request.result.createObjectStore('trust');
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
   });
 }
-export async function trustStore<T>(key: string): Promise<T | undefined>;
-export async function trustStore<T>(
+export async function sharingTrustStore<T>(key: string): Promise<T | undefined>;
+export async function sharingTrustStore<T>(
   key: string,
   value: T | null,
 ): Promise<T | undefined>;
-export async function trustStore<T>(
+export async function sharingTrustStore<T>(
   key: string,
   ...write: [T | null] | []
 ): Promise<T | undefined> {
@@ -43,33 +44,24 @@ export async function trustStore<T>(
   }
 }
 
-// Delete the key and its registration marks in one transaction. An old device
-// response must not discard a newer session unlocked in another tab.
-export async function clearStoredOwnerSession(sessionId?: string) {
+// Enumerate local trust, never the relay's device inventory.
+export async function sharingTrustEntries<T>(prefix: string): Promise<[string, T][]> {
   const db = await database();
   try {
-    await new Promise<void>((resolve, reject) => {
-      const tx = db.transaction('trust', 'readwrite');
-      const store = tx.objectStore('trust');
-      const session = store.get('session');
-      session.onsuccess = () => {
-        if (!sessionId || session.result?.sessionId === sessionId)
-          store.delete('session');
-      };
-      const prefix = sessionId ? `registration:${sessionId}:` : 'registration:';
-      const request = store.openCursor();
+    return await new Promise((resolve, reject) => {
+      const tx = db.transaction('trust', 'readonly');
+      const entries: [string, T][] = [];
+      const request = tx.objectStore('trust').openCursor();
       request.onsuccess = () => {
         const cursor = request.result;
         if (!cursor) return;
         if (typeof cursor.key === 'string' && cursor.key.startsWith(prefix))
-          cursor.delete();
+          entries.push([cursor.key, cursor.value as T]);
         cursor.continue();
       };
-      tx.oncomplete = () => resolve();
+      tx.oncomplete = () => resolve(entries);
       tx.onerror = () => reject(tx.error);
       tx.onabort = () => reject(tx.error);
     });
-  } finally {
-    db.close();
-  }
+  } finally { db.close(); }
 }

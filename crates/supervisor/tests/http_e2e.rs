@@ -1959,3 +1959,37 @@ async fn direct_http_compresses_large_text_for_clients_that_accept_it() {
         .unwrap();
     assert!(health.headers().get("content-encoding").is_none());
 }
+
+#[tokio::test]
+async fn local_web_ui_is_served_runnable_with_real_content_types() {
+    let dist = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dist.path().join("assets")).unwrap();
+    std::fs::write(
+        dist.path().join("index.html"),
+        "<!doctype html><script type=\"module\" src=\"/assets/app.js\"></script>",
+    )
+    .unwrap();
+    std::fs::write(dist.path().join("assets/app.js"), "export {};").unwrap();
+    std::fs::write(dist.path().join("assets/art.webp"), b"RIFF0000WEBP").unwrap();
+    // Only Web UI paths read this variable; API tests are unaffected.
+    std::env::set_var("POCKYMOE_WEB_DIST_DIR", dist.path());
+    let (_dir, port, _root) = spawn_supervisor(vec![Provider::Codex]).await;
+    let client = reqwest::Client::new();
+    let get = |path: &str| client.get(format!("http://127.0.0.1:{port}{path}")).send();
+    for (path, content_type) in [
+        ("/", "text/html; charset=utf-8"),
+        ("/threads/some-thread", "text/html; charset=utf-8"),
+        ("/assets/app.js", "text/javascript; charset=utf-8"),
+        ("/assets/art.webp", "image/webp"),
+    ] {
+        let response = get(path).await.unwrap();
+        assert_eq!(response.status(), 200, "{path}");
+        assert_eq!(response.headers()["content-type"], content_type, "{path}");
+        // A sandbox CSP or text/plain scripts would stop the app from running.
+        assert!(
+            response.headers().get("content-security-policy").is_none(),
+            "{path}"
+        );
+    }
+    std::env::remove_var("POCKYMOE_WEB_DIST_DIR");
+}

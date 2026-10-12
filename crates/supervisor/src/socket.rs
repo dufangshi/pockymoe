@@ -20,7 +20,7 @@ impl SocketSession {
     pub(crate) fn spawn_authorized(
         state: Arc<Supervisor>,
         output: mpsc::Sender<Value>,
-        principal: Option<crate::owner_trust::OwnerPrincipal>,
+        principal: Option<crate::owner_trust::BrowserPrincipal>,
         thread: Option<String>,
     ) -> Self {
         let (input, incoming) = mpsc::channel();
@@ -78,7 +78,7 @@ async fn run_socket_session(
     state: Arc<Supervisor>,
     mut incoming: mpsc::Receiver<Value>,
     output: mpsc::Sender<Value>,
-    principal: Option<crate::owner_trust::OwnerPrincipal>,
+    principal: Option<crate::owner_trust::BrowserPrincipal>,
     thread: Option<String>,
 ) {
     let mut client_state = SocketClientState::default();

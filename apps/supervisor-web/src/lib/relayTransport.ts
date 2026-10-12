@@ -1,4 +1,6 @@
-import { isRecipientDevice } from './ownerDeviceTrust';
+import { boundDevices } from './accountVault';
+import { accountRevocations } from './accountVaultState';
+import { verifySharedDeviceRole } from './accountTransport';
 import { relayUrl } from './relayOrigin';
 import { getLocale, translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import workerUrl from './relayServiceWorker.ts?worker&url';
@@ -28,7 +30,7 @@ export function probeDeviceEncryption(deviceId: string): Promise<void> {
     const timeout = setTimeout(() => controller.abort(), 10000);
     try {
       const scope = scopeFromPage(window.location.href, deviceId);
-      const recipient = await isRecipientDevice(deviceId, scope);
+      const recipient = await verifySharedDeviceRole(deviceId, scope);
       const path = recipient ? scope ? `/api/threads/${encodeURIComponent(scope)}` : '/api/workspaces' : '/api/version';
       const { response } = await exchange(new Request(
         new URL(relayUrl(`/relay/devices/${encodeURIComponent(deviceId)}${path}`), window.location.href),
@@ -73,6 +75,7 @@ export async function trustDeviceIdentity(deviceId: string, identityKey: string,
   });
 }
 let workerReady: Promise<void> | undefined;
+let workerPageReset = false;
 export async function ensureRelayWorker() {
   if (!navigator.serviceWorker || !window.isSecureContext)
     throw new Error(
@@ -110,6 +113,7 @@ export async function ensureRelayWorker() {
   })();
   try {
     await workerReady;
+    if (!workerPageReset) { navigator.serviceWorker.controller?.postMessage({ type: 'pockymoe-account-reset' }); workerPageReset = true; }
     navigator.serviceWorker.controller?.postMessage({ type: 'remote-codex-locale', locale: getLocale() });
     return await navigator.serviceWorker.ready;
   } catch (e) {
@@ -270,3 +274,20 @@ class EncryptedRelaySocket extends EventTarget {
 export function encryptedRelaySocket(url: string): WebSocket {
   return new EncryptedRelaySocket(url) as unknown as WebSocket;
 }
+
+window.addEventListener('pockymoe-account-logout', () => {
+  statuses.clear(); navigator.serviceWorker?.controller?.postMessage({ type: 'pockymoe-account-reset' });
+});
+const revocationsChanged = () => {
+  navigator.serviceWorker?.controller?.postMessage({ type: 'pockymoe-account-reset' });
+  void accountRevocations(true).then(async revocations => {
+    for (const r of revocations) if (r.kind === 'device') report({ deviceId: r.subjectId, state: 'error', bound: true, certificateVerified: false });
+    for (const id of await boundDevices()) {
+      if (revocations.some(r => r.kind === 'device' && r.subjectId === id)) continue;
+      // Best effort now; exchange also synchronizes before the next request.
+      void encryptedBrowserFetch(`/relay/devices/${encodeURIComponent(id)}/api/transport/revocations`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ revocations }) }).catch(() => {});
+    }
+  }).catch(() => {});
+};
+window.addEventListener('pockymoe-account-revocations', revocationsChanged);
+window.addEventListener('pockymoe-account-revocations-changed', revocationsChanged);

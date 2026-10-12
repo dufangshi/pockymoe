@@ -38,7 +38,9 @@ pub fn resource_id_from_path(path: &str, resource: &str) -> Option<String> {
     while let Some(segment) = segments.next() {
         if segment == resource {
             let id = segments.next()?;
-            if id == "start" || id == "import" {
+            if matches!(id, "start" | "import")
+                || (resource == "threads" && id == "import-candidates")
+            {
                 return None;
             }
             return Some(id.to_string());
@@ -52,10 +54,10 @@ pub fn relay_target_allowed(path: &str) -> bool {
     path == "/healthz" || path.starts_with("/api/") || path == "/api"
 }
 
-/// Relay bootstrap exception only: the device verifies the registration assertion.
+/// Relay bootstrap exception only: the device verifies the browser certificate.
 /// Callers must first establish a live share or grant on the target device.
 pub fn grantee_registration_allowed(method: &str, path: &str, encrypted: bool) -> bool {
-    encrypted && method == "POST" && path.split('?').next() == Some("/api/transport/owner-session")
+    encrypted && method == "POST" && path.split('?').next() == Some("/api/transport/browser")
 }
 
 pub fn access_allows(access: &EffectiveAccess, method: &str, path: &str) -> bool {
@@ -469,11 +471,28 @@ mod tests {
         }
     }
     #[test]
+    fn literal_thread_routes_do_not_become_thread_ids() {
+        for literal in ["start", "import", "import-candidates"] {
+            let path = format!("/api/threads/{literal}");
+            assert!(resource_id_from_path(&path, "threads").is_none());
+            assert!(resource_id_from_path(&format!("{path}?view=all"), "threads").is_none());
+            for level in ["read", "control"] {
+                assert!(!access_allows(
+                    &shared("device", level, "write"),
+                    "GET",
+                    &path
+                ));
+            }
+            assert!(access_allows(&owner_access(), "GET", &path));
+        }
+        assert_eq!(
+            resource_id_from_path("/api/threads/root/history", "threads").as_deref(),
+            Some("root")
+        );
+    }
+    #[test]
     fn grantee_registration_exception_is_encrypted_post_to_one_exact_endpoint() {
-        for path in [
-            "/api/transport/owner-session",
-            "/api/transport/owner-session?view=full",
-        ] {
+        for path in ["/api/transport/browser", "/api/transport/browser?view=full"] {
             assert!(grantee_registration_allowed("POST", path, true));
             assert!(!grantee_registration_allowed("POST", path, false));
             for method in ["GET", "PUT", "PATCH", "DELETE"] {
@@ -481,8 +500,8 @@ mod tests {
             }
         }
         for path in [
-            "/api/transport/owner-session/",
-            "/api/transport/owner-session/extra",
+            "/api/transport/browser/",
+            "/api/transport/browser/extra",
             "/api/transport/session",
             "/api/transport/key",
             "/api/transport/trust",
