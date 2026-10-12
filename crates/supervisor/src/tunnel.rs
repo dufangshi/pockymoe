@@ -472,11 +472,30 @@ fn connect_relay_client(
     }
     let output_crypto = crypto.as_ref().map(|(_, session)| session.clone());
     let (session_output, mut output) = mpsc::channel::<Value>();
-    let socket = crate::socket::SocketSession::spawn(state.clone(), session_output);
+    let socket = crate::socket::SocketSession::spawn_authorized(
+        state.clone(),
+        session_output,
+        output_crypto.as_ref().and_then(|s| s.principal.clone()),
+        output_crypto.as_ref().and_then(|s| s.thread_id.clone()),
+    );
     let relay_output = outgoing.clone();
     let output_client_id = client_id.clone();
     let bridge = tokio::spawn(async move {
-        while let Some(payload) = output.recv().await {
+        let mut auth_tick = tokio::time::interval(Duration::from_secs(5));
+        loop {
+            let payload = tokio::select! {
+                _ = auth_tick.tick() => {
+                    if !channel_authorized(&state,output_crypto.as_deref()) {
+                        let _=relay_output.send(json!({"type":"relay.client.close","clientId":output_client_id}));
+                        break;
+                    }
+                    continue;
+                }
+                payload=output.recv() => { let Some(payload)=payload else {
+                    let _=relay_output.send(json!({"type":"relay.client.close","clientId":output_client_id}));
+                    break;
+                }; payload }
+            };
             if !channel_authorized(&state, output_crypto.as_deref()) {
                 let _ = relay_output
                     .send(json!({"type":"relay.client.close","clientId":output_client_id}));
@@ -525,7 +544,16 @@ fn channel_authorized(
         return false;
     }
     match channel.and_then(|c| c.principal.as_ref()) {
-        Some(p) => p.valid(state),
+        Some(p) => {
+            p.valid(state)
+                && (p.is_owner()
+                    || channel.is_some_and(|c| {
+                        crate::grants::effective_access(state, p, c.thread_id.as_deref(), None)
+                            .ok()
+                            .flatten()
+                            .is_some()
+                    }))
+        }
         None => !crate::owner_trust::strict(state),
     }
 }
@@ -678,7 +706,9 @@ pub(crate) async fn forward_local(
         let owner_endpoint = path == "/api/transport/trust"
             || path == "/api/transport/credentials"
             || path.starts_with("/api/transport/credentials/")
-            || path.starts_with("/api/transport/sessions/");
+            || path.starts_with("/api/transport/sessions/")
+            || path == "/api/transport/grants"
+            || path.starts_with("/api/transport/grants/");
         let signature_supplied = payload["headers"]["x-rcd-session"].is_string()
             || payload["headers"]["x-rcd-signature"].is_string();
         if principal.is_none()
@@ -690,6 +720,21 @@ pub(crate) async fn forward_local(
                 .unwrap_or_else(|_| {
                     relay_error_response(502, "Device response encryption failed")
                 });
+        }
+        if let Some(p) = &principal {
+            if let Err(error) = crate::grants::authorize_path(
+                state,
+                p,
+                method,
+                opened.request["path"].as_str().unwrap_or(path),
+            ) {
+                let response = crate::owner_trust::response(Err(error));
+                let status = response.status().as_u16();
+                let body = axum::body::to_bytes(response.into_body(), 4096)
+                    .await
+                    .unwrap_or_default();
+                return opened.response(json!({"statusCode":status,"headers":{"content-type":"application/json"},"body":String::from_utf8_lossy(&body)})).unwrap_or_else(|_|relay_error_response(502,"Device response encryption failed"));
+            }
         }
         opened.principal = principal.clone();
         if principal.is_none() {
@@ -1294,6 +1339,94 @@ pub(crate) mod tests {
 mod owner_channel_tests {
     use super::*;
     use crate::owner_trust::tests::{decoded, encrypted, live_owner};
+    #[tokio::test]
+    async fn grantee_open_channels_recheck_deletion_expiry_and_scope_changes() {
+        for mutation in ["delete", "expire", "scope"] {
+            let (_dir, state, owner, mut grant, _registration, key, p) =
+                crate::grants::tests::fixture().await;
+            let path = "/api/threads/root/transport/session";
+            let (r, response_key, aad) = crate::owner_trust::tests::encrypted_with_key(
+                &state,
+                "POST",
+                path,
+                Value::Null,
+                Some(&p),
+                &key,
+            );
+            let (status, body) = decoded(forward_local(&state, r, None).await, &response_key, &aad);
+            assert_eq!(status, 200);
+            let transport = crate::secure_transport::transport(&state).unwrap();
+            let channel = transport
+                .session(body["channelId"].as_str().unwrap())
+                .unwrap();
+            assert_eq!(
+                channel.principal.as_ref().unwrap().actor(),
+                "grantee:recipient"
+            );
+            assert!(channel_authorized(&state, Some(&channel)));
+            let (outgoing, mut output) = mpsc::channel();
+            let mut clients = HashMap::new();
+            connect_relay_client(
+                state.clone(),
+                &mut clients,
+                &outgoing,
+                "grantee".into(),
+                Some(channel.id()),
+            );
+            let connected = tokio::time::timeout(Duration::from_secs(1), output.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(connected["type"], "relay.server.message");
+            match mutation {
+                "delete" => {
+                    let (r, k, aad) = encrypted(
+                        &state,
+                        "DELETE",
+                        &format!("/api/transport/grants/{}", grant.grant_id),
+                        Value::Null,
+                        Some(&owner),
+                    );
+                    assert_eq!(
+                        decoded(forward_local(&state, r, None).await, &k, &aad).0,
+                        200
+                    );
+                }
+                "expire" => {
+                    grant.expires_at = Some(crate::owner_trust::now() - 1);
+                    state
+                        .db
+                        .with(|c| {
+                            c.execute(
+                                "UPDATE device_grants SET grant_json=?1 WHERE grant_id=?2",
+                                rusqlite::params![serde_json::to_string(&grant)?, grant.grant_id],
+                            )?;
+                            Ok(())
+                        })
+                        .unwrap();
+                }
+                _ => {
+                    grant.thread_id = Some("other".into());
+                    state
+                        .db
+                        .with(|c| {
+                            c.execute(
+                                "UPDATE device_grants SET grant_json=?1 WHERE grant_id=?2",
+                                rusqlite::params![serde_json::to_string(&grant)?, grant.grant_id],
+                            )?;
+                            Ok(())
+                        })
+                        .unwrap();
+                }
+            }
+            assert!(!channel_authorized(&state, Some(&channel)), "{mutation}");
+            let closed = tokio::time::timeout(Duration::from_secs(6), output.recv())
+                .await
+                .unwrap()
+                .expect("idle channel closed");
+            assert_eq!(closed["type"], "relay.client.close", "{mutation}");
+        }
+    }
     #[tokio::test]
     async fn strict_channels_inherit_owner_principal_and_reject_legacy_or_revoked_channels() {
         let (_dir, state) = super::tests::state_with_relay_url("http://127.0.0.1:1");

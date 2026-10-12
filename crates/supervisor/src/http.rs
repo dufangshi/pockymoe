@@ -9,7 +9,7 @@ use axum::http::{header, Method, StatusCode};
 use axum::http::{HeaderMap, HeaderValue, Uri};
 use axum::middleware;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, patch, post};
+use axum::routing::{delete, get, patch, post, put};
 use axum::{Json, Router};
 use pockymoe_protocol::{
     now_rfc3339, ApiError, AuthSessionDto, CreateThreadInput, CreateWorkspaceInput,
@@ -68,6 +68,11 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/transport/owner-session",
             post(crate::owner_trust::session_endpoint),
+        )
+        .route("/api/transport/grants", get(crate::grants::list_endpoint))
+        .route(
+            "/api/transport/grants/{grantId}",
+            put(crate::grants::put_endpoint).delete(crate::grants::delete_endpoint),
         )
         .route(
             "/api/transport/trust",

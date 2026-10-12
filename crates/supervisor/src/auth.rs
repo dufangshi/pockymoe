@@ -88,7 +88,9 @@ pub async fn require_auth(
     let owner_endpoint = path == "/api/transport/trust"
         || path == "/api/transport/credentials"
         || path.starts_with("/api/transport/credentials/")
-        || path.starts_with("/api/transport/sessions/");
+        || path.starts_with("/api/transport/sessions/")
+        || path == "/api/transport/grants"
+        || path.starts_with("/api/transport/grants/");
     if bootstrap || owner_endpoint {
         if request
             .extensions()
@@ -112,6 +114,21 @@ pub async fn require_auth(
                 Json(serde_json::json!({"code":"owner_session_required"})),
             )
                 .into_response();
+        }
+    }
+    if let Some(p) = request
+        .extensions()
+        .get::<crate::owner_trust::OwnerPrincipal>()
+    {
+        if p.valid(&state) {
+            if let Err(error) = crate::grants::authorize_path(
+                &state,
+                p,
+                request.method().as_str(),
+                &request.uri().to_string(),
+            ) {
+                return crate::owner_trust::response(Err(error));
+            }
         }
     }
     if request.extensions().get::<TrustedRelayForward>().is_some()

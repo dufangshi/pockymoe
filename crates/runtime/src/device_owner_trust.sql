@@ -33,3 +33,18 @@ CREATE TABLE IF NOT EXISTS owner_port_mappings (
   mapping_id TEXT PRIMARY KEY,
   credential_id TEXT NOT NULL
 );
+
+-- Device-authorized shares; relay rows are only references, never authority.
+CREATE TABLE IF NOT EXISTS device_grants (
+  grant_id TEXT PRIMARY KEY,
+  grant_json TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  created_by TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS grantee_sessions (
+  session_id TEXT PRIMARY KEY,
+  public_key TEXT NOT NULL,
+  credential_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  expires_at INTEGER NOT NULL
+);

@@ -78,14 +78,24 @@ pub(crate) struct Pairing {
 pub(crate) struct OwnerPrincipal {
     pub credential_id: String,
     pub session_id: String,
+    pub grantee_user_id: Option<String>,
 }
 impl OwnerPrincipal {
     pub fn actor(&self) -> String {
-        format!("owner:{}", self.credential_id)
+        match &self.grantee_user_id {
+            Some(user) => format!("grantee:{user}"),
+            None => format!("owner:{}", self.credential_id),
+        }
+    }
+    pub fn is_owner(&self) -> bool {
+        self.grantee_user_id.is_none()
     }
     pub fn valid(&self, state: &Supervisor) -> bool {
-        session(&state.db, &self.session_id, now())
-            .is_ok_and(|s| s.is_some_and(|s| s.credential_id == self.credential_id))
+        session(&state.db, &self.session_id, now()).is_ok_and(|s| {
+            s.is_some_and(|s| {
+                s.credential_id == self.credential_id && s.grantee_user_id == self.grantee_user_id
+            })
+        })
     }
 }
 #[derive(Clone)]
@@ -96,13 +106,13 @@ struct Rejection {
     status: u16,
     code: &'static str,
 }
-fn reject<T>(status: u16, code: &'static str) -> Result<T> {
+pub(crate) fn reject<T>(status: u16, code: &'static str) -> Result<T> {
     Err(Rejection { status, code }.into())
 }
 pub(crate) fn error(status: u16, code: &str) -> Value {
     json!({"statusCode":status,"headers":{"content-type":"application/json","cache-control":"no-store"},"body":json!({"code":code}).to_string()})
 }
-fn response(result: Result<Value>) -> Response {
+pub(crate) fn response(result: Result<Value>) -> Response {
     match result {
         Ok(v) => Json(v).into_response(),
         Err(e) => {
@@ -284,9 +294,15 @@ fn credential(c: &Connection, id: &str) -> Result<Option<Credential>> {
 struct OwnerSession {
     public_key: String,
     credential_id: String,
+    grantee_user_id: Option<String>,
 }
 fn session(db: &Database, id: &str, time: i64) -> Result<Option<OwnerSession>> {
-    db.with(|c| Ok(c.query_row("SELECT s.public_key,s.credential_id FROM owner_sessions s JOIN owner_credentials c USING(credential_id) WHERE session_id=?1 AND expires_at>?2",params![id,time],|r|Ok(OwnerSession {public_key:r.get(0)?,credential_id:r.get(1)?})).optional()?))
+    db.with(|c| {
+        let owner = c.query_row("SELECT s.public_key,s.credential_id FROM owner_sessions s JOIN owner_credentials c USING(credential_id) WHERE session_id=?1 AND expires_at>?2",params![id,time],|r|Ok(OwnerSession {public_key:r.get(0)?,credential_id:r.get(1)?,grantee_user_id:None})).optional()?;
+        if owner.is_some() { return Ok(owner); }
+        let grantee = c.query_row("SELECT public_key,credential_id,user_id FROM grantee_sessions WHERE session_id=?1 AND expires_at>?2",params![id,time],|r|Ok(OwnerSession {public_key:r.get(0)?,credential_id:r.get(1)?,grantee_user_id:Some(r.get(2)?)})).optional()?;
+        Ok(grantee.filter(|s| crate::grants::live_credential(c, &s.credential_id, time).ok().flatten().is_some_and(|(_, user)| Some(user) == s.grantee_user_id)))
+    })
 }
 pub(crate) fn authorize(
     state: &Supervisor,
@@ -309,9 +325,10 @@ pub(crate) fn authorize(
     Ok(OwnerPrincipal {
         session_id: id.into(),
         credential_id: s.credential_id,
+        grantee_user_id: s.grantee_user_id,
     })
 }
-fn check_owner_origin(c: &Connection, record: &Credential) -> Result<()> {
+pub(crate) fn check_owner_origin(c: &Connection, record: &Credential) -> Result<()> {
     // All credentials share the origin/RP established by the first pairing.
     // Checking every existing record also fails closed on previously mixed records.
     for existing in credentials(c)? {
@@ -390,18 +407,19 @@ fn register(db: &Database, r: &Registration, time: i64) -> Result<Value> {
         )? {
             return reject(401, "owner_session_revoked");
         }
-        let record =
-            credential(&tx, &r.assertion.credential_id)?.context("unknown owner credential")?;
+        let (record, user) = if let Some(record) = credential(&tx, &r.assertion.credential_id)? {
+            (record, None)
+        } else if let Some((record, user)) = crate::grants::live_credential(&tx, &r.assertion.credential_id, time)? {
+            (record, Some(user))
+        } else { return reject(401, "owner_session_required"); };
         verify(&record, &r.assertion, &session_challenge(r))?;
-        tx.execute(
-            "INSERT INTO owner_sessions(session_id,public_key,credential_id,expires_at)
-             VALUES(?1,?2,?3,?4) ON CONFLICT(session_id) DO UPDATE SET
-             public_key=excluded.public_key,credential_id=excluded.credential_id,
-             expires_at=excluded.expires_at",
-            params![id, r.session_public_key, record.credential_id, r.expires_at],
-        )?;
+        if let Some(user) = &user {
+            tx.execute("INSERT INTO grantee_sessions(session_id,public_key,credential_id,user_id,expires_at) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(session_id) DO UPDATE SET public_key=excluded.public_key,credential_id=excluded.credential_id,user_id=excluded.user_id,expires_at=excluded.expires_at", params![id,r.session_public_key,record.credential_id,user,r.expires_at])?;
+        } else {
+            tx.execute("INSERT INTO owner_sessions(session_id,public_key,credential_id,expires_at) VALUES(?1,?2,?3,?4) ON CONFLICT(session_id) DO UPDATE SET public_key=excluded.public_key,credential_id=excluded.credential_id,expires_at=excluded.expires_at", params![id,r.session_public_key,record.credential_id,r.expires_at])?;
+        }
         tx.commit()?;
-        Ok(json!({"sessionId":id,"expiresAt":r.expires_at}))
+        Ok(json!({"sessionId":id,"expiresAt":r.expires_at,"role":if user.is_some() {"grantee"} else {"owner"}}))
     })
 }
 fn credentials(c: &Connection) -> Result<Vec<Value>> {
@@ -415,7 +433,7 @@ fn credentials(c: &Connection) -> Result<Vec<Value>> {
 }
 fn trust(db: &Database, principal: &OwnerPrincipal) -> Result<Value> {
     db.with(|c| {
-        let sessions=c.prepare("SELECT session_id,credential_id,expires_at FROM owner_sessions WHERE expires_at>?1 ORDER BY session_id")?.query_map([now()],|r| {let id:String=r.get(0)?;Ok(json!({"sessionId":id,"credentialId":r.get::<_,String>(1)?,"expiresAt":r.get::<_,i64>(2)?,"current":id==principal.session_id}))})?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let sessions=c.prepare("SELECT session_id,credential_id,expires_at FROM owner_sessions WHERE expires_at>?1 UNION ALL SELECT session_id,credential_id,expires_at FROM grantee_sessions WHERE expires_at>?1 ORDER BY session_id")?.query_map([now()],|r| {let id:String=r.get(0)?;Ok(json!({"sessionId":id,"credentialId":r.get::<_,String>(1)?,"expiresAt":r.get::<_,i64>(2)?,"current":id==principal.session_id}))})?.collect::<rusqlite::Result<Vec<_>>>()?;
         let certificate: Option<String>=c.query_row("SELECT certificate_json FROM device_certificates WHERE singleton=1",[],|r|r.get(0)).optional()?;
         let records=credentials(c)?;
         Ok(json!({"deviceId":device_id(c)?,"paired":!records.is_empty(),"strict":strict_in(c)?,"credentials":records,"sessions":sessions,"certificate":certificate.map(|s|serde_json::from_str::<Value>(&s)).transpose()?}))
@@ -481,7 +499,7 @@ fn collect_revoked_sessions(c: &Connection, time: i64) -> Result<()> {
     )?;
     Ok(())
 }
-fn remember_revocation(c: &Connection, id: &str, expires: i64) -> Result<()> {
+pub(crate) fn remember_revocation(c: &Connection, id: &str, expires: i64) -> Result<()> {
     c.execute(
         "INSERT INTO kv(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET
          value=CAST(MAX(CAST(kv.value AS INTEGER),CAST(excluded.value AS INTEGER)) AS TEXT)",
@@ -495,7 +513,7 @@ fn revoke_session(db: &Database, id: &str, time: i64) -> Result<Value> {
         collect_revoked_sessions(&tx, time)?;
         let expires: Option<i64> = tx
             .query_row(
-                "SELECT expires_at FROM owner_sessions WHERE session_id=?1 AND expires_at>?2",
+                "SELECT expires_at FROM owner_sessions WHERE session_id=?1 AND expires_at>?2 UNION ALL SELECT expires_at FROM grantee_sessions WHERE session_id=?1 AND expires_at>?2",
                 params![id, time],
                 |r| r.get(0),
             )
@@ -504,6 +522,7 @@ fn revoke_session(db: &Database, id: &str, time: i64) -> Result<Value> {
             remember_revocation(&tx, id, expires)?;
         }
         tx.execute("DELETE FROM owner_sessions WHERE session_id=?1", [id])?;
+        tx.execute("DELETE FROM grantee_sessions WHERE session_id=?1", [id])?;
         tx.commit()?;
         Ok(json!({}))
     })
@@ -657,7 +676,7 @@ pub fn reset_owner_trust(database: &FsPath) -> Result<()> {
             [serde_json::to_string(&mappings)?],
         )?;
     }
-    tx.execute_batch("DELETE FROM owner_port_mappings; DELETE FROM owner_sessions; DELETE FROM owner_credentials; DELETE FROM device_certificates; DELETE FROM pairing_offers; DELETE FROM kv WHERE key GLOB 'ownerRevokedSession:*'; UPDATE device_owner_trust SET strict=0 WHERE singleton=1;")?;
+    tx.execute_batch("DELETE FROM device_grants; DELETE FROM grantee_sessions; DELETE FROM owner_port_mappings; DELETE FROM owner_sessions; DELETE FROM owner_credentials; DELETE FROM device_certificates; DELETE FROM pairing_offers; DELETE FROM kv WHERE key GLOB 'ownerRevokedSession:*'; UPDATE device_owner_trust SET strict=0 WHERE singleton=1;")?;
     tx.commit()?;
     Ok(())
 }

@@ -15,8 +15,18 @@ pub(crate) struct SocketSession {
 
 impl SocketSession {
     pub(crate) fn spawn(state: Arc<Supervisor>, output: mpsc::Sender<Value>) -> Self {
+        Self::spawn_authorized(state, output, None, None)
+    }
+    pub(crate) fn spawn_authorized(
+        state: Arc<Supervisor>,
+        output: mpsc::Sender<Value>,
+        principal: Option<crate::owner_trust::OwnerPrincipal>,
+        thread: Option<String>,
+    ) -> Self {
         let (input, incoming) = mpsc::channel();
-        let task = tokio::spawn(run_socket_session(state, incoming, output));
+        let task = tokio::spawn(run_socket_session(
+            state, incoming, output, principal, thread,
+        ));
         Self { input, task }
     }
 
@@ -68,6 +78,8 @@ async fn run_socket_session(
     state: Arc<Supervisor>,
     mut incoming: mpsc::Receiver<Value>,
     output: mpsc::Sender<Value>,
+    principal: Option<crate::owner_trust::OwnerPrincipal>,
+    thread: Option<String>,
 ) {
     let mut client_state = SocketClientState::default();
     let mut events = state.bus.subscribe();
@@ -86,13 +98,19 @@ async fn run_socket_session(
     {
         return;
     }
+    let mut auth_tick = tokio::time::interval(std::time::Duration::from_secs(5));
     loop {
         tokio::select! {
+            _ = auth_tick.tick() => {
+                if principal.as_ref().is_some_and(|p| !p.valid(&state)) { break; }
+            }
             message = incoming.recv() => {
                 let Some(message) = message else {
                     break;
                 };
+                if principal.as_ref().is_some_and(|p| !p.valid(&state) || !crate::grants::websocket_message_allowed(&state,p,thread.as_deref(),&message)) { break; }
                 for response in handle_client_message(&message, &mut client_state) {
+                    if principal.as_ref().is_some_and(|p| !crate::grants::websocket_event_allowed(&state,p,thread.as_deref(),&response)) { continue; }
                     if output.send(response).is_err() {
                         return;
                     }
@@ -102,6 +120,8 @@ async fn run_socket_session(
                 match event {
                     Ok(event) => {
                         let event = serde_json::to_value(event).unwrap_or_else(|_| json!({}));
+                        if principal.as_ref().is_some_and(|p| !p.valid(&state)) { break; }
+                        if principal.as_ref().is_some_and(|p| !crate::grants::websocket_event_allowed(&state,p,thread.as_deref(),&event)) { continue; }
                         if output.send(event).is_err() {
                             break;
                         }
@@ -118,6 +138,8 @@ async fn run_socket_session(
                         let Some(message) = client_state.shell_message(shell) else {
                             continue;
                         };
+                        if principal.as_ref().is_some_and(|p| !p.valid(&state)) { break; }
+                        if principal.as_ref().is_some_and(|p| !crate::grants::websocket_event_allowed(&state,p,thread.as_deref(),&message)) { continue; }
                         if output.send(message).is_err() {
                             break;
                         }

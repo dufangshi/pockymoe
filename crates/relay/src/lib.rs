@@ -1582,36 +1582,7 @@ impl AccessQuery {
     }
 }
 
-#[derive(Clone, Debug)]
-struct EffectiveAccess {
-    kind: &'static str,
-    grant_id: Option<String>,
-    share_id: Option<String>,
-    scope: String,
-    thread_id: Option<String>,
-    thread_access: String,
-    workspace_access: String,
-    workspace_id: Option<String>,
-    workspace_scope: Option<String>,
-    workspace_ids: Vec<String>,
-    can_create_threads: bool,
-}
-
-fn owner_access() -> EffectiveAccess {
-    EffectiveAccess {
-        kind: "owner",
-        grant_id: None,
-        share_id: None,
-        scope: "owner".to_string(),
-        thread_id: None,
-        thread_access: "control".to_string(),
-        workspace_access: "write".to_string(),
-        workspace_id: None,
-        workspace_scope: None,
-        workspace_ids: Vec::new(),
-        can_create_threads: true,
-    }
-}
+use pockymoe_protocol::access::{owner_access, EffectiveAccess};
 
 fn access_json(access: &EffectiveAccess) -> Value {
     json!({
@@ -1715,11 +1686,14 @@ fn effective_access(
         None
     };
     if let Some(share) = share {
-        let workspace_matches = workspace_id.is_none_or(|workspace_id| {
-            share.workspace_id.as_deref() == Some(workspace_id) && share.workspace_access != "none"
-        });
-        if workspace_matches {
-            return Some(share);
+        if let Some(access) = pockymoe_protocol::access::merge_access(
+            false,
+            Some(share),
+            &[],
+            thread_id,
+            workspace_id,
+        ) {
+            return Some(access);
         }
     }
 
@@ -1763,80 +1737,107 @@ fn effective_access(
             can_create_threads,
         ) = row;
         let selected: Vec<String> = serde_json::from_str(&workspace_ids).unwrap_or_default();
-        let matches = match scope.as_str() {
-            "device" => workspace_id.is_none() || workspace_access != "none",
-            "thread" => thread_id.is_some_and(|value| {
-                grant_thread
-                    .as_deref()
-                    .is_some_and(|parent| thread_groups::contains(conn, device_id, parent, value))
-            }),
-            "workspace" => {
-                workspace_access != "none"
-                    && workspace_id.is_some_and(|value| Some(value) == grant_workspace.as_deref())
-            }
-            _ => false,
+        let grant = EffectiveAccess {
+            kind: "shared",
+            grant_id: Some(id),
+            share_id: None,
+            scope,
+            thread_id: grant_thread,
+            thread_access,
+            workspace_access,
+            workspace_id: grant_workspace,
+            workspace_scope: Some(workspace_scope),
+            workspace_ids: selected,
+            can_create_threads: can_create_threads == 1,
         };
-        if matches {
-            matching.push(EffectiveAccess {
-                kind: "shared",
-                grant_id: Some(id),
-                share_id: None,
-                scope,
-                thread_id: grant_thread,
-                thread_access,
-                workspace_access,
-                workspace_id: grant_workspace,
-                workspace_scope: Some(workspace_scope),
-                workspace_ids: selected,
-                can_create_threads: can_create_threads == 1,
-            });
+        // Database lookup supplies lineage evidence; the matching rule is shared.
+        let lineage = grant
+            .thread_id
+            .as_deref()
+            .filter(|parent| {
+                thread_id
+                    .is_some_and(|target| thread_groups::contains(conn, device_id, parent, target))
+            })
+            .map(|parent| vec![parent.to_owned()])
+            .unwrap_or_default();
+        if pockymoe_protocol::access::grant_matches(&grant, thread_id, workspace_id, &lineage) {
+            matching.push(grant);
         }
     }
-    let representative = matching.first()?.clone();
-    let merged_scope = if matching.iter().any(|grant| grant.scope == "device") {
-        "device"
-    } else if matching.iter().any(|grant| grant.scope == "workspace") {
-        "workspace"
-    } else {
-        "thread"
-    };
-    let thread_access = if matching
+    pockymoe_protocol::access::merge_access(false, None, &matching, thread_id, workspace_id)
+}
+
+fn grantee_registration_request(method: &Method, path: &str, headers: &HeaderMap) -> bool {
+    let encrypted = ["x-rcd-key", "x-rcd-request", "x-rcd-enc"]
         .iter()
-        .any(|grant| grant.thread_access == "control")
-    {
-        "control"
-    } else {
-        "read"
-    };
-    let workspace_access = if matching
-        .iter()
-        .any(|grant| grant.workspace_access == "write")
-    {
-        "write"
-    } else if matching
-        .iter()
-        .any(|grant| grant.workspace_access == "read")
-    {
-        "read"
-    } else {
-        "none"
-    };
-    let mut merged = representative;
-    merged.scope = merged_scope.to_string();
-    merged.thread_id = if merged_scope == "thread" {
-        thread_id.map(str::to_string).or(merged.thread_id)
-    } else {
-        None
-    };
-    merged.thread_access = thread_access.to_string();
-    merged.workspace_access = workspace_access.to_string();
-    merged.workspace_id = if merged_scope == "workspace" {
-        workspace_id.map(str::to_string).or(merged.workspace_id)
-    } else {
-        None
-    };
-    merged.can_create_threads = matching.iter().any(|grant| grant.can_create_threads);
-    Some(merged)
+        .all(|name| {
+            headers
+                .get(*name)
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(|value| !value.is_empty())
+        });
+    pockymoe_protocol::access::grantee_registration_allowed(method.as_str(), path, encrypted)
+}
+
+/// Registration has no resource id: any live row lets the device decide whether
+/// the assertion belongs to one of its grants. Never use this for ordinary routes.
+fn registration_access(conn: &Connection, user: &str, device: &str) -> Option<EffectiveAccess> {
+    if !load_user_by_id(conn, user).is_some_and(|user| user.enabled == 1) {
+        return None;
+    }
+    conn.query_row(
+        "SELECT id,'share', 'thread',thread_id,workspace_id,thread_access,workspace_access
+         FROM relay_shares WHERE target_user_id=?1 AND device_id=?2
+           AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>?3)
+         UNION ALL
+         SELECT id,'grant',scope,thread_id,workspace_id,thread_access,workspace_access
+         FROM relay_access_grants WHERE target_user_id=?1 AND device_id=?2
+           AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>?3)
+         LIMIT 1",
+        params![user, device, now_rfc3339()],
+        |row| {
+            let id: String = row.get(0)?;
+            let share = row.get::<_, String>(1)? == "share";
+            Ok(EffectiveAccess {
+                kind: "shared",
+                share_id: share.then(|| id.clone()),
+                grant_id: (!share).then_some(id),
+                scope: row.get(2)?,
+                thread_id: row.get(3)?,
+                workspace_id: row.get(4)?,
+                thread_access: row.get(5)?,
+                workspace_access: row.get(6)?,
+                workspace_scope: None,
+                workspace_ids: Vec::new(),
+                can_create_threads: false,
+            })
+        },
+    )
+    .optional()
+    .ok()
+    .flatten()
+}
+
+fn device_request_access(
+    conn: &Connection,
+    user: &str,
+    device: &str,
+    method: &Method,
+    path: &str,
+    headers: &HeaderMap,
+) -> Option<EffectiveAccess> {
+    effective_access(
+        conn,
+        user,
+        device,
+        resource_id_from_path(path, "threads").as_deref(),
+        resource_id_from_path(path, "workspaces").as_deref(),
+    )
+    .or_else(|| {
+        grantee_registration_request(method, path, headers)
+            .then(|| registration_access(conn, user, device))
+            .flatten()
+    })
 }
 
 async fn relay_access(
@@ -2816,25 +2817,20 @@ async fn device_api(
     body: Bytes,
 ) -> impl IntoResponse {
     let path = relay_api_target_path(&rest, &uri);
-    let thread_id = resource_id_from_path(&path, "threads");
-    let workspace_id = resource_id_from_path(&path, "workspaces");
     let resolved = {
         let conn = state.store.conn.lock().await;
         authenticated_user(&conn, &state.store.session_secret, &headers, &query).and_then(|user| {
-            effective_access(
-                &conn,
-                &user.id,
-                &device_id,
-                thread_id.as_deref(),
-                workspace_id.as_deref(),
-            )
-            .map(|access| (user.id, access))
+            device_request_access(&conn, &user.id, &device_id, &method, &path, &headers)
+                .map(|access| (user.id, access))
         })
     };
     let Some((user_id, access)) = resolved else {
         return unauthorized();
     };
-    if !relay_target_allowed(&path) || !access_allows(&access, &method, &path) {
+    if !relay_target_allowed(&path)
+        || !(access_allows(&access, &method, &path)
+            || grantee_registration_request(&method, &path, &headers))
+    {
         return (
             StatusCode::FORBIDDEN,
             Json(ApiError::new(
@@ -2891,8 +2887,6 @@ async fn relay_api_compat(
     body: Bytes,
 ) -> impl IntoResponse {
     let path = relay_api_target_path(&rest, &uri);
-    let thread_id = resource_id_from_path(&path, "threads");
-    let workspace_id = resource_id_from_path(&path, "workspaces");
     let mut connected_device_ids: Vec<String> =
         state.sockets.read().await.keys().cloned().collect();
     {
@@ -2914,14 +2908,8 @@ async fn relay_api_compat(
             return unauthorized();
         };
         connected_device_ids.iter().find_map(|device_id| {
-            effective_access(
-                &conn,
-                &user.id,
-                device_id,
-                thread_id.as_deref(),
-                workspace_id.as_deref(),
-            )
-            .map(|access| (device_id.clone(), user.id.clone(), access))
+            device_request_access(&conn, &user.id, device_id, &method, &path, &headers)
+                .map(|access| (device_id.clone(), user.id.clone(), access))
         })
     };
     let Some((device_id, user_id, access)) = resolved else {
@@ -2934,7 +2922,10 @@ async fn relay_api_compat(
         )
             .into_response();
     };
-    if !relay_target_allowed(&path) || !access_allows(&access, &method, &path) {
+    if !relay_target_allowed(&path)
+        || !(access_allows(&access, &method, &path)
+            || grantee_registration_request(&method, &path, &headers))
+    {
         return (
             StatusCode::FORBIDDEN,
             Json(ApiError::new(
@@ -3655,6 +3646,40 @@ async fn client_ws_compat(
     .into_response()
 }
 
+async fn shared_shell_scope_allowed(
+    state: &Arc<AppState>,
+    device: &str,
+    thread: &str,
+    shell: &str,
+    secure_channel: bool,
+) -> bool {
+    // This hint chooses a redundant routing probe; the strict device always
+    // authenticates the channel and authorizes the shell against its own grants.
+    let device_filters = secure_channel
+        && internal_forward_json(state, device, "GET", "/api/transport/key", None)
+            .await
+            .ok()
+            .is_some_and(|key| key["trust"]["strict"] == true);
+    if device_filters {
+        return true;
+    }
+    // Retain relay shell ownership checks for legacy and unpaired channels.
+    internal_forward_json(
+        state,
+        device,
+        "GET",
+        &format!("/api/threads/{thread}/transport/shell-scope"),
+        None,
+    )
+    .await
+    .ok()
+    .is_some_and(|response| {
+        response["shells"]
+            .as_array()
+            .is_some_and(|items| items.iter().any(|s| s["id"].as_str() == Some(shell)))
+    })
+}
+
 async fn handle_client_socket(
     socket: WebSocket,
     state: Arc<AppState>,
@@ -3716,7 +3741,7 @@ async fn handle_client_socket(
                         let message_thread = payload.get("threadId").and_then(Value::as_str);
                         if thread_id.as_deref().zip(message_thread).is_some_and(|(a,b)| a != b) { break; }
                         let kind = payload.get("type").and_then(Value::as_str).unwrap_or_default();
-                        if !matches!(kind, "supervisor.ping" | "shell.attach" | "shell.detach" | "shell.input" | "shell.resize" | "shell.clear") { break; }
+                        if !pockymoe_protocol::access::client_message_allowed(&owner_access(), kind) { break; }
                         let fresh_access = {
                             let conn = state.store.conn.lock().await;
                             if load_user_by_session(&conn, &state.store.session_secret, &session_token).is_none() { break; }
@@ -3731,7 +3756,7 @@ async fn handle_client_socket(
                         let Some(fresh_access) = fresh_access else {
                             break;
                         };
-                        if kind != "supervisor.ping" && fresh_access.kind == "shared" && fresh_access.thread_access != "control" {
+                        if !pockymoe_protocol::access::client_message_allowed(&fresh_access, kind) {
                             break;
                         }
                         if kind.starts_with("shell.") {
@@ -3739,8 +3764,7 @@ async fn handle_client_socket(
                             if kind == "shell.attach" && fresh_access.kind == "shared" {
                                 let Some(scope) = thread_id.as_deref().or(message_thread) else { break; };
                                 if scope.contains(['/', '?', '#']) { break; }
-                                let Ok(shells) = internal_forward_json(&state, &device_id, "GET", &format!("/api/threads/{scope}/transport/shell-scope"), None).await else { break; };
-                                if !shells.get("shells").and_then(Value::as_array).is_some_and(|items| items.iter().any(|s| s.get("id").and_then(Value::as_str) == Some(shell_id))) { break; }
+                                if !shared_shell_scope_allowed(&state,&device_id,scope,shell_id,secure_channel_id.is_some()).await { break; }
                             } else if kind != "shell.attach" {
                                 let clients = state.clients.read().await;
                                 if !clients.get(&client_id).is_some_and(|c| c.attached_shell_id.as_deref() == Some(shell_id)) { break; }
@@ -3863,17 +3887,12 @@ async fn forward_server_message_to_client(
         return;
     };
     let event_thread = payload.get("threadId").and_then(Value::as_str);
-    let control_event = matches!(
-        payload.get("type").and_then(Value::as_str),
-        Some("supervisor.connected" | "supervisor.pong")
-    );
-    let attached_shell_event = attached_shell
-        .as_deref()
-        .is_some_and(|shell_id| payload.get("shellId").and_then(Value::as_str) == Some(shell_id));
-    if let Some(expected) = configured_thread.as_deref() {
-        if !control_event && !attached_shell_event && event_thread != Some(expected) {
-            return;
-        }
+    if !pockymoe_protocol::access::outbound_event_in_scope(
+        configured_thread.as_deref(),
+        attached_shell.as_deref(),
+        payload,
+    ) {
+        return;
     }
     let authorized = {
         let conn = state.store.conn.lock().await;
@@ -3935,6 +3954,70 @@ mod tests {
 
     fn temporary_test_dir(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("pockymoe-relay-{name}-{}", Uuid::new_v4().simple()))
+    }
+
+    #[tokio::test]
+    async fn strict_encrypted_shells_skip_plaintext_probe_and_unpaired_shells_keep_scope_checks() {
+        for (secure, strict, shell_present, expected) in [
+            (true, true, false, true),
+            (true, false, true, true),
+            (true, false, false, false),
+            (false, false, false, false),
+            (false, true, false, false),
+        ] {
+            let (state, dir) = test_app_state("shell-probe");
+            let (tx, mut requests) = tokio::sync::mpsc::channel(4);
+            state.sockets.write().await.insert(
+                "device".into(),
+                DeviceSocket {
+                    tx,
+                    connection_id: Uuid::new_v4(),
+                    connected_at: "now".into(),
+                    last_heartbeat_at: "now".into(),
+                },
+            );
+            let request_state = state.clone();
+            let task = tokio::spawn(async move {
+                shared_shell_scope_allowed(&request_state, "device", "thread", "shell", secure)
+                    .await
+            });
+            if secure {
+                let request: Value = serde_json::from_str(&requests.recv().await.unwrap()).unwrap();
+                assert_eq!(request["payload"]["path"], "/api/transport/key");
+                let pending = state
+                    .pending
+                    .lock()
+                    .unwrap()
+                    .remove(request["requestId"].as_str().unwrap())
+                    .unwrap();
+                pending.tx.send(json!({"statusCode":200,"headers":{"content-type":"application/json"},"body":json!({"trust":{"strict":strict}}).to_string()})).unwrap();
+            }
+            if !secure || !strict {
+                let request: Value = serde_json::from_str(&requests.recv().await.unwrap()).unwrap();
+                assert_eq!(
+                    request["payload"]["path"],
+                    "/api/threads/thread/transport/shell-scope"
+                );
+                let pending = state
+                    .pending
+                    .lock()
+                    .unwrap()
+                    .remove(request["requestId"].as_str().unwrap())
+                    .unwrap();
+                let response = if strict {
+                    json!({"statusCode":403,"body":json!({"code":"device_strict_mode"}).to_string()})
+                } else {
+                    json!({"statusCode":200,"body":json!({"shells":if shell_present {json!([{"id":"shell"}])} else {json!([{"id":"other"}])}}).to_string()})
+                };
+                pending.tx.send(response).unwrap();
+            }
+            assert_eq!(task.await.unwrap(), expected);
+            assert!(
+                requests.try_recv().is_err(),
+                "strict devices received an unexpected plaintext scope probe"
+            );
+            std::fs::remove_dir_all(dir).unwrap();
+        }
     }
 
     pub(super) fn test_app_state(name: &str) -> (Arc<AppState>, PathBuf) {

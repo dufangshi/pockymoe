@@ -43,7 +43,7 @@ fn credential_key() -> SigningKey {
     )
     .unwrap()
 }
-fn assertion(c: &Credential, key: &SigningKey, challenge: &[u8]) -> Assertion {
+pub(crate) fn assertion(c: &Credential, key: &SigningKey, challenge: &[u8]) -> Assertion {
     let client = serde_json::to_vec(
         &json!({"type":"webauthn.get","challenge":B64.encode(challenge),"origin":c.origin}),
     )
@@ -632,6 +632,7 @@ pub(crate) fn live_owner(state: &Supervisor) -> OwnerPrincipal {
     OwnerPrincipal {
         session_id: value["sessionId"].as_str().unwrap().into(),
         credential_id: record().credential_id,
+        grantee_user_id: None,
     }
 }
 /// A browser-like HPKE request, with a response exporter, tests actual tunnel dispatch.
@@ -642,12 +643,32 @@ pub(crate) fn encrypted(
     body: Value,
     owner: Option<&OwnerPrincipal>,
 ) -> (Value, [u8; 32], String) {
+    encrypted_with_key(state, method, path, body, owner, &session_key())
+}
+pub(crate) fn encrypted_with_key(
+    state: &Supervisor,
+    method: &str,
+    path: &str,
+    body: Value,
+    principal: Option<&OwnerPrincipal>,
+    signing_key: &SigningKey,
+) -> (Value, [u8; 32], String) {
+    let transport = crate::secure_transport::transport(state).unwrap();
+    let descriptor = transport.descriptor("").unwrap();
+    encrypted_with_descriptor(method, path, body, principal, signing_key, &descriptor)
+}
+pub(crate) fn encrypted_with_descriptor(
+    method: &str,
+    path: &str,
+    body: Value,
+    principal: Option<&OwnerPrincipal>,
+    signing_key: &SigningKey,
+    d: &Value,
+) -> (Value, [u8; 32], String) {
     use hpke::{
         aead::AesGcm256, kdf::HkdfSha256, kem::DhP256HkdfSha256 as Kem, Deserializable,
         Kem as KemTrait, Serializable,
     };
-    let transport = crate::secure_transport::transport(state).unwrap();
-    let d = transport.descriptor("").unwrap();
     let public = <Kem as KemTrait>::PublicKey::from_bytes(
         &B64.decode(d["publicKey"].as_str().unwrap()).unwrap(),
     )
@@ -676,9 +697,9 @@ pub(crate) fn encrypted(
         .export(b"remote-codex/http-response/v1", &mut response)
         .unwrap();
     let mut request = json!({"method":method,"path":path,"headers":{"x-rcd-key":key,"x-rcd-request":id,"x-rcd-enc":B64.encode(enc.to_bytes()),"x-rcd-sealed":B64.encode(&sealed)}});
-    if let Some(owner) = owner {
+    if let Some(owner) = principal {
         let sig: Signature =
-            session_key().sign(format!("pockymoe-request-v1\n{aad}\n{}", hash(&sealed)).as_bytes());
+            signing_key.sign(format!("pockymoe-request-v1\n{aad}\n{}", hash(&sealed)).as_bytes());
         request["headers"]["x-rcd-session"] = json!(owner.session_id);
         request["headers"]["x-rcd-signature"] = json!(B64.encode(sig.to_bytes()));
     }
