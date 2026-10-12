@@ -1,3 +1,4 @@
+mod account;
 mod admin;
 mod apns;
 mod auth_api;
@@ -717,23 +718,43 @@ async fn healthz(State(state): State<Arc<AppState>>) -> Json<Value> {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct RegisterInput {
     email: String,
     username: String,
-    password: String,
-    #[serde(rename = "registrationPassword")]
+    auth_key: String,
+    recovery_auth_key: String,
+    vault: Value,
     registration_password: Option<String>,
 }
 
-async fn register(
-    State(state): State<Arc<AppState>>,
-    Json(body): Json<RegisterInput>,
-) -> impl IntoResponse {
+async fn register(State(state): State<Arc<AppState>>, Json(body): Json<RegisterInput>) -> Response {
     let username = normalize_username(&body.username);
-    if username.len() < 3 || body.password.len() < 8 || !body.email.trim().contains('@') {
+    let email = body.email.trim().to_ascii_lowercase();
+    let id = body.vault["userId"].as_str().unwrap_or_default().to_owned();
+    if username.len() < 3
+        || username.len() > 80
+        || email.len() > 320
+        || !email.contains('@')
+        || !account::valid_key(&body.auth_key)
+        || !account::valid_key(&body.recovery_auth_key)
+    {
         return (
             StatusCode::BAD_REQUEST,
             Json(ApiError::new("bad_request", "Invalid registration fields")),
+        )
+            .into_response();
+    }
+    if let Err(error) = account::validate_vault(&body.vault, &id) {
+        return error.into_response();
+    }
+    if body.vault["revision"] != 1 {
+        return (
+            StatusCode::CONFLICT,
+            Json(ApiError::new(
+                "vault_conflict",
+                "First vault revision must be 1",
+            )),
         )
             .into_response();
     }
@@ -757,85 +778,59 @@ async fn register(
                 .into_response();
         }
     }
-    let email = body.email.trim().to_ascii_lowercase();
-    if relay_setting(&conn, "registrationApprovalRequired").as_deref() == Some("true") {
-        let (password_salt, password_hash) = match hash_password(&body.password) {
-            Ok(hash) => hash,
-            Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-        };
-        return match insert_pending_registration(
-            &conn,
-            &email,
-            &username,
-            &password_salt,
-            &password_hash,
-            "password",
-            None,
-        ) {
-            Ok(request) => (
+    let Ok((salt, hash)) = hash_password(&body.auth_key) else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
+    let Ok((recovery_salt, recovery_hash)) = hash_password(&body.recovery_auth_key) else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
+    let Ok(tx) = conn.unchecked_transaction() else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
+    if relay_setting(&tx, "registrationApprovalRequired").as_deref() == Some("true") {
+        let result = (|| -> Result<Value> {
+            let request = insert_pending_registration(
+                &tx, &email, &username, &salt, &hash, "password", None,
+            )?;
+            let request_id = request["id"]
+                .as_str()
+                .context("Pending request missing id")?;
+            // Do not replace a pending request's vault/credentials on duplicate submissions.
+            tx.execute("INSERT INTO relay_pending_account_vaults(request_id,user_id,vault_json,recovery_salt,recovery_hash) VALUES (?1,?2,?3,?4,?5)",params![request_id,id,serde_json::to_string(&body.vault)?,recovery_salt,recovery_hash])?;
+            Ok(request)
+        })();
+        return match result {
+            Ok(request) if tx.commit().is_ok() => (
                 StatusCode::ACCEPTED,
-                Json(json!({ "pendingApproval": true, "request": request })),
+                Json(json!({"pendingApproval":true,"request":request})),
             )
                 .into_response(),
-            Err(error) => (
+            _ => (
                 StatusCode::CONFLICT,
-                Json(ApiError::new("conflict", error.to_string())),
+                Json(ApiError::new("conflict", "Registration already exists")),
             )
                 .into_response(),
         };
     }
-    let id = Uuid::new_v4().to_string();
-    let (password_salt, password_hash) = match hash_password(&body.password) {
-        Ok(hash) => hash,
-        Err(_) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiError::new("internal", "Failed to hash password")),
-            )
-                .into_response();
-        }
-    };
-    match conn.execute(
-        "INSERT INTO relay_users
-         (id,email,username,password_hash,password_salt,role,enabled,last_seen_at,created_at)
-         VALUES (?1,?2,?3,?4,?5,'user',1,NULL,?6)",
-        params![
-            id,
-            email,
-            username,
-            password_hash,
-            password_salt,
-            now_rfc3339()
-        ],
-    ) {
-        Ok(_) => {
-            let token = match create_session(&conn, &state.store.session_secret, &id) {
-                Ok(token) => token,
-                Err(_) => {
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(ApiError::new("internal", "Failed to create session")),
-                    )
-                        .into_response();
-                }
-            };
-            let user = load_user_by_id(&conn, &id);
-            let response = (
-                StatusCode::OK,
-                Json(json!({
-                    "token": &token,
-                    "session": session_json(&conn, user.as_ref(), &state.oauth)
-                })),
-            )
-                .into_response();
-            with_session_cookie(response, &token)
-        }
-        Err(_) => (
+    let result = (|| -> Result<()> {
+        tx.execute("INSERT INTO relay_users(id,email,username,password_salt,password_hash,role,enabled,created_at) VALUES (?1,?2,?3,'','','user',1,?4)",params![id,email,username,now_rfc3339()])?;
+        account::store_vault(&tx, &id, &body.vault)
+            .map_err(|_| anyhow::anyhow!("Invalid vault"))?;
+        tx.execute("INSERT INTO relay_account_auth(user_id,auth_salt,auth_hash,recovery_salt,recovery_hash) VALUES (?1,?2,?3,?4,?5)",params![id,salt,hash,recovery_salt,recovery_hash])?;
+        Ok(())
+    })();
+    if result.is_err() || tx.commit().is_err() {
+        return (
             StatusCode::CONFLICT,
             Json(ApiError::new("conflict", "User already exists")),
         )
-            .into_response(),
+            .into_response();
     }
+    let Some(user) = load_user_by_id(&conn, &id) else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
+    auth_api::login_response(&conn, &state, &user, &HeaderMap::new(), true, false)
+        .unwrap_or_else(IntoResponse::into_response)
 }
 
 fn insert_pending_registration(
@@ -907,82 +902,91 @@ fn insert_pending_registration(
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct LoginInput {
     identifier: Option<String>,
     username: Option<String>,
-    password: String,
+    login: Option<String>,
+    password: Option<String>,
+    auth_key: Option<String>,
 }
 
 async fn login(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(body): Json<LoginInput>,
-) -> impl IntoResponse {
-    let ident = body.identifier.or(body.username).unwrap_or_default();
-    if body.password.len() > 1024
+) -> Response {
+    let ident = body
+        .identifier
+        .or(body.username)
+        .or(body.login)
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    let key_login = body.auth_key.is_some();
+    let secret = body.auth_key.or(body.password).unwrap_or_default();
+    if secret.len() > 1024
         || ident.len() > 320
-        || !state.admission.allow(
-            format!("login:{}", ident.trim().to_ascii_lowercase()),
-            30,
-            300,
-        )
+        || !state.admission.allow(format!("login:{ident}"), 30, 300)
     {
         return StatusCode::TOO_MANY_REQUESTS.into_response();
+    }
+    if key_login && !account::valid_key(&secret) {
+        return unauthorized();
     }
     static PASSWORD_WORK: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
     let Ok(_permit) = PASSWORD_WORK.try_acquire() else {
         return StatusCode::TOO_MANY_REQUESTS.into_response();
     };
     let conn = state.store.conn.lock().await;
-    let row: Option<(String, String, String, i64)> = conn
-        .query_row(
-            "SELECT id, password_salt, password_hash, enabled
-             FROM relay_users WHERE username=?1 OR email=?1",
-            params![ident.trim().to_ascii_lowercase()],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-        )
-        .optional()
-        .ok()
-        .flatten();
+    let row: Option<(String,String,String)> = conn.query_row(
+        "SELECT id,password_salt,password_hash FROM relay_users WHERE (username=?1 OR email=?1) AND enabled=1",[ident],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().ok().flatten();
+    let row = row.and_then(|(id,salt,hash)| {
+        let user = load_user_by_id(&conn,&id)?;
+        if user.role == "admin" { return (!key_login).then_some((id,salt,hash)); }
+        if account::oauth_only(&conn,&id) { return None; }
+        if key_login {
+            conn.query_row("SELECT auth_salt,auth_hash FROM relay_account_auth WHERE user_id=?1 AND auth_hash IS NOT NULL",[&id],|r|Ok((id.clone(),r.get::<_,String>(0)?,r.get::<_,String>(1)?))).optional().ok().flatten()
+        } else if account::has_vault(&conn,&id) { None } else { Some((id,salt,hash)) }
+    });
     drop(conn);
     let verified = tokio::task::spawn_blocking(move || {
-        row.filter(|(_, salt, hash, enabled)| {
-            *enabled == 1 && verify_password(&body.password, salt, hash)
-        })
-        .map(|(id, salt, hash, _)| {
-            let upgraded = (salt == LEGACY_SHA256_SALT)
-                .then(|| hash_password(&body.password).ok())
-                .flatten();
-            (id, salt, hash, upgraded)
-        })
+        row.filter(|(_, salt, hash)| verify_password(&secret, salt, hash))
     })
     .await
     .ok()
     .flatten();
     let conn = state.store.conn.lock().await;
-    match verified {
-        Some((id, salt, hash, upgraded)) if conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM relay_users WHERE id=?1 AND password_salt=?2 AND password_hash=?3 AND enabled=1)",
-            params![id, salt, hash], |r| r.get::<_, bool>(0)).unwrap_or(false) =>
-        {
-            if let Some((new_salt, new_hash)) = upgraded {
-                    let _ = conn.execute(
-                        "UPDATE relay_users SET password_salt=?1,password_hash=?2 WHERE id=?3",
-                        params![new_salt, new_hash, id],
-                    );
-            }
-            let Some(user) = load_user_by_id(&conn,&id) else { return unauthorized(); };
-            let has_factors = auth_factors::has_factors(&conn,&id);
-            if has_factors && !auth_factors::trusted(&conn,&id,&headers) {
-                return auth_api::challenge_response(&conn,&user,&headers).unwrap_or_else(IntoResponse::into_response);
-            }
-            auth_api::login_response(&conn,&state,&user,&headers,!has_factors,false).unwrap_or_else(IntoResponse::into_response)
-        }
-        _ => (
-            StatusCode::UNAUTHORIZED,
-            Json(ApiError::new("unauthorized", "Invalid credentials")),
-        )
-            .into_response(),
+    let Some((id, salt, hash)) = verified else {
+        return unauthorized();
+    };
+    // Recheck the exact credential after the slow hash; reset/disable may have raced it.
+    let table_check = if key_login {
+        "SELECT EXISTS(SELECT 1 FROM relay_account_auth a JOIN relay_users u ON u.id=a.user_id WHERE a.user_id=?1 AND a.auth_salt=?2 AND a.auth_hash=?3 AND u.enabled=1 AND a.oauth_only=0)"
+    } else {
+        "SELECT EXISTS(SELECT 1 FROM relay_users WHERE id=?1 AND password_salt=?2 AND password_hash=?3 AND enabled=1)"
+    };
+    if !conn
+        .query_row(table_check, params![id, salt, hash], |r| {
+            r.get::<_, bool>(0)
+        })
+        .unwrap_or(false)
+    {
+        return unauthorized();
+    }
+    let Some(user) = load_user_by_id(&conn, &id) else {
+        return unauthorized();
+    };
+    if !key_login && user.role != "admin" && account::has_vault(&conn, &id) {
+        return unauthorized();
+    }
+    let has_factors = auth_factors::has_factors(&conn, &id);
+    if has_factors && !auth_factors::trusted(&conn, &id, &headers) {
+        auth_api::challenge_response(&conn, &user, &headers)
+            .unwrap_or_else(IntoResponse::into_response)
+    } else {
+        auth_api::login_response(&conn, &state, &user, &headers, !has_factors, false)
+            .unwrap_or_else(IntoResponse::into_response)
     }
 }
 
@@ -1019,9 +1023,14 @@ async fn session(
     State(state): State<Arc<AppState>>,
 ) -> Json<Value> {
     let conn = state.store.conn.lock().await;
-    let user = extract_session_token(&headers, &query)
-        .and_then(|token| load_user_by_session(&conn, &state.store.session_secret, &token));
-    Json(session_json(&conn, user.as_ref(), &state.oauth))
+    let token = extract_session_token(&headers, &query);
+    let user = token
+        .as_deref()
+        .and_then(|token| load_user_by_session(&conn, &state.store.session_secret, token));
+    Json(match (user, token) {
+        (Some(user), Some(token)) => account::session_json(&conn, &user, &state.oauth, &token),
+        _ => session_json(&conn, None, &state.oauth),
+    })
 }
 
 async fn oauth_start(
@@ -1233,12 +1242,7 @@ fn authenticate_external_identity(
     }
     let username = available_username(conn, &identity.username)
         .map_err(|_| "OAuth username allocation failed.".to_string())?;
-    let mut password_bytes = [0_u8; 32];
-    OsRng.fill_bytes(&mut password_bytes);
-    let generated_password =
-        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(password_bytes);
-    let (password_salt, password_hash) = hash_password(&generated_password)
-        .map_err(|_| "OAuth account creation failed.".to_string())?;
+    let (password_salt, password_hash) = (String::new(), String::new());
     if relay_setting(conn, "registrationApprovalRequired").as_deref() == Some("true") {
         insert_pending_registration(
             conn,
@@ -1285,6 +1289,11 @@ fn authenticate_external_identity(
         ],
     )
     .map_err(|_| "OAuth identity creation failed.".to_string())?;
+    tx.execute(
+        "INSERT INTO relay_account_auth(user_id,oauth_only) VALUES (?1,1)",
+        [&user_id],
+    )
+    .map_err(|_| "OAuth account creation failed.".to_string())?;
     tx.commit()
         .map_err(|_| "OAuth account creation failed.".to_string())?;
     let token = create_session(conn, session_secret, &user_id)
@@ -1455,6 +1464,16 @@ async fn update_account_password(
     else {
         return unauthorized();
     };
+    if account::has_vault(&conn, &user.id) || account::oauth_only(&conn, &user.id) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ApiError::new(
+                "bad_request",
+                "Change the password through the account vault",
+            )),
+        )
+            .into_response();
+    }
     let current_token = extract_session_token(&headers, &query).unwrap_or_default();
     if body.new_password.len() < 8 {
         return (
@@ -1788,7 +1807,7 @@ fn grantee_registration_request(method: &Method, path: &str, headers: &HeaderMap
                 .and_then(|value| value.to_str().ok())
                 .is_some_and(|value| !value.is_empty())
         });
-    pockymoe_protocol::access::grantee_registration_allowed(method.as_str(), path, encrypted)
+    encrypted && *method == Method::POST && path.split('?').next() == Some("/api/transport/browser")
 }
 
 /// Registration has no resource id: any live row lets the device decide whether
@@ -3420,6 +3439,24 @@ async fn handle_supervisor_with_timeout(
         remove_supervisor_connection(&state, &device_id, connection_id).await;
         return;
     }
+    let revocations = match account::device_revocations(&state, &device_id).await {
+        Ok(frame) => frame,
+        Err(_) => {
+            remove_supervisor_connection(&state, &device_id, connection_id).await;
+            return;
+        }
+    };
+    if !matches!(
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            sink.send(Message::Text(revocations.into()))
+        )
+        .await,
+        Ok(Ok(()))
+    ) {
+        remove_supervisor_connection(&state, &device_id, connection_id).await;
+        return;
+    }
     let mut last_received = tokio::time::Instant::now();
     loop {
         tokio::select! {
@@ -4140,7 +4177,8 @@ mod tests {
         let (mut socket, _) = connect_async(format!("ws://{address}/tunnel"))
             .await
             .unwrap();
-        // relay.connected
+        // relay.connected and the initial durable revocation list
+        socket.next().await.unwrap().unwrap();
         socket.next().await.unwrap().unwrap();
         // A healthy device must remain online across multiple lease periods.
         for _ in 0..4 {

@@ -477,6 +477,8 @@ mod tests {
             greeting["deviceName"],
             format!("Device {}", id.to_uppercase())
         );
+        let revocations = read(&mut tunnel).await;
+        assert_eq!(revocations["type"], "relay.revocations");
         tunnel
     }
 

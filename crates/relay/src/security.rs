@@ -254,7 +254,8 @@ async fn browser_security_response(
         && !(path == "/relay"
             || path.starts_with("/relay/")
             || path == "/healthz"
-            || path == "/supervisor/tunnel")
+            || path == "/supervisor/tunnel"
+            || path.starts_with("/supervisor/port-stream/"))
     {
         return super::spa_fallback(axum::extract::State(state), request).await;
     }
@@ -306,6 +307,38 @@ async fn browser_security_response(
         && !has_origin
     {
         return StatusCode::FORBIDDEN.into_response();
+    }
+    let query: super::TokenQuery = super::TokenQuery {
+        token: request.uri().query().and_then(|q| {
+            url::form_urlencoded::parse(q.as_bytes())
+                .find(|(k, _)| k == "token")
+                .map(|(_, v)| v.into_owned())
+        }),
+        relay_session: request.uri().query().and_then(|q| {
+            url::form_urlencoded::parse(q.as_bytes())
+                .find(|(k, _)| k == "relaySession")
+                .map(|(_, v)| v.into_owned())
+        }),
+        ..Default::default()
+    };
+    if let Some(token) = super::extract_session_token(headers, &query) {
+        let conn = state.store.conn.lock().await;
+        if let Some(user) = super::load_user_by_session(&conn, &state.store.session_secret, &token)
+        {
+            let mode = super::account::session_mode(&conn, &token);
+            if !super::account::request_allowed(
+                &conn,
+                &user,
+                &mode,
+                request.method(),
+                request.uri(),
+            ) {
+                return (StatusCode::FORBIDDEN, axum::Json(serde_json::json!({
+                    "code":if mode == super::account::RECOVERY { "forbidden" } else { "account_setup_required" },
+                    "message":if mode == super::account::RECOVERY { "Complete account recovery first" } else { "Secure your account first" }
+                }))).into_response();
+            }
+        }
     }
     let transport_worker = request
         .uri()

@@ -445,6 +445,7 @@ impl RelayStore {
         drop_retired_hosted_tables(&conn)?;
         migrate_legacy_rust_tables(&mut conn)?;
         security::ensure_schema(&conn)?;
+        crate::account::ensure_schema(&conn)?;
         device_tokens::migrate(&conn, &session_secret)?;
         auth_factors::ensure_schema(&conn)?;
         share_activity::ensure_schema(&conn)?;
