@@ -142,7 +142,7 @@ fn bridge(path: &Path, binary: &Path) -> Result<()> {
 fn validate_setup_binding(options: &SetupOptions) -> Result<()> {
     ensure!(
         options.account_key.is_some() == options.enroll.is_some(),
-        "Provide both --account-key and --enroll"
+        "Provide --account-key and enrollment through POCKYMOE_ENROLL_SECRET or stdin"
     );
     if let (Some(account), Some(secret)) = (&options.account_key, &options.enroll) {
         crate::owner_trust::validate_binding(account, secret)?;
@@ -165,6 +165,8 @@ fn apply_setup_binding(saved: &Value, options: &SetupOptions) -> Result<()> {
     Ok(())
 }
 pub async fn setup(options: SetupOptions) -> Result<()> {
+    std::env::remove_var("POCKYMOE_ENROLL_SECRET");
+    std::env::remove_var("POCKYMOE_ENROLL");
     validate_setup_binding(&options)?;
     ensure!(
         options.port > 0 && options.token.is_some() != options.code.is_some(),
@@ -425,7 +427,7 @@ mod tests {
             crate::owner_trust::binding_status(&db).unwrap()["strict"],
             true
         );
-        assert!(saved.get("POCKYMOE_ENROLL").is_none());
+        assert!(saved.get("POCKYMOE_ENROLL_SECRET").is_none());
         options.account_key = Some(
             v["otherAccount"]["accountPublicKey"]
                 .as_str()
