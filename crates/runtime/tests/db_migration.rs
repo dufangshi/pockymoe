@@ -518,7 +518,7 @@ async fn migrates_node_0030_history_and_policies_idempotently() {
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )?;
-            assert_eq!(runtime_migration_count, 14);
+            assert_eq!(runtime_migration_count, 15);
             assert_eq!(legacy_metadata_count, 2);
             assert_eq!(
                 migrated_metadata.0,
@@ -543,7 +543,7 @@ async fn migrates_node_0030_history_and_policies_idempotently() {
                 |row| row.get(0),
             )?;
             assert_eq!(turns, 3);
-            assert_eq!(migrations, 14);
+            assert_eq!(migrations, 15);
             Ok(())
         })
         .unwrap();
@@ -810,4 +810,30 @@ fn device_owner_trust_v2_migration_defaults_and_persists_account_registrations()
         Ok(())
     })
     .unwrap();
+}
+
+#[test]
+fn offline_trust_preparation_accepts_current_and_later_additive_migrations() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("offline.sqlite");
+    let database = Database::open(&path).unwrap();
+    database
+        .with(|c| {
+            pockymoe_runtime::db::ensure_device_owner_trust(c)?;
+            pockymoe_runtime::db::ensure_device_owner_trust(c)?;
+            Ok(())
+        })
+        .unwrap();
+}
+#[cfg(unix)]
+#[test]
+fn newly_created_database_is_private() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("private.sqlite");
+    let _database = Database::open(&path).unwrap();
+    assert_eq!(
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
 }

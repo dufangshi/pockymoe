@@ -3,6 +3,7 @@ mod legacy_env;
 mod threads;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use std::io::Read;
 
 #[derive(Parser)]
 #[command(name = "pockymoe", version, about = "Pockymoe supervisor and relay")]
@@ -18,96 +19,75 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bind_command_accepts_offline_options_and_requires_explicit_reset_for_yes() {
-        let cli = Cli::try_parse_from([
-            "pockymoe",
-            "bind",
-            "--database",
-            "/tmp/test.sqlite",
-            "--account-key",
-            "public",
-            "--enroll",
-            "secret",
-            "--web-origin",
-            "https://pockymoe.test",
-        ])
-        .unwrap();
-        let Commands::Bind {
-            database,
-            web_origin,
-            account_key,
-            enroll,
-            reset,
-            yes,
-            status,
-        } = cli.command
-        else {
-            panic!("expected bind")
-        };
-        assert_eq!(
-            database.unwrap(),
-            std::path::PathBuf::from("/tmp/test.sqlite")
-        );
-        assert_eq!(web_origin.as_deref(), Some("https://pockymoe.test"));
-        assert_eq!(account_key.as_deref(), Some("public"));
-        assert_eq!(enroll.as_deref(), Some("secret"));
-        assert!(!reset && !yes && !status);
-        for args in [
-            vec!["bind", "--status"],
-            vec!["bind", "--reset", "--yes"],
+    fn bind_and_setup_enrollment_never_accept_secret_arguments() {
+        for prefix in [
+            vec!["pockymoe", "bind"],
             vec![
-                "bind",
-                "--reset",
+                "pockymoe",
+                "setup",
+                "--relay",
+                "https://relay.test",
+                "--code",
+                "synthetic",
+            ],
+        ] {
+            assert!(
+                Cli::try_parse_from(prefix.iter().copied().chain(["--account-key", "public"]))
+                    .is_ok()
+            );
+            assert!(Cli::try_parse_from(prefix.iter().copied().chain([
+                "--account-key",
+                "public",
+                "--enroll-stdin"
+            ]))
+            .is_ok());
+            assert!(Cli::try_parse_from(prefix.iter().copied().chain([
                 "--account-key",
                 "public",
                 "--enroll",
-                "secret",
-            ],
-        ] {
+                "synthetic-secret"
+            ]))
+            .is_err());
+            assert!(Cli::try_parse_from(prefix.iter().copied().chain(["--enroll-stdin"])).is_err());
+        }
+        for args in [vec!["bind", "--status"], vec!["bind", "--reset", "--yes"]] {
             assert!(Cli::try_parse_from(std::iter::once("pockymoe").chain(args)).is_ok());
         }
         for args in [
             vec!["pair"],
             vec!["bind"],
             vec!["bind", "--yes"],
-            vec!["bind", "--account-key", "public"],
-            vec!["bind", "--enroll", "secret"],
             vec!["bind", "--status", "--reset"],
-            vec![
-                "bind",
-                "--status",
-                "--account-key",
-                "public",
-                "--enroll",
-                "secret",
-            ],
         ] {
             assert!(Cli::try_parse_from(std::iter::once("pockymoe").chain(args)).is_err());
         }
     }
-
     #[test]
-    fn setup_binding_flags_require_both_values() {
-        let prefix = [
-            "pockymoe",
-            "setup",
-            "--relay",
-            "https://relay.test",
-            "--code",
-            "synthetic",
-        ];
-        assert!(Cli::try_parse_from(prefix).is_ok());
-        assert!(Cli::try_parse_from(prefix.into_iter().chain([
-            "--account-key",
-            "public",
-            "--enroll",
-            "secret"
-        ]))
-        .is_ok());
-        assert!(
-            Cli::try_parse_from(prefix.into_iter().chain(["--account-key", "public"])).is_err()
+    fn enrollment_sources_require_a_key_and_do_not_echo_invalid_input() {
+        let mut stdin = &b"synthetic-secret\n"[..];
+        assert_eq!(
+            enrollment_secret(true, true, None, &mut stdin)
+                .unwrap()
+                .as_deref(),
+            Some("synthetic-secret")
         );
-        assert!(Cli::try_parse_from(prefix.into_iter().chain(["--enroll", "secret"])).is_err());
+        assert_eq!(
+            enrollment_secret(true, false, Some("synthetic-secret".into()), &mut &b""[..])
+                .unwrap()
+                .as_deref(),
+            Some("synthetic-secret")
+        );
+        for (account, stdin, env) in [
+            (true, false, None),
+            (false, false, Some("synthetic-secret".into())),
+            (true, true, Some("synthetic-secret".into())),
+        ] {
+            let error = enrollment_secret(account, stdin, env, &mut &b""[..])
+                .unwrap_err()
+                .to_string();
+            assert!(!error.contains("synthetic-secret"));
+        }
+        assert!(enrollment_secret(true, true, None, &mut &vec![b'a'; 1025][..]).is_err());
     }
 
     #[test]
@@ -439,10 +419,11 @@ More: pockymoe guide tasks"#
     Bind {
         #[arg(long, env = "POCKYMOE_DATABASE_PATH")]
         database: Option<std::path::PathBuf>,
-        #[arg(long, requires = "enroll", required_unless_present_any = ["reset", "status"], conflicts_with = "status")]
+        #[arg(long, required_unless_present_any = ["reset", "status"], conflicts_with = "status")]
         account_key: Option<String>,
+        /// Read the enrollment secret from stdin instead of POCKYMOE_ENROLL_SECRET.
         #[arg(long, requires = "account_key", conflicts_with = "status")]
-        enroll: Option<String>,
+        enroll_stdin: bool,
         #[arg(long, requires = "account_key")]
         web_origin: Option<String>,
         /// Delete all account trust and owner previews, and restore relay trust.
@@ -461,10 +442,11 @@ More: pockymoe guide tasks"#
         /// Trusted Web origin saved locally for account enrollment.
         #[arg(long, env = "POCKYMOE_WEB_ORIGIN")]
         web_origin: Option<String>,
-        #[arg(long, env = "POCKYMOE_ACCOUNT_KEY", requires = "enroll")]
+        #[arg(long, env = "POCKYMOE_ACCOUNT_KEY")]
         account_key: Option<String>,
-        #[arg(long, env = "POCKYMOE_ENROLL", requires = "account_key")]
-        enroll: Option<String>,
+        /// Read the enrollment secret from stdin instead of POCKYMOE_ENROLL_SECRET.
+        #[arg(long, requires = "account_key")]
+        enroll_stdin: bool,
         #[arg(long, conflicts_with = "code", required_unless_present = "code")]
         token: Option<String>,
         #[arg(long, conflicts_with = "token")]
@@ -496,7 +478,47 @@ fn main() -> Result<()> {
         .block_on(run())
 }
 
+fn enrollment_secret(
+    account: bool,
+    stdin: bool,
+    environment: Option<String>,
+    reader: &mut impl std::io::Read,
+) -> Result<Option<String>> {
+    anyhow::ensure!(
+        !(stdin && environment.is_some()),
+        "Choose stdin or POCKYMOE_ENROLL_SECRET for enrollment"
+    );
+    let secret = if stdin {
+        let mut bytes = Vec::new();
+        reader.take(1025).read_to_end(&mut bytes)?;
+        anyhow::ensure!(bytes.len() <= 1024, "Invalid enrollment input");
+        Some(
+            String::from_utf8(bytes)
+                .map_err(|_| anyhow::anyhow!("Invalid enrollment input"))?
+                .trim()
+                .to_owned(),
+        )
+    } else {
+        environment
+    };
+    anyhow::ensure!(
+        account == secret.is_some(),
+        "Provide --account-key with POCKYMOE_ENROLL_SECRET or --enroll-stdin"
+    );
+    Ok(secret)
+}
+
 async fn run() -> Result<()> {
+    // Remove the secret before any child or Supervisor can inherit the environment.
+    let enrollment_env = std::env::var_os("POCKYMOE_ENROLL_SECRET");
+    std::env::remove_var("POCKYMOE_ENROLL_SECRET");
+    std::env::remove_var("POCKYMOE_ENROLL");
+    let enrollment_env = enrollment_env
+        .map(|v| {
+            v.into_string()
+                .map_err(|_| anyhow::anyhow!("Invalid enrollment input"))
+        })
+        .transpose()?;
     if std::env::args().nth(1).as_deref() == Some("app-server")
         && std::env::var_os("POCKYMOE_APP_SERVER_BRIDGE").is_some()
     {
@@ -660,12 +682,18 @@ async fn run() -> Result<()> {
         Commands::Bind {
             database,
             account_key,
-            enroll,
+            enroll_stdin,
             web_origin,
             reset,
             yes,
             status,
         } => {
+            let enroll = enrollment_secret(
+                account_key.is_some(),
+                enroll_stdin,
+                enrollment_env,
+                &mut std::io::stdin().lock(),
+            )?;
             std::env::set_var("POCKYMOE_MODE", "relay");
             let config = pockymoe_runtime::RuntimeConfig::from_env();
             let database = database.unwrap_or(config.database_url);
@@ -702,6 +730,12 @@ async fn run() -> Result<()> {
                 println!("Bound to account {}. Strict mode is on.", &id[..12]);
             } else if status {
                 let result = pockymoe_supervisor::binding_status(&database)?;
+                if let Some(origin) = result["webOrigin"].as_str() {
+                    println!("Web origin (installation hint): {origin}");
+                }
+                if result["relayStatus"]["code"] == "device_id_mismatch" {
+                    println!("Relay assigned a different device id. Reconnecting with backoff; restore the original relay registration or explicitly reset binding.");
+                }
                 if let Some(id) = result["accountKeyId"].as_str() {
                     println!(
                         "Bound to account {}. Strict mode: {}.",
@@ -721,11 +755,17 @@ async fn run() -> Result<()> {
             relay,
             web_origin,
             account_key,
-            enroll,
+            enroll_stdin,
             token,
             code,
             port,
         } => {
+            let enroll = enrollment_secret(
+                account_key.is_some(),
+                enroll_stdin,
+                enrollment_env,
+                &mut std::io::stdin().lock(),
+            )?;
             pockymoe_supervisor::distribution::setup(
                 pockymoe_supervisor::distribution::SetupOptions {
                     relay,

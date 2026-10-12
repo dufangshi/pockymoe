@@ -865,3 +865,79 @@ async fn encrypted_streams_require_the_starting_principal_and_valid_scoped_ids()
     assert_eq!(meta["status"], 200);
     assert_eq!(bytes, vec![42u8; 7]);
 }
+
+#[tokio::test]
+async fn grantee_browser_revocations_are_scoped_and_grantee_registrations_are_capped() {
+    use p256::ecdsa::{signature::Signer, Signature};
+    let (_dir, state, owner, _grant, certificate, _key, principal, account) =
+        fixture_with_account().await;
+    let mut revocation = crate::owner_trust::tests::browser_revocation(&principal);
+    let sig: Signature =
+        account.sign(owner_trust::revocation_signing_input(&revocation).as_bytes());
+    revocation.signature = B64.encode(sig.to_bytes());
+    let mut forged_owner = revocation.clone();
+    forged_owner.subject_id = owner.browser_id.clone();
+    let sig: Signature =
+        account.sign(owner_trust::revocation_signing_input(&forged_owner).as_bytes());
+    forged_owner.signature = B64.encode(sig.to_bytes());
+    let mut forged_device = revocation.clone();
+    forged_device.kind = "device".into();
+    forged_device.subject_id = "test-device".into();
+    let sig: Signature =
+        account.sign(owner_trust::revocation_signing_input(&forged_device).as_bytes());
+    forged_device.signature = B64.encode(sig.to_bytes());
+    owner_trust::apply_revocations(&state, &[forged_owner, forged_device, revocation]).unwrap();
+    assert!(owner.valid(&state));
+    assert!(!owner_trust::device_revoked(&state, "test-device").unwrap());
+    assert!(!principal.valid(&state));
+    assert_eq!(
+        register(&state, &certificate).await.1["code"],
+        "browser_revoked"
+    );
+    // A tombstone for a not-yet-registered browser must also survive.
+    let fresh =
+        crate::owner_trust::tests::browser_certificate(&account, &SigningKey::random(&mut OsRng));
+    let mut r = crate::owner_trust::tests::browser_revocation(&principal);
+    r.subject_id = fresh.browser_id.clone();
+    let sig: Signature = account.sign(owner_trust::revocation_signing_input(&r).as_bytes());
+    r.signature = B64.encode(sig.to_bytes());
+    owner_trust::apply_revocations(&state, &[r]).unwrap();
+    assert_eq!(register(&state, &fresh).await.1["code"], "browser_revoked");
+    let mut first = None;
+    for _ in 0..32 {
+        let c = crate::owner_trust::tests::browser_certificate(
+            &account,
+            &SigningKey::random(&mut OsRng),
+        );
+        assert_eq!(register(&state, &c).await.0, 200);
+        first.get_or_insert(c);
+    }
+    assert_eq!(register(&state, first.as_ref().unwrap()).await.0, 200);
+    let overflow =
+        crate::owner_trust::tests::browser_certificate(&account, &SigningKey::random(&mut OsRng));
+    assert_eq!(
+        register(&state, &overflow).await,
+        (429, json!({"code":"browser_limit"}))
+    );
+}
+
+#[tokio::test]
+async fn grantee_browser_cap_allows_idempotent_registration_at_limit() {
+    let (_dir, state, owner, _grant, cert, _key, _principal, account) =
+        fixture_with_account().await;
+    for _ in 1..32 {
+        let c = crate::owner_trust::tests::browser_certificate(
+            &account,
+            &SigningKey::random(&mut OsRng),
+        );
+        assert_eq!(register(&state, &c).await.0, 200);
+    }
+    assert_eq!(register(&state, &cert).await.0, 200);
+    let c =
+        crate::owner_trust::tests::browser_certificate(&account, &SigningKey::random(&mut OsRng));
+    assert_eq!(
+        register(&state, &c).await,
+        (429, json!({"code":"browser_limit"}))
+    );
+    assert!(owner.valid(&state));
+}
