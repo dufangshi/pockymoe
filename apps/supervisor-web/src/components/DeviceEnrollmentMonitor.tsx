@@ -10,7 +10,10 @@ import {
   type PendingEnrollment,
 } from '../lib/deviceEnrollment';
 import { FormDialog } from './FormDialog';
-import type { TransportStatus } from '../lib/relayTransportCrypto';
+import {
+  clearTransportKeyCache,
+  type TransportStatus,
+} from '../lib/relayTransportCrypto';
 
 const POLL_INTERVAL_MS = 15_000;
 const MAX_RETRY_MS = 120_000;
@@ -29,6 +32,7 @@ interface EnrollmentProgress {
   connected?: boolean;
   paused?: boolean;
   completed?: boolean;
+  wakeAfterAttempt?: boolean;
 }
 
 /** Runs while the browser is open, including when it is viewing a thread. */
@@ -80,7 +84,8 @@ export function DeviceEnrollmentMonitor() {
   }
   useEffect(() => {
     let stopped = false,
-      running = false;
+      running = false,
+      queued = false;
     const progress = new Map<string, EnrollmentProgress>();
     const hints = new Map<string, string>();
     async function tick() {
@@ -143,6 +148,7 @@ export function DeviceEnrollmentMonitor() {
           )
             continue;
           try {
+            state.wakeAfterAttempt = false;
             state.completed = await completeDeviceEnrollment(enrollment, true);
           } catch (caught) {
             if (caught instanceof EnrollmentIdentityChangeError) {
@@ -151,6 +157,9 @@ export function DeviceEnrollmentMonitor() {
               continue;
             }
             // enrollment_missing means the local bind command has not run yet.
+            const code = (caught as { code?: string } | null)?.code;
+            if (code === 'browser_registration_required')
+              clearTransportKeyCache(enrollment.deviceId);
             if (
               caught instanceof TypeError ||
               (caught instanceof Error &&
@@ -161,15 +170,18 @@ export function DeviceEnrollmentMonitor() {
                   'device_offline',
                   'device_unresponsive',
                   'enrollment_missing',
+                  'browser_registration_required',
                 ].includes((caught as Error & { code?: string }).code ?? ''))
             ) {
-              state.failures++;
+              state.failures = state.wakeAfterAttempt ? 0 : state.failures + 1;
               state.nextAttemptAt =
-                Date.now() +
-                Math.min(
-                  POLL_INTERVAL_MS * 2 ** Math.min(state.failures - 1, 3),
-                  MAX_RETRY_MS,
-                );
+                state.wakeAfterAttempt
+                  ? 0
+                  : Date.now() +
+                    Math.min(
+                      POLL_INTERVAL_MS * 2 ** Math.min(state.failures - 1, 3),
+                      MAX_RETRY_MS,
+                    );
               continue;
             }
             state.paused = true;
@@ -185,22 +197,31 @@ export function DeviceEnrollmentMonitor() {
         /* Account not set up or relay unreachable; retry later. */
       } finally {
         running = false;
+        if (queued && !stopped) {
+          queued = false;
+          void tick();
+        }
       }
     }
     const update = () => {
+      if (running) queued = true;
       void tick();
     };
     const wake = () => {
       for (const state of progress.values()) {
         state.failures = 0;
         state.nextAttemptAt = 0;
+        if (running) state.wakeAfterAttempt = true;
       }
       update();
     };
     const trustChanged = (event: Event) => {
       const status = (event as CustomEvent<TransportStatus>).detail;
       const state = status && progress.get(status.deviceId);
-      if (!state) return;
+      if (!state || state.completed) return;
+      // A registration rejection is retried with backoff, not a new binding
+      // hint. Alternating encrypted/error statuses must not create a retry loop.
+      if (status.state === 'unlock-required' || status.state === 'error') return;
       const hint = JSON.stringify([
         status.state,
         status.bound,
@@ -211,8 +232,10 @@ export function DeviceEnrollmentMonitor() {
       ]);
       if (hints.get(status.deviceId) === hint) return;
       hints.set(status.deviceId, hint);
+      clearTransportKeyCache(status.deviceId);
       state.failures = 0;
       state.nextAttemptAt = 0;
+      if (running) state.wakeAfterAttempt = true;
       update();
     };
     void tick();

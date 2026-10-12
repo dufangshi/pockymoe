@@ -577,13 +577,22 @@ export async function exchange(
   if (!hasBody) headers.set('x-rcd-sealed', b64(sealed));
   const wireUrl = new URL(request.url);
   wireUrl.search = '';
-  const recoverOwner = async (response: Response) => {
-    if (!retryOwner || !key.paired || bootstrap || !owner || response.status !== 401)
+  const recoverOwner = async (response: Response, authenticated = false) => {
+    if (!retryOwner || bootstrap || !owner || response.status !== 401)
       return null;
     const failure = await response.clone().json().catch(() => null) as {
       code?: string;
     } | null;
     if (failure?.code !== 'browser_registration_required') return null;
+    const account = await currentAccount();
+    const { listPendingEnrollments } = await import('./deviceEnrollment');
+    const pending = !!account && (await listPendingEnrollments(account)).some(
+      enrollment => enrollment.deviceId === route.deviceId,
+    );
+    if (!key.paired && (!pending || !authenticated)) return null;
+    // A local bind can make the cached unbound descriptor obsolete. Refresh
+    // only this device; browser keys and the account unlock window stay live.
+    if (pending) clearTransportKeyCache(route.deviceId);
     // The device rejects this before dispatch, so a single retry is safe even
     // for mutations. Renewal or another key still requires an explicit click.
     await forgetBrowserRegistration(owner, route.deviceId);
@@ -744,7 +753,7 @@ export async function exchange(
     status: data.status,
     headers: data.headers,
   });
-  const recovered = await recoverOwner(result);
+  const recovered = await recoverOwner(result, true);
   if (recovered) return recovered;
   await reportOwnerRequired(result, route.deviceId, key.paired || wirePath === '/api/transport/browser' ? owner?.browserId : undefined);
   if (!socketKeys)
