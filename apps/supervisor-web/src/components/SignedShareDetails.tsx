@@ -1,3 +1,4 @@
+import { OWNER_UNLOCKED_EVENT } from '../lib/ownerUnlockRecovery';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { useEffect, useState } from 'react';
 import type { RelayPortalSummaryDto } from '@pockymoe/shared';
@@ -45,9 +46,9 @@ export function SignedShareDetails({
   const [inviteOwnerKeyId, setInviteOwnerKeyId] = useState<string>();
   useEffect(() => {
     const refresh = () => setRevision((r) => r + 1);
-    window.addEventListener('remote-codex-account-unlocked', refresh);
+    window.addEventListener(OWNER_UNLOCKED_EVENT, refresh);
     return () =>
-      window.removeEventListener('remote-codex-account-unlocked', refresh);
+      window.removeEventListener(OWNER_UNLOCKED_EVENT, refresh);
   }, []);
   useEffect(() => {
     let active = true;
@@ -193,9 +194,9 @@ export function OrphanDeviceGrants({
   const [busy, setBusy] = useState(false);
   useEffect(() => {
     const refresh = () => setRevision((r) => r + 1);
-    window.addEventListener('remote-codex-account-unlocked', refresh);
+    window.addEventListener(OWNER_UNLOCKED_EVENT, refresh);
     return () =>
-      window.removeEventListener('remote-codex-account-unlocked', refresh);
+      window.removeEventListener(OWNER_UNLOCKED_EVENT, refresh);
   }, []);
   useEffect(() => {
     let active = true;
