@@ -84,7 +84,8 @@ fn describe(
     if let Some(lease) = &lease {
         control
             .query_pairs_mut()
-            .append_pair("lease", &lease.lease_id);
+            .append_pair("lease", &lease.lease_id)
+            .append_pair("leaseExpiresAt", &lease.expires_at.to_string());
     }
     Ok(
         json!({"leaseId":lease.as_ref().map(|l| &l.lease_id),"expiresAt":lease.as_ref().map(|l|l.expires_at),"id":mapping.id,"port":mapping.port,"label":mapping.label,"createdAt":mapping.created_at,
@@ -378,7 +379,20 @@ mod tests {
         );
         assert!(first["leaseId"].as_str().is_some_and(|id| id.len() == 43));
         assert!(first["expiresAt"].as_i64().unwrap() > crate::owner_trust::now());
-        assert!(first["openUrl"].as_str().unwrap().contains("lease="));
+        for preview in [&first, &second] {
+            let query: std::collections::HashMap<String, String> =
+                Url::parse(preview["openUrl"].as_str().unwrap())
+                    .unwrap()
+                    .query_pairs()
+                    .into_owned()
+                    .collect();
+            assert_eq!(query["lease"], preview["leaseId"].as_str().unwrap());
+            assert_eq!(
+                query["leaseExpiresAt"],
+                preview["expiresAt"].as_i64().unwrap().to_string()
+            );
+            assert_eq!(query["path"], "/app?q=1");
+        }
         assert!(first["openUrl"]
             .as_str()
             .unwrap()
