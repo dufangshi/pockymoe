@@ -306,13 +306,14 @@ export class Fixture {
   }
 }
 
-export async function fixture(browser: Browser, info: TestInfo) {
+export async function fixture(browser: Browser, info: TestInfo, options: { previews?: boolean } = {}) {
   await mkdir(resolve('.scratch'), { recursive: true });
   const root = await mkdtemp(resolve('.scratch/account-key-e2e-'));
   await mkdir(join(root, 'home'));
   const f = new Fixture(root, browser, info);
   f.start('relay', { PORT: new URL(f.base).port, POCKYMOE_RELAY_DATA_DIR: join(root, 'relay'),
     POCKYMOE_RELAY_REGISTRATION_ENABLED: 'true', POCKYMOE_PUBLIC_BASE_URL: f.base,
+    ...(options.previews ? { POCKYMOE_PORT_PREVIEW_BASE_URL: `http://preview.localhost:${new URL(f.base).port}` } : {}),
     POCKYMOE_RELAY_WEB_DIST_DIR: resolve('apps/supervisor-web/dist') });
   await expect.poll(() => fetch(f.base + '/healthz').then(r => r.status).catch(() => 0)).toBe(200);
   const response = await fetch(f.base);
