@@ -33,6 +33,7 @@ import {
 import vectors from './fixtures/deviceEnrollmentVectors.json';
 import { accountStore } from './accountStore';
 import { sharingTrustStore } from './sharingTrustStore';
+import { savePending } from './pendingEnrollmentStore';
 vi.mock('./accountStore', () => ({ accountStore: vi.fn() }));
 vi.mock('./sharingTrustStore', () => ({ sharingTrustStore: vi.fn() }));
 vi.mock('./accountVault', async (original) => ({
@@ -181,6 +182,26 @@ describe('device identity fingerprints', () => {
   });
 });
 describe('pending enrollment lifecycle', () => {
+  it('atomically claims one remote update when concurrent views approve it', async () => {
+    data.clear();
+    const queued = await createPendingEnrollment('remote-update', account, Date.now(), { phase: 'update-required' });
+    const updating = { ...queued, remoteProtection: { phase: 'updating' as const, updateRequestedAt: Date.now() } };
+    expect(await Promise.all([
+      savePending(updating, queued, 'update-required'),
+      savePending(updating, queued, 'update-required'),
+    ])).toEqual([true, false]);
+    expect(data.get(queued.deviceId)?.remoteProtection?.phase).toBe('updating');
+  });
+  it('persists remote protection approval with the secret, scopes it to the account, and expires it', async () => {
+    data.clear();
+    const now = Date.now();
+    const queued = await createPendingEnrollment('remote-offline', account, now, { phase: 'queued' });
+    expect((await listPendingEnrollments(account))[0]).toEqual(queued);
+    expect(data.get('remote-offline')?.remoteProtection).toEqual({ phase: 'queued' });
+    expect(await listPendingEnrollments({ ...account, accountKeyId: 'another-account-key' })).toEqual([]);
+    expect(await listPendingEnrollments(account, now + ENROLLMENT_LIFETIME_MS)).toEqual([]);
+    expect(data.has('remote-offline')).toBe(false);
+  });
   it('stores independent random 32-byte secrets, lists by account and deletes', async () => {
     data.clear();
     const a = await createPendingEnrollment('a', account);

@@ -493,6 +493,8 @@ export async function exchange(
     throw error;
   }
   if (!key) {
+    if (route.path.split('?')[0] === '/api/transport/bind')
+      throw new TransportError('transport_unavailable', translate('devices.remoteProtectionFailed'));
     const response = await nativeFetch(request);
     await reportOwnerRequired(response, route.deviceId);
     return { response };

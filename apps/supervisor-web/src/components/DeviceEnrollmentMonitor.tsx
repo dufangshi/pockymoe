@@ -11,6 +11,7 @@ import {
   type PendingEnrollment,
 } from '../lib/deviceEnrollment';
 import { FormDialog } from './FormDialog';
+import { runRemoteProtection } from '../lib/remoteDeviceProtection';
 import {
   clearTransportKeyCache,
   type TransportStatus,
@@ -173,7 +174,9 @@ export function DeviceEnrollmentMonitor() {
             continue;
           try {
             state.wakeAfterAttempt = false;
-            state.completed = await completeDeviceEnrollment(enrollment, true);
+            state.completed = enrollment.remoteProtection
+              ? await runRemoteProtection(enrollment, true)
+              : await completeDeviceEnrollment(enrollment, true);
           } catch (caught) {
             if (caught instanceof EnrollmentIdentityChangeError) {
               state.paused = true;
@@ -208,6 +211,7 @@ export function DeviceEnrollmentMonitor() {
                   'device_offline',
                   'device_unresponsive',
                   'enrollment_missing',
+                  'already_bound',
                   'browser_registration_required',
                 ].includes((caught as Error & { code?: string }).code ?? ''))
             ) {
