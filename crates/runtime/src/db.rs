@@ -225,6 +225,30 @@ pub fn validate_database_path(path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Prepare only the additive trust schema for native setup/offline binding. This
+/// deliberately does not acquire Supervisor ownership: setup may bind version 13
+/// before restarting it into the new runtime. Older schemas still need an upgrade.
+pub fn ensure_device_owner_trust(conn: &Connection) -> Result<()> {
+    let tx = rusqlite::Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    validate_database_before_migration(&tx)?;
+    let version: i64 = tx.query_row(
+        "SELECT COALESCE(max(version),0) FROM __remote_codex_runtime_migrations",
+        [],
+        |r| r.get(0),
+    )?;
+    ensure!(
+        matches!(version, 13 | 14),
+        "Update the Supervisor before binding this database"
+    );
+    if version == 13 {
+        let migration = RUNTIME_MIGRATIONS.iter().find(|m| m.version == 14).unwrap();
+        (migration.apply)(&tx)?;
+        tx.execute("INSERT INTO __remote_codex_runtime_migrations(version,name,applied_at) VALUES(?1,?2,?3)", params![migration.version,migration.name,pockymoe_protocol::now_rfc3339()])?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
 impl Database {
     pub fn open(path: &Path) -> Result<Self> {
         // DATABASE_URL is a file path. Never create a new SQLite database from
