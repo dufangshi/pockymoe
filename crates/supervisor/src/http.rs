@@ -460,12 +460,13 @@ pub(crate) fn static_content_type(path: &FsPath) -> &'static str {
         "html" => "text/html; charset=utf-8",
         "ico" => "image/x-icon",
         "jpeg" | "jpg" => "image/jpeg",
-        "js" => "text/javascript; charset=utf-8",
+        "js" | "mjs" => "text/javascript; charset=utf-8",
         "json" | "webmanifest" => "application/json; charset=utf-8",
         "png" => "image/png",
         "svg" => "image/svg+xml",
         "ttf" => "font/ttf",
         "wasm" => "application/wasm",
+        "webp" => "image/webp",
         "woff" => "font/woff",
         "woff2" => "font/woff2",
         _ => "application/octet-stream",
@@ -521,22 +522,9 @@ async fn spa_fallback(State(state): State<AppState>, request: Request) -> Respon
     };
     Response::builder()
         .status(StatusCode::OK)
-        .header(
-            header::CONTENT_TYPE,
-            if matches!(
-                path.extension().and_then(|e| e.to_str()),
-                Some("js" | "mjs" | "cjs")
-            ) {
-                "text/plain; charset=utf-8"
-            } else {
-                static_content_type(&path)
-            },
-        )
-        // Raw workspace documents are untrusted, even when opened directly in a tab.
-        .header(
-            "content-security-policy",
-            "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data: blob:",
-        )
+        // The installed Web UI is the app itself: its scripts must run, so it keeps
+        // real content types and no sandbox (unlike raw workspace documents).
+        .header(header::CONTENT_TYPE, static_content_type(&path))
         .header("referrer-policy", "no-referrer")
         .header(header::CACHE_CONTROL, cache_control)
         .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
