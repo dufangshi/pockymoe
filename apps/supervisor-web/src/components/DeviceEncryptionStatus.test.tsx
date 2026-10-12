@@ -135,3 +135,14 @@ it('does not offer to forget certificate-verified identity because of an obsolet
   await waitFor(() => expect(pins.get).toHaveBeenCalled());
   expect(screen.queryByRole('button', { name: 'Forget pinned owner account' })).not.toBeInTheDocument();
 });
+it('lets a grantee forget the invite account pin even after the foreign device certificate verifies', async () => {
+  pins.get.mockResolvedValue('confirmed-owner-pin');
+  render(<DeviceEncryptionStatus deviceId="device-1" />);
+  act(() => window.dispatchEvent(new CustomEvent('remote-codex-transport', { detail: {
+    deviceId: 'device-1', state: 'encrypted', certificateVerified: true, role: 'grantee', identityTrust: 'invite',
+  } })));
+  fireEvent.click(screen.getByRole('button', { name: /invited owner account verified/ }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Forget pinned owner account' }));
+  await waitFor(() => expect(pins.forget).toHaveBeenCalledWith('device-1'));
+  expect(pins.reset).toHaveBeenCalledWith('device-1');
+});
