@@ -1,6 +1,7 @@
 import { SignedShareDetails, OrphanDeviceGrants } from '../components/SignedShareDetails';
 import { requireUnlock } from '../lib/accountVault';
-import { prepareDeviceEnrollment, revokeDevice } from '../lib/deviceEnrollment';
+import { removeDeviceFromAccount } from '../lib/deviceRemoval';
+import { prepareDeviceEnrollment } from '../lib/deviceEnrollment';
 import {
   relaySupervisorCommand,
   type SupervisorPlatform,
@@ -409,11 +410,17 @@ export function RelayDevicesPage() {
     setBusy(device.id);
     setError(null);
     try {
-      await revokeDevice(device.id);
+      await removeDeviceFromAccount(device.id);
       if (createdDevice?.device.id === device.id) {
         setCreatedDevice(null);
       }
-      await load({ showLoading: false });
+      const reloaded = await load({ showLoading: false });
+      if (!reloaded) {
+        setPortal(current => current ? {
+          ...current,
+          devices: current.devices.filter(entry => entry.id !== device.id),
+        } : current);
+      }
       setDeletingDevice(null);
       window.requestAnimationFrame(() => {
         window.requestAnimationFrame(() => {
