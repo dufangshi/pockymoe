@@ -367,6 +367,10 @@ impl RelayStore {
             );
             CREATE INDEX IF NOT EXISTS relay_devices_owner_idx
               ON relay_devices(owner_user_id);
+            CREATE TABLE IF NOT EXISTS relay_device_certificates (
+              device_id TEXT PRIMARY KEY REFERENCES relay_devices(id) ON DELETE CASCADE,
+              certificate_json TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS relay_public_links (
               id TEXT PRIMARY KEY,
               owner_user_id TEXT NOT NULL REFERENCES relay_users(id) ON DELETE CASCADE,

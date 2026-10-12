@@ -15,6 +15,8 @@ mod share_activity;
 mod share_presence;
 mod store;
 mod thread_groups;
+#[cfg(test)]
+mod trust_tests;
 mod workbench;
 use admin::*;
 use route_acl::*;
@@ -2851,6 +2853,8 @@ async fn device_api(
         "x-rcd-enc".parse().unwrap(),
         "x-rcd-sealed".parse().unwrap(),
         "x-rcd-resource".parse().unwrap(),
+        "x-rcd-session".parse().unwrap(),
+        "x-rcd-signature".parse().unwrap(),
     ]
     .into_iter()
     .filter_map(|name| {
@@ -2949,6 +2953,8 @@ async fn relay_api_compat(
         "x-rcd-enc".parse().unwrap(),
         "x-rcd-sealed".parse().unwrap(),
         "x-rcd-resource".parse().unwrap(),
+        "x-rcd-session".parse().unwrap(),
+        "x-rcd-signature".parse().unwrap(),
     ]
     .into_iter()
     .filter_map(|name| {
