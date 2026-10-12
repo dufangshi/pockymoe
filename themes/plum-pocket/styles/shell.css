@@ -83,7 +83,7 @@
 }
 :theme .thread-ui-shell .matter-workbench .matter-rail > button[aria-pressed='true']:hover { background: var(--theme-accent-solid-hover); color: var(--plum-chrome); }
 :theme .thread-ui-shell .matter-workbench .matter-rail .device-monitor-button {
-  width: 40px;
+  width: 44px;
   border-radius: 10px;
   background: rgb(255 255 255 / 5%);
   color: var(--plum-chrome-muted);
@@ -737,18 +737,17 @@
 @media (max-width: 639px) {
   :theme .thread-ui-shell .matter-workbench,
   :theme .thread-ui-shell .matter-workbench.is-sidebar-hidden { grid-template-columns: minmax(0, 1fr); grid-template-rows: calc(40px + env(safe-area-inset-top)) minmax(0, 1fr); }
-  /* Seven 44px-wide targets and the 44px device meter fit a 360px phone with no
-     gaps; Home and Chat live in the drawer. Slots fill the 40px bar and narrow (to
-     36px, search keeps 44px) on 320px phones or when a device adds more tools. */
+  /* Seven flexible icon slots and a paired device meter fit narrow phones;
+     Home and Chat live in the drawer. Hit targets stay 40px tall. */
   :theme .thread-ui-shell .matter-workbench .matter-topbar { padding: env(safe-area-inset-top) 2px 0; gap: 0; }
   :theme .thread-ui-shell .matter-workbench .matter-topbar-end { gap: 0; min-width: 0; flex-shrink: 1; }
   :theme .thread-ui-shell .matter-workbench .matter-topbar-search { flex-shrink: 0; }
   :theme .thread-ui-shell .matter-workbench .matter-topbar :where(button, a):not(:is(.workbench-search-field, .workbench-search-dropdown) *),
   :theme .thread-ui-shell .matter-workbench .matter-topbar .matter-search-trigger,
   :theme .thread-ui-shell .matter-workbench .matter-topbar-end > :is(button, [data-slot='dialog-trigger']) {
-    flex: 0 1 44px;
-    width: 44px;
-    min-width: 36px;
+    flex: 0 1 38px;
+    width: 38px;
+    min-width: 32px;
     height: 40px;
     margin: 0;
     padding: 0;
@@ -771,45 +770,32 @@
   }
   :theme .thread-ui-shell .matter-workbench .matter-topbar :is(button, a):not(:is(.workbench-search-field, .workbench-search-dropdown) *) { position: relative; }
   :theme .thread-ui-shell .matter-workbench .matter-unread { top: 9px; right: 9px; }
-  /* Device meter: a small stacked CPU/RAM tag in one slot. */
+  /* Two paired readings per row; GPU and VRAM never add a third row. */
   :theme .thread-ui-shell .matter-workbench .matter-topbar-end > .device-monitor-button {
-    flex: 0 0 44px;
-    width: 44px;
-    min-width: 44px;
+    flex: 0 0 86px;
+    width: 86px;
+    min-width: 86px;
     height: 40px;
-    flex-direction: column;
     align-items: stretch;
     justify-content: center;
-    gap: 0;
-    padding: 7px 2px;
+    gap: 1px;
+    padding: 8px 3px;
     border-radius: 12px;
     background: rgb(255 255 255 / 7%) content-box;
     color: var(--plum-chrome-muted);
     font-size: 8.5px;
     font-weight: 700;
-    line-height: 13px;
-    letter-spacing: .02em;
+    line-height: 11px;
+    letter-spacing: 0;
   }
-  /* Rows read "C 34%" / "M 45%": one-letter labels keep even 100% inside the slot.
-     The button keeps its "Device monitor" name and its CPU/memory title. */
-  :theme .thread-ui-shell .matter-workbench .matter-topbar-end > .device-monitor-button > span {
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 1px;
-    padding-inline: 2px;
-    font-size: 0;
-    line-height: 12px;
-    white-space: nowrap;
-  }
-  :theme .thread-ui-shell .matter-workbench .matter-topbar-end > .device-monitor-button > span::before { content: 'C'; font-size: 8px; font-weight: 800; }
-  :theme .thread-ui-shell .matter-workbench .matter-topbar-end > .device-monitor-button > span + span::before { content: 'M'; }
   :theme .thread-ui-shell .matter-workbench .matter-topbar-end > .device-monitor-button b {
-    font-size: 10px;
+    font-size: inherit;
     font-weight: 800;
-    line-height: 12px;
+    line-height: inherit;
     letter-spacing: -.02em;
     font-variant-numeric: tabular-nums;
   }
+  :theme .thread-ui-shell .matter-workbench .matter-topbar-end > .device-monitor-button:not([data-gpu]) { font-size: 9px; }
   :theme .thread-ui-shell .matter-workbench .matter-topbar-end > .device-monitor-button[data-stale] b { color: var(--plum-chrome-muted); }
   :theme .thread-ui-shell .matter-workbench .matter-topbar-end > .device-monitor-button:is(:hover, [aria-expanded='true']) { background-color: transparent; background-image: linear-gradient(var(--plum-chrome-hover), var(--plum-chrome-hover)); background-clip: content-box; color: var(--plum-chrome-soft); }
 
@@ -895,4 +881,16 @@
   :theme .thread-ui-shell .matter-workbench .matter-notifications > a { min-height: 56px; }
   :theme .thread-ui-shell .matter-workbench .matter-notifications-heading :where(button) { width: 44px; height: 44px; }
   :theme .matter-agent-threads-menu .matter-agent-threads-item { min-height: 48px; }
+}
+
+/* Reserve the paired monitor's width on the narrowest phones. */
+@media (max-width: 359px) {
+  :theme .thread-ui-shell .matter-workbench .matter-topbar-end > button.device-monitor-button {
+    flex-basis: 78px;
+    width: 78px;
+    min-width: 78px;
+    font-size: 8px;
+    padding-inline: 3px;
+  }
+  :theme .thread-ui-shell .matter-workbench .matter-topbar-end > button.device-monitor-button:not([data-gpu]) { font-size: 9px; }
 }

@@ -184,7 +184,16 @@ export function DeviceMonitor() {
     ? Math.max(0, Math.floor((now - Date.parse(data.sampledAt)) / 1000))
     : null;
   const stale = Boolean(error) || (age != null && age > staleAfterSeconds(open));
-  const gpu = data?.gpus.find((gpu) => gpu.usagePercent != null);
+  const gpu = data?.gpus.find(gpu => gpu.usagePercent != null ||
+    (gpu.usedMemoryBytes != null && gpu.totalMemoryBytes != null && gpu.totalMemoryBytes > 0));
+  const vram = gpu?.usedMemoryBytes != null && gpu.totalMemoryBytes != null && gpu.totalMemoryBytes > 0
+    ? 100 * gpu.usedMemoryBytes / gpu.totalMemoryBytes : null;
+  const reading = (label: string, value: number | null | undefined, title: string) => (
+    <span className="dm-summary-reading" title={title}>
+      <span className="dm-summary-label" data-short={label === 'CPU' ? 'C' : label === 'GPU' ? 'G' : label}>{label}</span>{' '}
+      <b style={load(stale ? null : value)}>{pct(stale ? null : value)}</b>
+    </span>
+  );
   return (
     <>
       <button
@@ -193,18 +202,18 @@ export function DeviceMonitor() {
         aria-label={translate("devices.deviceMonitor")}
         aria-expanded={open}
         data-stale={stale || undefined}
+        data-gpu={gpu ? true : undefined}
         title={error ?? translate("devices.cPUMemoryAndHardwareSensors")}
         onClick={() => setOpen(true)}
       >
-        <span>
-          CPU <b style={load(stale ? null : data?.cpu.usagePercent)}>{pct(stale ? null : data?.cpu.usagePercent)}</b>
-        </span>
-        <span>
-          RAM <b style={load(stale ? null : data?.memory.usagePercent)}>{pct(stale ? null : data?.memory.usagePercent)}</b>
+        <span className="dm-summary-row">
+          {reading('CPU', data?.cpu.usagePercent, 'CPU')}
+          {reading('DM', data?.memory.usagePercent, 'DRAM')}
         </span>
         {gpu && (
-          <span>
-            GPU <b style={load(stale ? null : gpu.usagePercent)}>{pct(stale ? null : gpu.usagePercent)}</b>
+          <span className="dm-summary-row">
+            {reading('GPU', gpu.usagePercent, gpu.name)}
+            {reading('VM', vram, 'VRAM')}
           </span>
         )}
       </button>

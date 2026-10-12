@@ -89,7 +89,8 @@ test('device monitor shows cores, memory and real watts, and marks failed sample
     exact: true,
   });
   await expect(monitor).toContainText('CPU 37%');
-  await expect(monitor).toContainText('RAM 50%');
+  await expect(monitor).toContainText('DM 50%');
+  await expect(monitor).toContainText('VM 13%');
   const mobile = testInfo.project.name === 'mobile-chromium';
   await expect(
     mobile
@@ -108,6 +109,18 @@ test('device monitor shows cores, memory and real watts, and marks failed sample
     const monitorBox = await monitor.boundingBox();
     const settingsBox = await settings.boundingBox();
     expect(monitorBox!.y + monitorBox!.height).toBeLessThanOrEqual(settingsBox!.y);
+  }
+  const fit = await monitor.evaluate(button => {
+    const bounds = button.getBoundingClientRect();
+    return [...button.querySelectorAll('.dm-summary-reading')].map(cell => {
+      const r = cell.getBoundingClientRect();
+      return { overflow: cell.scrollWidth - cell.clientWidth, top: r.top - bounds.top, bottom: bounds.bottom - r.bottom };
+    });
+  });
+  for (const cell of fit) {
+    expect(cell.overflow).toBeLessThanOrEqual(0);
+    expect(cell.top).toBeGreaterThanOrEqual(0);
+    expect(cell.bottom).toBeGreaterThanOrEqual(0);
   }
   await monitor.click();
   const dialog = page.getByRole('dialog', { name: 'Device monitor' });

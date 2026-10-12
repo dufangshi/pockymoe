@@ -52,6 +52,11 @@ expanded CPU row instead. An unavailable reading shows
 a small "not available" mark whose tooltip and accessible name carry the reason;
 a missing RAPL permission links the mark to the setup below.
 
+The compact monitor pairs CPU and physical memory (`DM`, DRAM) on its first row.
+When a GPU reports utilization or memory, a second row pairs GPU utilization and
+video memory (`VM`, VRAM). VM is used/total GPU memory, not GPU compute load;
+missing readings show a dash. CPU-only devices use a single, slightly larger row.
+
 ## Linux sensor access
 
 RAPL `energy_uj` is commonly root-readable only. An interface being present does
