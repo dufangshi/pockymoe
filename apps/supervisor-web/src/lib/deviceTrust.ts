@@ -1,6 +1,6 @@
 import { exchange } from './relayTransportCrypto';
 import { OwnerTrustError } from './ownerSession';
-import type { DeviceCertificate, OwnerCredential } from './ownerTrustCrypto';
+import type { CertificateDocument, OwnerCredential } from './ownerTrustCrypto';
 export interface DeviceTrust {
   deviceId: string;
   paired: boolean;
@@ -12,7 +12,7 @@ export interface DeviceTrust {
     expiresAt: number;
     current: boolean;
   }[];
-  certificate: DeviceCertificate | null;
+  certificate: CertificateDocument | null;
 }
 export async function deviceTrustRequest<T>(
   deviceId: string,
