@@ -63,6 +63,16 @@ fn assertion(c: &Credential, key: &SigningKey, challenge: &[u8]) -> Assertion {
 fn resign_registration(r: &mut Registration) {
     r.assertion = assertion(&record(), &credential_key(), &session_challenge(r));
 }
+fn addition(credential: Credential, key: &SigningKey, device: &str) -> AddCredential {
+    let challenge = Sha256::digest(format!(
+        "pockymoe-add-credential-v1\n{device}\n{}\n{}",
+        credential.credential_id, credential.public_key,
+    ));
+    AddCredential {
+        assertion: assertion(&credential, key, &challenge),
+        credential,
+    }
+}
 fn mac(p: &mut Pairing, device: &str, secret: &[u8]) {
     let mut m = Hmac::<Sha256>::new_from_slice(secret).unwrap();
     m.update(pairing_mac_input(device, p).unwrap().as_bytes());
@@ -375,6 +385,233 @@ fn credential_addition_last_credential_and_revocation() {
     )
     .unwrap()
     .is_none());
+}
+
+#[test]
+fn revoked_session_survives_restart_rejects_registration_until_expiry_and_is_collected() {
+    let (dir, db) = fixture();
+    db.with(|c| store_credential(c, &record())).unwrap();
+    let r = registration();
+    let id = register(&db, &r, r.issued_at).unwrap()["sessionId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    revoke_session(&db, &id, r.issued_at + 1).unwrap();
+    // Repeated revocation cannot discard or shorten the existing tombstone.
+    revoke_session(&db, &id, r.issued_at + 2).unwrap();
+    drop(db);
+    let db = Database::open(&dir.path().join("db.sqlite")).unwrap();
+    assert_eq!(
+        db.get_kv(&format!("{REVOKED_SESSION_PREFIX}{id}")).unwrap(),
+        Some(r.expires_at.to_string())
+    );
+    for time in [r.issued_at + 3, r.expires_at - 1] {
+        let error = register(&db, &r, time).unwrap_err();
+        let rejection = error.downcast_ref::<Rejection>().unwrap();
+        assert_eq!(
+            (rejection.status, rejection.code),
+            (401, "owner_session_revoked")
+        );
+        assert!(session(&db, &id, time).unwrap().is_none());
+    }
+    // Even a rejected, expired registration garbage-collects its tombstone.
+    assert!(register(&db, &r, r.expires_at).is_err());
+    assert!(db
+        .get_kv(&format!("{REVOKED_SESSION_PREFIX}{id}"))
+        .unwrap()
+        .is_none());
+    let mut renewed = r.clone();
+    renewed.issued_at = r.expires_at;
+    renewed.expires_at = renewed.issued_at + 24 * 60 * 60 * 1000;
+    resign_registration(&mut renewed);
+    assert_eq!(
+        register(&db, &renewed, renewed.issued_at).unwrap()["sessionId"],
+        id
+    );
+
+    revoke_session(&db, &id, renewed.issued_at).unwrap();
+    reset_owner_trust(&dir.path().join("db.sqlite")).unwrap();
+    assert!(db
+        .get_kv(&format!("{REVOKED_SESSION_PREFIX}{id}"))
+        .unwrap()
+        .is_none());
+}
+
+#[test]
+fn removing_then_readding_credential_cannot_restore_its_sessions_even_without_foreign_keys() {
+    let (_dir, db) = fixture();
+    db.with(|c| {
+        c.execute_batch("PRAGMA foreign_keys=OFF;")?;
+        store_credential(c, &record())?;
+        Ok(())
+    })
+    .unwrap();
+    let mut r = registration();
+    r.issued_at = now();
+    r.expires_at = r.issued_at + 24 * 60 * 60 * 1000;
+    resign_registration(&mut r);
+    let id = register(&db, &r, r.issued_at).unwrap()["sessionId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let device = db.with(device_id).unwrap();
+    let mut second = record();
+    second.credential_id = B64.encode(b"remaining owner");
+    add(&db, &addition(second.clone(), &credential_key(), &device)).unwrap();
+    // A session belonging to the other credential must remain usable.
+    let mut other = r.clone();
+    other.session_public_key = B64.encode(
+        SigningKey::random(&mut OsRng)
+            .verifying_key()
+            .to_public_key_der()
+            .unwrap()
+            .as_bytes(),
+    );
+    other.assertion = assertion(&second, &credential_key(), &session_challenge(&other));
+    let other_id = register(&db, &other, r.issued_at).unwrap()["sessionId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    remove_credential(&db, &record().credential_id).unwrap();
+    db.with(|c| {
+        assert_eq!(
+            c.query_row(
+                "SELECT count(*) FROM owner_sessions WHERE credential_id=?1",
+                [&record().credential_id],
+                |r| r.get::<_, u64>(0)
+            )?,
+            0
+        );
+        Ok(())
+    })
+    .unwrap();
+    add(&db, &addition(record(), &credential_key(), &device)).unwrap();
+    assert!(session(&db, &id, now()).unwrap().is_none());
+    assert!(session(&db, &other_id, now()).unwrap().is_some());
+    let error = register(&db, &r, now()).unwrap_err();
+    assert_eq!(
+        error.downcast_ref::<Rejection>().unwrap().code,
+        "owner_session_revoked"
+    );
+    // A fresh session key and passkey assertion remain usable after re-addition.
+    r.session_public_key = B64.encode(
+        SigningKey::random(&mut OsRng)
+            .verifying_key()
+            .to_public_key_der()
+            .unwrap()
+            .as_bytes(),
+    );
+    resign_registration(&mut r);
+    register(&db, &r, now()).unwrap();
+}
+
+#[tokio::test]
+async fn encrypted_session_revocation_refuses_browser_reregistration_with_revoked_code() {
+    let (_dir, state) = crate::tunnel::tests::state_with_relay_url("http://127.0.0.1:1");
+    let owner = live_owner(&state);
+    let mut registration = registration();
+    registration.expires_at = state
+        .db
+        .with(|c| {
+            Ok(c.query_row(
+                "SELECT expires_at FROM owner_sessions WHERE session_id=?1",
+                [&owner.session_id],
+                |r| r.get(0),
+            )?)
+        })
+        .unwrap();
+    registration.issued_at = registration.expires_at - 3 * 24 * 60 * 60 * 1000;
+    resign_registration(&mut registration);
+    let path = format!("/api/transport/sessions/{}", owner.session_id);
+    let (request, key, aad) = encrypted(&state, "DELETE", &path, Value::Null, Some(&owner));
+    assert_eq!(
+        decoded(
+            crate::tunnel::forward_local(&state, request, None).await,
+            &key,
+            &aad
+        )
+        .0,
+        200
+    );
+    assert!(!owner.valid(&state));
+    let (request, key, aad) = encrypted(
+        &state,
+        "POST",
+        "/api/transport/owner-session",
+        serde_json::to_value(&registration).unwrap(),
+        None,
+    );
+    let (status, body) = decoded(
+        crate::tunnel::forward_local(&state, request, None).await,
+        &key,
+        &aad,
+    );
+    assert_eq!(status, 401);
+    assert_eq!(body["code"], "owner_session_revoked");
+    let (request, key, aad) = encrypted(&state, "GET", "/api/version", Value::Null, Some(&owner));
+    let (status, body) = decoded(
+        crate::tunnel::forward_local(&state, request, None).await,
+        &key,
+        &aad,
+    );
+    assert_eq!(status, 401);
+    assert_eq!(body["code"], "owner_session_required");
+}
+
+#[tokio::test]
+async fn encrypted_credential_addition_requires_both_paired_origin_and_rp_id() {
+    let (_dir, state) = crate::tunnel::tests::state_with_relay_url("http://127.0.0.1:1");
+    let owner = live_owner(&state);
+    let mut new = record();
+    new.credential_id = B64.encode(b"additional owner");
+    for (origin, rp) in [
+        ("https://other.pockymoe.test", "pockymoe.test"),
+        ("https://pockymoe.test", "other.pockymoe.test"),
+        ("https://other.pockymoe.test", "other.pockymoe.test"),
+    ] {
+        new.origin = origin.into();
+        new.rp_id = rp.into();
+        let input = addition(new.clone(), &credential_key(), "test-device");
+        // Proof is valid for the new credential; rejection must enforce paired scope.
+        let (request, key, aad) = encrypted(
+            &state,
+            "POST",
+            "/api/transport/credentials",
+            json!({"credential":input.credential,"assertion":input.assertion}),
+            Some(&owner),
+        );
+        let (status, body) = decoded(
+            crate::tunnel::forward_local(&state, request, None).await,
+            &key,
+            &aad,
+        );
+        assert_eq!(status, 400);
+        assert_eq!(body["code"], "owner_origin_mismatch");
+        assert!(state
+            .db
+            .with(|c| credential(c, &new.credential_id))
+            .unwrap()
+            .is_none());
+    }
+    new.origin = record().origin;
+    new.rp_id = record().rp_id;
+    let input = addition(new, &credential_key(), "test-device");
+    let (request, key, aad) = encrypted(
+        &state,
+        "POST",
+        "/api/transport/credentials",
+        json!({"credential":input.credential,"assertion":input.assertion}),
+        Some(&owner),
+    );
+    assert_eq!(
+        decoded(
+            crate::tunnel::forward_local(&state, request, None).await,
+            &key,
+            &aad
+        )
+        .0,
+        200
+    );
 }
 
 pub(crate) fn live_owner(state: &Supervisor) -> OwnerPrincipal {

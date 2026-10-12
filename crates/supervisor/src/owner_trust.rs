@@ -27,6 +27,8 @@ use std::{path::Path as FsPath, sync::Arc};
 
 const CLOCK_WINDOW: u64 = 5 * 60 * 1000;
 const MAX_LIFETIME: i64 = 7 * 24 * 60 * 60 * 1000;
+// Public session IDs and expiry times only; retained independently of credentials.
+const REVOKED_SESSION_PREFIX: &str = "ownerRevokedSession:";
 pub(crate) fn now() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
@@ -309,6 +311,16 @@ pub(crate) fn authorize(
         credential_id: s.credential_id,
     })
 }
+fn check_owner_origin(c: &Connection, record: &Credential) -> Result<()> {
+    // All credentials share the origin/RP established by the first pairing.
+    // Checking every existing record also fails closed on previously mixed records.
+    for existing in credentials(c)? {
+        if existing["origin"] != record.origin || existing["rpId"] != record.rp_id {
+            return reject(400, "owner_origin_mismatch");
+        }
+    }
+    Ok(())
+}
 fn store_credential(c: &Connection, record: &Credential) -> Result<()> {
     if let Some(existing) = credential(c, &record.credential_id)? {
         ensure!(
@@ -340,6 +352,7 @@ fn pair(db: &Database, identity: &str, p: &Pairing, time: i64) -> Result<Value> 
             return reject(400,"invalid_pairing_mac");
         }
         ensure!(p.credential.origin == origin && p.credential.rp_id == rp,"pairing origin/rpId mismatch");
+        check_owner_origin(&tx,&p.credential)?;
         verify(&p.credential,&p.assertion,&certificate_challenge(&device,identity,&p.pairing_id))?;
         let certificate=json!({"version":1,"deviceId":device,"identityKey":identity,"pairingId":p.pairing_id,"assertion":p.assertion});
         store_credential(&tx,&p.credential)?;
@@ -351,6 +364,8 @@ fn pair(db: &Database, identity: &str, p: &Pairing, time: i64) -> Result<Value> 
     })
 }
 fn register(db: &Database, r: &Registration, time: i64) -> Result<Value> {
+    // Persist GC even when the registration itself is rejected (e.g. expired).
+    db.with(|c| collect_revoked_sessions(c, time))?;
     ensure!(
         r.version == 1
             && r.issued_at <= time.saturating_add(CLOCK_WINDOW as i64)
@@ -368,6 +383,13 @@ fn register(db: &Database, r: &Registration, time: i64) -> Result<Value> {
     let id = hash(&key);
     db.with(|c| {
         let tx = Transaction::new_unchecked(c, TransactionBehavior::Immediate)?;
+        if tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM kv WHERE key=?1 AND CAST(value AS INTEGER)>?2)",
+            params![format!("{REVOKED_SESSION_PREFIX}{id}"), time],
+            |r| r.get::<_, bool>(0),
+        )? {
+            return reject(401, "owner_session_revoked");
+        }
         let record =
             credential(&tx, &r.assertion.credential_id)?.context("unknown owner credential")?;
         verify(&record, &r.assertion, &session_challenge(r))?;
@@ -407,6 +429,7 @@ pub(crate) struct AddCredential {
 fn add(db: &Database, input: &AddCredential) -> Result<Value> {
     db.with(|c| {
         let tx = Transaction::new_unchecked(c, TransactionBehavior::Immediate)?;
+        check_owner_origin(&tx, &input.credential)?;
         let challenge = Sha256::digest(
             format!(
                 "pockymoe-add-credential-v1\n{}\n{}\n{}",
@@ -433,10 +456,56 @@ fn remove_credential(db: &Database, id: &str) -> Result<Value> {
         {
             return reject(409, "last_owner_credential");
         }
+        let time = now();
+        collect_revoked_sessions(&tx, time)?;
+        let sessions = tx
+            .prepare("SELECT session_id,expires_at FROM owner_sessions WHERE credential_id=?1 AND expires_at>?2")?
+            .query_map(params![id,time], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for (session, expires) in sessions {
+            remember_revocation(&tx, &session, expires)?;
+        }
+        // Explicit deletion protects against re-addition even if FK enforcement is off.
+        tx.execute("DELETE FROM owner_sessions WHERE credential_id=?1", [id])?;
         tx.execute("DELETE FROM owner_credentials WHERE credential_id=?1", [id])?;
         let result = json!({"credentials":credentials(&tx)?});
         tx.commit()?;
         Ok(result)
+    })
+}
+
+fn collect_revoked_sessions(c: &Connection, time: i64) -> Result<()> {
+    c.execute(
+        "DELETE FROM kv WHERE key GLOB 'ownerRevokedSession:*' AND CAST(value AS INTEGER)<=?1",
+        [time],
+    )?;
+    Ok(())
+}
+fn remember_revocation(c: &Connection, id: &str, expires: i64) -> Result<()> {
+    c.execute(
+        "INSERT INTO kv(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET
+         value=CAST(MAX(CAST(kv.value AS INTEGER),CAST(excluded.value AS INTEGER)) AS TEXT)",
+        params![format!("{REVOKED_SESSION_PREFIX}{id}"), expires.to_string()],
+    )?;
+    Ok(())
+}
+fn revoke_session(db: &Database, id: &str, time: i64) -> Result<Value> {
+    db.with(|c| {
+        let tx = Transaction::new_unchecked(c, TransactionBehavior::Immediate)?;
+        collect_revoked_sessions(&tx, time)?;
+        let expires: Option<i64> = tx
+            .query_row(
+                "SELECT expires_at FROM owner_sessions WHERE session_id=?1 AND expires_at>?2",
+                params![id, time],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(expires) = expires {
+            remember_revocation(&tx, id, expires)?;
+        }
+        tx.execute("DELETE FROM owner_sessions WHERE session_id=?1", [id])?;
+        tx.commit()?;
+        Ok(json!({}))
     })
 }
 
@@ -498,10 +567,7 @@ pub(crate) async fn revoke_endpoint(
     Extension(_): Extension<OwnerPrincipal>,
     Path(id): Path<String>,
 ) -> Response {
-    response(state.db.with(|c| {
-        c.execute("DELETE FROM owner_sessions WHERE session_id=?1", [id])?;
-        Ok(json!({}))
-    }))
+    response(revoke_session(&state.db, &id, now()))
 }
 
 fn local_connection(path: &FsPath) -> Result<Connection> {
@@ -591,7 +657,7 @@ pub fn reset_owner_trust(database: &FsPath) -> Result<()> {
             [serde_json::to_string(&mappings)?],
         )?;
     }
-    tx.execute_batch("DELETE FROM owner_port_mappings; DELETE FROM owner_sessions; DELETE FROM owner_credentials; DELETE FROM device_certificates; DELETE FROM pairing_offers; UPDATE device_owner_trust SET strict=0 WHERE singleton=1;")?;
+    tx.execute_batch("DELETE FROM owner_port_mappings; DELETE FROM owner_sessions; DELETE FROM owner_credentials; DELETE FROM device_certificates; DELETE FROM pairing_offers; DELETE FROM kv WHERE key GLOB 'ownerRevokedSession:*'; UPDATE device_owner_trust SET strict=0 WHERE singleton=1;")?;
     tx.commit()?;
     Ok(())
 }
