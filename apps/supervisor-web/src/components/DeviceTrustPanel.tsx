@@ -28,6 +28,7 @@ export function DeviceTrustPanel({ deviceId }: { deviceId: string }) {
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState(false);
   const [available, setAvailable] = useState<OwnerCredential[]>([]);
+  const [accountCredentials, setAccountCredentials] = useState<OwnerCredential[]>([]);
   const [selected, setSelected] = useState('');
   const [add, setAdd] = useState<() => ReturnType<typeof assertOwner>>();
   const [certify, setCertify] = useState<() => Promise<DeviceCertificate>>();
@@ -40,6 +41,7 @@ export function DeviceTrustPanel({ deviceId }: { deviceId: string }) {
     const records = data.paired ? await fetchOwnerCredentials() : [];
     if (ticket !== revision.current || deviceRef.current !== deviceId) return;
     setTrust(data);
+    setAccountCredentials(records);
     setError(undefined);
     setAvailable(
       records.filter(
@@ -94,8 +96,17 @@ export function DeviceTrustPanel({ deviceId }: { deviceId: string }) {
       setBusy(false);
     }
   }
+  function credentialLabel(record: OwnerCredential) {
+    // Match the public record to the authenticated device's credential before
+    // using its current account name (the device may hold an older name).
+    const account = accountCredentials.find(candidate =>
+      candidate.credentialId === record.credentialId &&
+      candidate.publicKey === record.publicKey && candidate.algorithm === record.algorithm &&
+      candidate.rpId === record.rpId && candidate.origin === record.origin);
+    return account?.name?.trim() || record.name?.trim() || shortId(record.credentialId);
+  }
   return (
-    <div className="space-y-4 text-sm">
+    <div className="owner-trust-panel space-y-4 text-sm">
       {error && <p role="alert">{error}</p>}
       {!trust && !error && (
         <p role="status">{translate('auth.ownerPreparing')}</p>
@@ -107,7 +118,10 @@ export function DeviceTrustPanel({ deviceId }: { deviceId: string }) {
               trust.paired ? 'auth.ownerPaired' : 'auth.ownerRelayTrusted',
             )}
           </p>
-          {trust.strict && <p>{translate('auth.ownerStrict')}</p>}
+          {trust.strict && <div className="space-y-1">
+            <p>{translate('auth.ownerStrict')}</p>
+            <p className="text-xs text-[var(--theme-fg-muted)]">{translate('auth.ownerPortVisibility')}</p>
+          </div>}
           {!trust.paired ? (
             <p>{translate('auth.ownerPairInstructions')}</p>
           ) : (
@@ -119,10 +133,10 @@ export function DeviceTrustPanel({ deviceId }: { deviceId: string }) {
                 {trust.credentials.map((record) => (
                   <li
                     key={record.credentialId}
-                    className="flex flex-wrap items-center justify-between gap-2"
+                    className="owner-trust-row"
                   >
-                    <span className="min-w-0 flex-1 break-all">
-                      {record.name || record.credentialId}
+                    <span className="min-w-0 break-words" title={record.credentialId}>
+                      {credentialLabel(record)}
                     </span>
                     <button
                       className="relay-button-secondary px-3 py-2"
@@ -151,19 +165,21 @@ export function DeviceTrustPanel({ deviceId }: { deviceId: string }) {
                 {trust.sessions.map((session) => (
                   <li
                     key={session.sessionId}
-                    className="flex flex-wrap items-center justify-between gap-2"
+                    className="owner-trust-row"
                   >
-                    <span className="min-w-0 flex-1 break-all">
-                      <code className="text-xs">{session.sessionId}</code>
-                      {session.current && (
-                        <span className="block">
-                          {translate('auth.ownerCurrent')}
-                        </span>
-                      )}
-                      <time className="block text-xs">
-                        {new Date(session.expiresAt).toLocaleString(
-                          getLocale(),
+                    <span className="min-w-0">
+                      <span className="flex flex-wrap items-center gap-2">
+                        <code className="text-xs" title={session.sessionId}>
+                          {shortId(session.sessionId)}
+                        </code>
+                        {session.current && (
+                          <span className="owner-trust-browser-badge">
+                            {translate('auth.ownerCurrent')}
+                          </span>
                         )}
+                      </span>
+                      <time className="mt-1 block text-xs text-[var(--theme-fg-muted)]" dateTime={new Date(session.expiresAt).toISOString()}>
+                        {translate('auth.ownerExpires', { value1: new Date(session.expiresAt).toLocaleString(getLocale()) })}
                       </time>
                     </span>
                     <button
@@ -182,6 +198,10 @@ export function DeviceTrustPanel({ deviceId }: { deviceId: string }) {
                 ))}
               </ul>
               <h3 className="font-semibold">{translate('auth.ownerAdd')}</h3>
+              <p className="text-[var(--theme-fg-muted)]">{translate('auth.ownerRegisterFirst')}</p>
+              <a className="owner-trust-account-link" href="/relay-account">
+                {translate('auth.ownerAccountSecurity')}
+              </a>
               {available.length ? (
                 <>
                   <select
@@ -193,7 +213,7 @@ export function DeviceTrustPanel({ deviceId }: { deviceId: string }) {
                     <option value="">{translate('auth.ownerSelect')}</option>
                     {available.map((r) => (
                       <option key={r.credentialId} value={r.credentialId}>
-                        {r.name || r.credentialId}
+                        {r.name || shortId(r.credentialId)}
                       </option>
                     ))}
                   </select>
@@ -244,11 +264,7 @@ export function DeviceTrustPanel({ deviceId }: { deviceId: string }) {
                     {translate('auth.ownerAdd')}
                   </button>
                 </>
-              ) : (
-                <a href="/relay-account">
-                  {translate('auth.ownerAccountSecurity')}
-                </a>
-              )}
+              ) : null}
               {certify && (
                 <div className="space-y-2">
                   <p>{translate('auth.ownerCertifyHelp')}</p>
@@ -293,9 +309,6 @@ export function DeviceTrustPanel({ deviceId }: { deviceId: string }) {
                   {translate('auth.ownerSaveCertificate')}
                 </button>
               )}
-              <p className="text-xs text-[var(--theme-fg-muted)]">
-                {translate('auth.ownerPortVisibility')}
-              </p>
             </>
           )}
         </>
@@ -318,4 +331,7 @@ export function DeviceTrustPanel({ deviceId }: { deviceId: string }) {
       </button>
     </div>
   );
+}
+function shortId(id: string) {
+  return id.length > 8 ? `${id.slice(0, 8)}…` : id;
 }

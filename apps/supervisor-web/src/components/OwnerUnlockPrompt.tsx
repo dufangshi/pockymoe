@@ -1,5 +1,5 @@
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import { Link, useLocation } from 'react-router-dom';
 import { prepareOwnerUnlock } from '../lib/ownerSession';
@@ -19,10 +19,14 @@ export function OwnerUnlockButton({
   onUnlocked,
   renew = false,
   credentialId,
+  focusWhenReady = false,
+  buttonRef,
 }: {
   onUnlocked: () => void | Promise<void>;
   renew?: boolean;
   credentialId?: string | string[];
+  focusWhenReady?: boolean;
+  buttonRef?: RefObject<HTMLButtonElement | null>;
 }) {
   useI18n();
   const [unlock, setUnlock] =
@@ -30,6 +34,11 @@ export function OwnerUnlockButton({
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState(false);
   const [attempt, setAttempt] = useState(0);
+  const ownButton = useRef<HTMLButtonElement>(null);
+  const primaryButton = buttonRef ?? ownButton;
+  useEffect(() => {
+    if (focusWhenReady && unlock && !error) primaryButton.current?.focus();
+  }, [focusWhenReady, unlock, error, primaryButton]);
   useEffect(() => {
     let active = true;
     setUnlock(undefined);
@@ -61,8 +70,10 @@ export function OwnerUnlockButton({
         </button>
       ) : (
         <button
-          className="relay-button-primary px-3 py-2"
+          ref={primaryButton}
+          className="relay-button-primary owner-passkey-action px-3 py-2"
           disabled={!unlock || busy}
+          aria-busy={busy}
           onClick={() => {
             if (!unlock) return;
             // Start WebAuthn in the gesture, before the first await.
@@ -76,6 +87,7 @@ export function OwnerUnlockButton({
         >
           {!unlock
             ? translate('auth.ownerPreparing')
+            : busy ? translate('auth.ownerUnlocking')
             : translate(renew ? 'auth.ownerRenew' : 'auth.ownerUnlock')}
         </button>
       )}
@@ -90,8 +102,10 @@ export function OwnerUnlockPrompt() {
   const [dismissed, setDismissed] = useState(false);
   const [revoked, setRevoked] = useState(false);
   const dialog = useRef<HTMLElement>(null);
+  const primaryButton = useRef<HTMLButtonElement>(null);
   useDialogLifecycle({
     containerRef: dialog,
+    initialFocusRef: primaryButton,
     open: !!devices.length && !dismissed && location.pathname !== '/pair',
     onClose: () => setDismissed(true),
   });
@@ -143,6 +157,8 @@ export function OwnerUnlockPrompt() {
           {translate(revoked ? 'auth.owner_session_revoked' : 'auth.ownerUnlockHelp')}
         </p>
         <OwnerUnlockButton
+          buttonRef={primaryButton}
+          focusWhenReady
           {...(credentialId ? { credentialId } : {})}
           onUnlocked={async () => {
             // Reconnect only after verification; application mutations are never replayed.

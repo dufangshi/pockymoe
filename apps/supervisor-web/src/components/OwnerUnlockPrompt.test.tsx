@@ -47,6 +47,27 @@ function report(deviceId = 'a', revoked = false) {
   });
 }
 describe('owner unlock prompt', () => {
+  it('focuses the prepared primary action without starting WebAuthn and distinguishes the busy state', async () => {
+    let ready!: (start: Awaited<ReturnType<typeof prepareOwnerUnlock>>) => void;
+    vi.mocked(prepareOwnerUnlock).mockReturnValue(new Promise(resolve => { ready = resolve; }));
+    let finish!: () => void;
+    start.mockImplementation(() => new Promise<void>(resolve => { finish = resolve; }));
+    render(<MemoryRouter><OwnerUnlockPrompt /></MemoryRouter>);
+    report();
+    const preparing = screen.getByRole('button', { name: translate('auth.ownerPreparing') });
+    expect(preparing).toBeDisabled();
+    expect(screen.getByRole('link', { name: translate('auth.ownerAccountSecurity') })).not.toHaveFocus();
+    await act(async () => ready(start));
+    const primary = screen.getByRole('button', { name: translate('auth.ownerUnlock') });
+    await waitFor(() => expect(primary).toHaveFocus());
+    expect(primary).toBeEnabled();
+    expect(start).not.toHaveBeenCalled();
+    fireEvent.click(primary);
+    expect(screen.getByRole('button', { name: translate('auth.ownerUnlocking') })).toBeDisabled();
+    expect(primary).toHaveAttribute('aria-busy', 'true');
+    await act(async () => finish());
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  });
   it.each(['en', 'zh-CN'] as const)('shows the distinct revocation message in %s and requires a fresh click even after dismissal', async (locale) => {
     setLocale(locale);
     render(<MemoryRouter><OwnerUnlockPrompt /></MemoryRouter>);

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { setLocale, translate } from '@pockymoe/thread-ui/i18n';
 import { DeviceTrustPanel } from './DeviceTrustPanel';
@@ -94,11 +94,41 @@ describe('device trust controls', () => {
   it('shows paired/strict state, credentials, sessions and prevents removing the last credential', async () => {
     render(<DeviceTrustPanel deviceId="d" />);
     expect(await screen.findByText('Strict mode enabled')).toBeVisible();
-    expect(screen.getByText('Current session')).toBeVisible();
+    expect(screen.getByText('This browser')).toBeVisible();
     expect(
       screen.getByRole('button', { name: 'Remove passkey' }),
     ).toBeDisabled();
     expect(screen.getByText(/pockymoe pair --reset/)).toBeVisible();
+  });
+  it.each(['en', 'zh-CN'] as const)('uses matching account names, abbreviated IDs, localized expiry labels and registration guidance in %s', async (locale) => {
+    setLocale(locale);
+    const named = { ...credential, name: 'Old device name' };
+    const unnamed = { ...credential, credentialId: 'unnamed-credential-long-id' };
+    delete unnamed.name;
+    trust.credentials = [named, unnamed];
+    trust.sessions[0]!.sessionId = 'session-long-id-for-this-browser';
+    vi.mocked(fetchOwnerCredentials).mockResolvedValue([{ ...credential, name: 'Synced owner passkey' }, unnamed]);
+    render(<DeviceTrustPanel deviceId="d" />);
+    const name = await screen.findByText('Synced owner passkey');
+    expect(name).toHaveAttribute('title', credential.credentialId);
+    expect(screen.queryByText('Old device name')).toBeNull();
+    expect(screen.getByText('unnamed-…')).toHaveAttribute('title', unnamed.credentialId);
+    expect(screen.getByText('session-…')).toHaveAttribute('title', trust.sessions[0]!.sessionId);
+    const expiry = new Date(trust.sessions[0]!.expiresAt);
+    expect(screen.getByText(`${locale === 'en' ? 'Expires ' : '到期时间：'}${expiry.toLocaleString(locale)}`))
+      .toHaveAttribute('dateTime', expiry.toISOString());
+    expect(screen.getByText(translate('auth.ownerCurrent'))).toHaveClass('owner-trust-browser-badge');
+    const note = screen.getByText(translate('auth.ownerPortVisibility'));
+    expect(within(note.parentElement!).getByText(translate('auth.ownerStrict'))).toBeVisible();
+    expect(screen.getByText(translate('auth.ownerRegisterFirst'))).toBeVisible();
+    expect(screen.getByRole('link', { name: translate('auth.ownerAccountSecurity') }))
+      .toHaveClass('owner-trust-account-link');
+  });
+  it('does not take a name from a substituted account key', async () => {
+    vi.mocked(fetchOwnerCredentials).mockResolvedValue([{ ...credential, publicKey: 'substituted', name: 'Wrong key name' }]);
+    render(<DeviceTrustPanel deviceId="d" />);
+    expect(await screen.findByTitle(credential.credentialId)).toHaveTextContent(`${credential.credentialId.slice(0, 8)}…`);
+    expect(screen.queryByText('Wrong key name')).toBeNull();
   });
   it('revokes the current session and clears the browser key', async () => {
     render(<DeviceTrustPanel deviceId="d" />);

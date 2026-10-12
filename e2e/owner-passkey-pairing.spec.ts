@@ -1,4 +1,4 @@
-import { test, expect, type CDPSession, type Page, type TestInfo } from '@playwright/test';
+import { test, expect, type CDPSession, type Locator, type Page, type TestInfo } from '@playwright/test';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
@@ -89,6 +89,42 @@ async function openTrustPanel(page: Page, info: TestInfo) {
 async function screenshot(page: Page, info: TestInfo, name: string) {
   await mkdir(resolve('.scratch/screenshots'), { recursive: true });
   await page.screenshot({ path: resolve(`.scratch/screenshots/${info.project.name}-${name}.png`) });
+}
+
+async function checkPasskeyButtonThemes(button: Locator) {
+  const samples = await button.evaluate(element => {
+    const root = document.documentElement;
+    const previousPreset = root.getAttribute('data-theme-preset');
+    const previousTheme = root.getAttribute('data-theme-effective');
+    const disabled = element.cloneNode(true) as HTMLButtonElement;
+    disabled.disabled = true;
+    disabled.style.position = 'fixed';
+    disabled.style.left = '-10000px';
+    document.body.append(disabled);
+    const samples = [];
+    try {
+      for (const preset of ['classic', 'plum-pocket']) for (const theme of ['light', 'dark']) {
+        root.dataset.themePreset = preset; root.dataset.themeEffective = theme;
+        const enabledStyle = getComputedStyle(element), disabledStyle = getComputedStyle(disabled);
+        samples.push({ preset, theme, enabled: enabledStyle.backgroundColor,
+          disabled: disabledStyle.backgroundColor, color: enabledStyle.color,
+          disabledColor: disabledStyle.color, opacity: enabledStyle.opacity,
+          transition: enabledStyle.transitionDuration });
+      }
+      return samples;
+    } finally {
+      disabled.remove();
+      for (const [name, value] of [['data-theme-preset', previousPreset], ['data-theme-effective', previousTheme]]) {
+        if (value === null) root.removeAttribute(name!); else root.setAttribute(name!, value!);
+      }
+    }
+  });
+  for (const sample of samples) {
+    expect(sample.enabled, `${sample.preset}/${sample.theme}: primary button must look enabled immediately`).not.toBe(sample.disabled);
+    expect(sample.color, `${sample.preset}/${sample.theme}: enabled text must differ from disabled text`).not.toBe(sample.disabledColor);
+    expect(sample.opacity).toBe('1');
+    expect(sample.transition).toBe('0s');
+  }
 }
 
 async function sendPrompt(page: Page, marker: string) {
@@ -312,6 +348,8 @@ test('owner passkey pairs a strict device, trusts a second browser, revokes and 
     const unlock = secondPage.getByRole('dialog', { name: 'Unlock your devices', exact: true });
     await expect(unlock).toBeVisible();
     await expect(unlock.getByRole('button', { name: 'Unlock with passkey', exact: true })).toBeEnabled();
+    await expect(unlock.getByRole('button', { name: 'Unlock with passkey', exact: true })).toBeFocused();
+    await checkPasskeyButtonThemes(unlock.getByRole('button', { name: 'Unlock with passkey', exact: true }));
     await screenshot(secondPage, info, 'unlock');
     await unlock.getByRole('button', { name: 'Unlock with passkey', exact: true }).click();
     await expect(unlock).toHaveCount(0);
@@ -340,10 +378,25 @@ test('owner passkey pairs a strict device, trusts a second browser, revokes and 
     await page.goto(base + '/relay-devices');
     const panel = await openTrustPanel(page, info);
     await expect(panel.getByRole('button', { name: 'Revoke session', exact: true })).toHaveCount(2);
+    await expect(panel.getByText('Synced owner passkey', { exact: true })).toBeVisible();
+    await expect(panel.getByText('This browser', { exact: true })).toBeVisible();
+    expect(await panel.locator('time').evaluateAll(elements => elements.every(element =>
+      element.textContent?.includes(new Date(element.getAttribute('datetime')!).toLocaleString('en')))),
+      'Session expiry labels must contain the localized date, not an interpolation placeholder').toBe(true);
+    if (screenshotsOnly) {
+      expect(await panel.locator('.owner-trust-row').evaluateAll(rows => rows.every(row => {
+        const label = row.firstElementChild!.getBoundingClientRect();
+        const action = row.querySelector('button')!.getBoundingClientRect();
+        return action.top >= label.bottom && action.width < row.getBoundingClientRect().width;
+      })), 'Mobile trust rows must put compact actions below the labels').toBe(true);
+    }
+    const renew = panel.getByRole('button', { name: 'Renew with passkey', exact: true });
+    await expect(renew).toBeEnabled();
+    await checkPasskeyButtonThemes(renew);
     await screenshot(page, info, 'device-trust');
     if (screenshotsOnly) return; // Mobile is visual QA; protocol coverage runs once on desktop.
 
-    const row = panel.getByRole('listitem').filter({ has: page.locator('code').filter({ hasText: secondId! }) });
+    const row = panel.getByRole('listitem').filter({ has: page.locator(`code[title="${secondId!}"]`) });
     await row.getByRole('button', { name: 'Revoke session', exact: true }).click();
     await expect(row).toHaveCount(0);
     const afterRevoke = await browserRequest(secondPage, device.api + '/workspaces');
