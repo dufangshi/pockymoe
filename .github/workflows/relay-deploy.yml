@@ -3,10 +3,6 @@ name: Relay Deploy
 on:
   workflow_dispatch:
     inputs:
-      thread_ui_sha:
-        description: Full commit SHA from remote-codex-thread-ui-rust
-        required: true
-        type: string
       deploy:
         description: Replace the public relay after building (disable for a build-only check)
         type: boolean
@@ -50,51 +46,9 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
-  web:
-    if: github.ref == 'refs/heads/main'
-    name: Build relay Web
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v6
-      - name: Check out pinned shared UI
-        uses: actions/checkout@v6
-        with:
-          repository: dufangshi/pockymoe-thread-ui-rust
-          ref: ${{ inputs.thread_ui_sha }}
-          path: pockymoe-thread-ui
-      - name: Validate shared UI revision
-        env:
-          THREAD_UI_SHA: ${{ inputs.thread_ui_sha }}
-        run: |
-          [[ "${THREAD_UI_SHA}" =~ ^[0-9a-f]{40}$ ]]
-          test "$(git -C pockymoe-thread-ui rev-parse HEAD)" = "${THREAD_UI_SHA}"
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10.11.1
-      - uses: actions/setup-node@v6
-        with:
-          node-version: '24'
-          cache: pnpm
-          cache-dependency-path: |
-            pnpm-lock.yaml
-            pockymoe-thread-ui/pnpm-lock.yaml
-      - name: Build Web assets
-        run: |
-          pnpm --dir pockymoe-thread-ui install --frozen-lockfile
-          pnpm --dir pockymoe-thread-ui --filter @pockymoe/thread-ui build
-          pnpm --filter @pockymoe/supervisor-web... install --frozen-lockfile
-          pnpm --filter @pockymoe/supervisor-web build
-      - uses: actions/upload-artifact@v4
-        with:
-          name: relay-web
-          path: apps/supervisor-web/dist/
-          if-no-files-found: error
-          retention-days: 3
-
   deploy-rust-rewrite:
     if: github.ref == 'refs/heads/main'
-    needs: [native, web]
+    needs: [native]
     name: Deploy Rust relay to remote.lnz-study.com
     runs-on: ubuntu-24.04
     environment: relay-rust-canary
@@ -103,13 +57,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
-
-      - name: Validate shared UI revision
-        env:
-          THREAD_UI_SHA: ${{ inputs.thread_ui_sha }}
-        run: |
-          [[ "${THREAD_UI_SHA}" =~ ^[0-9a-f]{40}$ ]] || { echo 'A full UI SHA is required' >&2; exit 1; }
-          echo "Runtime: ${GITHUB_SHA}; shared UI: ${THREAD_UI_SHA}" >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Capture deployment boundaries
         if: inputs.deploy
@@ -158,24 +105,16 @@ jobs:
         with:
           name: relay-native
           path: rust-relay-artifact
-      - uses: actions/download-artifact@v4
-        with:
-          name: relay-web
-          path: rust-relay-artifact/web
-
       - name: Package Rust relay artifacts
-        id: package
         shell: bash
         run: |
           set -euo pipefail
           artifact_dir="rust-relay-artifact"
           archive="remote-codex-rust-relay-${GITHUB_SHA}.tgz"
+          echo "Runtime: ${GITHUB_SHA}" >> "${GITHUB_STEP_SUMMARY}"
 
           chmod 0755 "${artifact_dir}/remote-codex"
           (cd "${artifact_dir}" && sha256sum remote-codex > SHA256SUMS)
-          asset_path="$(sed -n 's#.*src="\(/assets/index-[^"]*\.js\)".*#\1#p' "${artifact_dir}/web/index.html" | head -n 1)"
-          test -n "${asset_path}"
-          echo "asset_path=${asset_path}" >> "${GITHUB_OUTPUT}"
           tar -czf "${archive}" -C "${artifact_dir}" .
 
       - name: Preserve build-only package
@@ -217,13 +156,11 @@ jobs:
             base='/opt/remote-codex-rust-relay'
             service='remote-codex-rust-relay.service'
             health_url='http://127.0.0.1:18791/healthz'
-            expected_asset='${{ steps.package.outputs.asset_path }}'
             release_id="${sha}-${{ github.run_id }}-${{ github.run_attempt }}"
             stage="${base}/releases/${release_id}"
             backup="${base}/rollback-${release_id}"
             failed="${base}/failed-${release_id}"
             next_binary="${base}/.remote-codex-${release_id}.next"
-            next_web="${base}/.web-${release_id}.next"
 
             unit="$(sudo systemctl cat "${service}")"
             printf '%s' "${unit}" | grep -Fq 'remote.lnz-study.com'
@@ -231,7 +168,6 @@ jobs:
             sudo grep -Fxq 'HOST=127.0.0.1' "${base}/relay.env"
             sudo grep -Fxq 'PORT=18791' "${base}/relay.env"
             sudo grep -Fxq 'REMOTE_CODEX_RELAY_DATA_DIR=/var/lib/remote-codex-rust-relay' "${base}/relay.env"
-            sudo grep -Fxq 'REMOTE_CODEX_RELAY_WEB_DIST_DIR=/opt/remote-codex-rust-relay/web' "${base}/relay.env"
             # Fail before stopping the old service if the auth migration is misconfigured.
             sudo python3 - "${base}/relay.env" <<'PYPREFLIGHT'
             import pathlib, shlex, sys
@@ -246,22 +182,19 @@ jobs:
             if secret is not None and len(secret) < 32:
                 raise SystemExit('Relay auth preflight: session secret must be at least 32 characters')
             if values.get('REMOTE_CODEX_PUBLIC_BASE_URL', '').rstrip('/') != 'https://remote.lnz-study.com':
-                raise SystemExit('Relay auth preflight: configure the public HTTPS origin for Passkeys and OAuth')
+                raise SystemExit('Relay auth preflight: configure the public HTTPS relay origin')
+            if values.get('POCKYMOE_WEB_ORIGIN', '').rstrip('/') != 'https://app.lnz-study.com':
+                raise SystemExit('Relay auth preflight: configure the separate HTTPS Web origin for API-only mode')
             PYPREFLIGHT
             test -f "${archive}"
             test -x "${base}/remote-codex"
-            test -d "${base}/web"
 
             node_container_before="$(sudo docker ps --all --no-trunc --filter 'name=^/remote-codex-relay$' --format '{{.ID}}')"
             old_binary_sha="$(sha256sum "${base}/remote-codex" | awk '{print $1}')"
-            old_asset="$(sed -n 's#.*src="\(/assets/index-[^"]*\.js\)".*#\1#p' "${base}/web/index.html" | head -n 1)"
-            test -n "${old_asset}"
             mkdir -p "${stage}" "${backup}"
             tar -xzf "${archive}" -C "${stage}"
             (cd "${stage}" && sha256sum --check SHA256SUMS)
             file "${stage}/remote-codex" | grep -Eq 'x86-64|x86_64'
-            test -f "${stage}/web/index.html"
-            grep -Fq '#171713' "${stage}/web/index.html"
 
             rollback() {
               deployment_active='false'
@@ -283,14 +216,7 @@ jobs:
                 fi
                 mv "${backup}/remote-codex" "${base}/remote-codex" || rollback_status=1
               fi
-              if [ -e "${backup}/web" ]; then
-                if [ -e "${base}/web" ]; then
-                  mv "${base}/web" "${failed}/web" || rollback_status=1
-                fi
-                mv "${backup}/web" "${base}/web" || rollback_status=1
-              fi
               test -x "${base}/remote-codex" || rollback_status=1
-              test -d "${base}/web" || rollback_status=1
               sudo systemctl start "${service}" || rollback_status=1
 
               restored='false'
@@ -308,12 +234,6 @@ jobs:
               if [ -x "${base}/remote-codex" ]; then
                 restored_binary_sha="$(sha256sum "${base}/remote-codex" | awk '{print $1}')"
                 test "${restored_binary_sha}" = "${old_binary_sha}" || rollback_status=1
-              else
-                rollback_status=1
-              fi
-              if [ -f "${base}/web/index.html" ]; then
-                restored_asset="$(sed -n 's#.*src="\(/assets/index-[^"]*\.js\)".*#\1#p' "${base}/web/index.html" | head -n 1)"
-                test "${restored_asset}" = "${old_asset}" || rollback_status=1
               else
                 rollback_status=1
               fi
@@ -353,12 +273,9 @@ jobs:
                 shutil.copyfile(secret, destination / 'session-secret')
             PYBACKUP
             mv "${base}/remote-codex" "${backup}/remote-codex"
-            mv "${base}/web" "${backup}/web"
             chmod 0755 "${stage}/remote-codex"
             mv "${stage}/remote-codex" "${next_binary}"
             mv "${next_binary}" "${base}/remote-codex"
-            mv "${stage}/web" "${next_web}"
-            mv "${next_web}" "${base}/web"
 
             sudo systemctl start "${service}"
 
@@ -380,10 +297,9 @@ jobs:
 
             public_ready='false'
             for _ in $(seq 1 30); do
-              public_html="$(curl -fsS https://remote.lnz-study.com/ || true)"
-              public_health="$(curl -fsS https://remote.lnz-study.com/healthz || true)"
-              public_asset="$(printf '%s' "${public_html}" | sed -n 's#.*src="\(/assets/index-[^"]*\.js\)".*#\1#p' | head -n 1)"
-              if [ "${public_asset}" = "${expected_asset}" ] \
+              public_redirect="$(curl -sS --max-time 20 -o /dev/null -w '%{http_code} %{redirect_url}' https://remote.lnz-study.com/ || true)"
+              public_health="$(curl -fsS --max-time 20 https://remote.lnz-study.com/healthz || true)"
+              if [ "${public_redirect}" = '307 https://app.lnz-study.com/' ] \
                 && printf '%s' "${public_health}" | grep -Fq '"status":"ok"'; then
                 public_ready='true'
                 break
@@ -409,21 +325,19 @@ jobs:
         run: |
           set -euo pipefail
 
-          expected_asset='${{ steps.package.outputs.asset_path }}'
-          target_asset=''
+          target_redirect=''
           target_health=''
           for _ in $(seq 1 45); do
-            target_html="$(curl -fsS https://remote.lnz-study.com/ || true)"
-            target_asset="$(printf '%s' "${target_html}" | sed -n 's#.*src="\(/assets/index-[^"]*\.js\)".*#\1#p' | head -n 1)"
-            target_health="$(curl -fsS https://remote.lnz-study.com/healthz || true)"
-            if [ "${target_asset}" = "${expected_asset}" ] \
+            target_redirect="$(curl -sS --max-time 20 -o /dev/null -w '%{http_code} %{redirect_url}' https://remote.lnz-study.com/ || true)"
+            target_health="$(curl -fsS --max-time 20 https://remote.lnz-study.com/healthz || true)"
+            if [ "${target_redirect}" = '307 https://app.lnz-study.com/' ] \
               && printf '%s' "${target_health}" | jq -e '.status == "ok"' >/dev/null 2>&1; then
               break
             fi
             sleep 2
           done
 
-          test "${target_asset}" = "${expected_asset}"
+          test "${target_redirect}" = '307 https://app.lnz-study.com/'
           printf '%s' "${target_health}" | jq -e '.status == "ok"' >/dev/null
 
           legacy_ready='false'
@@ -449,5 +363,5 @@ jobs:
           done
           test "${legacy_ready}" = 'true'
 
-          printf 'Rust relay asset: %s\n' "${target_asset}"
+          printf 'Rust relay Web redirect: %s\n' "${target_redirect}"
           printf 'Legacy baseline unchanged (%s): %s\n' "${LEGACY_MODE}" "${legacy_asset:-default site}"
