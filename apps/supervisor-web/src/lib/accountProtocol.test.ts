@@ -45,7 +45,8 @@ it('opens fixed password and recovery slots and validates the account private ke
   for (const [slot, key] of [['password', vectors.derivation.wrapKey], ['recovery', vectors.derivation.recoveryKey]] as const) {
     const result = await vault.decryptVault(v, c.decode64(key), slot, a.userId);
     expect(c.encode64(result.vdk)).toBe(vectors.vault.vdk);
-    expect(result.body).toEqual(JSON.parse(vectors.vault.bodyPlaintext));
+    const expected = JSON.parse(vectors.vault.bodyPlaintext);
+    expect(result.body).toEqual({ ...expected, boundDevices: expected.boundDevices.map((deviceId: string) => ({ deviceId, identityKey: '' })) });
     expect(result.key.extractable).toBe(false);
   }
 });
