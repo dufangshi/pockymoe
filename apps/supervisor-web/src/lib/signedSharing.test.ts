@@ -15,7 +15,7 @@ const state = vi.hoisted(() => ({
 }));
 vi.mock('./api', () => ({ request: state.request }));
 vi.mock('./sharingApproval', () => ({ requestGrantReview: state.approve }));
-vi.mock('./sharedDeviceTrust', async (original) => ({ ...await original<object>(), isProtectedSharingDevice: state.paired, locallyCertifiedDevices: state.certified }));
+vi.mock('./sharedDeviceTrust', async (original) => ({ ...await original<object>(), isProtectedSharingDevice: state.paired, sharingGrantDevices: state.certified }));
 vi.mock('./accountVault', () => ({ safetyCode: state.safety }));
 vi.mock('./sharingTrustStore', () => ({
   sharingTrustStore: async (key: string, ...write: unknown[]) => {
@@ -31,6 +31,7 @@ import {
   reconcileGrants,
   sharingMutation,
   syncDeviceGrant,
+  sharingEditInput,
 } from './signedSharing';
 const account = { accountKeyId: vectors.account.accountKeyId, accountPublicKey: vectors.account.accountPublicKey };
 const otherAccount = vectors.otherAccount;
@@ -71,11 +72,11 @@ describe('signed grant sharing', () => {
     expect(state.safety).toHaveBeenCalledWith(vectors.account.accountKeyId);
   });
   it('confirms only a validated account key and requires confirmation again when the recipient key changes', async () => {
-    expect(await recipientVerified(account)).toBe(false);
-    await confirmRecipient(account);
-    expect(await recipientVerified({ ...account })).toBe(true);
-    expect(await recipientVerified(otherAccount)).toBe(false);
-    await expect(recipientVerified({ ...account, accountPublicKey: otherAccount.accountPublicKey })).rejects.toMatchObject({ code: 'account_mismatch' });
+    expect(await recipientVerified(account, 'recipient')).toBe(false);
+    await confirmRecipient(account, 'recipient');
+    expect(await recipientVerified({ ...account }, 'recipient')).toBe(true);
+    expect(await recipientVerified(otherAccount, 'recipient')).toBe(false);
+    await expect(recipientVerified({ ...account, accountPublicKey: otherAccount.accountPublicKey }, 'recipient')).rejects.toMatchObject({ code: 'account_mismatch' });
   });
   it('creates the relay row first, fetches the recipient, then writes the exact device ACL', async () => {
     const mutate = vi.fn(async () => ({ id: row.id }));
@@ -149,7 +150,7 @@ describe('signed grant sharing', () => {
       sharingMutation('share', 'edit', row.id, async () => {
         current = { ...row, threadAccess: 'control' };
         return {};
-      }, { threadAccess: 'control' }),
+      }, { ...sharingEditInput('share', row), threadAccess: 'control' }),
     ).rejects.toThrow(/Device offline/);
     expect(state.request).toHaveBeenLastCalledWith('/relay/shares/row', {
       method: 'PATCH',
@@ -311,10 +312,10 @@ it('requires explicit exact-field and unverified-recipient acknowledgement befor
   state.approve.mockReturnValue(true);
   await syncDeviceGrant('share', row);
   expect(state.request.mock.calls.some(c => c[1]?.method === 'PUT')).toBe(true);
-  expect(await recipientVerified(account)).toBe(false); // acknowledgement does not claim verification
+  expect(await recipientVerified(account, 'recipient')).toBe(false); // acknowledgement does not claim verification
 });
 it('still requires exact-field review for an already verified account key', async () => {
-  await confirmRecipient(account);
+  await confirmRecipient(account, 'recipient');
   await syncDeviceGrant('share', row);
   expect(state.approve).toHaveBeenCalledOnce();
   expect(state.approve.mock.calls[0]![0].recipientVerified).toBe(true);
@@ -363,7 +364,7 @@ it('uses only dialog permissions even when a full mutation reply is followed by 
 it('refuses a relay edit reply that reassigns the device or recipient', async () => {
   for (const altered of [{ deviceId: 'other-device' }, { targetUserId: 'relay-user' }]) {
     current = row;
-    await expect(sharingMutation('share', 'edit', row.id, async () => ({ ...row, ...altered, threadAccess: 'control' }), { threadAccess: 'control' })).rejects.toThrow(/differ from your choices/);
+    await expect(sharingMutation('share', 'edit', row.id, async () => ({ ...row, ...altered, threadAccess: 'control' }), { ...sharingEditInput('share', row), threadAccess: 'control' })).rejects.toThrow(/differ from your choices/);
   }
   expect(state.request.mock.calls.some(c => c[1]?.method === 'PUT')).toBe(false);
 });
@@ -374,7 +375,7 @@ it('rolls back a new row if the owner cancels first-grant acknowledgement', asyn
   expect(state.request.mock.calls.some(c => c[1]?.method === 'PUT')).toBe(false);
 });
 it('reviews the current account key again instead of reusing a stale verified status', async () => {
-  await confirmRecipient(account);
+  await confirmRecipient(account, 'recipient');
   const changed = otherAccount;
   const server = state.request.getMockImplementation()!;
   state.request.mockImplementation(async (path, ...args) => path.endsWith('/recipient-account') ? changed : server(path, ...args));

@@ -1,3 +1,4 @@
+import { sharingEditInput } from '../lib/signedSharing';
 import { SignedShareDetails, OrphanDeviceGrants } from '../components/SignedShareDetails';
 import { requireUnlock } from '../lib/accountVault';
 import { removeDeviceFromAccount } from '../lib/deviceRemoval';
@@ -508,7 +509,7 @@ export function RelayDevicesPage() {
         workspaceId: grant.workspaceId,
         workspaceScope: grant.workspaceScope,
         workspaceIds: grant.workspaceIds,
-      });
+      }, sharingEditInput('grant', grant));
       setEditingGrant(null);
       setDialogError(null);
       await load({ showLoading: false });
@@ -551,7 +552,7 @@ export function RelayDevicesPage() {
       await updateRelayShare(share.id, {
         ...input,
         workspaceId: share.workspaceId,
-      });
+      }, sharingEditInput('share', share));
       setEditingShare(null);
       setDialogError(null);
       await load({ showLoading: false });

@@ -10,7 +10,7 @@ import { request } from './api';
 import { requestGrantReview } from './sharingApproval';
 import {
   isProtectedSharingDevice,
-  locallyCertifiedDevices,
+  sharingGrantDevices,
   validatePublicAccount,
   encode64,
   type PublicAccount,
@@ -79,13 +79,14 @@ async function deviceRequest<T>(
     throw error;
   }
 }
-export async function recipientVerified(account: PublicAccount) {
+export async function recipientVerified(account: PublicAccount, userId: string) {
   const checked = await validatePublicAccount(account);
-  return !!(await sharingTrustStore<boolean>('recipient-confirmed:' + checked.accountKeyId));
+  return !!(await sharingTrustStore<boolean>('recipient-confirmed:' + JSON.stringify([userId, checked.accountKeyId])));
 }
-export async function confirmRecipient(account: PublicAccount) {
+export async function confirmRecipient(account: PublicAccount, userId: string) {
   const checked = await validatePublicAccount(account);
-  await sharingTrustStore('recipient-confirmed:' + checked.accountKeyId, true);
+  if (!userId) throw new Error(translate('sharing.rowAltered'));
+  await sharingTrustStore('recipient-confirmed:' + JSON.stringify([userId, checked.accountKeyId]), true);
 }
 export async function findRelayRow(kind: ShareKind, id: string) {
   const portal = await request<RelayPortalSummaryDto>('/relay/portal');
@@ -141,13 +142,27 @@ type SharingFields = Omit<
 > & { threadId: string | null };
 export type SharingInput = {
   [K in keyof SharingFields]?: SharingFields[K] | undefined;
-};
+} & Partial<Pick<ShareRow, 'targetUserId' | 'targetUsername' | 'deviceName'>>;
+// Snapshot the values presented by the dialog. Callers combine this local
+// context with form values; no subsequent relay read supplies signed fields.
+export function sharingEditInput(kind: ShareKind, row: ShareRow): SharingInput {
+  const grant = kind === 'grant' ? row as RelayAccessGrantDto : undefined;
+  return {
+    deviceId: row.deviceId, deviceName: row.deviceName,
+    targetUserId: row.targetUserId, targetUsername: row.targetUsername,
+    scope: grant?.scope ?? 'thread', threadId: row.threadId ?? null,
+    workspaceId: row.workspaceId ?? null, workspaceScope: grant?.workspaceScope ?? 'all',
+    workspaceIds: [...(grant?.workspaceIds ?? [])], canCreateThreads: grant?.canCreateThreads ?? false,
+    threadAccess: row.threadAccess, workspaceAccess: row.workspaceAccess, expiresAt: row.expiresAt ?? null,
+  };
+}
 async function approveDeviceGrant(
   deviceId: string,
   deviceName: string,
   grant: DeviceGrant,
+  previous?: DeviceGrant,
 ) {
-  const verified = await recipientVerified(grant.grantee);
+  const verified = await recipientVerified(grant.grantee, grant.grantee.userId);
   const code = await safetyCode(grant.grantee.accountKeyId);
   // An unlocked session and the reconciliation button never authorize a PUT.
   // Wait for explicit review of this exact snapshot and recipient account key.
@@ -171,8 +186,19 @@ async function approveDeviceGrant(
     value5: JSON.stringify({ name: grant.grantee.label, userId: grant.grantee.userId }),
     value6: code,
   });
+  const difference = translate('sharing.reviewDifference', {
+    value1: previous ? JSON.stringify(previous) : translate('sharing.notActive'),
+    value2: JSON.stringify(grant),
+  });
+  const changes = previous ? translate('sharing.reviewChanges', {
+    value1: JSON.stringify(Object.fromEntries(
+      (Object.keys(grant) as (keyof DeviceGrant)[])
+        .filter((key) => JSON.stringify(previous[key]) !== JSON.stringify(grant[key]))
+        .map((key) => [key, { before: previous[key], after: grant[key] }]),
+    )),
+  }) : '';
   if (!(await requestGrantReview({
-    description: fields,
+    description: fields + '\n\n' + difference + (changes ? '\n' + changes : ''),
     recipientVerified: verified,
   })))
     throw new Error(translate('sharing.signCancelled'));
@@ -188,7 +214,7 @@ export async function syncDeviceGrant(kind: ShareKind, source: ShareRow) {
   const grant = grantForRow(kind, row, account, existing?.grantId);
   if (grant.expiresAt !== null && !Number.isFinite(grant.expiresAt))
     throw new Error(translate('sharing.rowAltered'));
-  await approveDeviceGrant(row.deviceId, row.deviceName, grant);
+  await approveDeviceGrant(row.deviceId, row.deviceName, grant, existing);
   await deviceRequest(
     row.deviceId,
     '/api/transport/grants/' + encodeURIComponent(grant.grantId),
@@ -216,10 +242,10 @@ export async function sharingMutation<T>(
     )) as SharingInput
     : undefined;
   if (operation === 'revoke') {
-    // Load every locally certified device before deleting anything. A malicious
+    // Load every bound or locally certified device before deleting anything. A malicious
     // portal cannot hide/reassign the grant's device or claim it is unpaired.
     const inventory = [];
-    for (const deviceId of await locallyCertifiedDevices())
+    for (const deviceId of await sharingGrantDevices())
       inventory.push({ deviceId, grants: await deviceGrants(deviceId) });
     for (const { deviceId, grants } of inventory)
       for (const grant of grants)
@@ -235,8 +261,13 @@ export async function sharingMutation<T>(
   ];
   if (operation === 'edit' && !permissionFields.some((key) => key in input))
     return mutate();
+  if (operation === 'edit' && [
+    'deviceId', 'targetUserId', 'targetUsername', 'scope', 'threadId', 'workspaceId',
+    'workspaceScope', 'workspaceIds', 'threadAccess', 'workspaceAccess', 'canCreateThreads', 'expiresAt',
+  ].some((key) => !(key in input)))
+    throw new Error(translate('sharing.dialogIncomplete'));
   const previous = id ? await findRelayRow(kind, id) : undefined;
-  const chosen = structuredClone({ ...previous, ...input });
+  const chosen = structuredClone(input);
   const result = await mutate();
   const response = result as ShareRow;
   const rowId = id ?? response.id;
@@ -254,10 +285,10 @@ export async function sharingMutation<T>(
     const expected = {
       ...chosen,
       id: rowId,
-      targetUserId: previous?.targetUserId ?? returned.targetUserId,
-      targetUsername: input.targetIdentifier ?? previous?.targetUsername,
+      targetUserId: input.targetUserId ?? returned.targetUserId,
+      targetUsername: input.targetIdentifier ?? input.targetUsername,
       // Names are display hints only; the reviewed device ID is authoritative.
-      deviceName: previous?.deviceName ?? returned.deviceName,
+      deviceName: input.deviceName ?? returned.deviceName,
     } as ShareRow;
     const metadataChanged = (['label', 'threadTitle', 'workspaceLabel'] as const)
       .some((key) => key in input &&
