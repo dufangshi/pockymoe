@@ -52,7 +52,14 @@ gh workflow run platform-compatibility.yml --ref main
 The compatibility workflow does not publish packages, create a GitHub Release, or deploy
 services. It does not include the separate browser E2E suite; select browser tests
 using the focused-e2e skill, with a full browser run only upon explicit request.
-The existing release/deployment workflows remain manual and keep their release
+The release and relay deployment workflows remain manual and keep their release
 gates. Do not invoke a release dry-run as a routine check of a CI-only change.
+
+`Web Pages Deploy` (`.github/workflows/pages-deploy.yml`) is the one automatic
+deployment: a push to `main` that changes the Web, its packages, the setup scripts
+or `thread-ui.sha` builds the static Web UI with the shared UI at that pinned SHA,
+checks it with `scripts/check-static-web.mjs` and publishes it to GitHub Pages. It
+can also be dispatched manually from `main`. `relay-deploy.yml` builds and deploys
+only the relay.
 
 Runtime publication uses the manual `runtime-release.yml` workflow: workspace release gate, four native platforms and pinned Web build, complete asset assembly, then immutable GitHub publication. No npm publication job remains.

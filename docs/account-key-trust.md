@@ -5,18 +5,22 @@ clear. A device bound to that key obeys only requests signed by a browser that
 the key certified, so a compromised relay can neither command a bound device nor
 read its traffic (port previews excepted). Signing in once in a browser (password,
 plus the relay's second factor when enabled) lets that browser use every device of
-the account, with no expiry. A device is bound once, when it is installed or with
-`pockymoe bind`.
+the account, with no expiry. A device is bound once: when it is installed, with
+`pockymoe bind` on the device, or from the Devices page with
+[Protect all devices](#protect-all-devices).
 
 Devices that are not bound keep trusting the relay; the Web labels them
 **Not protected · Relay trusted**.
 
 Code: device `crates/supervisor/src/owner_trust.rs`, `grants.rs`, `tunnel.rs`,
 `auth.rs`, `ports.rs`, `secure_transport/client.rs`; relay
-`crates/relay/src/account.rs`, `preview.rs`; Web
-`apps/supervisor-web/src/lib/account*.ts`, `deviceEnrollment.ts`,
+`crates/relay/src/account.rs`, `preview.rs`, `oauth.rs` and `lib.rs` (API-only
+mode); Web `apps/supervisor-web/src/lib/account*.ts`, `deviceEnrollment.ts`,
+`pendingEnrollmentStore.ts`, `remoteDeviceProtection.ts`,
 `deviceSetupCommands.ts`, `relayTransportCrypto.ts`, `signedSharing.ts`,
-`sharedDeviceTrust.ts`, `portPreview.ts`. Shared interop vectors:
+`sharedDeviceTrust.ts`, `portPreview.ts`, `staticWeb.ts` and
+`apps/supervisor-web/staticHosting.ts`; Pages build
+`.github/workflows/pages-deploy.yml`. Shared interop vectors:
 `crates/relay/test-fixtures/account-key-v2.json`,
 `crates/supervisor/tests/fixtures/account-key-v2.json` and
 `apps/supervisor-web/src/lib/fixtures/accountKeyVectors.json`.
@@ -51,14 +55,23 @@ Limits:
   sign-in that sends its existing password to the relay
   (**First sign-in since the security upgrade**). A relay that is compromised at
   that moment learns that password; choose a different one when securing the
-  account. A relay can also make an ordinary sign-in fail, and the Web then
-  suggests the upgrade choice on browsers that have not opened a vault for that
-  sign-in name. Browsers refuse the choice for names they have opened a vault for,
-  and a Web build without it removes the risk ([migration](#migration)).
+  account. A relay can also make an ordinary sign-in fail; on a browser that has
+  never opened an account vault, the Web then suggests the upgrade choice.
+  Browsers refuse the choice for sign-in names they have opened a vault for and
+  ask for an explicit confirmation when they have opened any vault. A Web build
+  without the choice removes the risk ([migration](#migration)).
 - **Web code.** The JavaScript that holds the password and keys, and the device
   setup scripts, must come from a separate static origin
   ([self-hosting](self-host-relay.md#separate-web-origin)). A relay that serves
-  the Web UI can serve modified code and take over the account.
+  the Web UI can serve modified code and take over the account. With a separate
+  origin, the static host and whoever can change what it publishes hold that
+  power instead: for the public service, GitHub Pages and the repository's `main`
+  with its pinned shared UI commit ([static hosting](#static-hosting)).
+- **Remote binding.** [Protect all devices](#protect-all-devices) trusts the
+  relay at the moment of binding: a relay that is compromised then can answer in
+  the device's place with an identity of its own and have the browser certify it,
+  while the real device stays unbound or is bound to another key. The local bind
+  command does not have this window.
 - **Fresh browsers.** A browser without a cached vault cannot detect an older
   vault revision or a hidden device certificate. It may then show a device bound
   after that revision as not protected and talk to whatever the relay presents.
@@ -72,7 +85,8 @@ Limits:
 - **Availability.** The relay can drop, delay or refuse requests, hide devices and
   withhold revocation frames (browsers also deliver revocations, see
   [Revocations](#revocations)).
-- **Unbound devices** remain fully controlled by the relay.
+- **Unbound devices** remain fully controlled by the relay, which can also bind
+  them to a key of its choice.
 - **Port previews** are not end-to-end encrypted. The relay terminates preview
   HTTPS and sees the traffic. It also sees every lease ID it forwards and can open
   further connections to that mapping until the lease expires
@@ -82,12 +96,14 @@ Limits:
   access granted to that recipient; the safety code detects it.
 - **Control access.** A recipient with control access to a thread can make its
   agent run commands on the device, including `pockymoe bind --reset`, which
-  returns the device to relay trust.
+  returns the device to relay trust, and `pockymoe preview create`, which creates
+  a local port mapping and preview lease.
 
 Local authority is outside this model. Whoever can write the Supervisor database
-or use its local API (CLI, local mode, server mode with its admin login) can bind
-or reset the device and create local port mappings and preview leases. Strict
-mode applies only to requests that arrive through the relay tunnel.
+can bind or reset the device (`pockymoe bind`), and whoever can use its local API
+(the CLI, including agents running on the device, local mode, server mode with
+its admin login) can create local port mappings and preview leases. Strict mode
+applies only to requests that arrive through the relay tunnel.
 
 ## Keys
 
@@ -96,7 +112,7 @@ mode applies only to requests that arrive through the relay tunnel.
 | Account key (ECDSA P-256) | Private key in clear only in browser memory during an unlock window; encrypted in the vault on the relay | Until the user starts over |
 | Vault data key (VDK, 32 bytes, AES-256-GCM) | In clear only in browser memory during an unlock window | Same |
 | Browser key (ECDSA P-256) | Non-extractable `CryptoKey` in the Web origin's IndexedDB, one per browser profile and account | Until sign-out or removal |
-| Device identity key (ECDSA P-256) | `<database>.transport-identity` next to the Supervisor database | Device lifetime |
+| Device identity key (ECDSA P-256) | Next to the Supervisor database, with `.transport-identity` in place of its extension (`relay-supervisor.transport-identity`) | Device lifetime |
 
 `accountKeyId = B64(SHA256(account SPKI))` and `browserId = B64(SHA256(browser SPKI))`.
 A device's `identityKey` is the B64 uncompressed SEC1 point from its key
@@ -121,10 +137,11 @@ receives the password.
 - New and changed passwords, including OAuth unlock passwords, need at least 12
   characters (Unicode code points after NFC).
 
-`GET /relay/auth/kdf` returns the vault's real parameters for an account with a
-vault and deterministic fake parameters for every other name (unknown, not yet
-secured, OAuth-only, disabled, administrator, admin reset pending), so it reveals
-neither which accounts exist nor their state.
+`GET /relay/auth/kdf` returns the vault's real parameters for every sign-in name
+whose account has a vault (also when it is disabled or an admin reset is pending)
+and deterministic fake parameters for every other name (unknown, not yet secured,
+OAuth-only without a vault, administrator), so it reveals neither which accounts
+exist nor whether they have a vault.
 
 The vault (at most 64 KiB, [format](#vault-format)) holds the VDK twice, in a
 password slot and a recovery slot, and a body encrypted with the VDK that contains
@@ -136,10 +153,11 @@ later vault with a different account key ("The relay served a different account
 key") or a lower revision ("The relay served an older account vault"). Only
 **Start over** clears that cache.
 
-Every vault write keeps the replaced vault as the previous revision.
-`GET /relay/account/vault/previous` returns it (404 `vault_missing` if there is
-none); restoring it is an ordinary authenticated write of its contents as the next
-revision. The Web has no control for this.
+The relay keeps only the current vault; it stores no earlier revisions.
+Changing the password or the recovery code re-encrypts the same VDK and keeps the
+same account key, so a password or recovery code that leaked still opens any copy
+of the vault taken while it was valid. After such a leak, use **Start over** and
+bind the devices again; Account settings says so.
 
 **Recovery code.** 20 random bytes in Crockford base32
 (`0123456789ABCDEFGHJKMNPQRSTVWXYZ`), shown once as 8 groups of 4 characters
@@ -154,11 +172,11 @@ unrelated to the one-time recovery codes of the relay's two-step verification.
 **Unlock window.** After the password or recovery code is entered, the browser
 keeps the account private key and the VDK in memory for at most 10 minutes. They
 are never persisted and are dropped on sign-out, when the page is closed or
-reloaded, and when another account becomes active. Binding a device (including
-copying a setup or bind command), certifying a device, confirming a replaced
-device identity, removing a browser or device, changing the password and
-replacing the recovery code need an open window; otherwise the browser asks for
-the password with the reason.
+reloaded, and when another account becomes active. Creating this browser's key,
+binding a device (copying a setup or bind command, or remote protection),
+certifying a device, confirming a replaced device identity, removing a browser or
+device, changing the password and replacing the recovery code need an open
+window; otherwise the browser asks for the password with the reason.
 
 ## Browsers
 
@@ -166,13 +184,14 @@ At sign-in, a browser without a browser key creates one and has the account key
 sign a browser certificate for it. The browser registers the certificate with the
 relay at every sign-in (`POST /relay/account/browsers`, labelled with the browser
 and platform name). Certificates have no expiry. A browser stays authorized until
-its key is deleted locally (sign-out) or the browser is removed. An account has at
-most 32 browser rows on the relay; registering another answers 429
-`browser_limit` until one is removed.
+its key is deleted locally (sign-out) or the browser is removed. The relay keeps
+at most 32 browser rows per account key, counting only rows that are not revoked;
+a browser that already has a row registers again as usual, and a new one beyond
+the limit answers 429 `browser_limit` until a browser is removed.
 
-Registering binds the relay session to that browser: the session cannot register
-a different browser (403 `forbidden`), and removing the browser ends every relay
-session bound to it.
+Registering binds the relay session to that browser and account key: the session
+cannot register a different browser (403 `forbidden`), and removing the browser
+(a signed revocation) ends every relay session bound to it.
 
 On first contact with each protected device in a page session, a browser:
 
@@ -198,7 +217,9 @@ password creates a new browser key. A plaintext `browser_revoked` (which the rel
 could forge) never deletes the key.
 
 A signed-in session whose browser has no browser key shows **Unlock this browser**
-once: "Enter your password once to connect to your devices."
+on every account page until it has one: "Enter your password once to connect to
+your devices. Your account key stays unlocked for sensitive changes for 10
+minutes."
 
 ## Binding devices
 
@@ -207,12 +228,13 @@ enrollment secret and turns on strict mode. Enrollment then installs a device
 certificate signed by the account key.
 
 The enrollment secret is 32 random bytes in base64url, created by the browser and
-kept in its IndexedDB with the pending enrollment for 7 days. It travels only in
-the environment variable `POCKYMOE_ENROLL_SECRET` or on standard input
-(`pockymoe bind --enroll-stdin`; `pockymoe setup` and the setup scripts accept
-the same option), never as a process argument.
-The setup scripts read it, remove it from their environment and hand it only to
-native setup; `pockymoe` removes it from its own environment before starting
+kept in its IndexedDB with the pending enrollment for 7 days.
+[One-click protection](#protect-all-devices) sends it inside the encrypted bind
+request. In a command it travels only in the environment variable
+`POCKYMOE_ENROLL_SECRET` or on standard input (`pockymoe bind --enroll-stdin`;
+`pockymoe setup` and the setup scripts accept the same option), never as a
+process argument. The setup scripts read it, remove it from their environment
+and hand it only to native setup; `pockymoe` removes it from its own environment before starting
 anything, and the Supervisor service and its detached workers never inherit it.
 Shell history still holds the copied command; its secret is useless once the
 device has its certificate or the pending enrollment has expired. The Supervisor
@@ -243,10 +265,15 @@ Run on a device that is already installed for the same relay and port, a setup
 command with an account key binds the existing installation's database (after
 authenticating to its Supervisor with the saved local credentials when it is
 running) and keeps the saved registration; the token or setup code in the command
-is not used.
+is not used. It refuses when the command's Web origin differs from the one saved
+at installation, or when the installation saved none, as installations made
+before Web origins were saved did ("The saved Web origin differs; update the
+local configuration before resuming setup"). Protect such devices with the bind
+command or [Protect all devices](#protect-all-devices).
 
-**Existing devices.** An unbound device shows **Protect this device**, which gives
-a command to run on the device:
+**Existing devices.** An unbound device shows **Protect this device**. Its dialog
+offers **Protect this device remotely** ([one-click protection](#protect-all-devices))
+or **Show local bind command**, a command to run on the device:
 
 ```sh
 POCKYMOE_ENROLL_SECRET='<secret>' pockymoe bind --account-key '<B64 SPKI>' --web-origin 'https://app.example.com'
@@ -263,9 +290,9 @@ no running service. A running Supervisor applies the change at once.
 | Flags | Effect |
 | --- | --- |
 | `--account-key KEY` with `POCKYMOE_ENROLL_SECRET` or `--enroll-stdin` | Bind and turn on strict mode. Bound to the same key: stores the new secret, unless the device already holds a valid certificate for its current identity, in which case enrollment stays complete; a stored certificate for another identity is deleted. Bound to another key: refuses ("use pockymoe bind --reset to replace it"). Also deletes the device's live links that have no encryption key ([public links](#public-links)). Standard input is read up to 1024 bytes. |
-| `--web-origin URL` | Stored with the binding. HTTPS origin without path, query or credentials (HTTP only for `localhost`, `127.0.0.1`, `[::1]`). Defaults to env `POCKYMOE_WEB_ORIGIN`. |
-| `--status` | Prints `Bound to account <fingerprint>. Strict mode: on.` or `Not bound. Strict mode: off.`, preceded by `Web origin (installation hint): <origin>` when one is stored and a notice when the relay assigned a different device ID. |
-| `--reset` | Asks for confirmation, then deletes the pinned key, enrollment secret, device certificate, browser registrations and their preview leases, grants, peer registrations and port mappings created by browsers, and turns strict mode off. Revocation tombstones, threads, local port mappings and their leases, the identity key and the relay device ID remain. Combine with `--account-key` to rebind to another key in one step. |
+| `--web-origin URL` | With `--account-key`. Stored with the binding. HTTPS origin without path, query, fragment or credentials (HTTP only for `localhost`, `127.0.0.1`, `[::1]`). Defaults to env `POCKYMOE_WEB_ORIGIN`. |
+| `--status` | Prints the device identity fingerprint (`SHA-256 <B64 of SHA-256 of the identity key>`), then `Web origin (installation hint): <origin>` when one is stored, a notice when the relay assigned a different device ID, and `Bound to account <fingerprint>. Strict mode: on.` or `Not bound. Strict mode: off.` |
+| `--reset` | Asks for confirmation, then deletes the pinned key, enrollment secret, device certificate, stored Web origin, browser registrations and their preview leases, grants, peer registrations, port mappings created by browsers and the device-ID mismatch status, and turns strict mode off. Revocation tombstones, threads, local port mappings and their leases, the identity key and the relay device ID remain. Combine with `--account-key` to rebind to another key in one step. |
 | `--yes` | With `--reset`, skips the prompt. |
 | `--database PATH` | Supervisor database (env `POCKYMOE_DATABASE_PATH`, default `~/.remote-codex/relay-supervisor.sqlite`). |
 
@@ -279,14 +306,89 @@ retries with exponential backoff (1 second, doubling up to 5 minutes) and report
 registration, or reset the binding before attaching the device to another relay
 device.
 
+### Protect all devices
+
+**Protect all devices** on the Devices page binds the account's unprotected
+devices without a command on each device; **Protect this device remotely** in a
+device's **Protect this device** dialog does the same for one device. The dialog
+first states the trade-off: "Remote protection trusts the relay at the moment of
+binding. After binding, your account key protects device commands and traffic."
+and "For the most secure option, run the local bind command on each device."
+
+After one unlock ("Authorize binding a device to your account"), the browser goes
+through the devices the account owns:
+
+- devices removed from the account are skipped;
+- devices the vault already records are never bound remotely. They show
+  "Already bound; remote binding was skipped.", unless the device is online and
+  the certificate it presents does not verify for the recorded identity: then the
+  row shows the missing-certificate or changed-identity state, which
+  [repair](#identity-changes-and-repair) handles;
+- devices for which this browser holds a pending local-command enrollment are
+  skipped ("Waiting for the local bind command. …"), so a secret meant for a local
+  command never reaches the relay. A device uses one path at a time: while remote
+  protection is in progress, the dialog refuses a local command ("Remote
+  protection is already in progress for this device. …");
+- every other device gets a pending enrollment marked for remote protection.
+
+For each such device that is online, the browser reads its key descriptor:
+
+1. A runtime that does not advertise the `remote-bind` capability, or has no
+   encryption descriptor, shows "Update this device before protecting it
+   remotely." with **Update and protect**. That button starts the device's update
+   through the management API and the device restarts. Binding resumes when the
+   device reconnects; a failed update shows "The update did not enable remote
+   protection. …".
+2. A device that reports a binding to another account key, presents a certificate
+   of another key, or answers the bind with another key or device ID is reported
+   as "This device is bound to another account key. Run pockymoe bind --reset
+   locally, then retry or use the local bind command." That report reaches the
+   browser through the relay before the device is protected, so first run
+   `pockymoe bind --status` on the device; reset only a device that is bound to a
+   key other than yours. A device already bound to this account key by another
+   browser's command is left to that enrollment.
+3. Otherwise the browser sends an encrypted `POST /api/transport/bind` with
+   `{accountPublicKey, enrollSecret, webOrigin}`. The device does what
+   `pockymoe bind` does (pin, enrollment secret, strict mode) and answers
+   `{bound: true, accountKeyId, deviceId}`. The browser then completes
+   [enrollment](#enrollment) as usual: MAC check, certificate, relay copy and the
+   vault's bound devices. Signing the certificate asks for the password again if
+   the unlock window has closed.
+
+Offline devices stay queued ("Protection queued; waiting for the device to
+connect.") and are bound when they connect while this browser has a page open,
+within the pending enrollment's 7 days. Each device row shows its progress or its
+error, with **Update and protect** or **Retry enrollment**. The local command
+stays available as the most secure option.
+
+**Trade-off.** Until it is bound, a device obeys the relay, and its key
+descriptor carries no certificate the browser could check. The bind request is
+encrypted to whatever key the relay presents, so a relay that is compromised at
+that moment can bind the device to a key of its own or answer in the device's
+place with an identity it controls and have that certified. A bound and certified
+device is protected like any other. The local command avoids this window: the
+secret reaches the device outside the relay, and the enrollment MAC proves that
+the certified identity belongs to the device that received it.
+
+The device accepts the bind only while it is not bound (409 `already_bound`
+otherwise), only encrypted (403 `device_strict_mode` for plaintext, including
+direct local requests) and only as a request the relay forwards for the device
+owner (403 `owner_required` for a peer or a share recipient). An invalid key,
+secret or Web origin, or a device that has not connected to the relay yet,
+answers 400 `invalid_bind`. The secret is never logged. The key descriptor's
+unsigned trust hint carries `capabilities: ["remote-bind"]` on runtimes with the
+endpoint; it is a feature hint, never a security decision.
+
 ### Enrollment
 
-Enrollment completes on its own in the browser that created the command, on any
-page, while the device is online (checked every 15 seconds while the page is
-visible):
+Enrollment completes on its own in the browser that created the command or
+started remote protection, on any page, while the device is online (checked every
+15 seconds while the page is visible, backing off to 2 minutes after failures):
 
-1. The browser fetches the device's key descriptor and sends an encrypted, unsigned
-   `GET /api/transport/enrollment`. The device answers
+1. The browser fetches the device's key descriptor. If the descriptor already
+   carries a certificate that verifies for this account, device and identity, and
+   no identity replacement is involved, it continues with step 4. Otherwise it
+   sends an encrypted, unsigned `GET /api/transport/enrollment`. The device answers
    `{deviceId, identityKey, accountKeyId, mac}` with
    `mac = HMAC-SHA256(enrollSecret, "pockymoe-acct-enroll-v1\n{deviceId}\n{identityKey}\n{accountKeyId}")`,
    or 404 `enrollment_missing` (no secret pending, or the device already holds a
@@ -296,7 +398,9 @@ visible):
    for the device, it asks **Confirm device reinstall** first (see
    [repair](#identity-changes-and-repair)). It then signs a device certificate
    (asking for the password if the window is closed) and sends it in a signed
-   `PUT /api/transport/device-certificate`.
+   `PUT /api/transport/device-certificate`. A certificate older than the last one
+   this browser verified for the device is refused ("Enrollment refused: this
+   device certificate is older than the one already trusted. …").
 3. The device verifies the certificate against its pinned key, its own device ID
    and identity key, refuses a revoked device ID, stores the certificate, deletes
    the secret and answers `{certificate}`.
@@ -310,16 +414,16 @@ visible):
 | Label | Meaning |
 | --- | --- |
 | **Protected** | The device presented a certificate that verifies with this account's own key and answered a signed request in the `owner` role. A device shared with you is never labelled Protected. |
-| **Not protected · Relay trusted** | Not bound and not listed in the vault. |
-| **Waiting for first connection** | This browser holds a pending enrollment for the device. |
-| **Certificate missing** | The vault lists the device, or it reports itself bound, but it presents no valid certificate, or its certificate is for an identity other than the one the vault records. The connection is blocked and never falls back to relay trust. The row offers **Repair device binding**. |
-| **Protection not verified** | No descriptor yet, for example while the device is offline. |
+| **Not protected · Relay trusted** | Not listed in the vault, no pending enrollment in this browser, and the device's connection trusts the relay. |
+| **Waiting for first connection** | Not listed in the vault, and this browser holds a pending enrollment for the device (a copied command or queued remote protection). |
+| **Certificate missing** | The vault lists the device, but this page has no verified owner connection to it: the device is offline, presents no valid certificate, or presents a certificate for an identity other than the one the vault records. Also shown for a device removed from the account. The connection never falls back to relay trust. The row offers **Repair device binding**. |
+| **Protection not verified** | Not listed in the vault and no pending enrollment, while the device's connection state is unknown, for example while it is offline. |
 
 The device's key descriptor (`GET …/transport/key`) carries the device's own
 `certificate` (or `null`) and an unsigned hint `trust: {bound, strict,
-accountKeyId}`. Browsers use the hint only to refuse a downgrade, never to grant
-trust, and verify the certificate the device presents rather than the relay's
-copy. Devices in the user's own device list and devices with a pending enrollment
+accountKeyId, capabilities}`. Browsers use the hint only to refuse a downgrade
+and to offer features, never to grant trust, and verify the certificate the device
+presents rather than the relay's copy. Devices in the user's own device list and devices with a pending enrollment
 always take these owner checks, never the recipient checks of
 [sharing](#sharing). **Manage device trust** (the encryption status icon) shows the
 state, the bound account fingerprint and the browsers registered on the device.
@@ -337,9 +441,11 @@ the browser that copied it completes it:
   file, enrollment installs a new certificate without further questions;
 - after the identity file was lost or the device was reinstalled, the device has a
   new identity key. Once the enrollment MAC verifies, the browser shows
-  **Confirm device reinstall** with the previous and the new identity; **Confirm
-  replacement and unlock** signs the new certificate and records the new identity
-  key in the vault.
+  **Confirm device reinstall** with the device name and the previous and new
+  identity fingerprints (`SHA-256 …`), and asks the user to compare the new one
+  with `pockymoe bind --status` or `pockymoe relay-fingerprint` run on the device.
+  **Confirm replacement and unlock** signs the new certificate and records the new
+  identity key in the vault.
 
 Until that confirmation, a browser that finds a valid account certificate for an
 identity other than the recorded one blocks the device: "This device has a
@@ -358,6 +464,8 @@ signature:
 - `GET /api/publications/{token}` ([public links](#public-links));
 - encrypted `POST /api/transport/browser`, `GET /api/transport/enrollment` and
   `PUT /api/transport/revocations` (refused in plaintext on every device);
+- encrypted `POST /api/transport/bind`, which a bound device answers only with
+  409 `already_bound` or 403 `owner_required`;
 - encrypted `POST /api/peer/transport/certificate` from a relay-identified peer.
 
 Everything else needs an encrypted request signed by a registered owner or
@@ -379,9 +487,12 @@ only encrypted tunnel requests.
 | `device_strict_mode` | 403 | Plaintext request to a strict device outside the exceptions; `/api/peer/*` without a relay peer identity; a plaintext bootstrap or trust endpoint request on any device |
 | `browser_registration_required` | 401 | Encrypted request without `x-rcd-session`, from an unregistered browser, with an invalid signature or a registration that is no longer valid; trust endpoints on an unbound device |
 | `browser_revoked` | 401 | The browser is revoked by the pinned key or by the key of a recipient in a live grant (request or registration) |
-| `account_mismatch` | 403 | The certificate's account key is neither the pinned key nor a recipient key in a live grant, or the browser ID is registered for another account or user |
+| `account_mismatch` | 403 | The certificate's account key is neither the pinned key nor a recipient key in a live grant, or the browser ID is registered for another account or user (an owner certificate replaces a recipient registration with the same browser ID) |
 | `browser_limit` | 429 | A new recipient browser while 32 are registered for that recipient key |
-| `owner_required` | 403 | Recipient request to an owner-only path, or a preview lease for a browser that is not a registered owner |
+| `revocation_limit` | 429 | A revocation push that would store more than 1024 tombstones for one recipient key; the whole push is refused |
+| `owner_required` | 403 | Recipient request to an owner-only path, a preview lease for a browser that is not a registered owner, or a bind request from a peer or recipient |
+| `already_bound` | 409 | Bind request to a bound device |
+| `invalid_bind` | 400 | Bind request with an invalid key, secret, Web origin or body, or to a device that has not connected to the relay yet |
 | `grant_denied` | 403 | Recipient request outside its grants |
 | `invalid_grant` | 400 | Malformed grant ([sharing](#sharing)) |
 | `grantee_is_owner` | 400 | The recipient key is the device's own account key |
@@ -402,7 +513,8 @@ Removing a browser (**Account settings → Account key and browsers → Remove
 browser**) or a device (**Devices → Remove device**) signs a revocation
 `{kind: "browser" | "device", subjectId}` with the account key and posts it to the
 relay. The relay checks it against the vault's account key, stores it (at most
-4096 per account; more answer 429 `revocation_limit`) and, for a browser, ends the
+4096 per account key; a new one beyond that answers 429 `revocation_limit`, a
+repeated one is accepted) and, for a browser, deletes its browser row and ends the
 relay sessions bound to that browser. Revocations are permanent. They reach
 devices by three paths:
 
@@ -422,7 +534,9 @@ device accepts entries signed by its pinned key, and browser revocations signed 
 the account key of a recipient in a live grant, which apply only to browsers
 registered under that recipient key. Accepted entries are kept as tombstones,
 also across `pockymoe bind --reset`, so a removed browser cannot register again
-after the device is bound to the same key.
+after the device is bound to the same key. A device keeps at most 1024 tombstones
+per recipient key; a push that would add more is refused as a whole (429
+`revocation_limit`).
 
 A revoked browser loses its registration, its preview leases, every open channel
 and its relay sessions; for an owner browser, also the port mappings it created. A
@@ -450,25 +564,26 @@ after which their certificates no longer verify.
 | Flow | Behavior |
 | --- | --- |
 | Register | The browser generates the user ID (canonical UUID v4), account key, VDK, salt and recovery code, shows the code for confirmation, then sends `POST /relay/auth/register` with `authKey`, `recoveryAuthKey` and the vault. With registration approval, the vault waits with the request and is stored on approval; a second registration for a name with a pending request answers 409 `conflict`. A user ID collision answers 409 `user_id_taken`; registering again generates new keys. |
-| Sign in | One form: fetch the KDF parameters for the sign-in name, derive, sign in with `authKey`, complete the second factor, fetch and open the vault, register the browser. The unlock window opens without a separate step. When a sign-in fails on a browser that has not opened a vault for that name, the error points to the security upgrade choice if the build offers it. |
-| First sign-in since the security upgrade | For an account without a vault. An explicit choice on the sign-in page that posts `{login, password, upgrade: true}`; the relay accepts it only for accounts without a vault, browsers refuse it for names they have opened a vault for, and Web builds with `VITE_POCKYMOE_LEGACY_UPGRADE=0` do not offer it. A stored SHA-256 password hash is upgraded to scrypt at this sign-in. The session stays restricted until **Secure your account** creates the vault, which needs this sign-in to be less than 10 minutes old: choose a password of at least 12 characters and save the recovery code. Creating the vault deletes the relay's login password hash, signs out the account's other sessions and forgets its trusted (two-step) browsers. |
+| Sign in | One form: fetch the KDF parameters for the sign-in name, derive, sign in with `authKey`, complete the second factor, fetch and open the vault, register the browser. The unlock window opens without a separate step. When a sign-in fails on a browser that has never opened an account vault, the error points to the security upgrade choice if the build offers it. |
+| First sign-in since the security upgrade | For an account without a vault. An explicit choice on the sign-in page that posts `{login, password, upgrade: true}`; the relay accepts it only for password accounts without a vault that have not used an admin reset password. Browsers refuse it for names they have opened a vault for; a browser that has opened any vault warns and requires the box "I am upgrading a different account that has never been secured." Web builds with `VITE_POCKYMOE_LEGACY_UPGRADE=0` do not offer it. A stored SHA-256 password hash is upgraded to scrypt at this sign-in. The session stays restricted until **Secure your account** creates the vault, which needs this sign-in to be less than 10 minutes old: choose a password of at least 12 characters and save the recovery code. Creating the vault deletes the relay's login password hash, signs out the account's other sessions and forgets its trusted (two-step) browsers. |
 | OAuth account | No login password. At the first sign-in the user chooses an **unlock password**, which only encrypts the vault; no `authKey` is sent. A browser without a browser key asks for it after OAuth sign-in. Every vault write (including recording a bound device) and starting over need an OAuth sign-in or second factor within 10 minutes (otherwise 403 `reauthentication_required`). An account with both a password and an OAuth identity is a password account. |
 | Forgot password | **Forgot password? Use your account recovery code** on the sign-in page: the recovery code and a new password. The relay checks `recoveryAuthKey` (10 attempts per 5 minutes per name) and always asks for the configured second factor, even on trusted browsers. The browser opens the recovery slot, writes a new password slot and `authKey`, and registers itself. |
-| Admin reset | **Use an admin reset password**, a separate explicit choice, with a temporary password from the relay administrator (one use; the configured second factor is asked even on trusted browsers). Then enter the recovery code and a new password, or **Start over**. |
+| Admin reset | **Use an admin reset password**, a separate explicit choice, with a temporary password from the relay administrator (one use; the configured second factor is asked even on trusted browsers). For an account with a vault, then enter the recovery code and a new password, or **Start over**. For an account without a vault (including OAuth-only accounts), the sign-in opens a setup session that leads to **Secure your account** (or the unlock password); this works in every Web build. |
 | Change password | Account settings, unlock window. Proves the current `authKey`, or the recovery code when the window was opened with it. New random salt. Signs out other sessions and forgets trusted browsers; browser keys and device registrations stay valid. |
 | Regenerate recovery code | Shows a new code once; the old one stops working. Signs out other sessions and forgets trusted browsers. |
-| Start over | Offered only after signing in with the recovery code or an admin reset password. Deletes the vault, the account's browser certificates and the relay copies of its device certificates, and signs out other sessions. The session becomes a setup session, and the browser asks for a new password and shows a new recovery code to create a new account key. Until the new vault exists, the old recovery code still signs in (into a setup session); the password does not. Every bound device refuses the new key until `pockymoe bind --reset` on that device, which then shows **Protect this device**. The account's safety code changes, and a recipient browser that pinned the old owner key blocks the owner's devices until it uses **Forget pinned owner account**. |
+| Start over | In Account settings; outside a recovery or reset session it first asks for the current password ("Confirm your current password to start over."). Deletes the vault, the account's browser certificates and the relay copies of its device certificates, and signs out other sessions. The session becomes a setup session, and the browser asks for a new password and shows a new recovery code to create a new account key. Until the new vault exists, the old recovery code still signs in (into a setup session); the password does not work in the Web, because the relay then answers fake KDF parameters. Every bound device refuses the new key until `pockymoe bind --reset` on that device, which then shows **Protect this device**. The account's safety code changes, and a recipient browser that pinned the old owner key blocks the owner's devices until it uses **Forget pinned owner account**. |
 | Sign out | Deletes this browser's key. Its certificate stays listed until removed; the cached account key ID and vault revision stay to detect substitution at the next sign-in. |
 
 The relay administrator signs in at `/relay-admin` with the configured password,
 holds no account key and cannot use the portal.
 
-An admin reset of an account with a vault sets a one-time temporary password and
-invalidates the old `authKey`; the vault is unchanged, so only the recovery code
-(or starting over) restores device access. An admin reset of an account without a
-vault sets an ordinary password, which the user enters with **First sign-in since
-the security upgrade** to secure the account. Nobody, including the relay
-operator, can recover an account key without the password or recovery code.
+Every admin reset sets a one-time temporary password. For an account with a vault
+it also invalidates the old `authKey`; the vault is unchanged, so only the
+recovery code (or starting over) restores device access. For an account without a
+vault, the temporary-password sign-in yields a setup session in which the user
+secures the account; afterwards neither the temporary password nor the security
+upgrade sign-in works for it. Nobody, including the relay operator, can recover an
+account key without the password or recovery code.
 
 ## Migration
 
@@ -495,26 +610,120 @@ working as **Not protected · Relay trusted**.
 
 **Binding existing devices.**
 
-1. Update the device's runtime (device Settings) to a version that supports
-   binding.
-2. On the Devices page choose **Protect this device** and run the shown command on
-   the device, or run the device's setup command again; either binds the existing
-   installation without registering it again.
-3. Keep the browser that copied the command open, or come back to it within 7
-   days, until the device shows **Protected**.
-4. Afterwards the device honors only signed grants: in each share's details,
+1. On the Devices page choose **Protect all devices**
+   ([one-click protection](#protect-all-devices)). One unlock binds every online
+   unprotected device and queues the offline ones; a device whose runtime cannot
+   bind remotely offers **Update and protect**, which updates it first. For the
+   most secure option, choose **Protect this device** → **Show local bind
+   command** instead and run the command on the device; it needs a runtime that
+   supports binding (update it from device Settings first). Rerunning the
+   device's setup command also binds the existing installation, but only when the
+   Web origin saved at installation matches ([new devices](#binding-devices)).
+2. Keep the browser open, or come back to it within 7 days, until the device
+   shows **Protected**.
+3. Afterwards the device honors only signed grants: in each share's details,
    **Not active on device** offers **Review and confirm**. Port mappings created
    through the relay before binding must be enabled again, and the device deletes
    live public links created before link encryption (the relay keeps their last
    snapshot, marked stale).
 
-**Operators.** Update the relay and the Web UI together; a separately hosted Web
-build must serve the new `_headers`. When every account has a vault, build the
-Web with `VITE_POCKYMOE_LEGACY_UPGRADE=0` to remove the security upgrade choice.
-The relay still accepts the request, but no browser running that build will send
-a password. Accounts without a vault, including accounts reset by an administrator
-before they were secured, then cannot sign in with a password; after **Start
-over** the recovery code still works.
+**Operators.** Update the relay and the Web UI together. A relay that has served
+the Web UI itself moves it to a static origin as described
+[below](#moving-to-a-separate-web-origin). When every account has a vault, build
+the Web with `VITE_POCKYMOE_LEGACY_UPGRADE=0` to remove the security upgrade
+choice (for the public site, add it to the build environment in
+`pages-deploy.yml`). The relay still accepts the request, but no browser running
+that build sends a password. An account that still has no vault then signs in
+only after an [admin reset](#account-flows): **Use an admin reset password**
+leads to **Secure your account**. After **Start over**, the recovery code still
+signs in until the new vault exists.
+
+### Moving to a separate Web origin
+
+This is the procedure for a relay that serves the Web UI today and moves it to a
+static origin with an API-only relay
+([self-hosting](self-host-relay.md#separate-web-origin)). The public service
+moved this way: the Web UI from `https://remote.lnz-study.com` to GitHub Pages at
+`https://app.lnz-study.com`, while the relay kept `https://remote.lnz-study.com`.
+
+**Choosing hostnames.** Keeping the relay's hostname and giving the Web UI a new
+host on the same site (registrable domain) leaves everything that points at the
+relay unchanged: the relay URL devices saved at setup and their
+`/supervisor/tunnel` connection, the OAuth callback URLs
+(`…/relay/auth/oauth/{google,github}/callback` stay on
+`POCKYMOE_PUBLIC_BASE_URL`), the relay's session and trusted-browser cookies and
+the port preview hosts (`p-<id>.<base>` keep routing to the relay; an exact DNS
+record for the Web host takes precedence over a preview wildcard). What moves is
+the Web origin. Browsers keep browser keys, verified vault state, pending
+enrollments and pinned owner keys per origin, so these start empty on the new
+one, and passkeys registered as a second factor are bound to the old host. Moving the API to a new host instead keeps the
+Web origin and passkeys, but needs new OAuth callback URLs and the old host's
+`/supervisor/tunnel` routed to the relay
+([existing devices](self-host-relay.md#existing-devices)).
+
+**Trial instance.** Try the move first on a second relay with a copy of the
+data: a consistent SQLite backup of `relay-store.sqlite` together with the same
+`session-secret` (it decrypts stored two-step factors and device credentials),
+its own hostname and port, `POCKYMOE_PUBLIC_BASE_URL` and `POCKYMOE_WEB_ORIGIN`
+set to trial hosts on one site, and a static build for that pair. Check sign-in,
+two-step verification, OAuth (register the trial callback URL with the
+provider), securing an account and the Devices page; try binding with a test
+device set up against the trial relay. Use Web and relay hosts that production
+will never use: browsers keep the vault state they verified per Web origin and
+would later refuse a different production vault ("The relay served a different
+account key"). Nothing done on the trial carries over. The copy holds every
+account's credentials; protect it like the production database and delete it
+afterwards.
+
+**Cutover in place.**
+
+1. Publish the static Web UI on the new origin
+   ([building it](self-host-relay.md#building-the-static-web-ui)). For GitHub
+   Pages, set up the custom domain and its DNS record first.
+2. Stop the relay and back up its data directory consistently
+   (`relay-store.sqlite`, `session-secret`) and its environment file.
+   `relay-deploy.yml` does this for the public relay before replacing the binary.
+3. Add `POCKYMOE_WEB_ORIGIN` (keep `POCKYMOE_PUBLIC_BASE_URL`), install the new
+   relay and start it.
+4. Check that `/healthz` answers, that `/` on the relay redirects (307) to the
+   Web origin, that sign-in works on the Web origin and that devices reconnect.
+
+**Rollback.**
+
+- Removing `POCKYMOE_WEB_ORIGIN` again (with `POCKYMOE_RELAY_WEB_DIST_DIR` set)
+  returns to single-origin mode without losing data. Browsers then use the relay
+  origin's storage again; those whose old browser was removed after the move sign
+  in again there, and browser keys created on the static origin stay registered
+  until removed.
+- Restoring the database backup discards everything written since: vaults
+  created or changed, browser registrations, revocations and device
+  certificates. Browsers that opened a newer vault refuse the restored one ("The
+  relay served an older account vault. Connection blocked.") or its absence. An account
+  secured after the backup has lost its account key with its vault; devices bound
+  to that key need `pockymoe bind --reset` before they can be bound again.
+- A relay binary from before account keys cannot sign in accounts that have
+  created a vault, because their old password hash was deleted. Run such a binary
+  only on the backup taken before the upgrade.
+
+**What each user does once.**
+
+1. Open the Web origin (the relay's address redirects there) and sign in again;
+   the browser gets a new browser key. A passkey registered on the old host does
+   not work on the new one: use another second factor or a two-step recovery code
+   and register the passkey again.
+2. Secure the account there if that has not happened yet
+   ([each user, once](#migration)).
+3. In **Account settings → Account key and browsers**, remove the browsers created
+   before the move (the current one is marked). Their keys stay in the old
+   origin's storage, which is now the relay's own host, so a compromised relay
+   could serve a page there that uses them.
+4. Bind devices that are still unprotected with **Protect all devices** or the
+   local command. A command copied on the old origin cannot complete: its pending
+   enrollment stays in the old origin's storage, so copy it again. Devices bound
+   before the move keep their binding.
+
+**Old Web origin.** Browsers that had the Web UI installed from the relay are
+cleaned up by the relay ([old Web origin](#old-web-origin)).
 
 ## Sharing
 
@@ -640,22 +849,109 @@ owner browser while that browser's registration exists. It also opens a preview
 connection only under a live lease for that mapping:
 
 - an owner browser obtains one with a signed
-  `POST /api/port-mappings/{id}/lease` → `{leaseId, expiresAt}` before each
-  **Open**. A lease lasts 8 hours; asking again from the same browser for the same
-  mapping renews the same lease ID. It ends early when that browser is removed or
-  the mapping is stopped;
+  `POST /api/port-mappings/{id}/lease` → `{leaseId, expiresAt}` before **Open**
+  in Port mappings. A lease lasts 8 hours; asking again from the same browser for
+  the same mapping renews the same lease ID. It ends early when that browser is
+  removed or the mapping is stopped;
 - `pockymoe preview create` creates a local lease with the mapping (creating the
-  same port again renews it). Local leases survive browser removal and
+  same port again renews it). Its `openUrl` carries
+  `lease=<leaseId>&leaseExpiresAt=<ms>`. Local leases survive browser removal and
   `pockymoe bind --reset`;
 - the signed DSH console request returns a lease for the console mapping.
 
+Lease IDs are 43 base64url characters. The Web uses a lease it received from a
+CLI link or the DSH console as long as its `leaseExpiresAt` has not passed (or a
+link has none), and asks the device for a new one otherwise.
+
 The open request carries the lease (`POST /relay/devices/{id}/port-mappings/{mappingId}/open?lease=<leaseId>`),
 and the relay passes it as `leaseId` in every `preview.open` frame for that preview
-session. Without a lease, the relay refuses with 403 `preview_lease_required`
-unless the device reports that it is not strict. The device ignores a
+session. The relay refuses a malformed lease (400 `invalid_lease`), and without a
+lease it refuses with 403 `preview_lease_required` unless the device reports that
+it is not strict. It removes `lease`, `leaseExpiresAt` and its launch ticket from
+URLs before they reach the previewed application. The device ignores a
 `preview.open` without a live lease and closes open connections when their lease
 expires or ends. Recipients get `owner_required`. Details:
 [port previews](port-previews.md#bound-devices).
+
+## Web origin
+
+The Web code holds passwords and keys, so the public service serves it from a
+static origin and runs the relay API-only
+([self-hosting](self-host-relay.md#separate-web-origin)).
+
+### Static hosting
+
+`pnpm --filter @pockymoe/supervisor-web build:static` (`vite build --mode
+static`) produces a site that needs no server logic:
+
+- The relay origin is compiled in (`VITE_POCKYMOE_RELAY_ORIGIN`), so the page
+  needs no inline script; every script is external and same-origin.
+- `index.html` starts with the Content Security Policy in a
+  `<meta http-equiv="Content-Security-Policy">` tag, ahead of every script and
+  link, and a `<meta name="referrer" content="no-referrer">` tag. The meta policy
+  has every directive of the header version except `frame-ancestors`, which a
+  meta policy cannot carry: `script-src 'self' 'wasm-unsafe-eval'`, `connect-src`
+  limited to the Web origin and the relay's `https:` and `wss:` origins,
+  `object-src 'none'`, `base-uri 'none'` and `form-action` limited to the Web
+  origin and the relay.
+- The app refuses to start in a frame. When it is not the top window, it empties
+  the page, tries to navigate the top window to itself and stops ("The account
+  Web app requires a top-level window"). This stands in for `frame-ancestors
+  'none'` and `X-Frame-Options: DENY`.
+- The service worker is `/relayServiceWorker.js` at the site root, registered
+  with scope `/`, so it needs no `Service-Worker-Allowed` header.
+- `404.html` is a copy of `index.html`. GitHub Pages serves it for every unknown
+  path, which gives the single-page app its routes (with status 404). `CNAME`
+  holds the custom domain (`POCKYMOE_WEB_DOMAIN`).
+- `_headers` and `_redirects` carry the full policy as response headers and the
+  fallback rewrite for hosts that apply them.
+
+`scripts/check-static-web.mjs` checks the output: the meta policy equals the
+`_headers` policy without `frame-ancestors` and allows the configured relay, the
+meta tags precede scripts and links, scripts are external, `404.html` equals
+`index.html`, `CNAME` matches, the worker is at the root and the bundle contains
+the frame check.
+
+GitHub Pages cannot set custom response headers, so the public site goes without
+those in `_headers`:
+
+- `frame-ancestors` and `X-Frame-Options`; the frame check replaces them once the
+  app's script runs;
+- `X-Content-Type-Options: nosniff`;
+- a policy for the service worker: a meta policy applies only to the document, so
+  `relayServiceWorker.js` runs without a Content Security Policy;
+- `Cache-Control: no-cache` for `index.html` and the service worker; Pages applies
+  its own caching, so a new deploy can take a few minutes to reach browsers.
+
+The referrer meta tag covers the `Referrer-Policy` header for the page.
+
+**Deployment.** `.github/workflows/pages-deploy.yml` builds and deploys the
+public site on every push to `main` that changes the Web, its packages, the setup
+scripts, `thread-ui.sha` or the workflow itself, and on manual dispatch from
+`main`. It reads the full shared UI commit from the tracked file `thread-ui.sha`,
+checks out `dufangshi/pockymoe-thread-ui-rust` at exactly that commit and refuses
+one that is not on that repository's `main`, builds with
+`VITE_POCKYMOE_RELAY_ORIGIN` from the repository variable `POCKYMOE_RELAY_ORIGIN`
+and `POCKYMOE_WEB_DOMAIN=app.lnz-study.com`, runs the check script and deploys
+with `actions/deploy-pages`. Whoever can push to `main`, change that variable or
+publish to the shared UI's `main` decides the code that receives users' passwords.
+
+The relay at `https://remote.lnz-study.com` runs API-only: its environment file
+sets `POCKYMOE_WEB_ORIGIN=https://app.lnz-study.com` (the runtime also reads the
+old name `REMOTE_CODEX_WEB_ORIGIN`, but the deploy preflight checks the new one).
+`relay-deploy.yml`, dispatched from `main`, builds and replaces only the relay and
+then checks that `/` redirects to the Web origin.
+
+### Old Web origin
+
+In API-only mode the relay answers the service worker script URLs of the Web UI it
+used to serve (`/assets/relayServiceWorker-<hash>.js`, `/service-worker.js` and
+`/relayServiceWorker.js`, `GET` and `HEAD`) with a small worker instead of a
+redirect: it activates at once, unregisters itself and reloads the open pages,
+which then follow the redirect to the Web origin. The response is `no-store`; for
+the `/assets/` URL it also carries `Service-Worker-Allowed: /`, because the old
+worker was registered there with scope `/` and the browser's update check needs
+the same maximum scope. The relay serves no other script.
 
 ## Wire reference
 
@@ -703,16 +999,17 @@ both pairs.
 
 | Endpoint | Auth | Body → response |
 | --- | --- | --- |
-| `GET …/transport/key?challenge=` | None | Key descriptor plus `trust: {bound, strict, accountKeyId}` and `certificate` (or `null`); `challenge` is 8 to 128 characters of `[A-Za-z0-9_-]` |
+| `GET …/transport/key?challenge=` | None | Key descriptor plus `trust: {bound, strict, accountKeyId, capabilities}` (`capabilities: ["remote-bind"]` when the next endpoint exists) and `certificate` (or `null`); `challenge` is 8 to 128 characters of `[A-Za-z0-9_-]` |
+| `POST /api/transport/bind` | Encrypted, relay-forwarded owner | `{accountPublicKey, enrollSecret, webOrigin?}` → `{bound: true, accountKeyId, deviceId}`; 409 `already_bound`, 400 `invalid_bind`, 403 `owner_required` or `device_strict_mode` |
 | `POST /api/transport/browser` | Encrypted | Browser certificate → `{browserId, role: "owner" \| "grantee"}` |
 | `GET /api/transport/enrollment` | Encrypted | → `{deviceId, identityKey, accountKeyId, mac}` |
 | `PUT /api/transport/device-certificate` | Owner | Device certificate → `{certificate}` |
-| `PUT /api/transport/revocations` | Encrypted | `{revocations: [...]}` (at most 4096) → `{}` |
+| `PUT /api/transport/revocations` | Encrypted | `{revocations: [...]}` (at most 4096) → `{}`; 429 `revocation_limit` |
 | `GET /api/transport/trust` | Owner | See [Strict mode](#strict-mode) |
 | `GET /api/transport/grants` | Owner | → `{grants: [grant + createdAt, createdBy]}` |
-| `PUT /api/transport/grants/{grantId}` | Owner | Grant → `{grant}` |
+| `PUT /api/transport/grants/{grantId}` | Owner | Grant → `{grant}` (with `createdAt`, `createdBy`) |
 | `DELETE /api/transport/grants/{grantId}` | Owner | → `{}` |
-| `POST /api/port-mappings/{id}/lease` | Owner | → `{leaseId, expiresAt}`; 404 `mapping_not_found` |
+| `POST /api/port-mappings/{id}/lease` | Owner | → `{leaseId, expiresAt}`; 404 `mapping_not_found`, 403 `owner_required` |
 | `POST /api/peer/transport/certificate` | Peer | Caller's device certificate → `{}` |
 | `GET /healthz` | None | Includes `relayStatus`: `null` or `{code: "device_id_mismatch", retryAt}` |
 
@@ -726,41 +1023,47 @@ both pairs.
 | `POST /relay/auth/recover` | Public | `{login, recoveryAuthKey}` → recovery session (setup session for an account without a vault) or challenge |
 | `GET /relay/auth/session` | Any | Session with the `account` field |
 | `GET /relay/account/vault` | Signed in | → vault; 404 `vault_missing` |
-| `GET /relay/account/vault/previous` | Signed in | → previous vault revision; 404 `vault_missing` |
-| `PUT /relay/account/vault` | Signed in | `{vault, expectedRevision, authKey?, currentAuthKey?, recoveryAuthKey?}` → vault; 409 `vault_conflict` |
+| `PUT /relay/account/vault` | Signed in | `{vault, expectedRevision, currentAuthKey?, currentRecoveryAuthKey?, authKey?, recoveryAuthKey?}` → vault; 409 `vault_conflict`; 429 `rate_limited` (with `DELETE`, 10 per 5 minutes) |
 | `DELETE /relay/account/vault` | Signed in | `{currentAuthKey?}` → `{}` |
 | `GET /relay/account/browsers` | Signed in | → `{browsers: [{certificate, label, createdAt, lastSeenAt}], revocations}` (revocations of the current key only) |
 | `POST /relay/account/browsers` | Signed in | `{certificate, label}` (label at most 80 characters) → `{}`; binds the session to the browser; 401 `browser_revoked`; 403 `forbidden` for a session bound to another browser; 429 `browser_limit` |
+| `DELETE /relay/account/browsers/{browserId}` | Signed in | → `{}`; deletes a signed-out browser row of the current key without a revocation; 409 `browser_in_use` while a live session is bound to it, 404 `not_found`. The Web does not use it |
 | `POST /relay/account/revocations` | Signed in | `{revocation}` → `{}`; 429 `revocation_limit` |
 | `POST /relay/account/security/reauth` | Signed in | `{authKey}` for accounts with a vault, `{password}` for accounts without one and the administrator, `{code}` when a second factor exists |
 | `POST /relay/devices`, `POST /relay/devices/{id}/setup-token`, `/bootstrap`, `/token` | Owner, recent authentication | Create a device or return, issue or replace its token; 403 `reauthentication_required` |
 | `GET /relay/devices/{id}/certificate` | Owner or recipient | Stored certificate; 404 if none |
 | `PUT /relay/devices/{id}/certificate` | Owner | Device certificate (at most 16 KiB, matching `deviceId`), stored unverified |
 | `GET /relay/devices/{id}/owner-account` | Owner or recipient | → `{accountKeyId, accountPublicKey}`; 404 |
-| `GET /relay/shares/{id}/recipient-account`, `GET /relay/grants/{id}/recipient-account` | Owner of the live row | → `{accountKeyId, accountPublicKey}`; 404 `recipient_account_missing` |
-| `POST /relay/devices/{id}/port-mappings/{mappingId}/open?lease=` | Owner | `{path}` → `{url}`; 403 `preview_lease_required`; 400 `invalid_lease` |
-| `POST /relay/admin/users/{id}/reset-password` | Relay admin | `{password}` (at least 12 characters, not for admin accounts) |
+| `GET /relay/shares/{id}/recipient-account`, `GET /relay/grants/{id}/recipient-account` | Owner of the live row | → `{accountKeyId, accountPublicKey}`; 404 `recipient_account_missing` (recipient without a vault) or `not_found` |
+| `POST /relay/devices/{id}/port-mappings/{mappingId}/open?lease=` | Owner | `{path}` → `{url}`; 403 `preview_lease_required`; 400 `invalid_lease` (not 43 characters of `[A-Za-z0-9_-]`) |
+| `POST /relay/admin/users/{id}/reset-password` | Relay admin | `{password}` (at least 12 characters, not for admin accounts) → one-time temporary password |
 
 The relay checks browser certificates and revocations against the vault's account
 key and stores device certificates unverified; devices and browsers never rely on
 the relay's checks. "Recent authentication" means a sign-in, second factor or
-reauthentication within the last 10 minutes; a sign-in on a trusted browser that
-skipped the second factor does not count.
+reauthentication within the last 10 minutes. A password sign-in on a trusted
+browser that skipped the second factor does not count, except a sign-in into a
+setup session; an OAuth sign-in counts.
 
 `PUT /relay/account/vault` rules: `revision` must be `expectedRevision + 1`;
 `userId` (a canonical lowercase UUID v4), `accountKeyId` and `accountPublicKey`
-never change. Every write needs a proof: `currentAuthKey`, a `recoveryAuthKey`
-matching the current recovery code, or a recovery or reset session (which must
-write a new password slot and `authKey`); OAuth-only accounts need recent
-authentication instead. Creating the first vault needs a setup session (or an
+never change. Every write needs a proof: `currentAuthKey` (the current password)
+or `currentRecoveryAuthKey` (the current recovery code), or a recovery or reset
+session, which must write a new password slot (and, for password accounts, a new
+`authKey`); OAuth-only accounts need recent authentication instead and never send
+`authKey`. `authKey` and `recoveryAuthKey` carry new values: changing the password
+slot or KDF needs the new `authKey`, changing the recovery slot needs the new
+`recoveryAuthKey`, and either sent with an unchanged slot is refused (400). For
+compatibility, a write that changes only the body may prove the current recovery
+code as `recoveryAuthKey`. Creating the first vault needs a setup session (or an
 OAuth-only account), recent authentication and, for password accounts, the new
-`authKey`; it deletes the account's login password hash. Changing the password
-slot or KDF needs the new `authKey`; changing the recovery slot needs the new
-`recoveryAuthKey`. Slot changes sign out the account's other sessions and forget
-its trusted browsers. `DELETE` needs `currentAuthKey`, a recovery or reset
-session, or recent authentication for OAuth-only accounts; it signs out other
-sessions and turns the current session into a setup session that is no longer
-bound to a browser. The relay keeps the account's `authKey` and recovery hashes.
+`authKey`; it deletes the account's login password hash. Slot changes sign out
+the account's other sessions and forget its trusted browsers. A successful write
+makes the session a full session, and a new password slot completes a pending
+admin reset. `DELETE` needs `currentAuthKey`, a recovery or reset session, or
+recent authentication for OAuth-only accounts; it signs out other sessions and
+turns the current session into a setup session that is no longer bound to a
+browser. The relay keeps the account's `authKey` and recovery hashes.
 
 Login, register and recover answers include `{token, account, session}`, and
 `GET /relay/auth/session` includes `account`:
@@ -770,13 +1073,15 @@ Login, register and recover answers include `{token, account, session}`, and
   "recovery": false, "hasVault": true, "accountKeyId": "…" | null }
 ```
 
-`mode` is `legacy` for a password account without a vault.
+`mode` is `oauth` for an OAuth-only account (with or without a vault), `account`
+for any other account with a vault and `legacy` otherwise, including the
+administrator.
 
 | Session | Created by | Allowed requests |
 | --- | --- | --- |
-| Setup (`setupRequired`) | Sign-in to an account without a vault (security upgrade, OAuth, recovery code after start over), start over, sessions from before account keys | Session, logout, `/relay/auth/*`, `/relay/account/security/reauth`, `GET`/`PUT` vault, `GET` previous vault, `/relay/devices`, `/relay/devices/*`, `/relay/api/*`, `/relay/ws`, `/relay/access` |
-| Recovery (`recovery`) | `POST /relay/auth/recover` for an account with a vault | Session, logout, `GET`/`PUT`/`DELETE` vault, `GET` previous vault |
-| Reset (`recovery`) | Temporary-password sign-in | As recovery |
+| Setup (`setupRequired`) | Sign-in to an account without a vault (security upgrade, OAuth, temporary password, recovery code after start over), start over, sessions from before account keys | Session, logout, `/relay/auth/*`, `/relay/account/security/reauth`, `GET`/`PUT` vault, `/relay/devices`, `/relay/devices/*`, `/relay/api/*`, `/relay/ws`, `/relay/access` |
+| Recovery (`recovery`) | `POST /relay/auth/recover` for an account with a vault | Session, logout, `GET`/`PUT`/`DELETE` vault |
+| Reset (`recovery`) | Temporary-password sign-in to an account with a vault | As recovery |
 | Full | Other sign-ins, any successful vault write, reauthentication of an account with a vault | Everything |
 
 Other requests from restricted sessions answer 403 `forbidden`. The relay resolves

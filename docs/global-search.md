@@ -26,6 +26,6 @@ Queries of at least three Unicode characters use quoted FTS trigram candidates f
 
 ## UI integration
 
-Shared UI exports `ConversationSearchScopePicker` and `ConversationSearchExcerpt`. Search copy lives in paired `src/i18n/search.en.ts` / `search.zh-CN.ts` resources, consumed through the unified `useI18n` store. Rebuild the shared UI source repository and refresh the Web file dependency before checking or publishing a combined version. The public Web is deployed through the relay workflow with a pinned shared UI commit.
+Shared UI exports `ConversationSearchScopePicker` and `ConversationSearchExcerpt`. Search copy lives in paired `src/i18n/search.en.ts` / `search.zh-CN.ts` resources, consumed through the unified `useI18n` store. Rebuild the shared UI source repository and refresh the Web file dependency before checking or publishing a combined version. The public Web is deployed to GitHub Pages from `main` with the shared UI commit pinned in `thread-ui.sha`.
 
 The new scopes require the updated device Supervisor, including runtime migration 11. Publishing the Web or relay alone does not update connected devices. A workspace/device endpoint returning 404 shows localized guidance to update the device runtime, verify the workspace still exists, or explicitly choose Current conversation. The scope stays selected; no fallback runs automatically. Network failures and permission denials retain their own errors. Current-conversation search keeps its older-Supervisor compatibility path.

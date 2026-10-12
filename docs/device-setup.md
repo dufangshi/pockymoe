@@ -48,10 +48,15 @@ the browser that copied the command finishes enrollment by itself while it stays
 open; the device then shows **Protected**. That browser keeps the enrollment for 7
 days; after that, copy the setup command again and rerun it on the device. On an
 installed device, rerunning a setup command binds the existing installation and
-keeps its registration.
+keeps its registration, provided the Web origin saved at installation matches
+the command's.
 
 Devices installed without the binding flags show **Not protected · Relay
-trusted**. **Protect this device** gives a command to run on the device:
+trusted**. **Protect all devices** on the Devices page binds them from the browser
+in one step and offers **Update and protect** for older runtimes; it trusts the
+relay at the moment of binding ([one-click protection](account-key-trust.md#protect-all-devices)).
+**Protect this device** offers the same for one device, or **Show local bind
+command**, the most secure option, a command to run on the device:
 
 ```sh
 POCKYMOE_ENROLL_SECRET='<secret>' pockymoe bind --account-key '<key>' --web-origin 'https://app.example.com'
@@ -63,7 +68,7 @@ instead.
 
 It writes the Supervisor database directly, needs no network access and works
 whether or not the Supervisor is running. `pockymoe bind --status` prints the
-bound account fingerprint, and `pockymoe bind --reset` (`--yes` skips the prompt)
+device identity fingerprint and the bound account fingerprint, and `pockymoe bind --reset` (`--yes` skips the prompt)
 removes the binding and every browser registration, grant and browser-created
 port mapping, restoring relay trust; removed browsers stay removed if the device
 is bound to the same key again. Use it before binding to a new account key after

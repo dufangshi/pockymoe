@@ -92,7 +92,7 @@ relay.example.com {
 }
 ```
 
-打开 `https://relay.example.com`，注册账号，然后按[快速上手](../README.zh-CN.md#快速上手)继续。
+打开 `https://relay.example.com`，注册账号，然后按[快速上手](../README.zh-CN.md#快速上手)继续。这样部署的 Relay 自己提供网页；如果不想让 Relay 掌握网页代码，就把网页单独托管（见[独立的 Web origin](#独立的-web-origin)）。
 
 ## Docker
 
@@ -109,66 +109,78 @@ docker run -d --name pockymoe-relay --restart unless-stopped \
 
 ## 更新
 
-用新版本重复第 1 步，然后重启服务。设备在网页的设置里自行更新；Relay 提供的是与它自身版本一致的安装命令。
+用新版本重复第 1 步，然后重启服务。使用独立的 Web origin 时，还要用同一版本重新构建并发布静态网页。设备在网页的设置里自行更新；安装脚本安装的是最新发布的版本。
 
 ### 尚无账户密钥的账户和未绑定的设备
 
 账户、二步验证、设备、共享和 thread 都会保留。还没有账户密钥的账户在登录页选择「First sign-in since the security upgrade」登录一次（这是密码唯一一次发给 Relay），然后在 10 分钟内完成「Secure your account」：设置一个至少 12 个字符的密码并保存恢复码。完成之前，Relay 只允许会话、退出登录和设备相关的请求；升级前已有的会话也受同样限制。创建 vault 时 Relay 会删除旧的密码哈希。使用 Google 或 GitHub 登录的账户照常登录，然后设置一个解锁密码。Relay 管理员账户在 `/relay-admin` 用配置的密码登录，没有账户密钥。
 
-未绑定的设备照常可用，但不受保护（「Not protected · Relay trusted」），直到所有者点「Protect this device」并在设备上运行显示的 `pockymoe bind` 命令，或重新运行它的安装命令。设备需要运行支持绑定的版本。逐步说明见 [Migration](account-key-trust.md#migration)。
+未绑定的设备照常可用，但不受保护（「Not protected · Relay trusted」），直到所有者保护它：在 Devices 页面点「Protect all devices」，或点「Protect this device」并在设备上运行显示的 `pockymoe bind` 命令，或重新运行它的安装命令。设备需要运行支持绑定的版本。逐步说明见 [Migration](account-key-trust.md#migration)。
 
-发布的 `remote-codex-web.zip` 带有这个升级入口。所有账户都完成保护后，设置 `VITE_POCKYMOE_LEGACY_UPGRADE=0` 从源码构建网页（例如下面的[静态构建](#构建静态网页)）即可去掉它。此后仍没有 vault 的账户（包括在完成保护之前被你重置过密码的账户）无法再用密码登录。
+发布的 `remote-codex-web.zip` 带有这个升级入口。所有账户都完成保护后，设置 `VITE_POCKYMOE_LEGACY_UPGRADE=0` 从源码构建网页（例如下面的[静态构建](#构建静态网页)）即可去掉它。此后仍没有 vault 的账户需要先[重置密码](#重置密码)才能登录并完成保护。
 
 ## 重置密码
 
 Relay 只把每个用户的账户密钥保存在用其密码和恢复码加密的 vault 里。任何能访问服务器的人（包括你）都无法恢复它。
 
-在管理面板重置用户密码，会设置一个至少 12 个字符的临时密码。它只能使用一次，用户若设置了二步验证仍需通过，并且旧密码不能再登录。用户在登录页选择「Use an admin reset password」，然后输入恢复码和新密码。没有恢复码时只能用新账户密钥重新开始，并在每台设备本机重新绑定（先 `pockymoe bind --reset`，再「Protect this device」）。对尚未完成保护的账户，重置设置的是普通密码，用户随后在「First sign-in since the security upgrade」中用它登录并完成账户保护。
+在管理面板重置用户密码，会设置一个至少 12 个字符的临时密码。它只能使用一次，用户若设置了二步验证仍需通过（在受信任的浏览器上也一样），并且旧密码不能再登录。用户在登录页选择「Use an admin reset password」，然后输入恢复码和新密码。没有恢复码时只能用新账户密钥重新开始，并重新绑定每台设备（先在设备上运行 `pockymoe bind --reset`，再「Protect this device」）。对尚未完成保护的账户，同样的登录会直接进入「Secure your account」；去掉了安全升级入口的网页构建也可以这样做。
 
 ## 备份
 
 备份整个数据目录，里面有 `relay-store.sqlite` 和 `session-secret`。这个 secret 还用来加密已保存的二步验证和设备凭据，丢失或替换后这些数据就无法解密。SQLite 请用一致性备份，不要直接复制正在写入的数据库。
 
-数据库里还有加密的账户 vault 及其上一个版本。数据库丢失后，用户必须重新开始，并重新绑定所有设备。恢复的备份可能包含较旧的 vault，已经见过更新 vault 的浏览器会拒绝它（「The relay served an older account vault」）。更多说明见 [Relay 安全运维](relay-security-operations.zh.md)。
+数据库里还有加密的账户 vault。数据库丢失后，用户必须重新开始，并重新绑定所有设备。恢复的备份可能包含较旧的 vault，已经见过更新 vault 的浏览器会拒绝它（「The relay served an older account vault」）。更多说明见 [Relay 安全运维](relay-security-operations.zh.md)。
 
 ## 独立的 Web origin
 
-默认情况下，Relay 在 `POCKYMOE_PUBLIC_BASE_URL` 上同时提供网页和 API。提供网页的 Relay 也能修改网页代码，而这段代码会处理你的密码和账户密钥。要去掉这个能力，可以把网页作为静态文件放到另一个 origin，并让 Relay 只提供 API：
+Relay 有两种运行方式：
+
+- **单一 origin**（默认）：Relay 从 `POCKYMOE_RELAY_WEB_DIST_DIR` 提供网页，并和 API 一起放在 `POCKYMOE_PUBLIC_BASE_URL` 上。这种方式最简单，但 Relay 因此也能修改网页代码，而这段代码会处理你的密码和账户密钥（见[威胁模型](account-key-trust.md#threat-model)）。
+- **独立的 Web origin**：网页是另一个 origin 上的静态站点，Relay 只提供 API。公共 Pockymoe 服务就是这样运行的：网页在 GitHub Pages 上（`https://app.lnz-study.com`），Relay 在 `https://remote.lnz-study.com`。
+
+第二种方式要在 Relay 上同时设置两个 origin：
 
 ```sh
 POCKYMOE_PUBLIC_BASE_URL=https://relay.example.com   # API、OAuth 回调、设备连接
 POCKYMOE_WEB_ORIGIN=https://app.example.com          # 静态网页
 ```
 
-`POCKYMOE_WEB_ORIGIN` 必须是不带路径的 HTTPS origin（只有 `localhost` 可以用 HTTP），默认等于 `POCKYMOE_PUBLIC_BASE_URL` 的 origin。设置后 Relay 会：
+`POCKYMOE_WEB_ORIGIN`（也接受旧名称 `REMOTE_CODEX_WEB_ORIGIN`）必须是不带路径的 HTTPS origin（只有 `localhost` 可以用 HTTP），默认等于 `POCKYMOE_PUBLIC_BASE_URL` 的 origin。设置后 Relay 会：
 
-- 用 Web origin 做 WebAuthn：登录 passkey 的 RP ID 是它的主机名。passkey 绑定 RP ID，所以如果用户已经在当前主机上注册过 passkey，应让网页留在这个主机、把 API 移到新主机；
+- 用 Web origin 做 WebAuthn：登录 passkey 的 RP ID 是它的主机名。passkey 绑定 RP ID，所以在其他主机上注册的 passkey 将不能再用；
 - 对修改类请求和 WebSocket 升级的 `Origin` 检查只接受 Web origin；
 - 在 `/relay/*` 上只对这个 Web origin 返回 CORS，允许携带凭据并带 `Vary: Origin`。预检允许网页使用的方法和请求头（`content-type`、`accept`、`range`、`authorization`、`if-none-match`、`x-remote-codex-auth-realm`、`x-rcd-*`），响应暴露网页需要读取的头。其他 origin 得不到 CORS 头，预检返回 403；
 - OAuth 登录完成后把浏览器重定向回 Web origin；OAuth 回调地址仍在 `POCKYMOE_PUBLIC_BASE_URL` 上；
-- 两个 origin 不同时不再提供任何 HTML 或脚本：只保留 `/relay/*`、`/healthz`、`/supervisor/tunnel` 和端口预览的数据通道 `/supervisor/port-stream/*`，其他 `GET`、`HEAD` 请求（包括 `/setup.sh`）重定向到 Web origin 的同一路径，其他方法返回 404，也不需要 `POCKYMOE_RELAY_WEB_DIST_DIR`。
+- 两个 origin 不同时不再提供任何 HTML 或应用脚本：只保留 `/relay/*`、`/healthz`、`/supervisor/tunnel` 和端口预览的数据通道 `/supervisor/port-stream/*`，其他 `GET`、`HEAD` 请求（包括 `/setup.sh`）重定向到 Web origin 的同一路径，其他方法返回 404，也不需要 `POCKYMOE_RELAY_WEB_DIST_DIR`。它唯一还会返回的脚本，是用来注销 Relay 以前提供的网页所注册的 service worker 的小 worker（见[旧的 Web origin](account-key-trust.md#old-web-origin)）。
 
 Relay 的 Cookie 仍然只属于 Relay 主机（host-only），带 `Secure`、`HttpOnly` 和 `SameSite=Lax`。只有两个 origin 属于同一站点（同一个可注册域名，例如 `app.example.com` 和 `relay.example.com`）时，浏览器才会在网页发出的请求中带上它们。开发时可以用 `localhost` 的不同端口。
 
-浏览器密钥和每个浏览器已核对过的账户数据保存在 Web origin 的存储里。把网页移到另一个 origin 后，每个浏览器都要作为新浏览器重新登录。
+浏览器密钥和每个浏览器已核对过的账户数据保存在 Web origin 的存储里。把网页移到另一个 origin 后，每个浏览器都要作为新浏览器重新登录。已有用户和设备的 Relay 要迁移，请按[迁移到独立的 Web origin](account-key-trust.md#moving-to-a-separate-web-origin)操作。
 
 ### 构建静态网页
 
 在按 [development](development.md) 准备好的源码 checkout 中（共享 UI 位于 `pockymoe-thread-ui/`）：
 
 ```sh
-VITE_POCKYMOE_RELAY_ORIGIN=https://relay.example.com \
+VITE_POCKYMOE_RELAY_ORIGIN=https://relay.example.com POCKYMOE_WEB_DOMAIN=app.example.com \
   pnpm --filter @pockymoe/supervisor-web build:static
+node scripts/check-static-web.mjs   # 设置同样的两个变量
 ```
 
-这个构建在编译时选定 relay 模式，不需要内联脚本。加上 `VITE_POCKYMOE_LEGACY_UPGRADE=0` 可去掉「First sign-in since the security upgrade」入口。`apps/supervisor-web/dist/` 中除了网页本身还有：
+`POCKYMOE_WEB_DOMAIN` 是网页的主机名，必须设置。这个构建在编译时选定 relay 模式，不需要内联脚本。加上 `VITE_POCKYMOE_LEGACY_UPGRADE=0` 可去掉「First sign-in since the security upgrade」入口。`apps/supervisor-web/dist/` 中除了网页本身还有：
 
-- `_headers`：CSP 的 `connect-src` 只允许 Web origin、Relay origin 及其 `wss:` 主机，`script-src` 只额外允许 `'wasm-unsafe-eval'`（密码派生用 WebAssembly 运行 Argon2id）；`/assets/*` 带 `Service-Worker-Allowed: /`，`index.html` 带 `no-cache`；
+- `index.html` 里以 `<meta http-equiv>` 标签写入的内容安全策略（CSP），包含响应头版本中除 `frame-ancestors` 以外的全部指令，以及 `no-referrer` 的 referrer 策略；
+- `404.html`：`index.html` 的副本，在 GitHub Pages 等托管服务上作为 SPA 回退；
+- 位于站点根目录的 `relayServiceWorker.js`，因此作用域是 `/`，不需要 `Service-Worker-Allowed` 响应头；
+- `_headers`：CSP 的 `connect-src` 只允许 Web origin、Relay origin 及其 `wss:` 主机，`script-src` 只额外允许 `'wasm-unsafe-eval'`（密码派生用 WebAssembly 运行 Argon2id），并设置 `frame-ancestors 'none'`；另有 `X-Content-Type-Options: nosniff`、`Referrer-Policy: no-referrer`、`X-Frame-Options: DENY`，以及 `index.html` 和 service worker 的 `no-cache`；
 - `_redirects`：SPA 回退规则 `/* /index.html 200`；
+- `CNAME`：GitHub Pages 的自定义域名；
 - `setup.sh` 和 `setup.ps1`，因为设备安装命令从 Web origin 下载它们；
 - `STATIC_HOSTING.txt`，上述要求的摘要。
 
-Cloudflare Pages 等托管服务会直接应用 `_headers` 和 `_redirects`；其他托管服务需要换成对应的响应头和重写规则。请通过 HTTPS 在 Web origin 上提供这个目录。不设置 `VITE_POCKYMOE_RELAY_ORIGIN` 时，构建结果访问自身 origin。
+Cloudflare Pages 等托管服务会直接应用 `_headers` 和 `_redirects`；其他托管服务需要换成对应的响应头和重写规则。GitHub Pages 两者都不应用：它使用 `CNAME` 和 `404.html`，页面只靠 meta 标签和应用自身的 frame 检查保护（缺少哪些保护见[静态托管](account-key-trust.md#static-hosting)）。请通过 HTTPS 在 Web origin 上提供这个目录。不设置 `VITE_POCKYMOE_RELAY_ORIGIN` 时，构建结果访问自身 origin。
+
+本仓库用 `.github/workflows/pages-deploy.yml` 发布公共网页。fork 可以沿用它：设置仓库变量 `POCKYMOE_RELAY_ORIGIN`，修改工作流中的 `POCKYMOE_WEB_DOMAIN`，在 `thread-ui.sha` 中固定共享 UI 的提交，并把 Pages 的发布来源设为 GitHub Actions。
 
 ### 已安装的设备
 

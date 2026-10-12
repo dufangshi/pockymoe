@@ -6,8 +6,12 @@ The thread toolbar’s **Port mappings** button is next to sharing. Enter an HTT
 port and optional label, then enable and open it in a new tab. Clicking a chat
 link to `http://localhost:4013/...` or `http://127.0.0.1:4013/...` offers a
 confirmation before enabling and opening that port. Cancelling makes no change.
-Mappings belong to the device, persist across Supervisor restarts, and are
-private to its account owner. Shared-thread control does not grant port access.
+Mappings belong to the device and persist across Supervisor restarts. Only the
+device's account owner can manage or open them from the Web. Control access to a
+shared thread still reaches them indirectly: the recipient can have the thread's
+agent run `pockymoe preview create` or `preview stop`, and the agent CLI uses the
+device's local API, which creates local mappings and preview leases
+([bound devices](#bound-devices)).
 
 **Open** signs the current browser in to that preview. **Copy address** copies
 the stable private address, without a login ticket. Browser navigation to that
@@ -172,7 +176,8 @@ On a device bound to an account key ([account key trust](account-key-trust.md)),
 strict mode decides which mappings the device reports to the Relay and serves:
 
 - **Local mappings**, made through the authenticated local API, such as
-  `pockymoe preview create` or the Supervisor's own Web UI. They survive browser
+  `pockymoe preview create` (also when an agent runs it, including in a thread a
+  share recipient controls) or the Supervisor's own Web UI. They survive browser
   removal and `pockymoe bind --reset`. An owner browser that enables the same port
   keeps the mapping local.
 - **Owner mappings**, made from the Web through the Relay. Creating one needs a
@@ -196,7 +201,9 @@ mapping:
   connections whose lease has expired or ended.
 - `pockymoe preview create` creates a local lease with the mapping (creating the
   same port again renews it). `preview create`, `preview list` and `preview check`
-  report `leaseId` and `expiresAt` and add `lease=` to `openUrl` while it is live.
+  report `leaseId` and `expiresAt` and add `lease=` and `leaseExpiresAt=` to
+  `openUrl` while it is live. The Web reuses that lease until `leaseExpiresAt` and
+  then asks the device for a new one.
   Local leases survive browser removal and `pockymoe bind --reset`.
 - The signed DSH console request returns a lease for the console mapping.
 
@@ -290,6 +297,9 @@ actual browser hot reload. A rejected handshake can also mean the framework
 requires a token/subprotocol, so do not diagnose it as a broken Relay by itself.
 
 Use `preview list` to recover addresses and `preview stop PORT_OR_ID` to revoke
-one. Stop does not terminate the application process. Shared-device access does
-not authorize preview access; the existing owner-only policy remains in force.
+one. Stop does not terminate the application process. Opening a preview through
+the Relay stays limited to the device owner, and shared-device access does not
+change that. The CLI acts with the device's local authority, though: an agent in
+a thread that a share recipient controls can create, list and stop mappings and
+their local leases like any local user.
 The embedded `pockymoe skill` documents the required agent workflow.

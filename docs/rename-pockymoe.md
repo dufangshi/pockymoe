@@ -83,7 +83,7 @@ For other branches after the rename lands:
    - Assets keep their names, so native devices update through Web Settings as usual.
 3. Publish the same version as the final `remote-codex` npm package with `npm-final-release.yml`.
    - npm devices install it through their existing Update, then press Update again to move to the native runtime.
-4. Deploy the relay with the same `thread_ui_sha`.
+4. Set `thread-ui.sha` on `main` to the same thread UI SHA, which deploys the public Web to GitHub Pages, and dispatch `relay-deploy.yml` from `main` for the relay.
 
 ## Repository rename
 

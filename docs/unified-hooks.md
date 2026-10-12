@@ -235,5 +235,6 @@ Replace TARGET_A/SOURCE_B with actual local Pockymoe thread IDs. The target
 is selected by the URL; no turnId is required. The same trigger supports explicit
 prompt or runScript actions through the existing action and busy-turn rules.
 
-Web changes require the independent shared UI commit and a future relay UI deploy
-with that full thread_ui_sha. A device Supervisor restart alone does not publish UI.
+Web changes require the independent shared UI commit; the public Web picks it up
+when `thread-ui.sha` on `main` is set to that full SHA, which deploys GitHub Pages.
+A device Supervisor restart alone does not publish UI.

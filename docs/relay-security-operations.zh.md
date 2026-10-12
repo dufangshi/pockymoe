@@ -12,16 +12,16 @@
 
 可信浏览器和会话可逐项撤销；关联会话随浏览器撤销失效，已打开的 WebSocket 也会断开。恢复码登录不会自动信任浏览器，并撤销已有信任和旧会话。启用／停用因素、修改密码等敏感变更会使其他会话失效。OAuth 登录也遵守该账户的 MFA 设置，不能仅因 OAuth 回调成功就绕过。
 
-账户密码不会发送给 relay：浏览器用 Argon2id 从密码派生登录用的 `authKey` 和加密账户 vault 的密钥（见 [Account key trust](account-key-trust.md)）。`GET /relay/auth/kdf` 对没有 vault 的账户也只返回固定的假参数，relay 无法借此让浏览器发送明文密码；只有用户在登录页明确选择「First sign-in since the security upgrade」时，尚未保护的账户才发送一次明文密码。注册或保护账户时显示的**账户恢复码**（8 组 4 字符）用于忘记密码时恢复账户密钥，与二步验证的一次性恢复码是两回事。修改密码、更换账户恢复码、移除浏览器都在 Account settings 的 **Account key and browsers** 中完成。浏览器在 relay 登记后，当前 relay 会话即绑定到该浏览器；移除浏览器会结束绑定到它的所有会话。每个账户最多 32 个浏览器、4096 条撤销记录，超出返回 429 `browser_limit`／`revocation_limit`。
+账户密码不会发送给 relay：浏览器用 Argon2id 从密码派生登录用的 `authKey` 和加密账户 vault 的密钥（见 [Account key trust](account-key-trust.md)）。`GET /relay/auth/kdf` 对没有 vault 的账户也只返回固定的假参数，relay 无法借此让浏览器发送明文密码；只有用户在登录页明确选择「First sign-in since the security upgrade」时，尚未保护的账户才发送一次明文密码。注册或保护账户时显示的**账户恢复码**（8 组 4 字符）用于忘记密码时恢复账户密钥，与二步验证的一次性恢复码是两回事。修改密码、更换账户恢复码、移除浏览器都在 Account settings 的 **Account key and browsers** 中完成。浏览器在 relay 登记后，当前 relay 会话即绑定到该浏览器；移除浏览器会结束绑定到它的所有会话。每个账户密钥最多 32 个未撤销的浏览器、4096 条撤销记录，新增超出时返回 429 `browser_limit`／`revocation_limit`。
 
 ## Relay 部署配置与备份
 
 - `POCKYMOE_PUBLIC_BASE_URL` 固定为 Relay 实际的 HTTPS origin，例如 `https://relay.example.com`，用于 OAuth callback 等 Relay 自身地址。浏览器 Origin 验证、CORS 和 WebAuthn RP 使用 Web origin：设置了 `POCKYMOE_WEB_ORIGIN` 时用它，否则用 `POCKYMOE_PUBLIC_BASE_URL` 的 origin（见[独立的 Web origin](self-host-relay.zh-CN.md#独立的-web-origin)）。不要使用客户端传入的 forwarded-host 决定信任 origin。
-- Relay 提供网页时，控制 relay 的人可以替换网页代码并拿到用户密码。要让账户密钥保护真正生效，把网页放到独立的静态 origin。Relay 自身网页和静态托管的 `_headers` 的 CSP 都只为 Argon2id（WebAssembly）在 `script-src` 中额外允许 `'wasm-unsafe-eval'`。
+- Relay 提供网页时，控制 relay 的人可以替换网页代码并拿到用户密码。要让账户密钥保护真正生效，把网页放到独立的静态 origin；公共服务的网页在 GitHub Pages 上，Relay 只提供 API（见 [Web origin](account-key-trust.md#web-origin)）。Relay 自身网页的 CSP、静态构建 `_headers` 中的 CSP 以及 `index.html` 里的 meta CSP 都只为 Argon2id（WebAssembly）在 `script-src` 中额外允许 `'wasm-unsafe-eval'`。
 - `POCKYMOE_RELAY_SESSION_SECRET` 至少 32 字符，使用密码学随机值。未配置时，在持久的 `POCKYMOE_RELAY_DATA_DIR/session-secret` 自动创建随机值；Unix 权限 0600。禁止使用临时目录或每次部署重生成。
 - 同时备份 relay 数据库 `relay-store.sqlite` 和上述 secret（环境变量形式也必须备份）。SQLite 使用一致性备份，不能只复制正在写入的主文件而漏掉 WAL。
 - **secret 同时派生 TOTP 和设备安装凭据的存储加密密钥。丢失／直接替换它会使这些凭据无法解密。** 它还用来为没有 vault 的登录名（包括不存在的）生成固定的假 KDF 参数。迁移机器应恢复原 secret；不要把常规改密码当成更换 master secret。数据库和 secret 均按机密材料保存，分离访问权限。
-- 数据库保存用户加密的账户 vault 及其上一个版本（`relay_account_vaults`）、`authKey` 和恢复码的哈希（`relay_account_auth`）、浏览器证书、撤销记录和设备证书。vault 只能用用户的密码或账户恢复码打开，运维无法恢复账户密钥。数据库丢失后，用户只能重新开始并在本机重新绑定所有设备；恢复较旧的备份会让已见过更新 vault 的浏览器拒绝连接。数据库泄露后，攻击者可以离线猜测用户密码（每次猜测一次 Argon2id），弱密码会被猜出。
+- 数据库保存用户加密的账户 vault（`relay_account_vaults`，只保留当前版本）、`authKey` 和恢复码的哈希（`relay_account_auth`）、浏览器证书、撤销记录和设备证书。vault 只能用用户的密码或账户恢复码打开，运维无法恢复账户密钥。数据库丢失后，用户只能重新开始并在本机重新绑定所有设备；恢复较旧的备份会让已见过更新 vault 的浏览器拒绝连接。数据库泄露后，攻击者可以离线猜测用户密码（每次猜测一次 Argon2id），弱密码会被猜出。
 - 尚未保护的账户仍保存原登录密码的哈希；密码登录时，旧的 SHA-256 哈希会改用 scrypt 重新保存。账户创建第一个 vault 的同一事务中删除这个哈希。
 - 首次升级时，如果旧 session secret 不足 32 字符，必须先配置新的随机值，否则启动会明确拒绝；此时尚未登记本版本的 TOTP。启用 MFA 后不再直接替换 master secret，应保留原值迁移。
 - 更新后旧的无服务端会话记录 JWT 会要求一次重新登录。新 Cookie 有 Secure（HTTPS）、HttpOnly、SameSite 属性；Web 不再将长期 bearer 保存在 localStorage。原生客户端可使用显式 Authorization bearer，但也受服务端撤销约束。

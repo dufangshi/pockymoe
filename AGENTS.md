@@ -23,7 +23,8 @@ checked out at `pockymoe-thread-ui/`. Documentation index: [docs/README.md](docs
 
 - Follow the [release-runtime skill](.agents/skills/release-runtime/SKILL.md) for runtime releases and installed-version problems. GitHub Releases are authoritative. A release is immutable and contains every platform; do not publish npm packages.
 - The Windows Device Manager is released independently. Bump or release it only when its own UI, installer, tray/startup or self-update behavior changes, never for a runtime fix, and mark its releases `--latest=false`.
-- The public Web UI is served by the relay, not by device Supervisors. After a Web or shared UI change, push the shared UI and dispatch `relay-deploy.yml` from `main` with its full `thread_ui_sha`.
+- The public Web UI is a GitHub Pages site that `pages-deploy.yml` builds on pushes to `main` with the shared UI at the SHA in `thread-ui.sha`; the relay is API-only.
+- After a Web or shared UI change, push the shared UI and update `thread-ui.sha` on `main`; after a relay change, dispatch `relay-deploy.yml` from `main`.
 - Update a running Supervisor through its management Check/Update API (Settings), not by replacing its executable or killing it.
 
 ## Documentation and notes

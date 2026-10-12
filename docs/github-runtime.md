@@ -84,8 +84,13 @@ platforms and the pinned Web concurrently, then assembles all assets. It rejects
 candidate missing already-published runtime ancestry. Every version is immutable;
 existing assets may only be verified, never overwritten with another build. `dry-run`
 assembles artifacts without publishing. Verify the resulting version, all four native
-assets, Web ZIP, version file and SHA256SUMS. Only then deploy Relay's baked-in public
-bootstrap with `relay-deploy.yml` and the same full `thread_ui_sha`.
+assets, Web ZIP, version file and SHA256SUMS. Then make sure `thread-ui.sha` on `main`
+holds the same full shared UI SHA. The public Web UI and its `setup.sh`/`setup.ps1`
+are a static GitHub Pages site that `pages-deploy.yml` builds from `main` whenever the
+Web, the setup scripts or `thread-ui.sha` change. The setup scripts install the latest
+published release, so a script change that needs a new runtime option fails on the
+public site until that release is published. `relay-deploy.yml` deploys only the
+API-only relay; dispatch it from `main` when the relay changed.
 
 The runtime release is marked GitHub latest. Independent Device Manager/tool releases
 must use `--latest=false` so they cannot replace the runtime's latest download alias.

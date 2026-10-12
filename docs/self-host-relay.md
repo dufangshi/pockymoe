@@ -101,7 +101,9 @@ relay.example.com {
 ```
 
 Open `https://relay.example.com`, create your account, and continue with the
-[quick start](../README.md#quick-start).
+[quick start](../README.md#quick-start). This relay serves the Web UI itself; to
+keep the Web code out of the relay's hands, host it separately
+([separate Web origin](#separate-web-origin)).
 
 ## Docker
 
@@ -119,8 +121,10 @@ In the container, leave out `POCKYMOE_RELAY_HOST`, `POCKYMOE_RELAY_DATA_DIR` and
 
 ## Updating
 
-Repeat step 1 with the new version and restart the service. Devices update
-themselves from Settings; the relay serves setup commands for its own version.
+Repeat step 1 with the new version and restart the service. With a separate Web
+origin, also rebuild and publish the static Web UI from the same version. Devices
+update themselves from Settings; the setup scripts install the latest published
+release.
 
 ### Accounts without an account key and unbound devices
 
@@ -136,17 +140,18 @@ administrator account signs in at `/relay-admin` with its configured password an
 has no account key.
 
 A device that is not bound keeps working without protection (**Not protected ·
-Relay trusted**) until its owner chooses **Protect this device** and runs the
-shown `pockymoe bind` command on the device, or reruns its setup command. The
-device must run a runtime version that supports binding. Step-by-step:
+Relay trusted**) until its owner protects it: with **Protect all devices** on the
+Devices page, or with **Protect this device** and the shown `pockymoe bind`
+command run on the device, or by rerunning its setup command. The device must run
+a runtime version that supports binding. Step-by-step:
 [migration](account-key-trust.md#migration).
 
 The released `remote-codex-web.zip` offers the upgrade choice. When every account
 has been secured, build the Web UI from source with
 `VITE_POCKYMOE_LEGACY_UPGRADE=0` set (for example the
-[static build](#building-the-static-web-ui)) to remove it. Accounts that still have
-no vault, including those reset by you before they were secured, then cannot sign
-in with a password.
+[static build](#building-the-static-web-ui)) to remove it. An account that still
+has no vault then needs a [password reset](#password-resets) to sign in and secure
+itself.
 
 ## Password resets
 
@@ -156,13 +161,13 @@ you, can recover it.
 
 Resetting a user's password in the admin panel sets a temporary password of at
 least 12 characters. It works once, still requires the user's second factor if
-they have one, and stops the old password from signing in. The user chooses
-**Use an admin reset password** on the sign-in page, then enters their recovery
-code and a new password. Without the recovery code they can only start over with
-a new account key and bind each device again locally (`pockymoe bind --reset`,
-then **Protect this device**). For an account that was not yet secured, the reset
-sets an ordinary password that the user enters with **First sign-in since the
-security upgrade** to secure the account.
+they have one (even on a trusted browser), and stops the old password from
+signing in. The user chooses **Use an admin reset password** on the sign-in page,
+then enters their recovery code and a new password. Without the recovery code they
+can only start over with a new account key and bind each device again
+(`pockymoe bind --reset` on the device, then **Protect this device**). For an
+account that was not yet secured, the same sign-in leads straight to **Secure your
+account**; this also works in Web builds without the security upgrade choice.
 
 ## Backups
 
@@ -171,30 +176,40 @@ Back up the whole data directory. It holds `relay-store.sqlite` and
 credentials: if it is lost or replaced, those can no longer be decrypted. Use a
 consistent SQLite backup rather than copying a database that is being written.
 
-The database also holds the encrypted account vaults, each with its previous
-revision. If it is lost, users must start over and bind every device again. A
-restored backup can contain older vaults, which browsers that have already seen a
-newer vault refuse ("The relay served an older account vault").
+The database also holds the encrypted account vaults. If it is lost, users must
+start over and bind every device again. A restored backup can contain older
+vaults, which browsers that have already seen a newer vault refuse ("The relay
+served an older account vault").
 More detail: [relay security operations](relay-security-operations.zh.md).
 
 ## Separate Web origin
 
-By default the relay serves the Web UI and its API from
-`POCKYMOE_PUBLIC_BASE_URL`. A relay that serves the Web UI can also change it,
-and that code handles your password and account key. To remove this power, serve
-the Web UI as static files from another origin and run the relay in API-only mode:
+A relay runs in one of two modes:
+
+- **Single origin**, the default: the relay serves the Web UI from
+  `POCKYMOE_RELAY_WEB_DIST_DIR` and its API, both on `POCKYMOE_PUBLIC_BASE_URL`.
+  This is the simplest setup, but the relay can then change the Web code, and that
+  code handles your password and account key
+  ([threat model](account-key-trust.md#threat-model)).
+- **Separate Web origin**: the Web UI is a static site on its own origin and the
+  relay serves only its API. The public Pockymoe service runs this way, with the
+  Web UI on GitHub Pages at `https://app.lnz-study.com` and the relay at
+  `https://remote.lnz-study.com`.
+
+For the second mode, set both origins on the relay:
 
 ```sh
 POCKYMOE_PUBLIC_BASE_URL=https://relay.example.com   # API, OAuth callbacks, devices
 POCKYMOE_WEB_ORIGIN=https://app.example.com          # static Web UI
 ```
 
-`POCKYMOE_WEB_ORIGIN` must be an HTTPS origin (HTTP only for `localhost`) without
-a path; it defaults to the origin of `POCKYMOE_PUBLIC_BASE_URL`. The relay then:
+`POCKYMOE_WEB_ORIGIN` (also read under its old name `REMOTE_CODEX_WEB_ORIGIN`)
+must be an HTTPS origin (HTTP only for `localhost`) without a path; it defaults to
+the origin of `POCKYMOE_PUBLIC_BASE_URL`. The relay then:
 
 - uses the Web origin for WebAuthn: its host is the RP ID of sign-in passkeys.
-  Passkeys are bound to their RP ID, so if users registered passkeys on the
-  current host, keep the Web UI on that host and move the API to a new one;
+  Passkeys are bound to their RP ID, so passkeys registered on another host stop
+  working;
 - accepts only the Web origin in the `Origin` check for state-changing requests
   and WebSocket upgrades;
 - answers CORS on `/relay/*` for exactly the Web origin, with credentials and
@@ -204,11 +219,13 @@ a path; it defaults to the origin of `POCKYMOE_PUBLIC_BASE_URL`. The relay then:
   reads. Other origins get no CORS headers and a 403 preflight;
 - sends the browser back to the Web origin after OAuth sign-in; OAuth callbacks
   stay on `POCKYMOE_PUBLIC_BASE_URL`;
-- when the two origins differ, serves no HTML or scripts: it keeps `/relay/*`,
+- when the two origins differ, serves no HTML or app scripts: it keeps `/relay/*`,
   `/healthz`, `/supervisor/tunnel` and the preview data path
   `/supervisor/port-stream/*`, redirects other `GET` and `HEAD` requests (including
   `/setup.sh`) to the same path on the Web origin and answers 404 to other methods.
-  It needs no `POCKYMOE_RELAY_WEB_DIST_DIR`.
+  It needs no `POCKYMOE_RELAY_WEB_DIST_DIR`. The only script it still serves is a
+  worker that retires the service worker of a Web UI the relay used to serve
+  ([old Web origin](account-key-trust.md#old-web-origin)).
 
 Relay cookies remain host-only on the relay host, `Secure`, `HttpOnly` and
 `SameSite=Lax`. Browsers send them with the Web's requests only when both
@@ -217,7 +234,8 @@ origins are on the same site (registrable domain), such as `app.example.com` and
 
 Browser keys and the account data each browser has verified live in the Web
 origin's storage. Moving the Web UI to another origin makes every browser sign in
-again as a new browser.
+again as a new browser. To move an existing relay with users and devices, follow
+[moving to a separate Web origin](account-key-trust.md#moving-to-a-separate-web-origin).
 
 ### Building the static Web UI
 
@@ -225,27 +243,47 @@ In a source checkout prepared as in [development](development.md), with the
 shared UI at `pockymoe-thread-ui/`:
 
 ```sh
-VITE_POCKYMOE_RELAY_ORIGIN=https://relay.example.com \
+VITE_POCKYMOE_RELAY_ORIGIN=https://relay.example.com POCKYMOE_WEB_DOMAIN=app.example.com \
   pnpm --filter @pockymoe/supervisor-web build:static
+node scripts/check-static-web.mjs   # with the same two variables set
 ```
 
-The build selects relay mode at compile time, so it needs no inline script. Add
+`POCKYMOE_WEB_DOMAIN` is the Web host name and is required. The build selects
+relay mode at compile time, so it needs no inline script. Add
 `VITE_POCKYMOE_LEGACY_UPGRADE=0` to leave out the **First sign-in since the
 security upgrade** choice. Besides the app, `apps/supervisor-web/dist/` contains:
 
-- `_headers`: a CSP whose `connect-src` allows only the Web origin, the relay
-  origin and its `wss:` host and whose `script-src` adds only
-  `'wasm-unsafe-eval'` (password derivation runs Argon2id as WebAssembly), plus
-  `Service-Worker-Allowed: /` for `/assets/*` and `no-cache` for `index.html`;
+- in `index.html`, the Content Security Policy as a `<meta http-equiv>` tag, with
+  every directive of the header version except `frame-ancestors`, and a
+  `no-referrer` referrer policy;
+- `404.html`, a copy of `index.html` that serves as the SPA fallback on hosts such
+  as GitHub Pages;
+- `relayServiceWorker.js` at the site root, so its scope is `/` without a
+  `Service-Worker-Allowed` header;
+- `_headers`: the CSP, whose `connect-src` allows only the Web origin, the relay
+  origin and its `wss:` host, whose `script-src` adds only `'wasm-unsafe-eval'`
+  (password derivation runs Argon2id as WebAssembly) and which sets
+  `frame-ancestors 'none'`; `X-Content-Type-Options: nosniff`,
+  `Referrer-Policy: no-referrer` and `X-Frame-Options: DENY`; and `no-cache` for
+  `index.html` and the service worker;
 - `_redirects`: the SPA fallback `/* /index.html 200`;
+- `CNAME`, the custom domain for GitHub Pages;
 - `setup.sh` and `setup.ps1`, because device setup commands download them from
   the Web origin;
 - `STATIC_HOSTING.txt`, a summary of these requirements.
 
 Hosts such as Cloudflare Pages apply `_headers` and `_redirects` directly; on
-other hosts, translate them into response-header and rewrite rules. Serve the
-directory over HTTPS on the Web origin. Without `VITE_POCKYMOE_RELAY_ORIGIN`
-the build calls its own origin.
+other hosts, translate them into response-header and rewrite rules. GitHub Pages
+applies neither: it uses `CNAME` and `404.html`, and only the meta tags and the
+app's own frame check protect the page
+([what that leaves out](account-key-trust.md#static-hosting)). Serve the
+directory over HTTPS on the Web origin. Without `VITE_POCKYMOE_RELAY_ORIGIN` the
+build calls its own origin.
+
+This repository publishes the public Web UI with `.github/workflows/pages-deploy.yml`.
+A fork can reuse it: set the repository variable `POCKYMOE_RELAY_ORIGIN`, change
+`POCKYMOE_WEB_DOMAIN` in the workflow, pin the shared UI commit in `thread-ui.sha`,
+and choose GitHub Actions as the Pages source.
 
 ### Existing devices
 
