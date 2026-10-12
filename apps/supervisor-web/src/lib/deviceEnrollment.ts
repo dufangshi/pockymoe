@@ -7,7 +7,10 @@ import {
   type AccountKeyInfo,
   type DeviceCertificate,
   type UnlockedAccount,
+  type Revocation,
 } from './accountVault';
+import { accountStore } from './accountStore';
+import { sharingTrustStore } from './sharingTrustStore';
 import { deviceTrustRequest } from './deviceTrust';
 import * as transport from './relayTransportCrypto';
 import { relayUrl } from './relayOrigin';
@@ -360,6 +363,14 @@ export async function revokeDevice(deviceId: string) {
   if (!response.ok)
     throw new Error(translate('devices.deviceRevocationFailed'));
   // The signed tombstone is permanent even if the later vault CAS fails.
+  const saved = await accountStore<Revocation[]>(`revocations:${account.userId}`) ?? [];
+  await accountStore(`revocations:${account.userId}`, [...saved, revocation]);
+  const certificateKey = `device-certificate:${account.accountKeyId}:${deviceId}`;
+  await Promise.all([
+    accountStore(certificateKey, null),
+    accountStore(`protected-device:${account.accountKeyId}:${deviceId}`, null),
+    sharingTrustStore(certificateKey, null),
+  ]);
   transport.clearTransportKeyCache(deviceId);
   if (typeof window !== 'undefined') {
     window.dispatchEvent(

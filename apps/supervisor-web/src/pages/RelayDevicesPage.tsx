@@ -5,6 +5,7 @@ import { removeDeviceFromAccount } from '../lib/deviceRemoval';
 import { prepareDeviceEnrollment } from '../lib/deviceEnrollment';
 import {
   relaySupervisorCommand,
+  validateDeviceSetupToken,
   type SupervisorPlatform,
   type DeviceBindingFlags,
 } from '../lib/deviceSetupCommands';
@@ -205,6 +206,7 @@ export function RelayDevicesPage() {
       const binding = await prepareDeviceEnrollment(rotatingDevice.id);
       setCreatedBinding(binding);
       const result=await request<RelayCreateDeviceResultDto>(`/relay/devices/${rotatingDevice.id}/token`,{method:'POST'});
+      validateDeviceSetupToken(result.token);
       setCreatedDevice(result);setAddDeviceOpen(true);setRotatingDevice(null);setRotationVerification(null);await load({showLoading:false});
     } catch(e) {setError(errorMessage(e,translate("devices.tokenRotationFailed")));}
   }
@@ -391,6 +393,7 @@ export function RelayDevicesPage() {
     try {
       await requireUnlock('bind-device');
       const result = await createRelayDevice({ name: deviceName });
+      validateDeviceSetupToken(result.token);
       setCreatedBinding(await prepareDeviceEnrollment(result.device.id));
       setCreatedDevice(result);
       setDeviceName('');
