@@ -2099,17 +2099,17 @@ function DeviceRow({
         <p role={protection === 'certificate-missing' ? 'alert' : undefined}>
           {translate(protectionLabel(protection))}
         </p>
-        {protection === 'not-protected' && (
+        {(protection === 'not-protected' || protection === 'certificate-missing') && (
           <button
             className="relay-button-secondary mt-2 px-3 py-2"
             onClick={() => setProtectOpen(true)}
           >
-            {translate('devices.protectDevice')}
+            {translate(protection === 'certificate-missing' ? 'devices.repairDevice' : 'devices.protectDevice')}
           </button>
         )}
         {protectOpen && (
           <FormDialog
-            title={translate('devices.protectDevice')}
+            title={translate(protection === 'certificate-missing' ? 'devices.repairDevice' : 'devices.protectDevice')}
             onClose={() => setProtectOpen(false)}
           >
             <DeviceBindingPanel deviceId={device.id} />

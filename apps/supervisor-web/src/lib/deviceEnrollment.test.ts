@@ -6,6 +6,8 @@ import {
   requireUnlock,
   signingInput,
   verifyDeviceCertificate,
+  boundDeviceIdentities,
+  confirmBoundDeviceIdentity,
 } from './accountVault';
 import { deviceTrustRequest } from './deviceTrust';
 import * as transport from './relayTransportCrypto';
@@ -36,6 +38,8 @@ vi.mock('./accountVault', async (original) => ({
   currentAccount: vi.fn(),
   requireUnlock: vi.fn(),
   verifyDeviceCertificate: vi.fn(),
+  boundDeviceIdentities: vi.fn(),
+  confirmBoundDeviceIdentity: vi.fn(),
 }));
 vi.mock('./deviceTrust', () => ({ deviceTrustRequest: vi.fn() }));
 vi.mock('./relayTransportCrypto', () => ({
@@ -67,13 +71,18 @@ beforeEach(() => {
   data.clear();
   trustData.clear();
   sharingData.clear();
-  for (const [mock, records] of [[accountStore, trustData], [sharingTrustStore, sharingData]] as const) {
-    vi.mocked(mock).mockImplementation(async (key: string, ...write: [unknown?]) => {
-      if (!write.length) return records.get(key) as never;
-      if (write[0] === null) records.delete(key);
-      else records.set(key, structuredClone(write[0]));
-      return undefined;
-    });
+  for (const [mock, records] of [
+    [accountStore, trustData],
+    [sharingTrustStore, sharingData],
+  ] as const) {
+    vi.mocked(mock).mockImplementation(
+      async (key: string, ...write: [unknown?]) => {
+        if (!write.length) return records.get(key) as never;
+        if (write[0] === null) records.delete(key);
+        else records.set(key, structuredClone(write[0]));
+        return undefined;
+      },
+    );
   }
   vi.stubGlobal('crypto', webcrypto);
   vi.stubGlobal('fetch', relayFetch);
@@ -117,6 +126,8 @@ beforeEach(() => {
   update.mockResolvedValue(undefined);
   relayFetch.mockResolvedValue(Response.json({}));
   vi.mocked(currentAccount).mockResolvedValue(account);
+  vi.mocked(boundDeviceIdentities).mockResolvedValue([]);
+  vi.mocked(confirmBoundDeviceIdentity).mockResolvedValue(undefined);
   vi.mocked(requireUnlock).mockResolvedValue({
     ...account,
     sign,
@@ -236,11 +247,102 @@ describe('enrollment protocol', () => {
         body: JSON.stringify(certificate),
       }),
     );
-    expect(update.mock.calls[0]![0](['existing', deviceId])).toEqual([
-      'existing',
+    expect(confirmBoundDeviceIdentity).toHaveBeenCalledWith(
       deviceId,
-    ]);
+      enrollment.identityKey,
+      null,
+    );
     expect(clearTransportKeyCache).toHaveBeenCalledWith(deviceId);
+  });
+  it('requires explicit replacement confirmation before signing or installing a new identity', async () => {
+    vi.mocked(boundDeviceIdentities).mockResolvedValue([
+      { deviceId, identityKey: 'previous-identity' },
+    ]);
+    await expect(completeDeviceEnrollment(pending, true)).rejects.toMatchObject(
+      {
+        deviceId,
+        previousIdentityKey: 'previous-identity',
+        identityKey: enrollment.identityKey,
+      },
+    );
+    expect(requireUnlock).not.toHaveBeenCalled();
+    expect(sign).not.toHaveBeenCalled();
+    expect(confirmBoundDeviceIdentity).not.toHaveBeenCalled();
+    expect(deviceTrustRequest).not.toHaveBeenCalledWith(
+      deviceId,
+      'device-certificate',
+      'PUT',
+      expect.anything(),
+    );
+    expect(data.has(deviceId)).toBe(true);
+  });
+  it('does not publish a Protected transport status from certificate installation alone', async () => {
+    await completeDeviceEnrollment(pending, true);
+    expect(transport.reportTransport).not.toHaveBeenCalled();
+  });
+  it('accepts an explicitly confirmed replacement only for the exact old/new identity pair', async () => {
+    vi.mocked(boundDeviceIdentities).mockResolvedValue([
+      { deviceId, identityKey: 'old-identity' },
+    ]);
+    await expect(
+      completeDeviceEnrollment(pending, true, {
+        previousIdentityKey: 'stale-identity',
+        identityKey: enrollment.identityKey,
+      }),
+    ).rejects.toMatchObject({ previousIdentityKey: 'old-identity' });
+    expect(confirmBoundDeviceIdentity).not.toHaveBeenCalled();
+    expect(
+      await completeDeviceEnrollment(pending, true, {
+        previousIdentityKey: 'old-identity',
+        identityKey: enrollment.identityKey,
+      }),
+    ).toBe(true);
+    expect(confirmBoundDeviceIdentity).toHaveBeenCalledWith(
+      deviceId,
+      enrollment.identityKey,
+      'old-identity',
+    );
+    expect(
+      vi.mocked(confirmBoundDeviceIdentity).mock.invocationCallOrder[0],
+    ).toBeLessThan(sign.mock.invocationCallOrder[0]!);
+  });
+  it('verifies the enrollment MAC before presenting a replacement confirmation', async () => {
+    vi.mocked(boundDeviceIdentities).mockResolvedValue([
+      { deviceId, identityKey: 'old-identity' },
+    ]);
+    vi.mocked(deviceTrustRequest).mockResolvedValue({
+      ...enrollment,
+      mac: vectors.negative.enrollmentMacWrongIdentity,
+    });
+    await expect(
+      completeDeviceEnrollment(pending, true),
+    ).rejects.not.toMatchObject({ previousIdentityKey: 'old-identity' });
+    expect(confirmBoundDeviceIdentity).not.toHaveBeenCalled();
+    expect(sign).not.toHaveBeenCalled();
+  });
+  it('refuses a concurrent vault identity change after explicit confirmation', async () => {
+    vi.mocked(boundDeviceIdentities).mockResolvedValue([
+      { deviceId, identityKey: 'old-identity' },
+    ]);
+    vi.mocked(confirmBoundDeviceIdentity).mockRejectedValueOnce(
+      new Error('accountCertificateInvalid'),
+    );
+    await expect(
+      completeDeviceEnrollment(pending, true, {
+        previousIdentityKey: 'old-identity',
+        identityKey: enrollment.identityKey,
+      }),
+    ).rejects.toThrow('accountCertificateInvalid');
+    expect(sign).not.toHaveBeenCalled();
+    expect(relayFetch).not.toHaveBeenCalled();
+    expect(data.has(deviceId)).toBe(true);
+  });
+  it('never re-enrolls a locally revoked device even if a vault CAS left its pending enrollment', async () => {
+    update.mockRejectedValueOnce(new Error('vault_conflict'));
+    await expect(revokeDevice(deviceId)).rejects.toThrow('vault_conflict');
+    expect(await completeDeviceEnrollment(pending, true)).toBe(false);
+    expect(inspectEnrollmentDevice).not.toHaveBeenCalled();
+    expect(data.has(deviceId)).toBe(false);
   });
   it('retries when an offline device comes online', async () => {
     expect(await completeDeviceEnrollment(pending, false)).toBe(false);
@@ -262,11 +364,16 @@ describe('enrollment protocol', () => {
     expect(await completeDeviceEnrollment(data.get(deviceId)!, true)).toBe(
       true,
     );
-    expect(deviceTrustRequest).not.toHaveBeenCalled();
+    expect(deviceTrustRequest).toHaveBeenCalledExactlyOnceWith(
+      deviceId,
+      'trust',
+    );
     expect(data.has(deviceId)).toBe(false);
   });
   it('retains pending after vault CAS failure, then resumes without re-installing', async () => {
-    update.mockRejectedValueOnce(new Error('vault_conflict'));
+    vi.mocked(confirmBoundDeviceIdentity).mockRejectedValueOnce(
+      new Error('vault_conflict'),
+    );
     await expect(completeDeviceEnrollment(pending, true)).rejects.toThrow(
       'vault_conflict',
     );
@@ -356,30 +463,42 @@ describe('device protection states', () => {
   });
 });
 describe('remove device', () => {
-  it.each([false, true])('persists local revocation and deletes certificate caches before vault CAS (fails: %s)', async (fails) => {
-    const certificateKey = `device-certificate:${account.accountKeyId}:${deviceId}`;
-    const protectedKey = `protected-device:${account.accountKeyId}:${deviceId}`;
-    const otherKey = `device-certificate:${account.accountKeyId}:other`;
-    trustData.set(certificateKey, vectors.deviceCertificate);
-    trustData.set(protectedKey, true);
-    sharingData.set(certificateKey, vectors.deviceCertificate);
-    sharingData.set(otherKey, { other: true });
-    const oldRevocation = { kind: 'device', subjectId: 'other', accountKeyId: account.accountKeyId };
-    trustData.set(`revocations:${account.userId}`, [oldRevocation]);
-    update.mockImplementationOnce(async () => {
-      expect(trustData.has(certificateKey)).toBe(false);
-      expect(trustData.has(protectedKey)).toBe(false);
-      expect(sharingData.has(certificateKey)).toBe(false);
-      expect(trustData.get(`revocations:${account.userId}`)).toEqual([
-        oldRevocation,
-        expect.objectContaining({ kind: 'device', subjectId: deviceId, signature: 'signature' }),
-      ]);
-      if (fails) throw new Error('vault_conflict');
-    });
-    if (fails) await expect(revokeDevice(deviceId)).rejects.toThrow('vault_conflict');
-    else await revokeDevice(deviceId);
-    expect(sharingData.get(otherKey)).toEqual({ other: true });
-  });
+  it.each([false, true])(
+    'persists local revocation and deletes certificate caches before vault CAS (fails: %s)',
+    async (fails) => {
+      const certificateKey = `device-certificate:${account.accountKeyId}:${deviceId}`;
+      const protectedKey = `protected-device:${account.accountKeyId}:${deviceId}`;
+      const otherKey = `device-certificate:${account.accountKeyId}:other`;
+      trustData.set(certificateKey, vectors.deviceCertificate);
+      trustData.set(protectedKey, true);
+      sharingData.set(certificateKey, vectors.deviceCertificate);
+      sharingData.set(otherKey, { other: true });
+      const oldRevocation = {
+        kind: 'device',
+        subjectId: 'other',
+        accountKeyId: account.accountKeyId,
+      };
+      trustData.set(`revocations:${account.userId}`, [oldRevocation]);
+      update.mockImplementationOnce(async () => {
+        expect(trustData.has(certificateKey)).toBe(false);
+        expect(trustData.has(protectedKey)).toBe(false);
+        expect(sharingData.has(certificateKey)).toBe(false);
+        expect(trustData.get(`revocations:${account.userId}`)).toEqual([
+          oldRevocation,
+          expect.objectContaining({
+            kind: 'device',
+            subjectId: deviceId,
+            signature: 'signature',
+          }),
+        ]);
+        if (fails) throw new Error('vault_conflict');
+      });
+      if (fails)
+        await expect(revokeDevice(deviceId)).rejects.toThrow('vault_conflict');
+      else await revokeDevice(deviceId);
+      expect(sharingData.get(otherKey)).toEqual({ other: true });
+    },
+  );
   it('signs device revocation, posts it and removes only that bound id', async () => {
     await revokeDevice(deviceId);
     expect(requireUnlock).toHaveBeenCalledWith('revoke');
