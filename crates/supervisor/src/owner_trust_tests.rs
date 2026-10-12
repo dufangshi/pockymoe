@@ -6,6 +6,338 @@ use p256::{
 use rand::rngs::OsRng;
 use tower::ServiceExt;
 
+fn remote_bind_input() -> Value {
+    json!({"accountPublicKey":account(&account_key()).account_public_key,"enrollSecret":B64.encode([59;32]),"webOrigin":"https://web.test"})
+}
+#[tokio::test]
+async fn remote_bind_enrolls_and_preserves_tombstones_while_deleting_keyless_publications() {
+    let (_dir, state) = crate::tunnel::tests::state_with_relay_url("http://127.0.0.1:1");
+    let previous = live_owner(&state);
+    apply_revocations(&state, &[browser_revocation(&previous)]).unwrap();
+    reset_account_trust(&state.config.database_url).unwrap();
+    let policy = json!({"threadId":"unused","turnIds":[],"afterOrdinal":0,"theme":"dark","createdAt":"unused"});
+    state
+        .db
+        .set_kv("publication:legacy", &policy.to_string())
+        .unwrap();
+    let mut sealed = policy;
+    sealed["encryptionKey"] = json!(B64.encode([0; 32]));
+    state
+        .db
+        .set_kv("publication:encrypted", &sealed.to_string())
+        .unwrap();
+    let (status, body) = crate::grants::tests::request(
+        &state,
+        None,
+        &session_key(),
+        "POST",
+        "/api/transport/bind",
+        remote_bind_input(),
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        body,
+        json!({"bound":true,"deviceId":"test-device","accountKeyId":previous.account_key_id})
+    );
+    assert!(strict(&state));
+    assert!(state.db.get_kv("publication:legacy").unwrap().is_none());
+    assert!(state.db.get_kv("publication:encrypted").unwrap().is_some());
+    assert_eq!(
+        binding_status(&state.config.database_url).unwrap()["webOrigin"],
+        "https://web.test"
+    );
+    assert!(state
+        .db
+        .with(|c| revoked(c, &previous.account_key_id, "browser", &previous.browser_id))
+        .unwrap());
+    let (status, enrollment) = crate::grants::tests::request(
+        &state,
+        None,
+        &session_key(),
+        "GET",
+        "/api/transport/enrollment",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, 200);
+    let identity = crate::secure_transport::transport(&state)
+        .unwrap()
+        .identity_key();
+    assert_eq!(
+        enrollment["mac"],
+        enrollment_mac(
+            &[59; 32],
+            "test-device",
+            &identity,
+            &previous.account_key_id
+        )
+        .unwrap()
+    );
+    let key = SigningKey::random(&mut OsRng);
+    let certificate = browser_certificate(&account_key(), &key);
+    assert_eq!(
+        crate::grants::tests::request(
+            &state,
+            None,
+            &key,
+            "POST",
+            "/api/transport/browser",
+            serde_json::to_value(&certificate).unwrap()
+        )
+        .await
+        .0,
+        200
+    );
+    let owner = BrowserPrincipal {
+        browser_id: certificate.browser_id,
+        account_key_id: certificate.account_key_id,
+        grantee_user_id: None,
+    };
+    let mut device = DeviceCertificate {
+        version: 1,
+        account_key_id: owner.account_key_id.clone(),
+        device_id: "test-device".into(),
+        identity_key: identity,
+        created_at: now(),
+        signature: String::new(),
+    };
+    let signature: Signature = account_key().sign(device_signing_input(&device).as_bytes());
+    device.signature = B64.encode(signature.to_bytes());
+    assert_eq!(
+        crate::grants::tests::request(
+            &state,
+            Some(&owner),
+            &key,
+            "PUT",
+            "/api/transport/device-certificate",
+            serde_json::to_value(&device).unwrap()
+        )
+        .await
+        .0,
+        200
+    );
+    assert_eq!(
+        device_certificate(&state).unwrap().unwrap().signature,
+        device.signature
+    );
+    assert_eq!(
+        crate::grants::tests::request(
+            &state,
+            None,
+            &key,
+            "GET",
+            "/api/transport/enrollment",
+            Value::Null
+        )
+        .await,
+        (404, json!({"code":"enrollment_missing"}))
+    );
+    assert_eq!(
+        crate::grants::tests::request(&state, None, &key, "GET", "/api/threads", Value::Null).await,
+        (401, json!({"code":"browser_registration_required"}))
+    );
+}
+#[tokio::test]
+async fn remote_bind_refuses_bound_owner_unsigned_and_grantee_requests() {
+    let (_dir, state, owner, _grant, _cert, grantee_key, grantee) =
+        crate::grants::tests::fixture().await;
+    let before = enrollment(&state).unwrap();
+    for principal in [None, Some(&owner)] {
+        assert_eq!(
+            crate::grants::tests::request(
+                &state,
+                principal,
+                &session_key(),
+                "POST",
+                "/api/transport/bind",
+                remote_bind_input()
+            )
+            .await,
+            (409, json!({"code":"already_bound"}))
+        );
+    }
+    assert_eq!(
+        crate::grants::tests::request(
+            &state,
+            Some(&grantee),
+            &grantee_key,
+            "POST",
+            "/api/transport/bind",
+            remote_bind_input()
+        )
+        .await,
+        (403, json!({"code":"owner_required"}))
+    );
+    assert_eq!(enrollment(&state).unwrap(), before);
+}
+#[tokio::test]
+async fn remote_bind_refuses_plaintext_peer_and_non_tunnel_requests() {
+    let (_dir, state) = crate::tunnel::tests::state_with_relay_url("http://127.0.0.1:1");
+    let plain=crate::tunnel::forward_local(&state,json!({"method":"POST","path":"/api/transport/bind","body":remote_bind_input().to_string()}),None).await;
+    assert_eq!(plain["statusCode"], 403);
+    assert_eq!(
+        serde_json::from_str::<Value>(plain["body"].as_str().unwrap()).unwrap()["code"],
+        "device_strict_mode"
+    );
+    let (payload, _key, _aad) = encrypted(
+        &state,
+        "POST",
+        "/api/transport/bind",
+        remote_bind_input(),
+        None,
+    );
+    let peer = crate::auth::PeerCaller {
+        device_id: "peer".into(),
+        device_name: "Peer".into(),
+        user_id: "owner".into(),
+    };
+    let denied = crate::tunnel::forward_local(&state, payload, Some(peer)).await;
+    assert_eq!(denied["statusCode"], 403);
+    assert_eq!(
+        serde_json::from_str::<Value>(denied["body"].as_str().unwrap()).unwrap()["code"],
+        "owner_required"
+    );
+    for encrypted_extension in [false, true] {
+        let mut request = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/transport/bind")
+            .header("content-type", "application/json");
+        if encrypted_extension {
+            request = request.extension(EncryptedOwnerRequest);
+        }
+        let response = crate::http::router(state.clone())
+            .oneshot(
+                request
+                    .body(axum::body::Body::from(remote_bind_input().to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 403);
+    }
+    assert!(!bound(&state));
+}
+#[tokio::test]
+async fn remote_bind_concurrent_first_requests_never_replace_the_winning_key() {
+    let (_dir, state) = crate::tunnel::tests::state_with_relay_url("http://127.0.0.1:1");
+    remember_device(&state, "test-device").unwrap();
+    let first = remote_bind_input();
+    let mut other = first.clone();
+    other.as_object_mut().unwrap().remove("webOrigin");
+    other["accountPublicKey"] = json!(account(&SigningKey::random(&mut OsRng)).account_public_key);
+    let key = session_key();
+    let (a, b) = tokio::join!(
+        crate::grants::tests::request(
+            &state,
+            None,
+            &key,
+            "POST",
+            "/api/transport/bind",
+            first.clone()
+        ),
+        crate::grants::tests::request(
+            &state,
+            None,
+            &key,
+            "POST",
+            "/api/transport/bind",
+            other.clone()
+        )
+    );
+    assert!(
+        (a.0 == 200 && b == (409, json!({"code":"already_bound"})))
+            || (b.0 == 200 && a == (409, json!({"code":"already_bound"})))
+    );
+    let winner = if a.0 == 200 { first } else { other };
+    assert_eq!(
+        pinned_account(&state).unwrap().unwrap().account_public_key,
+        winner["accountPublicKey"]
+    );
+}
+#[tokio::test]
+async fn remote_bind_capability_is_present_in_device_and_peer_descriptors() {
+    let (_dir, state) = crate::tunnel::tests::state_with_relay_url("http://127.0.0.1:1");
+    state.set_peer_access(true).unwrap();
+    let peer = crate::auth::PeerCaller {
+        device_id: "peer".into(),
+        device_name: "Peer".into(),
+        user_id: "owner".into(),
+    };
+    for (path, caller) in [
+        ("/api/transport/key", None),
+        ("/api/peer/transport/key", Some(peer)),
+    ] {
+        let response =
+            crate::tunnel::forward_local(&state, json!({"method":"GET","path":path}), caller).await;
+        assert_eq!(response["statusCode"], 200);
+        let descriptor: Value = serde_json::from_str(response["body"].as_str().unwrap()).unwrap();
+        assert_eq!(descriptor["trust"]["capabilities"], json!(["remote-bind"]));
+    }
+}
+#[tokio::test]
+async fn remote_bind_does_not_log_or_echo_enrollment_secrets() {
+    use std::io::Write;
+    use tracing::instrument::WithSubscriber;
+    #[derive(Clone)]
+    struct Capture(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+    impl Write for Capture {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let logs = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let captured = logs.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .without_time()
+        .with_max_level(tracing::Level::TRACE)
+        .with_writer(move || Capture(captured.clone()))
+        .finish();
+    async {
+        tracing::info!("remote-bind capture probe");
+        let (_dir, state) = crate::tunnel::tests::state_with_relay_url("http://127.0.0.1:1");
+        remember_device(&state, "test-device").unwrap();
+        let mut bad = remote_bind_input();
+        bad["enrollSecret"] = json!("invalid-sensitive-enrollment-marker");
+        let (status, body) = crate::grants::tests::request(
+            &state,
+            None,
+            &session_key(),
+            "POST",
+            "/api/transport/bind",
+            bad,
+        )
+        .await;
+        assert_eq!((status, &body), (400, &json!({"code":"invalid_bind"})));
+        assert!(!body
+            .to_string()
+            .contains("invalid-sensitive-enrollment-marker"));
+        assert!(!bound(&state));
+        let (status, body) = crate::grants::tests::request(
+            &state,
+            None,
+            &session_key(),
+            "POST",
+            "/api/transport/bind",
+            remote_bind_input(),
+        )
+        .await;
+        assert_eq!(status, 200);
+        assert!(!body.to_string().contains(&B64.encode([59; 32])));
+    }
+    .with_subscriber(subscriber)
+    .await;
+    let logs = String::from_utf8(logs.lock().unwrap().clone()).unwrap();
+    assert!(logs.contains("remote-bind capture probe"));
+    assert!(!logs.contains("invalid-sensitive-enrollment-marker"));
+    assert!(!logs.contains(&B64.encode([59; 32])));
+}
+
 pub(crate) fn vectors() -> Value {
     serde_json::from_str(include_str!("../tests/fixtures/account-key-v2.json")).unwrap()
 }
@@ -904,7 +1236,7 @@ fn bind_prepares_version_13_before_setup_restarts_its_runtime() {
             |r| r.get::<_, u32>(0)
         )?))
         .unwrap(),
-        15
+        16
     );
 }
 
@@ -980,7 +1312,21 @@ fn binding_restricts_existing_database_permissions() {
         std::fs::Permissions::from_mode(0o644),
     )
     .unwrap();
+    for suffix in ["-wal", "-shm"] {
+        let file =
+            std::path::PathBuf::from(format!("{}{suffix}", state.config.database_url.display()));
+        assert!(file.exists());
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+    }
     live_owner(&state);
+    for suffix in ["-wal", "-shm"] {
+        let file =
+            std::path::PathBuf::from(format!("{}{suffix}", state.config.database_url.display()));
+        assert_eq!(
+            std::fs::metadata(file).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
     assert_eq!(
         std::fs::metadata(&state.config.database_url)
             .unwrap()
@@ -989,6 +1335,44 @@ fn binding_restricts_existing_database_permissions() {
             & 0o777,
         0o600
     );
+}
+#[tokio::test]
+async fn second_review_mismatch_status_write_failure_keeps_tunnel_retrying() {
+    use futures_util::SinkExt;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let (_dir, state) = crate::tunnel::tests::state_with_relay_url(&format!(
+        "http://{}",
+        listener.local_addr().unwrap()
+    ));
+    live_owner(&state);
+    state.db.with(|c| {
+        c.execute_batch("CREATE TRIGGER fail_retry_status BEFORE UPDATE ON kv WHEN NEW.key='relayTrustStatus' AND json_extract(NEW.value,'$.retryAt') IS NOT NULL BEGIN SELECT RAISE(FAIL,'synthetic retry status write failure'); END;")?;
+        Ok(())
+    }).unwrap();
+    let tunnel = tokio::spawn(crate::tunnel::run_relay_tunnel(state.clone()));
+    let mut times = Vec::new();
+    for _ in 0..3 {
+        let accepted =
+            tokio::time::timeout(std::time::Duration::from_secs(4), listener.accept()).await;
+        if accepted.is_err() {
+            tunnel.abort();
+            panic!("tunnel stopped retrying after status persistence failed");
+        }
+        let (socket, _) = accepted.unwrap().unwrap();
+        times.push(tokio::time::Instant::now());
+        let mut relay = tokio_tungstenite::accept_async(socket).await.unwrap();
+        relay
+            .send(tokio_tungstenite::tungstenite::Message::Text(
+                json!({"type":"relay.connected","deviceId":"different-device"})
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+    }
+    tunnel.abort();
+    assert!(times[1].duration_since(times[0]) >= std::time::Duration::from_secs(1));
+    assert!(times[2].duration_since(times[1]) >= std::time::Duration::from_secs(2));
 }
 
 #[tokio::test]

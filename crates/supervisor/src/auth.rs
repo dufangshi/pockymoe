@@ -101,6 +101,11 @@ pub async fn require_auth(
             )
                 .into_response();
         }
+        if path == "/api/transport/bind"
+            && request.extensions().get::<TrustedRelayForward>().is_none()
+        {
+            return crate::owner_trust::response(crate::owner_trust::reject(403, "owner_required"));
+        }
         if owner_endpoint
             && request
                 .extensions()

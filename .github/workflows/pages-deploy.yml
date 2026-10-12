@@ -1,0 +1,91 @@
+name: Web Pages Deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/supervisor-web/**'
+      - 'packages/**'
+      - 'thread-ui.sha'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - 'tsconfig.base.json'
+      - 'scripts/setup.sh'
+      - 'scripts/setup.ps1'
+      - 'scripts/check-static-web.mjs'
+      - '.github/workflows/pages-deploy.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages-deploy
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      VITE_POCKYMOE_RELAY_ORIGIN: ${{ vars.POCKYMOE_RELAY_ORIGIN }}
+      POCKYMOE_WEB_DOMAIN: app.lnz-study.com
+    steps:
+      - uses: actions/checkout@v6
+      - name: Read shared UI pin and validate relay configuration
+        id: ui
+        shell: bash
+        run: |
+          set -euo pipefail
+          ui_sha="$(cat thread-ui.sha)"
+          [[ "${ui_sha}" =~ ^[0-9a-f]{40}$ ]]
+          test -n "${VITE_POCKYMOE_RELAY_ORIGIN}"
+          echo "sha=${ui_sha}" >> "${GITHUB_OUTPUT}"
+      - name: Check out pinned shared UI
+        uses: actions/checkout@v6
+        with:
+          repository: dufangshi/pockymoe-thread-ui-rust
+          ref: ${{ steps.ui.outputs.sha }}
+          path: pockymoe-thread-ui
+      - name: Verify shared UI checkout
+        env:
+          THREAD_UI_SHA: ${{ steps.ui.outputs.sha }}
+        run: test "$(git -C pockymoe-thread-ui rev-parse HEAD)" = "${THREAD_UI_SHA}"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.11.1
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: pnpm
+          cache-dependency-path: |
+            pnpm-lock.yaml
+            pockymoe-thread-ui/pnpm-lock.yaml
+      - name: Build and validate static Web
+        run: |
+          pnpm --dir pockymoe-thread-ui install --frozen-lockfile
+          pnpm --dir pockymoe-thread-ui --filter @pockymoe/thread-ui build
+          pnpm --filter @pockymoe/supervisor-web... install --frozen-lockfile
+          pnpm --filter @pockymoe/supervisor-web build:static
+          node scripts/check-static-web.mjs
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: apps/supervisor-web/dist
+
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy static Web
+        id: deployment
+        uses: actions/deploy-pages@v4

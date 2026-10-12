@@ -7,7 +7,7 @@ const state = vi.hoisted(() => ({ store: new Map<string, unknown>(), fetch: vi.f
 vi.mock('./accountStore', () => ({ accountStore: async (key: string, value?: unknown) => {
   if (value === null) state.store.delete(key); else if (value !== undefined) state.store.set(key, structuredClone(value));
   return structuredClone(state.store.get(key) ?? null);
-} }));
+}, hasStoredAccountVault: async () => [...state.store.keys()].some(key => key.startsWith('cache:')) }));
 vi.mock('./accountCrypto', async original => ({ ...await original<typeof import('./accountCrypto')>(), passwordKeys: state.derive }));
 vi.stubGlobal('crypto', webcrypto); vi.stubGlobal('fetch', state.fetch); vi.stubGlobal('navigator', { userAgent: 'Test browser', language: 'en-US' });
 const auth = await import('./accountAuth');
@@ -49,7 +49,8 @@ it('changes the password after a normal-session recovery unlock using the recove
   expect(await auth.accountSessionState()).toMatchObject({ recovery: false });
   await vault.changeAccountPassword('a new sufficiently long password');
   const update = JSON.parse(state.fetch.mock.calls.find(([, init]) => init.method === 'PUT')![1].body);
-  expect(update.recoveryAuthKey).toBe(vectors.derivation.recoveryAuthKey);
+  expect(update.currentRecoveryAuthKey).toBe(vectors.derivation.recoveryAuthKey);
+  expect(update).not.toHaveProperty('recoveryAuthKey');
   expect(update.authKey).toBe(vectors.derivation.authKey); expect(update).not.toHaveProperty('currentAuthKey');
   expect(JSON.stringify([...state.store.values()])).not.toContain(vectors.derivation.recoveryAuthKey);
   await vault.changeAccountPassword('another sufficiently long password');
@@ -71,9 +72,9 @@ it('expires the recovery proof with the unlock window and uses only the next pas
     expect(update.currentAuthKey).toBe(vectors.derivation.authKey); expect(update).not.toHaveProperty('recoveryAuthKey');
   } finally { vault.closeUnlockWindow(); vi.useRealTimers(); }
 });
-it('refuses Start over in a normal session even while unlocked', async () => {
+it('requires fresh password confirmation for Start over even while unlocked', async () => {
   await auth.startAccountLogin('user', 'local'); await auth.finishAccountLogin(v.userId);
-  await expect(vault.startAccountOver()).rejects.toMatchObject({ code: 'accountRecoverySessionRequired' });
+  await expect(vault.startAccountOver()).rejects.toMatchObject({ code: 'accountPasswordConfirmationRequired' });
   expect(state.fetch.mock.calls.some(([, init]) => init.method === 'DELETE')).toBe(false);
   expect(await vault.currentAccount()).not.toBeNull();
 });
@@ -147,8 +148,14 @@ it('replaces a relay-revoked browser with a new key after password authenticatio
     if (url.endsWith('/browsers')) return Response.json({ browsers: [], revocations: [revoke] });
     return Response.json({});
   });
-  await auth.startAccountLogin('user', 'local'); await auth.finishAccountLogin(v.userId);
+  // This suite runs without a DOM; give the module an event target to report to.
+  const events = new EventTarget(), removed = vi.fn(); events.addEventListener(vault.BROWSER_REMOVED, removed);
+  const g = globalThis as { window?: unknown }; g.window = events;
+  try { await auth.startAccountLogin('user', 'local'); await auth.finishAccountLogin(v.userId); }
+  finally { delete g.window; }
   expect((await vault.currentBrowser())!.browserId).not.toBe(old.browserId);
+  // The page explains the removal instead of a generic unlock prompt.
+  expect(removed).toHaveBeenCalledTimes(1);
 });
 it('keeps revocation tombstones when the relay later omits them', async () => {
   await auth.startAccountLogin('user', 'local'); await auth.finishAccountLogin(v.userId);
@@ -232,6 +239,49 @@ it('blocks explicit upgrades for known vault identifiers and when the migration 
     expect(state.fetch).not.toHaveBeenCalled();
   } finally { vi.unstubAllEnvs(); }
 });
+it('caches both session username and email after verifying a vault, even when sign-in used an alias', async () => {
+  await auth.startAccountLogin('typed alias', 'local');
+  await auth.finishAccountLogin(v.userId, { username: 'CanonicalUser', email: 'Account@Example.invalid' });
+  for (const login of ['CANONICALUSER', 'account@example.invalid']) {
+    state.fetch.mockClear();
+    await expect(auth.startLegacyUpgrade(login, 'must stay local', true)).rejects.toMatchObject({ code: 'accountLoginDowngrade' });
+    expect(state.fetch).not.toHaveBeenCalled();
+  }
+});
+it('requires an explicit warning confirmation before upgrading another account when any vault was opened', async () => {
+  await auth.startAccountLogin('known', 'local'); await auth.finishAccountLogin(v.userId);
+  await vault.logoutAccount(); state.fetch.mockClear();
+  expect(await auth.legacyUpgradeMayApply('unrecognized')).toBe(false);
+  await expect(auth.startLegacyUpgrade('other legacy', 'must stay local')).rejects.toMatchObject({ code: 'accountUpgradeConfirmationRequired' });
+  expect(state.fetch).not.toHaveBeenCalled();
+  await auth.startLegacyUpgrade('other legacy', 'explicit old password', true);
+  expect(JSON.parse(state.fetch.mock.calls[0]![1].body)).toEqual({ login: 'other legacy', password: 'explicit old password', upgrade: true });
+});
+it('does not restore the legacy sign-in hint after Start over clears the last cached vault', async () => {
+  await vault.openVault(v, 'local');
+  state.store.delete(`cache:${v.userId}`);
+  expect(await auth.legacyUpgradeMayApply('new spelling')).toBe(false);
+});
+it('posts the existing browser certificate after OAuth login without reopening the key window', async () => {
+  await auth.startAccountLogin('user', 'local'); await auth.finishAccountLogin(v.userId);
+  const browser = await vault.currentBrowser(); vault.closeUnlockWindow();
+  await auth.setAccountSession(v.userId, true); state.fetch.mockClear();
+  await auth.finishAccountLogin(v.userId);
+  const posts = state.fetch.mock.calls.filter(([url, init]) => url.endsWith('/browsers') && init.method === 'POST');
+  expect(posts).toHaveLength(1); expect(JSON.parse(posts[0]![1].body).certificate).toEqual(browser!.certificate);
+  expect(vault.isAccountUnlocked()).toBe(false); expect(await vault.currentBrowser()).toEqual(browser);
+});
+it('does not restore a browser key if sign-out happens during an idempotent certificate POST', async () => {
+  await auth.startAccountLogin('user', 'local'); await auth.finishAccountLogin(v.userId);
+  vault.closeUnlockWindow();
+  const original = state.fetch.getMockImplementation()!;
+  state.fetch.mockImplementation(async (url, init) => {
+    if (url.endsWith('/browsers') && init.method === 'POST') { await vault.logoutAccount(); return Response.json({}); }
+    return original(url, init);
+  });
+  await expect(vault.registerBrowser()).rejects.toMatchObject({ code: 'accountUnlockRequired' });
+  expect(await vault.currentBrowser()).toBeNull();
+});
 it('refuses plaintext reauthentication when no account context is locally known', async () => {
   await expect(auth.accountPasswordProof('must stay local')).rejects.toMatchObject({ code: 'accountUnlockRequired' });
   expect(state.fetch).not.toHaveBeenCalled();
@@ -281,4 +331,79 @@ it('rejects stale identity confirmations and requires an explicit previous snaps
   await vault.confirmBoundDeviceIdentity(id, replacement, original);
   await expect(vault.confirmBoundDeviceIdentity(id, original, original)).rejects.toMatchObject({ code: 'accountDeviceIdentityChanged' });
   expect(await vault.boundDeviceIdentities()).toContainEqual({ deviceId: id, identityKey: replacement });
+});
+
+it('uses the recovery proof for bound-device writes and explicit identity replacement', async () => {
+  await auth.setAccountSession(v.userId, false);
+  await vault.openVault(v, vectors.derivation.recoveryCodeDisplay, true);
+  const account = await vault.requireUnlock('bind-device');
+  await account.updateBoundDevices(ids => [...ids, 'recovery-device']);
+  await vault.confirmBoundDeviceIdentity('recovery-device', vectors.deviceCertificate.certificate.identityKey, '');
+  const replacement = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']);
+  await vault.confirmBoundDeviceIdentity('recovery-device', c.encode64(await crypto.subtle.exportKey('raw', replacement.publicKey)), vectors.deviceCertificate.certificate.identityKey);
+  const updates = state.fetch.mock.calls.filter(([, init]) => init.method === 'PUT').map(([, init]) => JSON.parse(init.body));
+  expect(updates).toHaveLength(3);
+  for (const update of updates) {
+    expect(update.currentRecoveryAuthKey).toBe(vectors.derivation.recoveryAuthKey);
+    expect(update).not.toHaveProperty('currentAuthKey');
+    expect(update).not.toHaveProperty('recoveryAuthKey');
+  }
+  expect(JSON.stringify([...state.store.values()])).not.toContain(vectors.derivation.recoveryAuthKey);
+});
+it('regenerates a recovery code with its old proof and uses the new proof for subsequent writes', async () => {
+  await auth.setAccountSession(v.userId, false);
+  await vault.openVault(v, vectors.derivation.recoveryCodeDisplay, true);
+  const account = await vault.requireUnlock('bind-device');
+  const code = await vault.regenerateRecoveryCode();
+  const keys = await c.recoveryKeys(code);
+  const update = JSON.parse(state.fetch.mock.calls.find(([, init]) => init.method === 'PUT')![1].body);
+  expect(update.currentRecoveryAuthKey).toBe(vectors.derivation.recoveryAuthKey);
+  expect(update.recoveryAuthKey).toBe(keys.recoveryAuthKey);
+  expect(update.recoveryAuthKey).not.toBe(update.currentRecoveryAuthKey);
+  await account.updateBoundDevices(ids => [...ids, 'after-regeneration']);
+  const next = JSON.parse(state.fetch.mock.calls.filter(([, init]) => init.method === 'PUT').at(-1)![1].body);
+  expect(next.currentRecoveryAuthKey).toBe(keys.recoveryAuthKey);
+  expect(next).not.toHaveProperty('recoveryAuthKey');
+  keys.recoveryKey.fill(0);
+});
+it('retains the old recovery proof if regeneration fails', async () => {
+  await auth.setAccountSession(v.userId, false);
+  await vault.openVault(v, vectors.derivation.recoveryCodeDisplay, true);
+  state.fetch.mockResolvedValueOnce(Response.json({ code: 'vault_conflict' }, { status: 409 }));
+  await expect(vault.regenerateRecoveryCode()).rejects.toMatchObject({ code: 'vault_conflict' });
+  await (await vault.requireUnlock('bind-device')).updateBoundDevices(ids => [...ids, 'after-failure']);
+  const next = JSON.parse(state.fetch.mock.calls.filter(([, init]) => init.method === 'PUT').at(-1)![1].body);
+  expect(next.currentRecoveryAuthKey).toBe(vectors.derivation.recoveryAuthKey);
+});
+it('starts over in a normal session only after locally verifying the confirmed password', async () => {
+  await auth.startAccountLogin('user', 'local'); await auth.finishAccountLogin(v.userId);
+  await vault.startAccountOver('confirmed password');
+  expect(state.derive).toHaveBeenLastCalledWith('confirmed password', v.kdf);
+  const deletion = state.fetch.mock.calls.find(([, init]) => init.method === 'DELETE')!;
+  expect(JSON.parse(deletion[1].body)).toEqual({ currentAuthKey: vectors.derivation.authKey });
+  expect(await vault.currentAccount()).toBeNull(); expect(await vault.currentBrowser()).toBeNull();
+  expect(state.store.has(`cache:${v.userId}`)).toBe(false);
+});
+it('does not delete a vault or browser when the confirmed password is wrong', async () => {
+  await auth.startAccountLogin('user', 'local'); await auth.finishAccountLogin(v.userId);
+  state.derive.mockResolvedValueOnce({ authKey: 'wrong', wrapKey: new Uint8Array(32) });
+  await expect(vault.startAccountOver('wrong password')).rejects.toThrow();
+  expect(state.fetch.mock.calls.some(([, init]) => init.method === 'DELETE')).toBe(false);
+  expect(await vault.currentBrowser()).not.toBeNull();
+});
+it('keeps an OAuth-only Start over password local while verifying it before deletion', async () => {
+  await auth.setAccountSession(v.userId, true); await vault.openVault(v, 'local');
+  await vault.startAccountOver('confirmed local password');
+  expect(state.derive).toHaveBeenLastCalledWith('confirmed local password', v.kdf);
+  const deletion = state.fetch.mock.calls.find(([, init]) => init.method === 'DELETE')!;
+  expect(JSON.parse(deletion[1].body)).toEqual({});
+});
+
+it('preserves the browser and vault if password-confirmed Start over is denied by the relay', async () => {
+  await auth.startAccountLogin('user', 'local'); await auth.finishAccountLogin(v.userId);
+  state.fetch.mockImplementation(async (url: string, init: RequestInit) => init.method === 'DELETE'
+    ? Response.json({ code: 'reauthentication_required' }, { status: 403 }) : Response.json(v));
+  await expect(vault.startAccountOver('confirmed password')).rejects.toMatchObject({ code: 'reauthentication_required' });
+  expect(await vault.currentBrowser()).not.toBeNull(); expect(await vault.currentAccount()).not.toBeNull();
+  expect(state.store.has(`cache:${v.userId}`)).toBe(true);
 });

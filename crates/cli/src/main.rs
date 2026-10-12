@@ -478,6 +478,13 @@ fn main() -> Result<()> {
         .block_on(run())
 }
 
+fn device_identity_fingerprint(database: &std::path::Path) -> Result<String> {
+    Ok(format!(
+        "SHA-256 {}",
+        pockymoe_supervisor::relay_device_fingerprint(database)?
+    ))
+}
+
 fn enrollment_secret(
     account: bool,
     stdin: bool,
@@ -674,10 +681,7 @@ async fn run() -> Result<()> {
             std::env::set_var("POCKYMOE_MODE", "relay");
             let database = database
                 .unwrap_or_else(|| pockymoe_runtime::RuntimeConfig::from_env().database_url);
-            println!(
-                "SHA-256 {}",
-                pockymoe_supervisor::relay_device_fingerprint(&database)?
-            );
+            println!("{}", device_identity_fingerprint(&database)?);
         }
         Commands::Bind {
             database,
@@ -730,6 +734,7 @@ async fn run() -> Result<()> {
                 println!("Bound to account {}. Strict mode is on.", &id[..12]);
             } else if status {
                 let result = pockymoe_supervisor::binding_status(&database)?;
+                println!("{}", device_identity_fingerprint(&database)?);
                 if let Some(origin) = result["webOrigin"].as_str() {
                     println!("Web origin (installation hint): {origin}");
                 }

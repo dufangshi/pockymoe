@@ -75,6 +75,11 @@ describe('bound device commands', () => {
     );
     expect(escaped).toContain("--account-key 'key'\\''with quote'");
   });
+  it('clears the Windows bind secret in finally even if binding fails', () => {
+    expect(deviceBindCommand(binding, 'https://web.test', 'windows')).toBe(
+      "$env:POCKYMOE_ENROLL_SECRET = 'enrollment-secret'; try { pockymoe bind --account-key 'account-public-key' --web-origin 'https://web.test' } finally { Remove-Item Env:POCKYMOE_ENROLL_SECRET -ErrorAction SilentlyContinue }",
+    );
+  });
 });
 
 const unsafeCharacters = [

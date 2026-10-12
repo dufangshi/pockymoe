@@ -185,7 +185,10 @@ async function keyFor(
     if (key && !key.inspectionOnly && key.descriptor.expiresAt > Date.now() + key.offset + 60000 &&
         key.accountKeyId === (await currentAccount())?.accountKeyId &&
         (key.certificateVerified || (!key.paired && !(await boundDevices()).includes(deviceId) && await pinned(deviceId) === key.descriptor.identityKey))) {
-      if (key.certificateVerified) await verifyTransportDevice(deviceId, key.descriptor.identityKey, key.descriptor.certificate, key.descriptor.trust);
+      if (key.certificateVerified) {
+        const trust = await verifyTransportDevice(deviceId, key.descriptor.identityKey, key.descriptor.certificate, key.descriptor.trust);
+        key.identityTrust = trust.identityTrust;
+      }
       return key;
     }
     keys.delete(deviceId);
@@ -351,10 +354,10 @@ export async function inspectEnrollmentDevice(deviceId: string) {
   if (!key) throw new AccountTrustError('accountIdentityMismatch');
   return key.descriptor;
 }
-async function reportOwnerRequired(response: Response, deviceId: string, encryptedBrowserId?: string) {
+async function reportOwnerRequired(response: Response, deviceId: string, encryptedBrowserId?: string, trustedIdentity = false) {
   if (response.ok) return;
   const body = await response.clone().json().catch(() => null) as { code?: string } | null;
-  const revoked = response.status === 401 && body?.code === 'browser_revoked' && !!encryptedBrowserId;
+  const revoked = response.status === 401 && body?.code === 'browser_revoked' && !!encryptedBrowserId && trustedIdentity;
   if (revoked) await handleBrowserRevoked(encryptedBrowserId!);
   if (body?.code === 'browser_registration_required' && encryptedBrowserId) {
     const browser = await currentBrowser();
@@ -446,6 +449,7 @@ export async function exchange(
   receiveKey?: CryptoKey;
   continuation?: string | null;
   authenticated?: boolean;
+  trustedIdentity?: boolean;
 }> {
   if (request.method === 'HEAD') {
     const result = await exchange(
@@ -489,6 +493,8 @@ export async function exchange(
     throw error;
   }
   if (!key) {
+    if (route.path.split('?')[0] === '/api/transport/bind')
+      throw new TransportError('transport_unavailable', translate('devices.remoteProtectionFailed'));
     const response = await nativeFetch(request);
     await reportOwnerRequired(response, route.deviceId);
     return { response };
@@ -519,7 +525,7 @@ export async function exchange(
       }));
       if (!registered.response.ok) {
         const failure = await registered.response.clone().json().catch(() => null) as { code?: string } | null;
-        if (registered.authenticated && registered.response.status === 401 && failure?.code === 'browser_revoked') {
+        if (registered.authenticated && registered.trustedIdentity && registered.response.status === 401 && failure?.code === 'browser_revoked') {
           await handleBrowserRevoked(owner.browserId);
           reportTransport({ deviceId: route.deviceId, state: 'unlock-required', paired: true, bound: true, unlockReason: 'browser_revoked' });
         }
@@ -755,12 +761,14 @@ export async function exchange(
   });
   const recovered = await recoverOwner(result, true);
   if (recovered) return recovered;
-  await reportOwnerRequired(result, route.deviceId, key.paired || wirePath === '/api/transport/browser' ? owner?.browserId : undefined);
+  const trustedIdentity = key.certificateVerified && (key.identityTrust === 'certificate' || key.identityTrust === 'invite');
+  await reportOwnerRequired(result, route.deviceId, key.paired || wirePath === '/api/transport/browser' ? owner?.browserId : undefined, trustedIdentity);
   if (!socketKeys)
-    return { response: result, continuation: data.streamNext ?? null, authenticated: true };
+    return { response: result, continuation: data.streamNext ?? null, authenticated: true, trustedIdentity };
   return {
     response: result,
     authenticated: true,
+    trustedIdentity,
     sendKey: await aesKey(
       await sender.export(encoder.encode('remote-codex/ws-client/v1'), 32),
       ['encrypt'],

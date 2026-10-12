@@ -87,7 +87,11 @@ pub async fn run_relay_tunnel(state: Arc<Supervisor>) -> Result<()> {
                 if let Err(error) = run_connected_tunnel(state.clone(), socket).await {
                     tracing::warn!(%error, "relay tunnel connection ended");
                     if error.is::<crate::owner_trust::DeviceIdMismatch>() {
-                        crate::owner_trust::mismatch_retry(&state, mismatch_delay)?;
+                        if let Err(error) =
+                            crate::owner_trust::mismatch_retry(&state, mismatch_delay)
+                        {
+                            tracing::warn!(%error, "could not persist device-id mismatch retry status");
+                        }
                         tokio::time::sleep(mismatch_delay).await;
                         mismatch_delay = (mismatch_delay * 2).min(Duration::from_secs(300));
                         continue;
@@ -632,6 +636,9 @@ pub(crate) async fn forward_local(
     if bootstrap && !encrypted {
         return crate::owner_trust::error(403, "device_strict_mode");
     }
+    if peer.is_some() && method == "POST" && path == "/api/transport/bind" {
+        return crate::owner_trust::error(403, "owner_required");
+    }
     if peer.is_some() != path.starts_with("/api/peer/") {
         return relay_error_response(403, "Peer credentials only allow /api/peer/ requests");
     }
@@ -759,7 +766,10 @@ pub(crate) async fn forward_local(
         } else {
             None
         };
-        let authorization = if bound && peer.is_none() && !bootstrap {
+        let authorization = if bound
+            && peer.is_none()
+            && (!bootstrap || (method == "POST" && path == "/api/transport/bind"))
+        {
             Some(crate::owner_trust::authorize(
                 state,
                 &payload,

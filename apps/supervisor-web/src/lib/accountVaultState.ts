@@ -16,6 +16,8 @@ let serial: Promise<unknown> = Promise.resolve();
 export const UNLOCK_WINDOW_MS = 10 * 60 * 1000;
 export const ACCOUNT_UNLOCK_REQUEST = 'pockymoe-account-unlock-request';
 export const ACCOUNT_CHANGED = 'pockymoe-account-changed';
+/** This browser found itself in the account-signed revocation list. */
+export const BROWSER_REMOVED = 'pockymoe-browser-removed';
 function accountErrorMessage(code: string) {
   try { return translate(`auth.${code}` as Parameters<typeof translate>[0]); }
   catch { return translate('auth.accountRequestFailed'); }
@@ -94,6 +96,7 @@ export function isAccountUnlocked() { if (unlocked && unlocked.expires <= Date.n
 async function cacheVault(v: Vault, body: Body) {
   await accountStore<Cache>(`cache:${v.userId}`, { userId: v.userId, accountKeyId: v.accountKeyId,
     accountPublicKey: v.accountPublicKey, revision: v.revision, boundDevices: body.boundDevices });
+  await accountStore('has-opened-vault', true);
 }
 export async function checkVault(v: Vault, expectedUserId: string) {
   if (!v || v.version !== 1 || v.userId !== expectedUserId || !Number.isSafeInteger(v.revision) || v.revision < 1 ||
@@ -190,7 +193,7 @@ async function saveWindow(w: WindowState, body: Body, extra: Record<string, unkn
   const vault: Vault = { ...w.vault, ...fields, revision: w.vault.revision + 1 };
   vault.body = await c.seal(w.vdk, c.utf8(JSON.stringify(body)), bodyAad(vault));
   if (windowState() !== w) throw new AccountTrustError('accountUnlockExpired');
-  await accountRequest('/relay/account/vault', 'PUT', { vault, expectedRevision: w.vault.revision, ...(w.authKey ? { currentAuthKey: w.authKey } : {}), ...extra });
+  await accountRequest('/relay/account/vault', 'PUT', { vault, expectedRevision: w.vault.revision, ...(w.authKey ? { currentAuthKey: w.authKey } : w.recoveryAuthKey ? { currentRecoveryAuthKey: w.recoveryAuthKey } : {}), ...extra });
   if (windowState() !== w) throw new AccountTrustError('accountUnlockExpired');
   w.vault = vault; w.body = body; await cacheVault(vault, body);
 }
@@ -200,13 +203,16 @@ export async function unlockAccount(secret: string, recovery = false) {
   return openVault(vault, secret, recovery, id);
 }
 export async function registerBrowser(label = browserLabel()) {
-  const handle = await requireUnlock('connect'), w = windowState();
   let browser = await currentBrowser();
   const revoked = await accountRevocations(true);
   if (browser && revoked.some(r => r.kind === 'browser' && r.subjectId === browser!.browserId)) {
-    await accountStore(`browser:${handle.userId}`, null); browser = null;
+    await accountStore(`browser:${browser.userId}`, null); browser = null;
+    // The revocation is signed by the account key, so it is authoritative; say why the prompt appears.
+    if (typeof window !== 'undefined') window.dispatchEvent(new Event(BROWSER_REMOVED));
   }
+  let w: WindowState | undefined;
   if (!browser) {
+    const handle = await requireUnlock('connect'); w = windowState();
     const pair = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign', 'verify']);
     const publicKey = c.encode64(await crypto.subtle.exportKey('spki', pair.publicKey));
     const fields = { accountKeyId: handle.accountKeyId, browserId: await c.hash64(c.decode64(publicKey)), publicKey, createdAt: Date.now() };
@@ -214,8 +220,10 @@ export async function registerBrowser(label = browserLabel()) {
       browserId: fields.browserId, privateKey: pair.privateKey, certificate: { version: 1, ...fields, signature: await handle.sign(c.inputs.browser(fields)) } };
   }
   await accountRequest('/relay/account/browsers', 'POST', { certificate: browser.certificate, label: label.slice(0, 80) });
-  if (windowState() !== w) throw new AccountTrustError('accountUnlockExpired');
-  await accountStore(`browser:${handle.userId}`, browser);
+  if (w) {
+    if (windowState() !== w) throw new AccountTrustError('accountUnlockExpired');
+    await accountStore(`browser:${browser.userId}`, browser);
+  } else if ((await currentBrowser())?.browserId !== browser.browserId) throw new AccountTrustError('accountUnlockRequired');
   if (typeof window !== 'undefined') window.dispatchEvent(new Event(ACCOUNT_CHANGED));
   return browser;
 }
@@ -256,7 +264,7 @@ export async function changeAccountPassword(password: string, oauthOnly = false)
   try {
     const slots = { ...w.vault.slots, password: await c.seal(keys.wrapKey, w.vdk, slotAad(w.vault, 'password')) };
     await saveWindow(w, { ...w.body, updatedAt: Date.now() }, oauthOnly ? {} : {
-      authKey: keys.authKey, ...(w.authKey ? { currentAuthKey: w.authKey } : w.recoveryAuthKey ? { recoveryAuthKey: w.recoveryAuthKey } : {}) }, { kdf, slots });
+      authKey: keys.authKey }, { kdf, slots });
     if (oauthOnly) delete w.authKey;
     else w.authKey = keys.authKey;
     delete w.recoveryAuthKey;
@@ -265,14 +273,25 @@ export async function changeAccountPassword(password: string, oauthOnly = false)
 export async function regenerateRecoveryCode() {
   await requireUnlock('recovery-code'); const w = windowState();
   const code = c.recoveryDisplay(c.random(20)), keys = await c.recoveryKeys(code);
-  try { await saveWindow(w, { ...w.body, updatedAt: Date.now() }, { recoveryAuthKey: keys.recoveryAuthKey, ...(w.authKey ? { currentAuthKey: w.authKey } : {}) },
-    { slots: { ...w.vault.slots, recovery: await c.seal(keys.recoveryKey, w.vdk, slotAad(w.vault, 'recovery')) } }); return code; }
+  try { await saveWindow(w, { ...w.body, updatedAt: Date.now() }, { recoveryAuthKey: keys.recoveryAuthKey },
+    { slots: { ...w.vault.slots, recovery: await c.seal(keys.recoveryKey, w.vdk, slotAad(w.vault, 'recovery')) } });
+    if (w.recoveryAuthKey) w.recoveryAuthKey = keys.recoveryAuthKey;
+    return code; }
   finally { keys.recoveryKey.fill(0); }
 }
-export async function startAccountOver() {
+export async function startAccountOver(password?: string) {
   const id = await accountStore<string>('active'); if (!id) throw new AccountTrustError('accountUnlockRequired');
   const state = await accountStore<{ recovery?: boolean }>(`session:${id}`);
-  if (!state?.recovery) throw new AccountTrustError('accountRecoverySessionRequired');
-  await accountRequest('/relay/account/vault', 'DELETE', {});
+  let proof = {};
+  if (!state?.recovery) {
+    if (!password) throw new AccountTrustError('accountPasswordConfirmationRequired');
+    // Always verify a fresh confirmation locally, including OAuth-only accounts
+    // whose unlock password never leaves this browser.
+    await unlockAccount(password);
+    const w = windowState();
+    if (w.authKey) proof = { currentAuthKey: w.authKey };
+  }
+  if (await accountStore<string>('active') !== id) throw new AccountTrustError('accountUnlockRequired');
+  await accountRequest('/relay/account/vault', 'DELETE', proof);
   await logoutAccount(); await accountStore(`cache:${id}`, null); await accountStore(`revocations:${id}`, null);
 }

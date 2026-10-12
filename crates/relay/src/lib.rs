@@ -346,6 +346,20 @@ fn normalize_username(value: &str) -> String {
 // Anonymous credential work must not serialize database access or grow the
 // blocking pool without bound. Waiting requests hold no database connection.
 static ANONYMOUS_PASSWORD_WORK: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
+static LOGIN_PASSWORD_WORK: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
+static DUMMY_PASSWORD_WORK: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+fn credential_work_pool<'a>(
+    known: bool,
+    real: &'a tokio::sync::Semaphore,
+) -> &'a tokio::sync::Semaphore {
+    // Enumeration-resistant dummy work has independent capacity, so fabricated
+    // identities cannot exhaust the slots needed by real account logins.
+    if known {
+        real
+    } else {
+        &DUMMY_PASSWORD_WORK
+    }
+}
 
 fn hash_password(password: &str) -> Result<(String, String)> {
     let mut salt = [0_u8; 16];
@@ -359,6 +373,7 @@ struct PasswordLockProbe {
     secret: String,
     connection: std::sync::Weak<tokio::sync::Mutex<Connection>>,
     result: tokio::sync::oneshot::Sender<bool>,
+    resume: Option<std::sync::mpsc::Receiver<()>>,
 }
 #[cfg(test)]
 static PASSWORD_LOCK_PROBES: std::sync::Mutex<Vec<PasswordLockProbe>> =
@@ -380,6 +395,9 @@ fn node_scrypt_hash(password: &str, salt: &str) -> Result<String> {
                 .upgrade()
                 .is_some_and(|conn| conn.try_lock().is_ok());
             let _ = probe.result.send(unlocked);
+            if let Some(resume) = probe.resume {
+                let _ = resume.recv();
+            }
         }
     }
     let params = ScryptParams::new(14, 8, 1, 32)?;
@@ -1017,10 +1035,6 @@ async fn login(
     if key_login && !account::valid_key(&secret) {
         return unauthorized();
     }
-    static PASSWORD_WORK: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
-    let Ok(_permit) = PASSWORD_WORK.try_acquire() else {
-        return StatusCode::TOO_MANY_REQUESTS.into_response();
-    };
     let conn = state.store.conn.lock().await;
     let row: Option<(String,String,String)> = conn.query_row(
         "SELECT id,password_salt,password_hash FROM relay_users WHERE (username=?1 OR email=?1) AND enabled=1",[ident],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().ok().flatten();
@@ -1035,7 +1049,12 @@ async fn login(
         } else if body.upgrade && account::legacy_password_allowed(&conn,&id) { Some((id,salt,hash)) } else { None }
     });
     drop(conn);
+    let Ok(_permit) = credential_work_pool(row.is_some(), &LOGIN_PASSWORD_WORK).try_acquire()
+    else {
+        return StatusCode::TOO_MANY_REQUESTS.into_response();
+    };
     let verified = tokio::task::spawn_blocking(move || {
+        let _permit = _permit;
         let proof = row
             .as_ref()
             .map(|(_, salt, hash)| verify_password(&secret, salt, hash))
@@ -4634,6 +4653,26 @@ async fn spa_fallback(State(state): State<Arc<AppState>>, req: Request) -> Respo
         || path == "/healthz"
         || path == "/supervisor/tunnel";
     if state.oauth.api_only(req.headers()) {
+        // Updating an installed worker must succeed at its original URL rather
+        // than redirecting across origins. This worker retires the old site.
+        let old_worker = (path.starts_with("/assets/relayServiceWorker-")
+            && path.ends_with(".js")
+            && !path.trim_start_matches("/assets/").contains('/'))
+            || matches!(path, "/service-worker.js" | "/relayServiceWorker.js");
+        if old_worker && matches!(*req.method(), Method::GET | Method::HEAD) {
+            return Response::builder()
+                .header(
+                    header::CONTENT_TYPE,
+                    "application/javascript; charset=utf-8",
+                )
+                .header(header::CACHE_CONTROL, "no-store")
+                .body(if req.method() == Method::HEAD {
+                    Body::empty()
+                } else {
+                    Body::from(include_str!("retired_service_worker.js"))
+                })
+                .unwrap();
+        }
         if api {
             return (
                 StatusCode::NOT_FOUND,

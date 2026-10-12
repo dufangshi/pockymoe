@@ -3,7 +3,7 @@ import { staticHosting } from '../../staticHosting';
 
 it.each(['', 'https://relay.example.test'])('emits a static CSP permitting WASM compilation without relaxing any other directive (%s)', relay => {
   const emitFile = vi.fn();
-  const generate = staticHosting(relay).generateBundle;
+  const generate = staticHosting(relay, 'web.example.test').generateBundle;
   if (typeof generate !== 'function') throw new Error('Missing static header generator');
   generate.call({ emitFile } as never, {} as never, {} as never, false);
   const headers = emitFile.mock.calls.map(([file]) => file).find(file => file.fileName === '_headers').source as string;

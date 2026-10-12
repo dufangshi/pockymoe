@@ -12,8 +12,12 @@ export function PortPreviewPage() {
   useEffect(() => {
     const controller = new AbortController();
     setError(null);
-    const path = new URLSearchParams(location.search).get('path') ?? '/';
-    openDevicePortPreview(deviceId ?? '', mappingId ?? '', path, controller.signal).then(({ url }) => {
+    const query = new URLSearchParams(location.search);
+    const path = query.get('path') ?? '/';
+    const leaseId = query.get('lease');
+    const expiry = query.get('leaseExpiresAt');
+    const expiresAt = expiry && /^\d+$/.test(expiry) && Number.isSafeInteger(Number(expiry)) ? Number(expiry) : undefined;
+    openDevicePortPreview(deviceId ?? '', mappingId ?? '', path, controller.signal, leaseId ? { leaseId, ...(expiresAt === undefined ? {} : { expiresAt }) } : undefined).then(({ url }) => {
       if (!controller.signal.aborted) window.location.replace(url);
     }).catch((cause: unknown) => {
       if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : String(cause));

@@ -182,6 +182,14 @@ const RUNTIME_MIGRATIONS: &[Migration] = &[
             Ok(())
         },
     },
+    Migration {
+        version: 16,
+        name: "account_revocation_subject_index",
+        apply: |conn| {
+            conn.execute("CREATE INDEX IF NOT EXISTS account_revocations_subject_idx ON account_revocations(kind,subject_id)", [])?;
+            Ok(())
+        },
+    },
 ];
 
 const NODE_0030_MIGRATIONS: &[&str] = &[
@@ -256,7 +264,7 @@ pub fn ensure_device_owner_trust(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// SQLite inherits restrictive permissions for the database and its journal files.
+/// Restrict both the database and journals left by an earlier installation.
 pub fn secure_database_file(path: &Path) -> Result<()> {
     let mut options = std::fs::OpenOptions::new();
     options.read(true).write(true).create(true).truncate(false);
@@ -270,6 +278,15 @@ pub fn secure_database_file(path: &Path) -> Result<()> {
     {
         use std::os::unix::fs::PermissionsExt;
         file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        for suffix in ["-wal", "-shm"] {
+            let mut journal_path = path.as_os_str().to_os_string();
+            journal_path.push(suffix);
+            match std::fs::File::open(std::path::PathBuf::from(journal_path)) {
+                Ok(journal) => journal.set_permissions(std::fs::Permissions::from_mode(0o600))?,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
     }
     Ok(())
 }

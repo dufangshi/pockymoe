@@ -24,6 +24,8 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{path::Path, sync::Arc};
 
+const GRANTEE_REVOCATION_LIMIT: u64 = 1024;
+
 pub(crate) fn now() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
@@ -176,7 +178,7 @@ pub(crate) fn strict(state: &Supervisor) -> bool {
         .unwrap_or(true)
 }
 pub(crate) fn hint(state: &Supervisor) -> Result<Value> {
-    state.db.with(|c| { let pin=pinned_in(c)?; Ok(json!({"bound":pin.is_some(),"strict":c.query_row("SELECT strict FROM device_owner_trust WHERE singleton=1",[],|r|r.get::<_,bool>(0))?,"accountKeyId":pin.map(|p|p.account_key_id)})) })
+    state.db.with(|c| { let pin=pinned_in(c)?; Ok(json!({"bound":pin.is_some(),"strict":c.query_row("SELECT strict FROM device_owner_trust WHERE singleton=1",[],|r|r.get::<_,bool>(0))?,"accountKeyId":pin.map(|p|p.account_key_id),"capabilities":["remote-bind"]})) })
 }
 pub(crate) fn device_id(c: &Connection) -> Result<String> {
     c.query_row(
@@ -369,15 +371,24 @@ pub(crate) fn authorize(
         return reject(401, "browser_registration_required");
     };
     state.db.with(|c| {
-        let registered: Option<String> = c.query_row("SELECT account_key_id FROM browser_registrations WHERE browser_id=?1", [id], |r|r.get(0)).optional()?;
+        let registered: Option<String> = c
+            .query_row(
+                "SELECT account_key_id FROM browser_registrations WHERE browser_id=?1",
+                [id],
+                |r| r.get(0),
+            )
+            .optional()?;
         let revoked_browser = if let Some(account) = registered {
             revoked(c, &account, "browser", id)?
         } else {
-            let accounts = c.prepare("SELECT account_key_id FROM account_revocations WHERE kind='browser' AND subject_id=?1")?.query_map([id], |r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
-            let owner = pinned_in(c)?;
-            accounts.into_iter().any(|account| owner.as_ref().is_some_and(|p|p.account_key_id == account) || crate::grants::live_account(c, &account, now()).ok().flatten().is_some())
+            match pinned_in(c)? {
+                Some(owner) => revoked(c, &owner.account_key_id, "browser", id)?,
+                None => false,
+            }
         };
-        if revoked_browser { return reject(401, "browser_revoked") }
+        if revoked_browser {
+            return reject(401, "browser_revoked");
+        }
         let Some((key, principal)) = browser(c, id)? else {
             return reject(401, "browser_registration_required");
         };
@@ -403,8 +414,14 @@ fn register(db: &Database, certificate: &BrowserCertificate) -> Result<Value> {
         if revoked(&tx,&account.account_key_id,"browser",&certificate.browser_id)? {return reject(401,"browser_revoked")}
         verify_browser_certificate(&account,certificate)?;
         let role=if user.is_none(){"owner"}else{"grantee"};
-        if let Some((existing_account,existing_user))=tx.query_row("SELECT account_key_id,user_id FROM browser_registrations WHERE browser_id=?1",[&certificate.browser_id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,Option<String>>(1)?))).optional()? {
-            if existing_account!=account.account_key_id || existing_user!=user {return reject(403,"account_mismatch")}
+        if let Some((existing_account,existing_user,existing_role))=tx.query_row("SELECT account_key_id,user_id,role FROM browser_registrations WHERE browser_id=?1",[&certificate.browser_id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,Option<String>>(1)?,r.get::<_,String>(2)?))).optional()? {
+            if existing_account!=account.account_key_id || existing_user!=user {
+                if role=="owner" && existing_role=="grantee" {
+                    // A recipient can certify a known public key under its own
+                    // account, but cannot reserve that id against its owner.
+                    tx.execute("DELETE FROM browser_registrations WHERE browser_id=?1",[&certificate.browser_id])?;
+                } else {return reject(403,"account_mismatch")}
+            }
         }
         if user.is_some() && !tx.query_row("SELECT EXISTS(SELECT 1 FROM browser_registrations WHERE browser_id=?1)", [&certificate.browser_id], |r| r.get::<_,bool>(0))? {
             let count: u64 = tx.query_row("SELECT count(*) FROM browser_registrations WHERE account_key_id=?1 AND role='grantee'", [&account.account_key_id], |r| r.get(0))?;
@@ -502,6 +519,11 @@ pub(crate) fn apply_revocation_values(state: &Supervisor, entries: &[Value]) -> 
             } else { continue };
             if verify_revocation(&account, &r).is_err() { continue }
 
+            if r.account_key_id != pin.account_key_id && !revoked(&tx,&r.account_key_id,&r.kind,&r.subject_id)? {
+                let count: u64 = tx.query_row("SELECT count(*) FROM account_revocations WHERE account_key_id=?1", [&r.account_key_id], |row| row.get(0))?;
+                if count >= GRANTEE_REVOCATION_LIMIT { return reject(429,"revocation_limit") }
+            }
+
             tx.execute("INSERT INTO account_revocations(account_key_id,kind,subject_id,revocation_json) VALUES(?1,?2,?3,?4) ON CONFLICT DO NOTHING",params![r.account_key_id,r.kind,r.subject_id,serde_json::to_string(&r)?])?;
             if r.kind=="browser" {
                 tx.execute("DELETE FROM browser_registrations WHERE browser_id=?1 AND account_key_id=?2",params![r.subject_id,r.account_key_id])?;
@@ -532,21 +554,69 @@ fn trust(state: &Supervisor, current: &str) -> Result<Value> {
 pub(crate) fn bootstrap(method: &str, path: &str) -> bool {
     matches!(
         (method, path),
-        ("POST", "/api/transport/browser")
+        ("POST", "/api/transport/bind")
+            | ("POST", "/api/transport/browser")
             | ("GET", "/api/transport/enrollment")
             | ("PUT", "/api/transport/revocations")
     )
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BindInput {
+    account_public_key: String,
+    enroll_secret: String,
+    web_origin: Option<String>,
+}
+pub(crate) async fn bind_endpoint(
+    State(state): State<Arc<Supervisor>>,
+    Extension(_): Extension<EncryptedOwnerRequest>,
+    relay: Option<Extension<crate::auth::TrustedRelayForward>>,
+    peer: Option<Extension<crate::auth::PeerCaller>>,
+    principal: Option<Extension<BrowserPrincipal>>,
+    input: Result<Json<BindInput>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    if relay.is_none() || peer.is_some() || principal.is_some_and(|Extension(p)| !p.is_owner()) {
+        return response(reject(403, "owner_required"));
+    }
+    let result = input
+        .map_err(|_| anyhow::anyhow!("Invalid binding request"))
+        .and_then(|Json(input)| {
+            state.db.with(|c| {
+                bind_on_connection(
+                    c,
+                    &state.config.database_url,
+                    &input.account_public_key,
+                    &input.enroll_secret,
+                    input.web_origin.as_deref(),
+                    true,
+                )
+            })
+        })
+        .map_err(|error| {
+            if error.is::<Rejection>() {
+                error
+            } else {
+                Rejection {
+                    status: 400,
+                    code: "invalid_bind",
+                }
+                .into()
+            }
+        });
+    response(result)
 }
 pub(crate) async fn browser_endpoint(
     State(state): State<Arc<Supervisor>>,
     Extension(_): Extension<EncryptedOwnerRequest>,
     input: Result<Json<BrowserCertificate>, axum::extract::rejection::JsonRejection>,
 ) -> Response {
-    response(
-        input
-            .map_err(|_| anyhow::anyhow!("Invalid certificate"))
-            .and_then(|Json(c)| register(&state.db, &c)),
-    )
+    let result = input
+        .map_err(|_| anyhow::anyhow!("Invalid certificate"))
+        .and_then(|Json(c)| register(&state.db, &c));
+    if result.is_ok() {
+        crate::secure_transport::invalidate_unauthorized_channels(&state);
+    }
+    response(result)
 }
 pub(crate) async fn enrollment_endpoint(
     State(state): State<Arc<Supervisor>>,
@@ -634,14 +704,35 @@ pub fn bind_account(
     validate_binding(account, enroll)?;
     let origin = web_origin.map(validate_web_origin).transpose()?;
     let c = local_connection(database)?;
-    let tx = Transaction::new_unchecked(&c, TransactionBehavior::Immediate)?;
+    bind_on_connection(&c, database, account, enroll, origin.as_deref(), false)
+}
+fn bind_on_connection(
+    c: &Connection,
+    database: &Path,
+    account: &str,
+    enroll: &str,
+    web_origin: Option<&str>,
+    only_unbound: bool,
+) -> Result<Value> {
+    let tx = Transaction::new_unchecked(c, TransactionBehavior::Immediate)?;
+    let pin = pinned_in(&tx)?;
+    if only_unbound && pin.is_some() {
+        return reject(409, "already_bound");
+    }
+    validate_binding(account, enroll)?;
+    let origin = web_origin.map(validate_web_origin).transpose()?;
     let id = account_key_id(account)?;
-    if let Some(pin) = pinned_in(&tx)? {
+    if let Some(pin) = pin {
         ensure!(
             pin.account_key_id == id && pin.account_public_key == account,
             "Device is bound to another account key; use pockymoe bind --reset to replace it"
         );
     }
+    let device = if only_unbound {
+        Some(device_id(&tx)?)
+    } else {
+        None
+    };
     let identity = crate::secure_transport::identity_key_for_database(database)?;
     let pin = PinnedAccount {
         account_key_id: id.clone(),
@@ -658,7 +749,11 @@ pub fn bind_account(
     tx.execute("UPDATE device_owner_trust SET account_key_id=?1,account_public_key=?2,enroll_secret=?3,bound_at=COALESCE(bound_at,?4),web_origin=COALESCE(?5,web_origin),strict=1 WHERE singleton=1",params![id,account,pending,now(),origin])?;
     pockymoe_runtime::publications::delete_keyless_publications(&tx)?;
     tx.commit()?;
-    Ok(json!({"bound":true,"strict":true,"accountKeyId":id}))
+    if only_unbound {
+        Ok(json!({"bound":true,"accountKeyId":id,"deviceId":device}))
+    } else {
+        Ok(json!({"bound":true,"strict":true,"accountKeyId":id}))
+    }
 }
 pub fn binding_status(database: &Path) -> Result<Value> {
     validate_database_path(database)?;

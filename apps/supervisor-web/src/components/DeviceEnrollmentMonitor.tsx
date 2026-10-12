@@ -4,12 +4,14 @@ import { currentAccount } from '../lib/accountVault';
 import { fetchRelayPortal } from '../lib/api';
 import {
   completeDeviceEnrollment,
+  deviceIdentityFingerprint,
   ENROLLMENT_CHANGED_EVENT,
   listPendingEnrollments,
   EnrollmentIdentityChangeError,
   type PendingEnrollment,
 } from '../lib/deviceEnrollment';
 import { FormDialog } from './FormDialog';
+import { runRemoteProtection } from '../lib/remoteDeviceProtection';
 import {
   clearTransportKeyCache,
   type TransportStatus,
@@ -34,16 +36,33 @@ interface EnrollmentProgress {
   completed?: boolean;
   wakeAfterAttempt?: boolean;
 }
+interface ReplacementPrompt {
+  enrollment: PendingEnrollment;
+  change: EnrollmentIdentityChangeError;
+  deviceName: string;
+  previousFingerprint: string | null;
+  newFingerprint: string;
+}
+async function replacementPrompt(
+  enrollment: PendingEnrollment,
+  change: EnrollmentIdentityChangeError,
+  deviceName: string,
+): Promise<ReplacementPrompt> {
+  const [previousFingerprint, newFingerprint] = await Promise.all([
+    change.previousIdentityKey
+      ? deviceIdentityFingerprint(change.previousIdentityKey)
+      : Promise.resolve(null),
+    deviceIdentityFingerprint(change.identityKey),
+  ]);
+  return { enrollment, change, deviceName, previousFingerprint, newFingerprint };
+}
 
 /** Runs while the browser is open, including when it is viewing a thread. */
 export function DeviceEnrollmentMonitor() {
   useI18n();
   const [error, setError] = useState<string | null>(null);
   const [generation, setGeneration] = useState(0);
-  const [replacement, setReplacement] = useState<{
-    enrollment: PendingEnrollment;
-    change: EnrollmentIdentityChangeError;
-  } | null>(null);
+  const [replacement, setReplacement] = useState<ReplacementPrompt | null>(null);
   const [confirming, setConfirming] = useState(false);
   async function confirmReplacement() {
     if (!replacement || confirming) return;
@@ -69,7 +88,13 @@ export function DeviceEnrollmentMonitor() {
       setGeneration((g) => g + 1);
     } catch (caught) {
       if (caught instanceof EnrollmentIdentityChangeError)
-        setReplacement({ enrollment: replacement.enrollment, change: caught });
+        setReplacement(
+          await replacementPrompt(
+            replacement.enrollment,
+            caught,
+            replacement.deviceName,
+          ),
+        );
       else {
         setReplacement(null);
         setError(
@@ -149,11 +174,27 @@ export function DeviceEnrollmentMonitor() {
             continue;
           try {
             state.wakeAfterAttempt = false;
-            state.completed = await completeDeviceEnrollment(enrollment, true);
+            state.completed = enrollment.remoteProtection
+              ? await runRemoteProtection(enrollment, true)
+              : await completeDeviceEnrollment(enrollment, true);
           } catch (caught) {
             if (caught instanceof EnrollmentIdentityChangeError) {
               state.paused = true;
-              if (!stopped) setReplacement({ enrollment, change: caught });
+              try {
+                const prompt = await replacementPrompt(
+                  enrollment,
+                  caught,
+                  device?.name || enrollment.deviceId,
+                );
+                if (!stopped) setReplacement(prompt);
+              } catch (failure) {
+                if (!stopped)
+                  setError(
+                    failure instanceof Error
+                      ? failure.message
+                      : translate('devices.enrollmentMismatch'),
+                  );
+              }
               continue;
             }
             // enrollment_missing means the local bind command has not run yet.
@@ -170,6 +211,7 @@ export function DeviceEnrollmentMonitor() {
                   'device_offline',
                   'device_unresponsive',
                   'enrollment_missing',
+                  'already_bound',
                   'browser_registration_required',
                 ].includes((caught as Error & { code?: string }).code ?? ''))
             ) {
@@ -270,20 +312,24 @@ export function DeviceEnrollmentMonitor() {
             setError(translate('devices.confirmIdentityReplacement'));
           }}
         >
+          <p className="text-sm font-medium">{replacement.deviceName}</p>
           <p className="break-all font-mono text-xs">
             {replacement.enrollment.deviceId}
           </p>
           <dl className="space-y-2 text-sm">
             <dt>{translate('devices.previousIdentity')}</dt>
             <dd className="break-all font-mono text-xs">
-              {replacement.change.previousIdentityKey ||
+              {replacement.previousFingerprint ||
                 translate('devices.identityUnavailable')}
             </dd>
             <dt>{translate('devices.newIdentity')}</dt>
             <dd className="break-all font-mono text-xs">
-              {replacement.change.identityKey}
+              {replacement.newFingerprint}
             </dd>
           </dl>
+          <p className="mt-3 text-sm">
+            {translate('devices.identityReplacementCompare')}
+          </p>
           <button
             className="relay-button-primary mt-4 px-3 py-2"
             disabled={confirming}

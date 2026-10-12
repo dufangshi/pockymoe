@@ -3,10 +3,10 @@ import { beforeEach, expect, it, vi } from 'vitest';
 import { setLocale, translate } from '@pockymoe/thread-ui/i18n';
 import { AccountSecurityPanel } from './AccountSecurityPanel';
 import vectors from '../lib/fixtures/accountKeyVectors.json';
-const state = vi.hoisted(() => ({ request: vi.fn(), revoked: vi.fn(), change: vi.fn(), recovery: vi.fn(), verify: vi.fn(), authStatus: vi.fn(), session: vi.fn() }));
+const state = vi.hoisted(() => ({ request: vi.fn(), revoked: vi.fn(), change: vi.fn(), recovery: vi.fn(), verify: vi.fn(), authStatus: vi.fn(), session: vi.fn(), reset: vi.fn() }));
 vi.mock('../lib/accountVault', () => ({ currentAccount: async () => vectors.account, currentBrowser: async () => ({ browserId: vectors.browserCertificate.certificate.browserId }), safetyCode: async () => vectors.safetyCode.display }));
 vi.mock('../lib/accountVaultState', () => ({ accountRequest: state.request, accountRevocations: async () => [], revokeAccountSubject: state.revoked,
-  changeAccountPassword: state.change, regenerateRecoveryCode: state.recovery, startAccountOver: vi.fn() }));
+  changeAccountPassword: state.change, regenerateRecoveryCode: state.recovery, startAccountOver: state.reset }));
 vi.mock('../lib/relaySecurity', () => ({ securityRequest: state.authStatus }));
 vi.mock('./RelaySecurity', () => ({ SecurityVerification: ({ onVerified }: { onVerified: () => void }) => <button onClick={onVerified}>Verify factor</button> }));
 vi.mock('../lib/accountAuth', () => ({ isOAuthAccount: async () => true, accountSessionState: state.session }));
@@ -17,11 +17,19 @@ beforeEach(() => {
   state.session.mockResolvedValue({ recovery: false });
   state.request.mockResolvedValue({ browsers: [{ certificate: vectors.browserCertificate.certificate, label: 'My laptop', createdAt: 1760000000000, lastSeenAt: 1760000001000 }] });
 });
-it.each([false, true])('offers Start over only in a restricted recovery/reset session (recovery=%s)', async recovery => {
+it.each([false, true])('offers Start over in normal and restricted recovery/reset sessions (recovery=%s)', async recovery => {
   state.session.mockResolvedValue({ recovery });
   render(<AccountSecurityPanel />); await screen.findByText('My laptop');
   const button = screen.queryByRole('button', { name: translate('auth.accountStartOver') });
-  if (recovery) expect(button).toBeVisible(); else expect(button).toBeNull();
+  expect(button).toBeVisible();
+});
+it.each(['en', 'zh-CN'] as const)('explains that leaked passwords require Start over in both secret-change dialogs in %s', async locale => {
+  setLocale(locale); render(<AccountSecurityPanel />); await screen.findByText('My laptop');
+  fireEvent.click(screen.getByRole('button', { name: translate('auth.changePassword') }));
+  expect(screen.getByText(translate('auth.accountSecretRotationWarning'))).toBeVisible();
+  fireEvent.keyDown(screen.getByLabelText(translate('auth.newPassword')), { key: 'Escape' });
+  fireEvent.click(screen.getByRole('button', { name: translate('auth.accountRegenerateRecovery') }));
+  expect(screen.getByText(translate('auth.accountSecretRotationWarning'))).toBeVisible();
 });
 it.each(['en', 'zh-CN'] as const)('shows verified named browsers, own badge, times and safety code in %s', async locale => {
   setLocale(locale); render(<AccountSecurityPanel />);
@@ -61,4 +69,26 @@ it('retries an OAuth-sensitive change after a real second-factor confirmation', 
   fireEvent.click(await screen.findByText('Verify factor'));
   await waitFor(() => expect(state.change).toHaveBeenCalledTimes(2));
   expect(state.change).toHaveBeenLastCalledWith('a sufficiently long new password', true);
+});
+
+it.each(['en', 'zh-CN'] as const)('requires a current password to confirm normal-session Start over in %s', async locale => {
+  setLocale(locale); state.reset.mockRejectedValue(new Error('keep the dialog open'));
+  render(<AccountSecurityPanel />); await screen.findByText('My laptop');
+  fireEvent.click(screen.getByRole('button', { name: translate('auth.accountStartOver') }));
+  expect(screen.getByText(translate('auth.accountResetWarning'))).toBeVisible();
+  const input = screen.getByLabelText(translate('auth.currentPassword'));
+  expect(input).toBeRequired();
+  fireEvent.click(screen.getByRole('button', { name: translate('auth.continue') }));
+  expect(state.reset).not.toHaveBeenCalled();
+  fireEvent.change(input, { target: { value: 'fresh password confirmation' } });
+  fireEvent.click(screen.getByRole('button', { name: translate('auth.continue') }));
+  await waitFor(() => expect(state.reset).toHaveBeenCalledWith('fresh password confirmation'));
+});
+it('allows restricted recovery-session Start over without asking for a forgotten password', async () => {
+  state.session.mockResolvedValue({ recovery: true }); state.reset.mockRejectedValue(new Error('keep the dialog open'));
+  render(<AccountSecurityPanel />); await screen.findByText('My laptop');
+  fireEvent.click(screen.getByRole('button', { name: translate('auth.accountStartOver') }));
+  expect(screen.queryByLabelText(translate('auth.currentPassword'))).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: translate('auth.continue') }));
+  await waitFor(() => expect(state.reset).toHaveBeenCalledWith(undefined));
 });

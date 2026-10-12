@@ -37,6 +37,7 @@ p256 = { version = "0.13", features = ["ecdsa"] }
 rusqlite.workspace = true
 
 [dev-dependencies]
+tracing-subscriber.workspace = true
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 tempfile = "3"
 tokio = { workspace = true, features = ["full", "macros", "rt-multi-thread"] }

@@ -6,6 +6,8 @@ import {
   waitFor,
 } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { setLocale, translate } from '@pockymoe/thread-ui/i18n';
+import vectors from '../lib/fixtures/deviceEnrollmentVectors.json';
 import { currentAccount } from '../lib/accountVault';
 import { fetchRelayPortal } from '../lib/api';
 import {
@@ -16,6 +18,8 @@ import {
 import { DeviceTrustError } from '../lib/deviceTrust';
 import { clearTransportKeyCache } from '../lib/relayTransportCrypto';
 import { DeviceEnrollmentMonitor } from './DeviceEnrollmentMonitor';
+import { runRemoteProtection } from '../lib/remoteDeviceProtection';
+vi.mock('../lib/remoteDeviceProtection', () => ({ runRemoteProtection: vi.fn() }));
 vi.mock('../lib/accountVault', () => ({ currentAccount: vi.fn() }));
 vi.mock('../lib/api', () => ({ fetchRelayPortal: vi.fn() }));
 vi.mock('../lib/deviceEnrollment', async (original) => ({
@@ -23,11 +27,18 @@ vi.mock('../lib/deviceEnrollment', async (original) => ({
   ENROLLMENT_CHANGED_EVENT: 'pockymoe-enrollment-changed',
   completeDeviceEnrollment: vi.fn(),
   listPendingEnrollments: vi.fn(),
+  deviceIdentityFingerprint: vi.fn(async (key: string) =>
+    key === oldIdentityKey ? oldFingerprint : newFingerprint,
+  ),
 }));
 vi.mock('../lib/deviceTrust', async (original) => ({
   ...(await original<typeof import('../lib/deviceTrust')>()),
 }));
 vi.mock('../lib/relayTransportCrypto', () => ({ exchange: vi.fn(), clearTransportKeyCache: vi.fn() }));
+const oldIdentityKey = vectors.negative.deviceCertWrongIdentity.identityKey;
+const newIdentityKey = vectors.deviceCertificate.identityKey;
+const oldFingerprint = 'SHA-256 IXGVb6Gh9VKTIP5kn0YmMh5gw1c1sVKEambZWuXBISQ';
+const newFingerprint = 'SHA-256 GPl4rTU9tmxjC0ytioq85DBp75cqabZeAdUhx67JhXQ';
 const account = {
   userId: 'user',
   accountKeyId: 'account',
@@ -40,9 +51,10 @@ const pending = {
   enrollSecret: 'secret',
 };
 const portal = (connected: boolean) =>
-  ({ devices: [{ id: 'device', connected }] }) as never;
+  ({ devices: [{ id: 'device', name: 'Build workstation', connected }] }) as never;
 beforeEach(() => {
   vi.clearAllMocks();
+  setLocale('en');
   vi.useFakeTimers();
   vi.mocked(currentAccount).mockResolvedValue(account);
   vi.mocked(listPendingEnrollments).mockResolvedValue([pending]);
@@ -56,6 +68,41 @@ async function tick(ms = 0) {
   });
 }
 describe('automatic enrollment while the browser is open', () => {
+  it('backs off remote-bind races and offline failures even when progress events wake the in-flight monitor', async () => {
+    const remote = { ...pending, remoteProtection: { phase: 'binding' as const, bindStarted: true } };
+    vi.mocked(listPendingEnrollments).mockResolvedValue([remote]);
+    let attempts = 0;
+    vi.mocked(runRemoteProtection).mockImplementation(async () => {
+      if (++attempts >= 3) return true;
+      window.dispatchEvent(new Event('pockymoe-enrollment-changed'));
+      throw new DeviceTrustError(attempts === 1 ? 'already_bound' : 'device_offline', attempts === 1 ? 409 : 503);
+    });
+    render(<DeviceEnrollmentMonitor />);
+    await tick();
+    expect(runRemoteProtection).toHaveBeenCalledTimes(1);
+    await tick(15000);
+    expect(runRemoteProtection).toHaveBeenCalledTimes(2);
+    await tick(15000);
+    expect(runRemoteProtection).toHaveBeenCalledTimes(2);
+    await tick(15000);
+    expect(runRemoteProtection).toHaveBeenCalledTimes(3);
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+  it('resumes persisted remote-protection intent after an offline device reconnects, using the remote runner', async () => {
+    const remote = { ...pending, remoteProtection: { phase: 'queued' as const } };
+    vi.mocked(listPendingEnrollments).mockResolvedValue([remote]);
+    vi.mocked(fetchRelayPortal).mockResolvedValue(portal(false));
+    vi.mocked(runRemoteProtection).mockResolvedValue(true);
+    render(<DeviceEnrollmentMonitor />);
+    await tick();
+    expect(runRemoteProtection).not.toHaveBeenCalled();
+    vi.mocked(fetchRelayPortal).mockResolvedValue(portal(true));
+    await tick(15000);
+    expect(runRemoteProtection).toHaveBeenCalledExactlyOnceWith(remote, true);
+    expect(completeDeviceEnrollment).not.toHaveBeenCalled();
+    await tick(60000);
+    expect(runRemoteProtection).toHaveBeenCalledTimes(1);
+  });
   it('backs off and retries registration-required failures without a manual Retry', async () => {
     vi.mocked(completeDeviceEnrollment).mockRejectedValueOnce(
       new DeviceTrustError('browser_registration_required', 401),
@@ -161,7 +208,7 @@ describe('automatic enrollment while the browser is open', () => {
       deviceId: pending.deviceId,
       state: 'encrypted',
       bound: true,
-      identityKey: 'new-identity',
+      identityKey: newIdentityKey,
     };
     act(() =>
       window.dispatchEvent(
@@ -226,7 +273,7 @@ describe('automatic enrollment while the browser is open', () => {
   });
   it('does not confirm a cached replacement dialog after the pending enrollment was removed', async () => {
     vi.mocked(completeDeviceEnrollment).mockRejectedValueOnce(
-      new EnrollmentIdentityChangeError(pending.deviceId, 'old', 'new'),
+      new EnrollmentIdentityChangeError(pending.deviceId, oldIdentityKey, newIdentityKey),
     );
     render(<DeviceEnrollmentMonitor />);
     await tick();
@@ -238,18 +285,36 @@ describe('automatic enrollment while the browser is open', () => {
     expect(completeDeviceEnrollment).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole('dialog')).toBeNull();
   });
+  it.each(['en', 'zh-CN'] as const)('shows the device name and exact CLI fingerprints with a device comparison hint in %s', async (locale) => {
+    setLocale(locale);
+    vi.mocked(completeDeviceEnrollment).mockRejectedValueOnce(new EnrollmentIdentityChangeError(pending.deviceId, oldIdentityKey, newIdentityKey));
+    render(<DeviceEnrollmentMonitor />);
+    await tick();
+    const dialog = screen.getByRole('dialog');
+    expect(dialog).toHaveTextContent('Build workstation');
+    expect(dialog).toHaveTextContent(oldFingerprint);
+    expect(dialog).toHaveTextContent(newFingerprint);
+    expect(dialog).not.toHaveTextContent(oldIdentityKey);
+    expect(dialog).not.toHaveTextContent(newIdentityKey);
+    expect(dialog).toHaveTextContent('pockymoe bind --status');
+    expect(dialog).toHaveTextContent('pockymoe relay-fingerprint');
+    expect(dialog).toHaveTextContent(locale === 'en' ? 'Compare the new fingerprint' : '核对新指纹');
+    fireEvent.click(screen.getByRole('button', { name: translate('devices.replaceIdentity') }));
+    await tick();
+    expect(completeDeviceEnrollment).toHaveBeenCalledWith(pending, true, { previousIdentityKey: oldIdentityKey, identityKey: newIdentityKey });
+  });
   it('requires explicit old/new identity confirmation and passes only the shown replacement', async () => {
     vi.mocked(completeDeviceEnrollment).mockRejectedValueOnce(
       new EnrollmentIdentityChangeError(
         pending.deviceId,
-        'old-identity',
-        'new-identity',
+        oldIdentityKey,
+        newIdentityKey,
       ),
     );
     render(<DeviceEnrollmentMonitor />);
     await tick();
-    expect(screen.getByRole('dialog')).toHaveTextContent('old-identity');
-    expect(screen.getByRole('dialog')).toHaveTextContent('new-identity');
+    expect(screen.getByRole('dialog')).toHaveTextContent(oldFingerprint);
+    expect(screen.getByRole('dialog')).toHaveTextContent(newFingerprint);
     await tick(15000);
     expect(completeDeviceEnrollment).toHaveBeenCalledTimes(1);
     fireEvent.click(
@@ -257,16 +322,16 @@ describe('automatic enrollment while the browser is open', () => {
     );
     await tick();
     expect(completeDeviceEnrollment).toHaveBeenCalledWith(pending, true, {
-      previousIdentityKey: 'old-identity',
-      identityKey: 'new-identity',
+      previousIdentityKey: oldIdentityKey,
+      identityKey: newIdentityKey,
     });
   });
   it('does not replace an identity when confirmation is dismissed', async () => {
     vi.mocked(completeDeviceEnrollment).mockRejectedValueOnce(
       new EnrollmentIdentityChangeError(
         pending.deviceId,
-        'old-identity',
-        'new-identity',
+        oldIdentityKey,
+        newIdentityKey,
       ),
     );
     render(<DeviceEnrollmentMonitor />);

@@ -167,11 +167,12 @@ async fn open(
     {
         return (StatusCode::CONFLICT, Json(json!({"message":"This port is not enabled on the online device. Update its Supervisor if port mappings are unavailable."}))).into_response();
     }
-    if query
-        .lease
-        .as_ref()
-        .is_some_and(|lease| Uuid::parse_str(lease).is_err())
-    {
+    if query.lease.as_ref().is_some_and(|lease| {
+        lease.len() != 43
+            || !lease
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+    }) {
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({"code":"invalid_lease","message":"Invalid preview lease"})),
@@ -343,6 +344,22 @@ fn require_browser_login(state: &AppState, request: &Request, mapping: &Mapping)
         .into_response()
 }
 
+// Strip control-plane parameters without normalizing application query bytes,
+// duplicate keys or bare flags. Match decoded names so encoded aliases cannot leak.
+fn app_query(query: &str) -> String {
+    query
+        .split('&')
+        .filter(|pair| {
+            url::form_urlencoded::parse(pair.as_bytes())
+                .next()
+                .is_none_or(|(key, _)| {
+                    !matches!(key.as_ref(), "__rc_launch" | "lease" | "leaseExpiresAt")
+                })
+        })
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
 // Run outside the control-plane security middleware: local applications own their
 // CSP and websocket Origin, and must never be served on the control-plane origin.
 pub(super) async fn middleware(
@@ -392,10 +409,8 @@ pub(super) async fn middleware(
         sessions.insert(session.clone(), grant);
         let mut destination = origin.clone();
         destination.set_path(request.uri().path());
-        destination.query_pairs_mut().extend_pairs(
-            url::form_urlencoded::parse(request.uri().query().unwrap_or("").as_bytes())
-                .filter(|(k, _)| k != "__rc_launch"),
-        );
+        let query = app_query(request.uri().query().unwrap_or(""));
+        destination.set_query((!query.is_empty()).then_some(query.as_str()));
         let secure = origin.scheme() == "https";
         let cookie_name = if secure { COOKIE } else { LOCAL_COOKIE };
         return Response::builder()
@@ -447,12 +462,12 @@ pub(super) async fn middleware(
         .is_some_and(|s| s.as_bytes().eq_ignore_ascii_case(b"websocket"));
     let browser_upgrade = websocket.then(|| hyper::upgrade::on(&mut request));
     let original_host = origin[url::Position::BeforeHost..url::Position::AfterPort].to_string();
-    let target = request
-        .uri()
-        .path_and_query()
-        .map(|v| v.as_str())
-        .unwrap_or("/")
-        .to_string();
+    let query = app_query(request.uri().query().unwrap_or(""));
+    let target = if query.is_empty() {
+        request.uri().path().to_string()
+    } else {
+        format!("{}?{query}", request.uri().path())
+    };
     *request.uri_mut() = target.parse().unwrap();
     strip_hop_headers(request.headers_mut(), websocket);
     let headers = request.headers_mut();
@@ -990,7 +1005,7 @@ mod tests {
     async fn security_revision_preview_lease_reaches_host_launch_and_every_device_open_frame() {
         let (state, dir, headers, mut rx, mapping_id) =
             lease_fixture("security-preview-lease").await;
-        let lease = Uuid::new_v4().to_string();
+        let lease = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([222; 32]);
         let response = open(
             State(state.clone()),
             Path(("device".into(), mapping_id.clone())),
@@ -1032,6 +1047,159 @@ mod tests {
             .unwrap();
         tx.send(tokio::io::duplex(1024).0).unwrap();
         assert!(task.await.unwrap().is_ok());
+        drop(state);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn documentation_preview_lease_validation_uses_device_alphabet_and_length() {
+        let (state, dir, headers, _rx, mapping) = lease_fixture("doc-preview-lease-shape").await;
+        for lease in [
+            Uuid::new_v4().to_string(),
+            "a".repeat(42),
+            "a".repeat(44),
+            format!("{}+", "a".repeat(42)),
+            format!("{}/", "a".repeat(42)),
+            format!("{}=", "a".repeat(42)),
+            format!("{}é", "a".repeat(41)),
+        ] {
+            let response = open(
+                State(state.clone()),
+                Path(("device".into(), mapping.clone())),
+                headers.clone(),
+                Query(serde_json::from_value(json!({"lease":lease})).unwrap()),
+                Json(OpenInput::default()),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            let value: Value =
+                serde_json::from_slice(&to_bytes(response.into_body(), 4096).await.unwrap())
+                    .unwrap();
+            assert_eq!(value["code"], "invalid_lease");
+        }
+        assert!(state.preview.launches.lock().unwrap().is_empty());
+        // Alphabet and length are the wire contract; UUID or padding is not required.
+        let response = open(
+            State(state.clone()),
+            Path(("device".into(), mapping)),
+            headers,
+            Query(serde_json::from_value(json!({"lease":format!("{}_-","A".repeat(41))})).unwrap()),
+            Json(OpenInput::default()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        drop(state);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn documentation_preview_redirect_and_forwarding_strip_lease_parameters() {
+        let (state, dir, headers, mut rx, mapping) = lease_fixture("doc-preview-lease-query").await;
+        let lease = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([224; 32]);
+        let token = extract_session_token(&headers, &TokenQuery::default()).unwrap();
+        let ticket = Uuid::new_v4().to_string();
+        state.preview.launches.lock().unwrap().insert(
+            ticket.clone(),
+            Grant {
+                mapping: mapping.clone(),
+                device: "device".into(),
+                session: token,
+                lease: Some(lease.clone()),
+                expires: std::time::Instant::now() + Duration::from_secs(60),
+            },
+        );
+        let host = state
+            .preview
+            .origin(&mapping)
+            .unwrap()
+            .host_str()
+            .unwrap()
+            .to_owned();
+        let app = Router::new()
+            .fallback(|| async { StatusCode::IM_A_TEAPOT })
+            .layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                middleware,
+            ));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let relay = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap();
+        let response=client.get(format!("{base}/work?app=a%2Fb&app=two&flag&lease={lease}&leaseExpiresAt=123&%6cease=duplicate&__rc_launch={ticket}")).header(header::HOST,&host).send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        let redirect =
+            url::Url::parse(response.headers()[header::LOCATION].to_str().unwrap()).unwrap();
+        assert_eq!(redirect.path(), "/work");
+        assert_eq!(redirect.query(), Some("app=a%2Fb&app=two&flag"));
+        let cookie = response.headers()[header::SET_COOKIE]
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_owned();
+        assert_eq!(
+            state
+                .preview
+                .sessions
+                .lock()
+                .unwrap()
+                .values()
+                .next()
+                .unwrap()
+                .lease
+                .as_deref(),
+            Some(lease.as_str())
+        );
+        // Also filter manually supplied lease parameters on subsequent HTTP/WS paths.
+        let request=client.get(format!("{base}/work?app=a%2Fb&app=two&flag&lease=forged&leaseExpiresAt=1&%6ceaseExpiresAt=2")).header(header::HOST,&host).header(header::COOKIE,cookie);
+        let caller = tokio::spawn(async move { request.send().await.unwrap() });
+        let frame: Value = serde_json::from_str(&rx.recv().await.unwrap()).unwrap();
+        assert_eq!(frame["type"], "preview.open");
+        assert_eq!(frame["leaseId"], lease);
+        let observed = Arc::new(StdMutex::new(Vec::<String>::new()));
+        let recorder = observed.clone();
+        let (browser, device) = tokio::io::duplex(4096);
+        let upstream = tokio::spawn(async move {
+            hyper::server::conn::http1::Builder::new()
+                .serve_connection(
+                    TokioIo::new(device),
+                    hyper::service::service_fn(
+                        move |request: hyper::Request<hyper::body::Incoming>| {
+                            recorder.lock().unwrap().push(request.uri().to_string());
+                            async {
+                                Ok::<_, std::convert::Infallible>(Response::new(Body::from("ok")))
+                            }
+                        },
+                    ),
+                )
+                .await
+                .unwrap();
+        });
+        let stream_ticket = frame["ticket"].as_str().unwrap();
+        let sender = state
+            .preview
+            .streams
+            .lock()
+            .unwrap()
+            .get_mut(stream_ticket)
+            .unwrap()
+            .tx
+            .take()
+            .unwrap();
+        sender.send(browser).unwrap();
+        let response = caller.await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.text().await.unwrap(), "ok");
+        assert_eq!(
+            *observed.lock().unwrap(),
+            vec!["/work?app=a%2Fb&app=two&flag".to_owned()]
+        );
+        upstream.await.unwrap();
+        relay.abort();
         drop(state);
         let _ = std::fs::remove_dir_all(dir);
     }

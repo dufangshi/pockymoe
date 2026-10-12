@@ -4,9 +4,10 @@ import { setLocale, translate } from '@pockymoe/thread-ui/i18n';
 import { AccountUnlockPrompt } from './AccountUnlockPrompt';
 import { FormDialog } from './FormDialog';
 import { readAfterOwnerUnlock } from '../lib/ownerUnlockRecovery';
+import { ACCOUNT_UNLOCK_REQUEST, BROWSER_REMOVED } from '../lib/accountVaultState';
 const state = vi.hoisted(() => ({ unlock: vi.fn(), register: vi.fn(), current: vi.fn(), fetch: vi.fn(), session: vi.fn(), change: vi.fn(), setSession: vi.fn(), account: vi.fn(), create: vi.fn(), open: vi.fn(), setup: vi.fn() }));
 vi.mock('../lib/accountVault', () => ({ currentAccount: state.account, currentBrowser: state.current }));
-vi.mock('../lib/accountVaultState', () => ({ ACCOUNT_UNLOCK_REQUEST: 'pockymoe-account-unlock-request', accountRequest: state.fetch,
+vi.mock('../lib/accountVaultState', () => ({ ACCOUNT_UNLOCK_REQUEST: 'pockymoe-account-unlock-request', BROWSER_REMOVED: 'pockymoe-browser-removed', accountRequest: state.fetch,
   unlockAccount: state.unlock, registerBrowser: state.register, createVault: state.create, openVault: state.open, changeAccountPassword: state.change, startAccountOver: vi.fn(),
   AccountTrustError: class extends Error { constructor(public code: string) { super(code); } },
 }));
@@ -128,4 +129,11 @@ it('creates a legacy/OAuth vault only after recovery-code confirmation and retri
   fireEvent.click(screen.getByRole('button', { name: translate('auth.accountUnlock') }));
   await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
   expect(state.setup).toHaveBeenCalledTimes(1); expect(state.create).toHaveBeenCalledTimes(1);
+});
+
+it('explains a browser that found itself in the account-signed revocation list', async () => {
+  render(<AccountUnlockPrompt />);
+  act(() => { window.dispatchEvent(new Event(BROWSER_REMOVED)); });
+  act(() => { window.dispatchEvent(new CustomEvent(ACCOUNT_UNLOCK_REQUEST, { detail: { reason: 'connect', resolve: vi.fn(), reject: vi.fn() } })); });
+  expect(await screen.findByText(translate('auth.browser_revoked'))).toBeInTheDocument();
 });

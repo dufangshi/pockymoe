@@ -91,10 +91,19 @@ export default defineConfig(({ mode }) => {
   });
 
   return {
-    worker: { format: 'es' },
+    worker: {
+      format: 'es',
+      ...(staticWeb ? { rollupOptions: { output: {
+        entryFileNames: (chunk: { name: string }) => chunk.name === 'relayServiceWorker'
+          ? 'relayServiceWorker.js' : 'assets/[name]-[hash].js',
+      } } } : {}),
+    },
     define: staticWeb ? { 'import.meta.env.VITE_POCKYMOE_STATIC_WEB': JSON.stringify('true') } : {},
     plugins: [
-      ...(staticWeb ? [staticHosting(env.VITE_POCKYMOE_RELAY_ORIGIN ?? process.env.VITE_POCKYMOE_RELAY_ORIGIN ?? '')] : []),
+      ...(staticWeb ? [staticHosting(
+        env.VITE_POCKYMOE_RELAY_ORIGIN ?? process.env.VITE_POCKYMOE_RELAY_ORIGIN ?? '',
+        process.env.POCKYMOE_WEB_DOMAIN ?? '',
+      )] : []),
       react(),
       tailwindcss(),
       {
