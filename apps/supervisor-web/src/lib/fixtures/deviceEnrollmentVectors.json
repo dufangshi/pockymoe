@@ -1,0 +1,39 @@
+{
+  "account": {
+    "userId": "user-123",
+    "accountKeyId": "bbNZDxMlJqPBsWsFLvOi-pnS-vAKzGgs9HevaG1vOgY",
+    "accountPublicKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEttUsslRkjNh1TXjKXbaPzuypehMsqdhdjw1vxLzJYry6JRgCmTlqkHLYCH5GktG-ufqz0PzhyxQyTp_4Ufo7rA"
+  },
+  "deviceCertificate": {
+    "version": 1,
+    "accountKeyId": "bbNZDxMlJqPBsWsFLvOi-pnS-vAKzGgs9HevaG1vOgY",
+    "deviceId": "device-1",
+    "identityKey": "BHCCXhqgIPoQJjs-nCol4Dix19YlDenqelnfd826cxjMzkPSaUSV37MFdy91WW18K88YilW3hw6DtZxpluW52Is",
+    "createdAt": 1760000000000,
+    "signature": "aRYslw9S59D2dD01mXXa9-JyK--HdVUpZFQuOwqN_CMtqld1qpNTVmN9pnxvdrZGqB0BJ0AT_nhxD2iyNIq21w"
+  },
+  "enrollment": {
+    "enrollSecret": "ZWxzeoGIj5adpKuyucDHztXc4-rx-P8GDRQbIikwNz4",
+    "signingInput": "pockymoe-acct-enroll-v1\ndevice-1\nBHCCXhqgIPoQJjs-nCol4Dix19YlDenqelnfd826cxjMzkPSaUSV37MFdy91WW18K88YilW3hw6DtZxpluW52Is\nbbNZDxMlJqPBsWsFLvOi-pnS-vAKzGgs9HevaG1vOgY",
+    "mac": "HZ7TGbfATHdQ9DGLv5GElfIWZB5-py7dmKzLJZVDYS0"
+  },
+  "negative": {
+    "enrollmentMacWrongIdentity": "g4Ic1s-jbkavLcU7EPb2eoXGU6CpK5Ryk4YxzuPWxIE",
+    "deviceCertWrongDevice": {
+      "version": 1,
+      "accountKeyId": "bbNZDxMlJqPBsWsFLvOi-pnS-vAKzGgs9HevaG1vOgY",
+      "deviceId": "device-2",
+      "identityKey": "BHCCXhqgIPoQJjs-nCol4Dix19YlDenqelnfd826cxjMzkPSaUSV37MFdy91WW18K88YilW3hw6DtZxpluW52Is",
+      "createdAt": 1760000000000,
+      "signature": "aRYslw9S59D2dD01mXXa9-JyK--HdVUpZFQuOwqN_CMtqld1qpNTVmN9pnxvdrZGqB0BJ0AT_nhxD2iyNIq21w"
+    },
+    "deviceCertWrongIdentity": {
+      "version": 1,
+      "accountKeyId": "bbNZDxMlJqPBsWsFLvOi-pnS-vAKzGgs9HevaG1vOgY",
+      "deviceId": "device-1",
+      "identityKey": "BP-RMvATfsu03rMedWqbO5XXTJqp3UrRAIKxJfTrJe9kYG-bRM8dP2UzilwyeTszfUbJMMgux2Y-pQKszJrnPSg",
+      "createdAt": 1760000000000,
+      "signature": "aRYslw9S59D2dD01mXXa9-JyK--HdVUpZFQuOwqN_CMtqld1qpNTVmN9pnxvdrZGqB0BJ0AT_nhxD2iyNIq21w"
+    }
+  }
+}

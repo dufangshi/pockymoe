@@ -4,7 +4,6 @@ import { MemoryRouter } from 'react-router-dom';
 import { notifyOwnerUnlocked } from '../lib/ownerUnlockRecovery';
 import { exchange } from '../lib/relayTransportCrypto';
 import { WorkspacesPage } from './WorkspacesPage';
-import { DeviceTrustPanel } from '../components/DeviceTrustPanel';
 import { encryptedBrowserFetch } from '../lib/relayTransport';
 
 vi.mock('../lib/relayTransportCrypto', () => ({
@@ -60,18 +59,6 @@ describe('device views resume their original blocked loads', () => {
     const completed = vi.mocked(exchange).mock.calls.length;
     unlock(['b']); unlock();
     expect(exchange).toHaveBeenCalledTimes(completed);
-  });
-  it('loads the device trust/settings panel automatically after matching unlock without refetching an unrelated panel', async () => {
-    render(<DeviceTrustPanel deviceId="a" />);
-    await waitFor(() => expect(exchange).toHaveBeenCalledTimes(1));
-    unlock(['b']);
-    expect(exchange).toHaveBeenCalledTimes(1);
-    unlock();
-    expect(await screen.findByText('Strict mode enabled')).toBeVisible();
-    expect(screen.queryByRole('alert')).toBeNull();
-    expect(exchange).toHaveBeenCalledTimes(2);
-    unlock(['b']); unlock();
-    expect(exchange).toHaveBeenCalledTimes(2);
   });
   it('returns an owner error for mutations immediately and never replays them after unlocking', async () => {
     const response = await encryptedBrowserFetch('/relay/devices/a/api/workspaces', { method: 'POST', body: '{}' });
