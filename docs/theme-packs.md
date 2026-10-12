@@ -171,7 +171,6 @@ when the applied pack lists the flag (`useThemeFeature(flag)`):
 | Flag | Effect |
 | --- | --- |
 | `workbench.phoneDrawerTools` | On phones, Home and Chat move from the top bar into the thread drawer |
-| `composer.usageInShell` | The 5h / 7d usage meter sits inside the composer shell instead of a row below |
 | `composer.modelAvatar` | The model chip shows the agent avatar and a menu chevron |
 | `composer.richMenus` | Icon rows with descriptions in the slash toolbox and attach menu, a `/` glyph and a paperclip trigger |
 | `composer.intentIcons` | Per-intent send icons, and "Send after this turn" while a turn runs |

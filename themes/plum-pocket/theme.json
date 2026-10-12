@@ -39,7 +39,6 @@
   },
   "features": [
     "workbench.phoneDrawerTools",
-    "composer.usageInShell",
     "composer.modelAvatar",
     "composer.richMenus",
     "composer.intentIcons",
