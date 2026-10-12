@@ -75,18 +75,25 @@ pub(crate) fn live_owner(state: &Supervisor) -> BrowserPrincipal {
     }
 }
 pub(crate) fn bound_peer(state: &Supervisor, id: &str) -> DeviceCertificate {
-    let v = vectors();
+    bound_peer_with_account(state, id, &account_key())
+}
+pub(crate) fn bound_peer_with_account(
+    state: &Supervisor,
+    id: &str,
+    key: &SigningKey,
+) -> DeviceCertificate {
+    let pin = account(key);
     bind_account(
         &state.config.database_url,
-        v["account"]["accountPublicKey"].as_str().unwrap(),
-        v["enrollment"]["enrollSecret"].as_str().unwrap(),
+        &pin.account_public_key,
+        vectors()["enrollment"]["enrollSecret"].as_str().unwrap(),
         None,
     )
     .unwrap();
     remember_device(state, id).unwrap();
     let mut c = DeviceCertificate {
         version: 1,
-        account_key_id: account(&account_key()).account_key_id,
+        account_key_id: pin.account_key_id,
         device_id: id.into(),
         identity_key: crate::secure_transport::transport(state)
             .unwrap()
@@ -94,10 +101,18 @@ pub(crate) fn bound_peer(state: &Supervisor, id: &str) -> DeviceCertificate {
         created_at: now(),
         signature: String::new(),
     };
-    let sig: Signature = account_key().sign(device_signing_input(&c).as_bytes());
+    let sig: Signature = key.sign(device_signing_input(&c).as_bytes());
     c.signature = B64.encode(sig.to_bytes());
     install_certificate(state, &c).unwrap();
     c
+}
+pub(crate) fn device_revocation(id: &str) -> Revocation {
+    let mut r: Revocation =
+        serde_json::from_value(vectors()["revocations"]["device"].clone()).unwrap();
+    r.subject_id = id.into();
+    let signature: Signature = account_key().sign(revocation_signing_input(&r).as_bytes());
+    r.signature = B64.encode(signature.to_bytes());
+    r
 }
 /// A browser-like HPKE request, with a response exporter, tests actual tunnel dispatch.
 pub(crate) fn encrypted(

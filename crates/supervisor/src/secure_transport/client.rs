@@ -39,8 +39,6 @@ struct Descriptor {
     public: <Kem as KemTrait>::PublicKey,
     expires: i64,
     clock_offset: i64,
-    identity: String,
-    certificate: Value,
 }
 impl Descriptor {
     fn timestamp(&self) -> Result<i64> {
@@ -110,14 +108,18 @@ impl Client {
     }
     async fn descriptor(&self, state: &Supervisor, device_id: &str) -> Result<Descriptor> {
         let device = self.device(device_id);
-        if let Some(descriptor) = device.cached() {
-            verify_target(state, device_id, &descriptor)?;
-            return Ok(descriptor);
+        // Bound callers never authenticate from a cached descriptor: a target
+        // may have been reset without rotating its transport identity or key.
+        if !crate::owner_trust::bound(state) {
+            if let Some(descriptor) = device.cached() {
+                return Ok(descriptor);
+            }
         }
         let _handshake = device.handshake.lock().await;
-        if let Some(descriptor) = device.cached() {
-            verify_target(state, device_id, &descriptor)?;
-            return Ok(descriptor);
+        if !crate::owner_trust::bound(state) {
+            if let Some(descriptor) = device.cached() {
+                return Ok(descriptor);
+            }
         }
         let challenge = Uuid::new_v4().to_string();
         let started = now();
@@ -134,7 +136,7 @@ impl Client {
         }
         let value: Value = serde_json::from_slice(&response.body)?;
         let (descriptor, identity) = verify_descriptor(&value, &challenge, started, received)?;
-        verify_target(state, device_id, &descriptor)?;
+        verify_target(state, device_id, &value, &identity)?;
         let bound = crate::owner_trust::bound(state);
         // Pin and publish under one lock, so a trust reset also invalidates the cache.
         let mut cached = device.descriptor.lock().unwrap();
@@ -152,7 +154,11 @@ impl Client {
                 &json!({"identityKey":identity,"fingerprint":B64.encode(Sha256::digest(B64.decode(&identity)?)),"pinnedAt":now_rfc3339()}).to_string(),
             )?;
         }
-        *cached = Some(descriptor.clone());
+        *cached = if bound {
+            None
+        } else {
+            Some(descriptor.clone())
+        };
         Ok(descriptor)
     }
     async fn one(
@@ -166,8 +172,8 @@ impl Client {
     ) -> Result<Reply> {
         let mut refreshed = false;
         let mut registered = false;
+        let mut descriptor = self.descriptor(state, device_id).await?;
         loop {
-            let descriptor = self.descriptor(state, device_id).await?;
             let mut sealed = seal(&descriptor, method, path_and_query, content_type, body)?;
             sign_peer(state, &mut sealed)?;
             let payload =
@@ -186,15 +192,16 @@ impl Client {
             {
                 self.device(device_id).invalidate(&descriptor.key_id);
                 refreshed = true;
+                descriptor = self.descriptor(state, device_id).await?;
                 continue;
             }
             if !registered
                 && crate::owner_trust::bound(state)
                 && matches!(&error, PeerError::Remote { status: 401, code, .. } if code == "peer_certificate_required")
             {
-                let bundle = crate::owner_trust::device_certificate(state)?
-                    .ok_or_else(|| anyhow!("missing local peer certificate bundle"))?;
-                let body = serde_json::to_vec(&bundle)?;
+                let certificate = crate::owner_trust::device_certificate(state)?
+                    .ok_or_else(|| anyhow!("missing local peer device certificate"))?;
+                let body = serde_json::to_vec(&certificate)?;
                 let mut registration = seal(
                     &descriptor,
                     "POST",
@@ -216,6 +223,7 @@ impl Client {
                     {
                         self.device(device_id).invalidate(&descriptor.key_id);
                         refreshed = true;
+                        descriptor = self.descriptor(state, device_id).await?;
                         continue;
                     }
                     ensure!(
@@ -331,8 +339,6 @@ fn verify_descriptor(
         public: <Kem as KemTrait>::PublicKey::from_bytes(&B64.decode(public)?)?,
         expires,
         clock_offset,
-        identity: text("identityKey")?.into(),
-        certificate: value["certificate"].clone(),
     };
     ensure!(
         descriptor.timestamp()? < expires,
@@ -343,13 +349,13 @@ fn verify_descriptor(
         B64.encode(identity.to_encoded_point(false).as_bytes()),
     ))
 }
-fn verify_target(state: &Supervisor, device: &str, descriptor: &Descriptor) -> Result<()> {
+fn verify_target(state: &Supervisor, device: &str, value: &Value, identity: &str) -> Result<()> {
     if crate::owner_trust::bound(state) {
         crate::owner_trust::verify_peer_certificate(
             state,
-            descriptor.certificate.clone(),
+            value["certificate"].clone(),
             device,
-            Some(&descriptor.identity),
+            Some(identity),
         )
         .map_err(|_| PeerError::TargetUnverified(device.into()))?;
     }
@@ -359,12 +365,13 @@ fn sign_peer(state: &Supervisor, sealed: &mut Sealed) -> Result<()> {
     if !crate::owner_trust::bound(state) {
         return Ok(());
     }
-    let bundle = crate::owner_trust::device_certificate(state)?
-        .ok_or_else(|| anyhow!("missing local peer certificate bundle"))?;
+    let certificate = crate::owner_trust::device_certificate(state)?
+        .ok_or_else(|| anyhow!("missing local peer device certificate"))?;
     let ciphertext = STANDARD.decode(sealed.payload["body"].as_str().unwrap())?;
-    let input = crate::owner_trust::peer_signing_input(&bundle.device_id, &sealed.aad, &ciphertext);
+    let input =
+        crate::owner_trust::peer_signing_input(&certificate.device_id, &sealed.aad, &ciphertext);
     let signature: Signature = super::transport(state)?.identity.sign(input.as_bytes());
-    sealed.payload["headers"]["x-rcd-peer-device"] = json!(bundle.device_id);
+    sealed.payload["headers"]["x-rcd-peer-device"] = json!(certificate.device_id);
     sealed.payload["headers"]["x-rcd-peer-signature"] = json!(B64.encode(signature.to_bytes()));
     Ok(())
 }
@@ -1093,7 +1100,7 @@ mod tests {
         ));
     }
     #[tokio::test]
-    async fn bound_client_verifies_target_replaces_tofu_and_rechecks_cached_account() {
+    async fn bound_client_verifies_current_target_replaces_tofu_and_refuses_revocation() {
         use crate::owner_trust::{self, tests::bound_peer};
         let (_caller_dir, caller) = state_with_relay_url("http://127.0.0.1:1");
         let (_target_dir, target) = state_with_relay_url("http://127.0.0.1:1");
@@ -1214,6 +1221,139 @@ mod tests {
         assert!(matches!(error.downcast_ref(),Some(PeerError::Offline(id)) if id == "target"));
         assert!(error.downcast_ref::<PeerError>().unwrap().retryable());
         assert_eq!(frames.lock().unwrap().len(), 3);
+        stop(task).await;
+    }
+    #[tokio::test]
+    async fn bound_client_refuses_reset_target_from_current_descriptor_even_with_cached_key() {
+        use crate::owner_trust::{self, tests::bound_peer};
+        let (_caller_dir, caller) = state_with_relay_url("http://127.0.0.1:1");
+        let (_target_dir, target) = state_with_relay_url("http://127.0.0.1:1");
+        for (state, id) in [(&caller, "caller"), (&target, "target")] {
+            state.set_peer_access(true).unwrap();
+            bound_peer(state, id);
+        }
+        let (task, frames) = serve(
+            &caller,
+            target.clone(),
+            Service {
+                forward: true,
+                ..Default::default()
+            },
+        );
+        let client = Client::default();
+        assert_eq!(
+            client
+                .request(
+                    &caller,
+                    "target",
+                    "POST",
+                    "/api/peer/cli",
+                    Some("application/json"),
+                    br#"{"operation":"info"}"#,
+                )
+                .await
+                .unwrap()
+                .status,
+            200
+        );
+        let transport = super::super::transport(&target).unwrap();
+        let before = transport.descriptor("old-handshake").unwrap();
+        let (stale, _) = verify_descriptor(&before, "old-handshake", now(), now()).unwrap();
+        // Populate even an otherwise usable cache to ensure bound callers bypass it.
+        *client.device("target").descriptor.lock().unwrap() = Some(stale);
+        let previous_pin = caller.db.get_kv("peer:pin:target").unwrap();
+        owner_trust::reset_account_trust(&target.config.database_url).unwrap();
+        let after = transport.descriptor("new-handshake").unwrap();
+        assert_eq!(before["identityKey"], after["identityKey"]);
+        assert_eq!(before["keyId"], after["keyId"]);
+        let count = frames.lock().unwrap().len();
+        assert!(
+            matches!(client.request(&caller,"target","POST","/api/peer/cli",Some("application/json"),br#"{"operation":"info"}"#).await.unwrap_err().downcast_ref(),Some(PeerError::TargetUnverified(id)) if id == "target")
+        );
+        let frames = frames.lock().unwrap();
+        assert_eq!(frames.len(), count + 1); // only a new key descriptor, no encrypted action
+        assert!(frames.last().unwrap()["path"]
+            .as_str()
+            .unwrap()
+            .starts_with("/api/peer/transport/key?challenge="));
+        drop(frames);
+        assert_eq!(caller.db.get_kv("peer:pin:target").unwrap(), previous_pin);
+        stop(task).await;
+    }
+
+    #[tokio::test]
+    async fn bound_client_refuses_other_account_wrong_device_identity_and_signature() {
+        use crate::owner_trust::{
+            self,
+            tests::{bound_peer, bound_peer_with_account},
+        };
+        use p256::ecdsa::{signature::Signer, Signature};
+        let (_caller_dir, caller) = state_with_relay_url("http://127.0.0.1:1");
+        let (_target_dir, target) = state_with_relay_url("http://127.0.0.1:1");
+        for state in [&caller, &target] {
+            state.set_peer_access(true).unwrap();
+        }
+        bound_peer(&caller, "caller");
+        let other = p256::ecdsa::SigningKey::random(&mut rand::rngs::OsRng);
+        bound_peer_with_account(&target, "target", &other);
+        let (task, frames) = serve(
+            &caller,
+            target.clone(),
+            Service {
+                forward: true,
+                ..Default::default()
+            },
+        );
+        assert!(matches!(
+            call(&caller).await.unwrap_err().downcast_ref(),
+            Some(PeerError::TargetUnverified(_))
+        ));
+        owner_trust::reset_account_trust(&target.config.database_url).unwrap();
+        let certificate = bound_peer(&target, "target");
+        for invalid in [
+            {
+                let mut c = certificate.clone();
+                c.device_id = "wrong-device".into();
+                let signature: Signature = owner_trust::tests::account_key()
+                    .sign(owner_trust::device_signing_input(&c).as_bytes());
+                c.signature = B64.encode(signature.to_bytes());
+                c
+            },
+            {
+                let mut c = certificate.clone();
+                c.identity_key = owner_trust::tests::vectors()["deviceCertificate"]["certificate"]
+                    ["identityKey"]
+                    .as_str()
+                    .unwrap()
+                    .into();
+                let signature: Signature = owner_trust::tests::account_key()
+                    .sign(owner_trust::device_signing_input(&c).as_bytes());
+                c.signature = B64.encode(signature.to_bytes());
+                c
+            },
+            {
+                let mut c = certificate.clone();
+                c.signature = B64.encode([0; 64]);
+                c
+            },
+        ] {
+            target
+                .db
+                .with(|c| {
+                    c.execute(
+                        "UPDATE device_certificates SET certificate_json=?1",
+                        [serde_json::to_string(&invalid)?],
+                    )?;
+                    Ok(())
+                })
+                .unwrap();
+            assert!(matches!(
+                call(&caller).await.unwrap_err().downcast_ref(),
+                Some(PeerError::TargetUnverified(_))
+            ));
+        }
+        assert_eq!(frames.lock().unwrap().len(), 4);
+        assert!(caller.db.get_kv("peer:pin:target").unwrap().is_none());
         stop(task).await;
     }
 }

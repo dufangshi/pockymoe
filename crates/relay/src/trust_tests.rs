@@ -530,7 +530,7 @@ async fn grantee_registration_routes_any_live_scope_without_resource_ids() {
             let request = fixture
                 .request(
                     Method::POST,
-                    &format!("{prefix}/transport/owner-session"),
+                    &format!("{prefix}/transport/browser"),
                     Some(user),
                 )
                 .header("x-rcd-key", "scoped-key")
@@ -543,7 +543,7 @@ async fn grantee_registration_routes_any_live_scope_without_resource_ids() {
                 .unwrap()
                 .unwrap();
             let frame: Value = serde_json::from_str(&raw).unwrap();
-            assert_eq!(frame["payload"]["path"], "/api/transport/owner-session");
+            assert_eq!(frame["payload"]["path"], "/api/transport/browser");
             assert_eq!(frame["payload"]["method"], "POST");
             assert_eq!(frame["payload"]["headers"]["x-rcd-key"], "scoped-key");
             assert_eq!(frame["payload"]["headers"]["x-rcd-enc"], "encapsulation");
@@ -625,10 +625,11 @@ async fn registration_exception_does_not_open_other_transport_routes_or_plaintex
             "share-guest",
         ] {
             for (method, path) in [
-                (Method::GET, "/transport/owner-session"),
-                (Method::PUT, "/transport/owner-session"),
-                (Method::DELETE, "/transport/owner-session"),
-                (Method::POST, "/transport/owner-session/extra"),
+                (Method::GET, "/transport/browser"),
+                (Method::PUT, "/transport/browser"),
+                (Method::DELETE, "/transport/browser"),
+                (Method::POST, "/transport/browser/extra"),
+                (Method::POST, "/transport/owner-session"),
                 (Method::POST, "/transport/session"),
                 (Method::POST, "/transport/pair"),
                 (Method::GET, "/transport/trust"),
@@ -661,7 +662,7 @@ async fn registration_exception_does_not_open_other_transport_routes_or_plaintex
             ] {
                 let mut request = fixture.request(
                     Method::POST,
-                    &format!("{prefix}/transport/owner-session"),
+                    &format!("{prefix}/transport/browser"),
                     Some(user),
                 );
                 for name in supplied {
@@ -679,11 +680,7 @@ async fn registration_exception_does_not_open_other_transport_routes_or_plaintex
         }
         for user in [None, Some("stranger")] {
             let response = fixture
-                .request(
-                    Method::POST,
-                    &format!("{prefix}/transport/owner-session"),
-                    user,
-                )
+                .request(Method::POST, &format!("{prefix}/transport/browser"), user)
                 .header("x-rcd-key", "key")
                 .header("x-rcd-request", "request")
                 .header("x-rcd-enc", "enc")
@@ -770,7 +767,7 @@ async fn revoked_expired_disabled_and_other_device_rows_cannot_register() {
             let response = fixture
                 .request(
                     Method::POST,
-                    "/relay/devices/device/api/transport/owner-session",
+                    "/relay/devices/device/api/transport/browser",
                     Some(user),
                 )
                 .header("x-rcd-key", "key")
