@@ -334,7 +334,7 @@ async fn browser_security_response(
                 request.uri(),
             ) {
                 return (StatusCode::FORBIDDEN, axum::Json(serde_json::json!({
-                    "code":if mode == super::account::RECOVERY { "forbidden" } else { "account_setup_required" },
+                    "code":"forbidden",
                     "message":if mode == super::account::RECOVERY { "Complete account recovery first" } else { "Secure your account first" }
                 }))).into_response();
             }

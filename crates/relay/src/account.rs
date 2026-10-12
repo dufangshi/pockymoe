@@ -338,7 +338,7 @@ async fn write_vault(
     } else if mode != SETUP && !oauth {
         return Err(failure(
             StatusCode::FORBIDDEN,
-            "account_setup_required",
+            "forbidden",
             "Sign in to create your account vault",
         ));
     }
