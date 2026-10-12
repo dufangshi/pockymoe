@@ -94,6 +94,7 @@ export function isAccountUnlocked() { if (unlocked && unlocked.expires <= Date.n
 async function cacheVault(v: Vault, body: Body) {
   await accountStore<Cache>(`cache:${v.userId}`, { userId: v.userId, accountKeyId: v.accountKeyId,
     accountPublicKey: v.accountPublicKey, revision: v.revision, boundDevices: body.boundDevices });
+  await accountStore('has-opened-vault', true);
 }
 export async function checkVault(v: Vault, expectedUserId: string) {
   if (!v || v.version !== 1 || v.userId !== expectedUserId || !Number.isSafeInteger(v.revision) || v.revision < 1 ||
@@ -200,13 +201,14 @@ export async function unlockAccount(secret: string, recovery = false) {
   return openVault(vault, secret, recovery, id);
 }
 export async function registerBrowser(label = browserLabel()) {
-  const handle = await requireUnlock('connect'), w = windowState();
   let browser = await currentBrowser();
   const revoked = await accountRevocations(true);
   if (browser && revoked.some(r => r.kind === 'browser' && r.subjectId === browser!.browserId)) {
-    await accountStore(`browser:${handle.userId}`, null); browser = null;
+    await accountStore(`browser:${browser.userId}`, null); browser = null;
   }
+  let w: WindowState | undefined;
   if (!browser) {
+    const handle = await requireUnlock('connect'); w = windowState();
     const pair = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign', 'verify']);
     const publicKey = c.encode64(await crypto.subtle.exportKey('spki', pair.publicKey));
     const fields = { accountKeyId: handle.accountKeyId, browserId: await c.hash64(c.decode64(publicKey)), publicKey, createdAt: Date.now() };
@@ -214,8 +216,10 @@ export async function registerBrowser(label = browserLabel()) {
       browserId: fields.browserId, privateKey: pair.privateKey, certificate: { version: 1, ...fields, signature: await handle.sign(c.inputs.browser(fields)) } };
   }
   await accountRequest('/relay/account/browsers', 'POST', { certificate: browser.certificate, label: label.slice(0, 80) });
-  if (windowState() !== w) throw new AccountTrustError('accountUnlockExpired');
-  await accountStore(`browser:${handle.userId}`, browser);
+  if (w) {
+    if (windowState() !== w) throw new AccountTrustError('accountUnlockExpired');
+    await accountStore(`browser:${browser.userId}`, browser);
+  } else if ((await currentBrowser())?.browserId !== browser.browserId) throw new AccountTrustError('accountUnlockRequired');
   if (typeof window !== 'undefined') window.dispatchEvent(new Event(ACCOUNT_CHANGED));
   return browser;
 }

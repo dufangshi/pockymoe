@@ -23,6 +23,14 @@ it.each([false, true])('offers Start over only in a restricted recovery/reset se
   const button = screen.queryByRole('button', { name: translate('auth.accountStartOver') });
   if (recovery) expect(button).toBeVisible(); else expect(button).toBeNull();
 });
+it.each(['en', 'zh-CN'] as const)('explains that leaked passwords require Start over in both secret-change dialogs in %s', async locale => {
+  setLocale(locale); render(<AccountSecurityPanel />); await screen.findByText('My laptop');
+  fireEvent.click(screen.getByRole('button', { name: translate('auth.changePassword') }));
+  expect(screen.getByText(translate('auth.accountSecretRotationWarning'))).toBeVisible();
+  fireEvent.keyDown(screen.getByLabelText(translate('auth.newPassword')), { key: 'Escape' });
+  fireEvent.click(screen.getByRole('button', { name: translate('auth.accountRegenerateRecovery') }));
+  expect(screen.getByText(translate('auth.accountSecretRotationWarning'))).toBeVisible();
+});
 it.each(['en', 'zh-CN'] as const)('shows verified named browsers, own badge, times and safety code in %s', async locale => {
   setLocale(locale); render(<AccountSecurityPanel />);
   expect(await screen.findByText('My laptop')).toBeVisible(); expect(screen.getByText(translate('auth.ownerCurrent'))).toBeVisible();

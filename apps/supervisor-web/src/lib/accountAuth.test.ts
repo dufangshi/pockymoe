@@ -7,7 +7,7 @@ const state = vi.hoisted(() => ({ store: new Map<string, unknown>(), fetch: vi.f
 vi.mock('./accountStore', () => ({ accountStore: async (key: string, value?: unknown) => {
   if (value === null) state.store.delete(key); else if (value !== undefined) state.store.set(key, structuredClone(value));
   return structuredClone(state.store.get(key) ?? null);
-} }));
+}, hasStoredAccountVault: async () => [...state.store.keys()].some(key => key.startsWith('cache:')) }));
 vi.mock('./accountCrypto', async original => ({ ...await original<typeof import('./accountCrypto')>(), passwordKeys: state.derive }));
 vi.stubGlobal('crypto', webcrypto); vi.stubGlobal('fetch', state.fetch); vi.stubGlobal('navigator', { userAgent: 'Test browser', language: 'en-US' });
 const auth = await import('./accountAuth');
@@ -231,6 +231,49 @@ it('blocks explicit upgrades for known vault identifiers and when the migration 
     await expect(auth.startLegacyUpgrade('fresh', 'must stay local')).rejects.toMatchObject({ code: 'accountLoginDowngrade' });
     expect(state.fetch).not.toHaveBeenCalled();
   } finally { vi.unstubAllEnvs(); }
+});
+it('caches both session username and email after verifying a vault, even when sign-in used an alias', async () => {
+  await auth.startAccountLogin('typed alias', 'local');
+  await auth.finishAccountLogin(v.userId, { username: 'CanonicalUser', email: 'Account@Example.invalid' });
+  for (const login of ['CANONICALUSER', 'account@example.invalid']) {
+    state.fetch.mockClear();
+    await expect(auth.startLegacyUpgrade(login, 'must stay local', true)).rejects.toMatchObject({ code: 'accountLoginDowngrade' });
+    expect(state.fetch).not.toHaveBeenCalled();
+  }
+});
+it('requires an explicit warning confirmation before upgrading another account when any vault was opened', async () => {
+  await auth.startAccountLogin('known', 'local'); await auth.finishAccountLogin(v.userId);
+  await vault.logoutAccount(); state.fetch.mockClear();
+  expect(await auth.legacyUpgradeMayApply('unrecognized')).toBe(false);
+  await expect(auth.startLegacyUpgrade('other legacy', 'must stay local')).rejects.toMatchObject({ code: 'accountUpgradeConfirmationRequired' });
+  expect(state.fetch).not.toHaveBeenCalled();
+  await auth.startLegacyUpgrade('other legacy', 'explicit old password', true);
+  expect(JSON.parse(state.fetch.mock.calls[0]![1].body)).toEqual({ login: 'other legacy', password: 'explicit old password', upgrade: true });
+});
+it('does not restore the legacy sign-in hint after Start over clears the last cached vault', async () => {
+  await vault.openVault(v, 'local');
+  state.store.delete(`cache:${v.userId}`);
+  expect(await auth.legacyUpgradeMayApply('new spelling')).toBe(false);
+});
+it('posts the existing browser certificate after OAuth login without reopening the key window', async () => {
+  await auth.startAccountLogin('user', 'local'); await auth.finishAccountLogin(v.userId);
+  const browser = await vault.currentBrowser(); vault.closeUnlockWindow();
+  await auth.setAccountSession(v.userId, true); state.fetch.mockClear();
+  await auth.finishAccountLogin(v.userId);
+  const posts = state.fetch.mock.calls.filter(([url, init]) => url.endsWith('/browsers') && init.method === 'POST');
+  expect(posts).toHaveLength(1); expect(JSON.parse(posts[0]![1].body).certificate).toEqual(browser!.certificate);
+  expect(vault.isAccountUnlocked()).toBe(false); expect(await vault.currentBrowser()).toEqual(browser);
+});
+it('does not restore a browser key if sign-out happens during an idempotent certificate POST', async () => {
+  await auth.startAccountLogin('user', 'local'); await auth.finishAccountLogin(v.userId);
+  vault.closeUnlockWindow();
+  const original = state.fetch.getMockImplementation()!;
+  state.fetch.mockImplementation(async (url, init) => {
+    if (url.endsWith('/browsers') && init.method === 'POST') { await vault.logoutAccount(); return Response.json({}); }
+    return original(url, init);
+  });
+  await expect(vault.registerBrowser()).rejects.toMatchObject({ code: 'accountUnlockRequired' });
+  expect(await vault.currentBrowser()).toBeNull();
 });
 it('refuses plaintext reauthentication when no account context is locally known', async () => {
   await expect(auth.accountPasswordProof('must stay local')).rejects.toMatchObject({ code: 'accountUnlockRequired' });

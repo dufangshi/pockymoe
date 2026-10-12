@@ -1,4 +1,4 @@
-import { finishAccountLogin, startLegacyUpgrade, legacyUpgradeEnabled, legacyUpgradeMayApply, registerAccount, startAccountRecovery, startTemporaryResetLogin, cancelAccountLogin, isOAuthAccount, type PreparedRegistration } from '../lib/accountAuth';
+import { finishAccountLogin, startLegacyUpgrade, legacyUpgradeEnabled, legacyUpgradeMayApply, hasOpenedAccountVault, registerAccount, startAccountRecovery, startTemporaryResetLogin, cancelAccountLogin, isOAuthAccount, type PreparedRegistration } from '../lib/accountAuth';
 import { requireUnlock } from '../lib/accountVault';
 import { ensureBrowserAccess, RecoveryConfirmation } from '../components/AccountUnlockPrompt';
 import { createVault, openVault, registerBrowser, changeAccountPassword, AccountTrustError } from '../lib/accountVaultState';
@@ -161,7 +161,7 @@ export function RelayPortalPage() {
       throw new Error(translate("auth.thisPortalAcceptsRelayUserAccountsOnly"));
     }
     if (!nextSession.user) throw new Error(translate('auth.accountUnlockRequired'));
-    const flow = await finishAccountLogin(nextSession.user.id);
+    const flow = await finishAccountLogin(nextSession.user.id, nextSession.user);
     continueToRequestedPage();
   }
 
@@ -244,6 +244,8 @@ function RelayAuthPanel({
   const [error, setError] = useState(initialError ?? oauthError);
   const [notice, setNotice] = useState<string | null>(oauthNotice);
   const [submitting, setSubmitting] = useState(false);
+  const [upgradeWarning, setUpgradeWarning] = useState<boolean>();
+  const [upgradeConfirmed, setUpgradeConfirmed] = useState(false);
   const registrationPasswordRequired =
     settings?.registrationPasswordConfigured ??
     Boolean(settings?.registrationPassword);
@@ -251,6 +253,14 @@ function RelayAuthPanel({
   useEffect(() => {
     setError(initialError ?? oauthError);
   }, [initialError, oauthError]);
+  useEffect(() => {
+    setUpgradeConfirmed(false); setUpgradeWarning(undefined);
+    if (mode !== 'upgrade') return;
+    let active = true;
+    void hasOpenedAccountVault().then(value => { if (active) setUpgradeWarning(value); })
+      .catch(caught => { if (active) setError(errorMessage(caught, translate('auth.accountRequestFailed'))); });
+    return () => { active = false; };
+  }, [mode]);
 
   function selectMode(nextMode: AuthMode) {
     if (nextMode === 'register' && !registrationEnabled) {
@@ -299,7 +309,7 @@ function RelayAuthPanel({
         const result = await startTemporaryResetLogin(identifier, password); setPassword('');
         if (result.challengeRequired) { setChallenge({ challengeRequired: true, authenticator: Boolean(result.authenticator), passkey: Boolean(result.passkey) }); return; }
       } else if (mode === 'upgrade') {
-        const result = await startLegacyUpgrade(identifier, password); setPassword('');
+        const result = await startLegacyUpgrade(identifier, password, upgradeConfirmed); setPassword('');
         if (result.challengeRequired) { setChallenge({ challengeRequired: true, authenticator: Boolean(result.authenticator), passkey: Boolean(result.passkey) }); return; }
       } else if (mode === 'login') {
         const result = await relayLogin({ identifier, password });
@@ -342,7 +352,7 @@ function RelayAuthPanel({
     if (mode === 'recover') {
       const session = await fetchRelaySession();
       if (!session.user) throw new Error(translate('auth.accountUnlockRequired'));
-      await finishAccountLogin(session.user.id);
+      await finishAccountLogin(session.user.id, session.user);
       await changeAccountPassword(recoveryNewPassword, await isOAuthAccount());
       await registerBrowser();
       setPassword(''); setRecoveryNewPassword('');
@@ -514,10 +524,15 @@ function RelayAuthPanel({
         />
 
         {mode === 'recover' && <RelayInput autoComplete="new-password" label={translate('auth.newPassword')} name="newPassword" type="password" minLength={12} required value={recoveryNewPassword} onChange={setRecoveryNewPassword} description={translate('auth.accountPasswordHelp')} />}
+        {mode === 'recover' && <p className="text-sm text-[var(--theme-fg-muted)]">{translate('auth.accountSecretRotationWarning')}</p>}
         {mode !== 'register' && <button type="button" className="owner-trust-account-link" onClick={() => { setMode(mode === 'recover' ? 'login' : 'recover'); setPassword(''); }}>{translate(mode === 'recover' ? 'auth.accountUsePassword' : 'auth.accountUseRecovery')}</button>}
         {mode !== 'register' && <button type="button" className="owner-trust-account-link" onClick={() => { setMode(mode === 'reset' ? 'login' : 'reset'); setPassword(''); }}>{translate(mode === 'reset' ? 'auth.accountUsePassword' : 'auth.accountTemporaryLogin')}</button>}
         {mode !== 'register' && legacyUpgradeEnabled() && <button type="button" className="owner-trust-account-link" onClick={() => { setMode(mode === 'upgrade' ? 'login' : 'upgrade'); setPassword(''); }}>{translate(mode === 'upgrade' ? 'auth.accountUsePassword' : 'auth.accountLegacyUpgrade')}</button>}
         {mode === 'upgrade' && <p className="text-sm">{translate('auth.accountLegacyUpgradeHelp')}</p>}
+        {mode === 'upgrade' && upgradeWarning && <div className="space-y-3 rounded border p-3">
+          <p role="alert">{translate('auth.accountUpgradeExistingVaultWarning')}</p>
+          <label className="flex items-start gap-2"><input type="checkbox" checked={upgradeConfirmed} onChange={event => setUpgradeConfirmed(event.target.checked)} disabled={submitting} />{translate('auth.accountUpgradeExistingVaultConfirm')}</label>
+        </div>}
         {mode === 'reset' && <p className="text-sm">{translate('auth.accountTemporaryHelp')}</p>}
         {error ? (
           <RelayNotice tone="danger">
@@ -536,7 +551,7 @@ function RelayAuthPanel({
 
         <button
           className="relay-button-primary h-11 w-full"
-          disabled={submitting}
+          disabled={submitting || (mode === 'upgrade' && (upgradeWarning === undefined || (upgradeWarning && !upgradeConfirmed)))}
           type="submit"
         >
           {submitting

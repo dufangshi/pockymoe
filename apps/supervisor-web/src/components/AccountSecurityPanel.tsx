@@ -67,6 +67,7 @@ export function AccountSecurityPanel() {
     {verification && <SecurityVerification status={verification} onCancel={() => { retry.current = null; setVerification(undefined); }} onVerified={async () => { const work = retry.current; retry.current = null; setVerification(undefined); if (work) await run(work, true); }} />}
     {action && !verification && <FormDialog title={translate(action === 'password' ? 'auth.changePassword' : action === 'reset' ? 'auth.accountStartOver' : 'auth.accountRegenerateRecovery')} busy={busy} onClose={() => { setAction(undefined); setPassword(''); }}>
       <p>{translate(action === 'reset' ? 'auth.accountResetWarning' : 'auth.accountPasswordHelp')}</p>
+      {action !== 'reset' && <p className="text-sm text-[var(--theme-fg-muted)]">{translate('auth.accountSecretRotationWarning')}</p>}
       <form className="space-y-4" onSubmit={e => { e.preventDefault(); void run(async () => {
         if (action === 'password') { await changeAccountPassword(password, await isOAuthAccount()); setMessage(translate('auth.passwordChanged')); }
         else if (action === 'reset') { await startAccountOver(); location.assign('/relay-portal'); }
