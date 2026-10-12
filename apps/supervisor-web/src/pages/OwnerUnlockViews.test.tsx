@@ -28,13 +28,10 @@ beforeEach(() => {
     controller: { postMessage: vi.fn() }, addEventListener: vi.fn(),
   } });
   vi.mocked(exchange).mockImplementation(async request => {
-    if (!unlocked) return { response: Response.json({ code: 'browser_registration_required' }, { status: 401 }) };
+    if (!unlocked) return { response: Response.json({ code: 'device_strict_mode' }, { status: 401 }) };
     if (request.url.endsWith('/workspaces')) return { response: Response.json([{
       id: 'w', label: 'Recovered workspace', absPath: '/tmp/work', createdAt: '2026-01-01', lastOpenedAt: null,
     }]) };
-    if (request.url.endsWith('/transport/trust')) return { response: Response.json({
-      deviceId: 'a', paired: true, strict: true, credentials: [], sessions: [], certificate: null,
-    }) };
     return { response: Response.json({ workspaceRoot: '/tmp/work', environment: 'test', host: 'localhost', port: 0, appName: 'Pockymoe', appVersion: 'test' }) };
   });
 });
