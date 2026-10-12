@@ -1,5 +1,7 @@
+import { SecurityVerification } from './RelaySecurity';
+import { securityRequest, type SecurityStatus } from '../lib/relaySecurity';
 import { getLocale, translate, useI18n } from '@pockymoe/thread-ui/i18n';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { currentAccount, currentBrowser, safetyCode, type BrowserCertificate } from '../lib/accountVault';
 import { accountRequest, accountRevocations, changeAccountPassword, regenerateRecoveryCode, revokeAccountSubject,
   startAccountOver } from '../lib/accountVaultState';
@@ -23,9 +25,18 @@ export function AccountSecurityPanel() {
     setThisId((await currentBrowser())?.browserId); setCode(await safetyCode(account.accountKeyId));
   }
   useEffect(() => { void load().catch(e => setError(e instanceof Error ? e.message : translate('auth.accountRequestFailed'))); }, []);
-  async function run(work: () => Promise<void>) {
+  const [verification, setVerification] = useState<SecurityStatus>();
+  const retry = useRef<(() => Promise<void>) | null>(null);
+  async function run(work: () => Promise<void>, verified = false) {
     setBusy(true); setError(undefined); setMessage(undefined);
-    try { await work(); await load(); } catch (e) { setError(e instanceof Error ? e.message : translate('auth.accountRequestFailed')); }
+    try { await work(); await load(); } catch (e) {
+      setError(e instanceof Error ? e.message : translate('auth.accountRequestFailed'));
+      if (!verified && (e as { code?: string }).code === 'reauthentication_required') {
+        try { const status = await securityRequest<SecurityStatus>('');
+          if (status.authenticatorEnabled || status.passkeys.length) { retry.current = work; setVerification(status); }
+        } catch { /* The original action error remains visible. */ }
+      }
+    }
     finally { setBusy(false); setPassword(''); }
   }
   const date = (n: number) => new Date(n).toLocaleString(getLocale());
@@ -51,7 +62,8 @@ export function AccountSecurityPanel() {
       <button className="relay-button-secondary min-h-11 px-3" disabled={busy} onClick={() => setAction('recovery')}>{translate('auth.accountRegenerateRecovery')}</button>
       <button className="relay-button-secondary min-h-11 px-3" disabled={busy} onClick={() => setAction('reset')}>{translate('auth.accountStartOver')}</button>
     </div>
-    {action && <FormDialog title={translate(action === 'password' ? 'auth.changePassword' : action === 'reset' ? 'auth.accountStartOver' : 'auth.accountRegenerateRecovery')} busy={busy} onClose={() => { setAction(undefined); setPassword(''); }}>
+    {verification && <SecurityVerification status={verification} onCancel={() => { retry.current = null; setVerification(undefined); }} onVerified={async () => { const work = retry.current; retry.current = null; setVerification(undefined); if (work) await run(work, true); }} />}
+    {action && !verification && <FormDialog title={translate(action === 'password' ? 'auth.changePassword' : action === 'reset' ? 'auth.accountStartOver' : 'auth.accountRegenerateRecovery')} busy={busy} onClose={() => { setAction(undefined); setPassword(''); }}>
       <p>{translate(action === 'reset' ? 'auth.accountResetWarning' : 'auth.accountPasswordHelp')}</p>
       <form className="space-y-4" onSubmit={e => { e.preventDefault(); void run(async () => {
         if (action === 'password') { await changeAccountPassword(password, await isOAuthAccount()); setMessage(translate('auth.passwordChanged')); }

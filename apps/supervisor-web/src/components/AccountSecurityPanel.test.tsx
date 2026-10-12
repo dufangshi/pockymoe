@@ -3,10 +3,12 @@ import { beforeEach, expect, it, vi } from 'vitest';
 import { setLocale, translate } from '@pockymoe/thread-ui/i18n';
 import { AccountSecurityPanel } from './AccountSecurityPanel';
 import vectors from '../lib/fixtures/accountKeyVectors.json';
-const state = vi.hoisted(() => ({ request: vi.fn(), revoked: vi.fn(), change: vi.fn(), recovery: vi.fn(), verify: vi.fn() }));
+const state = vi.hoisted(() => ({ request: vi.fn(), revoked: vi.fn(), change: vi.fn(), recovery: vi.fn(), verify: vi.fn(), authStatus: vi.fn() }));
 vi.mock('../lib/accountVault', () => ({ currentAccount: async () => vectors.account, currentBrowser: async () => ({ browserId: vectors.browserCertificate.certificate.browserId }), safetyCode: async () => vectors.safetyCode.display }));
 vi.mock('../lib/accountVaultState', () => ({ accountRequest: state.request, accountRevocations: async () => [], revokeAccountSubject: state.revoked,
   changeAccountPassword: state.change, regenerateRecoveryCode: state.recovery, startAccountOver: vi.fn() }));
+vi.mock('../lib/relaySecurity', () => ({ securityRequest: state.authStatus }));
+vi.mock('./RelaySecurity', () => ({ SecurityVerification: ({ onVerified }: { onVerified: () => void }) => <button onClick={onVerified}>Verify factor</button> }));
 vi.mock('../lib/accountAuth', () => ({ isOAuthAccount: async () => true }));
 vi.mock('../lib/accountCrypto', () => ({ verifyBrowserCertificate: state.verify }));
 vi.mock('./AccountUnlockPrompt', () => ({ RecoveryConfirmation: ({ code, onConfirm }: { code: string; onConfirm: () => void }) => <div>{code}<button onClick={onConfirm}>Saved code</button></div> }));
@@ -40,4 +42,16 @@ it('requires explicit confirmation to remove a browser and shows a regenerated r
   fireEvent.click(screen.getByRole('button', { name: translate('auth.continue') }));
   expect(await screen.findByText(vectors.derivation.recoveryCodeDisplay)).toBeVisible(); fireEvent.click(screen.getByText('Saved code'));
   expect(screen.queryByText(vectors.derivation.recoveryCodeDisplay)).toBeNull(); vi.restoreAllMocks();
+});
+
+it('retries an OAuth-sensitive change after a real second-factor confirmation', async () => {
+  state.authStatus.mockResolvedValue({ authenticatorEnabled: true, passkeys: [] });
+  state.change.mockRejectedValueOnce(Object.assign(new Error('Reauthenticate'), { code: 'reauthentication_required' })).mockResolvedValue(undefined);
+  render(<AccountSecurityPanel />); await screen.findByText('My laptop');
+  fireEvent.click(screen.getByRole('button', { name: translate('auth.changePassword') }));
+  fireEvent.change(screen.getByLabelText(translate('auth.newPassword')), { target: { value: 'a sufficiently long new password' } });
+  fireEvent.click(screen.getByRole('button', { name: translate('auth.continue') }));
+  fireEvent.click(await screen.findByText('Verify factor'));
+  await waitFor(() => expect(state.change).toHaveBeenCalledTimes(2));
+  expect(state.change).toHaveBeenLastCalledWith('a sufficiently long new password', true);
 });

@@ -133,3 +133,43 @@ it('regenerates recovery authentication with currentAuthKey while preserving acc
   expect(update.currentAuthKey).toBe(vectors.derivation.authKey); expect(update).toHaveProperty('recoveryAuthKey');
   expect(update.vault.accountKeyId).toBe(v.accountKeyId); expect(await vault.boundDevices()).toEqual(before);
 });
+it('keeps OAuth password changes and later recovery-code changes free of relay auth keys', async () => {
+  await auth.setAccountSession(v.userId, true);
+  await vault.openVault(v, 'local password');
+  await vault.changeAccountPassword('a new sufficiently long password', true);
+  await vault.regenerateRecoveryCode();
+  const updates = state.fetch.mock.calls.filter(([, init]) => init.method === 'PUT').map(([, init]) => JSON.parse(init.body));
+  expect(updates).toHaveLength(2);
+  for (const update of updates) {
+    expect(update).not.toHaveProperty('authKey');
+    expect(update).not.toHaveProperty('currentAuthKey');
+  }
+  expect(updates[1]).toHaveProperty('recoveryAuthKey');
+});
+it('persists the authoritative account session state and refuses a changed account key hint', async () => {
+  await auth.startAccountLogin('user', 'local'); await auth.finishAccountLogin(v.userId);
+  await auth.setAccountSession(v.userId, { mode: 'oauth', setupRequired: false, recovery: false, hasVault: true, accountKeyId: v.accountKeyId });
+  expect(await auth.isOAuthAccount()).toBe(true); expect(await auth.accountSessionState()).toMatchObject({ mode: 'oauth', hasVault: true });
+  await expect(auth.setAccountSession(v.userId, { mode: 'account', setupRequired: false, recovery: false, hasVault: true, accountKeyId: vectors.otherAccount.accountKeyId })).rejects.toMatchObject({ code: 'accountKeyChanged' });
+});
+it('blocks a relay downgrade to legacy for a previously verified login identifier', async () => {
+  await auth.startAccountLogin('user', 'local'); await auth.finishAccountLogin(v.userId);
+  state.fetch.mockResolvedValueOnce(Response.json({ mode: 'legacy' }));
+  const before = state.fetch.mock.calls.length;
+  await expect(auth.startAccountLogin('USER', 'local')).rejects.toMatchObject({ code: 'accountLoginDowngrade' });
+  expect(state.fetch.mock.calls.slice(before)).toHaveLength(1);
+});
+it('uses an explicit temporary reset login then requires recovery rather than creating a replacement vault', async () => {
+  await auth.startTemporaryResetLogin('user', 'temporary password from administrator');
+  expect(JSON.parse(state.fetch.mock.calls.at(-1)![1].body)).toEqual({ identifier: 'user', password: 'temporary password from administrator' });
+  await auth.setAccountSession(v.userId, { mode: 'account', setupRequired: false, recovery: true, hasVault: true, accountKeyId: v.accountKeyId });
+  expect(await auth.finishAccountLogin(v.userId)).toEqual({ setup: false, recovery: true }); expect(vault.isAccountUnlocked()).toBe(false);
+  await vault.startAccountOver();
+  expect(state.fetch.mock.calls.find(([, init]) => init.method === 'DELETE')![1].body).toBe('{}'); expect(await vault.currentAccount()).toBeNull();
+});
+it('registers using the exact chosen top-level userId and preserves a collision for a new attempt', async () => {
+  const prepared = { vault: v, authKey: vectors.derivation.authKey, recoveryAuthKey: vectors.derivation.recoveryAuthKey, recoveryCode: vectors.derivation.recoveryCodeDisplay };
+  state.fetch.mockResolvedValueOnce(Response.json({ code: 'user_id_taken' }, { status: 409 }));
+  await expect(auth.registerAccount({ username: 'tester', email: 'test@example.invalid' }, prepared)).rejects.toMatchObject({ code: 'user_id_taken' });
+  const body = JSON.parse(state.fetch.mock.calls.at(-1)![1].body); expect(body.userId).toBe(body.vault.userId);
+});

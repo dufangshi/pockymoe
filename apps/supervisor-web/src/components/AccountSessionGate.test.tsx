@@ -3,6 +3,7 @@ import { beforeEach, expect, it, vi } from 'vitest';
 import { AccountSessionGate } from './AccountSessionGate';
 const state = vi.hoisted(() => ({ current: vi.fn(), unlock: vi.fn() }));
 vi.mock('../lib/accountVault', () => ({ currentBrowser: state.current, requireUnlock: state.unlock }));
+vi.mock('../lib/accountAuth', () => ({ accountSessionState: async () => undefined }));
 vi.mock('../lib/accountVaultState', () => ({ ACCOUNT_CHANGED: 'pockymoe-account-changed' }));
 beforeEach(() => { vi.clearAllMocks(); });
 it('opens signed-in sessions without a browser key only after shared password unlock', async () => {

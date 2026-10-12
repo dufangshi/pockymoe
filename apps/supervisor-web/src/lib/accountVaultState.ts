@@ -189,10 +189,10 @@ export async function registerBrowser(label = navigator.userAgent.slice(0, 80)) 
   return browser;
 }
 export async function clearBrowser(browserId?: string) {
-  const a = await currentAccount(); if (!a) return;
-  const current = await accountStore<BrowserIdentity>(`browser:${a.userId}`);
+  const userId = await accountStore<string>('active'); if (!userId) return;
+  const current = await accountStore<BrowserIdentity>(`browser:${userId}`);
   if (!browserId || current?.browserId === browserId) {
-    await accountStore(`browser:${a.userId}`, null); closeUnlockWindow();
+    await accountStore(`browser:${userId}`, null); closeUnlockWindow();
     if (typeof window !== 'undefined') window.dispatchEvent(new Event('pockymoe-account-logout'));
   }
 }
@@ -225,7 +225,8 @@ export async function changeAccountPassword(password: string, oauthOnly = false)
     const slots = { ...w.vault.slots, password: await c.seal(keys.wrapKey, w.vdk, slotAad(w.vault, 'password')) };
     await saveWindow(w, { ...w.body, updatedAt: Date.now() }, oauthOnly ? {} : {
       authKey: keys.authKey, ...(w.authKey ? { currentAuthKey: w.authKey } : {}) }, { kdf, slots });
-    w.authKey = keys.authKey;
+    if (oauthOnly) delete w.authKey;
+    else w.authKey = keys.authKey;
   } finally { keys.wrapKey.fill(0); }
 }
 export async function regenerateRecoveryCode() {
@@ -236,7 +237,12 @@ export async function regenerateRecoveryCode() {
   finally { keys.recoveryKey.fill(0); }
 }
 export async function startAccountOver() {
-  await requireUnlock('change-password'); const w = windowState();
-  await accountRequest('/relay/account/vault', 'DELETE', w.authKey ? { currentAuthKey: w.authKey } : {});
-  await logoutAccount(); await accountStore(`cache:${w.vault.userId}`, null); await accountStore(`revocations:${w.vault.userId}`, null);
+  const id = await accountStore<string>('active'); if (!id) throw new AccountTrustError('accountUnlockRequired');
+  const state = await accountStore<{ recovery?: boolean }>(`session:${id}`);
+  if (state?.recovery) await accountRequest('/relay/account/vault', 'DELETE', {});
+  else {
+    await requireUnlock('change-password'); const w = windowState();
+    await accountRequest('/relay/account/vault', 'DELETE', w.authKey ? { currentAuthKey: w.authKey } : {});
+  }
+  await logoutAccount(); await accountStore(`cache:${id}`, null); await accountStore(`revocations:${id}`, null);
 }

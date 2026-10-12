@@ -1,4 +1,4 @@
-import { finishAccountLogin, registerAccount, startAccountRecovery, cancelAccountLogin, type PreparedRegistration } from '../lib/accountAuth';
+import { finishAccountLogin, registerAccount, startAccountRecovery, startTemporaryResetLogin, cancelAccountLogin, isOAuthAccount, type PreparedRegistration } from '../lib/accountAuth';
 import { requireUnlock } from '../lib/accountVault';
 import { ensureBrowserAccess, RecoveryConfirmation } from '../components/AccountUnlockPrompt';
 import { createVault, openVault, registerBrowser, changeAccountPassword } from '../lib/accountVaultState';
@@ -26,7 +26,7 @@ import {
   relayLogout,
 } from '../lib/api';
 
-type AuthMode = 'login' | 'register' | 'recover';
+type AuthMode = 'login' | 'register' | 'recover' | 'reset';
 
 const DEFAULT_RETURN_TO = '/relay-devices';
 const RETURN_TO_STORAGE_KEY = 'remote-codex-relay-return-to';
@@ -162,7 +162,6 @@ export function RelayPortalPage() {
     }
     if (!nextSession.user) throw new Error(translate('auth.accountUnlockRequired'));
     const flow = await finishAccountLogin(nextSession.user.id);
-    if (flow.recovery) { await requireUnlock('change-password'); }
     continueToRequestedPage();
   }
 
@@ -296,6 +295,9 @@ function RelayAuthPanel({
       if (mode === 'recover') {
         const result = await startAccountRecovery(identifier, password);
         if (result.challengeRequired) { setChallenge({ challengeRequired: true, authenticator: Boolean(result.authenticator), passkey: Boolean(result.passkey) }); return; }
+      } else if (mode === 'reset') {
+        const result = await startTemporaryResetLogin(identifier, password); setPassword('');
+        if (result.challengeRequired) { setChallenge({ challengeRequired: true, authenticator: Boolean(result.authenticator), passkey: Boolean(result.passkey) }); return; }
       } else if (mode === 'login') {
         const result = await relayLogin({ identifier, password });
         setPassword('');
@@ -323,6 +325,7 @@ function RelayAuthPanel({
       }
       await completeAuthentication();
     } catch (caught) {
+      if ((caught as { code?: string }).code === 'user_id_taken') setPrepared(undefined);
       setError(errorMessage(caught, translate("auth.unableToAuthenticateWithTheRelay")));
     } finally {
       setSubmitting(false);
@@ -334,7 +337,7 @@ function RelayAuthPanel({
       const session = await fetchRelaySession();
       if (!session.user) throw new Error(translate('auth.accountUnlockRequired'));
       await finishAccountLogin(session.user.id);
-      await changeAccountPassword(recoveryNewPassword);
+      await changeAccountPassword(recoveryNewPassword, await isOAuthAccount());
       await registerBrowser();
       setPassword(''); setRecoveryNewPassword('');
     }
@@ -491,9 +494,9 @@ function RelayAuthPanel({
           </>
         )}
         <RelayInput
-          autoComplete={mode === 'login' ? 'current-password' : mode === 'recover' ? 'off' : 'new-password'}
+          autoComplete={mode === 'login' ? 'current-password' : mode === 'recover' || mode === 'reset' ? 'off' : 'new-password'}
           disabled={submitting}
-          label={translate(mode === 'recover' ? 'auth.accountRecoveryCode' : 'auth.password')}
+          label={translate(mode === 'recover' ? 'auth.accountRecoveryCode' : mode === 'reset' ? 'auth.accountTemporaryPassword' : 'auth.password')}
           name="password"
           onChange={setPassword}
           required
@@ -506,6 +509,8 @@ function RelayAuthPanel({
 
         {mode === 'recover' && <RelayInput autoComplete="new-password" label={translate('auth.newPassword')} name="newPassword" type="password" minLength={12} required value={recoveryNewPassword} onChange={setRecoveryNewPassword} description={translate('auth.accountPasswordHelp')} />}
         {mode !== 'register' && <button type="button" className="owner-trust-account-link" onClick={() => { setMode(mode === 'recover' ? 'login' : 'recover'); setPassword(''); }}>{translate(mode === 'recover' ? 'auth.accountUsePassword' : 'auth.accountUseRecovery')}</button>}
+        {mode !== 'register' && <button type="button" className="owner-trust-account-link" onClick={() => { setMode(mode === 'reset' ? 'login' : 'reset'); setPassword(''); }}>{translate(mode === 'reset' ? 'auth.accountUsePassword' : 'auth.accountTemporaryLogin')}</button>}
+        {mode === 'reset' && <p className="text-sm">{translate('auth.accountTemporaryHelp')}</p>}
         {error ? (
           <RelayNotice tone="danger">
             <p>{error}</p>
@@ -528,7 +533,7 @@ function RelayAuthPanel({
         >
           {submitting
             ? translate("auth.working")
-            : mode === 'login'
+            : mode === 'login' || mode === 'reset'
               ? translate("auth.signIn")
               : translate(mode === 'recover' ? 'auth.accountRecover' : "auth.createAccount")}
         </button>

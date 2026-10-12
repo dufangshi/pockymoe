@@ -1,7 +1,7 @@
 import { sharingMutation } from './signedSharing';
 import { relayOrigin, relayUrl, relaySocketUrl, relayFetchInit } from './relayOrigin';
 import { logoutAccount } from './accountVaultState';
-import { startAccountLogin, setAccountSession, cancelAccountLogin } from './accountAuth';
+import { startAccountLogin, setAccountSession, cancelAccountLogin, type AccountSessionState } from './accountAuth';
 import { confirmWorkspaceDocumentLeave, type WorkspaceDocumentSnapshot, type WorkspaceDocumentSaveInput, type WorkspaceSaveReceipt } from "@pockymoe/thread-ui";
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { encryptedBrowserFetch, encryptedRelaySocket } from './relayTransport';
@@ -589,7 +589,7 @@ export async function fetchRelaySession() {
     cache: 'no-store',
   });
   workspaceActorScope = `relay:${result.user?.id??'anonymous'}`;
-  if (result.user?.role !== 'admin') await setAccountSession(result.authenticated ? result.user?.id ?? null : null, Boolean((result as RelaySessionDto & { oauthOnly?: boolean }).oauthOnly));
+  if (result.user?.role !== 'admin') await setAccountSession(result.authenticated ? result.user?.id ?? null : null, (result as RelaySessionDto & { account?: AccountSessionState }).account ?? false);
   return result;
 }
 
@@ -642,15 +642,12 @@ export async function relayAdminLogout() {
 
 export async function relayLogout() {
   if (!confirmWorkspaceDocumentLeave()) throw new Error(translate('files.keepEditing'));
-  const result = await request<RelaySessionDto>('/relay/auth/logout', {
-    method: 'POST',
-  });
-  cancelAccountLogin();
-  await logoutAccount();
-  setStoredRelayToken(null);
-  setSelectedRelayDeviceId(null);
-  setSelectedRelayThreadId(null);
-  return result;
+  try {
+    return await request<RelaySessionDto>('/relay/auth/logout', { method: 'POST' });
+  } finally {
+    cancelAccountLogin(); await logoutAccount(); setStoredRelayToken(null);
+    setSelectedRelayDeviceId(null); setSelectedRelayThreadId(null);
+  }
 }
 
 export function fetchRelayPortal() {
