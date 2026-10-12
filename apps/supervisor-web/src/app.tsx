@@ -1,10 +1,11 @@
+import { AccountSessionGate } from './components/AccountSessionGate';
 import { SharedInvitePage } from './pages/SharedInvitePage';
 import { WorkspaceDocumentNavigationGuard } from "./components/WorkspaceDocumentNavigationGuard";
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { installNotificationRouteResponder } from './lib/relayPush';
 import { PortPreviewPage } from './pages/PortPreviewPage';
-import { PairPage } from './pages/PairPage';
-import { OwnerUnlockPrompt } from './components/OwnerUnlockPrompt';
+import { DeviceEnrollmentMonitor } from './components/DeviceEnrollmentMonitor';
+import { AccountUnlockPrompt } from './components/AccountUnlockPrompt';
 import { PublicThreadPage } from './pages/PublicThreadPage';
 import {
   BrowserRouter,
@@ -510,7 +511,7 @@ function RelayGate({ children }: { children: React.ReactNode }) {
     );
   }
 
-  return children;
+  return <AccountSessionGate>{children}</AccountSessionGate>;
 }
 
 function SupervisorAccessGate({ children }: { children: React.ReactNode }) {
@@ -631,10 +632,10 @@ export function App() {
       <BrowserRouter>
         <WorkspaceDocumentNavigationGuard>
         <DocumentTitleUpdater />
-        <OwnerUnlockPrompt />
+        <AccountUnlockPrompt />
+        <DeviceEnrollmentMonitor />
         <RoutePluginProvider>
           <Routes>
-            <Route path="/pair" element={<PairPage />} />
             <Route path="/shared" element={<SharedInvitePage />} />
             <Route path="/devices/:deviceId/ports/:mappingId" element={<RelayGate><PortPreviewPage /></RelayGate>} />
             <Route path="/s/:id" element={<PublicThreadPage />} />

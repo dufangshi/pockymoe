@@ -1,13 +1,11 @@
+import { AccountSecurityPanel } from '../components/AccountSecurityPanel';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { ProductHeader } from '../components/ProductHeader';
 import { RelayNotifications } from '../components/RelayNotifications';
 import {
   RelaySecurityPanel,
-  SecurityVerification,
 } from '../components/RelaySecurity';
-import { securityRequest, type SecurityStatus } from '../lib/relaySecurity';
-import { FormDialog } from '../components/FormDialog';
-import { RefreshCw, Save, KeyRound } from 'lucide-react';
+import { RefreshCw, Save } from 'lucide-react';
 import { FormEvent, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 
@@ -17,7 +15,6 @@ import {
   enableRelayMode,
   fetchRelaySession,
   updateRelayAccount,
-  updateRelayPassword,
 } from '../lib/api';
 
 function errorMessage(caught: unknown, fallback: string) {
@@ -56,19 +53,11 @@ export function RelayAccountSettingsPanel({
   const [username, setUsername] = useState('');
   const [avatar, setAvatar] = useState<string | null>(null);
   const [preparingAvatar, setPreparingAvatar] = useState(false);
-  const [currentPassword, setCurrentPassword] = useState('');
-  const [newPassword, setNewPassword] = useState('');
-  const [confirmPassword, setConfirmPassword] = useState('');
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [savingProfile, setSavingProfile] = useState(false);
-  const [savingPassword, setSavingPassword] = useState(false);
   const [profileError, setProfileError] = useState<string | null>(null);
   const [profileMessage, setProfileMessage] = useState<string | null>(null);
-  const [passwordError, setPasswordError] = useState<string | null>(null);
-  const [passwordMessage, setPasswordMessage] = useState<string | null>(null);
-  const [passwordOpen, setPasswordOpen] = useState(false);
-  const [verification, setVerification] = useState<SecurityStatus | null>(null);
 
   async function load() {
     setLoading(true);
@@ -109,44 +98,6 @@ export function RelayAccountSettingsPanel({
       setProfileError(errorMessage(caught, translate("auth.profileSaveFailed")));
     } finally {
       setSavingProfile(false);
-    }
-  }
-
-  async function savePassword(
-    event?: FormEvent<HTMLFormElement>,
-    verificationToken?: string,
-  ) {
-    event?.preventDefault();
-    setSavingPassword(true);
-    setPasswordError(null);
-    setPasswordMessage(null);
-    try {
-      if (newPassword !== confirmPassword) {
-        setPasswordError(translate("auth.newPasswordsDoNotMatch"));
-        return;
-      }
-      await updateRelayPassword({
-        currentPassword,
-        newPassword,
-        ...(verificationToken ? { verificationToken } : {}),
-      });
-      setPasswordOpen(false);
-      setCurrentPassword('');
-      setNewPassword('');
-      setConfirmPassword('');
-      setPasswordMessage(translate("auth.passwordChanged"));
-    } catch (caught) {
-      if (
-        caught instanceof ApiError &&
-        caught.payload.code === 'reauthentication_required'
-      ) {
-        setVerification(await securityRequest<SecurityStatus>(''));
-      } else
-        setPasswordError(
-          errorMessage(caught, translate("auth.unableToChangeYourPassword")),
-        );
-    } finally {
-      setSavingPassword(false);
     }
   }
 
@@ -283,111 +234,10 @@ export function RelayAccountSettingsPanel({
         </div>
       </section>
 
-      <section className="flex items-center justify-between gap-3 py-4">
-        <h2 className="text-sm font-semibold">{translate("auth.password")}</h2>
-        <button
-          type="button"
-          aria-label={translate("auth.changePassword")}
-          title={translate("auth.changePassword")}
-          className="host-icon-button inline-flex h-10 w-10 items-center justify-center rounded-md"
-          onClick={() => {
-            setPasswordError(null);
-            setPasswordMessage(null);
-            setPasswordOpen(true);
-          }}
-        >
-          <KeyRound size={18} />
-        </button>
-      </section>
-      {passwordMessage && <Notice tone="success">{passwordMessage}</Notice>}
-      {passwordOpen && (
-        <FormDialog
-          title={translate("auth.changePassword")}
-          busy={savingPassword || Boolean(verification)}
-          onClose={() => {
-            setPasswordOpen(false);
-            setCurrentPassword('');
-            setNewPassword('');
-            setConfirmPassword('');
-          }}
-        >
-          <header>
-            <p className="mt-1 text-sm leading-5 text-[var(--theme-fg-muted)]">
-              {translate("auth.useAtLeast8Characters")}</p>
-          </header>
-          <form className="min-w-0 max-w-md space-y-4" onSubmit={savePassword}>
-            <PasswordInput
-              autoComplete="current-password"
-              disabled={savingPassword}
-              label={translate("auth.currentPassword")}
-              name="currentPassword"
-              onChange={(value) => {
-                setCurrentPassword(value);
-                setPasswordError(null);
-                setPasswordMessage(null);
-              }}
-              value={currentPassword}
-            />
-            <PasswordInput
-              autoComplete="new-password"
-              disabled={savingPassword}
-              label={translate("auth.newPassword")}
-              minLength={8}
-              name="newPassword"
-              onChange={(value) => {
-                setNewPassword(value);
-                setPasswordError(null);
-                setPasswordMessage(null);
-              }}
-              value={newPassword}
-            />
-            <PasswordInput
-              autoComplete="new-password"
-              disabled={savingPassword}
-              label={translate("auth.confirmNewPassword")}
-              minLength={8}
-              name="confirmPassword"
-              onChange={(value) => {
-                setConfirmPassword(value);
-                setPasswordError(null);
-                setPasswordMessage(null);
-              }}
-              value={confirmPassword}
-            />
-            {passwordError ? (
-              <Notice tone="danger">{passwordError}</Notice>
-            ) : null}
-            {passwordMessage ? (
-              <Notice tone="success">{passwordMessage}</Notice>
-            ) : null}
-            <button
-              className="relay-button-primary inline-flex h-11 items-center gap-2"
-              disabled={
-                savingPassword ||
-                !currentPassword ||
-                newPassword.length < 8 ||
-                !confirmPassword
-              }
-              type="submit"
-            >
-              <Save aria-hidden="true" className="h-4 w-4" />
-              {savingPassword ? translate("auth.changing") : translate("auth.changePassword")}
-            </button>
-          </form>
-        </FormDialog>
-      )}
+      <AccountSecurityPanel />
       <RelayNotifications />
       <RelaySecurityPanel />
-      {verification && (
-        <SecurityVerification
-          status={verification}
-          onCancel={() => setVerification(null)}
-          onVerified={async (token) => {
-            setVerification(null);
-            await savePassword(undefined, token);
-          }}
-        />
-      )}
+
     </div>
   );
 }
@@ -402,42 +252,6 @@ export function RelayAccountPage() {
         <RelayAccountSettingsPanel />
       </div>
     </div>
-  );
-}
-
-function PasswordInput({
-  autoComplete,
-  disabled = false,
-  label,
-  minLength,
-  name,
-  value,
-  onChange,
-}: {
-  autoComplete: string;
-  disabled?: boolean;
-  label: string;
-  minLength?: number;
-  name: string;
-  value: string;
-  onChange: (value: string) => void;
-}) {
-  const { locale: i18nLocale } = useI18n();
-  return (
-    <label className="block text-sm text-[var(--theme-fg-soft)]">
-      {label}
-      <input
-        autoComplete={autoComplete}
-        className="relay-input mt-2 min-h-11 w-full disabled:cursor-wait disabled:opacity-60"
-        disabled={disabled}
-        minLength={minLength}
-        name={name}
-        onChange={(event) => onChange(event.target.value)}
-        required
-        type="password"
-        value={value}
-      />
-    </label>
   );
 }
 

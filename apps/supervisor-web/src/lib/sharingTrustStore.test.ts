@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { clearStoredOwnerSession, trustStore } from './ownerTrustStore';
+import { sharingTrustStore, sharingTrustEntries } from './sharingTrustStore';
 
 // A minimal asynchronous IDB runtime; exercise the real transaction/cursor
 // implementation without a browser profile or a dependency on installed IDB.
@@ -38,6 +38,7 @@ beforeEach(() => {
                 const key = keys[index++];
                 read.result = key === undefined ? null : {
                   key,
+                  value: structuredClone(data.get(key)),
                   delete: () => data.delete(key),
                   continue: next,
                 };
@@ -56,35 +57,20 @@ beforeEach(() => {
     },
   });
 });
-describe('persisted owner session removal', () => {
-  it('removes a revoked key and every device mark in one read/write transaction while keeping credential trust', async () => {
-    data.set('session', { sessionId: 'revoked' });
-    data.set('registration:revoked:a', true);
-    data.set('registration:revoked:b', true);
-    data.set('credential:owner', { verified: true });
-    await clearStoredOwnerSession('revoked');
-    expect([...data.keys()]).toEqual(['credential:owner']);
-    expect(modes).toEqual(['readwrite']);
-    expect(close).toHaveBeenCalledTimes(1);
-    expect(await trustStore('session')).toBeUndefined();
-  });
-  it('cleans only the revoked session marks if another tab has already unlocked a new key', async () => {
-    data.set('session', { sessionId: 'new' });
-    data.set('registration:old:a', true);
-    data.set('registration:new:a', true);
-    data.set('registration:older:a', true);
-    await clearStoredOwnerSession('old');
-    expect(await trustStore('session')).toEqual({ sessionId: 'new' });
-    expect(data.has('registration:old:a')).toBe(false);
-    expect(data.has('registration:new:a')).toBe(true);
-    expect(data.has('registration:older:a')).toBe(true);
-  });
-  it('sign-out clears the key and registration marks left by any session', async () => {
-    data.set('session', { sessionId: 'new' });
-    data.set('registration:old:a', true);
-    data.set('registration:new:b', true);
-    data.set('credential:owner', { verified: true });
-    await clearStoredOwnerSession();
-    expect([...data.keys()]).toEqual(['credential:owner']);
-  });
+
+it('enumerates only the selected account certificate prefix without consulting relay inventory', async () => {
+  data.set('device-certificate:account-a:hidden', { deviceId: 'hidden' });
+  data.set('device-certificate:account-b:other', { deviceId: 'other' });
+  data.set('recipient-confirmed:recipient', true);
+  expect(await sharingTrustEntries('device-certificate:account-a:')).toEqual([['device-certificate:account-a:hidden', { deviceId: 'hidden' }]]);
+  expect(modes).toEqual(['readonly']);
+  expect(close).toHaveBeenCalledOnce();
+});
+it('persists public sharing confirmation independently of an invite pin and can delete the pin', async () => {
+  await sharingTrustStore('recipient-confirmed:key', true);
+  await sharingTrustStore('invite-owner:device', 'owner-key');
+  expect(await sharingTrustStore('invite-owner:device')).toBe('owner-key');
+  await sharingTrustStore('invite-owner:device', null);
+  expect(await sharingTrustStore('invite-owner:device')).toBeUndefined();
+  expect(await sharingTrustStore('recipient-confirmed:key')).toBe(true);
 });

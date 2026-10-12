@@ -5,7 +5,7 @@ import {
   scopeFromPage,
   TransportError,
 } from './relayTransportCrypto';
-import { OwnerTrustError } from './ownerSession';
+import { AccountTrustError } from './accountVaultState';
 // The worker uses the same exchange/signing path and reads CryptoKeys from IDB.
 export async function relayWorkerFetch(request: Request, clientUrl?: string) {
   try {
@@ -22,7 +22,7 @@ export async function relayWorkerFetch(request: Request, clientUrl?: string) {
     ).response;
   } catch (error) {
     const code =
-      error instanceof TransportError || error instanceof OwnerTrustError
+      error instanceof TransportError || error instanceof AccountTrustError
         ? error.code
         : 'transport_unavailable';
     return new Response(
@@ -35,7 +35,7 @@ export async function relayWorkerFetch(request: Request, clientUrl?: string) {
       }),
       {
         status:
-          code === 'owner_session_required' || code === 'owner_session_revoked'
+          ['accountUnlockRequired', 'browser_registration_required', 'browser_revoked'].includes(code)
             ? 401
             : 502,
         headers: {
