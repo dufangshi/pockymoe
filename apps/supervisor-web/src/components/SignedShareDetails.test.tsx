@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, expect, it, vi } from 'vitest';
 import vectors from '../lib/fixtures/accountKeyVectors.json';
 import type {
@@ -162,4 +162,15 @@ it('hides copy invite when the handshake has no certificate-verified fingerprint
   render(<SignedShareDetails kind="share" row={row} />);
   await screen.findByText(/VDNZ DB8Z 3HKC/);
   expect(screen.queryByRole('button', { name: 'Copy invite link' })).not.toBeInTheDocument();
+});
+
+it('refreshes reconciliation and orphan inventory after account browser unlock completes', async () => {
+  const portal = { devices: [], sharedByMe: [], grantsByMe: [] } as unknown as RelayPortalSummaryDto;
+  render(<><SignedShareDetails kind="share" row={row} /><OrphanDeviceGrants portal={portal} kind="share" /></>);
+  await screen.findByText('Not active on device');
+  const loaded = state.grants.mock.calls.length;
+  state.reconciliation = 'active';
+  act(() => window.dispatchEvent(new CustomEvent('remote-codex-owner-unlocked', { detail: { deviceIds: ['device'] } })));
+  await waitFor(() => expect(screen.queryByText('Not active on device')).not.toBeInTheDocument());
+  await waitFor(() => expect(state.grants.mock.calls.length).toBeGreaterThanOrEqual(loaded + 2));
 });
