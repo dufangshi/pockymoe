@@ -2,7 +2,7 @@ import type { RelayLoginResultDto, RelayRegisterResultDto } from '@pockymoe/shar
 import { accountRequest, checkVault, closeUnlockWindow, createVault, decryptVault, installUnlockedVault, registerBrowser,
   setActiveAccount, currentAccount, type Vault, AccountTrustError } from './accountVaultState';
 import { passwordKeys, recoveryKeys, type Kdf } from './accountCrypto';
-import { accountStore } from './accountStore';
+import { accountStore, hasStoredAccountVault } from './accountStore';
 interface PendingLogin { wrapKey: Uint8Array; authKey?: string; kdf?: Kdf; recovery: boolean; expires: number }
 let pending: PendingLogin | undefined;
 let pendingExpiry: ReturnType<typeof setTimeout> | undefined;
@@ -20,6 +20,14 @@ export async function accountSessionState() {
   return id ? await accountStore<AccountSessionState>(`session:${id}`) : undefined;
 }
 const loginCacheKey = (identifier: string) => `login:${identifier.normalize('NFC').trim().toLowerCase()}`;
+export async function rememberAccountLogin(user: { id: string; username?: string; email?: string | null }) {
+  for (const identifier of [user.username, user.email]) if (identifier?.trim()) await accountStore(loginCacheKey(identifier), user.id);
+}
+export async function hasOpenedAccountVault() {
+  if (await accountStore<boolean>('has-opened-vault')) return true;
+  if (!await hasStoredAccountVault()) return false;
+  await accountStore('has-opened-vault', true); return true;
+}
 
 export function cancelAccountLogin() { if (pendingExpiry) clearTimeout(pendingExpiry); pendingExpiry = undefined; pending?.wrapKey.fill(0); pending = undefined; pendingIdentifier = undefined; closeUnlockWindow(); }
 export async function startAccountLogin(identifier: string, password: string) {
@@ -36,15 +44,15 @@ export async function startAccountLogin(identifier: string, password: string) {
 }
 export function legacyUpgradeEnabled() { return import.meta.env.VITE_POCKYMOE_LEGACY_UPGRADE !== '0'; }
 /** True when a failed sign-in could be an account that has not been secured yet. */
-export async function legacyUpgradeMayApply(login: string) {
+export async function legacyUpgradeMayApply(_login: string) {
   if (!legacyUpgradeEnabled()) return false;
-  const known = await accountStore<string>(loginCacheKey(login));
-  return !(known && await accountStore(`cache:${known}`));
+  return !await hasOpenedAccountVault();
 }
-export async function startLegacyUpgrade(login: string, password: string) {
+export async function startLegacyUpgrade(login: string, password: string, confirmedExistingVault = false) {
   cancelAccountLogin();
   const known = await accountStore<string>(loginCacheKey(login));
   if (!legacyUpgradeEnabled() || (known && await accountStore(`cache:${known}`))) throw new AccountTrustError('accountLoginDowngrade');
+  if (await hasOpenedAccountVault() && !confirmedExistingVault) throw new AccountTrustError('accountUpgradeConfirmationRequired');
   pendingIdentifier = login;
   return accountRequest<RelayLoginResultDto>('/relay/auth/login', 'POST', { login, password, upgrade: true });
 }
@@ -55,16 +63,25 @@ export async function startAccountRecovery(login: string, code: string) {
     pending = { wrapKey: keys.recoveryKey, recovery: true, expires: Date.now() + 10 * 60 * 1000 }; expirePending(); return result;
   } catch (e) { keys.recoveryKey.fill(0); throw e; }
 }
-export async function finishAccountLogin(userId: string) {
+export async function finishAccountLogin(userId: string, user?: { username?: string; email?: string | null }) {
   await setActiveAccount(userId);
   const attempt = pending;
-  if (!attempt) { const state = await accountSessionState(); return { setup: !state?.hasVault, recovery: !!state?.recovery }; }
+  if (!attempt) {
+    const state = await accountSessionState();
+    if (state?.hasVault && !state.recovery && await currentAccount()) {
+      if (user) await rememberAccountLogin({ id: userId, ...user });
+      const { currentBrowser } = await import('./accountVaultState');
+      if (await currentBrowser()) await registerBrowser();
+    }
+    return { setup: !state?.hasVault, recovery: !!state?.recovery };
+  }
   try {
     if (attempt.expires <= Date.now()) throw new AccountTrustError('accountUnlockExpired');
     const vault = await accountRequest<Vault>('/relay/account/vault'); await checkVault(vault, userId);
     if (attempt.kdf && (['name', 'memoryKiB', 'iterations', 'parallelism', 'salt'] as const).some(k => attempt.kdf![k] !== vault.kdf[k])) throw new AccountTrustError('accountVaultInvalid');
     const data = await decryptVault(vault, attempt.wrapKey, attempt.recovery ? 'recovery' : 'password', userId);
     await installUnlockedVault(vault, data, attempt.authKey);
+    if (user) await rememberAccountLogin({ id: userId, ...user });
     if (!attempt.recovery) await registerBrowser();
     if (pendingIdentifier) await accountStore(loginCacheKey(pendingIdentifier), userId);
     return { setup: false, recovery: attempt.recovery };

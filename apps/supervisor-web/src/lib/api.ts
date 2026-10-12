@@ -2,7 +2,7 @@ import { markOwnedDevices } from './accountTransport';
 import { sharingMutation, type SharingInput } from './signedSharing';
 import { relayOrigin, relayUrl, relaySocketUrl, relayFetchInit } from './relayOrigin';
 import { logoutAccount } from './accountVaultState';
-import { startAccountLogin, setAccountSession, cancelAccountLogin, type AccountSessionState } from './accountAuth';
+import { startAccountLogin, setAccountSession, cancelAccountLogin, rememberAccountLogin, type AccountSessionState } from './accountAuth';
 import { confirmWorkspaceDocumentLeave, type WorkspaceDocumentSnapshot, type WorkspaceDocumentSaveInput, type WorkspaceSaveReceipt } from "@pockymoe/thread-ui";
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { encryptedBrowserFetch, encryptedRelaySocket } from './relayTransport';
@@ -591,6 +591,7 @@ export async function fetchRelaySession() {
   });
   workspaceActorScope = `relay:${result.user?.id??'anonymous'}`;
   await setAccountSession(result.authenticated ? result.user?.id ?? null : null, (result as RelaySessionDto & { account?: AccountSessionState }).account ?? false);
+  if (result.authenticated && result.user) await rememberAccountLogin(result.user);
   return result;
 }
 
@@ -953,7 +954,7 @@ export function fetchAgentHarnessCatalog<T>(
  */
 export async function dshConsoleUrl(
   threadId: string,
-  target: { port: number; path: string; mappingId?: string },
+  target: { port: number; path: string; mappingId?: string; leaseId?: string; expiresAt?: number },
   deviceId?: string | null,
 ) {
   if (!deviceId || deviceId === 'local') {
@@ -983,7 +984,7 @@ export async function dshConsoleUrl(
       })).id;
   }
   const { openDevicePortPreview } = await import('./portPreview');
-  const { url } = await openDevicePortPreview(deviceId, mappingId, target.path);
+  const { url } = await openDevicePortPreview(deviceId, mappingId, target.path, undefined, target.leaseId ? { leaseId: target.leaseId, expiresAt: target.expiresAt } : undefined);
   return url;
 }
 

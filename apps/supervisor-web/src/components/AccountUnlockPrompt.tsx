@@ -82,7 +82,7 @@ export function AccountUnlockPrompt() {
     return () => { active = false; };
   }, [open]);
   async function complete(account: UnlockedAccount) {
-    if (!await currentBrowser()) await registerBrowser();
+    await registerBrowser();
     // Only reissue the original reads after a device confirms the new identity.
     const waitingDevices = [...locked.current.keys()];
     for (const id of waitingDevices) {
@@ -142,6 +142,7 @@ export function AccountUnlockPrompt() {
           <input ref={input} className="relay-input mt-2 min-h-11 w-full" type={recovery && !setup ? 'text' : 'password'} autoComplete={setup ? 'new-password' : recovery ? 'off' : 'current-password'} minLength={setup ? 12 : undefined} required value={secret} onChange={e => setSecret(e.target.value)} disabled={busy} />
         </label>
         {recoverySession && <label className="block">{translate('auth.newPassword')}<input className="relay-input mt-2 min-h-11 w-full" type="password" autoComplete="new-password" minLength={12} required value={newPassword} disabled={busy} onChange={e => setNewPassword(e.target.value)} /></label>}
+        {recoverySession && <p className="text-sm text-[var(--theme-fg-muted)]">{translate('auth.accountSecretRotationWarning')}</p>}
         <button className="relay-button-primary account-key-action min-h-11 px-4" disabled={busy || !secret}>{translate(busy ? 'auth.working' : setup ? 'auth.accountSecure' : 'auth.accountUnlock')}</button>
       </form>}
       {error && <p role="alert">{error}</p>}

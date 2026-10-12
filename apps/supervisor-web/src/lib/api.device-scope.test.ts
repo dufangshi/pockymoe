@@ -1,3 +1,4 @@
+import { openDevicePortPreview } from './portPreview';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { encryptedBrowserFetch, encryptedRelaySocket } from './relayTransport';
 import {
@@ -20,7 +21,9 @@ import {
   workspaceResourceScope,
   connectShellSocket,
   fetchThreadDelivery,
+  dshConsoleUrl,
 } from './api';
+vi.mock('./portPreview', () => ({ openDevicePortPreview: vi.fn() }));
 vi.mock('./relayTransport', () => ({
   encryptedBrowserFetch: vi.fn(),
   encryptedRelaySocket: vi.fn(),
@@ -168,4 +171,12 @@ it.each([
     window.removeEventListener('remote-codex-owner-unlock-request', unlock);
     window.removeEventListener('remote-codex-owner-read-blocked', unlock);
   }
+});
+
+it('reuses the signed DSH console lease when opening its existing mapping', async () => {
+  vi.mocked(openDevicePortPreview).mockResolvedValue({ url: 'https://preview.invalid/console' });
+  const target = { port: 4242, path: '/?token=launch', mappingId: 'console-mapping', leaseId: 'signed-console-lease', expiresAt: Date.now() + 10000 };
+  expect(await dshConsoleUrl('thread', target, 'peer-device')).toBe('https://preview.invalid/console');
+  expect(openDevicePortPreview).toHaveBeenCalledWith('peer-device', 'console-mapping', target.path, undefined, { leaseId: target.leaseId, expiresAt: target.expiresAt });
+  expect(encryptedBrowserFetch).not.toHaveBeenCalled();
 });

@@ -1,7 +1,7 @@
 import { beforeEach, expect, it, vi } from 'vitest';
 import { fetchRelaySession } from './api';
-import { setAccountSession } from './accountAuth';
-vi.mock('./accountAuth', () => ({ setAccountSession: vi.fn(), startAccountLogin: vi.fn(), cancelAccountLogin: vi.fn() }));
+import { setAccountSession, rememberAccountLogin } from './accountAuth';
+vi.mock('./accountAuth', () => ({ setAccountSession: vi.fn(), rememberAccountLogin: vi.fn(), startAccountLogin: vi.fn(), cancelAccountLogin: vi.fn() }));
 beforeEach(() => { vi.clearAllMocks(); localStorage.setItem('remote-codex-relay-mode', 'true'); });
 it('sets the account context even when the relay labels a vault user admin', async () => {
   const account = { mode: 'account', setupRequired: false, recovery: false, hasVault: true, accountKeyId: 'known-key' };
@@ -9,5 +9,12 @@ it('sets the account context even when the relay labels a vault user admin', asy
   try {
     await fetchRelaySession();
     expect(setAccountSession).toHaveBeenCalledWith('known-user', account);
+  } finally { vi.unstubAllGlobals(); localStorage.clear(); }
+});
+it('caches both session user identifiers after a successful sign-in', async () => {
+  const user = { id: 'known-user', username: 'CanonicalUser', email: 'account@example.invalid', role: 'user' };
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json({ authenticated: true, user })));
+  try {
+    await fetchRelaySession(); expect(rememberAccountLogin).toHaveBeenCalledWith(user);
   } finally { vi.unstubAllGlobals(); localStorage.clear(); }
 });

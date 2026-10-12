@@ -96,6 +96,8 @@ export interface DshConsoleTarget {
   port: number;
   path: string;
   mappingId?: string;
+  leaseId?: string;
+  expiresAt?: number;
 }
 export interface DshPanelResult {
   result?: {
