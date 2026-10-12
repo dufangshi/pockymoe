@@ -1,8 +1,13 @@
-Delegate questions and the work they trigger now form a secondary fold inside the original task's steps.
+Claude foreground answers now remain one message when background tool and wait
+events arrive between text chunks. The runtime groups by native message identity,
+preserving complete paragraphs, headings and tables with one timestamp. Existing
+history is not rewritten.
 
-- Registered wakes durably retain their task and question context through queue acceptance. The timeline shows the delegate name and question subject; opening a question loads its full text and execution history without loading every other round or acknowledging the inbox message.
-- Physical turns keep their own usage and billing. The task header aggregates known totals, the latest progress or final reply stays outside the fold, and pending human approvals remain accessible.
-- Long human prompts default to a six-line text preview with Expand/Show less controls. Attachments remain visible and Copy retains the complete prompt.
-- The local Supervisor serves the Web UI with the correct content types and without an iframe sandbox policy.
+The Plum Pocket subscription meter sits inside the composer's bottom seam.
+Remaining-allowance details open above the composer in an opaque panel that
+retains the theme and cannot be hidden by composer controls.
 
-Validated with targeted Rust projection and queue/history integration tests, 36 UI tests, type checks, and mobile browser checks for nested lazy loading, both disclosure levels, cost totals, compact layout and long-prompt copying. Windows Device Manager is unchanged.
+Validated with 14 mapper regression tests, seven composer tests, shared UI and
+Web type checks, and focused light/dark browser checks on desktop and mobile.
+Windows Device Manager is unchanged. Devices can update voluntarily; this
+release does not force an update of the current device.

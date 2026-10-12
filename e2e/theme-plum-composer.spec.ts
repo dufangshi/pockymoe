@@ -33,6 +33,7 @@ async function openPlum(page: Page, request: APIRequestContext, mode: 'light' | 
     localStorage.setItem('pockymoe-theme-preset', 'plum-pocket');
     localStorage.setItem('remote-codex-theme-mode', m);
     localStorage.setItem('remote-codex.locale', 'en');
+    localStorage.setItem(`pockymoe.onboarding.v1:${JSON.stringify([window.location.origin, 'local:owner'])}`, JSON.stringify({ welcomeDismissed: true, completed: [], resume: {} }));
   }, mode);
   await page.goto(`/threads/${thread.id}`);
   const later = page.getByRole('button', { name: 'Later' });
@@ -122,8 +123,8 @@ test('plum composer respects reduced motion', async ({ page, request }) => {
   expect(await composer.evaluate((node) => getComputedStyle(node, '::before').transitionDuration)).toBe('0s');
 });
 
-test('plum composer sews the usage meter onto its seam and centres the context bar', async ({ page, request }) => {
-  const { composer } = await openPlum(page, request);
+for (const mode of ['light', 'dark'] as const) test(`plum usage meter sits inside its seam and shows opaque top-layer details (${mode})`, async ({ page, request }, info) => {
+  const { composer, editor } = await openPlum(page, request, mode);
   const usage = composer.locator('.thread-graph-composer-shell .thread-composer-usage-tag .thread-subscription-usage');
   await expect(usage).toBeVisible();
   await expect(composer.locator('.thread-composer-usage-footer')).toHaveCount(0);
@@ -131,14 +132,43 @@ test('plum composer sews the usage meter onto its seam and centres the context b
     const r = (s: string) => node.querySelector(s)!.getBoundingClientRect();
     return { shell: r('.thread-graph-composer-shell'), usage: r('.thread-subscription-usage'), chip: r('.composer-model-label'), bar: r('.thread-context-progress-track'), size: getComputedStyle(node.querySelector('.thread-subscription-usage')!).fontSize };
   });
-  // It straddles the bottom edge instead of taking a row below the composer.
+  // The meter is inside the shell, with no second pill overlapping its edge.
   expect(g.usage.top).toBeLessThan(g.shell.bottom);
-  expect(g.usage.bottom).toBeGreaterThan(g.shell.bottom);
-  expect(g.usage.bottom - g.shell.bottom).toBeLessThanOrEqual(8);
+  expect(g.usage.bottom).toBeLessThan(g.shell.bottom);
+  expect(g.shell.bottom - g.usage.bottom).toBeLessThanOrEqual(8);
+  await expect(usage).toHaveCSS('border-top-width', '0px');
   expect(parseFloat(g.size)).toBeLessThanOrEqual(9);
   // The context bar sits inside the chip with equal insets.
   expect(Math.abs((g.bar.left - g.chip.left) - (g.chip.right - g.bar.right))).toBeLessThanOrEqual(1);
   expect(g.bar.bottom).toBeLessThanOrEqual(g.chip.bottom);
+  await editor.click();
+  const focused = await composer.locator('.thread-graph-composer-shell').boundingBox();
+  await usage.click();
+  await expect(usage).toHaveAttribute('aria-expanded', 'true');
+  const details = page.getByRole('tooltip');
+  await expect(details).toBeVisible();
+  await expect(details).toContainText('80% remaining');
+  await expect(details).toContainText('60% remaining');
+  const surface = await details.evaluate((el) => {
+    const bounds = el.getBoundingClientRect();
+    const style = getComputedStyle(el);
+    const topmost = document.elementFromPoint(bounds.left + bounds.width / 2, bounds.top + bounds.height / 2);
+    return { topLayer: el.matches(':popover-open'), bg: style.backgroundColor, opacity: style.opacity, topmost: !!topmost && el.contains(topmost), bounds };
+  });
+  expect(surface.topLayer).toBe(true);
+  expect(surface.opacity).toBe('1');
+  expect(surface.bg).not.toMatch(/rgba|transparent|\/\s*0[.]/);
+  expect(surface.topmost).toBe(true);
+  expect(surface.bounds.left).toBeGreaterThanOrEqual(0);
+  expect(surface.bounds.right).toBeLessThanOrEqual(page.viewportSize()!.width);
+  expect(surface.bounds.bottom).toBeLessThan(focused!.y);
+  // Opening the usage panel keeps the prompt geometry stable.
+  expect(await composer.locator('.thread-graph-composer-shell').boundingBox()).toEqual(focused);
+  await page.screenshot({ path: info.outputPath(`usage-${mode}-open.png`), scale: 'css' });
+  await page.keyboard.press('Escape');
+  await expect(details).toHaveCount(0);
+  await expect(usage).toHaveAttribute('aria-expanded', 'false');
+  await page.screenshot({ path: info.outputPath(`usage-${mode}-closed.png`), scale: 'css' });
 });
 
 test('plum settings fit every tab on one line and keep hints for screen readers', async ({ page, request }, info) => {

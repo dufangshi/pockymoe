@@ -23,6 +23,7 @@ pub struct TurnMapper {
     active_agent_segment: Option<usize>,
     active_thought_segment: Option<usize>,
     agent_message_id: Option<String>,
+    agent_message_segments: HashMap<String, usize>,
     thought_message_id: Option<String>,
     tools: Vec<ThreadHistoryItemDto>,
     tool_payloads: HashMap<String, Value>,
@@ -63,6 +64,7 @@ impl TurnMapper {
             active_agent_segment: None,
             active_thought_segment: None,
             agent_message_id: None,
+            agent_message_segments: HashMap::new(),
             thought_message_id: None,
             tools: Vec::new(),
             tool_payloads: HashMap::new(),
@@ -413,13 +415,25 @@ impl TurnMapper {
                     if let Some(pending) = self.take_reconcile(false) {
                         self.active_agent_segment = Some(pending.index);
                         self.active_thought_segment = None;
+                        if let Some(id) = &message_id {
+                            self.agent_message_segments
+                                .insert(id.clone(), pending.index);
+                        }
                         self.agent_message_id = message_id;
                         return self.reconcile_chunk(false, pending, &text);
                     }
                     if message_id.is_some() && message_id != self.agent_message_id {
                         self.active_agent_segment = None;
                     }
-                    self.agent_message_id = message_id;
+                    // Background tools and wait notices can arrive while a single
+                    // foreground answer is streaming. The adapter's native message
+                    // identity, rather than these interleaved events, owns its text.
+                    if self.active_agent_segment.is_none() {
+                        self.active_agent_segment = message_id
+                            .as_ref()
+                            .and_then(|id| self.agent_message_segments.get(id).copied());
+                    }
+                    self.agent_message_id = message_id.clone();
                     self.active_thought_segment = None;
                     let segment_index = if let Some(index) = self.active_agent_segment {
                         index
@@ -441,6 +455,9 @@ impl TurnMapper {
                         self.active_agent_segment = Some(index);
                         index
                     };
+                    if let Some(id) = message_id {
+                        self.agent_message_segments.insert(id, segment_index);
+                    }
                     if let Some(segment) = self.agent_segments.get_mut(segment_index) {
                         segment.text.push_str(&text);
                         mapped.deltas.push((
@@ -1190,6 +1207,45 @@ mod stream_tests {
             .map(|item| (item.kind.as_str(), item.text.as_str()))
             .collect();
         assert_eq!(texts, [("reasoning", "think"), ("agentMessage", "Hello")]);
+    }
+
+    #[test]
+    fn native_message_identity_keeps_text_whole_across_background_events() {
+        let mut mapper = TurnMapper::new("turn");
+        let text = |id: &str, text: &str| {
+            serde_json::json!({
+                "sessionUpdate": "agent_message_chunk", "messageId": id,
+                "content": { "type": "text", "text": text }
+            })
+        };
+        let first = mapper.apply(&text("answer", "## New passkey "));
+        mapper.native_background_wait(2);
+        mapper.apply(&serde_json::json!({
+            "sessionUpdate":"tool_call", "toolCallId":"child-read",
+            "title":"Read file", "kind":"read", "status":"in_progress"
+        }));
+        let second = mapper.apply(&text("answer", "on all devices\n\nCa"));
+        mapper.apply(&serde_json::json!({
+            "sessionUpdate":"tool_call_update", "toolCallId":"child-read", "status":"completed"
+        }));
+        let third = mapper.apply(&text("answer", "n approve once."));
+        assert_eq!(first.deltas[0].0, second.deltas[0].0);
+        assert_eq!(first.deltas[0].0, third.deltas[0].0);
+        let next = mapper.apply(&text("next-response", "Next update"));
+        assert_ne!(first.deltas[0].0, next.deltas[0].0);
+        let messages: Vec<_> = mapper
+            .finish(false)
+            .into_iter()
+            .filter(|item| item.kind == "agentMessage")
+            .map(|item| item.text)
+            .collect();
+        assert_eq!(
+            messages,
+            [
+                "## New passkey on all devices\n\nCan approve once.",
+                "Next update"
+            ]
+        );
     }
 
     #[test]

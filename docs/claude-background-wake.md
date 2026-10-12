@@ -6,6 +6,12 @@ cancellable and retains its output subscription while it awaits task notices
 and the autonomous follow-up. Follow-up tools, messages and usage use that
 turn's existing durable event channel.
 
+Claude text chunks carrying the same native message ID append to one saved
+message, even when background tools or wait notices arrive between them. Those
+events retain their own history entries without splitting a foreground answer's
+paragraphs, headings or tables into separate timestamps. Different native
+message IDs still create separate messages. This does not rewrite old records.
+
 The timeline saves a small waiting anchor. A task notification updates that
 anchor with its wake cause and timestamp; subsequent execution and reports
 follow it. Repeated delivery of a terminal notice does not create another row.
