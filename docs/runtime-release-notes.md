@@ -1,7 +1,8 @@
-Claude can now receive a Steer message while waiting for a native background task.
+Delegate questions and the work they trigger now form a secondary fold inside the original task's steps.
 
-- When Claude has no foreground response running, ACP asks the host to submit a normal prompt. Pockymoe now does so immediately instead of reporting `promptRequired / noRunningTurn`. The existing turn retains ownership of the response, tool events, usage and cancellation; the original background task can still wake it later.
-- Input delivery returns after the prompt is written, without waiting for the model to finish. Unrelated steering errors are not retried, and cancelled or retired turns reject new input.
-- The workbench always has one split button. Its menu offers closing the active split or restoring the previous split, alongside selecting another conversation. Entering or leaving split mode no longer adds a separate restore button to the toolbar.
+- Registered wakes durably retain their task and question context through queue acceptance. The timeline shows the delegate name and question subject; opening a question loads its full text and execution history without loading every other round or acknowledging the inbox message.
+- Physical turns keep their own usage and billing. The task header aggregates known totals, the latest progress or final reply stays outside the fold, and pending human approvals remain accessible.
+- Long human prompts default to a six-line text preview with Expand/Show less controls. Attachments remain visible and Copy retains the complete prompt.
+- The local Supervisor serves the Web UI with the correct content types and without an iframe sandbox policy.
 
-Validation includes durable-history protocol regressions, an isolated real Claude waiting/steering/wake cycle, and desktop/mobile split-menu checks in the classic and Plum Pocket themes. This runtime release includes the current main-branch Web UI. Windows Device Manager remains independently released.
+Validated with targeted Rust projection and queue/history integration tests, 36 UI tests, type checks, and mobile browser checks for nested lazy loading, both disclosure levels, cost totals, compact layout and long-prompt copying. Windows Device Manager is unchanged.
