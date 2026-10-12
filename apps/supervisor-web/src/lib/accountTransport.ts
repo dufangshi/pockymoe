@@ -68,6 +68,11 @@ export async function verifyTransportDevice(deviceId: string, identityKey: strin
     const previous = await accountStore<DeviceCertificate>(`device-certificate:${authority.accountKeyId}:${deviceId}`);
     const pinnedIdentity = pin?.identityKey || previous?.identityKey;
     if ((pin && !pinnedIdentity) || (pinnedIdentity && pinnedIdentity !== identityKey)) throw new AccountTrustError('accountDeviceIdentityChanged');
+    // Keep the verified certificate's timestamp monotonic. Otherwise an older
+    // descriptor could erase the baseline used by a later enrollment retry.
+    if (previous && certificate.createdAt < previous.createdAt &&
+      await verifyDeviceCertificate(previous, authority, deviceId, identityKey))
+      throw new AccountTrustError('accountCertificateInvalid');
     await rememberCertifiedDevice(certificate, authority);
     await accountStore(`device-certificate:${authority.accountKeyId}:${deviceId}`, certificate);
     return { verified: true, bound: true, grantee: false, identityTrust: 'certificate' as const };
