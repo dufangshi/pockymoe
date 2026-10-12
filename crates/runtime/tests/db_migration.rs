@@ -517,7 +517,7 @@ async fn migrates_node_0030_history_and_policies_idempotently() {
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )?;
-            assert_eq!(runtime_migration_count, 13);
+            assert_eq!(runtime_migration_count, 14);
             assert_eq!(legacy_metadata_count, 2);
             assert_eq!(
                 migrated_metadata.0,
@@ -542,7 +542,7 @@ async fn migrates_node_0030_history_and_policies_idempotently() {
                 |row| row.get(0),
             )?;
             assert_eq!(turns, 3);
-            assert_eq!(migrations, 13);
+            assert_eq!(migrations, 14);
             Ok(())
         })
         .unwrap();
@@ -745,4 +745,57 @@ fn migration_10_reapplies_over_columns_left_by_a_downgrade() {
         )
         .unwrap();
     assert_eq!(columns, 4);
+}
+
+#[test]
+fn device_owner_trust_migration_defaults_persists_and_revokes_sessions() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("trust.sqlite");
+    let db = Database::open(&path).unwrap();
+    db.with(|c| {
+        assert_eq!(
+            c.query_row(
+                "SELECT name FROM __remote_codex_runtime_migrations WHERE version=14",
+                [],
+                |r| r.get::<_, String>(0)
+            )?,
+            "device_owner_trust"
+        );
+        assert_eq!(
+            c.query_row("SELECT strict FROM device_owner_trust", [], |r| r
+                .get::<_, i32>(0))?,
+            0
+        );
+        c.execute(
+            "UPDATE device_owner_trust SET relay_device_id='relay-device', strict=1",
+            [],
+        )?;
+        c.execute("INSERT INTO owner_credentials VALUES('owner','{}')", [])?;
+        c.execute(
+            "INSERT INTO owner_sessions VALUES('session','public-key','owner',42)",
+            [],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    drop(db);
+    let db = Database::open(&path).unwrap();
+    db.with(|c| {
+        assert_eq!(
+            c.query_row(
+                "SELECT relay_device_id,strict FROM device_owner_trust",
+                [],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, bool>(1)?))
+            )?,
+            ("relay-device".to_owned(), true)
+        );
+        c.execute("DELETE FROM owner_credentials", [])?;
+        assert_eq!(
+            c.query_row("SELECT count(*) FROM owner_sessions", [], |r| r
+                .get::<_, u32>(0))?,
+            0
+        );
+        Ok(())
+    })
+    .unwrap();
 }
