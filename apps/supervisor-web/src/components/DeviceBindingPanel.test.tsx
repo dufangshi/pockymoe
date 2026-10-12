@@ -28,10 +28,27 @@ it('shows and copies a local command without requesting the offline device', asy
   await waitFor(() =>
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
       expect.stringContaining(
-        'POCKYMOE_ENROLL=secret pockymoe bind --account-key public --web-origin',
+        "POCKYMOE_ENROLL_SECRET='secret' pockymoe bind --account-key 'public' --web-origin",
       ),
     ),
   );
   expect(prepareDeviceEnrollment).toHaveBeenCalledWith('offline');
   expect(await screen.findByText('Setup command copied.')).toBeVisible();
+});
+it('requests a fresh enrollment for missing-certificate repair and offers both platform commands', async () => {
+  render(<DeviceBindingPanel deviceId="offline" repair />);
+  const copy = await screen.findByRole('button', { name: 'Copy bind command' });
+  expect(prepareDeviceEnrollment).toHaveBeenCalledWith('offline', {
+    fresh: true,
+  });
+  fireEvent.click(screen.getByRole('button', { name: 'Windows' }));
+  fireEvent.click(copy);
+  await waitFor(() =>
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+      expect.stringContaining("$env:POCKYMOE_ENROLL_SECRET = 'secret'"),
+    ),
+  );
+  expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+    expect.stringContaining('Remove-Item Env:POCKYMOE_ENROLL_SECRET'),
+  );
 });

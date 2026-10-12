@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   deviceBindCommand,
   relaySupervisorCommand,
+  validateDeviceSetupToken,
 } from './deviceSetupCommands';
 vi.mock('./relayOrigin', () => ({ relayOrigin: () => 'https://relay.test' }));
 const binding = {
@@ -21,16 +22,22 @@ describe('bound device commands', () => {
       const bind = deviceBindCommand(binding, 'https://web.test', platform);
       for (const command of [setup, bind]) {
         expect(command).not.toMatch(/(?:--enroll|-Enroll)\s/);
-        expect(command).toContain('POCKYMOE_ENROLL');
+        expect(command).toContain('POCKYMOE_ENROLL_SECRET');
       }
       if (platform === 'unix') {
-        expect(setup).toContain('| POCKYMOE_ENROLL=enrollment-secret sh -s');
+        expect(setup).toContain(
+          "| POCKYMOE_ENROLL_SECRET='enrollment-secret' sh -s",
+        );
         expect(bind).toMatch(
-          /^POCKYMOE_ENROLL=enrollment-secret pockymoe bind/,
+          /^POCKYMOE_ENROLL_SECRET='enrollment-secret' pockymoe bind/,
         );
       } else {
-        expect(setup).toContain("$env:POCKYMOE_ENROLL = 'enrollment-secret'");
-        expect(bind).toContain("$env:POCKYMOE_ENROLL = 'enrollment-secret'");
+        expect(setup).toContain(
+          "$env:POCKYMOE_ENROLL_SECRET = 'enrollment-secret'",
+        );
+        expect(bind).toContain(
+          "$env:POCKYMOE_ENROLL_SECRET = 'enrollment-secret'",
+        );
         expect(setup).toContain('finally');
         expect(bind).toContain('finally');
       }
@@ -44,7 +51,7 @@ describe('bound device commands', () => {
       'https://web.test',
     );
     expect(command).toBe(
-      'curl -fsSL https://web.test/setup.sh | POCKYMOE_ENROLL=enrollment-secret sh -s -- --relay https://relay.test --token 0123456789abcdef --port 45679 --web-origin https://web.test --account-key account-public-key',
+      "curl -fsSL 'https://web.test/setup.sh' | POCKYMOE_ENROLL_SECRET='enrollment-secret' sh -s -- --relay 'https://relay.test' --token '0123456789abcdef' --port 45679 --web-origin 'https://web.test' --account-key 'account-public-key'",
     );
   });
   it('passes PowerShell installer parameters on Windows', () => {
@@ -55,12 +62,12 @@ describe('bound device commands', () => {
       'https://web.test',
     );
     expect(command).toBe(
-      "$pockymoePreviousEnroll = $env:POCKYMOE_ENROLL; try { $env:POCKYMOE_ENROLL = 'enrollment-secret'; & ([scriptblock]::Create((Invoke-WebRequest -UseBasicParsing 'https://web.test/setup.ps1').Content)) -Relay 'https://relay.test' -Token '0123456789abcdef' -Port 45680 -WebOrigin 'https://web.test' -AccountKey 'account-public-key' } finally { $env:POCKYMOE_ENROLL = $pockymoePreviousEnroll; Remove-Variable pockymoePreviousEnroll -ErrorAction SilentlyContinue }",
+      "$env:POCKYMOE_ENROLL_SECRET = 'enrollment-secret'; try { & ([scriptblock]::Create((Invoke-WebRequest -UseBasicParsing 'https://web.test/setup.ps1').Content)) -Relay 'https://relay.test' -Token '0123456789abcdef' -Port 45680 -WebOrigin 'https://web.test' -AccountKey 'account-public-key' } finally { Remove-Item Env:POCKYMOE_ENROLL_SECRET -ErrorAction SilentlyContinue }",
     );
   });
   it('binds existing devices locally and shell-quotes values', () => {
     expect(deviceBindCommand(binding, 'https://web.test')).toBe(
-      'POCKYMOE_ENROLL=enrollment-secret pockymoe bind --account-key account-public-key --web-origin https://web.test',
+      "POCKYMOE_ENROLL_SECRET='enrollment-secret' pockymoe bind --account-key 'account-public-key' --web-origin 'https://web.test'",
     );
     const escaped = deviceBindCommand(
       { ...binding, accountPublicKey: "key'with quote" },
@@ -82,6 +89,12 @@ const unsafeCharacters = [
   '\u2029',
 ];
 describe('setup command injection prevention', () => {
+  it('rejects trailing controls in token validation before rendering a command', () => {
+    for (const control of ['\n', '\r', '\r\n', '\u2028', '\u2029'])
+      expect(() =>
+        validateDeviceSetupToken('0123456789abcdef' + control),
+      ).toThrow();
+  });
   it.each(['unix', 'windows'] as const)(
     'rejects malformed and out-of-range %s tokens',
     (platform) => {
