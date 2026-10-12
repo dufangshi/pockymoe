@@ -1,3 +1,4 @@
+import { relayUrl } from './relayOrigin';
 import { translate } from '@pockymoe/thread-ui/i18n';
 import { clearStoredOwnerSession, trustStore } from './ownerTrustStore';
 import {
@@ -47,8 +48,8 @@ export class OwnerTrustError extends Error {
   }
 }
 export async function fetchOwnerCredentials(): Promise<OwnerCredential[]> {
-  const response = await nativeFetch('/relay/account/passkeys/public', {
-    credentials: 'same-origin',
+  const response = await nativeFetch(relayUrl('/relay/account/passkeys/public'), {
+    credentials: 'include',
     cache: 'no-store',
   });
   if (!response.ok) throw new OwnerTrustError('ownerCredentialsUnavailable');

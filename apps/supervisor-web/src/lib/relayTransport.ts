@@ -1,4 +1,5 @@
 import { isRecipientDevice } from './ownerDeviceTrust';
+import { relayUrl } from './relayOrigin';
 import { getLocale, translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import workerUrl from './relayServiceWorker.ts?worker&url';
 import { readAfterOwnerUnlock } from './ownerUnlockRecovery';
@@ -30,8 +31,8 @@ export function probeDeviceEncryption(deviceId: string): Promise<void> {
       const recipient = await isRecipientDevice(deviceId, scope);
       const path = recipient ? scope ? `/api/threads/${encodeURIComponent(scope)}` : '/api/workspaces' : '/api/version';
       const { response } = await exchange(new Request(
-        new URL(`/relay/devices/${encodeURIComponent(deviceId)}${path}`, window.location.href),
-        { credentials: 'same-origin', signal: controller.signal },
+        new URL(relayUrl(`/relay/devices/${encodeURIComponent(deviceId)}${path}`), window.location.href),
+        { credentials: 'include', signal: controller.signal },
       ), scope);
       if (!response.ok) throw new Error(translate("workbench.deviceEncryptionCheckFailed"));
     } catch {
@@ -117,9 +118,10 @@ export async function ensureRelayWorker() {
   }
 }
 export async function encryptedBrowserFetch(url: string, init: RequestInit, threadScope?: string) {
-  const deviceId = deviceRoute(new URL(url, window.location.href))?.deviceId;
+  const target = new URL(relayUrl(url), window.location.href);
+  const deviceId = deviceRoute(target)?.deviceId;
   const read = () => exchange(
-      new Request(new URL(url, window.location.href), init),
+      new Request(target, init),
       threadScope ?? scopeFromPage(window.location.href, deviceId),
       async () => { await ensureRelayWorker(); },
     );
@@ -152,10 +154,10 @@ class EncryptedRelaySocket extends EventTarget {
       const threadId = url.searchParams.get('threadId');
       const prefix = `/relay/devices/${deviceId}/api${threadId ? `/threads/${encodeURIComponent(threadId)}` : ''}`;
       const request = new Request(
-        new URL(`${prefix}/transport/session`, window.location.href),
+        new URL(relayUrl(`${prefix}/transport/session`), window.location.href),
         {
           method: 'POST',
-          credentials: 'same-origin',
+          credentials: 'include',
           headers: { 'content-type': 'application/json' },
           body: '{}',
         },

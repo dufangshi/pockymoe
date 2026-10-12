@@ -11,7 +11,7 @@ export async function relayWorkerFetch(request: Request, clientUrl?: string) {
   try {
     return (
       await exchange(
-        request,
+        new Request(request, { credentials: 'include' }),
         clientUrl
           ? scopeFromPage(
               clientUrl,

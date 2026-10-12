@@ -1,3 +1,4 @@
+import { relayUrl } from './relayOrigin';
 import {
   OwnerTrustError,
   assertOwner,
@@ -92,12 +93,12 @@ export async function completePairing(
     const { response } = await exchange(
       new Request(
         new URL(
-          `/relay/devices/${encodeURIComponent(offer.deviceId)}/api/transport/pair`,
+          relayUrl(`/relay/devices/${encodeURIComponent(offer.deviceId)}/api/transport/pair`),
           location.origin,
         ),
         {
           method: 'POST',
-          credentials: 'same-origin',
+          credentials: 'include',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
             version: 1,

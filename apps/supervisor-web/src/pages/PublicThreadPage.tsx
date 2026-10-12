@@ -1,3 +1,4 @@
+import { relayUrl } from '../lib/relayOrigin';
 import { LanguageSwitcher } from '@pockymoe/thread-ui/i18n';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { useEffect, useState } from 'react';
@@ -32,9 +33,9 @@ export function PublicThreadPage() {
     setError('');
     async function refresh() {
       try {
-        const response = await fetch(`/relay/public-links/${encodeURIComponent(id ?? '')}`, {
+        const response = await fetch(relayUrl(`/relay/public-links/${encodeURIComponent(id ?? '')}`), {
           signal: controller.signal,
-          credentials: 'omit',
+          credentials: 'include',
           cache: 'no-store',
         });
         if (!response.ok)

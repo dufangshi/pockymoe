@@ -4,7 +4,7 @@ mod service;
 mod setup;
 mod update;
 
-pub use setup::{run_device, setup, SetupOptions};
+pub use setup::{pairing_defaults, run_device, setup, SetupOptions};
 pub use update::{maintenance_cli, run_worker, updater};
 
 use anyhow::{Context, Result};

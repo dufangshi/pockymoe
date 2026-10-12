@@ -6,10 +6,29 @@ use std::{collections::BTreeMap, net::TcpListener, time::Duration};
 
 pub struct SetupOptions {
     pub relay: String,
+    pub web_origin: Option<String>,
     pub token: Option<String>,
     pub code: Option<String>,
     pub port: u16,
 }
+/// Read only the local saved configuration; relay greetings are never a source of trust.
+pub fn pairing_defaults() -> Result<(Option<String>, Option<String>)> {
+    let file = config_path();
+    if !file.exists() {
+        return Ok((None, None));
+    }
+    let saved = read_device_config(&file)?;
+    Ok((
+        saved["webOrigin"]
+            .as_str()
+            .or_else(|| saved["POCKYMOE_WEB_ORIGIN"].as_str())
+            .map(str::to_owned),
+        saved["POCKYMOE_RELAY_SERVER_URL"]
+            .as_str()
+            .map(str::to_owned),
+    ))
+}
+
 fn digest(value: &[u8]) -> String {
     hex::encode(Sha256::digest(value))
 }
@@ -156,6 +175,11 @@ pub async fn setup(options: SetupOptions) -> Result<()> {
         "Relay must use HTTPS"
     );
     let origin = url.origin().ascii_serialization();
+    let web_origin = options
+        .web_origin
+        .as_deref()
+        .map(|origin| crate::owner_trust::pairing_web_origin(Some(origin), None, None))
+        .transpose()?;
     let file = config_path();
     let mut saved: Value = if file.exists() {
         read_device_config(&file)?
@@ -176,6 +200,14 @@ pub async fn setup(options: SetupOptions) -> Result<()> {
                         &serde_json::to_vec(&json!([origin, options.port, options.code])).unwrap(),
                     ))
             && receipt["configHash"] == digest(&std::fs::read(&file).unwrap_or_default()));
+    ensure!(
+        web_origin.as_deref().is_none_or(|origin| !resume
+            || saved["webOrigin"]
+                .as_str()
+                .or_else(|| saved["POCKYMOE_WEB_ORIGIN"].as_str())
+                == Some(origin)),
+        "The saved Web origin differs; update the local configuration before resuming setup"
+    );
     let occupied = TcpListener::bind(("127.0.0.1", options.port)).is_err();
     ensure!(
         !occupied || resume,
@@ -234,6 +266,9 @@ pub async fn setup(options: SetupOptions) -> Result<()> {
             .replacen("https:", "wss:", 1)
             .replacen("http:", "ws:", 1));
         saved["POCKYMOE_RELAY_AGENT_TOKEN"] = json!(token);
+        if let Some(origin) = &web_origin {
+            saved["webOrigin"] = json!(origin);
+        }
         saved["POCKYMOE_RELAY_SUPERVISOR_PORT"] = json!(options.port.to_string());
         saved["POCKYMOE_ADMIN_USERNAME"] = json!("admin");
         saved["POCKYMOE_ADMIN_PASSWORD"] = json!(format!(
@@ -271,6 +306,10 @@ pub fn load_environment(config: &Path) -> Result<BTreeMap<String, String>> {
                 env.insert(key.clone(), value.into());
             }
         }
+    }
+    if let Some(origin) = saved["webOrigin"].as_str() {
+        let origin = crate::owner_trust::pairing_web_origin(Some(origin), None, None)?;
+        env.insert("POCKYMOE_WEB_ORIGIN".into(), origin);
     }
     env.insert("POCKYMOE_MODE".into(), "relay".into());
     env.insert("POCKYMOE_RELAY_SUPERVISOR_HOST".into(), "127.0.0.1".into());
@@ -353,6 +392,26 @@ pub async fn run_device(config: PathBuf) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn local_web_origin_survives_config_persistence_and_environment_loading() {
+        let root =
+            std::env::temp_dir().join(format!("pockymoe-web-origin-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let file = root.join("device.json");
+        let saved = json!({"webOrigin":"https://web.example.test", "POCKYMOE_RELAY_SERVER_URL":"wss://relay.example.test", "POCKYMOE_RELAY_AGENT_TOKEN":"synthetic", "POCKYMOE_DATABASE_PATH":root.join("device.sqlite")});
+        write_device_config(&file, &saved).unwrap();
+        let loaded = read_device_config(&file).unwrap();
+        assert_eq!(loaded["webOrigin"], "https://web.example.test");
+        let env = load_environment(&file).unwrap();
+        assert_eq!(env["POCKYMOE_WEB_ORIGIN"], "https://web.example.test");
+        assert_eq!(env["POCKYMOE_RELAY_SERVER_URL"], "wss://relay.example.test");
+        let mut invalid = loaded;
+        invalid["webOrigin"] = json!("https://web.example.test/path");
+        write_device_config(&file, &invalid).unwrap();
+        assert!(load_environment(&file).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn native_setup_preserves_connection_identity_and_rejects_different_device() {
         let saved = json!({"POCKYMOE_RELAY_SERVER_URL":"wss://relay.example.test/","POCKYMOE_RELAY_AGENT_TOKEN":"synthetic","POCKYMOE_RELAY_SUPERVISOR_PORT":"8787"});

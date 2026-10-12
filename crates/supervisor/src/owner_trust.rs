@@ -808,16 +808,13 @@ fn local_connection(path: &FsPath) -> Result<Connection> {
     c.execute_batch("PRAGMA foreign_keys=ON; PRAGMA synchronous=FULL;")?;
     Ok(c)
 }
-/// Local database write authority creates the out-of-band pairing capability.
-/// The caller displays the returned URL locally; never send it to a relay or log it.
-pub fn create_pairing_offer(
-    database: &FsPath,
+/// Local CLI override, then locally configured Web origin, then the legacy relay host.
+pub(crate) fn pairing_web_origin(
     web_origin: Option<&str>,
+    configured_web_origin: Option<&str>,
     relay_url: Option<&str>,
 ) -> Result<String> {
-    let c = local_connection(database)?;
-    let device = device_id(&c)?;
-    let origin = match web_origin {
+    let origin = match web_origin.or(configured_web_origin) {
         Some(s) => s.to_owned(),
         None => {
             let u =
@@ -831,7 +828,9 @@ pub fn create_pairing_offer(
     };
     let u = url::Url::parse(&origin).map_err(|_| anyhow::anyhow!("Invalid Web origin"))?;
     ensure!(
-        matches!(u.scheme(), "https" | "http")
+        (u.scheme() == "https"
+            || (u.scheme() == "http"
+                && matches!(u.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"))))
             && u.host_str().is_some()
             && u.username().is_empty()
             && u.password().is_none()
@@ -840,7 +839,21 @@ pub fn create_pairing_offer(
             && u.fragment().is_none(),
         "--web-origin must be an HTTP(S) origin without credentials, path, query or fragment"
     );
-    let origin = u.origin().ascii_serialization();
+    Ok(u.origin().ascii_serialization())
+}
+
+/// Local database write authority creates the out-of-band pairing capability.
+/// The caller displays the returned URL locally; never send it to a relay or log it.
+pub fn create_pairing_offer(
+    database: &FsPath,
+    web_origin: Option<&str>,
+    relay_url: Option<&str>,
+    configured_web_origin: Option<&str>,
+) -> Result<String> {
+    let c = local_connection(database)?;
+    let device = device_id(&c)?;
+    let origin = pairing_web_origin(web_origin, configured_web_origin, relay_url)?;
+    let u = url::Url::parse(&origin)?;
     let fingerprint = crate::secure_transport::fingerprint(database)?;
     let mut id = [0u8; 16];
     let mut secret = [0u8; 32];

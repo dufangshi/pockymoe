@@ -1,3 +1,4 @@
+import { relayUrl } from './relayOrigin';
 import { OwnerTrustError, verifiedCredential } from './ownerSession';
 import {
   certificateEntries,
@@ -17,8 +18,8 @@ async function remoteDocument(
   deviceId: string,
 ): Promise<CertificateDocument | null> {
   const response = await nativeFetch(
-    `/relay/devices/${encodeURIComponent(deviceId)}/certificate`,
-    { credentials: 'same-origin', cache: 'no-store' },
+    relayUrl(`/relay/devices/${encodeURIComponent(deviceId)}/certificate`),
+    { credentials: 'include', cache: 'no-store' },
   );
   if (response.status === 404) return null;
   if (!response.ok) throw new OwnerTrustError('ownerCertificateUnavailable');
@@ -92,10 +93,10 @@ export async function appendDeviceCertificate(certificate: DeviceCertificate) {
   );
   certificates.push(certificate);
   const response = await nativeFetch(
-    `/relay/devices/${encodeURIComponent(certificate.deviceId)}/certificate`,
+    relayUrl(`/relay/devices/${encodeURIComponent(certificate.deviceId)}/certificate`),
     {
       method: 'PUT',
-      credentials: 'same-origin',
+      credentials: 'include',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         version: 1,

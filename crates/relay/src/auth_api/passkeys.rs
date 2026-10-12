@@ -13,10 +13,9 @@ fn webauthn(state: &AppState) -> Result<Webauthn, Failure> {
 fn rp_origin(state: &AppState) -> Result<(String, Url), Failure> {
     let base = state
         .oauth
-        .public_base_url
-        .as_deref()
+        .browser_origin()
         .ok_or_else(|| invalid("Passkeys require a configured public URL"))?;
-    let origin = Url::parse(base).map_err(internal)?;
+    let origin = Url::parse(&base).map_err(internal)?;
     let rp = origin
         .host_str()
         .ok_or_else(|| invalid("Invalid public URL"))?;
@@ -658,5 +657,27 @@ mod tests {
                 StatusCode::NOT_FOUND
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod web_origin_tests {
+    use super::*;
+    #[test]
+    fn passkeys_use_the_web_rp_and_origin_with_single_origin_fallback() {
+        let (mut state, dir) = crate::tests::test_app_state("passkey-origin");
+        let oauth = &mut Arc::get_mut(&mut state).unwrap().oauth;
+        oauth.public_base_url = Some("https://relay.example.test:8443/base/".into());
+        let (rp, origin) = rp_origin(&state).unwrap();
+        assert_eq!(rp, "relay.example.test");
+        assert_eq!(origin.as_str(), "https://relay.example.test:8443/");
+        Arc::get_mut(&mut state).unwrap().oauth.web_origin =
+            Some("https://web.example.test".into());
+        let (rp, origin) = rp_origin(&state).unwrap();
+        assert_eq!(rp, "web.example.test");
+        assert_eq!(origin.as_str(), "https://web.example.test/");
+        assert!(webauthn(&state).is_ok());
+        drop(state);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

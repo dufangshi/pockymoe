@@ -1,3 +1,4 @@
+import { relayUrl } from './relayOrigin';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import {
   Aes256Gcm,
@@ -203,8 +204,8 @@ async function keyFor(
     let response: Response;
     try {
       response = await nativeFetch(
-        `/relay/devices/${encodeURIComponent(deviceId)}${prefix}/transport/key?challenge=${challenge}`,
-        { credentials: 'same-origin', cache: 'no-store', signal: controller.signal },
+        relayUrl(`/relay/devices/${encodeURIComponent(deviceId)}${prefix}/transport/key?challenge=${challenge}`),
+        { credentials: 'include', cache: 'no-store', signal: controller.signal },
       );
     } catch (error) {
       if (controller.signal.aborted)

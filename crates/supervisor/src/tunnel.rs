@@ -1049,6 +1049,7 @@ pub(crate) mod tests {
             admin_password: Some("secret123".into()),
             session_secret: Some("0123456789abcdef".into()),
             relay_server_url: Some(relay_url.into()),
+            web_origin: None,
             relay_agent_token: Some("agent token/+".into()),
             enabled_providers: vec![Provider::Codex],
             acp_command: None,

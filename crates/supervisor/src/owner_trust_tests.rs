@@ -879,6 +879,7 @@ async fn encrypted_pairing_and_owner_session_bootstrap_then_signed_trust() {
         &state.config.database_url,
         Some("https://pockymoe.test"),
         None,
+        None,
     )
     .unwrap();
     let u = url::Url::parse(&url).unwrap();
@@ -951,6 +952,7 @@ async fn pairing_offer_initializes_identity_before_the_first_transport_key_reque
         &state.config.database_url,
         Some("https://pockymoe.test"),
         None,
+        None,
     )
     .unwrap();
     assert!(path.exists());
@@ -990,6 +992,7 @@ async fn offline_offer_and_reset_work_with_a_running_database_and_refuse_unknown
         &state.config.database_url,
         Some("https://pockymoe.test"),
         None,
+        None,
     )
     .unwrap_err();
     assert!(err.to_string().contains("not connected"));
@@ -998,6 +1001,7 @@ async fn offline_offer_and_reset_work_with_a_running_database_and_refuse_unknown
         &state.config.database_url,
         None,
         Some("wss://pockymoe.test/tunnel"),
+        None,
     )
     .unwrap();
     let url = url::Url::parse(&url).unwrap();
@@ -1009,7 +1013,9 @@ async fn offline_offer_and_reset_work_with_a_running_database_and_refuse_unknown
         "https://pockymoe.test/path",
         "https://pockymoe.test?query=yes",
     ] {
-        assert!(create_pairing_offer(&state.config.database_url, Some(invalid), None).is_err());
+        assert!(
+            create_pairing_offer(&state.config.database_url, Some(invalid), None, None).is_err()
+        );
     }
     state
         .db
@@ -1322,6 +1328,7 @@ fn local_certificate_bundle_append_remove_and_legacy_single_row() {
     let owner = OwnerPrincipal {
         credential_id: record().credential_id,
         session_id: "none".into(),
+        grantee_user_id: None,
     };
     let bundle = trust(&db, &owner).unwrap()["certificate"].clone();
     assert_eq!(bundle["certificates"].as_array().unwrap().len(), 2);
@@ -1635,4 +1642,41 @@ fn peer_signing_input_is_domain_separated_and_wrong_owner_key_is_rejected() {
         })
         .unwrap();
     assert!(verify_peer_bundle(&state, cert.clone(), device, None).is_err());
+}
+
+#[test]
+fn pairing_origin_uses_local_override_then_local_setting_then_legacy_relay_host() {
+    let relay = Some("wss://relay.example.test:9443/supervisor/tunnel");
+    assert_eq!(
+        pairing_web_origin(
+            Some("https://override.example.test/"),
+            Some("https://web.example.test"),
+            relay
+        )
+        .unwrap(),
+        "https://override.example.test"
+    );
+    assert_eq!(
+        pairing_web_origin(None, Some("https://web.example.test:8443"), relay).unwrap(),
+        "https://web.example.test:8443"
+    );
+    assert_eq!(
+        pairing_web_origin(None, None, relay).unwrap(),
+        "https://relay.example.test"
+    );
+    assert_eq!(
+        pairing_web_origin(None, Some("http://localhost:4188"), None).unwrap(),
+        "http://localhost:4188"
+    );
+    assert!(pairing_web_origin(None, None, None).is_err());
+    // An invalid local setting must not silently fall through to the relay.
+    for invalid in [
+        "http://web.example.test",
+        "https://web.example.test/path",
+        "https://web.example.test#fragment",
+        "https://user@web.example.test",
+        "https://web.example.test?query=1",
+    ] {
+        assert!(pairing_web_origin(None, Some(invalid), relay).is_err());
+    }
 }

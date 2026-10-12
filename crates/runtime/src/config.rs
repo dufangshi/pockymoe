@@ -18,6 +18,7 @@ pub struct RuntimeConfig {
     pub admin_password: Option<String>,
     pub session_secret: Option<String>,
     pub relay_server_url: Option<String>,
+    pub web_origin: Option<String>,
     pub relay_agent_token: Option<String>,
     pub enabled_providers: Vec<Provider>,
     pub acp_command: Option<String>,
@@ -81,6 +82,7 @@ impl RuntimeConfig {
             admin_password: env::var("POCKYMOE_ADMIN_PASSWORD").ok(),
             session_secret: env::var("POCKYMOE_SESSION_SECRET").ok(),
             relay_server_url: env::var("POCKYMOE_RELAY_SERVER_URL").ok(),
+            web_origin: nonempty_env("POCKYMOE_WEB_ORIGIN"),
             relay_agent_token: env::var("POCKYMOE_RELAY_AGENT_TOKEN").ok(),
             enabled_providers,
             acp_command: setting("POCKYMOE_ACP_COMMAND", "ACP_COMMAND")

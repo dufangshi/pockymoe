@@ -1,4 +1,5 @@
 import { sharingMutation } from './signedSharing';
+import { relayOrigin, relayUrl, relaySocketUrl, relayFetchInit } from './relayOrigin';
 import { clearOwnerSession } from './ownerSession';
 import { confirmWorkspaceDocumentLeave, type WorkspaceDocumentSnapshot, type WorkspaceDocumentSaveInput, type WorkspaceSaveReceipt } from "@pockymoe/thread-ui";
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
@@ -111,7 +112,6 @@ declare global {
   interface Window {
     __POCKYMOE_BOOTSTRAP__?: {
       mode?: 'local' | 'server' | 'relay';
-      relayApiBase?: string;
     };
   }
 }
@@ -158,6 +158,8 @@ function relayModeEnabled() {
   }
   return (
     window.__POCKYMOE_BOOTSTRAP__?.mode === 'relay' ||
+    import.meta.env.VITE_POCKYMOE_STATIC_WEB === 'true' ||
+    !!import.meta.env.VITE_POCKYMOE_RELAY_ORIGIN ||
     window.location.pathname.startsWith('/relay-portal') ||
     window.location.pathname.startsWith('/relay-admin') ||
     window.location.pathname.startsWith('/relay-account') ||
@@ -242,7 +244,7 @@ function apiPath(path: string, deviceId?: string | null) {
 }
 
 export function buildApiUrl(path: string) {
-  return apiPath(path);
+  return relayUrl(apiPath(path));
 }
 
 function buildBrowserMediaUrl(path: string, deviceId?: string | null) {
@@ -251,7 +253,7 @@ function buildBrowserMediaUrl(path: string, deviceId?: string | null) {
     return resolvedPath;
   }
 
-  const url = new URL(resolvedPath, window.location.origin);
+  const url = new URL(relayUrl(resolvedPath), window.location.origin);
   const relayToken = readStoredRelayToken();
   const authToken = readStoredAuthToken();
   if (relayModeEnabled() && relayToken) {
@@ -259,7 +261,7 @@ function buildBrowserMediaUrl(path: string, deviceId?: string | null) {
   } else if (authToken) {
     url.searchParams.set('token', authToken);
   }
-  return `${url.pathname}${url.search}${url.hash}`;
+  return url.origin === window.location.origin ? `${url.pathname}${url.search}${url.hash}` : url.toString();
 }
 
 // These wrappers keep every operation (including retries/downloads) on the pane's device.
@@ -270,7 +272,7 @@ function deviceDownload(deviceId: string | null | undefined, input: RequestInfo 
   return downloadFile(input, init, deviceId);
 }
 function buildDeviceApiUrl(deviceId: string | null | undefined, path: string) {
-  return apiPath(path, deviceId);
+  return relayUrl(apiPath(path, deviceId));
 }
 function buildDeviceMediaUrl(deviceId: string | null | undefined, path: string) {
   return buildBrowserMediaUrl(path, deviceId);
@@ -409,7 +411,10 @@ async function readApiErrorPayload(response: Response): Promise<ApiErrorShape> {
 
 function fetchApi(path: string, init: RequestInit, deviceId?: string | null, threadScope?: string) {
   const url = apiPath(path, deviceId);
-  return /^\/relay\/devices\/[^/]+\/api\//.test(url) ? encryptedBrowserFetch(url, init, threadScope) : fetch(url, init);
+  const target = relayUrl(url);
+  const endpoint = new URL(target, window.location.origin);
+  const requestInit = relayFetchInit(target, init);
+  return endpoint.origin === relayOrigin() && /^\/relay\/devices\/[^/]+\/api\//.test(endpoint.pathname) ? encryptedBrowserFetch(target, requestInit, threadScope) : fetch(target, requestInit);
 }
 
 export async function request<T>(
@@ -1827,6 +1832,10 @@ function buildSocketUrl(protocol: 'ws:' | 'wss:', target?: { deviceId: string | 
     url.pathname = deviceId
       ? `/relay/devices/${encodeURIComponent(deviceId)}/ws`
       : '/relay/ws';
+    const relay = new URL(relaySocketUrl(url.pathname));
+    url.protocol = relay.protocol;
+    url.hostname = relay.hostname;
+    url.port = relay.port;
   }
   const token = readStoredAuthToken();
   const relayToken = readStoredRelayToken();

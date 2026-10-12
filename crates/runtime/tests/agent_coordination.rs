@@ -25,6 +25,7 @@ fn setup() -> (tempfile::TempDir, Arc<Supervisor>) {
         admin_password: None,
         session_secret: None,
         relay_server_url: None,
+        web_origin: None,
         relay_agent_token: None,
         enabled_providers: vec![Provider::Codex],
         acp_command: None,
