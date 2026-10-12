@@ -359,6 +359,15 @@ export async function revokeDevice(deviceId: string) {
   });
   if (!response.ok)
     throw new Error(translate('devices.deviceRevocationFailed'));
+  // The signed tombstone is permanent even if the later vault CAS fails.
+  transport.clearTransportKeyCache(deviceId);
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(
+      new CustomEvent('pockymoe-account-revocations-changed', {
+        detail: { revocation },
+      }),
+    );
+  }
   await account.updateBoundDevices((ids) =>
     ids.filter((id) => id !== deviceId),
   );
