@@ -241,3 +241,9 @@ it.each(['invite', 'tofu'])('enforces an existing %s owner pin even before an ac
   await expect(transport.exchange(new Request(endpoint('threads/thread')))).rejects.toMatchObject({ code: 'accountCertificateMissing' });
   expect(wires).toHaveLength(0);
 });
+
+it('does not advertise Protected before the encrypted browser registration role is checked', async () => {
+  const reporter = vi.fn(); transport.setTransportReporter(reporter); grantee = true;
+  await expect(transport.exchange(new Request(endpoint('version')))).rejects.toMatchObject({ code: 'accountCertificateInvalid' });
+  expect(reporter).not.toHaveBeenCalledWith(expect.objectContaining({ state: 'encrypted', certificateVerified: true, role: 'owner' }));
+});

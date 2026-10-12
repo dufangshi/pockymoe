@@ -20,7 +20,7 @@ vi.mock('../lib/relayTransport', () => ({
   trustDeviceIdentity: vi.fn(),
 }));
 
-vi.mock('../lib/accountVault', () => ({ currentAccount: vi.fn(), boundDevices: vi.fn(), verifyDeviceCertificate: vi.fn() }));
+vi.mock('../lib/accountVault', () => ({ currentAccount: vi.fn(), boundDevices: vi.fn(), accountRevocations: vi.fn().mockResolvedValue([]), verifyDeviceCertificate: vi.fn() }));
 vi.mock('../lib/deviceEnrollment', async original => ({ ...await original<typeof import('../lib/deviceEnrollment')>(), listPendingEnrollments: vi.fn() }));
 beforeEach(() => {
   vi.mocked(currentAccount).mockResolvedValue({ userId: 'user', accountKeyId: 'account', accountPublicKey: 'public' });

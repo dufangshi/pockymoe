@@ -669,7 +669,7 @@ export async function exchange(
   );
   const data = unpack(opened);
   if (data.encoding === 'gzip') data.body = await gunzip(data.body, limit);
-  if (!key.inspectionOnly) reportTransport({
+  if (!key.inspectionOnly && !bootstrap) reportTransport({
     deviceId: route.deviceId,
     state: 'encrypted',
     paired: key.paired,
