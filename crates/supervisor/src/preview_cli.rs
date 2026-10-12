@@ -119,8 +119,11 @@ pub(crate) async fn run(state: &Supervisor, input: &Value) -> Result<Value> {
                 created_at: String::new(),
             };
             describe(state, &placeholder, requested_path)?;
-            let mapping =
-                crate::ports::create_mapping(state, port, input["label"].as_str().unwrap_or(""))?;
+            let mapping = crate::ports::create_local_mapping(
+                state,
+                port,
+                input["label"].as_str().unwrap_or(""),
+            )?;
             describe(state, &mapping, requested_path)
         }
         operation => {
@@ -281,6 +284,62 @@ async fn check(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn strict_local_machine_and_thread_cli_previews_survive_session_expiry_and_owner_removal()
+    {
+        use axum::{
+            body::Body,
+            http::{Request, StatusCode},
+        };
+        use tower::ServiceExt;
+        let (_dir, state) =
+            crate::tunnel::tests::state_with_relay_url("https://remote.example.test");
+        let (connection, _outbound) = crate::peer_link::tests::connected(&state, "device");
+        connection.connected(Some(crate::peer_link::RelayIdentity {
+            device_id: "device".into(),
+            device_name: "Device".into(),
+            port_preview_base_url: Some("https://example.test".into()),
+            public_base_url: Some("https://remote.example.test".into()),
+        }));
+        state.relay_connected.store(true, Ordering::SeqCst);
+        crate::owner_trust::tests::live_owner(&state);
+        let machine_token = state.configure_cli("http://127.0.0.1:0".into()).token;
+        let thread_token = state.cli_thread_token("local-thread");
+        let router = crate::http::router(state.clone());
+        for (port, token) in [(4014, machine_token), (4015, thread_token)] {
+            let input = json!({"operation":"previewCreate","port":port,"label":"Local CLI"});
+            let request = Request::builder()
+                .method("POST")
+                .uri("/api/cli")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::from(input.to_string()))
+                .unwrap();
+            assert_eq!(
+                router.clone().oneshot(request).await.unwrap().status(),
+                StatusCode::OK
+            );
+        }
+        assert_eq!(crate::ports::snapshot(&state).len(), 2);
+        state
+            .db
+            .with(|c| {
+                c.execute("UPDATE owner_sessions SET expires_at=0", [])?;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(crate::ports::snapshot(&state).len(), 2);
+        state
+            .db
+            .with(|c| {
+                c.execute("DELETE FROM owner_credentials", [])?;
+                Ok(())
+            })
+            .unwrap();
+        assert!(crate::owner_trust::strict(&state));
+        assert_eq!(crate::ports::snapshot(&state).len(), 2);
+    }
+
     #[test]
     fn validates_paths_and_distinguishes_host_rejection_from_application_errors() {
         for invalid in [

@@ -830,6 +830,7 @@ async fn thread_harness_action(
     Path(id): Path<String>,
     State(state): State<AppState>,
     owner: Option<axum::Extension<crate::owner_trust::OwnerPrincipal>>,
+    forwarded: Option<axum::Extension<crate::auth::TrustedRelayForward>>,
     Json(action): Json<Value>,
 ) -> Result<Json<Value>, ApiErr> {
     let console = action["kind"] == "console";
@@ -842,10 +843,17 @@ async fn thread_harness_action(
         .as_u64()
         .and_then(|port| u16::try_from(port).ok());
     if let (true, true, Some(port)) = (console, state.config.relay_server_url.is_some(), port) {
-        let mapping =
-            crate::ports::dsh_console_mapping(&state, &id, port, owner.as_ref().map(|p| &p.0))
-                .await
-                .map_err(map_err)?;
+        let mapping = crate::ports::dsh_console_mapping(
+            &state,
+            &id,
+            port,
+            crate::ports::MappingAuthority::for_request(
+                forwarded.as_ref().map(|f| &f.0),
+                owner.as_ref().map(|p| &p.0),
+            ),
+        )
+        .await
+        .map_err(map_err)?;
         result["console"]["mappingId"] = json!(mapping.id);
     }
     Ok(Json(result))
