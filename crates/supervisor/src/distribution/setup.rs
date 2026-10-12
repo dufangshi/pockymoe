@@ -142,7 +142,7 @@ fn bridge(path: &Path, binary: &Path) -> Result<()> {
 fn validate_setup_binding(options: &SetupOptions) -> Result<()> {
     ensure!(
         options.account_key.is_some() == options.enroll.is_some(),
-        "Provide both --account-key and --enroll"
+        "Provide --account-key and enrollment through POCKYMOE_ENROLL_SECRET or stdin"
     );
     if let (Some(account), Some(secret)) = (&options.account_key, &options.enroll) {
         crate::owner_trust::validate_binding(account, secret)?;
@@ -165,6 +165,11 @@ fn apply_setup_binding(saved: &Value, options: &SetupOptions) -> Result<()> {
     Ok(())
 }
 pub async fn setup(options: SetupOptions) -> Result<()> {
+    setup_at(options, &config_path()).await
+}
+async fn setup_at(options: SetupOptions, file: &Path) -> Result<()> {
+    std::env::remove_var("POCKYMOE_ENROLL_SECRET");
+    std::env::remove_var("POCKYMOE_ENROLL");
     validate_setup_binding(&options)?;
     ensure!(
         options.port > 0 && options.token.is_some() != options.code.is_some(),
@@ -190,7 +195,6 @@ pub async fn setup(options: SetupOptions) -> Result<()> {
         .as_deref()
         .map(|origin| crate::owner_trust::validate_web_origin(origin))
         .transpose()?;
-    let file = config_path();
     let mut saved: Value = if file.exists() {
         read_device_config(&file)?
     } else {
@@ -199,10 +203,15 @@ pub async fn setup(options: SetupOptions) -> Result<()> {
     ensure!(saved.is_object(), "Invalid device configuration");
     let receipt_file = file.with_extension("json.setup.json");
     let receipt = read::<Value>(&receipt_file).unwrap_or(Value::Null);
-    let resume = options
-        .token
-        .as_deref()
-        .is_some_and(|t| matches(&saved, &origin, t, options.port))
+    let rebind = options.account_key.is_some()
+        && saved["POCKYMOE_RELAY_AGENT_TOKEN"]
+            .as_str()
+            .is_some_and(|token| matches(&saved, &origin, token, options.port));
+    let resume = rebind
+        || options
+            .token
+            .as_deref()
+            .is_some_and(|t| matches(&saved, &origin, t, options.port))
         || (options.code.is_some()
             && (receipt["identity"] == identity(&origin, &options)
                 || receipt["identity"]
@@ -228,14 +237,16 @@ pub async fn setup(options: SetupOptions) -> Result<()> {
         "A different device configuration already exists; it will not be overwritten"
     );
     let version = env!("CARGO_PKG_VERSION");
-    let installed = releases::install(version, Some(&std::env::current_exe()?)).await?;
     if occupied {
-        apply_setup_binding(&saved, &options)?;
+        // Authenticate the already-installed Supervisor before modifying its
+        // binding. Fresh relay setup credentials never replace its registration.
         let status = device_api(options.port, &saved, "/api/management/supervisor", false).await?;
+        apply_setup_binding(&saved, &options)?;
         if status["runningVersion"] == version {
             println!("Device is already running Pockymoe {version}.");
             return Ok(());
         }
+        let installed = releases::install(version, Some(&std::env::current_exe()?)).await?;
         if status["manager"] != "github-release" {
             let legacy = status["path"].as_str().context("Existing installation cannot migrate automatically; no legacy launcher path was reported")?;
             bridge(Path::new(legacy), &installed.executable)
@@ -254,6 +265,7 @@ pub async fn setup(options: SetupOptions) -> Result<()> {
         );
         return online(options.port, version).await;
     }
+    let installed = releases::install(version, Some(&std::env::current_exe()?)).await?;
     if !resume {
         let token = if let Some(token) = &options.token {
             token.clone()
@@ -404,6 +416,74 @@ pub async fn run_device(config: PathBuf) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn explicit_rebind_of_running_install_preserves_registration_without_installing_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("existing.sqlite");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let relay = format!("http://127.0.0.1:{port}");
+        let config = dir.path().join("device.json");
+        let saved = json!({"POCKYMOE_RELAY_SERVER_URL":relay,"POCKYMOE_RELAY_AGENT_TOKEN":"synthetic-existing-token","POCKYMOE_RELAY_SUPERVISOR_PORT":port.to_string(),"POCKYMOE_DATABASE_PATH":db,"POCKYMOE_ADMIN_USERNAME":"admin","POCKYMOE_ADMIN_PASSWORD":"synthetic-password"});
+        write_device_config(&config, &saved).unwrap();
+        let before = std::fs::read(&config).unwrap();
+        async fn login() -> axum::Json<Value> {
+            axum::Json(json!({"token":"synthetic-session"}))
+        }
+        async fn status(headers: axum::http::HeaderMap) -> axum::Json<Value> {
+            assert_eq!(
+                headers[axum::http::header::AUTHORIZATION],
+                "Bearer synthetic-session"
+            );
+            axum::Json(json!({"runningVersion":env!("CARGO_PKG_VERSION")}))
+        }
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                axum::Router::new()
+                    .route("/api/auth/login", axum::routing::post(login))
+                    .route("/api/management/supervisor", axum::routing::get(status)),
+            )
+            .await
+            .unwrap();
+        });
+        let v = crate::owner_trust::tests::vectors();
+        crate::owner_trust::bind_account(
+            &db,
+            v["account"]["accountPublicKey"].as_str().unwrap(),
+            v["enrollment"]["enrollSecret"].as_str().unwrap(),
+            None,
+        )
+        .unwrap();
+        crate::owner_trust::reset_account_trust(&db).unwrap();
+        assert_eq!(
+            crate::owner_trust::binding_status(&db).unwrap()["bound"],
+            false
+        );
+        let options = SetupOptions {
+            relay,
+            web_origin: None,
+            account_key: Some(v["account"]["accountPublicKey"].as_str().unwrap().into()),
+            enroll: Some(base64::Engine::encode(
+                &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+                [31; 32],
+            )),
+            token: None,
+            code: Some("new-unused-code".into()),
+            port,
+        };
+        let result = setup_at(options, &config).await;
+        server.abort();
+        result.unwrap();
+        assert_eq!(std::fs::read(&config).unwrap(), before);
+        assert_eq!(
+            crate::owner_trust::binding_status(&db).unwrap()["bound"],
+            true
+        );
+        // Fresh setup codes are not redeemed and no release downloader or service
+        // launcher is used: the fake server exposes only local management routes.
+    }
+
     #[test]
     fn setup_binds_fresh_database_before_runtime_and_keeps_enrollment_out_of_config() {
         let dir = tempfile::tempdir().unwrap();
@@ -425,7 +505,7 @@ mod tests {
             crate::owner_trust::binding_status(&db).unwrap()["strict"],
             true
         );
-        assert!(saved.get("POCKYMOE_ENROLL").is_none());
+        assert!(saved.get("POCKYMOE_ENROLL_SECRET").is_none());
         options.account_key = Some(
             v["otherAccount"]["accountPublicKey"]
                 .as_str()

@@ -20,6 +20,7 @@ struct Grant {
     mapping: String,
     device: String,
     session: String,
+    lease: Option<String>,
     expires: std::time::Instant,
 }
 struct Stream {
@@ -117,26 +118,33 @@ async fn config(
 }
 
 #[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 struct OpenInput {
     #[serde(default)]
     path: String,
+}
+#[derive(Deserialize, Default)]
+struct OpenQuery {
+    #[serde(flatten)]
+    token: TokenQuery,
+    lease: Option<String>,
 }
 async fn open(
     State(state): State<Arc<AppState>>,
     Path((device, id)): Path<(String, String)>,
     headers: HeaderMap,
-    Query(query): Query<TokenQuery>,
+    Query(query): Query<OpenQuery>,
     Json(input): Json<OpenInput>,
 ) -> Response {
     let conn = state.store.conn.lock().await;
-    let Some(user) = authenticated_user(&conn, &state.store.session_secret, &headers, &query)
+    let Some(user) = authenticated_user(&conn, &state.store.session_secret, &headers, &query.token)
     else {
         return unauthorized();
     };
     if !owns(&conn, &user.id, &device) {
         return StatusCode::FORBIDDEN.into_response();
     }
-    let Some(session) = extract_session_token(&headers, &query) else {
+    let Some(session) = extract_session_token(&headers, &query.token) else {
         return unauthorized();
     };
     drop(conn);
@@ -159,6 +167,24 @@ async fn open(
     {
         return (StatusCode::CONFLICT, Json(json!({"message":"This port is not enabled on the online device. Update its Supervisor if port mappings are unavailable."}))).into_response();
     }
+    if query
+        .lease
+        .as_ref()
+        .is_some_and(|lease| Uuid::parse_str(lease).is_err())
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"code":"invalid_lease","message":"Invalid preview lease"})),
+        )
+            .into_response();
+    }
+    if query.lease.is_none() {
+        // The device descriptor is only a routing hint; the device enforces its own lease.
+        let key = internal_forward_json(&state, &device, "GET", "/api/transport/key", None).await;
+        if !key.is_ok_and(|key| key["trust"]["strict"] != true) {
+            return (StatusCode::FORBIDDEN,Json(json!({"code":"preview_lease_required","message":"Obtain a signed device preview lease first"}))).into_response();
+        }
+    }
     let path = if input.path.is_empty() {
         "/"
     } else {
@@ -178,6 +204,9 @@ async fn open(
         return StatusCode::BAD_REQUEST.into_response();
     }
     url = destination;
+    if let Some(lease) = &query.lease {
+        url.query_pairs_mut().append_pair("lease", lease);
+    }
     let ticket = Uuid::new_v4().to_string();
     let mut launches = state.preview.launches.lock().unwrap();
     launches.retain(|_, g| g.expires > std::time::Instant::now());
@@ -190,6 +219,7 @@ async fn open(
             mapping: id,
             device,
             session,
+            lease: query.lease,
             expires: std::time::Instant::now() + Duration::from_secs(60),
         },
     );
@@ -636,7 +666,7 @@ async fn open_stream(state: &AppState, mapping: &Mapping, grant: &Grant) -> Resu
             .filter(|s| s.connection_id == mapping.connection)
             .ok_or_else(|| anyhow::anyhow!("Device offline"))?;
         socket.tx.try_send(
-            json!({"type":"preview.open","mappingId":mapping.id,"ticket":ticket}).to_string(),
+            json!({"type":"preview.open","mappingId":mapping.id,"ticket":ticket,"leaseId":grant.lease}).to_string(),
         )?;
     }
     let stream = tokio::time::timeout(Duration::from_secs(10), rx).await??;
@@ -838,6 +868,7 @@ mod tests {
             mapping: id.clone(),
             device: "device".into(),
             session: String::new(),
+            lease: None,
             expires: std::time::Instant::now() + Duration::from_secs(60),
         };
         let token = CancellationToken::new();
@@ -881,5 +912,127 @@ mod tests {
         assert!(state.preview.mappings.lock().unwrap().is_empty());
         drop(state);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+    async fn lease_fixture(
+        name: &str,
+    ) -> (
+        Arc<AppState>,
+        PathBuf,
+        HeaderMap,
+        tokio::sync::mpsc::Receiver<String>,
+        String,
+    ) {
+        let (mut state, dir) = crate::tests::test_app_state(name);
+        Arc::get_mut(&mut state).unwrap().preview.base =
+            Some(parse_base("https://preview.example.test").unwrap());
+        let token = {
+            let conn = state.store.conn.lock().await;
+            conn.execute("INSERT INTO relay_users (id,email,username,role,enabled,created_at,password_salt,password_hash) VALUES ('owner','owner@example.test','owner','user',1,'now','','')",[]).unwrap();
+            conn.execute("INSERT INTO relay_devices(id,owner_user_id,name,token_hash,token_preview,created_at) VALUES ('device','owner','device','hash','test','now')",[]).unwrap();
+            create_session(&conn, &state.store.session_secret, "owner").unwrap()
+        };
+        let connection = Uuid::new_v4();
+        let (tx, rx) = tokio::sync::mpsc::channel(4);
+        state.sockets.write().await.insert(
+            "device".into(),
+            DeviceSocket {
+                tx,
+                connection_id: connection,
+                connected_at: now_rfc3339(),
+                last_heartbeat_at: now_rfc3339(),
+            },
+        );
+        let mapping = "c".repeat(32);
+        update(
+            &state,
+            "device",
+            connection,
+            &json!([{"id":mapping,"port":4013}]),
+        );
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            format!("Bearer {token}").parse().unwrap(),
+        );
+        (state, dir, headers, rx, mapping)
+    }
+
+    #[tokio::test]
+    async fn security_revision_strict_preview_refuses_open_without_device_lease() {
+        let (state, dir, headers, mut rx, mapping) =
+            lease_fixture("security-preview-no-lease").await;
+        let responder = state.clone();
+        let task = tokio::spawn(async move {
+            if let Ok(Some(frame)) = tokio::time::timeout(Duration::from_secs(2), rx.recv()).await {
+                let frame: Value = serde_json::from_str(&frame).unwrap();
+                assert_eq!(frame["payload"]["path"], "/api/transport/key");
+                let id = frame["requestId"].as_str().unwrap();
+                let pending = responder.pending.lock().unwrap().remove(id).unwrap();
+                pending.tx.send(json!({"statusCode":200,"body":json!({"trust":{"strict":true}}).to_string()})).unwrap();
+            }
+        });
+        let response = open(
+            State(state.clone()),
+            Path(("device".into(), mapping)),
+            headers,
+            Query(serde_json::from_value(json!({})).unwrap()),
+            Json(OpenInput::default()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert!(state.preview.launches.lock().unwrap().is_empty());
+        task.await.unwrap();
+        drop(state);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn security_revision_preview_lease_reaches_host_launch_and_every_device_open_frame() {
+        let (state, dir, headers, mut rx, mapping_id) =
+            lease_fixture("security-preview-lease").await;
+        let lease = Uuid::new_v4().to_string();
+        let response = open(
+            State(state.clone()),
+            Path(("device".into(), mapping_id.clone())),
+            headers,
+            Query(serde_json::from_value(json!({"lease":lease})).unwrap()),
+            Json(OpenInput::default()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 4096).await.unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        let url = url::Url::parse(value["url"].as_str().unwrap()).unwrap();
+        assert!(url.query_pairs().any(|(k, v)| k == "lease" && v == lease));
+        let grant = state
+            .preview
+            .launches
+            .lock()
+            .unwrap()
+            .values()
+            .next()
+            .unwrap()
+            .clone();
+        let mapping = state.preview.mappings.lock().unwrap()[&mapping_id].clone();
+        let caller = state.clone();
+        let task = tokio::spawn(async move { open_stream(&caller, &mapping, &grant).await });
+        let frame: Value = serde_json::from_str(&rx.recv().await.unwrap()).unwrap();
+        assert_eq!(frame["type"], "preview.open");
+        assert_eq!(frame["leaseId"], lease);
+        let ticket = frame["ticket"].as_str().unwrap();
+        let tx = state
+            .preview
+            .streams
+            .lock()
+            .unwrap()
+            .get_mut(ticket)
+            .unwrap()
+            .tx
+            .take()
+            .unwrap();
+        tx.send(tokio::io::duplex(1024).0).unwrap();
+        assert!(task.await.unwrap().is_ok());
+        drop(state);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -1,22 +1,41 @@
 import { useEffect, useState } from 'react';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { prepareDeviceEnrollment } from '../lib/deviceEnrollment';
-import { deviceBindCommand } from '../lib/deviceSetupCommands';
+import {
+  deviceBindCommand,
+  type SupervisorPlatform,
+} from '../lib/deviceSetupCommands';
 
 /** Binding is a local command and must also be available while the device is offline. */
-export function DeviceBindingPanel({ deviceId }: { deviceId: string }) {
+export function DeviceBindingPanel({
+  deviceId,
+  repair = false,
+}: {
+  deviceId: string;
+  repair?: boolean;
+}) {
   useI18n();
-  const [command, setCommand] = useState<string>();
+  const [commands, setCommands] =
+    useState<Record<SupervisorPlatform, string>>();
+  const [platform, setPlatform] = useState<SupervisorPlatform>('unix');
+  const command = commands?.[platform];
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string>();
   useEffect(() => {
     let active = true;
-    setCommand(undefined);
+    setCommands(undefined);
     setCopied(false);
     setError(undefined);
-    void prepareDeviceEnrollment(deviceId)
+    const preparing = repair
+      ? prepareDeviceEnrollment(deviceId, { fresh: true })
+      : prepareDeviceEnrollment(deviceId);
+    void preparing
       .then((binding) => {
-        if (active) setCommand(deviceBindCommand(binding));
+        if (active)
+          setCommands({
+            unix: deviceBindCommand(binding),
+            windows: deviceBindCommand(binding, location.origin, 'windows'),
+          });
       })
       .catch((e: unknown) => {
         if (active)
@@ -29,7 +48,7 @@ export function DeviceBindingPanel({ deviceId }: { deviceId: string }) {
     return () => {
       active = false;
     };
-  }, [deviceId]);
+  }, [deviceId, repair]);
   return (
     <div className="space-y-3 text-sm">
       <p>{translate('devices.protectDeviceHelp')}</p>
@@ -39,6 +58,29 @@ export function DeviceBindingPanel({ deviceId }: { deviceId: string }) {
       )}
       {command && (
         <>
+          <div
+            role="group"
+            aria-label={translate('devices.supervisorCommandPlatform')}
+          >
+            {(['unix', 'windows'] as const).map((value) => (
+              <button
+                key={value}
+                type="button"
+                aria-pressed={platform === value}
+                className="relay-button-secondary px-3 py-2"
+                onClick={() => {
+                  setPlatform(value);
+                  setCopied(false);
+                }}
+              >
+                {translate(
+                  value === 'unix'
+                    ? 'devices.platformUnix'
+                    : 'devices.platformWindows',
+                )}
+              </button>
+            ))}
+          </div>
           <pre className="whitespace-pre-wrap break-all text-xs">{command}</pre>
           <button
             className="relay-button-secondary px-3 py-2"

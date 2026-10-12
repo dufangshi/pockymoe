@@ -8,22 +8,23 @@ setup_code=''
 setup_port=8787
 setup_web_origin=${POCKYMOE_WEB_ORIGIN:-}
 setup_account_key=${POCKYMOE_ACCOUNT_KEY:-}
-setup_enroll=${POCKYMOE_ENROLL:-}
+setup_enroll=${POCKYMOE_ENROLL_SECRET:-}
+unset POCKYMOE_ENROLL_SECRET
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --account-key) setup_account_key=${2:?Missing account public key}; shift 2 ;;
-    --enroll) setup_enroll=${2:?Missing enrollment secret}; shift 2 ;;
+    --enroll-stdin) [ -z "$setup_enroll" ] || { echo 'Choose stdin or POCKYMOE_ENROLL_SECRET.' >&2; exit 1; }; IFS= read -r setup_enroll || [ -n "$setup_enroll" ]; shift ;;
     --web-origin) setup_web_origin=${2:?Missing Web origin}; shift 2 ;;
     --relay) relay_url=${2:?Missing relay URL}; shift 2 ;;
     --token) setup_token=${2:?Missing device token}; shift 2 ;;
     --code) setup_code=${2:?Missing setup code}; shift 2 ;;
     --port) setup_port=${2:?Missing port}; shift 2 ;;
-    *) echo "Usage: setup.sh --relay URL (--token TOKEN | --code CODE) [--port PORT] [--web-origin URL] [--account-key KEY --enroll SECRET]" >&2; exit 1 ;;
+    *) echo "Usage: setup.sh --relay URL (--token TOKEN | --code CODE) [--port PORT] [--web-origin URL] [--account-key KEY --enroll-stdin] (or POCKYMOE_ENROLL_SECRET environment)" >&2; exit 1 ;;
   esac
 done
 [ -n "$relay_url" ] && { [ -n "$setup_token" ] || [ -n "$setup_code" ]; } || { echo 'Copy a setup command from the Devices page.' >&2; exit 1; }
 [ -z "$setup_token" ] || [ -z "$setup_code" ] || { echo 'Choose either a device token or a setup code.' >&2; exit 1; }
-{ [ -z "$setup_account_key" ] && [ -z "$setup_enroll" ]; } || { [ -n "$setup_account_key" ] && [ -n "$setup_enroll" ]; } || { echo 'Provide both --account-key and --enroll.' >&2; exit 1; }
+{ [ -z "$setup_account_key" ] && [ -z "$setup_enroll" ]; } || { [ -n "$setup_account_key" ] && [ -n "$setup_enroll" ]; } || { echo 'Provide --account-key and enrollment through POCKYMOE_ENROLL_SECRET or --enroll-stdin.' >&2; exit 1; }
 case "$relay_url" in https://*|http://localhost:*|http://127.0.0.1:*) ;; *) echo 'Relay must use HTTPS.' >&2; exit 1 ;; esac
 case "$setup_port" in *[!0-9]*|'') echo 'Invalid port' >&2; exit 1 ;; esac
 download() {
@@ -82,7 +83,7 @@ if [ -n "$setup_web_origin" ]; then
   export POCKYMOE_WEB_ORIGIN="$setup_web_origin"
 fi
 if [ -n "$setup_account_key" ]; then
-  export POCKYMOE_ACCOUNT_KEY="$setup_account_key" POCKYMOE_ENROLL="$setup_enroll"
+  export POCKYMOE_ACCOUNT_KEY="$setup_account_key" POCKYMOE_ENROLL_SECRET="$setup_enroll"
 fi
 if [ -n "$setup_token" ]; then
   "$setup_tmp/pockymoe" setup --relay "$relay_url" --token "$setup_token" --port "$setup_port"

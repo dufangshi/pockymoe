@@ -43,11 +43,14 @@ impl Fixture {
         {
             let conn = state.store.conn.lock().await;
             let (salt, hash) = hash_password(PASSWORD).unwrap();
-            for (id, role) in [("legacy", "user"), ("admin", "admin")] {
+            for (id, role) in [
+                ("a45aed3e-2f46-4b9c-93c1-e6f9d80c51e4", "user"),
+                ("admin", "admin"),
+            ] {
                 conn.execute("INSERT INTO relay_users(id,email,username,role,enabled,created_at,password_salt,password_hash) VALUES (?1,?2,?1,?3,1,'now',?4,?5)",params![id,format!("{id}@example.test"),role,salt,hash]).unwrap();
             }
             for id in ["unbound", "protected"] {
-                conn.execute("INSERT INTO relay_devices(id,owner_user_id,name,token_hash,token_preview,created_at) VALUES (?1,'legacy',?1,?2,'test','now')",params![id,hash_device_token(&format!("test-{id}"))]).unwrap();
+                conn.execute("INSERT INTO relay_devices(id,owner_user_id,name,token_hash,token_preview,created_at) VALUES (?1,'a45aed3e-2f46-4b9c-93c1-e6f9d80c51e4',?1,?2,'test','now')",params![id,hash_device_token(&format!("test-{id}"))]).unwrap();
             }
             conn.execute(
                 "INSERT INTO relay_device_certificates VALUES ('protected','{}')",
@@ -147,20 +150,20 @@ impl Fixture {
                 Method::POST,
                 "/relay/auth/login",
                 None,
-                json!({"identifier":"legacy","password":PASSWORD}),
+                json!({"identifier":"a45aed3e-2f46-4b9c-93c1-e6f9d80c51e4","password":PASSWORD,"upgrade":true}),
             )
             .await;
         assert_eq!(s, StatusCode::OK);
         assert_eq!(v["session"]["account"]["setupRequired"], true);
         let token = v["token"].as_str().unwrap();
-        let (s,_) = self.json(Method::PUT,"/relay/account/vault",Some(token),json!({"vault":test_vault("legacy",1),"expectedRevision":0,"authKey":auth_key(),"recoveryAuthKey":recovery_key()})).await;
+        let (s,_) = self.json(Method::PUT,"/relay/account/vault",Some(token),json!({"vault":test_vault("a45aed3e-2f46-4b9c-93c1-e6f9d80c51e4",1),"expectedRevision":0,"authKey":auth_key(),"recoveryAuthKey":recovery_key()})).await;
         assert_eq!(s, StatusCode::OK);
         token.into()
     }
 }
 
 #[tokio::test]
-async fn kdf_is_deterministic_secret_bound_and_preserves_legacy_exception() {
+async fn kdf_is_deterministic_secret_bound_without_legacy_exception() {
     let f = Fixture::new("account-kdf").await;
     let get = |login: &str| {
         f.req(Method::GET, &format!("/relay/auth/kdf?login={login}"), None)
@@ -182,8 +185,13 @@ async fn kdf_is_deterministic_secret_bound_and_preserves_legacy_exception() {
             .len(),
         16
     );
-    let legacy: Value = get("legacy").await.unwrap().json().await.unwrap();
-    assert_eq!(legacy["mode"], "legacy");
+    let legacy: Value = get("a45aed3e-2f46-4b9c-93c1-e6f9d80c51e4")
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(legacy["mode"], "account");
     f.register().await;
     let known: Value = get("vector-user").await.unwrap().json().await.unwrap();
     assert_eq!(known["mode"], "account");
@@ -201,7 +209,7 @@ async fn legacy_sessions_are_restricted_until_setup_then_auth_key_login_only() {
             Method::POST,
             "/relay/auth/login",
             None,
-            json!({"username":"legacy","password":PASSWORD}),
+            json!({"username":"a45aed3e-2f46-4b9c-93c1-e6f9d80c51e4","password":PASSWORD,"upgrade":true}),
         )
         .await;
     assert_eq!(s, StatusCode::OK);
@@ -254,8 +262,8 @@ async fn legacy_sessions_are_restricted_until_setup_then_auth_key_login_only() {
             .status(),
         StatusCode::NOT_FOUND
     );
-    let mut request = json!({"vault":test_vault("legacy",1),"expectedRevision":0,"authKey":auth_key(),"recoveryAuthKey":recovery_key()});
-    let ordinary = f.token("legacy", FULL).await;
+    let mut request = json!({"vault":test_vault("a45aed3e-2f46-4b9c-93c1-e6f9d80c51e4",1),"expectedRevision":0,"authKey":auth_key(),"recoveryAuthKey":recovery_key()});
+    let ordinary = f.token("a45aed3e-2f46-4b9c-93c1-e6f9d80c51e4", FULL).await;
     assert_eq!(
         f.json(
             Method::PUT,
@@ -308,7 +316,7 @@ async fn legacy_sessions_are_restricted_until_setup_then_auth_key_login_only() {
             Method::POST,
             "/relay/auth/login",
             None,
-            json!({"login":"legacy","password":PASSWORD})
+            json!({"login":"a45aed3e-2f46-4b9c-93c1-e6f9d80c51e4","password":PASSWORD,"upgrade":true})
         )
         .await
         .0,
@@ -319,7 +327,7 @@ async fn legacy_sessions_are_restricted_until_setup_then_auth_key_login_only() {
             Method::POST,
             "/relay/auth/login",
             None,
-            json!({"login":"legacy","authKey":auth_key()})
+            json!({"login":"a45aed3e-2f46-4b9c-93c1-e6f9d80c51e4","authKey":auth_key()})
         )
         .await
         .0,
@@ -346,7 +354,7 @@ async fn registration_requires_vault_and_derived_keys_and_admin_login_stays_plai
             Method::POST,
             "/relay/auth/register",
             None,
-            json!({"username":"plain","email":"plain@example.test","password":PASSWORD})
+            json!({"username":"plain","email":"plain@example.test","password":PASSWORD,"upgrade":true})
         )
         .await
         .0,
@@ -388,7 +396,7 @@ async fn registration_requires_vault_and_derived_keys_and_admin_login_stays_plai
             Method::POST,
             "/relay/auth/login",
             None,
-            json!({"login":"admin","password":PASSWORD}),
+            json!({"login":"admin","password":PASSWORD,"upgrade":true}),
         )
         .await;
     assert_eq!(s, StatusCode::OK);
@@ -400,7 +408,7 @@ async fn vault_cas_immutable_identity_limits_and_slot_authentication() {
     let f = Fixture::new("account-vault-rules").await;
     let token = f.register().await;
     let mut v = test_vault("b45aed3e-2f46-4b9c-93c1-e6f9d80c51e4", 2);
-    let body = |v: Value| json!({"vault":v,"expectedRevision":1});
+    let body = |v: Value| json!({"vault":v,"expectedRevision":1,"currentAuthKey":auth_key()});
     let (s, _) = f
         .json(
             Method::PUT,
@@ -603,13 +611,13 @@ async fn setup_and_recovery_mode_survive_second_factor_challenges() {
     f.setup().await;
     let codes = {
         let conn = f.state.store.conn.lock().await;
-        conn.execute("INSERT INTO relay_totp(user_id,secret,enabled,expires_at) VALUES ('legacy','unused',1,0)",[]).unwrap();
-        auth_factors::recovery_codes(&conn, "legacy").unwrap()
+        conn.execute("INSERT INTO relay_totp(user_id,secret,enabled,expires_at) VALUES ('a45aed3e-2f46-4b9c-93c1-e6f9d80c51e4','unused',1,0)",[]).unwrap();
+        auth_factors::recovery_codes(&conn, "a45aed3e-2f46-4b9c-93c1-e6f9d80c51e4").unwrap()
     };
     // Existing second-factor backup codes are intentionally separate from the vault recovery key.
     let response = f
         .req(Method::POST, "/relay/auth/recover", None)
-        .json(&json!({"login":"legacy","recoveryAuthKey":recovery_key()}))
+        .json(&json!({"login":"a45aed3e-2f46-4b9c-93c1-e6f9d80c51e4","recoveryAuthKey":recovery_key()}))
         .send()
         .await
         .unwrap();
@@ -719,6 +727,7 @@ async fn browser_registry_checks_vectors_labels_and_permanent_revocations() {
         .0,
         StatusCode::BAD_REQUEST
     );
+    let token = f.token(ACCOUNT_USER, FULL).await;
     for _ in 0..2 {
         assert_eq!(
             f.json(
@@ -981,7 +990,7 @@ async fn oauth_only_accounts_have_no_password_and_can_create_and_update_vault_wi
             Method::POST,
             "/relay/auth/login",
             None,
-            json!({"login":"oauth-only","password":PASSWORD})
+            json!({"login":"oauth-only","password":PASSWORD,"upgrade":true})
         )
         .await
         .0,
@@ -1225,20 +1234,23 @@ async fn schema_upgrade_preserves_existing_users_and_oauth_password_rows() {
     let conn = f.state.store.conn.lock().await;
     let before: String = conn
         .query_row(
-            "SELECT password_hash FROM relay_users WHERE id='legacy'",
+            "SELECT password_hash FROM relay_users WHERE id='a45aed3e-2f46-4b9c-93c1-e6f9d80c51e4'",
             [],
             |r| r.get(0),
         )
         .unwrap();
     // Simulate an OAuth account created before the new metadata table existed.
-    conn.execute("INSERT INTO relay_user_identities(id,user_id,provider,provider_subject,provider_email,created_at) VALUES ('old-oauth','legacy','google','old-subject','legacy@example.test','now')",[]).unwrap();
+    conn.execute("INSERT INTO relay_user_identities(id,user_id,provider,provider_subject,provider_email,created_at) VALUES ('old-oauth','a45aed3e-2f46-4b9c-93c1-e6f9d80c51e4','google','old-subject','legacy@example.test','now')",[]).unwrap();
     account::ensure_schema(&conn).unwrap();
     account::ensure_schema(&conn).unwrap();
-    assert!(account::oauth_only(&conn, "legacy"));
+    assert!(!account::oauth_only(
+        &conn,
+        "a45aed3e-2f46-4b9c-93c1-e6f9d80c51e4"
+    ));
     assert!(!account::oauth_only(&conn, "admin"));
     let after: String = conn
         .query_row(
-            "SELECT password_hash FROM relay_users WHERE id='legacy'",
+            "SELECT password_hash FROM relay_users WHERE id='a45aed3e-2f46-4b9c-93c1-e6f9d80c51e4'",
             [],
             |r| r.get(0),
         )
@@ -1257,12 +1269,12 @@ async fn legacy_setup_second_factor_preserves_setup_restriction() {
     let f = Fixture::new("account-legacy-factor").await;
     let codes = {
         let conn = f.state.store.conn.lock().await;
-        conn.execute("INSERT INTO relay_totp(user_id,secret,enabled,expires_at) VALUES ('legacy','unused',1,0)",[]).unwrap();
-        auth_factors::recovery_codes(&conn, "legacy").unwrap()
+        conn.execute("INSERT INTO relay_totp(user_id,secret,enabled,expires_at) VALUES ('a45aed3e-2f46-4b9c-93c1-e6f9d80c51e4','unused',1,0)",[]).unwrap();
+        auth_factors::recovery_codes(&conn, "a45aed3e-2f46-4b9c-93c1-e6f9d80c51e4").unwrap()
     };
     let response = f
         .req(Method::POST, "/relay/auth/login", None)
-        .json(&json!({"identifier":"legacy","password":PASSWORD}))
+        .json(&json!({"identifier":"a45aed3e-2f46-4b9c-93c1-e6f9d80c51e4","password":PASSWORD,"upgrade":true}))
         .send()
         .await
         .unwrap();
@@ -1383,7 +1395,7 @@ async fn account_state_is_present_in_session_login_register_recover_and_oauth_an
             Method::POST,
             "/relay/auth/login",
             None,
-            json!({"login":"legacy","password":PASSWORD}),
+            json!({"login":"a45aed3e-2f46-4b9c-93c1-e6f9d80c51e4","password":PASSWORD,"upgrade":true}),
         )
         .await;
     assert_eq!(s, StatusCode::OK);
@@ -1442,11 +1454,11 @@ async fn account_state_is_present_in_session_login_register_recover_and_oauth_an
     assert_eq!(v["account"], v["session"]["account"]);
     let conn = f.state.store.conn.lock().await;
     conn.execute(
-        "INSERT INTO relay_account_auth(user_id,oauth_only) VALUES ('legacy',1)",
+        "INSERT INTO relay_account_auth(user_id,oauth_only) VALUES ('a45aed3e-2f46-4b9c-93c1-e6f9d80c51e4',1)",
         [],
     )
     .unwrap();
-    let user = load_user_by_id(&conn, "legacy").unwrap();
+    let user = load_user_by_id(&conn, "a45aed3e-2f46-4b9c-93c1-e6f9d80c51e4").unwrap();
     let response =
         auth_api::login_response(&conn, &f.state, &user, &HeaderMap::new(), true, false).unwrap();
     let v: Value =
@@ -1460,9 +1472,11 @@ async fn account_state_is_present_in_session_login_register_recover_and_oauth_an
 #[tokio::test]
 async fn setup_sessions_allow_device_and_auth_routes_but_refuse_sharing_and_registry() {
     let f = Fixture::new("account-setup-routes").await;
-    let token = f.token("legacy", account::SETUP).await;
+    let token = f
+        .token("a45aed3e-2f46-4b9c-93c1-e6f9d80c51e4", account::SETUP)
+        .await;
     let conn = f.state.store.conn.lock().await;
-    let user = load_user_by_id(&conn, "legacy").unwrap();
+    let user = load_user_by_id(&conn, "a45aed3e-2f46-4b9c-93c1-e6f9d80c51e4").unwrap();
     for (method, path) in [
         (Method::GET, "/relay/auth/session"),
         (Method::POST, "/relay/auth/logout"),
@@ -1586,7 +1600,7 @@ async fn admin_reset_preserves_vault_replaces_login_once_and_limits_session_unti
         .json()
         .await
         .unwrap();
-    assert_eq!(kdf["mode"], "legacy");
+    assert_eq!(kdf["mode"], "account");
     let (s, v) = f
         .json(
             Method::POST,
@@ -1808,16 +1822,18 @@ async fn temporary_reset_password_requires_second_factor_and_preserves_recovery_
 #[tokio::test]
 async fn oauth_slot_updates_and_deletion_require_authentication_within_ten_minutes() {
     let f = Fixture::new("account-oauth-recent").await;
-    let token = f.token("legacy", account::SETUP).await;
+    let token = f
+        .token("a45aed3e-2f46-4b9c-93c1-e6f9d80c51e4", account::SETUP)
+        .await;
     {
         let conn = f.state.store.conn.lock().await;
         conn.execute(
-            "INSERT INTO relay_account_auth(user_id,oauth_only) VALUES ('legacy',1)",
+            "INSERT INTO relay_account_auth(user_id,oauth_only) VALUES ('a45aed3e-2f46-4b9c-93c1-e6f9d80c51e4',1)",
             [],
         )
         .unwrap();
     }
-    let mut vault = test_vault("legacy", 1);
+    let mut vault = test_vault("a45aed3e-2f46-4b9c-93c1-e6f9d80c51e4", 1);
     let create = json!({"vault":vault,"expectedRevision":0,"recoveryAuthKey":recovery_key()});
     let (s, v) = f
         .json(
@@ -1847,7 +1863,7 @@ async fn oauth_slot_updates_and_deletion_require_authentication_within_ten_minut
         )
         .unwrap();
     }
-    // A body-only edit remains allowed; encrypted slots have not changed.
+    // Every PUT needs recent OAuth proof, including body-only edits.
     vault["revision"] = json!(2);
     vault["body"]["iv"] = json!("AAAAAAAAAAAAAAAA");
     assert_eq!(
@@ -1859,8 +1875,31 @@ async fn oauth_slot_updates_and_deletion_require_authentication_within_ten_minut
         )
         .await
         .0,
+        StatusCode::FORBIDDEN
+    );
+    {
+        let conn = f.state.store.conn.lock().await;
+        auth_factors::mark_strong(&conn, &token).unwrap();
+    }
+    assert_eq!(
+        f.json(
+            Method::PUT,
+            "/relay/account/vault",
+            Some(&token),
+            json!({"vault":vault,"expectedRevision":1})
+        )
+        .await
+        .0,
         StatusCode::OK
     );
+    {
+        let conn = f.state.store.conn.lock().await;
+        conn.execute(
+            "UPDATE relay_auth_sessions SET strong_auth_at=?1",
+            [auth_factors::now() - 600_001],
+        )
+        .unwrap();
+    }
     vault["revision"] = json!(3);
     vault["slots"]["password"]["iv"] = json!("AAAAAAAAAAAAAAAA");
     let slot_request = json!({"vault":vault,"expectedRevision":2});
@@ -1956,7 +1995,7 @@ async fn vault_reauth_uses_auth_key_and_admin_legacy_passwords_remain_supported(
         let conn = f.state.store.conn.lock().await;
         assert!(auth_factors::recent(&conn, &token));
     }
-    for user in ["legacy", "admin"] {
+    for user in ["a45aed3e-2f46-4b9c-93c1-e6f9d80c51e4", "admin"] {
         let token = f.token(user, FULL).await;
         assert_eq!(
             f.json(
@@ -1970,14 +2009,14 @@ async fn vault_reauth_uses_auth_key_and_admin_legacy_passwords_remain_supported(
             StatusCode::OK
         );
     }
-    let oauth = f.token("legacy", FULL).await;
+    let oauth = f.token("a45aed3e-2f46-4b9c-93c1-e6f9d80c51e4", FULL).await;
     f.state
         .store
         .conn
         .lock()
         .await
         .execute(
-            "INSERT INTO relay_account_auth(user_id,oauth_only) VALUES ('legacy',1)",
+            "INSERT INTO relay_account_auth(user_id,oauth_only) VALUES ('a45aed3e-2f46-4b9c-93c1-e6f9d80c51e4',1)",
             [],
         )
         .unwrap();
@@ -1996,28 +2035,30 @@ async fn vault_reauth_uses_auth_key_and_admin_legacy_passwords_remain_supported(
 #[tokio::test]
 async fn oauth_recovery_session_can_rewrap_password_without_login_auth_key() {
     let f = Fixture::new("account-oauth-recovery").await;
-    let token = f.token("legacy", account::SETUP).await;
+    let token = f
+        .token("a45aed3e-2f46-4b9c-93c1-e6f9d80c51e4", account::SETUP)
+        .await;
     {
         let conn = f.state.store.conn.lock().await;
         conn.execute(
-            "INSERT INTO relay_account_auth(user_id,oauth_only) VALUES ('legacy',1)",
+            "INSERT INTO relay_account_auth(user_id,oauth_only) VALUES ('a45aed3e-2f46-4b9c-93c1-e6f9d80c51e4',1)",
             [],
         )
         .unwrap();
         auth_factors::mark_strong(&conn, &token).unwrap();
     }
-    assert_eq!(f.json(Method::PUT,"/relay/account/vault",Some(&token),json!({"vault":test_vault("legacy",1),"expectedRevision":0,"recoveryAuthKey":recovery_key()})).await.0,StatusCode::OK);
+    assert_eq!(f.json(Method::PUT,"/relay/account/vault",Some(&token),json!({"vault":test_vault("a45aed3e-2f46-4b9c-93c1-e6f9d80c51e4",1),"expectedRevision":0,"recoveryAuthKey":recovery_key()})).await.0,StatusCode::OK);
     let (s, v) = f
         .json(
             Method::POST,
             "/relay/auth/recover",
             None,
-            json!({"login":"legacy","recoveryAuthKey":recovery_key()}),
+            json!({"login":"a45aed3e-2f46-4b9c-93c1-e6f9d80c51e4","recoveryAuthKey":recovery_key()}),
         )
         .await;
     assert_eq!(s, StatusCode::OK);
     let no_factor = v["token"].as_str().unwrap();
-    let mut candidate = test_vault("legacy", 2);
+    let mut candidate = test_vault("a45aed3e-2f46-4b9c-93c1-e6f9d80c51e4", 2);
     candidate["slots"]["password"]["iv"] = json!("AAAAAAAAAAAAAAAA");
     assert_eq!(
         f.json(
@@ -2032,12 +2073,12 @@ async fn oauth_recovery_session_can_rewrap_password_without_login_auth_key() {
     );
     let codes = {
         let conn = f.state.store.conn.lock().await;
-        conn.execute("INSERT INTO relay_totp(user_id,secret,enabled,expires_at) VALUES ('legacy','unused',1,0)",[]).unwrap();
-        auth_factors::recovery_codes(&conn, "legacy").unwrap()
+        conn.execute("INSERT INTO relay_totp(user_id,secret,enabled,expires_at) VALUES ('a45aed3e-2f46-4b9c-93c1-e6f9d80c51e4','unused',1,0)",[]).unwrap();
+        auth_factors::recovery_codes(&conn, "a45aed3e-2f46-4b9c-93c1-e6f9d80c51e4").unwrap()
     };
     let response = f
         .req(Method::POST, "/relay/auth/recover", None)
-        .json(&json!({"login":"legacy","recoveryAuthKey":recovery_key()}))
+        .json(&json!({"login":"a45aed3e-2f46-4b9c-93c1-e6f9d80c51e4","recoveryAuthKey":recovery_key()}))
         .send()
         .await
         .unwrap();
@@ -2066,7 +2107,7 @@ async fn oauth_recovery_session_can_rewrap_password_without_login_auth_key() {
     assert_eq!(v["account"]["mode"], "oauth");
     assert_eq!(v["account"]["recovery"], true);
     let recovery = v["token"].as_str().unwrap();
-    let mut vault = test_vault("legacy", 2);
+    let mut vault = test_vault("a45aed3e-2f46-4b9c-93c1-e6f9d80c51e4", 2);
     vault["slots"]["password"]["iv"] = json!("AAAAAAAAAAAAAAAA");
     assert_eq!(
         f.json(
@@ -2094,7 +2135,7 @@ async fn body_only_vault_updates_do_not_complete_pending_admin_reset() {
             Method::PUT,
             "/relay/account/vault",
             Some(&token),
-            json!({"vault":test_vault(ACCOUNT_USER,2),"expectedRevision":1})
+            json!({"vault":test_vault(ACCOUNT_USER,2),"expectedRevision":1,"recoveryAuthKey":recovery_key()})
         )
         .await
         .0,
@@ -2102,4 +2143,773 @@ async fn body_only_vault_updates_do_not_complete_pending_admin_reset() {
     );
     let conn = f.state.store.conn.lock().await;
     assert!(account::reset_available(&conn, ACCOUNT_USER));
+}
+
+#[tokio::test]
+async fn security_revision_kdf_never_discloses_account_class_or_reset_state() {
+    let f = Fixture::new("security-kdf").await;
+    for login in ["a45aed3e-2f46-4b9c-93c1-e6f9d80c51e4", "admin", "missing"] {
+        let v: Value = f
+            .req(Method::GET, &format!("/relay/auth/kdf?login={login}"), None)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(v["mode"], "account");
+    }
+    f.register().await;
+    admin_reset(&f).await;
+    assert_eq!(
+        f.json(
+            Method::POST,
+            "/relay/auth/login",
+            None,
+            json!({"login":"vector-user","password":PASSWORD,"upgrade":true})
+        )
+        .await
+        .0,
+        StatusCode::UNAUTHORIZED
+    );
+    let v: Value = f
+        .req(Method::GET, "/relay/auth/kdf?login=vector-user", None)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(v["mode"], "account");
+    assert_eq!(
+        v["kdf"],
+        test_vault("b45aed3e-2f46-4b9c-93c1-e6f9d80c51e4", 1)["kdf"]
+    );
+}
+
+#[tokio::test]
+async fn security_revision_plaintext_legacy_login_requires_explicit_upgrade() {
+    let f = Fixture::new("security-upgrade").await;
+    assert_eq!(
+        f.json(
+            Method::POST,
+            "/relay/auth/login",
+            None,
+            json!({"login":"a45aed3e-2f46-4b9c-93c1-e6f9d80c51e4","password":PASSWORD})
+        )
+        .await
+        .0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        f.json(
+            Method::POST,
+            "/relay/auth/login",
+            None,
+            json!({"login":"a45aed3e-2f46-4b9c-93c1-e6f9d80c51e4","password":PASSWORD,"upgrade":true})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    f.setup().await;
+    assert_eq!(
+        f.json(
+            Method::POST,
+            "/relay/auth/login",
+            None,
+            json!({"login":"a45aed3e-2f46-4b9c-93c1-e6f9d80c51e4","password":PASSWORD,"upgrade":true})
+        )
+        .await
+        .0,
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+#[tokio::test]
+async fn security_revision_first_vault_erases_legacy_password_hash() {
+    let f = Fixture::new("security-password-clear").await;
+    f.setup().await;
+    let conn = f.state.store.conn.lock().await;
+    let (salt, hash): (String, String) = conn
+        .query_row(
+            "SELECT password_salt,password_hash FROM relay_users WHERE id='a45aed3e-2f46-4b9c-93c1-e6f9d80c51e4'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((salt, hash), (String::new(), String::new()));
+}
+
+#[tokio::test]
+async fn security_revision_anonymous_registration_cannot_attach_to_oauth_pending_request() {
+    let f = Fixture::new("security-oauth-pending").await;
+    {
+        let conn = f.state.store.conn.lock().await;
+        conn.execute("INSERT OR REPLACE INTO relay_settings(key,value) VALUES ('registrationApprovalRequired','true')",[]).unwrap();
+        insert_pending_registration(
+            &conn,
+            "victim@example.test",
+            "victim",
+            "",
+            "",
+            "google",
+            Some("synthetic-subject"),
+            None,
+        )
+        .unwrap();
+    }
+    let user = Uuid::new_v4().to_string();
+    let (status,value)=f.json(Method::POST,"/relay/auth/register",None,json!({"userId":user,"email":"victim@example.test","username":"attacker","authKey":auth_key(),"recoveryAuthKey":recovery_key(),"vault":test_vault(&user,1)})).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(value["request"].is_null());
+    let conn = f.state.store.conn.lock().await;
+    assert_eq!(
+        conn.query_row(
+            "SELECT COUNT(*) FROM relay_pending_account_vaults",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+}
+
+#[tokio::test]
+async fn security_revision_body_only_vault_write_requires_current_authentication() {
+    let f = Fixture::new("security-body-write").await;
+    let token = f.register().await;
+    let v = test_vault("b45aed3e-2f46-4b9c-93c1-e6f9d80c51e4", 2);
+    assert_eq!(
+        f.json(
+            Method::PUT,
+            "/relay/account/vault",
+            Some(&token),
+            json!({"vault":v,"expectedRevision":1})
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+}
+
+#[tokio::test]
+async fn security_revision_query_token_cannot_bypass_cookie_session_restrictions() {
+    let f = Fixture::new("security-session-resolution").await;
+    let token = f
+        .token("a45aed3e-2f46-4b9c-93c1-e6f9d80c51e4", account::SETUP)
+        .await;
+    let response = f
+        .req(Method::GET, "/relay/account/security?token=junk", None)
+        .header(
+            header::COOKIE,
+            format!("remote_codex_relay_session={token}"),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_ne!(response.status(), StatusCode::OK);
+    let response = f
+        .req(Method::GET, "/relay/account/security", None)
+        .header("x-pockymoe-resolved-session", "junk")
+        .header(
+            header::COOKIE,
+            format!("remote_codex_relay_session={token}"),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn security_revision_browser_revocation_ends_bound_relay_sessions() {
+    let f = Fixture::new("security-browser-sessions").await;
+    let token = f.register().await;
+    let user = "b45aed3e-2f46-4b9c-93c1-e6f9d80c51e4";
+    let other = f.token(user, FULL).await;
+    assert_eq!(f.json(Method::POST,"/relay/account/browsers",Some(&token),json!({"certificate":vectors()["browserCertificate"]["certificate"],"label":"synthetic"})).await.0,StatusCode::OK);
+    assert_eq!(
+        f.json(
+            Method::POST,
+            "/relay/account/revocations",
+            Some(&other),
+            json!({"revocation":vectors()["revocations"]["browser"]})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let value: Value = f
+        .req(Method::GET, "/relay/auth/session", Some(&token))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(value["authenticated"], false);
+    let value: Value = f
+        .req(Method::GET, "/relay/auth/session", Some(&other))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(value["authenticated"], true);
+}
+
+#[tokio::test]
+async fn security_revision_revocations_are_filtered_to_current_account_key() {
+    let f = Fixture::new("security-revocation-filter").await;
+    let token = f.register().await;
+    {
+        let conn = f.state.store.conn.lock().await;
+        conn.execute("INSERT INTO relay_account_revocations VALUES (?1,'old-key','browser','old-browser','{}')",["b45aed3e-2f46-4b9c-93c1-e6f9d80c51e4"]).unwrap();
+    }
+    let value: Value = f
+        .req(Method::GET, "/relay/account/browsers", Some(&token))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(value["revocations"], json!([]));
+}
+
+#[tokio::test]
+async fn security_revision_device_credentials_require_recent_authentication() {
+    let f = Fixture::new("security-device-tokens").await;
+    let token = f
+        .token("a45aed3e-2f46-4b9c-93c1-e6f9d80c51e4", account::SETUP)
+        .await;
+    for path in [
+        "/relay/devices/unbound/setup-token",
+        "/relay/devices/unbound/bootstrap",
+    ] {
+        let (status, value) = f.json(Method::POST, path, Some(&token), json!({})).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(value["code"], "reauthentication_required");
+    }
+    assert_eq!(
+        f.json(
+            Method::POST,
+            "/relay/devices",
+            Some(&token),
+            json!({"name":"synthetic"})
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    {
+        let conn = f.state.store.conn.lock().await;
+        auth_factors::mark_strong(&conn, &token).unwrap();
+    }
+    for path in [
+        "/relay/devices/unbound/setup-token",
+        "/relay/devices/unbound/bootstrap",
+    ] {
+        assert_eq!(
+            f.json(Method::POST, path, Some(&token), json!({})).await.0,
+            StatusCode::OK
+        );
+    }
+    assert_eq!(
+        f.json(
+            Method::POST,
+            "/relay/devices",
+            Some(&token),
+            json!({"name":"synthetic"})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn security_revision_registration_rejects_noncanonical_uuid() {
+    let f = Fixture::new("security-canonical-uuid").await;
+    let user = "B45AED3E-2F46-4B9C-93C1-E6F9D80C51E4";
+    assert_eq!(f.json(Method::POST,"/relay/auth/register",None,json!({"userId":user,"email":"upper@example.test","username":"upper","authKey":auth_key(),"recoveryAuthKey":recovery_key(),"vault":test_vault(user,1)})).await.0,StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn security_revision_previous_vault_is_authenticated_retained_and_restorable() {
+    let f = Fixture::new("security-vault-previous").await;
+    let token = f.register().await;
+    assert_eq!(
+        f.req(Method::GET, "/relay/account/vault/previous", Some(&token))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    let mut next = test_vault(ACCOUNT_USER, 2);
+    next["body"]["iv"] = json!("AAAAAAAAAAAAAAAA");
+    assert_eq!(
+        f.json(
+            Method::PUT,
+            "/relay/account/vault",
+            Some(&token),
+            json!({"vault":next,"expectedRevision":1,"currentAuthKey":auth_key()})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        f.req(Method::GET, "/relay/account/vault/previous", None)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    let mut previous: Value = f
+        .req(Method::GET, "/relay/account/vault/previous", Some(&token))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(previous, test_vault(ACCOUNT_USER, 1));
+    previous["revision"] = json!(3); // Real browsers re-encrypt using next-revision AAD.
+    assert_eq!(
+        f.json(
+            Method::PUT,
+            "/relay/account/vault",
+            Some(&token),
+            json!({"vault":previous,"expectedRevision":2,"currentAuthKey":auth_key()})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let previous: Value = f
+        .req(Method::GET, "/relay/account/vault/previous", Some(&token))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(previous, next);
+}
+
+#[tokio::test]
+async fn security_revision_recovery_proof_can_update_vault_and_recover_interrupted_start_over() {
+    let f = Fixture::new("security-start-over").await;
+    let token = f.register().await;
+    let mut v = test_vault(ACCOUNT_USER, 2);
+    v["slots"]["password"]["iv"] = json!("AAAAAAAAAAAAAAAA");
+    let next_key = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([6; 32]);
+    assert_eq!(f.json(Method::PUT,"/relay/account/vault",Some(&token),json!({"vault":v,"expectedRevision":1,"authKey":next_key,"recoveryAuthKey":recovery_key()})).await.0,StatusCode::OK);
+    let (s, value) = f
+        .json(
+            Method::POST,
+            "/relay/auth/recover",
+            None,
+            json!({"login":"vector-user","recoveryAuthKey":recovery_key()}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let recovery = value["token"].as_str().unwrap();
+    assert_eq!(
+        f.json(
+            Method::DELETE,
+            "/relay/account/vault",
+            Some(recovery),
+            json!({})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let (s, value) = f
+        .json(
+            Method::POST,
+            "/relay/auth/recover",
+            None,
+            json!({"login":"vector-user","recoveryAuthKey":recovery_key()}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(value["account"]["setupRequired"], true);
+    let setup = value["token"].as_str().unwrap();
+    assert_eq!(f.json(Method::PUT,"/relay/account/vault",Some(setup),json!({"vault":test_vault(ACCOUNT_USER,1),"expectedRevision":0,"authKey":auth_key(),"recoveryAuthKey":recovery_key()})).await.0,StatusCode::OK);
+}
+
+#[tokio::test]
+async fn security_revision_browser_cap_keeps_idempotent_registration_working() {
+    let f = Fixture::new("security-browser-cap").await;
+    let token = f.register().await;
+    {
+        let conn = f.state.store.conn.lock().await;
+        for n in 0..32 {
+            conn.execute(
+                "INSERT INTO relay_account_browsers VALUES (?1,?2,'{}','synthetic',0,0)",
+                params![ACCOUNT_USER, format!("synthetic-{n}")],
+            )
+            .unwrap();
+        }
+    }
+    let body =
+        json!({"certificate":vectors()["browserCertificate"]["certificate"],"label":"synthetic"});
+    let (s, v) = f
+        .json(
+            Method::POST,
+            "/relay/account/browsers",
+            Some(&token),
+            body.clone(),
+        )
+        .await;
+    assert_eq!(s, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(v["code"], "browser_limit");
+    {
+        let conn = f.state.store.conn.lock().await;
+        conn.execute(
+            "DELETE FROM relay_account_browsers WHERE browser_id='synthetic-0'",
+            [],
+        )
+        .unwrap();
+    }
+    for _ in 0..2 {
+        assert_eq!(
+            f.json(
+                Method::POST,
+                "/relay/account/browsers",
+                Some(&token),
+                body.clone()
+            )
+            .await
+            .0,
+            StatusCode::OK
+        );
+    }
+}
+
+#[tokio::test]
+async fn security_revision_revocation_cap_retains_permanent_tombstones_and_idempotence() {
+    let f = Fixture::new("security-revocation-cap").await;
+    let token = f.register().await;
+    {
+        let conn = f.state.store.conn.lock().await;
+        let tx = conn.unchecked_transaction().unwrap();
+        for n in 0..4096 {
+            tx.execute(
+                "INSERT INTO relay_account_revocations VALUES (?1,'old-key','browser',?2,'{}')",
+                params![ACCOUNT_USER, format!("synthetic-{n}")],
+            )
+            .unwrap();
+        }
+        tx.commit().unwrap();
+    }
+    let body = json!({"revocation":vectors()["revocations"]["browser"]});
+    let (s, v) = f
+        .json(
+            Method::POST,
+            "/relay/account/revocations",
+            Some(&token),
+            body.clone(),
+        )
+        .await;
+    assert_eq!(s, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(v["code"], "revocation_limit");
+    {
+        let conn = f.state.store.conn.lock().await;
+        conn.execute(
+            "DELETE FROM relay_account_revocations WHERE subject_id='synthetic-0'",
+            [],
+        )
+        .unwrap();
+    }
+    for _ in 0..2 {
+        assert_eq!(
+            f.json(
+                Method::POST,
+                "/relay/account/revocations",
+                Some(&token),
+                body.clone()
+            )
+            .await
+            .0,
+            StatusCode::OK
+        );
+    }
+    let conn = f.state.store.conn.lock().await;
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM relay_account_revocations", [], |r| {
+            r.get::<_, i64>(0)
+        })
+        .unwrap(),
+        4096
+    );
+}
+
+#[tokio::test]
+async fn security_revision_old_sha256_login_is_upgraded_and_old_sessions_are_restricted() {
+    let f = Fixture::new("security-old-sessions").await;
+    let user = "a45aed3e-2f46-4b9c-93c1-e6f9d80c51e4";
+    {
+        let conn = f.state.store.conn.lock().await;
+        conn.execute(
+            "UPDATE relay_users SET password_salt=?1,password_hash=?2 WHERE id=?3",
+            params![LEGACY_SHA256_SALT, legacy_sha256(PASSWORD), user],
+        )
+        .unwrap();
+    }
+    let old = f.token(user, FULL).await;
+    assert_eq!(
+        f.req(Method::GET, "/relay/account/security", Some(&old))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        f.json(
+            Method::POST,
+            "/relay/auth/login",
+            None,
+            json!({"login":user,"password":PASSWORD,"upgrade":true})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let conn = f.state.store.conn.lock().await;
+    let (salt, hash): (String, String) = conn
+        .query_row(
+            "SELECT password_salt,password_hash FROM relay_users WHERE id=?1",
+            [user],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_ne!(salt, LEGACY_SHA256_SALT);
+    assert!(verify_password(PASSWORD, &salt, &hash));
+}
+
+#[tokio::test]
+async fn security_revision_combined_oauth_identity_keeps_password_login() {
+    let f = Fixture::new("security-combined-oauth").await;
+    let user = "a45aed3e-2f46-4b9c-93c1-e6f9d80c51e4";
+    {
+        let conn = f.state.store.conn.lock().await;
+        conn.execute("INSERT INTO relay_user_identities VALUES ('combined',?1,'google','synthetic','legacy@example.test','now')",[user]).unwrap();
+    }
+    assert_eq!(
+        f.json(
+            Method::POST,
+            "/relay/auth/login",
+            None,
+            json!({"login":user,"password":PASSWORD,"upgrade":true})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    f.setup().await;
+    assert_eq!(
+        f.json(
+            Method::POST,
+            "/relay/auth/login",
+            None,
+            json!({"login":user,"authKey":auth_key()})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn security_revision_first_legacy_vault_requires_recent_upgrade_authentication() {
+    let f = Fixture::new("security-setup-recent").await;
+    let user = "a45aed3e-2f46-4b9c-93c1-e6f9d80c51e4";
+    let token = f.token(user, account::SETUP).await;
+    let body = json!({"vault":test_vault(user,1),"expectedRevision":0,"authKey":auth_key(),"recoveryAuthKey":recovery_key()});
+    let (s, v) = f
+        .json(Method::PUT, "/relay/account/vault", Some(&token), body)
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    assert_eq!(v["code"], "reauthentication_required");
+}
+
+#[tokio::test]
+async fn security_revision_oauth_body_only_put_requires_recent_authentication() {
+    let f = Fixture::new("security-oauth-body").await;
+    let token = f.register().await;
+    {
+        let conn = f.state.store.conn.lock().await;
+        conn.execute("UPDATE relay_account_auth SET oauth_only=1,auth_hash=NULL,auth_salt=NULL WHERE user_id=?1",[ACCOUNT_USER]).unwrap();
+        conn.execute("UPDATE relay_auth_sessions SET strong_auth_at=NULL", [])
+            .unwrap();
+    }
+    let (s, v) = f
+        .json(
+            Method::PUT,
+            "/relay/account/vault",
+            Some(&token),
+            json!({"vault":test_vault(ACCOUNT_USER,2),"expectedRevision":1}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    assert_eq!(v["code"], "reauthentication_required");
+}
+
+#[tokio::test]
+async fn security_revision_anonymous_scrypt_runs_without_holding_database_lock() {
+    let f = Fixture::new("security-password-lock").await;
+    let auth = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([77; 32]);
+    let recovery = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([78; 32]);
+    let probe = |secret: String| {
+        let (result, rx) = tokio::sync::oneshot::channel();
+        PASSWORD_LOCK_PROBES
+            .lock()
+            .unwrap()
+            .push(PasswordLockProbe {
+                secret,
+                connection: Arc::downgrade(&f.state.store.conn),
+                result,
+            });
+        rx
+    };
+    let registration_probe = probe(auth.clone());
+    let mut body = json!({"userId":ACCOUNT_USER,"username":"vector-user","email":"vector@example.test","vault":test_vault(ACCOUNT_USER,1)});
+    body["authKey"] = json!(auth);
+    body["recoveryAuthKey"] = json!(recovery);
+    assert_eq!(
+        f.json(Method::POST, "/relay/auth/register", None, body)
+            .await
+            .0,
+        StatusCode::OK
+    );
+    assert!(
+        registration_probe.await.unwrap(),
+        "registration scrypt held the database lock"
+    );
+    let recovery_probe = probe(recovery.clone());
+    assert_eq!(
+        f.json(
+            Method::POST,
+            "/relay/auth/recover",
+            None,
+            json!({"login":"vector-user","recoveryAuthKey":recovery})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert!(
+        recovery_probe.await.unwrap(),
+        "recovery scrypt held the database lock"
+    );
+}
+
+#[tokio::test]
+async fn security_revision_migration_does_not_trust_preupgrade_sessions() {
+    let f = Fixture::new("security-session-migration").await;
+    let token = f.register().await;
+    {
+        let conn = f.state.store.conn.lock().await;
+        conn.execute(
+            "ALTER TABLE relay_auth_sessions DROP COLUMN account_mode",
+            [],
+        )
+        .unwrap();
+        account::ensure_schema(&conn).unwrap();
+        assert_eq!(account::session_mode(&conn, &token), account::SETUP);
+    }
+    assert_eq!(
+        f.req(Method::GET, "/relay/account/browsers", Some(&token))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        f.json(
+            Method::POST,
+            "/relay/account/security/reauth",
+            Some(&token),
+            json!({"authKey":auth_key()})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        f.req(Method::GET, "/relay/account/browsers", Some(&token))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn security_revision_bound_session_cannot_change_browser_to_evade_revocation() {
+    let f = Fixture::new("security-browser-rebinding").await;
+    let token = f.register().await;
+    let cert = vectors()["browserCertificate"]["certificate"].clone();
+    assert_eq!(
+        f.json(
+            Method::POST,
+            "/relay/account/browsers",
+            Some(&token),
+            json!({"certificate":cert,"label":"synthetic"})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let mut second = cert.clone();
+    second["publicKey"] = vectors()["otherAccount"]["accountPublicKey"].clone();
+    let der = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(second["publicKey"].as_str().unwrap())
+        .unwrap();
+    second["browserId"] =
+        json!(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(Sha256::digest(der)));
+    let account_key = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(
+            vectors()["account"]["accountPrivateKeyPkcs8"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+    let key = openssl::pkey::PKey::private_key_from_pkcs8(&account_key).unwrap();
+    let mut signer =
+        openssl::sign::Signer::new(openssl::hash::MessageDigest::sha256(), &key).unwrap();
+    let input = format!(
+        "pockymoe-acct-browser-v1\n{}\n{}\n{}\n{}",
+        second["accountKeyId"].as_str().unwrap(),
+        second["browserId"].as_str().unwrap(),
+        second["publicKey"].as_str().unwrap(),
+        second["createdAt"].as_u64().unwrap()
+    );
+    signer.update(input.as_bytes()).unwrap();
+    let sig = openssl::ecdsa::EcdsaSig::from_der(&signer.sign_to_vec().unwrap()).unwrap();
+    let mut raw = sig.r().to_vec_padded(32).unwrap();
+    raw.extend(sig.s().to_vec_padded(32).unwrap());
+    second["signature"] = json!(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw));
+    assert_eq!(
+        f.json(
+            Method::POST,
+            "/relay/account/browsers",
+            Some(&token),
+            json!({"certificate":second,"label":"other"})
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
 }

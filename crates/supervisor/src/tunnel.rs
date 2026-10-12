@@ -65,6 +65,7 @@ pub async fn run_relay_tunnel(state: Arc<Supervisor>) -> Result<()> {
         .ok_or_else(|| anyhow!("POCKYMOE_RELAY_AGENT_TOKEN is required"))?;
     let tunnel_url = relay_tunnel_url(server_url)?;
     let mut reconnect_delay = RELAY_RECONNECT_INITIAL_DELAY;
+    let mut mismatch_delay = RELAY_RECONNECT_INITIAL_DELAY;
 
     loop {
         let mut handshake = tunnel_url.as_str().into_client_request()?;
@@ -85,7 +86,14 @@ pub async fn run_relay_tunnel(state: Arc<Supervisor>) -> Result<()> {
                 reconnect_delay = RELAY_RECONNECT_INITIAL_DELAY;
                 if let Err(error) = run_connected_tunnel(state.clone(), socket).await {
                     tracing::warn!(%error, "relay tunnel connection ended");
+                    if error.is::<crate::owner_trust::DeviceIdMismatch>() {
+                        crate::owner_trust::mismatch_retry(&state, mismatch_delay)?;
+                        tokio::time::sleep(mismatch_delay).await;
+                        mismatch_delay = (mismatch_delay * 2).min(Duration::from_secs(300));
+                        continue;
+                    }
                 }
+                mismatch_delay = RELAY_RECONNECT_INITIAL_DELAY;
                 // Reconnect an established tunnel immediately. Only failed
                 // connection attempts back off; the runtime remains alive.
                 continue;
@@ -296,7 +304,8 @@ fn handle_relay_message(
         Some("relay.revocations") => {
             if let Ok(entries) = serde_json::from_value::<crate::owner_trust::Revocations>(message)
             {
-                if crate::owner_trust::apply_revocations(&state, &entries.revocations).is_ok() {
+                if crate::owner_trust::apply_revocation_values(&state, &entries.revocations).is_ok()
+                {
                     clients.retain(|id, client| {
                         if channel_authorized(
                             &state,
@@ -684,15 +693,16 @@ pub(crate) async fn forward_local(
                 .unwrap_or("");
             let challenge = url::form_urlencoded::parse(query.as_bytes())
                 .find(|(key, _)| key == "challenge")
-                .map(|(_, v)| v.into_owned())
-                .unwrap_or_default();
-            if challenge.len() > 128
-                || !challenge
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || c == '-')
-            {
+                .map(|(_, v)| v.into_owned());
+            if challenge.as_ref().is_some_and(|value| {
+                !(8..=128).contains(&value.len())
+                    || !value
+                        .bytes()
+                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_'))
+            }) {
                 return relay_error_response(400, "Invalid key challenge");
             }
+            let challenge = challenge.unwrap_or_default();
             return match transport.descriptor(&challenge) {
                 Ok(mut value) => {
                     value["trust"] = crate::owner_trust::hint(state)
@@ -1137,7 +1147,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn peer_forwarding_requires_identity_opt_in_and_ciphertext() {
         let (_dir, state) = state_with_relay_url("http://127.0.0.1:1");
-        let key = json!({"method":"GET","path":"/api/peer/transport/key?challenge=fresh"});
+        let key = json!({"method":"GET","path":"/api/peer/transport/key?challenge=fresh_nonce"});
         assert_eq!(
             forward_local(&state, key.clone(), None).await["statusCode"],
             403
@@ -1152,7 +1162,7 @@ pub(crate) mod tests {
         let response = forward_local(&state, key, Some(peer())).await;
         assert_eq!(response["statusCode"], 200);
         let descriptor: Value = serde_json::from_str(response["body"].as_str().unwrap()).unwrap();
-        assert_eq!(descriptor["challenge"], "fresh");
+        assert_eq!(descriptor["challenge"], "fresh_nonce");
         for path in [
             "/api/cli",
             "/api/config/peer-access",
@@ -1678,7 +1688,7 @@ mod owner_channel_tests {
             state.clone(),
             &mut clients,
             &outgoing,
-            json!({"type":"relay.revocations","revocations":[crate::owner_trust::tests::browser_revocation(&owner)]}),
+            json!({"type":"relay.revocations","revocations":[{"malformed":true},crate::owner_trust::tests::browser_revocation(&owner)]}),
         );
         assert!(!channel.alive());
         assert!(!clients.contains_key("signed"));

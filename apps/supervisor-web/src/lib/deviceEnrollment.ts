@@ -1,28 +1,39 @@
 import { translate } from '@pockymoe/thread-ui/i18n';
 import {
   currentAccount,
+  boundDeviceIdentities,
+  confirmBoundDeviceIdentity,
   requireUnlock,
   signingInput,
   verifyDeviceCertificate,
   type AccountKeyInfo,
   type DeviceCertificate,
   type UnlockedAccount,
+  type Revocation,
 } from './accountVault';
+import { accountStore } from './accountStore';
+import { sharingTrustStore } from './sharingTrustStore';
 import { deviceTrustRequest } from './deviceTrust';
 import * as transport from './relayTransportCrypto';
 import { relayUrl } from './relayOrigin';
+import {
+  ENROLLMENT_CHANGED_EVENT,
+  ENROLLMENT_LIFETIME_MS,
+  deletePendingEnrollment,
+  listPendingEnrollments,
+  pendingIsCurrent,
+  savePending,
+  type PendingEnrollment,
+} from './pendingEnrollmentStore';
 
-export const ENROLLMENT_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000;
-export const ENROLLMENT_CHANGED_EVENT = 'pockymoe-enrollment-changed';
-export interface PendingEnrollment {
-  deviceId: string;
-  userId: string;
-  enrollSecret: string;
-  accountKeyId: string;
-  createdAt: number;
-  /** Persisted before installation, so a consumed secret does not strand a retry. */
-  certificate?: DeviceCertificate;
-}
+export {
+  ENROLLMENT_CHANGED_EVENT,
+  ENROLLMENT_LIFETIME_MS,
+  deletePendingEnrollment,
+  listPendingEnrollments,
+  type PendingEnrollment,
+};
+
 export interface EnrollmentDescriptor {
   identityKey: string;
   certificate?: DeviceCertificate | null;
@@ -43,35 +54,6 @@ const decode = (text: string) =>
   Uint8Array.from(atob(text.replace(/-/g, '+').replace(/_/g, '/')), (c) =>
     c.charCodeAt(0),
   );
-const changed = () => {
-  if (typeof window !== 'undefined')
-    window.dispatchEvent(new Event(ENROLLMENT_CHANGED_EVENT));
-};
-async function store<T>(
-  action: (store: IDBObjectStore, done: (value: T) => void) => void,
-): Promise<T> {
-  const db = await new Promise<IDBDatabase>((resolve, reject) => {
-    const open = indexedDB.open('pockymoe-device-enrollments-v2', 1);
-    open.onupgradeneeded = () =>
-      open.result.createObjectStore('pending', { keyPath: 'deviceId' });
-    open.onerror = () => reject(open.error);
-    open.onsuccess = () => resolve(open.result);
-  });
-  try {
-    return await new Promise<T>((resolve, reject) => {
-      const tx = db.transaction('pending', 'readwrite');
-      let result: T;
-      action(tx.objectStore('pending'), (value) => {
-        result = value;
-      });
-      tx.oncomplete = () => resolve(result);
-      tx.onerror = () => reject(tx.error);
-      tx.onabort = () => reject(tx.error);
-    });
-  } finally {
-    db.close();
-  }
-}
 export async function createPendingEnrollment(
   deviceId: string,
   account: AccountKeyInfo,
@@ -87,50 +69,19 @@ export async function createPendingEnrollment(
   await savePending(pending);
   return pending;
 }
-async function savePending(pending: PendingEnrollment) {
-  await store<void>((s, done) => {
-    s.put(pending);
-    done(undefined);
-  });
-  changed();
-}
-export async function deletePendingEnrollment(deviceId: string) {
-  await store<void>((s, done) => {
-    s.delete(deviceId);
-    done(undefined);
-  });
-  changed();
-}
-export async function listPendingEnrollments(
-  account?: AccountKeyInfo | null,
-  now = Date.now(),
+export async function prepareDeviceEnrollment(
+  deviceId: string,
+  options?: { fresh?: boolean },
 ) {
-  return store<PendingEnrollment[]>((s, done) => {
-    const request = s.getAll();
-    request.onsuccess = () => {
-      const live: PendingEnrollment[] = [];
-      for (const pending of request.result as PendingEnrollment[]) {
-        if (now - pending.createdAt >= ENROLLMENT_LIFETIME_MS)
-          s.delete(pending.deviceId);
-        else if (
-          !account ||
-          (pending.userId === account.userId &&
-            pending.accountKeyId === account.accountKeyId)
-        )
-          live.push(pending);
-      }
-      done(live);
-    };
-  });
-}
-export async function prepareDeviceEnrollment(deviceId: string) {
   const account = await requireUnlock('bind-device');
   const existing = (await listPendingEnrollments(account)).find(
     (p) => p.deviceId === deviceId,
   );
   return {
     accountPublicKey: account.accountPublicKey,
-    ...(existing ?? (await createPendingEnrollment(deviceId, account))),
+    ...(!options?.fresh && existing
+      ? existing
+      : await createPendingEnrollment(deviceId, account)),
   };
 }
 
@@ -179,14 +130,31 @@ export async function verifyEnrollmentMac(
   }
 }
 const active = new Map<string, Promise<boolean>>();
+export interface EnrollmentIdentityReplacement {
+  previousIdentityKey: string;
+  identityKey: string;
+}
+export class EnrollmentIdentityChangeError
+  extends Error
+  implements EnrollmentIdentityReplacement
+{
+  constructor(
+    public deviceId: string,
+    public previousIdentityKey: string,
+    public identityKey: string,
+  ) {
+    super(translate('devices.confirmIdentityReplacement'));
+  }
+}
 export function completeDeviceEnrollment(
   pending: PendingEnrollment,
   online: boolean,
+  confirmedReplacement?: EnrollmentIdentityReplacement,
 ): Promise<boolean> {
   if (!online) return Promise.resolve(false);
   const running = active.get(pending.deviceId);
   if (running) return running;
-  const task = complete(pending);
+  const task = complete(pending, confirmedReplacement);
   active.set(pending.deviceId, task);
   void task.then(
     () => active.delete(pending.deviceId),
@@ -194,9 +162,12 @@ export function completeDeviceEnrollment(
   );
   return task;
 }
-async function complete(pending: PendingEnrollment) {
+async function complete(
+  pending: PendingEnrollment,
+  confirmedReplacement?: EnrollmentIdentityReplacement,
+) {
   if (Date.now() - pending.createdAt >= ENROLLMENT_LIFETIME_MS) {
-    await deletePendingEnrollment(pending.deviceId);
+    await deletePendingEnrollment(pending.deviceId, pending);
     return false;
   }
   const account = await currentAccount();
@@ -206,7 +177,43 @@ async function complete(pending: PendingEnrollment) {
     account.userId !== pending.userId
   )
     return false;
+  const revoked =
+    (await accountStore<Revocation[]>(`revocations:${account.userId}`)) ?? [];
+  if (
+    revoked.some(
+      (r) =>
+        r.accountKeyId === account.accountKeyId &&
+        r.kind === 'device' &&
+        r.subjectId === pending.deviceId,
+    )
+  ) {
+    await deletePendingEnrollment(pending.deviceId, pending);
+    return false;
+  }
+  if (!(await pendingIsCurrent(pending))) return false;
   const descriptor = await inspectEnrollmentDevice(pending.deviceId);
+  const previous = (await boundDeviceIdentities()).find(
+    (d) => d.deviceId === pending.deviceId,
+  );
+  const replacing =
+    !!previous && previous.identityKey !== descriptor.identityKey;
+  const confirmReplacement = async () => {
+    if (!replacing) return;
+    if (
+      confirmedReplacement?.previousIdentityKey !== previous!.identityKey ||
+      confirmedReplacement?.identityKey !== descriptor.identityKey
+    )
+      throw new EnrollmentIdentityChangeError(
+        pending.deviceId,
+        previous!.identityKey,
+        descriptor.identityKey,
+      );
+    await confirmBoundDeviceIdentity(
+      pending.deviceId,
+      descriptor.identityKey,
+      previous!.identityKey,
+    );
+  };
   let certificate = descriptor.certificate;
   let unlocked: UnlockedAccount | undefined;
   if (
@@ -227,7 +234,11 @@ async function complete(pending: PendingEnrollment) {
       !(await verifyEnrollmentMac(pending, enrollment))
     )
       throw new Error(translate('devices.enrollmentMismatch'));
+    if (!(await pendingIsCurrent(pending))) return false;
+    // Authenticate the enrollment before offering any identity replacement.
+    await confirmReplacement();
     unlocked = await requireUnlock('certify-device');
+    if (!(await pendingIsCurrent(pending))) return false;
     if (
       unlocked.accountKeyId !== pending.accountKeyId ||
       unlocked.userId !== pending.userId
@@ -244,7 +255,8 @@ async function complete(pending: PendingEnrollment) {
       ...fields,
       signature: await unlocked.sign(signingInput.device(fields)),
     };
-    await savePending({ ...pending, certificate });
+    if (!(await savePending({ ...pending, certificate }, pending)))
+      return false;
     const installed = await deviceTrustRequest<{
       certificate: DeviceCertificate;
     }>(pending.deviceId, 'device-certificate', 'PUT', certificate);
@@ -258,13 +270,15 @@ async function complete(pending: PendingEnrollment) {
     )
       throw new Error(translate('devices.enrollmentMismatch'));
     certificate = installed.certificate;
-  }
+  } else await confirmReplacement();
+  if (!(await pendingIsCurrent(pending))) return false;
   unlocked ??= await requireUnlock('certify-device');
   if (
     unlocked.accountKeyId !== account.accountKeyId ||
     unlocked.userId !== account.userId
   )
     throw new Error(translate('devices.enrollmentMismatch'));
+  if (!(await pendingIsCurrent(pending))) return false;
   const response = await fetch(
     relayUrl(
       `/relay/devices/${encodeURIComponent(pending.deviceId)}/certificate`,
@@ -280,24 +294,17 @@ async function complete(pending: PendingEnrollment) {
     const error = new Error(translate('devices.enrollmentUploadFailed'));
     throw Object.assign(error, { status: response.status });
   }
-  await unlocked.updateBoundDevices((ids) => [
-    ...new Set([...ids, pending.deviceId]),
-  ]);
+  if (!(await pendingIsCurrent(pending))) return false;
+  if (!replacing)
+    await confirmBoundDeviceIdentity(
+      pending.deviceId,
+      descriptor.identityKey,
+      previous?.identityKey ?? null,
+    );
   transport.clearTransportKeyCache(pending.deviceId);
-  const status = {
-    deviceId: pending.deviceId,
-    state: 'encrypted' as const,
-    paired: true,
-    bound: true,
-    strict: true,
-    certificateVerified: true,
-    identityTrust: 'certificate' as const,
-    identityKey: descriptor.identityKey,
-    accountKeyId: account.accountKeyId,
-  };
-  transport.reportTransport(status);
-  await deletePendingEnrollment(pending.deviceId);
-  return true;
+  // Only a live owner response may establish Protected in the transport status.
+  await deviceTrustRequest(pending.deviceId, 'trust');
+  return deletePendingEnrollment(pending.deviceId, pending);
 }
 
 export type DeviceProtectionState =
@@ -360,6 +367,15 @@ export async function revokeDevice(deviceId: string) {
   if (!response.ok)
     throw new Error(translate('devices.deviceRevocationFailed'));
   // The signed tombstone is permanent even if the later vault CAS fails.
+  const saved =
+    (await accountStore<Revocation[]>(`revocations:${account.userId}`)) ?? [];
+  await accountStore(`revocations:${account.userId}`, [...saved, revocation]);
+  const certificateKey = `device-certificate:${account.accountKeyId}:${deviceId}`;
+  await Promise.all([
+    accountStore(certificateKey, null),
+    accountStore(`protected-device:${account.accountKeyId}:${deviceId}`, null),
+    sharingTrustStore(certificateKey, null),
+  ]);
   transport.clearTransportKeyCache(deviceId);
   if (typeof window !== 'undefined') {
     window.dispatchEvent(
@@ -368,8 +384,9 @@ export async function revokeDevice(deviceId: string) {
       }),
     );
   }
+  // A committed revocation ends enrollment even if the subsequent vault CAS fails.
+  await deletePendingEnrollment(deviceId);
   await account.updateBoundDevices((ids) =>
     ids.filter((id) => id !== deviceId),
   );
-  await deletePendingEnrollment(deviceId);
 }

@@ -11,12 +11,15 @@ import { fetchRelayPortal } from '../lib/api';
 import {
   completeDeviceEnrollment,
   listPendingEnrollments,
+  EnrollmentIdentityChangeError,
 } from '../lib/deviceEnrollment';
 import { DeviceTrustError } from '../lib/deviceTrust';
+import { clearTransportKeyCache } from '../lib/relayTransportCrypto';
 import { DeviceEnrollmentMonitor } from './DeviceEnrollmentMonitor';
 vi.mock('../lib/accountVault', () => ({ currentAccount: vi.fn() }));
 vi.mock('../lib/api', () => ({ fetchRelayPortal: vi.fn() }));
-vi.mock('../lib/deviceEnrollment', () => ({
+vi.mock('../lib/deviceEnrollment', async (original) => ({
+  ...(await original<typeof import('../lib/deviceEnrollment')>()),
   ENROLLMENT_CHANGED_EVENT: 'pockymoe-enrollment-changed',
   completeDeviceEnrollment: vi.fn(),
   listPendingEnrollments: vi.fn(),
@@ -24,7 +27,7 @@ vi.mock('../lib/deviceEnrollment', () => ({
 vi.mock('../lib/deviceTrust', async (original) => ({
   ...(await original<typeof import('../lib/deviceTrust')>()),
 }));
-vi.mock('../lib/relayTransportCrypto', () => ({ exchange: vi.fn() }));
+vi.mock('../lib/relayTransportCrypto', () => ({ exchange: vi.fn(), clearTransportKeyCache: vi.fn() }));
 const account = {
   userId: 'user',
   accountKeyId: 'account',
@@ -53,6 +56,226 @@ async function tick(ms = 0) {
   });
 }
 describe('automatic enrollment while the browser is open', () => {
+  it('backs off and retries registration-required failures without a manual Retry', async () => {
+    vi.mocked(completeDeviceEnrollment).mockRejectedValueOnce(
+      new DeviceTrustError('browser_registration_required', 401),
+    );
+    render(<DeviceEnrollmentMonitor />);
+    await tick();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(clearTransportKeyCache).toHaveBeenCalledExactlyOnceWith(pending.deviceId);
+    await tick(15000);
+    expect(completeDeviceEnrollment).toHaveBeenCalledTimes(2);
+    await tick(60000);
+    expect(completeDeviceEnrollment).toHaveBeenCalledTimes(2);
+  });
+  it('keeps repeated registration rejection status events from defeating backoff', async () => {
+    let attempts = 0;
+    vi.mocked(completeDeviceEnrollment).mockImplementation(async () => {
+      if (++attempts > 5) return true;
+      for (const detail of [
+        { deviceId: pending.deviceId, state: 'encrypted', bound: true, certificateVerified: false, role: 'owner' },
+        { deviceId: pending.deviceId, state: 'unlock-required', bound: true },
+      ]) window.dispatchEvent(new CustomEvent('remote-codex-transport', { detail }));
+      throw new DeviceTrustError('browser_registration_required', 401);
+    });
+    render(<DeviceEnrollmentMonitor />);
+    await tick();
+    expect(completeDeviceEnrollment).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole('alert')).toBeNull();
+    await tick(15000);
+    expect(completeDeviceEnrollment).toHaveBeenCalledTimes(3);
+  });
+  it('does not drop cached descriptors for devices without an active pending enrollment', async () => {
+    vi.mocked(listPendingEnrollments).mockResolvedValue([]);
+    render(<DeviceEnrollmentMonitor />);
+    await tick();
+    act(() => window.dispatchEvent(new CustomEvent('remote-codex-transport', {
+      detail: { deviceId: pending.deviceId, state: 'encrypted', bound: true },
+    })));
+    await tick();
+    expect(clearTransportKeyCache).not.toHaveBeenCalled();
+    expect(completeDeviceEnrollment).not.toHaveBeenCalled();
+  });
+  it('queues a trust change received during an in-flight enrollment instead of losing the wake-up', async () => {
+    let reject!: (error: Error) => void;
+    vi.mocked(completeDeviceEnrollment).mockImplementationOnce(() => new Promise((_resolve, fail) => { reject = fail; }));
+    render(<DeviceEnrollmentMonitor />);
+    await tick();
+    act(() => window.dispatchEvent(new CustomEvent('remote-codex-transport', {
+      detail: { deviceId: pending.deviceId, state: 'encrypted', bound: true },
+    })));
+    await act(async () => reject(new DeviceTrustError('enrollment_missing', 404)));
+    await tick();
+    expect(clearTransportKeyCache).toHaveBeenCalledWith(pending.deviceId);
+    expect(completeDeviceEnrollment).toHaveBeenCalledTimes(2);
+  });
+
+  it('waits for the bind command with bounded exponential backoff instead of showing an error', async () => {
+    vi.mocked(completeDeviceEnrollment).mockRejectedValue(
+      new DeviceTrustError('enrollment_missing', 404),
+    );
+    render(<DeviceEnrollmentMonitor />);
+    await tick();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(completeDeviceEnrollment).toHaveBeenCalledTimes(1);
+    await tick(15000);
+    expect(completeDeviceEnrollment).toHaveBeenCalledTimes(2);
+    await tick(15000);
+    expect(completeDeviceEnrollment).toHaveBeenCalledTimes(2);
+    await tick(15000);
+    expect(completeDeviceEnrollment).toHaveBeenCalledTimes(3);
+    await tick(60000);
+    expect(completeDeviceEnrollment).toHaveBeenCalledTimes(4);
+    await tick(120000);
+    expect(completeDeviceEnrollment).toHaveBeenCalledTimes(5);
+    vi.mocked(completeDeviceEnrollment).mockResolvedValue(true);
+    await tick(120000);
+    expect(completeDeviceEnrollment).toHaveBeenCalledTimes(6);
+    await tick(240000);
+    expect(completeDeviceEnrollment).toHaveBeenCalledTimes(6);
+  });
+  it('retries before the backoff deadline after an offline device reconnects', async () => {
+    vi.mocked(completeDeviceEnrollment).mockRejectedValue(
+      new DeviceTrustError('enrollment_missing', 404),
+    );
+    render(<DeviceEnrollmentMonitor />);
+    await tick();
+    await tick(15000);
+    await tick(30000);
+    expect(completeDeviceEnrollment).toHaveBeenCalledTimes(3);
+    vi.mocked(fetchRelayPortal).mockResolvedValue(portal(false));
+    await tick(15000);
+    vi.mocked(fetchRelayPortal).mockResolvedValue(portal(true));
+    await tick(15000);
+    expect(completeDeviceEnrollment).toHaveBeenCalledTimes(4);
+  });
+  it('retries when trust hints change, without repeated hints defeating backoff', async () => {
+    vi.mocked(completeDeviceEnrollment).mockRejectedValue(
+      new DeviceTrustError('enrollment_missing', 404),
+    );
+    render(<DeviceEnrollmentMonitor />);
+    await tick();
+    await tick(15000);
+    const hint = {
+      deviceId: pending.deviceId,
+      state: 'encrypted',
+      bound: true,
+      identityKey: 'new-identity',
+    };
+    act(() =>
+      window.dispatchEvent(
+        new CustomEvent('remote-codex-transport', { detail: hint }),
+      ),
+    );
+    await tick();
+    expect(completeDeviceEnrollment).toHaveBeenCalledTimes(3);
+    expect(clearTransportKeyCache).toHaveBeenCalledExactlyOnceWith(pending.deviceId);
+    act(() =>
+      window.dispatchEvent(
+        new CustomEvent('remote-codex-transport', { detail: hint }),
+      ),
+    );
+    await tick();
+    expect(completeDeviceEnrollment).toHaveBeenCalledTimes(3);
+    expect(clearTransportKeyCache).toHaveBeenCalledTimes(1);
+  });
+  it('stops retries when the pending record disappears through expiry or removal', async () => {
+    vi.mocked(completeDeviceEnrollment).mockRejectedValue(
+      new DeviceTrustError('enrollment_missing', 404),
+    );
+    render(<DeviceEnrollmentMonitor />);
+    await tick();
+    vi.mocked(listPendingEnrollments).mockResolvedValue([]);
+    await tick(240000);
+    expect(completeDeviceEnrollment).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+  it('restarts a previously paused enrollment when a fresh repair command replaces it', async () => {
+    vi.mocked(completeDeviceEnrollment).mockRejectedValueOnce(
+      new Error('Enrollment refused'),
+    );
+    render(<DeviceEnrollmentMonitor />);
+    await tick();
+    const repair = { ...pending, enrollSecret: 'fresh-secret' };
+    vi.mocked(listPendingEnrollments).mockResolvedValue([repair]);
+    act(() => window.dispatchEvent(new Event('pockymoe-enrollment-changed')));
+    await tick();
+    expect(completeDeviceEnrollment).toHaveBeenLastCalledWith(repair, true);
+  });
+  it('keeps authentication failures paused when transport hints change', async () => {
+    vi.mocked(completeDeviceEnrollment).mockRejectedValueOnce(
+      new Error('Enrollment refused'),
+    );
+    render(<DeviceEnrollmentMonitor />);
+    await tick();
+    act(() =>
+      window.dispatchEvent(
+        new CustomEvent('remote-codex-transport', {
+          detail: {
+            deviceId: pending.deviceId,
+            state: 'encrypted',
+            bound: true,
+          },
+        }),
+      ),
+    );
+    await tick(15000);
+    expect(completeDeviceEnrollment).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole('alert')).toHaveTextContent('Enrollment refused');
+  });
+  it('does not confirm a cached replacement dialog after the pending enrollment was removed', async () => {
+    vi.mocked(completeDeviceEnrollment).mockRejectedValueOnce(
+      new EnrollmentIdentityChangeError(pending.deviceId, 'old', 'new'),
+    );
+    render(<DeviceEnrollmentMonitor />);
+    await tick();
+    vi.mocked(listPendingEnrollments).mockResolvedValue([]);
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Confirm replacement and unlock' }),
+    );
+    await tick();
+    expect(completeDeviceEnrollment).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+  it('requires explicit old/new identity confirmation and passes only the shown replacement', async () => {
+    vi.mocked(completeDeviceEnrollment).mockRejectedValueOnce(
+      new EnrollmentIdentityChangeError(
+        pending.deviceId,
+        'old-identity',
+        'new-identity',
+      ),
+    );
+    render(<DeviceEnrollmentMonitor />);
+    await tick();
+    expect(screen.getByRole('dialog')).toHaveTextContent('old-identity');
+    expect(screen.getByRole('dialog')).toHaveTextContent('new-identity');
+    await tick(15000);
+    expect(completeDeviceEnrollment).toHaveBeenCalledTimes(1);
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Confirm replacement and unlock' }),
+    );
+    await tick();
+    expect(completeDeviceEnrollment).toHaveBeenCalledWith(pending, true, {
+      previousIdentityKey: 'old-identity',
+      identityKey: 'new-identity',
+    });
+  });
+  it('does not replace an identity when confirmation is dismissed', async () => {
+    vi.mocked(completeDeviceEnrollment).mockRejectedValueOnce(
+      new EnrollmentIdentityChangeError(
+        pending.deviceId,
+        'old-identity',
+        'new-identity',
+      ),
+    );
+    render(<DeviceEnrollmentMonitor />);
+    await tick();
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
+    await tick(15000);
+    expect(completeDeviceEnrollment).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
   it('finishes online pending enrollments without visiting the Devices page', async () => {
     render(<DeviceEnrollmentMonitor />);
     await tick();

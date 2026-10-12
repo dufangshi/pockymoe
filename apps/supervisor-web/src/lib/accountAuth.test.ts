@@ -35,6 +35,48 @@ it('logs in with authKey, opens the vault locally and registers a non-extractabl
   vault.closeUnlockWindow(); expect(await vault.currentBrowser()).toEqual(browser);
   await vault.logoutAccount(); expect(await vault.currentBrowser()).toBeNull();
 });
+it('registers a short readable browser label instead of sending the raw user agent', async () => {
+  vi.stubGlobal('navigator', { userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36' });
+  try {
+    await auth.startAccountLogin('user', 'local'); await auth.finishAccountLogin(v.userId);
+    const registration = state.fetch.mock.calls.find(([url, init]) => url.endsWith('/browsers') && init.method === 'POST')!;
+    expect(JSON.parse(registration[1].body).label).toBe('Chrome on macOS');
+  } finally { vi.stubGlobal('navigator', { userAgent: 'Test browser', language: 'en-US' }); }
+});
+it('changes the password after a normal-session recovery unlock using the recovery proof', async () => {
+  await auth.setAccountSession(v.userId, false);
+  await vault.openVault(v, vectors.derivation.recoveryCodeDisplay, true);
+  expect(await auth.accountSessionState()).toMatchObject({ recovery: false });
+  await vault.changeAccountPassword('a new sufficiently long password');
+  const update = JSON.parse(state.fetch.mock.calls.find(([, init]) => init.method === 'PUT')![1].body);
+  expect(update.recoveryAuthKey).toBe(vectors.derivation.recoveryAuthKey);
+  expect(update.authKey).toBe(vectors.derivation.authKey); expect(update).not.toHaveProperty('currentAuthKey');
+  expect(JSON.stringify([...state.store.values()])).not.toContain(vectors.derivation.recoveryAuthKey);
+  await vault.changeAccountPassword('another sufficiently long password');
+  const next = JSON.parse(state.fetch.mock.calls.filter(([, init]) => init.method === 'PUT').at(-1)![1].body);
+  expect(next.currentAuthKey).toBe(vectors.derivation.authKey); expect(next).not.toHaveProperty('recoveryAuthKey');
+});
+it('expires the recovery proof with the unlock window and uses only the next password proof', async () => {
+  await auth.setAccountSession(v.userId, false);
+  vi.useFakeTimers();
+  try {
+    await vault.openVault(v, vectors.derivation.recoveryCodeDisplay, true);
+    vi.advanceTimersByTime(vault.UNLOCK_WINDOW_MS);
+    expect(vault.isAccountUnlocked()).toBe(false);
+    await expect(vault.changeAccountPassword('a sufficiently long password')).rejects.toMatchObject({ code: 'accountUnlockRequired' });
+    expect(state.fetch.mock.calls.some(([, init]) => init.method === 'PUT')).toBe(false);
+    await vault.openVault(v, 'local password');
+    await vault.changeAccountPassword('a sufficiently long new password');
+    const update = JSON.parse(state.fetch.mock.calls.find(([, init]) => init.method === 'PUT')![1].body);
+    expect(update.currentAuthKey).toBe(vectors.derivation.authKey); expect(update).not.toHaveProperty('recoveryAuthKey');
+  } finally { vault.closeUnlockWindow(); vi.useRealTimers(); }
+});
+it('refuses Start over in a normal session even while unlocked', async () => {
+  await auth.startAccountLogin('user', 'local'); await auth.finishAccountLogin(v.userId);
+  await expect(vault.startAccountOver()).rejects.toMatchObject({ code: 'accountRecoverySessionRequired' });
+  expect(state.fetch.mock.calls.some(([, init]) => init.method === 'DELETE')).toBe(false);
+  expect(await vault.currentAccount()).not.toBeNull();
+});
 it('preserves the pending derived key through a second-factor challenge', async () => {
   state.fetch.mockImplementationOnce(async () => Response.json({ mode: 'account', kdf: v.kdf }))
     .mockImplementationOnce(async () => Response.json({ challengeRequired: true, authenticator: true }));
@@ -42,10 +84,9 @@ it('preserves the pending derived key through a second-factor challenge', async 
   expect(await auth.finishAccountLogin(v.userId)).toMatchObject({ recovery: false });
   expect(state.derive).toHaveBeenCalledTimes(1);
 });
-it('allows plaintext only for legacy login, then requires account setup', async () => {
-  state.fetch.mockImplementationOnce(async () => Response.json({ mode: 'legacy' }));
-  await auth.startAccountLogin('legacy', 'old password');
-  expect(JSON.parse(state.fetch.mock.calls[1]![1].body)).toEqual({ identifier: 'legacy', password: 'old password' });
+it('requires an explicit legacy upgrade, then requires account setup', async () => {
+  await auth.startLegacyUpgrade('legacy', 'old password');
+  expect(JSON.parse(state.fetch.mock.calls[0]![1].body)).toEqual({ login: 'legacy', password: 'old password', upgrade: true });
   expect(await auth.finishAccountLogin(v.userId)).toEqual({ setup: true, recovery: false });
   expect(state.derive).not.toHaveBeenCalled();
 });
@@ -172,4 +213,72 @@ it('registers using the exact chosen top-level userId and preserves a collision 
   state.fetch.mockResolvedValueOnce(Response.json({ code: 'user_id_taken' }, { status: 409 }));
   await expect(auth.registerAccount({ username: 'tester', email: 'test@example.invalid' }, prepared)).rejects.toMatchObject({ code: 'user_id_taken' });
   const body = JSON.parse(state.fetch.mock.calls.at(-1)![1].body); expect(body.userId).toBe(body.vault.userId);
+});
+
+it('never sends a fresh browser password because a relay claims legacy mode', async () => {
+  state.fetch.mockResolvedValueOnce(Response.json({ mode: 'legacy' }));
+  await expect(auth.startAccountLogin('fresh', 'must stay local')).rejects.toMatchObject({ code: 'accountLoginDowngrade' });
+  expect(state.fetch).toHaveBeenCalledTimes(1);
+});
+it('blocks explicit upgrades for known vault identifiers and when the migration build flag is off', async () => {
+  await auth.startAccountLogin('known', 'local'); await auth.finishAccountLogin(v.userId);
+  state.fetch.mockClear();
+  await expect(auth.startLegacyUpgrade('KNOWN', 'must stay local')).rejects.toMatchObject({ code: 'accountLoginDowngrade' });
+  expect(state.fetch).not.toHaveBeenCalled();
+  vi.stubEnv('VITE_POCKYMOE_LEGACY_UPGRADE', '0');
+  try {
+    expect(auth.legacyUpgradeEnabled()).toBe(false);
+    await expect(auth.startLegacyUpgrade('fresh', 'must stay local')).rejects.toMatchObject({ code: 'accountLoginDowngrade' });
+    expect(state.fetch).not.toHaveBeenCalled();
+  } finally { vi.unstubAllEnvs(); }
+});
+it('refuses plaintext reauthentication when no account context is locally known', async () => {
+  await expect(auth.accountPasswordProof('must stay local')).rejects.toMatchObject({ code: 'accountUnlockRequired' });
+  expect(state.fetch).not.toHaveBeenCalled();
+});
+it('ignores foreign-key and invalid revocations while retaining every valid current-key tombstone', async () => {
+  await auth.startAccountLogin('user', 'local'); await auth.finishAccountLogin(v.userId);
+  state.fetch.mockResolvedValueOnce(Response.json({ browsers: [], revocations: [
+    { ...vectors.revocations.browser, accountKeyId: vectors.otherAccount.accountKeyId },
+    { ...vectors.revocations.device, signature: 'broken' }, vectors.revocations.browser,
+  ] }));
+  expect(await vault.accountRevocations(true)).toEqual([vectors.revocations.browser]);
+});
+it('pins migrated device identities and requires unlocked explicit confirmation for a replacement', async () => {
+  await auth.startAccountLogin('user', 'local'); await auth.finishAccountLogin(v.userId);
+  const id = vectors.deviceCertificate.certificate.deviceId, identityKey = vectors.deviceCertificate.certificate.identityKey;
+  await vault.confirmBoundDeviceIdentity(id, identityKey, (await vault.boundDeviceIdentities()).find(d => d.deviceId === id)?.identityKey ?? null);
+  expect(await vault.boundDeviceIdentities()).toContainEqual({ deviceId: id, identityKey });
+  const update = JSON.parse(state.fetch.mock.calls.filter(([, init]) => init.method === 'PUT').at(-1)![1].body);
+  expect(update.currentAuthKey).toBe(vectors.derivation.authKey);
+  const data = await vault.decryptVault(update.vault, c.decode64(vectors.derivation.wrapKey), 'password', v.userId);
+  expect(data.body.boundDevices.every((entry: unknown) => typeof entry === 'object')).toBe(true);
+  vault.closeUnlockWindow();
+  await expect(vault.confirmBoundDeviceIdentity(id, vectors.negative.deviceCertWrongIdentity.identityKey)).rejects.toMatchObject({ code: 'accountUnlockRequired' });
+});
+
+it('uses local vault state even when reauthentication comes from the admin route', async () => {
+  await auth.startAccountLogin('user', 'local'); await auth.finishAccountLogin(v.userId);
+  expect(await auth.accountPasswordProof('must stay local', true)).toEqual({ authKey: vectors.derivation.authKey });
+});
+it('migrates string device IDs from an authenticated local certificate on read', async () => {
+  await auth.startAccountLogin('user', 'local'); await auth.finishAccountLogin(v.userId);
+  const cache = state.store.get(`cache:${v.userId}`) as Record<string, unknown>;
+  const cert = vectors.deviceCertificate.certificate;
+  state.store.set(`cache:${v.userId}`, { ...cache, boundDevices: [cert.deviceId] });
+  state.store.set(`device-certificate:${v.accountKeyId}:${cert.deviceId}`, cert);
+  expect(await vault.boundDeviceIdentities()).toEqual([{ deviceId: cert.deviceId, identityKey: cert.identityKey }]);
+  expect(await vault.boundDevices()).toEqual([cert.deviceId]);
+});
+
+it('rejects stale identity confirmations and requires an explicit previous snapshot for replacements', async () => {
+  await auth.startAccountLogin('user', 'local'); await auth.finishAccountLogin(v.userId);
+  const id = vectors.deviceCertificate.certificate.deviceId, original = vectors.deviceCertificate.certificate.identityKey;
+  await vault.confirmBoundDeviceIdentity(id, original, (await vault.boundDeviceIdentities()).find(d => d.deviceId === id)?.identityKey ?? null);
+  const replacement = vectors.negative.deviceCertWrongIdentity.identityKey;
+  await expect(vault.confirmBoundDeviceIdentity(id, replacement)).rejects.toMatchObject({ code: 'accountDeviceIdentityChanged' });
+  await expect(vault.confirmBoundDeviceIdentity(id, replacement, null)).rejects.toMatchObject({ code: 'accountDeviceIdentityChanged' });
+  await vault.confirmBoundDeviceIdentity(id, replacement, original);
+  await expect(vault.confirmBoundDeviceIdentity(id, original, original)).rejects.toMatchObject({ code: 'accountDeviceIdentityChanged' });
+  expect(await vault.boundDeviceIdentities()).toContainEqual({ deviceId: id, identityKey: replacement });
 });

@@ -4,6 +4,7 @@ use p256::{
     pkcs8::{DecodePrivateKey, EncodePublicKey},
 };
 use rand::rngs::OsRng;
+use tower::ServiceExt;
 
 pub(crate) fn vectors() -> Value {
     serde_json::from_str(include_str!("../tests/fixtures/account-key-v2.json")).unwrap()
@@ -655,7 +656,7 @@ async fn strict_plain_unsigned_signed_revoked_and_allowed_exceptions() {
     );
 }
 #[tokio::test]
-async fn revocations_verified_atomically_permanent_and_close_live_channels() {
+async fn revocations_verified_entry_by_entry_permanent_and_close_live_channels() {
     let (_dir, state) = crate::tunnel::tests::state_with_relay_url("http://127.0.0.1:1");
     let p = live_owner(&state);
     let (status, c) = crate::grants::tests::request(
@@ -675,8 +676,8 @@ async fn revocations_verified_atomically_permanent_and_close_live_channels() {
     let r = browser_revocation(&p);
     let mut bad = r.clone();
     bad.kind = "device".into();
-    assert!(apply_revocations(&state, &[r.clone(), bad]).is_err());
-    assert!(p.valid(&state));
+    apply_revocations(&state, &[bad, r.clone()]).unwrap();
+    assert!(!p.valid(&state));
     let (status, _) = crate::grants::tests::request(
         &state,
         None,
@@ -716,7 +717,20 @@ async fn revocations_verified_atomically_permanent_and_close_live_channels() {
         "browser_revoked"
     );
     reset_account_trust(&state.config.database_url).unwrap();
-    assert_eq!(trust(&state, "").unwrap()["revocations"], 0);
+    assert_eq!(trust(&state, "").unwrap()["revocations"], 1);
+    let v = vectors();
+    bind_account(
+        &state.config.database_url,
+        v["account"]["accountPublicKey"].as_str().unwrap(),
+        v["enrollment"]["enrollSecret"].as_str().unwrap(),
+        None,
+    )
+    .unwrap();
+    let cert = serde_json::from_value(v["browserCertificate"]["certificate"].clone()).unwrap();
+    assert_eq!(
+        rejection_code(&register(&state.db, &cert).unwrap_err()).1,
+        "browser_revoked"
+    );
 }
 #[tokio::test]
 async fn unknown_account_and_bad_browser_certificates_fail_registration() {
@@ -871,7 +885,7 @@ fn bind_prepares_version_13_before_setup_restarts_its_runtime() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("legacy.sqlite");
     let db = Database::open(&path).unwrap();
-    db.with(|c| { c.execute_batch("DROP TABLE device_owner_trust; DROP TABLE browser_registrations; DROP TABLE account_revocations; DROP TABLE device_certificates; DROP TABLE owner_port_mappings; DROP TABLE device_grants; DROP TABLE peer_certificates; DELETE FROM __remote_codex_runtime_migrations WHERE version=14;")?; Ok(()) }).unwrap();
+    db.with(|c| { c.execute_batch("DROP TABLE device_owner_trust; DROP TABLE browser_registrations; DROP TABLE account_revocations; DROP TABLE device_certificates; DROP TABLE owner_port_mappings; DROP TABLE device_grants; DROP TABLE peer_certificates; DROP TABLE preview_leases; DELETE FROM __remote_codex_runtime_migrations WHERE version>=14;")?; Ok(()) }).unwrap();
     assert_eq!(binding_status(&path).unwrap()["bound"], false);
     let v = vectors();
     bind_account(
@@ -890,7 +904,7 @@ fn bind_prepares_version_13_before_setup_restarts_its_runtime() {
             |r| r.get::<_, u32>(0)
         )?))
         .unwrap(),
-        14
+        15
     );
 }
 
@@ -914,4 +928,375 @@ fn web_origin_keeps_https_and_loopback_validation() {
     ] {
         assert!(validate_web_origin(origin).is_err());
     }
+}
+
+#[tokio::test]
+async fn mixed_revocation_json_ignores_unknown_keys_and_malformed_entries() {
+    let (_dir, state) = crate::tunnel::tests::state_with_relay_url("http://127.0.0.1:1");
+    let owner = live_owner(&state);
+    let valid = browser_revocation(&owner);
+    let mut other = valid.clone();
+    other.account_key_id = account(&SigningKey::random(&mut OsRng)).account_key_id;
+    let mut invalid = valid.clone();
+    invalid.signature = B64.encode([0; 64]);
+    let (status, _) = crate::grants::tests::request(
+        &state,
+        None,
+        &session_key(),
+        "PUT",
+        "/api/transport/revocations",
+        json!({"revocations":[other, {"malformed":true}, invalid, valid]}),
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert!(!owner.valid(&state));
+    assert_eq!(trust(&state, "").unwrap()["revocations"], 1);
+}
+#[test]
+fn binding_deletes_only_keyless_publications() {
+    let (_dir, state) = crate::tunnel::tests::state_with_relay_url("http://127.0.0.1:1");
+    let policy = json!({"threadId":"unused","turnIds":[],"afterOrdinal":0,"theme":"dark","createdAt":"unused"});
+    state
+        .db
+        .set_kv("publication:legacy", &policy.to_string())
+        .unwrap();
+    let mut encrypted = policy.clone();
+    encrypted["encryptionKey"] = json!(B64.encode([0; 32]));
+    state
+        .db
+        .set_kv("publication:encrypted", &encrypted.to_string())
+        .unwrap();
+    live_owner(&state);
+    assert!(state.db.get_kv("publication:legacy").unwrap().is_none());
+    assert!(state.db.get_kv("publication:encrypted").unwrap().is_some());
+}
+#[cfg(unix)]
+#[test]
+fn binding_restricts_existing_database_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+    let (_dir, state) = crate::tunnel::tests::state_with_relay_url("http://127.0.0.1:1");
+    std::fs::set_permissions(
+        &state.config.database_url,
+        std::fs::Permissions::from_mode(0o644),
+    )
+    .unwrap();
+    live_owner(&state);
+    assert_eq!(
+        std::fs::metadata(&state.config.database_url)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
+}
+
+#[tokio::test]
+async fn relay_device_id_mismatch_backs_off_and_reports_status() {
+    use futures_util::SinkExt;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let (_dir, state) = crate::tunnel::tests::state_with_relay_url(&format!(
+        "http://{}",
+        listener.local_addr().unwrap()
+    ));
+    live_owner(&state);
+    let tunnel = tokio::spawn(crate::tunnel::run_relay_tunnel(state.clone()));
+    let mut times = Vec::new();
+    for _ in 0..3 {
+        let (socket, _) =
+            tokio::time::timeout(std::time::Duration::from_secs(8), listener.accept())
+                .await
+                .unwrap()
+                .unwrap();
+        times.push(tokio::time::Instant::now());
+        let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
+        ws.send(tokio_tungstenite::tungstenite::Message::Text(
+            json!({"type":"relay.connected","deviceId":"different-device"})
+                .to_string()
+                .into(),
+        ))
+        .await
+        .unwrap();
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    tunnel.abort();
+    let response = crate::http::router(state.clone())
+        .oneshot(
+            axum::http::Request::builder()
+                .uri("/healthz")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status: Value = serde_json::from_slice(
+        &axum::body::to_bytes(response.into_body(), 8192)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(times[1].duration_since(times[0]) >= std::time::Duration::from_secs(1));
+    assert!(times[2].duration_since(times[1]) >= std::time::Duration::from_secs(2));
+    assert_eq!(status["relayStatus"]["code"], "device_id_mismatch");
+    assert!(status["relayStatus"]["retryAt"].as_i64().unwrap() > now());
+    assert!(!state
+        .relay_connected
+        .load(std::sync::atomic::Ordering::SeqCst));
+    assert_eq!(state.db.with(device_id).unwrap(), "test-device");
+    remember_device(&state, "test-device").unwrap();
+}
+
+#[test]
+fn reset_preserves_tombstones_scoped_to_the_account_key() {
+    let (_dir, state) = crate::tunnel::tests::state_with_relay_url("http://127.0.0.1:1");
+    let owner = live_owner(&state);
+    apply_revocations(&state, &[browser_revocation(&owner)]).unwrap();
+    reset_account_trust(&state.config.database_url).unwrap();
+    let v = vectors();
+    bind_account(
+        &state.config.database_url,
+        v["account"]["accountPublicKey"].as_str().unwrap(),
+        v["enrollment"]["enrollSecret"].as_str().unwrap(),
+        None,
+    )
+    .unwrap();
+    let c = browser_certificate(&account_key(), &session_key());
+    assert_eq!(
+        rejection_code(&register(&state.db, &c).unwrap_err()).1,
+        "browser_revoked"
+    );
+    reset_account_trust(&state.config.database_url).unwrap();
+    let other = SigningKey::random(&mut OsRng);
+    let account = account(&other);
+    bind_account(
+        &state.config.database_url,
+        &account.account_public_key,
+        v["enrollment"]["enrollSecret"].as_str().unwrap(),
+        None,
+    )
+    .unwrap();
+    assert!(register(&state.db, &browser_certificate(&other, &session_key())).is_ok());
+}
+
+#[tokio::test]
+async fn key_descriptors_accept_base64url_challenges_and_validate_supplied_lengths() {
+    let (_dir, state) = crate::tunnel::tests::state_with_relay_url("http://127.0.0.1:1");
+    for challenge in [
+        "abcd_E-F".to_owned(),
+        B64.encode([255; 32]),
+        "a".repeat(128),
+    ] {
+        let response = crate::tunnel::forward_local(
+            &state,
+            json!({"method":"GET","path":format!("/api/transport/key?challenge={challenge}")}),
+            None,
+        )
+        .await;
+        assert_eq!(response["statusCode"], 200);
+        let body: Value = serde_json::from_str(response["body"].as_str().unwrap()).unwrap();
+        assert_eq!(body["challenge"], challenge);
+    }
+    for challenge in [
+        "".to_owned(),
+        "short".to_owned(),
+        "a".repeat(129),
+        "invalid%2Fchallenge".to_owned(),
+        "invalid%0Achallenge".to_owned(),
+    ] {
+        let response = crate::tunnel::forward_local(
+            &state,
+            json!({"method":"GET","path":format!("/api/transport/key?challenge={challenge}")}),
+            None,
+        )
+        .await;
+        assert_eq!(response["statusCode"], 400);
+    }
+}
+#[tokio::test]
+async fn bound_device_missing_certificate_can_bootstrap_enrollment_after_reset() {
+    let (_dir, state) = crate::tunnel::tests::state_with_relay_url("http://127.0.0.1:1");
+    let prior = bound_peer(&state, "test-device");
+    reset_account_trust(&state.config.database_url).unwrap();
+    let v = vectors();
+    let fresh_secret = [31; 32];
+    bind_account(
+        &state.config.database_url,
+        v["account"]["accountPublicKey"].as_str().unwrap(),
+        &B64.encode(fresh_secret),
+        None,
+    )
+    .unwrap();
+    let response = crate::tunnel::forward_local(
+        &state,
+        json!({"method":"GET","path":"/api/transport/key?challenge=repair_nonce"}),
+        None,
+    )
+    .await;
+    assert_eq!(response["statusCode"], 200);
+    let descriptor: Value = serde_json::from_str(response["body"].as_str().unwrap()).unwrap();
+    assert_eq!(descriptor["certificate"], Value::Null);
+    assert_eq!(descriptor["identityKey"], prior.identity_key);
+    let (r, key, aad) = encrypted_with_descriptor(
+        "GET",
+        "/api/transport/enrollment",
+        Value::Null,
+        None,
+        &session_key(),
+        &descriptor,
+    );
+    let (status, enrollment) = decoded(
+        crate::tunnel::forward_local(&state, r, None).await,
+        &key,
+        &aad,
+    );
+    assert_eq!(status, 200);
+    assert_eq!(
+        enrollment["mac"],
+        enrollment_mac(
+            &fresh_secret,
+            "test-device",
+            &prior.identity_key,
+            &prior.account_key_id
+        )
+        .unwrap()
+    );
+    let owner = live_owner(&state);
+    assert_eq!(
+        crate::grants::tests::request(
+            &state,
+            Some(&owner),
+            &session_key(),
+            "PUT",
+            "/api/transport/device-certificate",
+            serde_json::to_value(prior).unwrap()
+        )
+        .await
+        .0,
+        200
+    );
+}
+
+#[test]
+fn rebind_healthy_certificate_clears_enrollment_and_exposes_web_origin_hint() {
+    let (_dir, state) = crate::tunnel::tests::state_with_relay_url("http://127.0.0.1:1");
+    let certificate = bound_peer(&state, "test-device");
+    let v = vectors();
+    bind_account(
+        &state.config.database_url,
+        v["account"]["accountPublicKey"].as_str().unwrap(),
+        &B64.encode([31; 32]),
+        Some("https://web.test"),
+    )
+    .unwrap();
+    assert_eq!(
+        rejection_code(&enrollment(&state).unwrap_err()).1,
+        "enrollment_missing"
+    );
+    assert_eq!(
+        device_certificate(&state).unwrap().unwrap().signature,
+        certificate.signature
+    );
+    assert!(state
+        .db
+        .with(|c| Ok(
+            c.query_row("SELECT enroll_secret FROM device_owner_trust", [], |r| {
+                r.get::<_, Option<Vec<u8>>>(0)
+            })?
+        ))
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        binding_status(&state.config.database_url).unwrap()["webOrigin"],
+        "https://web.test"
+    );
+}
+#[test]
+fn enrollment_cleans_up_stale_secret_for_a_certified_device() {
+    let (_dir, state) = crate::tunnel::tests::state_with_relay_url("http://127.0.0.1:1");
+    bound_peer(&state, "test-device");
+    state
+        .db
+        .with(|c| {
+            c.execute(
+                "UPDATE device_owner_trust SET enroll_secret=?1",
+                [vec![31u8; 32]],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        rejection_code(&enrollment(&state).unwrap_err()).1,
+        "enrollment_missing"
+    );
+    assert!(state
+        .db
+        .with(|c| Ok(
+            c.query_row("SELECT enroll_secret FROM device_owner_trust", [], |r| {
+                r.get::<_, Option<Vec<u8>>>(0)
+            })?
+        ))
+        .unwrap()
+        .is_none());
+}
+#[tokio::test]
+async fn rebind_after_lost_identity_rotates_transport_and_accepts_repaired_certificate() {
+    let (_dir, state) = crate::tunnel::tests::state_with_relay_url("http://127.0.0.1:1");
+    let old = bound_peer(&state, "test-device");
+    let owner = live_owner(&state);
+    let (status, body) = crate::grants::tests::request(
+        &state,
+        Some(&owner),
+        &session_key(),
+        "POST",
+        "/api/transport/session",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, 200);
+    let old_transport = crate::secure_transport::transport(&state).unwrap();
+    let old_channel = old_transport
+        .session(body["channelId"].as_str().unwrap())
+        .unwrap();
+    std::fs::remove_file(
+        state
+            .config
+            .database_url
+            .with_extension("transport-identity"),
+    )
+    .unwrap();
+    let secret = B64.encode([31; 32]);
+    let v = vectors();
+    bind_account(
+        &state.config.database_url,
+        v["account"]["accountPublicKey"].as_str().unwrap(),
+        &secret,
+        None,
+    )
+    .unwrap();
+    let next = crate::secure_transport::transport(&state)
+        .unwrap()
+        .identity_key();
+    assert_ne!(next, old.identity_key);
+    assert!(!old_channel.alive());
+    assert!(device_certificate(&state).unwrap().is_none());
+    let enrollment = enrollment(&state).unwrap();
+    assert_eq!(
+        enrollment["mac"],
+        enrollment_mac(&[31; 32], "test-device", &next, &owner.account_key_id).unwrap()
+    );
+    assert!(install_certificate(&state, &old).is_err());
+    let mut repaired = old;
+    repaired.identity_key = next;
+    repaired.created_at = now();
+    let signature: Signature = account_key().sign(device_signing_input(&repaired).as_bytes());
+    repaired.signature = B64.encode(signature.to_bytes());
+    install_certificate(&state, &repaired).unwrap();
+    assert_eq!(
+        device_certificate(&state).unwrap().unwrap().identity_key,
+        repaired.identity_key
+    );
+    assert_eq!(
+        rejection_code(&super::enrollment(&state).unwrap_err()).1,
+        "enrollment_missing"
+    );
 }

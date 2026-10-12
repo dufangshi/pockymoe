@@ -32,7 +32,9 @@ pub(crate) fn ensure_schema(conn: &Connection) -> Result<()> {
         callback TEXT NOT NULL, expires_at INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS relay_auth_sessions_user ON relay_auth_sessions(user_id);
-    CREATE TRIGGER IF NOT EXISTS relay_password_revoke_sessions AFTER UPDATE OF password_hash ON relay_users
+    DROP TRIGGER IF EXISTS relay_password_revoke_sessions;
+    CREATE TRIGGER relay_password_revoke_sessions AFTER UPDATE OF password_hash ON relay_users
+    WHEN NEW.password_hash<>''
     BEGIN DELETE FROM relay_auth_sessions WHERE user_id=NEW.id; END;
     CREATE TRIGGER IF NOT EXISTS relay_disabled_revoke_sessions AFTER UPDATE OF enabled ON relay_users
     WHEN NEW.enabled=0 BEGIN DELETE FROM relay_auth_sessions WHERE user_id=NEW.id; END;")?;
@@ -242,7 +244,7 @@ pub(crate) async fn browser_security(
 
 async fn browser_security_response(
     axum::extract::State(state): axum::extract::State<std::sync::Arc<super::AppState>>,
-    request: axum::extract::Request,
+    mut request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
     use axum::{
@@ -259,6 +261,8 @@ async fn browser_security_response(
     {
         return super::spa_fallback(axum::extract::State(state), request).await;
     }
+    // This header is internal; callers cannot supply a resolved credential.
+    request.headers_mut().remove("x-pockymoe-resolved-session");
     let headers = request.headers();
     if request.uri().path().starts_with("/relay/auth/") && request.method() != Method::GET {
         let peer = request
@@ -321,7 +325,12 @@ async fn browser_security_response(
         }),
         ..Default::default()
     };
-    if let Some(token) = super::extract_session_token(headers, &query) {
+    let resolved_token = if request.uri().path().starts_with("/relay/admin/") {
+        super::bearer_token(headers).or_else(|| cookie(headers, "remote_codex_relay_admin_session"))
+    } else {
+        super::extract_session_token(headers, &query)
+    };
+    if let Some(token) = &resolved_token {
         let conn = state.store.conn.lock().await;
         if let Some(user) = super::load_user_by_session(&conn, &state.store.session_secret, &token)
         {
@@ -340,6 +349,12 @@ async fn browser_security_response(
             }
         }
     }
+    let Ok(resolved_header) = resolved_token.as_deref().unwrap_or("").parse() else {
+        return super::unauthorized();
+    };
+    request
+        .headers_mut()
+        .insert("x-pockymoe-resolved-session", resolved_header);
     let transport_worker = request
         .uri()
         .path()
@@ -361,7 +376,7 @@ async fn browser_security_response(
         .trim_end_matches("</script>");
     let bootstrap_hash =
         base64::engine::general_purpose::STANDARD.encode(Sha256::digest(bootstrap.as_bytes()));
-    h.entry(header::CONTENT_SECURITY_POLICY).or_insert(format!("default-src 'self'; script-src 'self' 'sha256-{bootstrap_hash}'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; worker-src 'self'; frame-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'").parse().unwrap());
+    h.entry(header::CONTENT_SECURITY_POLICY).or_insert(format!("default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'sha256-{bootstrap_hash}'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; worker-src 'self'; frame-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'").parse().unwrap());
     if h.contains_key(header::SET_COOKIE) {
         h.insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
     }

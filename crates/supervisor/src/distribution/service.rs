@@ -66,7 +66,7 @@ pub fn definition(manager: &str, installed: &Installed, config: &Path) -> String
         // Interactive shells from Web terminals ignore SIGTERM; without a short
         // stop timeout systemd waits 90s before killing them, and the device
         // stays offline for the whole update restart.
-        format!("[Unit]\nDescription=Pockymoe Supervisor\nAfter=network-online.target\n[Service]\nType=simple\nExecStart={}\nWorkingDirectory=%h\nEnvironment={}\nEnvironment=POCKYMOE_MANAGED_SERVICE=systemd-user\nRestart=always\nRestartSec=5\nTimeoutStopSec=15\n[Install]\nWantedBy=default.target\n", args.iter().map(|a| unit(a)).collect::<Vec<_>>().join(" "), environment_value(&format!("PATH={path}")))
+        format!("[Unit]\nDescription=Pockymoe Supervisor\nAfter=network-online.target\n[Service]\nType=simple\nExecStart={}\nWorkingDirectory=%h\nEnvironment={}\nEnvironment=POCKYMOE_MANAGED_SERVICE=systemd-user\nRestart=always\nRestartSec=5\nTimeoutStopSec=15\nUnsetEnvironment=POCKYMOE_ENROLL_SECRET POCKYMOE_ENROLL\n[Install]\nWantedBy=default.target\n", args.iter().map(|a| unit(a)).collect::<Vec<_>>().join(" "), environment_value(&format!("PATH={path}")))
     }
 }
 pub fn log_path() -> PathBuf {
@@ -200,6 +200,15 @@ pub fn stop(pid: u32) -> Result<()> {
     ensure!(ok || !alive(pid), "Unable to stop the original Supervisor");
     Ok(())
 }
+fn worker_environment(
+    mut inherited: BTreeMap<String, String>,
+    environment: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    inherited.extend(environment.iter().map(|(k, v)| (k.clone(), v.clone())));
+    inherited.remove("POCKYMOE_ENROLL_SECRET");
+    inherited.remove("POCKYMOE_ENROLL");
+    inherited
+}
 /// Detach from the Supervisor's cgroup/job before it can be stopped.
 pub fn independent(
     binary: &Path,
@@ -208,12 +217,7 @@ pub fn independent(
     log: &Path,
 ) -> Result<()> {
     private_dir(log.parent().unwrap())?;
-    let mut inherited: BTreeMap<String, String> = std::env::vars().collect();
-    inherited.extend(
-        environment
-            .iter()
-            .map(|(key, value)| (key.clone(), value.clone())),
-    );
+    let inherited = worker_environment(std::env::vars().collect(), environment);
     let environment = &inherited;
     if cfg!(target_os = "linux") && command("systemctl", &["--user", "show-environment"]) {
         let mut command = Command::new("systemd-run");
@@ -222,6 +226,7 @@ pub fn independent(
             "--collect",
             "--property=Type=exec",
             "--property=KillMode=process",
+            "--property=UnsetEnvironment=POCKYMOE_ENROLL_SECRET POCKYMOE_ENROLL",
         ]);
         // Pass secrets through a private file rather than exposing --setenv
         // values in process arguments. The user manager has a separate env.
@@ -293,7 +298,7 @@ pub fn independent(
             &payload,
             &serde_json::json!({"binary":binary,"args":args,"environment":environment,"log":log}),
         )?;
-        let source = format!("$ErrorActionPreference='Stop'\n$p=Get-Content -LiteralPath '{}' -Raw | ConvertFrom-Json\nRemove-Item -LiteralPath '{}', $PSCommandPath -Force\nforeach($v in $p.environment.PSObject.Properties){{[Environment]::SetEnvironmentVariable($v.Name,[string]$v.Value,'Process')}}\n$a=@($p.args)\n& $p.binary @a *> $p.log\nexit $LASTEXITCODE\n", payload.to_string_lossy().replace('\'', "''"), payload.to_string_lossy().replace('\'', "''"));
+        let source = format!("$ErrorActionPreference='Stop'\n$p=Get-Content -LiteralPath '{}' -Raw | ConvertFrom-Json\nRemove-Item -LiteralPath '{}', $PSCommandPath -Force\nRemove-Item Env:POCKYMOE_ENROLL_SECRET -ErrorAction SilentlyContinue\nforeach($v in $p.environment.PSObject.Properties){{[Environment]::SetEnvironmentVariable($v.Name,[string]$v.Value,'Process')}}\n$a=@($p.args)\n& $p.binary @a *> $p.log\nexit $LASTEXITCODE\n", payload.to_string_lossy().replace('\'', "''"), payload.to_string_lossy().replace('\'', "''"));
         write_bytes(&launcher, source.as_bytes())?;
         let line = format!("powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File \"{}\"", launcher.display());
         let script = format!("$r=Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{{CommandLine='{}'}}; exit $r.ReturnValue", line.replace('\'', "''"));
@@ -315,6 +320,7 @@ pub fn independent(
             .arg("--fork")
             .arg(binary)
             .args(args)
+            .env_clear()
             .envs(environment)
             .stdin(Stdio::null())
             .stdout(out.try_clone()?)
@@ -441,6 +447,32 @@ pub fn retire_tmux(owner: &Option<TmuxOwner>) -> Result<()> {
 mod tests {
     use super::*;
     #[test]
+    fn detached_worker_does_not_inherit_enrollment_from_parent_or_overrides() {
+        let inherited = BTreeMap::from([
+            ("POCKYMOE_ENROLL_SECRET".into(), "synthetic-secret".into()),
+            ("SAFE".into(), "retained".into()),
+        ]);
+        let environment = worker_environment(
+            inherited,
+            &BTreeMap::from([(
+                "POCKYMOE_ENROLL_SECRET".into(),
+                "synthetic-other-secret".into(),
+            )]),
+        );
+        assert!(!environment.contains_key("POCKYMOE_ENROLL_SECRET"));
+        #[cfg(unix)]
+        assert!(Command::new("/bin/sh")
+            .args([
+                "-c",
+                "test -z \"$POCKYMOE_ENROLL_SECRET\" && test \"$SAFE\" = retained"
+            ])
+            .env_clear()
+            .envs(environment)
+            .status()
+            .unwrap()
+            .success());
+    }
+    #[test]
     fn unit_refresh_rewrites_only_a_changed_existing_unit() {
         let dir = tempfile::tempdir().unwrap();
         let unit = dir.path().join("remote-codex-supervisor.service");
@@ -467,7 +499,9 @@ mod tests {
         assert!(linux.contains("$$Name/100%%"));
         assert!(!linux.contains("--token"));
         assert!(linux.contains("device-run"));
-        assert!(linux.contains("TimeoutStopSec=15\n"));
+        assert!(linux.contains(
+            "TimeoutStopSec=15\nUnsetEnvironment=POCKYMOE_ENROLL_SECRET POCKYMOE_ENROLL\n"
+        ));
         assert!(linux.contains("\nEnvironment=\"PATH="));
         let mac = definition("launchd", &installed, Path::new("/cfg"));
         assert!(mac.contains("a&quot;b"));

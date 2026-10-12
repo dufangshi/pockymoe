@@ -529,6 +529,10 @@ pub(crate) async fn approve_registration(
             }
         }
         if let Some((_, raw, recovery_salt, recovery_hash)) = &pending_vault {
+            tx.execute(
+                "UPDATE relay_users SET password_salt='',password_hash='' WHERE id=?1",
+                [&user_id],
+            )?;
             let vault: Value = serde_json::from_str(raw)?;
             crate::account::store_vault(&tx, &user_id, &vault)
                 .map_err(|_| anyhow::anyhow!("Invalid pending vault"))?;

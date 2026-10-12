@@ -3,18 +3,25 @@ import { beforeEach, expect, it, vi } from 'vitest';
 import { setLocale, translate } from '@pockymoe/thread-ui/i18n';
 import { AccountSecurityPanel } from './AccountSecurityPanel';
 import vectors from '../lib/fixtures/accountKeyVectors.json';
-const state = vi.hoisted(() => ({ request: vi.fn(), revoked: vi.fn(), change: vi.fn(), recovery: vi.fn(), verify: vi.fn(), authStatus: vi.fn() }));
+const state = vi.hoisted(() => ({ request: vi.fn(), revoked: vi.fn(), change: vi.fn(), recovery: vi.fn(), verify: vi.fn(), authStatus: vi.fn(), session: vi.fn() }));
 vi.mock('../lib/accountVault', () => ({ currentAccount: async () => vectors.account, currentBrowser: async () => ({ browserId: vectors.browserCertificate.certificate.browserId }), safetyCode: async () => vectors.safetyCode.display }));
 vi.mock('../lib/accountVaultState', () => ({ accountRequest: state.request, accountRevocations: async () => [], revokeAccountSubject: state.revoked,
   changeAccountPassword: state.change, regenerateRecoveryCode: state.recovery, startAccountOver: vi.fn() }));
 vi.mock('../lib/relaySecurity', () => ({ securityRequest: state.authStatus }));
 vi.mock('./RelaySecurity', () => ({ SecurityVerification: ({ onVerified }: { onVerified: () => void }) => <button onClick={onVerified}>Verify factor</button> }));
-vi.mock('../lib/accountAuth', () => ({ isOAuthAccount: async () => true }));
+vi.mock('../lib/accountAuth', () => ({ isOAuthAccount: async () => true, accountSessionState: state.session }));
 vi.mock('../lib/accountCrypto', () => ({ verifyBrowserCertificate: state.verify }));
 vi.mock('./AccountUnlockPrompt', () => ({ RecoveryConfirmation: ({ code, onConfirm }: { code: string; onConfirm: () => void }) => <div>{code}<button onClick={onConfirm}>Saved code</button></div> }));
 beforeEach(() => {
   vi.clearAllMocks(); setLocale('en'); state.verify.mockResolvedValue(true); state.recovery.mockResolvedValue(vectors.derivation.recoveryCodeDisplay);
+  state.session.mockResolvedValue({ recovery: false });
   state.request.mockResolvedValue({ browsers: [{ certificate: vectors.browserCertificate.certificate, label: 'My laptop', createdAt: 1760000000000, lastSeenAt: 1760000001000 }] });
+});
+it.each([false, true])('offers Start over only in a restricted recovery/reset session (recovery=%s)', async recovery => {
+  state.session.mockResolvedValue({ recovery });
+  render(<AccountSecurityPanel />); await screen.findByText('My laptop');
+  const button = screen.queryByRole('button', { name: translate('auth.accountStartOver') });
+  if (recovery) expect(button).toBeVisible(); else expect(button).toBeNull();
 });
 it.each(['en', 'zh-CN'] as const)('shows verified named browsers, own badge, times and safety code in %s', async locale => {
   setLocale(locale); render(<AccountSecurityPanel />);

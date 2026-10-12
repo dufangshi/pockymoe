@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import type { RelayPortalSummaryDto } from '@pockymoe/shared';
 import {
   isProtectedSharingDevice,
-  locallyCertifiedDevices,
+  sharingGrantDevices,
   sharingOwnerAccountKeyId,
   type PublicAccount,
 } from '../lib/sharedDeviceTrust';
@@ -63,7 +63,7 @@ export function SignedShareDetails({
       const recipient = await recipientAccount(kind, row.id);
       const [nextCode, confirmed] = await Promise.all([
         safetyCode(recipient.accountKeyId),
-        recipientVerified(recipient),
+        recipientVerified(recipient, row.targetUserId),
       ]);
       if (!active) return;
       setAccount(recipient);
@@ -110,7 +110,7 @@ export function SignedShareDetails({
           {!verified && (
             <button className={button} disabled={busy} onClick={() => {
               setBusy(true);
-              void confirmRecipient(account)
+              void confirmRecipient(account, row.targetUserId)
                 .then(() => setVerified(true))
                 .catch((error: unknown) => setError(error instanceof Error ? error.message : translate('sharing.accountKeyMismatch')))
                 .finally(() => setBusy(false));
@@ -202,7 +202,7 @@ export function OrphanDeviceGrants({
     let active = true;
     void (async () => {
       const found: { deviceId: string; grant: DeviceGrant }[] = [];
-      for (const deviceId of await locallyCertifiedDevices()) {
+      for (const deviceId of await sharingGrantDevices()) {
         const grants = await deviceGrants(deviceId);
         for (const grant of grants.filter(
           (g) =>

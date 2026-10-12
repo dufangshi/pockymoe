@@ -122,6 +122,10 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/port-mappings/{id}", delete(crate::ports::remove))
         .route(
+            "/api/port-mappings/{id}/lease",
+            post(crate::ports::lease_endpoint),
+        )
+        .route(
             "/api/management/harnesses",
             get(crate::management::harnesses),
         )
@@ -608,7 +612,7 @@ pub(crate) fn map_err(e: anyhow::Error) -> ApiErr {
 
 async fn healthz(State(state): State<AppState>) -> Json<Value> {
     Json(
-        json!({"status":"ok", "timestamp":now_rfc3339(), "activeTurnCount":state.active_turn_count(), "runningVersion":APP_VERSION, "processId":std::process::id(), "relayConnected":state.relay_connected.load(std::sync::atomic::Ordering::SeqCst)}),
+        json!({"relayStatus":crate::owner_trust::relay_status(&state),"status":"ok", "timestamp":now_rfc3339(), "activeTurnCount":state.active_turn_count(), "runningVersion":APP_VERSION, "processId":std::process::id(), "relayConnected":state.relay_connected.load(std::sync::atomic::Ordering::SeqCst)}),
     )
 }
 
@@ -847,6 +851,16 @@ async fn thread_harness_action(
         )
         .await
         .map_err(map_err)?;
+        let authority = crate::ports::MappingAuthority::for_request(
+            forwarded.as_ref().map(|f| &f.0),
+            owner.as_ref().map(|p| &p.0),
+        );
+        if !matches!(authority, crate::ports::MappingAuthority::Tunnel(None)) {
+            let lease =
+                crate::ports::create_lease(&state, &mapping.id, authority).map_err(map_err)?;
+            result["console"]["leaseId"] = json!(lease.lease_id);
+            result["console"]["expiresAt"] = json!(lease.expires_at);
+        }
         result["console"]["mappingId"] = json!(mapping.id);
     }
     Ok(Json(result))

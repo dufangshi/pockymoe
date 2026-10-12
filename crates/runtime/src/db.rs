@@ -174,6 +174,14 @@ const RUNTIME_MIGRATIONS: &[Migration] = &[
             Ok(())
         },
     },
+    Migration {
+        version: 15,
+        name: "preview_leases",
+        apply: |conn| {
+            conn.execute_batch(include_str!("preview_leases.sql"))?;
+            Ok(())
+        },
+    },
 ];
 
 const NODE_0030_MIGRATIONS: &[&str] = &[
@@ -237,15 +245,32 @@ pub fn ensure_device_owner_trust(conn: &Connection) -> Result<()> {
         |r| r.get(0),
     )?;
     ensure!(
-        matches!(version, 13 | 14),
+        version >= 13,
         "Update the Supervisor before binding this database"
     );
-    if version == 13 {
-        let migration = RUNTIME_MIGRATIONS.iter().find(|m| m.version == 14).unwrap();
+    for migration in RUNTIME_MIGRATIONS.iter().filter(|m| m.version > version) {
         (migration.apply)(&tx)?;
         tx.execute("INSERT INTO __remote_codex_runtime_migrations(version,name,applied_at) VALUES(?1,?2,?3)", params![migration.version,migration.name,pockymoe_protocol::now_rfc3339()])?;
     }
     tx.commit()?;
+    Ok(())
+}
+
+/// SQLite inherits restrictive permissions for the database and its journal files.
+pub fn secure_database_file(path: &Path) -> Result<()> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options.open(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
     Ok(())
 }
 
@@ -278,6 +303,7 @@ impl Database {
         owner.try_lock().map_err(|_| anyhow::anyhow!(
             "This database is already owned by another Supervisor. Use an isolated database or stop its owner before starting another instance."
         ))?;
+        secure_database_file(path)?;
         let mut conn =
             Connection::open(path).with_context(|| format!("open sqlite {}", path.display()))?;
 

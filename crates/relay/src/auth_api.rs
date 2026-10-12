@@ -423,6 +423,9 @@ async fn reauth(
         }
     }
     factors::mark_strong(&conn, &token).map_err(internal)?;
+    if crate::account::has_vault(&conn, &user.id) {
+        crate::account::mark_session(&conn, &token, crate::account::FULL)?;
+    }
     let proof = factors::password_grant(&conn, &user.id, &token, &headers).map_err(internal)?;
     security::audit(&conn, Some(&user.id), "security.reauthenticated", None);
     Ok(Json(json!({"ok":true,"verificationToken":proof})))
@@ -584,7 +587,8 @@ async fn device_bootstrap(
     headers: HeaderMap,
 ) -> Result<Response, Failure> {
     let conn = state.store.conn.lock().await;
-    let (user, _) = auth(&conn, &state, &headers)?;
+    let (user, session) = auth(&conn, &state, &headers)?;
+    recent(&conn, &session)?;
     let owned: bool = conn
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM relay_devices WHERE id=?1 AND owner_user_id=?2)",
@@ -707,7 +711,8 @@ async fn device_setup_token(
     headers: HeaderMap,
 ) -> Result<Response, Failure> {
     let conn = state.store.conn.lock().await;
-    let (user, _) = auth(&conn, &state, &headers)?;
+    let (user, session) = auth(&conn, &state, &headers)?;
+    recent(&conn, &session)?;
     let owned: bool = conn
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM relay_devices WHERE id=?1 AND owner_user_id=?2)",

@@ -35,6 +35,21 @@ struct Publication {
     encryption_key: Option<String>,
 }
 
+/// Binding removes legacy capabilities in the same transaction as the trust pin.
+pub fn delete_keyless_publications(conn: &rusqlite::Connection) -> Result<()> {
+    let rows = conn
+        .prepare("SELECT key,value FROM kv WHERE key LIKE 'publication:%'")?
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for (key, raw) in rows {
+        let policy: Publication = serde_json::from_str(&raw)?;
+        if policy.encryption_key.is_none() {
+            conn.execute("DELETE FROM kv WHERE key=?1", [key])?;
+        }
+    }
+    Ok(())
+}
+
 impl Supervisor {
     pub async fn create_publication(
         &self,
@@ -117,9 +132,19 @@ impl Supervisor {
                     |r| r.get(0),
                 )
                 .optional()?;
-            Ok(serde_json::from_str(&raw.ok_or_else(|| {
-                anyhow::anyhow!("Publication not found")
-            })?)?)
+            let policy: Publication = serde_json::from_str(
+                &raw.ok_or_else(|| anyhow::anyhow!("Publication not found"))?,
+            )?;
+            let bound: bool = conn.query_row(
+                "SELECT account_key_id IS NOT NULL FROM device_owner_trust WHERE singleton=1",
+                [],
+                |r| r.get(0),
+            )?;
+            ensure!(
+                !bound || policy.encryption_key.is_some(),
+                "Publication not found"
+            );
+            Ok(policy)
         })?;
         let ids = self.db.with(|conn| {
             let mut stmt = conn.prepare(
@@ -190,7 +215,16 @@ impl Supervisor {
         );
         match policy.encryption_key {
             Some(key) => encrypt_snapshot(&snapshot, &key),
-            None => Ok(snapshot),
+            None => {
+                // Binding can happen through a separate offline SQLite connection
+                // while this async read is in flight.
+                self.db.with(|c| {
+                    let bound: bool = c.query_row("SELECT account_key_id IS NOT NULL FROM device_owner_trust WHERE singleton=1", [], |r|r.get(0))?;
+                    ensure!(!bound,"Publication not found");
+                    Ok(())
+                })?;
+                Ok(snapshot)
+            }
         }
     }
 }

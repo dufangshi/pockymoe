@@ -19,7 +19,7 @@ const state = vi.hoisted(() => ({
 const account = { accountKeyId: vectors.account.accountKeyId, accountPublicKey: vectors.account.accountPublicKey };
 vi.mock('../lib/sharedDeviceTrust', () => ({
   isProtectedSharingDevice: state.paired,
-  locallyCertifiedDevices: async () => ['device'],
+  sharingGrantDevices: async () => ['device'],
   sharingOwnerAccountKeyId: state.ownerKey,
 }));
 vi.mock('../lib/accountVault', () => ({ currentAccount: state.account }));
@@ -84,7 +84,7 @@ it('shows unverified recipient safety codes and confirms only after the owner co
   fireEvent.click(
     screen.getByRole('button', { name: 'I compared the safety code' }),
   );
-  await waitFor(() => expect(state.confirm).toHaveBeenCalledWith(account));
+  await waitFor(() => expect(state.confirm).toHaveBeenCalledWith(account, row.targetUserId));
   expect(await screen.findByText(/Verified/)).toBeVisible();
 });
 it.each([

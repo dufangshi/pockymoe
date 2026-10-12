@@ -5,16 +5,26 @@ import { Aes256Gcm, CipherSuite, DhkemP256HkdfSha256, HkdfSha256 } from '@hpke/c
 import vectors from './fixtures/accountKeyVectors.json';
 import * as c from './accountCrypto';
 import type { BrowserIdentity, DeviceCertificate } from './accountVault';
-const state = vi.hoisted(() => ({ fetch: vi.fn(), store: new Map<string, unknown>() }));
+const state = vi.hoisted(() => ({ fetch: vi.fn(), store: new Map<string, unknown>(), identities: new Map<string, string>(), pending: vi.fn() }));
+vi.mock('./pendingEnrollmentStore', () => ({ listPendingEnrollments: state.pending }));
 vi.mock('./accountStore', () => ({ accountStore: async (key: string, value?: unknown) => {
   if (value === null) state.store.delete(key); else if (value !== undefined) state.store.set(key, structuredClone(value));
   return structuredClone(state.store.get(key) ?? null);
 } }));
+vi.mock('./sharingTrustStore', () => ({
+  sharingTrustStore: async (key: string, ...write: unknown[]) => {
+    const storedKey = 'sharing:' + key;
+    if (write.length) { if (write[0] === null) state.store.delete(storedKey); else state.store.set(storedKey, structuredClone(write[0])); }
+    return structuredClone(state.store.get(storedKey));
+  },
+  sharingTrustEntries: async (prefix: string) => [...state.store.entries()]
+    .filter(([key]) => key.startsWith('sharing:' + prefix)).map(([key, value]) => [key.slice('sharing:'.length), structuredClone(value)]),
+}));
 vi.stubGlobal('crypto', webcrypto); vi.stubGlobal('fetch', state.fetch);
 vi.stubGlobal('navigator', { userAgent: 'test', language: 'en-US' });
 vi.stubGlobal('indexedDB', { open: () => {
   const req: any = { result: { close() {}, transaction: () => {
-    const tx: any = { objectStore: () => ({ get: () => { const r: any = {}; queueMicrotask(() => r.onsuccess?.()); return r; }, openCursor: () => { const r: any = {}; queueMicrotask(() => r.onsuccess?.()); return r; }, put() {}, delete() {} }) };
+    const tx: any = { objectStore: () => ({ get: (id: string) => { const r: any = { result: state.identities.get(id) }; queueMicrotask(() => r.onsuccess?.()); return r; }, getAll: () => { const r: any = { result: [] }; queueMicrotask(() => r.onsuccess?.()); return r; }, openCursor: () => { const r: any = {}; queueMicrotask(() => r.onsuccess?.()); return r; }, put(value: string, id: string) { state.identities.set(id, value); }, delete(id: string) { state.identities.delete(id); } }) };
     setTimeout(() => tx.oncomplete?.(), 0); return tx;
   } } }; queueMicrotask(() => req.onsuccess?.()); return req;
 } });
@@ -28,6 +38,7 @@ const recipient = await suite.kem.generateKeyPair();
 const identity = await c.importPrivate(vectors.deviceCertificate.identityPrivateKeyPkcs8);
 const device = vectors.deviceCertificate.certificate.deviceId;
 const endpoint = (path: string) => `https://pockymoe.test/relay/devices/${device}/api/${path}`;
+let unbound: boolean;
 let missingCertificate: boolean, registrationRevoked: boolean, applicationRevoked: boolean, rejectCount: number, grantee: boolean;
 let wires: { path: string; headers: Headers; aad: string; sealed: Uint8Array; body: unknown }[];
 let browser: BrowserIdentity;
@@ -38,7 +49,7 @@ function packet(body: unknown, status: number) {
 }
 beforeEach(async () => {
   vi.restoreAllMocks(); foreignCertificate = undefined; transport.setTransportReporter(() => {});
-  state.store.clear(); transport.clearAllTransportKeys(); vault.closeUnlockWindow(); state.fetch.mockReset();
+  state.store.clear(); state.identities.clear(); state.pending.mockReset().mockResolvedValue([]); unbound = false; transport.clearAllTransportKeys(); vault.closeUnlockWindow(); state.fetch.mockReset();
   wires = []; missingCertificate = registrationRevoked = applicationRevoked = grantee = false; rejectCount = 0;
   const a = vectors.account;
   const pair = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign', 'verify']);
@@ -46,13 +57,14 @@ beforeEach(async () => {
   const fields = { accountKeyId: a.accountKeyId, browserId: await c.hash64(c.decode64(publicKey)), publicKey, createdAt: Date.now() };
   browser = { ...a, browserId: fields.browserId, privateKey: pair.privateKey,
     certificate: { version: 1, ...fields, signature: await c.sign(await c.importPrivate(a.accountPrivateKeyPkcs8), c.inputs.browser(fields)) } };
+  state.store.set(`device-certificate:${a.accountKeyId}:${device}`, vectors.deviceCertificate.certificate);
   state.store.set('active', a.userId); state.store.set(`cache:${a.userId}`, { ...a, revision: 3, boundDevices: [device] }); state.store.set(`browser:${a.userId}`, browser);
   state.fetch.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
     const target = new URL(input instanceof Request ? input.url : String(input), 'https://pockymoe.test');
     if (target.pathname.endsWith('/account/browsers')) return Response.json({ browsers: [], revocations: [] });
     if (target.pathname.endsWith('/transport/key')) {
       const descriptor = { version: 1, challenge: target.searchParams.get('challenge'), keyId: 'key-1', publicKey: c.encode64(await suite.kem.serializePublicKey(recipient.publicKey)), identityKey: vectors.deviceCertificate.certificate.identityKey,
-        expiresAt: Date.now() + 600000, serverTime: Date.now(), signature: '', certificate: missingCertificate ? null : foreignCertificate ?? vectors.deviceCertificate.certificate, trust: { bound: true, strict: true, accountKeyId: a.accountKeyId } };
+        expiresAt: Date.now() + 600000, serverTime: Date.now(), signature: '', certificate: missingCertificate ? null : foreignCertificate ?? vectors.deviceCertificate.certificate, trust: { bound: !unbound, strict: !unbound, accountKeyId: a.accountKeyId } };
       descriptor.signature = await c.sign(identity, `rcd-key-v1\n${descriptor.challenge}\n${descriptor.keyId}\n${descriptor.expiresAt}\n${descriptor.serverTime}\n${descriptor.publicKey}`);
       return Response.json(descriptor);
     }
@@ -92,6 +104,78 @@ it('re-registers and retries at most once when a device forgets registration', a
   rejectCount = 1; expect((await transport.exchange(new Request(endpoint('workspaces'), { method: 'POST', body: '{}' }))).response.ok).toBe(true);
   expect(wires.filter(w => w.path.endsWith('/browser'))).toHaveLength(2); expect(wires.filter(w => w.path === '/api/workspaces')).toHaveLength(2); await verifyWires();
 });
+async function cacheUnboundDescriptor() {
+  missingCertificate = unbound = true;
+  state.store.delete(`device-certificate:${vectors.account.accountKeyId}:${device}`);
+  state.store.set(`cache:${vectors.account.userId}`, { ...vectors.account, revision: 3, boundDevices: [] });
+  expect((await transport.exchange(new Request(endpoint('version')))).response.ok).toBe(true);
+  expect(wires[0]!.headers.has('x-rcd-session')).toBe(false);
+  unbound = false; // Local bind happened; the browser's descriptor is still cached.
+  state.pending.mockResolvedValue([{ ...vectors.account, deviceId: device, createdAt: Date.now(), enrollSecret: 'fake-secret' }]);
+}
+it('refreshes a cached pre-bind descriptor and registers the existing browser during pending enrollment', async () => {
+  await cacheUnboundDescriptor();
+  const before = state.fetch.mock.calls.filter(([input]) => String(input).includes('/transport/key?')).length;
+  const unlocked = vi.spyOn(vault, 'requireUnlock');
+  const closeWindow = vi.spyOn(vault, 'closeUnlockWindow');
+  rejectCount = 1;
+  const certificate = vectors.deviceCertificate.certificate;
+  expect((await transport.exchange(new Request(endpoint('transport/device-certificate'), { method: 'PUT', body: JSON.stringify(certificate) }))).response.ok).toBe(true);
+  expect(state.fetch.mock.calls.filter(([input]) => String(input).includes('/transport/key?')).length).toBeGreaterThan(before);
+  expect(wires.map(w => w.path)).toEqual(['/api/version', '/api/transport/device-certificate', '/api/transport/browser', '/api/transport/device-certificate']);
+  expect(wires[1]!.headers.has('x-rcd-session')).toBe(false);
+  expect(wires[3]!.headers.get('x-rcd-session')).toBe(browser.browserId);
+  expect(await c.verify(browser.certificate.publicKey, wires[3]!.headers.get('x-rcd-signature')!, await c.requestSigningInput(wires[3]!.aad, wires[3]!.sealed))).toBe(true);
+  expect(wires[3]!.body).toEqual(certificate);
+  expect((await vault.currentBrowser())?.browserId).toBe(browser.browserId);
+  expect(unlocked).not.toHaveBeenCalled();
+  expect(closeWindow).not.toHaveBeenCalled();
+});
+it('bounds cached pre-bind recovery to one retry and preserves pending enrollment on failure', async () => {
+  await cacheUnboundDescriptor(); rejectCount = 5;
+  const result = await transport.exchange(new Request(endpoint('transport/device-certificate'), { method: 'PUT', body: '{}' }));
+  expect(result.response.status).toBe(401);
+  expect(wires.filter(w => w.path.endsWith('/device-certificate'))).toHaveLength(2);
+  expect(wires.filter(w => w.path.endsWith('/browser'))).toHaveLength(1);
+  expect((await state.pending())[0].deviceId).toBe(device);
+});
+it('does not upgrade a cached unbound descriptor without live account-scoped pending enrollment', async () => {
+  await cacheUnboundDescriptor(); state.pending.mockResolvedValue([]); rejectCount = 1;
+  const result = await transport.exchange(new Request(endpoint('transport/device-certificate'), { method: 'PUT', body: '{}' }));
+  expect(result.response.status).toBe(401);
+  expect(wires.filter(w => w.path.endsWith('/device-certificate'))).toHaveLength(1);
+  expect(wires.filter(w => w.path.endsWith('/browser'))).toHaveLength(0);
+});
+it('does not replay a pending mutation on a forged plaintext post-bind registration error', async () => {
+  await cacheUnboundDescriptor();
+  const original = state.fetch.getMockImplementation()!;
+  const rejections = vi.fn();
+  state.fetch.mockImplementation(async (input, init) => {
+    if (String(input).endsWith('/transport/device-certificate')) {
+      rejections();
+      return Response.json({ code: 'browser_registration_required' }, { status: 401 });
+    }
+    return original(input, init);
+  });
+  const result = await transport.exchange(new Request(endpoint('transport/device-certificate'), { method: 'PUT', body: '{}' }));
+  expect(result.response.status).toBe(401);
+  expect(rejections).toHaveBeenCalledTimes(1);
+  expect(wires.filter(w => w.path.endsWith('/browser'))).toHaveLength(0);
+});
+it('refuses a changed account in the fresh descriptor before registering or signing the retry', async () => {
+  await cacheUnboundDescriptor(); rejectCount = 1;
+  const original = state.fetch.getMockImplementation()!;
+  state.fetch.mockImplementation(async (input, init) => {
+    const response = await original(input, init);
+    if (!String(input).includes('/transport/key?')) return response;
+    const descriptor = await response.json();
+    descriptor.trust.accountKeyId = vectors.otherAccount.accountKeyId;
+    return Response.json(descriptor);
+  });
+  await expect(transport.exchange(new Request(endpoint('transport/device-certificate'), { method: 'PUT', body: '{}' }))).rejects.toMatchObject({ code: 'account_mismatch' });
+  expect(wires.filter(w => w.path.endsWith('/browser'))).toHaveLength(0);
+  expect(wires.filter(w => w.path.endsWith('/device-certificate'))).toHaveLength(1);
+});
 it('never keeps or retries a revoked key rejected during registration', async () => {
   registrationRevoked = true;
   await expect(transport.exchange(new Request(endpoint('version')))).rejects.toMatchObject({ code: 'browser_revoked' });
@@ -121,7 +205,8 @@ it('cannot silently turn an owner registration into a grantee role', async () =>
   await expect(transport.exchange(new Request(endpoint('version')))).rejects.toMatchObject({ code: 'accountCertificateInvalid' });
 });
 it('allows the MAC-checked enrollment install to register before the descriptor has a certificate', async () => {
-  missingCertificate = true; state.store.set(`cache:${vectors.account.userId}`, { ...vectors.account, revision: 3, boundDevices: [] });
+  missingCertificate = true; state.store.delete(`device-certificate:${vectors.account.accountKeyId}:${device}`);
+  state.store.set(`cache:${vectors.account.userId}`, { ...vectors.account, revision: 3, boundDevices: [] });
   expect((await transport.exchange(new Request(endpoint('transport/device-certificate'), { method: 'PUT', body: JSON.stringify(vectors.deviceCertificate.certificate) }))).response.ok).toBe(true);
   expect(wires.map(w => w.path)).toEqual(['/api/transport/browser', '/api/transport/device-certificate']); await verifyWires();
   await expect(transport.exchange(new Request(endpoint('version')))).rejects.toMatchObject({ code: 'accountCertificateMissing' });
@@ -134,6 +219,7 @@ it('uses confirmed account trust for grantees and registers their own browser ce
   foreignCertificate = { ...fields, version: 1, signature: await c.sign(pair.privateKey, c.inputs.device(fields)) };
   const verifier = vi.spyOn(sharedTrust, 'verifySharedDevice').mockResolvedValue({ accountKeyId, identityTrust: 'invite' });
   const reporter = vi.fn(); transport.setTransportReporter(reporter); grantee = true;
+  state.store.delete(`device-certificate:${vectors.account.accountKeyId}:${device}`);
   state.store.set(`cache:${vectors.account.userId}`, { ...vectors.account, revision: 3, boundDevices: [] });
   expect((await transport.exchange(new Request(endpoint('threads/thread')))).response.ok).toBe(true);
   expect(verifier).toHaveBeenCalledWith(device, fields.identityKey, foreignCertificate);
@@ -146,15 +232,17 @@ it('uses confirmed account trust for grantees and registers their own browser ce
 });
 it('refuses an owner registration answer for a recipient certificate verified through invite trust', async () => {
   foreignCertificate = { ...vectors.deviceCertificate.certificate, accountKeyId: vectors.otherAccount.accountKeyId } as DeviceCertificate;
+  state.store.delete(`device-certificate:${vectors.account.accountKeyId}:${device}`);
   state.store.set(`cache:${vectors.account.userId}`, { ...vectors.account, revision: 3, boundDevices: [] });
   // Certificate cryptography is covered by sharedDeviceTrust tests. This mocks
   // its verified boundary to exercise a malicious registration role answer.
   vi.spyOn(sharedTrust, 'verifySharedDevice').mockResolvedValue({ accountKeyId: vectors.otherAccount.accountKeyId, identityTrust: 'invite' });
   await expect(transport.exchange(new Request(endpoint('threads/thread')))).rejects.toMatchObject({ code: 'accountCertificateInvalid' });
-  expect(wires.map(w => w.path)).toEqual(['/api/transport/browser']);
+  expect(wires.map(w => w.path)).toEqual(['/api/transport/revocations', '/api/transport/browser']);
 });
 it('never falls back to owner registration when recipient certificate trust fails', async () => {
   foreignCertificate = { ...vectors.deviceCertificate.certificate, accountKeyId: vectors.otherAccount.accountKeyId } as DeviceCertificate;
+  state.store.delete(`device-certificate:${vectors.account.accountKeyId}:${device}`);
   state.store.set(`cache:${vectors.account.userId}`, { ...vectors.account, revision: 3, boundDevices: [] });
   vi.spyOn(sharedTrust, 'verifySharedDevice').mockRejectedValue(new vault.AccountTrustError('account_mismatch'));
   await expect(transport.exchange(new Request(endpoint('threads/thread')))).rejects.toMatchObject({ code: 'account_mismatch' });
@@ -166,4 +254,70 @@ it('refuses a newly learned signed device revocation before any application requ
   const send = vi.fn().mockResolvedValue(undefined);
   await expect(browserTransport.syncDeviceRevocations(device, send)).rejects.toMatchObject({ code: 'accountDeviceRevoked' });
   expect(send).toHaveBeenCalledWith([vectors.revocations.device]);
+});
+
+it('does not delete a browser key on a forged plaintext registration rejection', async () => {
+  const original = state.fetch.getMockImplementation()!;
+  state.fetch.mockImplementation(async (input, init) => String(input).endsWith('/transport/browser')
+    ? Response.json({ code: 'browser_revoked' }, { status: 401 }) : original(input, init));
+  await expect(transport.exchange(new Request(endpoint('version')))).rejects.toMatchObject({ code: 'browser_revoked' });
+  expect((await vault.currentBrowser())?.browserId).toBe(browser.browserId);
+  expect(await browserTransport.browserRequestHeaders(browser, 'aad', new Uint8Array())).toHaveProperty('x-rcd-session', browser.browserId);
+});
+it('pushes recipient browser revocations to a shared device, without foreign device tombstones', async () => {
+  state.store.delete(`device-certificate:${vectors.account.accountKeyId}:${device}`);
+  state.store.set(`cache:${vectors.account.userId}`, { ...vectors.account, revision: 3, boundDevices: [] });
+  state.store.set(`protected-device:${vectors.account.accountKeyId}:${device}`, true);
+  state.fetch.mockResolvedValueOnce(Response.json({ browsers: [], revocations: [vectors.revocations.browser, vectors.revocations.device] }));
+  const send = vi.fn().mockResolvedValue(undefined);
+  await browserTransport.syncDeviceRevocations(device, send);
+  expect(send).toHaveBeenCalledWith([vectors.revocations.browser]);
+});
+it('rejects even a valid owner certificate whose device identity differs from the vault pin', async () => {
+  const cert = vectors.deviceCertificate.certificate as DeviceCertificate;
+  state.store.set(`cache:${vectors.account.userId}`, { ...vectors.account, revision: 3, boundDevices: [{ deviceId: device, identityKey: vectors.negative.deviceCertWrongIdentity.identityKey }] });
+  await expect(browserTransport.verifyTransportDevice(device, cert.identityKey, cert)).rejects.toMatchObject({ code: 'accountDeviceIdentityChanged' });
+});
+it('never sends a locally owned device down the recipient trust path', async () => {
+  state.store.delete(`device-certificate:${vectors.account.accountKeyId}:${device}`);
+  state.store.set(`cache:${vectors.account.userId}`, { ...vectors.account, revision: 3, boundDevices: [] });
+  await browserTransport.markOwnedDevices([device]);
+  const cert = { ...vectors.deviceCertificate.certificate, accountKeyId: vectors.otherAccount.accountKeyId } as DeviceCertificate;
+  const verifier = vi.spyOn(sharedTrust, 'verifySharedDevice').mockResolvedValue({ accountKeyId: cert.accountKeyId, identityTrust: 'tofu' });
+  await expect(browserTransport.verifyTransportDevice(device, cert.identityKey, cert)).rejects.toMatchObject({ code: 'accountCertificateInvalid' });
+  expect(verifier).not.toHaveBeenCalled();
+});
+
+it('allows only unsigned enrollment inspection before a reinstalled identity is confirmed', async () => {
+  const cert = vectors.deviceCertificate.certificate;
+  state.store.set(`cache:${vectors.account.userId}`, { ...vectors.account, revision: 3, boundDevices: [{ deviceId: device, identityKey: vectors.negative.deviceCertWrongIdentity.identityKey }] });
+  expect((await transport.inspectEnrollmentDevice(device)).identityKey).toBe(cert.identityKey);
+  expect((await transport.exchange(new Request(endpoint('transport/enrollment')))).response.ok).toBe(true);
+  expect(wires.map(w => w.path)).toEqual(['/api/transport/enrollment']);
+  expect(wires[0]!.headers.has('x-rcd-session')).toBe(false);
+  await expect(transport.exchange(new Request(endpoint('version')))).rejects.toMatchObject({ code: 'accountDeviceIdentityChanged' });
+  expect(wires).toHaveLength(1);
+});
+
+it('allows certificate installation after exact unlocked replacement confirmation, while ordinary reads still require the certificate', async () => {
+  const cert = vectors.deviceCertificate.certificate;
+  missingCertificate = true;
+  state.store.set(`cache:${vectors.account.userId}`, { ...vectors.account, revision: 3, boundDevices: [{ deviceId: device, identityKey: cert.identityKey }] });
+  expect((await transport.exchange(new Request(endpoint('transport/device-certificate'), { method: 'PUT', body: JSON.stringify(cert) }))).response.ok).toBe(true);
+  await expect(transport.exchange(new Request(endpoint('version')))).rejects.toMatchObject({ code: 'accountCertificateMissing' });
+});
+
+it.each(['invite', 'tofu'])('enforces an existing %s owner pin even before an account loads or an offline device is refused', async (kind) => {
+  state.store.delete('active');
+  state.store.set(`sharing:${kind}-owner:${device}`, vectors.otherAccount.accountKeyId);
+  expect(await browserTransport.hasAccountDeviceCertificate(device)).toBe(true);
+  state.fetch.mockResolvedValue(new Response(null, { status: 404 }));
+  await expect(transport.exchange(new Request(endpoint('threads/thread')))).rejects.toMatchObject({ code: 'accountCertificateMissing' });
+  expect(wires).toHaveLength(0);
+});
+
+it('does not advertise Protected before the encrypted browser registration role is checked', async () => {
+  const reporter = vi.fn(); transport.setTransportReporter(reporter); grantee = true;
+  await expect(transport.exchange(new Request(endpoint('version')))).rejects.toMatchObject({ code: 'accountCertificateInvalid' });
+  expect(reporter).not.toHaveBeenCalledWith(expect.objectContaining({ state: 'encrypted', certificateVerified: true, role: 'owner' }));
 });
