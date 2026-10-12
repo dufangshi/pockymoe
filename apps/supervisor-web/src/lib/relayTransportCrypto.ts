@@ -78,6 +78,7 @@ export interface Descriptor {
 }
 interface Key {
   paired: boolean;
+  certificateVerified: boolean;
   grantee?: boolean;
   identityTrust: 'certificate' | 'invite' | 'tofu';
   accountKeyId?: string | undefined;
@@ -177,12 +178,12 @@ async function keyFor(
   const cached = keys.get(deviceId);
   if (cached) {
     const key = await cached;
-    if (!key && !(await boundDevices()).includes(deviceId)) return key;
+    if (!key && !(await boundDevices()).includes(deviceId) && !await hasAccountDeviceCertificate(deviceId)) return key;
     if (!key) keys.delete(deviceId);
     if (key && key.descriptor.expiresAt > Date.now() + key.offset + 60000 &&
         key.accountKeyId === (await currentAccount())?.accountKeyId &&
-        (key.identityTrust === 'certificate' || (!key.paired && !(await boundDevices()).includes(deviceId) && await pinned(deviceId) === key.descriptor.identityKey))) {
-      if (key.identityTrust === 'certificate') await verifyTransportDevice(deviceId, key.descriptor.identityKey, key.descriptor.certificate, key.descriptor.trust);
+        (key.certificateVerified || (!key.paired && !(await boundDevices()).includes(deviceId) && await pinned(deviceId) === key.descriptor.identityKey))) {
+      if (key.certificateVerified) await verifyTransportDevice(deviceId, key.descriptor.identityKey, key.descriptor.certificate, key.descriptor.trust);
       return key;
     }
     keys.delete(deviceId);
@@ -215,8 +216,9 @@ async function keyFor(
     }
     const expectedBound = (await boundDevices()).includes(deviceId);
     const previous = await pinned(deviceId);
-    if (response.status === 404 && expectedBound) throw new AccountTrustError('accountCertificateMissing');
-    if (response.status === 404 && !previous && !expectedBound) {
+    const protectedBefore = await hasAccountDeviceCertificate(deviceId);
+    if (response.status === 404 && (expectedBound || protectedBefore)) throw new AccountTrustError('accountCertificateMissing');
+    if (response.status === 404 && !previous && !expectedBound && !protectedBefore) {
       reportTransport({ deviceId, state: 'legacy', bound: false });
       setTimeout(() => { if (keys.get(deviceId) === task) keys.delete(deviceId); }, 10000);
       return null;
@@ -312,7 +314,8 @@ async function keyFor(
       bound: trust.bound,
       accountKeyId: (await currentAccount())?.accountKeyId,
       grantee,
-      identityTrust: certificate ? 'certificate' as const : 'tofu' as const,
+      certificateVerified: certificate,
+      identityTrust: trust.identityTrust ?? 'tofu' as const,
 
       fingerprint,
       offset: descriptor.serverTime - Date.now(),
@@ -342,6 +345,10 @@ async function reportOwnerRequired(response: Response, deviceId: string, encrypt
   const body = await response.clone().json().catch(() => null) as { code?: string } | null;
   const revoked = response.status === 401 && body?.code === 'browser_revoked' && !!encryptedBrowserId;
   if (revoked) await handleBrowserRevoked(encryptedBrowserId!);
+  if (body?.code === 'browser_registration_required' && encryptedBrowserId) {
+    const browser = await currentBrowser();
+    if (browser?.browserId === encryptedBrowserId) forgetBrowserRegistration(browser, deviceId);
+  }
   if (revoked || body?.code === 'browser_registration_required' || body?.code === 'device_strict_mode') {
     keys.delete(deviceId);
     reportTransport({ deviceId, state: 'unlock-required', paired: true, bound: true, strict: true,
@@ -466,6 +473,7 @@ export async function exchange(
           },
         ),
       };
+    if ((error as { code?: string })?.code && ['accountCertificateMissing', 'accountCertificateInvalid', 'accountKeyChanged', 'accountDeviceRevoked', 'account_mismatch', 'invalid_certificate'].includes((error as { code: string }).code)) reportTransport({ deviceId: route.deviceId, state: 'identity-changed', bound: true, certificateVerified: false });
     throw error;
   }
   if (!key) {
@@ -489,6 +497,7 @@ export async function exchange(
       if (!result.response.ok) throw new AccountTrustError('accountRevocationsFailed');
     }); } catch (e) {
       if (e instanceof AccountTrustError && e.code === 'browser_revoked') reportTransport({ deviceId: route.deviceId, state: 'unlock-required', paired: true, bound: true, unlockReason: 'browser_revoked' });
+      if (e instanceof AccountTrustError && e.code === 'accountDeviceRevoked') reportTransport({ deviceId: route.deviceId, state: 'identity-changed', bound: true, certificateVerified: false });
       throw e;
     }
     if (!isBrowserRegistered(owner, route.deviceId)) {
@@ -655,7 +664,7 @@ export async function exchange(
     paired: key.paired,
     strict: key.paired,
     bound: key.paired,
-    certificateVerified: key.identityTrust === 'certificate',
+    certificateVerified: key.certificateVerified,
     ...(key.identityTrust ? { identityTrust: key.identityTrust } : {}),
     role: key.grantee ? 'grantee' : 'owner',
     fingerprint: key.fingerprint,
@@ -828,7 +837,7 @@ export class SocketCipher {
 
 export async function sharingFingerprint(deviceId: string, threadId?: string) {
   const key = await keyFor(deviceId, threadId ? `/api/threads/${encodeURIComponent(threadId)}` : '/api/transport/grants', threadId);
-  if (!key) throw new AccountTrustError('accountIdentityMismatch');
+  if (!key || !key.certificateVerified || key.grantee) throw new AccountTrustError('accountCertificateInvalid');
   return key.fingerprint;
 }
 
