@@ -10,11 +10,14 @@ import { DeviceBindingPanel } from './DeviceBindingPanel';
 import { prepareDeviceEnrollment } from '../lib/deviceEnrollment';
 import {
   protectDevices,
+  canSwitchLocalEnrollmentToRemote,
   deviceProtectionProgress,
   REMOTE_PROTECTION_CHANGED_EVENT,
 } from '../lib/remoteDeviceProtection';
 import type { RelayDeviceDto } from '@pockymoe/shared';
 vi.mock('../lib/remoteDeviceProtection', () => ({
+  canSwitchLocalEnrollmentToRemote: vi.fn(async () => false),
+  switchLocalEnrollmentToRemote: vi.fn(),
   protectDevices: vi.fn(),
   deviceProtectionProgress: vi.fn(async () => undefined),
   updateAndProtectDevice: vi.fn(),
@@ -25,6 +28,7 @@ vi.mock('../lib/deviceEnrollment', () => ({
 }));
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(canSwitchLocalEnrollmentToRemote).mockResolvedValue(false);
   vi.mocked(deviceProtectionProgress).mockResolvedValue(undefined);
   vi.mocked(protectDevices).mockResolvedValue(undefined);
   vi.mocked(prepareDeviceEnrollment).mockResolvedValue({
@@ -150,4 +154,28 @@ it('requests a fresh enrollment for missing-certificate repair and offers both p
   expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
     expect.stringContaining('Remove-Item Env:POCKYMOE_ENROLL_SECRET'),
   );
+});
+
+it('keeps the local command visible beside the explicit one-click switch', async () => {
+  vi.mocked(deviceProtectionProgress).mockResolvedValue({
+    phase: 'local-command-pending',
+  });
+  vi.mocked(canSwitchLocalEnrollmentToRemote).mockResolvedValue(true);
+  render(
+    <DeviceBindingPanel
+      deviceId={device.id}
+      device={{ ...device, connected: true }}
+    />,
+  );
+  const copy = await screen.findByRole('button', { name: 'Copy bind command' });
+  expect(copy).toBeVisible();
+  expect(
+    await screen.findByRole('button', {
+      name: 'Use one-click protection instead',
+    }),
+  ).toBeVisible();
+  fireEvent.click(
+    screen.getByRole('button', { name: 'Use one-click protection instead' }),
+  );
+  expect(copy).toBeVisible();
 });

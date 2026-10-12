@@ -2189,12 +2189,12 @@ function DeviceRow({
         <p role={protection === 'certificate-missing' ? 'alert' : undefined}>
           {translate(protectionLabel(protection))}
         </p>
-        {(protection === 'not-protected' || protection === 'certificate-missing') && (
+        {(protection === 'not-protected' || protection === 'certificate-missing' || protection === 'pending') && (
           <button
             className="relay-button-secondary mt-2 px-3 py-2"
             onClick={() => setProtectOpen(true)}
           >
-            {translate(protection === 'certificate-missing' ? 'devices.repairDevice' : 'devices.protectDevice')}
+            {translate(protection === 'pending' ? 'devices.showLocalBindCommand' : protection === 'certificate-missing' ? 'devices.repairDevice' : 'devices.protectDevice')}
           </button>
         )}
         {protectOpen && (

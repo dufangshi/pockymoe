@@ -4,6 +4,8 @@ import type { RelayDeviceDto } from '@pockymoe/shared';
 import {
   deviceProtectionProgress,
   protectDevices,
+  canSwitchLocalEnrollmentToRemote,
+  switchLocalEnrollmentToRemote,
   updateAndProtectDevice,
   REMOTE_PROTECTION_CHANGED_EVENT,
   type ProtectionProgress,
@@ -14,16 +16,22 @@ import { FormDialog } from './FormDialog';
 export function ProtectDevicesButton({
   devices,
   all = false,
+  replaceLocal = false,
 }: {
   devices: readonly RelayDeviceDto[];
   all?: boolean;
+  replaceLocal?: boolean;
 }) {
   useI18n();
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(false);
   const title = translate(
-    all ? 'devices.protectAllDevices' : 'devices.protectRemotely',
+    replaceLocal
+      ? 'devices.useOneClickProtectionInstead'
+      : all
+        ? 'devices.protectAllDevices'
+        : 'devices.protectRemotely',
   );
   return (
     <>
@@ -49,6 +57,11 @@ export function ProtectDevicesButton({
           <p className="text-sm">
             {translate('devices.remoteProtectionUpdatesHelp')}
           </p>
+          {replaceLocal && (
+            <p className="text-sm">
+              {translate('devices.replaceLocalEnrollmentHelp')}
+            </p>
+          )}
           {error && (
             <p role="alert">{translate('devices.remoteProtectionFailed')}</p>
           )}
@@ -59,7 +72,11 @@ export function ProtectDevicesButton({
             onClick={() => {
               setBusy(true);
               setError(false);
-              void protectDevices(devices)
+              void (
+                replaceLocal
+                  ? switchLocalEnrollmentToRemote(devices[0]!)
+                  : protectDevices(devices)
+              )
                 .then(() => setOpen(false))
                 .catch(() => setError(true))
                 .finally(() => setBusy(false));
@@ -97,14 +114,21 @@ export function RemoteProtectionStatus({ device }: { device: RelayDeviceDto }) {
   const [state, setState] = useState<ProtectionProgress>();
   const [busy, setBusy] = useState(false);
   const [actionFailed, setActionFailed] = useState(false);
+  const [canSwitch, setCanSwitch] = useState(false);
   useEffect(() => {
     let active = true,
       generation = 0;
     const update = () => {
       const current = ++generation;
       void deviceProtectionProgress(device.id)
-        .then((next) => {
-          if (active && current === generation) setState(next);
+        .then(async (next) => {
+          if (!active || current !== generation) return;
+          setState(next);
+          setCanSwitch(false);
+          if (next?.phase === 'local-command-pending' && device.connected) {
+            const eligible = await canSwitchLocalEnrollmentToRemote(device);
+            if (active && current === generation) setCanSwitch(eligible);
+          }
         })
         .catch(() => {
           if (active && current === generation) setState(undefined);
@@ -121,7 +145,7 @@ export function RemoteProtectionStatus({ device }: { device: RelayDeviceDto }) {
       active = false;
       for (const event of events) window.removeEventListener(event, update);
     };
-  }, [device.id]);
+  }, [device.id, device.connected, device.ownerUserId]);
   if (!state) return null;
   const pinnedError =
     state.phase === 'identity-changed' || state.phase === 'certificate-missing';
@@ -143,6 +167,9 @@ export function RemoteProtectionStatus({ device }: { device: RelayDeviceDto }) {
       {actionFailed && (
         <p role="alert">{translate('devices.remoteProtectionFailed')}</p>
       )}
+      {state.phase === 'local-command-pending' &&
+        device.connected &&
+        canSwitch && <ProtectDevicesButton devices={[device]} replaceLocal />}
       {(updateRequired || failed) && (
         <button
           type="button"

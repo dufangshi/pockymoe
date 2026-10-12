@@ -8,6 +8,7 @@ import { accountPasswordProof } from '../lib/accountAuth';
 import { prepareDeviceEnrollment } from '../lib/deviceEnrollment';
 import { securityRequest } from '../lib/relaySecurity';
 import { relaySupervisorCommand } from '../lib/deviceSetupCommands';
+import { useDeviceProtection } from '../lib/useDeviceProtection';
 import { RelayDevicesPage } from './RelayDevicesPage';
 import { protectDevices, deviceProtectionProgress } from '../lib/remoteDeviceProtection';
 
@@ -29,9 +30,10 @@ vi.mock('../lib/relaySecurity', async (original) => ({ ...await original<object>
 vi.mock('../lib/relayTransport', () => ({ getTransportStatus: vi.fn() }));
 vi.mock('../lib/relayOrigin', () => ({ relayOrigin: () => 'https://relay.test' }));
 vi.mock('../lib/useDevicePresence', () => ({ useDevicePresence: (portal: unknown) => portal }));
-vi.mock('../lib/useDeviceProtection', () => ({ useDeviceProtection: () => 'not-protected', protectionLabel: () => 'devices.notProtected' }));
+vi.mock('../lib/useDeviceProtection', () => ({ useDeviceProtection: vi.fn(() => 'not-protected'), protectionLabel: () => 'devices.notProtected' }));
 vi.mock('../components/DeviceBindingPanel', () => ({ DeviceBindingPanel: () => null }));
 vi.mock('../lib/remoteDeviceProtection', () => ({
+  canSwitchLocalEnrollmentToRemote: vi.fn(async () => false), switchLocalEnrollmentToRemote: vi.fn(),
   protectDevices: vi.fn(), deviceProtectionProgress: vi.fn(), updateAndProtectDevice: vi.fn(),
   REMOTE_PROTECTION_CHANGED_EVENT: 'pockymoe-remote-protection-changed',
 }));
@@ -56,6 +58,7 @@ const reauthenticationRequired = () => new ApiError(403, { code: 'reauthenticati
 
 beforeEach(() => {
   vi.resetAllMocks();
+  vi.mocked(useDeviceProtection).mockReturnValue('not-protected');
   vi.mocked(deviceProtectionProgress).mockResolvedValue(undefined);
   vi.mocked(protectDevices).mockResolvedValue(undefined);
   vi.mocked(fetchRelayPortal).mockResolvedValue({ user: { id: 'test-user' } as never, devices: [device], sharedWithMe: [], sharedByMe: [] });
@@ -195,4 +198,11 @@ describe('device setup reauthentication', () => {
     expect(securityRequest).not.toHaveBeenCalled();
     expect(writeText).not.toHaveBeenCalled();
   });
+});
+
+it('keeps the local command accessible for a pending enrollment on the Devices page', async () => {
+  vi.mocked(useDeviceProtection).mockReturnValue('pending');
+  await openPage();
+  fireEvent.click(screen.getByRole('button', {name:'Show local bind command'}));
+  expect(screen.getByRole('dialog', {name:'Protect this device'})).toBeVisible();
 });
