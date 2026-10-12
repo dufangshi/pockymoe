@@ -10,6 +10,26 @@ import {
   type PendingEnrollment,
 } from '../lib/deviceEnrollment';
 import { FormDialog } from './FormDialog';
+import type { TransportStatus } from '../lib/relayTransportCrypto';
+
+const POLL_INTERVAL_MS = 15_000;
+const MAX_RETRY_MS = 120_000;
+const enrollmentKey = (pending: PendingEnrollment) =>
+  JSON.stringify([
+    pending.userId,
+    pending.accountKeyId,
+    pending.deviceId,
+    pending.createdAt,
+    pending.enrollSecret,
+  ]);
+interface EnrollmentProgress {
+  key: string;
+  failures: number;
+  nextAttemptAt: number;
+  connected?: boolean;
+  paused?: boolean;
+  completed?: boolean;
+}
 
 /** Runs while the browser is open, including when it is viewing a thread. */
 export function DeviceEnrollmentMonitor() {
@@ -25,6 +45,17 @@ export function DeviceEnrollmentMonitor() {
     if (!replacement || confirming) return;
     setConfirming(true);
     try {
+      const account = await currentAccount();
+      const live = await listPendingEnrollments(account);
+      if (
+        !account ||
+        !live.some(
+          (p) => enrollmentKey(p) === enrollmentKey(replacement.enrollment),
+        )
+      ) {
+        setReplacement(null);
+        return;
+      }
       await completeDeviceEnrollment(replacement.enrollment, true, {
         previousIdentityKey: replacement.change.previousIdentityKey,
         identityKey: replacement.change.identityKey,
@@ -50,43 +81,98 @@ export function DeviceEnrollmentMonitor() {
   useEffect(() => {
     let stopped = false,
       running = false;
-    const paused = new Set<string>();
+    const progress = new Map<string, EnrollmentProgress>();
+    const hints = new Map<string, string>();
     async function tick() {
       if (running || stopped || document.visibilityState === 'hidden') return;
       running = true;
       try {
         const account = await currentAccount();
-        if (!account) return;
-        const pending = await listPendingEnrollments(account);
-        if (!pending.length) return;
+        const pending = account ? await listPendingEnrollments(account) : [];
+        if (stopped) return;
+        const live = new Map(
+          pending.map((p) => [p.deviceId, enrollmentKey(p)]),
+        );
+        for (const [id, state] of progress) {
+          if (live.get(id) !== state.key) {
+            progress.delete(id);
+            hints.delete(id);
+          }
+        }
+        for (const enrollment of pending) {
+          if (!progress.has(enrollment.deviceId))
+            progress.set(enrollment.deviceId, {
+              key: enrollmentKey(enrollment),
+              failures: 0,
+              nextAttemptAt: 0,
+            });
+        }
+        setReplacement((previous) =>
+          previous &&
+          live.get(previous.enrollment.deviceId) ===
+            enrollmentKey(previous.enrollment)
+            ? previous
+            : null,
+        );
+        if (![...progress.values()].some((s) => s.paused)) setError(null);
+        if (
+          !pending.some((p) => {
+            const s = progress.get(p.deviceId)!;
+            return !s.paused && !s.completed;
+          })
+        )
+          return;
         const portal = await fetchRelayPortal();
         for (const enrollment of pending) {
-          if (stopped || paused.has(enrollment.deviceId)) continue;
+          if (stopped) break;
+          const state = progress.get(enrollment.deviceId)!;
           const device = portal.devices.find(
             (d) => d.id === enrollment.deviceId,
           );
-          if (!device?.connected) continue;
+          const connected = !!device?.connected;
+          if (state.connected === false && connected) {
+            state.failures = 0;
+            state.nextAttemptAt = 0;
+          }
+          state.connected = connected;
+          if (
+            !connected ||
+            state.paused ||
+            state.completed ||
+            Date.now() < state.nextAttemptAt
+          )
+            continue;
           try {
-            await completeDeviceEnrollment(enrollment, true);
+            state.completed = await completeDeviceEnrollment(enrollment, true);
           } catch (caught) {
             if (caught instanceof EnrollmentIdentityChangeError) {
-              paused.add(enrollment.deviceId);
+              state.paused = true;
               if (!stopped) setReplacement({ enrollment, change: caught });
               continue;
             }
-            // Offline transport errors keep their secret for a later connection.
+            // enrollment_missing means the local bind command has not run yet.
             if (
               caught instanceof TypeError ||
               (caught instanceof Error &&
                 (caught as Error & { status?: number }).status !== undefined &&
                 (caught as Error & { status: number }).status >= 500) ||
               (caught instanceof Error &&
-                ['device_offline', 'device_unresponsive'].includes(
-                  (caught as Error & { code?: string }).code ?? '',
-                ))
-            )
+                [
+                  'device_offline',
+                  'device_unresponsive',
+                  'enrollment_missing',
+                ].includes((caught as Error & { code?: string }).code ?? ''))
+            ) {
+              state.failures++;
+              state.nextAttemptAt =
+                Date.now() +
+                Math.min(
+                  POLL_INTERVAL_MS * 2 ** Math.min(state.failures - 1, 3),
+                  MAX_RETRY_MS,
+                );
               continue;
-            paused.add(enrollment.deviceId);
+            }
+            state.paused = true;
             if (!stopped)
               setError(
                 caught instanceof Error
@@ -104,15 +190,49 @@ export function DeviceEnrollmentMonitor() {
     const update = () => {
       void tick();
     };
+    const wake = () => {
+      for (const state of progress.values()) {
+        state.failures = 0;
+        state.nextAttemptAt = 0;
+      }
+      update();
+    };
+    const trustChanged = (event: Event) => {
+      const status = (event as CustomEvent<TransportStatus>).detail;
+      const state = status && progress.get(status.deviceId);
+      if (!state) return;
+      const hint = JSON.stringify([
+        status.state,
+        status.bound,
+        status.accountKeyId,
+        status.identityKey,
+        status.certificateVerified,
+        status.role,
+      ]);
+      if (hints.get(status.deviceId) === hint) return;
+      hints.set(status.deviceId, hint);
+      state.failures = 0;
+      state.nextAttemptAt = 0;
+      update();
+    };
     void tick();
-    const interval = window.setInterval(update, 15_000);
+    const interval = window.setInterval(update, POLL_INTERVAL_MS);
     window.addEventListener(ENROLLMENT_CHANGED_EVENT, update);
-    document.addEventListener('visibilitychange', update);
+    window.addEventListener('pockymoe-account-revocations-changed', update);
+    window.addEventListener('remote-codex-transport', trustChanged);
+    window.addEventListener('online', wake);
+    document.addEventListener('visibilitychange', wake);
     return () => {
       stopped = true;
       window.clearInterval(interval);
       window.removeEventListener(ENROLLMENT_CHANGED_EVENT, update);
-      document.removeEventListener('visibilitychange', update);
+      window.removeEventListener(
+        'pockymoe-account-revocations-changed',
+        update,
+      );
+      window.removeEventListener('remote-codex-transport', trustChanged);
+      window.removeEventListener('online', wake);
+      document.removeEventListener('visibilitychange', wake);
     };
   }, [generation]);
   return (
