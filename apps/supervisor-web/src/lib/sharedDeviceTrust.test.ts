@@ -4,10 +4,12 @@ import vectors from './fixtures/accountKeyVectors.json';
 import type { AccountKeyInfo, DeviceCertificate } from './accountVault';
 const state = vi.hoisted(() => ({
   account: vi.fn(), bound: vi.fn(), verify: vi.fn(), fetch: vi.fn(),
+  revocations: vi.fn(),
   store: new Map<string, unknown>(),
 }));
 vi.mock('./accountVault', () => ({
   currentAccount: state.account,
+  accountRevocations: state.revocations,
   boundDevices: state.bound,
   verifyDeviceCertificate: state.verify,
 }));
@@ -29,6 +31,7 @@ function raw(value: string) {
 }
 beforeEach(() => {
   state.store.clear();
+  state.revocations.mockReset().mockResolvedValue([]);
   state.account.mockReset().mockResolvedValue(null);
   state.bound.mockReset().mockResolvedValue([]);
   // accountVault is a parallel dependency. Mock its contract using real vector
@@ -92,8 +95,10 @@ describe('account-key recipient identity', () => {
     }
     expect(state.store.size).toBe(0);
   });
-  it('lets a confirmed invite replace an earlier TOFU owner account but rejects conflicting invite pins', async () => {
+  it('requires forgetting an existing TOFU owner pin before accepting a different invite', async () => {
     state.store.set(`tofu-owner:${certificate.deviceId}`, vectors.otherAccount.accountKeyId);
+    await expect(trust.pinInviteOwner(certificate.deviceId, account.accountKeyId)).rejects.toMatchObject({ code: 'account_mismatch' });
+    await trust.forgetInviteOwner(certificate.deviceId);
     await trust.pinInviteOwner(certificate.deviceId, account.accountKeyId);
     expect((await trust.verifySharedDevice(certificate.deviceId, certificate.identityKey, certificate)).identityTrust).toBe('invite');
     await expect(trust.pinInviteOwner(certificate.deviceId, vectors.otherAccount.accountKeyId)).rejects.toMatchObject({ code: 'account_mismatch' });

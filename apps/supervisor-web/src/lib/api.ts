@@ -1,4 +1,5 @@
-import { sharingMutation } from './signedSharing';
+import { markOwnedDevices } from './accountTransport';
+import { sharingMutation, type SharingInput } from './signedSharing';
 import { relayOrigin, relayUrl, relaySocketUrl, relayFetchInit } from './relayOrigin';
 import { logoutAccount } from './accountVaultState';
 import { startAccountLogin, setAccountSession, cancelAccountLogin, type AccountSessionState } from './accountAuth';
@@ -589,7 +590,7 @@ export async function fetchRelaySession() {
     cache: 'no-store',
   });
   workspaceActorScope = `relay:${result.user?.id??'anonymous'}`;
-  if (result.user?.role !== 'admin') await setAccountSession(result.authenticated ? result.user?.id ?? null : null, (result as RelaySessionDto & { account?: AccountSessionState }).account ?? false);
+  await setAccountSession(result.authenticated ? result.user?.id ?? null : null, (result as RelaySessionDto & { account?: AccountSessionState }).account ?? false);
   return result;
 }
 
@@ -650,8 +651,10 @@ export async function relayLogout() {
   }
 }
 
-export function fetchRelayPortal() {
-  return request<RelayPortalSummaryDto>('/relay/portal');
+export async function fetchRelayPortal() {
+  const summary = await request<RelayPortalSummaryDto>('/relay/portal');
+  await markOwnedDevices(summary.devices.filter(d => d.ownerUserId === summary.user.id).map(d => d.id));
+  return summary;
 }
 
 export function fetchRelayAccess(input: {
@@ -704,6 +707,7 @@ export function createRelayShare(input: CreateRelaySessionShareInput) {
 export function updateRelayShare(
   shareId: string,
   input: UpdateRelaySessionShareInput,
+  dialogContext?: SharingInput,
 ) {
   return sharingMutation('share', 'edit', shareId, () => request<RelaySessionShareDto>(
     `/relay/shares/${encodeURIComponent(shareId)}`,
@@ -711,7 +715,7 @@ export function updateRelayShare(
       method: 'PATCH',
       body: JSON.stringify(input),
     },
-  ), input);
+  ), { ...dialogContext, ...input });
 }
 
 export function revokeRelayShare(shareId: string) {
@@ -733,6 +737,7 @@ export function createRelayGrant(input: CreateRelayAccessGrantInput) {
 export function updateRelayGrant(
   grantId: string,
   input: UpdateRelayAccessGrantInput,
+  dialogContext?: SharingInput,
 ) {
   return sharingMutation('grant', 'edit', grantId, () => request<RelayAccessGrantDto>(
     `/relay/grants/${encodeURIComponent(grantId)}`,
@@ -740,7 +745,7 @@ export function updateRelayGrant(
       method: 'PATCH',
       body: JSON.stringify(input),
     },
-  ), input);
+  ), { ...dialogContext, ...input });
 }
 
 export function revokeRelayGrant(grantId: string) {
@@ -977,10 +982,8 @@ export async function dshConsoleUrl(
         body: JSON.stringify({ port: target.port, label }),
       })).id;
   }
-  const { url } = await request<{ url: string }>(`${device}/port-mappings/${mappingId}/open`, {
-    method: 'POST',
-    body: JSON.stringify({ path: target.path }),
-  });
+  const { openDevicePortPreview } = await import('./portPreview');
+  const { url } = await openDevicePortPreview(deviceId, mappingId, target.path);
   return url;
 }
 

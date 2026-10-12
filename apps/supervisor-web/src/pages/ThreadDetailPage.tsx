@@ -1,3 +1,4 @@
+import { sharingEditInput, type SharingInput } from '../lib/signedSharing';
 import { SignedShareDetails } from '../components/SignedShareDetails';
 import { useThreadDrafts } from './useThreadDrafts';
 import { useWorkbenchReference } from './useWorkbenchReference';
@@ -684,6 +685,7 @@ export function ThreadDetailPage() {
     setError,
     setThreads,
   });
+  const shareDialogContexts = useRef(new Map<string, SharingInput>());
   const [shareBusy, setShareBusy] = useState(false);
   const [threadShareState, setThreadShareState] = useState<{
     status: 'idle' | 'loading' | 'ready' | 'failed';
@@ -891,6 +893,11 @@ export function ThreadDetailPage() {
             }),
           ),
       );
+      shareDialogContexts.current = new Map([
+        ...ownedShares.map(share => [share.id, sharingEditInput('share', share)] as const),
+        ...(portal.grantsByMe ?? []).filter(grant => grant.deviceId === deviceId && grant.scope === 'device')
+          .map(grant => [`grant:${grant.id}`, sharingEditInput('grant', grant)] as const),
+      ]);
       const shares: ThreadShareSummary[] = ownedShares
         .map((share) => ({
           id: share.id,
@@ -989,15 +996,17 @@ export function ThreadDetailPage() {
     if (!currentDetail) return;
     setShareBusy(true);
     try {
+      const context = shareDialogContexts.current.get(shareId);
+      if (!context) throw new Error(translate('sharing.dialogIncomplete'));
       if (shareId.startsWith('grant:')) await updateRelayGrant(shareId.slice(6), {
         threadAccess: input.threadAccess, workspaceAccess: input.workspaceAccess, label: input.label ?? null,
-      });
+      }, context);
       else await updateRelayShare(shareId, {
         threadAccess: input.threadAccess, workspaceAccess: input.workspaceAccess,
         workspaceId: currentDetail.workspace.id,
         workspaceLabel: currentDetail.workspace.label,
         label: input.label ?? null,
-      });
+      }, context);
       await loadThreadShares();
     } catch (caught) {
       setThreadShareState(current => ({...current, status:'failed', error:actionErrorMessage(caught, translate("workbench.unableToUpdatePermissions"))}));

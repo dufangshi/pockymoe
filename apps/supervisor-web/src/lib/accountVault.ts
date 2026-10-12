@@ -9,6 +9,8 @@ export interface AccountKeyInfo {
   accountPublicKey: string;
 }
 
+export interface BoundDevice { deviceId: string; identityKey: string }
+
 export interface BrowserCertificate {
   version: 1;
   accountKeyId: string;
@@ -61,5 +63,5 @@ export interface UnlockedAccount extends AccountKeyInfo {
 }
 
 export { inputs as signingInput } from './accountCrypto';
-export { currentAccount, currentBrowser, boundDevices, requireUnlock,
+export { currentAccount, currentBrowser, boundDevices, boundDeviceIdentities, confirmBoundDeviceIdentity, accountRevocations, requireUnlock,
   verifyDeviceCertificate, safetyCode } from './accountVaultState';

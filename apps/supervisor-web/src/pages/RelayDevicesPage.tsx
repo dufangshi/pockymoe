@@ -1,9 +1,11 @@
+import { sharingEditInput } from '../lib/signedSharing';
 import { SignedShareDetails, OrphanDeviceGrants } from '../components/SignedShareDetails';
 import { requireUnlock } from '../lib/accountVault';
 import { removeDeviceFromAccount } from '../lib/deviceRemoval';
 import { prepareDeviceEnrollment } from '../lib/deviceEnrollment';
 import {
   relaySupervisorCommand,
+  validateDeviceSetupToken,
   type SupervisorPlatform,
   type DeviceBindingFlags,
 } from '../lib/deviceSetupCommands';
@@ -204,6 +206,7 @@ export function RelayDevicesPage() {
       const binding = await prepareDeviceEnrollment(rotatingDevice.id);
       setCreatedBinding(binding);
       const result=await request<RelayCreateDeviceResultDto>(`/relay/devices/${rotatingDevice.id}/token`,{method:'POST'});
+      validateDeviceSetupToken(result.token);
       setCreatedDevice(result);setAddDeviceOpen(true);setRotatingDevice(null);setRotationVerification(null);await load({showLoading:false});
     } catch(e) {setError(errorMessage(e,translate("devices.tokenRotationFailed")));}
   }
@@ -390,6 +393,7 @@ export function RelayDevicesPage() {
     try {
       await requireUnlock('bind-device');
       const result = await createRelayDevice({ name: deviceName });
+      validateDeviceSetupToken(result.token);
       setCreatedBinding(await prepareDeviceEnrollment(result.device.id));
       setCreatedDevice(result);
       setDeviceName('');
@@ -508,7 +512,7 @@ export function RelayDevicesPage() {
         workspaceId: grant.workspaceId,
         workspaceScope: grant.workspaceScope,
         workspaceIds: grant.workspaceIds,
-      });
+      }, sharingEditInput('grant', grant));
       setEditingGrant(null);
       setDialogError(null);
       await load({ showLoading: false });
@@ -551,7 +555,7 @@ export function RelayDevicesPage() {
       await updateRelayShare(share.id, {
         ...input,
         workspaceId: share.workspaceId,
-      });
+      }, sharingEditInput('share', share));
       setEditingShare(null);
       setDialogError(null);
       await load({ showLoading: false });
@@ -2096,17 +2100,17 @@ function DeviceRow({
         <p role={protection === 'certificate-missing' ? 'alert' : undefined}>
           {translate(protectionLabel(protection))}
         </p>
-        {protection === 'not-protected' && (
+        {(protection === 'not-protected' || protection === 'certificate-missing') && (
           <button
             className="relay-button-secondary mt-2 px-3 py-2"
             onClick={() => setProtectOpen(true)}
           >
-            {translate('devices.protectDevice')}
+            {translate(protection === 'certificate-missing' ? 'devices.repairDevice' : 'devices.protectDevice')}
           </button>
         )}
         {protectOpen && (
           <FormDialog
-            title={translate('devices.protectDevice')}
+            title={translate(protection === 'certificate-missing' ? 'devices.repairDevice' : 'devices.protectDevice')}
             onClose={() => setProtectOpen(false)}
           >
             <DeviceBindingPanel deviceId={device.id} />

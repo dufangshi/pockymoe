@@ -1,5 +1,9 @@
 import { useEffect, useState } from 'react';
-import { boundDevices, currentAccount } from './accountVault';
+import {
+  accountRevocations,
+  boundDevices,
+  currentAccount,
+} from './accountVault';
 import {
   deviceProtectionState,
   ENROLLMENT_CHANGED_EVENT,
@@ -18,14 +22,27 @@ export function useDeviceProtection(
     async function refresh() {
       if (!deviceId) return;
       const account = await currentAccount();
-      const [bound, pending] = await Promise.all([
+      const [bound, pending, revocations] = await Promise.all([
         boundDevices(),
         listPendingEnrollments(account),
+        accountRevocations(),
       ]);
+      const revoked = revocations.some(
+        (r) =>
+          r.accountKeyId === account?.accountKeyId &&
+          r.kind === 'device' &&
+          r.subjectId === deviceId,
+      );
       const next =
-        status?.state === 'identity-changed' && status.certificateVerified
+        revoked ||
+        (status?.state === 'identity-changed' && status.certificateVerified)
           ? 'certificate-missing'
-          : status?.certificateVerified
+          : account &&
+              status?.deviceId === deviceId &&
+              status.state === 'encrypted' &&
+              status.certificateVerified === true &&
+              status.role === 'owner' &&
+              status.accountKeyId === account.accountKeyId
             ? 'protected'
             : await deviceProtectionState(
                 deviceId,
@@ -54,10 +71,16 @@ export function useDeviceProtection(
         if (active) setState('unknown');
       });
     };
-    window.addEventListener(ENROLLMENT_CHANGED_EVENT, update);
+    const events = [
+      ENROLLMENT_CHANGED_EVENT,
+      'pockymoe-account-revocations-changed',
+      'pockymoe-account-revocations',
+      'pockymoe-account-logout',
+    ];
+    for (const event of events) window.addEventListener(event, update);
     return () => {
       active = false;
-      window.removeEventListener(ENROLLMENT_CHANGED_EVENT, update);
+      for (const event of events) window.removeEventListener(event, update);
     };
   }, [deviceId, status]);
   return state;

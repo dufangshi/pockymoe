@@ -11,12 +11,14 @@ import { fetchRelayPortal } from '../lib/api';
 import {
   completeDeviceEnrollment,
   listPendingEnrollments,
+  EnrollmentIdentityChangeError,
 } from '../lib/deviceEnrollment';
 import { DeviceTrustError } from '../lib/deviceTrust';
 import { DeviceEnrollmentMonitor } from './DeviceEnrollmentMonitor';
 vi.mock('../lib/accountVault', () => ({ currentAccount: vi.fn() }));
 vi.mock('../lib/api', () => ({ fetchRelayPortal: vi.fn() }));
-vi.mock('../lib/deviceEnrollment', () => ({
+vi.mock('../lib/deviceEnrollment', async (original) => ({
+  ...(await original<typeof import('../lib/deviceEnrollment')>()),
   ENROLLMENT_CHANGED_EVENT: 'pockymoe-enrollment-changed',
   completeDeviceEnrollment: vi.fn(),
   listPendingEnrollments: vi.fn(),
@@ -53,6 +55,44 @@ async function tick(ms = 0) {
   });
 }
 describe('automatic enrollment while the browser is open', () => {
+  it('requires explicit old/new identity confirmation and passes only the shown replacement', async () => {
+    vi.mocked(completeDeviceEnrollment).mockRejectedValueOnce(
+      new EnrollmentIdentityChangeError(
+        pending.deviceId,
+        'old-identity',
+        'new-identity',
+      ),
+    );
+    render(<DeviceEnrollmentMonitor />);
+    await tick();
+    expect(screen.getByRole('dialog')).toHaveTextContent('old-identity');
+    expect(screen.getByRole('dialog')).toHaveTextContent('new-identity');
+    await tick(15000);
+    expect(completeDeviceEnrollment).toHaveBeenCalledTimes(1);
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Confirm replacement and unlock' }),
+    );
+    await tick();
+    expect(completeDeviceEnrollment).toHaveBeenCalledWith(pending, true, {
+      previousIdentityKey: 'old-identity',
+      identityKey: 'new-identity',
+    });
+  });
+  it('does not replace an identity when confirmation is dismissed', async () => {
+    vi.mocked(completeDeviceEnrollment).mockRejectedValueOnce(
+      new EnrollmentIdentityChangeError(
+        pending.deviceId,
+        'old-identity',
+        'new-identity',
+      ),
+    );
+    render(<DeviceEnrollmentMonitor />);
+    await tick();
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
+    await tick(15000);
+    expect(completeDeviceEnrollment).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
   it('finishes online pending enrollments without visiting the Devices page', async () => {
     render(<DeviceEnrollmentMonitor />);
     await tick();

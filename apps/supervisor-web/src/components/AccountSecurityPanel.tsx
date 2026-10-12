@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from 'react';
 import { currentAccount, currentBrowser, safetyCode, type BrowserCertificate } from '../lib/accountVault';
 import { accountRequest, accountRevocations, changeAccountPassword, regenerateRecoveryCode, revokeAccountSubject,
   startAccountOver } from '../lib/accountVaultState';
-import { isOAuthAccount } from '../lib/accountAuth';
+import { accountSessionState, isOAuthAccount } from '../lib/accountAuth';
 import { verifyBrowserCertificate } from '../lib/accountCrypto';
 import { FormDialog } from './FormDialog';
 import { RecoveryConfirmation } from './AccountUnlockPrompt';
@@ -15,7 +15,9 @@ export function AccountSecurityPanel() {
   const [code, setCode] = useState(''), [error, setError] = useState<string>(), [busy, setBusy] = useState(false);
   const [action, setAction] = useState<'password' | 'reset' | 'recovery'>(), [password, setPassword] = useState('');
   const [recovery, setRecovery] = useState<string>(), [message, setMessage] = useState<string>();
+  const [canStartOver, setCanStartOver] = useState(false);
   async function load() {
+    setCanStartOver(!!(await accountSessionState())?.recovery);
     const account = await currentAccount(); if (!account) return;
     const data = await accountRequest<{ browsers: BrowserRow[] }>('/relay/account/browsers');
     if (!Array.isArray(data.browsers)) throw new Error(translate('auth.accountCertificateInvalid'));
@@ -60,7 +62,7 @@ export function AccountSecurityPanel() {
     <div className="flex flex-wrap gap-2">
       <button className="relay-button-secondary min-h-11 px-3" disabled={busy} onClick={() => setAction('password')}>{translate('auth.changePassword')}</button>
       <button className="relay-button-secondary min-h-11 px-3" disabled={busy} onClick={() => setAction('recovery')}>{translate('auth.accountRegenerateRecovery')}</button>
-      <button className="relay-button-secondary min-h-11 px-3" disabled={busy} onClick={() => setAction('reset')}>{translate('auth.accountStartOver')}</button>
+      {canStartOver && <button className="relay-button-secondary min-h-11 px-3" disabled={busy} onClick={() => setAction('reset')}>{translate('auth.accountStartOver')}</button>}
     </div>
     {verification && <SecurityVerification status={verification} onCancel={() => { retry.current = null; setVerification(undefined); }} onVerified={async () => { const work = retry.current; retry.current = null; setVerification(undefined); if (work) await run(work, true); }} />}
     {action && !verification && <FormDialog title={translate(action === 'password' ? 'auth.changePassword' : action === 'reset' ? 'auth.accountStartOver' : 'auth.accountRegenerateRecovery')} busy={busy} onClose={() => { setAction(undefined); setPassword(''); }}>

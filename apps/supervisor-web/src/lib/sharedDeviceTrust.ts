@@ -1,6 +1,7 @@
 import { translate } from '@pockymoe/thread-ui/i18n';
 import {
   boundDevices,
+  accountRevocations,
   currentAccount,
   verifyDeviceCertificate,
   type AccountKeyInfo,
@@ -74,6 +75,33 @@ export async function locallyCertifiedDevices() {
   }
   return devices;
 }
+export async function forgetCertifiedDevice(deviceId: string) {
+  const account = await currentAccount();
+  if (account) await sharingTrustStore(certificateKey(account.accountKeyId, deviceId), null);
+}
+// The authenticated vault covers devices this browser has never visited. A
+// verified revocation is the only reason to omit a previously trusted device.
+export async function sharingGrantDevices() {
+  const account = await currentAccount();
+  if (!account) throw new SharingTrustError('invalid_certificate');
+  const revoked = new Set((await accountRevocations(true))
+    .filter((r) => r.accountKeyId === account.accountKeyId && r.kind === 'device')
+    .map((r) => r.subjectId));
+  // Filter revoked IDs before loading certificates: a removed device may retain
+  // an obsolete local record, which must not block revocation elsewhere.
+  const bound = await boundDevices();
+  const prefix = certificateKey(account.accountKeyId, '');
+  const certified = (await sharingTrustEntries<DeviceCertificate>(prefix))
+    .filter(([key]) => !revoked.has(key.slice(prefix.length)));
+  const ids = new Set(bound.filter((id) => !revoked.has(id)));
+  for (const [key, certificate] of certified) {
+    const id = key.slice(prefix.length);
+    if (!(await verifies(certificate, account, id, certificate.identityKey)))
+      throw new SharingTrustError('invalid_certificate');
+    ids.add(id);
+  }
+  return [...ids];
+}
 async function deviceDescriptor(deviceId: string, threadId?: string) {
   const challenge = encode64(crypto.getRandomValues(new Uint8Array(32)));
   const prefix = threadId ? `/api/threads/${encodeURIComponent(threadId)}` : '/api';
@@ -107,11 +135,18 @@ export async function isProtectedSharingDevice(deviceId: string) {
 export async function inviteOwnerPin(deviceId: string) {
   return sharingTrustStore<string>(`invite-owner:${deviceId}`);
 }
+// Public pins protect first contact even before the account vault is loaded.
+export async function ownerAccountPin(deviceId: string) {
+  const invite = await inviteOwnerPin(deviceId);
+  const tofu = await sharingTrustStore<string>(`tofu-owner:${deviceId}`);
+  if (invite && tofu && invite !== tofu) throw new SharingTrustError('account_mismatch');
+  return invite ?? tofu;
+}
 export async function pinInviteOwner(deviceId: string, accountKeyId: string) {
   if (!/^[A-Za-z0-9_-]{43}$/.test(accountKeyId)) throw new SharingTrustError('account_mismatch');
   // A cached owner account and its bound-device list are stronger than an invite.
   if (await localOwnerCertificate(deviceId) || (await boundDevices()).includes(deviceId)) return;
-  const saved = await inviteOwnerPin(deviceId);
+  const saved = await ownerAccountPin(deviceId);
   if (saved && saved !== accountKeyId) throw new SharingTrustError('account_mismatch');
   await sharingTrustStore(`invite-owner:${deviceId}`, accountKeyId);
 }
@@ -125,7 +160,8 @@ export async function verifySharedDevice(deviceId: string, identityKey: string, 
   const account = await validatePublicAccount(await response.json() as PublicAccount);
   const pin = await inviteOwnerPin(deviceId);
   const tofu = await sharingTrustStore<string>(`tofu-owner:${deviceId}`);
-  if ((pin ?? tofu) && (pin ?? tofu) !== account.accountKeyId)
+  const savedPin = await ownerAccountPin(deviceId);
+  if (savedPin && savedPin !== account.accountKeyId)
     throw new SharingTrustError('account_mismatch');
   if (!certificate || !(await verifies(certificate, account, deviceId, identityKey)))
     throw new SharingTrustError('invalid_certificate');

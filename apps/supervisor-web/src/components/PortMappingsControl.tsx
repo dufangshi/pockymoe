@@ -1,3 +1,4 @@
+import { openDevicePortPreview } from '../lib/portPreview';
 import { getLocale } from '@pockymoe/thread-ui/i18n';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { useEffect, useRef, useState } from 'react';
@@ -91,9 +92,7 @@ export function PortMappingsControl({ deviceId, open: controlledOpen, onOpenChan
     return mapping;
   }
   async function launch(mapping: Mapping, path: string, signal: AbortSignal) {
-    return request<{ url: string }>(`/relay/devices/${encodeURIComponent(deviceId)}/port-mappings/${mapping.id}/open`, {
-      method: 'POST', signal, body: JSON.stringify({ path }),
-    });
+    return openDevicePortPreview(deviceId, mapping.id, path, signal);
   }
   function open(mapping?: Mapping, target = link) {
     // Reserve the tab in the click handler so asynchronous API calls do not

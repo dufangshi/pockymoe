@@ -20,7 +20,8 @@ describe('device port mappings', () => {
     const mapping = { id: 'a'.repeat(32), port: 4013, label: '', createdAt: new Date().toISOString() };
     vi.mocked(request).mockImplementation(async (url, init) => {
       if (String(url).endsWith('/config')) return { available: true };
-      if (String(url).endsWith('/open')) return { url: 'https://p-preview.example/a?q=1#b' };
+      if (String(url).endsWith('/lease')) return { leaseId: 'test-lease', expiresAt: Date.now() + 10000 };
+      if (String(url).includes('/open?')) return { url: 'https://p-preview.example/a?q=1#b' };
       if (init?.method === 'POST') return mapping;
       return { mappings: [] };
     });
@@ -33,7 +34,8 @@ describe('device port mappings', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'Enable and open' })).toBeEnabled());
     fireEvent.click(screen.getByRole('button', { name: 'Enable and open' }));
     await waitFor(() => expect(replace).toHaveBeenCalledWith('https://p-preview.example/a?q=1#b'));
-    expect(request).toHaveBeenCalledWith(`/relay/devices/device-1/port-mappings/${mapping.id}/open`, expect.objectContaining({ method: 'POST', body: JSON.stringify({ path: '/a?q=1#b' }) }));
+    expect(request).toHaveBeenCalledWith(`/relay/devices/device-1/api/port-mappings/${mapping.id}/lease`, expect.objectContaining({ method: 'POST' }));
+    expect(request).toHaveBeenCalledWith(`/relay/devices/device-1/port-mappings/${mapping.id}/open?lease=test-lease`, expect.objectContaining({ method: 'POST', body: JSON.stringify({ path: '/a?q=1#b' }) }));
   });
 
   it('shows configuration failure without creating a mapping, and allows stopping an existing one', async () => {

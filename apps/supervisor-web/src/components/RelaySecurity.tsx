@@ -212,7 +212,7 @@ export function SecurityVerification({
         : await securityRequest<{ verificationToken?: string }>(
             '/reauth',
             'POST',
-            factor ? { code: value } : realm === 'relay-admin' ? { password: value } : await accountPasswordProof(value),
+            factor ? { code: value } : await accountPasswordProof(value, realm === 'relay-admin'),
             realm,
           );
       await onVerified(result.verificationToken);

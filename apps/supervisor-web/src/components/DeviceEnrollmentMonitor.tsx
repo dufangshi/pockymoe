@@ -6,13 +6,47 @@ import {
   completeDeviceEnrollment,
   ENROLLMENT_CHANGED_EVENT,
   listPendingEnrollments,
+  EnrollmentIdentityChangeError,
+  type PendingEnrollment,
 } from '../lib/deviceEnrollment';
+import { FormDialog } from './FormDialog';
 
 /** Runs while the browser is open, including when it is viewing a thread. */
 export function DeviceEnrollmentMonitor() {
   useI18n();
   const [error, setError] = useState<string | null>(null);
   const [generation, setGeneration] = useState(0);
+  const [replacement, setReplacement] = useState<{
+    enrollment: PendingEnrollment;
+    change: EnrollmentIdentityChangeError;
+  } | null>(null);
+  const [confirming, setConfirming] = useState(false);
+  async function confirmReplacement() {
+    if (!replacement || confirming) return;
+    setConfirming(true);
+    try {
+      await completeDeviceEnrollment(replacement.enrollment, true, {
+        previousIdentityKey: replacement.change.previousIdentityKey,
+        identityKey: replacement.change.identityKey,
+      });
+      setReplacement(null);
+      setError(null);
+      setGeneration((g) => g + 1);
+    } catch (caught) {
+      if (caught instanceof EnrollmentIdentityChangeError)
+        setReplacement({ enrollment: replacement.enrollment, change: caught });
+      else {
+        setReplacement(null);
+        setError(
+          caught instanceof Error
+            ? caught.message
+            : translate('devices.enrollmentFailed'),
+        );
+      }
+    } finally {
+      setConfirming(false);
+    }
+  }
   useEffect(() => {
     let stopped = false,
       running = false;
@@ -35,6 +69,11 @@ export function DeviceEnrollmentMonitor() {
           try {
             await completeDeviceEnrollment(enrollment, true);
           } catch (caught) {
+            if (caught instanceof EnrollmentIdentityChangeError) {
+              paused.add(enrollment.deviceId);
+              if (!stopped) setReplacement({ enrollment, change: caught });
+              continue;
+            }
             // Offline transport errors keep their secret for a later connection.
             if (
               caught instanceof TypeError ||
@@ -76,21 +115,58 @@ export function DeviceEnrollmentMonitor() {
       document.removeEventListener('visibilitychange', update);
     };
   }, [generation]);
-  return error ? (
-    <div
-      role="alert"
-      className="fixed bottom-4 left-4 z-[90] max-w-md rounded border border-[var(--theme-border)] bg-[var(--theme-panel)] p-4"
-    >
-      <p>{error}</p>
-      <button
-        className="relay-button-secondary mt-2 px-3 py-2"
-        onClick={() => {
-          setError(null);
-          setGeneration((g) => g + 1);
-        }}
-      >
-        {translate('devices.retryEnrollment')}
-      </button>
-    </div>
-  ) : null;
+  return (
+    <>
+      {replacement && (
+        <FormDialog
+          title={translate('devices.confirmIdentityReplacement')}
+          description={translate('devices.identityReplacementHelp')}
+          busy={confirming}
+          onClose={() => {
+            setReplacement(null);
+            setError(translate('devices.confirmIdentityReplacement'));
+          }}
+        >
+          <p className="break-all font-mono text-xs">
+            {replacement.enrollment.deviceId}
+          </p>
+          <dl className="space-y-2 text-sm">
+            <dt>{translate('devices.previousIdentity')}</dt>
+            <dd className="break-all font-mono text-xs">
+              {replacement.change.previousIdentityKey ||
+                translate('devices.identityUnavailable')}
+            </dd>
+            <dt>{translate('devices.newIdentity')}</dt>
+            <dd className="break-all font-mono text-xs">
+              {replacement.change.identityKey}
+            </dd>
+          </dl>
+          <button
+            className="relay-button-primary mt-4 px-3 py-2"
+            disabled={confirming}
+            onClick={() => void confirmReplacement()}
+          >
+            {translate('devices.replaceIdentity')}
+          </button>
+        </FormDialog>
+      )}
+      {error ? (
+        <div
+          role="alert"
+          className="fixed bottom-4 left-4 z-[90] max-w-md rounded border border-[var(--theme-border)] bg-[var(--theme-panel)] p-4"
+        >
+          <p>{error}</p>
+          <button
+            className="relay-button-secondary mt-2 px-3 py-2"
+            onClick={() => {
+              setError(null);
+              setGeneration((g) => g + 1);
+            }}
+          >
+            {translate('devices.retryEnrollment')}
+          </button>
+        </div>
+      ) : null}
+    </>
+  );
 }

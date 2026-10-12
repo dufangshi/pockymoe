@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link, useLocation, useParams } from 'react-router-dom';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
-import { request } from '../lib/api';
+import { openDevicePortPreview } from '../lib/portPreview';
 
 /** Exchange the browser's account session for a private preview-host cookie. */
 export function PortPreviewPage() {
@@ -13,9 +13,7 @@ export function PortPreviewPage() {
     const controller = new AbortController();
     setError(null);
     const path = new URLSearchParams(location.search).get('path') ?? '/';
-    request<{ url: string }>(`/relay/devices/${encodeURIComponent(deviceId ?? '')}/port-mappings/${encodeURIComponent(mappingId ?? '')}/open`, {
-      method: 'POST', body: JSON.stringify({ path }), signal: controller.signal,
-    }).then(({ url }) => {
+    openDevicePortPreview(deviceId ?? '', mappingId ?? '', path, controller.signal).then(({ url }) => {
       if (!controller.signal.aborted) window.location.replace(url);
     }).catch((cause: unknown) => {
       if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : String(cause));

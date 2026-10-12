@@ -7,7 +7,7 @@ import { listPendingEnrollments } from '../lib/deviceEnrollment';
 import { notifyOwnerUnlocked } from '../lib/ownerUnlockRecovery';
 
 const pins = vi.hoisted(() => ({ get: vi.fn(), forget: vi.fn(), reset: vi.fn() }));
-vi.mock('../lib/sharedDeviceTrust', () => ({ inviteOwnerPin: pins.get, forgetInviteOwner: pins.forget }));
+vi.mock('../lib/sharedDeviceTrust', () => ({ ownerAccountPin: pins.get, forgetInviteOwner: pins.forget }));
 vi.mock('../lib/relayTransportCrypto', async (original) => ({ ...await original<object>(), resetPinnedDevice: pins.reset }));
 beforeEach(() => {
   pins.get.mockReset().mockResolvedValue(undefined);
@@ -20,7 +20,7 @@ vi.mock('../lib/relayTransport', () => ({
   trustDeviceIdentity: vi.fn(),
 }));
 
-vi.mock('../lib/accountVault', () => ({ currentAccount: vi.fn(), boundDevices: vi.fn(), verifyDeviceCertificate: vi.fn() }));
+vi.mock('../lib/accountVault', () => ({ currentAccount: vi.fn(), boundDevices: vi.fn(), accountRevocations: vi.fn().mockResolvedValue([]), verifyDeviceCertificate: vi.fn() }));
 vi.mock('../lib/deviceEnrollment', async original => ({ ...await original<typeof import('../lib/deviceEnrollment')>(), listPendingEnrollments: vi.fn() }));
 beforeEach(() => {
   vi.mocked(currentAccount).mockResolvedValue({ userId: 'user', accountKeyId: 'account', accountPublicKey: 'public' });
@@ -145,4 +145,13 @@ it('lets a grantee forget the invite account pin even after the foreign device c
   fireEvent.click(await screen.findByRole('button', { name: 'Forget pinned owner account' }));
   await waitFor(() => expect(pins.forget).toHaveBeenCalledWith('device-1'));
   expect(pins.reset).toHaveBeenCalledWith('device-1');
+});
+
+it('offers an explicit forget action for first-use owner pins before accepting a different invite', async () => {
+  pins.get.mockResolvedValue('existing-tofu-owner');
+  render(<DeviceEncryptionStatus deviceId="device-1" />);
+  report('identity-changed');
+  fireEvent.click(screen.getByRole('button', { name: 'Device identity changed' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Forget pinned owner account' }));
+  await waitFor(() => expect(pins.forget).toHaveBeenCalledWith('device-1'));
 });
