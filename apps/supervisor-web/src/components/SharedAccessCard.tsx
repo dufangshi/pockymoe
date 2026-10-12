@@ -33,7 +33,9 @@ export function SharedAccessCard({
   onEdit,
   onRevoke,
   onToggleAccess,
+  details,
 }: {
+  details?: React.ReactNode;
   title: string;
   subtitle: string;
   deviceName: string;
@@ -190,6 +192,7 @@ export function SharedAccessCard({
           )}
         </section>
       )}
+      {details}
       {profileOpen && (
         <FormDialog
           title={username}

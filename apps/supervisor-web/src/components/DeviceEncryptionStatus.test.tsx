@@ -82,4 +82,19 @@ describe('combined device connection indicator', () => {
     expect(screen.getByRole('button', { name: 'Trust replacement identity…' })).toBeVisible();
     expect(onConnect).toHaveBeenCalledTimes(1);
   });
+  it('keeps recipient trust visible and labels TOFU or invite pins without exposing owner management', () => {
+    render(<DeviceEncryptionStatus hideHealthy deviceId="device-1" connection={{ loaded: true, busy: false, state: 'connected', label: 'Connected', onConnect: vi.fn() }} />);
+    act(() => window.dispatchEvent(new CustomEvent('remote-codex-transport', { detail: {
+      deviceId: 'device-1', state: 'encrypted', paired: true, role: 'grantee', identityTrust: 'tofu', certificateVerified: false,
+    } })));
+    fireEvent.click(screen.getByRole('button', { name: /identity trusted on first use/ }));
+    expect(screen.getByText(/Device identity trusted on first use/)).toBeVisible();
+    expect(screen.queryByRole('button', { name: 'Manage device trust' })).not.toBeInTheDocument();
+    act(() => window.dispatchEvent(new CustomEvent('remote-codex-transport', { detail: {
+      deviceId: 'device-1', state: 'encrypted', paired: true, role: 'grantee', identityTrust: 'invite', certificateVerified: false,
+    } })));
+    expect(screen.getByRole('button', { name: /invite identity pinned/ })).toBeVisible();
+    expect(screen.getByText('Device identity pinned by the invite link')).toBeVisible();
+  });
+
 });

@@ -1,3 +1,4 @@
+import { SignedShareDetails } from '../components/SignedShareDetails';
 import { useThreadDrafts } from './useThreadDrafts';
 import { useWorkbenchReference } from './useWorkbenchReference';
 import { WorkbenchThreadPicker } from '../components/WorkbenchThreadPicker';
@@ -893,6 +894,7 @@ export function ThreadDetailPage() {
       const shares: ThreadShareSummary[] = ownedShares
         .map((share) => ({
           id: share.id,
+          trustContent: <SignedShareDetails kind="share" row={share} />,
           targetUsername: share.targetUsername,
           label: share.label,
           threadAccess: share.threadAccess,
@@ -900,6 +902,7 @@ export function ThreadDetailPage() {
           createdAt: share.createdAt,
         }));
       shares.push(...(portal.grantsByMe ?? []).filter(grant => grant.deviceId === deviceId && grant.scope === 'device').map(grant => ({
+        trustContent: <SignedShareDetails kind="grant" row={grant} />,
         id: `grant:${grant.id}`, scope: 'device' as const, targetUsername: grant.targetUsername, label: grant.label,
         threadAccess: grant.threadAccess, workspaceAccess: grant.workspaceAccess, createdAt: grant.createdAt,
       })));

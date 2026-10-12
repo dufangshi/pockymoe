@@ -1,3 +1,4 @@
+import { isRecipientDevice } from './ownerDeviceTrust';
 import { getLocale, translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import workerUrl from './relayServiceWorker.ts?worker&url';
 import { readAfterOwnerUnlock } from './ownerUnlockRecovery';
@@ -25,10 +26,13 @@ export function probeDeviceEncryption(deviceId: string): Promise<void> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 10000);
     try {
+      const scope = scopeFromPage(window.location.href, deviceId);
+      const recipient = await isRecipientDevice(deviceId, scope);
+      const path = recipient ? scope ? `/api/threads/${encodeURIComponent(scope)}` : '/api/workspaces' : '/api/version';
       const { response } = await exchange(new Request(
-        new URL(`/relay/devices/${encodeURIComponent(deviceId)}/api/version`, window.location.href),
+        new URL(`/relay/devices/${encodeURIComponent(deviceId)}${path}`, window.location.href),
         { credentials: 'same-origin', signal: controller.signal },
-      ));
+      ), scope);
       if (!response.ok) throw new Error(translate("workbench.deviceEncryptionCheckFailed"));
     } catch {
       // report() preserves identity-change warnings, including those emitted

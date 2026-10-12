@@ -2284,16 +2284,30 @@ async fn create_share(
     .into_response()
 }
 
+// Omitted PATCH fields preserve the row; explicit null restores nullable values.
+// This distinction is needed when rolling back an edit after a device grant fails.
+fn nullable_patch_string<'de, D>(deserializer: D) -> Result<Option<Option<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<String>::deserialize(deserializer).map(Some)
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct UpdateShareInput {
-    thread_title: Option<String>,
+    #[serde(default, deserialize_with = "nullable_patch_string")]
+    thread_title: Option<Option<String>>,
     thread_access: Option<String>,
     workspace_access: Option<String>,
-    workspace_id: Option<String>,
-    workspace_label: Option<String>,
-    label: Option<String>,
-    expires_at: Option<String>,
+    #[serde(default, deserialize_with = "nullable_patch_string")]
+    workspace_id: Option<Option<String>>,
+    #[serde(default, deserialize_with = "nullable_patch_string")]
+    workspace_label: Option<Option<String>>,
+    #[serde(default, deserialize_with = "nullable_patch_string")]
+    label: Option<Option<String>>,
+    #[serde(default, deserialize_with = "nullable_patch_string")]
+    expires_at: Option<Option<String>>,
 }
 
 async fn update_share(
@@ -2588,8 +2602,10 @@ struct UpdateGrantInput {
     can_create_threads: Option<bool>,
     workspace_scope: Option<String>,
     workspace_ids: Option<Vec<String>>,
-    label: Option<String>,
-    expires_at: Option<String>,
+    #[serde(default, deserialize_with = "nullable_patch_string")]
+    label: Option<Option<String>>,
+    #[serde(default, deserialize_with = "nullable_patch_string")]
+    expires_at: Option<Option<String>>,
 }
 
 async fn update_grant(

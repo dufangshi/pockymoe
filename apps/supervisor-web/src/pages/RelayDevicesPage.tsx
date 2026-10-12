@@ -1,3 +1,4 @@
+import { SignedShareDetails, OrphanDeviceGrants } from '../components/SignedShareDetails';
 import { getLocale } from '@pockymoe/thread-ui/i18n';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { SharedAccessCard } from '../components/SharedAccessCard';
@@ -834,6 +835,7 @@ export function RelayDevicesPage() {
             role="tabpanel"
             tabIndex={0}
           >
+            {portal && (activeSharedView === 'outgoing-threads' || activeSharedView === 'outgoing-devices') && <OrphanDeviceGrants portal={portal} kind={activeSharedView === 'outgoing-threads' ? 'share' : 'grant'} />}
             {activeSharedView === 'incoming-threads' ? (
             <ShareSection
               count={portal?.sharedWithMe.length ?? 0}
@@ -1274,7 +1276,7 @@ function SharedSessionRow({
     username={mode === 'incoming' ? share.ownerUsername : share.targetUsername} mode={mode}
     permissions={[share.threadAccess === 'read' ? translate("devices.viewOnly") : translate("devices.collaborator"), workspaceAccessLabel(share.workspaceAccess)]}
     events={share.accessEvents} lastAccessedAt={share.lastAccessedAt} busy={busy} expanded={expanded}
-    onOpen={onOpen} onEdit={onEdit} onRevoke={onRevoke} onToggleAccess={onToggleAccess} />;
+    onOpen={onOpen} onEdit={onEdit} onRevoke={onRevoke} onToggleAccess={onToggleAccess} details={mode === 'outgoing' ? <SignedShareDetails kind="share" row={share} /> : undefined} />;
 }
 
 function GrantDeviceCard({
@@ -1359,7 +1361,7 @@ function GrantScopeRow({
     username={mode === 'incoming' ? grant.ownerUsername : grant.targetUsername} mode={mode}
     permissions={[grant.threadAccess === 'read' ? translate("devices.viewOnly") : translate("devices.collaborator"), workspaceAccessLabel(grant.workspaceAccess), ...(grant.canCreateThreads ? [translate("devices.canCreateThreads")] : [])]}
     events={grant.accessEvents} lastAccessedAt={grant.lastAccessedAt} busy={busy} expanded={expanded}
-    onOpen={onOpen} onEdit={onEdit} onRevoke={onRevoke} onToggleAccess={onToggleAccess} />;
+    onOpen={onOpen} onEdit={onEdit} onRevoke={onRevoke} onToggleAccess={onToggleAccess} details={mode === 'outgoing' ? <SignedShareDetails kind="grant" row={grant} /> : undefined} />;
 }
 
 const DIALOG_FOCUSABLE_SELECTOR = [

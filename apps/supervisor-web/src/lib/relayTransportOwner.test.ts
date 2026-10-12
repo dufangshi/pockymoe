@@ -22,6 +22,9 @@ const state = vi.hoisted(() => ({
   store: new Map<string, unknown>(),
   fetch: vi.fn(),
   certificate: vi.fn(),
+  recipient: vi.fn(),
+  invite: vi.fn(),
+  invitePin: vi.fn(),
 }));
 vi.mock('./ownerTrustStore', () => ({
   clearStoredOwnerSession: async (sessionId?: string) => {
@@ -38,7 +41,12 @@ vi.mock('./ownerTrustStore', () => ({
     } else return structuredClone(state.store.get(key));
   },
 }));
-vi.mock('./ownerDeviceTrust', () => ({ deviceCertificate: state.certificate }));
+vi.mock('./ownerDeviceTrust', () => ({
+  deviceCertificate: state.certificate,
+  isRecipientDevice: state.recipient,
+  checkInviteIdentity: state.invite,
+  inviteIdentityPin: state.invitePin,
+}));
 vi.stubGlobal('fetch', state.fetch);
 const pins = new Map<string, unknown>();
 vi.stubGlobal('indexedDB', {
@@ -120,6 +128,8 @@ let rejectRemaining = Infinity;
 let ownerError: 'plain' | 'encrypted' | undefined;
 let registrationRevoked = false;
 let applicationRevoked = false;
+let grantee = false;
+let grantDenied = false;
 function packet(body: string, status = 200, streamNext?: string) {
   const prefix = utf8(
     JSON.stringify({
@@ -139,6 +149,10 @@ beforeEach(async () => {
   pins.clear();
   state.fetch.mockReset();
   state.certificate.mockReset();
+  state.recipient.mockReset().mockResolvedValue(false);
+  state.invite.mockReset().mockResolvedValue(false);
+  state.invitePin.mockReset().mockResolvedValue(undefined);
+  grantee = false; grantDenied = false;
   wires = [];
   ownerError = undefined;
   registrationRevoked = false;
@@ -187,6 +201,7 @@ beforeEach(async () => {
           expiresAt: Date.now() + 600000,
           serverTime: Date.now(),
           signature: '',
+          ...(grantee ? { trust: { paired: true, strict: true } } : {}),
         };
         descriptor.signature = encode64(
           await crypto.subtle.sign(
@@ -243,15 +258,16 @@ beforeEach(async () => {
       const body = revoked ? '{"code":"owner_session_revoked"}' : target.pathname.endsWith('/owner-session')
         ? JSON.stringify({
             sessionId: vectors.session.sessionId,
+            ...(grantee ? { role: 'grantee' } : {}),
             expiresAt: (await sessionManager.currentOwnerSession())!
               .registration.expiresAt,
           })
-        : rejected
+        : grantDenied ? '{"code":"grant_denied"}' : rejected
           ? '{"code":"owner_session_required"}'
           : '{"ok":true}';
       const clear = packet(
         body,
-        rejected || revoked ? 401 : 200,
+        grantDenied && !target.pathname.endsWith('/owner-session') ? 403 : rejected || revoked ? 401 : 200,
         target.pathname.endsWith('/files/large')
           ? '/api/transport/stream/continuation'
           : undefined,
@@ -508,4 +524,70 @@ describe('signed encrypted requests in main thread and service worker', () => {
     ).rejects.toMatchObject({ code: 'ownerIdentityMismatch' });
     expect(wires).toHaveLength(0);
   });
+  it('registers a recipient with their own session and signs requests while labeling TOFU, without an owner certificate', async () => {
+    grantee = true;
+    state.recipient.mockResolvedValue(true);
+    state.certificate.mockRejectedValue(new sessionManager.OwnerTrustError('owner_session_required', 'owner-only-credential'));
+    const report = vi.fn(); transport.setTransportReporter(report);
+    expect((await transport.exchange(new Request(url('threads/thread')))).response.status).toBe(200);
+    expect(wires.filter(w => w.path.endsWith('/owner-session'))).toHaveLength(1);
+    expect(state.store.get(`registration:${vectors.session.sessionId}:${device}`)).toBe('grantee');
+    expect(pins.get(device)).toBe(vectors.deviceCertificate.certificate.identityKey);
+    expect(report).toHaveBeenLastCalledWith(expect.objectContaining({ paired: true, certificateVerified: false, role: 'grantee', identityTrust: 'tofu' }));
+    await verifyWires();
+  });
+  it('lets a recipient unlock with their own passkeys instead of requesting an owner certificate signer', async () => {
+    grantee = true; state.store.delete('session');
+    state.recipient.mockResolvedValue(true);
+    state.certificate.mockRejectedValue(new sessionManager.OwnerTrustError('owner_session_required', 'owner-only-credential'));
+    const report = vi.fn(); transport.setTransportReporter(report);
+    await expect(transport.exchange(new Request(url('threads/thread')))).rejects.toMatchObject({ code: 'owner_session_required' });
+    expect(report).toHaveBeenLastCalledWith(expect.objectContaining({ state: 'unlock-required' }));
+    expect(report.mock.calls.at(-1)![0].ownerCredentialId).toBeUndefined();
+    expect(wires).toHaveLength(0);
+  });
+  it('labels recipient identity pinned from an invite and refuses invite mismatches before sending assertions', async () => {
+    grantee = true; state.recipient.mockResolvedValue(true);
+    state.certificate.mockRejectedValue(new sessionManager.OwnerTrustError('ownerCertificateInvalid'));
+    state.invite.mockResolvedValue(true);
+    const report = vi.fn(); transport.setTransportReporter(report);
+    expect((await transport.exchange(new Request(url('threads/thread')))).response.status).toBe(200);
+    expect(report).toHaveBeenLastCalledWith(expect.objectContaining({ identityTrust: 'invite', certificateVerified: false }));
+    wires = []; transport.clearTransportKeyCache(device);
+    state.invite.mockRejectedValue(new sessionManager.OwnerTrustError('ownerIdentityMismatch'));
+    await expect(transport.exchange(new Request(url('threads/thread')))).rejects.toMatchObject({ code: 'ownerIdentityMismatch' });
+    expect(wires).toHaveLength(0);
+  });
+  it('does not turn grant_denied into another unlock prompt or retry a forbidden mutation', async () => {
+    grantee = true; grantDenied = true;
+    state.recipient.mockResolvedValue(true);
+    state.certificate.mockRejectedValue(new sessionManager.OwnerTrustError('ownerCertificateInvalid'));
+    const report = vi.fn(); transport.setTransportReporter(report);
+    const result = await transport.exchange(new Request(url('threads/thread'), { method: 'POST', body: '{}' }));
+    expect(result.response.status).toBe(403);
+    expect(await result.response.json()).toEqual({ code: 'grant_denied' });
+    expect(wires).toHaveLength(2);
+    expect(report.mock.calls.some(c => c[0].state === 'unlock-required')).toBe(false);
+  });
+  it('rejects a changed first-use recipient identity and a missing descriptor under an invite pin', async () => {
+    grantee = true; state.recipient.mockResolvedValue(true);
+    state.certificate.mockRejectedValue(new sessionManager.OwnerTrustError('ownerCertificateInvalid'));
+    pins.set(device, 'old-identity');
+    await expect(transport.exchange(new Request(url('threads/thread')))).rejects.toMatchObject({ code: 'transport_identity_changed' });
+    expect(wires).toHaveLength(0);
+    pins.clear(); state.invitePin.mockResolvedValue('expected-fingerprint');
+    state.fetch.mockResolvedValue(new Response(null, { status: 404 }));
+    await expect(transport.exchange(new Request(url('threads/thread')))).rejects.toMatchObject({ code: 'ownerIdentityMismatch' });
+  });
+
+  it('uses recipient session signatures when no owner certificate was uploaded', async () => {
+    grantee = true;
+    state.recipient.mockResolvedValue(true);
+    state.certificate.mockResolvedValue(null);
+    const report = vi.fn(); transport.setTransportReporter(report);
+    expect((await transport.exchange(new Request(url('threads/thread')))).response.status).toBe(200);
+    expect(report).toHaveBeenLastCalledWith(expect.objectContaining({ role: 'grantee', identityTrust: 'tofu', certificateVerified: false }));
+    await verifyWires();
+  });
+
 });

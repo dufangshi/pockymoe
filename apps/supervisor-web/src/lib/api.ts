@@ -1,3 +1,4 @@
+import { sharingMutation } from './signedSharing';
 import { clearOwnerSession } from './ownerSession';
 import { confirmWorkspaceDocumentLeave, type WorkspaceDocumentSnapshot, type WorkspaceDocumentSaveInput, type WorkspaceSaveReceipt } from "@pockymoe/thread-ui";
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
@@ -331,6 +332,8 @@ function normalizedApiErrorPayload(
   fallbackMessage: string,
 ): ApiErrorShape {
   const message =
+    String(payload?.code) === 'grant_denied' ? translate('sharing.grantDenied') :
+    String(payload?.code) === 'owner_required' ? translate('sharing.ownerRequired') :
     typeof payload?.message === 'string' && payload.message.trim()
       ? payload.message.trim()
       : fallbackMessage;
@@ -724,61 +727,61 @@ export function updateRelayPassword(input: {
 }
 
 export function createRelayShare(input: CreateRelaySessionShareInput) {
-  return request<RelaySessionShareDto>('/relay/shares', {
+  return sharingMutation('share', 'create', undefined, () => request<RelaySessionShareDto>('/relay/shares', {
     method: 'POST',
     body: JSON.stringify(input),
-  });
+  }));
 }
 
 export function updateRelayShare(
   shareId: string,
   input: UpdateRelaySessionShareInput,
 ) {
-  return request<RelaySessionShareDto>(
+  return sharingMutation('share', 'edit', shareId, () => request<RelaySessionShareDto>(
     `/relay/shares/${encodeURIComponent(shareId)}`,
     {
       method: 'PATCH',
       body: JSON.stringify(input),
     },
-  );
+  ));
 }
 
 export function revokeRelayShare(shareId: string) {
-  return request<RelaySessionShareDto>(
+  return sharingMutation('share', 'revoke', shareId, () => request<RelaySessionShareDto>(
     `/relay/shares/${encodeURIComponent(shareId)}`,
     {
       method: 'DELETE',
     },
-  );
+  ));
 }
 
 export function createRelayGrant(input: CreateRelayAccessGrantInput) {
-  return request<RelayAccessGrantDto>('/relay/grants', {
+  return sharingMutation('grant', 'create', undefined, () => request<RelayAccessGrantDto>('/relay/grants', {
     method: 'POST',
     body: JSON.stringify(input),
-  });
+  }));
 }
 
 export function updateRelayGrant(
   grantId: string,
   input: UpdateRelayAccessGrantInput,
 ) {
-  return request<RelayAccessGrantDto>(
+  return sharingMutation('grant', 'edit', grantId, () => request<RelayAccessGrantDto>(
     `/relay/grants/${encodeURIComponent(grantId)}`,
     {
       method: 'PATCH',
       body: JSON.stringify(input),
     },
-  );
+  ));
 }
 
 export function revokeRelayGrant(grantId: string) {
-  return request<RelayAccessGrantDto>(
+  return sharingMutation('grant', 'revoke', grantId, () => request<RelayAccessGrantDto>(
     `/relay/grants/${encodeURIComponent(grantId)}`,
     {
       method: 'DELETE',
     },
-  );
+  ));
 }
 
 export function fetchRelayAdmin(days?: number) {

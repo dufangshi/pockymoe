@@ -70,6 +70,14 @@ impl Fixture {
         }
         let app = Router::new()
             .merge(auth_api::routes())
+            .route(
+                "/relay/shares/{share_id}",
+                axum::routing::patch(update_share),
+            )
+            .route(
+                "/relay/grants/{grant_id}",
+                axum::routing::patch(update_grant),
+            )
             .route("/relay/devices/{device_id}", delete(delete_device))
             .route("/relay/devices/{device_id}/api/{*rest}", any(device_api))
             .route("/relay/api/{*rest}", any(relay_api_compat))
@@ -776,4 +784,91 @@ async fn revoked_expired_disabled_and_other_device_rows_cannot_register() {
             assert!(rx.try_recv().is_err());
         }
     }
+}
+
+#[tokio::test]
+async fn sharing_patch_can_restore_null_values_after_failed_device_edits() {
+    let fixture = Fixture::new("sharing-null-rollback").await;
+    for (table, path, id) in [
+        ("relay_shares", "/relay/shares/share", "share"),
+        (
+            "relay_access_grants",
+            "/relay/grants/device-guest",
+            "device-guest",
+        ),
+    ] {
+        {
+            let conn = fixture.state.store.conn.lock().await;
+            conn.execute(&format!("UPDATE {table} SET label='New label',expires_at='2030-01-01T00:00:00Z' WHERE id=?1"), params![id]).unwrap();
+        }
+        assert_eq!(
+            fixture
+                .request(Method::PATCH, path, Some("owner"))
+                .json(&json!({"threadAccess":"control"}))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
+        );
+        {
+            let conn = fixture.state.store.conn.lock().await;
+            let values: (Option<String>, Option<String>) = conn
+                .query_row(
+                    &format!("SELECT label,expires_at FROM {table} WHERE id=?1"),
+                    params![id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(
+                values,
+                (
+                    Some("New label".into()),
+                    Some("2030-01-01T00:00:00Z".into())
+                )
+            );
+        }
+        assert_eq!(
+            fixture
+                .request(Method::PATCH, path, Some("owner"))
+                .json(&json!({"label":null,"expiresAt":null,"threadAccess":"read"}))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
+        );
+        let conn = fixture.state.store.conn.lock().await;
+        let values: (Option<String>, Option<String>, String) = conn
+            .query_row(
+                &format!("SELECT label,expires_at,thread_access FROM {table} WHERE id=?1"),
+                params![id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(values, (None, None, "read".into()));
+    }
+    {
+        let conn = fixture.state.store.conn.lock().await;
+        conn.execute("UPDATE relay_shares SET workspace_id='new',workspace_label='New',thread_title='New' WHERE id='share'", []).unwrap();
+    }
+    assert_eq!(
+        fixture
+            .request(Method::PATCH, "/relay/shares/share", Some("owner"))
+            .json(&json!({"workspaceId":null,"workspaceLabel":null,"threadTitle":null}))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK
+    );
+    let conn = fixture.state.store.conn.lock().await;
+    let values: (Option<String>, Option<String>, Option<String>) = conn
+        .query_row(
+            "SELECT workspace_id,workspace_label,thread_title FROM relay_shares WHERE id='share'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(values, (None, None, None));
 }
