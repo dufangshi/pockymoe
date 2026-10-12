@@ -31,6 +31,7 @@ jobs:
     timeout-minutes: 20
     env:
       VITE_POCKYMOE_RELAY_ORIGIN: ${{ vars.POCKYMOE_RELAY_ORIGIN }}
+      VITE_POCKYMOE_LEGACY_UPGRADE: ${{ vars.POCKYMOE_LEGACY_UPGRADE || '1' }}
       POCKYMOE_WEB_DOMAIN: app.lnz-study.com
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6

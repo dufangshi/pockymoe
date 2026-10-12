@@ -183,7 +183,8 @@ jobs:
                 raise SystemExit('Relay auth preflight: session secret must be at least 32 characters')
             if values.get('REMOTE_CODEX_PUBLIC_BASE_URL', '').rstrip('/') != 'https://remote.lnz-study.com':
                 raise SystemExit('Relay auth preflight: configure the public HTTPS relay origin')
-            if values.get('POCKYMOE_WEB_ORIGIN', '').rstrip('/') != 'https://app.lnz-study.com':
+            web_origin = values.get('POCKYMOE_WEB_ORIGIN', values.get('REMOTE_CODEX_WEB_ORIGIN', ''))
+            if web_origin.rstrip('/') != 'https://app.lnz-study.com':
                 raise SystemExit('Relay auth preflight: configure the separate HTTPS Web origin for API-only mode')
             PYPREFLIGHT
             test -f "${archive}"
