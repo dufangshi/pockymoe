@@ -17,6 +17,8 @@ mod store;
 mod thread_groups;
 #[cfg(test)]
 mod trust_tests;
+#[cfg(test)]
+mod web_origin_tests;
 mod workbench;
 use admin::*;
 use route_acl::*;
@@ -184,7 +186,7 @@ pub async fn serve() -> Result<()> {
             )?;
         }
     }
-    let oauth = OAuthConfig::from_env();
+    let oauth = OAuthConfig::from_env()?;
     {
         let conn = store.conn.lock().await;
         for (key, available) in [
@@ -1091,13 +1093,17 @@ async fn oauth_callback(
     State(state): State<Arc<AppState>>,
 ) -> Response {
     let Some(provider) = OAuthProvider::parse(&provider) else {
-        return Redirect::temporary("/relay-portal?oauthError=OAuth%20provider%20is%20invalid.")
-            .into_response();
+        return Redirect::temporary(
+            &state
+                .oauth
+                .browser_url("/relay-portal?oauthError=OAuth%20provider%20is%20invalid."),
+        )
+        .into_response();
     };
     if !oauth::verify_state(&query.state, provider, &state.store.session_secret) {
-        return Redirect::temporary(
+        return Redirect::temporary(&state.oauth.browser_url(
             "/relay-portal?oauthError=OAuth%20request%20expired%20or%20was%20invalid.",
-        )
+        ))
         .into_response();
     }
     let pending = {
@@ -1106,7 +1112,10 @@ async fn oauth_callback(
             .and_then(|browser| security::consume_oauth(&conn, &query.state, &browser))
     };
     let Some((verifier, callback)) = pending else {
-        return oauth_error_redirect("OAuth request expired or belongs to another browser.");
+        return oauth_error_redirect(
+            &state.oauth,
+            "OAuth request expired or belongs to another browser.",
+        );
     };
     let identity = match state
         .oauth
@@ -1122,7 +1131,7 @@ async fn oauth_callback(
         Ok(identity) => identity,
         Err(error) => {
             tracing::warn!(error = %error, provider = provider.as_str(), "OAuth identity lookup failed");
-            return oauth_error_redirect("OAuth authentication failed.");
+            return oauth_error_redirect(&state.oauth, "OAuth authentication failed.");
         }
     };
     let outcome = {
@@ -1131,7 +1140,8 @@ async fn oauth_callback(
     };
     match outcome {
         Ok(OAuthOutcome::Pending) => {
-            Redirect::temporary("/relay-portal?oauthPending=1").into_response()
+            Redirect::temporary(&state.oauth.browser_url("/relay-portal?oauthPending=1"))
+                .into_response()
         }
         Ok(OAuthOutcome::Login(token)) => {
             let conn = state.store.conn.lock().await;
@@ -1153,13 +1163,14 @@ async fn oauth_callback(
                 Err(e) => return e.into_response(),
             };
             *response.status_mut() = StatusCode::SEE_OTHER;
-            response
-                .headers_mut()
-                .insert(header::LOCATION, "/relay-portal".parse().unwrap());
+            response.headers_mut().insert(
+                header::LOCATION,
+                state.oauth.browser_url("/relay-portal").parse().unwrap(),
+            );
             *response.body_mut() = Body::empty();
             response
         }
-        Err(message) => oauth_error_redirect(&message),
+        Err(message) => oauth_error_redirect(&state.oauth, &message),
     }
 }
 
@@ -1313,9 +1324,10 @@ fn available_username(conn: &Connection, value: &str) -> rusqlite::Result<String
     }
 }
 
-fn oauth_error_redirect(message: &str) -> Response {
+fn oauth_error_redirect(oauth: &OAuthConfig, message: &str) -> Response {
     let encoded: String = url::form_urlencoded::byte_serialize(message.as_bytes()).collect();
-    Redirect::temporary(&format!("/relay-portal?oauthError={encoded}")).into_response()
+    Redirect::temporary(&oauth.browser_url(&format!("/relay-portal?oauthError={encoded}")))
+        .into_response()
 }
 
 #[derive(Deserialize)]
@@ -3892,8 +3904,7 @@ async fn forward_server_message_to_client(
     }
 }
 
-const RELAY_BOOTSTRAP: &str =
-    r#"<script>window.__POCKYMOE_BOOTSTRAP__={"mode":"relay","relayApiBase":"/relay"};</script>"#;
+const RELAY_BOOTSTRAP: &str = r#"<script>window.__POCKYMOE_BOOTSTRAP__={"mode":"relay"};</script>"#;
 
 fn inject_bootstrap(html: &str) -> String {
     if html.contains("</head>") {
@@ -4336,6 +4347,33 @@ fn safe_dist_path(dist: &FsPath, url_path: &str) -> Option<PathBuf> {
 }
 
 async fn spa_fallback(State(state): State<Arc<AppState>>, req: Request) -> Response {
+    // API-only relays cannot supply executable content to the trusted Web origin.
+    let path = req.uri().path();
+    let api = path == "/relay"
+        || path.starts_with("/relay/")
+        || path == "/healthz"
+        || path == "/supervisor/tunnel";
+    if state.oauth.api_only(req.headers()) {
+        if api {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({ "code": "not_found", "message": "not found" })),
+            )
+                .into_response();
+        }
+        if req.method() != Method::GET && req.method() != Method::HEAD {
+            return StatusCode::NOT_FOUND.into_response();
+        }
+        let target = format!(
+            "{}{}",
+            state.oauth.web_origin.as_deref().unwrap(),
+            req.uri()
+                .path_and_query()
+                .map(|p| p.as_str())
+                .unwrap_or("/")
+        );
+        return Redirect::temporary(&target).into_response();
+    }
     let Some(dist) = state.web_dist.as_ref() else {
         return (
             StatusCode::NOT_FOUND,

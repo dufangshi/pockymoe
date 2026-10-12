@@ -51,6 +51,7 @@ struct OAuthCredentials {
 #[derive(Clone, Debug)]
 pub struct OAuthConfig {
     pub public_base_url: Option<String>,
+    pub web_origin: Option<String>,
     google: Option<OAuthCredentials>,
     github: Option<OAuthCredentials>,
     google_enabled_by_env: bool,
@@ -68,6 +69,7 @@ impl Default for OAuthConfig {
     fn default() -> Self {
         Self {
             public_base_url: None,
+            web_origin: None,
             google: None,
             github: None,
             google_enabled_by_env: true,
@@ -84,7 +86,10 @@ impl Default for OAuthConfig {
 }
 
 impl OAuthConfig {
-    pub fn from_env() -> Self {
+    pub fn from_env() -> Result<Self> {
+        let web_origin = nonempty_env("POCKYMOE_WEB_ORIGIN")
+            .map(|value| validate_web_origin(&value))
+            .transpose()?;
         let google = credentials(
             "POCKYMOE_GOOGLE_OAUTH_CLIENT_ID",
             "POCKYMOE_GOOGLE_OAUTH_CLIENT_SECRET",
@@ -93,7 +98,8 @@ impl OAuthConfig {
             "POCKYMOE_GITHUB_OAUTH_CLIENT_ID",
             "POCKYMOE_GITHUB_OAUTH_CLIENT_SECRET",
         );
-        Self {
+        Ok(Self {
+            web_origin,
             public_base_url: nonempty_env("POCKYMOE_PUBLIC_BASE_URL")
                 .map(|value| value.trim_end_matches('/').to_string()),
             google,
@@ -130,7 +136,36 @@ impl OAuthConfig {
                 "POCKYMOE_GITHUB_OAUTH_EMAILS_URL",
                 "https://api.github.com/user/emails",
             ),
-        }
+        })
+    }
+
+    /// The browser is the passkey trust root; never use the relay callback URL here.
+    pub fn browser_origin(&self) -> Option<String> {
+        self.web_origin.clone().or_else(|| {
+            Url::parse(self.public_base_url.as_deref()?)
+                .ok()
+                .map(|url| url.origin().ascii_serialization())
+        })
+    }
+
+    pub fn browser_url(&self, path: &str) -> String {
+        self.web_origin
+            .as_ref()
+            .map(|origin| format!("{origin}{path}"))
+            .unwrap_or_else(|| path.to_owned())
+    }
+
+    pub fn api_only(&self, headers: &HeaderMap) -> bool {
+        self.web_origin.as_ref().is_some_and(|web| {
+            !crate::security::origin_allowed(
+                &{
+                    let mut h = headers.clone();
+                    h.insert("origin", web.parse().unwrap());
+                    h
+                },
+                self.public_base_url.as_deref(),
+            )
+        })
     }
 
     pub fn available(&self, provider: OAuthProvider) -> bool {
@@ -484,4 +519,21 @@ fn required_string(value: &Value, key: &str, label: &str) -> Result<String> {
         .filter(|value| !value.is_empty())
         .map(str::to_string)
         .ok_or_else(|| anyhow!("{label} is missing"))
+}
+
+/// Accept only a secure origin, with HTTP reserved for local development.
+pub(crate) fn validate_web_origin(value: &str) -> Result<String> {
+    let url = Url::parse(value).map_err(|_| anyhow!("Invalid POCKYMOE_WEB_ORIGIN"))?;
+    let local = matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
+    if !(url.scheme() == "https" || (url.scheme() == "http" && local))
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.path() != "/"
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        bail!("POCKYMOE_WEB_ORIGIN must be an HTTPS origin (HTTP is allowed for localhost) without credentials, path, query or fragment");
+    }
+    Ok(url.origin().ascii_serialization())
 }

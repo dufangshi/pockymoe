@@ -90,10 +90,14 @@ pub(crate) fn origin_allowed(headers: &axum::http::HeaderMap, public_base: Optio
     let Some(origin) = headers.get("origin").and_then(|v| v.to_str().ok()) else {
         return false;
     };
+    let raw_origin = origin;
     let Ok(origin) = url::Url::parse(origin) else {
         return false;
     };
-    if !matches!(origin.scheme(), "http" | "https") || origin.host_str().is_none() {
+    if !matches!(origin.scheme(), "http" | "https")
+        || origin.host_str().is_none()
+        || raw_origin != origin.origin().ascii_serialization()
+    {
         return false;
     }
     if let Some(base) = public_base {
@@ -111,6 +115,7 @@ pub(crate) fn origin_allowed(headers: &axum::http::HeaderMap, public_base: Optio
         .is_ok_and(|base| base.origin() == origin.origin())
 }
 
+// CORS wraps all API responses, including authentication and CSRF errors.
 pub(crate) async fn browser_security(
     axum::extract::State(state): axum::extract::State<std::sync::Arc<super::AppState>>,
     request: axum::extract::Request,
@@ -120,6 +125,139 @@ pub(crate) async fn browser_security(
         http::{header, Method, StatusCode},
         response::IntoResponse,
     };
+    let api = request.uri().path().starts_with("/relay/");
+    let allowed = api && origin_allowed(request.headers(), state.oauth.browser_origin().as_deref());
+    let origin = allowed.then(|| request.headers()[header::ORIGIN].clone());
+    let preflight = api
+        && request.method() == Method::OPTIONS
+        && request
+            .headers()
+            .contains_key(header::ACCESS_CONTROL_REQUEST_METHOD);
+    let requested = request
+        .headers()
+        .get(header::ACCESS_CONTROL_REQUEST_HEADERS)
+        .cloned();
+    let mut response = if preflight {
+        let method_allowed = request
+            .headers()
+            .get(header::ACCESS_CONTROL_REQUEST_METHOD)
+            .and_then(|h| h.to_str().ok())
+            .is_some_and(|m| {
+                matches!(
+                    m,
+                    "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS"
+                )
+            });
+        let headers_allowed = requested
+            .as_ref()
+            .map(|h| {
+                h.to_str().ok().is_some_and(|h| {
+                    h.split(',').all(|name| {
+                        let name = name.trim().to_ascii_lowercase();
+                        matches!(
+                            name.as_str(),
+                            "content-type"
+                                | "accept"
+                                | "range"
+                                | "authorization"
+                                | "if-none-match"
+                                | "x-remote-codex-auth-realm"
+                        ) || (name.starts_with("x-rcd-")
+                            && name.parse::<header::HeaderName>().is_ok())
+                    })
+                })
+            })
+            .unwrap_or(true);
+        if allowed && method_allowed && headers_allowed {
+            let mut response = StatusCode::NO_CONTENT.into_response();
+            let h = response.headers_mut();
+            h.insert(
+                header::ACCESS_CONTROL_ALLOW_METHODS,
+                "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS"
+                    .parse()
+                    .unwrap(),
+            );
+            if let Some(requested) = requested {
+                h.insert(header::ACCESS_CONTROL_ALLOW_HEADERS, requested);
+            }
+            response
+        } else {
+            StatusCode::FORBIDDEN.into_response()
+        }
+    } else {
+        browser_security_response(axum::extract::State(state), request, next).await
+    };
+    if api {
+        response
+            .headers_mut()
+            .append(header::VARY, "Origin".parse().unwrap());
+        if preflight {
+            response.headers_mut().append(
+                header::VARY,
+                "Access-Control-Request-Method, Access-Control-Request-Headers"
+                    .parse()
+                    .unwrap(),
+            );
+        }
+    }
+    // Overwrite downstream device CORS: a device cannot widen the relay allowlist.
+    response
+        .headers_mut()
+        .remove(header::ACCESS_CONTROL_ALLOW_ORIGIN);
+    response
+        .headers_mut()
+        .remove(header::ACCESS_CONTROL_ALLOW_CREDENTIALS);
+    response
+        .headers_mut()
+        .remove(header::ACCESS_CONTROL_EXPOSE_HEADERS);
+    if let Some(origin) = origin {
+        let mut expose = vec![
+            "content-disposition".to_owned(),
+            "content-range".to_owned(),
+            "accept-ranges".to_owned(),
+            "etag".to_owned(),
+            "x-total-count".to_owned(),
+            "link".to_owned(),
+        ];
+        expose.extend(
+            response
+                .headers()
+                .keys()
+                .filter(|h| h.as_str().starts_with("x-rcd-"))
+                .map(|h| h.as_str().to_owned()),
+        );
+        let h = response.headers_mut();
+        h.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, origin);
+        h.insert(
+            header::ACCESS_CONTROL_ALLOW_CREDENTIALS,
+            "true".parse().unwrap(),
+        );
+        h.insert(
+            header::ACCESS_CONTROL_EXPOSE_HEADERS,
+            expose.join(", ").parse().unwrap(),
+        );
+    }
+    response
+}
+
+async fn browser_security_response(
+    axum::extract::State(state): axum::extract::State<std::sync::Arc<super::AppState>>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::{
+        http::{header, Method, StatusCode},
+        response::IntoResponse,
+    };
+    let path = request.uri().path();
+    if state.oauth.api_only(request.headers())
+        && !(path == "/relay"
+            || path.starts_with("/relay/")
+            || path == "/healthz"
+            || path == "/supervisor/tunnel")
+    {
+        return super::spa_fallback(axum::extract::State(state), request).await;
+    }
     let headers = request.headers();
     if request.uri().path().starts_with("/relay/auth/") && request.method() != Method::GET {
         let peer = request
@@ -147,7 +285,7 @@ pub(crate) async fn browser_security(
         .get("sec-fetch-site")
         .is_some_and(|v| v == "cross-site");
     if (mutation || websocket)
-        && ((has_origin && !origin_allowed(headers, state.oauth.public_base_url.as_deref()))
+        && ((has_origin && !origin_allowed(headers, state.oauth.browser_origin().as_deref()))
             || cross_site
             || (websocket && !has_origin && !authenticated_native && !native_device_tunnel))
     {
@@ -173,9 +311,13 @@ pub(crate) async fn browser_security(
         .uri()
         .path()
         .starts_with("/assets/relayServiceWorker-");
+    let api_only = state.oauth.api_only(request.headers());
     let mut response = next.run(request).await;
     let h = response.headers_mut();
-    if transport_worker {
+    if api_only {
+        h.remove("service-worker-allowed");
+    }
+    if transport_worker && !api_only {
         h.insert("service-worker-allowed", "/".parse().unwrap());
     }
     h.insert(header::X_CONTENT_TYPE_OPTIONS, "nosniff".parse().unwrap());
