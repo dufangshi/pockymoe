@@ -26,6 +26,14 @@ pub(super) fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/relay/account/passkeys/public", get(public))
         .route(
+            "/relay/shares/{id}/recipient-passkeys",
+            get(share_recipient_passkeys),
+        )
+        .route(
+            "/relay/grants/{id}/recipient-passkeys",
+            get(grant_recipient_passkeys),
+        )
+        .route(
             "/relay/account/security/passkeys/register/start",
             post(register_start),
         )
@@ -58,13 +66,53 @@ fn public_key_spki(key: &COSEKey) -> Result<String, Failure> {
 async fn public(State(state): State<Arc<AppState>>, headers: HeaderMap) -> ApiResult {
     let conn = state.store.conn.lock().await;
     let (user, _) = auth(&conn, &state, &headers)?;
-    let (rp, origin) = rp_origin(&state)?;
+    public_records(&conn, &state, &user.id)
+}
+
+async fn share_recipient_passkeys(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> ApiResult {
+    recipient_passkeys(state, headers, id, "relay_shares").await
+}
+async fn grant_recipient_passkeys(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> ApiResult {
+    recipient_passkeys(state, headers, id, "relay_access_grants").await
+}
+async fn recipient_passkeys(
+    state: Arc<AppState>,
+    headers: HeaderMap,
+    id: String,
+    table: &str,
+) -> ApiResult {
+    let conn = state.store.conn.lock().await;
+    let (user, _) = auth(&conn, &state, &headers)?;
+    // table is selected by the two handlers, never from request input.
+    let recipient: Option<String> = conn.query_row(
+        &format!("SELECT target_user_id FROM {table} WHERE id=?1 AND owner_user_id=?2 AND revoked_at IS NULL"),
+        params![id, user.id], |row| row.get(0),
+    ).optional().map_err(internal)?;
+    let recipient = recipient.ok_or_else(|| {
+        failure(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "Shared access not found",
+        )
+    })?;
+    public_records(&conn, &state, &recipient)
+}
+fn public_records(conn: &Connection, state: &AppState, user_id: &str) -> ApiResult {
+    let (rp, origin) = rp_origin(state)?;
     let origin = origin.origin().ascii_serialization();
     let mut stmt = conn
         .prepare("SELECT credential,name FROM relay_passkeys WHERE user_id=?1 ORDER BY created_at DESC,id")
         .map_err(internal)?;
     let rows = stmt
-        .query_map(params![user.id], |row| {
+        .query_map(params![user_id], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })
         .map_err(internal)?;
@@ -517,5 +565,98 @@ mod tests {
         // Public records have no registration metadata, counters, or private material.
         assert_eq!(body["passkeys"][0].as_object().unwrap().len(), 6);
         webauthn(&fixture.state).unwrap();
+    }
+    #[tokio::test]
+    async fn recipient_directory_is_row_owner_only_and_exports_recipient_public_records() {
+        let fixture = crate::trust_tests::Fixture::new("recipient-public-directory").await;
+        let record = vectors()["credentialRecord"].clone();
+        let passkey: Passkey = serde_json::from_value(json!({"cred": {
+            "cred_id": record["credentialId"], "cred": vector_key(), "counter": 0,
+            "transports": null, "user_verified": true, "backup_eligible": true, "backup_state": true,
+            "registration_policy": "required", "extensions": {},
+            "attestation": { "data": "None", "metadata": "None" }, "attestation_format": "none"
+        }})).unwrap();
+        for (collection, id, recipient) in [
+            ("shares", "share", "share-guest"),
+            ("grants", "device-guest", "device-guest"),
+        ] {
+            let path = format!("/relay/{collection}/{id}/recipient-passkeys");
+            for user in [None, Some(recipient), Some("stranger")] {
+                assert_eq!(
+                    fixture
+                        .request(axum::http::Method::GET, &path, user)
+                        .send()
+                        .await
+                        .unwrap()
+                        .status(),
+                    if user.is_none() {
+                        StatusCode::UNAUTHORIZED
+                    } else {
+                        StatusCode::NOT_FOUND
+                    }
+                );
+            }
+            let empty: Value = fixture
+                .request(axum::http::Method::GET, &path, Some("owner"))
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            assert_eq!(empty, json!({"passkeys": []}));
+            {
+                let conn = fixture.state.store.conn.lock().await;
+                conn.execute("INSERT INTO relay_passkeys(id,user_id,credential,name,created_at) VALUES (?1,?2,?3,'Recipient passkey',0)",
+                    params![format!("{recipient}-key"), recipient, serde_json::to_string(&passkey).unwrap()]).unwrap();
+            }
+            let response = fixture
+                .request(axum::http::Method::GET, &path, Some("owner"))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let body: Value = response.json().await.unwrap();
+            assert_eq!(
+                body,
+                json!({"passkeys": [{
+                    "credentialId": record["credentialId"], "publicKey": record["publicKey"], "algorithm": -7,
+                    "rpId": "pockymoe.test", "origin": "https://pockymoe.test:8443", "name": "Recipient passkey"
+                }]})
+            );
+            assert_eq!(body["passkeys"][0].as_object().unwrap().len(), 6);
+            {
+                let conn = fixture.state.store.conn.lock().await;
+                let table = if collection == "shares" {
+                    "relay_shares"
+                } else {
+                    "relay_access_grants"
+                };
+                conn.execute(
+                    &format!("UPDATE {table} SET revoked_at='now' WHERE id=?1"),
+                    params![id],
+                )
+                .unwrap();
+            }
+            assert_eq!(
+                fixture
+                    .request(axum::http::Method::GET, &path, Some("owner"))
+                    .send()
+                    .await
+                    .unwrap()
+                    .status(),
+                StatusCode::NOT_FOUND
+            );
+            let missing = format!("/relay/{collection}/missing/recipient-passkeys");
+            assert_eq!(
+                fixture
+                    .request(axum::http::Method::GET, &missing, Some("owner"))
+                    .send()
+                    .await
+                    .unwrap()
+                    .status(),
+                StatusCode::NOT_FOUND
+            );
+        }
     }
 }
