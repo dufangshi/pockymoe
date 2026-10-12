@@ -237,7 +237,7 @@ export function DeviceEncryptionStatus({
               {protection === 'not-protected' && <span className="block">{translate('devices.protectDeviceHelp')}</span>}
               {status?.role !== 'grantee' && <button className="relay-button-secondary px-3 py-2" onClick={() => { setOpen(false); setManage(true); }}>{translate('auth.ownerManage')}</button>}
             </span>}
-            {deviceId && hasInvitePin && !status?.certificateVerified && <button className="relay-button-secondary px-3 py-2" onClick={() => {
+            {deviceId && hasInvitePin && (!status?.certificateVerified || status?.role === 'grantee') && <button className="relay-button-secondary px-3 py-2" onClick={() => {
               void forgetInviteOwner(deviceId).then(() => resetPinnedDevice(deviceId)).then(() => {
                 clearTransportKeyCache(deviceId);
                 navigator.serviceWorker?.controller?.postMessage({ type: 'remote-codex-reset-transport', deviceId });

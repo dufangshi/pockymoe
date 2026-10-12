@@ -837,7 +837,7 @@ export class SocketCipher {
 
 export async function sharingFingerprint(deviceId: string, threadId?: string) {
   const key = await keyFor(deviceId, threadId ? `/api/threads/${encodeURIComponent(threadId)}` : '/api/transport/grants', threadId);
-  if (!key || !key.certificateVerified || key.grantee) throw new AccountTrustError('accountCertificateInvalid');
+  if (!key || !key.certificateVerified || key.identityTrust !== 'certificate' || key.grantee) throw new AccountTrustError('accountCertificateInvalid');
   return key.fingerprint;
 }
 

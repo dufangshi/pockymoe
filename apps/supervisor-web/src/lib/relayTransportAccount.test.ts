@@ -140,8 +140,18 @@ it('uses confirmed account trust for grantees and registers their own browser ce
   expect(wires.find(w => w.path.endsWith('/browser'))!.body).toEqual(browser.certificate);
   expect(reporter).toHaveBeenCalledWith(expect.objectContaining({ role: 'grantee', certificateVerified: true, identityTrust: 'invite' }));
   await verifyWires();
+  await expect(transport.sharingFingerprint(device, 'thread')).rejects.toMatchObject({ code: 'accountCertificateInvalid' });
   missingCertificate = true; transport.clearTransportKeyCache(device);
   await expect(transport.exchange(new Request(endpoint('threads/thread')))).rejects.toMatchObject({ code: 'accountCertificateMissing' });
+});
+it('refuses an owner registration answer for a recipient certificate verified through invite trust', async () => {
+  foreignCertificate = { ...vectors.deviceCertificate.certificate, accountKeyId: vectors.otherAccount.accountKeyId } as DeviceCertificate;
+  state.store.set(`cache:${vectors.account.userId}`, { ...vectors.account, revision: 3, boundDevices: [] });
+  // Certificate cryptography is covered by sharedDeviceTrust tests. This mocks
+  // its verified boundary to exercise a malicious registration role answer.
+  vi.spyOn(sharedTrust, 'verifySharedDevice').mockResolvedValue({ accountKeyId: vectors.otherAccount.accountKeyId, identityTrust: 'invite' });
+  await expect(transport.exchange(new Request(endpoint('threads/thread')))).rejects.toMatchObject({ code: 'accountCertificateInvalid' });
+  expect(wires.map(w => w.path)).toEqual(['/api/transport/browser']);
 });
 it('never falls back to owner registration when recipient certificate trust fails', async () => {
   foreignCertificate = { ...vectors.deviceCertificate.certificate, accountKeyId: vectors.otherAccount.accountKeyId } as DeviceCertificate;
