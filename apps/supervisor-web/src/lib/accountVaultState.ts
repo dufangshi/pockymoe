@@ -2,13 +2,14 @@ import { translate } from '@pockymoe/thread-ui/i18n';
 import type { AccountKeyInfo, BoundDevice, BrowserIdentity, DeviceCertificate, Revocation, UnlockedAccount, UnlockReason } from './accountVault';
 import { accountStore } from './accountStore';
 import { relayUrl } from './relayOrigin';
+import { browserLabel } from './browserLabel';
 import * as c from './accountCrypto';
 export interface Vault extends AccountKeyInfo {
   version: 1; kdf: c.Kdf; slots: { password: c.Sealed; recovery: c.Sealed }; body: c.Sealed; revision: number;
 }
 interface Body { version: 1; accountPrivateKey: string; boundDevices: BoundDevice[] | string[]; updatedAt: number }
 interface Cache extends AccountKeyInfo { revision: number; boundDevices: BoundDevice[] | string[] }
-interface WindowState { vault: Vault; body: Body; vdk: Uint8Array; key: CryptoKey | null; expires: number; authKey?: string }
+interface WindowState { vault: Vault; body: Body; vdk: Uint8Array; key: CryptoKey | null; expires: number; authKey?: string; recoveryAuthKey?: string }
 let unlocked: WindowState | undefined;
 let expiry: ReturnType<typeof setTimeout> | undefined;
 let serial: Promise<unknown> = Promise.resolve();
@@ -82,7 +83,7 @@ export async function confirmBoundDeviceIdentity(deviceId: string, identityKey: 
 }
 export function closeUnlockWindow() {
   if (expiry) clearTimeout(expiry); expiry = undefined;
-  if (unlocked) { unlocked.vdk.fill(0); unlocked.body.accountPrivateKey = ''; unlocked.key = null; delete unlocked.authKey; }
+  if (unlocked) { unlocked.vdk.fill(0); unlocked.body.accountPrivateKey = ''; unlocked.key = null; delete unlocked.authKey; delete unlocked.recoveryAuthKey; }
   unlocked = undefined;
 }
 if (typeof window !== 'undefined') {
@@ -126,13 +127,14 @@ export async function openVault(v: Vault, secret: string, recovery = false, expe
   const slotKey = 'wrapKey' in keys ? keys.wrapKey : keys.recoveryKey;
   try {
     const data = await decryptVault(v, slotKey, recovery ? 'recovery' : 'password', expectedUserId);
-    await installUnlockedVault(v, data, 'authKey' in keys && !await accountStore(`oauth:${v.userId}`) ? keys.authKey : undefined);
+    await installUnlockedVault(v, data, 'authKey' in keys && !await accountStore(`oauth:${v.userId}`) ? keys.authKey : undefined,
+      'recoveryAuthKey' in keys ? keys.recoveryAuthKey : undefined);
     return windowHandle();
   } finally { slotKey.fill(0); }
 }
-export async function installUnlockedVault(v: Vault, data: Awaited<ReturnType<typeof decryptVault>>, authKey?: string) {
+export async function installUnlockedVault(v: Vault, data: Awaited<ReturnType<typeof decryptVault>>, authKey?: string, recoveryAuthKey?: string) {
   await setActiveAccount(v.userId); closeUnlockWindow();
-  unlocked = { ...data, vault: v, expires: Date.now() + UNLOCK_WINDOW_MS, ...(authKey ? { authKey } : {}) };
+  unlocked = { ...data, vault: v, expires: Date.now() + UNLOCK_WINDOW_MS, ...(authKey ? { authKey } : {}), ...(recoveryAuthKey ? { recoveryAuthKey } : {}) };
   expiry = setTimeout(closeUnlockWindow, UNLOCK_WINDOW_MS);
   await cacheVault(v, data.body);
 }
@@ -197,7 +199,7 @@ export async function unlockAccount(secret: string, recovery = false) {
   const vault = await accountRequest<Vault>('/relay/account/vault');
   return openVault(vault, secret, recovery, id);
 }
-export async function registerBrowser(label = navigator.userAgent.slice(0, 80)) {
+export async function registerBrowser(label = browserLabel()) {
   const handle = await requireUnlock('connect'), w = windowState();
   let browser = await currentBrowser();
   const revoked = await accountRevocations(true);
@@ -254,9 +256,10 @@ export async function changeAccountPassword(password: string, oauthOnly = false)
   try {
     const slots = { ...w.vault.slots, password: await c.seal(keys.wrapKey, w.vdk, slotAad(w.vault, 'password')) };
     await saveWindow(w, { ...w.body, updatedAt: Date.now() }, oauthOnly ? {} : {
-      authKey: keys.authKey, ...(w.authKey ? { currentAuthKey: w.authKey } : {}) }, { kdf, slots });
+      authKey: keys.authKey, ...(w.authKey ? { currentAuthKey: w.authKey } : w.recoveryAuthKey ? { recoveryAuthKey: w.recoveryAuthKey } : {}) }, { kdf, slots });
     if (oauthOnly) delete w.authKey;
     else w.authKey = keys.authKey;
+    delete w.recoveryAuthKey;
   } finally { keys.wrapKey.fill(0); }
 }
 export async function regenerateRecoveryCode() {
@@ -269,10 +272,7 @@ export async function regenerateRecoveryCode() {
 export async function startAccountOver() {
   const id = await accountStore<string>('active'); if (!id) throw new AccountTrustError('accountUnlockRequired');
   const state = await accountStore<{ recovery?: boolean }>(`session:${id}`);
-  if (state?.recovery) await accountRequest('/relay/account/vault', 'DELETE', {});
-  else {
-    await requireUnlock('change-password'); const w = windowState();
-    await accountRequest('/relay/account/vault', 'DELETE', w.authKey ? { currentAuthKey: w.authKey } : {});
-  }
+  if (!state?.recovery) throw new AccountTrustError('accountRecoverySessionRequired');
+  await accountRequest('/relay/account/vault', 'DELETE', {});
   await logoutAccount(); await accountStore(`cache:${id}`, null); await accountStore(`revocations:${id}`, null);
 }

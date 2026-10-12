@@ -1,4 +1,5 @@
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@pockymoe/thread-ui';
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { currentAccount, currentBrowser, requireUnlock, type UnlockReason, type UnlockedAccount } from '../lib/accountVault';
@@ -10,7 +11,6 @@ import { clearTransportKeyCache, type TransportStatus } from '../lib/relayTransp
 import { getTransportStatus, probeDeviceEncryption } from '../lib/relayTransport';
 import { OWNER_READ_BLOCKED_EVENT, OWNER_UNLOCKED_EVENT, notifyOwnerUnlocked,
   type OwnerReadBlockedDetail, type OwnerUnlockedDetail } from '../lib/ownerUnlockRecovery';
-import { useDialogLifecycle } from './useDialogLifecycle';
 interface UnlockRequest { reason: UnlockReason; resolve: (a: UnlockedAccount) => void; reject: (e: unknown) => void }
 export function RecoveryConfirmation({ code, onConfirm, busy = false }: { code: string; onConfirm: () => void; busy?: boolean }) {
   const [confirmation, setConfirmation] = useState(''); useI18n();
@@ -29,14 +29,13 @@ export function AccountUnlockPrompt() {
   const [recoverySession, setRecoverySession] = useState(false), [newPassword, setNewPassword] = useState('');
   const [secret, setSecret] = useState(''), [recovery, setRecovery] = useState(false), [setup, setSetup] = useState(false);
   const [prepared, setPrepared] = useState<PreparedRegistration>(), [error, setError] = useState<string>(), [busy, setBusy] = useState(false);
-  const dialog = useRef<HTMLElement>(null), input = useRef<HTMLInputElement>(null);
+  const input = useRef<HTMLInputElement>(null), previousFocus = useRef<HTMLElement | null>(null);
   const open = !!(devices.length || request || needsConnect) && !dismissed;
   const dismiss = () => {
     setDismissed(true); setSecret(''); setNewPassword(''); setPrepared(undefined); setError(undefined);
     for (const req of queue.current.splice(0)) req.reject(new AccountTrustError('accountUnlockCancelled'));
     setRequest(null);
   };
-  useDialogLifecycle({ containerRef: dialog, initialFocusRef: input, open, busy, onClose: dismiss });
   useEffect(() => {
     const status = (event: Event) => {
       if (event.type === 'remote-codex-owner-unlock-request') setDismissed(false);
@@ -125,10 +124,17 @@ export function AccountUnlockPrompt() {
     <p role="status">{translate(revoked ? 'auth.browser_revoked' : 'auth.accountLocked')}</p>
     <button className="relay-button-primary account-key-action" onClick={() => window.dispatchEvent(new Event('remote-codex-owner-unlock-request'))}>{translate('auth.accountUnlock')}</button>
   </aside>, document.body);
-  return createPortal(<div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 p-4">
-    <section ref={dialog} tabIndex={-1} role="dialog" aria-modal="true" aria-labelledby="account-unlock-title" className="max-h-[calc(100dvh-32px)] w-full max-w-md space-y-4 overflow-y-auto rounded-xl border border-[var(--theme-border)] bg-[var(--theme-panel)] p-5 shadow-xl">
-      <h2 id="account-unlock-title" className="text-lg font-semibold">{translate(setup ? 'auth.accountSecure' : 'auth.accountUnlockTitle')}</h2>
-      <p>{translate(revoked ? 'auth.browser_revoked' : setup ? 'auth.accountPasswordHelp' : recoverySession ? 'auth.accountResetRecoveryHelp' : 'auth.accountUnlockHelp')}</p>
+  // Share Radix's focus-scope stack with the form that requested the unlock.
+  // A separate hand-rolled portal remains outside that form's modal focus trap.
+  return <Dialog open onOpenChange={next => { if (!next && !busy) dismiss(); }}>
+    <DialogContent showCloseButton={false} overlayClassName="!z-[199]"
+      className="host-dialog !z-[200] !max-h-[calc(100dvh-32px)] !max-w-[min(28rem,calc(100%-2rem))] space-y-4 overflow-y-auto !rounded-xl border-[var(--theme-border)] !bg-[var(--theme-panel)] !p-5"
+      onOpenAutoFocus={event => { event.preventDefault(); previousFocus.current = document.activeElement as HTMLElement | null; input.current?.focus(); }}
+      onCloseAutoFocus={event => { event.preventDefault(); if (previousFocus.current?.isConnected) previousFocus.current.focus(); }}
+      onPointerDownOutside={event => { if (busy) event.preventDefault(); }}
+      onEscapeKeyDown={event => { if (busy) event.preventDefault(); }}>
+      <DialogTitle>{translate(setup ? 'auth.accountSecure' : 'auth.accountUnlockTitle')}</DialogTitle>
+      <DialogDescription>{translate(revoked ? 'auth.browser_revoked' : setup ? 'auth.accountPasswordHelp' : recoverySession ? 'auth.accountResetRecoveryHelp' : 'auth.accountUnlockHelp')}</DialogDescription>
       {request && <p className="text-sm text-[var(--theme-fg-muted)]">{translate(`auth.accountReason.${request.reason}`)}</p>}
       {prepared ? <RecoveryConfirmation code={prepared.recoveryCode} busy={busy} onConfirm={() => void submit()} /> :
       <form className="space-y-4" onSubmit={e => { e.preventDefault(); void submit(); }}>
@@ -144,8 +150,8 @@ export function AccountUnlockPrompt() {
         {recoverySession && <button disabled={busy} onClick={() => { if (window.confirm(translate('auth.accountResetWarning'))) { setBusy(true); void startAccountOver().then(() => location.assign('/relay-portal')).catch(e => setError(e instanceof Error ? e.message : translate('auth.accountRequestFailed'))).finally(() => setBusy(false)); } }}>{translate('auth.accountStartOver')}</button>}
         <button disabled={busy} onClick={dismiss}>{translate('auth.ownerLater')}</button>
       </div>
-    </section>
-  </div>, document.body);
+    </DialogContent>
+  </Dialog>;
 }
 export async function ensureBrowserAccess() {
   if (!await currentBrowser()) await requireUnlock('connect');

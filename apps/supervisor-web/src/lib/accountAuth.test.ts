@@ -35,6 +35,48 @@ it('logs in with authKey, opens the vault locally and registers a non-extractabl
   vault.closeUnlockWindow(); expect(await vault.currentBrowser()).toEqual(browser);
   await vault.logoutAccount(); expect(await vault.currentBrowser()).toBeNull();
 });
+it('registers a short readable browser label instead of sending the raw user agent', async () => {
+  vi.stubGlobal('navigator', { userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36' });
+  try {
+    await auth.startAccountLogin('user', 'local'); await auth.finishAccountLogin(v.userId);
+    const registration = state.fetch.mock.calls.find(([url, init]) => url.endsWith('/browsers') && init.method === 'POST')!;
+    expect(JSON.parse(registration[1].body).label).toBe('Chrome on macOS');
+  } finally { vi.stubGlobal('navigator', { userAgent: 'Test browser', language: 'en-US' }); }
+});
+it('changes the password after a normal-session recovery unlock using the recovery proof', async () => {
+  await auth.setAccountSession(v.userId, false);
+  await vault.openVault(v, vectors.derivation.recoveryCodeDisplay, true);
+  expect(await auth.accountSessionState()).toMatchObject({ recovery: false });
+  await vault.changeAccountPassword('a new sufficiently long password');
+  const update = JSON.parse(state.fetch.mock.calls.find(([, init]) => init.method === 'PUT')![1].body);
+  expect(update.recoveryAuthKey).toBe(vectors.derivation.recoveryAuthKey);
+  expect(update.authKey).toBe(vectors.derivation.authKey); expect(update).not.toHaveProperty('currentAuthKey');
+  expect(JSON.stringify([...state.store.values()])).not.toContain(vectors.derivation.recoveryAuthKey);
+  await vault.changeAccountPassword('another sufficiently long password');
+  const next = JSON.parse(state.fetch.mock.calls.filter(([, init]) => init.method === 'PUT').at(-1)![1].body);
+  expect(next.currentAuthKey).toBe(vectors.derivation.authKey); expect(next).not.toHaveProperty('recoveryAuthKey');
+});
+it('expires the recovery proof with the unlock window and uses only the next password proof', async () => {
+  await auth.setAccountSession(v.userId, false);
+  vi.useFakeTimers();
+  try {
+    await vault.openVault(v, vectors.derivation.recoveryCodeDisplay, true);
+    vi.advanceTimersByTime(vault.UNLOCK_WINDOW_MS);
+    expect(vault.isAccountUnlocked()).toBe(false);
+    await expect(vault.changeAccountPassword('a sufficiently long password')).rejects.toMatchObject({ code: 'accountUnlockRequired' });
+    expect(state.fetch.mock.calls.some(([, init]) => init.method === 'PUT')).toBe(false);
+    await vault.openVault(v, 'local password');
+    await vault.changeAccountPassword('a sufficiently long new password');
+    const update = JSON.parse(state.fetch.mock.calls.find(([, init]) => init.method === 'PUT')![1].body);
+    expect(update.currentAuthKey).toBe(vectors.derivation.authKey); expect(update).not.toHaveProperty('recoveryAuthKey');
+  } finally { vault.closeUnlockWindow(); vi.useRealTimers(); }
+});
+it('refuses Start over in a normal session even while unlocked', async () => {
+  await auth.startAccountLogin('user', 'local'); await auth.finishAccountLogin(v.userId);
+  await expect(vault.startAccountOver()).rejects.toMatchObject({ code: 'accountRecoverySessionRequired' });
+  expect(state.fetch.mock.calls.some(([, init]) => init.method === 'DELETE')).toBe(false);
+  expect(await vault.currentAccount()).not.toBeNull();
+});
 it('preserves the pending derived key through a second-factor challenge', async () => {
   state.fetch.mockImplementationOnce(async () => Response.json({ mode: 'account', kdf: v.kdf }))
     .mockImplementationOnce(async () => Response.json({ challengeRequired: true, authenticator: true }));

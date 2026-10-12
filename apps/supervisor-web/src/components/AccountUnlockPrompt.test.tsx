@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, expect, it, vi } from 'vitest';
 import { setLocale, translate } from '@pockymoe/thread-ui/i18n';
 import { AccountUnlockPrompt } from './AccountUnlockPrompt';
+import { FormDialog } from './FormDialog';
 import { readAfterOwnerUnlock } from '../lib/ownerUnlockRecovery';
 const state = vi.hoisted(() => ({ unlock: vi.fn(), register: vi.fn(), current: vi.fn(), fetch: vi.fn(), session: vi.fn(), change: vi.fn(), setSession: vi.fn(), account: vi.fn(), create: vi.fn(), open: vi.fn(), setup: vi.fn() }));
 vi.mock('../lib/accountVault', () => ({ currentAccount: state.account, currentBrowser: state.current }));
@@ -14,6 +15,45 @@ vi.mock('../lib/accountStore', () => ({ accountStore: async () => 'user' }));
 vi.mock('../lib/relayTransportCrypto', () => ({ clearTransportKeyCache: vi.fn() }));
 vi.mock('../lib/relayTransport', () => ({ probeDeviceEncryption: vi.fn().mockResolvedValue(undefined), getTransportStatus: () => ({ state: 'encrypted' }) }));
 beforeEach(() => { vi.clearAllMocks(); setLocale('en'); state.fetch.mockResolvedValue({}); state.unlock.mockResolvedValue({}); state.current.mockResolvedValue({}); state.account.mockResolvedValue(null); state.session.mockResolvedValue(undefined); state.change.mockResolvedValue(undefined); state.setup.mockResolvedValue(undefined); state.register.mockResolvedValue({}); state.open.mockResolvedValue({ userId: 'user' }); });
+it('unlocks from inside a FormDialog without its focus trap blocking the password field', async () => {
+  const resolve = vi.fn(), close = vi.fn();
+  render(<><FormDialog title="Protect this device" onClose={close}>
+    <button onClick={() => window.dispatchEvent(new CustomEvent('pockymoe-account-unlock-request', {
+      detail: { reason: 'bind-device', resolve, reject: vi.fn() },
+    }))}>Protect</button>
+  </FormDialog><AccountUnlockPrompt /></>);
+  fireEvent.click(screen.getByRole('button', { name: 'Protect' }));
+  const password = await screen.findByLabelText(translate('auth.password'));
+  await waitFor(() => { password.focus(); expect(password).toHaveFocus(); });
+  expect(screen.getByRole('dialog', { name: translate('auth.accountUnlockTitle') })).toBeVisible();
+  fireEvent.change(password, { target: { value: 'local password' } });
+  fireEvent.click(screen.getByRole('button', { name: translate('auth.accountUnlock') }));
+  await waitFor(() => expect(resolve).toHaveBeenCalledWith({}));
+  expect(screen.getByRole('dialog', { name: 'Protect this device' })).toBeVisible();
+  expect(close).not.toHaveBeenCalled();
+});
+it('keeps a busy stacked unlock open on Escape and dismisses only that dialog on Later', async () => {
+  const close = vi.fn(), reject = vi.fn(); let finish!: (account: object) => void;
+  state.unlock.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+  render(<><FormDialog title="Protect this device" onClose={close}><button>Protect</button></FormDialog><AccountUnlockPrompt /></>);
+  act(() => window.dispatchEvent(new CustomEvent('pockymoe-account-unlock-request', {
+    detail: { reason: 'bind-device', resolve: vi.fn(), reject },
+  })));
+  const password = await screen.findByLabelText(translate('auth.password'));
+  fireEvent.change(password, { target: { value: 'local password' } });
+  fireEvent.click(screen.getByRole('button', { name: translate('auth.accountUnlock') }));
+  fireEvent.keyDown(password, { key: 'Escape' });
+  expect(screen.getByRole('dialog', { name: translate('auth.accountUnlockTitle') })).toBeVisible();
+  expect(close).not.toHaveBeenCalled(); expect(reject).not.toHaveBeenCalled();
+  await act(async () => finish({}));
+  act(() => window.dispatchEvent(new CustomEvent('pockymoe-account-unlock-request', {
+    detail: { reason: 'bind-device', resolve: vi.fn(), reject },
+  })));
+  fireEvent.click(screen.getByRole('button', { name: translate('auth.ownerLater') }));
+  await waitFor(() => expect(screen.getByRole('dialog', { name: 'Protect this device' })).toBeVisible());
+  expect(reject).toHaveBeenCalledWith(expect.objectContaining({ code: 'accountUnlockCancelled' }));
+  expect(close).not.toHaveBeenCalled();
+});
 function block(revoked = false) { act(() => window.dispatchEvent(new CustomEvent('remote-codex-transport', { detail: { deviceId: 'a', state: 'unlock-required', ...(revoked ? { unlockReason: 'browser_revoked' } : {}) } }))); }
 it.each(['en', 'zh-CN'] as const)('shows a resumable locked notice after Later and unlocks with a real submit in %s', async locale => {
   setLocale(locale); render(<AccountUnlockPrompt />); block();
