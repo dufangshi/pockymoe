@@ -1,13 +1,13 @@
 import { translate } from '@pockymoe/thread-ui/i18n';
-import type { AccountKeyInfo, BrowserIdentity, DeviceCertificate, Revocation, UnlockedAccount, UnlockReason } from './accountVault';
+import type { AccountKeyInfo, BoundDevice, BrowserIdentity, DeviceCertificate, Revocation, UnlockedAccount, UnlockReason } from './accountVault';
 import { accountStore } from './accountStore';
 import { relayUrl } from './relayOrigin';
 import * as c from './accountCrypto';
 export interface Vault extends AccountKeyInfo {
   version: 1; kdf: c.Kdf; slots: { password: c.Sealed; recovery: c.Sealed }; body: c.Sealed; revision: number;
 }
-interface Body { version: 1; accountPrivateKey: string; boundDevices: string[]; updatedAt: number }
-interface Cache extends AccountKeyInfo { revision: number; boundDevices: string[] }
+interface Body { version: 1; accountPrivateKey: string; boundDevices: BoundDevice[] | string[]; updatedAt: number }
+interface Cache extends AccountKeyInfo { revision: number; boundDevices: BoundDevice[] | string[] }
 interface WindowState { vault: Vault; body: Body; vdk: Uint8Array; key: CryptoKey | null; expires: number; authKey?: string }
 let unlocked: WindowState | undefined;
 let expiry: ReturnType<typeof setTimeout> | undefined;
@@ -50,7 +50,35 @@ export async function currentBrowser(): Promise<BrowserIdentity | null> {
 }
 export async function boundDevices() {
   const a = await currentAccount(); if (!a) return [];
-  return (await accountStore<Cache>(`cache:${a.userId}`))?.boundDevices ?? [];
+  return (await boundDeviceIdentities()).map(d => d.deviceId);
+}
+async function normalizeBoundDevices(entries: (string | BoundDevice)[], account: AccountKeyInfo): Promise<BoundDevice[]> {
+  return Promise.all(entries.map(async entry => {
+    if (typeof entry !== 'string') return { ...entry };
+    // v2 was never shipped, but earlier development vaults used IDs alone.
+    // Recover their authenticated identity from the locally verified certificate.
+    const cert = await accountStore<DeviceCertificate>(`device-certificate:${account.accountKeyId}:${entry}`);
+    return { deviceId: entry, identityKey: cert && await verifyDeviceCertificate(cert, account, entry, cert.identityKey) ? cert.identityKey : '' };
+  }));
+}
+export async function boundDeviceIdentities(): Promise<BoundDevice[]> {
+  const a = await currentAccount(); if (!a) return [];
+  const cache = await accountStore<Cache>(`cache:${a.userId}`); if (!cache) return [];
+  const entries = await normalizeBoundDevices(cache.boundDevices, a);
+  if (cache.boundDevices.some(d => typeof d === 'string')) await accountStore(`cache:${a.userId}`, { ...cache, boundDevices: entries });
+  return entries;
+}
+export async function confirmBoundDeviceIdentity(deviceId: string, identityKey: string, expectedPreviousIdentityKey?: string | null) {
+  await requireUnlock('certify-device');
+  if (!deviceId || c.decode64(identityKey).length !== 65) throw new AccountTrustError('accountCertificateInvalid');
+  const task = serial.then(async () => {
+    const w = windowState();
+    const entries = await normalizeBoundDevices(w.body.boundDevices, w.vault);
+    const previous = entries.find(d => d.deviceId === deviceId);
+    if (expectedPreviousIdentityKey !== undefined ? (previous?.identityKey ?? null) !== expectedPreviousIdentityKey : previous && previous.identityKey !== identityKey) throw new AccountTrustError('accountDeviceIdentityChanged');
+    const next = [...entries.filter(d => d.deviceId !== deviceId), { deviceId, identityKey }];
+    await saveWindow(w, { ...w.body, boundDevices: next, updatedAt: Date.now() });
+  }); serial = task.catch(() => {}); await task;
 }
 export function closeUnlockWindow() {
   if (expiry) clearTimeout(expiry); expiry = undefined;
@@ -85,9 +113,10 @@ export async function decryptVault(v: Vault, slotKey: Uint8Array, slot: 'passwor
     if (vdk.length !== 32) throw new Error();
     const raw = await c.open(vdk, v.body, bodyAad(v));
     let body: Body; try { body = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(raw)); } finally { raw.fill(0); }
-    if (body.version !== 1 || !Number.isSafeInteger(body.updatedAt) || body.updatedAt < 0 || !Array.isArray(body.boundDevices) || body.boundDevices.some(id => typeof id !== 'string')) throw new Error();
+    if (body.version !== 1 || !Number.isSafeInteger(body.updatedAt) || body.updatedAt < 0 || !Array.isArray(body.boundDevices) || body.boundDevices.some(d => typeof d !== 'string' && (!d || typeof d.deviceId !== 'string' || typeof d.identityKey !== 'string' || (d.identityKey !== '' && c.decode64(d.identityKey).length !== 65)))) throw new Error();
     const key = await c.importPrivate(body.accountPrivateKey);
     if (!await c.verify(v.accountPublicKey, await c.sign(key, 'pockymoe-account-key-check-v1'), 'pockymoe-account-key-check-v1')) throw new Error();
+    body.boundDevices = await normalizeBoundDevices(body.boundDevices, v);
     return { body, vdk, key };
   } catch { vdk?.fill(0); throw new AccountTrustError('accountUnlockFailed'); }
 }
@@ -116,9 +145,9 @@ function windowHandle(): UnlockedAccount {
     sign: async input => { const result = await c.sign(current().key!, input); current(); return result; },
     updateBoundDevices: update => {
       const task = serial.then(async () => {
-        const active = current(); const ids = update([...active.body.boundDevices]);
+        const active = current(); const entries = await normalizeBoundDevices(active.body.boundDevices, active.vault); const ids = update(entries.map(d => d.deviceId));
         if (!Array.isArray(ids) || ids.some(id => typeof id !== 'string')) throw new AccountTrustError('accountVaultInvalid');
-        await saveWindow(active, { ...active.body, boundDevices: [...new Set(ids)], updatedAt: Date.now() });
+        await saveWindow(active, { ...active.body, boundDevices: await normalizeBoundDevices([...new Set(ids)].map(id => entries.find(d => d.deviceId === id) ?? id), active.vault), updatedAt: Date.now() });
       }); serial = task.catch(() => {}); return task;
     },
   };
@@ -159,7 +188,7 @@ async function saveWindow(w: WindowState, body: Body, extra: Record<string, unkn
   const vault: Vault = { ...w.vault, ...fields, revision: w.vault.revision + 1 };
   vault.body = await c.seal(w.vdk, c.utf8(JSON.stringify(body)), bodyAad(vault));
   if (windowState() !== w) throw new AccountTrustError('accountUnlockExpired');
-  await accountRequest('/relay/account/vault', 'PUT', { vault, expectedRevision: w.vault.revision, ...extra });
+  await accountRequest('/relay/account/vault', 'PUT', { vault, expectedRevision: w.vault.revision, ...(w.authKey ? { currentAuthKey: w.authKey } : {}), ...extra });
   if (windowState() !== w) throw new AccountTrustError('accountUnlockExpired');
   w.vault = vault; w.body = body; await cacheVault(vault, body);
 }
@@ -203,8 +232,9 @@ export async function accountRevocations(refresh = false) {
   if (!refresh) return saved;
   const data = await accountRequest<{ revocations: Revocation[] }>('/relay/account/browsers');
   if (!Array.isArray(data.revocations)) throw new AccountTrustError('accountCertificateInvalid');
-  for (const r of data.revocations) if (!await c.verifyRevocation(r, a)) throw new AccountTrustError('accountCertificateInvalid');
-  const merged = new Map([...saved, ...data.revocations].map(r => [`${r.kind}:${r.subjectId}`, r]));
+  const valid: Revocation[] = [];
+  for (const r of [...saved, ...data.revocations]) if (r?.accountKeyId === a.accountKeyId && await c.verifyRevocation(r, a)) valid.push(r);
+  const merged = new Map(valid.map(r => [`${r.kind}:${r.subjectId}`, r]));
   await accountStore(`revocations:${a.userId}`, [...merged.values()]); return [...merged.values()];
 }
 export async function revokeAccountSubject(kind: 'browser' | 'device', subjectId: string) {
