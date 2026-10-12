@@ -181,6 +181,9 @@ async fn run_connected_tunnel_with_deadline(
                             continue;
                         }
                         if message["type"] == "relay.connected" {
+                            if let Some(id) = message["deviceId"].as_str() {
+                                crate::owner_trust::remember_device(&state, id)?;
+                            }
                             state.relay_connected.store(true, std::sync::atomic::Ordering::SeqCst);
                             let identity = message["deviceId"].as_str().map(|id| crate::peer_link::RelayIdentity {
                                 device_id: id.into(),
@@ -213,6 +216,15 @@ async fn run_connected_tunnel_with_deadline(
                 }
             }
             _ = heartbeat.tick() => {
+                crate::ports::close_unauthorized(&state);
+                clients.retain(|id, client| {
+                    if channel_authorized(&state, client.crypto.as_ref().map(|(_, s)| s.as_ref())) {
+                        true
+                    } else {
+                        let _ = outgoing.send(json!({"type":"relay.client.close","clientId":id}));
+                        false
+                    }
+                });
                 if let Ok(notices) = state.pending_relay_notifications() {
                     for payload in notices { let _ = outgoing.send(json!({"type":"relay.notification","payload":payload})); }
                 }
@@ -380,6 +392,13 @@ fn handle_relay_message(
                 message.get("payload"),
             ) {
                 if let Some(client) = clients.get(client_id) {
+                    if !channel_authorized(&state, client.crypto.as_ref().map(|(_, s)| s.as_ref()))
+                    {
+                        let _ = outgoing
+                            .send(json!({"type":"relay.client.close","clientId":client_id}));
+                        clients.remove(client_id);
+                        return;
+                    }
                     let clear = match &client.crypto {
                         Some((_, crypto)) => crypto.open(payload),
                         None if payload.get("encrypted").is_none() => Ok(payload.clone()),
@@ -447,13 +466,22 @@ fn connect_relay_client(
     } else {
         None
     };
+    if !channel_authorized(&state, crypto.as_ref().map(|(_, s)| s.as_ref())) {
+        let _ = outgoing.send(json!({"type":"relay.client.close","clientId":client_id}));
+        return;
+    }
     let output_crypto = crypto.as_ref().map(|(_, session)| session.clone());
     let (session_output, mut output) = mpsc::channel::<Value>();
-    let socket = crate::socket::SocketSession::spawn(state, session_output);
+    let socket = crate::socket::SocketSession::spawn(state.clone(), session_output);
     let relay_output = outgoing.clone();
     let output_client_id = client_id.clone();
     let bridge = tokio::spawn(async move {
         while let Some(payload) = output.recv().await {
+            if !channel_authorized(&state, output_crypto.as_deref()) {
+                let _ = relay_output
+                    .send(json!({"type":"relay.client.close","clientId":output_client_id}));
+                break;
+            }
             let payload = if let Some(crypto) = &output_crypto {
                 match crypto.seal(&payload) {
                     Ok(payload) => payload,
@@ -489,6 +517,19 @@ fn connect_relay_client(
     );
 }
 
+fn channel_authorized(
+    state: &Supervisor,
+    channel: Option<&crate::secure_transport::Session>,
+) -> bool {
+    if channel.is_some_and(|c| !c.alive()) {
+        return false;
+    }
+    match channel.and_then(|c| c.principal.as_ref()) {
+        Some(p) => p.valid(state),
+        None => !crate::owner_trust::strict(state),
+    }
+}
+
 async fn bounded_forward(
     future: impl std::future::Future<Output = Value>,
     timeout: Duration,
@@ -514,6 +555,27 @@ pub(crate) async fn forward_local(
         .split('?')
         .next()
         .unwrap_or("");
+    let strict = crate::owner_trust::strict(state);
+    let paired = crate::owner_trust::paired(state);
+    let method = payload["method"].as_str().unwrap_or("GET");
+    let encrypted = payload["headers"]["x-rcd-key"].is_string();
+    let bootstrap =
+        method == "POST" && matches!(path, "/api/transport/pair" | "/api/transport/owner-session");
+    let public = method == "GET"
+        && (path == "/healthz"
+            || path.ends_with("/transport/key")
+            || path
+                .strip_prefix("/api/publications/")
+                .is_some_and(|token| !token.is_empty() && !token.contains('/')));
+    if strict && (peer.is_some() || path.starts_with("/api/peer/")) {
+        return crate::owner_trust::error(403, "device_strict_mode");
+    }
+    if strict && !encrypted && !public {
+        return crate::owner_trust::error(403, "device_strict_mode");
+    }
+    if bootstrap && !encrypted {
+        return crate::owner_trust::error(403, "device_strict_mode");
+    }
     if peer.is_some() != path.starts_with("/api/peer/") {
         return relay_error_response(403, "Peer credentials only allow /api/peer/ requests");
     }
@@ -533,7 +595,6 @@ pub(crate) async fn forward_local(
     }
     let key_path = path.ends_with("/transport/key");
     let session_path = peer.is_none() && path.ends_with("/transport/session");
-    let encrypted = payload["headers"]["x-rcd-key"].is_string();
     if peer.is_some()
         && !encrypted
         && !(key_path && payload["method"] == "GET")
@@ -541,7 +602,11 @@ pub(crate) async fn forward_local(
     {
         return relay_error_response(400, "An encrypted peer request is required");
     }
-    if path.ends_with("/transport/shell-scope") && payload["method"] == "GET" {
+    if !strict
+        && !encrypted
+        && path.ends_with("/transport/shell-scope")
+        && payload["method"] == "GET"
+    {
         let thread = path
             .strip_prefix("/api/threads/")
             .and_then(|p| p.strip_suffix("/transport/shell-scope"));
@@ -582,7 +647,11 @@ pub(crate) async fn forward_local(
                 return relay_error_response(400, "Invalid key challenge");
             }
             return match transport.descriptor(&challenge) {
-                Ok(value) => json_response(value),
+                Ok(mut value) => {
+                    value["trust"] = crate::owner_trust::hint(state)
+                        .unwrap_or(json!({"paired":true,"strict":true}));
+                    json_response(value)
+                }
                 Err(_) => relay_error_response(503, "Device encryption is unavailable"),
             };
         }
@@ -601,8 +670,42 @@ pub(crate) async fn forward_local(
                 ),
             };
         let mut opened = opened;
-        opened.request["fileActor"] = payload["headers"]["x-rcd-file-actor"].clone();
-        let response = if path.contains("/transport/stream/") {
+        let principal = if paired {
+            crate::owner_trust::authorize(state, &payload, &opened.aad, &opened.sealed).ok()
+        } else {
+            None
+        };
+        let owner_endpoint = path == "/api/transport/trust"
+            || path == "/api/transport/credentials"
+            || path.starts_with("/api/transport/credentials/")
+            || path.starts_with("/api/transport/sessions/");
+        let signature_supplied = payload["headers"]["x-rcd-session"].is_string()
+            || payload["headers"]["x-rcd-signature"].is_string();
+        if principal.is_none()
+            && ((!public && !bootstrap && (strict || (paired && signature_supplied)))
+                || owner_endpoint)
+        {
+            return opened
+                .response(crate::owner_trust::error(401, "owner_session_required"))
+                .unwrap_or_else(|_| {
+                    relay_error_response(502, "Device response encryption failed")
+                });
+        }
+        opened.principal = principal.clone();
+        if principal.is_none() {
+            opened.request["fileActor"] = payload["headers"]["x-rcd-file-actor"].clone();
+        }
+        let response = if path.ends_with("/transport/shell-scope") && method == "GET" {
+            let thread = path
+                .strip_prefix("/api/threads/")
+                .and_then(|p| p.strip_suffix("/transport/shell-scope"));
+            match thread.and_then(|id| state.get_thread(id).ok()) {
+                Some(thread) => json_response(
+                    json!({"shells":crate::shells::hub().list_for_thread(&thread.id).iter().map(|shell|json!({"id":shell["id"]})).collect::<Vec<_>>()}),
+                ),
+                None => relay_error_response(404, "Thread not found"),
+            }
+        } else if path.contains("/transport/stream/") {
             match transport
                 .streams
                 .read(opened.request["path"].as_str().unwrap_or(""))
@@ -617,7 +720,14 @@ pub(crate) async fn forward_local(
                 Err(_) => relay_error_response(429, "Too many encrypted connections"),
             }
         } else {
-            dispatch_streaming(state, opened.request.clone(), &transport, peer.clone()).await
+            dispatch_streaming(
+                state,
+                opened.request.clone(),
+                &transport,
+                peer.clone(),
+                principal,
+            )
+            .await
         };
         return opened
             .response(response)
@@ -634,6 +744,8 @@ async fn dispatch_raw(
     state: &Arc<Supervisor>,
     payload: Value,
     peer: Option<PeerCaller>,
+    encrypted: bool,
+    principal: Option<crate::owner_trust::OwnerPrincipal>,
 ) -> Result<axum::response::Response, Value> {
     let method = payload
         .get("method")
@@ -653,7 +765,14 @@ async fn dispatch_raw(
     if let Some(peer) = peer {
         request = request.extension(peer);
     }
-    if let Some(actor) = payload["fileActor"].as_str().filter(|s| !s.is_empty()) {
+    if encrypted {
+        request = request.extension(crate::owner_trust::EncryptedOwnerRequest);
+    }
+    if let Some(principal) = principal {
+        request = request
+            .extension(crate::file_documents::FileActor(principal.actor()))
+            .extension(principal);
+    } else if let Some(actor) = payload["fileActor"].as_str().filter(|s| !s.is_empty()) {
         request = request.extension(crate::file_documents::FileActor(format!("relay:{actor}")));
     }
     if let Some(headers) = payload.get("headers").and_then(Value::as_object) {
@@ -682,9 +801,10 @@ async fn dispatch_streaming(
     payload: Value,
     transport: &crate::secure_transport::Transport,
     peer: Option<PeerCaller>,
+    principal: Option<crate::owner_trust::OwnerPrincipal>,
 ) -> Value {
     let path = payload["path"].as_str().unwrap_or("").to_string();
-    let response = match dispatch_raw(state, payload, peer).await {
+    let response = match dispatch_raw(state, payload, peer, true, principal).await {
         Ok(response) => response,
         Err(error) => return error,
     };
@@ -721,7 +841,7 @@ async fn dispatch_local(
     payload: Value,
     peer: Option<PeerCaller>,
 ) -> Value {
-    match dispatch_raw(state, payload, peer).await {
+    match dispatch_raw(state, payload, peer, false, None).await {
         Ok(response) => {
             let status = response.status().as_u16();
             let headers = response
@@ -966,6 +1086,20 @@ pub(crate) mod tests {
         let identity = crate::peer_link::relay_identity(&state).unwrap();
         assert_eq!(identity.device_id, "local-device");
         assert_eq!(identity.device_name, "Local device");
+        state
+            .db
+            .with(|conn| {
+                assert_eq!(
+                    conn.query_row(
+                        "SELECT relay_device_id FROM device_owner_trust WHERE singleton=1",
+                        [],
+                        |row| row.get::<_, String>(0)
+                    )?,
+                    "local-device"
+                );
+                Ok(())
+            })
+            .unwrap();
         relay.send(Message::Text(json!({"type":"relay.request","requestId":"peer-key","peer":{"deviceId":"source","deviceName":"Source device","userId":"owner"},"payload":{"method":"GET","path":"/api/peer/transport/key?challenge=from-relay-frame"}}).to_string().into())).await.unwrap();
         let response = relay_frame(&mut relay, "relay.response").await;
         assert_eq!(response["requestId"], "peer-key");
@@ -1153,5 +1287,97 @@ pub(crate) mod tests {
         assert!(!state
             .relay_connected
             .load(std::sync::atomic::Ordering::SeqCst));
+    }
+}
+
+#[cfg(test)]
+mod owner_channel_tests {
+    use super::*;
+    use crate::owner_trust::tests::{decoded, encrypted, live_owner};
+    #[tokio::test]
+    async fn strict_channels_inherit_owner_principal_and_reject_legacy_or_revoked_channels() {
+        let (_dir, state) = super::tests::state_with_relay_url("http://127.0.0.1:1");
+        let (outgoing, mut output) = mpsc::channel();
+        let mut clients = HashMap::new();
+        connect_relay_client(
+            state.clone(),
+            &mut clients,
+            &outgoing,
+            "legacy".into(),
+            None,
+        );
+        assert!(clients.contains_key("legacy"));
+        let (r, key, aad) = encrypted(&state, "POST", "/api/transport/session", Value::Null, None);
+        let (status, body) = decoded(forward_local(&state, r, None).await, &key, &aad);
+        assert_eq!(status, 200);
+        let unsigned_id = body["channelId"].as_str().unwrap();
+        let transport = crate::secure_transport::transport(&state).unwrap();
+        assert!(transport.session(unsigned_id).unwrap().principal.is_none());
+        let owner = live_owner(&state);
+        assert!(!channel_authorized(&state, None));
+        connect_relay_client(state.clone(), &mut clients, &outgoing, "plain".into(), None);
+        assert!(!clients.contains_key("plain"));
+        connect_relay_client(
+            state.clone(),
+            &mut clients,
+            &outgoing,
+            "unsigned".into(),
+            Some(unsigned_id),
+        );
+        assert!(!clients.contains_key("unsigned"));
+        let (r, key, aad) = encrypted(
+            &state,
+            "POST",
+            "/api/transport/session",
+            Value::Null,
+            Some(&owner),
+        );
+        let (status, body) = decoded(forward_local(&state, r, None).await, &key, &aad);
+        assert_eq!(status, 200);
+        let signed_id = body["channelId"].as_str().unwrap();
+        let channel = transport.session(signed_id).unwrap();
+        assert_eq!(channel.principal.as_ref().unwrap().actor(), owner.actor());
+        connect_relay_client(
+            state.clone(),
+            &mut clients,
+            &outgoing,
+            "signed".into(),
+            Some(signed_id),
+        );
+        assert!(clients.contains_key("signed"));
+        // Even a legacy client connected before pairing cannot send plaintext input.
+        handle_relay_message(
+            state.clone(),
+            &mut clients,
+            &outgoing,
+            json!({"type":"relay.client.message","clientId":"legacy","payload":{"type":"shell.input","shellId":"unused","data":"x"}}),
+        );
+        assert!(!clients.contains_key("legacy"));
+        state
+            .db
+            .with(|c| {
+                c.execute("DELETE FROM owner_sessions", [])?;
+                Ok(())
+            })
+            .unwrap();
+        assert!(!channel_authorized(&state, Some(&channel)));
+        handle_relay_message(
+            state.clone(),
+            &mut clients,
+            &outgoing,
+            json!({"type":"relay.client.message","clientId":"signed","payload":{}}),
+        );
+        assert!(!clients.contains_key("signed"));
+        let mut closes = Vec::new();
+        while let Ok(Some(value)) =
+            tokio::time::timeout(Duration::from_millis(10), output.recv()).await
+        {
+            if value["type"] == "relay.client.close" {
+                closes.push(value["clientId"].as_str().unwrap().to_owned());
+            }
+        }
+        for id in ["plain", "unsigned", "legacy", "signed"] {
+            assert!(closes.iter().any(|closed| closed == id));
+        }
     }
 }

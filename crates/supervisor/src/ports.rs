@@ -5,7 +5,7 @@ use axum::{
     extract::{Path, State},
     http::StatusCode,
     response::{IntoResponse, Response},
-    Json,
+    Extension, Json,
 };
 use futures_util::{SinkExt, StreamExt};
 use pockymoe_runtime::Supervisor;
@@ -34,13 +34,19 @@ fn active() -> &'static Active {
 }
 
 pub(crate) fn snapshot(state: &Supervisor) -> Vec<Mapping> {
-    state
+    let mappings: Vec<Mapping> = state
         .db
         .get_kv(KEY)
         .ok()
         .flatten()
         .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    if !crate::owner_trust::strict(state) {
+        return mappings;
+    }
+    state.db.with(|c| {
+        Ok(mappings.into_iter().filter(|m| c.query_row("SELECT EXISTS(SELECT 1 FROM owner_port_mappings m JOIN owner_credentials c USING(credential_id) WHERE mapping_id=?1)", [&m.id], |r| r.get::<_,bool>(0)).unwrap_or(false)).collect())
+    }).unwrap_or_default()
 }
 
 pub(crate) async fn list(State(state): State<Arc<Supervisor>>) -> Json<Value> {
@@ -56,9 +62,15 @@ pub(crate) struct Create {
 
 pub(crate) async fn create(
     State(state): State<Arc<Supervisor>>,
+    owner: Option<Extension<crate::owner_trust::OwnerPrincipal>>,
     Json(input): Json<Create>,
 ) -> Response {
-    match create_mapping(&state, input.port, &input.label) {
+    match create_authorized_mapping(
+        &state,
+        input.port,
+        &input.label,
+        owner.as_ref().map(|p| &p.0),
+    ) {
         Ok(mapping) => Json(json!(mapping)).into_response(),
         Err(error) => (
             StatusCode::BAD_REQUEST,
@@ -78,21 +90,83 @@ fn changed(state: &Supervisor) {
 }
 
 pub(crate) fn create_mapping(state: &Supervisor, port: u16, label: &str) -> Result<Mapping> {
+    create_authorized_mapping(state, port, label, None)
+}
+fn create_authorized_mapping(
+    state: &Supervisor,
+    port: u16,
+    label: &str,
+    owner: Option<&crate::owner_trust::OwnerPrincipal>,
+) -> Result<Mapping> {
     if port == 0 || port == state.config.port || label.len() > 120 {
         bail!("Choose an HTTP service port from 1–65535, excluding the Supervisor port. Labels may contain up to 120 bytes.");
     }
     let mapping = state.db.with(|conn| {
-        let saved: String = conn.query_row("SELECT COALESCE((SELECT value FROM kv WHERE key=?1),'[]')", [KEY], |r| r.get(0))?;
+        // Serialize provenance and mapping creation with local pairing/reset writes.
+        let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
+        let strict: bool = tx.query_row("SELECT strict FROM device_owner_trust WHERE singleton=1", [], |r| r.get(0))?;
+        let valid_owner = match owner {
+            Some(p) => tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM owner_sessions s JOIN owner_credentials c
+                 USING(credential_id) WHERE session_id=?1 AND credential_id=?2 AND expires_at>?3)",
+                rusqlite::params![p.session_id, p.credential_id, crate::owner_trust::now()],
+                |r| r.get::<_,bool>(0),
+            )?,
+            None => false,
+        };
+        if (strict || owner.is_some()) && !valid_owner {
+            bail!("An owner session is required to create a port mapping");
+        }
+        let saved: String = tx.query_row(
+            "SELECT COALESCE((SELECT value FROM kv WHERE key=?1),'[]')", [KEY], |r| r.get(0),
+        )?;
         let mut mappings: Vec<Mapping> = serde_json::from_str(&saved)?;
-        if let Some(existing) = mappings.iter().find(|m| m.port == port) { return Ok(existing.clone()); }
-        if mappings.len() >= 32 { bail!("At most 32 port mappings can be enabled on a device"); }
-        let mapping = Mapping { id: Uuid::new_v4().simple().to_string(), port, label: label.trim().to_string(), created_at: pockymoe_protocol::now_rfc3339() };
-        mappings.push(mapping.clone());
-        conn.execute("INSERT INTO kv(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [KEY, &serde_json::to_string(&mappings)?])?;
+        let mapping = if let Some(existing) = mappings.iter().find(|m| m.port == port) {
+            existing.clone()
+        } else {
+            if mappings.len() >= 32 { bail!("At most 32 port mappings can be enabled on a device"); }
+            let mapping = Mapping {
+                id: Uuid::new_v4().simple().to_string(), port,
+                label: label.trim().to_string(), created_at: pockymoe_protocol::now_rfc3339(),
+            };
+            mappings.push(mapping.clone());
+            mapping
+        };
+        if let Some(p) = owner {
+            tx.execute(
+                "INSERT INTO owner_port_mappings(mapping_id,credential_id) VALUES(?1,?2)
+                 ON CONFLICT(mapping_id) DO UPDATE SET credential_id=excluded.credential_id",
+                [&mapping.id, &p.credential_id],
+            )?;
+        }
+        tx.execute(
+            "INSERT INTO kv(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            [KEY, &serde_json::to_string(&mappings)?],
+        )?;
+        tx.commit()?;
         Ok(mapping)
     })?;
     changed(state);
     Ok(mapping)
+}
+
+pub(crate) fn close_unauthorized(state: &Supervisor) {
+    let allowed = snapshot(state);
+    active().lock().unwrap().retain(|id, handles| {
+        if allowed.iter().any(|m| &m.id == id) {
+            true
+        } else {
+            for handle in handles {
+                handle.abort();
+            }
+            false
+        }
+    });
+}
+
+pub(crate) fn refresh_owner_permissions(state: &Supervisor) {
+    close_unauthorized(state);
+    changed(state);
 }
 
 const DSH_CONSOLE: &str = "DSH console ";
@@ -104,6 +178,7 @@ pub(crate) async fn dsh_console_mapping(
     state: &Supervisor,
     thread_id: &str,
     port: u16,
+    owner: Option<&crate::owner_trust::OwnerPrincipal>,
 ) -> Result<Mapping> {
     for mapping in snapshot(state) {
         if !mapping.label.starts_with(DSH_CONSOLE) || mapping.port == port {
@@ -120,7 +195,7 @@ pub(crate) async fn dsh_console_mapping(
         }
     }
     let short: String = thread_id.chars().take(8).collect();
-    create_mapping(state, port, &format!("{DSH_CONSOLE}{short}"))
+    create_authorized_mapping(state, port, &format!("{DSH_CONSOLE}{short}"), owner)
 }
 
 pub(crate) async fn remove(
@@ -138,6 +213,7 @@ pub(crate) fn remove_mapping(state: &Supervisor, id: &str) -> Result<()> {
         let saved: String = conn.query_row("SELECT COALESCE((SELECT value FROM kv WHERE key=?1),'[]')", [KEY], |r| r.get(0))?;
         let mut mappings: Vec<Mapping> = serde_json::from_str(&saved)?;
         mappings.retain(|m| m.id != id);
+        conn.execute("DELETE FROM owner_port_mappings WHERE mapping_id=?1", [id])?;
         conn.execute("INSERT INTO kv(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [KEY, &serde_json::to_string(&mappings)?])?;
         Ok(())
     })?;
@@ -259,4 +335,43 @@ async fn connect(state: &Supervisor, port: u16, ticket: &str) -> Result<()> {
     }
     let _ = tokio::time::timeout(std::time::Duration::from_secs(2), sink.close()).await;
     Ok(())
+}
+
+#[cfg(test)]
+mod owner_mapping_tests {
+    use super::*;
+    #[tokio::test]
+    async fn mappings_require_owner_and_survive_session_expiry_but_not_credential_removal_or_reset()
+    {
+        let (_dir, state) = crate::tunnel::tests::state_with_relay_url("http://127.0.0.1:1");
+        let legacy = create_mapping(&state, 3001, "legacy").unwrap();
+        assert!(snapshot(&state).iter().any(|m| m.id == legacy.id));
+        let owner = crate::owner_trust::tests::live_owner(&state);
+        assert!(snapshot(&state).is_empty());
+        assert!(create_mapping(&state, 3002, "local unsigned").is_err());
+        let mapping = create_authorized_mapping(&state, 3002, "owner", Some(&owner)).unwrap();
+        assert_eq!(snapshot(&state).len(), 1);
+        state
+            .db
+            .with(|c| {
+                c.execute("UPDATE owner_sessions SET expires_at=0", [])?;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(snapshot(&state)[0].id, mapping.id);
+        state
+            .db
+            .with(|c| {
+                c.execute(
+                    "DELETE FROM owner_credentials WHERE credential_id=?1",
+                    [&owner.credential_id],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        assert!(snapshot(&state).is_empty());
+        crate::owner_trust::reset_owner_trust(&state.config.database_url).unwrap();
+        assert!(!snapshot(&state).iter().any(|m| m.id == mapping.id));
+        assert!(snapshot(&state).iter().any(|m| m.id == legacy.id));
+    }
 }
