@@ -13,7 +13,10 @@ import {
 } from '../lib/relayTransport';
 import { useDialogLifecycle } from './useDialogLifecycle';
 import { securityError } from '../lib/relaySecurity';
-import { notifyOwnerUnlocked } from '../lib/ownerUnlockRecovery';
+import {
+  notifyOwnerUnlocked, OWNER_READ_BLOCKED_EVENT, OWNER_UNLOCKED_EVENT,
+  type OwnerReadBlockedDetail, type OwnerUnlockedDetail,
+} from '../lib/ownerUnlockRecovery';
 
 export function OwnerUnlockButton({
   onUnlocked,
@@ -101,6 +104,7 @@ export function OwnerUnlockPrompt() {
   const [credentialId, setCredentialId] = useState<string | string[]>();
   const [dismissed, setDismissed] = useState(false);
   const [revoked, setRevoked] = useState(false);
+  const locked = useRef(new Map<string, boolean>());
   const dialog = useRef<HTMLElement>(null);
   const primaryButton = useRef<HTMLButtonElement>(null);
   useDialogLifecycle({
@@ -114,10 +118,15 @@ export function OwnerUnlockPrompt() {
       const status = (event as CustomEvent<TransportStatus>).detail;
       if (event.type === 'remote-codex-owner-unlock-request')
         setDismissed(false);
-      if (status.state === 'unlock-required') {
-        if (status.unlockReason === 'owner_session_revoked') {
+      if (status?.state === 'unlock-required') {
+        const wasRevoked = locked.current.get(status.deviceId) === true;
+        const isRevoked = status.unlockReason === 'owner_session_revoked';
+        locked.current.set(status.deviceId, wasRevoked || isRevoked);
+        if (isRevoked) {
           setRevoked(true);
-          setDismissed(false);
+          // A newly revoked session needs attention, but repeated failures must
+          // respect Later rather than reopening the modal on every pending read.
+          if (!wasRevoked) setDismissed(false);
         }
         if (status.ownerCredentialId) setCredentialId(status.ownerCredentialId);
         setDevices((current) =>
@@ -127,19 +136,47 @@ export function OwnerUnlockPrompt() {
         );
       }
     };
+    const onBlockedRead = (event: Event) => {
+      const detail = (event as CustomEvent<OwnerReadBlockedDetail>).detail;
+      onStatus(new CustomEvent('remote-codex-transport', {
+        detail: { deviceId: detail.deviceId, state: 'unlock-required',
+          ...(detail.revoked ? { unlockReason: 'owner_session_revoked' } : {}) },
+      }));
+    };
+    const onUnlocked = (event: Event) => {
+      const detail = (event as CustomEvent<OwnerUnlockedDetail>).detail;
+      if (!Array.isArray(detail?.deviceIds)) return;
+      for (const id of detail.deviceIds) locked.current.delete(id);
+      setDevices([...locked.current.keys()]);
+      setRevoked([...locked.current.values()].some(Boolean));
+      if (!locked.current.size) setCredentialId(undefined);
+    };
     window.addEventListener('remote-codex-transport', onStatus);
     window.addEventListener('remote-codex-owner-unlock-request', onStatus);
+    window.addEventListener(OWNER_READ_BLOCKED_EVENT, onBlockedRead);
+    window.addEventListener(OWNER_UNLOCKED_EVENT, onUnlocked);
     return () => {
       window.removeEventListener('remote-codex-transport', onStatus);
       window.removeEventListener('remote-codex-owner-unlock-request', onStatus);
+      window.removeEventListener(OWNER_READ_BLOCKED_EVENT, onBlockedRead);
+      window.removeEventListener(OWNER_UNLOCKED_EVENT, onUnlocked);
     };
   }, []);
   useEffect(() => {
     setDismissed(false);
   }, [location.pathname]);
   // Pairing has its own explicit verification and completion prompts.
-  if (!devices.length || dismissed || location.pathname === '/pair')
+  if (!devices.length || location.pathname === '/pair')
     return null;
+  if (dismissed) return createPortal(
+    <aside className="owner-locked-notice" aria-label={translate('auth.ownerLockedNotice')}>
+      <p role="status">{translate(revoked ? 'auth.ownerLockedRevoked' : 'auth.ownerLockedNotice')}</p>
+      <button className="relay-button-primary owner-passkey-action" onClick={() => {
+        window.dispatchEvent(new Event('remote-codex-owner-unlock-request'));
+      }}>{translate('auth.ownerLockedUnlock')}</button>
+    </aside>,
+    document.body,
+  );
   return createPortal(
     <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 p-4">
       <section
@@ -173,9 +210,6 @@ export function OwnerUnlockPrompt() {
                 throw new Error(translate('auth.ownerTrustFailed'));
               notifyOwnerUnlocked([id]);
             }
-            setDevices([]);
-            setCredentialId(undefined);
-            setRevoked(false);
           }}
         />
         <div className="flex flex-wrap items-center gap-4 text-sm">

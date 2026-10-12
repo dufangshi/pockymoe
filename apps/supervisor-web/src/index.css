@@ -2376,6 +2376,29 @@ input {
 /* Passkey preparation changes the enabled state asynchronously. Its visual
    affordance must change with it, without fading through disabled colors. */
 .owner-passkey-action { transition: none; }
+.owner-locked-notice {
+  position: fixed;
+  z-index: 100;
+  top: calc(64px + max(12px, env(safe-area-inset-top)));
+  left: max(12px, env(safe-area-inset-left));
+  right: max(12px, env(safe-area-inset-right));
+  width: fit-content;
+  max-width: 480px;
+  margin-inline: auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--theme-accent-border);
+  border-radius: 12px;
+  background: var(--theme-panel);
+  color: var(--theme-fg);
+  box-shadow: var(--theme-shadow);
+  font-size: 13px;
+  line-height: 1.4;
+}
+.owner-locked-notice p { min-width: 0; margin: 0; }
+.owner-locked-notice button { flex: none; padding: 8px 12px; min-height: 44px; }
 .owner-trust-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
