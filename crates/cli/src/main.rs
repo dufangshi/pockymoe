@@ -18,6 +18,53 @@ mod tests {
     use super::*;
 
     #[test]
+    fn pair_command_accepts_offline_options_and_requires_explicit_reset_for_yes() {
+        let cli = Cli::try_parse_from([
+            "pockymoe",
+            "pair",
+            "--database",
+            "/tmp/test.sqlite",
+            "--web-origin",
+            "https://pockymoe.test",
+        ])
+        .unwrap();
+        let Commands::Pair {
+            database,
+            web_origin,
+            reset,
+            yes,
+        } = cli.command
+        else {
+            panic!("expected pair");
+        };
+        assert_eq!(
+            database.unwrap(),
+            std::path::PathBuf::from("/tmp/test.sqlite")
+        );
+        assert_eq!(web_origin.as_deref(), Some("https://pockymoe.test"));
+        assert!(!reset && !yes);
+        assert!(matches!(
+            Cli::try_parse_from(["pockymoe", "pair", "--reset", "--yes"])
+                .unwrap()
+                .command,
+            Commands::Pair {
+                reset: true,
+                yes: true,
+                ..
+            }
+        ));
+        assert!(Cli::try_parse_from(["pockymoe", "pair", "--yes"]).is_err());
+        assert!(Cli::try_parse_from([
+            "pockymoe",
+            "pair",
+            "--reset",
+            "--web-origin",
+            "https://pockymoe.test"
+        ])
+        .is_err());
+    }
+
+    #[test]
     fn preview_cli_reserves_before_startup_and_rejects_invalid_ports() {
         for port in ["0", "65536", "-1", "abc"] {
             assert!(
@@ -342,6 +389,19 @@ More: pockymoe guide tasks"#
         #[arg(long, env = "POCKYMOE_DATABASE_PATH")]
         database: Option<std::path::PathBuf>,
     },
+    /// Pair the device with an owner passkey using a local terminal QR code.
+    Pair {
+        #[arg(long, env = "POCKYMOE_DATABASE_PATH")]
+        database: Option<std::path::PathBuf>,
+        #[arg(long, conflicts_with = "reset")]
+        web_origin: Option<String>,
+        /// Remove owner trust and restore relay trust using local database authority.
+        #[arg(long)]
+        reset: bool,
+        /// Confirm the reset without an interactive prompt.
+        #[arg(long, requires = "reset")]
+        yes: bool,
+    },
     /// Install this device from the official GitHub runtime release.
     Setup {
         #[arg(long)]
@@ -537,6 +597,42 @@ async fn run() -> Result<()> {
                 "SHA-256 {}",
                 pockymoe_supervisor::relay_device_fingerprint(&database)?
             );
+        }
+        Commands::Pair {
+            database,
+            web_origin,
+            reset,
+            yes,
+        } => {
+            std::env::set_var("POCKYMOE_MODE", "relay");
+            let config = pockymoe_runtime::RuntimeConfig::from_env();
+            let database = database.unwrap_or(config.database_url);
+            if reset {
+                if !yes {
+                    use std::io::Write;
+                    eprint!("Remove all owner credentials, sessions, certificates and pairing offers, and restore relay trust? [y/N] ");
+                    std::io::stderr().flush()?;
+                    let mut answer = String::new();
+                    std::io::stdin().read_line(&mut answer)?;
+                    if !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+                        anyhow::bail!("Pairing reset cancelled");
+                    }
+                }
+                pockymoe_supervisor::reset_owner_trust(&database)?;
+                println!("Owner trust reset. The device trusts the relay again.");
+            } else {
+                let url = pockymoe_supervisor::create_pairing_offer(
+                    &database,
+                    web_origin.as_deref(),
+                    config.relay_server_url.as_deref(),
+                )?;
+                let qr = qrcode::QrCode::new(url.as_bytes())?;
+                println!(
+                    "{}",
+                    qr.render::<qrcode::render::unicode::Dense1x2>().build()
+                );
+                println!("{url}");
+            }
         }
         Commands::Setup {
             relay,
