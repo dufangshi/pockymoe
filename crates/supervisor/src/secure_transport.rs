@@ -119,10 +119,13 @@ pub(crate) fn transport(state: &Supervisor) -> Result<Arc<Transport>> {
         .get_or_init(Mutex::default)
         .lock()
         .map_err(|_| anyhow!("transport lock failed"))?;
-    if let Some(value) = transports.get(&path) {
-        return Ok(value.clone());
-    }
     let identity = load_or_create_identity(&state.config.database_url)?;
+    let previous = transports.get(&path).cloned();
+    if let Some(value) = &previous {
+        if value.identity.verifying_key() == identity.verifying_key() {
+            return Ok(value.clone());
+        }
+    }
     let value = Arc::new(Transport {
         identity,
         streams: streams::Streams::default(),
@@ -131,6 +134,17 @@ pub(crate) fn transport(state: &Supervisor) -> Result<Arc<Transport>> {
         sessions: Mutex::default(),
     });
     transports.insert(path, value.clone());
+    drop(transports);
+    if let Some(previous) = previous {
+        let mut sessions = previous
+            .sessions
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        for session in sessions.values() {
+            session.revoked.store(true, Ordering::Release);
+        }
+        sessions.clear();
+    }
     Ok(value)
 }
 fn load_or_create_identity(database: &Path) -> Result<SigningKey> {
@@ -177,6 +191,14 @@ fn create_identity(path: &Path) -> Result<SigningKey> {
     Ok(identity)
 }
 
+pub(crate) fn identity_key_for_database(database: &Path) -> Result<String> {
+    Ok(B64.encode(
+        load_or_create_identity(database)?
+            .verifying_key()
+            .to_encoded_point(false)
+            .as_bytes(),
+    ))
+}
 pub(crate) fn fingerprint(database: &Path) -> Result<String> {
     use sha2::{Digest, Sha256};
     let identity = load_or_create_identity(database)?;

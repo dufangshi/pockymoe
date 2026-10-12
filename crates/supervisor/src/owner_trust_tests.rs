@@ -1118,10 +1118,11 @@ async fn bound_device_missing_certificate_can_bootstrap_enrollment_after_reset()
     let prior = bound_peer(&state, "test-device");
     reset_account_trust(&state.config.database_url).unwrap();
     let v = vectors();
+    let fresh_secret = [31; 32];
     bind_account(
         &state.config.database_url,
         v["account"]["accountPublicKey"].as_str().unwrap(),
-        v["enrollment"]["enrollSecret"].as_str().unwrap(),
+        &B64.encode(fresh_secret),
         None,
     )
     .unwrap();
@@ -1152,8 +1153,7 @@ async fn bound_device_missing_certificate_can_bootstrap_enrollment_after_reset()
     assert_eq!(
         enrollment["mac"],
         enrollment_mac(
-            &B64.decode(v["enrollment"]["enrollSecret"].as_str().unwrap())
-                .unwrap(),
+            &fresh_secret,
             "test-device",
             &prior.identity_key,
             &prior.account_key_id
@@ -1173,5 +1173,130 @@ async fn bound_device_missing_certificate_can_bootstrap_enrollment_after_reset()
         .await
         .0,
         200
+    );
+}
+
+#[test]
+fn rebind_healthy_certificate_clears_enrollment_and_exposes_web_origin_hint() {
+    let (_dir, state) = crate::tunnel::tests::state_with_relay_url("http://127.0.0.1:1");
+    let certificate = bound_peer(&state, "test-device");
+    let v = vectors();
+    bind_account(
+        &state.config.database_url,
+        v["account"]["accountPublicKey"].as_str().unwrap(),
+        &B64.encode([31; 32]),
+        Some("https://web.test"),
+    )
+    .unwrap();
+    assert_eq!(
+        rejection_code(&enrollment(&state).unwrap_err()).1,
+        "enrollment_missing"
+    );
+    assert_eq!(
+        device_certificate(&state).unwrap().unwrap().signature,
+        certificate.signature
+    );
+    assert!(state
+        .db
+        .with(|c| Ok(
+            c.query_row("SELECT enroll_secret FROM device_owner_trust", [], |r| {
+                r.get::<_, Option<Vec<u8>>>(0)
+            })?
+        ))
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        binding_status(&state.config.database_url).unwrap()["webOrigin"],
+        "https://web.test"
+    );
+}
+#[test]
+fn enrollment_cleans_up_stale_secret_for_a_certified_device() {
+    let (_dir, state) = crate::tunnel::tests::state_with_relay_url("http://127.0.0.1:1");
+    bound_peer(&state, "test-device");
+    state
+        .db
+        .with(|c| {
+            c.execute(
+                "UPDATE device_owner_trust SET enroll_secret=?1",
+                [vec![31u8; 32]],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        rejection_code(&enrollment(&state).unwrap_err()).1,
+        "enrollment_missing"
+    );
+    assert!(state
+        .db
+        .with(|c| Ok(
+            c.query_row("SELECT enroll_secret FROM device_owner_trust", [], |r| {
+                r.get::<_, Option<Vec<u8>>>(0)
+            })?
+        ))
+        .unwrap()
+        .is_none());
+}
+#[tokio::test]
+async fn rebind_after_lost_identity_rotates_transport_and_accepts_repaired_certificate() {
+    let (_dir, state) = crate::tunnel::tests::state_with_relay_url("http://127.0.0.1:1");
+    let old = bound_peer(&state, "test-device");
+    let owner = live_owner(&state);
+    let (status, body) = crate::grants::tests::request(
+        &state,
+        Some(&owner),
+        &session_key(),
+        "POST",
+        "/api/transport/session",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, 200);
+    let old_transport = crate::secure_transport::transport(&state).unwrap();
+    let old_channel = old_transport
+        .session(body["channelId"].as_str().unwrap())
+        .unwrap();
+    std::fs::remove_file(
+        state
+            .config
+            .database_url
+            .with_extension("transport-identity"),
+    )
+    .unwrap();
+    let secret = B64.encode([31; 32]);
+    let v = vectors();
+    bind_account(
+        &state.config.database_url,
+        v["account"]["accountPublicKey"].as_str().unwrap(),
+        &secret,
+        None,
+    )
+    .unwrap();
+    let next = crate::secure_transport::transport(&state)
+        .unwrap()
+        .identity_key();
+    assert_ne!(next, old.identity_key);
+    assert!(!old_channel.alive());
+    assert!(device_certificate(&state).unwrap().is_none());
+    let enrollment = enrollment(&state).unwrap();
+    assert_eq!(
+        enrollment["mac"],
+        enrollment_mac(&[31; 32], "test-device", &next, &owner.account_key_id).unwrap()
+    );
+    assert!(install_certificate(&state, &old).is_err());
+    let mut repaired = old;
+    repaired.identity_key = next;
+    repaired.created_at = now();
+    let signature: Signature = account_key().sign(device_signing_input(&repaired).as_bytes());
+    repaired.signature = B64.encode(signature.to_bytes());
+    install_certificate(&state, &repaired).unwrap();
+    assert_eq!(
+        device_certificate(&state).unwrap().unwrap().identity_key,
+        repaired.identity_key
+    );
+    assert_eq!(
+        rejection_code(&super::enrollment(&state).unwrap_err()).1,
+        "enrollment_missing"
     );
 }

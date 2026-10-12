@@ -730,6 +730,9 @@ async fn run() -> Result<()> {
                 println!("Bound to account {}. Strict mode is on.", &id[..12]);
             } else if status {
                 let result = pockymoe_supervisor::binding_status(&database)?;
+                if let Some(origin) = result["webOrigin"].as_str() {
+                    println!("Web origin (installation hint): {origin}");
+                }
                 if result["relayStatus"]["code"] == "device_id_mismatch" {
                     println!("Relay assigned a different device id. Reconnecting with backoff; restore the original relay registration or explicitly reset binding.");
                 }

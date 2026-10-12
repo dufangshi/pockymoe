@@ -424,14 +424,43 @@ pub(crate) fn enrollment_mac(
     mac.update(format!("pockymoe-acct-enroll-v1\n{device}\n{identity}\n{account}").as_bytes());
     Ok(B64.encode(mac.finalize().into_bytes()))
 }
+fn certificate_matches(c: &Connection, account: &PinnedAccount, identity: &str) -> Result<bool> {
+    let saved: Option<String> = c
+        .query_row(
+            "SELECT certificate_json FROM device_certificates WHERE singleton=1",
+            [],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let device: Option<String> = c.query_row(
+        "SELECT relay_device_id FROM device_owner_trust WHERE singleton=1",
+        [],
+        |r| r.get(0),
+    )?;
+    let (Some(saved), Some(device)) = (saved, device) else {
+        return Ok(false);
+    };
+    let Ok(cert) = serde_json::from_str::<DeviceCertificate>(&saved) else {
+        return Ok(false);
+    };
+    Ok(verify_device(account, &cert, &device, identity).is_ok()
+        && !revoked(c, &account.account_key_id, "device", &device)?)
+}
 fn enrollment(state: &Supervisor) -> Result<Value> {
     let identity = crate::secure_transport::transport(state)?.identity_key();
     state.db.with(|c| {
-        let pending:Option<Vec<u8>>=c.query_row("SELECT enroll_secret FROM device_owner_trust WHERE singleton=1",[],|r|r.get(0))?;
+        let tx=Transaction::new_unchecked(c,TransactionBehavior::Immediate)?;
+        let pending:Option<Vec<u8>>=tx.query_row("SELECT enroll_secret FROM device_owner_trust WHERE singleton=1",[],|r|r.get(0))?;
         let Some(secret)=pending else{return reject(404,"enrollment_missing")};
-        let account=pinned_in(c)?.context("Device is not bound")?;
-        let device=device_id(c)?;
-        Ok(json!({"deviceId":device,"identityKey":identity,"accountKeyId":account.account_key_id,"mac":enrollment_mac(&secret,&device,&identity,&account.account_key_id)?}))
+        let account=pinned_in(&tx)?.context("Device is not bound")?;
+        if certificate_matches(&tx,&account,&identity)? {
+            tx.execute("UPDATE device_owner_trust SET enroll_secret=NULL WHERE singleton=1", [])?;
+            tx.commit()?;
+            return reject(404,"enrollment_missing");
+        }
+        let device=device_id(&tx)?;
+        let result=json!({"deviceId":device,"identityKey":identity,"accountKeyId":account.account_key_id,"mac":enrollment_mac(&secret,&device,&identity,&account.account_key_id)?});
+        tx.commit()?; Ok(result)
     })
 }
 fn install_certificate(state: &Supervisor, cert: &DeviceCertificate) -> Result<Value> {
@@ -613,7 +642,20 @@ pub fn bind_account(
             "Device is bound to another account key; use pockymoe bind --reset to replace it"
         );
     }
-    tx.execute("UPDATE device_owner_trust SET account_key_id=?1,account_public_key=?2,enroll_secret=?3,bound_at=COALESCE(bound_at,?4),web_origin=COALESCE(?5,web_origin),strict=1 WHERE singleton=1",params![id,account,B64.decode(enroll)?,now(),origin])?;
+    let identity = crate::secure_transport::identity_key_for_database(database)?;
+    let pin = PinnedAccount {
+        account_key_id: id.clone(),
+        account_public_key: account.into(),
+    };
+    let pending = if certificate_matches(&tx, &pin, &identity)? {
+        None
+    } else {
+        // A certificate for an identity that was lost/replaced must not be
+        // advertised while its replacement is awaiting owner enrollment.
+        tx.execute("DELETE FROM device_certificates", [])?;
+        Some(B64.decode(enroll)?)
+    };
+    tx.execute("UPDATE device_owner_trust SET account_key_id=?1,account_public_key=?2,enroll_secret=?3,bound_at=COALESCE(bound_at,?4),web_origin=COALESCE(?5,web_origin),strict=1 WHERE singleton=1",params![id,account,pending,now(),origin])?;
     pockymoe_runtime::publications::delete_keyless_publications(&tx)?;
     tx.commit()?;
     Ok(json!({"bound":true,"strict":true,"accountKeyId":id}))
@@ -637,6 +679,14 @@ pub fn binding_status(database: &Path) -> Result<Value> {
     )?;
     let mut status =
         json!({"bound":pin.is_some(),"strict":strict,"accountKeyId":pin.map(|p|p.account_key_id)});
+    let origin: Option<String> = c.query_row(
+        "SELECT web_origin FROM device_owner_trust WHERE singleton=1",
+        [],
+        |r| r.get(0),
+    )?;
+    if let Some(origin) = origin {
+        status["webOrigin"] = json!(origin);
+    }
     let relay: Option<String> = c
         .query_row(
             "SELECT value FROM kv WHERE key='relayTrustStatus'",
