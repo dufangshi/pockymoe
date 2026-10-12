@@ -130,9 +130,64 @@ export async function deviceProtectionProgress(
   return terminal.get(key(account, deviceId));
 }
 
+async function switchableLocalEnrollment(
+  device: RelayDeviceDto,
+  account: AccountKeyInfo,
+) {
+  if (!device.connected || device.ownerUserId !== account.userId)
+    return undefined;
+  const pending = (await listPendingEnrollments(account)).find(
+    (p) => p.deviceId === device.id,
+  );
+  if (!pending || pending.remoteProtection || !(await liveAccount(pending)))
+    return undefined;
+  // Pinned devices require the existing MAC-gated local repair path, even if
+  // the relay substitutes an unbound capability hint.
+  if ((await boundDeviceIdentities()).some((pin) => pin.deviceId === device.id))
+    return undefined;
+  const descriptor = await inspectEnrollmentDevice(device.id);
+  if (
+    descriptor.certificate ||
+    descriptor.trust?.bound !== false ||
+    !descriptor.trust.capabilities?.includes('remote-bind')
+  )
+    return undefined;
+  return pending;
+}
+
+export async function canSwitchLocalEnrollmentToRemote(device: RelayDeviceDto) {
+  const account = await currentAccount();
+  if (!account) return false;
+  try {
+    return !!(await switchableLocalEnrollment(device, account));
+  } catch {
+    return false;
+  }
+}
+
+/** Explicit approval discards the local secret; normal remote enrollment mints a new one. */
+export async function switchLocalEnrollmentToRemote(device: RelayDeviceDto) {
+  const account = await requireUnlock('bind-device');
+  const pending = await switchableLocalEnrollment(device, account);
+  if (
+    !pending ||
+    !(await liveAccount(pending)) ||
+    !(await deletePendingEnrollment(device.id, pending))
+  )
+    throw new DeviceTrustError('enrollment_missing', 409);
+  clearTransportKeyCache(device.id);
+  await protectDevicesWithAccount([device], account);
+}
+
 /** The user approves remote binding once. Offline intent is durable and account-scoped. */
 export async function protectDevices(devices: readonly RelayDeviceDto[]) {
-  const account = await requireUnlock('bind-device');
+  await protectDevicesWithAccount(devices, await requireUnlock('bind-device'));
+}
+
+async function protectDevicesWithAccount(
+  devices: readonly RelayDeviceDto[],
+  account: AccountKeyInfo,
+) {
   const pins = await boundDeviceIdentities();
   const revoked = await accountRevocations();
   for (const device of devices) {

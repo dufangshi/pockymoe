@@ -22,6 +22,8 @@ import {
 } from './pendingEnrollmentStore';
 import {
   protectDevices,
+  canSwitchLocalEnrollmentToRemote,
+  switchLocalEnrollmentToRemote,
   runRemoteProtection,
   updateAndProtectDevice,
   deviceProtectionProgress,
@@ -600,5 +602,146 @@ describe('one-click protection batches', () => {
     await expect(
       runRemoteProtection(structuredClone(pending('replacement')), true),
     ).rejects.toBe(change);
+  });
+});
+
+describe('explicit local-to-remote enrollment switch', () => {
+  const id = 'switch-local';
+  function localPending() {
+    const p = {
+      deviceId: id,
+      userId: account.userId,
+      accountKeyId: account.accountKeyId,
+      enrollSecret: 'discarded-local-secret',
+      createdAt: Date.now(),
+    };
+    records.set(id, p);
+    supported.add(id);
+    return p;
+  }
+  it('offers switching only an owned online unbound capable device with a pending local enrollment', async () => {
+    localPending();
+    expect(await canSwitchLocalEnrollmentToRemote(device(id))).toBe(true);
+    expect(deviceTrustRequest).not.toHaveBeenCalled();
+    expect(requireUnlock).not.toHaveBeenCalled();
+  });
+  it.each([
+    'offline',
+    'bound',
+    'pinned',
+    'old-runtime',
+    'no-pending',
+    'remote-pending',
+    'shared',
+    'revoked',
+    'certificate',
+    'inspection-offline',
+  ])('does not offer or perform switching for %s', async (reason) => {
+    const local = localPending();
+    let candidate = device(id);
+    if (reason === 'offline') candidate = device(id, false);
+    if (reason === 'shared') candidate = device(id, true, 'another-user');
+    if (reason === 'bound') bound.add(id);
+    if (reason === 'pinned')
+      vi.mocked(boundDeviceIdentities).mockResolvedValue([
+        { deviceId: id, identityKey: 'previous' },
+      ]);
+    if (reason === 'old-runtime') supported.delete(id);
+    if (reason === 'no-pending') records.delete(id);
+    if (reason === 'remote-pending')
+      records.set(id, { ...local, remoteProtection: { phase: 'queued' } });
+    if (reason === 'revoked')
+      vi.mocked(accountRevocations).mockResolvedValue([
+        {
+          version: 1,
+          accountKeyId: account.accountKeyId,
+          kind: 'device',
+          subjectId: id,
+          revokedAt: 1,
+          signature: 'sig',
+        },
+      ]);
+    if (reason === 'certificate')
+      vi.mocked(inspectEnrollmentDevice).mockResolvedValue({
+        identityKey: 'identity',
+        certificate: {
+          version: 1,
+          deviceId: id,
+          accountKeyId: account.accountKeyId,
+          identityKey: 'identity',
+          createdAt: 1,
+          signature: 'sig',
+        },
+        trust: { bound: false, strict: false, capabilities: ['remote-bind'] },
+      });
+    if (reason === 'inspection-offline')
+      vi.mocked(inspectEnrollmentDevice).mockRejectedValue(
+        new DeviceTrustError('device_offline', 503),
+      );
+    expect(await canSwitchLocalEnrollmentToRemote(candidate)).toBe(false);
+    await expect(switchLocalEnrollmentToRemote(candidate)).rejects.toThrow();
+    expect(deviceTrustRequest).not.toHaveBeenCalled();
+    expect(createPendingEnrollment).not.toHaveBeenCalled();
+    if (!['revoked', 'no-pending', 'remote-pending'].includes(reason))
+      expect(pending(id)).toEqual(local);
+  });
+  it('deletes the local enrollment, mints a new secret and completes normal protection with one bind unlock', async () => {
+    const local = localPending();
+    const create = vi.mocked(createPendingEnrollment).getMockImplementation()!;
+    vi.mocked(createPendingEnrollment).mockImplementation(async (...args) => {
+      expect(records.has(id)).toBe(false);
+      return create(...args);
+    });
+    await switchLocalEnrollmentToRemote(device(id));
+    expect(requireUnlock).toHaveBeenCalledExactlyOnceWith('bind-device');
+    expect(createPendingEnrollment).toHaveBeenCalledExactlyOnceWith(
+      id,
+      account,
+      expect.any(Number),
+      { phase: 'queued' },
+      null,
+    );
+    expect(deviceTrustRequest).toHaveBeenCalledExactlyOnceWith(
+      id,
+      'bind',
+      'POST',
+      {
+        accountPublicKey: account.accountPublicKey,
+        enrollSecret: 'test-secret-switch-local',
+        webOrigin: location.origin,
+      },
+    );
+    for (const call of vi.mocked(deviceTrustRequest).mock.calls)
+      expect(call[3]).not.toHaveProperty('enrollSecret', local.enrollSecret);
+    expect(completeDeviceEnrollment).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        enrollSecret: 'test-secret-switch-local',
+        remoteProtection: { phase: 'certifying', bindStarted: true },
+      }),
+      true,
+    );
+    expect(records.has(id)).toBe(false);
+    expect(await deviceProtectionProgress(id)).toEqual({ phase: 'complete' });
+    expect(await runRemoteProtection(local, true)).toBe(false);
+  });
+  it('rechecks a device that became bound after the button was shown without discarding the local enrollment', async () => {
+    const local = localPending();
+    expect(await canSwitchLocalEnrollmentToRemote(device(id))).toBe(true);
+    bound.add(id);
+    await expect(switchLocalEnrollmentToRemote(device(id))).rejects.toThrow();
+    expect(pending(id)).toEqual(local);
+    expect(deviceTrustRequest).not.toHaveBeenCalled();
+  });
+  it('does not delete or transmit an enrollment that another view replaced while inspection was pending', async () => {
+    const local = localPending();
+    const inspect = vi.mocked(inspectEnrollmentDevice).getMockImplementation()!;
+    vi.mocked(inspectEnrollmentDevice).mockImplementation(async (deviceId) => {
+      records.set(id, { ...local, enrollSecret: 'another-local-secret' });
+      return inspect(deviceId);
+    });
+    await expect(switchLocalEnrollmentToRemote(device(id))).rejects.toThrow();
+    expect(pending(id).enrollSecret).toBe('another-local-secret');
+    expect(createPendingEnrollment).not.toHaveBeenCalled();
+    expect(deviceTrustRequest).not.toHaveBeenCalled();
   });
 });
