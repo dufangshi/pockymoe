@@ -2373,9 +2373,8 @@ input {
   opacity: 0.55;
 }
 
-/* Passkey preparation changes the enabled state asynchronously. Its visual
-   affordance must change with it, without fading through disabled colors. */
-.owner-passkey-action { transition: none; }
+/* Password actions must show their busy state without fading through disabled colors. */
+.account-key-action { transition: none; }
 .owner-locked-notice {
   position: fixed;
   z-index: 100;
