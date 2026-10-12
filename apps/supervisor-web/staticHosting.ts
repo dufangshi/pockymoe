@@ -12,7 +12,7 @@ export function staticHosting(relay: string): Plugin {
     origin = url.origin;
     websocket = `${url.protocol === 'https:' ? 'wss:' : 'ws:'}//${url.host}`;
   }
-  const csp = `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: ${origin}; media-src 'self' blob: ${origin}; font-src 'self' data:; connect-src 'self' ${origin} ${websocket}; worker-src 'self' blob:; frame-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self' ${origin}`;
+  const csp = `default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: ${origin}; media-src 'self' blob: ${origin}; font-src 'self' data:; connect-src 'self' ${origin} ${websocket}; worker-src 'self' blob:; frame-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self' ${origin}`;
   return {
     name: 'static-host-security',
     apply: 'build',
