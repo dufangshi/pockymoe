@@ -24,9 +24,9 @@ pockymoe transcript THREAD_ID --turn TURN_ID --item ITEM_ID --raw
 
 `thread create` also accepts `--text` / `--text-file` for an initial prompt. Without a managed caller, specify `--workspace`. Model IDs and reasoning levels must be advertised by the target harness. Creation inherits the caller's workspace and approval mode unless explicitly overridden. It does not copy the caller's history.
 
-Ordinary `send` stores passive inbox mail and never starts or interrupts a turn. Explicit `queue --kind task` assigns executable work: idle recipients start automatically and busy recipients process it after current work. Urgent peer corrections/unblock requests may use direct/steer with an interrupt reason. The receiver sees the sender's Pockymoe thread ID and can use the same CLI to reply. `--request-id KEY` makes retries of the same send return the original receipt; reusing a key with different content is rejected. A send receipt does not mean execution has completed.
+Ordinary `send` stores passive inbox mail without immediately starting or interrupting a turn. Explicit `queue --kind task` assigns executable work: idle recipients start automatically and busy recipients process it after current work. Urgent peer corrections/unblock requests may use direct/steer with an interrupt reason. The receiver sees the sender's Pockymoe thread ID and can use the same CLI to reply. `--request-id KEY` makes retries of the same send return the original receipt; reusing a key with different content is rejected. A send receipt does not mean execution has completed.
 
-`--notify-on-complete` is optional per executable send. It requires a caller identity. When that receiving turn ends, the Supervisor stores a passive inbox result with the peer/turn IDs and completed, failed or interrupted status. It never wakes the caller or queues a turn. Multiple opted-in messages steered into one turn keep independent subscriptions; cancelling an unconsumed queued prompt removes its subscription.
+`--notify-on-complete` is optional per executable send. It requires a caller identity. When that receiving turn ends, the Supervisor stores a passive inbox result with the peer/turn IDs and completed, failed or interrupted status. It does not immediately wake the caller or queue a turn. Multiple opted-in messages steered into one turn keep independent subscriptions; cancelling an unconsumed queued prompt removes its subscription.
 
 An agent can explicitly mail usable intermediate batches independently of the automatic turn-end option. Avoid duplicate completion reports, reflexive acknowledgement replies and notifying peers that do not depend on the change. See the bundled skill for handoff and waiting rules.
 
@@ -139,6 +139,27 @@ Unsupported active steering is rejected without enqueueing. Accepted steering ta
 
 Inbox remains passive by default. Peer direct/steer is reserved for urgent correction or unblocking, with `--kind task|question --interrupt-reason REASON`; use `queue --kind task` for assignments. Completion notification delivery is always inbox. Claude `CronCreate` / `/loop` can independently wake its native session while the harness process remains alive; that is not an automatic completion callback. See [scheduled history recovery](claude-scheduled-history.md) for visibility and persistence limits.
 
+## Delayed unread inbox reminders
+
+New inbox messages carry `readAt`, `remindAfter` (creation + 10 minutes) and
+`remindedAt`. Every 30 seconds, the interaction worker checks for overdue,
+unread, unacknowledged, non-superseded mail. If the recipient is open, has no
+active/recovering turn and no queued or held input, it queues one normal durable
+continuation summarizing the waiting subjects. The reminder and subsequent work
+use the existing turn/history recording path.
+
+A batch includes all currently unread, unreminded messages in that mailbox.
+Marking the batch reminded and enqueueing the continuation are one transaction;
+restarts cannot duplicate it. Further batches are spaced at least 10 minutes
+apart. The reminder never acknowledges mail or reopens a closed thread.
+Historical messages without `remindAfter` are not enrolled retroactively.
+
+`inbox read` and inline messages returned by `inbox wait` record `readAt` and
+cancel their reminder eligibility. Listing bounded previews does not. Reading
+still does not acknowledge or remove messages: counts and the default list retain
+unhandled messages until explicit `ack`. Use blocking wait or an explicit delegate
+wake for required handoffs; the delayed reminder is a fallback, not a replacement.
+
 ## Peer communication policy and inbox snapshots
 
 The runtime enforces peer delivery rules at acceptance, including calls from older
@@ -170,7 +191,7 @@ Runtime migration 10 (`agent_coordination`) adds `agent_name`, `agent_role`, `wo
 - **Names.** `thread create --name N` stores an address unique among the open threads of one lineage (partial unique index on `root_thread_id, agent_name` where not closed). The CLI resolves a non-UUID target, and `self`/`parent`/`root`, through the `resolve` operation from the caller's lineage.
 - **Close.** `thread close` sets `closed_at`. The open-thread cap now counts `closed_at IS NULL` threads that are not failed or interrupted: a delegate whose turn finished is `idle` and keeps its slot until closed (previously nothing ever set a thread `completed`, so finished delegates held slots forever). Starting a turn clears `closed_at`; sending execution to a closed delegate checks the cap first. `--remove-worktree` runs `git worktree remove`, which refuses dirty checkouts. The CLI closes several targets per call and exits nonzero if any fails.
 - **Wait.** `thread wait` (`wait`) blocks server-side until the listed threads settle (no in-progress turn and no queued continuation), any one blocks - a pending approval, or a `question` it mailed that has neither an `--in-reply-to` reply in its inbox nor an acknowledgement - or the timeout (default 300 s, max 1800 s) passes. It returns each thread's state and last turn's closing message. `inbox wait` (`inboxWait`) blocks until matching unacknowledged mail exists and returns it inline; `--new` excludes, by id, mail that was already waiting. Both wake on bus `thread.updated` events with a 1 s fallback tick; the CLI extends its HTTP timeout by the wait.
-- **Wake.** `thread wait --wake` stores a one-shot `cli:wake:CALLER:ID` KV record (members must be the caller's descendants; at most 3 pending per caller). The interaction worker fires it when every member settles or one blocks, enqueueing a single continuation on the caller with the members' closing messages. This is the only way delegates start a turn on their parent, and only on the parent's request.
+- **Wake.** `thread wait --wake` stores a one-shot `cli:wake:CALLER:ID` KV record (members must be the caller's descendants; at most 3 pending per caller). The interaction worker fires it when every member settles or one blocks, enqueueing a single continuation on the caller with the members' closing messages. This is an immediate, receiver-requested continuation; the delayed inbox reminder below is a separate fallback.
 - **Task board.** Tasks are numbered per lineage root. `task claim` is a single transaction guarded on `status='pending'`; dependencies (`--after`) must be completed before a claim. A null claim reports `finished` (nothing pending, or nothing in progress that could unblock what is pending) and task counts; `task claim --wait` blocks while pending work is only blocked on in-progress tasks. `task done` mails the creator the result and mails assignees of newly unblocked tasks; `--assign` mails the assignee. All mail is passive.
 - **Roles.** `--role R` reads `.pockymoe/agents/R.md` from the workspace, then `~/.pockymoe/agents/`; the pre-rename `.remote-codex/agents/` directories are still read after each. Front matter (`model`, `effort`, `agent`, `description`) supplies defaults the caller can override; the body is staged in KV and prefixed to the thread's first turn only.
 - **Worktrees.** `--worktree [--worktree-branch B]` creates `../REPO.worktrees/SLUG` on branch `agent/SLUG` (or `agent/SLUG-N` when that branch already exists; an explicit branch is checked out as is) from committed HEAD before the harness session starts (and removes it if the session fails to start). Session start, resume, goal and capability calls use the worktree as cwd.
@@ -203,3 +224,17 @@ Long human prompts use a six-line text preview, bounded by 600 Unicode
 characters, 160 words or eight explicit lines. Expand/Show less controls reuse
 message disclosure state and keep the scroll position anchored. Attachments
 remain visible in the preview, and Copy always copies the complete prompt.
+
+## Substantial answers during work
+
+The timeline keeps substantive agent answers at their chronological positions,
+with separate folded work sections before and after them. Explicit final replies
+remain visible. When ACP does not distinguish answers from progress, an agent
+message qualifies at 600 Unicode characters, or at 300 characters with a Markdown
+heading and three paragraphs, or with a three-line Markdown table. This is a
+presentation heuristic, not a completion signal. Short progress still uses the
+latest-update preview. Lazy history summaries preserve qualifying answers;
+commands and their outputs continue to load on demand.
+
+The compact model menu shows reported context use and capacity in thousands of
+tokens below the reasoning controls. Missing readings show a dash.

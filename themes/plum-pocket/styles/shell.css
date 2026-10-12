@@ -1,0 +1,906 @@
+/* Plum Pocket: workbench shell. Every rule is scoped to :theme.
+
+   One plum felt frame (rail, top bar and tab strip) holds two pockets: the quilted
+   thread list, with a stitched seam, and the cream conversation card. Thread tabs
+   are folder tabs that join the card. Agent mascots carry identity; their status is
+   a badge on the avatar. Classic is untouched: the shared UI only adds neutral class
+   hooks, and the phone drawer tools render only with the
+   `workbench.phoneDrawerTools` flag. Avatars and the composer mascot read the
+   `--theme-agent-avatar` / `--theme-agent-peek` art from theme.json `agents`. */
+
+:theme {
+  --plum-shell-gap: 8px;
+  --plum-shell-radius: 16px;
+  --plum-shell-card-edge: transparent;
+  --plum-shell-focus: #7b3a99;
+  /* Status colors on light content; the chrome and dark mode override them. */
+  --plum-status-running: #2f6fd6;
+  --plum-status-agents: #7a52c8;
+  --plum-status-unread: #a87200;
+  --plum-status-failed: #c4473d;
+  --plum-status-interrupted: #a8701f;
+  --plum-status-idle: #9b8470;
+}
+:theme[data-theme-effective='dark'],
+:theme :is(.matter-rail, .matter-topbar, .matter-sidebar, .matter-tabs-row) {
+  --plum-shell-focus: #f2c15c;
+  --plum-status-running: #8fc3ff;
+  --plum-status-agents: #c7a6ff;
+  --plum-status-unread: #f2c15c;
+  --plum-status-failed: #ff8a80;
+  --plum-status-interrupted: #f0b46a;
+  --plum-status-idle: #a88db2;
+}
+:theme[data-theme-effective='dark'] { --plum-shell-card-edge: var(--plum-chrome-border); }
+
+/* ── Frame ─────────────────────────────────────────────────────────────── */
+
+:theme .thread-ui-shell .matter-workbench {
+  --plum-shell-card: var(--theme-bg);
+  grid-template-columns: 49px 264px minmax(0, 1fr);
+  grid-template-rows: 44px minmax(0, 1fr);
+  background: var(--plum-chrome);
+}
+:theme .thread-ui-shell .matter-workbench :is(.matter-rail, .matter-topbar) { background: var(--plum-chrome); border: 0; }
+:theme .thread-ui-shell .matter-workbench :is(.matter-rail, .matter-topbar, .matter-sidebar, .matter-tabs-row, .matter-notifications, .matter-breadcrumb) :where(button, a, summary):focus-visible {
+  outline: 2px solid var(--plum-shell-focus);
+  outline-offset: 1px;
+}
+:theme .product-topbar.product-topbar.product-navigation { background: var(--plum-chrome); color: var(--plum-chrome-fg); border-color: var(--plum-chrome-border); }
+
+/* Chrome buttons: soft rounded squares that light up like felt under a lamp. */
+:theme .thread-ui-shell .matter-workbench :is(.matter-rail, .matter-topbar, .matter-sidebar-heading) :where(button, a):not(:is(.workbench-search-field, .workbench-search-dropdown) *) {
+  border-radius: 11px;
+  color: var(--plum-chrome-soft);
+}
+:theme .thread-ui-shell .matter-workbench :is(.matter-rail, .matter-topbar, .matter-sidebar-heading) :where(button, a):not(:is(.workbench-search-field, .workbench-search-dropdown) *):hover {
+  background: var(--plum-chrome-hover);
+  color: var(--plum-chrome-fg);
+}
+:theme .thread-ui-shell .matter-workbench :is(.matter-rail, .matter-topbar) svg:not(:is(.workbench-search-field, .workbench-search-dropdown) *) { width: 17px; height: 17px; stroke-width: 1.85; }
+
+/* Rail: the pocket icon, then chunky mustard "felt buttons" for the active tool. */
+:theme .thread-ui-shell .matter-workbench .matter-rail { gap: 6px; padding: 5px 0 10px; }
+:theme .thread-ui-shell .matter-workbench .matter-rail > .matter-brand {
+  width: 34px;
+  height: 34px;
+  margin-bottom: 10px;
+  border-radius: 11px;
+  color: transparent;
+  letter-spacing: 0;
+  font-size: 0;
+  background: url("asset:assets/pockymoe-icon.png") center / cover no-repeat;
+  box-shadow: 0 0 0 1.5px var(--plum-stitch), 0 3px 0 rgb(0 0 0 / 28%);
+  transition: transform 180ms ease;
+}
+:theme .thread-ui-shell .matter-workbench .matter-rail > .matter-brand:hover { background: url("asset:assets/pockymoe-icon.png") center / cover no-repeat; transform: rotate(-6deg) scale(1.04); }
+:theme .matter-brand span { color: transparent; }
+:theme .thread-ui-shell .matter-workbench .matter-rail > button { width: 36px; height: 36px; }
+:theme .thread-ui-shell .matter-workbench .matter-rail > button[aria-pressed='true'] {
+  color: var(--plum-chrome);
+  background: var(--theme-accent-solid);
+  box-shadow: inset 0 -2.5px 0 rgb(122 72 0 / 45%);
+}
+:theme .thread-ui-shell .matter-workbench .matter-rail > button[aria-pressed='true']:hover { background: var(--theme-accent-solid-hover); color: var(--plum-chrome); }
+:theme .thread-ui-shell .matter-workbench .matter-rail .device-monitor-button {
+  width: 44px;
+  border-radius: 10px;
+  background: rgb(255 255 255 / 5%);
+  color: var(--plum-chrome-muted);
+}
+:theme .thread-ui-shell .matter-workbench .device-monitor-button b { color: #f2c15c; }
+/* DeviceMonitor sets --load (0–100) on each live value: green when idle, amber
+   halfway, red when busy. Every step stays at least 4.5:1 on the plum chrome. */
+:theme .thread-ui-shell .matter-workbench .device-monitor-button b[style*='--load'] {
+  color: oklch(calc(0.84 - var(--load) * 0.0012) calc(0.15 + var(--load) * 0.0004) calc(150 - var(--load) * 1.25));
+}
+
+/* Top bar: rounded brand, back/forward/home, and a pill search field. The
+   conversation search field and its results render inside the top bar, so the
+   icon-button rules here leave them alone. */
+:theme .thread-ui-shell .matter-workbench .matter-topbar { gap: 4px; padding: 0 12px 0 8px; }
+:theme .thread-ui-shell .matter-workbench .matter-topbar :where(button, a):not(:is(.workbench-search-field, .workbench-search-dropdown) *) { width: 32px; height: 32px; }
+:theme .thread-ui-shell .matter-workbench .matter-topbar-brand {
+  margin: 0 8px 0 6px;
+  font-size: 16px;
+  color: var(--plum-chrome-fg);
+}
+:theme .thread-ui-shell .matter-workbench .matter-topbar-separator { height: 18px; margin: 0 6px 0 2px; background: var(--plum-chrome-active); }
+:theme .thread-ui-shell .matter-workbench .matter-topbar .matter-search-trigger {
+  justify-content: flex-start;
+  width: min(340px, 32vw);
+  height: 32px;
+  margin-left: 12px;
+  padding: 0 14px;
+  gap: 9px;
+  border: 1px solid var(--plum-chrome-border);
+  border-radius: 999px;
+  background: rgb(255 255 255 / 6%);
+  color: var(--plum-chrome-muted);
+  font-size: 12.5px;
+}
+:theme .thread-ui-shell .matter-workbench .matter-topbar .matter-search-trigger:hover:not(:disabled) {
+  border-color: rgb(242 193 92 / 45%);
+  background: rgb(255 255 255 / 10%);
+  color: var(--plum-chrome-fg);
+}
+:theme .thread-ui-shell .matter-workbench .matter-topbar .matter-search-trigger svg { width: 15px; height: 15px; color: #f2c15c; }
+:theme .thread-ui-shell .matter-workbench .matter-topbar-end { gap: 4px; }
+:theme .thread-ui-shell .matter-workbench .matter-topbar-end > button[aria-expanded='true'] { background: var(--plum-chrome-active); color: var(--plum-chrome-fg); }
+:theme .thread-ui-shell .matter-workbench .matter-unread {
+  width: 9px;
+  height: 9px;
+  top: 4px;
+  right: 4px;
+  background: #f2c15c;
+  box-shadow: 0 0 0 2px var(--plum-chrome);
+}
+
+/* ── Thread list pocket ────────────────────────────────────────────────── */
+
+/* Colors, margins and the seam only: the workbench owns the sidebar's position and
+   size and turns it into a fixed drawer on phones. */
+:theme .thread-ui-shell .matter-workbench .matter-sidebar {
+  margin: 0 var(--plum-shell-gap) var(--plum-shell-gap) 0;
+  padding: 12px 10px 10px;
+  border: 0;
+  border-radius: var(--plum-shell-radius);
+  outline: 1.5px dashed rgb(242 193 92 / 26%);
+  outline-offset: -5px;
+  background:
+    linear-gradient(to bottom, transparent, var(--plum-chrome-panel) 150px),
+    repeating-linear-gradient(45deg, transparent 0 13px, rgb(242 193 92 / 8%) 13px 14px),
+    repeating-linear-gradient(-45deg, transparent 0 13px, rgb(242 193 92 / 8%) 13px 14px),
+    var(--plum-chrome-panel);
+  scrollbar-width: thin;
+  scrollbar-color: var(--plum-chrome-active) transparent;
+}
+:theme .thread-ui-shell .matter-workbench.is-sidebar-hidden { grid-template-columns: 49px 0 minmax(0, 1fr); }
+:theme .thread-ui-shell .matter-workbench.is-sidebar-hidden .matter-sidebar { margin: 0; outline: 0; }
+:theme .thread-ui-shell .matter-workbench .matter-sidebar-heading {
+  margin-bottom: 8px;
+  padding: 0 6px 0 10px;
+  font-family: var(--plum-display);
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--plum-chrome-fg);
+}
+:theme .thread-ui-shell .matter-workbench .matter-section-heading {
+  height: 32px;
+  margin-top: 4px;
+  padding: 0 8px 0 10px;
+  border-radius: 10px;
+  color: var(--plum-chrome-muted);
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+:theme .thread-ui-shell .matter-workbench .matter-section-heading:hover { background: var(--plum-chrome-hover); color: var(--plum-chrome-fg); }
+:theme .thread-ui-shell .matter-workbench .matter-section-heading svg:last-child { width: 14px; height: 14px; color: #f2c15c; }
+:theme .thread-ui-shell .matter-workbench .matter-section-count {
+  min-width: 22px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: rgb(240 181 74 / 16%);
+  color: #f6cf7c;
+  font-size: 10.5px;
+  letter-spacing: 0;
+  text-align: center;
+}
+:theme .thread-ui-shell .matter-workbench .matter-thread-section { margin-bottom: 8px; }
+:theme .thread-ui-shell .matter-workbench .matter-sidebar-hint {
+  margin: 2px 4px 6px;
+  padding: 10px 12px;
+  border: 1.5px dashed rgb(242 193 92 / 32%);
+  border-radius: 12px;
+  color: var(--plum-chrome-muted);
+}
+:theme .thread-ui-shell .matter-workbench .matter-sidebar-error { color: #ffb0a6; }
+
+/* Thread rows: a 32px mascot, a two-line label and a status badge on the mascot. */
+:theme .thread-ui-shell .matter-workbench .matter-thread-row {
+  --plum-row-avatar: 32px;
+  --plum-badge-ring: var(--plum-chrome-panel);
+  position: relative;
+  gap: 10px;
+  min-height: 48px;
+  margin: 2px 0;
+  padding: 6px 34px 6px 8px;
+  border: 1.5px solid transparent;
+  border-radius: 14px;
+  color: var(--plum-chrome-soft);
+  transition: background-color 140ms, border-color 140ms;
+}
+:theme .thread-ui-shell .matter-workbench .matter-thread-row:hover { --plum-badge-ring: var(--plum-chrome-hover); background: var(--plum-chrome-hover); color: var(--plum-chrome-fg); }
+:theme .thread-ui-shell .matter-workbench .matter-thread-row[aria-current='page'] {
+  --plum-badge-ring: var(--plum-chrome-active);
+  background: var(--plum-chrome-active);
+  border: 1.5px dashed var(--plum-stitch);
+  color: var(--plum-chrome-fg);
+  box-shadow: 0 2px 0 rgb(0 0 0 / 18%);
+}
+:theme .thread-ui-shell .matter-workbench .matter-thread-row .matter-thread-avatar { width: var(--plum-row-avatar); height: var(--plum-row-avatar); }
+:theme .thread-ui-shell .matter-workbench .matter-thread-copy { gap: 0; line-height: 18px; }
+:theme .thread-ui-shell .matter-workbench .matter-thread-copy > span { font-size: 13px; font-weight: 600; }
+:theme .thread-ui-shell .matter-workbench .matter-thread-copy small { font-size: 11px; color: var(--plum-chrome-muted); }
+:theme .thread-ui-shell .matter-workbench .matter-thread-row[aria-current='page'] .matter-thread-copy > span { color: #ffd98f; font-weight: 700; }
+:theme .thread-ui-shell .matter-workbench .matter-thread-row[aria-current='page'] small { color: var(--plum-chrome-soft); }
+:theme .thread-ui-shell .matter-workbench .matter-thread-row:has(> .matter-status-dot[data-status='unread']) .matter-thread-copy > span { color: var(--plum-chrome-fg); font-weight: 800; }
+
+/* The "…" menu appears on hover or focus with a mouse; touch keeps it visible. */
+:theme .matter-thread-entry > .recent-thread-actions { right: 5px; border-radius: 10px; color: var(--plum-chrome-muted); }
+:theme .matter-thread-entry > .recent-thread-actions:is(:hover, [aria-expanded='true']) { background: var(--plum-chrome-active); color: var(--plum-chrome-fg); }
+@media (hover: hover) {
+  :theme .thread-ui-shell .matter-workbench .matter-thread-entry > .matter-thread-row { padding-right: 10px; }
+  :theme .thread-ui-shell .matter-workbench .matter-thread-entry:is(:hover, :focus-within, :has(> [aria-expanded='true'])) > .matter-thread-row { padding-right: 38px; }
+  :theme .matter-thread-entry > .recent-thread-actions { opacity: 0; transition: opacity 120ms; }
+  :theme .matter-thread-entry:is(:hover, :focus-within) > .recent-thread-actions,
+  :theme .matter-thread-entry > .recent-thread-actions[aria-expanded='true'] { opacity: 1; }
+}
+
+/* Agent threads: a pill that opens a stitched branch of smaller rows. */
+:theme .thread-ui-shell .matter-workbench .matter-agent-threads {
+  position: relative;
+  margin: -2px 0 6px 25px !important;
+  padding-left: 10px;
+}
+:theme .thread-ui-shell .matter-workbench .matter-agent-threads::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: -4px;
+  bottom: 18px;
+  border-left: 1.5px dashed rgb(242 193 92 / 45%);
+  border-bottom: 1.5px dashed rgb(242 193 92 / 45%);
+  border-bottom-left-radius: 8px;
+  width: 8px;
+}
+:theme .thread-ui-shell .matter-workbench .matter-agent-threads:not([open])::before { bottom: 12px; }
+:theme .thread-ui-shell .matter-workbench .matter-agent-threads-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+  margin: 2px 0;
+  padding: 2px 10px 2px 8px !important;
+  border-radius: 999px;
+  background: rgb(199 166 255 / 12%);
+  color: var(--plum-chrome-soft) !important;
+  font-size: 11.5px !important;
+  font-weight: 700;
+  list-style: none;
+}
+:theme .thread-ui-shell .matter-workbench .matter-agent-threads-summary::-webkit-details-marker { display: none; }
+:theme .thread-ui-shell .matter-workbench .matter-agent-threads-summary::before {
+  content: '';
+  width: 5px;
+  height: 5px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform 140ms;
+}
+:theme .thread-ui-shell .matter-workbench .matter-agent-threads[open] > .matter-agent-threads-summary::before { transform: translateY(-2px) rotate(45deg); }
+:theme .thread-ui-shell .matter-workbench .matter-agent-threads-summary:hover { background: rgb(199 166 255 / 20%); color: var(--plum-chrome-fg) !important; }
+:theme .thread-ui-shell .matter-workbench .matter-agent-threads .matter-thread-row { --plum-row-avatar: 24px; min-height: 40px; padding-block: 4px; }
+:theme .thread-ui-shell .matter-workbench .matter-agent-threads .matter-thread-copy > span { font-size: 12px; }
+
+/* The three pocket friends peek out at the foot of the list. */
+:theme .thread-ui-shell .matter-workbench .matter-sidebar-footer {
+  padding: 14px 8px 2px;
+  color: var(--plum-chrome-muted);
+  font-family: var(--plum-display);
+  font-size: 12px;
+  font-weight: 500;
+  text-align: center;
+}
+:theme .thread-ui-shell .matter-workbench .matter-sidebar-footer::before {
+  content: '';
+  display: block;
+  height: 108px;
+  margin: 0 auto 4px;
+  background: url("asset:assets/pocket-friends.webp") center bottom / contain no-repeat;
+  transform-origin: 50% 100%;
+}
+:theme .thread-ui-shell .matter-workbench .matter-sidebar-footer:hover::before { animation: plum-shell-hop 700ms ease; }
+@keyframes plum-shell-hop { 30% { transform: translateY(-5px) scaleY(1.03); } 60% { transform: translateY(0) scaleY(.97); } }
+@media (max-height: 640px) {
+  :theme .thread-ui-shell .matter-workbench .matter-sidebar-footer::before { display: none; }
+}
+
+/* ── Agent avatars and status badges ───────────────────────────────────── */
+
+/* Shared primitive: other areas size it with width and height. */
+:theme .matter-thread-avatar {
+  display: inline-block;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: #fff8ee var(--theme-agent-avatar) center / cover no-repeat;
+  box-shadow: 0 0 0 1.5px var(--plum-stitch);
+}
+
+/* Status dots keep their role and label. Their colors follow the surface. */
+:theme .matter-status-dot { border-color: var(--plum-status-idle); }
+:theme .matter-status-dot[data-status='running'] { border-color: var(--plum-status-running); border-top-color: transparent; background-clip: padding-box; }
+:theme .matter-status-dot[data-status='agents-running'] { border-color: var(--plum-status-agents); background: radial-gradient(circle, var(--plum-status-agents) 0 2px, transparent 2.5px); }
+:theme .matter-status-dot[data-status='unread'] { border-color: var(--plum-status-unread); background: var(--plum-status-unread); box-shadow: none; }
+:theme .matter-status-dot:is([data-status='failed'], [data-status='error']) { border-color: var(--plum-status-failed); background: var(--plum-status-failed); }
+:theme .matter-status-dot[data-status='interrupted'] { border-color: var(--plum-status-interrupted); }
+
+/* On an avatar the dot becomes a badge at its lower right, on a ring that matches
+   the row. Idle needs no badge: the mascot alone means "ready". */
+:theme :is(.matter-thread-row, .matter-group-tab, .matter-agent-threads-item) { position: relative; }
+:theme :is(.matter-thread-row, .matter-group-tab, .matter-agent-threads-item) > .matter-thread-avatar + .matter-status-dot {
+  --plum-badge: 11px;
+  position: absolute;
+  left: calc(var(--plum-avatar-left, 8px) + var(--plum-row-avatar, 24px) - 3px);
+  top: calc(50% + var(--plum-row-avatar, 24px) / 2 - 3px);
+  translate: -50% -50%;
+  width: var(--plum-badge);
+  height: var(--plum-badge);
+  margin: 0;
+  border-width: 2px;
+  border-radius: 50%;
+  background-color: var(--plum-badge-ring, var(--theme-panel));
+  box-shadow: 0 0 0 2px var(--plum-badge-ring, var(--theme-panel));
+  transform: none;
+  opacity: 1;
+}
+:theme :is(.matter-thread-row, .matter-group-tab, .matter-agent-threads-item) > .matter-thread-avatar + .matter-status-dot[data-status='idle'] { opacity: 0; }
+:theme :is(.matter-thread-row, .matter-group-tab, .matter-agent-threads-item) > .matter-thread-avatar + .matter-status-dot[data-status='running'] { --plum-badge: 12px; background-color: var(--plum-badge-ring, var(--theme-panel)); }
+:theme :is(.matter-thread-row, .matter-group-tab, .matter-agent-threads-item) > .matter-thread-avatar + .matter-status-dot[data-status='agents-running'] { background: radial-gradient(circle, var(--plum-status-agents) 0 2px, var(--plum-badge-ring, var(--theme-panel)) 2.5px); }
+:theme :is(.matter-thread-row, .matter-group-tab, .matter-agent-threads-item) > .matter-thread-avatar + .matter-status-dot:is([data-status='unread'], [data-status='failed'], [data-status='error']) { --plum-badge: 10px; }
+:theme :is(.matter-thread-row, .matter-group-tab, .matter-agent-threads-item) > .matter-thread-avatar + .matter-status-dot:is([data-status='failed'], [data-status='error']) { background-color: var(--plum-status-failed); }
+:theme :is(.matter-thread-row, .matter-group-tab, .matter-agent-threads-item) > .matter-thread-avatar + .matter-status-dot[data-status='unread'] { background-color: var(--plum-status-unread); }
+:theme :is(.matter-thread-row, .matter-group-tab, .matter-agent-threads-item) > .matter-thread-avatar + .matter-status-dot[data-status='interrupted'] { --plum-badge: 10px; border-radius: 3px; background-color: var(--plum-status-interrupted); }
+/* A running mascot wears a soft breathing halo. */
+:theme :is(.matter-thread-row, .matter-group-tab, .matter-agent-threads-item):has(> .matter-status-dot[data-status='running']) > .matter-thread-avatar {
+  box-shadow: 0 0 0 1.5px var(--plum-status-running), 0 0 0 4px color-mix(in srgb, var(--plum-status-running) 22%, transparent);
+  animation: plum-shell-halo 1.8s ease-in-out infinite;
+}
+:theme :is(.matter-thread-row, .matter-group-tab, .matter-agent-threads-item):has(> .matter-status-dot:is([data-status='failed'], [data-status='error'])) > .matter-thread-avatar { box-shadow: 0 0 0 1.5px var(--plum-status-failed); }
+:theme :is(.matter-thread-row, .matter-group-tab, .matter-agent-threads-item):has(> .matter-status-dot[data-status='unknown']) > .matter-thread-avatar { filter: grayscale(.7); opacity: .7; }
+@keyframes plum-shell-halo { 50% { box-shadow: 0 0 0 1.5px var(--plum-status-running), 0 0 0 6px color-mix(in srgb, var(--plum-status-running) 8%, transparent); } }
+
+/* ── Tab strip and the conversation card ──────────────────────────────── */
+
+:theme .thread-ui-shell .matter-workbench .matter-main { background: transparent; }
+:theme .thread-ui-shell .matter-workbench .matter-main > :is(.workbench-panels, .matter-content) {
+  margin: 0 var(--plum-shell-gap) var(--plum-shell-gap) 0;
+  border-radius: var(--plum-shell-radius);
+  background: var(--theme-bg);
+  box-shadow: 0 0 0 1px var(--plum-shell-card-edge), 0 12px 32px rgb(8 3 12 / 28%);
+  overflow: hidden;
+}
+/* The first tab sits on the card's corner; square it so the tab joins cleanly. */
+:theme .thread-ui-shell .matter-workbench .matter-main:is(:has(.matter-thread-tabs > .matter-thread-group:first-child > [aria-current='page']), :has(.matter-thread-tabs > a:first-child[aria-current='page'])) > :is(.workbench-panels, .matter-content) { border-top-left-radius: 0; }
+
+/* The strip lies on the plum frame, so its tokens are the chrome's. Popovers that
+   open inside it get the content tokens back. */
+:theme .thread-ui-shell .matter-workbench .matter-tabs-row {
+  --theme-surface: var(--plum-chrome-panel);
+  --theme-surface-strong: var(--plum-chrome-hover);
+  --theme-muted: var(--plum-chrome-hover);
+  --theme-hover: var(--plum-chrome-hover);
+  --theme-fg: var(--plum-chrome-fg);
+  --theme-fg-soft: var(--plum-chrome-soft);
+  --theme-fg-muted: var(--plum-chrome-muted);
+  --theme-border: var(--plum-chrome-border);
+  --theme-border-strong: var(--plum-chrome-active);
+  --theme-accent-soft: rgb(240 181 74 / 18%);
+  --theme-accent-strong: #f2c15c;
+  align-items: flex-end;
+  /* The thread tools open as a second line, so the row grows with them; the tab
+     strip keeps the first line 40px tall. */
+  height: auto;
+  border: 0;
+  background: transparent;
+  color: var(--plum-chrome-fg);
+}
+:theme .thread-ui-shell .matter-workbench .matter-tabs-row > :not(.matter-tab-scroll, button, .workbench-thread-picker-actions) {
+  --theme-surface: var(--thread-gc-workspace);
+  --theme-surface-strong: var(--thread-gc-surface);
+  --theme-muted: var(--thread-gc-muted);
+  --theme-hover: var(--thread-gc-hover);
+  --theme-fg: var(--thread-gc-fg);
+  --theme-fg-soft: var(--thread-gc-fg-soft);
+  --theme-fg-muted: var(--thread-gc-fg-muted);
+  --theme-border: var(--thread-gc-border);
+  --theme-border-strong: var(--thread-gc-border-strong);
+  --theme-accent-soft: var(--thread-gc-accent-soft);
+  --theme-accent-strong: var(--thread-gc-accent-strong);
+  --plum-shell-focus: #7b3a99;
+  --plum-status-running: #2f6fd6;
+  color: var(--theme-fg);
+}
+:theme[data-theme-effective='dark'] .thread-ui-shell .matter-workbench .matter-tabs-row > :not(.matter-tab-scroll, button, .workbench-thread-picker-actions) { --plum-shell-focus: #f2c15c; --plum-status-running: #8fc3ff; }
+:theme .thread-ui-shell .matter-workbench .matter-tab-scroll { z-index: 1; height: 40px; align-items: flex-end; box-shadow: none; }
+:theme .thread-ui-shell .matter-workbench .matter-tab-scroll::before { background: linear-gradient(to right, var(--plum-chrome) 30%, transparent); text-shadow: none; color: var(--plum-chrome-soft); }
+:theme .thread-ui-shell .matter-workbench .matter-tab-scroll::after { background: linear-gradient(to left, var(--plum-chrome) 30%, transparent); text-shadow: none; color: var(--plum-chrome-soft); }
+:theme .thread-ui-shell .matter-workbench .matter-thread-tabs {
+  height: 100%;
+  align-items: flex-end;
+  gap: 2px;
+  padding-right: 4px;
+  background: transparent;
+}
+
+/* Folder tabs: plum while resting, cream and joined to the card when current. */
+:theme .thread-ui-shell .matter-workbench .matter-thread-group { position: relative; height: 34px; border-radius: 12px 12px 0 0; }
+:theme .thread-ui-shell .matter-workbench :is(.matter-thread-tabs > a, .matter-group-tab) {
+  --plum-row-avatar: 20px;
+  --plum-badge-ring: var(--plum-chrome);
+  height: 34px;
+  max-width: 200px;
+  gap: 8px;
+  padding: 0 12px 0 8px;
+  border: 0;
+  border-radius: 12px 12px 0 0;
+  color: var(--plum-chrome-soft);
+  font-weight: 600;
+}
+:theme .thread-ui-shell .matter-workbench .matter-thread-group:hover:not(:has([aria-current='page'])) { --plum-badge-ring: var(--plum-chrome-hover); background: var(--plum-chrome-hover); }
+:theme .thread-ui-shell .matter-workbench .matter-thread-group:hover:not(:has([aria-current='page'])) .matter-group-tab { --plum-badge-ring: var(--plum-chrome-hover); color: var(--plum-chrome-fg); }
+:theme .thread-ui-shell .matter-workbench .matter-group-tab .matter-thread-avatar { width: 20px; height: 20px; box-shadow: 0 0 0 1px var(--plum-stitch); }
+:theme .thread-ui-shell .matter-workbench :is(.matter-thread-tabs > a[aria-current='page'], .matter-thread-group:has(> [aria-current='page'])) {
+  background: var(--plum-shell-card);
+  box-shadow: inset 0 2.5px 0 var(--theme-accent-solid), 0 -1px 0 var(--plum-shell-card-edge), 1px 0 0 var(--plum-shell-card-edge), -1px 0 0 var(--plum-shell-card-edge);
+}
+:theme .thread-ui-shell .matter-workbench :is(.matter-thread-tabs > a, .matter-group-tab)[aria-current='page'] {
+  --plum-badge-ring: var(--plum-shell-card);
+  --plum-status-running: #2f6fd6;
+  --plum-status-agents: #7a52c8;
+  --plum-status-unread: #a87200;
+  --plum-status-failed: #c4473d;
+  --plum-status-interrupted: #a8701f;
+  background: transparent;
+  box-shadow: none;
+  color: var(--thread-gc-fg);
+  font-weight: 700;
+}
+:theme[data-theme-effective='dark'] .thread-ui-shell .matter-workbench :is(.matter-thread-tabs > a, .matter-group-tab)[aria-current='page'] {
+  --plum-status-running: #8fc3ff;
+  --plum-status-agents: #c7a6ff;
+  --plum-status-unread: #f2c15c;
+  --plum-status-failed: #ff8a80;
+  --plum-status-interrupted: #f0b46a;
+}
+:theme .thread-ui-shell .matter-workbench .matter-thread-tabs > a[aria-current='page'] { background: var(--plum-shell-card); }
+:theme .thread-ui-shell .matter-workbench .matter-group-toggle {
+  position: relative;
+  align-self: center;
+  height: 22px;
+  margin: 0 8px 0 -4px;
+  padding: 0 6px 0 8px;
+  gap: 2px;
+  border: 0;
+  border-radius: 999px;
+  background: rgb(199 166 255 / 16%);
+  color: var(--plum-chrome-soft);
+  font-size: 11px;
+  font-weight: 800;
+}
+:theme .thread-ui-shell .matter-workbench .matter-group-toggle:is(:hover, [aria-expanded='true']) { background: rgb(199 166 255 / 28%); color: var(--plum-chrome-fg); }
+:theme .thread-ui-shell .matter-workbench .matter-thread-group:has(> [aria-current='page']) .matter-group-toggle { background: var(--thread-gc-muted); color: var(--thread-gc-fg-soft); }
+:theme .thread-ui-shell .matter-workbench .matter-thread-group:has(> [aria-current='page']) .matter-group-toggle:is(:hover, [aria-expanded='true']) { background: var(--thread-gc-hover); color: var(--thread-gc-fg); }
+:theme .thread-ui-shell .matter-workbench .matter-thread-tabs .matter-new-thread {
+  width: 28px;
+  height: 28px;
+  margin: 0 8px 3px 6px;
+  border: 1.5px dashed rgb(242 193 92 / 60%);
+  border-radius: 10px;
+  color: #f2c15c;
+}
+:theme .thread-ui-shell .matter-workbench .matter-thread-tabs .matter-new-thread:hover { border-style: solid; background: var(--theme-accent-solid); color: var(--plum-chrome); }
+
+/* Tools at the strip's end: one felt toolbelt. The buttons are segments of a single
+   capsule, and the lucide glyphs are replaced by Plum Pocket icons drawn as masks in
+   currentColor, so labels, titles and badges stay as they are. */
+:theme {
+  --plum-icon-tools: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' d='M4 7h4.5M13.5 7H20M4 12h10M19 12h1M4 17h2.5M11.5 17H20'/%3E%0A%3Ccircle cx='11' cy='7' r='2.6' fill='black' fill-opacity='.35' stroke='black' stroke-width='2'/%3E%0A%3Ccircle cx='16.5' cy='12' r='2.6' fill='black' fill-opacity='.35' stroke='black' stroke-width='2'/%3E%0A%3Ccircle cx='9' cy='17' r='2.6' fill='black' fill-opacity='.35' stroke='black' stroke-width='2'/%3E%3C/svg%3E");
+  --plum-icon-agents: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' d='M4.5 13.5a7.5 7 0 0 1 15 0v1.5a4.5 4.5 0 0 1-4.5 4.5H9A4.5 4.5 0 0 1 4.5 15z'/%3E%0A%3Cpath fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' d='M12 6.5c-.2-2 .9-3.4 2.8-3.7'/%3E%0A%3Ccircle cx='9.3' cy='13.6' r='1.35' fill='black'/%3E%3Ccircle cx='14.7' cy='13.6' r='1.35' fill='black'/%3E%0A%3Cellipse cx='7.6' cy='16.3' rx='1.4' ry='.9' fill='black' fill-opacity='.35'/%3E%3Cellipse cx='16.4' cy='16.3' rx='1.4' ry='.9' fill='black' fill-opacity='.35'/%3E%3C/svg%3E");
+  --plum-icon-automations: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' d='M18.8 13.2A7.3 7.3 0 1 1 11 5.7'/%3E%0A%3Cpath fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' d='M11.5 9.5v3.8l2.6 1.6'/%3E%0A%3Cpath d='M17.6 2.8l.9 2.3 2.3.9-2.3.9-.9 2.3-.9-2.3-2.3-.9 2.3-.9z' fill='black' stroke='black' stroke-width='1.2' stroke-linejoin='round'/%3E%3C/svg%3E");
+  --plum-icon-split: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' x='3.5' y='4.5' width='8' height='15' rx='2.5'/%3E%0A%3Crect x='14.5' y='4.5' width='6' height='15' rx='2.5' fill='black' fill-opacity='.22' stroke='black' stroke-width='2' stroke-dasharray='1.7 2.1' stroke-linecap='round'/%3E%3C/svg%3E");
+  --plum-icon-restore: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' d='M5 12a7 7 0 1 0 2.1-5'/%3E%3Cpath fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' d='M4.5 4v4h4'/%3E%0A%3Ccircle cx='12' cy='12' r='2' fill='black' fill-opacity='.35'/%3E%3C/svg%3E");
+}
+:theme .thread-ui-shell .matter-workbench .matter-tabs-row > :is(.matter-toolbar-toggle, .matter-watches-toggle),
+:theme .thread-ui-shell .matter-workbench .matter-tabs-row .workbench-thread-picker-trigger {
+  align-self: center;
+  min-width: 32px;
+  height: 30px;
+  margin: 0;
+  padding: 0 7px;
+  gap: 3px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--plum-chrome-soft);
+}
+:theme .thread-ui-shell .matter-workbench .matter-tabs-row > :is(.matter-toolbar-toggle, .matter-watches-toggle, .workbench-thread-picker-actions) { background: rgb(255 255 255 / 7%); }
+:theme .thread-ui-shell .matter-workbench .matter-tabs-row .workbench-thread-picker-actions { align-self: center; gap: 0; border-radius: 0 12px 12px 0; }
+:theme .thread-ui-shell .matter-workbench .matter-tabs-row > .matter-toolbar-toggle { margin-left: 6px; border-radius: 12px 0 0 12px; }
+:theme .thread-ui-shell .matter-workbench .matter-tabs-row > :is(.matter-toolbar-toggle, .matter-watches-toggle):last-child,
+:theme .thread-ui-shell .matter-workbench .matter-tabs-row .workbench-thread-picker-actions > :last-child { border-radius: 0 12px 12px 0; }
+:theme .thread-ui-shell .matter-workbench .matter-tabs-row > .matter-toolbar-toggle:last-child { border-radius: 12px; }
+:theme .thread-ui-shell .matter-workbench .matter-tabs-row > :is(.matter-toolbar-toggle, .matter-watches-toggle):is(:hover, [aria-expanded='true']),
+:theme .thread-ui-shell .matter-workbench .matter-tabs-row .workbench-thread-picker-trigger:is(:hover, [aria-expanded='true']) { background: var(--plum-chrome-active); color: var(--plum-chrome-fg); }
+:theme .thread-ui-shell .matter-workbench .matter-tabs-row > .matter-toolbar-toggle[aria-expanded='true'],
+:theme .thread-ui-shell .matter-workbench .matter-tabs-row .workbench-thread-picker-trigger:is(.is-active, [aria-pressed='true']) { background: rgb(240 181 74 / 24%); color: #f6cf7c; }
+:theme .thread-ui-shell .matter-workbench .matter-tabs-row > :last-child:is(button, .workbench-thread-picker-actions) { margin-right: 8px; }
+:theme .matter-tabs-row :is(.matter-toolbar-toggle > .lucide-sliders-horizontal, .matter-watches-toggle > :is(.lucide-bot, .lucide-workflow), .workbench-thread-picker-trigger > :is(.lucide-columns-2, .lucide-rotate-ccw)) { display: none; }
+:theme .matter-tabs-row :is(.matter-toolbar-toggle:has(> .lucide-sliders-horizontal), .matter-watches-toggle:has(> :is(.lucide-bot, .lucide-workflow)), .workbench-thread-picker-trigger:has(> :is(.lucide-columns-2, .lucide-rotate-ccw)))::before {
+  content: '';
+  flex: none;
+  width: 18px;
+  height: 18px;
+  background: currentColor;
+  -webkit-mask: var(--plum-icon) center / contain no-repeat;
+  mask: var(--plum-icon) center / contain no-repeat;
+}
+:theme .matter-tabs-row .matter-toolbar-toggle { --plum-icon: var(--plum-icon-tools); }
+:theme .matter-tabs-row .matter-watches-toggle:has(> .lucide-bot) { --plum-icon: var(--plum-icon-agents); }
+:theme .matter-tabs-row .matter-watches-toggle:has(> .lucide-workflow) { --plum-icon: var(--plum-icon-automations); }
+:theme .matter-tabs-row .workbench-thread-picker-trigger:has(> .lucide-columns-2) { --plum-icon: var(--plum-icon-split); }
+:theme .matter-tabs-row .workbench-thread-picker-trigger:has(> .lucide-rotate-ccw) { --plum-icon: var(--plum-icon-restore); }
+/* Running subagents: a mustard count badge on the mascot's corner. */
+:theme .matter-tabs-row .matter-watches-toggle:has(> .lucide-bot) { position: relative; }
+:theme .matter-tabs-row .matter-watches-toggle .native-agents-running-count {
+  position: absolute;
+  top: -4px;
+  right: -3px;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: #f2c15c;
+  color: #2a1530;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+  box-shadow: 0 0 0 2px var(--plum-chrome);
+}
+:theme .matter-tabs-row .matter-watches-toggle .native-agents-running-count > svg { display: none; }
+
+/* Thread tools: a cream shelf under the tabs with the path on a small tag. */
+:theme .thread-ui-shell .matter-workbench .matter-breadcrumb {
+  min-width: 0;
+  overflow: hidden;
+  height: 44px;
+  padding: 0 10px 0 14px;
+  border-bottom: 1.5px dashed var(--theme-border-strong);
+  background: var(--theme-panel);
+  box-shadow: 0 8px 18px rgb(47 26 59 / 12%);
+  color: var(--theme-fg-soft);
+  font-size: 12px;
+}
+:theme .thread-ui-shell .matter-workbench .matter-breadcrumb :where(button, a) { border-radius: 10px; }
+:theme .thread-ui-shell .matter-workbench .matter-breadcrumb .matter-workspace-path {
+  flex: 0 1 auto;
+  max-width: 45%;
+  padding: 3px 9px;
+  border-radius: 8px;
+  background: var(--theme-muted);
+  color: var(--theme-fg-soft);
+  font-size: 11px;
+}
+:theme .thread-ui-shell .matter-workbench .matter-breadcrumb .matter-current-title { color: var(--theme-fg); font-weight: 700; }
+:theme .thread-ui-shell .matter-workbench .matter-breadcrumb button[aria-pressed='true'] { color: var(--theme-accent-strong); }
+:theme .thread-ui-shell .matter-workbench .matter-thread-menu > div { border-radius: 16px; border-color: var(--theme-border); }
+:theme .thread-ui-shell .matter-workbench .matter-thread-menu > div > button { border-radius: 10px; }
+
+/* ── Popovers ──────────────────────────────────────────────────────────── */
+
+/* Notifications: a cream note card; when empty the pocket friends say so. */
+:theme .thread-ui-shell .matter-workbench .matter-notifications {
+  top: 48px;
+  right: 10px;
+  padding-bottom: 6px;
+  border: 1px solid var(--theme-border);
+  border-radius: 18px;
+  background: var(--theme-panel);
+  box-shadow: var(--theme-shadow);
+}
+:theme .thread-ui-shell .matter-workbench .matter-notifications-heading {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  margin-bottom: 4px;
+  padding: 10px 10px 10px 16px;
+  border-bottom: 1.5px dashed var(--theme-border-strong);
+  background: var(--theme-panel);
+  font-family: var(--plum-display);
+  font-size: 15px;
+  font-weight: 600;
+}
+:theme .thread-ui-shell .matter-workbench .matter-notifications-heading :where(button) { border-radius: 10px; color: var(--theme-fg-soft); }
+:theme .thread-ui-shell .matter-workbench .matter-notifications > a {
+  align-items: flex-start;
+  gap: 12px;
+  margin: 2px 6px;
+  padding: 10px 10px 10px 12px;
+  border: 0;
+  border-radius: 12px;
+  line-height: 1.35;
+  font-weight: 700;
+  color: var(--theme-fg);
+}
+:theme .thread-ui-shell .matter-workbench .matter-notifications > a:hover { background: var(--theme-hover); }
+:theme .thread-ui-shell .matter-workbench .matter-notifications > a > .matter-status-dot {
+  width: 10px;
+  height: 10px;
+  margin-top: 4px;
+  border-color: var(--plum-status-unread);
+  background: var(--plum-status-unread);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--plum-status-unread) 22%, transparent);
+}
+:theme .thread-ui-shell .matter-workbench .matter-notifications .matter-notification-summary { font-weight: 400; color: var(--theme-fg-soft); }
+:theme .thread-ui-shell .matter-workbench .matter-notifications small { color: var(--theme-fg-muted); font-weight: 600; }
+:theme .thread-ui-shell .matter-workbench .matter-notifications > p { padding: 8px 22px 18px; text-align: center; color: var(--theme-fg-muted); }
+:theme .thread-ui-shell .matter-workbench .matter-notifications > p::before {
+  content: '';
+  display: block;
+  height: 84px;
+  margin: 4px auto 8px;
+  background: url("asset:assets/pocket-friends.webp") center / contain no-repeat;
+}
+
+/* Agent threads of a tab group (portaled to the body, sized inline). */
+:theme .matter-agent-threads-menu {
+  padding: 6px !important;
+  border-color: var(--theme-border) !important;
+  border-radius: 16px !important;
+  background: var(--theme-panel) !important;
+  box-shadow: var(--theme-shadow) !important;
+  animation: plum-shell-pop 140ms ease-out;
+}
+:theme .matter-agent-threads-menu .matter-agent-threads-item {
+  --plum-row-avatar: 24px;
+  --plum-avatar-left: 10px;
+  --plum-badge-ring: var(--theme-panel);
+  gap: 10px !important;
+  min-height: 40px;
+  border-radius: 11px !important;
+  font-size: 13px;
+  font-weight: 600;
+}
+:theme .matter-agent-threads-menu .matter-agent-threads-item:hover { --plum-badge-ring: var(--theme-hover); background: var(--theme-hover); }
+:theme .matter-agent-threads-menu .matter-agent-threads-item[aria-current='page'] { --plum-badge-ring: var(--theme-accent-soft); background: var(--theme-accent-soft) !important; color: var(--theme-fg); font-weight: 800; }
+:theme .matter-agent-threads-menu .matter-agent-threads-item:focus-visible { outline: 2px solid var(--plum-shell-focus); outline-offset: -2px; }
+:theme .matter-agent-threads-menu .matter-agent-threads-item:not(:first-child) { margin-left: 14px; }
+@keyframes plum-shell-pop { from { opacity: 0; transform: translateY(-4px) scale(.98); } }
+
+/* The "…" thread menu (portaled to the body). */
+:theme .recent-thread-menu {
+  padding: 6px;
+  border-color: var(--theme-border);
+  border-radius: 16px;
+  background: var(--theme-panel);
+  animation: plum-shell-pop 140ms ease-out;
+}
+:theme .recent-thread-menu > .recent-thread-menu-title {
+  margin: 0 0 4px;
+  padding: 8px 10px 9px;
+  border-bottom: 1.5px dashed var(--theme-border-strong);
+  font-family: var(--plum-display);
+  font-size: 13px;
+  font-weight: 600;
+}
+:theme .recent-thread-menu > button { gap: 10px; min-height: 38px; padding: 8px 10px; border-radius: 10px; font-size: 12.5px; font-weight: 600; }
+:theme .recent-thread-menu > button > svg { color: var(--theme-fg-muted); }
+:theme .recent-thread-menu > button:hover:not(:disabled) > svg { color: var(--theme-accent-strong); }
+:theme .recent-thread-menu > button:first-of-type > svg { color: var(--theme-accent-strong); }
+:theme .recent-thread-menu > .recent-thread-delete > svg { color: inherit; }
+:theme .recent-thread-menu :focus-visible { outline-color: var(--plum-shell-focus); }
+
+/* Split conversation picker (portaled to the body). */
+:theme .workbench-thread-picker-popover { border-color: var(--theme-border); border-radius: 18px; box-shadow: var(--theme-shadow); }
+:theme .workbench-thread-picker-heading { border-bottom: 1.5px dashed var(--theme-border-strong); }
+:theme .workbench-thread-picker-heading strong { font-family: var(--plum-display); font-size: 15px; font-weight: 600; }
+:theme .workbench-thread-picker-heading button { border-radius: 10px; }
+:theme .workbench-thread-picker-section-label { font-weight: 800; letter-spacing: .08em; }
+:theme .workbench-thread-picker-popover .workbench-thread-picker-row { border: 1.5px solid transparent; border-radius: 12px; }
+:theme .workbench-thread-picker-row-label strong { font-size: 13px; font-weight: 700; }
+:theme .workbench-thread-picker-row[aria-current='true'] { border: 1.5px dashed var(--theme-accent-border); }
+:theme .workbench-thread-picker-row-icon { flex-basis: 32px; height: 32px; border: 0; border-radius: 50%; background: var(--theme-muted); color: var(--theme-fg-soft); }
+:theme .workbench-thread-picker-row-icon.is-favorite { background: var(--theme-accent-soft); }
+:theme .workbench-split-status { width: 7px; height: 7px; opacity: .8; }
+:theme .workbench-split-status:is(.is-running, .is-recovering, .is-connected) { background: var(--plum-status-running); }
+:theme .workbench-split-status:is(.is-failed, .is-error) { background: var(--plum-status-failed); }
+:theme .workbench-thread-picker-popover footer button { border-radius: 10px; }
+
+@media (prefers-reduced-motion: reduce) {
+  :theme :is(.matter-agent-threads-menu, .recent-thread-menu) { animation: none; }
+  :theme .matter-thread-avatar { animation: none !important; }
+  :theme .thread-ui-shell .matter-workbench .matter-rail > .matter-brand:hover { transform: none; }
+}
+
+/* ── Tablet ────────────────────────────────────────────────────────────── */
+
+@media (max-width: 1000px) and (min-width: 640px) {
+  :theme .thread-ui-shell .matter-workbench { grid-template-columns: 43px 224px minmax(0, 1fr); }
+  :theme .thread-ui-shell .matter-workbench.is-sidebar-hidden { grid-template-columns: 43px 0 minmax(0, 1fr); }
+  :theme .thread-ui-shell .matter-workbench .matter-rail > button { width: 34px; height: 34px; }
+  :theme .thread-ui-shell .matter-workbench .matter-rail > .matter-brand { width: 32px; height: 32px; }
+  :theme .thread-ui-shell .matter-workbench .matter-topbar .matter-search-trigger { width: auto; max-width: 260px; }
+  :theme .thread-ui-shell .matter-workbench .matter-sidebar { padding-inline: 8px; }
+  :theme .thread-ui-shell .matter-workbench .matter-thread-row { --plum-row-avatar: 28px; gap: 8px; }
+}
+
+/* ── Phone ─────────────────────────────────────────────────────────────── */
+
+@media (max-width: 639px) {
+  :theme .thread-ui-shell .matter-workbench,
+  :theme .thread-ui-shell .matter-workbench.is-sidebar-hidden { grid-template-columns: minmax(0, 1fr); grid-template-rows: calc(40px + env(safe-area-inset-top)) minmax(0, 1fr); }
+  /* Seven flexible icon slots and a paired device meter fit narrow phones;
+     Home and Chat live in the drawer. Hit targets stay 40px tall. */
+  :theme .thread-ui-shell .matter-workbench .matter-topbar { padding: env(safe-area-inset-top) 2px 0; gap: 0; }
+  :theme .thread-ui-shell .matter-workbench .matter-topbar-end { gap: 0; min-width: 0; flex-shrink: 1; }
+  :theme .thread-ui-shell .matter-workbench .matter-topbar-search { flex-shrink: 0; }
+  :theme .thread-ui-shell .matter-workbench .matter-topbar :where(button, a):not(:is(.workbench-search-field, .workbench-search-dropdown) *),
+  :theme .thread-ui-shell .matter-workbench .matter-topbar .matter-search-trigger,
+  :theme .thread-ui-shell .matter-workbench .matter-topbar-end > :is(button, [data-slot='dialog-trigger']) {
+    flex: 0 1 38px;
+    width: 38px;
+    min-width: 32px;
+    height: 40px;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 14px;
+    background: transparent;
+    justify-content: center;
+  }
+  :theme .thread-ui-shell .matter-workbench .matter-topbar svg:not(:is(.workbench-search-field, .workbench-search-dropdown) *),
+  :theme .thread-ui-shell .matter-workbench .matter-topbar .matter-search-trigger svg { width: 20px; height: 20px; color: inherit; }
+  :theme .thread-ui-shell .matter-workbench .matter-topbar :is(button, a)[aria-pressed='true']:not(:is(.workbench-search-field, .workbench-search-dropdown) *) { color: #f6cf7c; }
+  :theme .thread-ui-shell .matter-workbench .matter-topbar :is(button, a)[aria-pressed='true']:not(:is(.workbench-search-field, .workbench-search-dropdown) *)::after {
+    content: '';
+    position: absolute;
+    bottom: 6px;
+    width: 14px;
+    height: 3px;
+    border-radius: 2px;
+    background: var(--theme-accent-solid);
+  }
+  :theme .thread-ui-shell .matter-workbench .matter-topbar :is(button, a):not(:is(.workbench-search-field, .workbench-search-dropdown) *) { position: relative; }
+  :theme .thread-ui-shell .matter-workbench .matter-unread { top: 9px; right: 9px; }
+  /* Two paired readings per row; GPU and VRAM never add a third row. */
+  :theme .thread-ui-shell .matter-workbench .matter-topbar-end > .device-monitor-button {
+    flex: 0 0 100px;
+    width: 100px;
+    min-width: 100px;
+    height: 40px;
+    align-items: stretch;
+    justify-content: center;
+    gap: 1px;
+    padding: 8px 3px;
+    border-radius: 12px;
+    background: rgb(255 255 255 / 7%) content-box;
+    color: var(--plum-chrome-muted);
+    font-size: 8.5px;
+    font-weight: 700;
+    line-height: 11px;
+    letter-spacing: 0;
+  }
+  :theme .thread-ui-shell .matter-workbench .matter-topbar-end > .device-monitor-button b {
+    font-size: inherit;
+    font-weight: 800;
+    line-height: inherit;
+    letter-spacing: -.02em;
+    font-variant-numeric: tabular-nums;
+  }
+  :theme .thread-ui-shell .matter-workbench .matter-topbar-end > .device-monitor-button .dm-summary-capacity b { font-size: 7.5px; }
+  :theme .thread-ui-shell .matter-workbench .matter-topbar-end > .device-monitor-button:not([data-gpu]) { font-size: 9px; }
+  :theme .thread-ui-shell .matter-workbench .matter-topbar-end > .device-monitor-button[data-stale] b { color: var(--plum-chrome-muted); }
+  :theme .thread-ui-shell .matter-workbench .matter-topbar-end > .device-monitor-button:is(:hover, [aria-expanded='true']) { background-color: transparent; background-image: linear-gradient(var(--plum-chrome-hover), var(--plum-chrome-hover)); background-clip: content-box; color: var(--plum-chrome-soft); }
+
+  /* The drawer is a pocket sliding over everything, full height. */
+  :theme .thread-ui-shell .matter-workbench .matter-sidebar {
+    top: 0;
+    width: min(312px, calc(100vw - 44px));
+    margin: 0;
+    padding: calc(10px + env(safe-area-inset-top)) 10px calc(10px + env(safe-area-inset-bottom));
+    border-radius: 0 22px 22px 0;
+    outline-offset: -6px;
+    box-shadow: 16px 0 48px rgb(8 3 12 / 45%);
+    transition: transform 220ms cubic-bezier(.2, .8, .2, 1), visibility 220ms;
+  }
+  :theme .thread-ui-shell .matter-workbench .matter-sidebar-scrim { inset: 0; background: var(--overlay-scrim); backdrop-filter: blur(2px); }
+  :theme .thread-ui-shell .matter-workbench .matter-sidebar-heading { height: 44px; margin-bottom: 6px; padding-right: 0; font-size: 18px; }
+  :theme .thread-ui-shell .matter-workbench .matter-sidebar-heading :where(button) { width: 44px; height: 44px; border-radius: 14px; }
+  :theme .thread-ui-shell .matter-workbench .matter-sidebar-heading svg { width: 19px; height: 19px; }
+  :theme .thread-ui-shell .matter-workbench .matter-section-heading { height: 44px; }
+  :theme .thread-ui-shell .matter-workbench .matter-thread-row { min-height: 56px; padding-right: 48px; }
+  :theme .thread-ui-shell .matter-workbench .matter-thread-copy > span { font-size: 14px; }
+  :theme .thread-ui-shell .matter-workbench .matter-thread-copy small { font-size: 12px; }
+  :theme .matter-thread-entry > .recent-thread-actions { right: 4px; width: 40px; height: 44px; }
+  :theme .thread-ui-shell .matter-workbench .matter-agent-threads-summary { min-height: 36px; padding-inline: 14px 12px !important; font-size: 12.5px !important; }
+  :theme .thread-ui-shell .matter-workbench .matter-agent-threads .matter-thread-row { min-height: 48px; }
+
+  /* Drawer tools: workspaces and chat as felt tiles. */
+  :theme .thread-ui-shell .matter-workbench .matter-drawer-tools {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+    margin: 0 2px 10px;
+  }
+  :theme .thread-ui-shell .matter-workbench .matter-drawer-tools > :is(a, button) {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    width: auto;
+    min-width: 0;
+    flex-direction: row;
+    height: 48px;
+    padding: 4px 10px;
+    border: 1.5px dashed rgb(242 193 92 / 28%);
+    border-radius: 14px;
+    background: rgb(255 255 255 / 5%);
+    color: var(--plum-chrome-soft);
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 1.1;
+  }
+  :theme .thread-ui-shell .matter-workbench .matter-drawer-tools > :is(a, button):active { background: var(--plum-chrome-hover); }
+  :theme .thread-ui-shell .matter-workbench .matter-drawer-tools > :is(a, button) > span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  :theme .thread-ui-shell .matter-workbench .matter-drawer-tools svg { width: 19px; height: 19px; }
+  :theme .thread-ui-shell .matter-workbench .matter-drawer-tools > button[aria-pressed='true'] { border-style: solid; border-color: transparent; background: var(--theme-accent-solid); color: var(--plum-chrome); }
+  :theme .thread-ui-shell .matter-workbench .matter-drawer-tools :where(button, a):focus-visible { outline: 2px solid var(--plum-shell-focus); outline-offset: 1px; }
+
+  /* Tabs and card: the card runs edge to edge under taller folder tabs. */
+  :theme .thread-ui-shell .matter-workbench .matter-main > :is(.workbench-panels, .matter-content) { margin: 0; border-radius: 16px 16px 0 0; box-shadow: 0 0 0 1px var(--plum-shell-card-edge); }
+  :theme .thread-ui-shell .matter-workbench .matter-tab-scroll { height: 42px; }
+  :theme .thread-ui-shell .matter-workbench .matter-thread-tabs { height: 100%; padding-left: 4px; }
+  :theme .thread-ui-shell .matter-workbench :is(.matter-thread-group, .matter-thread-tabs > a, .matter-group-tab) { height: 40px; }
+  :theme .thread-ui-shell .matter-workbench :is(.matter-thread-tabs > a, .matter-group-tab) { max-width: 160px; padding-inline: 8px 12px; font-size: 13px; }
+  :theme .thread-ui-shell .matter-workbench .matter-group-toggle { height: 26px; }
+  :theme .thread-ui-shell .matter-workbench .matter-group-toggle::after { content: ''; position: absolute; inset: -9px -4px; }
+  :theme .thread-ui-shell .matter-workbench .matter-thread-tabs .matter-new-thread { width: 36px; height: 36px; margin-bottom: 2px; }
+  /* A 44px-wide segment; the hit area grows to 44px tall around the 38px capsule. */
+  :theme .thread-ui-shell .matter-workbench .matter-tabs-row > :is(.matter-toolbar-toggle, .matter-watches-toggle),
+  :theme .thread-ui-shell .matter-workbench .matter-tabs-row .workbench-thread-picker-trigger { position: relative; min-width: 44px; height: 38px; padding: 0 10px; }
+  :theme .thread-ui-shell .matter-workbench .matter-tabs-row > :is(.matter-toolbar-toggle, .matter-watches-toggle)::after,
+  :theme .thread-ui-shell .matter-workbench .matter-tabs-row .workbench-thread-picker-trigger::after { content: ''; position: absolute; inset: -3px 0; }
+  :theme .thread-ui-shell .matter-workbench .matter-tabs-row > .matter-toolbar-toggle { margin-left: 4px; border-radius: 14px 0 0 14px; }
+  :theme .thread-ui-shell .matter-workbench .matter-tabs-row .workbench-thread-picker-actions,
+  :theme .thread-ui-shell .matter-workbench .matter-tabs-row .workbench-thread-picker-actions > :last-child { border-radius: 0 14px 14px 0; }
+  :theme .thread-ui-shell .matter-workbench .matter-tabs-row > :last-child:is(button, .workbench-thread-picker-actions) { margin-right: 4px; }
+  :theme .matter-tabs-row :is(.matter-toolbar-toggle, .matter-watches-toggle, .workbench-thread-picker-trigger)::before { width: 20px; height: 20px; }
+  :theme .matter-tabs-row .matter-watches-toggle .native-agents-running-count { top: 1px; right: 3px; min-width: 15px; height: 15px; }
+  :theme .thread-ui-shell .matter-workbench .matter-breadcrumb { right: 0; height: 48px; padding: 0 4px 0 8px; }
+  :theme .thread-ui-shell .matter-workbench .matter-breadcrumb button { width: 40px; height: 44px; }
+  :theme .thread-ui-shell .matter-workbench .matter-breadcrumb .matter-workspace-path { max-width: none; font-size: 10.5px; }
+  :theme .thread-ui-shell .matter-workbench .matter-notifications { top: calc(48px + env(safe-area-inset-top)); right: 8px; width: calc(100vw - 16px); }
+  :theme .thread-ui-shell .matter-workbench .matter-notifications > a { min-height: 56px; }
+  :theme .thread-ui-shell .matter-workbench .matter-notifications-heading :where(button) { width: 44px; height: 44px; }
+  :theme .matter-agent-threads-menu .matter-agent-threads-item { min-height: 48px; }
+}
+
+/* Reserve the paired monitor's width on the narrowest phones. */
+@media (max-width: 359px) {
+  :theme .thread-ui-shell .matter-workbench .matter-topbar :where(button, a):not(.device-monitor-button):not(:is(.workbench-search-field, .workbench-search-dropdown) *),
+  :theme .thread-ui-shell .matter-workbench .matter-topbar-end.matter-topbar-end > :is(button, [data-slot='dialog-trigger']):not(.device-monitor-button),
+  :theme .thread-ui-shell .matter-workbench .matter-topbar .matter-search-trigger.matter-search-trigger {
+    flex-basis: 30px;
+    width: 30px;
+    min-width: 30px;
+  }
+
+  :theme .thread-ui-shell .matter-workbench .matter-topbar-end > button.device-monitor-button {
+    flex-basis: 94px;
+    width: 94px;
+    min-width: 94px;
+    font-size: 8px;
+    padding-inline: 3px;
+  }
+  :theme .thread-ui-shell .matter-workbench .matter-topbar-end > button.device-monitor-button .dm-summary-capacity b { font-size: 7px; }
+  :theme .thread-ui-shell .matter-workbench .matter-topbar-end > button.device-monitor-button:not([data-gpu]) { font-size: 9px; }
+}

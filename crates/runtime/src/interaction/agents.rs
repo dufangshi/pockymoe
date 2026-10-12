@@ -1,6 +1,6 @@
 //! Coordination over a lineage: names, roles, worktrees, close, tree, wait and wake.
-//! Everything here is opt-in on top of the passive inbox; nothing starts a turn
-//! except a wake the caller explicitly registered for its own delegates.
+//! Delegate wakes here are explicitly registered by the caller. Delayed unread
+//! inbox reminders are handled separately by service::inbox_reminder.
 use super::{closing_message, enqueue};
 use crate::Supervisor;
 use anyhow::{anyhow, bail, ensure, Result};

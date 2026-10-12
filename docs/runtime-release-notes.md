@@ -1,13 +1,16 @@
-Claude foreground answers now remain one message when background tool and wait
-events arrive between text chunks. The runtime groups by native message identity,
-preserving complete paragraphs, headings and tables with one timestamp. Existing
-history is not rewritten.
+Substantial agent answers now remain visible at their chronological positions,
+with independently folded work before and after them. ACP messages without a
+reliable answer/progress distinction use a conservative Unicode-length and
+Markdown-structure heuristic. Lazy history summaries retain qualifying answers
+without loading command outputs; short progress, final replies and background
+wake behavior keep their existing roles.
 
-The Plum Pocket subscription meter sits inside the composer's bottom seam.
-Remaining-allowance details open above the composer in an opaque panel that
-retains the theme and cannot be hidden by composer controls.
+The hardware shortcut uses mini CPU/memory/GPU icons, utilization percentages
+and used/total RAM or VRAM with one decimal. The compact model menu fits more
+choices and shows reported context use and capacity in K below reasoning effort.
+Classic and Plum Pocket share the new layout.
 
-Validated with 14 mapper regression tests, seven composer tests, shared UI and
-Web type checks, and focused light/dark browser checks on desktop and mobile.
-Windows Device Manager is unchanged. Devices can update voluntarily; this
-release does not force an update of the current device.
+Validated with focused timeline/composer tests, Rust history-summary tests,
+mobile Chromium layouts at 320/360px in both themes, desktop monitor checks and
+browser reload/lazy-history verification. Windows Device Manager is unchanged.
+This release does not force-update or reinstall the current device.

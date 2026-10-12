@@ -47,10 +47,10 @@ test('device monitor shows cores, memory and real watts, and marks failed sample
               })),
             },
             memory: {
-              totalBytes: 16 * 2 ** 30,
-              usedBytes: 8 * 2 ** 30,
-              availableBytes: 8 * 2 ** 30,
-              usagePercent: 50,
+              totalBytes: 60.9 * 2 ** 30,
+              usedBytes: 25.4 * 2 ** 30,
+              availableBytes: 35.5 * 2 ** 30,
+              usagePercent: 42,
             },
             swap: {
               totalBytes: 0,
@@ -88,8 +88,9 @@ test('device monitor shows cores, memory and real watts, and marks failed sample
     name: 'Device monitor',
     exact: true,
   });
-  await expect(monitor).toContainText('CPU 37%');
-  await expect(monitor).toContainText('RAM 50%');
+  await expect(monitor.locator('[aria-label^=CPU]')).toHaveText('37%');
+  await expect(monitor.locator('[aria-label^=DRAM]')).toHaveText('25.4/60.9G');
+  await expect(monitor.locator('[aria-label^=VRAM]')).toHaveText('1.0/8.0G');
   const mobile = testInfo.project.name === 'mobile-chromium';
   await expect(
     mobile
@@ -109,6 +110,18 @@ test('device monitor shows cores, memory and real watts, and marks failed sample
     const settingsBox = await settings.boundingBox();
     expect(monitorBox!.y + monitorBox!.height).toBeLessThanOrEqual(settingsBox!.y);
   }
+  const fit = await monitor.evaluate(button => {
+    const bounds = button.getBoundingClientRect();
+    return [...button.querySelectorAll('.dm-summary-reading')].map(cell => {
+      const r = cell.getBoundingClientRect();
+      return { overflow: cell.scrollWidth - cell.clientWidth, top: r.top - bounds.top, bottom: bounds.bottom - r.bottom };
+    });
+  });
+  for (const cell of fit) {
+    expect(cell.overflow).toBeLessThanOrEqual(0);
+    expect(cell.top).toBeGreaterThanOrEqual(0);
+    expect(cell.bottom).toBeGreaterThanOrEqual(0);
+  }
   await monitor.click();
   const dialog = page.getByRole('dialog', { name: 'Device monitor' });
   // Freshness, platform and environment fit beside the title; the environment's
@@ -116,8 +129,8 @@ test('device monitor shows cores, memory and real watts, and marks failed sample
   await expect(dialog.locator('.dm-meta')).toContainText(/\ds ago · linux/);
   await expect(dialog.locator('.dm-meta abbr')).toHaveAttribute('title', /WSL environment/);
   await expect(dialog.getByRole('meter', { name: 'CPU utilization' })).toHaveAttribute('aria-valuenow', '37');
-  await expect(dialog.getByRole('meter', { name: 'Memory utilization' })).toHaveAttribute('aria-valuenow', '50');
-  await expect(dialog).toContainText('8.0 GiB / 16.0 GiB');
+  await expect(dialog.getByRole('meter', { name: 'Memory utilization' })).toHaveAttribute('aria-valuenow', '42');
+  await expect(dialog).toContainText('25.4 GiB / 60.9 GiB');
   await expect(dialog).toContainText('24.5 W');
   await expect(dialog).toContainText('97.5 °C');
   // Unavailable readings are a small mark whose name carries the reason.
@@ -147,7 +160,7 @@ test('device monitor shows cores, memory and real watts, and marks failed sample
   await page.keyboard.press('Escape');
   await expect(dialog).toHaveCount(0);
   await expect(monitor).toHaveAttribute('data-stale', 'true');
-  await expect(monitor).toContainText('CPU —');
+  await expect(monitor.locator('[aria-label^=CPU]')).toHaveText('—');
   if (mobile) await page.setViewportSize({ width: 320, height: 740 });
   const bounds = await monitor.boundingBox();
   expect(bounds).not.toBeNull();

@@ -121,6 +121,52 @@ pub fn defer_tool_details(value: &mut serde_json::Value) {
     }
 }
 
+/// Keep aligned with thread-ui's answerSections.ts. Length is in Unicode code
+/// points, so Chinese and emoji do not accidentally use UTF-8 byte thresholds.
+fn is_substantive_answer(item: &ThreadHistoryItemDto) -> bool {
+    if item.kind != "agentMessage" {
+        return false;
+    }
+    if item
+        .extra
+        .get("responsePhase")
+        .and_then(serde_json::Value::as_str)
+        == Some("final")
+    {
+        return true;
+    }
+    let text = item.text.trim();
+    let length = text.chars().count();
+    if length >= 600 {
+        return true;
+    }
+    if length < 300 {
+        return false;
+    }
+    let heading = text.lines().any(|line| {
+        let hashes = line.chars().take_while(|c| *c == '#').count();
+        (1..=6).contains(&hashes) && line[hashes..].starts_with([' ', '\t'])
+    });
+    let paragraphs = text
+        .lines()
+        .fold((0, false), |(count, in_paragraph), line| {
+            if line.trim().is_empty() {
+                (count, false)
+            } else {
+                (count + usize::from(!in_paragraph), true)
+            }
+        })
+        .0;
+    let table_lines = text
+        .lines()
+        .filter(|line| {
+            let line = line.trim();
+            line.starts_with('|') && line.ends_with('|') && line.len() > 1
+        })
+        .count();
+    (heading && paragraphs >= 3) || table_lines >= 3
+}
+
 pub fn summarize_completed_turn(mut turn: ThreadTurnDto) -> ThreadTurnDto {
     if turn.status == "inProgress" {
         return turn;
@@ -150,6 +196,7 @@ pub fn summarize_completed_turn(mut turn: ThreadTurnDto) -> ThreadTurnDto {
                 || Some(*index) == final_agent_index
                 || background_anchor(item)
                 || (has_background && item.kind == "agentMessage")
+                || is_substantive_answer(item)
         })
         .map(|(_, item)| item.clone())
         .collect();
@@ -178,6 +225,41 @@ mod tests {
             "items": items,
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn summary_preserves_substantive_answers_and_defers_operations_without_background_events() {
+        let long = "中文".repeat(300);
+        let structured = format!(
+            "## Explanation\n\n{}\n\n{}",
+            "a".repeat(150),
+            "b".repeat(150)
+        );
+        let summary = summarize_completed_turn(turn(json!([
+            {"id":"prompt","kind":"userMessage","text":"Explain and implement"},
+            {"id":"before","kind":"commandExecution","text":"before"},
+            {"id":"answer","kind":"agentMessage","text":long},
+            {"id":"structured","kind":"agentMessage","text":structured},
+            {"id":"short","kind":"agentMessage","text":"中".repeat(299)},
+            {"id":"after","kind":"commandExecution","text":"after"},
+            {"id":"final","kind":"agentMessage","text":"Done","responsePhase":"final"},
+            {"id":"checkpoint","kind":"agentMessage","text":"Checking the next result"}
+        ])));
+        assert_eq!(
+            summary
+                .items
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            ["prompt", "answer", "structured", "final", "checkpoint"]
+        );
+        assert_eq!(summary.deferred_item_count, Some(3));
+        assert_eq!(summary.has_deferred_items, Some(true));
+        let emoji: ThreadHistoryItemDto = serde_json::from_value(
+            json!({"id":"emoji","kind":"agentMessage","text":"😀".repeat(300)}),
+        )
+        .unwrap();
+        assert!(!is_substantive_answer(&emoji));
     }
 
     #[test]

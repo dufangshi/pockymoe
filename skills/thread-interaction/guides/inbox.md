@@ -40,12 +40,15 @@ dependency; expose blockers in the task board or a question instead of repeatedl
 waking both to ask for status. For a long-lived producer's intermediate batches, wait
 for inbox results rather than its whole thread to finish.
 
-### Ending your turn discards nothing, but nothing will wake you
+### Required handoffs need a wait; unread mail has a delayed fallback
 
-An idle thread does not run, so it cannot read mail. Completion notifications are
-passive too - `--notify-on-complete` files a message, it does not start a turn for you.
-So if you delegate and then simply end your turn, the result **sits in your inbox**
-until a person or a peer starts your next turn.
+Completion notifications are passive: `--notify-on-complete` files a message without
+immediately starting a turn. If new mail remains unread for 10 minutes and the
+recipient has no active turn or queued input, the Supervisor queues one batched
+reminder. Each batch is reminded only once, even across restarts; further batches
+are at least 10 minutes apart. Closed threads are not reopened, and historical
+mail from before this feature is not enrolled. Do not rely on this delayed
+fallback when a result is required to complete your task.
 
 - **If you must act on the result, stay in your turn** and block on it:
   `thread wait NAME` or `inbox wait`. Do independent work first if you have any.
@@ -74,7 +77,7 @@ The caller's identity selects the mailbox. `--thread THREAD_ID` explicitly selec
 
 List returns bounded previews (240 characters) and envelope metadata. It defaults to 20 active unread messages, capped at 100, displaying the selected page chronologically. `--kind` and `--from-thread` are repeatable on list/wait. Follow `nextBefore` with `--before MESSAGE_ID`, preserving filters and `--all` if used. `--all` includes acknowledged and superseded history. One page need not contain every unread message.
 
-Read returns at most 8192 Unicode characters. Follow `nextTextOffset` with `inbox read MESSAGE_ID --text-offset OFFSET` when needed. Reading does **not** mark mail processed, including after a crash. Acknowledge only messages you have handled or deliberately recorded for later action. `ack` accepts 1–100 explicit IDs atomically and is safe to repeat; acknowledged messages remain accessible with `--all` or `read`. Do not mark messages acknowledged merely to hide a queue count.
+Read returns at most 8192 Unicode characters. Follow `nextTextOffset` with `inbox read MESSAGE_ID --text-offset OFFSET` when needed. Reading (including inline `inbox wait` results) records `readAt` and suppresses the delayed reminder. List previews do not. Reading does **not** mark mail processed, including after a crash. Acknowledge only messages you have handled or deliberately recorded for later action. `ack` accepts 1–100 explicit IDs atomically and is safe to repeat; acknowledged messages remain accessible with `--all` or `read`. Do not mark messages acknowledged merely to hide a queue count.
 
 A reply uses the sender's `fromThreadId`:
 
@@ -84,6 +87,6 @@ pockymoe thread send SENDER_ID --kind result --subject 'Requested build result' 
 pockymoe inbox ack MESSAGE_ID
 ```
 
-An idle sender will not wake for a passive reply. The sender must collect or register
-its own wake; do not upgrade results to direct/queue to compensate. Include the
+A passive reply does not immediately wake an idle sender. The sender should collect
+or register its own wake for a required result; do not upgrade results to direct/queue to compensate. Include the
 concrete response destination and handoff conditions in delegated instructions.

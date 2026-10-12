@@ -1,93 +1,68 @@
 # Theme presets
 
-Settings → Preferences → Appearance offers a **Theme** (preset) and a **Color mode**
-(Light, Dark, System). Both are stored per browser, and every preset supports both
+Settings → Preferences → Appearance offers a **Theme** and a **Color mode**
+(Light, Dark, System). Both are stored per browser, and every theme supports both
 modes.
 
-| Preset | Look |
+| Theme | Look |
 | --- | --- |
 | Classic (default) | Quiet green-neutral workbench |
 | Plum Pocket | Plum chrome, mustard felt accents and cream content, rounded fonts, agent mascot avatars and the pocket sticker |
 
-## How it works
+Every theme other than Classic is a [theme pack](theme-packs.md): Plum Pocket is
+the built-in pack in `themes/plum-pocket/`, and more packs can be imported in
+Settings. The choice is stored in `localStorage['pockymoe-theme-preset']`.
 
-- `apps/supervisor-web/src/lib/themePreset.ts` stores the preset in
-  `localStorage['pockymoe-theme-preset']` and sets `<html data-theme-preset>` at
-  startup, on change and when another tab changes it. The color mode stays on
-  `data-theme-effective`.
-- **Classic** is the base styling: `apps/supervisor-web/src/matter-theme.css` for the
-  outer pages and the shared UI's `styles/matter-workbench.css` for the workbench and
-  dialogs.
-- A preset is a stylesheet (or a folder of them) under `apps/supervisor-web/src/theme-presets/`, imported
-  from `index.css`. It overrides the same tokens one step more specifically:
-  - main app tokens (`--app-*`, `--theme-*`) on `:root:root:root[data-theme-preset='…']`,
-    with a `[data-theme-effective='light']` variant;
-  - shared UI tokens (`--thread-gc-*`, `--matter-*`) on `.thread-ui-shell` and
-    `.thread-graph-dialog` under the preset attribute, with a dark variant.
-- Some shared UI rules hard-code Classic's slate neutrals. A preset that changes the
-  neutrals overrides those rules too; `plum-pocket/tokens.css` has the current list.
-- The terminal (xterm) and the file editor and diff view (Monaco) paint with
-  JavaScript palettes. They read optional hex colors from CSS, `--terminal-bg`,
-  `--terminal-fg`, `--terminal-cursor`, `--terminal-selection` on `.terminal-panel`
-  and `--editor-bg`, `--editor-fg` and related `--editor-*` variables on an
-  ancestor, and re-read them when `data-theme-preset` changes
-  (`components/themeHooks.ts` in the shared UI). Without them they keep the Classic
-  palette.
-- Thread rows and tabs carry `<span class="matter-thread-avatar" data-agent="…">`,
-  hidden by default. A preset can show it with a background image per agent.
-  Plum Pocket's images are in `apps/supervisor-web/public/theme/plum-pocket/`: an
-  avatar (`<agent>.webp`) and a composer mascot (`composer-peek-<agent>.webp`) for
-  claude, codex, deepseek, gemini, grok, cursor, copilot and opencode; other
-  harnesses get `agent.webp`. A new harness needs both images and their rules in
-  `shell.css` and `composer.css`.
-- Agent-thread groups carry neutral class hooks (`matter-agent-threads`,
-  `matter-agent-threads-summary`, `matter-agent-threads-menu`,
-  `matter-agent-threads-item`) that only a preset styles.
-- On phones, Plum Pocket keeps the workbench top bar to 40px-tall controls and moves
-  Home and Chat into the thread drawer (`matter-drawer-tools`). The device monitor
-  stays in the top bar as a compact CPU/memory meter. The workbench checks the
-  preset with `useDocumentThemePreset()`; Classic keeps all of them in the top bar.
-- Each live device-monitor reading carries `--load` (0–100) as an inline style.
-  Plum Pocket shades the value from green through amber to red; Classic ignores it.
-- The thread tools open as a second line of the tab row (`.matter-breadcrumb`), so a
-  preset must let `.matter-tabs-row` grow and fix the height of the tab strip instead.
-- The chat composer form carries `data-agent` (derived from the harness label) and
-  `data-composer-busy` while a turn runs, and the toolbox rows carry
-  `data-toolbox-action`. Classic ignores them. Plum Pocket uses them for the
-  mascot that peeks over the composer (`composer-peek-*.webp`), the busy seam and
-  the toolbox icons; its extra composer markup (mascot on the model chip, menu
-  icons, per-intent send icons) renders only when `useDocumentThemePreset()` is
-  `plum-pocket`. Under Plum Pocket the 5h / 7d usage meter moves from the row
-  below the composer into the shell (`thread-composer-usage-tag`). The send button carries
-  `data-send-intent` (`send`, `queue` while a turn runs, `goal`); Plum Pocket
-  labels the queue state "Send after this turn".
-- Settings help text carries the neutral class `settings-hint`, and a few settings
-  groups carry `settings-choice-group`, `settings-harness-picker`,
-  `settings-harness-switch` and `settings-harness-row`. Plum Pocket
-  (`plum-pocket/controls.css`) hides hints visually but keeps them for screen
-  readers, gives each settings tab an icon (icons only on phones), and styles the
-  shared buttons, inputs, switches, segmented controls, dialogs and menus.
-- Transcript turns carry `data-turn-status`, and under Plum Pocket each reply opens
-  with the replying agent's avatar and name (`graph-chat/TranscriptAgent.tsx`).
-- Expanded step batches keep their child tools and subgroups indented behind a
-  vertical guide in both presets. Plum Pocket uses contiguous 24px detail rows and 28px subgroup headers;
-  mixed-operation batch headers are 32px on phones. The outer work disclosure
-  retains its 44px touch target. A single typed batch uses its own disclosure
-  directly without a redundant outer step batch.
-- Outer pages (workspaces, devices, relay home, sign-in, account, admin, guide,
-  import, port preview) carry a neutral `data-page` attribute on their root.
-  `plum-pocket/pages.css` uses it to hide help paragraphs and eyebrows, turn boxed
-  lists into plain rows and size buttons so their labels never wrap.
-- Plum Pocket redraws the thread tab bar's tools (thread tools, subagents,
-  automations, split) as CSS masks over the existing buttons, keyed on the lucide
-  icon classes. Labels, titles and badges stay as they are.
+## Classic
 
-## Adding a preset
+Classic is the base styling and needs no pack: `apps/supervisor-web/src/matter-theme.css`
+for the outer pages and the shared UI's `styles/matter-workbench.css` for the
+workbench and dialogs. Packs override the same tokens one step more specifically.
+Some shared UI rules hard-code Classic's slate neutrals; a pack that changes the
+neutrals overrides those rules too (`themes/plum-pocket/styles/tokens.css` has
+the current list).
 
-1. Add its id to `THEME_PRESETS`, a card in `components/ThemePresetSettings.tsx`, a
-   `themeChromeColor` entry and the `files.themePreset…` strings in the shared UI
-   translations.
-2. Add `theme-presets/<id>.css` and import it from `index.css`.
-3. Check both color modes on desktop and phone, including dialogs, menus, the
-   composer, code blocks and the outer pages. `e2e/settings-appearance.spec.ts`
-   covers switching and persistence.
+## Plum Pocket
+
+Its stylesheets are split by area: `tokens.css`, `shell.css`, `transcript.css`,
+`workspace.css`, `composer.css`, `pages.css` and `controls.css`. It declares
+every [capability flag](theme-packs.md#capability-flags).
+
+- Nunito and Fredoka come from the pack's `fonts`; their OFL texts are next to
+  them in `assets/fonts/`.
+- Agent art (`assets/agents/`): an avatar and a composer mascot
+  (`composer-peek-<agent>.webp`) for claude, codex, deepseek, gemini, grok, cursor,
+  copilot and opencode; other agents get `agent.webp`. A new harness needs both
+  images and an `agents` entry in `theme.json`.
+- Thread rows, tabs and replies show the avatar; the mascot peeks over the
+  composer, and the composer's busy seam and toolbox icons key on
+  `data-composer-busy` and `data-toolbox-action`. The queue state of the send
+  button reads "Send after this turn", and the 5h / 7d usage meter sits in the
+  composer shell.
+- Transcript replies open with the agent's avatar and name. Expanded step
+  batches keep their child tools and subgroups behind a vertical guide in both
+  themes; Plum Pocket uses contiguous 24px detail rows and 28px subgroup headers,
+  and mixed-operation batch headers are 32px on phones. The outer work disclosure
+  keeps its 44px touch target. The token and price breakdown is a small receipt.
+- On phones the workbench top bar keeps 40px-tall controls, Home and Chat move
+  into the thread drawer, and the device monitor stays as a compact CPU/memory
+  meter whose values shade from green through amber to red with `--load`.
+- The thread tools open as a second line of the tab row (`.matter-breadcrumb`), so
+  the theme lets `.matter-tabs-row` grow and fixes the height of the tab strip.
+  The tab bar's tools (thread tools, subagents, automations, split) are redrawn as
+  CSS masks over the existing buttons; labels, titles and badges stay.
+- Outer pages (`data-page`) hide help paragraphs and eyebrows, turn boxed lists
+  into plain rows and size buttons so their labels never wrap.
+- Settings hide help text visually (`settings-hint`, kept for screen readers),
+  give each settings tab an icon (icons only on phones), and restyle the shared
+  buttons, inputs, switches, segmented controls, dialogs and menus.
+- The terminal, the file editor and code blocks use the pack's `--terminal-*`,
+  `--editor-*` and `--shiki-*` palettes.
+
+## Checking a theme
+
+Check both color modes on desktop and phone, including dialogs, menus, the
+composer, code blocks and the outer pages. `e2e/settings-appearance.spec.ts`
+covers switching and persistence, the `plum-*` and `theme-plum-composer` specs
+cover Plum Pocket, and `e2e/theme-packs.spec.ts` covers import, export and
+removal.

@@ -36,6 +36,7 @@ COPY apps/supervisor-web ./apps/supervisor-web
 COPY packages/plugin-runtime ./packages/plugin-runtime
 COPY packages/plugin-terminal ./packages/plugin-terminal
 COPY packages/shared ./packages/shared
+COPY themes ./themes
 
 RUN echo "thread-ui cache key: ${POCKYMOE_THREAD_UI_CACHE_BUST}" \
     && git init ./pockymoe-thread-ui \

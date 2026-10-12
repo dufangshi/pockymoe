@@ -7,6 +7,8 @@ import react from '@vitejs/plugin-react';
 import { defineConfig, loadEnv } from 'vite';
 import { staticHosting } from './staticHosting';
 
+import { themePacksPlugin } from './build/themePacksPlugin';
+
 const require = createRequire(import.meta.url);
 
 function packageChunk(id: string) {
@@ -106,6 +108,7 @@ export default defineConfig(({ mode }) => {
       )] : []),
       react(),
       tailwindcss(),
+      themePacksPlugin({ themesDir: path.resolve(__dirname, '../../themes') }),
       {
         name: 'copy-3dmol-runtime',
         apply: 'build',

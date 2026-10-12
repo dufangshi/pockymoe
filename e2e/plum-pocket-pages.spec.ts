@@ -45,7 +45,7 @@ test('Plum Pocket outer pages show one title, no help paragraphs and unwrapped b
   await open(page, '/workspaces', 'plum-pocket');
   const title = page.locator('.product-navigation h1');
   await expect(title).toHaveText('Workspaces');
-  expect(await title.evaluate(element => getComputedStyle(element, '::before').backgroundImage)).toContain('icon-192');
+  expect(await title.evaluate(element => getComputedStyle(element, '::before').backgroundImage)).toContain('pockymoe-icon.png');
   for (const url of ['/workspaces/new', '/threads/import']) {
     await page.goto(url);
     await expect(page.locator('.product-page')).toBeVisible();
@@ -63,25 +63,52 @@ test('Plum Pocket outer pages show one title, no help paragraphs and unwrapped b
 
 // The phone top bar holds the device monitor and every tool without overlap or
 // overflow, in Plum (44px-tall slots) and in Classic, down to 320px.
-for (const [preset, width] of [['plum-pocket', 360], ['plum-pocket', 320], ['classic', 320]] as const) test(`phone top bar keeps the device monitor and fits ${width}px (${preset})`, async ({ page, request }, testInfo) => {
+for (const [preset, width] of [['plum-pocket', 360], ['plum-pocket', 320], ['classic', 360], ['classic', 320]] as const) test(`phone top bar keeps the device monitor and fits ${width}px (${preset})`, async ({ page, request }, testInfo) => {
   test.skip(testInfo.project.name !== 'mobile-chromium', 'Phone top bar');
   await page.setViewportSize({ width, height: 780 });
   const absPath = path.resolve(process.env.E2E_WORKSPACE_ROOT!, `plum-${randomUUID()}`);
   await mkdir(absPath, { recursive: true });
   const workspace = await (await request.post(`${base}/api/workspaces`, { data: { absPath, label: 'Top bar fit' } })).json();
   const started = await (await request.post(`${base}/api/threads/start`, { data: { workspaceId: workspace.id, provider: 'acp', agentId: 'codex', model: 'ios-e2e-stream', approvalMode: 'yolo' } })).json();
+  let hasGpu = false;
+  await page.route('**/api/device/metrics', route => route.fulfill({ json: {
+    sampledAt: new Date().toISOString(), platform: 'linux', environment: 'native', sampleWindowMs: 2000,
+    cpu: { model: 'CPU', usagePercent: 100, logicalCoreCount: 4, cores: [] },
+    memory: { totalBytes: 16 * 2 ** 30, usedBytes: 12.34 * 2 ** 30, availableBytes: 0, usagePercent: 100 },
+    swap: { totalBytes: 0, usedBytes: 0, availableBytes: 0, usagePercent: null },
+    cpuPower: { watts: null, source: null, reason: null }, hardwareNotes: [], limits: null,
+    gpus: hasGpu ? [{ id: 'gpu', name: 'Test GPU', usagePercent: 100, usedMemoryBytes: 6.78 * 2 ** 30, totalMemoryBytes: 8 * 2 ** 30, power: { watts: null, source: null, reason: null }, source: 'test' }] : [],
+  } }));
   await open(page, `/threads/${started.thread?.id ?? started.id}`, preset);
   const topbar = page.locator('header.matter-topbar');
   const monitor = topbar.getByRole('button', { name: 'Device monitor' });
   await expect(monitor).toBeVisible();
   await expect(page.locator('.matter-drawer-tools .device-monitor-button')).toHaveCount(0);
-  if (preset === 'plum-pocket') {
-    // Worst-case readings still fit their rows.
-    const rows = await monitor.evaluate(button => {
-      for (const value of button.querySelectorAll('b')) value.textContent = '100%';
-      return [...button.querySelectorAll('span')].map(row => row.scrollWidth - row.clientWidth);
+  for (const gpu of [false, true]) {
+    hasGpu = gpu;
+    if (gpu) await page.reload();
+    await expect(monitor.locator('[aria-label^=DRAM]')).toHaveText('12.3/16.0G');
+    await expect(monitor.locator('[aria-label^=CPU] svg')).toBeVisible();
+    await expect(monitor.locator('.dm-summary-row')).toHaveCount(gpu ? 2 : 1);
+    if (gpu) {
+      await expect(monitor.locator('[aria-label^=GPU]')).toHaveText('100%');
+      await expect(monitor.locator('[aria-label^=VRAM]')).toHaveText('6.8/8.0G');
+    }
+    const fit = await monitor.evaluate(button => {
+      const box = button.getBoundingClientRect();
+      return [...button.querySelectorAll('.dm-summary-reading')].map(row => {
+        const r = row.getBoundingClientRect();
+        return { overflow: row.scrollWidth - row.clientWidth, top: r.top - box.top, bottom: box.bottom - r.bottom };
+      });
     });
-    for (const overflow of rows) expect(overflow).toBeLessThanOrEqual(0);
+    for (const row of fit) {
+      expect(row.overflow, JSON.stringify(fit)).toBeLessThanOrEqual(0);
+      expect(row.top).toBeGreaterThanOrEqual(0);
+      expect(row.bottom).toBeGreaterThanOrEqual(0);
+    }
+    await page.screenshot({ path: testInfo.outputPath(`monitor-${preset}-${width}-${gpu ? 'gpu' : 'cpu'}.png`), scale: 'css' });
+  }
+  if (preset === 'plum-pocket') {
     // Readings shade from green when idle to red when busy.
     const hues = await monitor.evaluate(button => {
       const value = button.querySelector('b')!;

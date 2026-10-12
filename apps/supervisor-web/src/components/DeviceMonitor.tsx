@@ -184,7 +184,22 @@ export function DeviceMonitor() {
     ? Math.max(0, Math.floor((now - Date.parse(data.sampledAt)) / 1000))
     : null;
   const stale = Boolean(error) || (age != null && age > staleAfterSeconds(open));
-  const gpu = data?.gpus.find((gpu) => gpu.usagePercent != null);
+  const gpu = data?.gpus.find(gpu => gpu.usagePercent != null ||
+    (gpu.usedMemoryBytes != null && gpu.totalMemoryBytes != null && gpu.totalMemoryBytes > 0));
+  const vram = gpu?.usedMemoryBytes != null && gpu.totalMemoryBytes != null && gpu.totalMemoryBytes > 0
+    ? 100 * gpu.usedMemoryBytes / gpu.totalMemoryBytes : null;
+  const reading = (icon: ReactNode, value: number | null | undefined, title: string) => (
+    <span className="dm-summary-reading" title={title} aria-label={`${title}: ${pct(stale ? null : value)}`}>
+      {icon}<b style={load(stale ? null : value)}>{pct(stale ? null : value)}</b>
+    </span>
+  );
+  const capacity = (used: number | null | undefined, total: number | null | undefined, value: number | null | undefined, title: string) => {
+    const text = stale || used == null || total == null || total <= 0
+      ? '—' : `${(used / 2 ** 30).toFixed(1)}/${(total / 2 ** 30).toFixed(1)}`;
+    return <span className="dm-summary-reading dm-summary-capacity" title={`${title}: ${text} GiB`} aria-label={`${title}: ${text} GiB`}>
+      <MemoryStick aria-hidden style={{ width: 8, height: 8 }} /><b style={load(stale ? null : value)}>{text}{text !== '—' && <small>G</small>}</b>
+    </span>;
+  };
   return (
     <>
       <button
@@ -193,18 +208,20 @@ export function DeviceMonitor() {
         aria-label={translate("devices.deviceMonitor")}
         aria-expanded={open}
         data-stale={stale || undefined}
+        data-gpu={gpu ? true : undefined}
         title={error ?? translate("devices.cPUMemoryAndHardwareSensors")}
         onClick={() => setOpen(true)}
       >
-        <span>
-          CPU <b style={load(stale ? null : data?.cpu.usagePercent)}>{pct(stale ? null : data?.cpu.usagePercent)}</b>
-        </span>
-        <span>
-          RAM <b style={load(stale ? null : data?.memory.usagePercent)}>{pct(stale ? null : data?.memory.usagePercent)}</b>
+        <span className="dm-summary-row">
+          {reading(<Cpu aria-hidden style={{ width: 8, height: 8 }} />, data?.cpu.usagePercent, 'CPU')}
+          <span className="dm-summary-separator" aria-hidden>·</span>
+          {capacity(data?.memory.usedBytes, data?.memory.totalBytes, data?.memory.usagePercent, 'DRAM')}
         </span>
         {gpu && (
-          <span>
-            GPU <b style={load(stale ? null : gpu.usagePercent)}>{pct(stale ? null : gpu.usagePercent)}</b>
+          <span className="dm-summary-row">
+            {reading(<Gpu aria-hidden style={{ width: 8, height: 8 }} />, gpu.usagePercent, `GPU · ${gpu.name}`)}
+            <span className="dm-summary-separator" aria-hidden>·</span>
+            {capacity(gpu.usedMemoryBytes, gpu.totalMemoryBytes, vram, 'VRAM')}
           </span>
         )}
       </button>

@@ -41,6 +41,7 @@ jobs:
               - 'migrations/**'
             web:
               - 'apps/supervisor-web/**'
+              - 'themes/**'
               - 'packages/shared/**'
               - 'packages/plugin-*/**'
               - 'package.json'

@@ -7,7 +7,13 @@ import type {
 } from '@pockymoe/thread-ui';
 import { ApiError, relayModeActive, request } from '../lib/api';
 import { threadHref } from '../lib/relayRoutes';
-import { threadAgentField } from '../lib/themePreset';
+import { threadThemeAgentKey } from '@pockymoe/thread-ui';
+
+/** The avatar key a theme shows for a thread's harness. */
+function threadAgentField(thread: { provider?: string | null; agentId?: string | null }): { agent?: string } {
+  const agent = threadThemeAgentKey(thread);
+  return agent ? { agent } : {};
+}
 
 interface ThreadReference {
   deviceId: string | null;

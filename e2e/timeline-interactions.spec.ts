@@ -295,3 +295,59 @@ test('failed sends preserve the prompt and all attachments for correction and re
   await expect(editor).toHaveText('');
   await expect(page.getByText('Showing 1 of 1 turns')).toBeVisible();
 });
+
+test('substantial answers survive refresh between folded work sections', async ({ page, request }, info) => {
+  const id = await createThread(request);
+  const turnId = `${id}-answer-turn`;
+  const db = new DatabaseSync(path.resolve(process.env.E2E_DATABASE_URL!));
+  db.function('search_fold', { deterministic: true }, value => typeof value === 'string' ? value.toLowerCase() : value);
+  db.function('search_body', { deterministic: true }, (text, kind, _source) => ['userMessage', 'agentMessage'].includes(String(kind)) ? text : null);
+  const at = (index: number) => new Date(Date.UTC(2026, 9, 12, 12, index)).toISOString();
+  const answer = '## 先回答你的问题\n\n' + '身份和授权基于公钥签名，私钥由用户保管，设备独立验证收到的请求。'.repeat(23);
+  try {
+    db.prepare('INSERT INTO thread_turns(id,thread_id,status,started_at,completed_at,ordinal,display_prompt) VALUES (?,?,?,?,?,?,?)').run(turnId, id, 'completed', at(0), at(7), 1, 'Explain and implement');
+    const items = [
+      { id: 'prompt', kind: 'userMessage', text: 'Explain and implement' },
+      { id: 'before-1', kind: 'commandExecution', text: 'check-before-one' },
+      { id: 'before-2', kind: 'commandExecution', text: 'check-before-two' },
+      { id: 'answer', kind: 'agentMessage', text: answer, responsePhase: 'commentary' },
+      { id: 'after-1', kind: 'commandExecution', text: 'check-after-one' },
+      { id: 'after-2', kind: 'commandExecution', text: 'check-after-two' },
+      { id: 'final', kind: 'agentMessage', text: 'Implementation verified.', responsePhase: 'final' },
+    ];
+    for (const [index, item] of items.entries()) {
+      const key = `${turnId}-${item.id}`;
+      db.prepare('INSERT INTO thread_history_items(id,thread_id,turn_id,item_id,item_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?)').run(randomUUID(), id, turnId, key, JSON.stringify({ ...item, id: key, createdAt: at(index), status: 'completed' }), at(index), at(index));
+    }
+  } finally { db.close(); }
+  await page.addInitScript(() => {
+    localStorage.setItem('pockymoe-theme-preset', 'plum-pocket');
+    localStorage.setItem('remote-codex-theme-mode', 'dark');
+    localStorage.setItem(`pockymoe.onboarding.v1:${JSON.stringify([window.location.origin, 'local:owner'])}`, JSON.stringify({ welcomeDismissed: true, completed: [], resume: {} }));
+  });
+  const turnRequests: string[] = [];
+  page.on('request', request => { if (request.url().includes(`/turns/${turnId}`)) turnRequests.push(request.url()); });
+  await page.goto(`/threads/${id}`);
+  const turn = page.locator(`[data-timeline-turn][data-turn-id="${turnId}"]`);
+  await expect(turn.locator('.thread-answer-section')).toHaveCount(2);
+  await expect(turn.getByText('先回答你的问题', { exact: true })).toBeVisible();
+  await expect(turn.getByText('Implementation verified.', { exact: true })).toBeVisible();
+  expect(turnRequests).toHaveLength(0);
+  await page.reload();
+  await expect(turn.locator('.thread-answer-section')).toHaveCount(2);
+  expect(turnRequests).toHaveLength(0);
+  await turn.getByRole('button', { name: /Expand turn 1/ }).click();
+  await expect(turn.locator('.thread-answer-sequence > .thread-execution-timeline')).toHaveCount(2);
+  expect(turnRequests).toHaveLength(1);
+  const order = await turn.locator('.thread-answer-sequence > *').evaluateAll(elements => elements.map(element => element.className));
+  expect(order).toEqual(['thread-execution-timeline', 'thread-answer-section', 'thread-execution-timeline', 'thread-answer-section']);
+  const batches = turn.getByRole('button', { name: 'Expand 2 command entries', exact: true });
+  await expect(batches).toHaveCount(2);
+  await page.screenshot({ path: info.outputPath('substantial-answer-between-steps.png'), scale: 'css' });
+  await batches.last().click();
+  await expect(turn.getByText('check-after-one', { exact: true })).toBeVisible();
+  await expect(turn.getByText('check-before-one', { exact: true })).toHaveCount(0);
+  await turn.getByRole('button', { name: /Collapse turn 1/ }).click();
+  await expect(turn.getByText('先回答你的问题', { exact: true })).toBeVisible();
+  await expect(turn.getByText('Implementation verified.', { exact: true })).toBeVisible();
+});

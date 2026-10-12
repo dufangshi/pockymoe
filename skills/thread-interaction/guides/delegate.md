@@ -49,7 +49,8 @@ Choose by how long you expect to wait:
 - **Long, and nothing else to do:** `pockymoe thread wait tests docs --wake`, then
   end your turn saying what you are waiting for. Exactly one turn is queued on you when
   they all settle (or one blocks), carrying their closing messages; it costs nothing
-  while you wait. That is the only way delegates wake you, and only because you asked.
+  while you wait. That explicitly requests an immediate continuation; delayed unread inbox reminders
+  are a separate 10-minute fallback.
 
 Run `pockymoe thread tree` any time for the whole picture: every delegate's state,
 unread mail, current task and worktree.
@@ -158,7 +159,7 @@ Replace placeholders before sending. Provide goal, checkout, relevant files, con
 
 `--notify-on-complete` subscribes to the receiving **execution turn**, so it requires direct/queue/steer delivery plus a caller identity. Passive inbox messages have no execution turn and reject this flag. It is a per-send subscription, not a permanent watch of future activity.
 
-Completion notifications always go to the caller's passive inbox. They include peer/thread IDs, terminal status (`completed`, `failed`, or `interrupted`), timestamp, a transcript command, and the delegate's closing message (truncated at 4000 characters). They never wake, steer, or queue a turn on the caller - `thread wait` and `inbox wait` are how you block on them, `--wake` how you hand off.
+Completion notifications always go to the caller's passive inbox. They include peer/thread IDs, terminal status (`completed`, `failed`, or `interrupted`), timestamp, a transcript command, and the delegate's closing message (truncated at 4000 characters). They do not immediately wake, steer, or queue a turn on the caller - `thread wait` and `inbox wait` are how you block on them, `--wake` how you hand off.
 
 ```bash
 pockymoe thread wait PEER_ID          # usually all you need

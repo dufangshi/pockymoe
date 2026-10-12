@@ -1,0 +1,763 @@
+/* Plum Pocket: composer and its menus. Every rule is scoped to :theme.
+
+   The composer is a felt pocket: a solid felt edge with a stitched seam inside,
+   squircle "felt keys" with a pressable lip, the harness mascot on the model
+   chip and peeking over the edge, icon rows in the menus and queued prompts as
+   numbered slips. Layout and geometry follow the Classic compact composer
+   (styles/composer-compact.css) so focus and pointer behaviour stay identical. */
+
+/* Composer palette (pc = pocket composer). */
+:theme {
+  --pc-felt: #fffaf1;
+  --pc-edge: #dcc19a;
+  --pc-stitch: color-mix(in srgb, var(--plum-stitch) 62%, transparent);
+  --pc-stitch-busy: #9b7fc4;
+  --pc-key: #f5e8d1;
+  --pc-key-hover: #efdcbc;
+  --pc-key-lip: #e0c697;
+  --pc-key-fg: #4f3559;
+  --pc-send: #e8a93a;
+  --pc-send-hover: #efb54f;
+  --pc-send-lip: #c4862a;
+  --pc-send-fg: #2e1a35;
+  --pc-stop: #fbe4e7;
+  --pc-stop-hover: #f7d3d8;
+  --pc-stop-lip: #edbcc4;
+  --pc-stop-fg: #a62e3d;
+  --pc-stop-ring: color-mix(in srgb, #a62e3d 70%, transparent);
+  --pc-focus: var(--theme-accent-strong);
+  --pc-edge-focus: #b67a1c;
+  --pc-shadow: 0 14px 34px rgb(61 35 73 / 13%), 0 3px 8px rgb(61 35 73 / 7%);
+  --pc-menu-shadow: 0 18px 44px rgb(61 35 73 / 18%), 0 3px 10px rgb(61 35 73 / 8%);
+  --pc-slip: #fffdf8;
+}
+:theme[data-theme-effective='dark'] {
+  --pc-felt: #24162e;
+  --pc-edge: #4d3260;
+  --pc-stitch: color-mix(in srgb, var(--plum-stitch) 58%, transparent);
+  --pc-stitch-busy: #b79cdf;
+  --pc-key: #33203f;
+  --pc-key-hover: #402853;
+  --pc-key-lip: #1a0e21;
+  --pc-key-fg: #ecdcc6;
+  --pc-send: #f0b54a;
+  --pc-send-hover: #f6c66a;
+  --pc-send-lip: #a8731d;
+  --pc-send-fg: #2a1530;
+  --pc-stop: #4a1f30;
+  --pc-stop-hover: #5a2639;
+  --pc-stop-lip: #2a1019;
+  --pc-stop-fg: #ffb4bd;
+  --pc-stop-ring: color-mix(in srgb, #ffb4bd 65%, transparent);
+  --pc-focus: var(--theme-accent-solid);
+  --pc-edge-focus: var(--theme-accent-solid);
+  --pc-shadow: 0 18px 44px rgb(8 3 12 / 48%), 0 4px 12px rgb(8 3 12 / 28%);
+  --pc-menu-shadow: 0 22px 52px rgb(8 3 12 / 55%), 0 4px 14px rgb(8 3 12 / 30%);
+  --pc-slip: #2a1a35;
+}
+
+/* ── Pocket shell ─────────────────────────────────────────────────────────── */
+
+:theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-shell {
+  position: relative;
+  z-index: 1;
+  border: 1.5px solid var(--pc-edge);
+  border-radius: 22px;
+  background: color-mix(in srgb, var(--pc-felt) 96%, transparent);
+  box-shadow: inset 0 1px 0 var(--matter-glass-highlight), var(--pc-shadow);
+  padding: 8px 9px 8px 16px;
+  transition: border-color 160ms ease, box-shadow 160ms ease;
+}
+/* The stitched seam, sewn 4px inside the felt edge. */
+:theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-shell::before {
+  content: '';
+  position: absolute;
+  inset: 3px;
+  border: 1.5px dashed var(--pc-stitch);
+  border-radius: 17.5px;
+  pointer-events: none;
+  transition: border-color 160ms ease;
+}
+:theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-shell:focus-within {
+  border-color: var(--pc-edge-focus);
+  box-shadow:
+    inset 0 1px 0 var(--matter-glass-highlight),
+    0 0 0 3px color-mix(in srgb, var(--theme-accent-solid) 18%, transparent),
+    var(--pc-shadow);
+}
+:theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-shell:focus-within::before {
+  border-color: color-mix(in srgb, var(--theme-accent-solid) 85%, transparent);
+}
+/* A running turn: the seam turns lavender. */
+:theme .thread-ui-shell [data-composer-busy] .thread-graph-composer-shell::before {
+  border-color: color-mix(in srgb, var(--pc-stitch-busy) 70%, transparent);
+}
+:theme .thread-ui-shell [data-composer-layout='expanded'] .thread-graph-composer-shell { padding: 12px 9px 8px 16px; }
+:theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-input-group { column-gap: 10px; background: transparent; }
+
+/* Prompt text. */
+:theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-input {
+  color: var(--theme-fg);
+  font-size: 15px;
+}
+:theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-input > span { color: var(--theme-fg-muted); }
+:theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-input > [role='textbox'] { caret-color: var(--theme-accent-strong); }
+:theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-input > [role='textbox']::selection { background: color-mix(in srgb, var(--theme-accent-solid) 34%, transparent); }
+/* Dropping files: the pocket opens. */
+:theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-input.is-drag-target {
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--theme-accent-solid) 12%, transparent);
+  box-shadow: 0 0 0 1.5px var(--theme-accent-solid);
+}
+:theme .thread-ui-shell .thread-graph-composer-input .thread-composer-attachment-chip {
+  border-color: var(--theme-accent-border) !important;
+  border-radius: 10px !important;
+  background: var(--theme-accent-soft) !important;
+  color: var(--theme-accent-strong) !important;
+}
+:theme .thread-ui-shell .thread-graph-composer-input .thread-composer-attachment-caption { color: var(--theme-accent-strong); }
+
+/* ── The mascot peeking over the edge ─────────────────────────────────────── */
+
+/* The thread's harness mascot sits inside the pocket, behind the shell. She
+   looks out while the thread waits for you and ducks in while a turn runs. */
+:theme .thread-ui-shell form[data-composer-layout]:is([data-agent='claude'], [data-agent='codex'], [data-agent='deepseek'], [data-agent='gemini'], [data-agent='grok'], [data-agent='cursor'], [data-agent='copilot'], [data-agent='opencode'])::before {
+  content: '';
+  position: absolute;
+  z-index: 0;
+  left: 26px;
+  bottom: calc(100% - var(--pc-peek-tuck, 4px));
+  width: var(--pc-peek-w, 54px);
+  aspect-ratio: var(--pc-peek-ratio, 160 / 129);
+  background: var(--theme-agent-peek) center bottom / contain no-repeat;
+  pointer-events: none;
+  transition: transform 260ms cubic-bezier(0.3, 1.4, 0.5, 1);
+}
+:theme .thread-ui-shell form[data-agent='codex'] { --pc-peek-ratio: 160 / 130; }
+:theme .thread-ui-shell form[data-agent='deepseek'] { --pc-peek-ratio: 160 / 189; --pc-peek-w: 46px; }
+:theme .thread-ui-shell form[data-agent='gemini'] { --pc-peek-ratio: 160 / 120; }
+:theme .thread-ui-shell form[data-agent='grok'] { --pc-peek-ratio: 160 / 118; }
+:theme .thread-ui-shell form[data-agent='cursor'] { --pc-peek-ratio: 160 / 149; --pc-peek-w: 50px; }
+:theme .thread-ui-shell form[data-agent='copilot'] { --pc-peek-ratio: 160 / 146; --pc-peek-w: 50px; }
+:theme .thread-ui-shell form[data-agent='opencode'] { --pc-peek-ratio: 160 / 155; --pc-peek-w: 50px; }
+:theme .thread-ui-shell form[data-composer-layout][data-agent]:focus-within::before { transform: translateY(-3px); }
+:theme .thread-ui-shell form[data-composer-layout][data-agent][data-composer-busy]::before { transform: translateY(58%); }
+/* Queued slips and the phone pane switch take the space above the pocket. */
+:theme .thread-ui-shell .thread-graph-composer-layer:is(:has(> .thread-composer-pending-queue), :has(.thread-pane-switch)) form[data-agent]::before { display: none; }
+
+/* ── Felt keys: slash, attach, stop and send ──────────────────────────────── */
+
+/* Slash and attach are light, half-translucent felt so the prompt stays the
+   main thing; send and stop stay solid. */
+:theme .thread-ui-shell [data-composer-layout] :is(.thread-graph-composer-icon-button, .thread-graph-composer-stop-button, .thread-graph-composer-send-button) {
+  position: relative;
+  width: 30px !important;
+  height: 30px !important;
+  min-width: 30px !important;
+  min-height: 30px !important;
+  border: 0 !important;
+  border-radius: 10px !important;
+  transition: background-color 140ms ease, transform 120ms ease, box-shadow 120ms ease;
+}
+:theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-icon-button {
+  background: color-mix(in srgb, var(--pc-key) 55%, transparent) !important;
+  color: var(--pc-key-fg) !important;
+  box-shadow: inset 0 -1.5px 0 color-mix(in srgb, var(--pc-key-lip) 60%, transparent) !important;
+}
+:theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-icon-button:hover {
+  background: var(--pc-key-hover) !important;
+  color: var(--theme-fg) !important;
+}
+:theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-icon-button[aria-expanded='true'],
+:theme .thread-ui-shell [data-composer-layout] .relative:has(> [data-composer-menu-surface]) > .thread-graph-composer-icon-button {
+  background: var(--theme-accent-soft) !important;
+  color: var(--theme-accent-strong) !important;
+  box-shadow: inset 0 0 0 1.5px var(--theme-accent-border) !important;
+}
+:theme .thread-ui-shell [data-composer-layout] .composer-slash-glyph {
+  font-family: var(--plum-display);
+  font-size: 17px;
+  font-weight: 600;
+  line-height: 1;
+  transform: translateY(-1px) skewX(-6deg);
+}
+
+/* Send: a mustard key, a little wider than the others. */
+:theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-send-button {
+  width: 38px !important;
+  min-width: 38px !important;
+  background: var(--pc-send) !important;
+  color: var(--pc-send-fg) !important;
+  box-shadow: inset 0 -2px 0 var(--pc-send-lip) !important;
+}
+:theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-send-button:hover:not(:disabled) { background: var(--pc-send-hover) !important; }
+:theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-send-button.ui-action-info { background: var(--theme-accent-soft) !important; color: var(--theme-accent-strong) !important; box-shadow: inset 0 0 0 1.5px var(--theme-accent-border), inset 0 -3px 0 var(--theme-accent-border) !important; }
+:theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-send-button.ui-action-danger { background: var(--pc-stop) !important; color: var(--pc-stop-fg) !important; box-shadow: inset 0 -3px 0 var(--pc-stop-lip) !important; }
+:theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-send-button:disabled {
+  background: var(--pc-key) !important;
+  color: var(--theme-fg-muted) !important;
+  box-shadow: none !important;
+  opacity: 1;
+}
+:theme .thread-ui-shell [data-composer-layout] .composer-send-plane { transform: translate(-1px, 1px) rotate(4deg); }
+
+/* While a turn runs: Stop is a quiet rose ring with a small square, and Send
+   becomes "send after this turn", Send's shape in a secondary style. Neither
+   outweighs the model chip. */
+:theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-stop-button {
+  width: 28px !important;
+  height: 28px !important;
+  min-width: 28px !important;
+  min-height: 28px !important;
+  border-radius: 50% !important;
+  background: transparent !important;
+  color: var(--pc-stop-fg) !important;
+  box-shadow: inset 0 0 0 1.5px var(--pc-stop-ring) !important;
+}
+:theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-stop-button:hover { background: var(--pc-stop) !important; }
+:theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-stop-button > span { width: 8px; height: 8px; border-radius: 2px; }
+:theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-send-button[data-send-intent='queue']:not(:disabled) {
+  background: color-mix(in srgb, var(--theme-accent-soft) 85%, transparent) !important;
+  color: var(--theme-accent-strong) !important;
+  box-shadow: inset 0 0 0 1.5px var(--theme-accent-border) !important;
+}
+:theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-send-button[data-send-intent='queue']:hover:not(:disabled) { background: var(--theme-accent-soft) !important; }
+
+/* Pressing a key pushes it into the felt. */
+:theme .thread-ui-shell [data-composer-layout] :is(.thread-graph-composer-icon-button, .thread-graph-composer-stop-button, .thread-graph-composer-send-button):active:not(:disabled) {
+  transform: translateY(1px);
+  box-shadow: none !important;
+}
+:theme .thread-ui-shell [data-composer-layout] :is(.thread-graph-composer-icon-button, .thread-graph-composer-stop-button, .thread-graph-composer-send-button, .composer-model-label):focus-visible {
+  outline: 2px solid var(--pc-focus) !important;
+  outline-offset: 2px;
+}
+
+/* ── Model chip: mascot, name, effort, chevron ────────────────────────────── */
+
+/* Name and effort are centred on one axis; the context bar sits inside the chip
+   with equal insets, so chip, text and bar share the same centre line. */
+:theme .thread-ui-shell [data-composer-layout] .composer-model-control { position: relative; }
+:theme .thread-ui-shell [data-composer-layout] .composer-model-label {
+  display: grid;
+  grid-template-columns: auto minmax(0, max-content) auto;
+  grid-template-areas: 'avatar name chevron' 'avatar effort chevron';
+  align-items: center;
+  justify-content: center;
+  justify-items: center;
+  column-gap: 6px;
+  min-height: 30px;
+  max-width: min(16rem, max(4rem, calc(100cqi - 13rem)));
+  padding: 2px 8px;
+  border: 1.5px dashed transparent;
+  border-radius: 10px;
+  color: var(--theme-fg-soft);
+  text-align: center;
+  transition: background-color 140ms ease, border-color 140ms ease;
+}
+:theme .thread-ui-shell [data-composer-layout] .composer-model-control:has(> .thread-context-progress-track) .composer-model-label { padding-bottom: 7px; }
+:theme .thread-ui-shell [data-composer-layout] .composer-model-label:hover:not(:disabled) { background: color-mix(in srgb, var(--pc-key) 70%, transparent); }
+:theme .thread-ui-shell [data-composer-layout] .composer-model-label[aria-expanded='true'] {
+  background: var(--theme-accent-soft);
+  border-color: var(--theme-accent-border);
+}
+:theme .thread-ui-shell [data-composer-layout] .composer-model-label:not(:has(.composer-model-effort)) { grid-template-areas: 'avatar name chevron'; }
+:theme .thread-ui-shell [data-composer-layout] .composer-model-avatar {
+  grid-area: avatar;
+  width: 22px;
+  height: 22px;
+}
+:theme .thread-ui-shell [data-composer-layout] .composer-model-name {
+  grid-area: name;
+  max-width: 100%;
+  color: var(--theme-fg);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 14px;
+}
+:theme .thread-ui-shell [data-composer-layout] .composer-model-effort {
+  grid-area: effort;
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--theme-fg-muted);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 12px;
+  text-overflow: ellipsis;
+  opacity: 1;
+}
+:theme .thread-ui-shell [data-composer-layout] .composer-model-chevron {
+  grid-area: chevron;
+  width: 12px;
+  height: 12px;
+  color: var(--theme-fg-muted);
+  transition: transform 160ms ease;
+}
+:theme .thread-ui-shell [data-composer-layout] .composer-model-label[aria-expanded='true'] .composer-model-chevron { transform: rotate(180deg); }
+:theme .thread-ui-shell [data-composer-layout] .composer-model-control > .thread-context-progress-track {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: 3px;
+  height: 2.5px;
+  margin: 0;
+  background: color-mix(in srgb, var(--pc-key-lip) 85%, transparent);
+}
+/* The fill colour is set inline (sky, amber, rose by remaining context); keep
+   the warning colours and swap only the healthy sky for mustard. */
+:theme .thread-ui-shell .composer-model-control .thread-context-progress-fill[style*='125, 211, 252'] { background-color: var(--theme-accent-solid) !important; }
+
+/* The shared border legend replaces a short stretch of edge and stitching.
+   Theme only its felt/ink; never add padding or move the composer. */
+:theme .thread-ui-shell .thread-composer-usage-tag {
+  --composer-seam-surface: color-mix(in srgb, var(--pc-felt) 96%, var(--theme-bg));
+}
+:theme .thread-ui-shell .thread-composer-usage-tag .thread-subscription-usage { font-weight: 700; }
+:theme .thread-ui-shell .thread-composer-usage-tag [data-subscription-window-track] { background: color-mix(in srgb, var(--pc-key-lip) 85%, transparent); }
+:theme .thread-ui-shell .thread-subscription-usage-details {
+  --subscription-details-bg: var(--pc-felt);
+  border-color: var(--pc-edge);
+  border-radius: 10px;
+  background: var(--pc-felt);
+  color: var(--theme-fg);
+  box-shadow: var(--pc-menu-shadow);
+  font-size: 10.5px;
+  white-space: normal;
+}
+/* ── Menus: one felt card style for model, slash toolbox and attachments ──── */
+
+:theme .thread-ui-shell [data-composer-menu-surface='true'] {
+  border: 1.5px solid var(--pc-edge) !important;
+  border-radius: 18px !important;
+  background: var(--pc-felt) !important;
+  color: var(--theme-fg) !important;
+  box-shadow: var(--pc-menu-shadow) !important;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+:theme .thread-ui-shell [data-composer-menu-surface='true'] :is(.thread-graph-composer-menu-item, [role='menuitemradio'], [data-toolbox-action] > button, button[data-toolbox-action]) {
+  border-radius: 12px !important;
+  color: var(--theme-fg) !important;
+}
+:theme .thread-ui-shell [data-composer-menu-surface='true'] :is(.thread-graph-composer-menu-item, [role='menuitemradio'], [data-toolbox-action] > button, button[data-toolbox-action]):hover:not(:disabled) {
+  background: var(--pc-key) !important;
+}
+:theme .thread-ui-shell [data-composer-menu-surface='true'] :is(button, [role='menuitemradio']):focus-visible {
+  outline: 2px solid var(--pc-focus);
+  outline-offset: -2px;
+}
+
+/* Attachments: icon rows. */
+:theme .thread-ui-shell .composer-tools [data-composer-menu-surface='true']:has(.composer-attach-icon) { width: 10rem !important; }
+:theme .thread-ui-shell [data-composer-menu-surface='true'] .thread-graph-composer-menu-item:has(> .composer-attach-icon) {
+  display: flex !important;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+  font-weight: 600;
+}
+:theme .thread-ui-shell .composer-attach-icon {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  padding: 6px;
+  border-radius: 9px;
+  background: var(--theme-accent-soft);
+  color: var(--theme-accent-strong);
+}
+
+/* Slash toolbox: icon tile, command, description and a status pill. */
+:theme .thread-ui-shell .composer-tools [data-composer-menu-surface='true']:has([data-toolbox-action]) { width: min(20rem, calc(100vw - 1rem)) !important; }
+:theme .thread-ui-shell button[data-toolbox-action] { padding: 6px 10px 6px 6px !important; }
+:theme .thread-ui-shell [data-toolbox-action] .flex { min-width: 0; }
+:theme .thread-ui-shell .composer-toolbox-icon {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  background: var(--theme-accent-soft);
+  color: var(--theme-accent-strong);
+}
+:theme .thread-ui-shell .composer-toolbox-icon > svg { width: 16px; height: 16px; stroke-width: 2.1; }
+:theme .thread-ui-shell .composer-toolbox-text { display: flex; flex: 1; flex-direction: column; min-width: 0; margin-left: -2px; }
+:theme .thread-ui-shell .composer-toolbox-command {
+  font-family: var(--plum-display);
+  font-size: 13.5px;
+  font-weight: 600;
+  line-height: 17px;
+}
+:theme .thread-ui-shell .composer-toolbox-description {
+  overflow: hidden;
+  color: var(--theme-fg-muted);
+  font-size: 11.5px;
+  line-height: 15px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+:theme .thread-ui-shell .composer-toolbox-status {
+  flex: none;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--pc-key);
+  color: var(--theme-fg-muted) !important;
+  font-size: 10px !important;
+  font-weight: 700;
+  letter-spacing: 0.08em !important;
+}
+/* Active toggles (plan, fast, an active goal) light up the whole row. */
+:theme .thread-ui-shell [data-composer-menu-surface='true'] button[data-toolbox-action].ui-status-warning {
+  background: var(--theme-accent-soft) !important;
+  box-shadow: inset 0 0 0 1.5px var(--theme-accent-border);
+}
+:theme .thread-ui-shell button[data-toolbox-action].ui-status-warning .composer-toolbox-status { background: var(--theme-accent-solid); color: var(--theme-accent-solid-fg) !important; }
+:theme .thread-ui-shell button[data-toolbox-action].ui-status-warning .composer-toolbox-icon { background: var(--theme-accent-solid); color: var(--theme-accent-solid-fg); }
+/* /goal is a split row: view goals | open the goal composer. */
+:theme .thread-ui-shell .composer-toolbox-split { border: 0 !important; border-radius: 12px; }
+:theme .thread-ui-shell .composer-toolbox-split > button:first-child { padding: 6px 8px 6px 6px !important; }
+:theme .thread-ui-shell .composer-toolbox-split > button:last-child {
+  align-self: center;
+  min-width: 0;
+  height: 26px;
+  margin: 0 6px 0 2px;
+  padding: 0 10px;
+  border: 0 !important;
+  border-radius: 999px !important;
+  background: var(--pc-key);
+  color: var(--theme-fg-soft) !important;
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+:theme .thread-ui-shell .composer-toolbox-split > button:last-child:hover:not(:disabled) { background: var(--theme-accent-solid) !important; color: var(--theme-accent-solid-fg) !important; }
+
+/* Model menu. */
+:theme .thread-ui-shell .composer-model-control [data-composer-menu-surface='true'] { --composer-menu-surface-bg: var(--pc-felt); padding: 6px !important; }
+:theme .thread-ui-shell .composer-model-control [data-composer-menu-surface='true'] > p,
+:theme .thread-ui-shell .composer-reasoning-heading > span:first-child {
+  color: var(--theme-fg-muted);
+  font-family: var(--plum-display);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+:theme .thread-ui-shell .composer-model-control [role='menuitemradio'] { min-height: 30px !important; line-height: 18px !important; padding: 4px 10px !important; font-size: 12px !important; font-weight: 600; }
+:theme .thread-ui-shell .composer-model-control [role='menuitemradio'][aria-checked='true'] {
+  background: var(--theme-accent-soft) !important;
+  box-shadow: inset 0 0 0 1.5px var(--theme-accent-border);
+  color: var(--theme-fg) !important;
+}
+:theme .thread-ui-shell .composer-model-control [role='menuitemradio'][aria-checked='true'] > svg {
+  width: 18px;
+  height: 18px;
+  padding: 3px;
+  border-radius: 50%;
+  background: var(--theme-accent-solid);
+  color: var(--theme-accent-solid-fg);
+  stroke-width: 3;
+}
+
+/* Reasoning effort: a plum-to-rose heat scale on a felt track. */
+:theme .composer-reasoning { padding: 6px 10px 0; margin-top: 4px; --pc-effort-ink: color-mix(in srgb, var(--effort-color) 52%, #1f0f26); border-top: 1.5px dashed var(--theme-border); }
+:theme[data-theme-effective='dark'] .composer-reasoning { --pc-effort-ink: color-mix(in srgb, var(--effort-color) 55%, #fff6ea); }
+:theme .composer-reasoning:is([data-effort='none'], [data-effort='minimal']) { --effort-color: #8c9bd0 !important; }
+:theme .composer-reasoning[data-effort='low'] { --effort-color: #9479cf !important; }
+:theme .composer-reasoning[data-effort='medium'] { --effort-color: #d99a28 !important; }
+:theme .composer-reasoning[data-effort='high'] { --effort-color: #e07a3c !important; }
+:theme .composer-reasoning[data-effort='xhigh'] { --effort-color: #d4566f !important; }
+:theme .composer-reasoning:is([data-effort='max'], [data-effort='ultra']) { --effort-color: #b04a9c !important; }
+:theme .composer-reasoning-value {
+  border: 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--effort-color) 18%, var(--pc-felt));
+  color: var(--pc-effort-ink);
+  font-family: var(--plum-display);
+  font-weight: 600;
+}
+:theme .composer-reasoning-track {
+  height: 7px;
+  background: var(--pc-key);
+  box-shadow: inset 0 1px 2px color-mix(in srgb, var(--pc-key-lip) 90%, transparent);
+}
+:theme .composer-reasoning-range { background: linear-gradient(90deg, #9479cf, var(--effort-color)); }
+:theme .composer-reasoning-thumb {
+  width: 21px;
+  height: 21px;
+  border: 3px solid var(--pc-felt);
+  outline: 1.5px dashed color-mix(in srgb, var(--effort-color) 70%, transparent);
+  outline-offset: 1px;
+  background: var(--effort-color);
+}
+:theme .composer-reasoning-stops button { font-size: 10px; font-weight: 600; }
+:theme .composer-reasoning-stops button:is([aria-pressed='true'], :hover) { color: var(--pc-effort-ink); }
+
+/* ── Queued prompts: numbered slips tucked above the pocket ───────────────── */
+
+:theme .thread-ui-shell .thread-composer-pending-queue {
+  counter-reset: pc-slip;
+  margin-bottom: 10px;
+  border: 1.5px solid var(--pc-edge);
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--pc-felt) 97%, transparent);
+  box-shadow: var(--pc-shadow);
+}
+:theme .thread-ui-shell .thread-composer-pending-queue > div:first-child {
+  padding: 8px 12px 6px 14px;
+  color: var(--theme-fg-soft);
+  font-family: var(--plum-display);
+  font-size: 12px;
+  font-weight: 600;
+}
+:theme .thread-ui-shell .thread-composer-pending-queue > div:first-child > span:first-child { display: inline-flex; align-items: center; gap: 6px; }
+:theme .thread-ui-shell .thread-composer-pending-queue > div:first-child > span:first-child::before {
+  content: '';
+  width: 14px;
+  height: 14px;
+  background: var(--theme-accent-strong);
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M10 12h11M10 18h11M10 6h11M4 10h2M4 6h1v4M6 18H4c0-1 2-2 2-3s-1-1.5-2-1'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M10 12h11M10 18h11M10 6h11M4 10h2M4 6h1v4M6 18H4c0-1 2-2 2-3s-1-1.5-2-1'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+:theme .thread-ui-shell .thread-composer-pending-queue > div:first-child > span:last-child {
+  min-width: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--theme-accent-solid);
+  color: var(--theme-accent-solid-fg);
+  font-size: 11px;
+  line-height: 18px;
+  text-align: center;
+}
+:theme .thread-ui-shell .thread-composer-pending-row {
+  counter-increment: pc-slip;
+  gap: 10px;
+  margin: 0 6px 6px;
+  padding: 6px 6px 6px 8px;
+  border: 1px dashed var(--theme-border-strong);
+  border-radius: 12px;
+  background: var(--pc-slip);
+}
+:theme .thread-ui-shell .thread-composer-pending-row::before {
+  content: counter(pc-slip);
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 8px;
+  background: var(--theme-accent-soft);
+  color: var(--theme-accent-strong);
+  font-family: var(--plum-display);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 22px;
+  text-align: center;
+}
+:theme .thread-ui-shell .thread-composer-steer-button {
+  border: 0;
+  border-radius: 10px;
+  background: var(--pc-key);
+  color: var(--pc-key-fg);
+  box-shadow: inset 0 -2px 0 var(--pc-key-lip);
+  font-weight: 700;
+}
+:theme .thread-ui-shell .thread-composer-steer-button:hover:not(:disabled) { background: var(--theme-accent-solid); color: var(--theme-accent-solid-fg); box-shadow: inset 0 -2px 0 var(--pc-send-lip); }
+:theme .thread-ui-shell .thread-composer-queue-remove { border-radius: 10px; color: var(--theme-fg-muted); }
+:theme .thread-ui-shell .thread-composer-queue-remove:hover:not(:disabled) { background: var(--pc-stop); color: var(--pc-stop-fg); }
+:theme .thread-ui-shell :is(.thread-composer-steer-button, .thread-composer-queue-remove):focus-visible { outline: 2px solid var(--pc-focus); outline-offset: 1px; }
+
+/* ── Goal composer card: a ribbon tag stitched on top of the pocket ───────── */
+
+:theme .thread-ui-shell .thread-goal-compose-card {
+  margin: 4px 0 6px;
+  border: 1.5px dashed var(--theme-accent-border);
+  border-radius: 14px;
+  background: var(--theme-accent-soft);
+  box-shadow: none;
+  color: var(--theme-fg-soft);
+}
+:theme .thread-ui-shell .thread-goal-compose-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--theme-accent-strong);
+  font-family: var(--plum-display);
+  font-weight: 600;
+  letter-spacing: 0.1em;
+}
+:theme .thread-ui-shell .thread-goal-compose-label::before {
+  content: '';
+  width: 14px;
+  height: 14px;
+  background: currentColor;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.4'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Ccircle cx='12' cy='12' r='6'/%3E%3Ccircle cx='12' cy='12' r='2'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.4'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Ccircle cx='12' cy='12' r='6'/%3E%3Ccircle cx='12' cy='12' r='2'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+:theme .thread-ui-shell .thread-goal-compose-field { color: var(--theme-fg-soft); }
+:theme .thread-ui-shell .thread-goal-compose-input { border-color: var(--theme-accent-border); background: var(--pc-felt); color: var(--theme-fg); }
+:theme .thread-ui-shell .thread-goal-compose-input:focus { border-color: var(--pc-focus); }
+:theme .thread-ui-shell .thread-goal-compose-cancel { border-color: var(--theme-accent-border); background: var(--pc-felt); color: var(--theme-fg-soft); }
+:theme .thread-ui-shell .thread-goal-compose-cancel:hover { background: var(--pc-key); }
+
+/* ── Narrow panes and phones ──────────────────────────────────────────────── */
+
+@container (max-width: 480px) {
+  :theme .thread-ui-shell [data-composer-layout] :is(.thread-graph-composer-icon-button, .thread-graph-composer-stop-button) { width: 28px !important; min-width: 28px !important; }
+  :theme .thread-ui-shell [data-composer-layout] .composer-model-label { max-width: min(9rem, max(4rem, calc(100cqi - 12rem))); column-gap: 4px; padding-inline: 6px; }
+  :theme .thread-ui-shell [data-composer-layout] .composer-model-chevron { display: none; }
+}
+/* Phones and split panes: the peeking mascot carries the identity, the chip keeps the words. */
+@container (max-width: 420px) {
+  :theme .thread-ui-shell [data-composer-layout] .composer-model-avatar { display: none; }
+}
+@container (max-width: 300px) {
+  :theme .thread-ui-shell [data-composer-layout] :is(.thread-graph-composer-icon-button, .thread-graph-composer-stop-button, .thread-graph-composer-send-button) { width: 26px !important; height: 26px !important; min-width: 26px !important; min-height: 26px !important; border-radius: 9px !important; }
+}
+@media (max-width: 639px) {
+  :theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-shell { border-radius: 20px; padding: 7px 7px 7px 13px; }
+  :theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-shell::before { border-radius: 16px; }
+  :theme .thread-ui-shell [data-composer-layout='expanded'] .thread-graph-composer-shell { padding: 11px 7px 7px 14px; }
+  :theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-input { font-size: 16px; }
+  :theme .thread-ui-shell form[data-composer-layout][data-agent]::before { left: 20px; --pc-peek-w: 42px; }
+  :theme .thread-ui-shell form[data-agent='deepseek']::before { --pc-peek-w: 37px; }
+  :theme .thread-ui-shell form:is([data-agent='cursor'], [data-agent='copilot'], [data-agent='opencode'])::before { --pc-peek-w: 39px; }
+  :theme .thread-ui-shell .matter-workbench .thread-composer-pending-queue { width: auto; margin: 0 9px 8px; border-radius: 16px; }
+  :theme .thread-ui-shell .thread-composer-pending-row :is(.thread-composer-steer-button, .thread-composer-queue-remove) { height: 40px; }
+  :theme .thread-ui-shell .thread-composer-pending-row .thread-composer-queue-remove { width: 40px; }
+}
+/* Touch: 36px keys, each with a 44px hit area; the gaps keep the areas apart. */
+@media (pointer: coarse) {
+  :theme .thread-ui-shell [data-composer-layout] :is(.thread-graph-composer-icon-button, .thread-graph-composer-stop-button, .thread-graph-composer-send-button) {
+    width: 36px !important;
+    height: 36px !important;
+    min-width: 36px !important;
+    min-height: 36px !important;
+    border-radius: 12px !important;
+  }
+  :theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-send-button { width: 42px !important; min-width: 42px !important; }
+  :theme .thread-ui-shell [data-composer-layout] :is(.thread-graph-composer-icon-button, .thread-graph-composer-stop-button, .thread-graph-composer-send-button, .composer-model-label)::after {
+    content: '';
+    position: absolute;
+    inset: -4px;
+  }
+  :theme .thread-ui-shell [data-composer-layout] .composer-model-label::after { inset: -4px 0; }
+  :theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-stop-button { width: 32px !important; height: 32px !important; min-width: 32px !important; min-height: 32px !important; border-radius: 50% !important; }
+  :theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-stop-button::after { inset: -6px; border-radius: 50%; }
+  :theme .thread-ui-shell [data-composer-layout] :is(.composer-tools, .composer-settings, .thread-graph-composer-toolbar) { gap: 6px !important; }
+  :theme .thread-ui-shell [data-composer-layout] .composer-model-label { position: relative; min-height: 36px; }
+  :theme .thread-ui-shell [data-composer-menu-surface='true'] :is(.thread-graph-composer-menu-item, [role='menuitemradio'], button[data-toolbox-action], [data-toolbox-action] > button) { min-height: 44px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  :theme .thread-ui-shell [data-composer-layout] *,
+  :theme .thread-ui-shell [data-composer-layout]::before,
+  :theme .thread-ui-shell [data-composer-layout] *::before { transition: none !important; }
+  :theme .thread-ui-shell [data-composer-layout] :is(.thread-graph-composer-icon-button, .thread-graph-composer-stop-button, .thread-graph-composer-send-button):active { transform: none; }
+}
+@media (prefers-reduced-transparency: reduce) {
+  :theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-shell { background: var(--pc-felt); }
+}
+
+/* ── Thread dialogs: rename, delete, share and export, automations ────────── */
+
+/* Same felt card as the menus. Edge, seam, radius and type only: no size or
+   border-width change, so nothing moves when the preset switches. */
+:theme :is(.host-dialog.max-w-md[role='dialog'], .thread-export-dialog-panel, .automation-panel) {
+  border-color: var(--pc-edge) !important;
+  background: var(--pc-felt);
+  box-shadow: var(--pc-menu-shadow) !important;
+}
+:theme .host-dialog.max-w-md[role='dialog'],
+:theme .thread-export-dialog-root .thread-export-dialog-panel { border-radius: 22px; }
+:theme :is(.host-dialog.max-w-md[role='dialog'], .thread-export-dialog-panel)::before {
+  content: '';
+  position: absolute;
+  inset: 4px;
+  border: 1.5px dashed var(--pc-stitch);
+  border-radius: 18px;
+  pointer-events: none;
+}
+:theme :is(.host-dialog.max-w-md[role='dialog'] .host-page-title, .thread-export-dialog-title, .automation-panel h2) {
+  font-family: var(--plum-display);
+  font-weight: 600;
+  letter-spacing: 0;
+}
+:theme .host-dialog.max-w-md[role='dialog'] input {
+  border-color: var(--pc-edge);
+  border-radius: 12px;
+  background: var(--pc-slip);
+}
+:theme .host-dialog.max-w-md[role='dialog'] input:focus { border-color: var(--pc-focus); box-shadow: 0 0 0 3px color-mix(in srgb, var(--theme-accent-solid) 18%, transparent); }
+:theme .host-dialog.max-w-md[role='dialog'] :is(.ui-action-primary, .ui-action-danger, .host-secondary-button, .host-icon-button) { border-radius: 12px; }
+:theme .host-dialog.max-w-md[role='dialog'] .ui-action-primary { box-shadow: inset 0 -3px 0 var(--pc-send-lip); }
+:theme .host-dialog.max-w-md[role='dialog'] .host-secondary-button { background: var(--pc-key); border-color: transparent; box-shadow: inset 0 -2px 0 var(--pc-key-lip); }
+:theme :is(.host-dialog.max-w-md[role='dialog'], .thread-export-dialog-panel) :is(.ui-action-primary, .host-secondary-button, .host-icon-button, .thread-export-dialog-icon-button, button):focus-visible { outline: 2px solid var(--pc-focus); outline-offset: 2px; }
+/* Share and export keep their own --export-* palette; give it the plum one. */
+:theme .thread-export-dialog-root.thread-export-dialog-root {
+  --export-bg: #fbf4e8;
+  --export-panel: #fffaf1;
+  --export-surface: #f8eedd;
+  --export-surface-strong: #f2e4cc;
+  --export-border: #dcc19a;
+  --export-fg: #2e1a35;
+  --export-fg-soft: #554060;
+  --export-fg-muted: #6e5875;
+  --export-accent: #e8a93a;
+  --export-accent-bg: #fbe7bf;
+  --export-accent-border: #e2b25a;
+  --export-shadow: rgb(61 35 73 / 18%);
+  font-family: var(--plum-font);
+}
+:theme .thread-export-dialog-root.thread-export-dialog-root:is([data-theme-effective='dark'], .thread-ui-theme-dark) {
+  --export-bg: #1b1022;
+  --export-panel: #24162e;
+  --export-surface: #2a1a35;
+  --export-surface-strong: #321f3f;
+  --export-border: #4d3260;
+  --export-fg: #f5e9d6;
+  --export-fg-soft: #e2d2bd;
+  --export-fg-muted: #b9a2c0;
+  --export-accent: #f0b54a;
+  --export-accent-bg: #42301b;
+  --export-accent-border: #8a6020;
+  --export-shadow: rgb(8 3 12 / 55%);
+}
+:theme .thread-export-dialog-root .thread-export-dialog-backdrop { background: var(--overlay-scrim); }
+:theme .thread-export-dialog-root :is(.thread-export-dialog-secondary-button, .matter-dialog-primary, .thread-export-dialog-box, .thread-export-dialog-box-header, select) { border-radius: 12px; }
+:theme .thread-export-dialog-root .matter-dialog-primary.matter-dialog-primary {
+  border-color: transparent;
+  background: var(--pc-send);
+  color: var(--pc-send-fg);
+  box-shadow: inset 0 -3px 0 var(--pc-send-lip);
+  font-weight: 700;
+}
+:theme .thread-export-dialog-root .matter-dialog-primary:hover:not(:disabled) { background: var(--pc-send-hover); }
+:theme .thread-export-dialog-root input[type='checkbox'] { accent-color: var(--theme-accent-solid); }
+@media (max-width: 639px) {
+  :theme .thread-export-dialog-root .thread-export-dialog-panel { border-radius: 22px 22px 0 0; }
+  :theme .thread-export-dialog-panel::before { bottom: -2px; border-bottom: 0; border-radius: 18px 18px 0 0; }
+}
+
+/* ── Terminal (shell view) composer: palette only ─────────────────────────── */
+
+:theme .thread-ui-shell .thread-composer-shell { border-color: var(--theme-border); background: var(--theme-panel); }
+:theme .thread-ui-shell .thread-composer-toolbar { border-color: var(--theme-border) !important; }
+:theme .thread-ui-shell .thread-graph-composer-toolbar { color: var(--theme-fg-muted); }
+:theme .thread-ui-shell .thread-graph-composer-host { border-top-color: var(--theme-border); }
+:theme .thread-ui-shell .thread-composer-icon-button {
+  border-color: var(--theme-border-strong) !important;
+  background: var(--theme-muted) !important;
+  color: var(--theme-fg-soft) !important;
+}
+:theme .thread-ui-shell .thread-composer-icon-button:hover { background: var(--theme-hover) !important; color: var(--theme-fg) !important; }
+:theme .thread-ui-shell .thread-composer-send-button.ui-action-danger { border-color: var(--theme-border-strong) !important; background: var(--theme-muted) !important; }
+:theme .thread-ui-shell :where(.thread-composer-menu, .thread-graph-composer-menu, [data-composer-menu-surface='true']) :where(input, textarea, select) {
+  border-color: var(--theme-border) !important;
+  background: var(--theme-panel) !important;
+  color: var(--theme-fg) !important;
+}
+
+@media (max-width: 639px) {
+  :theme .thread-ui-shell .thread-composer-usage-tag { --composer-seam-surface: var(--pc-felt); }
+}
+
+:theme .composer-context-summary { padding: 5px 10px 2px; border-top-style: dashed; font-family: var(--plum-display); }
+:theme .composer-context-value { font-weight: 600; }

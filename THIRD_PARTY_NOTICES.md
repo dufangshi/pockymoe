@@ -47,7 +47,8 @@ SOFTWARE.
 # Fonts
 
 The Web UI bundles these fonts under the SIL Open Font License 1.1. Each license
-is next to its font in `apps/supervisor-web/public/fonts/`.
+is next to its font: DM Sans in `apps/supervisor-web/public/fonts/`, Nunito and
+Fredoka in the Plum Pocket theme pack (`themes/plum-pocket/assets/fonts/`).
 
 - DM Sans (`dm-sans-OFL.txt`), https://github.com/googlefonts/dm-fonts
 - Nunito (`nunito-OFL.txt`), https://github.com/googlefonts/nunito

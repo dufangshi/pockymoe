@@ -483,6 +483,7 @@ impl Supervisor {
         let weak = Arc::downgrade(self);
         tokio::spawn(async move {
             let running = Arc::new(std::sync::Mutex::new(HashSet::<String>::new()));
+            let mut next_inbox_reminder = std::time::Instant::now();
             loop {
                 tokio::time::sleep(std::time::Duration::from_millis(250)).await;
                 let Some(state) = weak.upgrade() else {
@@ -496,6 +497,13 @@ impl Supervisor {
                 }
                 if let Err(error) = state.fire_wakes().await {
                     tracing::warn!(%error,"delegate wake failed");
+                }
+                if std::time::Instant::now() >= next_inbox_reminder {
+                    if let Err(error) = state.inbox_reminder_tick(&now_rfc3339()).await {
+                        tracing::warn!(%error, "unread inbox reminder failed");
+                    }
+                    next_inbox_reminder =
+                        std::time::Instant::now() + std::time::Duration::from_secs(30);
                 }
                 let ids = state.db.with(|c| {
                     let mut stmt = c.prepare("SELECT DISTINCT p.thread_id FROM thread_pending_steers p JOIN threads t ON t.id=p.thread_id WHERE p.delivery='continuation' AND t.status!='running'")?;
