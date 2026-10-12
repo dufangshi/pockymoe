@@ -10,6 +10,15 @@ vi.mock('./accountStore', () => ({ accountStore: async (key: string, value?: unk
   if (value === null) state.store.delete(key); else if (value !== undefined) state.store.set(key, structuredClone(value));
   return structuredClone(state.store.get(key) ?? null);
 } }));
+vi.mock('./sharingTrustStore', () => ({
+  sharingTrustStore: async (key: string, ...write: unknown[]) => {
+    const storedKey = 'sharing:' + key;
+    if (write.length) { if (write[0] === null) state.store.delete(storedKey); else state.store.set(storedKey, structuredClone(write[0])); }
+    return structuredClone(state.store.get(storedKey));
+  },
+  sharingTrustEntries: async (prefix: string) => [...state.store.entries()]
+    .filter(([key]) => key.startsWith('sharing:' + prefix)).map(([key, value]) => [key.slice('sharing:'.length), structuredClone(value)]),
+}));
 vi.stubGlobal('crypto', webcrypto); vi.stubGlobal('fetch', state.fetch);
 vi.stubGlobal('navigator', { userAgent: 'test', language: 'en-US' });
 vi.stubGlobal('indexedDB', { open: () => {
@@ -166,4 +175,13 @@ it('refuses a newly learned signed device revocation before any application requ
   const send = vi.fn().mockResolvedValue(undefined);
   await expect(browserTransport.syncDeviceRevocations(device, send)).rejects.toMatchObject({ code: 'accountDeviceRevoked' });
   expect(send).toHaveBeenCalledWith([vectors.revocations.device]);
+});
+
+it.each(['invite', 'tofu'])('enforces an existing %s owner pin even before an account loads or an offline device is refused', async (kind) => {
+  state.store.delete('active');
+  state.store.set(`sharing:${kind}-owner:${device}`, vectors.otherAccount.accountKeyId);
+  expect(await browserTransport.hasAccountDeviceCertificate(device)).toBe(true);
+  state.fetch.mockResolvedValue(new Response(null, { status: 404 }));
+  await expect(transport.exchange(new Request(endpoint('threads/thread')))).rejects.toMatchObject({ code: 'accountCertificateMissing' });
+  expect(wires).toHaveLength(0);
 });

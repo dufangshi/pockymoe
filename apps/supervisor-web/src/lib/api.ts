@@ -1,4 +1,4 @@
-import { sharingMutation } from './signedSharing';
+import { sharingMutation, type SharingInput } from './signedSharing';
 import { relayOrigin, relayUrl, relaySocketUrl, relayFetchInit } from './relayOrigin';
 import { logoutAccount } from './accountVaultState';
 import { startAccountLogin, setAccountSession, cancelAccountLogin, type AccountSessionState } from './accountAuth';
@@ -704,6 +704,7 @@ export function createRelayShare(input: CreateRelaySessionShareInput) {
 export function updateRelayShare(
   shareId: string,
   input: UpdateRelaySessionShareInput,
+  dialogContext?: SharingInput,
 ) {
   return sharingMutation('share', 'edit', shareId, () => request<RelaySessionShareDto>(
     `/relay/shares/${encodeURIComponent(shareId)}`,
@@ -711,7 +712,7 @@ export function updateRelayShare(
       method: 'PATCH',
       body: JSON.stringify(input),
     },
-  ), input);
+  ), { ...dialogContext, ...input });
 }
 
 export function revokeRelayShare(shareId: string) {
@@ -733,6 +734,7 @@ export function createRelayGrant(input: CreateRelayAccessGrantInput) {
 export function updateRelayGrant(
   grantId: string,
   input: UpdateRelayAccessGrantInput,
+  dialogContext?: SharingInput,
 ) {
   return sharingMutation('grant', 'edit', grantId, () => request<RelayAccessGrantDto>(
     `/relay/grants/${encodeURIComponent(grantId)}`,
@@ -740,7 +742,7 @@ export function updateRelayGrant(
       method: 'PATCH',
       body: JSON.stringify(input),
     },
-  ), input);
+  ), { ...dialogContext, ...input });
 }
 
 export function revokeRelayGrant(grantId: string) {

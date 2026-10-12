@@ -1,4 +1,4 @@
-import { verifySharedDevice, rememberCertifiedDevice, locallyCertifiedDevices, inviteOwnerPin } from './sharedDeviceTrust';
+import { verifySharedDevice, rememberCertifiedDevice, locallyCertifiedDevices, ownerAccountPin } from './sharedDeviceTrust';
 import { currentAccount, currentBrowser, boundDevices, verifyDeviceCertificate, type BrowserIdentity, type DeviceCertificate } from './accountVault';
 import { accountRequest, accountRevocations, clearBrowser, AccountTrustError } from './accountVaultState';
 import { signRequest } from './accountCrypto';
@@ -58,7 +58,8 @@ export async function verifyTransportDevice(deviceId: string, identityKey: strin
   return { verified: false, bound: false, grantee: false, identityTrust: 'tofu' as const };
 }
 export async function hasAccountDeviceCertificate(deviceId: string) {
-  const a = await currentAccount(); return !!a && (!!await accountStore(`device-certificate:${a.accountKeyId}:${deviceId}`) || !!await accountStore(`protected-device:${a.accountKeyId}:${deviceId}`) || (await locallyCertifiedDevices()).includes(deviceId) || !!await inviteOwnerPin(deviceId));
+  if (await ownerAccountPin(deviceId)) return true;
+  const a = await currentAccount(); return !!a && (!!await accountStore(`device-certificate:${a.accountKeyId}:${deviceId}`) || !!await accountStore(`protected-device:${a.accountKeyId}:${deviceId}`) || (await locallyCertifiedDevices()).includes(deviceId));
 }
 
 // Descriptor verification in exchange establishes the recipient role. The
