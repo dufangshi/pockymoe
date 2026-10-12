@@ -24,6 +24,7 @@ import {
   pendingIsCurrent,
   savePending,
   type PendingEnrollment,
+  type RemoteProtectionIntent,
 } from './pendingEnrollmentStore';
 
 export {
@@ -37,7 +38,7 @@ export {
 export interface EnrollmentDescriptor {
   identityKey: string;
   certificate?: DeviceCertificate | null;
-  trust?: { bound: boolean; strict: boolean; accountKeyId?: string | null };
+  trust?: { bound: boolean; strict: boolean; accountKeyId?: string | null; capabilities?: string[] };
 }
 export interface EnrollmentResponse {
   deviceId: string;
@@ -73,6 +74,7 @@ export async function createPendingEnrollment(
   deviceId: string,
   account: AccountKeyInfo,
   now = Date.now(),
+  remoteProtection?: RemoteProtectionIntent,
 ) {
   const pending: PendingEnrollment = {
     deviceId,
@@ -80,6 +82,7 @@ export async function createPendingEnrollment(
     accountKeyId: account.accountKeyId,
     createdAt: now,
     enrollSecret: encode(crypto.getRandomValues(new Uint8Array(32))),
+    ...(remoteProtection ? { remoteProtection } : {}),
   };
   await savePending(pending);
   return pending;

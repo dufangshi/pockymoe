@@ -10,6 +10,7 @@ import {
   type DeviceBindingFlags,
 } from '../lib/deviceSetupCommands';
 import { DeviceBindingPanel } from '../components/DeviceBindingPanel';
+import { ProtectDevicesButton, RemoteProtectionStatus } from '../components/RemoteProtectionControls';
 import { FormDialog } from '../components/FormDialog';
 import { useDeviceProtection, protectionLabel } from '../lib/useDeviceProtection';
 import { getTransportStatus } from '../lib/relayTransport';
@@ -797,6 +798,8 @@ export function RelayDevicesPage() {
               <p className="mt-1 text-sm text-[var(--theme-fg-muted)]">
                 {translate("devices.yourRelaySupervisorsAndTheirCurrentAvailability")}</p>
             </div>
+            <div className="flex flex-wrap justify-end gap-2">
+            <ProtectDevicesButton devices={portal?.devices ?? []} all />
             <button
               aria-controls="add-device-form"
               aria-expanded={addDeviceOpen}
@@ -815,8 +818,8 @@ export function RelayDevicesPage() {
               )}
               {addDeviceOpen ? translate("devices.close") : translate("devices.addDevice")}
             </button>
+            </div>
           </div>
-
           {addDeviceOpen ? (
             <AddDeviceForm
               busy={busy === 'create'}
@@ -2182,6 +2185,7 @@ function DeviceRow({
       <div className="min-w-0 text-xs text-[var(--theme-fg-muted)]">
         <p>{activityText}</p>
         <DeviceEncryptionStatus deviceId={device.id} online={device.connected} />
+        <RemoteProtectionStatus device={device} />
         <p role={protection === 'certificate-missing' ? 'alert' : undefined}>
           {translate(protectionLabel(protection))}
         </p>
@@ -2200,6 +2204,7 @@ function DeviceRow({
           >
             <DeviceBindingPanel
               deviceId={device.id}
+              device={device}
               repair={protection === 'certificate-missing'}
             />
           </FormDialog>

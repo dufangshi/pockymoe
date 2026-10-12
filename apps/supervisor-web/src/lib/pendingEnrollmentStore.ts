@@ -4,6 +4,16 @@ import type { AccountKeyInfo, DeviceCertificate } from './accountVault';
 
 export const ENROLLMENT_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000;
 export const ENROLLMENT_CHANGED_EVENT = 'pockymoe-enrollment-changed';
+export type RemoteProtectionPhase =
+  | 'queued' | 'update-required' | 'updating' | 'binding' | 'certifying' | 'error';
+export interface RemoteProtectionIntent {
+  phase: RemoteProtectionPhase;
+  updateRequestedAt?: number;
+  /** Distinguishes an interrupted bind from a device already bound at approval. */
+  bindStarted?: boolean;
+  resumeEnrollment?: boolean;
+  error?: 'account-mismatch' | 'update-failed' | 'failed';
+}
 export interface PendingEnrollment {
   deviceId: string;
   userId: string;
@@ -12,6 +22,8 @@ export interface PendingEnrollment {
   createdAt: number;
   /** Persisted before installation, so a consumed secret does not strand a retry. */
   certificate?: DeviceCertificate;
+  /** Local user approval to bind remotely; never sent as enrollment wire data. */
+  remoteProtection?: RemoteProtectionIntent;
 }
 const changed = () => {
   if (typeof window !== 'undefined')
@@ -59,6 +71,7 @@ export async function pendingIsCurrent(pending: PendingEnrollment) {
 export async function savePending(
   pending: PendingEnrollment,
   expected?: PendingEnrollment,
+  expectedRemotePhase?: RemoteProtectionPhase,
 ) {
   const saved = await store<boolean>((s, done) => {
     if (!expected) {
@@ -68,7 +81,8 @@ export async function savePending(
     }
     const request = s.get(pending.deviceId);
     request.onsuccess = () => {
-      const current = sameEnrollment(request.result, expected);
+      const current = sameEnrollment(request.result, expected) &&
+        (expectedRemotePhase === undefined || request.result.remoteProtection?.phase === expectedRemotePhase);
       if (current) s.put(pending);
       done(current);
     };

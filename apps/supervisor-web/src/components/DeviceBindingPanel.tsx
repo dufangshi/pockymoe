@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { prepareDeviceEnrollment } from '../lib/deviceEnrollment';
+import type { RelayDeviceDto } from '@pockymoe/shared';
+import { ProtectDevicesButton, RemoteProtectionStatus } from './RemoteProtectionControls';
 import {
   deviceBindCommand,
   type SupervisorPlatform,
@@ -10,9 +12,11 @@ import {
 export function DeviceBindingPanel({
   deviceId,
   repair = false,
+  device,
 }: {
   deviceId: string;
   repair?: boolean;
+  device?: RelayDeviceDto;
 }) {
   useI18n();
   const [commands, setCommands] =
@@ -52,6 +56,10 @@ export function DeviceBindingPanel({
   return (
     <div className="space-y-3 text-sm">
       <p>{translate('devices.protectDeviceHelp')}</p>
+      {device && !repair && <>
+        <ProtectDevicesButton devices={[device]} />
+        <RemoteProtectionStatus device={device} />
+      </>}
       {error && <p role="alert">{error}</p>}
       {!command && !error && (
         <p role="status">{translate('auth.ownerPreparing')}</p>

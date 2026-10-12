@@ -18,6 +18,8 @@ import {
 import { DeviceTrustError } from '../lib/deviceTrust';
 import { clearTransportKeyCache } from '../lib/relayTransportCrypto';
 import { DeviceEnrollmentMonitor } from './DeviceEnrollmentMonitor';
+import { runRemoteProtection } from '../lib/remoteDeviceProtection';
+vi.mock('../lib/remoteDeviceProtection', () => ({ runRemoteProtection: vi.fn() }));
 vi.mock('../lib/accountVault', () => ({ currentAccount: vi.fn() }));
 vi.mock('../lib/api', () => ({ fetchRelayPortal: vi.fn() }));
 vi.mock('../lib/deviceEnrollment', async (original) => ({
@@ -66,6 +68,41 @@ async function tick(ms = 0) {
   });
 }
 describe('automatic enrollment while the browser is open', () => {
+  it('backs off remote-bind races and offline failures even when progress events wake the in-flight monitor', async () => {
+    const remote = { ...pending, remoteProtection: { phase: 'binding' as const, bindStarted: true } };
+    vi.mocked(listPendingEnrollments).mockResolvedValue([remote]);
+    let attempts = 0;
+    vi.mocked(runRemoteProtection).mockImplementation(async () => {
+      if (++attempts >= 3) return true;
+      window.dispatchEvent(new Event('pockymoe-enrollment-changed'));
+      throw new DeviceTrustError(attempts === 1 ? 'already_bound' : 'device_offline', attempts === 1 ? 409 : 503);
+    });
+    render(<DeviceEnrollmentMonitor />);
+    await tick();
+    expect(runRemoteProtection).toHaveBeenCalledTimes(1);
+    await tick(15000);
+    expect(runRemoteProtection).toHaveBeenCalledTimes(2);
+    await tick(15000);
+    expect(runRemoteProtection).toHaveBeenCalledTimes(2);
+    await tick(15000);
+    expect(runRemoteProtection).toHaveBeenCalledTimes(3);
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+  it('resumes persisted remote-protection intent after an offline device reconnects, using the remote runner', async () => {
+    const remote = { ...pending, remoteProtection: { phase: 'queued' as const } };
+    vi.mocked(listPendingEnrollments).mockResolvedValue([remote]);
+    vi.mocked(fetchRelayPortal).mockResolvedValue(portal(false));
+    vi.mocked(runRemoteProtection).mockResolvedValue(true);
+    render(<DeviceEnrollmentMonitor />);
+    await tick();
+    expect(runRemoteProtection).not.toHaveBeenCalled();
+    vi.mocked(fetchRelayPortal).mockResolvedValue(portal(true));
+    await tick(15000);
+    expect(runRemoteProtection).toHaveBeenCalledExactlyOnceWith(remote, true);
+    expect(completeDeviceEnrollment).not.toHaveBeenCalled();
+    await tick(60000);
+    expect(runRemoteProtection).toHaveBeenCalledTimes(1);
+  });
   it('backs off and retries registration-required failures without a manual Retry', async () => {
     vi.mocked(completeDeviceEnrollment).mockRejectedValueOnce(
       new DeviceTrustError('browser_registration_required', 401),

@@ -9,6 +9,7 @@ import { prepareDeviceEnrollment } from '../lib/deviceEnrollment';
 import { securityRequest } from '../lib/relaySecurity';
 import { relaySupervisorCommand } from '../lib/deviceSetupCommands';
 import { RelayDevicesPage } from './RelayDevicesPage';
+import { protectDevices, deviceProtectionProgress } from '../lib/remoteDeviceProtection';
 
 vi.mock('../lib/api', () => ({
   ApiError: class extends Error {
@@ -30,6 +31,10 @@ vi.mock('../lib/relayOrigin', () => ({ relayOrigin: () => 'https://relay.test' }
 vi.mock('../lib/useDevicePresence', () => ({ useDevicePresence: (portal: unknown) => portal }));
 vi.mock('../lib/useDeviceProtection', () => ({ useDeviceProtection: () => 'not-protected', protectionLabel: () => 'devices.notProtected' }));
 vi.mock('../components/DeviceBindingPanel', () => ({ DeviceBindingPanel: () => null }));
+vi.mock('../lib/remoteDeviceProtection', () => ({
+  protectDevices: vi.fn(), deviceProtectionProgress: vi.fn(), updateAndProtectDevice: vi.fn(),
+  REMOTE_PROTECTION_CHANGED_EVENT: 'pockymoe-remote-protection-changed',
+}));
 vi.mock('../components/DeviceEncryptionStatus', () => ({ DeviceEncryptionStatus: () => null }));
 vi.mock('../components/SignedShareDetails', () => ({ SignedShareDetails: () => null, OrphanDeviceGrants: () => null }));
 vi.mock('../components/SharedAccessCard', () => ({ SharedAccessCard: () => null }));
@@ -51,6 +56,8 @@ const reauthenticationRequired = () => new ApiError(403, { code: 'reauthenticati
 
 beforeEach(() => {
   vi.resetAllMocks();
+  vi.mocked(deviceProtectionProgress).mockResolvedValue(undefined);
+  vi.mocked(protectDevices).mockResolvedValue(undefined);
   vi.mocked(fetchRelayPortal).mockResolvedValue({ user: { id: 'test-user' } as never, devices: [device], sharedWithMe: [], sharedByMe: [] });
   vi.mocked(createRelayDevice).mockResolvedValue({ device, token });
   vi.mocked(request).mockResolvedValue({ token });
@@ -85,6 +92,14 @@ async function verify() {
 }
 
 describe('device setup reauthentication', () => {
+  it('offers Protect all devices for the owned device list and confirms before starting the batch', async () => {
+    await openPage();
+    fireEvent.click(screen.getByRole('button', { name: 'Protect all devices' }));
+    expect(protectDevices).not.toHaveBeenCalled();
+    const dialog = screen.getByRole('dialog', { name: 'Protect all devices' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Protect devices' }));
+    await waitFor(() => expect(protectDevices).toHaveBeenCalledExactlyOnceWith([device]));
+  });
   it('reverifies Add device and retries the original name once before creating enrollment', async () => {
     vi.mocked(createRelayDevice).mockRejectedValueOnce(reauthenticationRequired());
     // The protected endpoint's rejection wins over a racing "recent" status.
