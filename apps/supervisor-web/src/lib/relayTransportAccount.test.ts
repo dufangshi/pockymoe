@@ -6,7 +6,7 @@ import vectors from './fixtures/accountKeyVectors.json';
 import * as c from './accountCrypto';
 import type { BrowserIdentity, DeviceCertificate } from './accountVault';
 const state = vi.hoisted(() => ({ fetch: vi.fn(), store: new Map<string, unknown>(), identities: new Map<string, string>(), pending: vi.fn() }));
-vi.mock('./deviceEnrollment', () => ({ listPendingEnrollments: state.pending }));
+vi.mock('./pendingEnrollmentStore', () => ({ listPendingEnrollments: state.pending }));
 vi.mock('./accountStore', () => ({ accountStore: async (key: string, value?: unknown) => {
   if (value === null) state.store.delete(key); else if (value !== undefined) state.store.set(key, structuredClone(value));
   return structuredClone(state.store.get(key) ?? null);

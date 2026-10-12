@@ -1,3 +1,4 @@
+import { listPendingEnrollments } from './pendingEnrollmentStore';
 import { relayUrl } from './relayOrigin';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import {
@@ -585,7 +586,6 @@ export async function exchange(
     } | null;
     if (failure?.code !== 'browser_registration_required') return null;
     const account = await currentAccount();
-    const { listPendingEnrollments } = await import('./deviceEnrollment');
     const pending = !!account && (await listPendingEnrollments(account)).some(
       enrollment => enrollment.deviceId === route.deviceId,
     );

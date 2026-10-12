@@ -1,3 +1,4 @@
+import { listPendingEnrollments } from './pendingEnrollmentStore';
 import { verifySharedDevice, rememberCertifiedDevice, locallyCertifiedDevices, ownerAccountPin } from './sharedDeviceTrust';
 import { currentAccount, currentBrowser, boundDevices, boundDeviceIdentities, verifyDeviceCertificate, type BrowserIdentity, type DeviceCertificate } from './accountVault';
 import { accountRequest, accountRevocations, clearBrowser, AccountTrustError } from './accountVaultState';
@@ -28,7 +29,6 @@ async function isOwnedDevice(deviceId: string) {
   const a = await currentAccount(); if (!a) return false;
   if ((await accountStore<string[]>(`owned-devices:${a.accountKeyId}`) ?? []).includes(deviceId)) return true;
   // Pending enrollment is stored in its own database and is authoritative local intent.
-  const { listPendingEnrollments } = await import('./deviceEnrollment');
   return (await listPendingEnrollments(a)).some(e => e.deviceId === deviceId);
 }
 export async function syncDeviceRevocations(deviceId: string, send: (revocations: Awaited<ReturnType<typeof accountRevocations>>) => Promise<void>) {
