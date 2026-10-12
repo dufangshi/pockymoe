@@ -1767,6 +1767,79 @@ fn effective_access(
     pockymoe_protocol::access::merge_access(false, None, &matching, thread_id, workspace_id)
 }
 
+fn grantee_registration_request(method: &Method, path: &str, headers: &HeaderMap) -> bool {
+    let encrypted = ["x-rcd-key", "x-rcd-request", "x-rcd-enc"]
+        .iter()
+        .all(|name| {
+            headers
+                .get(*name)
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(|value| !value.is_empty())
+        });
+    pockymoe_protocol::access::grantee_registration_allowed(method.as_str(), path, encrypted)
+}
+
+/// Registration has no resource id: any live row lets the device decide whether
+/// the assertion belongs to one of its grants. Never use this for ordinary routes.
+fn registration_access(conn: &Connection, user: &str, device: &str) -> Option<EffectiveAccess> {
+    if !load_user_by_id(conn, user).is_some_and(|user| user.enabled == 1) {
+        return None;
+    }
+    conn.query_row(
+        "SELECT id,'share', 'thread',thread_id,workspace_id,thread_access,workspace_access
+         FROM relay_shares WHERE target_user_id=?1 AND device_id=?2
+           AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>?3)
+         UNION ALL
+         SELECT id,'grant',scope,thread_id,workspace_id,thread_access,workspace_access
+         FROM relay_access_grants WHERE target_user_id=?1 AND device_id=?2
+           AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>?3)
+         LIMIT 1",
+        params![user, device, now_rfc3339()],
+        |row| {
+            let id: String = row.get(0)?;
+            let share = row.get::<_, String>(1)? == "share";
+            Ok(EffectiveAccess {
+                kind: "shared",
+                share_id: share.then(|| id.clone()),
+                grant_id: (!share).then_some(id),
+                scope: row.get(2)?,
+                thread_id: row.get(3)?,
+                workspace_id: row.get(4)?,
+                thread_access: row.get(5)?,
+                workspace_access: row.get(6)?,
+                workspace_scope: None,
+                workspace_ids: Vec::new(),
+                can_create_threads: false,
+            })
+        },
+    )
+    .optional()
+    .ok()
+    .flatten()
+}
+
+fn device_request_access(
+    conn: &Connection,
+    user: &str,
+    device: &str,
+    method: &Method,
+    path: &str,
+    headers: &HeaderMap,
+) -> Option<EffectiveAccess> {
+    effective_access(
+        conn,
+        user,
+        device,
+        resource_id_from_path(path, "threads").as_deref(),
+        resource_id_from_path(path, "workspaces").as_deref(),
+    )
+    .or_else(|| {
+        grantee_registration_request(method, path, headers)
+            .then(|| registration_access(conn, user, device))
+            .flatten()
+    })
+}
+
 async fn relay_access(
     headers: HeaderMap,
     Query(query): Query<AccessQuery>,
@@ -2744,25 +2817,20 @@ async fn device_api(
     body: Bytes,
 ) -> impl IntoResponse {
     let path = relay_api_target_path(&rest, &uri);
-    let thread_id = resource_id_from_path(&path, "threads");
-    let workspace_id = resource_id_from_path(&path, "workspaces");
     let resolved = {
         let conn = state.store.conn.lock().await;
         authenticated_user(&conn, &state.store.session_secret, &headers, &query).and_then(|user| {
-            effective_access(
-                &conn,
-                &user.id,
-                &device_id,
-                thread_id.as_deref(),
-                workspace_id.as_deref(),
-            )
-            .map(|access| (user.id, access))
+            device_request_access(&conn, &user.id, &device_id, &method, &path, &headers)
+                .map(|access| (user.id, access))
         })
     };
     let Some((user_id, access)) = resolved else {
         return unauthorized();
     };
-    if !relay_target_allowed(&path) || !access_allows(&access, &method, &path) {
+    if !relay_target_allowed(&path)
+        || !(access_allows(&access, &method, &path)
+            || grantee_registration_request(&method, &path, &headers))
+    {
         return (
             StatusCode::FORBIDDEN,
             Json(ApiError::new(
@@ -2819,8 +2887,6 @@ async fn relay_api_compat(
     body: Bytes,
 ) -> impl IntoResponse {
     let path = relay_api_target_path(&rest, &uri);
-    let thread_id = resource_id_from_path(&path, "threads");
-    let workspace_id = resource_id_from_path(&path, "workspaces");
     let mut connected_device_ids: Vec<String> =
         state.sockets.read().await.keys().cloned().collect();
     {
@@ -2842,14 +2908,8 @@ async fn relay_api_compat(
             return unauthorized();
         };
         connected_device_ids.iter().find_map(|device_id| {
-            effective_access(
-                &conn,
-                &user.id,
-                device_id,
-                thread_id.as_deref(),
-                workspace_id.as_deref(),
-            )
-            .map(|access| (device_id.clone(), user.id.clone(), access))
+            device_request_access(&conn, &user.id, device_id, &method, &path, &headers)
+                .map(|access| (device_id.clone(), user.id.clone(), access))
         })
     };
     let Some((device_id, user_id, access)) = resolved else {
@@ -2862,7 +2922,10 @@ async fn relay_api_compat(
         )
             .into_response();
     };
-    if !relay_target_allowed(&path) || !access_allows(&access, &method, &path) {
+    if !relay_target_allowed(&path)
+        || !(access_allows(&access, &method, &path)
+            || grantee_registration_request(&method, &path, &headers))
+    {
         return (
             StatusCode::FORBIDDEN,
             Json(ApiError::new(

@@ -653,12 +653,22 @@ pub(crate) fn encrypted_with_key(
     principal: Option<&OwnerPrincipal>,
     signing_key: &SigningKey,
 ) -> (Value, [u8; 32], String) {
+    let transport = crate::secure_transport::transport(state).unwrap();
+    let descriptor = transport.descriptor("").unwrap();
+    encrypted_with_descriptor(method, path, body, principal, signing_key, &descriptor)
+}
+pub(crate) fn encrypted_with_descriptor(
+    method: &str,
+    path: &str,
+    body: Value,
+    principal: Option<&OwnerPrincipal>,
+    signing_key: &SigningKey,
+    d: &Value,
+) -> (Value, [u8; 32], String) {
     use hpke::{
         aead::AesGcm256, kdf::HkdfSha256, kem::DhP256HkdfSha256 as Kem, Deserializable,
         Kem as KemTrait, Serializable,
     };
-    let transport = crate::secure_transport::transport(state).unwrap();
-    let d = transport.descriptor("").unwrap();
     let public = <Kem as KemTrait>::PublicKey::from_bytes(
         &B64.decode(d["publicKey"].as_str().unwrap()).unwrap(),
     )

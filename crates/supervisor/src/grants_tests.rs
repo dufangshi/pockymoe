@@ -639,3 +639,64 @@ async fn file_save_actor_comes_from_grantee_not_relay_headers() {
         .file_operation("relay:owner:forged", &workspace.id, &operation)
         .is_err());
 }
+
+#[tokio::test]
+async fn grantee_registration_accepts_key_fetched_from_thread_scoped_handshake() {
+    let (_dir, state) = crate::tunnel::tests::state_with_relay_url("http://127.0.0.1:1");
+    let owner = live_owner(&state);
+    let (record, _, registration, signing_key) = grantee_material();
+    let g = grant(record);
+    put(&state.db, &g.grant_id, &g, &owner, owner_trust::now()).unwrap();
+    let response=crate::tunnel::forward_local(&state,json!({"method":"GET","path":"/api/threads/root/transport/key?challenge=recipient-handshake"}),None).await;
+    assert_eq!(response["statusCode"], 200);
+    let descriptor: Value = serde_json::from_str(response["body"].as_str().unwrap()).unwrap();
+    assert_eq!(descriptor["challenge"], "recipient-handshake");
+    let (request, key, aad) = crate::owner_trust::tests::encrypted_with_descriptor(
+        "POST",
+        "/api/transport/owner-session",
+        serde_json::to_value(&registration).unwrap(),
+        None,
+        &signing_key,
+        &descriptor,
+    );
+    assert_eq!(request["headers"]["x-rcd-key"], descriptor["keyId"]);
+    let (status, body) = decoded(
+        crate::tunnel::forward_local(&state, request, None).await,
+        &key,
+        &aad,
+    );
+    assert_eq!(status, 200);
+    assert_eq!(body["role"], "grantee");
+    let principal = OwnerPrincipal {
+        session_id: body["sessionId"].as_str().unwrap().into(),
+        credential_id: registration.assertion.credential_id,
+        grantee_user_id: Some(g.grantee.user_id),
+    };
+    assert!(principal.valid(&state));
+    // The fetched key is also accepted for the signed thread channel request.
+    let (request, key, aad) = crate::owner_trust::tests::encrypted_with_descriptor(
+        "POST",
+        "/api/threads/root/transport/session",
+        Value::Null,
+        Some(&principal),
+        &signing_key,
+        &descriptor,
+    );
+    let (status, body) = decoded(
+        crate::tunnel::forward_local(&state, request, None).await,
+        &key,
+        &aad,
+    );
+    assert_eq!(status, 200);
+    assert_eq!(
+        crate::secure_transport::transport(&state)
+            .unwrap()
+            .session(body["channelId"].as_str().unwrap())
+            .unwrap()
+            .principal
+            .as_ref()
+            .unwrap()
+            .actor(),
+        "grantee:recipient"
+    );
+}

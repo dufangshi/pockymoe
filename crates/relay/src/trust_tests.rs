@@ -498,3 +498,282 @@ async fn certificates_store_interop_vectors_without_verifying_assertions() {
         assert_eq!(stored, raw);
     }
 }
+
+#[tokio::test]
+async fn grantee_registration_routes_any_live_scope_without_resource_ids() {
+    let fixture = Fixture::new("grantee-registration-routing").await;
+    let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+    fixture.state.sockets.write().await.insert(
+        "device".into(),
+        DeviceSocket {
+            tx,
+            connection_id: Uuid::new_v4(),
+            connected_at: now_rfc3339(),
+            last_heartbeat_at: now_rfc3339(),
+        },
+    );
+    for prefix in ["/relay/devices/device/api", "/relay/api"] {
+        for user in [
+            "thread-guest",
+            "workspace-guest",
+            "device-guest",
+            "share-guest",
+        ] {
+            let request = fixture
+                .request(
+                    Method::POST,
+                    &format!("{prefix}/transport/owner-session"),
+                    Some(user),
+                )
+                .header("x-rcd-key", "scoped-key")
+                .header("x-rcd-request", "request")
+                .header("x-rcd-enc", "encapsulation")
+                .header("x-rcd-sealed", "ciphertext");
+            let result = tokio::spawn(async move { request.send().await.unwrap() });
+            let raw = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            let frame: Value = serde_json::from_str(&raw).unwrap();
+            assert_eq!(frame["payload"]["path"], "/api/transport/owner-session");
+            assert_eq!(frame["payload"]["method"], "POST");
+            assert_eq!(frame["payload"]["headers"]["x-rcd-key"], "scoped-key");
+            assert_eq!(frame["payload"]["headers"]["x-rcd-enc"], "encapsulation");
+            assert_eq!(frame["payload"]["headers"]["x-rcd-sealed"], "ciphertext");
+            fixture
+                .state
+                .pending
+                .lock()
+                .unwrap()
+                .remove(frame["requestId"].as_str().unwrap())
+                .unwrap()
+                .tx
+                .send(json!({"statusCode":200,"body":"{\"role\":\"grantee\"}"}))
+                .unwrap();
+            assert_eq!(
+                result.await.unwrap().status(),
+                StatusCode::OK,
+                "{prefix} {user}"
+            );
+        }
+        // The existing thread/workspace key handshake remains available.
+        for (user, resource) in [
+            ("thread-guest", "threads/thread"),
+            ("share-guest", "threads/shared-thread"),
+            ("workspace-guest", "workspaces/workspace"),
+        ] {
+            let request = fixture.request(
+                Method::GET,
+                &format!("{prefix}/{resource}/transport/key?challenge=fresh"),
+                Some(user),
+            );
+            let result = tokio::spawn(async move { request.send().await.unwrap() });
+            let raw = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            let frame: Value = serde_json::from_str(&raw).unwrap();
+            assert_eq!(
+                frame["payload"]["path"],
+                format!("/api/{resource}/transport/key?challenge=fresh")
+            );
+            fixture
+                .state
+                .pending
+                .lock()
+                .unwrap()
+                .remove(frame["requestId"].as_str().unwrap())
+                .unwrap()
+                .tx
+                .send(json!({"statusCode":200,"body":"{}"}))
+                .unwrap();
+            assert_eq!(
+                result.await.unwrap().status(),
+                StatusCode::OK,
+                "{prefix} {user}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn registration_exception_does_not_open_other_transport_routes_or_plaintext() {
+    let fixture = Fixture::new("grantee-registration-boundaries").await;
+    let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+    fixture.state.sockets.write().await.insert(
+        "device".into(),
+        DeviceSocket {
+            tx,
+            connection_id: Uuid::new_v4(),
+            connected_at: now_rfc3339(),
+            last_heartbeat_at: now_rfc3339(),
+        },
+    );
+    for prefix in ["/relay/devices/device/api", "/relay/api"] {
+        for user in [
+            "thread-guest",
+            "workspace-guest",
+            "device-guest",
+            "share-guest",
+        ] {
+            for (method, path) in [
+                (Method::GET, "/transport/owner-session"),
+                (Method::PUT, "/transport/owner-session"),
+                (Method::DELETE, "/transport/owner-session"),
+                (Method::POST, "/transport/owner-session/extra"),
+                (Method::POST, "/transport/session"),
+                (Method::POST, "/transport/pair"),
+                (Method::GET, "/transport/trust"),
+                (Method::GET, "/transport/grants"),
+                (Method::POST, "/transport/credentials"),
+                (Method::DELETE, "/transport/sessions/id"),
+            ] {
+                let response = fixture
+                    .request(method, &format!("{prefix}{path}"), Some(user))
+                    .header("x-rcd-key", "key")
+                    .header("x-rcd-request", "request")
+                    .header("x-rcd-enc", "enc")
+                    .header("x-rcd-sealed", "ciphertext")
+                    .send()
+                    .await
+                    .unwrap();
+                assert!(!response.status().is_success(), "{prefix} {user} {path}");
+                assert!(
+                    rx.try_recv().is_err(),
+                    "unauthorized request forwarded: {path}"
+                );
+            }
+            // Reject plaintext and partial encryption envelopes at the relay.
+            for supplied in [
+                vec![],
+                vec!["x-rcd-key"],
+                vec!["x-rcd-key", "x-rcd-request"],
+                vec!["x-rcd-request", "x-rcd-enc"],
+                vec!["x-rcd-key", "x-rcd-enc"],
+            ] {
+                let mut request = fixture.request(
+                    Method::POST,
+                    &format!("{prefix}/transport/owner-session"),
+                    Some(user),
+                );
+                for name in supplied {
+                    request = request.header(name, "value");
+                }
+                assert!(!request
+                    .body("plaintext")
+                    .send()
+                    .await
+                    .unwrap()
+                    .status()
+                    .is_success());
+                assert!(rx.try_recv().is_err());
+            }
+        }
+        for user in [None, Some("stranger")] {
+            let response = fixture
+                .request(
+                    Method::POST,
+                    &format!("{prefix}/transport/owner-session"),
+                    user,
+                )
+                .header("x-rcd-key", "key")
+                .header("x-rcd-request", "request")
+                .header("x-rcd-enc", "enc")
+                .header("x-rcd-sealed", "ciphertext")
+                .send()
+                .await
+                .unwrap();
+            assert!(!response.status().is_success());
+            assert!(rx.try_recv().is_err());
+        }
+    }
+}
+
+#[tokio::test]
+async fn revoked_expired_disabled_and_other_device_rows_cannot_register() {
+    let fixture = Fixture::new("grantee-registration-live-rows").await;
+    let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+    fixture.state.sockets.write().await.insert(
+        "device".into(),
+        DeviceSocket {
+            tx,
+            connection_id: Uuid::new_v4(),
+            connected_at: now_rfc3339(),
+            last_heartbeat_at: now_rfc3339(),
+        },
+    );
+    for mutation in ["revoked", "expired", "other-device", "disabled"] {
+        {
+            let conn = fixture.state.store.conn.lock().await;
+            conn.execute(
+                "UPDATE relay_shares SET revoked_at=NULL,expires_at=NULL,device_id='device'",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE relay_access_grants SET revoked_at=NULL,expires_at=NULL,device_id='device'",
+                [],
+            )
+            .unwrap();
+            conn.execute("UPDATE relay_users SET enabled=1", [])
+                .unwrap();
+            match mutation {
+                "revoked" => {
+                    conn.execute("UPDATE relay_shares SET revoked_at='now'", [])
+                        .unwrap();
+                    conn.execute("UPDATE relay_access_grants SET revoked_at='now'", [])
+                        .unwrap();
+                }
+                "expired" => {
+                    conn.execute(
+                        "UPDATE relay_shares SET expires_at='2000-01-01T00:00:00Z'",
+                        [],
+                    )
+                    .unwrap();
+                    conn.execute(
+                        "UPDATE relay_access_grants SET expires_at='2000-01-01T00:00:00Z'",
+                        [],
+                    )
+                    .unwrap();
+                }
+                "other-device" => {
+                    conn.execute("INSERT OR IGNORE INTO relay_devices(id,owner_user_id,name,token_hash,token_preview,created_at) VALUES('other-device','owner','Other device','other-hash','test','now')",[]).unwrap();
+                    conn.execute("UPDATE relay_shares SET device_id='other-device'", [])
+                        .unwrap();
+                    conn.execute(
+                        "UPDATE relay_access_grants SET device_id='other-device'",
+                        [],
+                    )
+                    .unwrap();
+                }
+                _ => {
+                    conn.execute("UPDATE relay_users SET enabled=0 WHERE id<>'owner'", [])
+                        .unwrap();
+                }
+            }
+        }
+        // Explicit target route cannot borrow another device's live rows.
+        for user in [
+            "thread-guest",
+            "workspace-guest",
+            "device-guest",
+            "share-guest",
+        ] {
+            let response = fixture
+                .request(
+                    Method::POST,
+                    "/relay/devices/device/api/transport/owner-session",
+                    Some(user),
+                )
+                .header("x-rcd-key", "key")
+                .header("x-rcd-request", "request")
+                .header("x-rcd-enc", "enc")
+                .header("x-rcd-sealed", "ciphertext")
+                .send()
+                .await
+                .unwrap();
+            assert!(!response.status().is_success(), "{mutation} {user}");
+            assert!(rx.try_recv().is_err());
+        }
+    }
+}
