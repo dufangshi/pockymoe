@@ -512,6 +512,7 @@ fn session_json(conn: &Connection, user: Option<&UserRow>, oauth: &OAuthConfig) 
     let settings = registration_settings(conn, oauth);
     json!({
         "authenticated": user.is_some(),
+        "account": {"mode":"legacy","setupRequired":false,"recovery":false,"hasVault":false,"accountKeyId":null},
         "user": user.map(user_json),
         "registrationEnabled": settings.get("enabled").cloned().unwrap_or(Value::Bool(true)),
         "registrationSettings": settings
@@ -722,6 +723,7 @@ async fn healthz(State(state): State<Arc<AppState>>) -> Json<Value> {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RegisterInput {
+    user_id: String,
     email: String,
     username: String,
     auth_key: String,
@@ -733,8 +735,12 @@ struct RegisterInput {
 async fn register(State(state): State<Arc<AppState>>, Json(body): Json<RegisterInput>) -> Response {
     let username = normalize_username(&body.username);
     let email = body.email.trim().to_ascii_lowercase();
-    let id = body.vault["userId"].as_str().unwrap_or_default().to_owned();
-    if username.len() < 3
+    let id = body.user_id.clone();
+    if Uuid::parse_str(&id)
+        .ok()
+        .is_none_or(|id| id.get_version_num() != 4)
+        || body.vault["userId"].as_str() != Some(&id)
+        || username.len() < 3
         || username.len() > 80
         || email.len() > 320
         || !email.contains('@')
@@ -780,6 +786,18 @@ async fn register(State(state): State<Arc<AppState>>, Json(body): Json<RegisterI
                 .into_response();
         }
     }
+    let id_taken = conn.query_row("SELECT EXISTS(SELECT 1 FROM relay_users WHERE id=?1 UNION ALL SELECT 1 FROM relay_pending_registrations WHERE id=?1 UNION ALL SELECT 1 FROM relay_pending_account_vaults WHERE user_id=?1)",[&id],|r|r.get::<_,bool>(0));
+    match id_taken {
+        Ok(true) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(ApiError::new("user_id_taken", "User id already exists")),
+            )
+                .into_response()
+        }
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        Ok(false) => {}
+    }
     let Ok((salt, hash)) = hash_password(&body.auth_key) else {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
@@ -792,7 +810,14 @@ async fn register(State(state): State<Arc<AppState>>, Json(body): Json<RegisterI
     if relay_setting(&tx, "registrationApprovalRequired").as_deref() == Some("true") {
         let result = (|| -> Result<Value> {
             let request = insert_pending_registration(
-                &tx, &email, &username, &salt, &hash, "password", None,
+                &tx,
+                &email,
+                &username,
+                &salt,
+                &hash,
+                "password",
+                None,
+                Some(&id),
             )?;
             let request_id = request["id"]
                 .as_str()
@@ -843,6 +868,7 @@ fn insert_pending_registration(
     password_hash: &str,
     provider: &str,
     provider_subject: Option<&str>,
+    requested_user_id: Option<&str>,
 ) -> Result<Value> {
     let user_exists = conn
         .query_row(
@@ -876,7 +902,9 @@ fn insert_pending_registration(
     if let Some(existing) = existing {
         return Ok(existing);
     }
-    let id = Uuid::new_v4().to_string();
+    let id = requested_user_id
+        .map(str::to_owned)
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
     let created_at = now_rfc3339();
     conn.execute(
         "INSERT INTO relay_pending_registrations(
@@ -946,10 +974,11 @@ async fn login(
     let row = row.and_then(|(id,salt,hash)| {
         let user = load_user_by_id(&conn,&id)?;
         if user.role == "admin" { return (!key_login).then_some((id,salt,hash)); }
+        if !key_login && account::reset_available(&conn,&id) { return Some((id,salt,hash)); }
         if account::oauth_only(&conn,&id) { return None; }
         if key_login {
             conn.query_row("SELECT auth_salt,auth_hash FROM relay_account_auth WHERE user_id=?1 AND auth_hash IS NOT NULL",[&id],|r|Ok((id.clone(),r.get::<_,String>(0)?,r.get::<_,String>(1)?))).optional().ok().flatten()
-        } else if account::has_vault(&conn,&id) { None } else { Some((id,salt,hash)) }
+        } else if account::legacy_password_allowed(&conn,&id) { Some((id,salt,hash)) } else { None }
     });
     drop(conn);
     let verified = tokio::task::spawn_blocking(move || {
@@ -979,15 +1008,22 @@ async fn login(
     let Some(user) = load_user_by_id(&conn, &id) else {
         return unauthorized();
     };
-    if !key_login && user.role != "admin" && account::has_vault(&conn, &id) {
+    let reset = !key_login && account::reset_available(&conn, &id);
+    if !key_login && !reset && user.role != "admin" && !account::legacy_password_allowed(&conn, &id)
+    {
         return unauthorized();
     }
+    let mode = if reset {
+        account::RESET
+    } else {
+        account::login_mode(&conn, &user)
+    };
     let has_factors = auth_factors::has_factors(&conn, &id);
-    if has_factors && !auth_factors::trusted(&conn, &id, &headers) {
-        auth_api::challenge_response(&conn, &user, &headers)
+    if has_factors && (reset || !auth_factors::trusted(&conn, &id, &headers)) {
+        auth_api::challenge_response_mode(&conn, &user, &headers, mode)
             .unwrap_or_else(IntoResponse::into_response)
     } else {
-        auth_api::login_response(&conn, &state, &user, &headers, !has_factors, false)
+        auth_api::login_response_mode(&conn, &state, &user, &headers, !has_factors, false, mode)
             .unwrap_or_else(IntoResponse::into_response)
     }
 }
@@ -1167,7 +1203,7 @@ async fn oauth_callback(
             let result = if has_factors && !auth_factors::trusted(&conn, &user.id, &headers) {
                 auth_api::challenge_response(&conn, &user, &headers)
             } else {
-                auth_api::login_response(&conn, &state, &user, &headers, !has_factors, false)
+                auth_api::login_response(&conn, &state, &user, &headers, true, false)
             };
             let mut response = match result {
                 Ok(r) => r,
@@ -1254,6 +1290,7 @@ fn authenticate_external_identity(
             &password_hash,
             identity.provider.as_str(),
             Some(&identity.subject),
+            None,
         )
         .map_err(|error| error.to_string())?;
         return Ok(OAuthOutcome::Pending);

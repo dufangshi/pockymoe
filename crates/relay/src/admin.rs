@@ -401,12 +401,12 @@ pub(crate) async fn admin_reset_password(
         )
             .into_response();
     };
-    if user.role == "admin" || body.password.len() < 8 {
+    if user.role == "admin" || body.password.len() < 12 || body.password.len() > 1024 {
         return (
             StatusCode::BAD_REQUEST,
             Json(ApiError::new(
                 "bad_request",
-                "Only non-admin users can be reset to a password of at least 8 characters",
+                "Only non-admin users can be reset to a password of at least 12 characters",
             )),
         )
             .into_response();
@@ -414,13 +414,22 @@ pub(crate) async fn admin_reset_password(
     let Ok((salt, hash)) = hash_password(&body.password) else {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
-    if conn
-        .execute(
+    let result = (|| -> Result<()> {
+        let tx = conn.unchecked_transaction()?;
+        tx.execute(
             "UPDATE relay_users SET password_salt=?1,password_hash=?2 WHERE id=?3",
             params![salt, hash, user_id],
-        )
-        .is_err()
-    {
+        )?;
+        if crate::account::has_vault(&tx, &user_id) {
+            tx.execute("INSERT INTO relay_account_auth(user_id,reset_pending,reset_consumed) VALUES (?1,1,0)
+                ON CONFLICT(user_id) DO UPDATE SET reset_pending=1,reset_consumed=0,auth_salt=NULL,auth_hash=NULL",[&user_id])?;
+        } else {
+            tx.execute("UPDATE relay_account_auth SET reset_pending=0,reset_consumed=0,auth_salt=NULL,auth_hash=NULL WHERE user_id=?1",[&user_id])?;
+        }
+        tx.commit()?;
+        Ok(())
+    })();
+    if result.is_err() {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
     Json(user_json(&user)).into_response()

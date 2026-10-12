@@ -23,6 +23,7 @@ pub(crate) const MAX_VAULT_BYTES: usize = 64 * 1024;
 pub(crate) const FULL: &str = "full";
 pub(crate) const SETUP: &str = "setup";
 pub(crate) const RECOVERY: &str = "recovery";
+pub(crate) const RESET: &str = "reset";
 
 pub(crate) fn ensure_schema(conn: &Connection) -> anyhow::Result<()> {
     conn.execute_batch(
@@ -62,6 +63,46 @@ pub(crate) fn ensure_schema(conn: &Connection) -> anyhow::Result<()> {
             [],
         )?;
     }
+    for (column, definition) in [
+        ("reset_pending", "INTEGER NOT NULL DEFAULT 0"),
+        ("reset_consumed", "INTEGER NOT NULL DEFAULT 0"),
+    ] {
+        if conn
+            .prepare(&format!("SELECT {column} FROM relay_account_auth LIMIT 0"))
+            .is_err()
+        {
+            conn.execute(
+                &format!("ALTER TABLE relay_account_auth ADD COLUMN {column} {definition}"),
+                [],
+            )?;
+        }
+    }
+    Ok(())
+}
+pub(crate) fn reset_available(conn: &Connection, user: &str) -> bool {
+    conn.query_row("SELECT EXISTS(SELECT 1 FROM relay_account_auth WHERE user_id=?1 AND reset_pending=1 AND reset_consumed=0)",[user],|r|r.get(0)).unwrap_or(false)
+}
+pub(crate) fn legacy_password_allowed(conn: &Connection, user: &str) -> bool {
+    !has_vault(conn,user) && !conn.query_row("SELECT EXISTS(SELECT 1 FROM relay_account_auth WHERE user_id=?1 AND reset_consumed=1)",[user],|r|r.get::<_,bool>(0)).unwrap_or(true)
+}
+pub(crate) fn consume_reset(conn: &Connection, user: &str) -> Result<(), Failure> {
+    let changed = conn.execute("UPDATE relay_account_auth SET reset_consumed=1 WHERE user_id=?1 AND reset_pending=1 AND reset_consumed=0",[user]).map_err(internal)?;
+    if changed == 1 {
+        Ok(())
+    } else {
+        Err(failure(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "Temporary password was already used",
+        ))
+    }
+}
+fn clear_reset(conn: &Connection, user: &str) -> Result<(), Failure> {
+    conn.execute(
+        "UPDATE relay_account_auth SET reset_consumed=CASE WHEN reset_pending=1 THEN 1 ELSE reset_consumed END,reset_pending=0 WHERE user_id=?1",
+        [user],
+    )
+    .map_err(internal)?;
     Ok(())
 }
 
@@ -128,9 +169,21 @@ pub(crate) fn session_json(
     token: &str,
 ) -> Value {
     let mut value = crate::session_json(conn, Some(user), oauth);
-    value["accountSetupRequired"] = json!(session_mode(conn, token) == SETUP);
-    value["recoverySession"] = json!(session_mode(conn, token) == RECOVERY);
-    value["oauthOnly"] = json!(oauth_only(conn, &user.id));
+    let has_vault = has_vault(conn, &user.id);
+    let mode = if oauth_only(conn, &user.id) {
+        "oauth"
+    } else if has_vault {
+        "account"
+    } else {
+        "legacy"
+    };
+    let restriction = session_mode(conn, token);
+    value["account"] = json!({
+        "mode":mode,"setupRequired":restriction == SETUP,
+        "recovery":matches!(restriction.as_str(),RECOVERY|RESET),
+        "hasVault":has_vault,
+        "accountKeyId":vault(conn,&user.id).ok().flatten().map(|v|v["accountKeyId"].clone()).unwrap_or(Value::Null),
+    });
     value
 }
 
@@ -280,7 +333,7 @@ async fn kdf(
     mac.update(b"pockymoe-fake-kdf-v1\n");
     mac.update(login.as_bytes());
     let salt = B64.encode(&mac.finalize().into_bytes()[..16]);
-    let value = json!({"mode":if user.is_some() && known.is_none() { "legacy" } else { "account" },"kdf":known.map(|v| v["kdf"].clone()).unwrap_or_else(|| json!({"name":"argon2id","memoryKiB":65536,"iterations":3,"parallelism":1,"salt":salt}))});
+    let value = json!({"mode":if user.is_some() && (known.is_none() || user.as_deref().is_some_and(|user|reset_available(&conn,user))) { "legacy" } else { "account" },"kdf":known.map(|v| v["kdf"].clone()).unwrap_or_else(|| json!({"name":"argon2id","memoryKiB":65536,"iterations":3,"parallelism":1,"salt":salt}))});
     Ok(([(header::CACHE_CONTROL, "no-store")], Json(value)).into_response())
 }
 async fn read_vault(State(state): State<Arc<AppState>>, headers: HeaderMap) -> ApiResult {
@@ -358,17 +411,29 @@ async fn write_vault(
     }
     let auth_changed = body.auth_key.is_some();
     let recovery_key_changed = body.recovery_auth_key.is_some();
-    if mode == RECOVERY && (!password_changed || body.auth_key.is_none()) {
+    if matches!(mode.as_str(), RECOVERY | RESET)
+        && (!password_changed || (!oauth && body.auth_key.is_none()))
+    {
         return Err(failure(
             StatusCode::FORBIDDEN,
             "forbidden",
             "Recovery requires a new password slot and authKey",
         ));
     }
+    if oauth
+        && (password_changed || recovery_changed || auth_changed || recovery_key_changed)
+        && !factors::recent(&conn, &token)
+    {
+        return Err(failure(
+            StatusCode::FORBIDDEN,
+            "reauthentication_required",
+            "Authenticate again before changing vault slots",
+        ));
+    }
     if old.is_some()
         && (password_changed || recovery_changed || auth_changed || recovery_key_changed)
         && !oauth
-        && mode != RECOVERY
+        && !matches!(mode.as_str(), RECOVERY | RESET)
         && !verify_auth(&conn, &user.id, body.current_auth_key.as_deref())
     {
         return Err(failure(
@@ -445,6 +510,9 @@ async fn write_vault(
         )
         .map_err(internal)?;
     }
+    if password_changed {
+        clear_reset(&tx, &user.id)?;
+    }
     mark_session(&tx, &token, FULL)?;
     tx.commit().map_err(internal)?;
     Ok(Json(body.vault))
@@ -461,7 +529,17 @@ async fn delete_vault(
 ) -> ApiResult {
     let conn = state.store.conn.lock().await;
     let (user, token) = auth(&conn, &state, &headers)?;
-    if !verify_auth(&conn, &user.id, body.current_auth_key.as_deref()) {
+    let mode = session_mode(&conn, &token);
+    let oauth = oauth_only(&conn, &user.id);
+    if oauth {
+        if !factors::recent(&conn, &token) {
+            return Err(failure(
+                StatusCode::FORBIDDEN,
+                "reauthentication_required",
+                "Authenticate again before starting over",
+            ));
+        }
+    } else if mode != RESET && !verify_auth(&conn, &user.id, body.current_auth_key.as_deref()) {
         return Err(failure(
             StatusCode::FORBIDDEN,
             "forbidden",
@@ -479,6 +557,7 @@ async fn delete_vault(
         params![user.id, security::token_hash(&token)],
     )
     .map_err(internal)?;
+    clear_reset(&tx, &user.id)?;
     mark_session(&tx, &token, SETUP)?;
     tx.commit().map_err(internal)?;
     Ok(Json(json!({})))
@@ -808,11 +887,11 @@ async fn recipient_account(
     )
 }
 
-/// Session restrictions are enforced before dispatch, including compatibility and WS paths.
-/// Setup can only touch owned devices without a certificate; it cannot create shares.
+/// Check every restricted request before dispatch, including compatibility and WS paths.
+/// Devices enforce binding themselves; setup sessions cannot manage sharing or browsers.
 pub(crate) fn request_allowed(
-    conn: &Connection,
-    user: &crate::UserRow,
+    _conn: &Connection,
+    _user: &crate::UserRow,
     mode: &str,
     method: &axum::http::Method,
     uri: &axum::http::Uri,
@@ -825,28 +904,19 @@ pub(crate) fn request_allowed(
     if path == "/relay/auth/logout" || (*method == Method::GET && path == "/relay/auth/session") {
         return true;
     }
-    if path == "/relay/account/vault" && matches!(*method, Method::GET | Method::PUT) {
-        return true;
+    if path == "/relay/account/vault" {
+        return matches!(*method, Method::GET | Method::PUT)
+            || (mode == RESET && *method == Method::DELETE);
     }
-    if mode == RECOVERY {
+    if matches!(mode, RECOVERY | RESET) {
         return false;
     }
-    if path == "/relay/devices" && *method == Method::POST {
-        return true;
-    }
-    let explicit = path
-        .strip_prefix("/relay/devices/")
-        .and_then(|p| p.split('/').next());
-    let device = explicit.map(str::to_owned).or_else(|| {
-        if path.starts_with("/relay/api/") || path == "/relay/ws" {
-            url::form_urlencoded::parse(uri.query().unwrap_or_default().as_bytes())
-                .find(|(k, _)| k == "deviceId")
-                .map(|(_, v)| v.into_owned())
-        } else {
-            None
-        }
-    });
-    device.is_some_and(|device| conn.query_row("SELECT EXISTS(SELECT 1 FROM relay_devices d WHERE d.id=?1 AND d.owner_user_id=?2 AND NOT EXISTS(SELECT 1 FROM relay_device_certificates c WHERE c.device_id=d.id))",params![device,user.id],|r|r.get::<_,bool>(0)).unwrap_or(false))
+    path.starts_with("/relay/auth/")
+        || path == "/relay/devices"
+        || path.starts_with("/relay/devices/")
+        || path.starts_with("/relay/api/")
+        || path == "/relay/ws"
+        || path == "/relay/access"
 }
 
 #[cfg(test)]

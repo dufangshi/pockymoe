@@ -132,6 +132,8 @@ pub(crate) fn login_response_mode(
     remember: bool,
     mode: &str,
 ) -> Result<Response, Failure> {
+    let tx = conn.unchecked_transaction().map_err(internal)?;
+    let conn = &tx;
     security::audit(
         conn,
         Some(&user.id),
@@ -142,10 +144,17 @@ pub(crate) fn login_response_mode(
         },
         None,
     );
+    if mode == crate::account::RESET {
+        crate::account::consume_reset(conn, &user.id)?;
+    }
     let token =
         super::create_session(conn, &state.store.session_secret, &user.id).map_err(internal)?;
     crate::account::mark_session(conn, &token, mode)?;
-    if strong {
+    // OAuth vault mutations require a fresh provider login or actual second
+    // factor; a recovery key / temporary password alone is not that proof.
+    let oauth_recovery = crate::account::oauth_only(conn, &user.id)
+        && matches!(mode, crate::account::RECOVERY | crate::account::RESET);
+    if strong && (!oauth_recovery || factors::has_factors(conn, &user.id)) {
         factors::mark_strong(conn, &token).map_err(internal)?;
     }
     let trust = if remember {
@@ -166,9 +175,9 @@ pub(crate) fn login_response_mode(
         ],
     )
     .map_err(internal)?;
+    let session = crate::account::session_json(conn, user, &state.oauth, &token);
     let mut response = super::with_session_cookie(
-        Json(json!({"token":token,"session":crate::account::session_json(conn,user,&state.oauth,&token)}))
-            .into_response(),
+        Json(json!({"token":token,"account":session["account"],"session":session})).into_response(),
         &token,
     );
     if user.role == "admin" {
@@ -178,6 +187,7 @@ pub(crate) fn login_response_mode(
         response.headers_mut().append(header::SET_COOKIE,format!("remote_codex_trusted_browser={trust}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=2592000").parse().unwrap());
     }
     response.headers_mut().append(header::SET_COOKIE,"remote_codex_factor_challenge=; HttpOnly; Secure; SameSite=Lax; Path=/relay/auth; Max-Age=0".parse().unwrap());
+    tx.commit().map_err(internal)?;
     Ok(response)
 }
 
@@ -380,7 +390,14 @@ async fn reauth(
             .map_err(internal)?;
         }
     } else {
-        let has_vault = crate::account::has_vault(&conn, &user.id);
+        if crate::account::oauth_only(&conn, &user.id) {
+            return Err(failure(
+                StatusCode::FORBIDDEN,
+                "reauthentication_required",
+                "Sign in with OAuth again or use a second factor",
+            ));
+        }
+        let has_vault = user.role != "admin" && crate::account::has_vault(&conn, &user.id);
         let (salt, hash): (String, String) = conn
             .query_row(
                 if has_vault {
@@ -398,7 +415,10 @@ async fn reauth(
             body.password.as_deref()
         }
         .unwrap_or_default();
-        if password.len() > 1024 || !super::verify_password(password, &salt, &hash) {
+        if password.len() > 1024
+            || (has_vault && !crate::account::valid_key(password))
+            || !super::verify_password(password, &salt, &hash)
+        {
             return Err(invalid("Password is incorrect"));
         }
     }
