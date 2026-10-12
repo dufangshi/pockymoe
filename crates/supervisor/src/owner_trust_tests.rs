@@ -708,6 +708,13 @@ pub(crate) fn encrypted_with_descriptor(
     (request, response, aad)
 }
 pub(crate) fn decoded(response: Value, key: &[u8; 32], aad: &str) -> (u64, Value) {
+    let (meta, body) = decoded_parts(response, key, aad);
+    (
+        meta["status"].as_u64().unwrap(),
+        serde_json::from_slice(&body).unwrap_or(Value::Null),
+    )
+}
+pub(crate) fn decoded_parts(response: Value, key: &[u8; 32], aad: &str) -> (Value, Vec<u8>) {
     use aes_gcm::{
         aead::{Aead, Payload},
         Aes256Gcm, KeyInit, Nonce,
@@ -727,8 +734,7 @@ pub(crate) fn decoded(response: Value, key: &[u8; 32], aad: &str) -> (u64, Value
         .unwrap();
     let n = u32::from_be_bytes(clear[..4].try_into().unwrap()) as usize;
     let meta: Value = serde_json::from_slice(&clear[4..4 + n]).unwrap();
-    let body = serde_json::from_slice(&clear[4 + n..]).unwrap_or(Value::Null);
-    (meta["status"].as_u64().unwrap(), body)
+    (meta, clear[4 + n..].to_vec())
 }
 #[tokio::test]
 async fn tunnel_strict_plain_unsigned_bad_signature_signed_and_exceptions() {

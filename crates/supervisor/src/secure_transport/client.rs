@@ -605,7 +605,11 @@ mod tests {
                         if let Some(status) = service.stream_error {
                             json!({"statusCode":status,"headers":{"content-type":"application/json"},"body":r#"{"code":"download_failed","message":"Target download failed"}"#})
                         } else {
-                            transport.streams.read(path).await.unwrap()
+                            transport
+                                .streams
+                                .read(path, &super::super::StreamPrincipal::Unauthenticated)
+                                .await
+                                .unwrap()
                         }
                     } else if let Some(size) = service.download_size {
                         let chunk = Bytes::from(
@@ -619,7 +623,11 @@ mod tests {
                         });
                         let (body, next) = transport
                             .streams
-                            .begin(path, Body::from_stream(futures_util::stream::iter(chunks)))
+                            .begin(
+                                path,
+                                Body::from_stream(futures_util::stream::iter(chunks)),
+                                super::super::StreamPrincipal::Unauthenticated,
+                            )
                             .await
                             .unwrap();
                         json!({"statusCode":206,"headers":{"content-type":"application/x-peer-test","content-range":"bytes 0-2/*"},"body":STANDARD.encode(body),"bodyEncoding":"base64","streamNext":next})

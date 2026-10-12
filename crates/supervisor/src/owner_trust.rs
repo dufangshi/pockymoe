@@ -179,7 +179,7 @@ pub(crate) fn verify_peer_bundle(
         bail!("no certificate verifies against an owner credential")
     })
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PeerPrincipal {
     device_id: String,
     identity_key: String,

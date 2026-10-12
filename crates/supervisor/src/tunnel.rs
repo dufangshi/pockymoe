@@ -791,7 +791,13 @@ pub(crate) async fn forward_local(
         } else if path.contains("/transport/stream/") {
             match transport
                 .streams
-                .read(opened.request["path"].as_str().unwrap_or(""))
+                .read(
+                    opened.request["path"].as_str().unwrap_or(""),
+                    &crate::secure_transport::StreamPrincipal::new(
+                        principal.as_ref(),
+                        peer_principal.as_ref(),
+                    ),
+                )
                 .await
             {
                 Ok(value) => value,
@@ -893,6 +899,8 @@ async fn dispatch_streaming(
     peer_principal: Option<crate::owner_trust::PeerPrincipal>,
 ) -> Value {
     let path = payload["path"].as_str().unwrap_or("").to_string();
+    let stream_principal =
+        crate::secure_transport::StreamPrincipal::new(principal.as_ref(), peer_principal.as_ref());
     let response = match dispatch_raw(state, payload, peer, true, principal, peer_principal).await {
         Ok(response) => response,
         Err(error) => return error,
@@ -918,7 +926,11 @@ async fn dispatch_streaming(
         })
         .filter_map(|(key, value)| value.to_str().ok().map(|v| (key.to_string(), json!(v))))
         .collect::<serde_json::Map<_, _>>();
-    match transport.streams.begin(&path, response.into_body()).await {
+    match transport
+        .streams
+        .begin(&path, response.into_body(), stream_principal)
+        .await
+    {
         Ok((bytes, next)) => {
             json!({"statusCode":status,"headers":headers,"body":base64::engine::general_purpose::STANDARD.encode(bytes),"bodyEncoding":"base64","streamNext":next})
         }

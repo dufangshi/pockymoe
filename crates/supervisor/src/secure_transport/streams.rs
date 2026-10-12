@@ -1,5 +1,5 @@
-//! Pull-based, bounded encrypted downloads. Continuation IDs are secret and each
-//! request is still authorized for the original thread/workspace by the relay.
+//! Pull-based, bounded encrypted downloads. Each continuation is bound to the
+//! authenticated principal that started it and retains its original route scope.
 use super::*;
 use axum::body::{Body, BodyDataStream, Bytes};
 use futures_util::StreamExt;
@@ -7,13 +7,47 @@ use std::time::{Duration, Instant};
 const CHUNK: usize = 1024 * 1024;
 #[derive(Default)]
 pub(crate) struct Streams(Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<Entry>>>>>);
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum StreamPrincipal {
+    Session(String),
+    Peer(crate::owner_trust::PeerPrincipal),
+    Unauthenticated,
+}
+impl StreamPrincipal {
+    pub fn new(
+        owner: Option<&crate::owner_trust::OwnerPrincipal>,
+        peer: Option<&crate::owner_trust::PeerPrincipal>,
+    ) -> Self {
+        match (owner, peer) {
+            (Some(owner), _) => Self::Session(owner.session_id.clone()),
+            (_, Some(peer)) => Self::Peer(peer.clone()),
+            _ => Self::Unauthenticated,
+        }
+    }
+}
 struct Entry {
     body: BodyDataStream,
     pending: Bytes,
     last: Option<(u64, Bytes, bool)>,
     next: u64,
     path: String,
+    principal: StreamPrincipal,
     used: Instant,
+}
+/// Continuations have an exact shape. A malformed scoped ID must never become
+/// the generic /api scope used by legitimate device-level downloads.
+fn continuation_scope(path: &str) -> Result<String> {
+    let parts: Vec<_> = path.split('?').next().unwrap_or("").split('/').collect();
+    match parts.as_slice() {
+        ["", "api", "transport", "stream", id] if !id.is_empty() => Ok("/api".into()),
+        ["", "api", "peer", "transport", "stream", id] if !id.is_empty() => Ok("/api/peer".into()),
+        ["", "api", resource @ ("threads" | "workspaces"), id, "transport", "stream", stream]
+            if Uuid::parse_str(id).is_ok() && !stream.is_empty() =>
+        {
+            Ok(format!("/api/{resource}/{id}"))
+        }
+        _ => bail!("invalid download scope"),
+    }
 }
 fn scope(path: &str) -> String {
     let parts: Vec<_> = path.split('?').next().unwrap_or("").split('/').collect();
@@ -70,13 +104,19 @@ impl Entry {
     }
 }
 impl Streams {
-    pub async fn begin(&self, path: &str, body: Body) -> Result<(Bytes, Option<String>)> {
+    pub async fn begin(
+        &self,
+        path: &str,
+        body: Body,
+        principal: StreamPrincipal,
+    ) -> Result<(Bytes, Option<String>)> {
         let mut entry = Entry {
             body: body.into_data_stream(),
             pending: Bytes::new(),
             last: None,
             next: 0,
             path: scope(path),
+            principal,
             used: Instant::now(),
         };
         let (bytes, done) = entry.read(0).await?;
@@ -118,7 +158,8 @@ impl Streams {
         });
         Ok((bytes, Some(next)))
     }
-    pub async fn read(&self, path: &str) -> Result<Value> {
+    pub async fn read(&self, path: &str, principal: &StreamPrincipal) -> Result<Value> {
+        let scope = continuation_scope(path)?;
         let url = url::Url::parse(&format!("http://device{path}"))?;
         let id = url.path().rsplit('/').next().unwrap_or("");
         let index = url
@@ -135,8 +176,11 @@ impl Streams {
                 .ok_or_else(|| anyhow!("download expired"))?
         };
         let mut entry = entry.lock().await;
-        if entry.used.elapsed() > Duration::from_secs(120) || entry.path != scope(path) {
-            bail!("download expired or wrong scope");
+        if entry.used.elapsed() > Duration::from_secs(120)
+            || entry.path != scope
+            || &entry.principal != principal
+        {
+            bail!("download expired or wrong scope or principal");
         }
         let (bytes, done) = entry.read(index).await?;
         let next =
@@ -167,22 +211,68 @@ impl Streams {
 mod tests {
     use super::*;
     #[tokio::test]
+    async fn continuations_require_the_starting_session_and_literal_scope() {
+        let streams = Streams::default();
+        let owner = StreamPrincipal::Session("owner-session".into());
+        let (_, next) = streams
+            .begin(
+                "/api/threads/import-candidates",
+                Body::from(vec![17u8; CHUNK + 7]),
+                owner.clone(),
+            )
+            .await
+            .unwrap();
+        let next = next.unwrap();
+        for other in [
+            StreamPrincipal::Session("grantee-session".into()),
+            StreamPrincipal::Session("another-owner-session".into()),
+            StreamPrincipal::Unauthenticated,
+        ] {
+            assert!(streams.read(&next, &other).await.is_err());
+        }
+        for prefix in [
+            "/api/threads/zzz".into(),
+            "/api/workspaces/zzz".into(),
+            format!("/api/threads/{}", Uuid::new_v4()),
+            "/api/threads/zzz/../..".into(),
+        ] {
+            assert!(streams
+                .read(&next.replacen("/api", &prefix, 1), &owner)
+                .await
+                .is_err());
+        }
+        let last = streams.read(&next, &owner).await.unwrap();
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(last["body"].as_str().unwrap())
+                .unwrap(),
+            vec![17u8; 7]
+        );
+    }
+    #[tokio::test]
     async fn peer_download_scope_stays_under_peer_and_cannot_cross_owner_scope() {
         let streams = Streams::default();
         let (_, next) = streams
             .begin(
                 "/api/peer/files/read?workspaceId=secret",
                 Body::from(vec![3u8; CHUNK + 7]),
+                StreamPrincipal::Unauthenticated,
             )
             .await
             .unwrap();
         let next = next.unwrap();
         assert!(next.starts_with("/api/peer/transport/stream/"));
         assert!(streams
-            .read(&next.replacen("/api/peer", "/api", 1))
+            .read(
+                &next.replacen("/api/peer", "/api", 1),
+                &StreamPrincipal::Unauthenticated
+            )
             .await
             .is_err());
-        let last = streams.read(&next).await.unwrap();
+        let last = streams
+            .read(&next, &StreamPrincipal::Unauthenticated)
+            .await
+            .unwrap();
         assert!(last["streamNext"].is_null());
         assert_eq!(
             base64::engine::general_purpose::STANDARD
@@ -191,11 +281,18 @@ mod tests {
             vec![3u8; 7]
         );
         let (_, next) = streams
-            .begin("/api/config/runtime", Body::from(vec![4u8; CHUNK + 1]))
+            .begin(
+                "/api/config/runtime",
+                Body::from(vec![4u8; CHUNK + 1]),
+                StreamPrincipal::Unauthenticated,
+            )
             .await
             .unwrap();
         assert!(streams
-            .read(&next.unwrap().replacen("/api", "/api/peer", 1))
+            .read(
+                &next.unwrap().replacen("/api", "/api/peer", 1),
+                &StreamPrincipal::Unauthenticated
+            )
             .await
             .is_err());
     }
@@ -210,20 +307,42 @@ mod tests {
             .begin(
                 &format!("{scope}/files/download"),
                 Body::from(bytes.clone()),
+                StreamPrincipal::Unauthenticated,
             )
             .await
             .unwrap();
         assert_eq!(first.len(), CHUNK);
         let next = next.unwrap();
-        assert!(streams.read(&next.replace(&scope, "/api")).await.is_err());
         assert!(streams
-            .read(&next.replace("chunk=1", "chunk=2"))
+            .read(
+                &next.replace(&scope, "/api"),
+                &StreamPrincipal::Unauthenticated
+            )
             .await
             .is_err());
-        let second = streams.read(&next).await.unwrap();
-        assert_eq!(streams.read(&next).await.unwrap(), second);
+        assert!(streams
+            .read(
+                &next.replace("chunk=1", "chunk=2"),
+                &StreamPrincipal::Unauthenticated
+            )
+            .await
+            .is_err());
+        let second = streams
+            .read(&next, &StreamPrincipal::Unauthenticated)
+            .await
+            .unwrap();
+        assert_eq!(
+            streams
+                .read(&next, &StreamPrincipal::Unauthenticated)
+                .await
+                .unwrap(),
+            second
+        );
         let third = streams
-            .read(second["streamNext"].as_str().unwrap())
+            .read(
+                second["streamNext"].as_str().unwrap(),
+                &StreamPrincipal::Unauthenticated,
+            )
             .await
             .unwrap();
         assert!(third["streamNext"].is_null());
@@ -241,7 +360,11 @@ mod tests {
         assert_eq!(all, bytes);
         assert!(streams.0.lock().unwrap().is_empty());
         let (_, next) = streams
-            .begin(&scope, Body::from(vec![0u8; CHUNK]))
+            .begin(
+                &scope,
+                Body::from(vec![0u8; CHUNK]),
+                StreamPrincipal::Unauthenticated,
+            )
             .await
             .unwrap();
         assert!(next.is_none());

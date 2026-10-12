@@ -38,7 +38,9 @@ pub fn resource_id_from_path(path: &str, resource: &str) -> Option<String> {
     while let Some(segment) = segments.next() {
         if segment == resource {
             let id = segments.next()?;
-            if id == "start" || id == "import" {
+            if matches!(id, "start" | "import")
+                || (resource == "threads" && id == "import-candidates")
+            {
                 return None;
             }
             return Some(id.to_string());
@@ -467,6 +469,26 @@ mod tests {
             share_id: None,
             can_create_threads: false,
         }
+    }
+    #[test]
+    fn literal_thread_routes_do_not_become_thread_ids() {
+        for literal in ["start", "import", "import-candidates"] {
+            let path = format!("/api/threads/{literal}");
+            assert!(resource_id_from_path(&path, "threads").is_none());
+            assert!(resource_id_from_path(&format!("{path}?view=all"), "threads").is_none());
+            for level in ["read", "control"] {
+                assert!(!access_allows(
+                    &shared("device", level, "write"),
+                    "GET",
+                    &path
+                ));
+            }
+            assert!(access_allows(&owner_access(), "GET", &path));
+        }
+        assert_eq!(
+            resource_id_from_path("/api/threads/root/history", "threads").as_deref(),
+            Some("root")
+        );
     }
     #[test]
     fn grantee_registration_exception_is_encrypted_post_to_one_exact_endpoint() {
