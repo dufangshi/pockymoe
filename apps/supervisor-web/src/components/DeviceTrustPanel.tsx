@@ -10,6 +10,7 @@ import {
 import {
   addCredentialChallenge,
   certificateChallenge,
+  certificateEntries,
   type DeviceCertificate,
   type OwnerCredential,
 } from '../lib/ownerTrustCrypto';
@@ -232,7 +233,9 @@ export function DeviceTrustPanel({ deviceId }: { deviceId: string }) {
                             'POST',
                             value,
                           );
-                          const base = trust.certificate;
+                          const base = trust.certificate
+                            ? certificateEntries(trust.certificate)[0]
+                            : undefined;
                           if (!base)
                             throw new OwnerTrustError(
                               'ownerCertificateUnavailable',
@@ -246,6 +249,12 @@ export function DeviceTrustPanel({ deviceId }: { deviceId: string }) {
                             const { assertion } = await assertOwner(
                               [value.credential],
                               challenge,
+                            );
+                            await deviceTrustRequest(
+                              deviceId,
+                              'credentials',
+                              'POST',
+                              { ...value, certificate: assertion },
                             );
                             return {
                               version: 1 as const,

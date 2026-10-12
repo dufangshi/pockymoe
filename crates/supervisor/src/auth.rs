@@ -140,14 +140,8 @@ pub async fn require_auth(
                     .strip_prefix("/api/publications/")
                     .is_some_and(|token| !token.is_empty() && !token.contains('/')));
         let bootstrap = bootstrap && request.method() == axum::http::Method::POST;
-        if path.starts_with("/api/peer/") {
-            return (
-                axum::http::StatusCode::FORBIDDEN,
-                Json(serde_json::json!({"code":"device_strict_mode"})),
-            )
-                .into_response();
-        }
-        if !public
+        if !path.starts_with("/api/peer/")
+            && !public
             && !bootstrap
             && request
                 .extensions()
@@ -165,6 +159,37 @@ pub async fn require_auth(
     let peer_path = request.uri().path().starts_with("/api/peer/");
     let peer = request.extensions().get::<PeerCaller>().is_some();
     if peer || peer_path {
+        if peer && peer_path && crate::owner_trust::strict(&state) {
+            let bootstrap = path == "/api/peer/transport/certificate"
+                && request.method() == axum::http::Method::POST
+                && request
+                    .extensions()
+                    .get::<crate::owner_trust::EncryptedOwnerRequest>()
+                    .is_some();
+            let verified = request
+                .extensions()
+                .get::<crate::owner_trust::PeerPrincipal>()
+                .is_some_and(|proof| {
+                    proof.valid(
+                        &state,
+                        &request.extensions().get::<PeerCaller>().unwrap().device_id,
+                    )
+                });
+            if !bootstrap && !verified {
+                return (
+                    axum::http::StatusCode::UNAUTHORIZED,
+                    Json(serde_json::json!({"code":"peer_certificate_required"})),
+                )
+                    .into_response();
+            }
+        }
+        if peer && peer_path && !state.peer_access_enabled() {
+            return (
+                axum::http::StatusCode::FORBIDDEN,
+                Json(serde_json::json!({"code":"peer_access_disabled"})),
+            )
+                .into_response();
+        }
         return if peer && peer_path && request.extensions().get::<TrustedRelayForward>().is_some() {
             next.run(request).await
         } else {

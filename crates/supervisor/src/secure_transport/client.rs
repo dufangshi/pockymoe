@@ -1,4 +1,4 @@
-//! Peer HTTP uses the same packets as the browser, with a persistent TOFU pin.
+//! Peer HTTP uses the browser packets, owner certificates when paired, and TOFU otherwise.
 use super::{now, pack, random, unpack, Kem, INFO, LIMIT};
 use crate::peer_link::{relay_request, PeerError, PeerResponse};
 use aes_gcm::{
@@ -13,7 +13,10 @@ use base64::{
 use hpke::{
     aead::AesGcm256, kdf::HkdfSha256, Deserializable, Kem as KemTrait, OpModeS, Serializable,
 };
-use p256::ecdsa::{signature::Verifier, Signature, VerifyingKey};
+use p256::ecdsa::{
+    signature::{Signer, Verifier},
+    Signature, VerifyingKey,
+};
 use pockymoe_protocol::now_rfc3339;
 use pockymoe_runtime::Supervisor;
 use rand09::SeedableRng;
@@ -36,6 +39,8 @@ struct Descriptor {
     public: <Kem as KemTrait>::PublicKey,
     expires: i64,
     clock_offset: i64,
+    identity: String,
+    certificate: Value,
 }
 impl Descriptor {
     fn timestamp(&self) -> Result<i64> {
@@ -106,10 +111,12 @@ impl Client {
     async fn descriptor(&self, state: &Supervisor, device_id: &str) -> Result<Descriptor> {
         let device = self.device(device_id);
         if let Some(descriptor) = device.cached() {
+            verify_target(state, device_id, &descriptor)?;
             return Ok(descriptor);
         }
         let _handshake = device.handshake.lock().await;
         if let Some(descriptor) = device.cached() {
+            verify_target(state, device_id, &descriptor)?;
             return Ok(descriptor);
         }
         let challenge = Uuid::new_v4().to_string();
@@ -127,16 +134,19 @@ impl Client {
         }
         let value: Value = serde_json::from_slice(&response.body)?;
         let (descriptor, identity) = verify_descriptor(&value, &challenge, started, received)?;
+        verify_target(state, device_id, &descriptor)?;
+        let paired = crate::owner_trust::paired(state);
         // Pin and publish under one lock, so a trust reset also invalidates the cache.
         let mut cached = device.descriptor.lock().unwrap();
         let pin_key = format!("peer:pin:{device_id}");
         if let Some(pin) = state.db.get_kv(&pin_key)? {
             let pin: Value = serde_json::from_str(&pin)?;
             ensure!(pin["identityKey"].is_string(), "invalid peer identity pin");
-            if pin["identityKey"] != identity {
+            if pin["identityKey"] != identity && !paired {
                 return Err(PeerError::IdentityChanged(device_id.into()).into());
             }
-        } else {
+        }
+        if paired || state.db.get_kv(&pin_key)?.is_none() {
             state.db.set_kv(
                 &pin_key,
                 &json!({"identityKey":identity,"fingerprint":B64.encode(Sha256::digest(B64.decode(&identity)?)),"pinnedAt":now_rfc3339()}).to_string(),
@@ -154,25 +164,78 @@ impl Client {
         content_type: Option<&str>,
         body: &[u8],
     ) -> Result<Reply> {
-        for attempt in 0..2 {
+        let mut refreshed = false;
+        let mut registered = false;
+        loop {
             let descriptor = self.descriptor(state, device_id).await?;
             let mut sealed = seal(&descriptor, method, path_and_query, content_type, body)?;
+            sign_peer(state, &mut sealed)?;
             let payload =
                 relay_request(state, device_id, std::mem::take(&mut sealed.payload)).await?;
-            if payload["headers"]["x-rcd-encrypted"] == "1" {
-                return open(&sealed, &payload);
-            }
-            let response = plain_response(&payload)?;
-            let error = remote_error(device_id, &response);
-            if attempt == 0
+            let reply = if payload["headers"]["x-rcd-encrypted"] == "1" {
+                open(&sealed, &payload)?
+            } else {
+                Reply {
+                    response: plain_response(&payload)?,
+                    next: None,
+                }
+            };
+            let error = remote_error(device_id, &reply.response);
+            if !refreshed
                 && matches!(&error, PeerError::Remote { status: 409, code, .. } if code == "transport_reconnect_required")
             {
                 self.device(device_id).invalidate(&descriptor.key_id);
+                refreshed = true;
                 continue;
             }
-            return Err(error.into());
+            if !registered
+                && crate::owner_trust::paired(state)
+                && matches!(&error, PeerError::Remote { status: 401, code, .. } if code == "peer_certificate_required")
+            {
+                let bundle = crate::owner_trust::certificate_bundle(state)?
+                    .ok_or_else(|| anyhow!("missing local peer certificate bundle"))?;
+                let body = serde_json::to_vec(&bundle)?;
+                let mut registration = seal(
+                    &descriptor,
+                    "POST",
+                    "/api/peer/transport/certificate",
+                    Some("application/json"),
+                    &body,
+                )?;
+                sign_peer(state, &mut registration)?;
+                let payload =
+                    relay_request(state, device_id, std::mem::take(&mut registration.payload))
+                        .await?;
+                // Keep relay/offline errors retryable by the durable outbox, while
+                // requiring successful registration replies to be encrypted.
+                if payload["headers"]["x-rcd-encrypted"] != "1" {
+                    let response = plain_response(&payload)?;
+                    let error = remote_error(device_id, &response);
+                    if !refreshed
+                        && matches!(&error, PeerError::Remote { status: 409, code, .. } if code == "transport_reconnect_required")
+                    {
+                        self.device(device_id).invalidate(&descriptor.key_id);
+                        refreshed = true;
+                        continue;
+                    }
+                    ensure!(
+                        !(200..300).contains(&response.status),
+                        "peer registration response must be encrypted"
+                    );
+                    return Err(error.into());
+                }
+                let response = open(&registration, &payload)?.response;
+                if !(200..300).contains(&response.status) {
+                    return Err(remote_error(device_id, &response).into());
+                }
+                registered = true;
+                continue;
+            }
+            if payload["headers"]["x-rcd-encrypted"] != "1" {
+                return Err(error.into());
+            }
+            return Ok(reply);
         }
-        unreachable!()
     }
     pub(crate) async fn request(
         &self,
@@ -268,6 +331,8 @@ fn verify_descriptor(
         public: <Kem as KemTrait>::PublicKey::from_bytes(&B64.decode(public)?)?,
         expires,
         clock_offset,
+        identity: text("identityKey")?.into(),
+        certificate: value["certificate"].clone(),
     };
     ensure!(
         descriptor.timestamp()? < expires,
@@ -277,6 +342,31 @@ fn verify_descriptor(
         descriptor,
         B64.encode(identity.to_encoded_point(false).as_bytes()),
     ))
+}
+fn verify_target(state: &Supervisor, device: &str, descriptor: &Descriptor) -> Result<()> {
+    if crate::owner_trust::paired(state) {
+        crate::owner_trust::verify_peer_bundle(
+            state,
+            descriptor.certificate.clone(),
+            device,
+            Some(&descriptor.identity),
+        )
+        .map_err(|_| PeerError::TargetUnverified(device.into()))?;
+    }
+    Ok(())
+}
+fn sign_peer(state: &Supervisor, sealed: &mut Sealed) -> Result<()> {
+    if !crate::owner_trust::paired(state) {
+        return Ok(());
+    }
+    let bundle = crate::owner_trust::certificate_bundle(state)?
+        .ok_or_else(|| anyhow!("missing local peer certificate bundle"))?;
+    let ciphertext = STANDARD.decode(sealed.payload["body"].as_str().unwrap())?;
+    let input = crate::owner_trust::peer_signing_input(&bundle.device_id, &sealed.aad, &ciphertext);
+    let signature: Signature = super::transport(state)?.identity.sign(input.as_bytes());
+    sealed.payload["headers"]["x-rcd-peer-device"] = json!(bundle.device_id);
+    sealed.payload["headers"]["x-rcd-peer-signature"] = json!(B64.encode(signature.to_bytes()));
+    Ok(())
 }
 fn ensure_body_size(size: usize) -> Result<()> {
     if size > WIRE_BODY_LIMIT / 4 * 3 {
@@ -441,8 +531,10 @@ mod tests {
     struct Service {
         forward: bool,
         bad_signature: bool,
+        bad_peer_signature: bool,
         rotate: usize,
         plain_error: Option<u16>,
+        registration_error: Option<u16>,
         download_size: Option<usize>,
         stream_error: Option<u16>,
         status: Option<u16>,
@@ -469,9 +561,19 @@ mod tests {
             while let Some(frame) = outbound.recv().await {
                 assert_eq!(frame["type"], "peer.request");
                 assert_eq!(frame["targetDeviceId"], "target");
-                let payload = frame["payload"].clone();
+                let mut payload = frame["payload"].clone();
+                if service.bad_peer_signature
+                    && payload["path"] != "/api/peer/transport/certificate"
+                {
+                    payload["headers"]["x-rcd-peer-signature"] = json!(B64.encode([0; 64]));
+                }
                 recorded.lock().unwrap().push(payload.clone());
-                let response = if let Some(status) = service.plain_error {
+                let plain_error = if payload["path"] == "/api/peer/transport/certificate" {
+                    service.registration_error.or(service.plain_error)
+                } else {
+                    service.plain_error
+                };
+                let response = if let Some(status) = plain_error {
                     json!({"statusCode":status,"headers":{"content-type":"application/json"},"body":json!({"code":"relay_error","message":"relay rejected the request"}).to_string()})
                 } else if payload["path"]
                     .as_str()
@@ -981,5 +1083,136 @@ mod tests {
             error.downcast_ref(),
             Some(PeerError::Remote { status: 413, .. })
         ));
+    }
+    #[tokio::test]
+    async fn paired_client_verifies_target_replaces_tofu_and_rechecks_cached_owner() {
+        use crate::owner_trust::{self, tests::paired_peer};
+        let (_caller_dir, caller) = state_with_relay_url("http://127.0.0.1:1");
+        let (_target_dir, target) = state_with_relay_url("http://127.0.0.1:1");
+        for state in [&caller, &target] {
+            state.set_peer_access(true).unwrap();
+        }
+        paired_peer(&caller, "caller");
+        let (task, _) = serve(
+            &caller,
+            target.clone(),
+            Service {
+                forward: true,
+                ..Default::default()
+            },
+        );
+        let error = call(&caller).await.unwrap_err();
+        assert!(
+            matches!(error.downcast_ref(),Some(PeerError::TargetUnverified(id)) if id == "target")
+        );
+        assert!(error
+            .to_string()
+            .contains("pair the target device with the same passkey"));
+        paired_peer(&target, "target");
+        caller
+            .db
+            .set_kv(
+                "peer:pin:target",
+                &json!({"identityKey":"old-tofu-key"}).to_string(),
+            )
+            .unwrap();
+        assert_eq!(call(&caller).await.unwrap().status, 200);
+        let pin: Value =
+            serde_json::from_str(&caller.db.get_kv("peer:pin:target").unwrap().unwrap()).unwrap();
+        assert_eq!(
+            pin["identityKey"],
+            super::super::transport(&target).unwrap().identity_key()
+        );
+        caller
+            .db
+            .with(|c| {
+                let mut other = owner_trust::tests::vectors()["credentialRecord"].clone();
+                other["credentialId"] = json!("other");
+                c.execute(
+                    "INSERT INTO owner_credentials(credential_id,record_json) VALUES('other',?1)",
+                    [other.to_string()],
+                )?;
+                c.execute(
+                    "DELETE FROM owner_credentials WHERE credential_id != 'other'",
+                    [],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        assert!(matches!(
+            call(&caller).await.unwrap_err().downcast_ref(),
+            Some(PeerError::TargetUnverified(_))
+        ));
+        stop(task).await;
+    }
+    #[tokio::test]
+    async fn strict_target_refuses_unpaired_caller_and_certificate_retry_is_once() {
+        use crate::owner_trust::tests::paired_peer;
+        let (_caller_dir, caller) = state_with_relay_url("http://127.0.0.1:1");
+        let (_target_dir, target) = state_with_relay_url("http://127.0.0.1:1");
+        for state in [&caller, &target] {
+            state.set_peer_access(true).unwrap();
+        }
+        paired_peer(&target, "target");
+        let (task, frames) = serve(
+            &caller,
+            target.clone(),
+            Service {
+                forward: true,
+                ..Default::default()
+            },
+        );
+        let response = call(&caller).await.unwrap();
+        assert_eq!(response.status, 401);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&response.body).unwrap()["code"],
+            "peer_certificate_required"
+        );
+        assert_eq!(frames.lock().unwrap().len(), 2); // unpaired callers do not register
+        stop(task).await;
+        paired_peer(&caller, "caller");
+        peer_link::reset_pin(&caller, "target").unwrap();
+        let (task, frames) = serve(
+            &caller,
+            target,
+            Service {
+                forward: true,
+                bad_peer_signature: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(call(&caller).await.unwrap().status, 401);
+        let frames = frames.lock().unwrap();
+        assert_eq!(frames.len(), 4);
+        assert_eq!(frames[2]["path"], "/api/peer/transport/certificate");
+        assert_ne!(
+            frames[1]["headers"]["x-rcd-request"],
+            frames[3]["headers"]["x-rcd-request"]
+        );
+        drop(frames);
+        stop(task).await;
+    }
+    #[tokio::test]
+    async fn offline_during_certificate_registration_remains_retryable() {
+        let (_caller_dir, caller) = state_with_relay_url("http://127.0.0.1:1");
+        let (_target_dir, target) = state_with_relay_url("http://127.0.0.1:1");
+        for (state, id) in [(&caller, "caller"), (&target, "target")] {
+            state.set_peer_access(true).unwrap();
+            crate::owner_trust::tests::paired_peer(state, id);
+        }
+        let (task, frames) = serve(
+            &caller,
+            target,
+            Service {
+                forward: true,
+                registration_error: Some(503),
+                ..Default::default()
+            },
+        );
+        let error = call(&caller).await.unwrap_err();
+        assert!(matches!(error.downcast_ref(),Some(PeerError::Offline(id)) if id == "target"));
+        assert!(error.downcast_ref::<PeerError>().unwrap().retryable());
+        assert_eq!(frames.lock().unwrap().len(), 3);
+        stop(task).await;
     }
 }

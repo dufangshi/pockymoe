@@ -141,6 +141,8 @@ fn request_payload(payload: &Value) -> Result<Value, Failure> {
                     | "x-rcd-request"
                     | "x-rcd-enc"
                     | "x-rcd-sealed"
+                    | "x-rcd-peer-device"
+                    | "x-rcd-peer-signature"
             ) && value.is_string()
             {
                 headers.insert(name, value.clone());
@@ -582,6 +584,7 @@ mod tests {
             "Content-Type":"application/octet-stream", "Accept":"application/json",
             "X-RCD-Key":"key", "x-rcd-request":"a.0", "x-rcd-enc":"enc", "x-rcd-sealed":"1",
             "x-rcd-resource":"threads/forged",
+            "X-RCD-Peer-Device":"a", "x-rcd-peer-signature":"peer-signature",
             "X-RCD-Session":"forged-session", "x-rcd-signature":"forged-signature",
             "authorization":"forged", "cookie":"forged", "x-peer-device-id":"foreign"
         });
@@ -612,7 +615,8 @@ mod tests {
             forwarded["payload"]["headers"],
             json!({
                 "content-type":"application/octet-stream", "accept":"application/json",
-                "x-rcd-key":"key", "x-rcd-request":"a.0", "x-rcd-enc":"enc", "x-rcd-sealed":"1"
+                "x-rcd-key":"key", "x-rcd-request":"a.0", "x-rcd-enc":"enc", "x-rcd-sealed":"1",
+                "x-rcd-peer-device":"a", "x-rcd-peer-signature":"peer-signature"
             })
         );
         assert_eq!(forwarded["payload"]["bodyEncoding"], "base64");

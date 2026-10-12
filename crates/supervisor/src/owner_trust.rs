@@ -73,6 +73,187 @@ pub(crate) struct Pairing {
     pub assertion: Assertion,
     pub mac: String,
 }
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DeviceCertificate {
+    pub version: u32,
+    pub device_id: String,
+    pub identity_key: String,
+    pub pairing_id: String,
+    pub assertion: Assertion,
+}
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CertificateBundle {
+    pub version: u32,
+    pub device_id: String,
+    pub certificates: Vec<DeviceCertificate>,
+}
+impl CertificateBundle {
+    pub(crate) fn parse(value: Value) -> Result<Self> {
+        if value.get("certificates").is_some() {
+            Ok(serde_json::from_value(value)?)
+        } else {
+            let certificate: DeviceCertificate = serde_json::from_value(value)?;
+            Ok(Self {
+                version: certificate.version,
+                device_id: certificate.device_id.clone(),
+                certificates: vec![certificate],
+            })
+        }
+    }
+}
+fn local_bundle(c: &Connection) -> Result<Option<CertificateBundle>> {
+    let raw: Option<String> = c
+        .query_row(
+            "SELECT certificate_json FROM device_certificates WHERE singleton=1",
+            [],
+            |r| r.get(0),
+        )
+        .optional()?;
+    raw.map(|s| CertificateBundle::parse(serde_json::from_str(&s)?))
+        .transpose()
+}
+pub(crate) fn certificate_bundle(state: &Supervisor) -> Result<Option<CertificateBundle>> {
+    state.db.with(local_bundle)
+}
+fn store_bundle(c: &Connection, bundle: &CertificateBundle) -> Result<()> {
+    c.execute("INSERT INTO device_certificates(singleton,certificate_json) VALUES(1,?1) ON CONFLICT(singleton) DO UPDATE SET certificate_json=excluded.certificate_json", [serde_json::to_string(bundle)?])?;
+    Ok(())
+}
+fn append_certificate(c: &Connection, certificate: DeviceCertificate) -> Result<()> {
+    let mut bundle = local_bundle(c)?.unwrap_or(CertificateBundle {
+        version: 1,
+        device_id: certificate.device_id.clone(),
+        certificates: vec![],
+    });
+    ensure!(
+        bundle.version == 1 && bundle.device_id == certificate.device_id,
+        "invalid local certificate bundle"
+    );
+    bundle
+        .certificates
+        .retain(|entry| entry.assertion.credential_id != certificate.assertion.credential_id);
+    bundle.certificates.push(certificate);
+    store_bundle(c, &bundle)
+}
+/// Only local owner records confer trust; relay hints and grantee records never do.
+pub(crate) fn verify_peer_bundle(
+    state: &Supervisor,
+    value: Value,
+    device: &str,
+    identity: Option<&str>,
+) -> Result<PeerPrincipal> {
+    let bundle = CertificateBundle::parse(value)?;
+    ensure!(
+        bundle.version == 1 && bundle.device_id == device,
+        "peer certificate device mismatch"
+    );
+    state.db.with(|c| {
+        for cert in bundle.certificates {
+            if cert.version != 1
+                || cert.device_id != device
+                || identity.is_some_and(|key| key != cert.identity_key)
+            {
+                continue;
+            }
+            let Some(record) = credential(c, &cert.assertion.credential_id)? else {
+                continue;
+            };
+            if verify(
+                &record,
+                &cert.assertion,
+                &certificate_challenge(device, &cert.identity_key, &cert.pairing_id),
+            )
+            .is_err()
+            {
+                continue;
+            }
+            VerifyingKey::from_sec1_bytes(&B64.decode(&cert.identity_key)?)?;
+            return Ok(PeerPrincipal {
+                device_id: device.into(),
+                identity_key: cert.identity_key,
+                credential_id: record.credential_id,
+            });
+        }
+        bail!("no certificate verifies against an owner credential")
+    })
+}
+#[derive(Clone, Debug)]
+pub(crate) struct PeerPrincipal {
+    device_id: String,
+    identity_key: String,
+    credential_id: String,
+}
+impl PeerPrincipal {
+    pub(crate) fn valid(&self, state: &Supervisor, device: &str) -> bool {
+        device == self.device_id
+            && state.db.with(|c| {
+                Ok(c.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM peer_certificates p JOIN owner_credentials c USING(credential_id) WHERE device_id=?1 AND identity_key=?2 AND credential_id=?3)",
+                    params![self.device_id, self.identity_key, self.credential_id],
+                    |r| r.get::<_, bool>(0),
+                )?)
+            }).unwrap_or(false)
+    }
+}
+pub(crate) fn peer_signing_input(device: &str, aad: &str, sealed: &[u8]) -> String {
+    format!(
+        "pockymoe-peer-request-v1\n{device}\n{aad}\n{}",
+        hash(sealed)
+    )
+}
+pub(crate) fn authorize_peer(
+    state: &Supervisor,
+    caller: &crate::auth::PeerCaller,
+    payload: &Value,
+    aad: &str,
+    sealed: &[u8],
+) -> Result<PeerPrincipal> {
+    let headers = &payload["headers"];
+    ensure!(
+        headers["x-rcd-peer-device"].as_str() == Some(caller.device_id.as_str()),
+        "peer caller mismatch"
+    );
+    let principal = state.db.with(|c| {
+        Ok(c.query_row("SELECT p.identity_key,p.credential_id FROM peer_certificates p JOIN owner_credentials c USING(credential_id) WHERE device_id=?1", [&caller.device_id], |r| Ok(PeerPrincipal { device_id: caller.device_id.clone(), identity_key: r.get(0)?, credential_id: r.get(1)? }))?)
+    })?;
+    let key = VerifyingKey::from_sec1_bytes(&B64.decode(&principal.identity_key)?)?;
+    let sig = Signature::from_slice(
+        &B64.decode(
+            headers["x-rcd-peer-signature"]
+                .as_str()
+                .context("missing peer signature")?,
+        )?,
+    )?;
+    key.verify(
+        peer_signing_input(&caller.device_id, aad, sealed).as_bytes(),
+        &sig,
+    )?;
+    Ok(principal)
+}
+pub(crate) async fn peer_certificate_endpoint(
+    State(state): State<Arc<Supervisor>>,
+    Extension(_): Extension<EncryptedOwnerRequest>,
+    Extension(caller): Extension<crate::auth::PeerCaller>,
+    Json(value): Json<Value>,
+) -> Response {
+    response((|| {
+        if !paired(&state) {
+            return Ok(json!({}));
+        }
+        let proof =
+            verify_peer_bundle(&state, value, &caller.device_id, None).map_err(|_| Rejection {
+                status: 401,
+                code: "peer_certificate_required",
+            })?;
+        state.db.with(|c| {
+            c.execute("INSERT INTO peer_certificates(device_id,identity_key,credential_id) VALUES(?1,?2,?3) ON CONFLICT(device_id) DO UPDATE SET identity_key=excluded.identity_key,credential_id=excluded.credential_id", params![proof.device_id,proof.identity_key,proof.credential_id])?;
+            Ok(json!({}))
+        })
+    })())
+}
+
 /// Constructed only after verifying the signature on the outer HPKE ciphertext.
 #[derive(Clone, Debug)]
 pub(crate) struct OwnerPrincipal {
@@ -373,7 +554,7 @@ fn pair(db: &Database, identity: &str, p: &Pairing, time: i64) -> Result<Value> 
         verify(&p.credential,&p.assertion,&certificate_challenge(&device,identity,&p.pairing_id))?;
         let certificate=json!({"version":1,"deviceId":device,"identityKey":identity,"pairingId":p.pairing_id,"assertion":p.assertion});
         store_credential(&tx,&p.credential)?;
-        tx.execute("INSERT INTO device_certificates(singleton,certificate_json) VALUES(1,?1) ON CONFLICT(singleton) DO UPDATE SET certificate_json=excluded.certificate_json",[certificate.to_string()])?;
+        append_certificate(&tx, serde_json::from_value(certificate.clone())?)?;
         tx.execute("UPDATE pairing_offers SET used_at=?1 WHERE pairing_id=?2",params![time,p.pairing_id])?;
         tx.execute("UPDATE device_owner_trust SET strict=1 WHERE singleton=1",[])?;
         tx.commit()?;
@@ -434,15 +615,16 @@ fn credentials(c: &Connection) -> Result<Vec<Value>> {
 fn trust(db: &Database, principal: &OwnerPrincipal) -> Result<Value> {
     db.with(|c| {
         let sessions=c.prepare("SELECT session_id,credential_id,expires_at FROM owner_sessions WHERE expires_at>?1 UNION ALL SELECT session_id,credential_id,expires_at FROM grantee_sessions WHERE expires_at>?1 ORDER BY session_id")?.query_map([now()],|r| {let id:String=r.get(0)?;Ok(json!({"sessionId":id,"credentialId":r.get::<_,String>(1)?,"expiresAt":r.get::<_,i64>(2)?,"current":id==principal.session_id}))})?.collect::<rusqlite::Result<Vec<_>>>()?;
-        let certificate: Option<String>=c.query_row("SELECT certificate_json FROM device_certificates WHERE singleton=1",[],|r|r.get(0)).optional()?;
+        let certificate = local_bundle(c)?;
         let records=credentials(c)?;
-        Ok(json!({"deviceId":device_id(c)?,"paired":!records.is_empty(),"strict":strict_in(c)?,"credentials":records,"sessions":sessions,"certificate":certificate.map(|s|serde_json::from_str::<Value>(&s)).transpose()?}))
+        Ok(json!({"deviceId":device_id(c)?,"paired":!records.is_empty(),"strict":strict_in(c)?,"credentials":records,"sessions":sessions,"certificate":certificate}))
     })
 }
 #[derive(Deserialize)]
 pub(crate) struct AddCredential {
     credential: Credential,
     assertion: Assertion,
+    certificate: Option<Assertion>,
 }
 fn add(db: &Database, input: &AddCredential) -> Result<Value> {
     db.with(|c| {
@@ -458,6 +640,28 @@ fn add(db: &Database, input: &AddCredential) -> Result<Value> {
             .as_bytes(),
         );
         verify(&input.credential, &input.assertion, &challenge)?;
+        if let Some(assertion) = &input.certificate {
+            let bundle = local_bundle(&tx)?.context("missing local certificate")?;
+            let base = bundle
+                .certificates
+                .first()
+                .context("empty local certificate bundle")?;
+            verify(
+                &input.credential,
+                assertion,
+                &certificate_challenge(&bundle.device_id, &base.identity_key, &base.pairing_id),
+            )?;
+            append_certificate(
+                &tx,
+                DeviceCertificate {
+                    version: 1,
+                    device_id: bundle.device_id,
+                    identity_key: base.identity_key.clone(),
+                    pairing_id: base.pairing_id.clone(),
+                    assertion: assertion.clone(),
+                },
+            )?;
+        }
         store_credential(&tx, &input.credential)?;
         let result = json!({"credentials":credentials(&tx)?});
         tx.commit()?;
@@ -484,6 +688,11 @@ fn remove_credential(db: &Database, id: &str) -> Result<Value> {
             remember_revocation(&tx, &session, expires)?;
         }
         // Explicit deletion protects against re-addition even if FK enforcement is off.
+        if let Some(mut bundle) = local_bundle(&tx)? {
+            bundle.certificates.retain(|cert| cert.assertion.credential_id != id);
+            store_bundle(&tx, &bundle)?;
+        }
+        tx.execute("DELETE FROM peer_certificates WHERE credential_id=?1", [id])?;
         tx.execute("DELETE FROM owner_sessions WHERE credential_id=?1", [id])?;
         tx.execute("DELETE FROM owner_credentials WHERE credential_id=?1", [id])?;
         let result = json!({"credentials":credentials(&tx)?});
@@ -676,7 +885,7 @@ pub fn reset_owner_trust(database: &FsPath) -> Result<()> {
             [serde_json::to_string(&mappings)?],
         )?;
     }
-    tx.execute_batch("DELETE FROM device_grants; DELETE FROM grantee_sessions; DELETE FROM owner_port_mappings; DELETE FROM owner_sessions; DELETE FROM owner_credentials; DELETE FROM device_certificates; DELETE FROM pairing_offers; DELETE FROM kv WHERE key GLOB 'ownerRevokedSession:*'; UPDATE device_owner_trust SET strict=0 WHERE singleton=1;")?;
+    tx.execute_batch("DELETE FROM device_grants; DELETE FROM grantee_sessions; DELETE FROM peer_certificates; DELETE FROM owner_port_mappings; DELETE FROM owner_sessions; DELETE FROM owner_credentials; DELETE FROM device_certificates; DELETE FROM pairing_offers; DELETE FROM kv WHERE key GLOB 'ownerRevokedSession:*'; UPDATE device_owner_trust SET strict=0 WHERE singleton=1;")?;
     tx.commit()?;
     Ok(())
 }

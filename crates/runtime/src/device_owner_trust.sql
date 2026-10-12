@@ -48,3 +48,8 @@ CREATE TABLE IF NOT EXISTS grantee_sessions (
   user_id TEXT NOT NULL,
   expires_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS peer_certificates (
+  device_id TEXT PRIMARY KEY,
+  identity_key TEXT NOT NULL,
+  credential_id TEXT NOT NULL REFERENCES owner_credentials(credential_id) ON DELETE CASCADE
+);

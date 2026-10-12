@@ -161,7 +161,14 @@ describe('device trust controls', () => {
     );
     expect(clearOwnerSession).not.toHaveBeenCalled();
   });
-  it('asserts the new credential only after the explicit add click', async () => {
+  it('adds the certificate assertion to the device on the existing certify click', async () => {
+    trust.certificate = {
+      version: 1,
+      deviceId: 'd',
+      certificates: [
+        trust.certificate as import('../lib/ownerTrustCrypto').DeviceCertificate,
+      ],
+    };
     render(<DeviceTrustPanel deviceId="d" />);
     fireEvent.change(
       await screen.findByRole('combobox', {
@@ -200,6 +207,11 @@ describe('device trust controls', () => {
         }),
       ),
     );
+    expect(deviceTrustRequest).toHaveBeenCalledWith('d', 'credentials', 'POST', {
+      credential: second,
+      assertion: vectors.session.registration.assertion,
+      certificate: vectors.session.registration.assertion,
+    });
     expect(assertOwner).toHaveBeenCalledTimes(2);
   });
 });
