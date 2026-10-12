@@ -1,3 +1,4 @@
+import { relayUrl } from './relayOrigin';
 import { exchange } from './relayTransportCrypto';
 import { OwnerTrustError } from './ownerSession';
 import type { DeviceCertificate, OwnerCredential } from './ownerTrustCrypto';
@@ -23,12 +24,12 @@ export async function deviceTrustRequest<T>(
   const { response } = await exchange(
     new Request(
       new URL(
-        `/relay/devices/${encodeURIComponent(deviceId)}/api/transport/${path || 'trust'}`,
+        relayUrl(`/relay/devices/${encodeURIComponent(deviceId)}/api/transport/${path || 'trust'}`),
         location.origin,
       ),
       {
         method,
-        credentials: 'same-origin',
+        credentials: 'include',
         headers: { 'content-type': 'application/json' },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       },

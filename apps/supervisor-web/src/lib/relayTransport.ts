@@ -1,3 +1,4 @@
+import { relayUrl } from './relayOrigin';
 import { getLocale, translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import workerUrl from './relayServiceWorker.ts?worker&url';
 import {
@@ -25,8 +26,8 @@ export function probeDeviceEncryption(deviceId: string): Promise<void> {
     const timeout = setTimeout(() => controller.abort(), 10000);
     try {
       const { response } = await exchange(new Request(
-        new URL(`/relay/devices/${encodeURIComponent(deviceId)}/api/version`, window.location.href),
-        { credentials: 'same-origin', signal: controller.signal },
+        new URL(relayUrl(`/relay/devices/${encodeURIComponent(deviceId)}/api/version`), window.location.href),
+        { credentials: 'include', signal: controller.signal },
       ));
       if (!response.ok) throw new Error(translate("workbench.deviceEncryptionCheckFailed"));
     } catch {
@@ -114,8 +115,8 @@ export async function ensureRelayWorker() {
 export async function encryptedBrowserFetch(url: string, init: RequestInit, threadScope?: string) {
   return (
     await exchange(
-      new Request(new URL(url, window.location.href), init),
-      threadScope ?? scopeFromPage(window.location.href, deviceRoute(new URL(url, window.location.href))?.deviceId),
+      new Request(new URL(relayUrl(url), window.location.href), init),
+      threadScope ?? scopeFromPage(window.location.href, deviceRoute(new URL(relayUrl(url), window.location.href))?.deviceId),
       async () => { await ensureRelayWorker(); },
     )
   ).response;
@@ -143,10 +144,10 @@ class EncryptedRelaySocket extends EventTarget {
       const threadId = url.searchParams.get('threadId');
       const prefix = `/relay/devices/${deviceId}/api${threadId ? `/threads/${encodeURIComponent(threadId)}` : ''}`;
       const request = new Request(
-        new URL(`${prefix}/transport/session`, window.location.href),
+        new URL(relayUrl(`${prefix}/transport/session`), window.location.href),
         {
           method: 'POST',
-          credentials: 'same-origin',
+          credentials: 'include',
           headers: { 'content-type': 'application/json' },
           body: '{}',
         },

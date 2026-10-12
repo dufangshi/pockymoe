@@ -1,3 +1,4 @@
+import { relayUrl } from '../lib/relayOrigin';
 import { LanguageSwitcher } from '@pockymoe/thread-ui/i18n';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { LoginVerification, usePendingLogin } from '../components/RelaySecurity';
@@ -387,14 +388,14 @@ function RelayAuthPanel({
           {settings.googleAuthEnabled ? (
             <a
               className="relay-button-secondary flex h-11 items-center justify-center"
-              href="/relay/auth/oauth/google/start"
+              href={relayUrl("/relay/auth/oauth/google/start")}
             >
               {translate("auth.continueWithGoogle")}</a>
           ) : null}
           {settings.githubAuthEnabled ? (
             <a
               className="relay-button-secondary flex h-11 items-center justify-center"
-              href="/relay/auth/oauth/github/start"
+              href={relayUrl("/relay/auth/oauth/github/start")}
             >
               {translate("auth.continueWithGitHub")}</a>
           ) : null}

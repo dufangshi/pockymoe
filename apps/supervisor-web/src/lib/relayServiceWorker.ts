@@ -1,10 +1,10 @@
+import { matchesRelayWorkerRequest } from './relayWorkerMatching';
 import { setLocale } from '@pockymoe/thread-ui/i18n';
 /// <reference lib="webworker" />
 import { relayWorkerFetch } from './relayServiceWorkerFetch';
 import { installPushHandlers } from './notificationWorker';
 import {
   clearTransportKeyCache,
-  deviceRoute,
   setTransportReporter,
 } from './relayTransportCrypto';
 const worker = self as unknown as ServiceWorkerGlobalScope;
@@ -31,15 +31,8 @@ worker.addEventListener('message', (event) => {
     clearTransportKeyCache(event.data.deviceId);
 });
 worker.addEventListener('fetch', (event) => {
-  const request = event.request,
-    url = new URL(request.url);
-  if (
-    url.origin !== worker.location.origin ||
-    !deviceRoute(url) ||
-    request.headers.has('x-rcd-key') ||
-    url.pathname.endsWith('/transport/key')
-  )
-    return;
+  const request = event.request;
+  if (!matchesRelayWorkerRequest(request, worker.location.origin)) return;
   event.respondWith(
     (async () => {
       const client = event.clientId ? await worker.clients.get(event.clientId) : null;

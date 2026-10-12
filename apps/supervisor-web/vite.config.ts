@@ -4,7 +4,8 @@ import { copyFileSync, mkdirSync } from 'node:fs';
 
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
-import { defineConfig } from 'vite';
+import { defineConfig, loadEnv } from 'vite';
+import { staticHosting } from './staticHosting';
 
 const require = createRequire(import.meta.url);
 
@@ -72,6 +73,8 @@ export default defineConfig(({ mode }) => {
     process.env.NODE_ENV = 'test';
   }
 
+  const env = loadEnv(mode, __dirname, 'VITE_');
+  const staticWeb = mode === 'static';
   const apiProxyTarget = process.env.VITE_API_PROXY_TARGET ?? 'http://127.0.0.1:8787';
   const wsProxyTarget = process.env.VITE_WS_PROXY_TARGET ?? 'ws://127.0.0.1:8787';
   const threadUiRoot = path.resolve(__dirname, '../../pockymoe-thread-ui');
@@ -89,7 +92,9 @@ export default defineConfig(({ mode }) => {
 
   return {
     worker: { format: 'es' },
+    define: staticWeb ? { 'import.meta.env.VITE_POCKYMOE_STATIC_WEB': JSON.stringify('true') } : {},
     plugins: [
+      ...(staticWeb ? [staticHosting(env.VITE_POCKYMOE_RELAY_ORIGIN ?? process.env.VITE_POCKYMOE_RELAY_ORIGIN ?? '')] : []),
       react(),
       tailwindcss(),
       {
@@ -103,6 +108,10 @@ export default defineConfig(({ mode }) => {
           const vendorDir = path.join(outputDir, 'vendor');
           mkdirSync(vendorDir, { recursive: true });
           copyFileSync(threeDmolSource, path.join(vendorDir, '3Dmol-min.js'));
+          if (staticWeb) {
+            copyFileSync(path.resolve(__dirname, '../../scripts/setup.sh'), path.join(outputDir, 'setup.sh'));
+            copyFileSync(path.resolve(__dirname, '../../scripts/setup.ps1'), path.join(outputDir, 'setup.ps1'));
+          }
         },
       },
     ],

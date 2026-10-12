@@ -1,3 +1,4 @@
+import { relayOrigin } from '../lib/relayOrigin';
 import { getLocale } from '@pockymoe/thread-ui/i18n';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { SharedAccessCard } from '../components/SharedAccessCard';
@@ -2356,11 +2357,12 @@ function relaySupervisorCommand(
   const relayUrl = relayWebsocketBaseUrl();
   const supervisorPort = RELAY_SUPERVISOR_PORT_BY_PLATFORM[platform];
   const origin = relayUrl.replace(/^ws/, 'http');
+  const webOrigin = window.location.origin;
   if (platform === 'windows') {
-    return `& ([scriptblock]::Create((Invoke-WebRequest -UseBasicParsing ${powershellQuote(origin + '/setup.ps1')}).Content)) -Relay ${powershellQuote(origin)} -Token ${powershellQuote(token)} -Port ${supervisorPort}`;
+    return `& ([scriptblock]::Create((Invoke-WebRequest -UseBasicParsing ${powershellQuote(webOrigin + '/setup.ps1')}).Content)) -Relay ${powershellQuote(origin)} -Token ${powershellQuote(token)} -Port ${supervisorPort} -WebOrigin ${powershellQuote(webOrigin)}`;
   }
 
-  return `curl -fsSL ${shellQuote(origin + '/setup.sh')} | sh -s -- --relay ${shellQuote(origin)} --token ${shellQuote(token)} --port ${supervisorPort}`;
+  return `curl -fsSL ${shellQuote(webOrigin + '/setup.sh')} | sh -s -- --relay ${shellQuote(origin)} --token ${shellQuote(token)} --port ${supervisorPort} --web-origin ${shellQuote(webOrigin)}`;
 }
 
 function powershellQuote(value: string) {
@@ -2380,7 +2382,7 @@ function relayWebsocketBaseUrl() {
     return 'wss://relay.example.com';
   }
 
-  return window.location.origin
+  return relayOrigin()
     .replace(/^https:\/\//, 'wss://')
     .replace(/^http:\/\//, 'ws://');
 }

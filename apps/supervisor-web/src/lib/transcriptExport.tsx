@@ -1,3 +1,4 @@
+import { relayUrl, relayFetchInit } from './relayOrigin';
 import { getLocale } from '@pockymoe/thread-ui/i18n';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { createRoot } from 'react-dom/client';
@@ -104,7 +105,7 @@ async function standaloneCss() {
     if (!resources.has(url))
       resources.set(
         url,
-        fetch(url).then(async (response) => {
+        fetch(relayUrl(url), relayFetchInit(url)).then(async (response) => {
           if (!response.ok)
             throw new Error(
               translate("sharing.anExportFontOrStyleResourceCould"),
@@ -174,7 +175,7 @@ export async function renderStandaloneTranscript(
       // Embed Markdown images when their host allows browser access. Otherwise
       // preserve the original external image, as the live thread does.
       try {
-        const response = await fetch(img.src);
+        const response = await fetch(relayUrl(img.src), relayFetchInit(img.src));
         if (response.ok) img.src = await dataUrl(await response.blob());
       } catch { /* External images can still load when viewing the HTML online. */ }
     }));

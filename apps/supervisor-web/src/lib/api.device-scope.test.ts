@@ -131,3 +131,21 @@ it('subscribes the terminal to the target device and thread instead of the prima
   expect(url.pathname).toBe('/relay/devices/peer-device/ws');
   expect(url.searchParams.get('threadId')).toBe('peer-thread');
 });
+
+it('uses the relay origin for device HTTP, media and sockets while keeping storage on the Web origin', async () => {
+  vi.stubEnv('VITE_POCKYMOE_RELAY_ORIGIN', 'https://relay.example.test');
+  try {
+    await fetchThreadDetail('peer', {}, 'peer-device');
+    expect(vi.mocked(encryptedBrowserFetch).mock.calls[0]![0]).toMatch(/^https:\/\/relay\.example\.test\/relay\/devices\/peer-device\/api\//);
+    expect(vi.mocked(encryptedBrowserFetch).mock.calls[0]![1]?.credentials).toBe('include');
+    expect(buildThreadImageAssetUrl('peer', { path: 'photo.png' }, 'peer-device')).toMatch(/^https:\/\/relay\.example\.test\/relay\/devices\/peer-device\/api\//);
+    const socket = { addEventListener: vi.fn(), send: vi.fn() };
+    vi.mocked(encryptedRelaySocket).mockReturnValue(socket as never);
+    connectShellSocket({}, { deviceId: 'peer-device', threadId: 'peer' });
+    expect(vi.mocked(encryptedRelaySocket).mock.calls[0]![0]).toBe('wss://relay.example.test/relay/devices/peer-device/ws?threadId=peer');
+    expect(workspaceResourceScope('peer-device')).toContain(window.location.origin);
+    expect(workspaceResourceScope('peer-device')).not.toContain('relay.example.test');
+  } finally {
+    vi.unstubAllEnvs();
+  }
+});
