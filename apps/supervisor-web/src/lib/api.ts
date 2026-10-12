@@ -954,7 +954,7 @@ export function fetchAgentHarnessCatalog<T>(
  */
 export async function dshConsoleUrl(
   threadId: string,
-  target: { port: number; path: string; mappingId?: string },
+  target: { port: number; path: string; mappingId?: string; leaseId?: string; expiresAt?: number },
   deviceId?: string | null,
 ) {
   if (!deviceId || deviceId === 'local') {
@@ -984,7 +984,7 @@ export async function dshConsoleUrl(
       })).id;
   }
   const { openDevicePortPreview } = await import('./portPreview');
-  const { url } = await openDevicePortPreview(deviceId, mappingId, target.path);
+  const { url } = await openDevicePortPreview(deviceId, mappingId, target.path, undefined, target.leaseId ? { leaseId: target.leaseId, expiresAt: target.expiresAt } : undefined);
   return url;
 }
 

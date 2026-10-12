@@ -26,3 +26,16 @@ it('keeps older explicitly unpaired devices working when they have no lease endp
   await openDevicePortPreview('device', 'mapping', '/');
   expect(request).toHaveBeenLastCalledWith('/relay/devices/device/port-mappings/mapping/open', expect.anything());
 });
+
+it.each([undefined, Date.now() + 100000])('reuses a supplied CLI or DSH lease with expiry %s', async expiresAt => {
+  vi.mocked(request).mockResolvedValueOnce({ url: 'https://preview.invalid/' });
+  await openDevicePortPreview('device', 'mapping', '/console?q=1', undefined, { leaseId: 'existing_lease', expiresAt });
+  expect(request).toHaveBeenCalledTimes(1);
+  expect(request).toHaveBeenCalledWith('/relay/devices/device/port-mappings/mapping/open?lease=existing_lease', expect.objectContaining({ body: JSON.stringify({ path: '/console?q=1' }) }));
+});
+it('renews a known-expired supplied lease before opening the preview', async () => {
+  vi.mocked(request).mockResolvedValueOnce({ leaseId: 'renewed', expiresAt: Date.now() + 10000 }).mockResolvedValueOnce({ url: 'https://preview.invalid/' });
+  await openDevicePortPreview('device', 'mapping', '/', undefined, { leaseId: 'expired', expiresAt: Date.now() - 1 });
+  expect(request).toHaveBeenCalledTimes(2);
+  expect(request).toHaveBeenLastCalledWith('/relay/devices/device/port-mappings/mapping/open?lease=renewed', expect.anything());
+});
