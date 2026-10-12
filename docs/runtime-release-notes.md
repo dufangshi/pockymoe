@@ -1,13 +1,13 @@
-Claude foreground answers now remain one message when background tool and wait
-events arrive between text chunks. The runtime groups by native message identity,
-preserving complete paragraphs, headings and tables with one timestamp. Existing
-history is not rewritten.
+Claude turn billing now includes native subagents. Usage is read incrementally
+from the owning session's child logs, with old history excluded and repeated
+native request snapshots counted once. Parent and child requests use their own
+models and preserve cache-write durations; mixed-model totals survive database
+reload and custom price changes. Children do not change the parent model,
+context occupancy or completion lifecycle. A late ACP summary cannot replace
+the complete native total.
 
-The Plum Pocket subscription meter sits inside the composer's bottom seam.
-Remaining-allowance details open above the composer in an opaque panel that
-retains the theme and cannot be hidden by composer controls.
-
-Validated with 14 mapper regression tests, seven composer tests, shared UI and
-Web type checks, and focused light/dark browser checks on desktop and mobile.
-Windows Device Manager is unchanged. Devices can update voluntarily; this
-release does not force an update of the current device.
+Validated with focused native-usage and pricing unit tests plus database
+integration checks for repeated updates, mixed models, final-summary fallback
+and history reload. This release also includes 0.12.90's intact Claude messages
+and subscription-panel visual fixes. Existing turn totals are not rewritten.
+Windows Device Manager is unchanged; the current device is not force-updated.

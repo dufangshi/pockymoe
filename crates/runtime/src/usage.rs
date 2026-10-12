@@ -226,6 +226,7 @@ pub(crate) fn normalize_usage(raw: &Value) -> Option<Value> {
             .or_else(|| number(raw, &["size"])),
         "cumulative": value.get("cumulative").and_then(Value::as_bool).unwrap_or(value.get("total_token_usage").is_some()),
         "baselineTotal": value.get("baselineTotal"),
+        "requests": value.get("requests").filter(|v| v.is_array()),
     }))
 }
 
@@ -271,6 +272,53 @@ pub(crate) fn estimate_price_with_catalog(
     catalog: &Value,
     at: Option<&str>,
 ) -> Option<Value> {
+    if let Some(requests) = usage
+        .get("requests")
+        .and_then(Value::as_array)
+        .filter(|v| !v.is_empty())
+    {
+        // Native Claude children may use a different model from the parent.
+        // Price each request snapshot once, retaining its context size and time.
+        let mut total = json!({"currency":"USD","inputUsd":0.0,"cachedInputUsd":0.0,
+            "cacheWriteInputUsd":0.0,"outputUsd":0.0,"totalUsd":0.0});
+        let mut signatures = std::collections::BTreeSet::new();
+        let mut models = std::collections::BTreeSet::new();
+        for request in requests {
+            let price = estimate_price_with_catalog(
+                request,
+                request["model"].as_str().or(model),
+                tier,
+                catalog,
+                request["observedAt"].as_str().or(at),
+            )?;
+            for field in [
+                "inputUsd",
+                "cachedInputUsd",
+                "cacheWriteInputUsd",
+                "outputUsd",
+                "totalUsd",
+            ] {
+                total[field] = json!(total[field].as_f64()? + price[field].as_f64()?);
+            }
+            models.insert(price["pricingModelKey"].as_str()?.to_owned());
+            signatures.insert(
+                json!([
+                    price["pricingModelKey"],
+                    price["pricingTierKey"],
+                    price["ratesSignature"]
+                ])
+                .to_string(),
+            );
+        }
+        total["ratesSignature"] = json!(serde_json::to_string(&signatures).ok()?);
+        total["pricingModelKey"] = json!(if models.len() == 1 {
+            models.first()?.as_str()
+        } else {
+            "mixed"
+        });
+        total["pricingTierKey"] = json!(tier.unwrap_or("standard"));
+        return Some(total);
+    }
     let model = crate::pricing::match_model(catalog, model?)?;
     let rates = &catalog["models"][&model];
     for field in [
@@ -397,6 +445,43 @@ pub(crate) fn public_usage(value: &Value) -> Option<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_request_snapshots_price_mixed_models_and_reprice_custom_rates() {
+        let mut catalog = pricing().clone();
+        let requests = json!([
+            {"messageId":"parent","model":"claude-opus-5-5","total":{"inputTokens":1000,"outputTokens":100},"last":{"inputTokens":1000,"outputTokens":100}},
+            {"messageId":"child","model":"claude-haiku-4-5","total":{"inputTokens":1000,"outputTokens":100},"last":{"inputTokens":1000,"outputTokens":100}}
+        ]);
+        let raw = json!({"total":{"inputTokens":2000,"outputTokens":200},"last":{"inputTokens":1000,"outputTokens":100},"requests":requests});
+        let normalized = normalize_usage(&raw).unwrap();
+        assert_eq!(normalized["requests"], requests);
+        let price =
+            estimate_price_with_catalog(&normalized, Some("claude-opus-5-5"), None, &catalog, None)
+                .unwrap();
+        let expected: f64 = requests
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| {
+                estimate_price(r, r["model"].as_str(), None).unwrap()["totalUsd"]
+                    .as_f64()
+                    .unwrap()
+            })
+            .sum();
+        assert!((price["totalUsd"].as_f64().unwrap() - expected).abs() < 1e-12);
+        assert_eq!(price["pricingModelKey"], "mixed");
+        let mut saved = normalized;
+        saved["priceEstimate"] = price.clone();
+        catalog["models"]["claude-haiku-4-5"]["inputUsdPerMillion"] = json!(10.0);
+        let repriced =
+            estimate_price_with_catalog(&saved, Some("claude-opus-5-5"), None, &catalog, None)
+                .unwrap();
+        assert!(repriced["totalUsd"].as_f64().unwrap() > expected);
+        assert_ne!(repriced["ratesSignature"], price["ratesSignature"]);
+        saved["requests"][1]["model"] = json!("unknown-model");
+        assert!(estimate_price(&saved, Some("claude-opus-5-5"), None).is_none());
+    }
 
     #[test]
     fn claude_audited_image_turn_prices_one_hour_writes_without_losing_input() {

@@ -12,6 +12,14 @@ output billing, so the two displayed rows split that charge instead of adding it
 twice. Prices estimate API token charges, even for subscription sessions; they do
 not represent subscription invoices, tool charges or cache-storage charges.
 
+Claude turn totals include native subagents under the owning session. The runtime
+tails their usage records without loading execution history, counts each native
+request ID once, and keeps the latest snapshot when its output grows. Parent and
+child requests are priced using their own reported models, context sizes and
+observation times. These request snapshots persist for historical repricing;
+child activity does not change the parent model or context-occupancy display.
+Older turns without these snapshots retain their previously recorded totals.
+
 ## Bundled rates
 
 The catalog is `config/codex-model-pricing.json`, with source links and verification

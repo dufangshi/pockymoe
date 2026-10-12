@@ -72,7 +72,10 @@ pub(super) struct ClaudeUsageReader {
     offset: u64,
     started: chrono::DateTime<chrono::Utc>,
     next_lookup: Instant,
-    messages: HashMap<String, Tokens>,
+    messages: HashMap<String, Value>,
+    child_offsets: HashMap<PathBuf, u64>,
+    last_parent_usage: Option<Tokens>,
+    parent_model: Option<String>,
     completion: super::claude_completion::ClaudeCompletion,
     background: super::claude_background::ClaudeBackgroundAgents,
     complete_tail: bool,
@@ -94,6 +97,11 @@ impl ClaudeUsageReader {
         if let Some(file) = reader.path.as_ref().and_then(|p| File::open(p).ok()) {
             reader.offset = file.metadata().map(|m| m.len()).unwrap_or(0);
         }
+        for path in reader.child_paths() {
+            if let Ok(meta) = path.metadata() {
+                reader.child_offsets.insert(path, meta.len());
+            }
+        }
         reader
     }
 
@@ -106,6 +114,9 @@ impl ClaudeUsageReader {
             started: chrono::Utc::now(),
             next_lookup: Instant::now(),
             messages: HashMap::new(),
+            child_offsets: HashMap::new(),
+            last_parent_usage: None,
+            parent_model: None,
             completion: Default::default(),
             background: Default::default(),
             complete_tail: false,
@@ -169,6 +180,7 @@ impl ClaudeUsageReader {
                 Err(_) => self.completion.invalidate(),
             }
         }
+        self.poll_children(&mut reports);
         reports
     }
 
@@ -259,10 +271,20 @@ impl ClaudeUsageReader {
         {
             return None;
         }
-        let message = &entry["message"];
         self.completion.record(entry);
         self.background.record(entry);
         self.tasks.record(entry);
+        self.record_usage(entry, true)
+    }
+
+    fn record_usage(&mut self, entry: &Value, parent: bool) -> Option<Value> {
+        let at = entry["timestamp"].as_str()?;
+        if entry["sessionId"] != self.session
+            || chrono::DateTime::parse_from_rfc3339(at).ok()? < self.started
+        {
+            return None;
+        }
+        let message = &entry["message"];
         if entry["type"] != "assistant" {
             return None;
         }
@@ -270,20 +292,113 @@ impl ClaudeUsageReader {
         let tokens = Tokens::parse(&message["usage"])?;
         // One API response may produce multiple JSONL content records with the
         // same message ID. They are snapshots, never additive usage deltas.
-        if self.messages.get(&id).is_some_and(|previous| {
-            previous == &tokens || previous.output_tokens > tokens.output_tokens
-        }) {
+        if self
+            .messages
+            .get(&id)
+            .and_then(|v| Tokens::parse(&v["total"]))
+            .is_some_and(|previous| {
+                previous == tokens || previous.output_tokens > tokens.output_tokens
+            })
+        {
             return None;
         }
-        self.messages.insert(id, tokens.clone());
+        if parent {
+            self.last_parent_usage = Some(tokens.clone());
+            self.parent_model = message["model"]
+                .as_str()
+                .map(str::to_owned)
+                .or(self.parent_model.take());
+        }
+        self.messages.insert(
+            id.clone(),
+            json!({"messageId":id,"total":tokens,"last":tokens,
+            "model":message["model"],"observedAt":at}),
+        );
         let total = self
             .messages
             .values()
-            .fold(Tokens::default(), |sum, tokens| sum.add(tokens));
+            .filter_map(|v| Tokens::parse(&v["total"]))
+            .fold(Tokens::default(), |sum, tokens| sum.add(&tokens));
+        let mut requests: Vec<_> = self.messages.values().cloned().collect();
+        requests.sort_by(|a, b| a["messageId"].as_str().cmp(&b["messageId"].as_str()));
         Some(
-            json!({"total":total,"last":tokens,"cumulative":false,"source":"claudeRollout",
-            "model":message["model"],"observedAt":at}),
+            json!({"total":total,"last":self.last_parent_usage.clone().unwrap_or_default(),
+            "requests":requests,"cumulative":false,"source":"claudeRollout",
+            "model":self.parent_model,"observedAt":at}),
         )
+    }
+
+    fn child_paths(&self) -> Vec<PathBuf> {
+        let Some(parent) = &self.path else {
+            return Vec::new();
+        };
+        std::fs::read_dir(parent.with_extension("").join("subagents"))
+            .into_iter()
+            .flatten()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|name| {
+                        name.strip_prefix("agent-")
+                            .and_then(|name| name.strip_suffix(".jsonl"))
+                            .is_some_and(|id| {
+                                !id.is_empty()
+                                    && id.bytes().all(|b| {
+                                        b.is_ascii_alphanumeric() || b == b'_' || b == b'-'
+                                    })
+                            })
+                    })
+            })
+            .collect()
+    }
+
+    fn poll_children(&mut self, reports: &mut Vec<Value>) {
+        for path in self.child_paths() {
+            let mut offset = self.child_offsets.get(&path).copied().unwrap_or(0);
+            let Ok(mut file) = File::open(&path) else {
+                continue;
+            };
+            let Ok(meta) = file.metadata() else {
+                continue;
+            };
+            if meta.len() < offset {
+                offset = 0;
+            }
+            if meta.len() == offset || file.seek(SeekFrom::Start(offset)).is_err() {
+                continue;
+            }
+            let agent = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .strip_prefix("agent-")
+                .unwrap_or("");
+            let mut reader = BufReader::new(file);
+            loop {
+                let mut line = String::new();
+                let Ok(count) = reader.read_line(&mut line) else {
+                    break;
+                };
+                if count == 0 || !line.ends_with('\n') {
+                    break;
+                }
+                offset += count as u64;
+                let Ok(entry) = serde_json::from_str::<Value>(&line) else {
+                    continue;
+                };
+                if entry["agentId"].as_str().is_some_and(|id| id != agent) {
+                    continue;
+                }
+                // Child messages contribute billing only. Their end_turn and
+                // tools must never finish or wake the foreground turn.
+                if let Some(report) = self.record_usage(&entry, false) {
+                    reports.push(report);
+                }
+            }
+            self.child_offsets.insert(path, offset);
+        }
     }
 }
 
@@ -291,6 +406,83 @@ impl ClaudeUsageReader {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn native_children_bill_the_parent_once_without_rebilling_history_or_changing_its_lifecycle() {
+        let home = tempfile::tempdir().unwrap();
+        let session = uuid::Uuid::new_v4().to_string();
+        let project = home.path().join("projects/project");
+        let children = project.join(&session).join("subagents");
+        std::fs::create_dir_all(&children).unwrap();
+        let file = project.join(format!("{session}.jsonl"));
+        std::fs::write(&file, "").unwrap();
+        let record = |id: &str, model: &str, output: u64| {
+            json!({"type":"assistant",
+            "timestamp":"2099-01-01T00:00:00Z","sessionId":session,"isSidechain":true,"agentId":"child",
+            "message":{"id":id,"model":model,"stop_reason":"end_turn","content":[{"type":"text","text":"child done"}],
+                "usage":{"input_tokens":10,"cache_read_input_tokens":100,"cache_creation_input_tokens":20,
+                    "cache_creation":{"ephemeral_1h_input_tokens":20},"output_tokens":output}}})
+        };
+        let child = children.join("agent-child.jsonl");
+        std::fs::write(
+            &child,
+            format!("{}\n", record("old", "claude-sonnet-4-5", 1000)),
+        )
+        .unwrap();
+        let mut reader = ClaudeUsageReader::with_home(home.path().into(), &session);
+        assert!(reader.poll().is_empty());
+        let mut parent = record("parent", "claude-opus-5-5", 30);
+        parent["isSidechain"] = json!(false);
+        parent["message"]["stop_reason"] = json!("tool_use");
+        let mut parent_file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&file)
+            .unwrap();
+        writeln!(parent_file, "{parent}").unwrap();
+        assert_eq!(reader.poll()[0]["total"]["outputTokens"], 30);
+        let mut out = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&child)
+            .unwrap();
+        writeln!(out, "{}", record("child-answer", "claude-sonnet-4-5", 40)).unwrap();
+        let report = reader.poll().pop().unwrap();
+        assert_eq!(report["total"]["outputTokens"], 70);
+        assert_eq!(report["total"]["inputTokens"], 260);
+        assert_eq!(report["total"]["cacheWriteOneHourInputTokens"], 40);
+        assert_eq!(report["last"]["outputTokens"], 30);
+        assert_eq!(report["model"], "claude-opus-5-5");
+        assert_eq!(report["requests"].as_array().unwrap().len(), 2);
+        assert!(!reader.completion.confirms_final_reply("child done"));
+        writeln!(out, "{}", record("child-answer", "claude-sonnet-4-5", 40)).unwrap();
+        assert!(reader.poll().is_empty());
+        writeln!(out, "{}", record("child-answer", "claude-sonnet-4-5", 60)).unwrap();
+        assert_eq!(reader.poll()[0]["total"]["outputTokens"], 90);
+        let mut foreign = record("foreign", "claude-sonnet-4-5", 999);
+        foreign["sessionId"] = json!("other");
+        writeln!(out, "{foreign}").unwrap();
+        foreign["sessionId"] = json!(session);
+        foreign["agentId"] = json!("other");
+        writeln!(out, "{foreign}").unwrap();
+        foreign["agentId"] = json!("child");
+        foreign["timestamp"] = json!("2000-01-01T00:00:00Z");
+        writeln!(out, "{foreign}").unwrap();
+        assert!(reader.poll().is_empty());
+        // A newly created child file can contain replayed old records and a
+        // partially written current request. Neither is consumed prematurely.
+        let new_child = children.join("agent-new.jsonl");
+        let mut fresh = record("new-answer", "claude-haiku-4-5", 50);
+        fresh["agentId"] = json!("new");
+        foreign["agentId"] = json!("new");
+        std::fs::write(&new_child, format!("{foreign}\n{fresh}")).unwrap();
+        assert!(reader.poll().is_empty());
+        let mut out = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&new_child)
+            .unwrap();
+        writeln!(out).unwrap();
+        assert_eq!(reader.poll_final()[0]["total"]["outputTokens"], 140);
+        assert!(reader.poll_final().is_empty());
+    }
 
     #[test]
     fn background_reply_phase_requires_native_end_turn_and_no_unfinished_work() {

@@ -678,7 +678,11 @@ impl Supervisor {
             let price = crate::usage::estimate_price_with_catalog(&usage, pricing_model, tier.as_deref(), &catalog, Some(&event.timestamp));
             // Accumulate request prices, so crossing the long-context threshold later
             // does not retrospectively change the rates of earlier requests.
-            let price = if let (Some(previous), Some(mut current_price)) = (previous.as_ref(), price.clone()) {
+            let price = if usage.get("requests").is_some_and(|v| v.is_array()) {
+                // Complete native request snapshots already include parent and
+                // child prices. Adding a total delta would bill them again.
+                price
+            } else if let (Some(previous), Some(mut current_price)) = (previous.as_ref(), price.clone()) {
                 if let (Some(previous_total), Some(current_total), Some(previous_price)) = (
                     previous.get("total").and_then(crate::usage::Tokens::parse),
                     usage.get("total").and_then(crate::usage::Tokens::parse),
