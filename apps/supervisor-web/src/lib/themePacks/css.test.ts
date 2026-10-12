@@ -93,6 +93,22 @@ describe('theme pack CSS compiler', () => {
     expect(cssError(source)).toMatch(message);
   });
 
+  it('rejects substituted values inside image functions that read strings as URLs', () => {
+    // Chromium fetches image-set(var(--x) 1x) when --x is "https://…".
+    for (const source of [
+      ':theme { --x: "https://evil.example/x"; } :theme .a { background: image-set(var(--x) 1x); }',
+      ':theme .a { background: -webkit-image-set(var(--x) 1x); }',
+      ':theme .a { background: image(var(--x)); }',
+      ':theme .a { background: cross-fade(var(--x) 50%, red); }',
+      ':theme .a { background: -webkit-cross-fade(env(x), red, 50%); }',
+      ':theme .a { background: image-set(attr(data-src) 1x); }',
+      ':theme { --z: image-set(var(--x) 1x); }',
+    ])
+      expect(cssError(source)).toMatch(/is not allowed inside an image function/);
+    // Plain strings in other properties never load anything and stay allowed.
+    expect(compile(':theme .a { --label: "https://example.org"; background: var(--icon); }')).toContain('--label: "https://example.org"');
+  });
+
   it('names the file and line of a rejection', () => {
     expect(cssError(':theme { color: red; }\n\n:theme { background: url(http://x/y.png); }')).toMatch(/^styles\/main\.css:3: /);
   });

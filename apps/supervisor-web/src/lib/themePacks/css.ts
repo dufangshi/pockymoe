@@ -224,6 +224,10 @@ class Compiler {
           index = close;
           continue;
         }
+        // These functions read plain strings as URLs, and a substituted value is
+        // never checked: image-set(var(--x)) with --x: "https://…" would fetch it.
+        if (/^(?:var|env|attr)$/.test(name) && functions.some(isStringUrlFunction))
+          this.fail(offset, `${name}() is not allowed inside an image function`);
         functions.push(name);
         depth += 1;
         out += token.raw;
@@ -236,7 +240,7 @@ class Compiler {
         functions.pop();
         depth -= 1;
       }
-      if (token.type === 'string' && functions.some((name) => /(?:^|-)image-set$|^cross-fade$|^image$/.test(name))) {
+      if (token.type === 'string' && functions.some(isStringUrlFunction)) {
         out += quote(this.resolveUrl(token.value, 'image', offset));
         continue;
       }
@@ -445,6 +449,10 @@ function trimTokens(tokens: CssToken[]) {
 }
 function tokenValue(token: CssToken) {
   return token.type === 'string' || token.type === 'ident' ? token.value : token.raw;
+}
+/** Image functions that take a plain string as a URL, with or without a vendor prefix. */
+function isStringUrlFunction(name: string) {
+  return /^(?:image-set|image|cross-fade)$/.test(name.toLowerCase().replace(/^-[a-z]+-/, ''));
 }
 function isUrlFunction(name: string) {
   const lower = name.toLowerCase();
