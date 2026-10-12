@@ -411,6 +411,7 @@ pub(crate) async fn admin_reset_password(
         )
             .into_response();
     }
+    let oauth_only = crate::account::oauth_only(&conn, &user_id);
     let Ok((salt, hash)) = hash_password(&body.password) else {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
@@ -420,12 +421,10 @@ pub(crate) async fn admin_reset_password(
             "UPDATE relay_users SET password_salt=?1,password_hash=?2 WHERE id=?3",
             params![salt, hash, user_id],
         )?;
-        if crate::account::has_vault(&tx, &user_id) {
-            tx.execute("INSERT INTO relay_account_auth(user_id,reset_pending,reset_consumed) VALUES (?1,1,0)
-                ON CONFLICT(user_id) DO UPDATE SET reset_pending=1,reset_consumed=0,auth_salt=NULL,auth_hash=NULL",[&user_id])?;
-        } else {
-            tx.execute("UPDATE relay_account_auth SET reset_pending=0,reset_consumed=0,auth_salt=NULL,auth_hash=NULL WHERE user_id=?1",[&user_id])?;
-        }
+        // Every non-admin reset is a one-time temporary password, including
+        // accounts that still need first-vault setup with legacy upgrade disabled.
+        tx.execute("INSERT INTO relay_account_auth(user_id,oauth_only,reset_pending,reset_consumed) VALUES (?1,?2,1,0)
+            ON CONFLICT(user_id) DO UPDATE SET reset_pending=1,reset_consumed=0,auth_salt=NULL,auth_hash=NULL",params![user_id,oauth_only])?;
         tx.commit()?;
         Ok(())
     })();

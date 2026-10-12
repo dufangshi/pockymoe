@@ -3415,3 +3415,213 @@ async fn review_two_known_login_can_run_while_dummy_capacity_is_full() {
         "dummy login must not queue behind real login capacity"
     );
 }
+
+#[tokio::test]
+async fn documentation_admin_reset_without_vault_logs_in_once_to_setup_without_upgrade() {
+    let f = Fixture::new("doc-legacy-reset").await;
+    let user = "a45aed3e-2f46-4b9c-93c1-e6f9d80c51e4";
+    let temporary = "temporary reset test password";
+    let admin = f.token("admin", FULL).await;
+    assert_eq!(
+        f.json(
+            Method::POST,
+            &format!("/relay/admin/users/{user}/reset-password"),
+            Some(&admin),
+            json!({"password":temporary})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let (status, body) = f
+        .json(
+            Method::POST,
+            "/relay/auth/login",
+            None,
+            json!({"login":user,"password":temporary}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body["account"],
+        json!({"mode":"legacy","setupRequired":true,"recovery":false,"hasVault":false,"accountKeyId":null})
+    );
+    let token = body["token"].as_str().unwrap();
+    for upgrade in [false, true] {
+        assert_eq!(
+            f.json(
+                Method::POST,
+                "/relay/auth/login",
+                None,
+                json!({"login":user,"password":temporary,"upgrade":upgrade})
+            )
+            .await
+            .0,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+    assert_eq!(
+        f.req(Method::GET, "/relay/portal", Some(token))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(f.json(Method::PUT,"/relay/account/vault",Some(token),json!({"vault":test_vault(user,1),"expectedRevision":0,"authKey":auth_key(),"recoveryAuthKey":recovery_key()})).await.0,StatusCode::OK);
+    assert_eq!(
+        f.json(
+            Method::POST,
+            "/relay/auth/login",
+            None,
+            json!({"login":user,"authKey":auth_key()})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let conn = f.state.store.conn.lock().await;
+    assert_eq!(
+        conn.query_row(
+            "SELECT reset_pending,reset_consumed FROM relay_account_auth WHERE user_id=?1",
+            [user],
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+        )
+        .unwrap(),
+        (0, 1)
+    );
+}
+
+#[tokio::test]
+async fn documentation_admin_reset_without_vault_keeps_mfa_and_one_time_consumption() {
+    let f = Fixture::new("doc-legacy-reset-factor").await;
+    let user = "a45aed3e-2f46-4b9c-93c1-e6f9d80c51e4";
+    let admin = f.token("admin", FULL).await;
+    assert_eq!(
+        f.json(
+            Method::POST,
+            &format!("/relay/admin/users/{user}/reset-password"),
+            Some(&admin),
+            json!({"password":PASSWORD})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let (codes, trusted) = {
+        let conn = f.state.store.conn.lock().await;
+        conn.execute(
+            "INSERT INTO relay_totp(user_id,secret,enabled,expires_at) VALUES (?1,'unused',1,0)",
+            [user],
+        )
+        .unwrap();
+        (
+            auth_factors::recovery_codes(&conn, user).unwrap(),
+            auth_factors::trust(&conn, user, &HeaderMap::new()).unwrap(),
+        )
+    };
+    let response = {
+        let _gate = LOGIN_TESTS.acquire().await.unwrap();
+        f.req(Method::POST, "/relay/auth/login", None)
+            .header(header::ORIGIN, &f.base)
+            .header(
+                header::COOKIE,
+                format!("remote_codex_trusted_browser={trusted}"),
+            )
+            .json(&json!({"login":user,"password":PASSWORD}))
+            .send()
+            .await
+            .unwrap()
+    };
+    assert_eq!(response.status(), StatusCode::OK);
+    let cookie = response
+        .headers()
+        .get_all(header::SET_COOKIE)
+        .iter()
+        .find_map(|h| {
+            h.to_str()
+                .ok()
+                .filter(|s| s.starts_with("remote_codex_factor_challenge="))
+                .map(|s| s.split(';').next().unwrap().to_owned())
+        })
+        .unwrap();
+    let value: Value = response.json().await.unwrap();
+    assert_eq!(value["challengeRequired"], true);
+    let response = f
+        .req(Method::POST, "/relay/auth/challenge", None)
+        .header(header::ORIGIN, &f.base)
+        .header(header::COOKIE, cookie)
+        .json(&json!({"code":codes[0]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let value: Value = response.json().await.unwrap();
+    assert_eq!(value["account"]["setupRequired"], true);
+    assert_eq!(value["account"]["recovery"], false);
+    assert_eq!(
+        f.json(
+            Method::POST,
+            "/relay/auth/login",
+            None,
+            json!({"login":user,"password":PASSWORD,"upgrade":true})
+        )
+        .await
+        .0,
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+#[tokio::test]
+async fn documentation_admin_reset_keeps_oauth_only_accounts_oauth_only_before_first_vault() {
+    let f = Fixture::new("doc-oauth-reset-no-vault").await;
+    let user = "a45aed3e-2f46-4b9c-93c1-e6f9d80c51e4";
+    {
+        let conn = f.state.store.conn.lock().await;
+        conn.execute(
+            "UPDATE relay_users SET password_salt='',password_hash='' WHERE id=?1",
+            [user],
+        )
+        .unwrap();
+        conn.execute("INSERT INTO relay_user_identities VALUES ('doc-oauth',?1,'google','synthetic','legacy@example.test','now')",[user]).unwrap();
+        assert!(account::oauth_only(&conn, user));
+    }
+    let admin = f.token("admin", FULL).await;
+    assert_eq!(
+        f.json(
+            Method::POST,
+            &format!("/relay/admin/users/{user}/reset-password"),
+            Some(&admin),
+            json!({"password":PASSWORD})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert!(
+        account::oauth_only(&*f.state.store.conn.lock().await, user),
+        "temporary reset must not convert an OAuth-only account into a password account"
+    );
+    let (s, value) = f
+        .json(
+            Method::POST,
+            "/relay/auth/login",
+            None,
+            json!({"login":user,"password":PASSWORD}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(value["account"]["mode"], "oauth");
+    assert_eq!(value["account"]["setupRequired"], true);
+    assert_eq!(
+        f.json(
+            Method::POST,
+            "/relay/auth/login",
+            None,
+            json!({"login":user,"password":PASSWORD})
+        )
+        .await
+        .0,
+        StatusCode::UNAUTHORIZED
+    );
+}
