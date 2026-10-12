@@ -19,15 +19,13 @@ export function resetBrowserTransport() { registered.clear(); delivered.clear();
 export async function handleBrowserRevoked(browserId: string) {
   revokedBrowsers.add(browserId); await clearBrowser(browserId); resetBrowserTransport();
 }
-// Account-scoped inventory comes from the owned Devices view, never owner-account.
+// Fresh relay inventory is a display hint. Only local pins/enrollment establish ownership.
 export async function markOwnedDevices(deviceIds: string[]) {
   const a = await currentAccount(); if (!a) return;
-  const existing = await accountStore<string[]>(`owned-devices:${a.accountKeyId}`) ?? [];
-  await accountStore(`owned-devices:${a.accountKeyId}`, [...new Set([...existing, ...deviceIds])]);
+  await accountStore(`owned-devices:${a.accountKeyId}`, [...new Set(deviceIds)]);
 }
-async function isOwnedDevice(deviceId: string) {
+async function isPendingDevice(deviceId: string) {
   const a = await currentAccount(); if (!a) return false;
-  if ((await accountStore<string[]>(`owned-devices:${a.accountKeyId}`) ?? []).includes(deviceId)) return true;
   // Pending enrollment is stored in its own database and is authoritative local intent.
   return (await listPendingEnrollments(a)).some(e => e.deviceId === deviceId);
 }
@@ -54,7 +52,7 @@ export async function verifyTransportDevice(deviceId: string, identityKey: strin
     if (account && hint?.accountKeyId && account.accountKeyId !== hint.accountKeyId) throw new AccountTrustError('account_mismatch');
     return { verified: false, bound: !!hint?.bound || expected, grantee: false, identityTrust: 'tofu' as const };
   }
-  const owned = expected || await isOwnedDevice(deviceId);
+  const owned = expected || await isPendingDevice(deviceId);
   if (certificate && account && certificate.accountKeyId !== account.accountKeyId && !owned) {
     const shared = await verifySharedDevice(deviceId, identityKey, certificate);
     await accountStore(`protected-device:${account.accountKeyId}:${deviceId}`, true);
@@ -86,7 +84,7 @@ export async function hasAccountDeviceCertificate(deviceId: string) {
 // Descriptor verification in exchange establishes the recipient role. The
 // portal probes a thread-scoped endpoint for accounts other than its owner.
 export async function verifySharedDeviceRole(deviceId: string, _scope?: string) {
-  if ((await boundDevices()).includes(deviceId) || await isOwnedDevice(deviceId)) return false;
+  if ((await boundDevices()).includes(deviceId) || await isPendingDevice(deviceId)) return false;
   const account = await currentAccount();
   if (!account) return false;
   try {
