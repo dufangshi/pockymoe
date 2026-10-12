@@ -10,6 +10,9 @@ import './index.css';
 import './native-subagents.css';
 import { initializeFontSize } from './lib/fontSize';
 import { initializeThemePreset } from './lib/themePreset';
+import { requireTopLevelWeb } from './lib/staticWeb';
+
+if (import.meta.env.VITE_POCKYMOE_STATIC_WEB === 'true') requireTopLevelWeb(window);
 
 // The host bundler resolves the worker asset before dependency optimization.
 Object.assign(window, { MonacoEnvironment: { getWorker: () => new WorkspaceEditorWorker() } });
