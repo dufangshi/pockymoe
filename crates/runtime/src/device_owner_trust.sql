@@ -33,3 +33,9 @@ CREATE TABLE IF NOT EXISTS owner_port_mappings (
   mapping_id TEXT PRIMARY KEY,
   credential_id TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS peer_certificates (
+  device_id TEXT PRIMARY KEY,
+  identity_key TEXT NOT NULL,
+  credential_id TEXT NOT NULL REFERENCES owner_credentials(credential_id) ON DELETE CASCADE
+);

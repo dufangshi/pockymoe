@@ -567,10 +567,10 @@ pub(crate) async fn forward_local(
             || path
                 .strip_prefix("/api/publications/")
                 .is_some_and(|token| !token.is_empty() && !token.contains('/')));
-    if strict && (peer.is_some() || path.starts_with("/api/peer/")) {
+    if strict && peer.is_none() && path.starts_with("/api/peer/") {
         return crate::owner_trust::error(403, "device_strict_mode");
     }
-    if strict && !encrypted && !public {
+    if strict && peer.is_none() && !encrypted && !public {
         return crate::owner_trust::error(403, "device_strict_mode");
     }
     if bootstrap && !encrypted {
@@ -650,6 +650,17 @@ pub(crate) async fn forward_local(
                 Ok(mut value) => {
                     value["trust"] = crate::owner_trust::hint(state)
                         .unwrap_or(json!({"paired":true,"strict":true}));
+                    if peer.is_some() {
+                        value["certificate"] = match crate::owner_trust::certificate_bundle(state) {
+                            Ok(bundle) => json!(bundle),
+                            Err(_) => {
+                                return relay_error_response(
+                                    503,
+                                    "Device certificate is unavailable",
+                                )
+                            }
+                        };
+                    }
                     json_response(value)
                 }
                 Err(_) => relay_error_response(503, "Device encryption is unavailable"),
@@ -670,7 +681,33 @@ pub(crate) async fn forward_local(
                 ),
             };
         let mut opened = opened;
-        let principal = if paired {
+        let peer_bootstrap =
+            peer.is_some() && method == "POST" && path == "/api/peer/transport/certificate";
+        let peer_principal = if strict && !peer_bootstrap {
+            if let Some(caller) = &peer {
+                match crate::owner_trust::authorize_peer(
+                    state,
+                    caller,
+                    &payload,
+                    &opened.aad,
+                    &opened.sealed,
+                ) {
+                    Ok(proof) => Some(proof),
+                    Err(_) => {
+                        return opened
+                            .response(crate::owner_trust::error(401, "peer_certificate_required"))
+                            .unwrap_or_else(|_| {
+                                relay_error_response(502, "Device response encryption failed")
+                            })
+                    }
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let principal = if paired && peer.is_none() {
             crate::owner_trust::authorize(state, &payload, &opened.aad, &opened.sealed).ok()
         } else {
             None
@@ -681,7 +718,8 @@ pub(crate) async fn forward_local(
             || path.starts_with("/api/transport/sessions/");
         let signature_supplied = payload["headers"]["x-rcd-session"].is_string()
             || payload["headers"]["x-rcd-signature"].is_string();
-        if principal.is_none()
+        if peer.is_none()
+            && principal.is_none()
             && ((!public && !bootstrap && (strict || (paired && signature_supplied)))
                 || owner_endpoint)
         {
@@ -726,6 +764,7 @@ pub(crate) async fn forward_local(
                 &transport,
                 peer.clone(),
                 principal,
+                peer_principal,
             )
             .await
         };
@@ -746,6 +785,7 @@ async fn dispatch_raw(
     peer: Option<PeerCaller>,
     encrypted: bool,
     principal: Option<crate::owner_trust::OwnerPrincipal>,
+    peer_principal: Option<crate::owner_trust::PeerPrincipal>,
 ) -> Result<axum::response::Response, Value> {
     let method = payload
         .get("method")
@@ -764,6 +804,9 @@ async fn dispatch_raw(
         .extension(crate::auth::TrustedRelayForward);
     if let Some(peer) = peer {
         request = request.extension(peer);
+    }
+    if let Some(proof) = peer_principal {
+        request = request.extension(proof);
     }
     if encrypted {
         request = request.extension(crate::owner_trust::EncryptedOwnerRequest);
@@ -802,9 +845,10 @@ async fn dispatch_streaming(
     transport: &crate::secure_transport::Transport,
     peer: Option<PeerCaller>,
     principal: Option<crate::owner_trust::OwnerPrincipal>,
+    peer_principal: Option<crate::owner_trust::PeerPrincipal>,
 ) -> Value {
     let path = payload["path"].as_str().unwrap_or("").to_string();
-    let response = match dispatch_raw(state, payload, peer, true, principal).await {
+    let response = match dispatch_raw(state, payload, peer, true, principal, peer_principal).await {
         Ok(response) => response,
         Err(error) => return error,
     };
@@ -841,7 +885,7 @@ async fn dispatch_local(
     payload: Value,
     peer: Option<PeerCaller>,
 ) -> Value {
-    match dispatch_raw(state, payload, peer, false, None).await {
+    match dispatch_raw(state, payload, peer, false, None, None).await {
         Ok(response) => {
             let status = response.status().as_u16();
             let headers = response

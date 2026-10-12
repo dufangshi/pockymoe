@@ -69,6 +69,7 @@ fn addition(credential: Credential, key: &SigningKey, device: &str) -> AddCreden
         credential.credential_id, credential.public_key,
     ));
     AddCredential {
+        certificate: None,
         assertion: assertion(&credential, key, &challenge),
         credential,
     }
@@ -371,6 +372,7 @@ fn credential_addition_last_credential_and_revocation() {
         .as_bytes(),
     );
     let mut input = AddCredential {
+        certificate: None,
         assertion: assertion(&new, &key, &challenge),
         credential: new,
     };
@@ -1195,4 +1197,377 @@ async fn unpaired_ignores_owner_headers_while_paired_rejects_unknown_and_expired
     );
     assert_eq!(status, 401);
     assert_eq!(body["code"], "owner_session_required");
+}
+
+/// Two real transport identities certified by the same test-only owner passkey.
+pub(crate) fn paired_peer(state: &Supervisor, device: &str) -> CertificateBundle {
+    remember_device(state, device).unwrap();
+    let identity = crate::secure_transport::transport(state)
+        .unwrap()
+        .identity_key();
+    let cert = DeviceCertificate {
+        version: 1,
+        device_id: device.into(),
+        identity_key: identity.clone(),
+        pairing_id: "original-pairing".into(),
+        assertion: assertion(
+            &record(),
+            &credential_key(),
+            &certificate_challenge(device, &identity, "original-pairing"),
+        ),
+    };
+    state
+        .db
+        .with(|c| {
+            store_credential(c, &record())?;
+            append_certificate(c, cert)?;
+            c.execute("UPDATE device_owner_trust SET strict=1", [])?;
+            Ok(())
+        })
+        .unwrap();
+    certificate_bundle(state).unwrap().unwrap()
+}
+
+#[test]
+fn local_certificate_bundle_append_remove_and_legacy_single_row() {
+    let (_dir, db) = fixture();
+    pair(&db, &vector_identity(), &vector_pair(), 100).unwrap();
+    let original = vectors()["deviceCertificate"]["certificate"].clone();
+    // A wave-1 single certificate is normalized to a one-entry bundle on reads.
+    db.with(|c| {
+        c.execute(
+            "UPDATE device_certificates SET certificate_json=?1",
+            [original.to_string()],
+        )?;
+        assert_eq!(local_bundle(c)?.unwrap().certificates.len(), 1);
+        Ok(())
+    })
+    .unwrap();
+    let mut second = record();
+    second.credential_id = "second".into();
+    let device = original["deviceId"].as_str().unwrap();
+    let mut input = addition(second.clone(), &credential_key(), device);
+    input.certificate = Some(assertion(
+        &second,
+        &credential_key(),
+        &certificate_challenge(device, &vector_identity(), &vector_pair().pairing_id),
+    ));
+    add(&db, &input).unwrap();
+    add(&db, &input).unwrap(); // idempotent second POST from the existing Certify action
+    let owner = OwnerPrincipal {
+        credential_id: record().credential_id,
+        session_id: "none".into(),
+    };
+    let bundle = trust(&db, &owner).unwrap()["certificate"].clone();
+    assert_eq!(bundle["certificates"].as_array().unwrap().len(), 2);
+    let mut invalid = input;
+    invalid.certificate.as_mut().unwrap().signature = B64.encode([0; 64]);
+    assert!(add(&db, &invalid).is_err());
+    assert_eq!(trust(&db, &owner).unwrap()["certificate"], bundle);
+    remove_credential(&db, "second").unwrap();
+    assert_eq!(
+        trust(&db, &owner).unwrap()["certificate"]["certificates"],
+        json!([original])
+    );
+}
+
+#[test]
+fn peer_certificates_require_current_owner_device_and_identity() {
+    let (_dir, state) = crate::tunnel::tests::state_with_relay_url("http://127.0.0.1:1");
+    paired_peer(&state, "target");
+    let cert = vectors()["deviceCertificate"]["certificate"].clone();
+    let device = cert["deviceId"].as_str().unwrap();
+    let identity = cert["identityKey"].as_str().unwrap();
+    assert!(verify_peer_bundle(&state, cert.clone(), device, Some(identity)).is_ok());
+    assert!(verify_peer_bundle(&state, cert.clone(), "wrong-device", Some(identity)).is_err());
+    assert!(verify_peer_bundle(&state, cert.clone(), device, Some("wrong-identity")).is_err());
+    for (field, value) in [
+        ("deviceId", json!("wrong-device")),
+        ("identityKey", json!(vector_identity() + "x")),
+    ] {
+        let mut tampered = cert.clone();
+        tampered[field] = value;
+        assert!(verify_peer_bundle(&state, tampered, device, None).is_err());
+    }
+    let mut tampered = cert.clone();
+    tampered["assertion"]["signature"] = json!(B64.encode([0; 64]));
+    assert!(verify_peer_bundle(&state, tampered, device, None).is_err());
+    let mut outsider = record();
+    outsider.credential_id = "outsider".into();
+    let mut tampered = cert.clone();
+    tampered["assertion"] = json!(assertion(
+        &outsider,
+        &credential_key(),
+        &certificate_challenge(device, identity, cert["pairingId"].as_str().unwrap())
+    ));
+    assert!(verify_peer_bundle(&state, tampered, device, None).is_err());
+    state
+        .db
+        .with(|c| {
+            c.execute("DELETE FROM owner_credentials", [])?;
+            Ok(())
+        })
+        .unwrap();
+    assert!(verify_peer_bundle(&state, cert.clone(), device, Some(identity)).is_err());
+}
+
+#[tokio::test]
+async fn peer_registration_signatures_replay_and_revocation_over_http() {
+    use crate::{auth::PeerCaller, tunnel::forward_local};
+    let (_caller_dir, caller) = crate::tunnel::tests::state_with_relay_url("http://127.0.0.1:1");
+    let (_target_dir, target) = crate::tunnel::tests::state_with_relay_url("http://127.0.0.1:1");
+    let bundle = paired_peer(&caller, "caller");
+    paired_peer(&target, "target");
+    target.set_peer_access(true).unwrap();
+    let peer = PeerCaller {
+        device_id: "caller".into(),
+        device_name: "Caller".into(),
+        user_id: "owner".into(),
+    };
+    let post = "/api/peer/transport/certificate";
+    let cli = "/api/peer/cli";
+    for invalid in [
+        json!({"version":1,"deviceId":"forged","certificates":bundle.certificates}),
+        {
+            let mut wrong = json!(bundle);
+            wrong["certificates"][0]["identityKey"] = json!(vector_identity());
+            wrong
+        },
+        {
+            let mut wrong = json!(bundle);
+            wrong["certificates"][0]["assertion"]["credentialId"] = json!("outsider");
+            wrong
+        },
+    ] {
+        let (r, k, a) = encrypted(&target, "POST", post, invalid, None);
+        let (status, body) = decoded(forward_local(&target, r, Some(peer.clone())).await, &k, &a);
+        assert_eq!(status, 401);
+        assert_eq!(body["code"], "peer_certificate_required");
+    }
+    let (r, k, a) = encrypted(&target, "POST", post, json!(bundle), None);
+    assert_eq!(
+        decoded(forward_local(&target, r, Some(peer.clone())).await, &k, &a).0,
+        200
+    );
+    let signing = SigningKey::from_slice(
+        &B64.decode(
+            std::fs::read_to_string(
+                caller
+                    .config
+                    .database_url
+                    .with_extension("transport-identity"),
+            )
+            .unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let signed = || {
+        let (mut r, k, a) = encrypted(&target, "POST", cli, json!({"operation":"info"}), None);
+        let sealed = B64
+            .decode(r["headers"]["x-rcd-sealed"].as_str().unwrap())
+            .unwrap();
+        let sig: Signature = signing.sign(peer_signing_input("caller", &a, &sealed).as_bytes());
+        r["headers"]["x-rcd-peer-device"] = json!("caller");
+        r["headers"]["x-rcd-peer-signature"] = json!(B64.encode(sig.to_bytes()));
+        (r, k, a)
+    };
+    for mutate in 0..5 {
+        let (mut r, k, a) = signed();
+        match mutate {
+            0 => {
+                r["headers"]["x-rcd-peer-device"] = json!("forged");
+            }
+            1 => {
+                r["headers"]["x-rcd-peer-signature"] = json!(B64.encode([0; 64]));
+            }
+            2 => {
+                r["headers"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("x-rcd-peer-signature");
+            }
+            3 => {
+                r["method"] = json!("PUT");
+            } // HPKE authentication fails before signature verification
+            _ => {}
+        }
+        if mutate == 3 {
+            assert_eq!(
+                forward_local(&target, r, Some(peer.clone())).await["statusCode"],
+                400
+            );
+            continue;
+        }
+        let (status, body) = decoded(
+            forward_local(&target, r.clone(), Some(peer.clone())).await,
+            &k,
+            &a,
+        );
+        assert_eq!(status, if mutate == 4 { 200 } else { 401 }, "{body}");
+        if mutate != 4 {
+            assert_eq!(body["code"], "peer_certificate_required");
+        }
+        assert_eq!(
+            forward_local(&target, r, Some(peer.clone())).await["statusCode"],
+            400,
+            "replayed requestId"
+        );
+    }
+    let (r, k, a) = signed();
+    target
+        .db
+        .with(|c| {
+            let mut other = record();
+            other.credential_id = "other-owner".into();
+            store_credential(c, &other)?;
+            Ok(())
+        })
+        .unwrap();
+    remove_credential(&target.db, &record().credential_id).unwrap();
+    assert_eq!(
+        decoded(forward_local(&target, r, Some(peer.clone())).await, &k, &a).0,
+        401
+    );
+    // Re-adding the credential cannot revive an old registration.
+    target.db.with(|c| store_credential(c, &record())).unwrap();
+    let (r, k, a) = signed();
+    assert_eq!(
+        decoded(forward_local(&target, r, Some(peer.clone())).await, &k, &a).0,
+        401
+    );
+    let (r, k, a) = encrypted(&target, "POST", post, json!(bundle), None);
+    assert_eq!(
+        decoded(forward_local(&target, r, Some(peer)).await, &k, &a).0,
+        200
+    );
+    reset_owner_trust(&target.config.database_url).unwrap();
+    target
+        .db
+        .with(|c| {
+            assert_eq!(
+                c.query_row("SELECT count(*) FROM peer_certificates", [], |r| r
+                    .get::<_, i64>(0))?,
+                0
+            );
+            Ok(())
+        })
+        .unwrap();
+}
+
+#[tokio::test]
+async fn trust_http_returns_bundle_and_removes_added_certificate() {
+    let (_dir, state) = crate::tunnel::tests::state_with_relay_url("http://127.0.0.1:1");
+    let owner = live_owner(&state);
+    let bundle = paired_peer(&state, "test-device");
+    let mut second = record();
+    second.credential_id = "second".into();
+    let mut input = addition(second.clone(), &credential_key(), "test-device");
+    let base = &bundle.certificates[0];
+    input.certificate = Some(assertion(
+        &second,
+        &credential_key(),
+        &certificate_challenge("test-device", &base.identity_key, &base.pairing_id),
+    ));
+    let call =
+        |method: &str, path: &str, body: Value| encrypted(&state, method, path, body, Some(&owner));
+    let (r, k, a) = call(
+        "POST",
+        "/api/transport/credentials",
+        json!({"credential":input.credential,"assertion":input.assertion,"certificate":input.certificate}),
+    );
+    assert_eq!(
+        decoded(crate::tunnel::forward_local(&state, r, None).await, &k, &a).0,
+        200
+    );
+    let (r, k, a) = call("GET", "/api/transport/trust", Value::Null);
+    assert_eq!(
+        decoded(crate::tunnel::forward_local(&state, r, None).await, &k, &a).1["certificate"]
+            ["certificates"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    let (r, k, a) = call("DELETE", "/api/transport/credentials/second", Value::Null);
+    assert_eq!(
+        decoded(crate::tunnel::forward_local(&state, r, None).await, &k, &a).0,
+        200
+    );
+    let (r, k, a) = call("GET", "/api/transport/trust", Value::Null);
+    assert_eq!(
+        decoded(crate::tunnel::forward_local(&state, r, None).await, &k, &a).1["certificate"]
+            ["certificates"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn unpaired_target_ignores_peer_signature_headers() {
+    let (_dir, target) = crate::tunnel::tests::state_with_relay_url("http://127.0.0.1:1");
+    target.set_peer_access(true).unwrap();
+    let (mut r, k, a) = encrypted(
+        &target,
+        "POST",
+        "/api/peer/cli",
+        json!({"operation":"info"}),
+        None,
+    );
+    r["headers"]["x-rcd-peer-device"] = json!("forged");
+    r["headers"]["x-rcd-peer-signature"] = json!("malformed");
+    let peer = crate::auth::PeerCaller {
+        device_id: "caller".into(),
+        device_name: "Caller".into(),
+        user_id: "owner".into(),
+    };
+    assert_eq!(
+        decoded(
+            crate::tunnel::forward_local(&target, r, Some(peer)).await,
+            &k,
+            &a
+        )
+        .0,
+        200
+    );
+    assert!(!paired(&target));
+}
+
+#[test]
+fn peer_signing_input_is_domain_separated_and_wrong_owner_key_is_rejected() {
+    let v = vectors();
+    let aad = v["request"]["aad"].as_str().unwrap();
+    let sealed = B64
+        .decode(v["request"]["sealed"].as_str().unwrap())
+        .unwrap();
+    assert_eq!(
+        peer_signing_input("caller", aad, &sealed),
+        format!(
+            "pockymoe-peer-request-v1\ncaller\n{aad}\nlIWyudggU5-1h5zONwQ8pjpbO0z_S_mIb5C8_52V0k4"
+        )
+    );
+    let (_dir, state) = crate::tunnel::tests::state_with_relay_url("http://127.0.0.1:1");
+    paired_peer(&state, "target");
+    let cert = v["deviceCertificate"]["certificate"].clone();
+    let device = cert["deviceId"].as_str().unwrap();
+    state
+        .db
+        .with(|c| {
+            let mut changed = record();
+            changed.public_key = B64.encode(
+                session_key()
+                    .verifying_key()
+                    .to_public_key_der()?
+                    .as_bytes(),
+            );
+            c.execute(
+                "UPDATE owner_credentials SET record_json=?1",
+                [serde_json::to_string(&changed)?],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    assert!(verify_peer_bundle(&state, cert.clone(), device, None).is_err());
 }

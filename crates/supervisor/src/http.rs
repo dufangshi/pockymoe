@@ -87,6 +87,10 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/cli", post(crate::interaction::command))
         // Other devices of the same owner, through the relay (docs/cross-device-peer.zh.md).
+        .route(
+            "/api/peer/transport/certificate",
+            post(crate::owner_trust::peer_certificate_endpoint),
+        )
         .route("/api/peer/cli", post(crate::peer_api::cli))
         .route(
             "/api/peer/files/uploads",

@@ -1054,4 +1054,141 @@ mod tests {
         drop(state);
         assert!(weak.upgrade().is_none());
     }
+    #[tokio::test]
+    async fn strict_peers_send_read_files_and_deliver_offline_outbox_with_fresh_signatures() {
+        use crate::{
+            auth::PeerCaller, owner_trust::tests::paired_peer, peer_link::tests::connected,
+            tunnel::forward_local,
+        };
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let (_a_dir, a) = test_state();
+        let (_b_dir, b) = test_state();
+        for (state, id) in [(&a, "caller"), (&b, "target")] {
+            state.set_peer_access(true).unwrap();
+            paired_peer(state, id);
+        }
+        let a_thread = caller_thread(&a).await;
+        let b_thread = caller_thread(&b).await;
+        let b_workspace = b.get_thread(&b_thread).unwrap().workspace_id;
+        let a_workspace = a.get_thread(&a_thread).unwrap().workspace_id;
+        std::fs::write(b.config.workspace_root.join("peer.txt"), b"from target").unwrap();
+        std::fs::write(a.config.workspace_root.join("peer.txt"), b"from caller").unwrap();
+        let online = Arc::new(AtomicBool::new(false));
+        let frames = Arc::new(Mutex::new(Vec::new()));
+        let (a_link, mut a_rx) = connected(&a, "caller");
+        let (b_link, mut b_rx) = connected(&b, "target");
+        let task_a = {
+            let b = b.clone();
+            let online = online.clone();
+            let frames = frames.clone();
+            tokio::spawn(async move {
+                while let Some(frame) = a_rx.recv().await {
+                    assert_eq!(frame["targetDeviceId"], "target");
+                    frames.lock().unwrap().push(frame["payload"].clone());
+                    let response = if online.load(Ordering::SeqCst) {
+                        forward_local(
+                            &b,
+                            frame["payload"].clone(),
+                            Some(PeerCaller {
+                                device_id: "caller".into(),
+                                device_name: "Caller".into(),
+                                user_id: "owner".into(),
+                            }),
+                        )
+                        .await
+                    } else {
+                        json!({"statusCode":503,"headers":{},"body":"offline"})
+                    };
+                    a_link.receive(&json!({"type":"peer.response","requestId":frame["requestId"],"payload":response}));
+                }
+            })
+        };
+        let task_b = {
+            let a = a.clone();
+            tokio::spawn(async move {
+                while let Some(frame) = b_rx.recv().await {
+                    assert_eq!(frame["targetDeviceId"], "caller");
+                    let response = forward_local(
+                        &a,
+                        frame["payload"].clone(),
+                        Some(PeerCaller {
+                            device_id: "target".into(),
+                            device_name: "Target".into(),
+                            user_id: "owner".into(),
+                        }),
+                    )
+                    .await;
+                    b_link.receive(&json!({"type":"peer.response","requestId":frame["requestId"],"payload":response}));
+                }
+            })
+        };
+        let body = json!({"operation":"send","threadId":b_thread,"text":"offline hello","delivery":"inbox","fromThreadId":a_thread,"kind":"task","subject":"Review"});
+        let receipt = send(&a, "target".into(), body).await.unwrap();
+        assert_eq!(receipt["delivery"], "outboxed");
+        let pending = outbox_records(&a).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert!(!serde_json::to_string(&pending[0])
+            .unwrap()
+            .contains("x-rcd-peer-signature"));
+        online.store(true, Ordering::SeqCst);
+        process_outbox(&a, Utc::now() + Duration::minutes(1), |state, record| {
+            Box::pin(deliver(state, record))
+        })
+        .await
+        .unwrap();
+        assert!(outbox_records(&a).unwrap().is_empty());
+        assert_eq!(b.inbox_unread_count(&b_thread).unwrap(), 1);
+        let sent: Vec<Value> = frames
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|f| f["path"] == "/api/peer/cli")
+            .cloned()
+            .collect();
+        assert_eq!(sent.len(), 2); // registration-required response, then freshly signed retry
+        assert_ne!(
+            sent[0]["headers"]["x-rcd-request"],
+            sent[1]["headers"]["x-rcd-request"]
+        );
+        assert_ne!(
+            sent[0]["headers"]["x-rcd-peer-signature"],
+            sent[1]["headers"]["x-rcd-peer-signature"]
+        );
+        assert_eq!(sent[1]["headers"]["x-rcd-peer-device"], "caller");
+        for (source, target, thread, workspace, expected) in [
+            (
+                &a,
+                "target",
+                &b_thread,
+                &b_workspace,
+                b"from target".as_slice(),
+            ),
+            (
+                &b,
+                "caller",
+                &a_thread,
+                &a_workspace,
+                b"from caller".as_slice(),
+            ),
+        ] {
+            let receipt = peer_link::request_json(source,target,"/api/peer/cli",&json!({"operation":"send","threadId":thread,"text":"online hello","delivery":"inbox","kind":"task","subject":"Review"})).await.unwrap();
+            assert_eq!(receipt["delivery"], "inbox");
+            let file = peer_link::request(
+                source,
+                target,
+                "GET",
+                &format!("/api/peer/files/read?workspaceId={workspace}&path=peer.txt"),
+                None,
+                vec![],
+            )
+            .await
+            .unwrap();
+            assert_eq!(file.status, 206);
+            assert_eq!(file.body, expected);
+        }
+        task_a.abort();
+        task_b.abort();
+        let _ = task_a.await;
+        let _ = task_b.await;
+    }
 }
