@@ -27,18 +27,51 @@ fn owns(conn: &Connection, owner: &str, scope: &Scope) -> bool {
             .is_some()
 }
 
-fn numeric_fields(source: &Value, fields: &[&str]) -> Value {
-    Value::Object(
-        fields
-            .iter()
-            .filter_map(|key| {
-                source[*key]
-                    .as_f64()
-                    .filter(|v| *v >= 0.0)
-                    .map(|n| (key.to_string(), json!(n)))
-            })
-            .collect(),
-    )
+// The fragment key never reaches the relay. Store exactly the opaque envelope:
+// no title, turn count, theme, images or other rendered snapshot fields. AES-GCM
+// appends a 16-byte tag to ciphertext; all binary fields use unpadded base64url.
+const MAX_SNAPSHOT_BYTES: usize = 16 * 1024 * 1024;
+const MAX_CIPHERTEXT_BYTES: usize = MAX_SNAPSHOT_BYTES + 16;
+
+fn encrypted_envelope(input: &Value) -> Result<Value, StatusCode> {
+    let object = input.as_object().ok_or(StatusCode::BAD_REQUEST)?;
+    if input["version"] != 2
+        || object.len() != 3
+        || !object
+            .keys()
+            .all(|key| matches!(key.as_str(), "version" | "iv" | "ciphertext"))
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let decode = |field: &str, max: usize| -> Result<Vec<u8>, StatusCode> {
+        let encoded = input[field].as_str().ok_or(StatusCode::BAD_REQUEST)?;
+        if encoded.len() > max.div_ceil(3) * 4 {
+            return Err(StatusCode::PAYLOAD_TOO_LARGE);
+        }
+        let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(encoded)
+            .map_err(|_| StatusCode::BAD_REQUEST)?;
+        if bytes.len() > max {
+            return Err(StatusCode::PAYLOAD_TOO_LARGE);
+        }
+        Ok(bytes)
+    };
+    if decode("iv", 12)?.len() != 12 || decode("ciphertext", MAX_CIPHERTEXT_BYTES)?.len() < 16 {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    Ok(input.clone())
+}
+
+// Legacy sources remain readable, but an encrypted cache can never be replaced
+// with plaintext (including after a device is rolled back to an older version).
+fn refreshed_snapshot(input: &Value, encrypted: bool) -> Result<Value, StatusCode> {
+    if encrypted {
+        encrypted_envelope(input)
+    } else if input["live"] == true && input.to_string().len() <= MAX_SNAPSHOT_BYTES {
+        Ok(input.clone())
+    } else {
+        Err(StatusCode::BAD_REQUEST)
+    }
 }
 pub(super) async fn create(
     headers: HeaderMap,
@@ -71,7 +104,7 @@ pub(super) async fn create(
         )
         .await
         {
-            Ok(value) if value["live"] == true => Some(value),
+            Ok(value) if encrypted_envelope(&value).is_ok() => Some(value),
             _ => {
                 return (
                     StatusCode::BAD_GATEWAY,
@@ -83,106 +116,14 @@ pub(super) async fn create(
     } else {
         None
     };
-    // Fixed snapshots are decrypted and projected by the browser. Live snapshots
-    // are projected by a capability configured over the owner's encrypted channel.
     let Some(input) = live_snapshot.as_ref().or(scope.snapshot.as_ref()) else {
-        return (
-            StatusCode::BAD_REQUEST,
-            "A public transcript snapshot is required",
-        )
-            .into_response();
-    };
-    let Some(source_turns) = input["turns"].as_array().filter(|v| v.len() <= 10_000) else {
         return StatusCode::BAD_REQUEST.into_response();
     };
-    let mut turns = Vec::new();
-    let mut paths = HashSet::new();
-    for source in source_turns {
-        let Some(items) = source["messages"].as_array() else {
-            return StatusCode::BAD_REQUEST.into_response();
-        };
-        let mut messages = Vec::new();
-        for item in items {
-            if !matches!(item["role"].as_str(), Some("user" | "assistant")) {
-                continue;
-            }
-            let text = item["text"].as_str().unwrap_or("");
-            for tail in text.split("[PHOTO ").skip(1) {
-                if let Some((path, _)) = tail.split_once(']') {
-                    paths.insert(path.trim().to_string());
-                }
-            }
-            messages.push(
-                json!({"role":item["role"],"text":text,"createdAt":item["createdAt"].as_str()}),
-            );
-        }
-        let mut turn = json!({"messages":messages,"startedAt":source["startedAt"].as_str(),"completedAt":source["completedAt"].as_str(),"model":source["model"].as_str(),"reasoningEffort":source["reasoningEffort"].as_str()});
-        if source["tokenUsage"].is_object() {
-            let fields = [
-                "totalTokens",
-                "inputTokens",
-                "cachedInputTokens",
-                "cacheWriteInputTokens",
-                "outputTokens",
-                "reasoningOutputTokens",
-            ];
-            turn["tokenUsage"] = json!({"total":numeric_fields(&source["tokenUsage"]["total"],&fields),"last":numeric_fields(&source["tokenUsage"]["last"],&fields),"modelContextWindow":source["tokenUsage"]["modelContextWindow"].as_u64()});
-        }
-        if source["priceEstimate"].is_object() {
-            let mut price = numeric_fields(
-                &source["priceEstimate"],
-                &[
-                    "inputUsd",
-                    "cachedInputUsd",
-                    "cacheWriteInputUsd",
-                    "outputUsd",
-                    "totalUsd",
-                ],
-            );
-            for key in ["pricingModelKey", "pricingTierKey", "currency"] {
-                price[key] = json!(source["priceEstimate"][key].as_str());
-            }
-            turn["priceEstimate"] = price;
-        }
-        turns.push(turn);
-    }
-    let mut images = serde_json::Map::new();
-    let mut image_bytes = 0;
-    for path in paths {
-        let Some(data) = input["images"][&path].as_str() else {
-            continue;
-        };
-        let Some((prefix, encoded)) = data.split_once(",") else {
-            return StatusCode::BAD_REQUEST.into_response();
-        };
-        if !matches!(
-            prefix,
-            "data:image/png;base64"
-                | "data:image/jpeg;base64"
-                | "data:image/webp;base64"
-                | "data:image/gif;base64"
-        ) {
-            return StatusCode::BAD_REQUEST.into_response();
-        }
-        let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(encoded) else {
-            return StatusCode::BAD_REQUEST.into_response();
-        };
-        image_bytes += bytes.len();
-        if image_bytes > 10 * 1024 * 1024 {
-            return StatusCode::PAYLOAD_TOO_LARGE.into_response();
-        }
-        images.insert(path, json!(data));
-    }
-    let theme = if input["theme"] == "light" {
-        "light"
-    } else {
-        "dark"
+    let snapshot = match encrypted_envelope(input) {
+        Ok(envelope) => envelope,
+        Err(status) => return status.into_response(),
     };
-    let snapshot = json!({"title":input["title"].as_str().unwrap_or("Shared thread"),"createdAt":created_at,"updatedAt":created_at,"live":live_snapshot.is_some(),"turnCount":turns.len(),"turns":turns,"theme":theme,"images":images});
     let serialized = snapshot.to_string();
-    if serialized.len() > 16 * 1024 * 1024 {
-        return StatusCode::PAYLOAD_TOO_LARGE.into_response();
-    }
     let id = Uuid::new_v4().simple().to_string();
     let conn = state.store.conn.lock().await;
     if !owns(&conn, &owner, &scope) {
@@ -196,7 +137,7 @@ pub(super) async fn create(
                     return StatusCode::INTERNAL_SERVER_ERROR.into_response();
                 }
             }
-            Json(json!({"id":id,"createdAt":created_at,"turnCount":snapshot["turnCount"],"live":live_snapshot.is_some()})).into_response()
+            Json(json!({"id":id,"createdAt":created_at,"version":2,"live":live_snapshot.is_some()})).into_response()
         },
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
@@ -213,18 +154,18 @@ pub(super) async fn list(
     else {
         return unauthorized();
     };
-    let Ok(mut statement) = conn.prepare("SELECT id,created_at,json_extract(snapshot_json,'$.turnCount'),EXISTS(SELECT 1 FROM relay_public_link_sources WHERE link_id=id) FROM relay_public_links WHERE owner_user_id=?1 AND device_id=?2 AND thread_id=?3 ORDER BY created_at DESC") else { return StatusCode::INTERNAL_SERVER_ERROR.into_response() };
-    let Ok(rows) = statement.query_map(params![user.id,scope.device_id,scope.thread_id], |row| Ok(json!({"id":row.get::<_,String>(0)?,"createdAt":row.get::<_,String>(1)?,"turnCount":row.get::<_,i64>(2)?,"live":row.get::<_,bool>(3)?}))) else { return StatusCode::INTERNAL_SERVER_ERROR.into_response() };
+    let Ok(mut statement) = conn.prepare("SELECT id,created_at,json_extract(snapshot_json,'$.turnCount'),EXISTS(SELECT 1 FROM relay_public_link_sources WHERE link_id=id),COALESCE(json_extract(snapshot_json,'$.version'),1),(SELECT publication_token FROM relay_public_link_sources WHERE link_id=id) FROM relay_public_links WHERE owner_user_id=?1 AND device_id=?2 AND thread_id=?3 ORDER BY created_at DESC") else { return StatusCode::INTERNAL_SERVER_ERROR.into_response() };
+    let Ok(rows) = statement.query_map(params![user.id,scope.device_id,scope.thread_id], |row| Ok(json!({"id":row.get::<_,String>(0)?,"createdAt":row.get::<_,String>(1)?,"turnCount":row.get::<_,Option<i64>>(2)?,"live":row.get::<_,bool>(3)?,"version":row.get::<_,i64>(4)?,"publicationToken":row.get::<_,Option<String>>(5)?}))) else { return StatusCode::INTERNAL_SERVER_ERROR.into_response() };
     Json(rows.filter_map(Result::ok).collect::<Vec<_>>()).into_response()
 }
 
 pub(super) async fn read(Path(id): Path<String>, State(state): State<Arc<AppState>>) -> Response {
     let source = {
         let conn = state.store.conn.lock().await;
-        conn.query_row("SELECT l.device_id,s.publication_token,s.refreshed_at FROM relay_public_links l JOIN relay_public_link_sources s ON s.link_id=l.id WHERE l.id=?1", [&id], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?))).optional().ok().flatten()
+        conn.query_row("SELECT l.device_id,s.publication_token,s.refreshed_at,COALESCE(json_extract(l.snapshot_json,'$.version'),1)=2 FROM relay_public_links l JOIN relay_public_link_sources s ON s.link_id=l.id WHERE l.id=?1", [&id], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,bool>(3)?))).optional().ok().flatten()
     };
     let mut stale = false;
-    if let Some((device, token, refreshed)) = source {
+    if let Some((device, token, refreshed, encrypted)) = source {
         let due = chrono::DateTime::parse_from_rfc3339(&refreshed)
             .map(|time| chrono::Utc::now().signed_duration_since(time).num_seconds() >= 5)
             .unwrap_or(true);
@@ -241,11 +182,10 @@ pub(super) async fn read(Path(id): Path<String>, State(state): State<Arc<AppStat
                     None,
                 )
                 .await
+                .ok()
+                .and_then(|value| refreshed_snapshot(&value, encrypted).ok())
                 {
-                    Ok(snapshot)
-                        if snapshot["live"] == true
-                            && snapshot.to_string().len() <= 16 * 1024 * 1024 =>
-                    {
+                    Some(snapshot) => {
                         let _ = state.store.conn.lock().await.execute(
                             "UPDATE relay_public_links SET snapshot_json=?1 WHERE id=?2",
                             params![snapshot.to_string(), id],
@@ -324,5 +264,197 @@ pub(super) async fn revoke(
         }
         Ok(_) => StatusCode::NOT_FOUND.into_response(),
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn envelope() -> Value {
+        serde_json::from_str::<Value>(include_str!("../../../tests/fixtures/public-link-v2.json"))
+            .unwrap()["envelope"]
+            .clone()
+    }
+
+    #[test]
+    fn validates_only_bounded_ciphertext_envelopes() {
+        let valid = envelope();
+        assert_eq!(encrypted_envelope(&valid).unwrap(), valid);
+        for invalid in [
+            json!(null),
+            json!({"version":1,"title":"private","turns":[]}),
+            json!({"version":2,"iv":42,"ciphertext":"AAAA"}),
+            json!({"version":3,"iv":valid["iv"],"ciphertext":valid["ciphertext"]}),
+            json!({"version":2,"iv":"AAAA","ciphertext":valid["ciphertext"]}),
+            json!({"version":2,"iv":valid["iv"],"ciphertext":"AA"}),
+            json!({"version":2,"iv":valid["iv"],"ciphertext":"invalid+/="}),
+        ] {
+            assert_eq!(encrypted_envelope(&invalid), Err(StatusCode::BAD_REQUEST));
+        }
+        for field in [
+            "title",
+            "turns",
+            "theme",
+            "images",
+            "encryptionKey",
+            "stale",
+        ] {
+            let mut leaked = valid.clone();
+            leaked[field] = json!("must not be stored");
+            assert_eq!(encrypted_envelope(&leaked), Err(StatusCode::BAD_REQUEST));
+        }
+        let mut oversized = valid;
+        oversized["ciphertext"] = json!("A".repeat(MAX_CIPHERTEXT_BYTES.div_ceil(3) * 4 + 1));
+        assert_eq!(
+            encrypted_envelope(&oversized),
+            Err(StatusCode::PAYLOAD_TOO_LARGE)
+        );
+    }
+
+    #[test]
+    fn live_refresh_preserves_legacy_but_never_downgrades_encryption() {
+        let legacy = json!({"live":true,"title":"Legacy","turns":[]});
+        assert_eq!(refreshed_snapshot(&legacy, false).unwrap(), legacy);
+        assert!(refreshed_snapshot(&legacy, true).is_err());
+        assert_eq!(refreshed_snapshot(&envelope(), true).unwrap(), envelope());
+    }
+
+    #[tokio::test]
+    async fn owner_create_list_and_revoke_store_only_the_envelope() {
+        let (state, dir) = crate::tests::test_app_state("public-links-owner");
+        let thread = Uuid::new_v4().to_string();
+        let token = {
+            let conn = state.store.conn.lock().await;
+            conn.execute("INSERT INTO relay_users VALUES ('owner','owner@example.test','owner','user',1,NULL,'now','salt','hash')", []).unwrap();
+            conn.execute("INSERT INTO relay_devices(id,owner_user_id,name,token_hash,token_preview,created_at) VALUES ('device','owner','Test','test-hash','test','now')", []).unwrap();
+            conn.execute("INSERT INTO relay_public_links(id,owner_user_id,device_id,thread_id,snapshot_json,created_at) VALUES ('legacy','owner','device',?1,?2,'now')", params![thread,json!({"title":"Legacy","turnCount":7,"turns":[]}).to_string()]).unwrap();
+            create_session(&conn, &state.store.session_secret, "owner").unwrap()
+        };
+        let query = || {
+            Query(TokenQuery {
+                token: Some(token.clone()),
+                device_token: None,
+                relay_session: None,
+            })
+        };
+        let scope = |snapshot| Scope {
+            device_id: "device".into(),
+            thread_id: thread.clone(),
+            snapshot,
+            publication_token: None,
+        };
+        let rejected = create(
+            HeaderMap::new(),
+            query(),
+            State(state.clone()),
+            Json(scope(Some(json!({"title":"private","turns":[]})))),
+        )
+        .await;
+        assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
+        let created = create(
+            HeaderMap::new(),
+            query(),
+            State(state.clone()),
+            Json(scope(Some(envelope()))),
+        )
+        .await;
+        assert_eq!(created.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(created.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let created: Value = serde_json::from_slice(&bytes).unwrap();
+        let id = created["id"].as_str().unwrap();
+        assert_eq!(created["version"], 2);
+        assert!(created.get("turnCount").is_none());
+        {
+            let conn = state.store.conn.lock().await;
+            let raw: String = conn
+                .query_row(
+                    "SELECT snapshot_json FROM relay_public_links WHERE id=?1",
+                    [id],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(serde_json::from_str::<Value>(&raw).unwrap(), envelope());
+        }
+        let listed = list(
+            HeaderMap::new(),
+            query(),
+            State(state.clone()),
+            Query(scope(None)),
+        )
+        .await;
+        let bytes = axum::body::to_bytes(listed.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let listed: Value = serde_json::from_slice(&bytes).unwrap();
+        let rows = listed.as_array().unwrap();
+        assert_eq!(
+            rows.len(),
+            2,
+            "NULL turn counts must not hide encrypted links"
+        );
+        assert!(rows
+            .iter()
+            .any(|row| row["version"] == 2 && row["turnCount"].is_null()));
+        assert!(rows
+            .iter()
+            .any(|row| row["version"] == 1 && row["turnCount"] == 7));
+        assert_eq!(
+            revoke(
+                Path(id.into()),
+                HeaderMap::new(),
+                query(),
+                State(state.clone())
+            )
+            .await
+            .status(),
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(
+            read(Path(id.into()), State(state.clone())).await.status(),
+            StatusCode::NOT_FOUND
+        );
+        drop(state);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn reads_legacy_and_encrypted_cached_links_with_stale_marker() {
+        let (state, dir) = crate::tests::test_app_state("public-links-cache");
+        {
+            let conn = state.store.conn.lock().await;
+            // Isolated fixture database; no production users/devices are touched.
+            conn.execute_batch("PRAGMA foreign_keys=OFF").unwrap();
+            for (id, value) in [
+                ("legacy", json!({"title":"Legacy","turns":[]})),
+                ("encrypted", envelope()),
+            ] {
+                conn.execute("INSERT INTO relay_public_links(id,owner_user_id,device_id,thread_id,snapshot_json,created_at) VALUES (?1,'owner','offline','thread',?2,'2026-01-01T00:00:00Z')", params![id,value.to_string()]).unwrap();
+            }
+            conn.execute("INSERT INTO relay_public_link_sources(link_id,publication_token,refreshed_at) VALUES ('encrypted','token','2026-01-01T00:00:00Z')", []).unwrap();
+        }
+        let legacy = read(Path("legacy".into()), State(state.clone())).await;
+        assert_eq!(legacy.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(legacy.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&bytes).unwrap()["title"],
+            "Legacy"
+        );
+        for _ in 0..2 {
+            let response = read(Path("encrypted".into()), State(state.clone())).await;
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let value: Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(value["ciphertext"], envelope()["ciphertext"]);
+            assert_eq!(value["stale"], true);
+            assert!(value.get("title").is_none());
+        }
+        drop(state);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

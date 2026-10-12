@@ -1,0 +1,35 @@
+{
+  "note": "Test-only fixed key and IV for browser/Rust interoperability.",
+  "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+  "snapshot": {
+    "title": "Encrypted test 字",
+    "createdAt": "2026-10-11T00:00:00Z",
+    "turnCount": 1,
+    "live": true,
+    "theme": "light",
+    "turns": [
+      {
+        "messages": [
+          {
+            "role": "user",
+            "text": "Test prompt [PHOTO image.png]",
+            "createdAt": null
+          },
+          {
+            "role": "assistant",
+            "text": "Test answer",
+            "createdAt": null
+          }
+        ]
+      }
+    ],
+    "images": {
+      "image.png": "data:image/png;base64,AA=="
+    }
+  },
+  "envelope": {
+    "version": 2,
+    "iv": "ICEiIyQlJicoKSor",
+    "ciphertext": "qRjSGRj0fywgXgegomqNiaQsiLzz5RCaTBPBhWumfGoH64Rw60F0rjbHTKBoOynl0xrBv6toHVH0Uk8nfIJQ__QEuX7k-ab5_gSdBYFsFUO5_kVhlcHybLoq7ghudPuxZ3YUdKQt-Zu9vogl14O_fQOztRnq_MJoI4FmaJD0oBJnn1_sVIJmk1-t1xlrTT6K9b5OTae64Khkbc5bqqOjorSFSA-Hoz_Dtfjp1ctLfM6Fw9LjFOHjHwiyi8WSX7frl4FMeAHqqCJ5ZpfMgL_O7vcHlG21tmDrYNF9fmt2P2hEYEyxvzsajydEuv-agfVj6FOQ6kFvZEfbW0ABKU4Wg7bmNnz3W0E2ny90HtuBuPuB46t0QTPi31pFVAp0iyLU9krBUPKasyFRoNBKiUCwAuuQLbRfyPzuwSDk6KJpUiTmaNeLCZd5hMQXqA"
+  }
+}

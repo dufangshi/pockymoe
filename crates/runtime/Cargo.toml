@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+aes-gcm = "0.10"
 async-trait.workspace = true
 base64.workspace = true
 chrono.workspace = true

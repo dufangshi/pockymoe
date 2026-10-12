@@ -86,6 +86,33 @@ fn send(from: &str, text: &str, notify: bool, key: &str) -> SendInput {
     }
 }
 
+fn decrypt_publication(envelope: &Value) -> Value {
+    use aes_gcm::{
+        aead::{Aead, KeyInit, Payload},
+        Aes256Gcm, Nonce,
+    };
+    use base64::Engine;
+    let fixture: Value =
+        serde_json::from_str(include_str!("../../../tests/fixtures/public-link-v2.json")).unwrap();
+    let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    let key = b64.decode(fixture["key"].as_str().unwrap()).unwrap();
+    let iv = b64.decode(envelope["iv"].as_str().unwrap()).unwrap();
+    let ciphertext = b64
+        .decode(envelope["ciphertext"].as_str().unwrap())
+        .unwrap();
+    let plaintext = Aes256Gcm::new_from_slice(&key)
+        .unwrap()
+        .decrypt(
+            Nonce::from_slice(&iv),
+            Payload {
+                msg: &ciphertext,
+                aad: b"pockymoe-public-link-v1",
+            },
+        )
+        .unwrap();
+    serde_json::from_slice(&plaintext).unwrap()
+}
+
 #[tokio::test]
 async fn publication_selects_history_and_includes_future_until_revoked() {
     let (_dir, s) = setup();
@@ -111,15 +138,29 @@ async fn publication_selects_history_and_includes_future_until_revoked() {
             pockymoe_runtime::publications::CreatePublication {
                 turn_ids: vec![first],
                 theme: "light".into(),
+                encryption_key: serde_json::from_str::<Value>(include_str!(
+                    "../../../tests/fixtures/public-link-v2.json"
+                ))
+                .unwrap()["key"]
+                    .as_str()
+                    .unwrap()
+                    .into(),
             },
         )
         .await
         .unwrap();
-    assert_eq!(publication["snapshot"]["turnCount"], 1);
+    assert_eq!(publication["snapshot"]["version"], 2);
+    assert!(publication["snapshot"].get("title").is_none());
+    assert!(!publication.to_string().contains("prompt 1"));
+    let original = decrypt_publication(&publication["snapshot"]);
+    assert_eq!(original["turnCount"], 1);
+    assert_eq!(original["theme"], "light");
     assert!(!publication.to_string().contains("prompt 2"));
     seed(3);
     let token = publication["token"].as_str().unwrap();
     let updated = s.read_publication(token).await.unwrap();
+    assert_ne!(updated["iv"], publication["snapshot"]["iv"]);
+    let updated = decrypt_publication(&updated);
     assert_eq!(updated["turnCount"], 2);
     assert!(updated.to_string().contains("answer 3"));
     assert!(!updated.to_string().contains("prompt 2"));
@@ -129,6 +170,16 @@ async fn publication_selects_history_and_includes_future_until_revoked() {
         .read_publication(&uuid::Uuid::new_v4().simple().to_string())
         .await
         .is_err());
+    // Previously persisted policies still produce plaintext for existing v1 links.
+    s.db.with(|conn| {
+        conn.execute(
+            "UPDATE kv SET value=json_remove(value,'$.encryptionKey') WHERE key=?1",
+            [format!("publication:{token}")],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(s.read_publication(token).await.unwrap()["turnCount"], 2);
     s.revoke_publication(token).unwrap();
     assert!(s.read_publication(token).await.is_err());
 }

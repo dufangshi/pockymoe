@@ -1,6 +1,7 @@
 import { LanguageSwitcher } from '@pockymoe/thread-ui/i18n';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { useEffect, useState } from 'react';
+import { decryptPublicSnapshot, PublicLinkKeyError } from '../lib/publicLinkCrypto';
 import { useParams } from 'react-router-dom';
 import {
   PublicTranscript,
@@ -13,6 +14,12 @@ export function PublicThreadPage() {
   const [snapshot, setSnapshot] = useState<PublicTranscriptSnapshot | null>(
     null,
   );
+  const [fragment, setFragment] = useState(location.hash);
+  useEffect(() => {
+    const changed = () => setFragment(location.hash);
+    window.addEventListener('hashchange', changed);
+    return () => window.removeEventListener('hashchange', changed);
+  }, []);
   const [error, setError] = useState('');
   useEffect(() => {
     const robots = document.createElement('meta');
@@ -36,7 +43,7 @@ export function PublicThreadPage() {
               ? translate("sharing.thisShareLinkIsUnavailableOrHas")
               : translate("sharing.unableToLoadThisSharedThread"),
           );
-        const value: PublicTranscriptSnapshot = await response.json();
+        const value = await decryptPublicSnapshot(await response.json(), fragment);
         if (controller.signal.aborted) return;
         setSnapshot(value);
         setError('');
@@ -44,8 +51,10 @@ export function PublicThreadPage() {
       } catch (error) {
         if (!controller.signal.aborted) {
           setSnapshot(null);
-          setError(error instanceof Error ? error.message : translate("sharing.unableToLoadThisSharedThread"));
-          timer = setTimeout(refresh, 5000);
+          setError(error instanceof PublicLinkKeyError
+            ? translate(error.reason === 'missing' ? "sharing.publicLinkKeyMissing" : "sharing.publicLinkKeyWrong")
+            : error instanceof Error ? error.message : translate("sharing.unableToLoadThisSharedThread"));
+          if (!(error instanceof PublicLinkKeyError)) timer = setTimeout(refresh, 5000);
         }
       }
     }
@@ -55,7 +64,7 @@ export function PublicThreadPage() {
       clearTimeout(timer);
       robots.remove();
     };
-  }, [id]);
+  }, [id, fragment]);
   useEffect(() => {
     if (!snapshot) return;
     const previous = document.documentElement.getAttribute(

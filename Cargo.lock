@@ -2443,6 +2443,7 @@ dependencies = [
 name = "pockymoe-runtime"
 version = "0.12.88"
 dependencies = [
+ "aes-gcm 0.10.3",
  "anyhow",
  "async-trait",
  "base64 0.22.1",

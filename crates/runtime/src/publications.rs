@@ -1,6 +1,10 @@
 //! Explicitly published transcripts. A capability can read only the owner's
 //! selected turns and turns created after publication, never a private DTO.
 use crate::Supervisor;
+use aes_gcm::{
+    aead::{rand_core::RngCore, Aead, KeyInit, OsRng, Payload},
+    Aes256Gcm, Nonce,
+};
 use anyhow::{ensure, Result};
 use base64::Engine;
 use pockymoe_protocol::{now_rfc3339, ThreadTurnDto};
@@ -14,6 +18,8 @@ use std::collections::HashSet;
 pub struct CreatePublication {
     pub turn_ids: Vec<String>,
     pub theme: String,
+    // Delivered only via the encrypted owner channel, never to the relay.
+    pub encryption_key: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -24,6 +30,9 @@ struct Publication {
     after_ordinal: i64,
     theme: String,
     created_at: String,
+    // None is only for already-stored plaintext v1 publication capabilities.
+    #[serde(default)]
+    encryption_key: Option<String>,
 }
 
 impl Supervisor {
@@ -36,6 +45,7 @@ impl Supervisor {
             !input.turn_ids.is_empty() && input.turn_ids.len() <= 10_000,
             "Select at least one turn"
         );
+        decode_key(&input.encryption_key)?;
         self.get_thread(thread)?;
         let token = uuid::Uuid::new_v4().simple().to_string();
         let policy = self.db.with(|conn| {
@@ -64,6 +74,7 @@ impl Supervisor {
                 }
                 .into(),
                 created_at: now_rfc3339(),
+                encryption_key: Some(input.encryption_key),
             })
         })?;
         self.db.with(|conn| {
@@ -177,7 +188,10 @@ impl Supervisor {
             snapshot.to_string().len() <= 16 * 1024 * 1024,
             "Published transcript exceeds 16 MB"
         );
-        Ok(snapshot)
+        match policy.encryption_key {
+            Some(key) => encrypt_snapshot(&snapshot, &key),
+            None => Ok(snapshot),
+        }
     }
 }
 
@@ -226,4 +240,89 @@ fn public_numbers(source: &Value, fields: &[&str]) -> Value {
             })
             .collect(),
     )
+}
+
+const PUBLIC_LINK_AAD: &[u8] = b"pockymoe-public-link-v1";
+
+fn decode_key(key: &str) -> Result<Vec<u8>> {
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(key)
+        .map_err(|_| anyhow::anyhow!("Invalid public link encryption key"))?;
+    ensure!(bytes.len() == 32, "Invalid public link encryption key");
+    Ok(bytes)
+}
+
+// Encrypt the entire projection, including title, theme and embedded images.
+// Each read gets a fresh IV; AES-GCM's appended tag and base64url encoding match
+// browser WebCrypto. The URL fragment contains the key, never the relay request.
+fn encrypt_snapshot(snapshot: &Value, key: &str) -> Result<Value> {
+    let cipher = Aes256Gcm::new_from_slice(&decode_key(key)?)
+        .map_err(|_| anyhow::anyhow!("Invalid public link encryption key"))?;
+    let mut iv = [0u8; 12];
+    OsRng.fill_bytes(&mut iv);
+    let plaintext = serde_json::to_vec(snapshot)?;
+    let ciphertext = cipher
+        .encrypt(
+            Nonce::from_slice(&iv),
+            Payload {
+                msg: &plaintext,
+                aad: PUBLIC_LINK_AAD,
+            },
+        )
+        .map_err(|_| anyhow::anyhow!("Unable to encrypt public transcript"))?;
+    let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    Ok(json!({"version":2,"iv":b64.encode(iv),"ciphertext":b64.encode(ciphertext)}))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn publication_crypto_uses_webcrypto_envelope_and_authenticates_every_field() {
+        let fixture: Value =
+            serde_json::from_str(include_str!("../../../tests/fixtures/public-link-v2.json"))
+                .unwrap();
+        let key = fixture["key"].as_str().unwrap();
+        let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        let cipher = Aes256Gcm::new_from_slice(&decode_key(key).unwrap()).unwrap();
+        let decrypt = |envelope: &Value, aad: &[u8]| {
+            let iv = b64.decode(envelope["iv"].as_str().unwrap()).unwrap();
+            let ciphertext = b64
+                .decode(envelope["ciphertext"].as_str().unwrap())
+                .unwrap();
+            cipher.decrypt(
+                Nonce::from_slice(&iv),
+                Payload {
+                    msg: &ciphertext,
+                    aad,
+                },
+            )
+        };
+        assert_eq!(
+            serde_json::from_slice::<Value>(
+                &decrypt(&fixture["envelope"], PUBLIC_LINK_AAD).unwrap()
+            )
+            .unwrap(),
+            fixture["snapshot"]
+        );
+        let encrypted = encrypt_snapshot(&fixture["snapshot"], key).unwrap();
+        assert_eq!(encrypted.as_object().unwrap().len(), 3);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&decrypt(&encrypted, PUBLIC_LINK_AAD).unwrap())
+                .unwrap(),
+            fixture["snapshot"]
+        );
+        assert!(decrypt(&encrypted, b"wrong domain").is_err());
+        let mut tampered = encrypted;
+        let mut bytes = b64
+            .decode(tampered["ciphertext"].as_str().unwrap())
+            .unwrap();
+        bytes[0] ^= 1;
+        tampered["ciphertext"] = json!(b64.encode(bytes));
+        assert!(decrypt(&tampered, PUBLIC_LINK_AAD).is_err());
+        for invalid in ["", "bad+/=", "AA"] {
+            assert!(decode_key(invalid).is_err());
+        }
+    }
 }
