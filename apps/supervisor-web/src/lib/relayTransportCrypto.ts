@@ -224,7 +224,7 @@ async function keyFor(
       }
     }
     const previous = certificate || pairingFingerprint ? undefined : await pinned(deviceId);
-    const invitePin = !pairingFingerprint && await inviteIdentityPin(deviceId);
+    const invitePin = !certificate && !pairingFingerprint && await inviteIdentityPin(deviceId);
     if (response.status === 404 && invitePin) throw new OwnerTrustError('ownerIdentityMismatch');
     if (response.status === 404 && !previous && !certificate && !pairingFingerprint) {
       reportTransport({ deviceId, state: 'legacy' });
@@ -304,7 +304,7 @@ async function keyFor(
         buffer(unb64(descriptor.identityKey)),
       ),
     );
-    const invitePinned = !pairingFingerprint && await checkInviteIdentity(deviceId, fingerprint);
+    const invitePinned = !certificate && !pairingFingerprint && await checkInviteIdentity(deviceId, fingerprint);
     if (pairingFingerprint && fingerprint !== pairingFingerprint) throw new OwnerTrustError('ownerIdentityMismatch');
     if (certificate && certificate.identityKey !== descriptor.identityKey) {
       reportTransport({ deviceId, state: 'identity-changed', paired: true, certificateVerified: true, fingerprint });
@@ -535,6 +535,10 @@ export async function exchange(
       const registration = await registered.response.json() as { sessionId: string; expiresAt: number; role?: 'owner' | 'grantee' };
       if (registration.sessionId !== owner.sessionId || registration.expiresAt !== owner.registration.expiresAt)
         throw new OwnerTrustError('ownerVerificationFailed');
+      if (registration.role !== undefined && registration.role !== 'owner' && registration.role !== 'grantee')
+        throw new OwnerTrustError('ownerVerificationFailed');
+      if ((registration.role ?? (key.grantee ? 'grantee' : 'owner')) === 'owner' && key.identityTrust !== 'certificate')
+        throw new OwnerTrustError('ownerCertificateUnavailable');
       if (registration.role) key.grantee = registration.role === 'grantee';
       await markSessionRegistered(owner, route.deviceId, registration.role ?? (key.grantee ? 'grantee' : 'owner'));
     }
@@ -856,6 +860,13 @@ export class SocketCipher {
 
 export async function sharingFingerprint(deviceId: string, threadId?: string) {
   const key = await keyFor(deviceId, threadId ? `/api/threads/${encodeURIComponent(threadId)}` : '/api/transport/grants', threadId);
+  if (!key || key.identityTrust !== 'certificate') throw new OwnerTrustError('ownerCertificateUnavailable');
+  return key.fingerprint;
+}
+
+// Recipients check a signed descriptor against their confirmed invite pin.
+export async function checkSharedInviteDevice(deviceId: string, threadId?: string) {
+  const key = await keyFor(deviceId, threadId ? `/api/threads/${encodeURIComponent(threadId)}` : '/api/workspaces', threadId);
   if (!key) throw new OwnerTrustError('ownerIdentityMismatch');
   return key.fingerprint;
 }

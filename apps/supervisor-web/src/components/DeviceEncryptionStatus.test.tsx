@@ -1,9 +1,17 @@
-import { act, fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { DeviceEncryptionStatus } from './DeviceEncryptionStatus';
 import { probeDeviceEncryption } from '../lib/relayTransport';
 import { notifyOwnerUnlocked } from '../lib/ownerUnlockRecovery';
 
+const pins = vi.hoisted(() => ({ get: vi.fn(), forget: vi.fn(), reset: vi.fn() }));
+vi.mock('../lib/ownerDeviceTrust', () => ({ inviteIdentityPin: pins.get, forgetInviteIdentity: pins.forget }));
+vi.mock('../lib/relayTransportCrypto', async (original) => ({ ...await original<object>(), resetPinnedDevice: pins.reset }));
+beforeEach(() => {
+  pins.get.mockReset().mockResolvedValue(undefined);
+  pins.forget.mockReset().mockResolvedValue(undefined);
+  pins.reset.mockReset().mockImplementation(() => new Promise(() => {}));
+});
 vi.mock('../lib/relayTransport', () => ({
   getTransportStatus: () => undefined,
   probeDeviceEncryption: vi.fn().mockResolvedValue(undefined),
@@ -97,4 +105,23 @@ describe('combined device connection indicator', () => {
     expect(screen.getByText('Device identity pinned by the invite link')).toBeVisible();
   });
 
+});
+
+it('offers forget pinned identity for a blocked invite and clears the pin before resetting transport identity', async () => {
+  pins.get.mockResolvedValue('bogus-pin');
+  render(<DeviceEncryptionStatus deviceId="device-1" />);
+  report('identity-changed', 'actual-fingerprint');
+  fireEvent.click(screen.getByRole('button', { name: 'Device identity changed' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Forget pinned identity' }));
+  await waitFor(() => expect(pins.reset).toHaveBeenCalledWith('device-1'));
+  expect(pins.forget).toHaveBeenCalledWith('device-1');
+  expect(pins.forget.mock.invocationCallOrder[0]).toBeLessThan(pins.reset.mock.invocationCallOrder[0]!);
+});
+it('does not offer to forget certificate-verified identity because of an obsolete invite pin', async () => {
+  pins.get.mockResolvedValue('obsolete-pin');
+  render(<DeviceEncryptionStatus deviceId="device-1" />);
+  act(() => window.dispatchEvent(new CustomEvent('remote-codex-transport', { detail: { deviceId: 'device-1', state: 'encrypted', certificateVerified: true, paired: true } })));
+  fireEvent.click(screen.getByRole('button', { name: 'Device connection encrypted' }));
+  await waitFor(() => expect(pins.get).toHaveBeenCalled());
+  expect(screen.queryByRole('button', { name: 'Forget pinned identity' })).not.toBeInTheDocument();
 });

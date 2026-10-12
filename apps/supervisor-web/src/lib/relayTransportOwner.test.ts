@@ -129,6 +129,8 @@ let ownerError: 'plain' | 'encrypted' | undefined;
 let registrationRevoked = false;
 let applicationRevoked = false;
 let grantee = false;
+let registrationOwner = false;
+let registrationInvalidRole = false;
 let grantDenied = false;
 function packet(body: string, status = 200, streamNext?: string) {
   const prefix = utf8(
@@ -152,7 +154,7 @@ beforeEach(async () => {
   state.recipient.mockReset().mockResolvedValue(false);
   state.invite.mockReset().mockResolvedValue(false);
   state.invitePin.mockReset().mockResolvedValue(undefined);
-  grantee = false; grantDenied = false;
+  grantee = false; grantDenied = false; registrationOwner = false; registrationInvalidRole = false;
   wires = [];
   ownerError = undefined;
   registrationRevoked = false;
@@ -258,7 +260,7 @@ beforeEach(async () => {
       const body = revoked ? '{"code":"owner_session_revoked"}' : target.pathname.endsWith('/owner-session')
         ? JSON.stringify({
             sessionId: vectors.session.sessionId,
-            ...(grantee ? { role: 'grantee' } : {}),
+            ...(registrationInvalidRole ? { role: 'unexpected' } : registrationOwner ? { role: 'owner' } : grantee ? { role: 'grantee' } : {}),
             expiresAt: (await sessionManager.currentOwnerSession())!
               .registration.expiresAt,
           })
@@ -590,4 +592,38 @@ describe('signed encrypted requests in main thread and service worker', () => {
     await verifyWires();
   });
 
+});
+
+it('refuses owner registration from an identity without a verified owner certificate', async () => {
+  grantee = true; registrationOwner = true;
+  state.recipient.mockResolvedValue(true);
+  state.certificate.mockResolvedValue(null);
+  await expect(transport.exchange(new Request(url('threads/thread'), { method: 'POST', body: '{}' }))).rejects.toMatchObject({ code: 'ownerCertificateUnavailable' });
+  expect(wires).toHaveLength(1);
+  expect(wires[0]!.path).toContain('/owner-session');
+  expect(state.store.get(`registration:${vectors.session.sessionId}:${device}`)).toBeUndefined();
+});
+it('copies fingerprints only from a certificate-verified handshake, never TOFU or invite pins', async () => {
+  expect(await transport.sharingFingerprint(device, 'thread')).toMatch(/^[A-Za-z0-9_-]{43}$/);
+  for (const invite of [false, true]) {
+    transport.clearTransportKeyCache(device);
+    grantee = true; state.recipient.mockResolvedValue(true);
+    state.certificate.mockResolvedValue(null); state.invite.mockResolvedValue(invite);
+    await expect(transport.sharingFingerprint(device, 'thread')).rejects.toMatchObject({ code: 'ownerCertificateUnavailable' });
+  }
+});
+it('ignores malicious invite pins when the descriptor matches a verified owner certificate', async () => {
+  state.invite.mockRejectedValue(new Error('Bogus invite'));
+  state.invitePin.mockResolvedValue('bogus-pin');
+  expect((await transport.exchange(new Request(url('threads/thread')))).response.status).toBe(200);
+  expect(state.invite).not.toHaveBeenCalled();
+  expect(state.invitePin).not.toHaveBeenCalled();
+});
+
+it('rejects an unknown registration role instead of treating it as owner access', async () => {
+  grantee = true; registrationInvalidRole = true;
+  state.recipient.mockResolvedValue(true); state.certificate.mockResolvedValue(null);
+  await expect(transport.exchange(new Request(url('threads/thread')))).rejects.toMatchObject({ code: 'ownerVerificationFailed' });
+  expect(wires).toHaveLength(1);
+  expect(state.store.get(`registration:${vectors.session.sessionId}:${device}`)).toBeUndefined();
 });

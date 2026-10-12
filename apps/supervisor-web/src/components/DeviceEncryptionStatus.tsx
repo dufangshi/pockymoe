@@ -14,7 +14,8 @@ import {
   probeDeviceEncryption,
   trustDeviceIdentity,
 } from '../lib/relayTransport';
-import { type TransportStatus } from '../lib/relayTransportCrypto';
+import { inviteIdentityPin, forgetInviteIdentity } from '../lib/ownerDeviceTrust';
+import { resetPinnedDevice, clearTransportKeyCache, type TransportStatus } from '../lib/relayTransportCrypto';
 import { DeviceTrustPanel } from './DeviceTrustPanel';
 import { FormDialog } from './FormDialog';
 import { ConfirmDialog } from './ConfirmDialog';
@@ -42,6 +43,13 @@ export function DeviceEncryptionStatus({
     deviceId ? getTransportStatus(deviceId) : undefined,
   );
   const [manage, setManage] = useState(false);
+  const [hasInvitePin, setHasInvitePin] = useState(false);
+  useEffect(() => {
+    let active = true;
+    setHasInvitePin(false);
+    if (deviceId) void inviteIdentityPin(deviceId).then((pin) => { if (active) setHasInvitePin(!!pin); }).catch(() => {});
+    return () => { active = false; };
+  }, [deviceId, status]);
   const [open, setOpen] = useState(false),
     [confirm, setConfirm] = useState<TransportStatus | null>(null);
   const [trustError, setTrustError] = useState<string | null>(null);
@@ -226,6 +234,14 @@ export function DeviceEncryptionStatus({
               {!status?.paired && <span className="block">{translate('auth.ownerPairInstructions')}</span>}
               {status?.role !== 'grantee' && <button className="relay-button-secondary px-3 py-2" onClick={() => { setOpen(false); setManage(true); }}>{translate('auth.ownerManage')}</button>}
             </span>}
+            {deviceId && hasInvitePin && !status?.certificateVerified && <button className="relay-button-secondary px-3 py-2" onClick={() => {
+              void forgetInviteIdentity(deviceId).then(() => resetPinnedDevice(deviceId)).then(() => {
+                clearTransportKeyCache(deviceId);
+                navigator.serviceWorker?.controller?.postMessage({ type: 'remote-codex-reset-transport', deviceId });
+                setHasInvitePin(false);
+                location.reload();
+              }).catch((error: unknown) => setTrustError(error instanceof Error ? error.message : translate('auth.unableToSaveDeviceIdentity')));
+            }}>{translate('sharing.forgetInviteIdentity')}</button>}
             {trustError && <span role="alert">{trustError}</span>}
             {changed && !status?.paired && status?.identityKey && (
               <button
