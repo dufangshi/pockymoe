@@ -10,11 +10,11 @@ const state = vi.hoisted(() => ({
 vi.mock('../lib/api', () => ({
   enableRelayMode: vi.fn(),
   fetchRelaySession: state.session,
+  fetchRelayPortal: async () => ({ devices: [{ id: 'device', name: 'Test device' }] }),
 }));
-vi.mock('../lib/ownerDeviceTrust', () => ({ pinInviteIdentity: state.pin }));
+vi.mock('../lib/sharedDeviceTrust', () => ({ pinInviteOwner: state.pin, checkSharedInviteDevice: state.fingerprint }));
 vi.mock('../lib/relayTransportCrypto', () => ({
   clearTransportKeyCache: state.clear,
-  sharingFingerprint: state.fingerprint,
 }));
 import { SharedInvitePage } from './SharedInvitePage';
 const identity = 'g'.repeat(43);
@@ -41,11 +41,14 @@ beforeEach(() => {
   window.history.replaceState(
     null,
     '',
-    '/shared#v=1&device=device&identity=' + identity + '&thread=thread',
+    '/shared#v=2&device=device&owner=' + identity + '&thread=thread',
   );
 });
 it('pins the invite before checking the signed descriptor, then navigates to the encoded thread', async () => {
   mount();
+  expect(state.pin).not.toHaveBeenCalled();
+  expect(await screen.findByText('Device: Test device (device)')).toBeVisible();
+  fireEvent.click(screen.getByRole('button', { name: 'Confirm owner account key' }));
   expect(await screen.findByTestId('destination')).toHaveTextContent(
     '/devices/device/threads/thread',
   );
@@ -56,17 +59,22 @@ it('pins the invite before checking the signed descriptor, then navigates to the
   );
   expect(sessionStorage.getItem('pockymoe-pending-invite')).toBeNull();
 });
-it('keeps the invite pin and fragment across sign-in without sending them in the login URL', async () => {
+it('keeps the fragment across sign-in without saving a pin without sending them in the login URL', async () => {
   state.session.mockResolvedValue({ authenticated: false });
   const rendered = mount();
+  expect(state.pin).not.toHaveBeenCalled();
   const signin = await screen.findByRole('link', { name: 'Sign in' });
   expect(signin).toHaveAttribute('href', '/relay-portal');
-  expect(state.pin).toHaveBeenCalledWith('device', identity);
+  expect(state.pin).not.toHaveBeenCalled();
   expect(state.fingerprint).not.toHaveBeenCalled();
   rendered.unmount();
   window.history.replaceState(null, '', '/shared');
   state.session.mockResolvedValue({ authenticated: true });
+  state.pin.mockClear();
   mount();
+  expect(state.pin).not.toHaveBeenCalled();
+  expect(await screen.findByText('Device: Test device (device)')).toBeVisible();
+  fireEvent.click(screen.getByRole('button', { name: 'Confirm owner account key' }));
   expect(await screen.findByTestId('destination')).toHaveTextContent(
     '/devices/device/threads/thread',
   );
@@ -74,13 +82,14 @@ it('keeps the invite pin and fragment across sign-in without sending them in the
 it('shows a hard mismatch error instead of navigating or attempting to unlock', async () => {
   state.fingerprint.mockRejectedValue(new Error('Device identity mismatch'));
   mount();
+  fireEvent.click(await screen.findByRole('button', { name: 'Confirm owner account key' }));
   expect(await screen.findByRole('alert')).toHaveTextContent(
     'Device identity mismatch',
   );
   expect(screen.queryByTestId('destination')).not.toBeInTheDocument();
 });
 it('rejects malformed fragments before a relay request', async () => {
-  window.history.replaceState(null, '', '/shared#v=2&device=device');
+  window.history.replaceState(null, '', '/shared#v=1&device=device');
   mount();
   expect(await screen.findByRole('alert')).toHaveTextContent(/invalid/);
   expect(state.session).not.toHaveBeenCalled();

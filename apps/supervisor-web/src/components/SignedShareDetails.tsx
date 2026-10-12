@@ -1,19 +1,20 @@
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { useEffect, useState } from 'react';
 import type { RelayPortalSummaryDto } from '@pockymoe/shared';
-import { hasDeviceCertificate } from '../lib/ownerDeviceTrust';
-import { prepareOwnerUnlock, fetchOwnerCredentials } from '../lib/ownerSession';
-import type { OwnerCredential } from '../lib/ownerTrustCrypto';
 import {
-  sharingFingerprint,
-  clearTransportKeyCache,
-} from '../lib/relayTransportCrypto';
+  isProtectedSharingDevice,
+  locallyCertifiedDevices,
+  sharingOwnerAccountKeyId,
+  type PublicAccount,
+} from '../lib/sharedDeviceTrust';
+import { currentAccount } from '../lib/accountVault';
+import { clearTransportKeyCache } from '../lib/relayTransportCrypto';
 import { sharedInviteUrl } from '../lib/sharedInvite';
 import {
   confirmRecipient,
   recipientVerified,
   safetyCode,
-  recipientPasskeys,
+  recipientAccount,
   deviceGrants,
   reconcileGrants,
   syncDeviceGrant,
@@ -33,61 +34,53 @@ export function SignedShareDetails({
   row: ShareRow;
 }) {
   useI18n();
-  const [credentials, setCredentials] = useState<OwnerCredential[]>();
+  const [account, setAccount] = useState<PublicAccount>();
   const [code, setCode] = useState('');
   const [verified, setVerified] = useState(false);
   const [entry, setEntry] = useState<Reconciliation>();
-  const [unlock, setUnlock] =
-    useState<Awaited<ReturnType<typeof prepareOwnerUnlock>>>();
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState(false);
   const [revision, setRevision] = useState(0);
   const [copied, setCopied] = useState(false);
-  const [needsUnlock, setNeedsUnlock] = useState(false);
+  const [inviteOwnerKeyId, setInviteOwnerKeyId] = useState<string>();
   useEffect(() => {
     const refresh = () => setRevision((r) => r + 1);
-    window.addEventListener('remote-codex-owner-unlocked', refresh);
+    window.addEventListener('remote-codex-account-unlocked', refresh);
     return () =>
-      window.removeEventListener('remote-codex-owner-unlocked', refresh);
+      window.removeEventListener('remote-codex-account-unlocked', refresh);
   }, []);
   useEffect(() => {
     let active = true;
     setError(undefined);
     setEntry(undefined);
-    setUnlock(undefined);
-    setCredentials(undefined);
-    setNeedsUnlock(false);
+    setAccount(undefined);
+    setInviteOwnerKeyId(undefined);
+    if (row.deviceConnected !== false) void sharingOwnerAccountKeyId(row.deviceId)
+      .then((value) => { if (active) setInviteOwnerKeyId(value); }).catch(() => {});
     void (async () => {
-      if (!(await hasDeviceCertificate(row.deviceId))) return;
-      const records = await recipientPasskeys(kind, row.id);
+      if (!(await isProtectedSharingDevice(row.deviceId))) return;
+      const recipient = await recipientAccount(kind, row.id);
       const [nextCode, confirmed] = await Promise.all([
-        safetyCode(records),
-        recipientVerified(records),
+        safetyCode(recipient.accountKeyId),
+        recipientVerified(recipient),
       ]);
       if (!active) return;
-      setCredentials(records);
+      setAccount(recipient);
       setCode(nextCode);
       setVerified(confirmed);
       if (row.deviceConnected === false) {
-        setError(translate('sharing.pairedOnline'));
+        setError(translate('sharing.protectedOnline'));
         return;
       }
-      const prepare = await prepareOwnerUnlock();
-      if (active) setUnlock(() => prepare);
       const grants = await deviceGrants(row.deviceId);
       if (active)
         setEntry(
-          reconcileGrants([{ kind, row, credentials: records }], grants)[0],
+          reconcileGrants([{ kind, row, account: recipient }], grants)[0],
         );
     })().catch((e: unknown) => {
       if (active) {
-        setNeedsUnlock(
-          e instanceof Error &&
-            'code' in e &&
-            e.code === 'owner_session_required',
-        );
         setError(
-          e instanceof Error ? e.message : translate('auth.ownerTrustFailed'),
+          e instanceof Error ? e.message : translate('sharing.deviceCertificateInvalid'),
         );
       }
     });
@@ -96,62 +89,31 @@ export function SignedShareDetails({
     };
   }, [kind, row, revision]);
   function update() {
-    if (!unlock) return;
-    const proof = unlock(); // WebAuthn starts directly in this user gesture.
     setBusy(true);
     setError(undefined);
-    void proof
-      .then(async () => {
-        clearTransportKeyCache(row.deviceId);
-        await syncDeviceGrant(kind, row);
-        setRevision((r) => r + 1);
-      })
-      .catch((e: unknown) =>
-        setError(
-          e instanceof Error ? e.message : translate('auth.ownerTrustFailed'),
-        ),
-      )
+    clearTransportKeyCache(row.deviceId);
+    void syncDeviceGrant(kind, row)
+      .then(() => setRevision((r) => r + 1))
+      .catch((error: unknown) => setError(error instanceof Error ? error.message : translate('sharing.deviceCertificateInvalid')))
       .finally(() => setBusy(false));
   }
   return (
     <div className="space-y-2 py-2 text-xs">
-      {credentials && (
+      {account && (
         <>
-          {credentials.length ? (
-            <>
-              <p>
-                {translate('sharing.safetyCode')}: <code>{code}</code> ·{' '}
-                {translate(
-                  verified ? 'sharing.verified' : 'sharing.unverified',
-                )}
-              </p>
-              <p className="text-[var(--theme-fg-muted)]">
-                {translate('sharing.safetyHelp')}
-              </p>
-              {!verified && (
-                <button
-                  className={button}
-                  disabled={busy}
-                  onClick={() => {
-                    setBusy(true);
-                    void confirmRecipient(credentials)
-                      .then(() => setVerified(true))
-                      .catch((e: unknown) =>
-                        setError(
-                          e instanceof Error
-                            ? e.message
-                            : translate('auth.ownerTrustFailed'),
-                        ),
-                      )
-                      .finally(() => setBusy(false));
-                  }}
-                >
-                  {translate('sharing.confirmSafety')}
-                </button>
-              )}
-            </>
-          ) : (
-            <p>{translate('sharing.recipientNeedsPasskey')}</p>
+          <p>
+            {translate('sharing.safetyCode')}: <code>{code}</code> ·{' '}
+            {translate(verified ? 'sharing.verified' : 'sharing.unverified')}
+          </p>
+          <p className="text-[var(--theme-fg-muted)]">{translate('sharing.safetyHelp')}</p>
+          {!verified && (
+            <button className={button} disabled={busy} onClick={() => {
+              setBusy(true);
+              void confirmRecipient(account)
+                .then(() => setVerified(true))
+                .catch((error: unknown) => setError(error instanceof Error ? error.message : translate('sharing.accountKeyMismatch')))
+                .finally(() => setBusy(false));
+            }}>{translate('sharing.confirmSafety')}</button>
           )}
         </>
       )}
@@ -162,15 +124,14 @@ export function SignedShareDetails({
         <p role="status">{translate('sharing.permissionsDiffer')}</p>
       )}
       {entry?.state === 'changed' && (
-        <p role="status">{translate('sharing.newPasskeys')}</p>
+        <p role="status">{translate('sharing.recipientKeyChanged')}</p>
       )}
-      {(needsUnlock || (entry && entry.state !== 'active')) && (
+      {(entry?.state !== 'active' && account) && (
         <button
           className={button}
           disabled={
             busy ||
-            !unlock ||
-            !credentials?.length ||
+            !account ||
             row.deviceConnected === false
           }
           onClick={update}
@@ -178,22 +139,22 @@ export function SignedShareDetails({
           {translate(
             entry?.state === 'changed' || entry?.state === 'different'
               ? 'sharing.updateGrant'
-              : 'sharing.confirmPasskey',
+              : 'sharing.confirmGrant',
           )}
         </button>
       )}
-      <button
+      {inviteOwnerKeyId && <button
         className={button}
         disabled={busy || row.deviceConnected === false}
         onClick={() => {
           setBusy(true);
           setError(undefined);
-          void sharingFingerprint(row.deviceId, row.threadId ?? undefined)
-            .then((fingerprint) =>
+          void sharingOwnerAccountKeyId(row.deviceId)
+            .then((ownerAccountKeyId) =>
               navigator.clipboard.writeText(
                 sharedInviteUrl(location.origin, {
                   deviceId: row.deviceId,
-                  identity: fingerprint,
+                  ownerAccountKeyId,
                   ...(row.threadId ? { threadId: row.threadId } : {}),
                 }),
               ),
@@ -203,14 +164,14 @@ export function SignedShareDetails({
               setError(
                 e instanceof Error
                   ? e.message
-                  : translate('auth.ownerTrustFailed'),
+                  : translate('sharing.deviceCertificateInvalid'),
               ),
             )
             .finally(() => setBusy(false));
         }}
       >
         {translate(copied ? 'sharing.inviteCopied' : 'sharing.copyInvite')}
-      </button>
+      </button>}
       {error && <p role="alert">{error}</p>}
     </div>
   );
@@ -232,17 +193,16 @@ export function OrphanDeviceGrants({
   const [busy, setBusy] = useState(false);
   useEffect(() => {
     const refresh = () => setRevision((r) => r + 1);
-    window.addEventListener('remote-codex-owner-unlocked', refresh);
+    window.addEventListener('remote-codex-account-unlocked', refresh);
     return () =>
-      window.removeEventListener('remote-codex-owner-unlocked', refresh);
+      window.removeEventListener('remote-codex-account-unlocked', refresh);
   }, []);
   useEffect(() => {
     let active = true;
     void (async () => {
       const found: { deviceId: string; grant: DeviceGrant }[] = [];
-      for (const device of portal.devices.filter((d) => d.connected)) {
-        if (!(await hasDeviceCertificate(device.id))) continue;
-        const grants = await deviceGrants(device.id);
+      for (const deviceId of await locallyCertifiedDevices()) {
+        const grants = await deviceGrants(deviceId);
         for (const grant of grants.filter(
           (g) =>
             g.relayRef.kind === kind &&
@@ -252,10 +212,10 @@ export function OrphanDeviceGrants({
             kind === 'share' ? portal.sharedByMe : (portal.grantsByMe ?? []);
           if (
             !rows.some(
-              (r) => r.deviceId === device.id && r.id === grant.relayRef.id,
+              (r) => r.deviceId === deviceId && r.id === grant.relayRef.id,
             )
           )
-            found.push({ deviceId: device.id, grant });
+            found.push({ deviceId, grant });
         }
       }
       if (active) {
@@ -265,7 +225,7 @@ export function OrphanDeviceGrants({
     })().catch((e: unknown) => {
       if (active)
         setError(
-          e instanceof Error ? e.message : translate('auth.ownerTrustFailed'),
+          e instanceof Error ? e.message : translate('sharing.deviceCertificateInvalid'),
         );
     });
     return () => {
@@ -290,7 +250,7 @@ export function OrphanDeviceGrants({
                   setError(
                     e instanceof Error
                       ? e.message
-                      : translate('auth.ownerTrustFailed'),
+                      : translate('sharing.deviceCertificateInvalid'),
                   ),
                 )
                 .finally(() => setBusy(false));
@@ -314,9 +274,9 @@ export function AccountSafetyCode({ revision }: { revision?: unknown }) {
   const [error, setError] = useState<string>();
   useEffect(() => {
     let active = true;
-    void fetchOwnerCredentials()
-      .then(async (records) => {
-        const next = records.length ? await safetyCode(records) : '';
+    void currentAccount()
+      .then(async (account) => {
+        const next = account ? await safetyCode(account.accountKeyId) : '';
         if (active) {
           setCode(next);
           setError(undefined);
@@ -325,7 +285,7 @@ export function AccountSafetyCode({ revision }: { revision?: unknown }) {
       .catch((e: unknown) => {
         if (active)
           setError(
-            e instanceof Error ? e.message : translate('auth.ownerTrustFailed'),
+            e instanceof Error ? e.message : translate('sharing.deviceCertificateInvalid'),
           );
       });
     return () => {
@@ -341,7 +301,7 @@ export function AccountSafetyCode({ revision }: { revision?: unknown }) {
           <p>{translate('sharing.safetyRecipient')}</p>
         </>
       ) : (
-        !error && <p>{translate('sharing.recipientNeedsPasskey')}</p>
+        !error && <p>{translate('sharing.accountNotConfigured')}</p>
       )}
       {error && <p role="alert">{error}</p>}
     </div>

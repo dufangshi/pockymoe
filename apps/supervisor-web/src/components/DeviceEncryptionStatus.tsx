@@ -15,7 +15,8 @@ import {
   trustDeviceIdentity,
 } from '../lib/relayTransport';
 import { useDeviceProtection, protectionLabel } from '../lib/useDeviceProtection';
-import { type TransportStatus } from '../lib/relayTransportCrypto';
+import { inviteOwnerPin, forgetInviteOwner } from '../lib/sharedDeviceTrust';
+import { resetPinnedDevice, clearTransportKeyCache, type TransportStatus } from '../lib/relayTransportCrypto';
 import { DeviceTrustPanel } from './DeviceTrustPanel';
 import { FormDialog } from './FormDialog';
 import { ConfirmDialog } from './ConfirmDialog';
@@ -44,6 +45,13 @@ export function DeviceEncryptionStatus({
   );
   const protection = useDeviceProtection(deviceId, status);
   const [manage, setManage] = useState(false);
+  const [hasInvitePin, setHasInvitePin] = useState(false);
+  useEffect(() => {
+    let active = true;
+    setHasInvitePin(false);
+    if (deviceId) void inviteOwnerPin(deviceId).then((pin) => { if (active) setHasInvitePin(!!pin); }).catch(() => {});
+    return () => { active = false; };
+  }, [deviceId, status]);
   const [open, setOpen] = useState(false),
     [confirm, setConfirm] = useState<TransportStatus | null>(null);
   const [trustError, setTrustError] = useState<string | null>(null);
@@ -229,6 +237,14 @@ export function DeviceEncryptionStatus({
               {protection === 'not-protected' && <span className="block">{translate('devices.protectDeviceHelp')}</span>}
               {status?.role !== 'grantee' && <button className="relay-button-secondary px-3 py-2" onClick={() => { setOpen(false); setManage(true); }}>{translate('auth.ownerManage')}</button>}
             </span>}
+            {deviceId && hasInvitePin && !status?.certificateVerified && <button className="relay-button-secondary px-3 py-2" onClick={() => {
+              void forgetInviteOwner(deviceId).then(() => resetPinnedDevice(deviceId)).then(() => {
+                clearTransportKeyCache(deviceId);
+                navigator.serviceWorker?.controller?.postMessage({ type: 'remote-codex-reset-transport', deviceId });
+                setHasInvitePin(false);
+                location.reload();
+              }).catch((error: unknown) => setTrustError(error instanceof Error ? error.message : translate('auth.unableToSaveDeviceIdentity')));
+            }}>{translate('sharing.forgetInviteIdentity')}</button>}
             {trustError && <span role="alert">{trustError}</span>}
             {changed && protection === 'not-protected' && status?.identityKey && (
               <button

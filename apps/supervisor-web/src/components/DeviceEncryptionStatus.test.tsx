@@ -6,6 +6,14 @@ import { currentAccount, boundDevices } from '../lib/accountVault';
 import { listPendingEnrollments } from '../lib/deviceEnrollment';
 import { notifyOwnerUnlocked } from '../lib/ownerUnlockRecovery';
 
+const pins = vi.hoisted(() => ({ get: vi.fn(), forget: vi.fn(), reset: vi.fn() }));
+vi.mock('../lib/sharedDeviceTrust', () => ({ inviteOwnerPin: pins.get, forgetInviteOwner: pins.forget }));
+vi.mock('../lib/relayTransportCrypto', async (original) => ({ ...await original<object>(), resetPinnedDevice: pins.reset }));
+beforeEach(() => {
+  pins.get.mockReset().mockResolvedValue(undefined);
+  pins.forget.mockReset().mockResolvedValue(undefined);
+  pins.reset.mockReset().mockImplementation(() => new Promise(() => {}));
+});
 vi.mock('../lib/relayTransport', () => ({
   getTransportStatus: () => undefined,
   probeDeviceEncryption: vi.fn().mockResolvedValue(undefined),
@@ -97,14 +105,33 @@ describe('combined device connection indicator', () => {
     act(() => window.dispatchEvent(new CustomEvent('remote-codex-transport', { detail: {
       deviceId: 'device-1', state: 'encrypted', paired: true, role: 'grantee', identityTrust: 'tofu', certificateVerified: false,
     } })));
-    fireEvent.click(screen.getByRole('button', { name: /identity trusted on first use/ }));
-    expect(screen.getByText(/Device identity trusted on first use/)).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: /owner account trusted on first use/ }));
+    expect(screen.getByText(/Owner account key trusted on first use/)).toBeVisible();
     expect(screen.queryByRole('button', { name: 'Manage device trust' })).not.toBeInTheDocument();
     act(() => window.dispatchEvent(new CustomEvent('remote-codex-transport', { detail: {
       deviceId: 'device-1', state: 'encrypted', paired: true, role: 'grantee', identityTrust: 'invite', certificateVerified: false,
     } })));
-    expect(screen.getByRole('button', { name: /invite identity pinned/ })).toBeVisible();
-    expect(screen.getByText('Device identity pinned by the invite link')).toBeVisible();
+    expect(screen.getByRole('button', { name: /invited owner account verified/ })).toBeVisible();
+    expect(screen.getByText("Device certificate verified with the invited owner's account key")).toBeVisible();
   });
 
+});
+
+it('offers forget pinned identity for a blocked invite and clears the pin before resetting transport identity', async () => {
+  pins.get.mockResolvedValue('bogus-pin');
+  render(<DeviceEncryptionStatus deviceId="device-1" />);
+  report('identity-changed', 'actual-fingerprint');
+  fireEvent.click(screen.getByRole('button', { name: 'Device identity changed' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Forget pinned owner account' }));
+  await waitFor(() => expect(pins.reset).toHaveBeenCalledWith('device-1'));
+  expect(pins.forget).toHaveBeenCalledWith('device-1');
+  expect(pins.forget.mock.invocationCallOrder[0]).toBeLessThan(pins.reset.mock.invocationCallOrder[0]!);
+});
+it('does not offer to forget certificate-verified identity because of an obsolete invite pin', async () => {
+  pins.get.mockResolvedValue('obsolete-pin');
+  render(<DeviceEncryptionStatus deviceId="device-1" />);
+  act(() => window.dispatchEvent(new CustomEvent('remote-codex-transport', { detail: { deviceId: 'device-1', state: 'encrypted', certificateVerified: true, paired: true } })));
+  fireEvent.click(screen.getByRole('button', { name: 'Device connection encrypted' }));
+  await waitFor(() => expect(pins.get).toHaveBeenCalled());
+  expect(screen.queryByRole('button', { name: 'Forget pinned owner account' })).not.toBeInTheDocument();
 });
