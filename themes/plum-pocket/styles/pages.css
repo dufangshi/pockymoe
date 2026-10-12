@@ -389,7 +389,7 @@
 :theme [data-page='relay-portal'] > header > a:first-child img { display: none; }
 :theme [data-page='relay-portal'] > header > a:last-child { min-height: 40px; height: 40px; padding-inline: 12px 14px; border-radius: 999px; }
 :theme [data-page='relay-portal'] > div { padding-top: 12px; }
-:theme :is([data-page='relay-portal'], [data-page='login'], [data-page='admin-verify']) section:is(.rounded-lg, .rounded-xl) {
+:theme :is([data-page='relay-portal'], [data-page='login'], [data-page='admin-verify']) section:is(.rounded-lg, .rounded-xl, .auth-card) {
   position: relative;
   margin-top: 64px;
   padding: 72px 24px 24px;
@@ -398,7 +398,7 @@
   background: var(--theme-panel);
   box-shadow: var(--theme-shadow);
 }
-:theme :is([data-page='relay-portal'], [data-page='login']) section:is(.rounded-lg, .rounded-xl)::before {
+:theme :is([data-page='relay-portal'], [data-page='login']) section:is(.rounded-lg, .rounded-xl, .auth-card)::before {
   content: '';
   position: absolute;
   top: -64px;
@@ -418,6 +418,13 @@
 :theme [data-page='relay-portal'] section [role='tablist'] { margin-top: 18px; padding: 4px; border-radius: 999px; }
 :theme [data-page='relay-portal'] section [role='tablist'] > [role='tab'] { border-radius: 999px; white-space: nowrap; font-weight: 700; }
 :theme :is([data-page='relay-portal'], [data-page='login']) section :is(.relay-button-primary, .ui-action-primary)[type='submit'] { min-height: 46px; border-radius: 999px; font-weight: 800; }
+/* Account cards: the mascot replaces the icon; secondary actions and inputs stay soft. */
+:theme [data-page='relay-portal'] .auth-card .auth-card-icon { display: none; }
+:theme [data-page='relay-portal'] .auth-card .auth-subtitle { text-align: center; }
+:theme [data-page='relay-portal'] .auth-card :is(.relay-button-secondary, .ui-action-danger) { border-radius: 999px; }
+:theme [data-page='relay-portal'] .auth-card .relay-input { border-radius: 14px; }
+:theme [data-page='relay-portal'] .auth-card :is(.auth-segment, .auth-segment > button) { border-radius: 999px; }
+:theme [data-page='relay-portal'] > header .auth-topbar-link { border-radius: 999px; }
 /* Server login: the mascot replaces the brand row; its eyebrow (Supervisor or Relay
    Admin) stays as a small chip above the title. */
 :theme [data-page='login'] section > div:first-child { display: flex; flex-direction: column; align-items: center; margin-bottom: 18px; }
@@ -614,8 +621,8 @@
   :theme [data-page='relay-home'] > div > section:first-of-type::after { justify-self: center; width: 200px; height: 140px; margin-bottom: 14px; }
   :theme [data-page='relay-home'] > div > section:first-of-type > h1 { font-size: 27px; }
   :theme [data-page='relay-home'] > div > section:last-of-type ol { grid-template-columns: 1fr; gap: 10px; }
-  :theme :is([data-page='relay-portal'], [data-page='login']) section:is(.rounded-lg, .rounded-xl) { margin-top: 56px; padding: 64px 18px 20px; }
-  :theme :is([data-page='relay-portal'], [data-page='login']) section:is(.rounded-lg, .rounded-xl)::before { top: -52px; width: 140px; height: 100px; }
+  :theme :is([data-page='relay-portal'], [data-page='login']) section:is(.rounded-lg, .rounded-xl, .auth-card) { margin-top: 56px; padding: 64px 18px 20px; }
+  :theme :is([data-page='relay-portal'], [data-page='login']) section:is(.rounded-lg, .rounded-xl, .auth-card)::before { top: -52px; width: 140px; height: 100px; }
   :theme [data-page='relay-portal'] > header > a:last-child { min-height: 44px; height: 44px; }
   :theme [data-page='relay-portal'] > header > a:first-child { min-height: 44px; }
   :theme [data-page='admin'] [role='tablist'] > [role='tab'] { min-height: 44px; }

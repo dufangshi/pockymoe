@@ -2562,3 +2562,19 @@ main:has(.product-navigation) { padding-top: 0 !important; }
   flex-direction: column;
   max-height: min(calc(100dvh - 2rem), 48rem);
 }
+
+/* Account sign-in pages: the language picker keeps its accessible name but shows only the select. */
+.auth-topbar .auth-language > span {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+.auth-topbar .auth-language select {
+  min-height: 36px !important;
+  padding: 6px 8px !important;
+  border-radius: 10px !important;
+  font-size: 13px;
+}

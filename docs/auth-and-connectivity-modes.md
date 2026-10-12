@@ -231,9 +231,9 @@ Relay portal:
 - `/relay-portal` lets users log in or register with email, username, and password.
   The browser derives an authentication key and an encrypted account vault from
   the password, so the relay never receives it; registration also shows a
-  one-time account recovery code. An account created before account keys signs
-  in once with the explicit **First sign-in since the security upgrade** choice,
-  which sends its password, and then secures the account.
+  one-time account recovery code. An account created before account keys fails
+  its first ordinary sign-in and is then offered **Continue with this password**,
+  which sends its password once, and then secures the account.
 - registered users can create multiple devices.
 - creating a device returns a permanent `rcd_...` device token; it can be copied again by the device owner and is revoked only when replaced or the device is deleted. Creating a device and fetching, issuing or replacing its token need a sign-in or verification within the last 10 minutes.
 - each device token maps one running private Pockymoe supervisor to that user.

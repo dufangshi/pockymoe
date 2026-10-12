@@ -43,15 +43,22 @@ export async function startAccountLogin(identifier: string, password: string) {
   } catch (e) { keys.wrapKey.fill(0); throw e; }
 }
 export function legacyUpgradeEnabled() { return import.meta.env.VITE_POCKYMOE_LEGACY_UPGRADE !== '0'; }
-/** True when a failed sign-in could be an account that has not been secured yet. */
-export async function legacyUpgradeMayApply(_login: string) {
-  if (!legacyUpgradeEnabled()) return false;
-  return !await hasOpenedAccountVault();
+async function knownSecuredLogin(login: string) {
+  const known = await accountStore<string>(loginCacheKey(login));
+  return !!known && !!await accountStore(`cache:${known}`);
+}
+/**
+ * Whether a failed sign-in may offer the one-time upgrade: never for a name this
+ * browser has opened a vault for, and with a warning (`otherVault`) when it has
+ * opened any vault.
+ */
+export async function legacyUpgradeOffer(login: string) {
+  if (!legacyUpgradeEnabled() || await knownSecuredLogin(login)) return null;
+  return { otherVault: await hasOpenedAccountVault() };
 }
 export async function startLegacyUpgrade(login: string, password: string, confirmedExistingVault = false) {
   cancelAccountLogin();
-  const known = await accountStore<string>(loginCacheKey(login));
-  if (!legacyUpgradeEnabled() || (known && await accountStore(`cache:${known}`))) throw new AccountTrustError('accountLoginDowngrade');
+  if (!legacyUpgradeEnabled() || await knownSecuredLogin(login)) throw new AccountTrustError('accountLoginDowngrade');
   if (await hasOpenedAccountVault() && !confirmedExistingVault) throw new AccountTrustError('accountUpgradeConfirmationRequired');
   pendingIdentifier = login;
   return accountRequest<RelayLoginResultDto>('/relay/auth/login', 'POST', { login, password, upgrade: true });

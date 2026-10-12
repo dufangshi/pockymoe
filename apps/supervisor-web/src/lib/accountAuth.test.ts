@@ -244,6 +244,7 @@ it('caches both session username and email after verifying a vault, even when si
   await auth.finishAccountLogin(v.userId, { username: 'CanonicalUser', email: 'Account@Example.invalid' });
   for (const login of ['CANONICALUSER', 'account@example.invalid']) {
     state.fetch.mockClear();
+    expect(await auth.legacyUpgradeOffer(login)).toBeNull();
     await expect(auth.startLegacyUpgrade(login, 'must stay local', true)).rejects.toMatchObject({ code: 'accountLoginDowngrade' });
     expect(state.fetch).not.toHaveBeenCalled();
   }
@@ -251,16 +252,16 @@ it('caches both session username and email after verifying a vault, even when si
 it('requires an explicit warning confirmation before upgrading another account when any vault was opened', async () => {
   await auth.startAccountLogin('known', 'local'); await auth.finishAccountLogin(v.userId);
   await vault.logoutAccount(); state.fetch.mockClear();
-  expect(await auth.legacyUpgradeMayApply('unrecognized')).toBe(false);
+  expect(await auth.legacyUpgradeOffer('unrecognized')).toEqual({ otherVault: true });
   await expect(auth.startLegacyUpgrade('other legacy', 'must stay local')).rejects.toMatchObject({ code: 'accountUpgradeConfirmationRequired' });
   expect(state.fetch).not.toHaveBeenCalled();
   await auth.startLegacyUpgrade('other legacy', 'explicit old password', true);
   expect(JSON.parse(state.fetch.mock.calls[0]![1].body)).toEqual({ login: 'other legacy', password: 'explicit old password', upgrade: true });
 });
-it('does not restore the legacy sign-in hint after Start over clears the last cached vault', async () => {
+it('keeps warning about the upgrade after Start over clears the last cached vault', async () => {
   await vault.openVault(v, 'local');
   state.store.delete(`cache:${v.userId}`);
-  expect(await auth.legacyUpgradeMayApply('new spelling')).toBe(false);
+  expect(await auth.legacyUpgradeOffer('new spelling')).toEqual({ otherVault: true });
 });
 it('posts the existing browser certificate after OAuth login without reopening the key window', async () => {
   await auth.startAccountLogin('user', 'local'); await auth.finishAccountLogin(v.userId);

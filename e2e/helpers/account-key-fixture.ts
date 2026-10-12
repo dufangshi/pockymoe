@@ -109,8 +109,23 @@ export async function sendPrompt(page: Page, marker: string) {
   await page.getByRole('button', { name: 'Send Prompt', exact: true }).click();
   await expect(page.getByText(marker, { exact: true })).toBeVisible();
 }
+/** In-app unlock prompts are titled by purpose; all of them unlock with the password. */
+export const UNLOCK_DIALOG = /^(Unlock this browser|Confirm with your password|This browser was removed)$/;
+/** Reads the recovery code shown in groups of four after it was stored. */
+export async function readRecoveryCode(page: Page) {
+  const group = page.getByRole('group', { name: 'Save your recovery code', exact: true });
+  await expect(group).toBeVisible();
+  return group.evaluate(element => [...element.querySelectorAll('span')].map(span => span.textContent?.trim()).join('-'));
+}
+/** Confirms the recovery code step with its last four characters. */
+export async function confirmRecoveryCode(page: Page, code: string) {
+  const saved = page.getByRole('button', { name: 'I\u2019ve saved it', exact: true }).or(page.getByRole('button', { name: "I've saved it", exact: true }));
+  await expect(saved).toBeDisabled();
+  await page.getByLabel('Type the last 4 characters to confirm', { exact: true }).fill(code.slice(-4));
+  await saved.click();
+}
 export async function unlock(page: Page, password: string) {
-  const dialog = page.getByRole('dialog', { name: 'Unlock this browser', exact: true });
+  const dialog = page.getByRole('dialog', { name: UNLOCK_DIALOG });
   await expect(dialog).toBeVisible();
   await dialog.getByLabel('Password', { exact: true }).fill(password);
   const button = dialog.getByRole('button', { name: 'Unlock', exact: true });
@@ -130,7 +145,7 @@ export async function approveGrant(page: Page, password: string, unverified = fa
   await expect(review).toBeVisible();
   if (unverified) await review.getByRole('checkbox').check();
   await review.getByRole('button', { name: 'Confirm to sign these permissions.', exact: true }).click();
-  if (await page.getByRole('dialog', { name: 'Unlock this browser', exact: true }).isVisible()) await unlock(page, password);
+  if (await page.getByRole('dialog', { name: UNLOCK_DIALOG }).isVisible()) await unlock(page, password);
   await expect(review).toHaveCount(0);
 }
 
@@ -215,20 +230,17 @@ export class Fixture {
   async account(username: string, capture = false): Promise<Account & { username: string }> {
     const { context, page } = await this.context();
     await page.goto(this.base + '/relay-portal?returnTo=%2Frelay-account');
-    await page.getByRole('tab', { name: 'Create account', exact: true }).click();
+    await page.getByRole('button', { name: 'Create account', exact: true }).click();
     await page.getByLabel('Email', { exact: true }).fill(`${username}@example.test`);
     await page.getByLabel('Username', { exact: true }).fill(username);
     await page.getByLabel('Password', { exact: true }).fill(this.password);
+    await page.getByLabel('Confirm password', { exact: true }).fill(this.password);
     if (capture) await screenshot(page, this.info, 'v2-register');
-    await page.getByRole('button', { name: 'Create account', exact: true }).click();
-    const confirm = page.getByLabel('Re-type the last group to confirm you saved it', { exact: true });
-    await expect(confirm).toBeVisible();
-    const recovery = (await page.locator('code').textContent())!.trim(); this.secrets.push(recovery);
+    await page.locator('form button[type="submit"]').click();
+    const recovery = await readRecoveryCode(page); this.secrets.push(recovery);
     expect(/^[0-9A-HJKMNP-TV-Z]{4}(-[0-9A-HJKMNP-TV-Z]{4}){7}$/.test(recovery), 'Recovery format').toBe(true);
-    await expect(page.getByRole('button', { name: 'Continue', exact: true })).toBeDisabled();
     if (capture) await screenshot(page, this.info, 'v2-recovery-confirmation');
-    await confirm.fill(recovery.slice(-4));
-    await page.getByRole('button', { name: 'Continue', exact: true }).click();
+    await confirmRecoveryCode(page, recovery);
     await expect(page.getByRole('heading', { name: 'Security', exact: true })).toBeVisible();
     return this.accountMetadata({ page, context, recovery, password: this.password, username } as Account & { username: string });
   }
@@ -287,7 +299,7 @@ export class Fixture {
     // Runtimes that support remote binding offer it first; this fixture exercises
     // the local command, which the panel prepares only after an explicit choice.
     const local = dialog.getByRole('button', { name: 'Show local bind command', exact: true });
-    const unlockDialog = page.getByRole('dialog', { name: 'Unlock this browser', exact: true });
+    const unlockDialog = page.getByRole('dialog', { name: UNLOCK_DIALOG });
     await expect(local.or(unlockDialog)).toBeVisible();
     if (await local.isVisible()) await local.click();
     await unlock(page, owner.password);

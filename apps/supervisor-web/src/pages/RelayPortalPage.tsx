@@ -1,123 +1,84 @@
-import { finishAccountLogin, startLegacyUpgrade, legacyUpgradeEnabled, legacyUpgradeMayApply, hasOpenedAccountVault, registerAccount, startAccountRecovery, startTemporaryResetLogin, cancelAccountLogin, isOAuthAccount, type PreparedRegistration } from '../lib/accountAuth';
-import { requireUnlock } from '../lib/accountVault';
-import { ensureBrowserAccess, RecoveryConfirmation } from '../components/AccountUnlockPrompt';
-import { createVault, openVault, registerBrowser, changeAccountPassword, AccountTrustError } from '../lib/accountVaultState';
-import { relayUrl } from '../lib/relayOrigin';
-import { LanguageSwitcher } from '@pockymoe/thread-ui/i18n';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
-import { LoginVerification, usePendingLogin } from '../components/RelaySecurity';
-import { ArrowLeft, BookOpen, Eye, EyeOff } from 'lucide-react';
-import {
-  FormEvent,
-  useEffect,
-  useId,
-  useMemo,
-  useState,
-  type KeyboardEvent as ReactKeyboardEvent,
-} from 'react';
-import { Link, useLocation, useNavigate } from 'react-router-dom';
+import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 
 import type { RelaySessionDto } from '@pockymoe/shared';
+import { AccountSetupFlow } from '../components/auth/AccountSetupFlow';
+import { AuthCard, AuthDivider, AuthField, AuthLink, AuthLoading, AuthNotice, AuthShell, AuthSubmit, OAuthButtons, RecoveryCodeStep, SignedInFooter } from '../components/auth/AuthUi';
+import { LoginVerification, usePendingLogin } from '../components/RelaySecurity';
 import {
-  ApiError,
-  enableRelayMode,
-  fetchRelaySession,
-  relayLogin,
-  relayLogout,
-} from '../lib/api';
-
-type AuthMode = 'login' | 'register' | 'recover' | 'reset' | 'upgrade';
+  cancelAccountLogin,
+  finishAccountLogin,
+  isOAuthAccount,
+  legacyUpgradeOffer,
+  registerAccount,
+  startAccountRecovery,
+  startLegacyUpgrade,
+  startTemporaryResetLogin,
+} from '../lib/accountAuth';
+import { AccountTrustError, changeAccountPassword, createVault, openVault, registerBrowser } from '../lib/accountVaultState';
+import { ApiError, enableRelayMode, fetchRelaySession, relayLogin, relayLogout } from '../lib/api';
 
 const DEFAULT_RETURN_TO = '/relay-devices';
 const RETURN_TO_STORAGE_KEY = 'remote-codex-relay-return-to';
 
-function errorMessage(caught: unknown, fallback: string) {
-  return caught instanceof ApiError
-    ? caught.payload.message
-    : caught instanceof Error
-      ? caught.message
-      : fallback;
+function errorMessage(caught: unknown, fallback = translate('auth.unableToAuthenticateWithTheRelay')) {
+  // A rejected password login reaches the browser as a generic 401.
+  if (caught instanceof AccountTrustError && caught.code === 'unauthorized') return translate('auth.invalid_credentials');
+  if (caught instanceof ApiError) return caught.payload.message;
+  return caught instanceof Error ? caught.message : fallback;
 }
 
 function safeReturnTo(value: unknown) {
-  if (
-    typeof value !== 'string' ||
-    !value.startsWith('/') ||
-    value.startsWith('//')
-  ) {
-    return null;
-  }
-
+  if (typeof value !== 'string' || !value.startsWith('/') || value.startsWith('//')) return null;
   try {
     const base = 'https://pockymoe.invalid';
     const parsed = new URL(value, base);
-    const path = `${parsed.pathname}${parsed.search}${parsed.hash}`;
-    if (
-      parsed.origin !== base ||
-      parsed.pathname === '/relay-portal' ||
-      parsed.pathname.startsWith('/relay-admin')
-    ) {
-      return null;
-    }
-    return path;
+    if (parsed.origin !== base || parsed.pathname === '/relay-portal' || parsed.pathname.startsWith('/relay-admin')) return null;
+    return `${parsed.pathname}${parsed.search}${parsed.hash}`;
   } catch {
     return null;
   }
 }
 
 function storedReturnTo() {
-  if (typeof window === 'undefined') {
-    return null;
-  }
-  try {
-    return safeReturnTo(window.sessionStorage.getItem(RETURN_TO_STORAGE_KEY));
-  } catch {
-    return null;
-  }
+  try { return safeReturnTo(window.sessionStorage.getItem(RETURN_TO_STORAGE_KEY)); } catch { return null; }
 }
 
 function resolveReturnTo(search: string, state: unknown) {
   const queryValue = safeReturnTo(new URLSearchParams(search).get('returnTo'));
-  const stateValue =
-    state && typeof state === 'object' && 'returnTo' in state
-      ? safeReturnTo((state as { returnTo?: unknown }).returnTo)
-      : null;
+  const stateValue = state && typeof state === 'object' && 'returnTo' in state
+    ? safeReturnTo((state as { returnTo?: unknown }).returnTo) : null;
   return queryValue ?? stateValue ?? storedReturnTo() ?? DEFAULT_RETURN_TO;
 }
 
 function rememberReturnTo(returnTo: string) {
-  if (typeof window === 'undefined') {
-    return;
-  }
-  try {
-    window.sessionStorage.setItem(RETURN_TO_STORAGE_KEY, returnTo);
-  } catch {
-    // Authentication still works when storage is unavailable.
-  }
+  try { window.sessionStorage.setItem(RETURN_TO_STORAGE_KEY, returnTo); } catch { /* storage is optional */ }
 }
 
 function forgetReturnTo() {
-  if (typeof window === 'undefined') {
-    return;
-  }
-  try {
-    window.sessionStorage.removeItem(RETURN_TO_STORAGE_KEY);
-  } catch {
-    // There may be nothing to clear in restricted browser contexts.
-  }
+  try { window.sessionStorage.removeItem(RETURN_TO_STORAGE_KEY); } catch { /* nothing to clear */ }
 }
 
+function pendingChallenge(result: { authenticator?: boolean; passkey?: boolean }) {
+  return { challengeRequired: true as const, authenticator: Boolean(result.authenticator), passkey: Boolean(result.passkey) };
+}
+
+/** What happens right after the relay accepted a sign-in or a registration. */
+type Finished =
+  | { kind: 'setup'; oauth: boolean; password?: string | undefined; name: string | null }
+  | { kind: 'recovery-code'; code: string; pending: boolean };
+
 export function RelayPortalPage() {
-  const { locale: i18nLocale } = useI18n();
+  useI18n();
   const navigate = useNavigate();
   const location = useLocation();
-  const returnTo = useMemo(
-    () => resolveReturnTo(location.search, location.state),
-    [location.search, location.state],
-  );
+  const returnTo = useMemo(() => resolveReturnTo(location.search, location.state), [location.search, location.state]);
   const [session, setSession] = useState<RelaySessionDto | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [finished, setFinished] = useState<Finished | null>(null);
 
   function continueToRequestedPage() {
     forgetReturnTo();
@@ -125,569 +86,305 @@ export function RelayPortalPage() {
   }
 
   async function load() {
-    setLoading(true);
-    setError(null);
+    setLoading(true); setError(null);
     try {
       enableRelayMode();
-      const nextSession = await fetchRelaySession();
-      if (nextSession.authenticated && nextSession.user?.role === 'admin') {
-        const signedOutSession = await relayLogout();
-        setSession(signedOutSession);
-        return;
-      }
-      setSession(nextSession);
-      if (nextSession.authenticated) {
-        continueToRequestedPage();
-      }
+      const next = await fetchRelaySession();
+      if (next.authenticated && next.user?.role === 'admin') { setSession(await relayLogout()); return; }
+      setSession(next);
+      // The account gate in front of the app finishes setup, unlock and resets.
+      if (next.authenticated) continueToRequestedPage();
     } catch (caught) {
       setSession(null);
-      setError(errorMessage(caught, translate("auth.unableToLoadTheRelayPortal")));
+      setError(errorMessage(caught, translate('auth.unableToLoadTheRelayPortal')));
     } finally {
       setLoading(false);
     }
   }
 
-  useEffect(() => {
-    rememberReturnTo(returnTo);
-    void load();
-  }, []);
+  useEffect(() => { rememberReturnTo(returnTo); void load(); }, []);
 
-  async function handleAuthenticated() {
+  /** Called once the relay accepted the credentials (and any second factor). */
+  async function handleAuthenticated(password?: string) {
     enableRelayMode();
-    const nextSession = await fetchRelaySession();
-    if (nextSession.user?.role === 'admin') {
-      const signedOutSession = await relayLogout();
-      setSession(signedOutSession);
-      throw new Error(translate("auth.thisPortalAcceptsRelayUserAccountsOnly"));
+    const next = await fetchRelaySession();
+    if (next.user?.role === 'admin') {
+      setSession(await relayLogout());
+      throw new Error(translate('auth.thisPortalAcceptsRelayUserAccountsOnly'));
     }
-    if (!nextSession.user) throw new Error(translate('auth.accountUnlockRequired'));
-    const flow = await finishAccountLogin(nextSession.user.id, nextSession.user);
+    if (!next.user) throw new Error(translate('auth.accountUnlockRequired'));
+    const flow = await finishAccountLogin(next.user.id, next.user);
+    if (flow.setup) {
+      setFinished({ kind: 'setup', oauth: await isOAuthAccount(), password, name: next.user.username || next.user.email || null });
+      return;
+    }
     continueToRequestedPage();
   }
 
-  if (loading) {
-    return (
-      <RelayFrame>
-        <div
-          aria-live="polite"
-          className="w-full max-w-md py-12 text-sm text-[var(--theme-fg-muted)]"
-          role="status"
-        >
-          {translate("auth.checkingRelaySession")}</div>
-      </RelayFrame>
-    );
+  function signOutOfSetup() {
+    void relayLogout().catch(() => undefined).finally(() => { setFinished(null); void load(); });
   }
 
-  if (!session?.authenticated) {
-    const searchParams = new URLSearchParams(location.search);
+  if (loading) return <AuthLoading />;
+  if (finished?.kind === 'setup') {
     return (
-      <RelayFrame>
-        <RelayAuthPanel
-          initialError={error}
-          oauthError={searchParams.get('oauthError')}
-          oauthNotice={
-            searchParams.has('oauthPending')
-              ? translate("auth.oAuthRegistrationReceivedAnAdminMustApprove")
-              : null
-          }
-          onAuthenticated={handleAuthenticated}
-          onRetry={error ? load : undefined}
-          registrationEnabled={session?.registrationEnabled ?? false}
-          settings={session?.registrationSettings}
+      <AuthShell>
+        <AccountSetupFlow
+          footer={<SignedInFooter name={finished.name} onSignOut={signOutOfSetup} />}
+          initialPassword={finished.password}
+          oauth={finished.oauth}
+          onDone={continueToRequestedPage}
+          onReauthenticate={signOutOfSetup}
         />
-      </RelayFrame>
+      </AuthShell>
     );
   }
+  if (finished?.kind === 'recovery-code') {
+    return (
+      <AuthShell>
+        <RecoveryCodeStep code={finished.code} onDone={() => {
+          if (!finished.pending) { continueToRequestedPage(); return; }
+          setFinished(null); setNotice(translate('auth.ui.pendingApproval'));
+        }} />
+      </AuthShell>
+    );
+  }
+  if (session?.authenticated) return <AuthLoading />;
 
+  const params = new URLSearchParams(location.search);
   return (
-    <RelayFrame>
-      <div
-        aria-live="polite"
-        className="w-full max-w-md py-12 text-sm text-[var(--theme-fg-muted)]"
-        role="status"
-      >
-        {translate("auth.openingYourRelayWorkspace")}</div>
-    </RelayFrame>
+    <AuthShell>
+      <SignInPanel
+        initialError={error ?? params.get('oauthError')}
+        initialNotice={notice ?? (params.has('oauthPending') ? translate('auth.oAuthRegistrationReceivedAnAdminMustApprove') : null)}
+        onAuthenticated={handleAuthenticated}
+        onRegistered={(code, pending) => setFinished({ kind: 'recovery-code', code, pending })}
+        onRetry={error ? load : undefined}
+        registrationEnabled={session?.registrationEnabled ?? false}
+        settings={session?.registrationSettings}
+      />
+    </AuthShell>
   );
 }
 
-function RelayAuthPanel({
-  registrationEnabled,
-  settings,
-  oauthNotice,
-  oauthError,
-  initialError,
-  onAuthenticated,
-  onRetry,
-}: {
+type View = 'signin' | 'register' | 'reset';
+
+function SignInPanel({ registrationEnabled, settings, initialError, initialNotice, onAuthenticated, onRegistered, onRetry }: {
   registrationEnabled: boolean;
   settings: RelaySessionDto['registrationSettings'];
-  oauthNotice: string | null;
-  oauthError: string | null;
   initialError: string | null;
-  onAuthenticated: () => Promise<void>;
+  initialNotice: string | null;
+  onAuthenticated: (password?: string) => Promise<void>;
+  onRegistered: (recoveryCode: string, pendingApproval: boolean) => void;
   onRetry: (() => Promise<void>) | undefined;
 }) {
-  const { locale: i18nLocale } = useI18n();
-  const loginTabId = useId();
-  const registerTabId = useId();
-  const panelId = useId();
-  const [mode, setMode] = useState<AuthMode>('login');
+  useI18n();
+  const [view, setView] = useState<View>('signin');
   const [challenge, setChallenge] = usePendingLogin();
   const [identifier, setIdentifier] = useState('');
-  const [email, setEmail] = useState('');
-  const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
-  const [prepared, setPrepared] = useState<PreparedRegistration>();
-  const [recoveryNewPassword, setRecoveryNewPassword] = useState('');
-  const [registrationPassword, setRegistrationPassword] = useState('');
-  const [error, setError] = useState(initialError ?? oauthError);
-  const [notice, setNotice] = useState<string | null>(oauthNotice);
-  const [submitting, setSubmitting] = useState(false);
-  const [upgradeWarning, setUpgradeWarning] = useState<boolean>();
-  const [upgradeConfirmed, setUpgradeConfirmed] = useState(false);
-  const registrationPasswordRequired =
-    settings?.registrationPasswordConfigured ??
-    Boolean(settings?.registrationPassword);
+  const [error, setError] = useState<string | null>(initialError);
+  const [notice, setNotice] = useState<string | null>(initialNotice);
+  const [busy, setBusy] = useState(false);
+  // Shown after a failed sign-in: older accounts finish the upgrade with their old password.
+  const [legacy, setLegacy] = useState<null | { otherVault: boolean }>(null);
+  const [legacyConfirmed, setLegacyConfirmed] = useState(false);
+  // The password a legacy upgrade signed in with, reused to create the vault.
+  const [upgradePassword, setUpgradePassword] = useState<string>();
 
-  useEffect(() => {
-    setError(initialError ?? oauthError);
-  }, [initialError, oauthError]);
-  useEffect(() => {
-    setUpgradeConfirmed(false); setUpgradeWarning(undefined);
-    if (mode !== 'upgrade') return;
-    let active = true;
-    void hasOpenedAccountVault().then(value => { if (active) setUpgradeWarning(value); })
-      .catch(caught => { if (active) setError(errorMessage(caught, translate('auth.accountRequestFailed'))); });
-    return () => { active = false; };
-  }, [mode]);
+  useEffect(() => { setError(initialError); }, [initialError]);
+  useEffect(() => { setNotice(initialNotice); }, [initialNotice]);
+  function go(next: View) { setView(next); setError(null); setNotice(null); setLegacy(null); setPassword(''); }
 
-  function selectMode(nextMode: AuthMode) {
-    if (nextMode === 'register' && !registrationEnabled) {
-      return;
-    }
-    setMode(nextMode);
-    setError(null);
-  }
-
-  function handleModeKeyDown(
-    event: ReactKeyboardEvent<HTMLButtonElement>,
-    currentMode: AuthMode,
-  ) {
-    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) {
-      return;
-    }
-    event.preventDefault();
-    const nextMode: AuthMode =
-      event.key === 'Home'
-        ? 'login'
-        : event.key === 'End'
-          ? registrationEnabled
-            ? 'register'
-            : 'login'
-          : currentMode === 'login' && registrationEnabled
-            ? 'register'
-            : 'login';
-    selectMode(nextMode);
-    window.requestAnimationFrame(() => {
-      document
-        .getElementById(nextMode === 'login' ? loginTabId : registerTabId)
-        ?.focus();
-    });
-  }
-
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setSubmitting(true);
-    setError(null);
-    setNotice(null);
+  async function signIn(event: FormEvent) {
+    event.preventDefault(); setBusy(true); setError(null); setNotice(null); setLegacy(null);
     try {
-      if (mode === 'recover') {
-        const result = await startAccountRecovery(identifier, password);
-        if (result.challengeRequired) { setChallenge({ challengeRequired: true, authenticator: Boolean(result.authenticator), passkey: Boolean(result.passkey) }); return; }
-      } else if (mode === 'reset') {
-        const result = await startTemporaryResetLogin(identifier, password); setPassword('');
-        if (result.challengeRequired) { setChallenge({ challengeRequired: true, authenticator: Boolean(result.authenticator), passkey: Boolean(result.passkey) }); return; }
-      } else if (mode === 'upgrade') {
-        const result = await startLegacyUpgrade(identifier, password, upgradeConfirmed); setPassword('');
-        if (result.challengeRequired) { setChallenge({ challengeRequired: true, authenticator: Boolean(result.authenticator), passkey: Boolean(result.passkey) }); return; }
-      } else if (mode === 'login') {
-        const result = await relayLogin({ identifier, password });
-        setPassword('');
-        if (result.challengeRequired) {
-          setChallenge({ challengeRequired: true, authenticator: Boolean(result.authenticator), passkey: Boolean(result.passkey) });
-          return;
-        }
-      } else {
-        if (!prepared) {
-          if (username.trim().length < 3) throw new Error(translate('auth.usernameMustBeAtLeast3Characters'));
-          setPrepared(await createVault(crypto.randomUUID(), password));
-          return;
-        }
-        const code = registrationPassword.trim();
-        const result = await registerAccount({ email, username, ...(code ? { registrationPassword: code } : {}) }, prepared);
-        if (!result.pendingApproval) { await openVault(prepared.vault, password); await registerBrowser(); }
-        if (result.pendingApproval) {
-          setPrepared(undefined);
-          setNotice(
-            translate("auth.registrationRequestSentAnAdminMustApprove"),
-          );
-          setMode('login');
-          return;
-        }
-      }
-      await completeAuthentication();
+      const result = await relayLogin({ identifier, password });
+      if (result.challengeRequired) { setChallenge(pendingChallenge(result)); return; }
+      setPassword('');
+      await onAuthenticated();
     } catch (caught) {
-      if ((caught as { code?: string }).code === 'user_id_taken') setPrepared(undefined);
-      const message = errorMessage(caught, translate("auth.unableToAuthenticateWithTheRelay"));
-      // A not-yet-secured account cannot sign in with a derived key; point to the explicit upgrade.
-      setError(mode === 'login' && caught instanceof AccountTrustError && await legacyUpgradeMayApply(identifier)
-        ? `${message} ${translate('auth.accountLoginLegacyHint')}` : message);
-    } finally {
-      setSubmitting(false);
-    }
+      setError(errorMessage(caught));
+      // A not-yet-secured account fails the derived-key sign-in like a wrong password.
+      if (caught instanceof AccountTrustError && caught.code === 'unauthorized') {
+        setLegacy(await legacyUpgradeOffer(identifier)); setLegacyConfirmed(false);
+      }
+    } finally { setBusy(false); }
   }
 
-  async function completeAuthentication() {
-    if (mode === 'recover') {
+  async function upgrade() {
+    setBusy(true); setError(null);
+    try {
+      const result = await startLegacyUpgrade(identifier, password, legacy?.otherVault ?? false);
+      const typed = password;
+      setUpgradePassword(typed); setPassword(''); setLegacy(null);
+      if (result.challengeRequired) { setChallenge(pendingChallenge(result)); return; }
+      await onAuthenticated(typed);
+    } catch (caught) { setError(errorMessage(caught)); }
+    finally { setBusy(false); }
+  }
+
+  if (challenge) {
+    return (
+      <LoginVerification
+        challenge={challenge}
+        onBack={() => { cancelAccountLogin(); setChallenge(null); setUpgradePassword(undefined); }}
+        onSuccess={() => onAuthenticated(upgradePassword)}
+      />
+    );
+  }
+  if (view === 'register') return <RegisterCard onBack={() => go('signin')} onRegistered={onRegistered} settings={settings} />;
+  if (view === 'reset') return <ResetPasswordCard onAuthenticated={onAuthenticated} onBack={() => go('signin')} onChallenge={setChallenge} />;
+
+  const oauth = settings?.googleAuthEnabled || settings?.githubAuthEnabled;
+  return (
+    <AuthCard
+      footer={registrationEnabled
+        ? <span>{translate('auth.ui.newHere')} <AuthLink onClick={() => go('register')}>{translate('auth.createAccount')}</AuthLink></span>
+        : undefined}
+      title={translate('auth.ui.signInTitle')}
+    >
+      {notice ? <AuthNotice tone="info">{notice}</AuthNotice> : null}
+      {oauth ? <><OAuthButtons github={settings?.githubAuthEnabled} google={settings?.googleAuthEnabled} /><AuthDivider /></> : null}
+      <form className="space-y-4" onSubmit={signIn}>
+        <AuthField autoComplete="username" autoFocus disabled={busy} label={translate('auth.emailOrUsername')} name="identifier" onChange={setIdentifier} spellCheck={false} value={identifier} />
+        <AuthField
+          aside={<AuthLink disabled={busy} onClick={() => go('reset')}>{translate('auth.ui.forgotPassword')}</AuthLink>}
+          autoComplete="current-password" disabled={busy} label={translate('auth.password')} name="password" onChange={setPassword} type="password" value={password}
+        />
+        {error ? (
+          <AuthNotice>
+            <p>{error}</p>
+            {onRetry && error === initialError ? <button className="mt-2 font-medium underline" onClick={() => void onRetry()} type="button">{translate('auth.retryConnection')}</button> : null}
+          </AuthNotice>
+        ) : null}
+        {legacy ? (
+          <div className="auth-legacy space-y-3 rounded-xl border border-[var(--theme-border)] p-3.5 text-sm">
+            <p className="font-medium text-[var(--theme-fg)]">{translate('auth.ui.legacyTitle')}</p>
+            <p className="text-[var(--theme-fg-muted)]">{translate(legacy.otherVault ? 'auth.ui.legacyOtherAccount' : 'auth.ui.legacyBody')}</p>
+            {legacy.otherVault ? (
+              <label className="flex items-start gap-2 text-[var(--theme-fg)]">
+                <input checked={legacyConfirmed} className="mt-1" disabled={busy} onChange={e => setLegacyConfirmed(e.target.checked)} type="checkbox" />
+                {translate('auth.accountUpgradeExistingVaultConfirm')}
+              </label>
+            ) : null}
+            <button className="relay-button-secondary h-10 w-full" disabled={busy || !password || (legacy.otherVault && !legacyConfirmed)} onClick={() => void upgrade()} type="button">
+              {translate('auth.ui.legacyAction')}
+            </button>
+          </div>
+        ) : null}
+        <AuthSubmit busy={busy} disabled={!identifier || !password}>{translate('auth.signIn')}</AuthSubmit>
+      </form>
+    </AuthCard>
+  );
+}
+
+function RegisterCard({ settings, onBack, onRegistered }: {
+  settings: RelaySessionDto['registrationSettings'];
+  onBack: () => void;
+  onRegistered: (recoveryCode: string, pendingApproval: boolean) => void;
+}) {
+  useI18n();
+  const [email, setEmail] = useState(''), [username, setUsername] = useState('');
+  const [password, setPassword] = useState(''), [confirm, setConfirm] = useState(''), [code, setCode] = useState('');
+  const [busy, setBusy] = useState(false), [error, setError] = useState<string | null>(null);
+  const codeRequired = settings?.registrationPasswordConfigured ?? Boolean(settings?.registrationPassword);
+
+  async function submit(event: FormEvent) {
+    event.preventDefault(); setError(null);
+    if (username.trim().length < 3) { setError(translate('auth.usernameMustBeAtLeast3Characters')); return; }
+    if (password !== confirm) { setError(translate('auth.ui.passwordMismatch')); return; }
+    setBusy(true);
+    try {
+      // The vault is stored with the account, so the recovery code is valid once shown.
+      const prepared = await createVault(crypto.randomUUID(), password);
+      const trimmed = code.trim();
+      const result = await registerAccount({ email, username, ...(trimmed ? { registrationPassword: trimmed } : {}) }, prepared);
+      if (!result.pendingApproval) { await openVault(prepared.vault, password); await registerBrowser(); }
+      onRegistered(prepared.recoveryCode, Boolean(result.pendingApproval));
+    } catch (caught) { setError(errorMessage(caught)); }
+    finally { setBusy(false); }
+  }
+
+  const oauth = settings?.googleAuthEnabled || settings?.githubAuthEnabled;
+  return (
+    <AuthCard
+      footer={<span>{translate('auth.ui.haveAccount')} <AuthLink onClick={onBack}>{translate('auth.signIn')}</AuthLink></span>}
+      title={translate('auth.ui.registerTitle')}
+    >
+      {oauth ? <><OAuthButtons github={settings?.githubAuthEnabled} google={settings?.googleAuthEnabled} /><AuthDivider /></> : null}
+      <form className="space-y-4" onSubmit={submit}>
+        <AuthField autoComplete="email" autoFocus disabled={busy} inputMode="email" label={translate('auth.email')} name="email" onChange={setEmail} type="email" value={email} />
+        <AuthField autoComplete="username" disabled={busy} label={translate('auth.username')} minLength={3} name="username" onChange={setUsername} spellCheck={false} value={username} />
+        <AuthField autoComplete="new-password" disabled={busy} hint={translate('auth.ui.passwordRule')} label={translate('auth.password')} minLength={12} name="password" onChange={setPassword} type="password" value={password} />
+        <AuthField autoComplete="new-password" disabled={busy} label={translate('auth.ui.confirmPassword')} name="confirm" onChange={setConfirm} type="password" value={confirm} />
+        <AuthField autoComplete="one-time-code" disabled={busy} label={translate(codeRequired ? 'auth.registrationCode' : 'auth.ui.registrationCodeOptional')} name="registrationCode" onChange={setCode} required={codeRequired} value={code} />
+        {error ? <AuthNotice>{error}</AuthNotice> : null}
+        <AuthSubmit busy={busy}>{translate('auth.createAccount')}</AuthSubmit>
+      </form>
+    </AuthCard>
+  );
+}
+
+function ResetPasswordCard({ onBack, onAuthenticated, onChallenge }: {
+  onBack: () => void;
+  onAuthenticated: (password?: string) => Promise<void>;
+  onChallenge: (challenge: ReturnType<typeof pendingChallenge>) => void;
+}) {
+  useI18n();
+  const [method, setMethod] = useState<'code' | 'temporary'>('code');
+  const [identifier, setIdentifier] = useState(''), [secret, setSecret] = useState('');
+  const [password, setPassword] = useState(''), [confirm, setConfirm] = useState('');
+  const [busy, setBusy] = useState(false), [error, setError] = useState<string | null>(null);
+
+  async function submit(event: FormEvent) {
+    event.preventDefault(); setError(null);
+    if (method === 'code' && password !== confirm) { setError(translate('auth.ui.passwordMismatch')); return; }
+    setBusy(true);
+    try {
+      if (method === 'temporary') {
+        // The account gate then asks for the recovery code and a new password.
+        const result = await startTemporaryResetLogin(identifier, secret); setSecret('');
+        if (result.challengeRequired) { onChallenge(pendingChallenge(result)); return; }
+        await onAuthenticated(); return;
+      }
+      const result = await startAccountRecovery(identifier, secret);
+      if (result.challengeRequired) { onChallenge(pendingChallenge(result)); return; }
       const session = await fetchRelaySession();
       if (!session.user) throw new Error(translate('auth.accountUnlockRequired'));
       await finishAccountLogin(session.user.id, session.user);
-      await changeAccountPassword(recoveryNewPassword, await isOAuthAccount());
+      await changeAccountPassword(password, await isOAuthAccount());
       await registerBrowser();
-      setPassword(''); setRecoveryNewPassword('');
-    }
-    await onAuthenticated();
+      await onAuthenticated();
+    } catch (caught) { setError(errorMessage(caught)); }
+    finally { setBusy(false); }
   }
-  if (prepared) return <section className="w-full max-w-md space-y-4 rounded-xl border p-5">
-    <RecoveryConfirmation code={prepared.recoveryCode} busy={submitting} onConfirm={() => {
-      void submit({ preventDefault() {} } as FormEvent<HTMLFormElement>);
-    }} />
-    {error && <p role="alert">{error}</p>}
-    <button disabled={submitting} onClick={() => setPrepared(undefined)}>{translate('auth.cancel')}</button>
-  </section>;
-  if (challenge) return <LoginVerification challenge={challenge} onSuccess={completeAuthentication} onBack={() => { cancelAccountLogin(); setChallenge(null); }} />;
 
   return (
-    <section className="w-full max-w-md rounded-lg border border-[var(--theme-border)] bg-[var(--theme-panel)] p-5 shadow-[var(--theme-shadow)] sm:p-6">
-      <LanguageSwitcher className="mb-4" />
-      <p className="text-sm font-medium text-[var(--theme-accent-strong)]">
-        {translate("auth.relayAccess")}</p>
-      <h1 className="mt-2 text-2xl font-semibold text-[var(--theme-fg)]">
-        {mode === 'login' ? translate("auth.welcomeBack") : translate("auth.createYourAccount")}
-      </h1>
-      <p className="mt-2 text-sm leading-6 text-[var(--theme-fg-muted)]">
-        {mode === 'login'
-          ? translate("auth.signInToOpenYourDevicesAnd")
-          : translate("auth.createARelayUserAccountForPrivate")}
-      </p>
-
-      <div
-        aria-label={translate("auth.accountAccess")}
-        className="mt-5 grid grid-cols-2 rounded-lg bg-[var(--theme-muted)] p-1"
-        role="tablist"
-      >
-        <button
-          aria-controls={panelId}
-          aria-selected={mode === 'login'}
-          className={`min-h-11 rounded-md px-3 text-sm font-medium transition focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-accent-ring)] ${
-            mode === 'login'
-              ? 'bg-[var(--theme-panel)] text-[var(--theme-fg)] shadow-sm'
-              : 'text-[var(--theme-fg-muted)] hover:text-[var(--theme-fg)]'
-          }`}
-          id={loginTabId}
-          disabled={submitting}
-          onKeyDown={(event) => handleModeKeyDown(event, 'login')}
-          onClick={() => selectMode('login')}
-          role="tab"
-          tabIndex={mode === 'login' ? 0 : -1}
-          type="button"
-        >
-          {translate("auth.signIn")}</button>
-        <button
-          aria-controls={panelId}
-          aria-selected={mode === 'register'}
-          className={`min-h-11 rounded-md px-3 text-sm font-medium transition focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-accent-ring)] ${
-            mode === 'register'
-              ? 'bg-[var(--theme-panel)] text-[var(--theme-fg)] shadow-sm'
-              : 'text-[var(--theme-fg-muted)] hover:text-[var(--theme-fg)]'
-          }`}
-          disabled={!registrationEnabled || submitting}
-          id={registerTabId}
-          onKeyDown={(event) => handleModeKeyDown(event, 'register')}
-          onClick={() => selectMode('register')}
-          role="tab"
-          tabIndex={mode === 'register' ? 0 : -1}
-          title={registrationEnabled ? undefined : translate("auth.registrationIsDisabled")}
-          type="button"
-        >
-          {registrationEnabled ? translate("auth.createAccount") : translate("auth.registrationClosed")}
-        </button>
-      </div>
-
-      {settings?.googleAuthEnabled || settings?.githubAuthEnabled ? (
-        <div className="mt-5 grid gap-2">
-          {settings.googleAuthEnabled ? (
-            <a
-              className="relay-button-secondary flex h-11 items-center justify-center"
-              href={relayUrl("/relay/auth/oauth/google/start")}
-            >
-              {translate("auth.continueWithGoogle")}</a>
-          ) : null}
-          {settings.githubAuthEnabled ? (
-            <a
-              className="relay-button-secondary flex h-11 items-center justify-center"
-              href={relayUrl("/relay/auth/oauth/github/start")}
-            >
-              {translate("auth.continueWithGitHub")}</a>
-          ) : null}
-          <div className="flex items-center gap-3 py-1 text-xs text-[var(--theme-fg-muted)]">
-            <span className="h-px flex-1 bg-[var(--theme-border)]" />
-            <span>{translate("auth.orUseAPassword")}</span>
-            <span className="h-px flex-1 bg-[var(--theme-border)]" />
-          </div>
-        </div>
-      ) : null}
-
-      <form
-        aria-labelledby={mode === 'login' ? loginTabId : registerTabId}
-        className="mt-5 space-y-4"
-        id={panelId}
-        onSubmit={submit}
-        role="tabpanel"
-      >
-        {mode !== 'register' ? (
-          <RelayInput
-            autoComplete="username"
-            disabled={submitting}
-            label={translate("auth.emailOrUsername")}
-            name="identifier"
-            onChange={setIdentifier}
-            required
-            value={identifier}
-          />
-        ) : (
-          <>
-            <RelayInput
-              autoComplete="email"
-              disabled={submitting}
-              label={translate("auth.email")}
-              name="email"
-              onChange={setEmail}
-              required
-              type="email"
-              value={email}
-            />
-            <RelayInput
-              autoComplete="username"
-              disabled={submitting}
-              label={translate("auth.username")}
-              minLength={3}
-              name="username"
-              onChange={setUsername}
-              required
-              value={username}
-            />
-            <RelayInput
-              autoComplete="one-time-code"
-              disabled={submitting}
-              description={
-                registrationPasswordRequired
-                  ? translate("auth.requiredByThisRelay")
-                  : translate("auth.enterTheInviteCodeIfThisRelay")
-              }
-              label={
-                registrationPasswordRequired
-                  ? translate("auth.registrationCode")
-                  : translate("auth.registrationCodeIfRequired")
-              }
-              name="registrationCode"
-              onChange={setRegistrationPassword}
-              required={registrationPasswordRequired}
-              type="password"
-              value={registrationPassword}
-            />
-          </>
-        )}
-        <RelayInput
-          autoComplete={mode === 'login' ? 'current-password' : mode === 'recover' || mode === 'reset' ? 'off' : 'new-password'}
-          disabled={submitting}
-          label={translate(mode === 'recover' ? 'auth.accountRecoveryCode' : mode === 'reset' ? 'auth.accountTemporaryPassword' : 'auth.password')}
-          name="password"
-          onChange={setPassword}
-          required
-          type={mode === 'recover' ? 'text' : 'password'}
-          value={password}
-          {...(mode === 'register'
-            ? { description: translate("auth.accountPasswordHelp"), minLength: 12 }
-            : {})}
-        />
-
-        {mode === 'recover' && <RelayInput autoComplete="new-password" label={translate('auth.newPassword')} name="newPassword" type="password" minLength={12} required value={recoveryNewPassword} onChange={setRecoveryNewPassword} description={translate('auth.accountPasswordHelp')} />}
-        {mode === 'recover' && <p className="text-sm text-[var(--theme-fg-muted)]">{translate('auth.accountSecretRotationWarning')}</p>}
-        {mode !== 'register' && <button type="button" className="owner-trust-account-link" onClick={() => { setMode(mode === 'recover' ? 'login' : 'recover'); setPassword(''); }}>{translate(mode === 'recover' ? 'auth.accountUsePassword' : 'auth.accountUseRecovery')}</button>}
-        {mode !== 'register' && <button type="button" className="owner-trust-account-link" onClick={() => { setMode(mode === 'reset' ? 'login' : 'reset'); setPassword(''); }}>{translate(mode === 'reset' ? 'auth.accountUsePassword' : 'auth.accountTemporaryLogin')}</button>}
-        {mode !== 'register' && legacyUpgradeEnabled() && <button type="button" className="owner-trust-account-link" onClick={() => { setMode(mode === 'upgrade' ? 'login' : 'upgrade'); setPassword(''); }}>{translate(mode === 'upgrade' ? 'auth.accountUsePassword' : 'auth.accountLegacyUpgrade')}</button>}
-        {mode === 'upgrade' && <p className="text-sm">{translate('auth.accountLegacyUpgradeHelp')}</p>}
-        {mode === 'upgrade' && upgradeWarning && <div className="space-y-3 rounded border p-3">
-          <p role="alert">{translate('auth.accountUpgradeExistingVaultWarning')}</p>
-          <label className="flex items-start gap-2"><input type="checkbox" checked={upgradeConfirmed} onChange={event => setUpgradeConfirmed(event.target.checked)} disabled={submitting} />{translate('auth.accountUpgradeExistingVaultConfirm')}</label>
-        </div>}
-        {mode === 'reset' && <p className="text-sm">{translate('auth.accountTemporaryHelp')}</p>}
-        {error ? (
-          <RelayNotice tone="danger">
-            <p>{error}</p>
-            {initialError && onRetry ? (
-              <button
-                className="relay-button-secondary mt-3 h-11"
-                onClick={() => void onRetry()}
-                type="button"
-              >
-                {translate("auth.retryConnection")}</button>
-            ) : null}
-          </RelayNotice>
-        ) : null}
-        {notice ? <RelayNotice tone="accent">{notice}</RelayNotice> : null}
-
-        <button
-          className="relay-button-primary h-11 w-full"
-          disabled={submitting || (mode === 'upgrade' && (upgradeWarning === undefined || (upgradeWarning && !upgradeConfirmed)))}
-          type="submit"
-        >
-          {submitting
-            ? translate("auth.working")
-            : mode === 'login' || mode === 'reset' || mode === 'upgrade'
-              ? translate("auth.signIn")
-              : translate(mode === 'recover' ? 'auth.accountRecover' : "auth.createAccount")}
-        </button>
-      </form>
-    </section>
-  );
-}
-
-function RelayFrame({ children }: { children: React.ReactNode }) {
-  const { locale: i18nLocale } = useI18n();
-  return (
-    <main className="min-h-screen bg-[var(--app-bg)] px-4 py-5 text-[var(--app-fg)] sm:px-6 sm:py-6" data-page="relay-portal">
-      <header className="mx-auto flex w-full max-w-5xl items-center justify-between gap-3 border-b border-[var(--theme-border)] pb-4">
-        <Link
-          className="flex min-h-11 min-w-0 items-center gap-2 text-sm font-semibold text-[var(--theme-fg)]"
-          to="/"
-        >
-          <ArrowLeft aria-hidden="true" className="h-4 w-4 shrink-0" />
-          <img src="/icon-192.png?v=pockymoe" alt="" className="h-8 w-8 shrink-0 rounded-lg" />
-          <span className="truncate">{translate("auth.relayHome")}</span>
-        </Link>
-        <Link
-          className="relay-button-secondary inline-flex h-11 shrink-0 items-center gap-2"
-          to="/relay-guide"
-        >
-          <BookOpen aria-hidden="true" className="h-4 w-4" />
-          {translate("auth.guide")}</Link>
-      </header>
-      <div className="mx-auto flex w-full max-w-5xl justify-center py-8 sm:py-12">
-        {children}
-      </div>
-    </main>
-  );
-}
-
-function RelayInput({
-  label,
-  value,
-  onChange,
-  name,
-  type = 'text',
-  autoComplete,
-  description,
-  disabled = false,
-  minLength,
-  required = false,
-}: {
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-  name: string;
-  type?: string;
-  autoComplete?: string;
-  description?: string;
-  disabled?: boolean;
-  minLength?: number;
-  required?: boolean;
-}) {
-  const { locale: i18nLocale } = useI18n();
-  const descriptionId = useId();
-  const inputId = useId();
-  const [passwordVisible, setPasswordVisible] = useState(false);
-  const passwordField = type === 'password';
-  return (
-    <div className="text-sm text-[var(--theme-fg-soft)]">
-      <label htmlFor={inputId}>{label}</label>
-      <div className="relative mt-2">
-        <input
-          aria-describedby={description ? descriptionId : undefined}
-          autoComplete={autoComplete}
-          className={`relay-input min-h-11 w-full ${passwordField ? 'pr-12' : ''}`}
-          disabled={disabled}
-          id={inputId}
-          minLength={minLength}
-          name={name}
-          onChange={(event) => onChange(event.target.value)}
-          required={required}
-          type={passwordField && passwordVisible ? 'text' : type}
-          value={value}
-        />
-        {passwordField ? (
-          <button
-            aria-label={
-              passwordVisible
-                ? translate("auth.hide", { value1: label.toLowerCase() })
-                : translate("auth.show", { value1: label.toLowerCase() })
-            }
-            className="absolute inset-y-0 right-0 inline-flex w-11 items-center justify-center text-[var(--theme-fg-muted)] hover:text-[var(--theme-fg)]"
-            disabled={disabled}
-            onClick={() => setPasswordVisible((visible) => !visible)}
-            type="button"
-          >
-            {passwordVisible ? (
-              <EyeOff aria-hidden="true" className="h-4 w-4" />
-            ) : (
-              <Eye aria-hidden="true" className="h-4 w-4" />
-            )}
+    <AuthCard footer={<AuthLink onClick={onBack}>{translate('auth.ui.backToSignIn')}</AuthLink>} title={translate('auth.ui.resetTitle')}>
+      <div aria-label={translate('auth.ui.resetTitle')} className="auth-segment grid grid-cols-2 rounded-xl bg-[var(--theme-muted)] p-1 text-sm" role="tablist">
+        {(['code', 'temporary'] as const).map(value => (
+          <button aria-selected={method === value} className={`min-h-10 rounded-lg px-3 font-medium transition ${method === value ? 'bg-[var(--theme-panel)] text-[var(--theme-fg)] shadow-sm' : 'text-[var(--theme-fg-muted)] hover:text-[var(--theme-fg)]'}`}
+            disabled={busy} key={value} onClick={() => { setMethod(value); setSecret(''); setError(null); }} role="tab" type="button">
+            {translate(value === 'code' ? 'auth.ui.resetWithCode' : 'auth.ui.resetWithTemporary')}
           </button>
-        ) : null}
+        ))}
       </div>
-      {description ? (
-        <span
-          className="mt-1.5 block text-xs text-[var(--theme-fg-muted)]"
-          id={descriptionId}
-        >
-          {description}
-        </span>
-      ) : null}
-    </div>
-  );
-}
-
-function RelayNotice({
-  tone,
-  children,
-}: {
-  tone: 'accent' | 'danger';
-  children: React.ReactNode;
-}) {
-  const { locale: i18nLocale } = useI18n();
-  return (
-    <div
-      aria-live={tone === 'danger' ? 'assertive' : 'polite'}
-      className={`rounded-lg px-3 py-2 text-sm ${
-        tone === 'danger'
-          ? 'bg-[var(--status-danger-bg)] text-[var(--status-danger-fg)]'
-          : 'bg-[var(--theme-accent-soft)] text-[var(--theme-fg)]'
-      }`}
-      role={tone === 'danger' ? 'alert' : 'status'}
-    >
-      {children}
-    </div>
+      <form className="space-y-4" onSubmit={submit}>
+        <AuthField autoComplete="username" autoFocus disabled={busy} label={translate('auth.emailOrUsername')} onChange={setIdentifier} spellCheck={false} value={identifier} />
+        <AuthField
+          autoComplete="off" disabled={busy} key={method}
+          hint={translate(method === 'code' ? 'auth.ui.resetCodeHint' : 'auth.ui.resetTemporaryHint')}
+          label={translate(method === 'code' ? 'auth.ui.resetWithCode' : 'auth.accountTemporaryPassword')}
+          onChange={setSecret} spellCheck={false} type={method === 'code' ? 'text' : 'password'} value={secret}
+        />
+        {method === 'code' ? <>
+          <AuthField autoComplete="new-password" disabled={busy} hint={translate('auth.ui.passwordRule')} label={translate('auth.newPassword')} minLength={12} onChange={setPassword} type="password" value={password} />
+          <AuthField autoComplete="new-password" disabled={busy} label={translate('auth.ui.confirmPassword')} onChange={setConfirm} type="password" value={confirm} />
+        </> : null}
+        {error ? <AuthNotice>{error}</AuthNotice> : null}
+        <AuthSubmit busy={busy}>{translate(method === 'code' ? 'auth.ui.resetAction' : 'auth.signIn')}</AuthSubmit>
+      </form>
+    </AuthCard>
   );
 }

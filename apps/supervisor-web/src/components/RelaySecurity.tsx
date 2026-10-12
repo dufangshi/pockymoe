@@ -71,7 +71,7 @@ export function LoginVerification({
     }
   }
   return (
-    <section className="w-full max-w-md space-y-5 rounded-xl border border-[var(--theme-border)] bg-[var(--theme-panel)] p-6 shadow-[var(--theme-shadow)]">
+    <section className="auth-card h-fit w-full max-w-[400px] space-y-5 rounded-2xl border border-[var(--theme-border)] bg-[var(--theme-panel)] p-6 shadow-[var(--theme-shadow)] sm:p-8">
       <ShieldCheck
         className="h-8 w-8 text-[var(--theme-accent-strong)]"
         aria-hidden="true"

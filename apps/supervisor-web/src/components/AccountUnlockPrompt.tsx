@@ -1,25 +1,30 @@
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@pockymoe/thread-ui';
-import { useEffect, useRef, useState } from 'react';
+import { LockKeyhole } from 'lucide-react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { createPortal } from 'react-dom';
-import { currentAccount, currentBrowser, requireUnlock, type UnlockReason, type UnlockedAccount } from '../lib/accountVault';
-import { ACCOUNT_UNLOCK_REQUEST, BROWSER_REMOVED, accountRequest, unlockAccount, registerBrowser, createVault, openVault,
-  AccountTrustError, changeAccountPassword, startAccountOver, type Vault } from '../lib/accountVaultState';
-import { isOAuthAccount, accountSessionState, setAccountSession, setupAccount, type PreparedRegistration } from '../lib/accountAuth';
-import { accountStore } from '../lib/accountStore';
+import { currentBrowser, requireUnlock, type UnlockReason, type UnlockedAccount } from '../lib/accountVault';
+import { ACCOUNT_UNLOCK_REQUEST, BROWSER_REMOVED, AccountTrustError, registerBrowser, unlockAccount } from '../lib/accountVaultState';
+import { accountSessionState, isOAuthAccount } from '../lib/accountAuth';
+import { relayLogout } from '../lib/api';
 import { clearTransportKeyCache, type TransportStatus } from '../lib/relayTransportCrypto';
 import { getTransportStatus, probeDeviceEncryption } from '../lib/relayTransport';
 import { OWNER_READ_BLOCKED_EVENT, OWNER_UNLOCKED_EVENT, notifyOwnerUnlocked,
   type OwnerReadBlockedDetail, type OwnerUnlockedDetail } from '../lib/ownerUnlockRecovery';
+import { AuthField, AuthLink, AuthNotice, RecoveryCodeBody } from './auth/AuthUi';
+
 interface UnlockRequest { reason: UnlockReason; resolve: (a: UnlockedAccount) => void; reject: (e: unknown) => void }
+
+/** Kept for the account security panel: a regenerated recovery code. */
 export function RecoveryConfirmation({ code, onConfirm, busy = false }: { code: string; onConfirm: () => void; busy?: boolean }) {
-  const [confirmation, setConfirmation] = useState(''); useI18n();
-  return <div className="space-y-4">
-    <p>{translate('auth.accountSaveRecovery')}</p><code className="block break-all rounded border p-3">{code}</code>
-    <label className="block">{translate('auth.accountConfirmRecovery')}<input autoComplete="off" className="relay-input mt-2 w-full" value={confirmation} onChange={e => setConfirmation(e.target.value)} /></label>
-    <button className="relay-button-primary min-h-11 px-4" disabled={busy || confirmation.trim().toUpperCase() !== code.slice(-4)} onClick={onConfirm}>{translate('auth.continue')}</button>
-  </div>;
+  return <RecoveryCodeBody busy={busy} code={code} onDone={onConfirm} />;
 }
+
+/**
+ * The in-app unlock prompt: sensitive actions (requireUnlock) and devices that
+ * report this browser as locked. Account setup, sign-in again and resets are
+ * handled by the full-page account gate before the app opens.
+ */
 export function AccountUnlockPrompt() {
   useI18n();
   const [devices, setDevices] = useState<string[]>([]), locked = useRef(new Map<string, boolean>());
@@ -27,13 +32,14 @@ export function AccountUnlockPrompt() {
   const [needsConnect, setNeedsConnect] = useState(false);
   const [dismissed, setDismissed] = useState(false), [lockedRevoked, setRevoked] = useState(false);
   const [browserRemoved, setBrowserRemoved] = useState(false), revoked = lockedRevoked || browserRemoved;
-  const [recoverySession, setRecoverySession] = useState(false), [newPassword, setNewPassword] = useState('');
-  const [secret, setSecret] = useState(''), [recovery, setRecovery] = useState(false), [setup, setSetup] = useState(false);
-  const [prepared, setPrepared] = useState<PreparedRegistration>(), [error, setError] = useState<string>(), [busy, setBusy] = useState(false);
-  const input = useRef<HTMLInputElement>(null), previousFocus = useRef<HTMLElement | null>(null);
+  const [secret, setSecret] = useState(''), [recovery, setRecovery] = useState(false), [oauth, setOAuth] = useState(false);
+  const [setupPending, setSetupPending] = useState(false);
+  const [error, setError] = useState<string>(), [busy, setBusy] = useState(false);
+  const previousFocus = useRef<HTMLElement | null>(null);
   const open = !!(devices.length || request || needsConnect) && !dismissed;
+  const reset = () => { setSecret(''); setRecovery(false); setError(undefined); };
   const dismiss = () => {
-    setDismissed(true); setSecret(''); setNewPassword(''); setPrepared(undefined); setError(undefined);
+    setDismissed(true); reset();
     for (const req of queue.current.splice(0)) req.reject(new AccountTrustError('accountUnlockCancelled'));
     setRequest(null);
   };
@@ -57,9 +63,9 @@ export function AccountUnlockPrompt() {
     const ask = (event: Event) => {
       const req = (event as CustomEvent<UnlockRequest>).detail; queue.current.push(req); if (req.reason === 'connect') setNeedsConnect(true); setRequest(req); setDismissed(false);
     };
+    const removedBrowser = () => { setBrowserRemoved(true); setDismissed(false); };
     window.addEventListener('remote-codex-transport', status); window.addEventListener('remote-codex-owner-unlock-request', status);
     window.addEventListener(OWNER_READ_BLOCKED_EVENT, blocked); window.addEventListener(OWNER_UNLOCKED_EVENT, done);
-    const removedBrowser = () => { setBrowserRemoved(true); setDismissed(false); };
     window.addEventListener(ACCOUNT_UNLOCK_REQUEST, ask); window.addEventListener(BROWSER_REMOVED, removedBrowser);
     return () => {
       window.removeEventListener(BROWSER_REMOVED, removedBrowser);
@@ -71,19 +77,16 @@ export function AccountUnlockPrompt() {
   }, []);
   useEffect(() => {
     if (!open) return; let active = true;
-    setError(undefined); setSetup(false);
-    void accountSessionState().then(state => { if (active) { setRecoverySession(!!state?.recovery); if (state?.recovery) setRecovery(true); } });
-    accountRequest<Vault>('/relay/account/vault').catch(async e => {
+    reset();
+    void Promise.all([accountSessionState(), isOAuthAccount()]).then(([state, oauthOnly]) => {
       if (!active) return;
-      if (e instanceof AccountTrustError && e.code === 'vault_missing') {
-        const cached = await currentAccount(), state = await accountSessionState();
-        if (!active) return;
-        if (cached || state?.hasVault) setError(translate('auth.accountVaultMissing'));
-        else setSetup(true);
-      } else setError(e instanceof Error ? e.message : translate('auth.accountUnlockFailed'));
+      setOAuth(oauthOnly);
+      // Setup and resets belong to the account gate; never collect a password here for them.
+      setSetupPending(!!state && (!state.hasVault || state.recovery));
     });
     return () => { active = false; };
   }, [open]);
+
   async function complete(account: UnlockedAccount) {
     await registerBrowser(); setBrowserRemoved(false);
     // Only reissue the original reads after a device confirms the new identity.
@@ -96,67 +99,73 @@ export function AccountUnlockPrompt() {
     }
     if (!waitingDevices.length) notifyOwnerUnlocked([]);
     for (const req of queue.current.splice(0)) req.resolve(account);
-    setRequest(null); setNeedsConnect(false); setSecret(''); setNewPassword(''); setPrepared(undefined); setError(undefined);
+    setRequest(null); setNeedsConnect(false); reset();
   }
-  async function submit() {
-    setBusy(true); setError(undefined);
-    try {
-      if (setup && !prepared) {
-        const id = await accountStore<string>('active'); if (!id) throw new AccountTrustError('accountUnlockRequired');
-        setPrepared(await createVault(id, secret)); return;
-      }
-      if (prepared) {
-        await setupAccount(prepared, await isOAuthAccount());
-        const saved = prepared.vault; setPrepared(undefined); setSetup(false);
-        await complete(await openVault(saved, secret));
-      }
-      else {
-        const account = await unlockAccount(secret, recovery || recoverySession);
-        if (recoverySession) {
-          await changeAccountPassword(newPassword, await isOAuthAccount());
-          const state = await accountSessionState();
-          if (state) await setAccountSession(account.userId, { ...state, recovery: false });
-        }
-        await complete(account);
-      }
-    } catch (e) { setError(e instanceof Error ? e.message : translate('auth.accountUnlockFailed')); }
+  async function submit(event: FormEvent) {
+    event.preventDefault(); setBusy(true); setError(undefined);
+    try { await complete(await unlockAccount(secret, recovery)); }
+    catch (e) { setError(e instanceof Error ? e.message : translate('auth.accountUnlockFailed')); }
     finally { setBusy(false); }
   }
+  async function signOut() {
+    setBusy(true);
+    try { await relayLogout(); } catch { /* the local session is cleared either way */ }
+    window.location.assign('/relay-portal');
+  }
+
   if (!devices.length && !request && !needsConnect) return null;
   if (dismissed) return createPortal(<aside className="owner-locked-notice" aria-label={translate('auth.accountLocked')}>
-    <p role="status">{translate(revoked ? 'auth.browser_revoked' : 'auth.accountLocked')}</p>
-    <button className="relay-button-primary account-key-action" onClick={() => window.dispatchEvent(new Event('remote-codex-owner-unlock-request'))}>{translate('auth.accountUnlock')}</button>
+    <p role="status">{translate(revoked ? 'auth.ui.removedTitle' : 'auth.accountLocked')}</p>
+    <button className="relay-button-primary account-key-action" onClick={() => window.dispatchEvent(new Event('remote-codex-owner-unlock-request'))}>{translate('auth.ui.unlock')}</button>
   </aside>, document.body);
+
+  const title = revoked ? 'auth.ui.removedTitle' : request && request.reason !== 'connect' ? 'auth.ui.confirmTitle' : 'auth.ui.unlockTitle';
+  const description = setupPending ? 'auth.ui.setupElsewhere' : revoked ? 'auth.ui.removedBody' : oauth ? 'auth.ui.unlockBodyOAuth' : 'auth.ui.unlockBody';
   // Share Radix's focus-scope stack with the form that requested the unlock.
-  // A separate hand-rolled portal remains outside that form's modal focus trap.
   return <Dialog open onOpenChange={next => { if (!next && !busy) dismiss(); }}>
     <DialogContent showCloseButton={false} overlayClassName="!z-[199]"
-      className="host-dialog !z-[200] !max-h-[calc(100dvh-32px)] !max-w-[min(28rem,calc(100%-2rem))] space-y-4 overflow-y-auto !rounded-xl border-[var(--theme-border)] !bg-[var(--theme-panel)] !p-5"
-      onOpenAutoFocus={event => { event.preventDefault(); previousFocus.current = document.activeElement as HTMLElement | null; input.current?.focus(); }}
+      className="host-dialog auth-dialog !z-[200] !max-h-[calc(100dvh-32px)] !max-w-[min(25rem,calc(100%-2rem))] space-y-5 overflow-y-auto !rounded-2xl border-[var(--theme-border)] !bg-[var(--theme-panel)] !p-6"
+      onOpenAutoFocus={event => { previousFocus.current = document.activeElement as HTMLElement | null; if (setupPending) event.preventDefault(); }}
       onCloseAutoFocus={event => { event.preventDefault(); if (previousFocus.current?.isConnected) previousFocus.current.focus(); }}
       onPointerDownOutside={event => { if (busy) event.preventDefault(); }}
       onEscapeKeyDown={event => { if (busy) event.preventDefault(); }}>
-      <DialogTitle>{translate(setup ? 'auth.accountSecure' : 'auth.accountUnlockTitle')}</DialogTitle>
-      <DialogDescription>{translate(revoked ? 'auth.browser_revoked' : setup ? 'auth.accountPasswordHelp' : recoverySession ? 'auth.accountResetRecoveryHelp' : 'auth.accountUnlockHelp')}</DialogDescription>
-      {request && <p className="text-sm text-[var(--theme-fg-muted)]">{translate(`auth.accountReason.${request.reason}`)}</p>}
-      {prepared ? <RecoveryConfirmation code={prepared.recoveryCode} busy={busy} onConfirm={() => void submit()} /> :
-      <form className="space-y-4" onSubmit={e => { e.preventDefault(); void submit(); }}>
-        <label className="block">{translate(recovery && !setup ? 'auth.accountRecoveryCode' : 'auth.password')}
-          <input ref={input} className="relay-input mt-2 min-h-11 w-full" type={recovery && !setup ? 'text' : 'password'} autoComplete={setup ? 'new-password' : recovery ? 'off' : 'current-password'} minLength={setup ? 12 : undefined} required value={secret} onChange={e => setSecret(e.target.value)} disabled={busy} />
-        </label>
-        {recoverySession && <label className="block">{translate('auth.newPassword')}<input className="relay-input mt-2 min-h-11 w-full" type="password" autoComplete="new-password" minLength={12} required value={newPassword} disabled={busy} onChange={e => setNewPassword(e.target.value)} /></label>}
-        {recoverySession && <p className="text-sm text-[var(--theme-fg-muted)]">{translate('auth.accountSecretRotationWarning')}</p>}
-        <button className="relay-button-primary account-key-action min-h-11 px-4" disabled={busy || !secret}>{translate(busy ? 'auth.working' : setup ? 'auth.accountSecure' : 'auth.accountUnlock')}</button>
-      </form>}
-      {error && <p role="alert">{error}</p>}
-      <div className="flex gap-4 text-sm">
-        {!setup && !recoverySession && <button disabled={busy} onClick={() => { setRecovery(!recovery); setSecret(''); }}>{translate(recovery ? 'auth.accountUsePassword' : 'auth.accountUseRecovery')}</button>}
-        {recoverySession && <button disabled={busy} onClick={() => { if (window.confirm(translate('auth.accountResetWarning'))) { setBusy(true); void startAccountOver().then(() => location.assign('/relay-portal')).catch(e => setError(e instanceof Error ? e.message : translate('auth.accountRequestFailed'))).finally(() => setBusy(false)); } }}>{translate('auth.accountStartOver')}</button>}
-        <button disabled={busy} onClick={dismiss}>{translate('auth.ownerLater')}</button>
+      <div className="space-y-2">
+        <LockKeyhole aria-hidden="true" className="h-7 w-7 text-[var(--theme-accent-strong)]" />
+        <DialogTitle className="text-lg font-semibold">{translate(title)}</DialogTitle>
+        <DialogDescription className="text-sm leading-6 text-[var(--theme-fg-muted)]">{translate(description)}</DialogDescription>
+      </div>
+      {setupPending ? (
+        <button className="relay-button-primary h-11 w-full" onClick={() => window.location.reload()} type="button">{translate('auth.ui.setupContinue')}</button>
+      ) : (
+        <form className="space-y-4" onSubmit={submit}>
+          <AuthField
+            aside={<AuthLink disabled={busy} onClick={() => { setRecovery(!recovery); setSecret(''); setError(undefined); }}>{translate(recovery ? 'auth.ui.usePassword' : 'auth.ui.useRecoveryCode')}</AuthLink>}
+            autoComplete={recovery ? 'off' : 'current-password'}
+            autoFocus
+            disabled={busy}
+            key={recovery ? 'recovery' : 'password'}
+            label={translate(recovery ? 'auth.ui.resetWithCode' : oauth ? 'auth.ui.unlockPasswordLabel' : 'auth.password')}
+            onChange={setSecret}
+            spellCheck={false}
+            type={recovery ? 'text' : 'password'}
+            value={secret}
+          />
+          {error ? <AuthNotice>{error}</AuthNotice> : null}
+          <div className="flex gap-2">
+            <button className="relay-button-secondary h-11 flex-1" disabled={busy} onClick={dismiss} type="button">{translate('auth.ui.later')}</button>
+            <button aria-busy={busy || undefined} className="relay-button-primary account-key-action h-11 flex-1" disabled={busy || !secret} type="submit">
+              {translate(busy ? 'auth.ui.pleaseWait' : 'auth.ui.unlock')}
+            </button>
+          </div>
+        </form>
+      )}
+      <div className="border-t border-[var(--theme-border)] pt-4 text-center text-sm text-[var(--theme-fg-muted)]">
+        <AuthLink disabled={busy} onClick={() => void signOut()}>{translate('auth.ui.signOut')}</AuthLink>
       </div>
     </DialogContent>
   </Dialog>;
 }
+
 export async function ensureBrowserAccess() {
   if (!await currentBrowser()) await requireUnlock('connect');
 }

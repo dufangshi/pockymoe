@@ -1402,7 +1402,7 @@ async fn account_state_is_present_in_session_login_register_recover_and_oauth_an
     assert_eq!(s, StatusCode::OK);
     assert_eq!(
         v["account"],
-        json!({"mode":"legacy","setupRequired":true,"recovery":false,"hasVault":false,"accountKeyId":null})
+        json!({"mode":"legacy","setupRequired":true,"recovery":false,"hasVault":false,"accountKeyId":null,"recentAuth":true})
     );
     assert_eq!(v["account"], v["session"]["account"]);
     let (s, v) = f
@@ -1416,7 +1416,7 @@ async fn account_state_is_present_in_session_login_register_recover_and_oauth_an
     assert_eq!(s, StatusCode::OK);
     assert_eq!(
         v["account"],
-        json!({"mode":"account","setupRequired":false,"recovery":false,"hasVault":true,"accountKeyId":vectors()["account"]["accountKeyId"]})
+        json!({"mode":"account","setupRequired":false,"recovery":false,"hasVault":true,"accountKeyId":vectors()["account"]["accountKeyId"],"recentAuth":true})
     );
     assert_eq!(v["account"], v["session"]["account"]);
     let session: Value = f
@@ -1466,7 +1466,7 @@ async fn account_state_is_present_in_session_login_register_recover_and_oauth_an
         serde_json::from_slice(&to_bytes(response.into_body(), 16 * 1024).await.unwrap()).unwrap();
     assert_eq!(
         v["account"],
-        json!({"mode":"oauth","setupRequired":true,"recovery":false,"hasVault":false,"accountKeyId":null})
+        json!({"mode":"oauth","setupRequired":true,"recovery":false,"hasVault":false,"accountKeyId":null,"recentAuth":true})
     );
 }
 
@@ -1739,7 +1739,7 @@ async fn reset_session_can_delete_vault_without_current_key_and_temporary_passwo
         .unwrap();
     assert_eq!(
         state["account"],
-        json!({"mode":"legacy","setupRequired":true,"recovery":false,"hasVault":false,"accountKeyId":null})
+        json!({"mode":"legacy","setupRequired":true,"recovery":false,"hasVault":false,"accountKeyId":null,"recentAuth":true})
     );
     assert_eq!(f.json(Method::PUT,"/relay/account/vault",Some(token),json!({"vault":test_vault(ACCOUNT_USER,1),"expectedRevision":0,"authKey":auth_key(),"recoveryAuthKey":recovery_key()})).await.0,StatusCode::OK);
 }
@@ -3446,7 +3446,7 @@ async fn documentation_admin_reset_without_vault_logs_in_once_to_setup_without_u
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
         body["account"],
-        json!({"mode":"legacy","setupRequired":true,"recovery":false,"hasVault":false,"accountKeyId":null})
+        json!({"mode":"legacy","setupRequired":true,"recovery":false,"hasVault":false,"accountKeyId":null,"recentAuth":true})
     );
     let token = body["token"].as_str().unwrap();
     for upgrade in [false, true] {
@@ -3776,4 +3776,41 @@ async fn documentation_admin_reset_keeps_oauth_only_accounts_oauth_only_before_f
         .0,
         StatusCode::UNAUTHORIZED
     );
+}
+
+#[tokio::test]
+async fn session_reports_whether_setup_can_proceed_without_signing_in_again() {
+    let f = Fixture::new("session-recent-auth").await;
+    let user = "a45aed3e-2f46-4b9c-93c1-e6f9d80c51e4";
+    let token = f.token(user, account::SETUP).await;
+    let (s, v) = f
+        .json(
+            Method::GET,
+            "/relay/auth/session",
+            Some(&token),
+            json!(null),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    // A session from before the upgrade cannot create a vault; the Web must ask
+    // for a fresh sign-in before showing setup, not after the recovery code.
+    assert_eq!(v["account"]["setupRequired"], true);
+    assert_eq!(v["account"]["recentAuth"], false);
+    {
+        let conn = f.state.store.conn.lock().await;
+        conn.execute(
+            "UPDATE relay_auth_sessions SET strong_auth_at=?1",
+            [crate::auth_factors::now()],
+        )
+        .unwrap();
+    }
+    let (_, v) = f
+        .json(
+            Method::GET,
+            "/relay/auth/session",
+            Some(&token),
+            json!(null),
+        )
+        .await;
+    assert_eq!(v["account"]["recentAuth"], true);
 }

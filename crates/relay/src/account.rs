@@ -210,6 +210,9 @@ pub(crate) fn session_json(
         "recovery":matches!(restriction.as_str(),RECOVERY|RESET),
         "hasVault":has_vault,
         "accountKeyId":vault(conn,&user.id).ok().flatten().map(|v|v["accountKeyId"].clone()).unwrap_or(Value::Null),
+        // Whether vault creation and OAuth slot changes are allowed without
+        // signing in again; the Web asks for a fresh sign-in before setup otherwise.
+        "recentAuth":crate::auth_factors::recent(conn, token),
     });
     value
 }

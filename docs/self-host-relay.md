@@ -129,11 +129,12 @@ release.
 ### Accounts without an account key and unbound devices
 
 Accounts, factors, devices, shares and threads are kept. An account that has no
-account key yet signs in once with **First sign-in since the security upgrade**
-on the sign-in page, the only time its password reaches the relay, and then
-within 10 minutes **Secure your account**: a password of at least 12 characters
-and the recovery code. Until then the relay allows only the session, sign-out and
-device requests; sessions from before the upgrade are restricted the same way.
+account key yet fails its first ordinary sign-in and then chooses **Continue
+with this password**, the only time its password reaches the relay. **Secure your
+account** follows: a password of at least 12 characters and the recovery code.
+Until then the relay allows only the session, sign-out and device requests;
+sessions from before the upgrade are restricted the same way and are asked to
+sign in again.
 Creating the vault deletes the relay's old password hash. Accounts that use
 Google or GitHub sign in as usual and choose an unlock password. The relay
 administrator account signs in at `/relay-admin` with its configured password and
@@ -146,7 +147,7 @@ command run on the device, or by rerunning its setup command. The device must ru
 a runtime version that supports binding. Step-by-step:
 [migration](account-key-trust.md#migration).
 
-The released `remote-codex-web.zip` offers the upgrade choice. When every account
+The released `remote-codex-web.zip` offers the upgrade. When every account
 has been secured, build the Web UI from source with
 `VITE_POCKYMOE_LEGACY_UPGRADE=0` set (for example the
 [static build](#building-the-static-web-ui)) to remove it. An account that still
@@ -162,12 +163,12 @@ you, can recover it.
 Resetting a user's password in the admin panel sets a temporary password of at
 least 12 characters. It works once, still requires the user's second factor if
 they have one (even on a trusted browser), and stops the old password from
-signing in. The user chooses **Use an admin reset password** on the sign-in page,
-then enters their recovery code and a new password. Without the recovery code they
-can only start over with a new account key and bind each device again
-(`pockymoe bind --reset` on the device, then **Protect this device**). For an
-account that was not yet secured, the same sign-in leads straight to **Secure your
-account**; this also works in Web builds without the security upgrade choice.
+signing in. The user chooses **Forgot password?** → **Admin password** on the
+sign-in page, then enters their recovery code and a new password. Without the
+recovery code they can only start over with a new account key and bind each device
+again (`pockymoe bind --reset` on the device, then **Protect this device**). For
+an account that was not yet secured, the same sign-in leads straight to **Secure
+your account**; this also works in Web builds without the security upgrade.
 
 ## Backups
 
@@ -250,8 +251,8 @@ node scripts/check-static-web.mjs   # with the same two variables set
 
 `POCKYMOE_WEB_DOMAIN` is the Web host name and is required. The build selects
 relay mode at compile time, so it needs no inline script. Add
-`VITE_POCKYMOE_LEGACY_UPGRADE=0` to leave out the **First sign-in since the
-security upgrade** choice. Besides the app, `apps/supervisor-web/dist/` contains:
+`VITE_POCKYMOE_LEGACY_UPGRADE=0` to leave out the security upgrade (**Continue
+with this password**). Besides the app, `apps/supervisor-web/dist/` contains:
 
 - in `index.html`, the Content Security Policy as a `<meta http-equiv>` tag, with
   every directive of the header version except `frame-ancestors`, and a

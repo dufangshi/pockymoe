@@ -5,135 +5,125 @@ import { AccountUnlockPrompt } from './AccountUnlockPrompt';
 import { FormDialog } from './FormDialog';
 import { readAfterOwnerUnlock } from '../lib/ownerUnlockRecovery';
 import { ACCOUNT_UNLOCK_REQUEST, BROWSER_REMOVED } from '../lib/accountVaultState';
-const state = vi.hoisted(() => ({ unlock: vi.fn(), register: vi.fn(), current: vi.fn(), fetch: vi.fn(), session: vi.fn(), change: vi.fn(), setSession: vi.fn(), account: vi.fn(), create: vi.fn(), open: vi.fn(), setup: vi.fn() }));
-vi.mock('../lib/accountVault', () => ({ currentAccount: state.account, currentBrowser: state.current }));
-vi.mock('../lib/accountVaultState', () => ({ ACCOUNT_UNLOCK_REQUEST: 'pockymoe-account-unlock-request', BROWSER_REMOVED: 'pockymoe-browser-removed', accountRequest: state.fetch,
-  unlockAccount: state.unlock, registerBrowser: state.register, createVault: state.create, openVault: state.open, changeAccountPassword: state.change, startAccountOver: vi.fn(),
+const state = vi.hoisted(() => ({ unlock: vi.fn(), register: vi.fn(), current: vi.fn(), session: vi.fn(), oauth: vi.fn(), logout: vi.fn() }));
+vi.mock('../lib/accountVault', () => ({ currentBrowser: state.current, requireUnlock: vi.fn() }));
+vi.mock('../lib/accountVaultState', () => ({ ACCOUNT_UNLOCK_REQUEST: 'pockymoe-account-unlock-request', BROWSER_REMOVED: 'pockymoe-browser-removed',
+  unlockAccount: state.unlock, registerBrowser: state.register,
   AccountTrustError: class extends Error { constructor(public code: string) { super(code); } },
 }));
-vi.mock('../lib/accountAuth', () => ({ isOAuthAccount: vi.fn(), accountSessionState: state.session, setAccountSession: state.setSession, setupAccount: state.setup }));
-vi.mock('../lib/accountStore', () => ({ accountStore: async () => 'user' }));
+vi.mock('../lib/accountAuth', () => ({ isOAuthAccount: state.oauth, accountSessionState: state.session }));
+vi.mock('../lib/api', () => ({ relayLogout: state.logout }));
 vi.mock('../lib/relayTransportCrypto', () => ({ clearTransportKeyCache: vi.fn() }));
 vi.mock('../lib/relayTransport', () => ({ probeDeviceEncryption: vi.fn().mockResolvedValue(undefined), getTransportStatus: () => ({ state: 'encrypted' }) }));
-beforeEach(() => { vi.clearAllMocks(); setLocale('en'); state.fetch.mockResolvedValue({}); state.unlock.mockResolvedValue({}); state.current.mockResolvedValue({}); state.account.mockResolvedValue(null); state.session.mockResolvedValue(undefined); state.change.mockResolvedValue(undefined); state.setup.mockResolvedValue(undefined); state.register.mockResolvedValue({}); state.open.mockResolvedValue({ userId: 'user' }); });
+beforeEach(() => {
+  vi.clearAllMocks(); setLocale('en');
+  state.unlock.mockResolvedValue({}); state.current.mockResolvedValue({}); state.register.mockResolvedValue({});
+  state.session.mockResolvedValue({ mode: 'account', hasVault: true, recovery: false }); state.oauth.mockResolvedValue(false);
+  state.logout.mockResolvedValue({});
+});
+function block(revoked = false) { act(() => window.dispatchEvent(new CustomEvent('remote-codex-transport', { detail: { deviceId: 'a', state: 'unlock-required', ...(revoked ? { unlockReason: 'browser_revoked' } : {}) } }))); }
+function ask(reason: string, resolve = vi.fn(), reject = vi.fn()) {
+  act(() => window.dispatchEvent(new CustomEvent(ACCOUNT_UNLOCK_REQUEST, { detail: { reason, resolve, reject } })));
+  return { resolve, reject };
+}
+
 it('unlocks from inside a FormDialog without its focus trap blocking the password field', async () => {
   const resolve = vi.fn(), close = vi.fn();
   render(<><FormDialog title="Protect this device" onClose={close}>
-    <button onClick={() => window.dispatchEvent(new CustomEvent('pockymoe-account-unlock-request', {
+    <button onClick={() => window.dispatchEvent(new CustomEvent(ACCOUNT_UNLOCK_REQUEST, {
       detail: { reason: 'bind-device', resolve, reject: vi.fn() },
     }))}>Protect</button>
   </FormDialog><AccountUnlockPrompt /></>);
   fireEvent.click(screen.getByRole('button', { name: 'Protect' }));
   const password = await screen.findByLabelText(translate('auth.password'));
   await waitFor(() => { password.focus(); expect(password).toHaveFocus(); });
-  expect(screen.getByRole('dialog', { name: translate('auth.accountUnlockTitle') })).toBeVisible();
+  expect(screen.getByRole('dialog', { name: translate('auth.ui.confirmTitle') })).toBeVisible();
   fireEvent.change(password, { target: { value: 'local password' } });
-  fireEvent.click(screen.getByRole('button', { name: translate('auth.accountUnlock') }));
+  fireEvent.click(screen.getByRole('button', { name: translate('auth.ui.unlock') }));
   await waitFor(() => expect(resolve).toHaveBeenCalledWith({}));
   expect(screen.getByRole('dialog', { name: 'Protect this device' })).toBeVisible();
   expect(close).not.toHaveBeenCalled();
 });
-it('keeps a busy stacked unlock open on Escape and dismisses only that dialog on Later', async () => {
-  const close = vi.fn(), reject = vi.fn(); let finish!: (account: object) => void;
+
+it('keeps a busy stacked unlock open on Escape and dismisses only that dialog on Not now', async () => {
+  const close = vi.fn(); let finish!: (account: object) => void;
   state.unlock.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
   render(<><FormDialog title="Protect this device" onClose={close}><button>Protect</button></FormDialog><AccountUnlockPrompt /></>);
-  act(() => window.dispatchEvent(new CustomEvent('pockymoe-account-unlock-request', {
-    detail: { reason: 'bind-device', resolve: vi.fn(), reject },
-  })));
+  const { reject } = ask('bind-device');
   const password = await screen.findByLabelText(translate('auth.password'));
   fireEvent.change(password, { target: { value: 'local password' } });
-  fireEvent.click(screen.getByRole('button', { name: translate('auth.accountUnlock') }));
+  fireEvent.click(screen.getByRole('button', { name: translate('auth.ui.unlock') }));
   fireEvent.keyDown(password, { key: 'Escape' });
-  expect(screen.getByRole('dialog', { name: translate('auth.accountUnlockTitle') })).toBeVisible();
+  expect(screen.getByRole('dialog', { name: translate('auth.ui.confirmTitle') })).toBeVisible();
   expect(close).not.toHaveBeenCalled(); expect(reject).not.toHaveBeenCalled();
   await act(async () => finish({}));
-  act(() => window.dispatchEvent(new CustomEvent('pockymoe-account-unlock-request', {
-    detail: { reason: 'bind-device', resolve: vi.fn(), reject },
-  })));
-  fireEvent.click(screen.getByRole('button', { name: translate('auth.ownerLater') }));
+  const second = ask('bind-device');
+  fireEvent.click(await screen.findByRole('button', { name: translate('auth.ui.later') }));
   await waitFor(() => expect(screen.getByRole('dialog', { name: 'Protect this device' })).toBeVisible());
-  expect(reject).toHaveBeenCalledWith(expect.objectContaining({ code: 'accountUnlockCancelled' }));
+  expect(second.reject).toHaveBeenCalledWith(expect.objectContaining({ code: 'accountUnlockCancelled' }));
   expect(close).not.toHaveBeenCalled();
 });
-function block(revoked = false) { act(() => window.dispatchEvent(new CustomEvent('remote-codex-transport', { detail: { deviceId: 'a', state: 'unlock-required', ...(revoked ? { unlockReason: 'browser_revoked' } : {}) } }))); }
-it.each(['en', 'zh-CN'] as const)('shows a resumable locked notice after Later and unlocks with a real submit in %s', async locale => {
+
+it.each(['en', 'zh-CN'] as const)('shows a resumable locked notice after Not now and unlocks with a real submit in %s', async locale => {
   setLocale(locale); render(<AccountUnlockPrompt />); block();
-  fireEvent.click(screen.getByRole('button', { name: translate('auth.ownerLater') }));
+  fireEvent.click(await screen.findByRole('button', { name: translate('auth.ui.later') }));
   expect(screen.queryByRole('dialog')).toBeNull(); expect(screen.getByRole('status')).toHaveTextContent(translate('auth.accountLocked'));
-  expect(state.unlock).not.toHaveBeenCalled();
-  fireEvent.click(screen.getByRole('button', { name: translate('auth.accountUnlock') }));
-  expect(screen.getByRole('dialog')).toBeVisible();
-  fireEvent.change(screen.getByLabelText(translate('auth.password')), { target: { value: 'local password' } });
-  fireEvent.click(screen.getByRole('button', { name: translate('auth.accountUnlock') }));
+  fireEvent.click(screen.getByRole('button', { name: translate('auth.ui.unlock') }));
+  fireEvent.change(await screen.findByLabelText(translate('auth.password')), { target: { value: 'local password' } });
+  fireEvent.click(screen.getByRole('button', { name: translate('auth.ui.unlock') }));
   await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
   expect(screen.queryByRole('status')).toBeNull(); expect(state.unlock).toHaveBeenCalledWith('local password', false);
 });
-it('retains revoked wording after dismissal and lets a waiting read resolve via the notice', async () => {
+
+it('retains removed wording after dismissal and lets a waiting read resolve via the notice', async () => {
   render(<AccountUnlockPrompt />);
   const read = vi.fn().mockRejectedValueOnce({ code: 'browser_revoked' }).mockResolvedValue({ response: Response.json({ ok: true }) });
   let waiting!: Promise<{ response: Response }>;
   await act(async () => { waiting = readAfterOwnerUnlock('a', read); });
-  block(true); fireEvent.click(screen.getByRole('button', { name: translate('auth.ownerLater') }));
-  expect(screen.getByRole('status')).toHaveTextContent(translate('auth.browser_revoked'));
-  fireEvent.click(screen.getByRole('button', { name: translate('auth.accountUnlock') }));
-  fireEvent.change(screen.getByLabelText(translate('auth.password')), { target: { value: 'local password' } });
-  fireEvent.click(screen.getByRole('button', { name: translate('auth.accountUnlock') }));
+  block(true);
+  expect(await screen.findByRole('dialog', { name: translate('auth.ui.removedTitle') })).toBeVisible();
+  fireEvent.click(screen.getByRole('button', { name: translate('auth.ui.later') }));
+  expect(screen.getByRole('status')).toHaveTextContent(translate('auth.ui.removedTitle'));
+  fireEvent.click(screen.getByRole('button', { name: translate('auth.ui.unlock') }));
+  fireEvent.change(await screen.findByLabelText(translate('auth.password')), { target: { value: 'local password' } });
+  fireEvent.click(screen.getByRole('button', { name: translate('auth.ui.unlock') }));
   await act(async () => { expect((await waiting).response.ok).toBe(true); });
   expect(read).toHaveBeenCalledTimes(2); expect(screen.queryByRole('status')).toBeNull();
 });
-it('rejects cancelled sensitive requests and retains the connection notice', async () => {
-  render(<AccountUnlockPrompt />); const reject = vi.fn();
-  act(() => window.dispatchEvent(new CustomEvent('pockymoe-account-unlock-request', { detail: { reason: 'connect', resolve: vi.fn(), reject } })));
-  fireEvent.click(screen.getByRole('button', { name: translate('auth.ownerLater') }));
+
+it('rejects cancelled requests and keeps the connection notice', async () => {
+  render(<AccountUnlockPrompt />);
+  const { reject } = ask('connect');
+  fireEvent.click(await screen.findByRole('button', { name: translate('auth.ui.later') }));
   expect(reject).toHaveBeenCalledWith(expect.objectContaining({ code: 'accountUnlockCancelled' })); expect(screen.getByRole('status')).toBeVisible();
 });
 
-it('forces recovery-code unlock and a new password for a restricted reset session', async () => {
-  state.session.mockResolvedValue({ mode: 'account', recovery: true, hasVault: true });
-  state.unlock.mockResolvedValue({ userId: 'user' });
+it('unlocks with a recovery code', async () => {
   render(<AccountUnlockPrompt />); block();
-  const recovery = await screen.findByLabelText(translate('auth.accountRecoveryCode'));
-  fireEvent.change(recovery, { target: { value: 'ABCD-EFGH' } });
-  fireEvent.change(screen.getByLabelText(translate('auth.newPassword')), { target: { value: 'a sufficiently long new password' } });
-  fireEvent.click(screen.getByRole('button', { name: translate('auth.accountUnlock') }));
-  await waitFor(() => expect(state.change).toHaveBeenCalledWith('a sufficiently long new password', undefined));
-  expect(state.unlock).toHaveBeenCalledWith('ABCD-EFGH', true);
-  expect(state.setSession).toHaveBeenCalledWith('user', expect.objectContaining({ recovery: false }));
-});
-it('never offers a new vault when a verified cached account vault disappears', async () => {
-  state.account.mockResolvedValue({ accountKeyId: 'known' });
-  state.fetch.mockRejectedValue(Object.assign(new Error('missing'), { code: 'vault_missing' }));
-  // Use the exported error class so the UI recognizes the protocol code.
-  const { AccountTrustError } = await import('../lib/accountVaultState');
-  state.fetch.mockRejectedValue(new AccountTrustError('vault_missing'));
-  render(<AccountUnlockPrompt />); block();
-  expect(await screen.findByRole('alert')).toHaveTextContent(translate('auth.accountVaultMissing'));
-  expect(screen.queryByText(translate('auth.accountSecure'))).toBeNull();
+  fireEvent.click(await screen.findByRole('button', { name: translate('auth.ui.useRecoveryCode') }));
+  fireEvent.change(screen.getByLabelText(translate('auth.ui.resetWithCode')), { target: { value: 'ABCD-EFGH' } });
+  fireEvent.click(screen.getByRole('button', { name: translate('auth.ui.unlock') }));
+  await waitFor(() => expect(state.unlock).toHaveBeenCalledWith('ABCD-EFGH', true));
 });
 
-it('creates a legacy/OAuth vault only after recovery-code confirmation and retries registration without recreating it', async () => {
-  const { AccountTrustError } = await import('../lib/accountVaultState');
-  state.fetch.mockRejectedValue(new AccountTrustError('vault_missing'));
-  state.current.mockResolvedValue(null);
-  state.create.mockResolvedValue({ vault: { userId: 'user' }, recoveryCode: '0123-4567-89AB-CDEF-GHJK-MNPQ-RSTV-WXYZ' });
-  state.register.mockRejectedValueOnce(new Error('offline')).mockResolvedValue({});
+it('sends setup and resets to the account gate instead of collecting a password', async () => {
+  state.session.mockResolvedValue({ mode: 'legacy', hasVault: false, recovery: false });
   render(<AccountUnlockPrompt />); block();
-  await screen.findByRole('heading', { name: translate('auth.accountSecure') });
-  fireEvent.change(screen.getByLabelText(translate('auth.password')), { target: { value: 'a sufficiently long password' } });
-  fireEvent.click(screen.getByRole('button', { name: translate('auth.accountSecure') }));
-  const confirm = await screen.findByLabelText(translate('auth.accountConfirmRecovery'));
-  expect(state.setup).not.toHaveBeenCalled();
-  fireEvent.change(confirm, { target: { value: 'WXYZ' } });
-  fireEvent.click(screen.getByRole('button', { name: translate('auth.continue') }));
-  expect(await screen.findByRole('alert')).toHaveTextContent('offline'); expect(state.setup).toHaveBeenCalledTimes(1);
-  fireEvent.click(screen.getByRole('button', { name: translate('auth.accountUnlock') }));
-  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
-  expect(state.setup).toHaveBeenCalledTimes(1); expect(state.create).toHaveBeenCalledTimes(1);
+  expect(await screen.findByRole('button', { name: translate('auth.ui.setupContinue') })).toBeVisible();
+  expect(screen.queryByLabelText(translate('auth.password'))).toBeNull();
+});
+
+it('offers sign out from the prompt', async () => {
+  const assign = vi.fn(); Object.defineProperty(window, 'location', { configurable: true, value: { ...window.location, assign } });
+  render(<AccountUnlockPrompt />); block();
+  fireEvent.click(await screen.findByRole('button', { name: translate('auth.ui.signOut') }));
+  await waitFor(() => expect(assign).toHaveBeenCalledWith('/relay-portal'));
+  expect(state.logout).toHaveBeenCalledOnce();
 });
 
 it('explains a browser that found itself in the account-signed revocation list', async () => {
   render(<AccountUnlockPrompt />);
   act(() => { window.dispatchEvent(new Event(BROWSER_REMOVED)); });
-  act(() => { window.dispatchEvent(new CustomEvent(ACCOUNT_UNLOCK_REQUEST, { detail: { reason: 'connect', resolve: vi.fn(), reject: vi.fn() } })); });
-  expect(await screen.findByText(translate('auth.browser_revoked'))).toBeInTheDocument();
+  ask('connect');
+  expect(await screen.findByRole('dialog', { name: translate('auth.ui.removedTitle') })).toBeVisible();
 });

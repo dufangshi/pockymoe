@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { createServer } from 'node:http';
 import { randomBytes } from 'node:crypto';
-import { fixture, browserRequest, retainBrowserRequest, ok, sendPrompt, sockets, screenshot, unlock } from './helpers/account-key-fixture';
+import { fixture, browserRequest, retainBrowserRequest, ok, sendPrompt, sockets, screenshot, unlock, UNLOCK_DIALOG, readRecoveryCode, confirmRecoveryCode } from './helpers/account-key-fixture';
 
 // Passwords, recovery codes, binding commands and relay cookies stay in memory.
 test.use({ trace: 'off', video: 'off', screenshot: 'off', actionTimeout: 15_000 });
@@ -207,7 +207,7 @@ test('account key registration, enrollment, browser trust and recovery', async (
     expect(channels.some(c => c.frames.some(frame => /ACCOUNT_KEY_HISTORY|SECOND_BROWSER_ENCRYPTED_REPLY/.test(frame)))).toBe(false);
     await second.page.reload();
     await expect(second.page.getByRole('textbox', { name: 'Prompt', exact: true })).toBeVisible();
-    expect(await second.page.getByRole('dialog', { name: 'Unlock this browser', exact: true }).count()).toBe(0);
+    expect(await second.page.getByRole('dialog', { name: UNLOCK_DIALOG }).count()).toBe(0);
     expect(transmitted.filter(r => r.path.endsWith('/login')).every(r => !r.password && r.authKey), 'Account login sends authKey, never password').toBe(true);
     // A certificate signed by another account cannot register on an owner-only device.
     const outsider = await f.account('trust-outsider');
@@ -264,7 +264,7 @@ test('account key registration, enrollment, browser trust and recovery', async (
     // revocation list before contacting the device and discard the old key.
     await second.context.addCookies(owner.cookies);
     await second.page.goto(d1.url);
-    await expect.soft(second.page.getByText('This browser was removed. Enter your password to reconnect.', { exact: true }).first(), 'BROWSER_REMOVED_UI: verified account revocation or authenticated device refusal must show the reconnect state').toBeVisible({ timeout: 10_000 });
+    await expect.soft(second.page.getByText(/^This browser was removed(\. Enter your password to reconnect\.)?$/).first(), 'BROWSER_REMOVED_UI: verified account revocation or authenticated device refusal must show the reconnect state').toBeVisible({ timeout: 10_000 });
     // Independently use the retained key for a fresh encrypted, signed request.
     // A live owner relay session prevents relay session invalidation alone from
     // explaining this refusal. Never depend on the UI's first refusal source.
@@ -292,12 +292,13 @@ test('account key registration, enrollment, browser trust and recovery', async (
 
     const recovery = await f.context();
     await recovery.page.goto(f.base + '/relay-portal?returnTo=%2Frelay-account');
-    await recovery.page.getByRole('button', { name: 'Forgot password? Use your account recovery code', exact: true }).click();
+    await recovery.page.getByRole('button', { name: 'Forgot password?', exact: true }).click();
     await recovery.page.getByLabel('Email or username', { exact: true }).fill(owner.username!);
-    await recovery.page.getByLabel('Account recovery code', { exact: true }).fill(owner.recovery);
+    await recovery.page.getByLabel('Recovery code', { exact: true }).fill(owner.recovery);
     const recoveredPassword = newPassword + '-recovered'; f.secrets.push(recoveredPassword);
     await recovery.page.getByLabel('New password', { exact: true }).fill(recoveredPassword);
-    await recovery.page.getByRole('button', { name: 'Recover account', exact: true }).click();
+    await recovery.page.getByLabel('Confirm password', { exact: true }).fill(recoveredPassword);
+    await recovery.page.getByRole('button', { name: 'Reset password', exact: true }).click();
     await expect(recovery.page.getByRole('heading', { name: 'Security', exact: true })).toBeVisible();
     await recovery.page.goto(d1.url);
     await sendPrompt(recovery.page, 'RECOVERY_REWRAPPED_REPLY');
@@ -310,30 +311,29 @@ test('account key registration, enrollment, browser trust and recovery', async (
     await f.sql('c.execute("INSERT INTO relay_users (id,email,username,role,enabled,created_at,password_salt,password_hash) VALUES (?,?,?,?,?,?,?,?)",(str(uuid.uuid4()),"legacy@example.test","legacy-user","user",1,datetime.datetime.now(datetime.timezone.utc).isoformat(),"__remote_codex_legacy_sha256__",hashlib.sha256(p["password"].encode()).hexdigest()))', { password: legacyPassword });
     const legacy = await f.context();
     await legacy.page.goto(f.base + '/relay-portal?returnTo=%2Frelay-account');
-    const upgrade = legacy.page.getByRole('button', { name: 'First sign-in since the security upgrade', exact: true });
-    await expect.soft(upgrade, 'LEGACY_EXPLICIT_UPGRADE: security review requires an explicit legacy choice; /auth/kdf must never trigger plaintext password fallback').toBeVisible();
-    await upgrade.click();
     const kdf = await f.api('/relay/auth/kdf?login=legacy-user');
     expect.soft(kdf.data.mode, 'KDF_NO_LEGACY_DOWNGRADE: relay must never request automatic plaintext fallback').not.toBe('legacy');
     await legacy.page.getByLabel('Email or username', { exact: true }).fill('legacy-user');
     await legacy.page.getByLabel('Password', { exact: true }).fill(legacyPassword);
-    const upgradeLogin = legacy.page.waitForRequest(request => new URL(request.url()).pathname === '/relay/auth/login' && request.method() === 'POST');
-    await legacy.page.locator('form button[type="submit"]').click();
+    // A normal sign-in derives a key and fails; only then is the explicit upgrade offered.
+    await legacy.page.getByRole('button', { name: 'Sign in', exact: true }).click();
+    await expect(legacy.page.getByRole('alert')).toHaveText('Incorrect login or password.');
+    const upgrade = legacy.page.getByRole('button', { name: 'Continue with this password', exact: true });
+    await expect.soft(upgrade, 'LEGACY_EXPLICIT_UPGRADE: security review requires an explicit legacy choice; /auth/kdf must never trigger plaintext password fallback').toBeVisible();
+    const upgradeLogin = legacy.page.waitForRequest(request => new URL(request.url()).pathname === '/relay/auth/login' && request.method() === 'POST' && request.postDataJSON()?.upgrade === true);
+    await upgrade.click();
     const upgradeBody = (await upgradeLogin).postDataJSON();
     const explicitProof = upgradeBody?.upgrade === true && upgradeBody?.login === 'legacy-user' && upgradeBody?.password === legacyPassword;
     expect.soft(explicitProof, 'LEGACY_UPGRADE_PROOF: deliberate legacy submit must send {login,password,upgrade:true}').toBe(true);
-    const secure = legacy.page.getByRole('dialog', { name: 'Secure your account', exact: true });
-    await expect(secure).toBeVisible();
-    const passwordInput = secure.getByLabel('Password', { exact: true });
+    await expect(legacy.page.getByRole('heading', { name: 'Secure your account', exact: true })).toBeVisible();
+    const passwordInput = legacy.page.getByLabel('Password', { exact: true });
     expect(await passwordInput.getAttribute('minlength'), 'Short legacy password must be replaced').toBe('12');
     await passwordInput.fill(f.password + '-legacy');
-    await secure.getByRole('button', { name: 'Secure your account', exact: true }).click();
-    const confirm = secure.getByLabel('Re-type the last group to confirm you saved it', { exact: true });
-    await expect(confirm).toBeVisible();
-    const code = (await secure.locator('code').textContent())!.trim(); f.secrets.push(code);
-    await confirm.fill(code.slice(-4));
-    await secure.getByRole('button', { name: 'Continue', exact: true }).click();
-    await expect(secure).toHaveCount(0);
+    await legacy.page.getByLabel('Confirm password', { exact: true }).fill(f.password + '-legacy');
+    await legacy.page.getByRole('button', { name: 'Continue', exact: true }).click();
+    const code = await readRecoveryCode(legacy.page); f.secrets.push(code);
+    await confirmRecoveryCode(legacy.page, code);
+    await expect(legacy.page.getByRole('heading', { name: 'Security', exact: true })).toBeVisible();
     f.events.push('Legacy account upgraded with forced long password and confirmed recovery');
 
     // Admin reset changes the relay credential but cannot decrypt the vault.
@@ -346,17 +346,19 @@ test('account key registration, enrollment, browser trust and recovery', async (
     ok(await f.api(`/relay/admin/users/${owner.userId}/reset-password`, 'POST', { password: temporaryPassword }, adminCookie), 'Admin temporary reset');
     const reset = await f.context();
     await reset.page.goto(f.base + '/relay-portal?returnTo=%2Frelay-account');
-    await reset.page.getByRole('button', { name: 'Use an admin reset password', exact: true }).click();
+    await reset.page.getByRole('button', { name: 'Forgot password?', exact: true }).click();
+    await reset.page.getByRole('tab', { name: 'Admin password', exact: true }).click();
     await reset.page.getByLabel('Email or username', { exact: true }).fill(owner.username!);
     await reset.page.getByLabel('Temporary reset password', { exact: true }).fill(temporaryPassword);
     await reset.page.getByRole('button', { name: 'Sign in', exact: true }).click();
-    const resetUnlock = reset.page.getByRole('dialog', { name: 'Unlock this browser', exact: true });
-    await expect(resetUnlock.getByLabel('Account recovery code', { exact: true })).toBeVisible();
-    await resetUnlock.getByLabel('Account recovery code', { exact: true }).fill(owner.recovery);
+    // The account gate asks for the recovery code and a new password before the app opens.
+    await expect(reset.page.getByRole('heading', { name: 'Set a new password', exact: true })).toBeVisible();
+    await reset.page.getByLabel('Recovery code', { exact: true }).fill(owner.recovery);
     const resetPassword = f.password + '-after-reset'; f.secrets.push(resetPassword);
-    await resetUnlock.getByLabel('New password', { exact: true }).fill(resetPassword);
-    await resetUnlock.getByRole('button', { name: 'Unlock', exact: true }).click();
-    await expect(resetUnlock).toHaveCount(0);
+    await reset.page.getByLabel('New password', { exact: true }).fill(resetPassword);
+    await reset.page.getByLabel('Confirm password', { exact: true }).fill(resetPassword);
+    await reset.page.getByRole('button', { name: 'Reset password', exact: true }).click();
+    await expect(reset.page.getByRole('heading', { name: 'Security', exact: true })).toBeVisible();
     await reset.page.goto(d1.url);
     await sendPrompt(reset.page, 'ADMIN_RESET_RECOVERY_REPLY');
     f.events.push('Admin temporary reset recovered the same vault with recovery code; bound device still works');

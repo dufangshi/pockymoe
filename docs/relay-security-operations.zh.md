@@ -12,7 +12,7 @@
 
 可信浏览器和会话可逐项撤销；关联会话随浏览器撤销失效，已打开的 WebSocket 也会断开。恢复码登录不会自动信任浏览器，并撤销已有信任和旧会话。启用／停用因素、修改密码等敏感变更会使其他会话失效。OAuth 登录也遵守该账户的 MFA 设置，不能仅因 OAuth 回调成功就绕过。
 
-账户密码不会发送给 relay：浏览器用 Argon2id 从密码派生登录用的 `authKey` 和加密账户 vault 的密钥（见 [Account key trust](account-key-trust.md)）。`GET /relay/auth/kdf` 对没有 vault 的账户也只返回固定的假参数，relay 无法借此让浏览器发送明文密码；只有用户在登录页明确选择「First sign-in since the security upgrade」时，尚未保护的账户才发送一次明文密码。注册或保护账户时显示的**账户恢复码**（8 组 4 字符）用于忘记密码时恢复账户密钥，与二步验证的一次性恢复码是两回事。修改密码、更换账户恢复码、移除浏览器都在 Account settings 的 **Account key and browsers** 中完成。浏览器在 relay 登记后，当前 relay 会话即绑定到该浏览器；移除浏览器会结束绑定到它的所有会话。每个账户密钥最多 32 个未撤销的浏览器、4096 条撤销记录，新增超出时返回 429 `browser_limit`／`revocation_limit`。
+账户密码不会发送给 relay：浏览器用 Argon2id 从密码派生登录用的 `authKey` 和加密账户 vault 的密钥（见 [Account key trust](account-key-trust.md)）。`GET /relay/auth/kdf` 对没有 vault 的账户也只返回固定的假参数，relay 无法借此让浏览器发送明文密码；只有用户在登录失败后明确选择「Continue with this password」时，尚未保护的账户才发送一次明文密码。注册或保护账户时显示的**账户恢复码**（8 组 4 字符）用于忘记密码时恢复账户密钥，与二步验证的一次性恢复码是两回事。修改密码、更换账户恢复码、移除浏览器都在 Account settings 的 **Account key and browsers** 中完成。浏览器在 relay 登记后，当前 relay 会话即绑定到该浏览器；移除浏览器会结束绑定到它的所有会话。每个账户密钥最多 32 个未撤销的浏览器、4096 条撤销记录，新增超出时返回 429 `browser_limit`／`revocation_limit`。
 
 ## Relay 部署配置与备份
 
@@ -30,7 +30,7 @@
 
 丢失手机时使用二步验证恢复码或已登记 Passkey 登录，重新设置因素并生成新恢复码。如果同时丢失全部因素和恢复码，UI 不提供绕过验证的入口，管理员重置密码也仍要求二步验证；需要可信运维恢复流程。没有邮件重置 MFA 的捷径，也不应直接删除 session-secret“修复”登录。
 
-忘记账户密码时，在登录页用账户恢复码恢复并设置新密码。管理员在管理面板重置已有 vault 的账户时，设置的是一次性临时密码，旧密码随即不能登录；用户在登录页明确选择 **Use an admin reset password** 登录后，仍须输入账户恢复码并设置新密码，或者用新账户密钥重新开始（Start over，每台已绑定设备都要在本机重新绑定）。Start over 之后、新 vault 建好之前，旧的账户恢复码仍可登录（进入待保护会话），密码则不能。对尚未保护的账户，重置设置的是普通密码，用户用「First sign-in since the security upgrade」登录后完成保护。
+忘记账户密码时，在登录页选择「Forgot password?」→「Recovery code」，输入账户恢复码并设置新密码。管理员在管理面板重置已有 vault 的账户时，设置的是一次性临时密码，旧密码随即不能登录；用户在登录页选择「Forgot password?」→「Admin password」登录后，仍须输入账户恢复码并设置新密码，或者选择「I don't have my recovery code」用新账户密钥重新开始（Start over，每台已绑定设备都要在本机重新绑定）。Start over 之后、新 vault 建好之前，旧的账户恢复码仍可登录（进入待保护会话），密码则不能。对尚未保护的账户，用临时密码登录后直接进入「Secure your account」。
 
 ## 设备身份与更换
 
@@ -67,7 +67,7 @@ WebSocket 一次握手后复用分方向 AES-GCM 密钥，以单调序号构造 
 - Relay 看得到账户、授权、设备和资源 ID、消息种类、长度与时序，以及哪些设备有证书、浏览器标签（浏览器和平台名称，例如 “Chrome on macOS”）和时间、撤销记录、端口预览的租约 ID。
 - 公开链接由浏览器投影用户消息和最终回复后显式发布，并用只存在于链接 fragment（`#k=`）和创建者浏览器中的密钥加密；relay 只保存密文，实时链接由设备返回同样的密文。加密之前创建的旧链接仍为明文；已绑定设备不提供没有加密密钥的实时链接，并在绑定时删除它们，relay 只保留最后缓存的快照并标记为过期。HTML 导出保持浏览器渲染流程。
 - 对**未绑定**设备，加密只保护转发内容：控制 relay 的攻击者仍可以设备所有者身份发起命令，首次公钥固定也依赖可信首次连接／独立指纹核对。
-- 对**已绑定**设备，relay 不能自行发起命令，见下一节。但 relay 提供网页时，攻击者仍可替换网页 JavaScript 拿到密码。用户选择「First sign-in since the security upgrade」时，密码会明文发给 relay 一次；relay 可以故意让普通登录失败，网页随后会在没打开过该登录名 vault 的浏览器上提示这个入口。浏览器对已打开过 vault 的登录名拒绝该入口；所有账户完成保护后，用 `VITE_POCKYMOE_LEGACY_UPGRADE=0` 构建网页即可去掉它。
+- 对**已绑定**设备，relay 不能自行发起命令，见下一节。但 relay 提供网页时，攻击者仍可替换网页 JavaScript 拿到密码。用户选择「Continue with this password」时，密码会明文发给 relay 一次；relay 可以故意让普通登录失败，网页随后会提供这个选项。浏览器不会对已打开过 vault 的登录名提供它，打开过任何 vault 的浏览器还要求明确确认；所有账户完成保护后，用 `VITE_POCKYMOE_LEGACY_UPGRADE=0` 构建网页即可去掉它。
 
 ## 已绑定与未绑定设备
 
@@ -87,7 +87,7 @@ WebSocket 一次握手后复用分方向 AES-GCM 密钥，以单调序号构造 
 运维注意：
 
 - 解除绑定只能在设备本机运行 `pockymoe bind --reset`；relay 管理员无法替用户解除，也无法恢复账户密钥。重置保留撤销记录，被移除的浏览器在重新绑定到同一密钥后仍被拒绝。
-- 尚无 vault 的账户需用「First sign-in since the security upgrade」登录一次，并在 10 分钟内完成「Secure your account」才能继续使用网页；在此之前 relay 只允许会话、退出登录和设备相关请求，升级前的会话也一样。OAuth 账户照常登录后设置解锁密码。Relay 管理员账户不使用账户密钥。迁移步骤见 [Migration](account-key-trust.md#migration)。
+- 尚无 vault 的账户第一次普通登录失败后选择「Continue with this password」，并在 10 分钟内完成「Secure your account」才能继续使用网页；在此之前 relay 只允许会话、退出登录和设备相关请求。升级前的会话也一样，网页会先要求重新登录。OAuth 账户照常登录后设置解锁密码。Relay 管理员账户不使用账户密钥。迁移步骤见 [Migration](account-key-trust.md#migration)。
 - 所有账户都完成保护后，用 `VITE_POCKYMOE_LEGACY_UPGRADE=0` 构建网页，去掉明文密码的升级入口（relay 仍接受该请求，但这样构建的网页不会发送）。
 - 用户「Start over」（只在用账户恢复码或管理员临时密码登录后提供）会生成新的账户密钥并删除 relay 上的设备证书副本；之前绑定的设备会拒绝新密钥，需在本机 `pockymoe bind --reset` 后重新绑定。之后 relay 只下发新密钥签名的撤销记录；仍绑定旧密钥的设备保留已有的撤销记录，但收不到新的。
 - `relay_device_certificates` 保存设备证书副本，relay 不验证其签名；浏览器只信任设备自己出示的证书。

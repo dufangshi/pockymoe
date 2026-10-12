@@ -53,13 +53,12 @@ Limits:
   found offline. A guessed password opens the vault and the account key.
 - **Security upgrade sign-in.** An account without a vault is secured after one
   sign-in that sends its existing password to the relay
-  (**First sign-in since the security upgrade**). A relay that is compromised at
-  that moment learns that password; choose a different one when securing the
-  account. A relay can also make an ordinary sign-in fail; on a browser that has
-  never opened an account vault, the Web then suggests the upgrade choice.
-  Browsers refuse the choice for sign-in names they have opened a vault for and
-  ask for an explicit confirmation when they have opened any vault. A Web build
-  without the choice removes the risk ([migration](#migration)).
+  (**Continue with this password**). A relay that is compromised at that moment
+  learns that password; choose a different one when securing the account. A
+  relay can also make an ordinary sign-in fail, and the Web then offers the
+  upgrade. Browsers never offer it for sign-in names they have opened a vault
+  for, and ask for an explicit confirmation when they have opened any vault. A
+  Web build without the upgrade removes the risk ([migration](#migration)).
 - **Web code.** The JavaScript that holds the password and keys, and the device
   setup scripts, must come from a separate static origin
   ([self-hosting](self-host-relay.md#separate-web-origin)). A relay that serves
@@ -564,15 +563,15 @@ after which their certificates no longer verify.
 | Flow | Behavior |
 | --- | --- |
 | Register | The browser generates the user ID (canonical UUID v4), account key, VDK, salt and recovery code, shows the code for confirmation, then sends `POST /relay/auth/register` with `authKey`, `recoveryAuthKey` and the vault. With registration approval, the vault waits with the request and is stored on approval; a second registration for a name with a pending request answers 409 `conflict`. A user ID collision answers 409 `user_id_taken`; registering again generates new keys. |
-| Sign in | One form: fetch the KDF parameters for the sign-in name, derive, sign in with `authKey`, complete the second factor, fetch and open the vault, register the browser. The unlock window opens without a separate step. When a sign-in fails on a browser that has never opened an account vault, the error points to the security upgrade choice if the build offers it. |
-| First sign-in since the security upgrade | For an account without a vault. An explicit choice on the sign-in page that posts `{login, password, upgrade: true}`; the relay accepts it only for password accounts without a vault that have not used an admin reset password. Browsers refuse it for names they have opened a vault for; a browser that has opened any vault warns and requires the box "I am upgrading a different account that has never been secured." Web builds with `VITE_POCKYMOE_LEGACY_UPGRADE=0` do not offer it. A stored SHA-256 password hash is upgraded to scrypt at this sign-in. The session stays restricted until **Secure your account** creates the vault, which needs this sign-in to be less than 10 minutes old: choose a password of at least 12 characters and save the recovery code. Creating the vault deletes the relay's login password hash, signs out the account's other sessions and forgets its trusted (two-step) browsers. |
+| Sign in | One form: fetch the KDF parameters for the sign-in name, derive, sign in with `authKey`, complete the second factor, fetch and open the vault, register the browser. The unlock window opens without a separate step. |
+| Security upgrade | For an account without a vault. After a sign-in fails with "Incorrect login or password.", the sign-in page offers **Continue with this password**, which posts `{login, password, upgrade: true}`; the relay accepts it only for password accounts without a vault that have not used an admin reset password. Browsers never offer it for names they have opened a vault for; a browser that has opened any vault warns and requires the box "I am upgrading a different account that has never been secured." Web builds with `VITE_POCKYMOE_LEGACY_UPGRADE=0` do not offer it. A stored SHA-256 password hash is upgraded to scrypt at this sign-in. The session stays restricted until **Secure your account** creates the vault, which needs this sign-in to be less than 10 minutes old. A password of at least 12 characters is reused right away; a shorter one asks for a new password. The vault is stored before the recovery code is shown, and the code must be confirmed by typing its last 4 characters. Creating the vault deletes the relay's login password hash, signs out the account's other sessions and forgets its trusted (two-step) browsers. A setup session whose sign-in is older than 10 minutes, such as one from before the update, shows **Please sign in again** instead of the setup form. |
 | OAuth account | No login password. At the first sign-in the user chooses an **unlock password**, which only encrypts the vault; no `authKey` is sent. A browser without a browser key asks for it after OAuth sign-in. Every vault write (including recording a bound device) and starting over need an OAuth sign-in or second factor within 10 minutes (otherwise 403 `reauthentication_required`). An account with both a password and an OAuth identity is a password account. |
-| Forgot password | **Forgot password? Use your account recovery code** on the sign-in page: the recovery code and a new password. The relay checks `recoveryAuthKey` (10 attempts per 5 minutes per name) and always asks for the configured second factor, even on trusted browsers. The browser opens the recovery slot, writes a new password slot and `authKey`, and registers itself. |
-| Admin reset | **Use an admin reset password**, a separate explicit choice, with a temporary password from the relay administrator (one use; the configured second factor is asked even on trusted browsers). For an account with a vault, then enter the recovery code and a new password, or **Start over**. For an account without a vault (including OAuth-only accounts), the sign-in opens a setup session that leads to **Secure your account** (or the unlock password); this works in every Web build. |
+| Forgot password | **Forgot password?** on the sign-in page, **Recovery code** tab: the recovery code and a new password. The relay checks `recoveryAuthKey` (10 attempts per 5 minutes per name) and always asks for the configured second factor, even on trusted browsers. The browser opens the recovery slot, writes a new password slot and `authKey`, and registers itself. |
+| Admin reset | **Forgot password?**, **Admin password** tab, with a temporary password from the relay administrator (one use; the configured second factor is asked even on trusted browsers). For an account with a vault, **Set a new password** then asks for the recovery code and a new password; **I don't have my recovery code** leads to **Start over**. For an account without a vault (including OAuth-only accounts), the sign-in opens a setup session that leads to **Secure your account** (or the unlock password); this works in every Web build. |
 | Change password | Account settings, unlock window. Proves the current `authKey`, or the recovery code when the window was opened with it. New random salt. Signs out other sessions and forgets trusted browsers; browser keys and device registrations stay valid. |
 | Regenerate recovery code | Shows a new code once; the old one stops working. Signs out other sessions and forgets trusted browsers. |
 | Start over | In Account settings; outside a recovery or reset session it first asks for the current password ("Confirm your current password to start over."). Deletes the vault, the account's browser certificates and the relay copies of its device certificates, and signs out other sessions. The session becomes a setup session, and the browser asks for a new password and shows a new recovery code to create a new account key. Until the new vault exists, the old recovery code still signs in (into a setup session); the password does not work in the Web, because the relay then answers fake KDF parameters. Every bound device refuses the new key until `pockymoe bind --reset` on that device, which then shows **Protect this device**. The account's safety code changes, and a recipient browser that pinned the old owner key blocks the owner's devices until it uses **Forget pinned owner account**. |
-| Sign out | Deletes this browser's key. Its certificate stays listed until removed; the cached account key ID and vault revision stay to detect substitution at the next sign-in. |
+| Sign out | Offered on every account screen after sign-in (setup, unlock, reset) and in the unlock dialog. Deletes this browser's key. Its certificate stays listed until removed; the cached account key ID and vault revision stay to detect substitution at the next sign-in. |
 
 The relay administrator signs in at `/relay-admin` with the configured password,
 holds no account key and cannot use the portal.
@@ -599,11 +598,12 @@ working as **Not protected · Relay trusted**.
 
 **Each user, once.**
 
-1. Choose **First sign-in since the security upgrade**, sign in with the current
-   password (the only time the relay receives it) and the second factor, and then,
-   within 10 minutes, **Secure your account**: a password of at least 12
-   characters, preferably a new one, and the recovery code. Users who sign in with
-   Google or GitHub sign in as usual and choose an unlock password.
+1. Sign in with the current password. It fails once with "Incorrect login or
+   password."; choose **Continue with this password** (the only time the relay
+   receives it) and complete the second factor. **Secure your account** then
+   stores the vault: a password of at least 12 characters is kept, a shorter one
+   must be replaced. Save the recovery code. Users who sign in with Google or
+   GitHub sign in as usual and choose an unlock password.
 2. Other browsers then sign in with the ordinary form.
 3. Recipients of shares secure their accounts before a protected device can honor
    those shares.
@@ -631,11 +631,11 @@ working as **Not protected · Relay trusted**.
 the Web UI itself moves it to a static origin as described
 [below](#moving-to-a-separate-web-origin). When every account has a vault, build
 the Web with `VITE_POCKYMOE_LEGACY_UPGRADE=0` to remove the security upgrade
-choice (for the public site, add it to the build environment in
-`pages-deploy.yml`). The relay still accepts the request, but no browser running
-that build sends a password. An account that still has no vault then signs in
-only after an [admin reset](#account-flows): **Use an admin reset password**
-leads to **Secure your account**. After **Start over**, the recovery code still
+(for the public site, add it to the build environment in `pages-deploy.yml`).
+The relay still accepts the request, but no browser running that build sends a
+password. An account that still has no vault then signs in only after an
+[admin reset](#account-flows): **Forgot password?** → **Admin password** leads
+to **Secure your account**. After **Start over**, the recovery code still
 signs in until the new vault exists.
 
 ### Moving to a separate Web origin
@@ -1070,12 +1070,16 @@ Login, register and recover answers include `{token, account, session}`, and
 
 ```text
 { "mode": "account" | "legacy" | "oauth", "setupRequired": false,
-  "recovery": false, "hasVault": true, "accountKeyId": "…" | null }
+  "recovery": false, "hasVault": true, "accountKeyId": "…" | null,
+  "recentAuth": true }
 ```
 
 `mode` is `oauth` for an OAuth-only account (with or without a vault), `account`
 for any other account with a vault and `legacy` otherwise, including the
-administrator.
+administrator. `recentAuth` is true when the session signed in or confirmed a
+second factor within the last 10 minutes, so vault creation and OAuth slot
+changes will not answer `reauthentication_required`; the Web asks a setup
+session without it to sign in again before showing the setup form.
 
 | Session | Created by | Allowed requests |
 | --- | --- | --- |

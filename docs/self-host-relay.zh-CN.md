@@ -113,17 +113,17 @@ docker run -d --name pockymoe-relay --restart unless-stopped \
 
 ### 尚无账户密钥的账户和未绑定的设备
 
-账户、二步验证、设备、共享和 thread 都会保留。还没有账户密钥的账户在登录页选择「First sign-in since the security upgrade」登录一次（这是密码唯一一次发给 Relay），然后在 10 分钟内完成「Secure your account」：设置一个至少 12 个字符的密码并保存恢复码。完成之前，Relay 只允许会话、退出登录和设备相关的请求；升级前已有的会话也受同样限制。创建 vault 时 Relay 会删除旧的密码哈希。使用 Google 或 GitHub 登录的账户照常登录，然后设置一个解锁密码。Relay 管理员账户在 `/relay-admin` 用配置的密码登录，没有账户密钥。
+账户、二步验证、设备、共享和 thread 都会保留。还没有账户密钥的账户第一次普通登录会失败，这时选择「Continue with this password」（这是密码唯一一次发给 Relay），随后在「Secure your account」设置一个至少 12 个字符的密码并保存恢复码。完成之前，Relay 只允许会话、退出登录和设备相关的请求；升级前已有的会话也受同样限制，并会被要求重新登录。创建 vault 时 Relay 会删除旧的密码哈希。使用 Google 或 GitHub 登录的账户照常登录，然后设置一个解锁密码。Relay 管理员账户在 `/relay-admin` 用配置的密码登录，没有账户密钥。
 
 未绑定的设备照常可用，但不受保护（「Not protected · Relay trusted」），直到所有者保护它：在 Devices 页面点「Protect all devices」，或点「Protect this device」并在设备上运行显示的 `pockymoe bind` 命令，或重新运行它的安装命令。设备需要运行支持绑定的版本。逐步说明见 [Migration](account-key-trust.md#migration)。
 
-发布的 `remote-codex-web.zip` 带有这个升级入口。所有账户都完成保护后，设置 `VITE_POCKYMOE_LEGACY_UPGRADE=0` 从源码构建网页（例如下面的[静态构建](#构建静态网页)）即可去掉它。此后仍没有 vault 的账户需要先[重置密码](#重置密码)才能登录并完成保护。
+发布的 `remote-codex-web.zip` 提供这个升级。所有账户都完成保护后，设置 `VITE_POCKYMOE_LEGACY_UPGRADE=0` 从源码构建网页（例如下面的[静态构建](#构建静态网页)）即可去掉它。此后仍没有 vault 的账户需要先[重置密码](#重置密码)才能登录并完成保护。
 
 ## 重置密码
 
 Relay 只把每个用户的账户密钥保存在用其密码和恢复码加密的 vault 里。任何能访问服务器的人（包括你）都无法恢复它。
 
-在管理面板重置用户密码，会设置一个至少 12 个字符的临时密码。它只能使用一次，用户若设置了二步验证仍需通过（在受信任的浏览器上也一样），并且旧密码不能再登录。用户在登录页选择「Use an admin reset password」，然后输入恢复码和新密码。没有恢复码时只能用新账户密钥重新开始，并重新绑定每台设备（先在设备上运行 `pockymoe bind --reset`，再「Protect this device」）。对尚未完成保护的账户，同样的登录会直接进入「Secure your account」；去掉了安全升级入口的网页构建也可以这样做。
+在管理面板重置用户密码，会设置一个至少 12 个字符的临时密码。它只能使用一次，用户若设置了二步验证仍需通过（在受信任的浏览器上也一样），并且旧密码不能再登录。用户在登录页选择「Forgot password?」→「Admin password」，然后输入恢复码和新密码。没有恢复码时只能用新账户密钥重新开始，并重新绑定每台设备（先在设备上运行 `pockymoe bind --reset`，再「Protect this device」）。对尚未完成保护的账户，同样的登录会直接进入「Secure your account」；去掉了安全升级的网页构建也可以这样做。
 
 ## 备份
 
@@ -167,7 +167,7 @@ VITE_POCKYMOE_RELAY_ORIGIN=https://relay.example.com POCKYMOE_WEB_DOMAIN=app.exa
 node scripts/check-static-web.mjs   # 设置同样的两个变量
 ```
 
-`POCKYMOE_WEB_DOMAIN` 是网页的主机名，必须设置。这个构建在编译时选定 relay 模式，不需要内联脚本。加上 `VITE_POCKYMOE_LEGACY_UPGRADE=0` 可去掉「First sign-in since the security upgrade」入口。`apps/supervisor-web/dist/` 中除了网页本身还有：
+`POCKYMOE_WEB_DOMAIN` 是网页的主机名，必须设置。这个构建在编译时选定 relay 模式，不需要内联脚本。加上 `VITE_POCKYMOE_LEGACY_UPGRADE=0` 可去掉安全升级（「Continue with this password」）。`apps/supervisor-web/dist/` 中除了网页本身还有：
 
 - `index.html` 里以 `<meta http-equiv>` 标签写入的内容安全策略（CSP），包含响应头版本中除 `frame-ancestors` 以外的全部指令，以及 `no-referrer` 的 referrer 策略；
 - `404.html`：`index.html` 的副本，在 GitHub Pages 等托管服务上作为 SPA 回退；

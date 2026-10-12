@@ -1,6 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { createHash, createPublicKey, generateKeyPairSync, verify } from 'node:crypto';
-import { fixture, browserRequest, ok, unlock, type Account, type Device } from './helpers/account-key-fixture';
+import { fixture, browserRequest, ok, unlock, UNLOCK_DIALOG, type Account, type Device } from './helpers/account-key-fixture';
 
 test.use({ trace: 'off', video: 'off', screenshot: 'off', actionTimeout: 15_000 });
 
@@ -29,7 +29,7 @@ async function protectAll(page: Page, password: string, label: string) {
     await expect(confirmation.getByText(/Remote protection trusts the relay at the moment of binding\./),
       `${label}_TRADEOFF: the user sees that the relay is trusted during the first bind`).toBeVisible();
     await confirmation.getByRole('button', { name: 'Protect devices', exact: true }).click();
-    const dialog = page.getByRole('dialog', { name: 'Unlock this browser', exact: true });
+    const dialog = page.getByRole('dialog', { name: UNLOCK_DIALOG });
     await expect.soft(dialog, `${label}_UNLOCK: a locked page must request one account unlock for the whole batch`).toBeVisible({ timeout: 5_000 });
     if (await dialog.isVisible()) await unlock(page, password);
   }
@@ -53,7 +53,7 @@ test('one-click protection certifies two unbound devices and detects a relay-sub
       (window as any).__bulkUnlockSubmissions = 0;
       document.addEventListener('submit', event => {
         const form = event.target;
-        if (form instanceof HTMLFormElement && form.closest('[role="dialog"]')?.textContent?.includes('Unlock this browser') && form.querySelector('input[type="password"]')) {
+        if (form instanceof HTMLFormElement && /Unlock this browser|Confirm with your password/.test(form.closest('[role="dialog"]')?.textContent ?? '') && form.querySelector('input[type="password"]')) {
           (window as any).__bulkUnlockSubmissions++;
         }
       }, true);
@@ -77,7 +77,7 @@ test('one-click protection certifies two unbound devices and detects a relay-sub
       { timeout: offered ? 30_000 : 100, message: 'ONE_CLICK_PROTECTED: both initially unbound owned devices must complete enrollment automatically' }).toBe(true);
     expect.soft(await owner.page.evaluate(() => (window as any).__bulkUnlockSubmissions),
       'ONE_CLICK_SINGLE_UNLOCK: one password submission must protect both devices').toBe(1);
-    expect.soft(await owner.page.getByRole('dialog', { name: 'Unlock this browser', exact: true }).count(),
+    expect.soft(await owner.page.getByRole('dialog', { name: UNLOCK_DIALOG }).count(),
       'ONE_CLICK_NO_EXTRA_UNLOCK: no second unlock may remain queued').toBe(0);
     for (const device of devices) {
       const descriptor = ok(await f.api(device.api + '/transport/key?challenge=one-click-protection', 'GET', undefined, owner.cookie), 'Bulk-protected descriptor');
