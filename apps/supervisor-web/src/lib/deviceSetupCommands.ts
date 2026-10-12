@@ -20,7 +20,10 @@ const shellQuote = (value: string) =>
   /^[A-Za-z0-9_./:@%+=,~-]+$/.test(printableAscii(value))
     ? value
     : `'${value.replace(/'/g, `'\\''`)}'`;
-const powershellQuote = (value: string) => `'${printableAscii(value).replace(/'/g, "''")}'`;
+const powershellQuote = (value: string) =>
+  `'${printableAscii(value).replace(/'/g, "''")}'`;
+const powershellEnrollment = (secret: string, command: string) =>
+  `$pockymoePreviousEnroll = $env:POCKYMOE_ENROLL; try { $env:POCKYMOE_ENROLL = ${powershellQuote(secret)}; ${command} } finally { $env:POCKYMOE_ENROLL = $pockymoePreviousEnroll; Remove-Variable pockymoePreviousEnroll -ErrorAction SilentlyContinue }`;
 
 export function relaySupervisorCommand(
   token: string,
@@ -31,14 +34,23 @@ export function relaySupervisorCommand(
 ) {
   validateDeviceSetupToken(token);
   if (platform === 'windows') {
-    return `& ([scriptblock]::Create((Invoke-WebRequest -UseBasicParsing ${powershellQuote(webOrigin + '/setup.ps1')}).Content)) -Relay ${powershellQuote(origin)} -Token ${powershellQuote(token)} -Port 45680 -WebOrigin ${powershellQuote(webOrigin)} -AccountKey ${powershellQuote(binding.accountPublicKey)} -Enroll ${powershellQuote(binding.enrollSecret)}`;
+    return powershellEnrollment(
+      binding.enrollSecret,
+      `& ([scriptblock]::Create((Invoke-WebRequest -UseBasicParsing ${powershellQuote(webOrigin + '/setup.ps1')}).Content)) -Relay ${powershellQuote(origin)} -Token ${powershellQuote(token)} -Port 45680 -WebOrigin ${powershellQuote(webOrigin)} -AccountKey ${powershellQuote(binding.accountPublicKey)}`,
+    );
   }
-  return `curl -fsSL ${shellQuote(webOrigin + '/setup.sh')} | sh -s -- --relay ${shellQuote(origin)} --token ${shellQuote(token)} --port 45679 --web-origin ${shellQuote(webOrigin)} --account-key ${shellQuote(binding.accountPublicKey)} --enroll ${shellQuote(binding.enrollSecret)}`;
+  return `curl -fsSL ${shellQuote(webOrigin + '/setup.sh')} | POCKYMOE_ENROLL=${shellQuote(binding.enrollSecret)} sh -s -- --relay ${shellQuote(origin)} --token ${shellQuote(token)} --port 45679 --web-origin ${shellQuote(webOrigin)} --account-key ${shellQuote(binding.accountPublicKey)}`;
 }
 
 export function deviceBindCommand(
   binding: DeviceBindingFlags,
   webOrigin = location.origin,
+  platform: SupervisorPlatform = 'unix',
 ) {
-  return `pockymoe bind --account-key ${shellQuote(binding.accountPublicKey)} --enroll ${shellQuote(binding.enrollSecret)} --web-origin ${shellQuote(webOrigin)}`;
+  if (platform === 'windows')
+    return powershellEnrollment(
+      binding.enrollSecret,
+      `pockymoe bind --account-key ${powershellQuote(binding.accountPublicKey)} --web-origin ${powershellQuote(webOrigin)}`,
+    );
+  return `POCKYMOE_ENROLL=${shellQuote(binding.enrollSecret)} pockymoe bind --account-key ${shellQuote(binding.accountPublicKey)} --web-origin ${shellQuote(webOrigin)}`;
 }
