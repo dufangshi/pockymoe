@@ -7,7 +7,7 @@ use axum::{
     extract::{DefaultBodyLimit, Path, Query, State},
     http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{delete, get, post},
     Json, Router,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD as B64, Engine};
@@ -70,8 +70,18 @@ pub(crate) fn ensure_schema(conn: &Connection) -> anyhow::Result<()> {
             [],
         )?;
     }
+    // Historical ciphertext could still be unlocked with a retired password or
+    // recovery code. Remove the feature's column without touching the current vault.
+    if conn
+        .prepare("SELECT previous_vault_json FROM relay_account_vaults LIMIT 0")
+        .is_ok()
+    {
+        conn.execute(
+            "ALTER TABLE relay_account_vaults DROP COLUMN previous_vault_json",
+            [],
+        )?;
+    }
     for (table, column, definition) in [
-        ("relay_account_vaults", "previous_vault_json", "TEXT"),
         ("relay_auth_sessions", "account_browser_id", "TEXT"),
         ("relay_auth_sessions", "account_browser_key_id", "TEXT"),
     ] {
@@ -272,24 +282,108 @@ pub(crate) fn validate_vault(vault: &Value, user: &str) -> Result<(), Failure> {
 }
 pub(crate) fn store_vault(conn: &Connection, user: &str, value: &Value) -> Result<(), Failure> {
     conn.execute("INSERT INTO relay_account_vaults(user_id,vault_json,revision,account_key_id,account_public_key) VALUES (?1,?2,?3,?4,?5)
-        ON CONFLICT(user_id) DO UPDATE SET previous_vault_json=relay_account_vaults.vault_json,vault_json=excluded.vault_json,revision=excluded.revision",
+        ON CONFLICT(user_id) DO UPDATE SET vault_json=excluded.vault_json,revision=excluded.revision",
         params![user, serde_json::to_string(value).map_err(internal)?, value["revision"].as_i64(), value["accountKeyId"].as_str(), value["accountPublicKey"].as_str()]).map_err(internal)?;
     Ok(())
 }
-fn verify_auth(conn: &Connection, user: &str, key: Option<&str>) -> bool {
-    let Some(key) = key.filter(|key| valid_key(key)) else {
-        return false;
-    };
-    let hash: Option<(String, String)> = conn.query_row("SELECT auth_salt,auth_hash FROM relay_account_auth WHERE user_id=?1 AND auth_hash IS NOT NULL", [user], |r| Ok((r.get(0)?, r.get(1)?))).optional().ok().flatten();
-    hash.is_some_and(|(salt, hash)| crate::verify_password(key, &salt, &hash))
+#[derive(Clone, PartialEq)]
+struct Credentials {
+    auth_salt: Option<String>,
+    auth_hash: Option<String>,
+    recovery_salt: Option<String>,
+    recovery_hash: Option<String>,
+    oauth_only: bool,
+    reset_pending: bool,
+    reset_consumed: bool,
 }
-fn verify_recovery(conn: &Connection, user: &str, key: Option<&str>) -> bool {
-    let Some(key) = key.filter(|k| valid_key(k)) else {
-        return false;
-    };
-    let row:Option<(String,String)>=conn.query_row("SELECT recovery_salt,recovery_hash FROM relay_account_auth WHERE user_id=?1 AND recovery_hash IS NOT NULL",[user],|r|Ok((r.get(0)?,r.get(1)?))).optional().ok().flatten();
-    row.is_some_and(|(salt, hash)| crate::verify_password(key, &salt, &hash))
+impl Credentials {
+    fn load(conn: &Connection, user: &str) -> Result<Option<Self>, Failure> {
+        conn.query_row("SELECT auth_salt,auth_hash,recovery_salt,recovery_hash,oauth_only,reset_pending,reset_consumed FROM relay_account_auth WHERE user_id=?1", [user], |r| Ok(Self {
+            auth_salt:r.get(0)?,auth_hash:r.get(1)?,recovery_salt:r.get(2)?,recovery_hash:r.get(3)?,oauth_only:r.get(4)?,reset_pending:r.get(5)?,reset_consumed:r.get(6)?,
+        })).optional().map_err(internal)
+    }
+    fn verify(key: Option<&str>, salt: Option<&str>, hash: Option<&str>) -> bool {
+        match (key.filter(|key| valid_key(key)), salt, hash) {
+            (Some(key), Some(salt), Some(hash)) => crate::verify_password(key, salt, hash),
+            _ => false,
+        }
+    }
+    fn auth(&self, key: Option<&str>) -> bool {
+        Self::verify(key, self.auth_salt.as_deref(), self.auth_hash.as_deref())
+    }
+    fn recovery(&self, key: Option<&str>) -> bool {
+        Self::verify(
+            key,
+            self.recovery_salt.as_deref(),
+            self.recovery_hash.as_deref(),
+        )
+    }
 }
+#[derive(Clone, PartialEq)]
+struct VaultState {
+    vault: Option<Value>,
+    credentials: Option<Credentials>,
+    mode: String,
+    oauth: bool,
+    recent: bool,
+}
+impl VaultState {
+    fn load(conn: &Connection, user: &str, token: &str) -> Result<Self, Failure> {
+        Ok(Self {
+            vault: vault(conn, user)?,
+            credentials: Credentials::load(conn, user)?,
+            mode: session_mode(conn, token),
+            oauth: oauth_only(conn, user),
+            recent: factors::recent(conn, token),
+        })
+    }
+    fn recheck(
+        &self,
+        conn: &Connection,
+        state: &AppState,
+        headers: &HeaderMap,
+        user: &str,
+        token: &str,
+        recent_required: bool,
+    ) -> Result<(), Failure> {
+        // Expensive proofs used a snapshot. A revocation, reset, concurrent write,
+        // or start-over must invalidate it before any transaction is committed.
+        let (live_user, live_token) = auth(conn, state, headers)?;
+        let mut live = Self::load(conn, user, token)?;
+        if recent_required && !live.recent {
+            return Err(failure(
+                StatusCode::FORBIDDEN,
+                "reauthentication_required",
+                "Authenticate again before changing vault slots",
+            ));
+        }
+        // Current-key proofs don't require recent auth. Only enforce that flag
+        // for OAuth and setup, including expiry while the slow work was running.
+        live.recent = self.recent;
+        if live_user.id != user || live_token != token || live != *self {
+            return Err(failure(
+                StatusCode::CONFLICT,
+                "vault_conflict",
+                "Account authentication or vault changed; authenticate again",
+            ));
+        }
+        Ok(())
+    }
+}
+fn admit_vault_mutation(state: &AppState, user: &str) -> Result<(), Failure> {
+    if !state.admission.allow(format!("vault:{user}"), 10, 300) {
+        return Err(failure(
+            StatusCode::TOO_MANY_REQUESTS,
+            "rate_limited",
+            "Too many vault changes",
+        ));
+    }
+    Ok(())
+}
+// Independent of anonymous login work; authenticated callers cannot grow the
+// blocking pool without bound and never wait while holding the database lock.
+static VAULT_PASSWORD_WORK: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
+
 pub(crate) fn account_public(conn: &Connection, user: &str, code: &str) -> ApiResult {
     let value = vault(conn, user)?
         .ok_or_else(|| failure(StatusCode::NOT_FOUND, code, "Account key is not available"))?;
@@ -301,7 +395,6 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/relay/auth/kdf", get(kdf))
         .route("/relay/auth/recover", post(recover))
-        .route("/relay/account/vault/previous", get(read_previous_vault))
         .route(
             "/relay/account/vault",
             get(read_vault)
@@ -312,6 +405,10 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
         .route(
             "/relay/account/browsers",
             get(browsers).post(register_browser),
+        )
+        .route(
+            "/relay/account/browsers/{browserId}",
+            delete(delete_browser),
         )
         .route("/relay/account/revocations", post(revoke))
         .route("/relay/devices/{id}/owner-account", get(owner_account))
@@ -371,29 +468,6 @@ async fn read_vault(State(state): State<Arc<AppState>>, headers: HeaderMap) -> A
         )
     })?))
 }
-async fn read_previous_vault(State(state): State<Arc<AppState>>, headers: HeaderMap) -> ApiResult {
-    let conn = state.store.conn.lock().await;
-    let (user, _) = auth(&conn, &state, &headers)?;
-    let raw: Option<String> = conn
-        .query_row(
-            "SELECT previous_vault_json FROM relay_account_vaults WHERE user_id=?1",
-            [&user.id],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(internal)?
-        .flatten();
-    Ok(Json(
-        serde_json::from_str(&raw.ok_or_else(|| {
-            failure(
-                StatusCode::NOT_FOUND,
-                "vault_missing",
-                "Previous vault is not available",
-            )
-        })?)
-        .map_err(internal)?,
-    ))
-}
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct VaultWrite {
@@ -412,8 +486,10 @@ async fn write_vault(
         serde_json::from_slice(&body).map_err(|_| invalid("Invalid vault request"))?;
     let conn = state.store.conn.lock().await;
     let (user, token) = auth(&conn, &state, &headers)?;
+    admit_vault_mutation(&state, &user.id)?;
     validate_vault(&body.vault, &user.id)?;
-    let old = vault(&conn, &user.id)?;
+    let before = VaultState::load(&conn, &user.id, &token)?;
+    let old = before.vault.clone();
     let revision = old
         .as_ref()
         .and_then(|v| v["revision"].as_u64())
@@ -427,8 +503,8 @@ async fn write_vault(
             "Account vault changed; fetch it again",
         ));
     }
-    let mode = session_mode(&conn, &token);
-    let oauth = oauth_only(&conn, &user.id);
+    let mode = before.mode.clone();
+    let oauth = before.oauth;
     if let Some(old) = &old {
         for field in ["userId", "accountKeyId", "accountPublicKey"] {
             if old[field] != body.vault[field] {
@@ -448,14 +524,36 @@ async fn write_vault(
     let recovery_changed = old
         .as_ref()
         .is_none_or(|v| v["slots"]["recovery"] != body.vault["slots"]["recovery"]);
+    // Copy only the credential material; verification and hashing happen without
+    // a DB guard, then the exact session/vault/credentials are rechecked below.
+    drop(conn);
+    for key in [&body.auth_key, &body.recovery_auth_key]
+        .into_iter()
+        .flatten()
+    {
+        if !valid_key(key) {
+            return Err(invalid("Authentication keys must be B64 of 32 bytes"));
+        }
+    }
+    let permit = VAULT_PASSWORD_WORK.acquire().await.map_err(internal)?;
+    let credentials = before.credentials.clone();
+    let current = body.current_auth_key.clone();
+    let recovery = body.recovery_auth_key.clone();
+    let (auth_ok, recovery_ok, permit) = tokio::task::spawn_blocking(move || {
+        let auth_ok = credentials
+            .as_ref()
+            .is_some_and(|c| c.auth(current.as_deref()));
+        let recovery_ok = credentials
+            .as_ref()
+            .is_some_and(|c| c.recovery(recovery.as_deref()));
+        (auth_ok, recovery_ok, permit)
+    })
+    .await
+    .map_err(internal)?;
     if old.is_some() && body.auth_key.is_some() && !password_changed {
         return Err(invalid("A new authKey requires a changed password slot"));
     }
-    if old.is_some()
-        && body.recovery_auth_key.is_some()
-        && !recovery_changed
-        && !verify_recovery(&conn, &user.id, body.recovery_auth_key.as_deref())
-    {
+    if old.is_some() && body.recovery_auth_key.is_some() && !recovery_changed && !recovery_ok {
         return Err(invalid(
             "Unchanged recovery slot requires the existing recoveryAuthKey",
         ));
@@ -471,7 +569,7 @@ async fn write_vault(
             "Recovery requires a new password slot and authKey",
         ));
     }
-    if (oauth || old.is_none()) && !factors::recent(&conn, &token) {
+    if (oauth || old.is_none()) && !before.recent {
         return Err(failure(
             StatusCode::FORBIDDEN,
             "reauthentication_required",
@@ -481,8 +579,8 @@ async fn write_vault(
     if old.is_some()
         && !oauth
         && !matches!(mode.as_str(), RECOVERY | RESET)
-        && !verify_auth(&conn, &user.id, body.current_auth_key.as_deref())
-        && !verify_recovery(&conn, &user.id, body.recovery_auth_key.as_deref())
+        && !auth_ok
+        && !recovery_ok
     {
         return Err(failure(
             StatusCode::FORBIDDEN,
@@ -500,28 +598,30 @@ async fn write_vault(
     if oauth && body.auth_key.is_some() {
         return Err(invalid("OAuth-only accounts have no login authKey"));
     }
-    for key in [&body.auth_key, &body.recovery_auth_key]
-        .into_iter()
-        .flatten()
-    {
-        if !valid_key(key) {
-            return Err(invalid("Authentication keys must be B64 of 32 bytes"));
-        }
-    }
-    let auth_hash = body
-        .auth_key
-        .as_deref()
-        .map(crate::hash_password)
-        .transpose()
-        .map_err(internal)?;
-    let recovery_hash = body
-        .recovery_auth_key
-        .clone()
-        .filter(|_| recovery_changed)
-        .as_deref()
-        .map(crate::hash_password)
-        .transpose()
-        .map_err(internal)?;
+    let auth_key = body.auth_key.clone();
+    let recovery_key = body.recovery_auth_key.clone().filter(|_| recovery_changed);
+    let (auth_hash, recovery_hash) = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+        let _permit = permit;
+        Ok((
+            auth_key.as_deref().map(crate::hash_password).transpose()?,
+            recovery_key
+                .as_deref()
+                .map(crate::hash_password)
+                .transpose()?,
+        ))
+    })
+    .await
+    .map_err(internal)?
+    .map_err(internal)?;
+    let conn = state.store.conn.lock().await;
+    before.recheck(
+        &conn,
+        &state,
+        &headers,
+        &user.id,
+        &token,
+        oauth || old.is_none(),
+    )?;
     let tx = conn.unchecked_transaction().map_err(internal)?;
     store_vault(&tx, &user.id, &body.vault)?;
     if old.is_none() {
@@ -586,25 +686,39 @@ async fn delete_vault(
 ) -> ApiResult {
     let conn = state.store.conn.lock().await;
     let (user, token) = auth(&conn, &state, &headers)?;
-    let mode = session_mode(&conn, &token);
-    let oauth = oauth_only(&conn, &user.id);
+    admit_vault_mutation(&state, &user.id)?;
+    let before = VaultState::load(&conn, &user.id, &token)?;
+    let mode = before.mode.clone();
+    let oauth = before.oauth;
+    drop(conn);
+    let credentials = before.credentials.clone();
+    let proof = body.current_auth_key;
+    let permit = VAULT_PASSWORD_WORK.acquire().await.map_err(internal)?;
+    let auth_ok = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        credentials
+            .as_ref()
+            .is_some_and(|c| c.auth(proof.as_deref()))
+    })
+    .await
+    .map_err(internal)?;
     if oauth {
-        if !factors::recent(&conn, &token) {
+        if !before.recent {
             return Err(failure(
                 StatusCode::FORBIDDEN,
                 "reauthentication_required",
                 "Authenticate again before starting over",
             ));
         }
-    } else if !matches!(mode.as_str(), RESET | RECOVERY)
-        && !verify_auth(&conn, &user.id, body.current_auth_key.as_deref())
-    {
+    } else if !matches!(mode.as_str(), RESET | RECOVERY) && !auth_ok {
         return Err(failure(
             StatusCode::FORBIDDEN,
             "forbidden",
             "Current authKey is required",
         ));
     }
+    let conn = state.store.conn.lock().await;
+    before.recheck(&conn, &state, &headers, &user.id, &token, oauth)?;
     let tx = conn.unchecked_transaction().map_err(internal)?;
     for table in ["relay_account_vaults", "relay_account_browsers"] {
         tx.execute(&format!("DELETE FROM {table} WHERE user_id=?1"), [&user.id])
@@ -654,12 +768,13 @@ async fn recover(
     let conn = state.store.conn.lock().await;
     let row: Option<(String,String,String)> = conn.query_row("SELECT u.id,a.recovery_salt,a.recovery_hash FROM relay_users u JOIN relay_account_auth a ON a.user_id=u.id WHERE (u.username=?1 OR u.email=?1) AND u.enabled=1 AND a.recovery_hash IS NOT NULL", [body.login.trim().to_ascii_lowercase()], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(internal)?;
     drop(conn);
-    let password_work = crate::ANONYMOUS_PASSWORD_WORK
+    let password_work = crate::credential_work_pool(row.is_some(), &crate::ANONYMOUS_PASSWORD_WORK)
         .acquire()
         .await
         .map_err(internal)?;
     let proof = body.recovery_auth_key;
     let verified = tokio::task::spawn_blocking(move || {
+        let _permit = password_work;
         let ok = row
             .as_ref()
             .is_some_and(|(_, salt, hash)| crate::verify_password(&proof, salt, hash));
@@ -670,7 +785,6 @@ async fn recover(
     })
     .await
     .map_err(internal)?;
-    drop(password_work);
     let (id, salt, hash) = verified.ok_or_else(|| {
         failure(
             StatusCode::UNAUTHORIZED,
@@ -815,7 +929,7 @@ pub(crate) fn revocations(conn: &Connection, user: &str) -> Result<Vec<Value>, F
 async fn browsers(State(state): State<Arc<AppState>>, headers: HeaderMap) -> ApiResult {
     let conn = state.store.conn.lock().await;
     let (user, _) = auth(&conn, &state, &headers)?;
-    let mut stmt = conn.prepare("SELECT certificate_json,label,created_at,last_seen_at FROM relay_account_browsers WHERE user_id=?1 ORDER BY created_at,browser_id").map_err(internal)?;
+    let mut stmt = conn.prepare("SELECT certificate_json,label,created_at,last_seen_at FROM relay_account_browsers b WHERE user_id=?1 AND json_extract(certificate_json,'$.accountKeyId')=(SELECT account_key_id FROM relay_account_vaults WHERE user_id=?1) AND NOT EXISTS(SELECT 1 FROM relay_account_revocations r WHERE r.user_id=b.user_id AND r.account_key_id=json_extract(b.certificate_json,'$.accountKeyId') AND r.kind='browser' AND r.subject_id=b.browser_id) ORDER BY created_at,browser_id").map_err(internal)?;
     let rows = stmt
         .query_map([&user.id], |r| {
             Ok((
@@ -867,11 +981,11 @@ async fn register_browser(
             "This browser has been removed",
         ));
     }
-    let exists:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM relay_account_browsers WHERE user_id=?1 AND browser_id=?2)",params![user.id,cert["browserId"].as_str()],|r|r.get(0)).map_err(internal)?;
+    let exists:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM relay_account_browsers WHERE user_id=?1 AND browser_id=?2 AND json_extract(certificate_json,'$.accountKeyId')=?3)",params![user.id,cert["browserId"].as_str(),cert["accountKeyId"].as_str()],|r|r.get(0)).map_err(internal)?;
     let count: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM relay_account_browsers WHERE user_id=?1",
-            [&user.id],
+            "SELECT COUNT(*) FROM relay_account_browsers b WHERE user_id=?1 AND json_extract(certificate_json,'$.accountKeyId')=?2 AND NOT EXISTS(SELECT 1 FROM relay_account_revocations r WHERE r.user_id=b.user_id AND r.account_key_id=?2 AND r.kind='browser' AND r.subject_id=b.browser_id)",
+            params![user.id,cert["accountKeyId"].as_str()],
             |r| r.get(0),
         )
         .map_err(internal)?;
@@ -884,10 +998,39 @@ async fn register_browser(
     }
     let tx = conn.unchecked_transaction().map_err(internal)?;
     tx.execute("INSERT INTO relay_account_browsers(user_id,browser_id,certificate_json,label,created_at,last_seen_at) VALUES (?1,?2,?3,?4,?5,?6)
-        ON CONFLICT(user_id,browser_id) DO UPDATE SET label=excluded.label,last_seen_at=excluded.last_seen_at",
+        ON CONFLICT(user_id,browser_id) DO UPDATE SET certificate_json=excluded.certificate_json,label=excluded.label,created_at=excluded.created_at,last_seen_at=excluded.last_seen_at",
         params![user.id,cert["browserId"].as_str(),serde_json::to_string(cert).map_err(internal)?,body.label,cert["createdAt"].as_i64(),factors::now()]).map_err(internal)?;
     tx.execute("UPDATE relay_auth_sessions SET account_browser_id=?2,account_browser_key_id=?3 WHERE token_hash=?1",params![security::token_hash(&token),cert["browserId"].as_str(),cert["accountKeyId"].as_str()]).map_err(internal)?;
     tx.commit().map_err(internal)?;
+    Ok(Json(json!({})))
+}
+// Logout removes the local key, leaving a signed-out registry entry. Removing
+// that entry is housekeeping, not a signed revocation and cannot end sessions.
+async fn delete_browser(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(browser): Path<String>,
+) -> ApiResult {
+    let conn = state.store.conn.lock().await;
+    let (user, _) = auth(&conn, &state, &headers)?;
+    let key = vault(&conn, &user.id)?.and_then(|v| v["accountKeyId"].as_str().map(str::to_owned));
+    let exists:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM relay_account_browsers WHERE user_id=?1 AND browser_id=?2 AND json_extract(certificate_json,'$.accountKeyId')=?3)",params![user.id,browser,key],|r|r.get(0)).map_err(internal)?;
+    if !exists {
+        return Err(failure(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "Browser not found",
+        ));
+    }
+    let active:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM relay_auth_sessions WHERE user_id=?1 AND account_browser_id=?2 AND account_browser_key_id=?3 AND expires_at>?4)",params![user.id,browser,key,factors::now()],|r|r.get(0)).map_err(internal)?;
+    if active {
+        return Err(failure(
+            StatusCode::CONFLICT,
+            "browser_in_use",
+            "Sign out this browser before removing its row",
+        ));
+    }
+    conn.execute("DELETE FROM relay_account_browsers WHERE user_id=?1 AND browser_id=?2 AND json_extract(certificate_json,'$.accountKeyId')=?3",params![user.id,browser,key]).map_err(internal)?;
     Ok(Json(json!({})))
 }
 #[derive(Deserialize)]
@@ -907,8 +1050,8 @@ async fn revoke(
         let exists:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM relay_account_revocations WHERE user_id=?1 AND account_key_id=?2 AND kind=?3 AND subject_id=?4)",params![user.id,v["accountKeyId"].as_str(),v["kind"].as_str(),v["subjectId"].as_str()],|r|r.get(0)).map_err(internal)?;
         let count: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM relay_account_revocations WHERE user_id=?1",
-                [&user.id],
+                "SELECT COUNT(*) FROM relay_account_revocations WHERE user_id=?1 AND account_key_id=?2",
+                params![user.id,v["accountKeyId"].as_str()],
                 |r| r.get(0),
             )
             .map_err(internal)?;
@@ -923,6 +1066,7 @@ async fn revoke(
         tx.execute("INSERT OR IGNORE INTO relay_account_revocations(user_id,account_key_id,kind,subject_id,revocation_json) VALUES (?1,?2,?3,?4,?5)", params![user.id,v["accountKeyId"].as_str(),v["kind"].as_str(),v["subjectId"].as_str(),serde_json::to_string(v).map_err(internal)?]).map_err(internal)?;
         if v["kind"] == "browser" {
             tx.execute("DELETE FROM relay_auth_sessions WHERE user_id=?1 AND account_browser_key_id=?2 AND account_browser_id=?3",params![user.id,v["accountKeyId"].as_str(),v["subjectId"].as_str()]).map_err(internal)?;
+            tx.execute("DELETE FROM relay_account_browsers WHERE user_id=?1 AND browser_id=?2 AND json_extract(certificate_json,'$.accountKeyId')=?3",params![user.id,v["subjectId"].as_str(),v["accountKeyId"].as_str()]).map_err(internal)?;
         }
         tx.commit().map_err(internal)?;
         let frame = json!({"type":"relay.revocations","revocations":revocations(&conn,&user.id)?})
@@ -1040,9 +1184,6 @@ pub(crate) fn request_allowed(
     if path == "/relay/account/vault" {
         return matches!(*method, Method::GET | Method::PUT)
             || (matches!(mode, RESET | RECOVERY) && *method == Method::DELETE);
-    }
-    if *method == Method::GET && path == "/relay/account/vault/previous" {
-        return true;
     }
     if matches!(mode, RECOVERY | RESET) {
         return false;

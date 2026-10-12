@@ -20,6 +20,8 @@ fn recovery_key() -> String {
         .into()
 }
 const PASSWORD: &str = "synthetic legacy test password";
+// Saturation tests and endpoint-rule tests share the production work pools.
+static LOGIN_TESTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
 
 struct Fixture {
     state: Arc<AppState>,
@@ -117,8 +119,7 @@ impl Fixture {
     ) -> (StatusCode, Value) {
         // Production bounds simultaneous scrypt jobs. Endpoint-rule tests share a
         // process, so serialize their login calls instead of testing overload here.
-        static LOGIN_TESTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
-        let _login = if path == "/relay/auth/login" {
+        let _login = if matches!(path, "/relay/auth/login" | "/relay/auth/recover") {
             Some(LOGIN_TESTS.acquire().await.unwrap())
         } else {
             None
@@ -2438,71 +2439,6 @@ async fn security_revision_registration_rejects_noncanonical_uuid() {
 }
 
 #[tokio::test]
-async fn security_revision_previous_vault_is_authenticated_retained_and_restorable() {
-    let f = Fixture::new("security-vault-previous").await;
-    let token = f.register().await;
-    assert_eq!(
-        f.req(Method::GET, "/relay/account/vault/previous", Some(&token))
-            .send()
-            .await
-            .unwrap()
-            .status(),
-        StatusCode::NOT_FOUND
-    );
-    let mut next = test_vault(ACCOUNT_USER, 2);
-    next["body"]["iv"] = json!("AAAAAAAAAAAAAAAA");
-    assert_eq!(
-        f.json(
-            Method::PUT,
-            "/relay/account/vault",
-            Some(&token),
-            json!({"vault":next,"expectedRevision":1,"currentAuthKey":auth_key()})
-        )
-        .await
-        .0,
-        StatusCode::OK
-    );
-    assert_eq!(
-        f.req(Method::GET, "/relay/account/vault/previous", None)
-            .send()
-            .await
-            .unwrap()
-            .status(),
-        StatusCode::UNAUTHORIZED
-    );
-    let mut previous: Value = f
-        .req(Method::GET, "/relay/account/vault/previous", Some(&token))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(previous, test_vault(ACCOUNT_USER, 1));
-    previous["revision"] = json!(3); // Real browsers re-encrypt using next-revision AAD.
-    assert_eq!(
-        f.json(
-            Method::PUT,
-            "/relay/account/vault",
-            Some(&token),
-            json!({"vault":previous,"expectedRevision":2,"currentAuthKey":auth_key()})
-        )
-        .await
-        .0,
-        StatusCode::OK
-    );
-    let previous: Value = f
-        .req(Method::GET, "/relay/account/vault/previous", Some(&token))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(previous, next);
-}
-
-#[tokio::test]
 async fn security_revision_recovery_proof_can_update_vault_and_recover_interrupted_start_over() {
     let f = Fixture::new("security-start-over").await;
     let token = f.register().await;
@@ -2553,8 +2489,12 @@ async fn security_revision_browser_cap_keeps_idempotent_registration_working() {
         let conn = f.state.store.conn.lock().await;
         for n in 0..32 {
             conn.execute(
-                "INSERT INTO relay_account_browsers VALUES (?1,?2,'{}','synthetic',0,0)",
-                params![ACCOUNT_USER, format!("synthetic-{n}")],
+                "INSERT INTO relay_account_browsers VALUES (?1,?2,?3,'synthetic',0,0)",
+                params![
+                    ACCOUNT_USER,
+                    format!("synthetic-{n}"),
+                    vectors()["browserCertificate"]["certificate"].to_string()
+                ],
             )
             .unwrap();
         }
@@ -2603,8 +2543,12 @@ async fn security_revision_revocation_cap_retains_permanent_tombstones_and_idemp
         let tx = conn.unchecked_transaction().unwrap();
         for n in 0..4096 {
             tx.execute(
-                "INSERT INTO relay_account_revocations VALUES (?1,'old-key','browser',?2,'{}')",
-                params![ACCOUNT_USER, format!("synthetic-{n}")],
+                "INSERT INTO relay_account_revocations VALUES (?1,?2,'browser',?3,'{}')",
+                params![
+                    ACCOUNT_USER,
+                    vectors()["account"]["accountKeyId"].as_str(),
+                    format!("synthetic-{n}")
+                ],
             )
             .unwrap();
         }
@@ -2778,6 +2722,7 @@ async fn security_revision_anonymous_scrypt_runs_without_holding_database_lock()
                 secret,
                 connection: Arc::downgrade(&f.state.store.conn),
                 result,
+                resume: None,
             });
         rx
     };
@@ -2911,5 +2856,562 @@ async fn security_revision_bound_session_cannot_change_browser_to_evade_revocati
         .await
         .0,
         StatusCode::FORBIDDEN
+    );
+}
+
+#[tokio::test]
+async fn review_two_browser_caps_ignore_old_keys_and_revoked_rows() {
+    let f = Fixture::new("review-two-browser-count").await;
+    let token = f.register().await;
+    let cert = vectors()["browserCertificate"]["certificate"].clone();
+    {
+        let conn = f.state.store.conn.lock().await;
+        for n in 0..32 {
+            let mut old = cert.clone();
+            old["accountKeyId"] = json!("old-key");
+            conn.execute(
+                "INSERT INTO relay_account_browsers VALUES (?1,?2,?3,'old',0,0)",
+                params![ACCOUNT_USER, format!("old-{n}"), old.to_string()],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO relay_account_browsers VALUES (?1,?2,?3,'revoked',0,0)",
+                params![ACCOUNT_USER, format!("revoked-{n}"), cert.to_string()],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO relay_account_revocations VALUES (?1,?2,'browser',?3,'{}')",
+                params![
+                    ACCOUNT_USER,
+                    cert["accountKeyId"].as_str(),
+                    format!("revoked-{n}")
+                ],
+            )
+            .unwrap();
+        }
+    }
+    let (status, value) = f
+        .json(
+            Method::POST,
+            "/relay/account/browsers",
+            Some(&token),
+            json!({"certificate":cert,"label":"live"}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    let response: Value = f
+        .req(Method::GET, "/relay/account/browsers", Some(&token))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(response["browsers"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn review_two_browser_revocation_removes_registry_row() {
+    let f = Fixture::new("review-two-browser-revoke").await;
+    let token = f.register().await;
+    let other = f.token(ACCOUNT_USER, FULL).await;
+    assert_eq!(
+        f.json(
+            Method::POST,
+            "/relay/account/browsers",
+            Some(&token),
+            json!({"certificate":vectors()["browserCertificate"]["certificate"],"label":"live"})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        f.json(
+            Method::POST,
+            "/relay/account/revocations",
+            Some(&other),
+            json!({"revocation":vectors()["revocations"]["browser"]})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let conn = f.state.store.conn.lock().await;
+    assert_eq!(
+        conn.query_row(
+            "SELECT COUNT(*) FROM relay_account_browsers WHERE user_id=?1",
+            [ACCOUNT_USER],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT COUNT(*) FROM relay_account_revocations WHERE user_id=?1",
+            [ACCOUNT_USER],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn review_two_delete_signed_out_browser_keeps_other_sessions_and_current_key_scope() {
+    let f = Fixture::new("review-two-browser-delete").await;
+    let token = f.register().await;
+    let other = f.token(ACCOUNT_USER, FULL).await;
+    let cert = vectors()["browserCertificate"]["certificate"].clone();
+    let browser = cert["browserId"].as_str().unwrap();
+    let path = format!("/relay/account/browsers/{browser}");
+    assert_eq!(
+        f.json(
+            Method::POST,
+            "/relay/account/browsers",
+            Some(&other),
+            json!({"certificate":cert,"label":"live"})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        f.json(Method::DELETE, &path, Some(&token), json!({}))
+            .await
+            .0,
+        StatusCode::CONFLICT
+    );
+    {
+        let conn = f.state.store.conn.lock().await;
+        conn.execute(
+            "UPDATE relay_auth_sessions SET expires_at=0 WHERE token_hash=?1",
+            [security::token_hash(&other)],
+        )
+        .unwrap();
+        let mut old = cert.clone();
+        old["accountKeyId"] = json!("old-key");
+        conn.execute(
+            "INSERT INTO relay_account_browsers VALUES (?1,'old',?2,'old',0,0)",
+            params![ACCOUNT_USER, old.to_string()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO relay_account_browsers VALUES (?1,'foreign',?2,'foreign',0,0)",
+            params!["a45aed3e-2f46-4b9c-93c1-e6f9d80c51e4", cert.to_string()],
+        )
+        .unwrap();
+    }
+    assert_eq!(
+        f.json(Method::DELETE, &path, None, json!({})).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        f.json(Method::DELETE, &path, Some(&token), json!({}))
+            .await
+            .0,
+        StatusCode::OK
+    );
+    for id in [browser, "old", "foreign"] {
+        assert_eq!(
+            f.json(
+                Method::DELETE,
+                &format!("/relay/account/browsers/{id}"),
+                Some(&token),
+                json!({})
+            )
+            .await
+            .0,
+            StatusCode::NOT_FOUND
+        );
+    }
+    let session: Value = f
+        .req(Method::GET, "/relay/auth/session", Some(&token))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(session["authenticated"], true);
+    let conn = f.state.store.conn.lock().await;
+    assert_eq!(
+        conn.query_row(
+            "SELECT COUNT(*) FROM relay_auth_sessions WHERE user_id=?1",
+            [ACCOUNT_USER],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        2,
+        "delete must not delete sessions, even expired ones"
+    );
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM relay_account_revocations", [], |r| {
+            r.get::<_, i64>(0)
+        })
+        .unwrap(),
+        0,
+        "unsigned row deletion must not manufacture a revocation"
+    );
+}
+
+#[tokio::test]
+async fn review_two_previous_vault_is_removed_and_old_ciphertext_scrubbed() {
+    let f = Fixture::new("review-two-no-previous").await;
+    let token = f.register().await;
+    // Simulate the prior schema; upgrade must remove only obsolete ciphertext.
+    {
+        let conn = f.state.store.conn.lock().await;
+        if conn
+            .prepare("SELECT previous_vault_json FROM relay_account_vaults LIMIT 0")
+            .is_err()
+        {
+            conn.execute(
+                "ALTER TABLE relay_account_vaults ADD COLUMN previous_vault_json TEXT",
+                [],
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "UPDATE relay_account_vaults SET previous_vault_json=?1 WHERE user_id=?2",
+            params![test_vault(ACCOUNT_USER, 1).to_string(), ACCOUNT_USER],
+        )
+        .unwrap();
+        account::ensure_schema(&conn).unwrap();
+        assert!(conn
+            .prepare("SELECT previous_vault_json FROM relay_account_vaults LIMIT 0")
+            .is_err());
+        assert_eq!(
+            account::vault(&conn, ACCOUNT_USER).unwrap().unwrap(),
+            test_vault(ACCOUNT_USER, 1)
+        );
+    }
+    assert_eq!(f.json(Method::PUT,"/relay/account/vault",Some(&token),json!({"vault":test_vault(ACCOUNT_USER,2),"expectedRevision":1,"currentAuthKey":auth_key()})).await.0,StatusCode::OK);
+    for method in [Method::GET, Method::POST] {
+        let response = f
+            .req(method, "/relay/account/vault/previous", Some(&token))
+            .json(&json!({"currentAuthKey":auth_key()}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+}
+
+fn password_probe(f: &Fixture, secret: String) -> tokio::sync::oneshot::Receiver<bool> {
+    let (result, rx) = tokio::sync::oneshot::channel();
+    PASSWORD_LOCK_PROBES
+        .lock()
+        .unwrap()
+        .push(PasswordLockProbe {
+            secret,
+            connection: Arc::downgrade(&f.state.store.conn),
+            result,
+            resume: None,
+        });
+    rx
+}
+
+#[tokio::test]
+async fn review_two_vault_proofs_and_new_hashes_run_outside_database_lock() {
+    let f = Fixture::new("review-two-vault-lock").await;
+    let key = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([91; 32]);
+    let recovery = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([92; 32]);
+    let next_key = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([93; 32]);
+    let next_recovery = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([94; 32]);
+    let (s,body)=f.json(Method::POST,"/relay/auth/register",None,json!({"userId":ACCOUNT_USER,"username":"vector-user","email":"vector@example.test","authKey":key,"recoveryAuthKey":recovery,"vault":test_vault(ACCOUNT_USER,1)})).await;
+    assert_eq!(s, StatusCode::OK);
+    let token = body["token"].as_str().unwrap();
+    let auth_probe = password_probe(&f, key.clone());
+    let auth_hash_probe = password_probe(&f, next_key.clone());
+    let recovery_hash_probe = password_probe(&f, next_recovery.clone());
+    let mut next = test_vault(ACCOUNT_USER, 2);
+    next["slots"]["password"]["iv"] = json!("AAAAAAAAAAAAAAAA");
+    next["slots"]["recovery"]["iv"] = json!("AAAAAAAAAAAAAAAA");
+    assert_eq!(f.json(Method::PUT,"/relay/account/vault",Some(token),json!({"vault":next,"expectedRevision":1,"currentAuthKey":key,"authKey":next_key,"recoveryAuthKey":next_recovery})).await.0,StatusCode::OK);
+    assert!(auth_probe.await.unwrap(), "current auth proof held DB lock");
+    assert!(auth_hash_probe.await.unwrap(), "new auth hash held DB lock");
+    assert!(
+        recovery_hash_probe.await.unwrap(),
+        "new recovery hash held DB lock"
+    );
+    // An unchanged recovery slot can be used as the write proof.
+    let new_recovery_probe = password_probe(&f, next_recovery.clone());
+    next["revision"] = json!(3);
+    assert_eq!(
+        f.json(
+            Method::PUT,
+            "/relay/account/vault",
+            Some(token),
+            json!({"vault":next,"expectedRevision":2,"recoveryAuthKey":next_recovery})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert!(
+        new_recovery_probe.await.unwrap(),
+        "recovery proof held DB lock"
+    );
+    let delete_probe = password_probe(&f, next_key.clone());
+    assert_eq!(
+        f.json(
+            Method::DELETE,
+            "/relay/account/vault",
+            Some(token),
+            json!({"currentAuthKey":next_key})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert!(delete_probe.await.unwrap(), "delete proof held DB lock");
+}
+
+#[tokio::test]
+async fn review_two_vault_mutations_have_a_shared_per_user_rate_limit() {
+    let f = Fixture::new("review-two-vault-rate").await;
+    let token = f.register().await;
+    let other = f.token(ACCOUNT_USER, FULL).await;
+    for n in 0..10 {
+        let method = if n % 2 == 0 {
+            Method::PUT
+        } else {
+            Method::DELETE
+        };
+        let request = if method == Method::PUT {
+            json!({"vault":test_vault(ACCOUNT_USER,2),"expectedRevision":1})
+        } else {
+            json!({})
+        };
+        assert_eq!(
+            f.json(
+                method,
+                "/relay/account/vault",
+                Some(if n % 2 == 0 { &token } else { &other }),
+                request
+            )
+            .await
+            .0,
+            StatusCode::FORBIDDEN
+        );
+    }
+    let (status, value) = f
+        .json(
+            Method::DELETE,
+            "/relay/account/vault",
+            Some(&token),
+            json!({"currentAuthKey":auth_key()}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(value["code"], "rate_limited");
+    let unrelated = f
+        .token("a45aed3e-2f46-4b9c-93c1-e6f9d80c51e4", account::RESET)
+        .await;
+    assert_eq!(
+        f.json(
+            Method::DELETE,
+            "/relay/account/vault",
+            Some(&unrelated),
+            json!({})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn review_two_unknown_recovery_does_not_take_real_account_work_slots() {
+    let f = Fixture::new("review-two-dummy-work").await;
+    let _gate = LOGIN_TESTS.acquire().await.unwrap();
+    let slots = ANONYMOUS_PASSWORD_WORK.acquire_many(4).await.unwrap();
+    let key = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([111; 32]);
+    let started = password_probe(&f, key.clone());
+    let request = f
+        .req(Method::POST, "/relay/auth/recover", None)
+        .json(&json!({"login":"unknown","recoveryAuthKey":key}));
+    let task = tokio::spawn(async move { request.send().await.unwrap() });
+    // Observe work admission before scrypt itself; hash duration is irrelevant.
+    let result = tokio::time::timeout(std::time::Duration::from_secs(10), started).await;
+    drop(slots);
+    let response = task.await.unwrap();
+    assert!(result
+        .expect("dummy work queued behind real-account slots")
+        .unwrap());
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn review_two_revocation_credential_changes_and_cas_races_invalidate_vault_proofs() {
+    for (case, method) in [
+        (0, Method::PUT),
+        (1, Method::DELETE),
+        (2, Method::PUT),
+        (3, Method::PUT),
+    ] {
+        let f = Fixture::new(&format!("review-two-proof-race-{case}")).await;
+        let key = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([100 + case; 32]);
+        let (s,body)=f.json(Method::POST,"/relay/auth/register",None,json!({"userId":ACCOUNT_USER,"username":"vector-user","email":"vector@example.test","authKey":key,"recoveryAuthKey":recovery_key(),"vault":test_vault(ACCOUNT_USER,1)})).await;
+        assert_eq!(s, StatusCode::OK);
+        let token = body["token"].as_str().unwrap().to_owned();
+        if case == 3 {
+            let conn = f.state.store.conn.lock().await;
+            conn.execute(
+                "UPDATE relay_account_auth SET oauth_only=1 WHERE user_id=?1",
+                [ACCOUNT_USER],
+            )
+            .unwrap();
+        }
+        let (result, started) = tokio::sync::oneshot::channel();
+        let (resume, wait) = std::sync::mpsc::channel();
+        PASSWORD_LOCK_PROBES
+            .lock()
+            .unwrap()
+            .push(PasswordLockProbe {
+                secret: key.clone(),
+                connection: Arc::downgrade(&f.state.store.conn),
+                result,
+                resume: Some(wait),
+            });
+        let request_body = if method == Method::PUT {
+            json!({"vault":test_vault(ACCOUNT_USER,2),"expectedRevision":1,"currentAuthKey":key})
+        } else {
+            json!({"currentAuthKey":key})
+        };
+        let req = f
+            .req(method, "/relay/account/vault", Some(&token))
+            .json(&request_body);
+        let task = tokio::spawn(async move { req.send().await.unwrap() });
+        let unlocked = started.await.unwrap();
+        if !unlocked {
+            let _ = resume.send(());
+        }
+        assert!(
+            unlocked,
+            "proof race test requires verification outside DB lock"
+        );
+        {
+            let conn = f.state.store.conn.lock().await;
+            match case {
+                0 => {
+                    conn.execute(
+                        "DELETE FROM relay_auth_sessions WHERE token_hash=?1",
+                        [security::token_hash(&token)],
+                    )
+                    .unwrap();
+                }
+                1 => {
+                    conn.execute(
+                        "UPDATE relay_account_auth SET auth_hash='changed' WHERE user_id=?1",
+                        [ACCOUNT_USER],
+                    )
+                    .unwrap();
+                }
+                2 => {
+                    account::store_vault(&conn, ACCOUNT_USER, &test_vault(ACCOUNT_USER, 2))
+                        .unwrap();
+                }
+                _ => {
+                    conn.execute(
+                        "UPDATE relay_auth_sessions SET strong_auth_at=0 WHERE token_hash=?1",
+                        [security::token_hash(&token)],
+                    )
+                    .unwrap();
+                }
+            }
+        }
+        resume.send(()).unwrap();
+        let response = task.await.unwrap();
+        assert_eq!(
+            response.status(),
+            if case == 0 {
+                StatusCode::UNAUTHORIZED
+            } else if case == 3 {
+                StatusCode::FORBIDDEN
+            } else {
+                StatusCode::CONFLICT
+            }
+        );
+        if case == 3 {
+            let value: Value = response.json().await.unwrap();
+            assert_eq!(value["code"], "reauthentication_required");
+        }
+        let conn = f.state.store.conn.lock().await;
+        assert_eq!(
+            account::vault(&conn, ACCOUNT_USER).unwrap().unwrap()["revision"],
+            if case == 2 { 2 } else { 1 }
+        );
+    }
+}
+
+#[tokio::test]
+async fn review_two_revocation_cap_counts_only_current_key() {
+    let f = Fixture::new("review-two-current-revocation-cap").await;
+    let token = f.register().await;
+    {
+        let conn = f.state.store.conn.lock().await;
+        let tx = conn.unchecked_transaction().unwrap();
+        for n in 0..4096 {
+            tx.execute(
+                "INSERT INTO relay_account_revocations VALUES (?1,'old-key','browser',?2,'{}')",
+                params![ACCOUNT_USER, format!("old-{n}")],
+            )
+            .unwrap();
+        }
+        tx.commit().unwrap();
+    }
+    assert_eq!(
+        f.json(
+            Method::POST,
+            "/relay/account/revocations",
+            Some(&token),
+            json!({"revocation":vectors()["revocations"]["browser"]})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let conn = f.state.store.conn.lock().await;
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM relay_account_revocations", [], |r| {
+            r.get::<_, i64>(0)
+        })
+        .unwrap(),
+        4097,
+        "old tombstones remain permanent"
+    );
+}
+
+#[tokio::test]
+async fn review_two_known_login_can_run_while_dummy_capacity_is_full() {
+    let f = Fixture::new("review-two-real-login-capacity").await;
+    f.register().await;
+    // Hold the same test gate as ordinary auth calls before saturating a pool,
+    // so parallel rule tests aren't accidentally turned into overload tests.
+    let _gate = LOGIN_TESTS.acquire().await.unwrap();
+    let dummy = DUMMY_PASSWORD_WORK.acquire_many(2).await.unwrap();
+    let response = f
+        .req(Method::POST, "/relay/auth/login", None)
+        .json(&json!({"login":"vector-user","authKey":auth_key()}))
+        .send()
+        .await
+        .unwrap();
+    drop(dummy);
+    assert_eq!(response.status(), StatusCode::OK);
+    let real = LOGIN_PASSWORD_WORK.acquire_many(4).await.unwrap();
+    let response = f
+        .req(Method::POST, "/relay/auth/login", None)
+        .json(&json!({"login":"unknown-login","authKey":auth_key()}))
+        .send()
+        .await
+        .unwrap();
+    drop(real);
+    assert_eq!(
+        response.status(),
+        StatusCode::UNAUTHORIZED,
+        "dummy login must not queue behind real login capacity"
     );
 }
