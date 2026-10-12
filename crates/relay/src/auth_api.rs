@@ -149,7 +149,15 @@ pub(crate) fn login_response_mode(
     }
     let token =
         super::create_session(conn, &state.store.session_secret, &user.id).map_err(internal)?;
-    crate::account::mark_session(conn, &token, mode)?;
+    // Keep RESET through the factor challenge and consume it above, but a user
+    // without a vault needs the ordinary setup permissions after authentication.
+    let session_mode =
+        if mode == crate::account::RESET && !crate::account::has_vault(conn, &user.id) {
+            crate::account::SETUP
+        } else {
+            mode
+        };
+    crate::account::mark_session(conn, &token, session_mode)?;
     // OAuth vault mutations require a fresh provider login or actual second
     // factor; a recovery key / temporary password alone is not that proof.
     let oauth_recovery = crate::account::oauth_only(conn, &user.id)
