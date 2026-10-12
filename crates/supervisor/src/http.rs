@@ -62,6 +62,10 @@ pub fn router(state: AppState) -> Router {
     crate::peer_send::start_outbox_worker(&state);
     let router = Router::new()
         .route(
+            "/api/transport/bind",
+            post(crate::owner_trust::bind_endpoint),
+        )
+        .route(
             "/api/transport/browser",
             post(crate::owner_trust::browser_endpoint),
         )

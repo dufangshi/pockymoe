@@ -178,7 +178,7 @@ pub(crate) fn strict(state: &Supervisor) -> bool {
         .unwrap_or(true)
 }
 pub(crate) fn hint(state: &Supervisor) -> Result<Value> {
-    state.db.with(|c| { let pin=pinned_in(c)?; Ok(json!({"bound":pin.is_some(),"strict":c.query_row("SELECT strict FROM device_owner_trust WHERE singleton=1",[],|r|r.get::<_,bool>(0))?,"accountKeyId":pin.map(|p|p.account_key_id)})) })
+    state.db.with(|c| { let pin=pinned_in(c)?; Ok(json!({"bound":pin.is_some(),"strict":c.query_row("SELECT strict FROM device_owner_trust WHERE singleton=1",[],|r|r.get::<_,bool>(0))?,"accountKeyId":pin.map(|p|p.account_key_id),"capabilities":["remote-bind"]})) })
 }
 pub(crate) fn device_id(c: &Connection) -> Result<String> {
     c.query_row(
@@ -554,10 +554,56 @@ fn trust(state: &Supervisor, current: &str) -> Result<Value> {
 pub(crate) fn bootstrap(method: &str, path: &str) -> bool {
     matches!(
         (method, path),
-        ("POST", "/api/transport/browser")
+        ("POST", "/api/transport/bind")
+            | ("POST", "/api/transport/browser")
             | ("GET", "/api/transport/enrollment")
             | ("PUT", "/api/transport/revocations")
     )
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BindInput {
+    account_public_key: String,
+    enroll_secret: String,
+    web_origin: Option<String>,
+}
+pub(crate) async fn bind_endpoint(
+    State(state): State<Arc<Supervisor>>,
+    Extension(_): Extension<EncryptedOwnerRequest>,
+    relay: Option<Extension<crate::auth::TrustedRelayForward>>,
+    peer: Option<Extension<crate::auth::PeerCaller>>,
+    principal: Option<Extension<BrowserPrincipal>>,
+    input: Result<Json<BindInput>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    if relay.is_none() || peer.is_some() || principal.is_some_and(|Extension(p)| !p.is_owner()) {
+        return response(reject(403, "owner_required"));
+    }
+    let result = input
+        .map_err(|_| anyhow::anyhow!("Invalid binding request"))
+        .and_then(|Json(input)| {
+            state.db.with(|c| {
+                bind_on_connection(
+                    c,
+                    &state.config.database_url,
+                    &input.account_public_key,
+                    &input.enroll_secret,
+                    input.web_origin.as_deref(),
+                    true,
+                )
+            })
+        })
+        .map_err(|error| {
+            if error.is::<Rejection>() {
+                error
+            } else {
+                Rejection {
+                    status: 400,
+                    code: "invalid_bind",
+                }
+                .into()
+            }
+        });
+    response(result)
 }
 pub(crate) async fn browser_endpoint(
     State(state): State<Arc<Supervisor>>,
@@ -658,14 +704,35 @@ pub fn bind_account(
     validate_binding(account, enroll)?;
     let origin = web_origin.map(validate_web_origin).transpose()?;
     let c = local_connection(database)?;
-    let tx = Transaction::new_unchecked(&c, TransactionBehavior::Immediate)?;
+    bind_on_connection(&c, database, account, enroll, origin.as_deref(), false)
+}
+fn bind_on_connection(
+    c: &Connection,
+    database: &Path,
+    account: &str,
+    enroll: &str,
+    web_origin: Option<&str>,
+    only_unbound: bool,
+) -> Result<Value> {
+    let tx = Transaction::new_unchecked(c, TransactionBehavior::Immediate)?;
+    let pin = pinned_in(&tx)?;
+    if only_unbound && pin.is_some() {
+        return reject(409, "already_bound");
+    }
+    validate_binding(account, enroll)?;
+    let origin = web_origin.map(validate_web_origin).transpose()?;
     let id = account_key_id(account)?;
-    if let Some(pin) = pinned_in(&tx)? {
+    if let Some(pin) = pin {
         ensure!(
             pin.account_key_id == id && pin.account_public_key == account,
             "Device is bound to another account key; use pockymoe bind --reset to replace it"
         );
     }
+    let device = if only_unbound {
+        Some(device_id(&tx)?)
+    } else {
+        None
+    };
     let identity = crate::secure_transport::identity_key_for_database(database)?;
     let pin = PinnedAccount {
         account_key_id: id.clone(),
@@ -682,7 +749,11 @@ pub fn bind_account(
     tx.execute("UPDATE device_owner_trust SET account_key_id=?1,account_public_key=?2,enroll_secret=?3,bound_at=COALESCE(bound_at,?4),web_origin=COALESCE(?5,web_origin),strict=1 WHERE singleton=1",params![id,account,pending,now(),origin])?;
     pockymoe_runtime::publications::delete_keyless_publications(&tx)?;
     tx.commit()?;
-    Ok(json!({"bound":true,"strict":true,"accountKeyId":id}))
+    if only_unbound {
+        Ok(json!({"bound":true,"accountKeyId":id,"deviceId":device}))
+    } else {
+        Ok(json!({"bound":true,"strict":true,"accountKeyId":id}))
+    }
 }
 pub fn binding_status(database: &Path) -> Result<Value> {
     validate_database_path(database)?;
