@@ -1,7 +1,7 @@
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { useEffect, useState } from 'react';
 import type { RelayPortalSummaryDto } from '@pockymoe/shared';
-import { hasDeviceCertificate } from '../lib/ownerDeviceTrust';
+import { hasDeviceCertificate, locallyCertifiedDevices } from '../lib/ownerDeviceTrust';
 import { prepareOwnerUnlock, fetchOwnerCredentials } from '../lib/ownerSession';
 import type { OwnerCredential } from '../lib/ownerTrustCrypto';
 import {
@@ -43,6 +43,7 @@ export function SignedShareDetails({
   const [busy, setBusy] = useState(false);
   const [revision, setRevision] = useState(0);
   const [copied, setCopied] = useState(false);
+  const [inviteFingerprint, setInviteFingerprint] = useState<string>();
   const [needsUnlock, setNeedsUnlock] = useState(false);
   useEffect(() => {
     const refresh = () => setRevision((r) => r + 1);
@@ -57,6 +58,9 @@ export function SignedShareDetails({
     setUnlock(undefined);
     setCredentials(undefined);
     setNeedsUnlock(false);
+    setInviteFingerprint(undefined);
+    if (row.deviceConnected !== false) void sharingFingerprint(row.deviceId, row.threadId ?? undefined)
+      .then((value) => { if (active) setInviteFingerprint(value); }).catch(() => {});
     void (async () => {
       if (!(await hasDeviceCertificate(row.deviceId))) return;
       const records = await recipientPasskeys(kind, row.id);
@@ -182,7 +186,7 @@ export function SignedShareDetails({
           )}
         </button>
       )}
-      <button
+      {inviteFingerprint && <button
         className={button}
         disabled={busy || row.deviceConnected === false}
         onClick={() => {
@@ -210,7 +214,7 @@ export function SignedShareDetails({
         }}
       >
         {translate(copied ? 'sharing.inviteCopied' : 'sharing.copyInvite')}
-      </button>
+      </button>}
       {error && <p role="alert">{error}</p>}
     </div>
   );
@@ -240,9 +244,8 @@ export function OrphanDeviceGrants({
     let active = true;
     void (async () => {
       const found: { deviceId: string; grant: DeviceGrant }[] = [];
-      for (const device of portal.devices.filter((d) => d.connected)) {
-        if (!(await hasDeviceCertificate(device.id))) continue;
-        const grants = await deviceGrants(device.id);
+      for (const deviceId of await locallyCertifiedDevices()) {
+        const grants = await deviceGrants(deviceId);
         for (const grant of grants.filter(
           (g) =>
             g.relayRef.kind === kind &&
@@ -252,10 +255,10 @@ export function OrphanDeviceGrants({
             kind === 'share' ? portal.sharedByMe : (portal.grantsByMe ?? []);
           if (
             !rows.some(
-              (r) => r.deviceId === device.id && r.id === grant.relayRef.id,
+              (r) => r.deviceId === deviceId && r.id === grant.relayRef.id,
             )
           )
-            found.push({ deviceId: device.id, grant });
+            found.push({ deviceId, grant });
         }
       }
       if (active) {

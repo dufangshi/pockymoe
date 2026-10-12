@@ -6,6 +6,7 @@ const state = vi.hoisted(() => ({
   fetch: vi.fn(),
 }));
 vi.mock('./ownerTrustStore', () => ({
+  trustEntries: async (prefix: string) => [...state.store.entries()].filter(([key]) => key.startsWith(prefix)),
   trustStore: async (key: string, ...write: unknown[]) => {
     if (write.length) {
       if (write[0] === null) state.store.delete(key);
@@ -14,7 +15,7 @@ vi.mock('./ownerTrustStore', () => ({
   },
 }));
 vi.stubGlobal('fetch', state.fetch);
-const { deviceCertificate, saveDeviceCertificate, appendDeviceCertificate, pinInviteIdentity, checkInviteIdentity, isRecipientDevice } =
+const { deviceCertificate, saveDeviceCertificate, appendDeviceCertificate, pinInviteIdentity, checkInviteIdentity, isRecipientDevice, locallyCertifiedDevices, forgetInviteIdentity } =
   await import('./ownerDeviceTrust');
 const certificate = {
   ...vectors.deviceCertificate.certificate,
@@ -127,4 +128,29 @@ describe('certificate identity trust', () => {
     expect(await isRecipientDevice('device')).toBe(false);
   });
 
+});
+
+it('enumerates and re-verifies saved certificates without asking the relay for devices', async () => {
+  state.store.set(`credential:${certificate.assertion.credentialId}`, vectors.credentialRecord);
+  await saveDeviceCertificate(certificate);
+  state.fetch.mockRejectedValue(new Error('Relay is offline'));
+  expect(await locallyCertifiedDevices()).toEqual([certificate.deviceId]);
+  expect(state.fetch).not.toHaveBeenCalled();
+  state.store.set(`certificate:${certificate.deviceId}`, { ...certificate, identityKey: 'forged' });
+  await expect(locallyCertifiedDevices()).rejects.toMatchObject({ code: 'ownerCertificateInvalid' });
+});
+it('neither saves nor applies invite pins over a verified owner certificate, including stale bogus pins', async () => {
+  state.store.set(`credential:${certificate.assertion.credentialId}`, vectors.credentialRecord);
+  await saveDeviceCertificate(certificate);
+  state.store.set(`invite-pin:${certificate.deviceId}`, 'old-bogus-pin');
+  await pinInviteIdentity(certificate.deviceId, 'new-bogus-pin');
+  expect(state.store.get(`invite-pin:${certificate.deviceId}`)).toBe('old-bogus-pin');
+  expect(await checkInviteIdentity(certificate.deviceId, 'real-key')).toBe(false);
+});
+it('lets the recipient forget a conflicting pin before accepting a new invite', async () => {
+  await pinInviteIdentity('device', 'old');
+  await forgetInviteIdentity('device');
+  expect(await checkInviteIdentity('device', 'new')).toBe(false);
+  await pinInviteIdentity('device', 'new');
+  expect(await checkInviteIdentity('device', 'new')).toBe(true);
 });

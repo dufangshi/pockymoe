@@ -73,3 +73,25 @@ export async function clearStoredOwnerSession(sessionId?: string) {
     db.close();
   }
 }
+
+// Enumerate local trust, never the relay's device inventory.
+export async function trustEntries<T>(prefix: string): Promise<[string, T][]> {
+  const db = await database();
+  try {
+    return await new Promise((resolve, reject) => {
+      const tx = db.transaction('trust', 'readonly');
+      const entries: [string, T][] = [];
+      const request = tx.objectStore('trust').openCursor();
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (!cursor) return;
+        if (typeof cursor.key === 'string' && cursor.key.startsWith(prefix))
+          entries.push([cursor.key, cursor.value as T]);
+        cursor.continue();
+      };
+      tx.oncomplete = () => resolve(entries);
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error);
+    });
+  } finally { db.close(); }
+}

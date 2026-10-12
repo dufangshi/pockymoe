@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { clearStoredOwnerSession, trustStore } from './ownerTrustStore';
+import { clearStoredOwnerSession, trustStore, trustEntries } from './ownerTrustStore';
 
 // A minimal asynchronous IDB runtime; exercise the real transaction/cursor
 // implementation without a browser profile or a dependency on installed IDB.
@@ -38,6 +38,7 @@ beforeEach(() => {
                 const key = keys[index++];
                 read.result = key === undefined ? null : {
                   key,
+                  value: structuredClone(data.get(key)),
                   delete: () => data.delete(key),
                   continue: next,
                 };
@@ -87,4 +88,12 @@ describe('persisted owner session removal', () => {
     await clearStoredOwnerSession();
     expect([...data.keys()]).toEqual(['credential:owner']);
   });
+});
+
+it('enumerates only local certificate entries using a read-only transaction', async () => {
+  data.set('certificate:hidden', { deviceId: 'hidden' });
+  data.set('credential:owner', { verified: true });
+  expect(await trustEntries('certificate:')).toEqual([['certificate:hidden', { deviceId: 'hidden' }]]);
+  expect(modes).toEqual(['readonly']);
+  expect(close).toHaveBeenCalledOnce();
 });

@@ -735,7 +735,7 @@ export function createRelayShare(input: CreateRelaySessionShareInput) {
   return sharingMutation('share', 'create', undefined, () => request<RelaySessionShareDto>('/relay/shares', {
     method: 'POST',
     body: JSON.stringify(input),
-  }));
+  }), input);
 }
 
 export function updateRelayShare(
@@ -748,7 +748,7 @@ export function updateRelayShare(
       method: 'PATCH',
       body: JSON.stringify(input),
     },
-  ));
+  ), input);
 }
 
 export function revokeRelayShare(shareId: string) {
@@ -764,7 +764,7 @@ export function createRelayGrant(input: CreateRelayAccessGrantInput) {
   return sharingMutation('grant', 'create', undefined, () => request<RelayAccessGrantDto>('/relay/grants', {
     method: 'POST',
     body: JSON.stringify(input),
-  }));
+  }), input);
 }
 
 export function updateRelayGrant(
@@ -777,7 +777,7 @@ export function updateRelayGrant(
       method: 'PATCH',
       body: JSON.stringify(input),
     },
-  ));
+  ), input);
 }
 
 export function revokeRelayGrant(grantId: string) {

@@ -25,6 +25,7 @@ const credential = {
 };
 vi.mock('../lib/ownerDeviceTrust', () => ({
   hasDeviceCertificate: state.paired,
+  locallyCertifiedDevices: async () => ['device'],
 }));
 vi.mock('../lib/ownerSession', () => ({
   prepareOwnerUnlock: async () => state.unlock,
@@ -127,12 +128,12 @@ it('explains offline paired sharing and missing recipient passkeys without offer
   expect(await screen.findByText(/paired device must be online/)).toBeVisible();
   expect(state.grants).not.toHaveBeenCalled();
   expect(
-    screen.getByRole('button', { name: 'Copy invite link' }),
-  ).toBeDisabled();
+    screen.queryByRole('button', { name: 'Copy invite link' }),
+  ).not.toBeInTheDocument();
 });
 it('copies a fragment-only identity-pinned thread invite', async () => {
   render(<SignedShareDetails kind="share" row={row} />);
-  fireEvent.click(screen.getByRole('button', { name: 'Copy invite link' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Copy invite link' }));
   await waitFor(() =>
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
       `http://localhost:3000/shared#v=1&device=device&identity=${'g'.repeat(43)}&thread=thread`,
@@ -152,7 +153,7 @@ it('shows orphan device authorization and revokes it even when its relay row has
     },
   ]);
   const portal = {
-    devices: [{ id: 'device', connected: true }],
+    devices: [], // hidden by a compromised relay
     sharedByMe: [],
     grantsByMe: [],
   } as unknown as RelayPortalSummaryDto;
@@ -169,4 +170,11 @@ it('refreshes the account safety code when the security panel changes passkeys',
   state.records.mockResolvedValue([]);
   rendered.rerender(<AccountSafetyCode revision={2} />);
   expect(await screen.findByText(/recipient must add a passkey/)).toBeVisible();
+});
+
+it('hides copy invite when the handshake has no certificate-verified fingerprint', async () => {
+  state.fingerprint.mockRejectedValue(new Error('Certificate required'));
+  render(<SignedShareDetails kind="share" row={row} />);
+  await screen.findByText(/AAAA BBBB CCCC/);
+  expect(screen.queryByRole('button', { name: 'Copy invite link' })).not.toBeInTheDocument();
 });

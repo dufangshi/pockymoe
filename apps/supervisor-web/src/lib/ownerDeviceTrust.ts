@@ -6,7 +6,7 @@ import {
   type CertificateDocument,
   type DeviceCertificate,
 } from './ownerTrustCrypto';
-import { trustStore } from './ownerTrustStore';
+import { trustStore, trustEntries } from './ownerTrustStore';
 const nativeFetch = globalThis.fetch.bind(globalThis);
 export async function saveDeviceCertificate(certificate: DeviceCertificate) {
   const record = await verifiedCredential(certificate.assertion.credentialId);
@@ -125,11 +125,13 @@ export async function isRecipientDevice(deviceId: string, threadId?: string, wor
   return (await response.json() as { kind?: string }).kind === 'shared';
 }
 export async function pinInviteIdentity(deviceId: string, fingerprint: string) {
+  if (await localDeviceCertificate(deviceId)) return;
   const saved = await trustStore<string>(`invite-pin:${deviceId}`);
   if (saved && saved !== fingerprint) throw new OwnerTrustError('ownerIdentityMismatch');
   await trustStore(`invite-pin:${deviceId}`, fingerprint);
 }
 export async function checkInviteIdentity(deviceId: string, fingerprint: string) {
+  if (await localDeviceCertificate(deviceId)) return false;
   const expected = await trustStore<string>(`invite-pin:${deviceId}`);
   if (expected && expected !== fingerprint) throw new OwnerTrustError('ownerIdentityMismatch');
   return !!expected;
@@ -137,4 +139,25 @@ export async function checkInviteIdentity(deviceId: string, fingerprint: string)
 
 export async function inviteIdentityPin(deviceId: string) {
   return trustStore<string>(`invite-pin:${deviceId}`);
+}
+
+export async function localDeviceCertificate(deviceId: string) {
+  const saved = await trustStore<DeviceCertificate>(`certificate:${deviceId}`);
+  if (!saved) return null;
+  const credential = await verifiedCredential(saved.assertion.credentialId);
+  if (saved.deviceId !== deviceId || !credential || !(await verifyCertificate(saved, credential)))
+    throw new OwnerTrustError('ownerCertificateInvalid');
+  return saved;
+}
+export async function locallyCertifiedDevices() {
+  const entries = await trustEntries<DeviceCertificate>('certificate:');
+  const devices: string[] = [];
+  for (const [key] of entries) {
+    const id = key.slice('certificate:'.length);
+    if (await localDeviceCertificate(id)) devices.push(id);
+  }
+  return devices;
+}
+export async function forgetInviteIdentity(deviceId: string) {
+  await trustStore(`invite-pin:${deviceId}`, null);
 }

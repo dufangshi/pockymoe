@@ -3,9 +3,15 @@ import type {
   RelayAccessGrantDto,
   RelaySessionShareDto,
   RelayPortalSummaryDto,
+  CreateRelayAccessGrantInput,
+  CreateRelaySessionShareInput,
 } from '@pockymoe/shared';
 import { request } from './api';
-import { hasDeviceCertificate } from './ownerDeviceTrust';
+import { requestGrantReview } from './sharingApproval';
+import {
+  hasDeviceCertificate,
+  locallyCertifiedDevices,
+} from './ownerDeviceTrust';
 import { encode64, hash64, type OwnerCredential } from './ownerTrustCrypto';
 import { trustStore } from './ownerTrustStore';
 
@@ -145,7 +151,52 @@ export function grantForRow(
     expiresAt: row.expiresAt ? Date.parse(row.expiresAt) : null,
   };
 }
-export async function syncDeviceGrant(kind: ShareKind, row: ShareRow) {
+// All inputs are snapshotted before any async relay operation. Relay fields are
+// suggestions until explicitly reviewed; a create can never expand dialog intent.
+type SharingFields = Omit<
+  CreateRelayAccessGrantInput & CreateRelaySessionShareInput,
+  'threadId'
+> & { threadId: string | null };
+export type SharingInput = {
+  [K in keyof SharingFields]?: SharingFields[K] | undefined;
+};
+async function approveDeviceGrant(
+  deviceId: string,
+  deviceName: string,
+  grant: DeviceGrant,
+) {
+  const verified = await recipientVerified(grant.grantee.credentials);
+  const code = await safetyCode(grant.grantee.credentials);
+  // An unlocked session and the reconciliation button never authorize a PUT.
+  // Wait for explicit review of this exact snapshot and recipient key set.
+  const fields = translate('sharing.reviewGrant', {
+    value1: JSON.stringify({ name: deviceName, id: deviceId }),
+    value2: JSON.stringify({
+      scope: grant.scope,
+      threadId: grant.threadId,
+      workspaceId: grant.workspaceId,
+      workspaceScope: grant.workspaceScope,
+      workspaceIds: grant.workspaceIds,
+    }),
+    value3: JSON.stringify({
+      threadAccess: grant.threadAccess,
+      workspaceAccess: grant.workspaceAccess,
+      canCreateThreads: grant.canCreateThreads,
+    }),
+    value4: grant.expiresAt === null
+      ? translate('sharing.noExpiry')
+      : new Date(grant.expiresAt).toISOString(),
+    value5: JSON.stringify({ name: grant.grantee.label, userId: grant.grantee.userId }),
+    value6: code,
+  });
+  if (!(await requestGrantReview({
+    description: fields,
+    recipientVerified: verified,
+  })))
+    throw new Error(translate('sharing.signCancelled'));
+}
+export async function syncDeviceGrant(kind: ShareKind, source: ShareRow) {
+  const row = structuredClone(source);
   if (!(await pairedForSharing(row))) return;
   const credentials = await recipientPasskeys(kind, row.id);
   if (!credentials.length)
@@ -155,6 +206,9 @@ export async function syncDeviceGrant(kind: ShareKind, row: ShareRow) {
     (g) => g.relayRef.kind === kind && g.relayRef.id === row.id,
   );
   const grant = grantForRow(kind, row, credentials, existing?.grantId);
+  if (grant.expiresAt !== null && !Number.isFinite(grant.expiresAt))
+    throw new Error(translate('sharing.rowAltered'));
+  await approveDeviceGrant(row.deviceId, row.deviceName, grant);
   await deviceRequest(
     row.deviceId,
     '/api/transport/grants/' + encodeURIComponent(grant.grantId),
@@ -162,27 +216,75 @@ export async function syncDeviceGrant(kind: ShareKind, row: ShareRow) {
   );
   return grant;
 }
+function sameIntent(kind: ShareKind, expected: ShareRow, returned: ShareRow) {
+  return (
+    expected.deviceId === returned.deviceId &&
+    grantPermissions(grantForRow(kind, expected, [], 'compare')) ===
+      grantPermissions(grantForRow(kind, returned, [], 'compare'))
+  );
+}
 export async function sharingMutation<T>(
   kind: ShareKind,
   operation: 'create' | 'edit' | 'revoke',
   id: string | undefined,
   mutate: () => Promise<T>,
+  dialogInput?: SharingInput,
 ): Promise<T> {
-  const previous = id ? await findRelayRow(kind, id) : undefined;
+  const input = dialogInput
+    ? structuredClone(Object.fromEntries(
+      Object.entries(dialogInput).filter(([, value]) => value !== undefined),
+    )) as SharingInput
+    : undefined;
   if (operation === 'revoke') {
-    if (previous && (await pairedForSharing(previous))) {
-      for (const grant of await deviceGrants(previous.deviceId)) {
+    // Load every locally certified device before deleting anything. A malicious
+    // portal cannot hide/reassign the grant's device or claim it is unpaired.
+    const inventory = [];
+    for (const deviceId of await locallyCertifiedDevices())
+      inventory.push({ deviceId, grants: await deviceGrants(deviceId) });
+    for (const { deviceId, grants } of inventory)
+      for (const grant of grants)
         if (grant.relayRef.kind === kind && grant.relayRef.id === id)
-          await deleteDeviceGrant(previous.deviceId, grant.grantId);
-      }
-    }
+          await deleteDeviceGrant(deviceId, grant.grantId);
     return mutate();
   }
+  if (!input) throw new Error(translate('sharing.rowAltered'));
+  // Metadata refreshes must never re-authorize access from a portal row.
+  const permissionFields = [
+    'workspaceId', 'workspaceScope', 'workspaceIds', 'threadAccess',
+    'workspaceAccess', 'canCreateThreads', 'expiresAt',
+  ];
+  if (operation === 'edit' && !permissionFields.some((key) => key in input))
+    return mutate();
+  const previous = id ? await findRelayRow(kind, id) : undefined;
+  const chosen = structuredClone({ ...previous, ...input });
   const result = await mutate();
-  const rowId = id ?? (result as { id: string }).id;
+  const response = result as ShareRow;
+  const rowId = id ?? response.id;
   try {
-    const row = await findRelayRow(kind, rowId);
-    await syncDeviceGrant(kind, row);
+    if (!rowId || (response.id !== undefined && response.id !== rowId))
+      throw new Error(translate('sharing.rowAltered'));
+    // Some grant endpoints return only id. The portal may validate that intent,
+    // but must never supply the permissions that the browser signs.
+    const returned = response.deviceId
+      ? response
+      : await findRelayRow(kind, rowId);
+    if (!returned.targetUserId ||
+      (response.targetUserId && response.targetUserId !== returned.targetUserId))
+      throw new Error(translate('sharing.rowAltered'));
+    const expected = {
+      ...chosen,
+      id: rowId,
+      targetUserId: previous?.targetUserId ?? returned.targetUserId,
+      targetUsername: input.targetIdentifier ?? previous?.targetUsername,
+      // Names are display hints only; the reviewed device ID is authoritative.
+      deviceName: previous?.deviceName ?? returned.deviceName,
+    } as ShareRow;
+    const metadataChanged = (['label', 'threadTitle', 'workspaceLabel'] as const)
+      .some((key) => key in input &&
+        (input[key] ?? null) !== (returned[key] ?? null));
+    if (!sameIntent(kind, expected, returned) || metadataChanged)
+      throw new Error(translate('sharing.rowAltered'));
+    await syncDeviceGrant(kind, expected);
   } catch (error) {
     try {
       await request(
@@ -194,14 +296,9 @@ export async function sharingMutation<T>(
     } catch {
       throw new Error(translate('sharing.rollbackFailed'));
     }
-    throw new Error(
-      translate('sharing.rolledBack', {
-        value1:
-          error instanceof Error
-            ? error.message
-            : translate('sharing.pairedOnline'),
-      }),
-    );
+    throw new Error(translate('sharing.rolledBack', {
+      value1: error instanceof Error ? error.message : translate('sharing.pairedOnline'),
+    }));
   }
   return result;
 }
