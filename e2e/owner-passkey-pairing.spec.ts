@@ -1,4 +1,4 @@
-import { test, expect, type CDPSession, type Page, type TestInfo } from '@playwright/test';
+import { test, expect, type CDPSession, type Locator, type Page, type TestInfo } from '@playwright/test';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
@@ -89,6 +89,42 @@ async function openTrustPanel(page: Page, info: TestInfo) {
 async function screenshot(page: Page, info: TestInfo, name: string) {
   await mkdir(resolve('.scratch/screenshots'), { recursive: true });
   await page.screenshot({ path: resolve(`.scratch/screenshots/${info.project.name}-${name}.png`) });
+}
+
+async function checkPasskeyButtonThemes(button: Locator) {
+  const samples = await button.evaluate(element => {
+    const root = document.documentElement;
+    const previousPreset = root.getAttribute('data-theme-preset');
+    const previousTheme = root.getAttribute('data-theme-effective');
+    const disabled = element.cloneNode(true) as HTMLButtonElement;
+    disabled.disabled = true;
+    disabled.style.position = 'fixed';
+    disabled.style.left = '-10000px';
+    document.body.append(disabled);
+    const samples = [];
+    try {
+      for (const preset of ['classic', 'plum-pocket']) for (const theme of ['light', 'dark']) {
+        root.dataset.themePreset = preset; root.dataset.themeEffective = theme;
+        const enabledStyle = getComputedStyle(element), disabledStyle = getComputedStyle(disabled);
+        samples.push({ preset, theme, enabled: enabledStyle.backgroundColor,
+          disabled: disabledStyle.backgroundColor, color: enabledStyle.color,
+          disabledColor: disabledStyle.color, opacity: enabledStyle.opacity,
+          transition: enabledStyle.transitionDuration });
+      }
+      return samples;
+    } finally {
+      disabled.remove();
+      for (const [name, value] of [['data-theme-preset', previousPreset], ['data-theme-effective', previousTheme]]) {
+        if (value === null) root.removeAttribute(name!); else root.setAttribute(name!, value!);
+      }
+    }
+  });
+  for (const sample of samples) {
+    expect(sample.enabled, `${sample.preset}/${sample.theme}: primary button must look enabled immediately`).not.toBe(sample.disabled);
+    expect(sample.color, `${sample.preset}/${sample.theme}: enabled text must differ from disabled text`).not.toBe(sample.disabledColor);
+    expect(sample.opacity).toBe('1');
+    expect(sample.transition).toBe('0s');
+  }
 }
 
 async function sendPrompt(page: Page, marker: string) {
@@ -312,9 +348,30 @@ test('owner passkey pairs a strict device, trusts a second browser, revokes and 
     const unlock = secondPage.getByRole('dialog', { name: 'Unlock your devices', exact: true });
     await expect(unlock).toBeVisible();
     await expect(unlock.getByRole('button', { name: 'Unlock with passkey', exact: true })).toBeEnabled();
+    await expect(unlock.getByRole('button', { name: 'Unlock with passkey', exact: true })).toBeFocused();
+    await checkPasskeyButtonThemes(unlock.getByRole('button', { name: 'Unlock with passkey', exact: true }));
     await screenshot(secondPage, info, 'unlock');
+    await unlock.getByRole('button', { name: 'Later', exact: true }).click();
+    await expect(unlock).toHaveCount(0);
+    const lockedNotice = secondPage.locator('.owner-locked-notice');
+    await expect(lockedNotice).toContainText('Paired device locked. Unlock to continue.');
+    await expect(lockedNotice).toBeInViewport({ ratio: 1 });
+    expect(await secondPage.evaluate(() => document.body.style.overflow)).not.toBe('hidden');
+    await screenshot(secondPage, info, 'locked-notice');
+    if (screenshotsOnly) {
+      await secondPage.setViewportSize({ width: 320, height: 727 });
+      await expect(lockedNotice).toBeInViewport({ ratio: 1 });
+      await expect(lockedNotice.getByRole('button', { name: 'Unlock', exact: true })).toBeInViewport({ ratio: 1 });
+      await screenshot(secondPage, info, 'locked-notice-320');
+      await secondPage.setViewportSize(info.project.use.viewport!);
+    }
+    await lockedNotice.getByRole('button', { name: 'Unlock', exact: true }).click();
+    await expect(unlock).toBeVisible();
+    await expect(lockedNotice).toHaveCount(0);
+    await expect(unlock.getByRole('button', { name: 'Unlock with passkey', exact: true })).toBeEnabled();
     await unlock.getByRole('button', { name: 'Unlock with passkey', exact: true }).click();
     await expect(unlock).toHaveCount(0);
+    await expect(lockedNotice).toHaveCount(0);
     if (!screenshotsOnly) await expect.soft(secondPage.getByText('Owner trust workspace', { exact: true }),
       'UNLOCK_RELOAD: workspace reads must resume after a successful explicit unlock').toBeVisible({ timeout: 5_000 });
     if (await secondPage.getByRole('button', { name: 'Retry', exact: true }).isVisible()) {
@@ -337,13 +394,54 @@ test('owner passkey pairs a strict device, trusts a second browser, revokes and 
     const secondId = await ownerSessionId(secondPage);
     expect(!!secondId).toBe(true);
     expect(secondId).not.toBe(await ownerSessionId(page));
+    // The real dismissal/resume path above has a pending workspace read. Also
+    // exercise notice placement on a loaded thread with live composer controls.
+    await page.goto(threadUrl);
+    await expect(page.getByRole('textbox', { name: 'Prompt', exact: true })).toBeVisible();
+    await page.evaluate(deviceId => window.dispatchEvent(new CustomEvent('remote-codex-transport', {
+      detail: { deviceId, state: 'unlock-required', paired: true },
+    })), device.id);
+    await page.getByRole('dialog', { name: 'Unlock your devices', exact: true })
+      .getByRole('button', { name: 'Later', exact: true }).click();
+    await expect(page.locator('.owner-locked-notice')).toBeInViewport({ ratio: 1 });
+    const geometry = await page.evaluate(() => {
+      const notice = document.querySelector('.owner-locked-notice')!.getBoundingClientRect();
+      const controls = [...document.querySelectorAll('.thread-pane-switch, .thread-composer-toolbar, [role="textbox"][aria-label="Prompt"]')]
+        .filter(element => element.getClientRects().length);
+      return { count: controls.length, clear: controls.every(element => {
+        const box = element.getBoundingClientRect();
+        return notice.bottom <= box.top || notice.top >= box.bottom || notice.right <= box.left || notice.left >= box.right;
+      }) };
+    });
+    expect(geometry.count, 'Notice placement must be checked against visible thread controls').toBeGreaterThan(0);
+    expect(geometry.clear, 'Locked notice must not cover pane-switch or composer controls').toBe(true);
+    await screenshot(page, info, 'locked-notice-thread');
+    await page.evaluate(deviceId => window.dispatchEvent(new CustomEvent('remote-codex-owner-unlocked', {
+      detail: { deviceIds: [deviceId] },
+    })), device.id);
+    await expect(page.locator('.owner-locked-notice')).toHaveCount(0);
     await page.goto(base + '/relay-devices');
     const panel = await openTrustPanel(page, info);
     await expect(panel.getByRole('button', { name: 'Revoke session', exact: true })).toHaveCount(2);
+    await expect(panel.getByText('Synced owner passkey', { exact: true })).toBeVisible();
+    await expect(panel.getByText('This browser', { exact: true })).toBeVisible();
+    expect(await panel.locator('time').evaluateAll(elements => elements.every(element =>
+      element.textContent?.includes(new Date(element.getAttribute('datetime')!).toLocaleString('en')))),
+      'Session expiry labels must contain the localized date, not an interpolation placeholder').toBe(true);
+    if (screenshotsOnly) {
+      expect(await panel.locator('.owner-trust-row').evaluateAll(rows => rows.every(row => {
+        const label = row.firstElementChild!.getBoundingClientRect();
+        const action = row.querySelector('button')!.getBoundingClientRect();
+        return action.top >= label.bottom && action.width < row.getBoundingClientRect().width;
+      })), 'Mobile trust rows must put compact actions below the labels').toBe(true);
+    }
+    const renew = panel.getByRole('button', { name: 'Renew with passkey', exact: true });
+    await expect(renew).toBeEnabled();
+    await checkPasskeyButtonThemes(renew);
     await screenshot(page, info, 'device-trust');
     if (screenshotsOnly) return; // Mobile is visual QA; protocol coverage runs once on desktop.
 
-    const row = panel.getByRole('listitem').filter({ has: page.locator('code').filter({ hasText: secondId! }) });
+    const row = panel.getByRole('listitem').filter({ has: page.locator(`code[title="${secondId!}"]`) });
     await row.getByRole('button', { name: 'Revoke session', exact: true }).click();
     await expect(row).toHaveCount(0);
     const afterRevoke = await browserRequest(secondPage, device.api + '/workspaces');
@@ -357,6 +455,11 @@ test('owner passkey pairs a strict device, trusts a second browser, revokes and 
       'REVOCATION: deleted session must remain revoked after the client retries registration').toBe(false);
     // Once the revocation fix lands, verify a fresh gesture produces a new key.
     if (afterRevoke.status === 401) {
+      await secondPage.getByRole('dialog', { name: 'Unlock your devices', exact: true })
+        .getByRole('button', { name: 'Later', exact: true }).click();
+      await expect(secondPage.locator('.owner-locked-notice')).toContainText('Device access revoked. Unlock again to continue.');
+      await screenshot(secondPage, info, 'locked-notice-revoked');
+      await secondPage.locator('.owner-locked-notice').getByRole('button', { name: 'Unlock', exact: true }).click();
       await secondPage.getByRole('dialog', { name: 'Unlock your devices', exact: true })
         .getByRole('button', { name: 'Unlock with passkey', exact: true }).click();
       await expect.poll(() => ownerSessionId(secondPage)).not.toBe(secondId);

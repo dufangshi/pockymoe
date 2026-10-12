@@ -10,6 +10,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { setLocale, translate } from '@pockymoe/thread-ui/i18n';
 import { OwnerUnlockButton, OwnerUnlockPrompt } from './OwnerUnlockPrompt';
 import { prepareOwnerUnlock } from '../lib/ownerSession';
+import { notifyOwnerUnlocked, readAfterOwnerUnlock } from '../lib/ownerUnlockRecovery';
 import {
   getTransportStatus,
   probeDeviceEncryption,
@@ -47,6 +48,87 @@ function report(deviceId = 'a', revoked = false) {
   });
 }
 describe('owner unlock prompt', () => {
+  it.each(['en', 'zh-CN'] as const)('shows a non-modal notice after Later, reopens on click and disappears on unlock in %s', async locale => {
+    setLocale(locale);
+    render(<MemoryRouter><OwnerUnlockPrompt /></MemoryRouter>);
+    report();
+    fireEvent.click(screen.getByRole('button', { name: translate('auth.ownerLater') }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.getByRole('status')).toHaveTextContent(translate('auth.ownerLockedNotice'));
+    expect(document.body.style.overflow).not.toBe('hidden');
+    expect(start).not.toHaveBeenCalled();
+    act(() => notifyOwnerUnlocked(['unrelated']));
+    expect(screen.getByRole('status')).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: translate('auth.ownerLockedUnlock') }));
+    expect(screen.getByRole('dialog')).toBeVisible();
+    expect(screen.queryByRole('status')).toBeNull();
+    const primary = await screen.findByRole('button', { name: translate('auth.ownerUnlock') });
+    await waitFor(() => expect(primary).toBeEnabled());
+    expect(start).not.toHaveBeenCalled();
+    fireEvent.click(primary);
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(screen.queryByRole('status')).toBeNull();
+    expect(screen.queryByRole('button', { name: translate('auth.ownerLockedUnlock') })).toBeNull();
+  });
+  it.each(['en', 'zh-CN'] as const)('keeps the revoked notice after repeated failures and clears only the unlocked device in %s', locale => {
+    setLocale(locale);
+    render(<MemoryRouter><OwnerUnlockPrompt /></MemoryRouter>);
+    report('a', true);
+    report('b');
+    fireEvent.click(screen.getByRole('button', { name: translate('auth.ownerLater') }));
+    report('a', true);
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.getByRole('status')).toHaveTextContent(translate('auth.ownerLockedRevoked'));
+    act(() => notifyOwnerUnlocked(['a']));
+    expect(screen.getByRole('status')).toHaveTextContent(translate('auth.ownerLockedNotice'));
+    act(() => notifyOwnerUnlocked(['b']));
+    expect(screen.queryByRole('status')).toBeNull();
+  });
+  it.each(['owner_session_required', 'owner_session_revoked'])('resolves the original waiting read after unlocking from the notice (%s)', async code => {
+    render(<MemoryRouter><OwnerUnlockPrompt /></MemoryRouter>);
+    const read = vi.fn().mockResolvedValueOnce({ response: Response.json({ code }, { status: 401 }) })
+      .mockResolvedValue({ response: Response.json({ workspace: 'resumed' }) });
+    let pending!: ReturnType<typeof readAfterOwnerUnlock>;
+    act(() => { pending = readAfterOwnerUnlock('a', read); });
+    // No separate transport event: the generic blocked read must surface it.
+    await screen.findByRole('dialog');
+    fireEvent.click(screen.getByRole('button', { name: 'Later' }));
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole('status')).toHaveTextContent(translate(
+      code === 'owner_session_revoked' ? 'auth.ownerLockedRevoked' : 'auth.ownerLockedNotice'));
+    fireEvent.click(screen.getByRole('button', { name: 'Unlock' }));
+    const primary = await screen.findByRole('button', { name: 'Unlock with passkey' });
+    await waitFor(() => expect(primary).toBeEnabled());
+    fireEvent.click(primary);
+    await act(async () => {
+      const result = await pending;
+      expect(await result.response.json()).toEqual({ workspace: 'resumed' });
+    });
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.queryByRole('status')).toBeNull();
+  });
+  it('focuses the prepared primary action without starting WebAuthn and distinguishes the busy state', async () => {
+    let ready!: (start: Awaited<ReturnType<typeof prepareOwnerUnlock>>) => void;
+    vi.mocked(prepareOwnerUnlock).mockReturnValue(new Promise(resolve => { ready = resolve; }));
+    let finish!: () => void;
+    start.mockImplementation(() => new Promise<void>(resolve => { finish = resolve; }));
+    render(<MemoryRouter><OwnerUnlockPrompt /></MemoryRouter>);
+    report();
+    const preparing = screen.getByRole('button', { name: translate('auth.ownerPreparing') });
+    expect(preparing).toBeDisabled();
+    expect(screen.getByRole('link', { name: translate('auth.ownerAccountSecurity') })).not.toHaveFocus();
+    await act(async () => ready(start));
+    const primary = screen.getByRole('button', { name: translate('auth.ownerUnlock') });
+    await waitFor(() => expect(primary).toHaveFocus());
+    expect(primary).toBeEnabled();
+    expect(start).not.toHaveBeenCalled();
+    fireEvent.click(primary);
+    expect(screen.getByRole('button', { name: translate('auth.ownerUnlocking') })).toBeDisabled();
+    expect(primary).toHaveAttribute('aria-busy', 'true');
+    await act(async () => finish());
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  });
   it.each(['en', 'zh-CN'] as const)('shows the distinct revocation message in %s and requires a fresh click even after dismissal', async (locale) => {
     setLocale(locale);
     render(<MemoryRouter><OwnerUnlockPrompt /></MemoryRouter>);

@@ -1,4 +1,9 @@
 export const OWNER_UNLOCKED_EVENT = 'remote-codex-owner-unlocked';
+export const OWNER_READ_BLOCKED_EVENT = 'remote-codex-owner-read-blocked';
+export interface OwnerReadBlockedDetail {
+  deviceId: string;
+  revoked: boolean;
+}
 export interface OwnerUnlockedDetail {
   deviceIds: string[];
 }
@@ -38,16 +43,23 @@ export async function readAfterOwnerUnlock<T extends { response: Response }>(
     for (;;) {
       signal?.throwIfAborted();
       const attempt = generation;
+      let revoked = false;
       try {
         const result = await read();
         if (result.response.ok || ![401, 403].includes(result.response.status))
           return result;
         const failure: unknown = await result.response.clone().json().catch(() => null);
         if (!needsOwnerUnlock(failure)) return result;
+        revoked = (failure as { code: string }).code === 'owner_session_revoked';
       } catch (error) {
         if (!needsOwnerUnlock(error)) throw error;
+        revoked = (error as { code: string }).code === 'owner_session_revoked';
       }
       // The gesture can finish while the encrypted failure is still in flight.
+      if (generation !== attempt) continue;
+      window.dispatchEvent(new CustomEvent<OwnerReadBlockedDetail>(OWNER_READ_BLOCKED_EVENT, {
+        detail: { deviceId, revoked },
+      }));
       if (generation !== attempt) continue;
       await new Promise<void>((resolve, reject) => {
         resume = resolve;

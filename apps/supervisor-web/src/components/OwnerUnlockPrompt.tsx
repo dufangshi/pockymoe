@@ -1,5 +1,5 @@
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import { Link, useLocation } from 'react-router-dom';
 import { prepareOwnerUnlock } from '../lib/ownerSession';
@@ -13,16 +13,23 @@ import {
 } from '../lib/relayTransport';
 import { useDialogLifecycle } from './useDialogLifecycle';
 import { securityError } from '../lib/relaySecurity';
-import { notifyOwnerUnlocked } from '../lib/ownerUnlockRecovery';
+import {
+  notifyOwnerUnlocked, OWNER_READ_BLOCKED_EVENT, OWNER_UNLOCKED_EVENT,
+  type OwnerReadBlockedDetail, type OwnerUnlockedDetail,
+} from '../lib/ownerUnlockRecovery';
 
 export function OwnerUnlockButton({
   onUnlocked,
   renew = false,
   credentialId,
+  focusWhenReady = false,
+  buttonRef,
 }: {
   onUnlocked: () => void | Promise<void>;
   renew?: boolean;
   credentialId?: string | string[];
+  focusWhenReady?: boolean;
+  buttonRef?: RefObject<HTMLButtonElement | null>;
 }) {
   useI18n();
   const [unlock, setUnlock] =
@@ -30,6 +37,11 @@ export function OwnerUnlockButton({
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState(false);
   const [attempt, setAttempt] = useState(0);
+  const ownButton = useRef<HTMLButtonElement>(null);
+  const primaryButton = buttonRef ?? ownButton;
+  useEffect(() => {
+    if (focusWhenReady && unlock && !error) primaryButton.current?.focus();
+  }, [focusWhenReady, unlock, error, primaryButton]);
   useEffect(() => {
     let active = true;
     setUnlock(undefined);
@@ -61,8 +73,10 @@ export function OwnerUnlockButton({
         </button>
       ) : (
         <button
-          className="relay-button-primary px-3 py-2"
+          ref={primaryButton}
+          className="relay-button-primary owner-passkey-action px-3 py-2"
           disabled={!unlock || busy}
+          aria-busy={busy}
           onClick={() => {
             if (!unlock) return;
             // Start WebAuthn in the gesture, before the first await.
@@ -76,6 +90,7 @@ export function OwnerUnlockButton({
         >
           {!unlock
             ? translate('auth.ownerPreparing')
+            : busy ? translate('auth.ownerUnlocking')
             : translate(renew ? 'auth.ownerRenew' : 'auth.ownerUnlock')}
         </button>
       )}
@@ -89,9 +104,12 @@ export function OwnerUnlockPrompt() {
   const [credentialId, setCredentialId] = useState<string | string[]>();
   const [dismissed, setDismissed] = useState(false);
   const [revoked, setRevoked] = useState(false);
+  const locked = useRef(new Map<string, boolean>());
   const dialog = useRef<HTMLElement>(null);
+  const primaryButton = useRef<HTMLButtonElement>(null);
   useDialogLifecycle({
     containerRef: dialog,
+    initialFocusRef: primaryButton,
     open: !!devices.length && !dismissed && location.pathname !== '/pair',
     onClose: () => setDismissed(true),
   });
@@ -100,10 +118,15 @@ export function OwnerUnlockPrompt() {
       const status = (event as CustomEvent<TransportStatus>).detail;
       if (event.type === 'remote-codex-owner-unlock-request')
         setDismissed(false);
-      if (status.state === 'unlock-required') {
-        if (status.unlockReason === 'owner_session_revoked') {
+      if (status?.state === 'unlock-required') {
+        const wasRevoked = locked.current.get(status.deviceId) === true;
+        const isRevoked = status.unlockReason === 'owner_session_revoked';
+        locked.current.set(status.deviceId, wasRevoked || isRevoked);
+        if (isRevoked) {
           setRevoked(true);
-          setDismissed(false);
+          // A newly revoked session needs attention, but repeated failures must
+          // respect Later rather than reopening the modal on every pending read.
+          if (!wasRevoked) setDismissed(false);
         }
         if (status.ownerCredentialId) setCredentialId(status.ownerCredentialId);
         setDevices((current) =>
@@ -113,19 +136,47 @@ export function OwnerUnlockPrompt() {
         );
       }
     };
+    const onBlockedRead = (event: Event) => {
+      const detail = (event as CustomEvent<OwnerReadBlockedDetail>).detail;
+      onStatus(new CustomEvent('remote-codex-transport', {
+        detail: { deviceId: detail.deviceId, state: 'unlock-required',
+          ...(detail.revoked ? { unlockReason: 'owner_session_revoked' } : {}) },
+      }));
+    };
+    const onUnlocked = (event: Event) => {
+      const detail = (event as CustomEvent<OwnerUnlockedDetail>).detail;
+      if (!Array.isArray(detail?.deviceIds)) return;
+      for (const id of detail.deviceIds) locked.current.delete(id);
+      setDevices([...locked.current.keys()]);
+      setRevoked([...locked.current.values()].some(Boolean));
+      if (!locked.current.size) setCredentialId(undefined);
+    };
     window.addEventListener('remote-codex-transport', onStatus);
     window.addEventListener('remote-codex-owner-unlock-request', onStatus);
+    window.addEventListener(OWNER_READ_BLOCKED_EVENT, onBlockedRead);
+    window.addEventListener(OWNER_UNLOCKED_EVENT, onUnlocked);
     return () => {
       window.removeEventListener('remote-codex-transport', onStatus);
       window.removeEventListener('remote-codex-owner-unlock-request', onStatus);
+      window.removeEventListener(OWNER_READ_BLOCKED_EVENT, onBlockedRead);
+      window.removeEventListener(OWNER_UNLOCKED_EVENT, onUnlocked);
     };
   }, []);
   useEffect(() => {
     setDismissed(false);
   }, [location.pathname]);
   // Pairing has its own explicit verification and completion prompts.
-  if (!devices.length || dismissed || location.pathname === '/pair')
+  if (!devices.length || location.pathname === '/pair')
     return null;
+  if (dismissed) return createPortal(
+    <aside className="owner-locked-notice" aria-label={translate('auth.ownerLockedNotice')}>
+      <p role="status">{translate(revoked ? 'auth.ownerLockedRevoked' : 'auth.ownerLockedNotice')}</p>
+      <button className="relay-button-primary owner-passkey-action" onClick={() => {
+        window.dispatchEvent(new Event('remote-codex-owner-unlock-request'));
+      }}>{translate('auth.ownerLockedUnlock')}</button>
+    </aside>,
+    document.body,
+  );
   return createPortal(
     <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 p-4">
       <section
@@ -143,6 +194,8 @@ export function OwnerUnlockPrompt() {
           {translate(revoked ? 'auth.owner_session_revoked' : 'auth.ownerUnlockHelp')}
         </p>
         <OwnerUnlockButton
+          buttonRef={primaryButton}
+          focusWhenReady
           {...(credentialId ? { credentialId } : {})}
           onUnlocked={async () => {
             // Reconnect only after verification; application mutations are never replayed.
@@ -157,9 +210,6 @@ export function OwnerUnlockPrompt() {
                 throw new Error(translate('auth.ownerTrustFailed'));
               notifyOwnerUnlocked([id]);
             }
-            setDevices([]);
-            setCredentialId(undefined);
-            setRevoked(false);
           }}
         />
         <div className="flex flex-wrap items-center gap-4 text-sm">
