@@ -54,10 +54,16 @@ pub fn relay_target_allowed(path: &str) -> bool {
     path == "/healthz" || path.starts_with("/api/") || path == "/api"
 }
 
-/// Relay bootstrap exception only: the device verifies the browser certificate.
-/// Callers must first establish a live share or grant on the target device.
+/// Relay bootstrap exceptions only: browser registration and revocation pushes,
+/// whose certificates and signatures the device verifies itself. Callers must
+/// first establish a live share or grant on the target device.
 pub fn grantee_registration_allowed(method: &str, path: &str, encrypted: bool) -> bool {
-    encrypted && method == "POST" && path.split('?').next() == Some("/api/transport/browser")
+    let path = path.split('?').next();
+    encrypted
+        && matches!(
+            (method, path),
+            ("POST", Some("/api/transport/browser")) | ("PUT", Some("/api/transport/revocations"))
+        )
 }
 
 pub fn access_allows(access: &EffectiveAccess, method: &str, path: &str) -> bool {
@@ -500,8 +506,19 @@ mod tests {
             }
         }
         for path in [
+            "/api/transport/revocations",
+            "/api/transport/revocations?all=1",
+        ] {
+            assert!(grantee_registration_allowed("PUT", path, true));
+            assert!(!grantee_registration_allowed("PUT", path, false));
+            for method in ["GET", "POST", "PATCH", "DELETE"] {
+                assert!(!grantee_registration_allowed(method, path, true));
+            }
+        }
+        for path in [
             "/api/transport/browser/",
             "/api/transport/browser/extra",
+            "/api/transport/revocations/extra",
             "/api/transport/session",
             "/api/transport/key",
             "/api/transport/trust",

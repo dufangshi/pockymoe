@@ -531,42 +531,43 @@ async fn grantee_registration_routes_any_live_scope_without_resource_ids() {
             "device-guest",
             "share-guest",
         ] {
-            let request = fixture
-                .request(
-                    Method::POST,
-                    &format!("{prefix}/transport/browser"),
-                    Some(user),
-                )
-                .header("x-rcd-key", "scoped-key")
-                .header("x-rcd-request", "request")
-                .header("x-rcd-enc", "encapsulation")
-                .header("x-rcd-sealed", "ciphertext");
-            let result = tokio::spawn(async move { request.send().await.unwrap() });
-            let raw = tokio::time::timeout(Duration::from_secs(5), rx.recv())
-                .await
-                .unwrap()
-                .unwrap();
-            let frame: Value = serde_json::from_str(&raw).unwrap();
-            assert_eq!(frame["payload"]["path"], "/api/transport/browser");
-            assert_eq!(frame["payload"]["method"], "POST");
-            assert_eq!(frame["payload"]["headers"]["x-rcd-key"], "scoped-key");
-            assert_eq!(frame["payload"]["headers"]["x-rcd-enc"], "encapsulation");
-            assert_eq!(frame["payload"]["headers"]["x-rcd-sealed"], "ciphertext");
-            fixture
-                .state
-                .pending
-                .lock()
-                .unwrap()
-                .remove(frame["requestId"].as_str().unwrap())
-                .unwrap()
-                .tx
-                .send(json!({"statusCode":200,"body":"{\"role\":\"grantee\"}"}))
-                .unwrap();
-            assert_eq!(
-                result.await.unwrap().status(),
-                StatusCode::OK,
-                "{prefix} {user}"
-            );
+            for (method, path) in [
+                (Method::POST, "/transport/browser"),
+                (Method::PUT, "/transport/revocations"),
+            ] {
+                let request = fixture
+                    .request(method.clone(), &format!("{prefix}{path}"), Some(user))
+                    .header("x-rcd-key", "scoped-key")
+                    .header("x-rcd-request", "request")
+                    .header("x-rcd-enc", "encapsulation")
+                    .header("x-rcd-sealed", "ciphertext");
+                let result = tokio::spawn(async move { request.send().await.unwrap() });
+                let raw = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+                    .await
+                    .unwrap()
+                    .unwrap();
+                let frame: Value = serde_json::from_str(&raw).unwrap();
+                assert_eq!(frame["payload"]["path"], format!("/api{path}"));
+                assert_eq!(frame["payload"]["method"], method.as_str());
+                assert_eq!(frame["payload"]["headers"]["x-rcd-key"], "scoped-key");
+                assert_eq!(frame["payload"]["headers"]["x-rcd-enc"], "encapsulation");
+                assert_eq!(frame["payload"]["headers"]["x-rcd-sealed"], "ciphertext");
+                fixture
+                    .state
+                    .pending
+                    .lock()
+                    .unwrap()
+                    .remove(frame["requestId"].as_str().unwrap())
+                    .unwrap()
+                    .tx
+                    .send(json!({"statusCode":200,"body":"{\"role\":\"grantee\"}"}))
+                    .unwrap();
+                assert_eq!(
+                    result.await.unwrap().status(),
+                    StatusCode::OK,
+                    "{prefix} {user} {path}"
+                );
+            }
         }
         // The existing thread/workspace key handshake remains available.
         for (user, resource) in [

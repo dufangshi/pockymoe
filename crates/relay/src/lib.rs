@@ -1936,7 +1936,7 @@ fn grantee_registration_request(method: &Method, path: &str, headers: &HeaderMap
                 .and_then(|value| value.to_str().ok())
                 .is_some_and(|value| !value.is_empty())
         });
-    encrypted && *method == Method::POST && path.split('?').next() == Some("/api/transport/browser")
+    pockymoe_protocol::access::grantee_registration_allowed(method.as_str(), path, encrypted)
 }
 
 /// Registration has no resource id: any live row lets the device decide whether
