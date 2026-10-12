@@ -3,7 +3,7 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@pockymoe
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { currentAccount, currentBrowser, requireUnlock, type UnlockReason, type UnlockedAccount } from '../lib/accountVault';
-import { ACCOUNT_UNLOCK_REQUEST, accountRequest, unlockAccount, registerBrowser, createVault, openVault,
+import { ACCOUNT_UNLOCK_REQUEST, BROWSER_REMOVED, accountRequest, unlockAccount, registerBrowser, createVault, openVault,
   AccountTrustError, changeAccountPassword, startAccountOver, type Vault } from '../lib/accountVaultState';
 import { isOAuthAccount, accountSessionState, setAccountSession, setupAccount, type PreparedRegistration } from '../lib/accountAuth';
 import { accountStore } from '../lib/accountStore';
@@ -25,7 +25,8 @@ export function AccountUnlockPrompt() {
   const [devices, setDevices] = useState<string[]>([]), locked = useRef(new Map<string, boolean>());
   const [request, setRequest] = useState<UnlockRequest | null>(null), queue = useRef<UnlockRequest[]>([]);
   const [needsConnect, setNeedsConnect] = useState(false);
-  const [dismissed, setDismissed] = useState(false), [revoked, setRevoked] = useState(false);
+  const [dismissed, setDismissed] = useState(false), [lockedRevoked, setRevoked] = useState(false);
+  const [browserRemoved, setBrowserRemoved] = useState(false), revoked = lockedRevoked || browserRemoved;
   const [recoverySession, setRecoverySession] = useState(false), [newPassword, setNewPassword] = useState('');
   const [secret, setSecret] = useState(''), [recovery, setRecovery] = useState(false), [setup, setSetup] = useState(false);
   const [prepared, setPrepared] = useState<PreparedRegistration>(), [error, setError] = useState<string>(), [busy, setBusy] = useState(false);
@@ -58,8 +59,10 @@ export function AccountUnlockPrompt() {
     };
     window.addEventListener('remote-codex-transport', status); window.addEventListener('remote-codex-owner-unlock-request', status);
     window.addEventListener(OWNER_READ_BLOCKED_EVENT, blocked); window.addEventListener(OWNER_UNLOCKED_EVENT, done);
-    window.addEventListener(ACCOUNT_UNLOCK_REQUEST, ask);
+    const removedBrowser = () => { setBrowserRemoved(true); setDismissed(false); };
+    window.addEventListener(ACCOUNT_UNLOCK_REQUEST, ask); window.addEventListener(BROWSER_REMOVED, removedBrowser);
     return () => {
+      window.removeEventListener(BROWSER_REMOVED, removedBrowser);
       window.removeEventListener('remote-codex-transport', status); window.removeEventListener('remote-codex-owner-unlock-request', status);
       window.removeEventListener(OWNER_READ_BLOCKED_EVENT, blocked); window.removeEventListener(OWNER_UNLOCKED_EVENT, done);
       window.removeEventListener(ACCOUNT_UNLOCK_REQUEST, ask);
@@ -82,7 +85,7 @@ export function AccountUnlockPrompt() {
     return () => { active = false; };
   }, [open]);
   async function complete(account: UnlockedAccount) {
-    await registerBrowser();
+    await registerBrowser(); setBrowserRemoved(false);
     // Only reissue the original reads after a device confirms the new identity.
     const waitingDevices = [...locked.current.keys()];
     for (const id of waitingDevices) {

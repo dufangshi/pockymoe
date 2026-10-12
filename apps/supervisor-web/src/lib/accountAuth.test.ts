@@ -148,8 +148,14 @@ it('replaces a relay-revoked browser with a new key after password authenticatio
     if (url.endsWith('/browsers')) return Response.json({ browsers: [], revocations: [revoke] });
     return Response.json({});
   });
-  await auth.startAccountLogin('user', 'local'); await auth.finishAccountLogin(v.userId);
+  // This suite runs without a DOM; give the module an event target to report to.
+  const events = new EventTarget(), removed = vi.fn(); events.addEventListener(vault.BROWSER_REMOVED, removed);
+  const g = globalThis as { window?: unknown }; g.window = events;
+  try { await auth.startAccountLogin('user', 'local'); await auth.finishAccountLogin(v.userId); }
+  finally { delete g.window; }
   expect((await vault.currentBrowser())!.browserId).not.toBe(old.browserId);
+  // The page explains the removal instead of a generic unlock prompt.
+  expect(removed).toHaveBeenCalledTimes(1);
 });
 it('keeps revocation tombstones when the relay later omits them', async () => {
   await auth.startAccountLogin('user', 'local'); await auth.finishAccountLogin(v.userId);

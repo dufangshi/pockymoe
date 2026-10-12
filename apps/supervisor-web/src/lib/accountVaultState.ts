@@ -16,6 +16,8 @@ let serial: Promise<unknown> = Promise.resolve();
 export const UNLOCK_WINDOW_MS = 10 * 60 * 1000;
 export const ACCOUNT_UNLOCK_REQUEST = 'pockymoe-account-unlock-request';
 export const ACCOUNT_CHANGED = 'pockymoe-account-changed';
+/** This browser found itself in the account-signed revocation list. */
+export const BROWSER_REMOVED = 'pockymoe-browser-removed';
 function accountErrorMessage(code: string) {
   try { return translate(`auth.${code}` as Parameters<typeof translate>[0]); }
   catch { return translate('auth.accountRequestFailed'); }
@@ -205,6 +207,8 @@ export async function registerBrowser(label = browserLabel()) {
   const revoked = await accountRevocations(true);
   if (browser && revoked.some(r => r.kind === 'browser' && r.subjectId === browser!.browserId)) {
     await accountStore(`browser:${browser.userId}`, null); browser = null;
+    // The revocation is signed by the account key, so it is authoritative; say why the prompt appears.
+    if (typeof window !== 'undefined') window.dispatchEvent(new Event(BROWSER_REMOVED));
   }
   let w: WindowState | undefined;
   if (!browser) {
