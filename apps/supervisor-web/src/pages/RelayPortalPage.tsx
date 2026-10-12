@@ -1,7 +1,7 @@
-import { finishAccountLogin, startLegacyUpgrade, legacyUpgradeEnabled, registerAccount, startAccountRecovery, startTemporaryResetLogin, cancelAccountLogin, isOAuthAccount, type PreparedRegistration } from '../lib/accountAuth';
+import { finishAccountLogin, startLegacyUpgrade, legacyUpgradeEnabled, legacyUpgradeMayApply, registerAccount, startAccountRecovery, startTemporaryResetLogin, cancelAccountLogin, isOAuthAccount, type PreparedRegistration } from '../lib/accountAuth';
 import { requireUnlock } from '../lib/accountVault';
 import { ensureBrowserAccess, RecoveryConfirmation } from '../components/AccountUnlockPrompt';
-import { createVault, openVault, registerBrowser, changeAccountPassword } from '../lib/accountVaultState';
+import { createVault, openVault, registerBrowser, changeAccountPassword, AccountTrustError } from '../lib/accountVaultState';
 import { relayUrl } from '../lib/relayOrigin';
 import { LanguageSwitcher } from '@pockymoe/thread-ui/i18n';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
@@ -329,7 +329,10 @@ function RelayAuthPanel({
       await completeAuthentication();
     } catch (caught) {
       if ((caught as { code?: string }).code === 'user_id_taken') setPrepared(undefined);
-      setError(errorMessage(caught, translate("auth.unableToAuthenticateWithTheRelay")));
+      const message = errorMessage(caught, translate("auth.unableToAuthenticateWithTheRelay"));
+      // A not-yet-secured account cannot sign in with a derived key; point to the explicit upgrade.
+      setError(mode === 'login' && caught instanceof AccountTrustError && await legacyUpgradeMayApply(identifier)
+        ? `${message} ${translate('auth.accountLoginLegacyHint')}` : message);
     } finally {
       setSubmitting(false);
     }

@@ -35,6 +35,12 @@ export async function startAccountLogin(identifier: string, password: string) {
   } catch (e) { keys.wrapKey.fill(0); throw e; }
 }
 export function legacyUpgradeEnabled() { return import.meta.env.VITE_POCKYMOE_LEGACY_UPGRADE !== '0'; }
+/** True when a failed sign-in could be an account that has not been secured yet. */
+export async function legacyUpgradeMayApply(login: string) {
+  if (!legacyUpgradeEnabled()) return false;
+  const known = await accountStore<string>(loginCacheKey(login));
+  return !(known && await accountStore(`cache:${known}`));
+}
 export async function startLegacyUpgrade(login: string, password: string) {
   cancelAccountLogin();
   const known = await accountStore<string>(loginCacheKey(login));
