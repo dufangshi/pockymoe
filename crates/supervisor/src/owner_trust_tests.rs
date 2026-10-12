@@ -916,6 +916,50 @@ async fn encrypted_pairing_and_owner_session_bootstrap_then_signed_trust() {
     assert_eq!(body["sessionId"], vectors()["session"]["sessionId"]);
 }
 #[tokio::test]
+async fn pairing_offer_initializes_identity_before_the_first_transport_key_request() {
+    let (_dir, state) = crate::tunnel::tests::state_with_relay_url("http://127.0.0.1:1");
+    remember_device(&state, "fresh-device").unwrap();
+    let path = state
+        .config
+        .database_url
+        .with_extension("transport-identity");
+    assert!(!path.exists());
+    let offer = create_pairing_offer(
+        &state.config.database_url,
+        Some("https://pockymoe.test"),
+        None,
+    )
+    .unwrap();
+    assert!(path.exists());
+    let offer = url::Url::parse(&offer).unwrap();
+    let fragment: std::collections::HashMap<_, _> =
+        url::form_urlencoded::parse(offer.fragment().unwrap().as_bytes())
+            .into_owned()
+            .collect();
+    let transport = crate::secure_transport::transport(&state).unwrap();
+    let descriptor = transport.descriptor("pairing-first").unwrap();
+    assert_eq!(
+        fragment["identity"],
+        hash(
+            B64.decode(descriptor["identityKey"].as_str().unwrap())
+                .unwrap()
+        )
+    );
+    assert_eq!(
+        fragment["identity"],
+        crate::secure_transport::fingerprint(&state.config.database_url).unwrap()
+    );
+    assert!(state
+        .db
+        .with(|c| Ok(c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pairing_offers WHERE pairing_id=?1)",
+            [&fragment["pairing"]],
+            |r| r.get::<_, bool>(0)
+        )?))
+        .unwrap());
+}
+
+#[tokio::test]
 async fn offline_offer_and_reset_work_with_a_running_database_and_refuse_unknown_id() {
     let (_dir, state) = crate::tunnel::tests::state_with_relay_url("http://127.0.0.1:1");
     crate::secure_transport::transport(&state).unwrap();

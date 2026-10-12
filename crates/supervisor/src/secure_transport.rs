@@ -19,7 +19,7 @@ use serde_json::{json, Value};
 use std::{
     collections::HashMap,
     io::Write,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex, OnceLock},
 };
 use uuid::Uuid;
@@ -92,25 +92,7 @@ pub(crate) fn transport(state: &Supervisor) -> Result<Arc<Transport>> {
     if let Some(value) = transports.get(&path) {
         return Ok(value.clone());
     }
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let identity = if path.exists() {
-        SigningKey::from_slice(&B64.decode(std::fs::read_to_string(&path)?.trim())?)?
-    } else {
-        let key = SigningKey::random(&mut OsRng);
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut file = options.open(&path)?;
-        file.write_all(B64.encode(key.to_bytes()).as_bytes())?;
-        file.sync_all()?;
-        key
-    };
+    let identity = load_or_create_identity(&state.config.database_url)?;
     let value = Arc::new(Transport {
         identity,
         streams: streams::Streams::default(),
@@ -121,12 +103,53 @@ pub(crate) fn transport(state: &Supervisor) -> Result<Arc<Transport>> {
     transports.insert(path, value.clone());
     Ok(value)
 }
-pub(crate) fn fingerprint(database: &std::path::Path) -> Result<String> {
+fn load_or_create_identity(database: &Path) -> Result<SigningKey> {
+    let path = database.with_extension("transport-identity");
+    match std::fs::read_to_string(&path) {
+        Ok(saved) => Ok(SigningKey::from_slice(&B64.decode(saved.trim())?)?),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => create_identity(&path),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn create_identity(path: &Path) -> Result<SigningKey> {
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent)?;
+    }
+    let temporary = path.with_extension(format!("transport-identity.{}.tmp", Uuid::new_v4()));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&temporary)?;
+    let result = (|| -> Result<SigningKey> {
+        let key = SigningKey::random(&mut OsRng);
+        file.write_all(B64.encode(key.to_bytes()).as_bytes())?;
+        file.sync_all()?;
+        // Close before publishing/cleanup, including on platforms with file sharing locks.
+        drop(file);
+        // Publish a complete, synced inode without replacing a concurrent winner.
+        match std::fs::hard_link(&temporary, path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error.into()),
+        }
+        Ok(SigningKey::from_slice(
+            &B64.decode(std::fs::read_to_string(path)?.trim())?,
+        )?)
+    })();
+    let cleanup = std::fs::remove_file(&temporary);
+    let identity = result?;
+    cleanup?;
+    Ok(identity)
+}
+
+pub(crate) fn fingerprint(database: &Path) -> Result<String> {
     use sha2::{Digest, Sha256};
-    let identity =
-        SigningKey::from_slice(&B64.decode(
-            std::fs::read_to_string(database.with_extension("transport-identity"))?.trim(),
-        )?)?;
+    let identity = load_or_create_identity(database)?;
     Ok(B64.encode(Sha256::digest(
         identity.verifying_key().to_encoded_point(false).as_bytes(),
     )))
@@ -518,6 +541,63 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn concurrent_identity_creators_publish_one_complete_key_and_remove_temporary_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("device.transport-identity");
+        let barrier = std::sync::Barrier::new(2);
+        let (first, second) = std::thread::scope(|scope| {
+            let create = || {
+                barrier.wait();
+                // Force both callers into creation, exercising the hard-link loser too.
+                create_identity(&path)
+                    .unwrap()
+                    .verifying_key()
+                    .to_encoded_point(false)
+            };
+            let first = scope.spawn(create);
+            let second = scope.spawn(create);
+            (first.join().unwrap(), second.join().unwrap())
+        });
+        assert_eq!(first, second);
+        assert_eq!(
+            load_or_create_identity(&dir.path().join("device.sqlite"))
+                .unwrap()
+                .verifying_key()
+                .to_encoded_point(false),
+            first
+        );
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+    }
+
+    #[test]
+    fn existing_identity_is_preserved_and_corrupt_identity_is_not_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let database = dir.path().join("device.sqlite");
+        let path = database.with_extension("transport-identity");
+        let key = SigningKey::random(&mut OsRng);
+        let saved = format!("{}\n", B64.encode(key.to_bytes()));
+        std::fs::write(&path, &saved).unwrap();
+        assert_eq!(
+            load_or_create_identity(&database).unwrap().verifying_key(),
+            key.verifying_key()
+        );
+        // Do not print private key material on an assertion failure.
+        assert!(std::fs::read_to_string(&path).unwrap() == saved);
+        std::fs::write(&path, "invalid").unwrap();
+        assert!(load_or_create_identity(&database).is_err());
+        assert!(std::fs::read_to_string(&path).unwrap() == "invalid");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
     fn device() -> Transport {
         Transport {
             identity: SigningKey::random(&mut OsRng),
