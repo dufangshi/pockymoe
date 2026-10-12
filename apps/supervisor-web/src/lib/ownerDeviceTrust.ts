@@ -120,7 +120,7 @@ export async function isRecipientDevice(deviceId: string, threadId?: string, wor
   const query = new URLSearchParams({ deviceId });
   if (threadId) query.set('threadId', threadId);
   if (workspaceId) query.set('workspaceId', workspaceId);
-  const response = await nativeFetch(`/relay/access?${query}`, { credentials: 'same-origin', cache: 'no-store' });
+  const response = await nativeFetch(relayUrl(`/relay/access?${query}`), { credentials: 'include', cache: 'no-store' });
   if (!response.ok) return false;
   return (await response.json() as { kind?: string }).kind === 'shared';
 }
