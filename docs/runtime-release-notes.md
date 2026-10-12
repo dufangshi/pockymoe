@@ -1,13 +1,16 @@
-Claude turn billing now includes native subagents. Usage is read incrementally
-from the owning session's child logs, with old history excluded and repeated
-native request snapshots counted once. Parent and child requests use their own
-models and preserve cache-write durations; mixed-model totals survive database
-reload and custom price changes. Children do not change the parent model,
-context occupancy or completion lifecycle. A late ACP summary cannot replace
-the complete native total.
+Substantial agent answers now remain visible at their chronological positions,
+with independently folded work before and after them. ACP messages without a
+reliable answer/progress distinction use a conservative Unicode-length and
+Markdown-structure heuristic. Lazy history summaries retain qualifying answers
+without loading command outputs; short progress, final replies and background
+wake behavior keep their existing roles.
 
-Validated with focused native-usage and pricing unit tests plus database
-integration checks for repeated updates, mixed models, final-summary fallback
-and history reload. This release also includes 0.12.90's intact Claude messages
-and subscription-panel visual fixes. Existing turn totals are not rewritten.
-Windows Device Manager is unchanged; the current device is not force-updated.
+The hardware shortcut uses mini CPU/memory/GPU icons, utilization percentages
+and used/total RAM or VRAM with one decimal. The compact model menu fits more
+choices and shows reported context use and capacity in K below reasoning effort.
+Classic and Plum Pocket share the new layout.
+
+Validated with focused timeline/composer tests, Rust history-summary tests,
+mobile Chromium layouts at 320/360px in both themes, desktop monitor checks and
+browser reload/lazy-history verification. Windows Device Manager is unchanged.
+This release does not force-update or reinstall the current device.

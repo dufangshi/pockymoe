@@ -772,9 +772,9 @@
   :theme .thread-ui-shell .matter-workbench .matter-unread { top: 9px; right: 9px; }
   /* Two paired readings per row; GPU and VRAM never add a third row. */
   :theme .thread-ui-shell .matter-workbench .matter-topbar-end > .device-monitor-button {
-    flex: 0 0 86px;
-    width: 86px;
-    min-width: 86px;
+    flex: 0 0 100px;
+    width: 100px;
+    min-width: 100px;
     height: 40px;
     align-items: stretch;
     justify-content: center;
@@ -795,6 +795,7 @@
     letter-spacing: -.02em;
     font-variant-numeric: tabular-nums;
   }
+  :theme .thread-ui-shell .matter-workbench .matter-topbar-end > .device-monitor-button .dm-summary-capacity b { font-size: 7.5px; }
   :theme .thread-ui-shell .matter-workbench .matter-topbar-end > .device-monitor-button:not([data-gpu]) { font-size: 9px; }
   :theme .thread-ui-shell .matter-workbench .matter-topbar-end > .device-monitor-button[data-stale] b { color: var(--plum-chrome-muted); }
   :theme .thread-ui-shell .matter-workbench .matter-topbar-end > .device-monitor-button:is(:hover, [aria-expanded='true']) { background-color: transparent; background-image: linear-gradient(var(--plum-chrome-hover), var(--plum-chrome-hover)); background-clip: content-box; color: var(--plum-chrome-soft); }
@@ -885,12 +886,21 @@
 
 /* Reserve the paired monitor's width on the narrowest phones. */
 @media (max-width: 359px) {
+  :theme .thread-ui-shell .matter-workbench .matter-topbar :where(button, a):not(.device-monitor-button):not(:is(.workbench-search-field, .workbench-search-dropdown) *),
+  :theme .thread-ui-shell .matter-workbench .matter-topbar-end.matter-topbar-end > :is(button, [data-slot='dialog-trigger']):not(.device-monitor-button),
+  :theme .thread-ui-shell .matter-workbench .matter-topbar .matter-search-trigger.matter-search-trigger {
+    flex-basis: 30px;
+    width: 30px;
+    min-width: 30px;
+  }
+
   :theme .thread-ui-shell .matter-workbench .matter-topbar-end > button.device-monitor-button {
-    flex-basis: 78px;
-    width: 78px;
-    min-width: 78px;
+    flex-basis: 94px;
+    width: 94px;
+    min-width: 94px;
     font-size: 8px;
     padding-inline: 3px;
   }
+  :theme .thread-ui-shell .matter-workbench .matter-topbar-end > button.device-monitor-button .dm-summary-capacity b { font-size: 7px; }
   :theme .thread-ui-shell .matter-workbench .matter-topbar-end > button.device-monitor-button:not([data-gpu]) { font-size: 9px; }
 }

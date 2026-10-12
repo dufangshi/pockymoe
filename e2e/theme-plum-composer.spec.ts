@@ -240,3 +240,43 @@ test('plum composer shows a quiet stop ring and a labelled send-after-turn key w
     expect(g.stop.width).toBeLessThanOrEqual(28);
   }
 });
+
+for (const preset of ['classic', 'plum-pocket'] as const) test(`${preset} compact model menu shows six models, reasoning and context together`, async ({ page, request }, info) => {
+  await page.route(/\/api\/(agent-runtimes\/[^/]+|threads\/[0-9a-f-]+)\/models(?:\?|$)/, route => route.fulfill({ json:
+    ['Opus 5.5', '6.1 Sol', '6 Astra', '6 Sol', '6 Luna', '5.6 Sol'].map((displayName, index) => ({
+      id: index ? `model-${index}` : 'ios-e2e-stream', model: index ? `model-${index}` : 'ios-e2e-stream', displayName,
+      description: '', hidden: false, isDefault: index === 0, defaultReasoningEffort: 'medium',
+      supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'].map(reasoningEffort => ({ reasoningEffort, description: '' })),
+    }))
+  }));
+  const { composer } = await openPlum(page, request, 'dark', false, preset);
+  await composer.getByTestId('composer-model-label').click();
+  const menu = page.locator('.composer-model-menu');
+  await expect(menu).toBeVisible();
+  await expect(menu.getByRole('menuitemradio')).toHaveCount(6);
+  await expect(menu.locator('.composer-context-value')).toHaveText('1K / 2.5K');
+  await expect(menu.getByRole('slider')).toBeVisible();
+  await expect(menu).toHaveCSS('opacity', '1');
+  const background = await menu.evaluate(element => getComputedStyle(element).backgroundColor);
+  expect(background).not.toMatch(/(?:\/|,)\s*0\.\d+\s*\)$/);
+  const geometry = await menu.evaluate(element => {
+    const rect = element.getBoundingClientRect();
+    const context = element.querySelector('.composer-context-summary')!.getBoundingClientRect();
+    const last = element.querySelector('[role=menuitemradio]:last-child')!.getBoundingClientRect();
+    return { top: rect.top, bottom: rect.bottom, height: rect.height, left: rect.left, right: rect.right,
+      contextTop: context.top, contextBottom: context.bottom, lastBottom: last.bottom,
+      rowHeights: [...element.querySelectorAll('[role=menuitemradio]')].map(button => button.getBoundingClientRect().height) };
+  });
+  expect(geometry.height, JSON.stringify(geometry)).toBeLessThanOrEqual(340);
+  expect(geometry.top).toBeGreaterThanOrEqual(8);
+  expect(geometry.left).toBeGreaterThanOrEqual(8);
+  expect(geometry.right).toBeLessThanOrEqual(page.viewportSize()!.width - 8);
+  expect(geometry.lastBottom).toBeLessThan(geometry.contextTop);
+  expect(geometry.contextBottom).toBeLessThanOrEqual(geometry.bottom);
+  expect(Math.max(...geometry.rowHeights)).toBeLessThanOrEqual(32);
+  await page.screenshot({ path: info.outputPath(`model-menu-${preset}.png`), scale: 'css' });
+  await menu.getByRole('button', { name: 'low', exact: true }).click();
+  await expect(composer.getByTestId('composer-model-label')).toContainText('low');
+  await composer.getByTestId('composer-model-label').click();
+  await expect(menu.locator('.composer-reasoning')).toHaveAttribute('data-effort', 'low');
+});

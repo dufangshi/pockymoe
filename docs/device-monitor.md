@@ -52,10 +52,11 @@ expanded CPU row instead. An unavailable reading shows
 a small "not available" mark whose tooltip and accessible name carry the reason;
 a missing RAPL permission links the mark to the setup below.
 
-The compact monitor pairs CPU and physical memory (`DM`, DRAM) on its first row.
-When a GPU reports utilization or memory, a second row pairs GPU utilization and
-video memory (`VM`, VRAM). VM is used/total GPU memory, not GPU compute load;
-missing readings show a dash. CPU-only devices use a single, slightly larger row.
+The compact monitor uses CPU/memory icons with CPU utilization and used/total
+physical memory on its first row. A second row appears when a GPU reports
+utilization or memory, showing GPU utilization and used/total VRAM. Capacities
+use one decimal in GiB (compact `G`); the tooltip spells out the unit. Missing
+or stale readings show a dash. The narrow desktop rail stacks the same readings.
 
 ## Linux sensor access
 

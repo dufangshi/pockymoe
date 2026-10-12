@@ -224,3 +224,17 @@ Long human prompts use a six-line text preview, bounded by 600 Unicode
 characters, 160 words or eight explicit lines. Expand/Show less controls reuse
 message disclosure state and keep the scroll position anchored. Attachments
 remain visible in the preview, and Copy always copies the complete prompt.
+
+## Substantial answers during work
+
+The timeline keeps substantive agent answers at their chronological positions,
+with separate folded work sections before and after them. Explicit final replies
+remain visible. When ACP does not distinguish answers from progress, an agent
+message qualifies at 600 Unicode characters, or at 300 characters with a Markdown
+heading and three paragraphs, or with a three-line Markdown table. This is a
+presentation heuristic, not a completion signal. Short progress still uses the
+latest-update preview. Lazy history summaries preserve qualifying answers;
+commands and their outputs continue to load on demand.
+
+The compact model menu shows reported context use and capacity in thousands of
+tokens below the reasoning controls. Missing readings show a dash.

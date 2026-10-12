@@ -188,12 +188,18 @@ export function DeviceMonitor() {
     (gpu.usedMemoryBytes != null && gpu.totalMemoryBytes != null && gpu.totalMemoryBytes > 0));
   const vram = gpu?.usedMemoryBytes != null && gpu.totalMemoryBytes != null && gpu.totalMemoryBytes > 0
     ? 100 * gpu.usedMemoryBytes / gpu.totalMemoryBytes : null;
-  const reading = (label: string, value: number | null | undefined, title: string) => (
-    <span className="dm-summary-reading" title={title}>
-      <span className="dm-summary-label" data-short={label === 'CPU' ? 'C' : label === 'GPU' ? 'G' : label}>{label}</span>{' '}
-      <b style={load(stale ? null : value)}>{pct(stale ? null : value)}</b>
+  const reading = (icon: ReactNode, value: number | null | undefined, title: string) => (
+    <span className="dm-summary-reading" title={title} aria-label={`${title}: ${pct(stale ? null : value)}`}>
+      {icon}<b style={load(stale ? null : value)}>{pct(stale ? null : value)}</b>
     </span>
   );
+  const capacity = (used: number | null | undefined, total: number | null | undefined, value: number | null | undefined, title: string) => {
+    const text = stale || used == null || total == null || total <= 0
+      ? '—' : `${(used / 2 ** 30).toFixed(1)}/${(total / 2 ** 30).toFixed(1)}`;
+    return <span className="dm-summary-reading dm-summary-capacity" title={`${title}: ${text} GiB`} aria-label={`${title}: ${text} GiB`}>
+      <MemoryStick aria-hidden style={{ width: 8, height: 8 }} /><b style={load(stale ? null : value)}>{text}{text !== '—' && <small>G</small>}</b>
+    </span>;
+  };
   return (
     <>
       <button
@@ -207,13 +213,15 @@ export function DeviceMonitor() {
         onClick={() => setOpen(true)}
       >
         <span className="dm-summary-row">
-          {reading('CPU', data?.cpu.usagePercent, 'CPU')}
-          {reading('DM', data?.memory.usagePercent, 'DRAM')}
+          {reading(<Cpu aria-hidden style={{ width: 8, height: 8 }} />, data?.cpu.usagePercent, 'CPU')}
+          <span className="dm-summary-separator" aria-hidden>·</span>
+          {capacity(data?.memory.usedBytes, data?.memory.totalBytes, data?.memory.usagePercent, 'DRAM')}
         </span>
         {gpu && (
           <span className="dm-summary-row">
-            {reading('GPU', gpu.usagePercent, gpu.name)}
-            {reading('VM', vram, 'VRAM')}
+            {reading(<Gpu aria-hidden style={{ width: 8, height: 8 }} />, gpu.usagePercent, `GPU · ${gpu.name}`)}
+            <span className="dm-summary-separator" aria-hidden>·</span>
+            {capacity(gpu.usedMemoryBytes, gpu.totalMemoryBytes, vram, 'VRAM')}
           </span>
         )}
       </button>
