@@ -309,6 +309,10 @@ impl Transport {
                 send_sequence: Mutex::new(0),
                 receive_sequence: Mutex::new(0),
                 principal: request.principal.clone(),
+                thread_id: pockymoe_protocol::access::resource_id_from_path(
+                    request.request["path"].as_str().unwrap_or(""),
+                    "threads",
+                ),
             }),
         );
         Ok(json!({"channelId":id,"expiresAt":expires}))
@@ -400,6 +404,7 @@ pub(crate) struct Session {
     /// Large server events are gzipped; negotiated when the session was created.
     gzip: bool,
     pub principal: Option<crate::owner_trust::OwnerPrincipal>,
+    pub thread_id: Option<String>,
 }
 fn ws_aad(id: &str, seq: u64, message: &Value) -> String {
     ws_aad_for("rcd-ws-v1", id, seq, message)
@@ -609,6 +614,7 @@ mod tests {
         let server = Session {
             id: "channel".into(),
             principal: None,
+            thread_id: None,
             expires: now() + 60_000,
             receive_key: key,
             send_key: other,
@@ -619,6 +625,7 @@ mod tests {
         let client = Session {
             id: "channel".into(),
             principal: None,
+            thread_id: None,
             expires: now() + 60_000,
             receive_key: other,
             send_key: key,
@@ -807,6 +814,7 @@ mod tests {
         let client = Session {
             id: server.id.clone(),
             principal: None,
+            thread_id: None,
             expires: now() + 60_000,
             receive_key: server.send_key,
             send_key: server.receive_key,
