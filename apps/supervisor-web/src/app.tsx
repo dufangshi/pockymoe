@@ -2,6 +2,8 @@ import { WorkspaceDocumentNavigationGuard } from "./components/WorkspaceDocument
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { installNotificationRouteResponder } from './lib/relayPush';
 import { PortPreviewPage } from './pages/PortPreviewPage';
+import { PairPage } from './pages/PairPage';
+import { OwnerUnlockPrompt } from './components/OwnerUnlockPrompt';
 import { PublicThreadPage } from './pages/PublicThreadPage';
 import {
   BrowserRouter,
@@ -628,8 +630,10 @@ export function App() {
       <BrowserRouter>
         <WorkspaceDocumentNavigationGuard>
         <DocumentTitleUpdater />
+        <OwnerUnlockPrompt />
         <RoutePluginProvider>
           <Routes>
+            <Route path="/pair" element={<PairPage />} />
             <Route path="/devices/:deviceId/ports/:mappingId" element={<RelayGate><PortPreviewPage /></RelayGate>} />
             <Route path="/s/:id" element={<PublicThreadPage />} />
             <Route path="/relay-guide" element={<RelayGuidePage />} />

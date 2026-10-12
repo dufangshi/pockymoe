@@ -15,6 +15,8 @@ import {
   trustDeviceIdentity,
 } from '../lib/relayTransport';
 import { type TransportStatus } from '../lib/relayTransportCrypto';
+import { DeviceTrustPanel } from './DeviceTrustPanel';
+import { FormDialog } from './FormDialog';
 import { ConfirmDialog } from './ConfirmDialog';
 export function DeviceEncryptionStatus({
   deviceId,
@@ -37,6 +39,7 @@ export function DeviceEncryptionStatus({
   const [status, setStatus] = useState<TransportStatus | undefined>(() =>
     deviceId ? getTransportStatus(deviceId) : undefined,
   );
+  const [manage, setManage] = useState(false);
   const [open, setOpen] = useState(false),
     [confirm, setConfirm] = useState<TransportStatus | null>(null);
   const [trustError, setTrustError] = useState<string | null>(null);
@@ -64,11 +67,17 @@ export function DeviceEncryptionStatus({
   useEffect(() => {
     if (deviceId && online) void probeDeviceEncryption(deviceId);
   }, [deviceId, online]);
+  useEffect(() => {
+    const unlocked = () => { if (connection && !connection.loaded && !connection.busy) connection.onConnect(); };
+    window.addEventListener('remote-codex-owner-unlocked', unlocked);
+    return () => window.removeEventListener('remote-codex-owner-unlocked', unlocked);
+  }, [connection]);
   if (!deviceId && !connection) return null;
+  const locked = status?.state === 'unlock-required';
   const encrypted = status?.state === 'encrypted',
     changed = status?.state === 'identity-changed';
-  if (hideHealthy && !changed && connection?.loaded && connection.state === 'connected') return null;
-  const label = !deviceId ? translate("auth.localDeviceConnection") : encrypted
+  if (hideHealthy && !changed && !locked && connection?.loaded && connection.state === 'connected') return null;
+  const label = !deviceId ? translate("auth.localDeviceConnection") : locked ? translate("auth.ownerUnlock") : encrypted
     ? translate("auth.deviceConnectionEncrypted")
     : changed
       ? translate("auth.deviceIdentityChanged")
@@ -83,7 +92,7 @@ export function DeviceEncryptionStatus({
         type="button"
         aria-label={
           connection
-            ? !connection.loaded && !changed
+            ? !connection.loaded && !changed && !locked
               ? connection.busy
                 ? translate("auth.connectingThread")
                 : translate("auth.connectThread")
@@ -112,7 +121,7 @@ export function DeviceEncryptionStatus({
             : 'inline-flex h-8 w-8 items-center justify-center rounded-full text-[var(--theme-fg-muted)] hover:bg-[var(--theme-hover)]'
         }
         onClick={() =>
-          connection && !connection.loaded && !changed
+          connection && !connection.loaded && !changed && !locked
             ? connection.onConnect()
             : setOpen(!open)
         }
@@ -177,8 +186,15 @@ export function DeviceEncryptionStatus({
                 SHA-256 {status.fingerprint}
               </code>
             )}
+            {deviceId && <span className="block space-y-2">
+              <span className="block">{translate(status?.paired ? 'auth.ownerPaired' : status?.paired === false || status?.state === 'legacy' ? 'auth.ownerRelayTrusted' : 'auth.deviceEncryptionNotVerified')}</span>
+              {locked && <button className="relay-button-primary px-3 py-2" onClick={() => { setOpen(false); window.dispatchEvent(new CustomEvent('remote-codex-owner-unlock-request', { detail: status })); }}>{translate('auth.ownerUnlock')}</button>}
+              {status?.strict && <span className="block">{translate('auth.ownerStrict')}</span>}
+              {!status?.paired && <span className="block">{translate('auth.ownerPairInstructions')}</span>}
+              <button className="relay-button-secondary px-3 py-2" onClick={() => { setOpen(false); setManage(true); }}>{translate('auth.ownerManage')}</button>
+            </span>}
             {trustError && <span role="alert">{trustError}</span>}
-            {changed && status?.identityKey && (
+            {changed && !status?.paired && status?.identityKey && (
               <button
                 className="relay-button-secondary px-3 py-2"
                 onClick={() => {
@@ -192,6 +208,7 @@ export function DeviceEncryptionStatus({
           </span>
         </>, document.body
       )}
+      {manage && deviceId && <FormDialog title={translate("auth.ownerManage")} onClose={() => setManage(false)}><DeviceTrustPanel deviceId={deviceId} /></FormDialog>}
       <ConfirmDialog
         open={Boolean(confirm)}
         title={translate("auth.trustTheReplacementDeviceIdentity")}

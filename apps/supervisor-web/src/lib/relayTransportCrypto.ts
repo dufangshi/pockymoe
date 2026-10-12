@@ -6,6 +6,15 @@ import {
   HkdfSha256,
 } from '@hpke/core';
 
+import {
+  currentOwnerSession,
+  forgetSessionRegistration,
+  isSessionRegistered,
+  markSessionRegistered,
+  ownerRequestHeaders,
+  OwnerTrustError,
+} from './ownerSession';
+import { deviceCertificate } from './ownerDeviceTrust';
 const encoder = new TextEncoder(),
   decoder = new TextDecoder();
 const suite = new CipherSuite({
@@ -43,7 +52,11 @@ export class TransportError extends Error {
 }
 export interface TransportStatus {
   deviceId: string;
-  state: 'encrypted' | 'legacy' | 'identity-changed' | 'error';
+  state: 'encrypted' | 'legacy' | 'identity-changed' | 'error' | 'unlock-required';
+  paired?: boolean;
+  ownerCredentialId?: string | string[];
+  strict?: boolean;
+  certificateVerified?: boolean;
   fingerprint?: string;
   identityKey?: string;
 }
@@ -51,7 +64,8 @@ export let reportTransport = (_status: TransportStatus) => {};
 export function setTransportReporter(report: typeof reportTransport) {
   reportTransport = report;
 }
-interface Descriptor {
+export interface Descriptor {
+  trust?: { paired: boolean; strict: boolean };
   version: number;
   challenge: string;
   keyId: string;
@@ -62,12 +76,15 @@ interface Descriptor {
   signature: string;
 }
 interface Key {
+  paired: boolean;
+  ownerCredentialId?: string | string[];
   descriptor: Descriptor;
   publicKey: CryptoKey;
   offset: number;
   fingerprint: string;
 }
 const keys = new Map<string, Promise<Key | null>>();
+const pairingKeys = new Map<string, Key>();
 export function clearTransportKeyCache(deviceId: string) {
   keys.delete(deviceId);
 }
@@ -119,6 +136,7 @@ export async function resetPinnedDevice(deviceId: string) {
 // Pin exactly the public key whose fingerprint the user verified. Deleting the
 // old pin would trust whichever device answers next, including a different key.
 export async function trustPinnedDevice(deviceId: string, identityKey: string, fingerprint: string) {
+  if (await deviceCertificate(deviceId)) throw new OwnerTrustError('ownerIdentityMismatch');
   const actual = b64(await crypto.subtle.digest('SHA-256', buffer(unb64(identityKey))));
   if (actual !== fingerprint) throw new Error(translate("workbench.theDeviceFingerprintChangedInspectItAgain"));
   const db = await identityStore();
@@ -151,13 +169,16 @@ async function keyFor(
   deviceId: string,
   path: string,
   scope?: string,
+  pairingFingerprint?: string,
 ): Promise<Key | null> {
+  const pairingKey = pairingKeys.get(deviceId);
+  if (pairingKey && !pairingFingerprint && path.split('?')[0] === '/api/transport/pair') return pairingKey;
   const cached = keys.get(deviceId);
-  if (cached) {
+  if (cached && !pairingFingerprint) {
     const key = await cached;
     if (!key) return key;
     if (key.descriptor.expiresAt > Date.now() + key.offset + 60000 &&
-        await pinned(deviceId) === key.descriptor.identityKey) return key;
+        (key.paired || await pinned(deviceId) === key.descriptor.identityKey)) return key;
     keys.delete(deviceId);
   }
   const task = (async () => {
@@ -186,8 +207,9 @@ async function keyFor(
     } finally {
       clearTimeout(timeout);
     }
-    const previous = await pinned(deviceId);
-    if (response.status === 404 && !previous) {
+    const certificate = pairingFingerprint ? null : await deviceCertificate(deviceId);
+    const previous = certificate || pairingFingerprint ? undefined : await pinned(deviceId);
+    if (response.status === 404 && !previous && !certificate && !pairingFingerprint) {
       reportTransport({ deviceId, state: 'legacy' });
       setTimeout(() => { if (keys.get(deviceId) === task) keys.delete(deviceId); }, 10000);
       return null;
@@ -265,7 +287,16 @@ async function keyFor(
         buffer(unb64(descriptor.identityKey)),
       ),
     );
-    const stored = await pinned(deviceId, descriptor.identityKey);
+    if (pairingFingerprint && fingerprint !== pairingFingerprint) throw new OwnerTrustError('ownerIdentityMismatch');
+    if (certificate && certificate.identityKey !== descriptor.identityKey) {
+      reportTransport({ deviceId, state: 'identity-changed', paired: true, certificateVerified: true, fingerprint });
+      throw new OwnerTrustError('ownerIdentityMismatch');
+    }
+    if (!pairingFingerprint && !certificate && descriptor.trust?.paired) {
+      reportTransport({ deviceId, state: 'unlock-required', paired: true, strict: descriptor.trust.strict });
+      throw new OwnerTrustError('ownerCertificateUnavailable');
+    }
+    const stored = certificate || pairingFingerprint ? undefined : await pinned(deviceId, descriptor.identityKey);
     if (stored && stored !== descriptor.identityKey) {
       reportTransport({ deviceId, state: 'identity-changed', fingerprint, identityKey: descriptor.identityKey });
       throw new TransportError(
@@ -275,6 +306,8 @@ async function keyFor(
     }
     return {
       descriptor,
+      paired: !!certificate,
+      ...(certificate ? { ownerCredentialId: certificate.assertion.credentialId } : {}),
       fingerprint,
       offset: descriptor.serverTime - Date.now(),
       publicKey: await suite.kem.deserializePublicKey(
@@ -288,6 +321,27 @@ async function keyFor(
   } catch (e) {
     if (keys.get(deviceId) === task) keys.delete(deviceId);
     throw e;
+  }
+}
+// Pairing is the only path that trusts an out-of-band fingerprint directly.
+export async function inspectPairingDevice(deviceId: string, fingerprint: string) {
+  keys.delete(deviceId);
+  const key = await keyFor(deviceId, '/api/transport/pair', undefined, fingerprint);
+  if (!key) throw new OwnerTrustError('ownerIdentityMismatch');
+  keys.delete(deviceId);
+  pairingKeys.set(deviceId, key);
+  return key.descriptor;
+}
+export function finishPairingInspection(deviceId: string) {
+  pairingKeys.delete(deviceId);
+  keys.delete(deviceId);
+}
+async function reportOwnerRequired(response: Response, deviceId: string) {
+  if (response.ok) return;
+  const body = await response.clone().json().catch(() => null) as { code?: string } | null;
+  if (body?.code === 'owner_session_required' || body?.code === 'device_strict_mode') {
+    keys.delete(deviceId);
+    reportTransport({ deviceId, state: 'unlock-required', paired: true, strict: true });
   }
 }
 // Sealed bodies cannot be compressed by the relay or the CDN. Announcing gzip
@@ -363,6 +417,7 @@ export async function exchange(
   socketKeys = false,
   retryRead = true,
   followStream = true,
+  retryOwner = true,
 ): Promise<{
   response: Response;
   sendKey?: CryptoKey;
@@ -391,6 +446,9 @@ export async function exchange(
   try {
     key = await keyFor(route.deviceId, route.path, scope);
   } catch (error) {
+    if (error instanceof OwnerTrustError && error.code === 'owner_session_required') {
+      reportTransport({ deviceId: route.deviceId, state: 'unlock-required', paired: true, ...(error.credentialId ? { ownerCredentialId: error.credentialId } : {}) });
+    }
     if (error instanceof TransportError && error.status)
       return {
         response: new Response(
@@ -406,8 +464,35 @@ export async function exchange(
       };
     throw error;
   }
-  if (!key) return { response: await nativeFetch(request) };
+  if (!key) {
+    const response = await nativeFetch(request);
+    await reportOwnerRequired(response, route.deviceId);
+    return { response };
+  }
   await beforeEncrypt?.();
+  const owner = await currentOwnerSession();
+  const wirePath = route.path.split('?')[0]!;
+  const bootstrap = wirePath === '/api/transport/pair' || wirePath === '/api/transport/owner-session';
+  if (key.paired && !bootstrap) {
+    if (!owner) {
+      reportTransport({ deviceId: route.deviceId, state: 'unlock-required', paired: true, ...(key.ownerCredentialId ? { ownerCredentialId: key.ownerCredentialId } : {}) });
+      throw new OwnerTrustError('owner_session_required');
+    }
+    if (!await isSessionRegistered(owner, route.deviceId)) {
+      const registered = await exchange(new Request(new URL(`/relay/devices/${encodeURIComponent(route.deviceId)}/api/transport/owner-session`, url.origin), {
+        method: 'POST', credentials: request.credentials, signal: request.signal,
+        headers: { 'content-type': 'application/json' }, body: JSON.stringify(owner.registration),
+      }));
+      if (!registered.response.ok) {
+        reportTransport({ deviceId: route.deviceId, state: 'unlock-required', paired: true, ...(key.ownerCredentialId ? { ownerCredentialId: key.ownerCredentialId } : {}) });
+        throw new OwnerTrustError('owner_session_required');
+      }
+      const registration = await registered.response.json() as { sessionId: string; expiresAt: number };
+      if (registration.sessionId !== owner.sessionId || registration.expiresAt !== owner.registration.expiresAt)
+        throw new OwnerTrustError('ownerVerificationFailed');
+      await markSessionRegistered(owner, route.deviceId);
+    }
+  }
   const requestId = `${crypto.randomUUID()}.${Math.floor(Date.now() + key.offset)}`;
   const body =
     request.method === 'GET' || request.method === 'HEAD'
@@ -428,7 +513,6 @@ export async function exchange(
       /* original endpoint validates non-JSON */
     }
   }
-  const wirePath = route.path.split('?')[0]!;
   const aad = `rcd-http-v1\n${key.descriptor.keyId}\n${requestId}\n${request.method}\n${wirePath}\n${resource}`;
   const sender = await suite.createSenderContext({
     recipientPublicKey: key.publicKey,
@@ -439,6 +523,14 @@ export async function exchange(
     encoder.encode(aad),
   );
   const headers = new Headers(request.headers);
+  headers.delete('x-rcd-session');
+  headers.delete('x-rcd-signature');
+  const ownerHeaders = await ownerRequestHeaders(
+    key.paired && !bootstrap ? owner : undefined,
+    aad,
+    new Uint8Array(sealed),
+  );
+  for (const [name, value] of Object.entries(ownerHeaders)) headers.set(name, value);
   headers.set('x-rcd-key', key.descriptor.keyId);
   headers.set('x-rcd-request', requestId);
   headers.set('x-rcd-enc', b64(sender.enc));
@@ -448,6 +540,32 @@ export async function exchange(
   if (!hasBody) headers.set('x-rcd-sealed', b64(sealed));
   const wireUrl = new URL(request.url);
   wireUrl.search = '';
+  const recoverOwner = async (response: Response) => {
+    if (!retryOwner || !key.paired || bootstrap || !owner || response.status !== 401)
+      return null;
+    const failure = await response.clone().json().catch(() => null) as {
+      code?: string;
+    } | null;
+    if (failure?.code !== 'owner_session_required') return null;
+    // The device rejects this before dispatch, so a single retry is safe even
+    // for mutations. Renewal or another key still requires an explicit click.
+    await forgetSessionRegistration(owner, route.deviceId);
+    return exchange(
+      new Request(request.url, {
+        method: request.method,
+        headers: request.headers,
+        credentials: request.credentials,
+        signal: request.signal,
+        ...(hasBody ? { body: buffer(body) } : {}),
+      }),
+      scope,
+      beforeEncrypt,
+      socketKeys,
+      retryRead,
+      followStream,
+      false,
+    );
+  };
   const response = await nativeFetch(wireUrl, {
     method: request.method,
     headers,
@@ -482,9 +600,15 @@ export async function exchange(
           socketKeys,
           false,
           followStream,
+          retryOwner,
         );
     }
-    if (!response.ok) return { response };
+    if (!response.ok) {
+      const recovered = await recoverOwner(response);
+      if (recovered) return recovered;
+      await reportOwnerRequired(response, route.deviceId);
+      return { response };
+    }
     throw new TransportError(
       'transport_downgrade',
       translate("workbench.anUnencryptedDeviceResponseWasRejected"),
@@ -511,6 +635,9 @@ export async function exchange(
   reportTransport({
     deviceId: route.deviceId,
     state: 'encrypted',
+    paired: key.paired,
+    strict: key.paired,
+    certificateVerified: key.paired,
     fingerprint: key.fingerprint,
   });
   let responseBody: BodyInit | null = [204, 205, 304].includes(data.status)
@@ -576,6 +703,9 @@ export async function exchange(
     status: data.status,
     headers: data.headers,
   });
+  const recovered = await recoverOwner(result);
+  if (recovered) return recovered;
+  await reportOwnerRequired(result, route.deviceId);
   if (!socketKeys)
     return { response: result, continuation: data.streamNext ?? null };
   return {

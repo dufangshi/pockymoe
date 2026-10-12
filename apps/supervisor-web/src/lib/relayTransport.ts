@@ -43,8 +43,8 @@ export function probeDeviceEncryption(deviceId: string): Promise<void> {
 }
 function report(status: TransportStatus) {
   if (
-    statuses.get(status.deviceId)?.state === 'identity-changed' &&
-    status.state !== 'identity-changed' && status.state !== 'encrypted'
+    ['identity-changed', 'unlock-required'].includes(statuses.get(status.deviceId)?.state ?? '') &&
+    status.state === 'error'
   )
     return;
   statuses.set(status.deviceId, status);
