@@ -85,7 +85,7 @@ export async function decryptVault(v: Vault, slotKey: Uint8Array, slot: 'passwor
     if (vdk.length !== 32) throw new Error();
     const raw = await c.open(vdk, v.body, bodyAad(v));
     let body: Body; try { body = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(raw)); } finally { raw.fill(0); }
-    if (body.version !== 1 || !Array.isArray(body.boundDevices) || body.boundDevices.some(id => typeof id !== 'string')) throw new Error();
+    if (body.version !== 1 || !Number.isSafeInteger(body.updatedAt) || body.updatedAt < 0 || !Array.isArray(body.boundDevices) || body.boundDevices.some(id => typeof id !== 'string')) throw new Error();
     const key = await c.importPrivate(body.accountPrivateKey);
     if (!await c.verify(v.accountPublicKey, await c.sign(key, 'pockymoe-account-key-check-v1'), 'pockymoe-account-key-check-v1')) throw new Error();
     return { body, vdk, key };
@@ -97,7 +97,7 @@ export async function openVault(v: Vault, secret: string, recovery = false, expe
   const slotKey = 'wrapKey' in keys ? keys.wrapKey : keys.recoveryKey;
   try {
     const data = await decryptVault(v, slotKey, recovery ? 'recovery' : 'password', expectedUserId);
-    await installUnlockedVault(v, data, 'authKey' in keys ? keys.authKey : undefined);
+    await installUnlockedVault(v, data, 'authKey' in keys && !await accountStore(`oauth:${v.userId}`) ? keys.authKey : undefined);
     return windowHandle();
   } finally { slotKey.fill(0); }
 }
@@ -231,7 +231,7 @@ export async function changeAccountPassword(password: string, oauthOnly = false)
 export async function regenerateRecoveryCode() {
   await requireUnlock('recovery-code'); const w = windowState();
   const code = c.recoveryDisplay(c.random(20)), keys = await c.recoveryKeys(code);
-  try { await saveWindow(w, { ...w.body, updatedAt: Date.now() }, { recoveryAuthKey: keys.recoveryAuthKey },
+  try { await saveWindow(w, { ...w.body, updatedAt: Date.now() }, { recoveryAuthKey: keys.recoveryAuthKey, ...(w.authKey ? { currentAuthKey: w.authKey } : {}) },
     { slots: { ...w.vault.slots, recovery: await c.seal(keys.recoveryKey, w.vdk, slotAad(w.vault, 'recovery')) } }); return code; }
   finally { keys.recoveryKey.fill(0); }
 }

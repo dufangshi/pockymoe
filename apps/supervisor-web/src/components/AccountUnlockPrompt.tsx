@@ -94,7 +94,11 @@ export function AccountUnlockPrompt() {
         const id = await accountStore<string>('active'); if (!id) throw new AccountTrustError('accountUnlockRequired');
         setPrepared(await createVault(id, secret)); return;
       }
-      if (prepared) { await setupAccount(prepared, await isOAuthAccount()); await complete(await openVault(prepared.vault, secret)); }
+      if (prepared) {
+        await setupAccount(prepared, await isOAuthAccount());
+        const saved = prepared.vault; setPrepared(undefined); setSetup(false);
+        await complete(await openVault(saved, secret));
+      }
       else await complete(await unlockAccount(secret, recovery));
     } catch (e) { setError(e instanceof Error ? e.message : translate('auth.accountUnlockFailed')); }
     finally { setBusy(false); }

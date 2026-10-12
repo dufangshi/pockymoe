@@ -1,3 +1,4 @@
+import { accountPasswordProof } from '../lib/accountAuth';
 import { getLocale } from '@pockymoe/thread-ui/i18n';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { FormDialog } from './FormDialog';
@@ -211,7 +212,7 @@ export function SecurityVerification({
         : await securityRequest<{ verificationToken?: string }>(
             '/reauth',
             'POST',
-            factor ? { code: value } : { password: value },
+            factor ? { code: value } : realm === 'relay-admin' ? { password: value } : await accountPasswordProof(value),
             realm,
           );
       await onVerified(result.verificationToken);

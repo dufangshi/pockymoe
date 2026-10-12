@@ -95,3 +95,41 @@ it('uses compare-and-swap for bound device updates and refuses conflicting revis
   await account.updateBoundDevices(ids => [...ids, 'new-device']);
   expect(await vault.boundDevices()).toContain('new-device');
 });
+it('replaces a relay-revoked browser with a new key after password authentication', async () => {
+  await auth.startAccountLogin('user', 'local'); await auth.finishAccountLogin(v.userId);
+  const old = (await vault.currentBrowser())!;
+  const fields = { accountKeyId: v.accountKeyId, kind: 'browser' as const, subjectId: old.browserId, revokedAt: Date.now() };
+  const revoke = { version: 1, ...fields, signature: await c.sign(await c.importPrivate(vectors.account.accountPrivateKeyPkcs8), c.inputs.revocation(fields)) };
+  state.fetch.mockImplementation(async (url: string) => {
+    if (url.includes('/kdf?')) return Response.json({ mode: 'account', kdf: v.kdf });
+    if (url.endsWith('/vault')) return Response.json(v);
+    if (url.endsWith('/browsers')) return Response.json({ browsers: [], revocations: [revoke] });
+    return Response.json({});
+  });
+  await auth.startAccountLogin('user', 'local'); await auth.finishAccountLogin(v.userId);
+  expect((await vault.currentBrowser())!.browserId).not.toBe(old.browserId);
+});
+it('keeps revocation tombstones when the relay later omits them', async () => {
+  await auth.startAccountLogin('user', 'local'); await auth.finishAccountLogin(v.userId);
+  state.fetch.mockResolvedValueOnce(Response.json({ browsers: [], revocations: [vectors.revocations.browser] }));
+  expect(await vault.accountRevocations(true)).toContainEqual(vectors.revocations.browser);
+  expect(await vault.accountRevocations(true)).toContainEqual(vectors.revocations.browser);
+});
+it('expires pending second-factor derivations rather than keeping them indefinitely', async () => {
+  await auth.startAccountLogin('user', 'local'); vi.useFakeTimers(); vi.advanceTimersByTime(10 * 60 * 1000);
+  await expect(auth.finishAccountLogin(v.userId)).rejects.toMatchObject({ code: 'accountUnlockExpired' }); vi.useRealTimers();
+});
+it('reauthenticates v2 security actions with authKey and keeps OAuth unlock passwords local', async () => {
+  await auth.setAccountSession(v.userId, false);
+  expect(await auth.accountPasswordProof('local password')).toEqual({ authKey: vectors.derivation.authKey });
+  await auth.setAccountSession(v.userId, true);
+  await expect(auth.accountPasswordProof('local OAuth password')).rejects.toMatchObject({ code: 'accountOAuthFactorRequired' });
+});
+it('regenerates recovery authentication with currentAuthKey while preserving account identity and bound devices', async () => {
+  await auth.startAccountLogin('user', 'local'); await auth.finishAccountLogin(v.userId);
+  const before = await vault.boundDevices();
+  await vault.regenerateRecoveryCode();
+  const update = JSON.parse(state.fetch.mock.calls.find(([, init]) => init.method === 'PUT')![1].body);
+  expect(update.currentAuthKey).toBe(vectors.derivation.authKey); expect(update).toHaveProperty('recoveryAuthKey');
+  expect(update.vault.accountKeyId).toBe(v.accountKeyId); expect(await vault.boundDevices()).toEqual(before);
+});
