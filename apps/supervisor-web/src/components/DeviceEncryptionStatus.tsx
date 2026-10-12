@@ -1,5 +1,5 @@
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useLayoutEffect, useState, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import {
   LockKeyhole,
@@ -18,6 +18,8 @@ import { type TransportStatus } from '../lib/relayTransportCrypto';
 import { DeviceTrustPanel } from './DeviceTrustPanel';
 import { FormDialog } from './FormDialog';
 import { ConfirmDialog } from './ConfirmDialog';
+import { popoverPosition } from '../lib/popoverPosition';
+import { OWNER_UNLOCKED_EVENT, ownerUnlockedDevice } from '../lib/ownerUnlockRecovery';
 export function DeviceEncryptionStatus({
   deviceId,
   online,
@@ -44,16 +46,42 @@ export function DeviceEncryptionStatus({
     [confirm, setConfirm] = useState<TransportStatus | null>(null);
   const [trustError, setTrustError] = useState<string | null>(null);
   const trigger = useRef<HTMLButtonElement>(null);
-  const [position, setPosition] = useState({ top: 0, right: 12 });
-  useEffect(() => {
+  const popover = useRef<HTMLSpanElement>(null);
+  const [position, setPosition] = useState({ top: 0, left: 12, maxWidth: 360, maxHeight: 600 });
+  useLayoutEffect(() => {
     if (!open) return;
-    const place = () => { const rect = trigger.current?.getBoundingClientRect(); if (rect) setPosition({ top: rect.bottom + 8, right: Math.max(12, window.innerWidth - rect.right) }); };
+    const place = () => {
+      const rect = trigger.current?.getBoundingClientRect();
+      const panel = popover.current?.getBoundingClientRect();
+      const viewport = window.visualViewport;
+      if (rect && panel) setPosition(popoverPosition(rect, {
+        width: 360,
+        height: Math.max(panel.height, (popover.current?.scrollHeight ?? 0) +
+          (popover.current ? popover.current.offsetHeight - popover.current.clientHeight : 0)),
+      }, {
+        width: viewport?.width ?? window.innerWidth,
+        height: viewport?.height ?? window.innerHeight,
+        left: viewport?.offsetLeft ?? 0,
+        top: viewport?.offsetTop ?? 0,
+      }));
+    };
     const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') { setOpen(false); trigger.current?.focus(); } };
     place();
     window.addEventListener('resize', place);
     window.addEventListener('scroll', place, true);
     window.addEventListener('keydown', escape);
-    return () => { window.removeEventListener('resize', place); window.removeEventListener('scroll', place, true); window.removeEventListener('keydown', escape); };
+    window.visualViewport?.addEventListener('resize', place);
+    window.visualViewport?.addEventListener('scroll', place);
+    const observer = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(place);
+    if (popover.current) observer?.observe(popover.current);
+    return () => {
+      window.removeEventListener('resize', place);
+      window.removeEventListener('scroll', place, true);
+      window.removeEventListener('keydown', escape);
+      window.visualViewport?.removeEventListener('resize', place);
+      window.visualViewport?.removeEventListener('scroll', place);
+      observer?.disconnect();
+    };
   }, [open]);
   useEffect(() => {
     setStatus(deviceId ? getTransportStatus(deviceId) : undefined);
@@ -68,10 +96,13 @@ export function DeviceEncryptionStatus({
     if (deviceId && online) void probeDeviceEncryption(deviceId);
   }, [deviceId, online]);
   useEffect(() => {
-    const unlocked = () => { if (connection && !connection.loaded && !connection.busy) connection.onConnect(); };
-    window.addEventListener('remote-codex-owner-unlocked', unlocked);
-    return () => window.removeEventListener('remote-codex-owner-unlocked', unlocked);
-  }, [connection]);
+    const unlocked = (event: Event) => {
+      if (deviceId && ownerUnlockedDevice(event, deviceId) && connection && !connection.loaded && !connection.busy)
+        connection.onConnect();
+    };
+    window.addEventListener(OWNER_UNLOCKED_EVENT, unlocked);
+    return () => window.removeEventListener(OWNER_UNLOCKED_EVENT, unlocked);
+  }, [connection, deviceId]);
   if (!deviceId && !connection) return null;
   const locked = status?.state === 'unlock-required';
   const encrypted = status?.state === 'encrypted',
@@ -163,9 +194,10 @@ export function DeviceEncryptionStatus({
             onClick={() => setOpen(false)}
           />
           <span
+            ref={popover}
             role="status"
             className="device-connection-popover fixed z-[100] block space-y-3 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-panel)] p-4 text-left text-sm shadow-xl"
-            style={{ top: position.top, right: position.right, width: 'min(360px, calc(100vw - 24px))' }}
+            style={{ ...position, width: 'min(360px, calc(100vw - 24px))', overflowY: 'auto' }}
           >
             <strong className="block">{label}</strong>
             {connection && <span className="block device-connection-state">{connection.label}</span>}

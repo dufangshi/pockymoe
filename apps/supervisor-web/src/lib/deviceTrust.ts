@@ -1,5 +1,6 @@
 import { exchange } from './relayTransportCrypto';
 import { OwnerTrustError } from './ownerSession';
+import { readAfterOwnerUnlock } from './ownerUnlockRecovery';
 import type { DeviceCertificate, OwnerCredential } from './ownerTrustCrypto';
 export interface DeviceTrust {
   deviceId: string;
@@ -20,7 +21,7 @@ export async function deviceTrustRequest<T>(
   method = 'GET',
   body?: unknown,
 ): Promise<T> {
-  const { response } = await exchange(
+  const send = () => exchange(
     new Request(
       new URL(
         `/relay/devices/${encodeURIComponent(deviceId)}/api/transport/${path || 'trust'}`,
@@ -34,6 +35,9 @@ export async function deviceTrustRequest<T>(
       },
     ),
   );
+  const { response } = await (method === 'GET'
+    ? readAfterOwnerUnlock(deviceId, send)
+    : send());
   if (!response.ok) {
     const data = (await response.json().catch(() => null)) as {
       code?: string;

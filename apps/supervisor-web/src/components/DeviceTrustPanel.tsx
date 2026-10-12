@@ -17,6 +17,7 @@ import { appendDeviceCertificate } from '../lib/ownerDeviceTrust';
 import { deviceTrustRequest, type DeviceTrust } from '../lib/deviceTrust';
 import { securityError } from '../lib/relaySecurity';
 import { OwnerUnlockButton } from './OwnerUnlockPrompt';
+import { notifyOwnerUnlocked } from '../lib/ownerUnlockRecovery';
 
 export function DeviceTrustPanel({ deviceId }: { deviceId: string }) {
   useI18n();
@@ -304,7 +305,7 @@ export function DeviceTrustPanel({ deviceId }: { deviceId: string }) {
           renew
           onUnlocked={() => {
             setGeneration((g) => g + 1);
-            window.dispatchEvent(new Event('remote-codex-owner-unlocked'));
+            notifyOwnerUnlocked([deviceId]);
           }}
         />
       )}
