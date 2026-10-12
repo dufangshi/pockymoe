@@ -19,7 +19,14 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
+pub(crate) const MAX_BROWSERS: i64 = 32;
+pub(crate) const MAX_REVOCATIONS: i64 = 4096;
 pub(crate) const MAX_VAULT_BYTES: usize = 64 * 1024;
+pub(crate) fn canonical_user_id(id: &str) -> bool {
+    uuid::Uuid::parse_str(id)
+        .is_ok_and(|uuid| uuid.get_version_num() == 4 && uuid.to_string() == id)
+}
+
 pub(crate) const FULL: &str = "full";
 pub(crate) const SETUP: &str = "setup";
 pub(crate) const RECOVERY: &str = "recovery";
@@ -59,9 +66,24 @@ pub(crate) fn ensure_schema(conn: &Connection) -> anyhow::Result<()> {
         .is_err()
     {
         conn.execute(
-            "ALTER TABLE relay_auth_sessions ADD COLUMN account_mode TEXT NOT NULL DEFAULT 'full'",
+            "ALTER TABLE relay_auth_sessions ADD COLUMN account_mode TEXT NOT NULL DEFAULT 'unknown'",
             [],
         )?;
+    }
+    for (table, column, definition) in [
+        ("relay_account_vaults", "previous_vault_json", "TEXT"),
+        ("relay_auth_sessions", "account_browser_id", "TEXT"),
+        ("relay_auth_sessions", "account_browser_key_id", "TEXT"),
+    ] {
+        if conn
+            .prepare(&format!("SELECT {column} FROM {table} LIMIT 0"))
+            .is_err()
+        {
+            conn.execute(
+                &format!("ALTER TABLE {table} ADD COLUMN {column} {definition}"),
+                [],
+            )?;
+        }
     }
     for (column, definition) in [
         ("reset_pending", "INTEGER NOT NULL DEFAULT 0"),
@@ -132,7 +154,7 @@ pub(crate) fn oauth_only(conn: &Connection, user: &str) -> bool {
     // existing provider identity when no explicit authentication profile exists.
     conn.query_row(
         "SELECT COALESCE((SELECT oauth_only FROM relay_account_auth WHERE user_id=?1),
-         EXISTS(SELECT 1 FROM relay_user_identities WHERE user_id=?1))",
+         EXISTS(SELECT 1 FROM relay_user_identities i JOIN relay_users u ON u.id=i.user_id WHERE i.user_id=?1 AND u.password_hash=''))",
         [user],
         |r| r.get::<_, bool>(0),
     )
@@ -147,12 +169,7 @@ pub(crate) fn login_mode(conn: &Connection, user: &crate::UserRow) -> &'static s
     }
 }
 pub(crate) fn session_mode(conn: &Connection, token: &str) -> String {
-    conn.query_row(
-        "SELECT account_mode FROM relay_auth_sessions WHERE token_hash=?1",
-        [security::token_hash(token)],
-        |r| r.get(0),
-    )
-    .unwrap_or_else(|_| SETUP.into())
+    conn.query_row("SELECT CASE WHEN s.account_mode='unknown' THEN CASE WHEN u.role='admin' THEN 'full' ELSE 'setup' END WHEN s.account_mode='full' AND u.role<>'admin' AND NOT EXISTS(SELECT 1 FROM relay_account_vaults WHERE user_id=u.id) THEN 'setup' ELSE s.account_mode END FROM relay_auth_sessions s JOIN relay_users u ON u.id=s.user_id WHERE s.token_hash=?1",[security::token_hash(token)],|r|r.get(0)).unwrap_or_else(|_|SETUP.into())
 }
 pub(crate) fn mark_session(conn: &Connection, token: &str, mode: &str) -> Result<(), Failure> {
     conn.execute(
@@ -216,8 +233,7 @@ pub(crate) fn validate_vault(vault: &Value, user: &str) -> Result<(), Failure> {
     let key = vault["accountPublicKey"].as_str().unwrap_or_default();
     if vault["version"] != 1
         || vault["userId"].as_str() != Some(user)
-        || user.is_empty()
-        || user.len() > 128
+        || !canonical_user_id(user)
         || vault["revision"]
             .as_u64()
             .is_none_or(|n| n == 0 || n > i64::MAX as u64)
@@ -256,7 +272,7 @@ pub(crate) fn validate_vault(vault: &Value, user: &str) -> Result<(), Failure> {
 }
 pub(crate) fn store_vault(conn: &Connection, user: &str, value: &Value) -> Result<(), Failure> {
     conn.execute("INSERT INTO relay_account_vaults(user_id,vault_json,revision,account_key_id,account_public_key) VALUES (?1,?2,?3,?4,?5)
-        ON CONFLICT(user_id) DO UPDATE SET vault_json=excluded.vault_json,revision=excluded.revision",
+        ON CONFLICT(user_id) DO UPDATE SET previous_vault_json=relay_account_vaults.vault_json,vault_json=excluded.vault_json,revision=excluded.revision",
         params![user, serde_json::to_string(value).map_err(internal)?, value["revision"].as_i64(), value["accountKeyId"].as_str(), value["accountPublicKey"].as_str()]).map_err(internal)?;
     Ok(())
 }
@@ -266,6 +282,13 @@ fn verify_auth(conn: &Connection, user: &str, key: Option<&str>) -> bool {
     };
     let hash: Option<(String, String)> = conn.query_row("SELECT auth_salt,auth_hash FROM relay_account_auth WHERE user_id=?1 AND auth_hash IS NOT NULL", [user], |r| Ok((r.get(0)?, r.get(1)?))).optional().ok().flatten();
     hash.is_some_and(|(salt, hash)| crate::verify_password(key, &salt, &hash))
+}
+fn verify_recovery(conn: &Connection, user: &str, key: Option<&str>) -> bool {
+    let Some(key) = key.filter(|k| valid_key(k)) else {
+        return false;
+    };
+    let row:Option<(String,String)>=conn.query_row("SELECT recovery_salt,recovery_hash FROM relay_account_auth WHERE user_id=?1 AND recovery_hash IS NOT NULL",[user],|r|Ok((r.get(0)?,r.get(1)?))).optional().ok().flatten();
+    row.is_some_and(|(salt, hash)| crate::verify_password(key, &salt, &hash))
 }
 pub(crate) fn account_public(conn: &Connection, user: &str, code: &str) -> ApiResult {
     let value = vault(conn, user)?
@@ -278,6 +301,7 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/relay/auth/kdf", get(kdf))
         .route("/relay/auth/recover", post(recover))
+        .route("/relay/account/vault/previous", get(read_previous_vault))
         .route(
             "/relay/account/vault",
             get(read_vault)
@@ -333,7 +357,7 @@ async fn kdf(
     mac.update(b"pockymoe-fake-kdf-v1\n");
     mac.update(login.as_bytes());
     let salt = B64.encode(&mac.finalize().into_bytes()[..16]);
-    let value = json!({"mode":if user.is_some() && (known.is_none() || user.as_deref().is_some_and(|user|reset_available(&conn,user))) { "legacy" } else { "account" },"kdf":known.map(|v| v["kdf"].clone()).unwrap_or_else(|| json!({"name":"argon2id","memoryKiB":65536,"iterations":3,"parallelism":1,"salt":salt}))});
+    let value = json!({"mode":"account","kdf":known.map(|v| v["kdf"].clone()).unwrap_or_else(|| json!({"name":"argon2id","memoryKiB":65536,"iterations":3,"parallelism":1,"salt":salt}))});
     Ok(([(header::CACHE_CONTROL, "no-store")], Json(value)).into_response())
 }
 async fn read_vault(State(state): State<Arc<AppState>>, headers: HeaderMap) -> ApiResult {
@@ -346,6 +370,29 @@ async fn read_vault(State(state): State<Arc<AppState>>, headers: HeaderMap) -> A
             "Secure your account first",
         )
     })?))
+}
+async fn read_previous_vault(State(state): State<Arc<AppState>>, headers: HeaderMap) -> ApiResult {
+    let conn = state.store.conn.lock().await;
+    let (user, _) = auth(&conn, &state, &headers)?;
+    let raw: Option<String> = conn
+        .query_row(
+            "SELECT previous_vault_json FROM relay_account_vaults WHERE user_id=?1",
+            [&user.id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(internal)?
+        .flatten();
+    Ok(Json(
+        serde_json::from_str(&raw.ok_or_else(|| {
+            failure(
+                StatusCode::NOT_FOUND,
+                "vault_missing",
+                "Previous vault is not available",
+            )
+        })?)
+        .map_err(internal)?,
+    ))
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -404,13 +451,17 @@ async fn write_vault(
     if old.is_some() && body.auth_key.is_some() && !password_changed {
         return Err(invalid("A new authKey requires a changed password slot"));
     }
-    if old.is_some() && body.recovery_auth_key.is_some() && !recovery_changed {
+    if old.is_some()
+        && body.recovery_auth_key.is_some()
+        && !recovery_changed
+        && !verify_recovery(&conn, &user.id, body.recovery_auth_key.as_deref())
+    {
         return Err(invalid(
-            "A new recoveryAuthKey requires a changed recovery slot",
+            "Unchanged recovery slot requires the existing recoveryAuthKey",
         ));
     }
     let auth_changed = body.auth_key.is_some();
-    let recovery_key_changed = body.recovery_auth_key.is_some();
+    let recovery_key_changed = body.recovery_auth_key.is_some() && recovery_changed;
     if matches!(mode.as_str(), RECOVERY | RESET)
         && (!password_changed || (!oauth && body.auth_key.is_none()))
     {
@@ -420,10 +471,7 @@ async fn write_vault(
             "Recovery requires a new password slot and authKey",
         ));
     }
-    if oauth
-        && (password_changed || recovery_changed || auth_changed || recovery_key_changed)
-        && !factors::recent(&conn, &token)
-    {
+    if (oauth || old.is_none()) && !factors::recent(&conn, &token) {
         return Err(failure(
             StatusCode::FORBIDDEN,
             "reauthentication_required",
@@ -431,10 +479,10 @@ async fn write_vault(
         ));
     }
     if old.is_some()
-        && (password_changed || recovery_changed || auth_changed || recovery_key_changed)
         && !oauth
         && !matches!(mode.as_str(), RECOVERY | RESET)
         && !verify_auth(&conn, &user.id, body.current_auth_key.as_deref())
+        && !verify_recovery(&conn, &user.id, body.recovery_auth_key.as_deref())
     {
         return Err(failure(
             StatusCode::FORBIDDEN,
@@ -468,12 +516,21 @@ async fn write_vault(
         .map_err(internal)?;
     let recovery_hash = body
         .recovery_auth_key
+        .clone()
+        .filter(|_| recovery_changed)
         .as_deref()
         .map(crate::hash_password)
         .transpose()
         .map_err(internal)?;
     let tx = conn.unchecked_transaction().map_err(internal)?;
     store_vault(&tx, &user.id, &body.vault)?;
+    if old.is_none() {
+        tx.execute(
+            "UPDATE relay_users SET password_salt='',password_hash='' WHERE id=?1",
+            [&user.id],
+        )
+        .map_err(internal)?;
+    }
     tx.execute(
         "INSERT OR IGNORE INTO relay_account_auth(user_id,oauth_only) VALUES (?1,?2)",
         params![user.id, oauth],
@@ -539,7 +596,9 @@ async fn delete_vault(
                 "Authenticate again before starting over",
             ));
         }
-    } else if mode != RESET && !verify_auth(&conn, &user.id, body.current_auth_key.as_deref()) {
+    } else if !matches!(mode.as_str(), RESET | RECOVERY)
+        && !verify_auth(&conn, &user.id, body.current_auth_key.as_deref())
+    {
         return Err(failure(
             StatusCode::FORBIDDEN,
             "forbidden",
@@ -558,6 +617,7 @@ async fn delete_vault(
     )
     .map_err(internal)?;
     clear_reset(&tx, &user.id)?;
+    tx.execute("UPDATE relay_auth_sessions SET account_browser_id=NULL,account_browser_key_id=NULL WHERE token_hash=?1",[security::token_hash(&token)]).map_err(internal)?;
     mark_session(&tx, &token, SETUP)?;
     tx.commit().map_err(internal)?;
     Ok(Json(json!({})))
@@ -592,15 +652,35 @@ async fn recover(
         ));
     }
     let conn = state.store.conn.lock().await;
-    let row: Option<(String,String,String)> = conn.query_row("SELECT u.id,a.recovery_salt,a.recovery_hash FROM relay_users u JOIN relay_account_auth a ON a.user_id=u.id JOIN relay_account_vaults v ON v.user_id=u.id WHERE (u.username=?1 OR u.email=?1) AND u.enabled=1 AND a.recovery_hash IS NOT NULL", [body.login.trim().to_ascii_lowercase()], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(internal)?;
-    let (id, salt, hash) = row.ok_or_else(|| {
+    let row: Option<(String,String,String)> = conn.query_row("SELECT u.id,a.recovery_salt,a.recovery_hash FROM relay_users u JOIN relay_account_auth a ON a.user_id=u.id WHERE (u.username=?1 OR u.email=?1) AND u.enabled=1 AND a.recovery_hash IS NOT NULL", [body.login.trim().to_ascii_lowercase()], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(internal)?;
+    drop(conn);
+    let password_work = crate::ANONYMOUS_PASSWORD_WORK
+        .acquire()
+        .await
+        .map_err(internal)?;
+    let proof = body.recovery_auth_key;
+    let verified = tokio::task::spawn_blocking(move || {
+        let ok = row
+            .as_ref()
+            .is_some_and(|(_, salt, hash)| crate::verify_password(&proof, salt, hash));
+        if row.is_none() {
+            let _ = crate::node_scrypt_hash(&proof, "pockymoe-invalid-recovery");
+        }
+        row.filter(|_| ok)
+    })
+    .await
+    .map_err(internal)?;
+    drop(password_work);
+    let (id, salt, hash) = verified.ok_or_else(|| {
         failure(
             StatusCode::UNAUTHORIZED,
             "unauthorized",
             "Invalid credentials",
         )
     })?;
-    if !crate::verify_password(&body.recovery_auth_key, &salt, &hash) {
+    let conn = state.store.conn.lock().await;
+    let live:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM relay_account_auth a JOIN relay_users u ON u.id=a.user_id WHERE u.id=?1 AND u.enabled=1 AND a.recovery_salt=?2 AND a.recovery_hash=?3)",params![id,salt,hash],|r|r.get(0)).map_err(internal)?;
+    if !live {
         return Err(failure(
             StatusCode::UNAUTHORIZED,
             "unauthorized",
@@ -608,11 +688,15 @@ async fn recover(
         ));
     }
     let user = crate::load_user_by_id(&conn, &id).ok_or_else(|| internal("User missing"))?;
-    // Recovery always requires the configured second factor, even on trusted browsers.
-    if factors::has_factors(&conn, &id) {
-        crate::auth_api::challenge_response_mode(&conn, &user, &headers, RECOVERY)
+    let mode = if has_vault(&conn, &id) {
+        RECOVERY
     } else {
-        crate::auth_api::login_response_mode(&conn, &state, &user, &headers, true, false, RECOVERY)
+        SETUP
+    };
+    if factors::has_factors(&conn, &id) {
+        crate::auth_api::challenge_response_mode(&conn, &user, &headers, mode)
+    } else {
+        crate::auth_api::login_response_mode(&conn, &state, &user, &headers, true, false, mode)
     }
 }
 
@@ -721,7 +805,7 @@ fn validate_signed(
     Ok(())
 }
 pub(crate) fn revocations(conn: &Connection, user: &str) -> Result<Vec<Value>, Failure> {
-    let mut stmt = conn.prepare("SELECT revocation_json FROM relay_account_revocations WHERE user_id=?1 ORDER BY account_key_id,kind,subject_id").map_err(internal)?;
+    let mut stmt = conn.prepare("SELECT revocation_json FROM relay_account_revocations WHERE user_id=?1 AND account_key_id=(SELECT account_key_id FROM relay_account_vaults WHERE user_id=?1) ORDER BY kind,subject_id").map_err(internal)?;
     let rows = stmt
         .query_map([user], |r| r.get::<_, String>(0))
         .map_err(internal)?;
@@ -761,9 +845,20 @@ async fn register_browser(
         return Err(invalid("Browser label must be at most 80 characters"));
     }
     let conn = state.store.conn.lock().await;
-    let (user, _) = auth(&conn, &state, &headers)?;
+    let (user, token) = auth(&conn, &state, &headers)?;
     validate_signed(&conn, &user.id, &body.certificate, "browser")?;
     let cert = &body.certificate;
+    let bound:Option<(String,String)>=conn.query_row("SELECT account_browser_id,account_browser_key_id FROM relay_auth_sessions WHERE token_hash=?1 AND account_browser_id IS NOT NULL",[security::token_hash(&token)],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(internal)?;
+    if bound.is_some_and(|(browser, key)| {
+        Some(browser.as_str()) != cert["browserId"].as_str()
+            || Some(key.as_str()) != cert["accountKeyId"].as_str()
+    }) {
+        return Err(failure(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "Session is already bound to another browser",
+        ));
+    }
     let revoked: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM relay_account_revocations WHERE user_id=?1 AND account_key_id=?2 AND kind='browser' AND subject_id=?3)", params![user.id,cert["accountKeyId"].as_str(),cert["browserId"].as_str()],|r|r.get(0)).map_err(internal)?;
     if revoked {
         return Err(failure(
@@ -772,9 +867,27 @@ async fn register_browser(
             "This browser has been removed",
         ));
     }
-    conn.execute("INSERT INTO relay_account_browsers(user_id,browser_id,certificate_json,label,created_at,last_seen_at) VALUES (?1,?2,?3,?4,?5,?6)
+    let exists:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM relay_account_browsers WHERE user_id=?1 AND browser_id=?2)",params![user.id,cert["browserId"].as_str()],|r|r.get(0)).map_err(internal)?;
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM relay_account_browsers WHERE user_id=?1",
+            [&user.id],
+            |r| r.get(0),
+        )
+        .map_err(internal)?;
+    if !exists && count >= MAX_BROWSERS {
+        return Err(failure(
+            StatusCode::TOO_MANY_REQUESTS,
+            "browser_limit",
+            "Browser limit reached",
+        ));
+    }
+    let tx = conn.unchecked_transaction().map_err(internal)?;
+    tx.execute("INSERT INTO relay_account_browsers(user_id,browser_id,certificate_json,label,created_at,last_seen_at) VALUES (?1,?2,?3,?4,?5,?6)
         ON CONFLICT(user_id,browser_id) DO UPDATE SET label=excluded.label,last_seen_at=excluded.last_seen_at",
         params![user.id,cert["browserId"].as_str(),serde_json::to_string(cert).map_err(internal)?,body.label,cert["createdAt"].as_i64(),factors::now()]).map_err(internal)?;
+    tx.execute("UPDATE relay_auth_sessions SET account_browser_id=?2,account_browser_key_id=?3 WHERE token_hash=?1",params![security::token_hash(&token),cert["browserId"].as_str(),cert["accountKeyId"].as_str()]).map_err(internal)?;
+    tx.commit().map_err(internal)?;
     Ok(Json(json!({})))
 }
 #[derive(Deserialize)]
@@ -791,7 +904,27 @@ async fn revoke(
         let (user, _) = auth(&conn, &state, &headers)?;
         validate_signed(&conn, &user.id, &body.revocation, "revocation")?;
         let v = &body.revocation;
-        conn.execute("INSERT OR IGNORE INTO relay_account_revocations(user_id,account_key_id,kind,subject_id,revocation_json) VALUES (?1,?2,?3,?4,?5)", params![user.id,v["accountKeyId"].as_str(),v["kind"].as_str(),v["subjectId"].as_str(),serde_json::to_string(v).map_err(internal)?]).map_err(internal)?;
+        let exists:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM relay_account_revocations WHERE user_id=?1 AND account_key_id=?2 AND kind=?3 AND subject_id=?4)",params![user.id,v["accountKeyId"].as_str(),v["kind"].as_str(),v["subjectId"].as_str()],|r|r.get(0)).map_err(internal)?;
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM relay_account_revocations WHERE user_id=?1",
+                [&user.id],
+                |r| r.get(0),
+            )
+            .map_err(internal)?;
+        if !exists && count >= MAX_REVOCATIONS {
+            return Err(failure(
+                StatusCode::TOO_MANY_REQUESTS,
+                "revocation_limit",
+                "Revocation limit reached",
+            ));
+        }
+        let tx = conn.unchecked_transaction().map_err(internal)?;
+        tx.execute("INSERT OR IGNORE INTO relay_account_revocations(user_id,account_key_id,kind,subject_id,revocation_json) VALUES (?1,?2,?3,?4,?5)", params![user.id,v["accountKeyId"].as_str(),v["kind"].as_str(),v["subjectId"].as_str(),serde_json::to_string(v).map_err(internal)?]).map_err(internal)?;
+        if v["kind"] == "browser" {
+            tx.execute("DELETE FROM relay_auth_sessions WHERE user_id=?1 AND account_browser_key_id=?2 AND account_browser_id=?3",params![user.id,v["accountKeyId"].as_str(),v["subjectId"].as_str()]).map_err(internal)?;
+        }
+        tx.commit().map_err(internal)?;
         let frame = json!({"type":"relay.revocations","revocations":revocations(&conn,&user.id)?})
             .to_string();
         let mut stmt = conn
@@ -906,12 +1039,16 @@ pub(crate) fn request_allowed(
     }
     if path == "/relay/account/vault" {
         return matches!(*method, Method::GET | Method::PUT)
-            || (mode == RESET && *method == Method::DELETE);
+            || (matches!(mode, RESET | RECOVERY) && *method == Method::DELETE);
+    }
+    if *method == Method::GET && path == "/relay/account/vault/previous" {
+        return true;
     }
     if matches!(mode, RECOVERY | RESET) {
         return false;
     }
-    path.starts_with("/relay/auth/")
+    path == "/relay/account/security/reauth"
+        || path.starts_with("/relay/auth/")
         || path == "/relay/devices"
         || path.starts_with("/relay/devices/")
         || path.starts_with("/relay/api/")
@@ -966,7 +1103,11 @@ mod vector_tests {
             assert_eq!(B64.encode(out), expected.as_str().unwrap());
         }
         let vault = &v["vault"]["vault"];
-        validate_vault(vault, "user-123").unwrap();
+        // Original interop AAD uses user-123; production UUID validation is separate.
+        assert!(validate_vault(vault, "user-123").is_err());
+        let mut canonical_vault = vault.clone();
+        canonical_vault["userId"] = json!("b45aed3e-2f46-4b9c-93c1-e6f9d80c51e4");
+        validate_vault(&canonical_vault, "b45aed3e-2f46-4b9c-93c1-e6f9d80c51e4").unwrap();
         let password_aad = v["vault"]["slotAadPassword"].as_str().unwrap();
         let vdk = decrypt(
             &bytes(&d["wrapKey"]),

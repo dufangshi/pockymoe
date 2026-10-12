@@ -37,10 +37,16 @@ impl Fixture {
                      VALUES (?1,?2,?1,'user',1,'now','salt','hash')",
                     params![user, format!("{user}@example.test")],
                 ).unwrap();
+                if user == "owner" {
+                    account::store_vault(&conn,user,&json!({"revision":1,"accountKeyId":"test-key","accountPublicKey":"test-public"})).unwrap();
+                }
                 tokens.insert(
                     user.into(),
                     create_session(&conn, &state.store.session_secret, user).unwrap(),
                 );
+            }
+            for token in tokens.values() {
+                account::mark_session(&conn, token, account::FULL).unwrap();
             }
             conn.execute("INSERT INTO relay_devices (id,owner_user_id,name,token_hash,token_preview,created_at)
                           VALUES ('device','owner','Test device','hash','test','now')", []).unwrap();

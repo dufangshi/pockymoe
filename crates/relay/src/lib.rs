@@ -343,6 +343,10 @@ fn normalize_username(value: &str) -> String {
         .collect()
 }
 
+// Anonymous credential work must not serialize database access or grow the
+// blocking pool without bound. Waiting requests hold no database connection.
+static ANONYMOUS_PASSWORD_WORK: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
+
 fn hash_password(password: &str) -> Result<(String, String)> {
     let mut salt = [0_u8; 16];
     OsRng.fill_bytes(&mut salt);
@@ -350,7 +354,34 @@ fn hash_password(password: &str) -> Result<(String, String)> {
     Ok((salt.clone(), node_scrypt_hash(password, &salt)?))
 }
 
+#[cfg(test)]
+struct PasswordLockProbe {
+    secret: String,
+    connection: std::sync::Weak<tokio::sync::Mutex<Connection>>,
+    result: tokio::sync::oneshot::Sender<bool>,
+}
+#[cfg(test)]
+static PASSWORD_LOCK_PROBES: std::sync::Mutex<Vec<PasswordLockProbe>> =
+    std::sync::Mutex::new(Vec::new());
+
 fn node_scrypt_hash(password: &str, salt: &str) -> Result<String> {
+    #[cfg(test)]
+    {
+        let probe = {
+            let mut probes = PASSWORD_LOCK_PROBES.lock().unwrap();
+            probes
+                .iter()
+                .position(|p| p.secret == password)
+                .map(|i| probes.remove(i))
+        };
+        if let Some(probe) = probe {
+            let unlocked = probe
+                .connection
+                .upgrade()
+                .is_some_and(|conn| conn.try_lock().is_ok());
+            let _ = probe.result.send(unlocked);
+        }
+    }
     let params = ScryptParams::new(14, 8, 1, 32)?;
     let mut output = [0_u8; 32];
     scrypt(password.as_bytes(), salt.as_bytes(), &params, &mut output)?;
@@ -552,6 +583,13 @@ fn relay_cookie(headers: &HeaderMap) -> Option<String> {
 }
 
 fn extract_session_token(headers: &HeaderMap, query: &TokenQuery) -> Option<String> {
+    if let Some(token) = headers.get("x-pockymoe-resolved-session") {
+        return token
+            .to_str()
+            .ok()
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned);
+    }
     bearer_token(headers)
         .or_else(|| query.session_token())
         .or_else(|| {
@@ -623,8 +661,13 @@ fn authenticated_admin_user(
     headers: &HeaderMap,
     _query: &TokenQuery,
 ) -> Option<UserRow> {
-    let user = bearer_token(headers)
-        .or_else(|| security::cookie(headers, "remote_codex_relay_admin_session"))
+    let credential = if headers.contains_key("x-pockymoe-resolved-session") {
+        extract_session_token(headers, &TokenQuery::default())
+    } else {
+        bearer_token(headers)
+            .or_else(|| security::cookie(headers, "remote_codex_relay_admin_session"))
+    };
+    let user = credential
         .and_then(|token| load_user_by_session(conn, session_secret, &token))
         .filter(|user| user.role == "admin");
     if let Some(user) = user.as_ref() {
@@ -736,9 +779,7 @@ async fn register(State(state): State<Arc<AppState>>, Json(body): Json<RegisterI
     let username = normalize_username(&body.username);
     let email = body.email.trim().to_ascii_lowercase();
     let id = body.user_id.clone();
-    if Uuid::parse_str(&id)
-        .ok()
-        .is_none_or(|id| id.get_version_num() != 4)
+    if !account::canonical_user_id(&id)
         || body.vault["userId"].as_str() != Some(&id)
         || username.len() < 3
         || username.len() > 80
@@ -766,6 +807,19 @@ async fn register(State(state): State<Arc<AppState>>, Json(body): Json<RegisterI
         )
             .into_response();
     }
+    let Ok(password_work) = ANONYMOUS_PASSWORD_WORK.acquire().await else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    let auth_key = body.auth_key.clone();
+    let recovery_key = body.recovery_auth_key.clone();
+    let hashes = tokio::task::spawn_blocking(move || -> Result<_> {
+        Ok((hash_password(&auth_key)?, hash_password(&recovery_key)?))
+    })
+    .await;
+    drop(password_work);
+    let Ok(Ok(((salt, hash), (recovery_salt, recovery_hash)))) = hashes else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
     let conn = state.store.conn.lock().await;
     if relay_setting(&conn, "registrationEnabled").as_deref() == Some("false") {
         return (
@@ -798,12 +852,6 @@ async fn register(State(state): State<Arc<AppState>>, Json(body): Json<RegisterI
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
         Ok(false) => {}
     }
-    let Ok((salt, hash)) = hash_password(&body.auth_key) else {
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-    };
-    let Ok((recovery_salt, recovery_hash)) = hash_password(&body.recovery_auth_key) else {
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-    };
     let Ok(tx) = conn.unchecked_transaction() else {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
@@ -822,7 +870,10 @@ async fn register(State(state): State<Arc<AppState>>, Json(body): Json<RegisterI
             let request_id = request["id"]
                 .as_str()
                 .context("Pending request missing id")?;
-            // Do not replace a pending request's vault/credentials on duplicate submissions.
+            if request_id != id {
+                anyhow::bail!("Pending request identity mismatch");
+            }
+            // Only a request created by this registration may receive its vault.
             tx.execute("INSERT INTO relay_pending_account_vaults(request_id,user_id,vault_json,recovery_salt,recovery_hash) VALUES (?1,?2,?3,?4,?5)",params![request_id,id,serde_json::to_string(&body.vault)?,recovery_salt,recovery_hash])?;
             Ok(request)
         })();
@@ -899,8 +950,8 @@ fn insert_pending_registration(
             },
         )
         .optional()?;
-    if let Some(existing) = existing {
-        return Ok(existing);
+    if existing.is_some() {
+        bail!("Registration already exists");
     }
     let id = requested_user_id
         .map(str::to_owned)
@@ -939,6 +990,8 @@ struct LoginInput {
     login: Option<String>,
     password: Option<String>,
     auth_key: Option<String>,
+    #[serde(default)]
+    upgrade: bool,
 }
 
 async fn login(
@@ -973,22 +1026,40 @@ async fn login(
         "SELECT id,password_salt,password_hash FROM relay_users WHERE (username=?1 OR email=?1) AND enabled=1",[ident],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().ok().flatten();
     let row = row.and_then(|(id,salt,hash)| {
         let user = load_user_by_id(&conn,&id)?;
+        if !key_login && body.upgrade && account::has_vault(&conn,&id) {return None;}
         if user.role == "admin" { return (!key_login).then_some((id,salt,hash)); }
         if !key_login && account::reset_available(&conn,&id) { return Some((id,salt,hash)); }
         if account::oauth_only(&conn,&id) { return None; }
         if key_login {
             conn.query_row("SELECT auth_salt,auth_hash FROM relay_account_auth WHERE user_id=?1 AND auth_hash IS NOT NULL",[&id],|r|Ok((id.clone(),r.get::<_,String>(0)?,r.get::<_,String>(1)?))).optional().ok().flatten()
-        } else if account::legacy_password_allowed(&conn,&id) { Some((id,salt,hash)) } else { None }
+        } else if body.upgrade && account::legacy_password_allowed(&conn,&id) { Some((id,salt,hash)) } else { None }
     });
     drop(conn);
     let verified = tokio::task::spawn_blocking(move || {
-        row.filter(|(_, salt, hash)| verify_password(&secret, salt, hash))
+        let proof = row
+            .as_ref()
+            .map(|(_, salt, hash)| verify_password(&secret, salt, hash))
+            .unwrap_or_else(|| {
+                // Spend the same slow work for unknown or unavailable credentials.
+                let _ = node_scrypt_hash(&secret, "pockymoe-invalid-login");
+                false
+            });
+        let upgrade_hash = if proof
+            && row
+                .as_ref()
+                .is_some_and(|(_, salt, _)| salt == LEGACY_SHA256_SALT)
+        {
+            hash_password(&secret).ok()
+        } else {
+            None
+        };
+        row.filter(|_| proof).map(|row| (row, upgrade_hash))
     })
     .await
     .ok()
     .flatten();
     let conn = state.store.conn.lock().await;
-    let Some((id, salt, hash)) = verified else {
+    let Some(((id, salt, hash), upgrade_hash)) = verified else {
         return unauthorized();
     };
     // Recheck the exact credential after the slow hash; reset/disable may have raced it.
@@ -1013,6 +1084,17 @@ async fn login(
     {
         return unauthorized();
     }
+    if let Some((new_salt, new_hash)) = upgrade_hash {
+        if conn
+            .execute(
+                "UPDATE relay_users SET password_salt=?2,password_hash=?3 WHERE id=?1",
+                params![id, new_salt, new_hash],
+            )
+            .is_err()
+        {
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    }
     let mode = if reset {
         account::RESET
     } else {
@@ -1023,8 +1105,16 @@ async fn login(
         auth_api::challenge_response_mode(&conn, &user, &headers, mode)
             .unwrap_or_else(IntoResponse::into_response)
     } else {
-        auth_api::login_response_mode(&conn, &state, &user, &headers, !has_factors, false, mode)
-            .unwrap_or_else(IntoResponse::into_response)
+        auth_api::login_response_mode(
+            &conn,
+            &state,
+            &user,
+            &headers,
+            !has_factors || mode == account::SETUP,
+            false,
+            mode,
+        )
+        .unwrap_or_else(IntoResponse::into_response)
     }
 }
 
@@ -2108,6 +2198,20 @@ async fn create_device(
     let Some(user) = user else {
         return unauthorized();
     };
+    {
+        let conn = state.store.conn.lock().await;
+        let token = extract_session_token(&headers, &query).unwrap_or_default();
+        if !auth_factors::recent(&conn, &token) {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(ApiError::new(
+                    "reauthentication_required",
+                    "Authenticate again to create a device",
+                )),
+            )
+                .into_response();
+        }
+    }
     let name = body.name.trim();
     if name.is_empty() {
         return (

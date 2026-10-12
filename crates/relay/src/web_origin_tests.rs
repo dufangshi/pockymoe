@@ -39,10 +39,15 @@ impl WebFixture {
         let cookie = {
             let conn = state.store.conn.lock().await;
             conn.execute("INSERT INTO relay_users (id,email,username,role,enabled,created_at,password_salt,password_hash) VALUES ('owner','owner@example.test','owner','user',1,'now','salt','hash')", []).unwrap();
-            format!(
-                "remote_codex_relay_session={}",
-                create_session(&conn, &state.store.session_secret, "owner").unwrap()
+            account::store_vault(
+                &conn,
+                "owner",
+                &json!({"revision":1,"accountKeyId":"test-key","accountPublicKey":"test-public"}),
             )
+            .unwrap();
+            let token = create_session(&conn, &state.store.session_secret, "owner").unwrap();
+            account::mark_session(&conn, &token, account::FULL).unwrap();
+            format!("remote_codex_relay_session={token}")
         };
         async fn echo(headers: HeaderMap) -> Response {
             let mut response =
@@ -326,4 +331,16 @@ fn web_origin_validation_and_callback_addressing_are_separate() {
         config.callback_url(&HeaderMap::new(), OAuthProvider::Google),
         "https://relay.example.test/relay/auth/oauth/google/callback"
     );
+}
+
+#[tokio::test]
+async fn security_revision_same_origin_csp_allows_only_wasm_evaluation() {
+    let f = WebFixture::new(false).await;
+    let response = f.request(Method::GET, "/").send().await.unwrap();
+    let csp = response.headers()[header::CONTENT_SECURITY_POLICY]
+        .to_str()
+        .unwrap();
+    assert!(csp.contains("script-src 'self' 'wasm-unsafe-eval' 'sha256-"));
+    assert!(!csp.contains("'unsafe-eval'"));
+    assert!(csp.contains("connect-src 'self';"));
 }
