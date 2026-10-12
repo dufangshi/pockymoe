@@ -1,3 +1,4 @@
+import { SharedInvitePage } from './pages/SharedInvitePage';
 import { WorkspaceDocumentNavigationGuard } from "./components/WorkspaceDocumentNavigationGuard";
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { installNotificationRouteResponder } from './lib/relayPush';
@@ -634,6 +635,7 @@ export function App() {
         <RoutePluginProvider>
           <Routes>
             <Route path="/pair" element={<PairPage />} />
+            <Route path="/shared" element={<SharedInvitePage />} />
             <Route path="/devices/:deviceId/ports/:mappingId" element={<RelayGate><PortPreviewPage /></RelayGate>} />
             <Route path="/s/:id" element={<PublicThreadPage />} />
             <Route path="/relay-guide" element={<RelayGuidePage />} />

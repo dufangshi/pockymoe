@@ -14,7 +14,7 @@ vi.mock('./ownerTrustStore', () => ({
   },
 }));
 vi.stubGlobal('fetch', state.fetch);
-const { deviceCertificate, saveDeviceCertificate, appendDeviceCertificate } =
+const { deviceCertificate, saveDeviceCertificate, appendDeviceCertificate, pinInviteIdentity, checkInviteIdentity, isRecipientDevice } =
   await import('./ownerDeviceTrust');
 const certificate = {
   ...vectors.deviceCertificate.certificate,
@@ -112,4 +112,19 @@ describe('certificate identity trust', () => {
       { code: 'ownerCertificateUnavailable' },
     );
   });
+  it('persists invite pins, rejects conflicting invites and mismatching device identities', async () => {
+    await pinInviteIdentity('device', 'fingerprint');
+    expect(await checkInviteIdentity('device', 'fingerprint')).toBe(true);
+    await expect(checkInviteIdentity('device', 'changed')).rejects.toMatchObject({ code: 'ownerIdentityMismatch' });
+    await expect(pinInviteIdentity('device', 'changed')).rejects.toMatchObject({ code: 'ownerIdentityMismatch' });
+    expect(await checkInviteIdentity('unknown', 'fingerprint')).toBe(false);
+  });
+  it('selects recipient access without downgrading a browser with an owner-verified certificate', async () => {
+    state.fetch.mockResolvedValue(Response.json({ kind: 'shared' }));
+    expect(await isRecipientDevice('device', 'thread', 'workspace')).toBe(true);
+    expect(state.fetch).toHaveBeenLastCalledWith('/relay/access?deviceId=device&threadId=thread&workspaceId=workspace', expect.anything());
+    state.store.set('certificate:device', certificate);
+    expect(await isRecipientDevice('device')).toBe(false);
+  });
+
 });

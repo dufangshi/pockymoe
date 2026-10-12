@@ -76,9 +76,9 @@ export function DeviceEncryptionStatus({
   const locked = status?.state === 'unlock-required';
   const encrypted = status?.state === 'encrypted',
     changed = status?.state === 'identity-changed';
-  if (hideHealthy && !changed && !locked && connection?.loaded && connection.state === 'connected') return null;
+  if (hideHealthy && status?.role !== 'grantee' && !changed && !locked && connection?.loaded && connection.state === 'connected') return null;
   const label = !deviceId ? translate("auth.localDeviceConnection") : locked ? translate("auth.ownerUnlock") : encrypted
-    ? translate("auth.deviceConnectionEncrypted")
+    ? translate(status?.role === 'grantee' ? status.identityTrust === 'invite' ? 'sharing.granteeConnectionPinned' : 'sharing.granteeConnectionTofu' : 'auth.deviceConnectionEncrypted')
     : changed
       ? translate("auth.deviceIdentityChanged")
       : status?.state === 'legacy'
@@ -189,9 +189,10 @@ export function DeviceEncryptionStatus({
             {deviceId && <span className="block space-y-2">
               <span className="block">{translate(status?.paired ? 'auth.ownerPaired' : status?.paired === false || status?.state === 'legacy' ? 'auth.ownerRelayTrusted' : 'auth.deviceEncryptionNotVerified')}</span>
               {locked && <button className="relay-button-primary px-3 py-2" onClick={() => { setOpen(false); window.dispatchEvent(new CustomEvent('remote-codex-owner-unlock-request', { detail: status })); }}>{translate('auth.ownerUnlock')}</button>}
+              {status?.role === 'grantee' && <span className="block">{translate(status.identityTrust === 'invite' ? 'sharing.invitePinned' : 'sharing.recipientTofu')}</span>}
               {status?.strict && <span className="block">{translate('auth.ownerStrict')}</span>}
               {!status?.paired && <span className="block">{translate('auth.ownerPairInstructions')}</span>}
-              <button className="relay-button-secondary px-3 py-2" onClick={() => { setOpen(false); setManage(true); }}>{translate('auth.ownerManage')}</button>
+              {status?.role !== 'grantee' && <button className="relay-button-secondary px-3 py-2" onClick={() => { setOpen(false); setManage(true); }}>{translate('auth.ownerManage')}</button>}
             </span>}
             {trustError && <span role="alert">{trustError}</span>}
             {changed && !status?.paired && status?.identityKey && (

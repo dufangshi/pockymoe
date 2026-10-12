@@ -15,7 +15,7 @@ import {
   ownerRequestHeaders,
   OwnerTrustError,
 } from './ownerSession';
-import { deviceCertificate } from './ownerDeviceTrust';
+import { deviceCertificate, isRecipientDevice, checkInviteIdentity, inviteIdentityPin } from './ownerDeviceTrust';
 const encoder = new TextEncoder(),
   decoder = new TextDecoder();
 const suite = new CipherSuite({
@@ -59,6 +59,8 @@ export interface TransportStatus {
   unlockReason?: 'owner_session_revoked';
   strict?: boolean;
   certificateVerified?: boolean;
+  role?: 'owner' | 'grantee';
+  identityTrust?: 'certificate' | 'invite' | 'tofu';
   fingerprint?: string;
   identityKey?: string;
 }
@@ -79,6 +81,8 @@ export interface Descriptor {
 }
 interface Key {
   paired: boolean;
+  grantee?: boolean;
+  identityTrust: 'certificate' | 'invite' | 'tofu';
   ownerCredentialId?: string | string[];
   descriptor: Descriptor;
   publicKey: CryptoKey;
@@ -209,8 +213,18 @@ async function keyFor(
     } finally {
       clearTimeout(timeout);
     }
-    const certificate = pairingFingerprint ? null : await deviceCertificate(deviceId);
+    let grantee = false;
+    let certificate = null;
+    if (!pairingFingerprint) {
+      try { certificate = await deviceCertificate(deviceId); }
+      catch (error) {
+        grantee = await isRecipientDevice(deviceId, resource?.[1] === 'threads' ? resource[2] : scope, resource?.[1] === 'workspaces' ? resource[2] : undefined);
+        if (!grantee) throw error;
+      }
+    }
     const previous = certificate || pairingFingerprint ? undefined : await pinned(deviceId);
+    const invitePin = !pairingFingerprint && await inviteIdentityPin(deviceId);
+    if (response.status === 404 && invitePin) throw new OwnerTrustError('ownerIdentityMismatch');
     if (response.status === 404 && !previous && !certificate && !pairingFingerprint) {
       reportTransport({ deviceId, state: 'legacy' });
       setTimeout(() => { if (keys.get(deviceId) === task) keys.delete(deviceId); }, 10000);
@@ -289,12 +303,16 @@ async function keyFor(
         buffer(unb64(descriptor.identityKey)),
       ),
     );
+    const invitePinned = !pairingFingerprint && await checkInviteIdentity(deviceId, fingerprint);
     if (pairingFingerprint && fingerprint !== pairingFingerprint) throw new OwnerTrustError('ownerIdentityMismatch');
     if (certificate && certificate.identityKey !== descriptor.identityKey) {
       reportTransport({ deviceId, state: 'identity-changed', paired: true, certificateVerified: true, fingerprint });
       throw new OwnerTrustError('ownerIdentityMismatch');
     }
-    if (!pairingFingerprint && !certificate && descriptor.trust?.paired) {
+    if (!pairingFingerprint && !certificate && descriptor.trust?.paired && !grantee) {
+      grantee = await isRecipientDevice(deviceId, resource?.[1] === 'threads' ? resource[2] : scope, resource?.[1] === 'workspaces' ? resource[2] : undefined);
+    }
+    if (!pairingFingerprint && !certificate && descriptor.trust?.paired && !grantee) {
       reportTransport({ deviceId, state: 'unlock-required', paired: true, strict: descriptor.trust.strict });
       throw new OwnerTrustError('ownerCertificateUnavailable');
     }
@@ -308,7 +326,9 @@ async function keyFor(
     }
     return {
       descriptor,
-      paired: !!certificate,
+      paired: !!certificate || grantee,
+      grantee,
+      identityTrust: certificate ? 'certificate' as const : invitePinned ? 'invite' as const : 'tofu' as const,
       ...(certificate ? { ownerCredentialId: certificate.assertion.credentialId } : {}),
       fingerprint,
       offset: descriptor.serverTime - Date.now(),
@@ -325,7 +345,7 @@ async function keyFor(
     throw e;
   }
 }
-// Pairing is the only path that trusts an out-of-band fingerprint directly.
+// Pairing inspection requires the QR fingerprint and never uses a TOFU pin.
 export async function inspectPairingDevice(deviceId: string, fingerprint: string) {
   keys.delete(deviceId);
   const key = await keyFor(deviceId, '/api/transport/pair', undefined, fingerprint);
@@ -492,27 +512,30 @@ export async function exchange(
   const bootstrap = wirePath === '/api/transport/pair' || wirePath === '/api/transport/owner-session';
   if (key.paired && !bootstrap) {
     if (!owner) {
-      reportTransport({ deviceId: route.deviceId, state: 'unlock-required', paired: true, ...(key.ownerCredentialId ? { ownerCredentialId: key.ownerCredentialId } : {}) });
+      reportTransport({ deviceId: route.deviceId, state: 'unlock-required', paired: true, ...(key.grantee ? { role: 'grantee' as const, identityTrust: key.identityTrust } : {}), ...(key.ownerCredentialId ? { ownerCredentialId: key.ownerCredentialId } : {}) });
       throw new OwnerTrustError('owner_session_required');
     }
     if (!await isSessionRegistered(owner, route.deviceId)) {
       const registered = await exchange(new Request(new URL(`/relay/devices/${encodeURIComponent(route.deviceId)}/api/transport/owner-session`, url.origin), {
         method: 'POST', credentials: request.credentials, signal: request.signal,
         headers: { 'content-type': 'application/json' }, body: JSON.stringify(owner.registration),
-      }));
+      }), scope);
       if (!registered.response.ok) {
         const failure = await registered.response.clone().json().catch(() => null) as {
           code?: string;
         } | null;
+        if (failure?.code === 'grant_denied' || failure?.code === 'owner_required')
+          return { response: registered.response };
         if (registered.response.status === 401 && failure?.code === 'owner_session_revoked')
           throw new OwnerTrustError('owner_session_revoked');
-        reportTransport({ deviceId: route.deviceId, state: 'unlock-required', paired: true, ...(key.ownerCredentialId ? { ownerCredentialId: key.ownerCredentialId } : {}) });
+        reportTransport({ deviceId: route.deviceId, state: 'unlock-required', paired: true, ...(key.grantee ? { role: 'grantee' as const, identityTrust: key.identityTrust } : {}), ...(key.ownerCredentialId ? { ownerCredentialId: key.ownerCredentialId } : {}) });
         throw new OwnerTrustError('owner_session_required');
       }
-      const registration = await registered.response.json() as { sessionId: string; expiresAt: number };
+      const registration = await registered.response.json() as { sessionId: string; expiresAt: number; role?: 'owner' | 'grantee' };
       if (registration.sessionId !== owner.sessionId || registration.expiresAt !== owner.registration.expiresAt)
         throw new OwnerTrustError('ownerVerificationFailed');
-      await markSessionRegistered(owner, route.deviceId);
+      if (registration.role) key.grantee = registration.role === 'grantee';
+      await markSessionRegistered(owner, route.deviceId, registration.role ?? (key.grantee ? 'grantee' : 'owner'));
     }
   }
   const requestId = `${crypto.randomUUID()}.${Math.floor(Date.now() + key.offset)}`;
@@ -659,7 +682,9 @@ export async function exchange(
     state: 'encrypted',
     paired: key.paired,
     strict: key.paired,
-    certificateVerified: key.paired,
+    certificateVerified: key.identityTrust === 'certificate',
+    ...(key.identityTrust ? { identityTrust: key.identityTrust } : {}),
+    role: key.grantee ? 'grantee' : 'owner',
     fingerprint: key.fingerprint,
   });
   let responseBody: BodyInit | null = [204, 205, 304].includes(data.status)
@@ -826,4 +851,10 @@ export class SocketCipher {
     this.received = encrypted.sequence;
     return parsed;
   }
+}
+
+export async function sharingFingerprint(deviceId: string, threadId?: string) {
+  const key = await keyFor(deviceId, threadId ? `/api/threads/${encodeURIComponent(threadId)}` : '/api/transport/grants', threadId);
+  if (!key) throw new OwnerTrustError('ownerIdentityMismatch');
+  return key.fingerprint;
 }

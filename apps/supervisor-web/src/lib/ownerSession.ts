@@ -176,12 +176,13 @@ export async function ownerRequestHeaders(
 export async function markSessionRegistered(
   session: OwnerSession,
   deviceId: string,
+  role: 'owner' | 'grantee' = 'owner',
 ) {
   // Re-read so concurrent device registrations cannot overwrite each other's key.
   const stored = await currentOwnerSession();
   if (stored?.sessionId !== session.sessionId)
     throw new OwnerTrustError('ownerUnlockExpired');
-  await trustStore(`registration:${session.sessionId}:${deviceId}`, true);
+  await trustStore(`registration:${session.sessionId}:${deviceId}`, role);
 }
 export async function isSessionRegistered(
   session: OwnerSession,
