@@ -406,6 +406,9 @@ More: pockymoe guide tasks"#
     Setup {
         #[arg(long)]
         relay: String,
+        /// Trusted Web origin saved locally for passkey pairing.
+        #[arg(long, env = "POCKYMOE_WEB_ORIGIN")]
+        web_origin: Option<String>,
         #[arg(long, conflicts_with = "code", required_unless_present = "code")]
         token: Option<String>,
         #[arg(long, conflicts_with = "token")]
@@ -621,10 +624,20 @@ async fn run() -> Result<()> {
                 pockymoe_supervisor::reset_owner_trust(&database)?;
                 println!("Owner trust reset. The device trusts the relay again.");
             } else {
+                let (saved_web_origin, saved_relay_url) =
+                    if web_origin.is_none() && config.web_origin.is_none() {
+                        pockymoe_supervisor::distribution::pairing_defaults()?
+                    } else {
+                        (None, None)
+                    };
                 let url = pockymoe_supervisor::create_pairing_offer(
                     &database,
                     web_origin.as_deref(),
-                    config.relay_server_url.as_deref(),
+                    config
+                        .relay_server_url
+                        .as_deref()
+                        .or(saved_relay_url.as_deref()),
+                    config.web_origin.as_deref().or(saved_web_origin.as_deref()),
                 )?;
                 let qr = qrcode::QrCode::new(url.as_bytes())?;
                 println!(
@@ -636,6 +649,7 @@ async fn run() -> Result<()> {
         }
         Commands::Setup {
             relay,
+            web_origin,
             token,
             code,
             port,
@@ -643,6 +657,7 @@ async fn run() -> Result<()> {
             pockymoe_supervisor::distribution::setup(
                 pockymoe_supervisor::distribution::SetupOptions {
                     relay,
+                    web_origin,
                     token,
                     code,
                     port,

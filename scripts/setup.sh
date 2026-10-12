@@ -6,8 +6,10 @@ relay_url=''
 setup_token=''
 setup_code=''
 setup_port=8787
+setup_web_origin=${POCKYMOE_WEB_ORIGIN:-}
 while [ "$#" -gt 0 ]; do
   case "$1" in
+    --web-origin) setup_web_origin=${2:?Missing Web origin}; shift 2 ;;
     --relay) relay_url=${2:?Missing relay URL}; shift 2 ;;
     --token) setup_token=${2:?Missing device token}; shift 2 ;;
     --code) setup_code=${2:?Missing setup code}; shift 2 ;;
@@ -71,6 +73,9 @@ fi
 [ "$setup_actual_version" = "$setup_version" ] || { echo 'Runtime version verification failed.' >&2; exit 1; }
 echo "Configuring Pockymoe $setup_version…"
 # Do not exec: keep the cleanup trap alive until native setup finishes.
+if [ -n "$setup_web_origin" ]; then
+  export POCKYMOE_WEB_ORIGIN="$setup_web_origin"
+fi
 if [ -n "$setup_token" ]; then
   "$setup_tmp/pockymoe" setup --relay "$relay_url" --token "$setup_token" --port "$setup_port"
 else

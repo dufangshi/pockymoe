@@ -24,6 +24,7 @@ fn setup() -> (tempfile::TempDir, Arc<Supervisor>) {
         admin_password: None,
         session_secret: None,
         relay_server_url: Some("https://relay.example.test".into()),
+        web_origin: None,
         relay_agent_token: None,
         enabled_providers: vec![Provider::Codex, Provider::Acp],
         acp_command: None,

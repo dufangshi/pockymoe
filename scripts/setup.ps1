@@ -3,6 +3,7 @@ param(
     [Parameter(Mandatory = $true)][string]$Relay,
     [string]$Token,
     [string]$Code,
+    [string]$WebOrigin,
     [ValidateRange(1, 65535)][int]$Port = 8787
 )
 $ErrorActionPreference = 'Stop'
@@ -29,6 +30,7 @@ try {
     $actual = & $binary version
     if ($LASTEXITCODE -ne 0 -or $actual.Trim() -ne $version) { throw 'Downloaded runtime version verification failed.' }
     $arguments = @('setup', '--relay', $Relay, '--port', "$Port")
+    if ($WebOrigin) { $arguments += @('--web-origin', $WebOrigin) }
     if ($Token) { $arguments += @('--token', $Token) } else { $arguments += @('--code', $Code) }
     & $binary @arguments
     if ($LASTEXITCODE -ne 0) { throw "Native setup failed (exit $LASTEXITCODE)." }

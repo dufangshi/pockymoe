@@ -856,6 +856,7 @@ async fn encrypted_pairing_and_owner_session_bootstrap_then_signed_trust() {
         &state.config.database_url,
         Some("https://pockymoe.test"),
         None,
+        None,
     )
     .unwrap();
     let u = url::Url::parse(&url).unwrap();
@@ -923,6 +924,7 @@ async fn offline_offer_and_reset_work_with_a_running_database_and_refuse_unknown
         &state.config.database_url,
         Some("https://pockymoe.test"),
         None,
+        None,
     )
     .unwrap_err();
     assert!(err.to_string().contains("not connected"));
@@ -931,6 +933,7 @@ async fn offline_offer_and_reset_work_with_a_running_database_and_refuse_unknown
         &state.config.database_url,
         None,
         Some("wss://pockymoe.test/tunnel"),
+        None,
     )
     .unwrap();
     let url = url::Url::parse(&url).unwrap();
@@ -942,7 +945,9 @@ async fn offline_offer_and_reset_work_with_a_running_database_and_refuse_unknown
         "https://pockymoe.test/path",
         "https://pockymoe.test?query=yes",
     ] {
-        assert!(create_pairing_offer(&state.config.database_url, Some(invalid), None).is_err());
+        assert!(
+            create_pairing_offer(&state.config.database_url, Some(invalid), None, None).is_err()
+        );
     }
     state
         .db
@@ -1195,4 +1200,41 @@ async fn unpaired_ignores_owner_headers_while_paired_rejects_unknown_and_expired
     );
     assert_eq!(status, 401);
     assert_eq!(body["code"], "owner_session_required");
+}
+
+#[test]
+fn pairing_origin_uses_local_override_then_local_setting_then_legacy_relay_host() {
+    let relay = Some("wss://relay.example.test:9443/supervisor/tunnel");
+    assert_eq!(
+        pairing_web_origin(
+            Some("https://override.example.test/"),
+            Some("https://web.example.test"),
+            relay
+        )
+        .unwrap(),
+        "https://override.example.test"
+    );
+    assert_eq!(
+        pairing_web_origin(None, Some("https://web.example.test:8443"), relay).unwrap(),
+        "https://web.example.test:8443"
+    );
+    assert_eq!(
+        pairing_web_origin(None, None, relay).unwrap(),
+        "https://relay.example.test"
+    );
+    assert_eq!(
+        pairing_web_origin(None, Some("http://localhost:4188"), None).unwrap(),
+        "http://localhost:4188"
+    );
+    assert!(pairing_web_origin(None, None, None).is_err());
+    // An invalid local setting must not silently fall through to the relay.
+    for invalid in [
+        "http://web.example.test",
+        "https://web.example.test/path",
+        "https://web.example.test#fragment",
+        "https://user@web.example.test",
+        "https://web.example.test?query=1",
+    ] {
+        assert!(pairing_web_origin(None, Some(invalid), relay).is_err());
+    }
 }

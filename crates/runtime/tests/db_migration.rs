@@ -368,6 +368,7 @@ fn test_config(root: &std::path::Path, database_url: &std::path::Path) -> Runtim
         admin_password: None,
         session_secret: None,
         relay_server_url: None,
+        web_origin: None,
         relay_agent_token: None,
         enabled_providers: vec![Provider::Codex],
         acp_command: None,
