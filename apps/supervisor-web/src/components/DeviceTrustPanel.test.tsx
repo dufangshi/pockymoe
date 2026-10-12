@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { setLocale, translate } from '@pockymoe/thread-ui/i18n';
 import { DeviceTrustPanel } from './DeviceTrustPanel';
 import { deviceTrustRequest, type DeviceTrust } from '../lib/deviceTrust';
 import {
@@ -7,11 +8,13 @@ import {
   clearOwnerSession,
   currentOwnerSession,
   fetchOwnerCredentials,
+  OwnerTrustError,
 } from '../lib/ownerSession';
 import vectors from '../lib/fixtures/ownerTrustVectors.json';
 import { type OwnerCredential } from '../lib/ownerTrustCrypto';
 vi.mock('../lib/deviceTrust', () => ({ deviceTrustRequest: vi.fn() }));
-vi.mock('../lib/ownerSession', () => ({
+vi.mock('../lib/ownerSession', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../lib/ownerSession')>(),
   assertOwner: vi.fn(),
   clearOwnerSession: vi.fn(),
   currentOwnerSession: vi.fn(),
@@ -28,6 +31,7 @@ const credential = vectors.credentialRecord as OwnerCredential;
 const second = { ...credential, credentialId: 'c2', name: 'Second passkey' };
 let trust: DeviceTrust;
 beforeEach(() => {
+  setLocale('en');
   vi.clearAllMocks();
   trust = {
     deviceId: 'd',
@@ -62,6 +66,23 @@ beforeEach(() => {
   });
 });
 describe('device trust controls', () => {
+  it.each(['en', 'zh-CN'] as const)('shows the paired-origin error in the %s add-passkey flow and does not certify the rejected credential', async (locale) => {
+    setLocale(locale);
+    vi.mocked(deviceTrustRequest).mockImplementation(async (_id, path = '') => {
+      if (path === 'credentials') throw new OwnerTrustError('owner_origin_mismatch');
+      return trust as never;
+    });
+    render(<DeviceTrustPanel deviceId="d" />);
+    fireEvent.change(await screen.findByRole('combobox', { name: translate('auth.ownerSelect') }), { target: { value: 'c2' } });
+    const add = screen.getByRole('button', { name: translate('auth.ownerAdd') });
+    await waitFor(() => expect(add).toBeEnabled());
+    fireEvent.click(add);
+    expect(await screen.findByRole('alert')).toHaveTextContent(translate('auth.owner_origin_mismatch'));
+    expect(screen.queryByRole('button', { name: translate('auth.ownerCertify') })).toBeNull();
+    expect(assertOwner).toHaveBeenCalledTimes(1);
+    const { appendDeviceCertificate } = await import('../lib/ownerDeviceTrust');
+    expect(appendDeviceCertificate).not.toHaveBeenCalled();
+  });
   it('shows unpaired relay trust and the local pairing command', async () => {
     trust.paired = false;
     trust.strict = false;

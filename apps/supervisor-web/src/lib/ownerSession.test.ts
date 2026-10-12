@@ -14,6 +14,13 @@ const state = vi.hoisted(() => ({
   get: vi.fn(),
 }));
 vi.mock('./ownerTrustStore', () => ({
+  clearStoredOwnerSession: async (sessionId?: string) => {
+    const current = state.store.get('session') as { sessionId: string } | undefined;
+    if (!sessionId || current?.sessionId === sessionId) state.store.delete('session');
+    const prefix = sessionId ? `registration:${sessionId}:` : 'registration:';
+    for (const key of state.store.keys())
+      if (key.startsWith(prefix)) state.store.delete(key);
+  },
   trustStore: async (key: string, ...write: unknown[]) => {
     if (write.length) {
       if (write[0] === null) state.store.delete(key);
@@ -184,9 +191,38 @@ describe('owner session manager', () => {
     expect(await manager.isSessionRegistered(second, 'a')).toBe(false);
     await manager.clearOwnerSession();
     expect(await manager.currentOwnerSession()).toBeUndefined();
+    expect(await manager.isSessionRegistered(first, 'a')).toBe(false);
+    expect(await manager.isSessionRegistered(first, 'b')).toBe(false);
+    expect(await manager.verifiedCredential(record.credentialId)).toEqual(record);
     expect(
       await manager.ownerRequestHeaders(undefined, '', new Uint8Array()),
     ).toEqual({});
     vi.restoreAllMocks();
+  });
+  it('discards a revoked key and all its device registrations, then creates a different key only after a new click', async () => {
+    const revoked = await (await manager.prepareOwnerUnlock())();
+    await manager.markSessionRegistered(revoked, 'a');
+    await manager.markSessionRegistered(revoked, 'b');
+    await manager.clearOwnerSession(revoked.sessionId);
+    expect(await manager.currentOwnerSession()).toBeUndefined();
+    expect(await manager.isSessionRegistered(revoked, 'a')).toBe(false);
+    expect(await manager.isSessionRegistered(revoked, 'b')).toBe(false);
+    const unlock = await manager.prepareOwnerUnlock();
+    expect(state.get).toHaveBeenCalledTimes(1);
+    expect(await manager.currentOwnerSession()).toBeUndefined();
+    const renewed = await unlock();
+    expect(state.get).toHaveBeenCalledTimes(2);
+    expect(renewed.sessionId).not.toBe(revoked.sessionId);
+    expect(renewed.registration.sessionPublicKey).not.toBe(revoked.registration.sessionPublicKey);
+  });
+  it('keeps a newer unlock when a delayed response revokes the previous key', async () => {
+    const old = await (await manager.prepareOwnerUnlock())();
+    await manager.markSessionRegistered(old, 'a');
+    const renewed = await (await manager.prepareOwnerUnlock())();
+    await manager.markSessionRegistered(renewed, 'a');
+    await manager.clearOwnerSession(old.sessionId);
+    expect((await manager.currentOwnerSession())?.sessionId).toBe(renewed.sessionId);
+    expect(await manager.isSessionRegistered(old, 'a')).toBe(false);
+    expect(await manager.isSessionRegistered(renewed, 'a')).toBe(true);
   });
 });

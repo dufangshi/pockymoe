@@ -1,5 +1,5 @@
 import { translate } from '@pockymoe/thread-ui/i18n';
-import { trustStore } from './ownerTrustStore';
+import { clearStoredOwnerSession, trustStore } from './ownerTrustStore';
 import {
   bytes,
   decode64,
@@ -29,6 +29,8 @@ export type OwnerErrorCode =
   | 'ownerCancelled'
   | 'ownerUnlockExpired'
   | 'owner_session_required'
+  | 'owner_session_revoked'
+  | 'owner_origin_mismatch'
   | 'ownerPairInvalid'
   | 'ownerPairExpired'
   | 'ownerPairFailed'
@@ -157,8 +159,8 @@ export async function prepareOwnerUnlock(credentialId?: string | string[]) {
     return session;
   };
 }
-export async function clearOwnerSession() {
-  await trustStore('session', null);
+export async function clearOwnerSession(sessionId?: string) {
+  await clearStoredOwnerSession(sessionId);
 }
 export async function ownerRequestHeaders(
   session: OwnerSession | undefined,

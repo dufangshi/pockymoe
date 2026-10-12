@@ -7,6 +7,7 @@ import {
 } from '@hpke/core';
 
 import {
+  clearOwnerSession,
   currentOwnerSession,
   forgetSessionRegistration,
   isSessionRegistered,
@@ -55,6 +56,7 @@ export interface TransportStatus {
   state: 'encrypted' | 'legacy' | 'identity-changed' | 'error' | 'unlock-required';
   paired?: boolean;
   ownerCredentialId?: string | string[];
+  unlockReason?: 'owner_session_revoked';
   strict?: boolean;
   certificateVerified?: boolean;
   fingerprint?: string;
@@ -336,12 +338,27 @@ export function finishPairingInspection(deviceId: string) {
   pairingKeys.delete(deviceId);
   keys.delete(deviceId);
 }
-async function reportOwnerRequired(response: Response, deviceId: string) {
+async function reportOwnerRequired(
+  response: Response,
+  deviceId: string,
+  encryptedSessionId?: string,
+) {
   if (response.ok) return;
   const body = await response.clone().json().catch(() => null) as { code?: string } | null;
-  if (body?.code === 'owner_session_required' || body?.code === 'device_strict_mode') {
+  // Only an authenticated device response can revoke a persisted browser key.
+  const revoked =
+    response.status === 401 &&
+    body?.code === 'owner_session_revoked' &&
+    !!encryptedSessionId;
+  if (revoked) await clearOwnerSession(encryptedSessionId);
+  if (revoked || body?.code === 'owner_session_required' || body?.code === 'device_strict_mode') {
+    const ownerCredentialId = (await keys.get(deviceId))?.ownerCredentialId;
     keys.delete(deviceId);
-    reportTransport({ deviceId, state: 'unlock-required', paired: true, strict: true });
+    reportTransport({
+      deviceId, state: 'unlock-required', paired: true, strict: true,
+      ...(ownerCredentialId ? { ownerCredentialId } : {}),
+      ...(revoked ? { unlockReason: 'owner_session_revoked' as const } : {}),
+    });
   }
 }
 // Sealed bodies cannot be compressed by the relay or the CDN. Announcing gzip
@@ -484,6 +501,11 @@ export async function exchange(
         headers: { 'content-type': 'application/json' }, body: JSON.stringify(owner.registration),
       }));
       if (!registered.response.ok) {
+        const failure = await registered.response.clone().json().catch(() => null) as {
+          code?: string;
+        } | null;
+        if (registered.response.status === 401 && failure?.code === 'owner_session_revoked')
+          throw new OwnerTrustError('owner_session_revoked');
         reportTransport({ deviceId: route.deviceId, state: 'unlock-required', paired: true, ...(key.ownerCredentialId ? { ownerCredentialId: key.ownerCredentialId } : {}) });
         throw new OwnerTrustError('owner_session_required');
       }
@@ -705,7 +727,7 @@ export async function exchange(
   });
   const recovered = await recoverOwner(result);
   if (recovered) return recovered;
-  await reportOwnerRequired(result, route.deviceId);
+  await reportOwnerRequired(result, route.deviceId, key.paired ? owner?.sessionId : undefined);
   if (!socketKeys)
     return { response: result, continuation: data.streamNext ?? null };
   return {
