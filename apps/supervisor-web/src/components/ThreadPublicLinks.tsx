@@ -4,11 +4,14 @@ import { useEffect, useState } from 'react';
 import type { ThreadExportTurnOptionDto } from '@pockymoe/shared';
 import { Copy, Link2, Trash2, Check } from 'lucide-react';
 import { request, fetchThreadExportTurns } from '../lib/api';
+import { createPublicLinkKey, encryptPublicSnapshot, rememberPublicLinkKey, forgetPublicLinkKey, publicLinkUrl } from '../lib/publicLinkCrypto';
 import { loadExportSnapshot } from '../lib/transcriptExport';
 interface SnapshotLink {
   id: string;
   createdAt: string;
-  turnCount: number;
+  turnCount?: number | null;
+  version?: number;
+  publicationToken?: string | null;
   live?: boolean;
 }
 export function ThreadPublicLinks({
@@ -50,10 +53,12 @@ export function ThreadPublicLinks({
     }).catch(error => { if (active) setError(error.message); });
     return () => { active = false; };
   }, [threadId]);
-  async function copy(id: string) {
+  async function copy(link: SnapshotLink) {
     try {
-      await navigator.clipboard.writeText(`${location.origin}/s/${id}`);
-      setCopied(id);
+      const url = publicLinkUrl(link.id, link.version);
+      if (!url) throw new Error();
+      await navigator.clipboard.writeText(url);
+      setCopied(link.id);
     } catch {
       setError(translate("sharing.linkCreatedCopyItUsingTheCopy"));
     }
@@ -66,17 +71,22 @@ export function ThreadPublicLinks({
       const turnIds = scope === 'all' ? turns.map(turn => turn.turnId) : [...selected];
       if (!turnIds.length) throw new Error(translate("sharing.selectAtLeastOneTurn"));
       const theme = document.querySelector('.thread-ui-shell')?.getAttribute('data-theme-effective') === 'light' ? 'light' : 'dark';
+      const encryptionKey = createPublicLinkKey();
       let snapshot;
       if (liveUpdates) {
         try {
-          const publication = await request<{ token: string; snapshot: unknown }>(`/api/threads/${threadId}/publications`, { method: 'POST', body: JSON.stringify({ turnIds, theme }) });
+          const publication = await request<{ token: string; snapshot: unknown }>(`/api/threads/${threadId}/publications`, { method: 'POST', body: JSON.stringify({ turnIds, theme, encryptionKey }) });
           publicationToken = publication.token;
-          snapshot = publication.snapshot;
+          if (!publication.snapshot || (publication.snapshot as { version?: number }).version !== 2)
+            throw new Error(translate("sharing.encryptedLiveLinkRequiresDeviceUpdate"));
+          // The relay reads the ciphertext capability; do not forward the device
+          // response as a snapshot (older devices may still return plaintext).
         } catch (error) {
           throw new Error(translate("sharing.unableToEnableLiveSharingMakeSure", { value1: error instanceof Error ? error.message : '' }));
         }
       } else {
-        snapshot = await loadExportSnapshot(threadId, { mode: 'selected', turnIds });
+        const projection = await loadExportSnapshot(threadId, { mode: 'selected', turnIds });
+        snapshot = await encryptPublicSnapshot({ ...projection, theme }, encryptionKey);
       }
       const link = await request<SnapshotLink>('/relay/thread-links', {
         method: 'POST',
@@ -85,12 +95,14 @@ export function ThreadPublicLinks({
           threadId,
           snapshot,
           publicationToken,
-          theme,
         }),
       });
+      rememberPublicLinkKey(link.id, encryptionKey);
+      link.version = 2;
+      if (publicationToken) link.publicationToken = publicationToken;
       publicationToken = undefined;
       setLinks((current) => [link, ...current]);
-      await copy(link.id);
+      await copy(link);
     } catch (e) {
       if (publicationToken) await request(`/api/publications/${publicationToken}`, { method: 'DELETE' }).catch(() => {});
       setError(e instanceof Error ? e.message : translate("sharing.unableToCreateLink"));
@@ -98,12 +110,16 @@ export function ThreadPublicLinks({
       setBusy(false);
     }
   }
-  async function revoke(id: string) {
+  async function revoke(link: SnapshotLink) {
+    const id = link.id;
     setBusy(true);
     setError('');
     try {
       await request(`/relay/public-links/${id}`, { method: 'DELETE' });
+      forgetPublicLinkKey(id);
       setLinks((current) => current.filter((link) => link.id !== id));
+      // A strict device needs the encrypted owner request to revoke its capability.
+      if (link.publicationToken) await request(`/api/publications/${link.publicationToken}`, { method: 'DELETE' });
     } catch (e) {
       setError(e instanceof Error ? e.message : translate("sharing.unableToRevokeLink"));
     } finally {
@@ -114,6 +130,7 @@ export function ThreadPublicLinks({
     <section className="thread-public-links space-y-4">
       <p className="thread-export-dialog-subtitle text-sm">
         {translate("sharing.anyoneWithTheLinkCanReadThe")}</p>
+      <p className="thread-export-dialog-subtitle text-sm">{translate("sharing.encryptedLinkKeysStayInThisBrowser")}</p>
       <fieldset className="thread-public-link-options" disabled={busy}>
         <legend>{translate("sharing.turnsToShare")}</legend>
         <div className="thread-public-link-scope">
@@ -152,7 +169,7 @@ export function ThreadPublicLinks({
         >
           <div className="mb-2 flex items-center justify-between gap-2">
             <span className="text-xs">
-              {link.live ? translate("sharing.live") : translate("sharing.snapshot")} · {link.turnCount} {translate("sharing.turns")}{' '}
+              {link.live ? translate("sharing.live") : translate("sharing.snapshot")} · {link.turnCount != null && <>{link.turnCount} {translate("sharing.turns")} </>}{' '}
               {new Date(link.createdAt).toLocaleString(getLocale())}
             </span>
             <button
@@ -160,7 +177,7 @@ export function ThreadPublicLinks({
               aria-label={translate("sharing.revokeShareLink")}
               title={translate("sharing.revokeLink")}
               disabled={busy}
-              onClick={() => void revoke(link.id)}
+              onClick={() => void revoke(link)}
             >
               <Trash2 size={16} />
             </button>
@@ -170,12 +187,13 @@ export function ThreadPublicLinks({
               readOnly
               aria-label={translate("sharing.publicShareURL")}
               className="min-w-0 flex-1 rounded border border-[var(--theme-border)] bg-transparent p-2 text-xs"
-              value={`${location.origin}/s/${link.id}`}
+              value={publicLinkUrl(link.id, link.version) ?? translate("sharing.linkKeyUnavailableInThisBrowser")}
             />
             <button
               className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-lg hover:bg-[var(--theme-bg)]"
               aria-label={translate("sharing.copyShareLink")}
-              onClick={() => void copy(link.id)}
+              disabled={!publicLinkUrl(link.id, link.version)}
+              onClick={() => void copy(link)}
             >
               {copied === link.id ? <Check size={18} /> : <Copy size={18} />}
             </button>
