@@ -2726,3 +2726,101 @@ mod compression_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod public_link_tests {
+    use super::*;
+    use aes_gcm::{
+        aead::{Aead, KeyInit, Payload},
+        Aes256Gcm, Nonce,
+    };
+    use base64::Engine;
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn live_publication_http_returns_only_ciphertext_decryptable_by_fragment_key() {
+        let (_dir, mut state) = crate::tunnel::tests::state_with_relay_url("http://localhost:8788");
+        // The fixture exercises HTTP serialization with local authentication disabled.
+        std::sync::Arc::get_mut(&mut state)
+            .unwrap()
+            .config
+            .auth_required = false;
+        let workspace = state
+            .create_workspace(pockymoe_protocol::CreateWorkspaceInput {
+                abs_path: Some(state.config.workspace_root.to_string_lossy().into()),
+                git_url: None,
+                label: Some("test".into()),
+            })
+            .unwrap();
+        let thread = state
+            .create_thread(pockymoe_protocol::CreateThreadInput {
+                workspace_id: workspace.id,
+                title: Some("Private publication title".into()),
+                provider: Some(pockymoe_protocol::Provider::Codex),
+                agent_id: Some("codex".into()),
+                model: "ios-e2e-stream".into(),
+                reasoning_effort: None,
+                approval_mode: "yolo".into(),
+                parent_thread_id: None,
+            })
+            .await
+            .unwrap();
+        let turn = uuid::Uuid::new_v4().to_string();
+        state.db.with(|conn| {
+            conn.execute("INSERT INTO thread_turns(id,thread_id,status,ordinal) VALUES (?1,?2,'completed',1)", (&turn, &thread.id))?;
+            Ok(())
+        }).unwrap();
+        let fixture: Value =
+            serde_json::from_str(include_str!("../../../tests/fixtures/public-link-v2.json"))
+                .unwrap();
+        let publication = state
+            .create_publication(
+                &thread.id,
+                pockymoe_runtime::publications::CreatePublication {
+                    turn_ids: vec![turn],
+                    theme: "light".into(),
+                    encryption_key: fixture["key"].as_str().unwrap().into(),
+                },
+            )
+            .await
+            .unwrap();
+        let response = router(state)
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri(format!(
+                        "/api/publications/{}",
+                        publication["token"].as_str().unwrap()
+                    ))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let value: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(value["version"], 2);
+        assert_eq!(value.as_object().unwrap().len(), 3);
+        let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        let iv = b64.decode(value["iv"].as_str().unwrap()).unwrap();
+        let ciphertext = b64.decode(value["ciphertext"].as_str().unwrap()).unwrap();
+        let key = b64.decode(fixture["key"].as_str().unwrap()).unwrap();
+        let plaintext = Aes256Gcm::new_from_slice(&key)
+            .unwrap()
+            .decrypt(
+                Nonce::from_slice(&iv),
+                Payload {
+                    msg: &ciphertext,
+                    aad: b"pockymoe-public-link-v1",
+                },
+            )
+            .unwrap();
+        let snapshot: Value = serde_json::from_slice(&plaintext).unwrap();
+        assert_eq!(snapshot["title"], "Private publication title");
+        assert_eq!(snapshot["live"], true);
+        assert_eq!(snapshot["theme"], "light");
+        assert_eq!(snapshot["turnCount"], 1);
+    }
+}

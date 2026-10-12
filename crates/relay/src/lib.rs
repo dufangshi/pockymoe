@@ -24,7 +24,7 @@ pub use store::{
     RelayMigrationOptions, RelayMigrationReport,
 };
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::{Path as FsPath, PathBuf};
 use std::sync::{Arc, Mutex as StdMutex};
