@@ -1,13 +1,11 @@
-import { setLocale, translate, useI18n } from '@pockymoe/thread-ui/i18n';
+import { setLocale } from '@pockymoe/thread-ui/i18n';
 /// <reference lib="webworker" />
+import { relayWorkerFetch } from './relayServiceWorkerFetch';
 import { installPushHandlers } from './notificationWorker';
 import {
   clearTransportKeyCache,
   deviceRoute,
-  exchange,
-  scopeFromPage,
   setTransportReporter,
-  TransportError,
 } from './relayTransportCrypto';
 const worker = self as unknown as ServiceWorkerGlobalScope;
 installPushHandlers(worker);
@@ -44,37 +42,8 @@ worker.addEventListener('fetch', (event) => {
     return;
   event.respondWith(
     (async () => {
-      try {
-        const client = event.clientId
-          ? await worker.clients.get(event.clientId)
-          : null;
-        return (
-          await exchange(
-            request,
-            client ? scopeFromPage(client.url, deviceRoute(url)?.deviceId) : undefined,
-          )
-        ).response;
-      } catch (error) {
-        return new Response(
-          JSON.stringify({
-            code:
-              error instanceof TransportError
-                ? error.code
-                : 'transport_unavailable',
-            message:
-              error instanceof Error
-                ? error.message
-                : translate("workbench.encryptedConnectionFailed"),
-          }),
-          {
-            status: 502,
-            headers: {
-              'content-type': 'application/json',
-              'cache-control': 'no-store',
-            },
-          },
-        );
-      }
+      const client = event.clientId ? await worker.clients.get(event.clientId) : null;
+      return relayWorkerFetch(request, client?.url);
     })(),
   );
 });

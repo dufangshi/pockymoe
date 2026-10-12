@@ -10,7 +10,7 @@ if (!globalThis.URL.revokeObjectURL) {
   globalThis.URL.revokeObjectURL = (() => undefined) as typeof URL.revokeObjectURL;
 }
 
-if (!globalThis.window.matchMedia) {
+if (typeof globalThis.window !== 'undefined' && !globalThis.window.matchMedia) {
   globalThis.window.matchMedia = ((query: string) => ({
     matches: false,
     media: query,

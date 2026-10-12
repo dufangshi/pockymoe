@@ -1,3 +1,4 @@
+import { clearOwnerSession } from './ownerSession';
 import { confirmWorkspaceDocumentLeave, type WorkspaceDocumentSnapshot, type WorkspaceDocumentSaveInput, type WorkspaceSaveReceipt } from "@pockymoe/thread-ui";
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { encryptedBrowserFetch, encryptedRelaySocket } from './relayTransport';
@@ -660,6 +661,7 @@ export async function relayLogout() {
   const result = await request<RelaySessionDto>('/relay/auth/logout', {
     method: 'POST',
   });
+  await clearOwnerSession();
   setStoredRelayToken(null);
   setSelectedRelayDeviceId(null);
   setSelectedRelayThreadId(null);
