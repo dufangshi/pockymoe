@@ -241,7 +241,6 @@ async fn api_only_redirects_all_web_assets_and_oauth_returns_to_web() {
         for path in [
             "/",
             "/devices/d/threads/t?view=all",
-            "/assets/relayServiceWorker-test.js",
             "/setup.sh",
             "/setup.ps1",
             "/api/config/runtime",
@@ -331,6 +330,62 @@ fn web_origin_validation_and_callback_addressing_are_separate() {
         config.callback_url(&HeaderMap::new(), OAuthProvider::Google),
         "https://relay.example.test/relay/auth/oauth/google/callback"
     );
+}
+
+#[tokio::test]
+async fn api_only_retires_old_workers_without_redirecting_or_granting_scope() {
+    let f = WebFixture::new(true).await;
+    for path in [
+        "/assets/relayServiceWorker-oldHash.js",
+        "/service-worker.js",
+        "/relayServiceWorker.js",
+    ] {
+        for method in [Method::GET, Method::HEAD] {
+            let response = f
+                .client
+                .request(method.clone(), format!("{}{path}", f.base))
+                .header("service-worker", "script")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+            assert_eq!(
+                response.headers()[header::CONTENT_TYPE],
+                "application/javascript; charset=utf-8"
+            );
+            assert!(!response.headers().contains_key("service-worker-allowed"));
+            assert!(!response.headers().contains_key(header::LOCATION));
+            let body = response.text().await.unwrap();
+            if method == Method::HEAD {
+                assert!(body.is_empty());
+            } else {
+                assert_eq!(body, include_str!("retired_service_worker.js"));
+                assert!(body.contains("self.skipWaiting()"));
+                assert!(body.contains("self.registration.unregister()"));
+                assert!(body.contains("client.navigate(client.url)"));
+                assert!(!body.contains("'fetch'"));
+            }
+        }
+    }
+    let same = WebFixture::new(false).await;
+    let response = same
+        .request(Method::GET, "/assets/relayServiceWorker-test.js")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["service-worker-allowed"], "/");
+    assert_eq!(response.text().await.unwrap(), "// worker");
+    for path in [
+        "/assets/relayServiceWorker-oldHash.js/map.js",
+        "/assets/index-old.js",
+    ] {
+        assert_eq!(
+            f.request(Method::GET, path).send().await.unwrap().status(),
+            StatusCode::TEMPORARY_REDIRECT
+        );
+    }
 }
 
 #[tokio::test]
