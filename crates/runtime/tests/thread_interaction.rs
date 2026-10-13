@@ -30,6 +30,7 @@ fn setup() -> (tempfile::TempDir, Arc<Supervisor>) {
         acp_command: None,
         acp_startup_timeout_ms: 1000,
         fake_runtime: true,
+        supervisor_restart_strategy: Default::default(),
     };
     let db = Database::open(&config.database_url).unwrap();
     let state = Arc::new(Supervisor::new(

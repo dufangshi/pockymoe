@@ -29,6 +29,7 @@ fn test_config(dir: &std::path::Path) -> RuntimeConfig {
         acp_command: None,
         acp_startup_timeout_ms: 1000,
         fake_runtime: true,
+        supervisor_restart_strategy: Default::default(),
     }
 }
 
@@ -256,8 +257,9 @@ async fn update_intent_survives_crash_before_cancellation_and_failed_reconnect()
         0
     );
 }
-async fn verify_update_recovery(restart: bool) {
-    let (_dir, supervisor, _workspace, thread) = seeded_thread(Provider::Codex).await;
+async fn verify_update_recovery(restart: bool, strategy: pockymoe_runtime::RestartStrategy) {
+    let (_dir, mut supervisor, _workspace, thread) = seeded_thread(Provider::Codex).await;
+    supervisor.config.supervisor_restart_strategy = strategy;
     let supervisor = Arc::new(supervisor);
     supervisor.spawn_live_item_persister();
     let mut events = supervisor.bus.subscribe();
@@ -287,6 +289,14 @@ async fn verify_update_recovery(restart: bool) {
         .await
         .unwrap();
     let guard = supervisor.prepare_update_restart().await.unwrap();
+    // A separate connection sees committed recovery intent before the caller
+    // can exit; neither the live process nor its in-memory state is required.
+    let journal = rusqlite::Connection::open(&supervisor.config.database_url).unwrap();
+    let persisted: i64 = journal.query_row(
+        "SELECT count(*) FROM thread_pending_steers WHERE delivery='update-resume' AND thread_id=?1",
+        [&thread.id], |r| r.get(0)).unwrap();
+    assert_eq!(persisted, 1);
+    drop(journal);
     running.await.unwrap().unwrap();
     assert_eq!(
         supervisor.get_thread(&thread.id).unwrap().status,
@@ -322,6 +332,7 @@ async fn verify_update_recovery(restart: bool) {
         supervisor
     };
     state.spawn_live_item_persister();
+    assert_eq!(state.config.supervisor_restart_strategy, strategy);
     assert!(state.defer_update_recovery());
     assert!(state
         .prompt(
@@ -387,12 +398,17 @@ async fn verify_update_recovery(restart: bool) {
 
 #[tokio::test]
 async fn supervisor_update_recovers_session_and_queue_after_process_restart() {
-    verify_update_recovery(true).await;
+    verify_update_recovery(true, pockymoe_runtime::RestartStrategy::ExternalUpdater).await;
+}
+
+#[tokio::test]
+async fn supervisor_update_host_managed_journal_is_durable_before_exit_and_recovers_once() {
+    verify_update_recovery(true, pockymoe_runtime::RestartStrategy::HostManaged).await;
 }
 
 #[tokio::test]
 async fn supervisor_update_failure_resumes_old_process_without_duplicate_turns() {
-    verify_update_recovery(false).await;
+    verify_update_recovery(false, pockymoe_runtime::RestartStrategy::ExternalUpdater).await;
 }
 
 #[tokio::test]

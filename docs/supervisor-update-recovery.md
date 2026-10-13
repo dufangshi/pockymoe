@@ -15,9 +15,9 @@ Through a relay, use the selected device's `/relay/devices/<deviceId>` prefix an
 
 1. Reject concurrent updates and avoid pausing anything if no update is available.
 2. Block new turns, record the currently running turn IDs in SQLite, and request cancellation. Wait for runtime cancellation and history persistence before installing/restarting.
-3. Launch an updater outside the Supervisor's process lifetime: launchd on macOS, systemd user service on Linux, WMI on Windows. Linux machines without a user service manager use `setsid` to create a separate OS session.
-4. Stage an immutable GitHub native release and Web bundle in a versioned user-owned directory, verify SHA256 and the binary version, stop the old PID, then start the new Supervisor with its existing configuration. Verify HTTP health, process/version change, and relay reconnection in relay mode. The `verifying` phase distinguishes a started process from a fully verified operation. Before the new process is launched, installation failure can restore the previous installation. Once launch has been attempted, retain the current installation: even an unsuccessful startup may have migrated the database, so a package-only downgrade is unsafe.
-5. On startup, wait for the independent worker to finish health/relay verification, then automatically continue only tasks carrying an update recovery marker. The recovery journal remains intact while verification is active. Retain the native session, workspace, model, permission settings and queued instructions. Continuation tells the agent to inspect partial work before resuming; a filesystem operation or external request already completed cannot be rolled back automatically.
+3. Use the configured restart strategy. `external-updater` (the default) launches an updater outside the Supervisor's process lifetime: launchd on macOS, systemd user service on Linux, WMI on Windows, or `setsid` on Linux without a user service manager. `host-managed` performs installation in the running process and hands relaunch to its owning process manager; it does not spawn an independent updater or invoke a service manager.
+4. Stage an immutable GitHub native release and Web bundle in a versioned user-owned directory and verify SHA256 and the binary version. With `external-updater`, stop the old PID, switch the current installation, start the new Supervisor with its existing configuration, and verify HTTP health, process/version change and relay reconnection in relay mode. With `host-managed`, durably write the startup-verification handoff alongside the existing SQLite paused-turn journal, switch the current installation, then exit with **code 0**. The owner must relaunch on normal exit from a stable launch path. Plain restart uses the same strategy and handoff, without downloading or installing a package. Before relaunch, installation failure can restore the previous installation. Once relaunch is possible, retain the current installation: even an unsuccessful startup may have migrated the database, so a package-only downgrade is unsafe.
+5. On startup, `external-updater` waits for its independent worker to finish verification. With `host-managed`, the new process checks the persisted handoff and its running version after binding the HTTP listener, waits for relay reconnection when applicable, and records `completed` or `failed` through the management API. This also happens when there were no paused turns. The `verifying` phase distinguishes a started process from a verified operation. Automatically continue only tasks carrying an update recovery marker after successful verification; preserve markers on a wrong-version relaunch or failed relay verification. Retain the native session, workspace, model, permission settings and queued instructions. Continuation tells the agent to inspect partial work before resuming; a filesystem operation or external request already completed cannot be rolled back automatically.
 
 The recovery marker is consumed in the same SQLite transaction as the new turn. Repeated recovery notifications do not create duplicate turns. Queued prompts follow the recovered task. Internal recovery markers do not appear as pending user input; the actual continuation is recorded in conversation history for transparency.
 
@@ -25,12 +25,57 @@ An ordinary crash or a user-interrupted thread does **not** opt into recovery. A
 
 This is task continuation, not transparent process checkpointing. Running shell commands may have been interrupted or may have already performed side effects; agents must inspect state before repeating them. A very old Supervisor that lacks this API still needs a one-time bootstrap upgrade.
 
+## Configuring restart ownership
+
+Set `POCKYMOE_SUPERVISOR_RESTART_STRATEGY=host-managed` in the owner's launch environment
+when an external process manager already relaunches the Supervisor on exit. Leave it
+unset, or set `external-updater`, for the existing standalone behavior. Invalid values
+are rejected at startup. Native device configuration can also store this environment
+setting; a saved value takes precedence over the launch environment. The public Rust
+type is `pockymoe_runtime::RestartStrategy`, with the runtime configuration field
+`supervisor_restart_strategy`. Restart ownership is independent of connectivity mode.
+
+The owner must retain the same configuration, database and device identity, and launch
+through `~/.local/share/remote-codex/native/current/remote-codex` or the
+`~/.local/bin/pockymoe` symlink. Its Web bundle path must also follow `current/web`,
+or be loaded from the current native installation by `device-run`. Never save a command
+containing `native/releases/<version>/...`: it will continue starting the old binary.
+
+On Windows, `native/current.json` is the authoritative current-installation pointer.
+Use a stable owner-controlled launcher that reads it on each relaunch and invokes its
+`executable` (and supplies its `webDist` when running `supervisor` directly). For example,
+a persistent PowerShell script can forward the owner's configured command arguments:
+
+```powershell
+$nativeRoot = Join-Path $env:USERPROFILE '.local/share/remote-codex/native'
+$installed = Get-Content (Join-Path $nativeRoot 'current.json') -Raw | ConvertFrom-Json
+$env:POCKYMOE_SUPERVISOR_RESTART_STRATEGY = 'host-managed'
+$env:POCKYMOE_WEB_DIST_DIR = $installed.webDist
+& $installed.executable @args
+exit $LASTEXITCODE
+```
+
+Configure the owner to relaunch the script, with `supervisor` or `device-run` and its
+configuration arguments, on exit code 0. The update and exit contract is identical on
+Linux, macOS and Windows; no particular host product is detected.
+
+Management snapshots expose `restartStrategy`, and host-managed snapshots also expose
+`restartExitCode`, `launchPath` and a `restartDiagnostic` for versioned executable paths.
+`restartDiagnosticCode: versioned-launch-path` identifies a direct versioned launch;
+`resolved-release-path` is advisory because a correct Unix stable symlink still resolves
+to a versioned executable. The Supervisor cannot inspect the owner's saved launch
+command, including wrapper scripts. A wrong-version relaunch leaves the installation
+and journal intact across subsequent startups. Correct the owner command and relaunch
+the installed runtime to complete verification and recovery. After a relay verification
+failure, restore connectivity and explicitly restart, or relaunch through the owner.
+
 ## Installation ownership
 
 GitHub Releases are authoritative. See [native installation and migration](github-runtime.md).
 The native updater stages each version under `~/.local/share/remote-codex/native/releases/`,
 verifies every downloaded asset and the executable's version, and switches the current
-installation only after the original Supervisor has drained and stopped. Source and
+installation after the original Supervisor has drained (and, with `external-updater`,
+stopped). Source and
 unmanaged executables are never silently overwritten. Database and device identity
 paths are preserved. A failed download leaves the current installation intact.
 
@@ -46,6 +91,9 @@ stopping anything. Legacy npm tests and incident records below remain historical
 Fast tests:
 
 ```sh
+cargo test -p pockymoe-runtime --lib restart_strategy --locked
+cargo test -p pockymoe-runtime --test hello supervisor_update --locked
+cargo test -p pockymoe-supervisor --lib distribution:: --locked
 node --test scripts/supervisor-update.test.mjs scripts/installation.test.mjs
 ```
 
@@ -68,8 +116,9 @@ access blocked. It makes no model calls.
 
 ## Confirming the new process
 
-The worker treats an update as successful only when the new process's health
-endpoint reports `relayConnected: true`. The Supervisor sets the flag after the
+In relay mode, the external worker treats an update as successful only when the new
+process's health endpoint reports `relayConnected: true`. Host-managed startup checks
+the same in-process connection flag before completing its handoff. The Supervisor sets the flag after the
 relay's registration greeting and clears it when its tunnel exits. An explicit
 `relayConnected: false` wins over any older connection log, and an empty log
 override falls back to the default path.

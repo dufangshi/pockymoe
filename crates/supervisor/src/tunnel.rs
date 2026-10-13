@@ -1115,6 +1115,7 @@ pub(crate) mod tests {
             acp_command: None,
             acp_startup_timeout_ms: 1_000,
             fake_runtime: true,
+            supervisor_restart_strategy: Default::default(),
         };
         std::fs::create_dir_all(&config.workspace_root).unwrap();
         let database = Database::open(&config.database_url).unwrap();

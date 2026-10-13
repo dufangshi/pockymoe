@@ -3,7 +3,7 @@ use super::{
     service, setup, *,
 };
 use anyhow::{bail, ensure};
-use pockymoe_runtime::Supervisor;
+use pockymoe_runtime::{RestartStrategy, Supervisor};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
@@ -11,9 +11,18 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+mod host_managed;
+pub(crate) use host_managed::{complete_host_managed_startup, host_managed_pending};
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ContextData {
+    #[serde(default)]
+    restart_strategy: RestartStrategy,
+    #[serde(default)]
+    launch_executable: PathBuf,
+    #[serde(default)]
+    process_started_at: String,
     running_version: String,
     pid: u32,
     executable: PathBuf,
@@ -65,7 +74,7 @@ fn job(context: &ContextData) -> Value {
     let stopped = job["workerPid"]
         .as_u64()
         .is_some_and(|p| !service::alive(p as u32));
-    if active(&job) && (scheduled_stale || stopped) {
+    if active(&job) && job["restartStrategy"] != "host-managed" && (scheduled_stale || stopped) {
         job["phase"] = json!("failed");
         job["error"] = json!("The independent native update worker stopped unexpectedly. Check its log before retrying.");
         let _ = write(&file, &job);
@@ -75,6 +84,9 @@ fn job(context: &ContextData) -> Value {
 }
 fn context(state: &Supervisor) -> Result<ContextData> {
     Ok(ContextData {
+        restart_strategy: state.config.supervisor_restart_strategy,
+        launch_executable: std::env::args_os().next().unwrap_or_default().into(),
+        process_started_at: state.started_at.clone(),
         running_version: env!("CARGO_PKG_VERSION").into(),
         pid: std::process::id(),
         executable: std::env::current_exe()?,
@@ -92,6 +104,11 @@ fn compatible_context() -> Result<ContextData> {
         std::env::var(key).with_context(|| format!("Missing maintenance context {key}"))
     };
     Ok(ContextData {
+        restart_strategy: std::env::var("POCKYMOE_SUPERVISOR_RESTART_STRATEGY")
+            .unwrap_or_default()
+            .parse()?,
+        launch_executable: std::env::args_os().next().unwrap_or_default().into(),
+        process_started_at: String::new(),
         running_version: value("POCKYMOE_UPDATE_RUNNING_VERSION")?,
         pid: value("POCKYMOE_UPDATE_PID")?.parse()?,
         executable: value("POCKYMOE_UPDATE_EXECUTABLE")?.into(),
@@ -124,6 +141,12 @@ async fn action(context: ContextData, action: &str) -> Result<Value> {
     let migrate = npm_launcher && !device_manager;
     let allowed = (release_binary || migrate) && context.database.is_absolute();
     let mut base = json!({"runningVersion":context.running_version,"installedVersion":installed,"canUpdate":allowed,"canRestart":allowed && !migrate,"manager":if migrate {"npm"} else {"github-release"},"nativeMigration":migrate,"path":context.executable,"job":job(&context),"releaseUrl":releases::REPO});
+    host_managed::add_restart_status(&context, &mut base);
+    if migrate && context.restart_strategy == RestartStrategy::HostManaged {
+        base["canUpdate"] = json!(false);
+        base["reason"] = json!("Host-managed updates require a native installation and a stable native launch command. Run the GitHub setup command first.");
+        return Ok(base);
+    }
     if !allowed {
         base["reason"] = json!(if npm_launcher && device_manager {
             "This Windows Device Manager device runs the retired npm package. Run the Windows setup command from the Devices page to move it to the native GitHub runtime."
@@ -172,7 +195,7 @@ async fn action(context: ContextData, action: &str) -> Result<Value> {
     let lock = lock_path(&context);
     std::fs::create_dir(&lock).context("An update is already in progress")?;
     let failed_status = status_file.clone();
-    let result = (|| {
+    let result = async {
         let directory = status_file
             .parent()
             .unwrap()
@@ -186,6 +209,10 @@ async fn action(context: ContextData, action: &str) -> Result<Value> {
             status_file,
             lock: lock.clone(),
         };
+        if plan.context.restart_strategy == RestartStrategy::HostManaged {
+            base["job"] = host_managed::prepare_handoff(&plan).await?;
+            return Ok(base);
+        }
         let worker = directory.join(binary_name());
         std::fs::copy(std::env::current_exe()?, &worker)?;
         executable(&worker)?;
@@ -205,7 +232,7 @@ async fn action(context: ContextData, action: &str) -> Result<Value> {
         )?;
         base["job"] = scheduled;
         Ok(base)
-    })();
+    }.await;
     if let Err(error) = &result {
         let _ = write(
             &failed_status,
@@ -229,6 +256,13 @@ pub async fn maintenance_cli(action_name: &str) -> Result<Value> {
 }
 fn set_status(plan: &Plan, phase: &str, extra: Value) -> Result<()> {
     let mut status = json!({"phase":phase,"action":if plan.restart {"restart"} else {"update"},"targetVersion":plan.version,"runningVersion":plan.context.running_version,"workerPid":std::process::id(),"updatedAt":now(),"logPath":plan.directory.join("update.log")});
+    status["restartStrategy"] = json!(plan.context.restart_strategy);
+    if plan.context.restart_strategy == RestartStrategy::HostManaged {
+        status.as_object_mut().unwrap().remove("workerPid");
+        status.as_object_mut().unwrap().remove("logPath");
+        status["previousProcessId"] = json!(plan.context.pid);
+        status["previousProcessStartedAt"] = json!(plan.context.process_started_at);
+    }
     for (key, value) in extra.as_object().unwrap() {
         status[key] = value.clone();
     }
@@ -269,6 +303,10 @@ impl Drop for WorkerCleanup {
 }
 pub async fn run_worker(path: PathBuf) -> Result<()> {
     let plan: Plan = read(&path)?;
+    ensure!(
+        plan.context.restart_strategy == RestartStrategy::ExternalUpdater,
+        "Host-managed restarts must not launch an independent worker"
+    );
     ensure!(
         path.parent() == Some(plan.directory.as_path()) && plan.context.database.is_absolute(),
         "Invalid update plan"
@@ -447,6 +485,9 @@ mod tests {
     fn native_update_recovers_stale_worker_and_releases_private_lock() {
         let root = tempfile::tempdir().unwrap();
         let context = ContextData {
+            restart_strategy: RestartStrategy::ExternalUpdater,
+            launch_executable: PathBuf::new(),
+            process_started_at: String::new(),
             running_version: "1.0.0".into(),
             pid: std::process::id(),
             executable: root.path().join(binary_name()),
@@ -479,6 +520,9 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         drop(listener);
         let context = ContextData {
+            restart_strategy: RestartStrategy::ExternalUpdater,
+            launch_executable: PathBuf::new(),
+            process_started_at: String::new(),
             running_version: "1.0.0".into(),
             pid: std::process::id(),
             executable: root.path().join(binary_name()),

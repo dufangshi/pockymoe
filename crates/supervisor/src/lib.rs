@@ -67,7 +67,8 @@ pub async fn serve(state: Arc<Supervisor>) -> Result<()> {
             }
         });
     }
-    if state.defer_update_recovery() {
+    // A restart with no active turns still needs its startup outcome recorded.
+    if state.defer_update_recovery() || distribution::host_managed_pending(&state) {
         tokio::spawn(management::recover_after_update(state.clone()));
     } else {
         state.spawn_inbox_recovery();

@@ -374,6 +374,7 @@ fn test_config(root: &std::path::Path, database_url: &std::path::Path) -> Runtim
         acp_command: None,
         acp_startup_timeout_ms: 1_000,
         fake_runtime: true,
+        supervisor_restart_strategy: Default::default(),
     }
 }
 

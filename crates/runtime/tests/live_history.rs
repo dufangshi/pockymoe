@@ -32,6 +32,7 @@ async fn running_thread() -> (TempDir, Arc<Supervisor>, String) {
         acp_command: None,
         acp_startup_timeout_ms: 1000,
         fake_runtime: true,
+        supervisor_restart_strategy: Default::default(),
     };
     let db = Database::open(&config.database_url).unwrap();
     let runtime: SharedRuntime = Arc::new(FakeRuntime::new(Provider::Codex));

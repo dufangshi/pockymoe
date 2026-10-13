@@ -121,6 +121,7 @@ async fn spawn_supervisor_state(
         acp_command: None,
         acp_startup_timeout_ms: 1000,
         fake_runtime: true,
+        supervisor_restart_strategy: Default::default(),
     };
     let db = Database::open(&config.database_url).unwrap();
     let fakes: Vec<Arc<FakeRuntime>> = providers
@@ -435,6 +436,7 @@ async fn spawn_authenticated_supervisor() -> (tempfile::TempDir, u16) {
         acp_command: None,
         acp_startup_timeout_ms: 1000,
         fake_runtime: true,
+        supervisor_restart_strategy: Default::default(),
     };
     let db = Database::open(&config.database_url).unwrap();
     let state = Arc::new(Supervisor::new(
