@@ -10,12 +10,14 @@ import {
   steerSubmittedPrompt, updateThreadSettings, type SendThreadPromptRequestInput,
 } from '../lib/api';
 import { translate as t } from '@pockymoe/thread-ui/i18n';
+import { useThreadView } from '../lib/threadView';
 import { createClientRequestId, prependTurns } from './threadDetailModel';
 import { useScopedState } from './useScopedState';
 
 /** A second conversation controller: subscribes to its own device, never auto-resumes,
  * acknowledges reads, mounts device management, or changes the host route. */
-export function useWorkbenchReference(device: string, threadId: string | null, hostDevice = device) {
+/** `displayed`: the split shows this conversation, so a controllable one counts as viewed. */
+export function useWorkbenchReference(device: string, threadId: string | null, hostDevice = device, displayed = false) {
   const source = `${device}:${threadId ?? ''}`;
   const [detail, setDetail] = useScopedState<ThreadDetailDto | null>(source, null);
   const [error, setError] = useScopedState<string | null>(source, null);
@@ -53,7 +55,8 @@ export function useWorkbenchReference(device: string, threadId: string | null, h
     let alive = true;
     void Promise.allSettled([
       relay ? fetchRelayAccess({ deviceId: device, threadId }) : Promise.resolve(null),
-      fetchThreadCapabilitySnapshot(threadId, device), fetchThreadModels(threadId, device),
+      // Reading a reference must not start its harness.
+      fetchThreadCapabilitySnapshot(threadId, device, { load: false }), fetchThreadModels(threadId, device),
     ]).then(([acl, caps, model]) => {
       if (!alive || !isCurrent()) return;
       if (acl.status === 'fulfilled') { setAccess(acl.value); setAccessReady(true); }
@@ -94,13 +97,21 @@ export function useWorkbenchReference(device: string, threadId: string | null, h
   const onEvent = useCallback((event: ThreadEventEnvelope) => {
     if (device === hostDevice && event.threadId === threadId) refreshRef.current();
   }, [threadId, device, hostDevice]);
+  // A reference on the host device is reported on the host page's socket.
+  const viewSocketRef = useRef<WebSocket | null>(null);
+  const threadView = useThreadView(viewSocketRef, threadId && device !== hostDevice && displayed && canControl ? [threadId] : []);
   useEffect(() => {
     if (!threadId || device === hostDevice) return;
     const socket = connectSupervisorEvents(event => {
       if (event.threadId === threadId) refreshRef.current();
     }, { deviceId: device === 'local' ? null : device, threadId });
-    return () => socket.close();
-  }, [device, hostDevice, threadId]);
+    viewSocketRef.current = socket;
+    socket.addEventListener('open', () => threadView.socketOpened());
+    return () => {
+      viewSocketRef.current = null;
+      socket.close();
+    };
+  }, [device, hostDevice, threadId, threadView]);
 
   async function mutate(action: () => Promise<unknown>) {
     if (!threadId || !isCurrent() || !canControl || owner.mutation) return false;

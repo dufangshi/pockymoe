@@ -123,6 +123,40 @@ and Windows/macOS/NVIDIA provider fixtures. Browser regressions cover both deskt
 and mobile (including 320px width), details, keyboard dismissal and stale samples.
 Sensor availability on real hardware remains conditional on its drivers and access.
 
+## Harness memory
+
+The memory row expands, like the CPU row, into the memory of loaded harnesses.
+Only an expanded row reads `GET /api/device/processes` (the same owner and
+device-scoped access as the metrics, with the relay device prefix). It refreshes
+every 3 seconds while expanded, and immediately on `thread.runtime.loaded` and
+`thread.runtime.released` events from the page's socket. A Supervisor without
+the endpoint (404) leaves the memory row a plain reading.
+
+The first line shows the Supervisor's total and, beside it, the harness total;
+an info mark's tooltip names the measure (`metric`: Linux PSS with an RSS
+fallback, macOS physical footprint, Windows private working set). A notice
+appears when the loaded-thread or harness-memory limit is exceeded. A gear at
+the right opens Settings → Resources.
+
+Each loaded thread has one row: its harness, title, state and memory. The state
+is Running, another busy reason (awaiting a reply, queued input, background
+task, subagent, goal), Viewing while a page displays it, or idle minutes since
+its last activity. Expanding a row lists its processes by role (adapter, agent,
+bridge, MCP, tool) with their memory; a row marked ⇄ shares a process with
+other threads, which end with it. Other Supervisor child processes are listed
+under a collapsed group.
+
+**End** calls `POST /api/threads/{id}/release`. A settled thread is released
+directly. A busy thread, or one that answers 409 because a turn has started,
+first asks for confirmation and then sends `{"interrupt": true}`. The harness
+loads again the next time the thread is used.
+
+Settings → Resources holds the release policy from
+`GET`/`PUT /api/harness-resources/settings`: idle release minutes (1–1440,
+default 10), a loaded-thread limit (1–200) and a harness memory limit entered in
+GiB (at least 0.25 GiB, sent as bytes). Each can be turned off; the limits are
+off by default. The form rejects values outside these ranges before saving.
+
 # Turn progress indicator
 
 Running turns retain three animated dots. `Last progress · Ns ago` shows the age

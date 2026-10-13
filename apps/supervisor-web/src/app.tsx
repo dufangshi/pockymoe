@@ -226,6 +226,7 @@ function AppShell({
   const [navOpen, setNavOpen] = useState(false);
   const composerPreferences = useComposerPreferences();
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsSection, setSettingsSection] = useState<string | null>(null);
   const [showReasoningSummaries, setShowReasoningSummaries] = useState(() => {
     try { return localStorage.getItem('remote-codex-show-reasoning-summaries') === 'true'; } catch { return false; }
   });
@@ -278,8 +279,15 @@ function AppShell({
     toggleNav: () => setNavOpen((current) => !current),
     closeNav: () => setNavOpen(false),
     settingsOpen,
+    settingsSection,
     openSettings: () => {
       setNavOpen(false);
+      setSettingsSection(null);
+      setSettingsOpen(true);
+    },
+    openSettingsSection: (sectionId: string) => {
+      setNavOpen(false);
+      setSettingsSection(sectionId);
       setSettingsOpen(true);
     },
     closeSettings: () => {

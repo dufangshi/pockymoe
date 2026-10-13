@@ -156,6 +156,8 @@ import { useMobileComposerLayout } from './useMobileComposerLayout';
 import { useThreadAuxiliaryActions } from './useThreadAuxiliaryActions';
 import { useThreadListPolling } from './useThreadListPolling';
 import { useEventDrivenRefresh } from '../lib/useEventDrivenRefresh';
+import { useThreadView } from '../lib/threadView';
+import { announceHarnessRuntimeEvent } from '../lib/harnessRuntimeEvents';
 import { useThreadWorkspaceAdapter } from './useThreadWorkspaceAdapter';
 import { ThreadCreateForm } from './thread-create/ThreadCreateForm';
 
@@ -748,7 +750,15 @@ export function ThreadDetailPage() {
   }, [routeKey, setTerminalOpenState]);
   const [terminalOpenRequest, setTerminalOpenRequest] = useState<TerminalOpenRequest | null>(null);
   const [chatDraft, setChatDraft, referenceDraft, setReferenceDraft] = useThreadDrafts(routeKey, `${referenceDevice}:${referenceId ?? ''}`);
-  const referenceController = useWorkbenchReference(referenceDevice, referenceId, relayRouteDeviceId ?? 'local');
+  const referenceShown = Boolean(referenceId) && workbenchPresentation.value.mode === 'thread';
+  const referenceController = useWorkbenchReference(referenceDevice, referenceId, relayRouteDeviceId ?? 'local', referenceShown);
+  // The Supervisor keeps displayed harnesses loaded: the primary thread and a
+  // split showing a conversation on the same device (the split reports its own
+  // device). View-only shares never count.
+  const threadView = useThreadView(supervisorSocketRef, [
+    ...(relayThreadCanControl ? [id] : []),
+    ...(referenceShown && referenceController.canControl && referenceDevice === (relayRouteDeviceId ?? 'local') ? [referenceId!] : []),
+  ]);
   const referenceEventRef = useRef(referenceController.onEvent);
   referenceEventRef.current = referenceController.onEvent;
   const onCompareThread = useCallback((threadId: string) => {
@@ -1882,6 +1892,7 @@ export function ThreadDetailPage() {
 
     const handleSocketEvent = (event: ThreadEventEnvelope) => {
       referenceEventRef.current(event);
+      announceHarnessRuntimeEvent(event);
       if (event.threadId !== id) {
         // The current thread reaches the list through its own detail reads.
         if (THREAD_LIST_EVENT_TYPES.has(event.type) && !isPendingSteerUpdate(event)) {
@@ -2344,6 +2355,7 @@ export function ThreadDetailPage() {
         } else {
           refreshThreadDetailSilently();
         }
+        threadView.socketOpened();
         sendSupervisorPing();
         syncRealtimeConnectionState();
       });
@@ -2492,6 +2504,7 @@ export function ThreadDetailPage() {
     queueLiveOutputDelta,
     loadPageContext,
     syncRealtimeConnectionState,
+    threadView,
     upsertLiveTimelineItem,
   ]);
 
