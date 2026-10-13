@@ -182,7 +182,7 @@ mod tests {
     }
 
     fn state(root: &Path) -> Supervisor {
-        let mut config = pockymoe_runtime::RuntimeConfig::from_env();
+        let mut config = pockymoe_runtime::RuntimeConfig::from_env().unwrap();
         config.supervisor_restart_strategy = RestartStrategy::HostManaged;
         config.database_url = root.join("device.sqlite");
         config.workspace_root = root.join("workspaces");
@@ -416,7 +416,9 @@ mod tests {
         };
         let root = home();
         assert_eq!(
-            pockymoe_runtime::RuntimeConfig::from_env().supervisor_restart_strategy,
+            pockymoe_runtime::RuntimeConfig::from_env()
+                .unwrap()
+                .supervisor_restart_strategy,
             RestartStrategy::HostManaged
         );
         let installed = releases::Installed {
