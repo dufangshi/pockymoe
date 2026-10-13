@@ -323,7 +323,101 @@ fn watch_entries(
         .collect())
 }
 
+/// How long after its due time a `ScheduleWakeup` still holds the harness,
+/// for the SDK to start the woken turn; the running turn then holds it itself.
+const WAKEUP_GRACE_MS: i64 = 5 * 60 * 1000;
+
+/// The tool input, also for results that carry no `Result:` section.
+fn tool_input(detail: &str) -> Option<Value> {
+    let (_, input) = detail.split_once("Input:\n")?;
+    let input = ["\n\nResult:\n", "\n\nOutput:\n"]
+        .iter()
+        .find_map(|marker| input.split_once(marker).map(|(input, _)| input))
+        .unwrap_or(input);
+    serde_json::from_str(input.trim()).ok()
+}
+
+/// `ScheduleWakeup` calls the live process will still fire: made by this
+/// process (after `current_started`) and not yet past their due time.
+fn pending_wakeups(records: &[String], current_started: Option<&str>, now: i64) -> bool {
+    let started = timestamp(current_started);
+    records.iter().any(|raw| {
+        let Ok(item) = serde_json::from_str::<ThreadHistoryItemDto>(raw) else {
+            return false;
+        };
+        let Some(delay) = item
+            .detail_text
+            .as_deref()
+            .and_then(tool_input)
+            .and_then(|input| input["delaySeconds"].as_f64())
+            .filter(|delay| delay.is_finite() && *delay >= 0.0)
+        else {
+            return false;
+        };
+        let Some(created) = timestamp(item.created_at.as_deref()) else {
+            return false;
+        };
+        tool_completed(&item)
+            && started.is_none_or(|started| created >= started)
+            && created + (delay.min(86_400.0) * 1000.0) as i64 + WAKEUP_GRACE_MS > now
+    })
+}
+
 impl Supervisor {
+    /// Claude session crons (`/loop`, `CronCreate`) and wakeups fire in the live
+    /// process between Pockymoe prompts (docs/claude-scheduled-history.md):
+    /// releasing it would cancel them. Unknown timers count as scheduled.
+    pub(super) async fn claude_schedules_pending(&self, thread: &ThreadDto) -> bool {
+        if thread.provider != Provider::Claude && thread.agent_id.as_deref() != Some("claude") {
+            return false;
+        }
+        // Registers the thread with the history observer and saves finished
+        // scheduled turns, which may themselves have scheduled the next one.
+        if let Err(error) = self.sync_claude_scheduled_history(&thread.id).await {
+            tracing::debug!(thread_id = %thread.id, %error, "scheduled history check failed");
+        }
+        let id = thread.id.as_str();
+        let Ok(wakeups) = self.db.with(|c| {
+            let mut q = c.prepare("SELECT item_json FROM thread_history_items WHERE thread_id=?1 AND json_extract(item_json,'$.text')='ScheduleWakeup' ORDER BY created_at,rowid")?;
+            let rows = q.query_map([id], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows)
+        }) else {
+            return true;
+        };
+        let has_crons = self
+            .db
+            .with(|c| Ok(c.query_row("SELECT EXISTS(SELECT 1 FROM thread_history_items WHERE thread_id=?1 AND json_extract(item_json,'$.text')='CronCreate')", [id], |r| r.get::<_, bool>(0))?))
+            .unwrap_or(true);
+        if wakeups.is_empty() && !has_crons {
+            return false;
+        }
+        let started = match thread.provider_session_id.as_deref() {
+            Some(session) => match self.runtime(thread.provider) {
+                Ok(runtime) => runtime.session_instance_started_at(session).await,
+                Err(_) => None,
+            },
+            None => None,
+        };
+        if pending_wakeups(
+            &wakeups,
+            started.as_deref(),
+            chrono::Utc::now().timestamp_millis(),
+        ) {
+            return true;
+        }
+        if !has_crons {
+            return false;
+        }
+        match self.thread_watches(id).await {
+            Ok(watches) => watches["watches"].as_array().is_some_and(|watches| {
+                watches
+                    .iter()
+                    .any(|watch| matches!(watch["status"].as_str(), Some("active" | "unconfirmed")))
+            }),
+            Err(_) => true,
+        }
+    }
+
     /// Conservative history projection for scheduler admission. Unknown native
     /// timers remain a conflict until their successful cancellation is recorded.
     pub(super) fn recorded_native_watch_conflict(&self, id: &str) -> Result<bool> {
@@ -404,6 +498,45 @@ impl Supervisor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn release_waits_for_wakeups_this_process_will_still_fire() {
+        let wakeup = |at: &str, delay: u64, status: &str| {
+            json!({"id":format!("wake-{at}"),"createdAt":at,"kind":"toolCall","text":"ScheduleWakeup","status":status,
+                "detailText":format!("Tool: ScheduleWakeup\n\nStatus: {status}\n\nInput:\n{}", json!({"delaySeconds":delay,"prompt":"continue","reason":"waiting"}))}).to_string()
+        };
+        let now = timestamp(Some("2030-01-01T01:00:00Z")).unwrap();
+        let started = Some("2030-01-01T00:00:00Z");
+        assert!(pending_wakeups(
+            &[wakeup("2030-01-01T00:59:00Z", 600, "completed")],
+            started,
+            now
+        ));
+        // Past due by less than the grace for the woken turn to start.
+        assert!(pending_wakeups(
+            &[wakeup("2030-01-01T00:51:00Z", 300, "completed")],
+            started,
+            now
+        ));
+        assert!(!pending_wakeups(
+            &[wakeup("2030-01-01T00:30:00Z", 300, "completed")],
+            started,
+            now
+        ));
+        assert!(!pending_wakeups(
+            &[wakeup("2030-01-01T00:59:00Z", 600, "failed")],
+            started,
+            now
+        ));
+        assert!(
+            !pending_wakeups(
+                &[wakeup("2029-12-31T23:59:00Z", 7200, "completed")],
+                started,
+                now
+            ),
+            "an earlier process took its session-only wakeups with it"
+        );
+    }
+
     #[test]
     fn parses_real_claude_watch_result_and_supported_cadences_without_guessing() {
         let raw="Tool: CronCreate\n\nInput:\n{\"cron\":\"13,43 * * * *\",\"prompt\":\"Read inbox\",\"recurring\":true}\n\nResult:\nScheduled recurring job 9b3254c0 (13,43 * * * *). Auto-expires after 7 days.";

@@ -66,9 +66,7 @@ base, CSP, SPA fallback and separate relay origin; deployment workflows do not
 need changes.
 
 The unit suite's `webUrlGuard.test.ts` rejects root-absolute `/api`, `/ws` and
-`/relay` URL literals, including indirect constructions, outside tests. Its one
-legacy DeviceMonitor call still passes through the base-aware request helper.
-To verify the installed bundle behind a stripping proxy, build the Web app and
+`/relay` URL literals, including indirect constructions, outside tests. To verify the installed bundle behind a stripping proxy, build the Web app and
 run `e2e/web-base.spec.ts` with `playwright.web-base.config.ts` and the
 `desktop-chromium` project, using isolated `E2E_API_PORT`, `E2E_DATABASE_URL` and
 `E2E_WORKSPACE_ROOT` values.

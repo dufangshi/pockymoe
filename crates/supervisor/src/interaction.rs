@@ -163,11 +163,13 @@ pub(crate) async fn run(
                     .is_none_or(|c| from.is_none_or(|f| f == c)),
                 "forbidden: --from cannot override the authenticated caller for close"
             );
-            state.close_agent_thread(
-                caller.as_deref().or(from),
-                id,
-                input["removeWorktree"] == true,
-            )
+            state
+                .close_agent_thread_releasing(
+                    caller.as_deref().or(from),
+                    id,
+                    input["removeWorktree"] == true,
+                )
+                .await
         }
         "roles" => Ok(list_roles(Path::new(&caller_cwd(state, from)?))),
         "inboxWait" => {

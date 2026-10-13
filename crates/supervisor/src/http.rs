@@ -13,9 +13,9 @@ use axum::routing::{delete, get, patch, post, put};
 use axum::{Json, Router};
 use pockymoe_protocol::{
     now_rfc3339, ApiError, AuthSessionDto, CreateThreadInput, CreateWorkspaceInput,
-    ForkThreadInput, ImportThreadInput, PlatformCapabilitiesDto, Provider, RuntimeConfigDto,
-    SendThreadPromptInput, ThreadWorkspaceTreeNodeDto, UpdateWorkspaceSettingsInput, VersionDto,
-    APP_NAME, APP_VERSION,
+    ForkThreadInput, HarnessResourceSettingsDto, ImportThreadInput, PlatformCapabilitiesDto,
+    Provider, ReleaseThreadInput, ReleaseThreadResultDto, RuntimeConfigDto, SendThreadPromptInput,
+    ThreadWorkspaceTreeNodeDto, UpdateWorkspaceSettingsInput, VersionDto, APP_NAME, APP_VERSION,
 };
 use pockymoe_runtime::files::WorkspaceDownload;
 use pockymoe_runtime::{Supervisor, UploadedPromptAttachment};
@@ -120,6 +120,11 @@ pub fn router(state: AppState) -> Router {
         .route("/readyz", get(healthz))
         .route("/api/version", get(version))
         .route("/api/device/metrics", get(device_metrics))
+        .route("/api/device/processes", get(device_processes))
+        .route(
+            "/api/harness-resources/settings",
+            get(harness_resource_settings).put(put_harness_resource_settings),
+        )
         .route(
             "/api/port-mappings",
             get(crate::ports::list).post(crate::ports::create),
@@ -304,6 +309,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/threads/{id}/settings", patch(thread_settings))
         .route("/api/threads/{id}/prompt", post(thread_prompt))
         .route("/api/threads/{id}/interrupt", post(thread_interrupt))
+        .route("/api/threads/{id}/release", post(thread_release))
         .route("/api/threads/{id}/resume", post(thread_resume))
         .route("/api/threads/{id}/disconnect", post(thread_disconnect))
         .route("/api/threads/{id}/models", get(thread_models))
@@ -697,6 +703,73 @@ async fn device_metrics(State(state): State<AppState>) -> Response {
     }
 }
 
+async fn device_processes(State(state): State<AppState>) -> Response {
+    match state.harness_processes().await {
+        Ok(processes) => (
+            [(axum::http::header::CACHE_CONTROL, "no-store")],
+            Json(processes),
+        )
+            .into_response(),
+        Err(error) => err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "processes_unavailable",
+            error.to_string(),
+        )
+        .into_response(),
+    }
+}
+
+fn settings_storage_error(error: anyhow::Error) -> ApiErr {
+    err(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "settings_unavailable",
+        error.to_string(),
+    )
+}
+
+async fn harness_resource_settings(
+    State(state): State<AppState>,
+) -> Result<Json<HarnessResourceSettingsDto>, ApiErr> {
+    Ok(Json(
+        state
+            .harness_resource_settings()
+            .map_err(settings_storage_error)?,
+    ))
+}
+
+/// The body replaces the policy, so every key must be present: a missing
+/// one must not silently turn a rule off.
+async fn put_harness_resource_settings(
+    State(state): State<AppState>,
+    body: Bytes,
+) -> Result<Json<HarnessResourceSettingsDto>, ApiErr> {
+    let invalid = |message: String| err(StatusCode::BAD_REQUEST, "invalid_settings", message);
+    let value: Value = serde_json::from_slice(&body).map_err(|e| invalid(e.to_string()))?;
+    for key in [
+        "idleReleaseMinutes",
+        "maxLoadedThreads",
+        "maxHarnessMemoryBytes",
+    ] {
+        if value.get(key).is_none() {
+            return Err(invalid(format!(
+                "{key} is required (null turns the rule off)"
+            )));
+        }
+    }
+    let settings: HarnessResourceSettingsDto =
+        serde_json::from_value(value).map_err(|e| invalid(e.to_string()))?;
+    state
+        .update_harness_resource_settings(settings)
+        .map(Json)
+        .map_err(|e| {
+            if e.is::<pockymoe_runtime::service::InvalidSettings>() {
+                invalid(e.to_string())
+            } else {
+                settings_storage_error(e)
+            }
+        })
+}
+
 async fn runtime_config(State(state): State<AppState>) -> Json<RuntimeConfigDto> {
     Json(RuntimeConfigDto {
         app_name: state.config.app_name.clone(),
@@ -873,11 +946,20 @@ async fn agent_agents(
     Ok(Json(serde_json::to_value(agents).unwrap_or(json!([]))))
 }
 
+#[derive(Deserialize)]
+struct CapabilitiesQuery {
+    load: Option<bool>,
+}
+
 async fn thread_capabilities(
     Path(id): Path<String>,
+    Query(query): Query<CapabilitiesQuery>,
     State(state): State<AppState>,
 ) -> Result<Json<Value>, ApiErr> {
-    let caps = state.thread_capabilities(&id).await.map_err(map_err)?;
+    let caps = state
+        .thread_capabilities(&id, query.load.unwrap_or(true))
+        .await
+        .map_err(map_err)?;
     Ok(Json(serde_json::to_value(caps).unwrap_or(json!({}))))
 }
 
@@ -1647,7 +1729,7 @@ async fn delete_thread(
     Path(id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<StatusCode, ApiErr> {
-    state.delete_thread(&id).map_err(map_err)?;
+    state.delete_thread_releasing(&id).await.map_err(map_err)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1865,6 +1947,50 @@ async fn thread_interrupt(
     Ok(Json(
         serde_json::to_value(state.get_thread(&id).map_err(map_err)?).unwrap(),
     ))
+}
+
+async fn thread_release(
+    Path(id): Path<String>,
+    State(state): State<AppState>,
+    principal: Option<axum::Extension<crate::owner_trust::BrowserPrincipal>>,
+    body: Bytes,
+) -> Result<Json<ReleaseThreadResultDto>, ApiErr> {
+    let input = if body.iter().all(u8::is_ascii_whitespace) {
+        ReleaseThreadInput::default()
+    } else {
+        serde_json::from_slice(&body)
+            .map_err(|e| err(StatusCode::BAD_REQUEST, "bad_request", e.to_string()))?
+    };
+    // A shared caller may end only threads it could release one by one.
+    let shared = principal.map(|p| p.0).filter(|p| !p.is_owner());
+    let may_release = |thread: &str| {
+        shared.as_ref().is_none_or(|p| {
+            crate::grants::authorize_path(
+                &state,
+                p,
+                "POST",
+                &format!("/api/threads/{thread}/release"),
+            )
+            .is_ok()
+        })
+    };
+    state
+        .release_thread_harness(
+            &id,
+            input.interrupt,
+            shared
+                .is_some()
+                .then_some(&may_release as &(dyn Fn(&str) -> bool + Send + Sync)),
+        )
+        .await
+        .map(Json)
+        .map_err(|e| {
+            if e.is::<pockymoe_runtime::actor::TurnRunning>() {
+                err(StatusCode::CONFLICT, "turn_running", e.to_string())
+            } else {
+                map_err(e)
+            }
+        })
 }
 
 async fn thread_resume(

@@ -16,6 +16,7 @@ idle, while a turn runs and while hidden, and fails when a change exceeds them.
 | Capability snapshot (`/api/threads/<id>/capabilities`) | Current-thread turn, `thread.updated`, `thread.harness.ready` and collaboration events; 1.5 s and 6 s after the thread connects while the page is open, because ACP agents announce commands after a session opens; a reconnect | 60 s |
 | `/healthz` | Every 2 s, only while the socket is not open | none |
 | Device metrics (`/api/device/metrics`) | Opening the monitor dialog | 15 s for the topbar meter, 2 s while the dialog is open |
+| Harness processes (`/api/device/processes`) | Expanding the monitor's memory row; `thread.runtime.loaded` / `thread.runtime.released` events | 3 s while the row is expanded |
 
 The page loads the summary once on open. The first socket open re-reads it only
 when the thread is running, since a running turn's events may predate the
@@ -30,6 +31,15 @@ Thread renames and deletions made elsewhere emit no event; they appear on the
 list fallback or on return to the tab. A rename in this browser updates locally.
 
 Socket pings run every 2 s; a socket without a pong for 5.5 s is replaced.
+
+The page also tells its socket which threads it displays, so the Supervisor
+keeps their harnesses loaded: `{"type":"thread.view","threadIds":[...]}` with the
+full set, sent when the set changes, when a socket opens, and when the tab
+becomes visible again. The set is the primary thread plus a split pane showing a
+conversation; a split on another device reports on that device's socket. The
+split's files and collaboration views, hidden panes and view-only shares do not
+count, and the split reads capabilities with `?load=false` so it never starts a
+harness. A tab hidden for 60 s sends an empty set.
 
 ## First-paint bundle
 

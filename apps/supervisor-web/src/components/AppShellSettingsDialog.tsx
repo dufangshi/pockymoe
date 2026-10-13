@@ -4,6 +4,7 @@ import { FormDialog } from './FormDialog';
 import { useFontSize } from '../lib/fontSize';
 import { RuntimeManagement } from './RuntimeManagement';
 import { UpstreamsSettings } from './UpstreamsSettings';
+import { HarnessResourceSettings } from './HarnessResourceSettings';
 import { ModelPricingSettings } from './ModelPricingSettings';
 import { ComposerShortcutSettings } from './ComposerShortcutSettings';
 import { TourSettingsEntry } from './onboarding/TourProvider';
@@ -1018,6 +1019,7 @@ export function AppShellSettingsDialog({
             </section>
           )}
           {section === 'upstreams' && <UpstreamsSettings />}
+          {section === 'resources' && <HarnessResourceSettings />}
           {(section === 'device' || section === 'harnesses') && (
             <RuntimeManagement view={section} />
           )}
@@ -1365,6 +1367,7 @@ export function AppShellSettingsDialog({
     onOpenChange={(open) => { if (!open) closeSettings(); }}
     themeMode={selectedThemeMode} effectiveTheme={effectiveTheme}
     sections={appSettingsSections()}
+    {...(shellNav?.settingsSection ? { initialId: shellNav.settingsSection } : {})}
     contentProps={{ 'data-testid': 'settingsDialog', onCloseAutoFocus: (event) => event.preventDefault() }}
   />;
 
@@ -1387,6 +1390,11 @@ export function appSettingsSections(): SettingsSection[] {
       id: 'upstreams',
       label: translate('settings.upstreamsTab'),
       description: translate('settings.upstreamsDescription'),
+    },
+    {
+      id: 'resources',
+      label: translate('settings.resourcesTab'),
+      description: translate('settings.resourcesDescription'),
     },
     {
       id: 'device',

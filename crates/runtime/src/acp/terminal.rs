@@ -13,6 +13,8 @@ use uuid::Uuid;
 const DEFAULT_OUTPUT_BYTE_LIMIT: usize = 1024 * 1024;
 
 struct LiveTerminal {
+    /// The harness process that created it.
+    owner: String,
     output: Arc<Mutex<Vec<u8>>>,
     output_byte_limit: usize,
     child_id: u32,
@@ -27,6 +29,7 @@ pub struct AgentTerminals {
 impl AgentTerminals {
     pub async fn create(
         &self,
+        owner: &str,
         command: &str,
         args: &[String],
         cwd: PathBuf,
@@ -75,6 +78,7 @@ impl AgentTerminals {
         self.inner.lock().unwrap().insert(
             id.clone(),
             LiveTerminal {
+                owner: owner.into(),
                 output,
                 output_byte_limit: limit,
                 child_id,
@@ -131,6 +135,31 @@ impl AgentTerminals {
             if term.exit_rx.borrow().is_none() && term.child_id > 0 {
                 let _ = terminate_process(term.child_id);
             }
+        }
+    }
+
+    /// Commands a harness process started that are still running.
+    pub fn running(&self, owner: &str) -> usize {
+        self.inner
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|term| term.owner == owner && term.exit_rx.borrow().is_none())
+            .count()
+    }
+
+    /// Stop and forget every terminal of a released harness process.
+    pub fn release_owner(&self, owner: &str) {
+        let ids: Vec<_> = self
+            .inner
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, term)| term.owner == owner)
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in ids {
+            self.release(&id);
         }
     }
 }

@@ -63,6 +63,8 @@ pub struct AcpProcess {
     pub(crate) cli_env: Vec<(String, String)>,
     pub(crate) id: String,
     pub(crate) started_at: String,
+    /// Root of the harness process tree (and, on Unix, its process group).
+    pub(crate) pid: Option<u32>,
     stdin: Mutex<ChildStdin>,
     child: Arc<Mutex<Child>>,
     state: Arc<Mutex<RpcState>>,
@@ -110,6 +112,52 @@ impl AcpProcess {
             if child.try_wait()?.is_none() {
                 child.kill().await?;
             }
+        }
+        Ok(())
+    }
+
+    /// Stop the whole process group: SIGTERM, up to `grace` for the adapter to
+    /// exit, then SIGKILL for anything left. Windows ends the tree at once.
+    pub async fn terminate(&self, grace: Duration) -> Result<()> {
+        close_rpc_state(&self.state, "Harness released".into()).await;
+        let mut child = self.child.lock().await;
+        // A root reaped earlier may have freed its PID for another process group.
+        let running = child.try_wait()?.is_none();
+        // Tool commands may run in their own session or process group (Claude's
+        // Bash commands, codex-code-mode-host). Record the tree while it is
+        // intact; once the adapter exits they are reparented and unreachable.
+        #[cfg(unix)]
+        let tree = match self.pid.filter(|_| running) {
+            Some(pid) => tokio::task::spawn_blocking(move || {
+                crate::harness_processes::tree_now(&[(pid, None)])
+            })
+            .await
+            .unwrap_or_default(),
+            None => Vec::new(),
+        };
+        if running {
+            terminate_tree(&child);
+            #[cfg(unix)]
+            crate::harness_processes::signal(&tree, libc::SIGTERM);
+            let deadline = tokio::time::Instant::now() + grace;
+            while child.try_wait()?.is_none() && tokio::time::Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }
+        #[cfg(unix)]
+        if let Some(pid) = self.pid.filter(|_| running) {
+            unsafe {
+                libc::kill(-(pid as i32), libc::SIGKILL);
+            }
+            // Whatever ignored SIGTERM, and what it started meanwhile.
+            let late =
+                tokio::task::spawn_blocking(move || crate::harness_processes::tree_now(&tree))
+                    .await
+                    .unwrap_or_default();
+            crate::harness_processes::signal(&late, libc::SIGKILL);
+        }
+        if child.try_wait()?.is_none() {
+            child.kill().await?;
         }
         Ok(())
     }
@@ -175,6 +223,7 @@ impl AcpProcess {
             };
             close_rpc_state(&reader_state, reason).await;
         });
+        let pid = child.id();
         let child = Arc::new(Mutex::new(child));
         spawn_exit_monitor(child.clone(), state.clone());
         Ok((
@@ -182,6 +231,7 @@ impl AcpProcess {
                 cli_env,
                 id: uuid::Uuid::new_v4().to_string(),
                 started_at: pockymoe_protocol::now_rfc3339(),
+                pid,
                 stdin: Mutex::new(stdin),
                 child,
                 state,

@@ -1236,7 +1236,7 @@ fn bind_prepares_version_13_before_setup_restarts_its_runtime() {
             |r| r.get::<_, u32>(0)
         )?))
         .unwrap(),
-        16
+        17
     );
 }
 

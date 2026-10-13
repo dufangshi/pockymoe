@@ -17,15 +17,20 @@ use uuid::Uuid;
 
 use crate::acp::{adapter_for, NegotiatedCaps};
 use crate::actor::{
-    AgentRuntime, EventBus, GoalState, ImportSessionMeta, SessionSettings, StartSessionInput,
-    StartSessionResult, StartTurnInput,
+    AgentRuntime, EventBus, GoalState, ImportSessionMeta, LoadedSession, ReleaseScope,
+    SessionLifecycle, SessionSettings, StartSessionInput, StartSessionResult, StartTurnInput,
+    TurnRunning,
 };
 use crate::import_id::session_ids_match;
+use pockymoe_protocol::{HarnessBusyReason, HarnessLoadReason};
 
 pub struct FakeRuntime {
     provider: Provider,
     active: Mutex<HashMap<String, String>>,
     sessions: Mutex<HashMap<String, String>>,
+    /// What each loaded session would report as a process-backed harness.
+    loads: Mutex<HashMap<String, LoadedSession>>,
+    lifecycle: tokio::sync::broadcast::Sender<SessionLifecycle>,
     started_at: Mutex<Option<String>>,
     goal: Mutex<Option<GoalState>>,
     import_sessions: Mutex<Vec<ImportSessionMeta>>,
@@ -37,9 +42,60 @@ impl FakeRuntime {
             provider,
             active: Mutex::new(HashMap::new()),
             sessions: Mutex::new(HashMap::new()),
+            loads: Mutex::new(HashMap::new()),
+            lifecycle: tokio::sync::broadcast::channel(64).0,
             started_at: Mutex::new(None),
             goal: Mutex::new(None),
             import_sessions: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn record_load(&self, session_id: &str, reason: Option<HarnessLoadReason>) {
+        let now = chrono::Utc::now();
+        let intent = crate::actor::load_intent();
+        let session = LoadedSession {
+            session_id: session_id.into(),
+            thread_id: intent.as_ref().map(|intent| intent.thread_id.clone()),
+            process_id: Uuid::new_v4().to_string(),
+            root_pid: None,
+            load_reason: reason.unwrap_or_else(|| {
+                intent
+                    .as_ref()
+                    .map_or(HarnessLoadReason::Other, |intent| intent.reason)
+            }),
+            requested_at: intent.map_or(now, |intent| intent.requested_at),
+            loaded_at: now,
+            last_activity_at: now,
+            prompted: false,
+            baseline: Vec::new(),
+            busy: Vec::new(),
+        };
+        let _ = self.lifecycle.send(SessionLifecycle::Loaded {
+            session_id: session.session_id.clone(),
+            thread_id: session.thread_id.clone(),
+            reason: session.load_reason,
+            requested_at: session.requested_at,
+        });
+        self.loads
+            .lock()
+            .unwrap()
+            .insert(session_id.into(), session);
+    }
+
+    /// Serve `fork` from `parent`'s process, as Claude and Grok forks are.
+    pub fn share_process(&self, parent: &str, fork: &str) {
+        let mut loads = self.loads.lock().unwrap();
+        if let Some(process) = loads.get(parent).map(|load| load.process_id.clone()) {
+            if let Some(load) = loads.get_mut(fork) {
+                load.process_id = process;
+            }
+        }
+    }
+
+    fn touch(&self, session_id: &str, prompted: bool) {
+        if let Some(load) = self.loads.lock().unwrap().get_mut(session_id) {
+            load.last_activity_at = chrono::Utc::now();
+            load.prompted |= prompted;
         }
     }
 
@@ -214,6 +270,7 @@ impl AgentRuntime for FakeRuntime {
     async fn start_session(&self, input: StartSessionInput) -> Result<StartSessionResult> {
         let id = format!("e2e-session-{}", Uuid::new_v4());
         self.sessions.lock().unwrap().insert(id.clone(), input.cwd);
+        self.record_load(&id, None);
         Ok(StartSessionResult {
             provider_session_id: id,
             model: Some(input.model),
@@ -227,9 +284,14 @@ impl AgentRuntime for FakeRuntime {
         cwd: Option<&str>,
         _settings: SessionSettings,
     ) -> Result<StartSessionResult> {
-        let mut sessions = self.sessions.lock().unwrap();
-        if !sessions.contains_key(session_id) {
-            sessions.insert(session_id.into(), cwd.unwrap_or(".").into());
+        let inserted = {
+            let mut sessions = self.sessions.lock().unwrap();
+            sessions
+                .insert(session_id.into(), cwd.unwrap_or(".").into())
+                .is_none()
+        };
+        if inserted {
+            self.record_load(session_id, None);
         }
         Ok(StartSessionResult {
             provider_session_id: session_id.into(),
@@ -271,6 +333,7 @@ impl AgentRuntime for FakeRuntime {
             }
         }
         let _active = ActiveGuard(&self.active, input.provider_session_id.clone());
+        self.touch(&input.provider_session_id, true);
         if let Some(argument) = input.prompt.strip_prefix("/goal ") {
             self.set_goal(
                 &input.provider_session_id,
@@ -391,6 +454,10 @@ impl AgentRuntime for FakeRuntime {
             .lock()
             .unwrap()
             .insert(id.clone(), "fork".into());
+        self.record_load(&id, Some(HarnessLoadReason::Fork));
+        if let Some(load) = self.loads.lock().unwrap().get_mut(&id) {
+            load.thread_id = None;
+        }
         Ok(StartSessionResult {
             provider_session_id: id,
             model: None,
@@ -471,6 +538,93 @@ impl AgentRuntime for FakeRuntime {
             || sessions
                 .keys()
                 .any(|stored| session_ids_match(stored, session_id))
+    }
+
+    async fn loaded_sessions(&self) -> Vec<LoadedSession> {
+        let active = self.active.lock().unwrap().clone();
+        let goal_active = self
+            .goal
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|goal| goal.status == "active");
+        self.loads
+            .lock()
+            .unwrap()
+            .values()
+            .cloned()
+            .map(|mut load| {
+                if active.contains_key(&load.session_id) {
+                    load.busy.push(HarnessBusyReason::Turn);
+                    if goal_active {
+                        load.busy.push(HarnessBusyReason::Goal);
+                    }
+                }
+                load
+            })
+            .collect()
+    }
+
+    async fn release_loaded(
+        &self,
+        session_id: &str,
+        scope: ReleaseScope,
+        process_id: Option<&str>,
+    ) -> Result<Vec<LoadedSession>> {
+        let key = self
+            .sessions
+            .lock()
+            .unwrap()
+            .keys()
+            .find(|stored| session_ids_match(stored, session_id))
+            .cloned();
+        let Some(key) = key else {
+            return Ok(Vec::new());
+        };
+        if self.active.lock().unwrap().contains_key(&key) {
+            return Err(TurnRunning.into());
+        }
+        if process_id.is_some_and(|expected| {
+            self.loads
+                .lock()
+                .unwrap()
+                .get(&key)
+                .is_some_and(|load| load.process_id != expected)
+        }) {
+            bail!("conflict: The harness was reloaded; check it again");
+        }
+        let mut loads = self.loads.lock().unwrap();
+        let process = loads.get(&key).map(|load| load.process_id.clone());
+        let keys: Vec<String> = match scope {
+            ReleaseScope::Session => vec![key],
+            ReleaseScope::Process => loads
+                .values()
+                .filter(|load| Some(&load.process_id) == process.as_ref())
+                .map(|load| load.session_id.clone())
+                .collect(),
+        };
+        if keys
+            .iter()
+            .any(|key| self.active.lock().unwrap().contains_key(key))
+        {
+            return Err(TurnRunning.into());
+        }
+        let mut sessions = self.sessions.lock().unwrap();
+        Ok(keys
+            .iter()
+            .filter_map(|key| {
+                sessions.remove(key);
+                loads.remove(key)
+            })
+            .collect())
+    }
+
+    fn lifecycle(&self) -> Option<tokio::sync::broadcast::Receiver<SessionLifecycle>> {
+        Some(self.lifecycle.subscribe())
+    }
+
+    async fn touch_session(&self, session_id: &str) {
+        self.touch(session_id, false);
     }
 }
 

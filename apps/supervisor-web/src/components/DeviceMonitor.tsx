@@ -1,9 +1,13 @@
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
-import { type CSSProperties, type ReactNode, useEffect, useId, useState } from 'react';
-import { ArrowLeftRight, Ban, ChevronDown, Container, Cpu, Gpu, Info, MemoryStick, Thermometer, TriangleAlert, Zap } from 'lucide-react';
-import type { DeviceMetricsDto, TemperatureReadingDto } from '@pockymoe/shared';
-import { ApiError, request } from '../lib/api';
+import { type CSSProperties, type ReactNode, useEffect, useId, useRef, useState } from 'react';
+import { ArrowLeftRight, Ban, ChevronDown, ChevronRight, Container, Cpu, Gpu, Info, MemoryStick, Settings, Thermometer, TriangleAlert, Zap } from 'lucide-react';
+import type { DeviceMetricsDto, HarnessProcessDto, HarnessProcessesDto, LoadedThreadDto, TemperatureReadingDto } from '@pockymoe/shared';
+import { ApiError, fetchHarnessProcesses, releaseThread, request } from '../lib/api';
+import { onHarnessRuntimeChange } from '../lib/harnessRuntimeEvents';
+import { useAppShellNav } from './AppShellNavContext';
+import { ConfirmDialog } from './ConfirmDialog';
 import { FormDialog } from './FormDialog';
+import { harnessState, memory, METRIC_LABEL, ROLE_LABEL } from './harnessResourceModel';
 import './device-monitor.css';
 
 const pct = (value: number | null | undefined) =>
@@ -23,6 +27,21 @@ const CLOSED_POLL_MS = 15_000;
 /** A sample older than about two intervals is shown as stale. */
 const staleAfterSeconds = (open: boolean) => (open ? 15 : 35);
 type CpuSample = { at: string; total: number | null; cores: Array<number | null> };
+/** The expanded memory row refreshes loaded harnesses this often. */
+const PROCESS_POLL_MS = 3_000;
+function ProcessList({ processes }: { processes: HarnessProcessDto[] }) {
+  return (
+    <ul className="dm-procs">
+      {processes.map(process => (
+        <li key={process.pid} title={`PID ${process.pid}`}>
+          <span className="dm-proc-role">{ROLE_LABEL[process.role]?.() ?? process.role}</span>
+          <span className="dm-proc-name">{process.name}</span>
+          <span className="dm-proc-bytes">{memory(process.bytes)}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
 
 function Meter({ value, label, thin = false }: { value: number | null; label: string; thin?: boolean }) {
   return (
@@ -115,6 +134,90 @@ export function DeviceMonitor() {
   const [history, setHistory] = useState<CpuSample[]>([]);
   const [coresOpen, setCoresOpen] = useState(false);
   const coresId = useId();
+  const shellNav = useAppShellNav();
+  const [memoryOpen, setMemoryOpen] = useState(false);
+  const memoryId = useId();
+  const [processes, setProcesses] = useState<HarnessProcessesDto | null>(null);
+  const [processesError, setProcessesError] = useState<string | null>(null);
+  // Older Supervisors have no process breakdown; their memory row stays a plain reading.
+  const [processesUnsupported, setProcessesUnsupported] = useState(false);
+  const [threadsOpen, setThreadsOpen] = useState<ReadonlySet<string>>(new Set());
+  const [ending, setEnding] = useState<string | null>(null);
+  const [endError, setEndError] = useState<string | null>(null);
+  const [confirmEnd, setConfirmEnd] = useState<LoadedThreadDto | null>(null);
+  const refreshProcesses = useRef<() => void>(() => {});
+  const processesShown = open && memoryOpen && !processesUnsupported;
+  useEffect(() => {
+    if (!processesShown) return;
+    let disposed = false;
+    let busy = false;
+    let again = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let controller: AbortController | null = null;
+    const poll = async () => {
+      if (disposed) return;
+      if (busy) {
+        again = true;
+        return;
+      }
+      clearTimeout(timer);
+      if (document.hidden) {
+        timer = setTimeout(poll, PROCESS_POLL_MS);
+        return;
+      }
+      busy = true;
+      controller = new AbortController();
+      const timeout = setTimeout(() => controller?.abort(), 10_000);
+      try {
+        const sample = await fetchHarnessProcesses(controller.signal);
+        if (!disposed) {
+          setProcesses(sample);
+          setProcessesError(null);
+        }
+      } catch (cause) {
+        if (!disposed) {
+          if (cause instanceof ApiError && cause.statusCode === 404) {
+            setProcessesUnsupported(true);
+            setMemoryOpen(false);
+          } else setProcessesError(cause instanceof Error ? cause.message : String(cause));
+        }
+      } finally {
+        clearTimeout(timeout);
+        busy = false;
+        if (!disposed) {
+          if (again) {
+            again = false;
+            void poll();
+          } else timer = setTimeout(poll, PROCESS_POLL_MS);
+        }
+      }
+    };
+    refreshProcesses.current = () => void poll();
+    void poll();
+    const stopListening = onHarnessRuntimeChange(() => void poll());
+    return () => {
+      disposed = true;
+      clearTimeout(timer);
+      controller?.abort();
+      stopListening();
+      refreshProcesses.current = () => {};
+    };
+  }, [processesShown]);
+  const endThread = async (thread: LoadedThreadDto, interrupt: boolean) => {
+    setEnding(thread.threadId);
+    setEndError(null);
+    try {
+      await releaseThread(thread.threadId, interrupt ? { interrupt: true } : {});
+      setConfirmEnd(null);
+      refreshProcesses.current();
+    } catch (cause) {
+      // The thread started a turn since the last sample: confirm before interrupting.
+      if (!interrupt && cause instanceof ApiError && cause.statusCode === 409) setConfirmEnd(thread);
+      else setEndError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setEnding(null);
+    }
+  };
   useEffect(() => {
     let disposed = false;
     let busy = false;
@@ -133,7 +236,7 @@ export function DeviceMonitor() {
       controller = new AbortController();
       const timeout = setTimeout(() => controller?.abort(), 10_000);
       try {
-        const sample = await request<DeviceMetricsDto>('/api/device/metrics', {
+        const sample = await request<DeviceMetricsDto>('api/device/metrics', {
           signal: controller.signal,
         });
         if (!disposed) {
@@ -225,7 +328,7 @@ export function DeviceMonitor() {
           </span>
         )}
       </button>
-      {open && (
+      {open && !confirmEnd && (
         <FormDialog
           title={translate("devices.deviceMonitor")}
           onClose={() => setOpen(false)}
@@ -325,14 +428,24 @@ export function DeviceMonitor() {
                   )}
                 </section>
                 <section className="dm-row" aria-label={translate("devices.memoryUtilization")} style={load(data.memory.usagePercent)}>
-                  <div className="dm-head">
-                    <MemoryStick className="dm-icon" aria-hidden />
-                    <span className="dm-name">{translate("devices.memory")}</span>
-                    <span className="dm-sub" title={`${translate("devices.available")} ${gib(data.memory.availableBytes)}`}>
-                      {gib(data.memory.usedBytes)} / {gib(data.memory.totalBytes)}
-                    </span>
-                    <span className="dm-value">{pct(data.memory.usagePercent)}</span>
-                  </div>
+                  {(() => {
+                    const head = (
+                      <>
+                        <MemoryStick className="dm-icon" aria-hidden />
+                        <span className="dm-name">{translate("devices.memory")}</span>
+                        <span className="dm-sub" title={`${translate("devices.available")} ${gib(data.memory.availableBytes)}`}>
+                          {gib(data.memory.usedBytes)} / {gib(data.memory.totalBytes)}
+                        </span>
+                        <span className="dm-value">{pct(data.memory.usagePercent)}</span>
+                      </>
+                    );
+                    return processesUnsupported ? <div className="dm-head">{head}</div> : (
+                      <button type="button" className="dm-head" aria-expanded={memoryOpen} aria-controls={memoryId} onClick={() => setMemoryOpen(value => !value)}>
+                        {head}
+                        <ChevronDown className="dm-chevron" aria-hidden />
+                      </button>
+                    );
+                  })()}
                   <Meter value={data.memory.usagePercent} label={translate("devices.memoryUtilization")} />
                   {data.swap.totalBytes > 0 && (
                     <div className="dm-subrow" style={load(data.swap.usagePercent)}>
@@ -342,6 +455,79 @@ export function DeviceMonitor() {
                         {gib(data.swap.usedBytes)} / {gib(data.swap.totalBytes)}
                       </span>
                       <Meter value={data.swap.usagePercent} label={translate("devices.swapPageFile")} thin />
+                    </div>
+                  )}
+                  {processesShown && (
+                    <div id={memoryId} className="dm-harness" aria-label={translate('devices.harnessMemory')}>
+                      <div className="dm-harness-total">
+                        <span>
+                          <b>{translate('devices.supervisorTotal', { value1: memory(processes?.totalBytes ?? null) })}</b>
+                          {processes && <span className="dm-harness-sum"> · {translate('devices.harnessTotal', { value1: memory(processes.harnessBytes) })}</span>}
+                        </span>
+                        {processes && (
+                          <span className="dm-info" role="img" title={METRIC_LABEL[processes.metric]?.() ?? processes.metric} aria-label={METRIC_LABEL[processes.metric]?.() ?? processes.metric}>
+                            <Info aria-hidden />
+                          </span>
+                        )}
+                        {shellNav?.openSettingsSection && (
+                          <button type="button" className="dm-harness-settings" title={translate('devices.harnessResourceSettings')} aria-label={translate('devices.harnessResourceSettings')}
+                            onClick={() => { setOpen(false); shellNav.openSettingsSection?.('resources'); }}>
+                            <Settings aria-hidden />
+                          </button>
+                        )}
+                      </div>
+                      {processes && (processes.overThreadLimit || processes.overMemoryLimit) && (
+                        <p role="status" className="dm-notice">
+                          <TriangleAlert aria-hidden />
+                          {[processes.overThreadLimit && translate('devices.overThreadLimit'), processes.overMemoryLimit && translate('devices.overMemoryLimit')].filter(Boolean).join(' · ')}
+                        </p>
+                      )}
+                      {(processesError || endError) && (
+                        <p role="alert" className="dm-notice"><TriangleAlert aria-hidden />{endError ?? processesError}</p>
+                      )}
+                      {processes && !processes.threads.length && <p className="dm-harness-empty">{translate('devices.harnessNone')}</p>}
+                      {processes && processes.threads.length > 0 && (
+                        <ul className="dm-harness-threads">
+                          {processes.threads.map(thread => {
+                            const expanded = threadsOpen.has(thread.threadId);
+                            const listId = `${memoryId}-${thread.threadId}`;
+                            const shared = thread.sharesProcessWith.length;
+                            return (
+                              <li key={thread.threadId} data-busy={thread.busy.length ? true : undefined}>
+                                <div className="dm-harness-row">
+                                  <button type="button" className="dm-harness-toggle" aria-expanded={expanded} aria-controls={listId}
+                                    aria-label={translate('devices.harnessProcesses', { value1: thread.title })}
+                                    onClick={() => setThreadsOpen(current => {
+                                      const next = new Set(current);
+                                      if (!next.delete(thread.threadId)) next.add(thread.threadId);
+                                      return next;
+                                    })}>
+                                    <ChevronRight className="dm-harness-chevron" aria-hidden />
+                                    <span className="dm-harness-kind">{thread.agentId ?? thread.provider}</span>
+                                    <span className="dm-harness-title" title={thread.title}>{thread.title}</span>
+                                  </button>
+                                  <span className="dm-harness-state" title={shared ? translate('devices.harnessShared', { count: shared }) : undefined}>
+                                    {harnessState(thread, now)}{shared ? ' ⇄' : ''}
+                                  </span>
+                                  <span className="dm-harness-bytes">{memory(thread.bytes)}</span>
+                                  <button type="button" className="dm-harness-end" disabled={ending != null}
+                                    aria-label={translate('devices.harnessEndLabel', { value1: thread.title })}
+                                    onClick={() => thread.busy.length ? setConfirmEnd(thread) : void endThread(thread, false)}>
+                                    {ending === thread.threadId ? translate('devices.harnessEnding') : translate('devices.harnessEnd')}
+                                  </button>
+                                </div>
+                                {expanded && <div id={listId}><ProcessList processes={thread.processes} /></div>}
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      )}
+                      {processes && processes.other.length > 0 && (
+                        <details className="dm-harness-other">
+                          <summary>{translate('devices.harnessOtherProcesses')}</summary>
+                          <ProcessList processes={processes.other} />
+                        </details>
+                      )}
                     </div>
                   )}
                 </section>
@@ -393,6 +579,17 @@ export function DeviceMonitor() {
           </div>
         </FormDialog>
       )}
+      <ConfirmDialog
+        open={confirmEnd != null}
+        title={translate('devices.harnessEndRunningTitle')}
+        description={translate('devices.harnessEndRunningDescription', { value1: confirmEnd?.title ?? '' })}
+        confirmLabel={translate('devices.harnessEnd')}
+        busyLabel={translate('devices.harnessEnding')}
+        busy={ending != null}
+        error={endError}
+        onCancel={() => { setConfirmEnd(null); setEndError(null); }}
+        onConfirm={() => confirmEnd ? endThread(confirmEnd, true) : undefined}
+      />
     </>
   );
 }

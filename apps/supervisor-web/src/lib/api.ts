@@ -13,6 +13,10 @@ import type {
   AgentBackendDto,
   AgentBackendIdDto,
   AgentCapabilitySnapshotDto,
+  HarnessProcessesDto,
+  HarnessResourceSettingsDto,
+  ReleaseThreadInput,
+  ReleaseThreadResultDto,
   AgentSubscriptionUsageDto,
   ApiErrorShape,
   AuthLoginResultDto,
@@ -919,10 +923,40 @@ export function fetchAgentBackendAgents(provider: AgentBackendIdDto) {
   );
 }
 
+/** `load: false` reads a thread's capabilities without starting its harness. */
 export function fetchThreadCapabilitySnapshot(threadId: string,
   deviceId?: string | null,
+  options: { load?: boolean } = {},
 ) {
-  return deviceRequest<AgentCapabilitySnapshotDto>(deviceId, `api/threads/${encodeURIComponent(threadId)}/capabilities`, { cache: 'no-store' });
+  const query = options.load === false ? '?load=false' : '';
+  return deviceRequest<AgentCapabilitySnapshotDto>(deviceId, `api/threads/${encodeURIComponent(threadId)}/capabilities${query}`, { cache: 'no-store' });
+}
+
+/** Ends a thread's harness processes; `interrupt` first stops a running turn. */
+export function releaseThread(threadId: string, input: ReleaseThreadInput = {},
+  deviceId?: string | null,
+) {
+  return deviceRequest<ReleaseThreadResultDto>(deviceId, `api/threads/${encodeURIComponent(threadId)}/release`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export function fetchHarnessProcesses(signal?: AbortSignal) {
+  return request<HarnessProcessesDto>('api/device/processes', { cache: 'no-store', ...(signal ? { signal } : {}) });
+}
+
+export function fetchHarnessResourceSettings(deviceId?: string | null) {
+  return deviceRequest<HarnessResourceSettingsDto>(deviceId, 'api/harness-resources/settings', { cache: 'no-store' });
+}
+
+export function updateHarnessResourceSettings(input: HarnessResourceSettingsDto,
+  deviceId?: string | null,
+) {
+  return deviceRequest<HarnessResourceSettingsDto>(deviceId, 'api/harness-resources/settings', {
+    method: 'PUT',
+    body: JSON.stringify(input),
+  });
 }
 
 export function postThreadHarnessAction<T>(threadId: string,

@@ -44,8 +44,6 @@ describe('browser URL guard', () => {
       }
     }
     scan(root);
-    // A1 owns this file concurrently. Its existing call goes through request(),
-    // which accepts logical rooted paths. No other literal is grandfathered.
-    expect(violations).toEqual(["components/DeviceMonitor.tsx: '/api/device/metrics'"]);
+    expect(violations).toEqual([]);
   });
 });
