@@ -47,8 +47,9 @@ impl HostMode {
         }
     }
 
-    // A3 integration point: select its update restart strategy here when wired.
-    // Host mode currently changes subsystem capabilities only, never restart behavior.
+    // A3 integration point: map host mode to pockymoe_runtime::RestartStrategy
+    // (ExternalUpdater / HostManaged) via RuntimeConfig.supervisor_restart_strategy.
+    // Wire after A3 merges; host mode currently leaves restart behavior unchanged.
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
