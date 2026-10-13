@@ -1009,6 +1009,7 @@ mod tests {
             let root = dir.path().join("workspace");
             fs::create_dir(&root).unwrap();
             let config = RuntimeConfig {
+                host_mode: Default::default(),
                 mode: Mode::Local,
                 host: "127.0.0.1".into(),
                 port: 0,

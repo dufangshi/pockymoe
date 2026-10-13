@@ -587,7 +587,15 @@ pub(crate) fn err(status: StatusCode, code: &str, message: impl Into<String>) ->
 
 pub(crate) fn map_err(e: anyhow::Error) -> ApiErr {
     let message = e.to_string();
-    if message.contains("database disk image is malformed") || message.contains("SQLITE_CORRUPT") {
+    if e.is::<pockymoe_runtime::host_mode::FeatureDisabled>() {
+        err(
+            StatusCode::FORBIDDEN,
+            pockymoe_runtime::host_mode::FEATURE_DISABLED_CODE,
+            message,
+        )
+    } else if message.contains("database disk image is malformed")
+        || message.contains("SQLITE_CORRUPT")
+    {
         err(StatusCode::SERVICE_UNAVAILABLE, "harness_storage_corrupt",
             "The agent's local database is damaged. Reconnecting or retrying the prompt cannot repair it. Back up and recover the agent database before resuming this thread.")
     } else if message.contains("already has an active writer") {
@@ -616,7 +624,7 @@ pub(crate) fn map_err(e: anyhow::Error) -> ApiErr {
 
 async fn healthz(State(state): State<AppState>) -> Json<Value> {
     Json(
-        json!({"relayStatus":crate::owner_trust::relay_status(&state),"status":"ok", "timestamp":now_rfc3339(), "activeTurnCount":state.active_turn_count(), "runningVersion":APP_VERSION, "processId":std::process::id(), "relayConnected":state.relay_connected.load(std::sync::atomic::Ordering::SeqCst)}),
+        json!({"hostMode":state.config.host_mode,"hostCapabilities":state.host_capabilities,"relayStatus":crate::owner_trust::relay_status(&state),"status":"ok", "timestamp":now_rfc3339(), "activeTurnCount":state.active_turn_count(), "runningVersion":APP_VERSION, "processId":std::process::id(), "relayConnected":state.relay_connected.load(std::sync::atomic::Ordering::SeqCst)}),
     )
 }
 
@@ -643,8 +651,8 @@ async fn device_metrics(State(state): State<AppState>) -> Response {
     }
 }
 
-async fn runtime_config(State(state): State<AppState>) -> Json<RuntimeConfigDto> {
-    Json(RuntimeConfigDto {
+async fn runtime_config(State(state): State<AppState>) -> Json<Value> {
+    let mut config = serde_json::to_value(RuntimeConfigDto {
         app_name: state.config.app_name.clone(),
         app_version: state.config.app_version.clone(),
         mode: state.config.mode,
@@ -661,6 +669,10 @@ async fn runtime_config(State(state): State<AppState>) -> Json<RuntimeConfigDto>
             windows_task_scheduler: cfg!(windows),
         }),
     })
+    .expect("runtime config is serializable");
+    config["hostMode"] = json!(state.config.host_mode);
+    config["hostCapabilities"] = json!(state.host_capabilities);
+    Json(config)
 }
 
 fn which_tmux() -> bool {
@@ -843,7 +855,11 @@ async fn thread_harness_action(
     let port = result["console"]["port"]
         .as_u64()
         .and_then(|port| u16::try_from(port).ok());
-    if let (true, true, Some(port)) = (console, state.config.relay_server_url.is_some(), port) {
+    if let (true, true, Some(port)) = (
+        console,
+        state.host_capabilities.previews && state.config.relay_server_url.is_some(),
+        port,
+    ) {
         let mapping = crate::ports::dsh_console_mapping(
             &state,
             &id,

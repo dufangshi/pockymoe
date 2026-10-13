@@ -1,3 +1,4 @@
+import { HostFeatureGate } from '../lib/hostCapabilities';
 import { sharingEditInput, type SharingInput } from '../lib/signedSharing';
 import { SignedShareDetails } from '../components/SignedShareDetails';
 import { useThreadDrafts } from './useThreadDrafts';
@@ -3640,7 +3641,7 @@ export function ThreadDetailPage() {
     [relayAccess, i18nLocale],
   );
   const threadActionsButton = <div>
-    {relayThreadIsOwner && relayRouteDeviceId && <button aria-label={translate("workbench.portMappings")} title={translate("workbench.portMappings")} onClick={() => setPortsOpen(true)}><Network /></button>}
+    {relayThreadIsOwner && relayRouteDeviceId && <HostFeatureGate feature="previews"><button aria-label={translate("workbench.portMappings")} title={translate("workbench.portMappings")} onClick={() => setPortsOpen(true)}><Network /></button></HostFeatureGate>}
     <button aria-label={translate("workbench.shareAsLink")} title={translate("workbench.createAndCopyReadOnlyLink")} onClick={() => { setActionMode('link'); setExportDialogOpen(true); }}><Link2 /></button>
     <button aria-label={translate("workbench.sharingPermissions")} title={translate("workbench.sharingPermissions")} onClick={() => { setActionMode('share'); setExportDialogOpen(true); }}><Users /></button>
     <button aria-label={translate("workbench.downloadTranscript")} title={translate("workbench.downloadTranscript")} disabled={!detail} onClick={() => { setActionMode('html'); setExportDialogOpen(true); }}><Download /></button>
@@ -4001,7 +4002,7 @@ export function ThreadDetailPage() {
   return (
     <>
     {nativeResult && <LongTextDialog open title={nativeResult.title} text={nativeResult.text} onClose={() => setNativeResult(null)} />}
-    {relayThreadIsOwner && relayRouteDeviceId && <PortMappingsControl key={relayRouteDeviceId} deviceId={relayRouteDeviceId} open={portsOpen} onOpenChange={setPortsOpen} />}
+    {relayThreadIsOwner && relayRouteDeviceId && <HostFeatureGate feature="previews"><PortMappingsControl key={relayRouteDeviceId} deviceId={relayRouteDeviceId} open={portsOpen} onOpenChange={setPortsOpen} /></HostFeatureGate>}
     <ThreadDetailSurface
       deviceMonitor={<><DeviceMonitor key={relayRouteDeviceId ?? 'local'} /><TourLauncherButton /></>}
       workbench={{ ...workbenchNavigation, panels: {

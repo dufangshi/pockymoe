@@ -454,7 +454,7 @@ mod tests {
     async fn scheduled_history_is_durable_idempotent_and_does_not_change_execution_state() {
         use crate::fake::FakeRuntime;
         let dir = tempfile::tempdir().unwrap();
-        let mut config = RuntimeConfig::from_env();
+        let mut config = RuntimeConfig::from_env().unwrap();
         config.database_url = dir.path().join("isolated.sqlite");
         config.workspace_root = dir.path().join("workspaces");
         config.fake_runtime = true;

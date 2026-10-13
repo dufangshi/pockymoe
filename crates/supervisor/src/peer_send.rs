@@ -112,6 +112,7 @@ pub(crate) async fn intercept(
     caller: Option<&str>,
     input: &Value,
 ) -> Result<Option<Value>> {
+    crate::host_policy::require_command(state, input)?;
     let operation = input["operation"].as_str().unwrap_or("");
     match operation {
         "devices" => {
@@ -556,6 +557,9 @@ fn workers() -> &'static Mutex<HashMap<PathBuf, Worker>> {
 
 /// Weak ownership lets temporary supervisors be dropped normally.
 pub(crate) fn start_outbox_worker(state: &Arc<Supervisor>) {
+    if !state.host_capabilities.device_peer {
+        return;
+    }
     let mut workers = workers().lock().unwrap();
     workers.retain(|_, worker| worker.state.strong_count() > 0 && !worker.task.is_finished());
     let key = state.config.database_url.clone();
@@ -597,6 +601,7 @@ mod tests {
     fn test_state() -> (TempDir, Arc<Supervisor>) {
         let dir = tempfile::tempdir().unwrap();
         let config = RuntimeConfig {
+            host_mode: Default::default(),
             mode: Mode::Local,
             host: "127.0.0.1".into(),
             port: 0,
@@ -1033,6 +1038,19 @@ mod tests {
             "should reach send without uploading again: {error}"
         );
         assert_eq!(record.request, original);
+    }
+
+    #[tokio::test]
+    async fn host_mode_does_not_start_outbox_worker() {
+        let (_dir, mut state) = test_state();
+        let state_mut = Arc::get_mut(&mut state).unwrap();
+        state_mut.config.host_mode = pockymoe_runtime::host_mode::HostMode::Hosted;
+        state_mut.host_capabilities = state_mut.config.host_mode.capabilities();
+        start_outbox_worker(&state);
+        assert!(!workers()
+            .lock()
+            .unwrap()
+            .contains_key(&state.config.database_url));
     }
 
     #[tokio::test]

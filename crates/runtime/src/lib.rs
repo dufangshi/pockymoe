@@ -8,6 +8,7 @@ pub mod fake;
 pub mod file_documents;
 pub mod files;
 pub mod history;
+pub mod host_mode;
 pub mod import_id;
 pub mod interaction;
 pub mod local_sessions;
@@ -28,7 +29,7 @@ use std::sync::Arc;
 
 pub async fn boot() -> Result<Arc<Supervisor>> {
     crate::acp::augment_path();
-    let config = RuntimeConfig::from_env();
+    let config = RuntimeConfig::from_env()?;
     let db = Database::open(&config.database_url)?;
     let runtimes = bootstrap_runtimes(&config);
     for runtime in &runtimes {

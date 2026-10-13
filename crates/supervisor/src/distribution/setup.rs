@@ -344,6 +344,13 @@ async fn setup_at(options: SetupOptions, file: &Path) -> Result<()> {
     online(options.port, version).await
 }
 pub fn load_environment(config: &Path) -> Result<BTreeMap<String, String>> {
+    load_environment_with_host_mode(config, None)
+}
+
+fn load_environment_with_host_mode(
+    config: &Path,
+    host_mode: Option<pockymoe_runtime::host_mode::HostMode>,
+) -> Result<BTreeMap<String, String>> {
     let saved: Value = read_device_config(config)?;
     let mut env = BTreeMap::new();
     for (key, value) in saved.as_object().context("Invalid device configuration")? {
@@ -363,9 +370,19 @@ pub fn load_environment(config: &Path) -> Result<BTreeMap<String, String>> {
         "POCKYMOE_RELAY_SUPERVISOR_CONFIG".into(),
         config.to_string_lossy().into_owned(),
     );
+    if let Some(mode) = host_mode {
+        env.insert("POCKYMOE_HOST_MODE".into(), mode.to_string());
+    }
+    let host_mode = env
+        .get("POCKYMOE_HOST_MODE")
+        .map(|value| value.parse::<pockymoe_runtime::host_mode::HostMode>())
+        .transpose()?
+        .unwrap_or_default();
     ensure!(
-        env.get("POCKYMOE_RELAY_AGENT_TOKEN")
-            .is_some_and(|t| !t.is_empty()),
+        !host_mode.capabilities().relay
+            || env
+                .get("POCKYMOE_RELAY_AGENT_TOKEN")
+                .is_some_and(|t| !t.is_empty()),
         "Device token is missing from config"
     );
     let fallback = home().join(".remote-codex/relay-supervisor.sqlite");
@@ -410,7 +427,17 @@ fn is_database_url(value: &str) -> bool {
     })
 }
 pub async fn run_device(config: PathBuf) -> Result<()> {
-    let env = load_environment(&config)?;
+    run_device_with_host_mode(config, None).await
+}
+
+pub async fn run_device_with_host_mode(
+    config: PathBuf,
+    host_mode: Option<pockymoe_runtime::host_mode::HostMode>,
+) -> Result<()> {
+    let env = match host_mode {
+        Some(mode) => load_environment_with_host_mode(&config, Some(mode))?,
+        None => load_environment(&config)?,
+    };
     for (key, _) in std::env::vars().filter(|(k, _)| k.starts_with("POCKYMOE_")) {
         if key != "POCKYMOE_MANAGED_SERVICE" {
             std::env::remove_var(key);
@@ -438,6 +465,29 @@ pub async fn run_device(config: PathBuf) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn host_mode_device_config_and_flag_select_startup_policy() {
+        use pockymoe_runtime::host_mode::HostMode;
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("device.json");
+        let mut saved = json!({"POCKYMOE_DATABASE_PATH":dir.path().join("test.sqlite"),"POCKYMOE_HOST_MODE":"hosted"});
+        write_device_config(&config, &saved).unwrap();
+        let env = load_environment(&config).unwrap();
+        assert_eq!(env["POCKYMOE_HOST_MODE"], "hosted");
+        assert_eq!(env["POCKYMOE_MODE"], "relay");
+        assert!(load_environment_with_host_mode(&config, Some(HostMode::Standalone)).is_err());
+        saved["POCKYMOE_HOST_MODE"] = json!("invalid");
+        write_device_config(&config, &saved).unwrap();
+        assert!(load_environment(&config).is_err());
+        assert!(load_environment_with_host_mode(&config, Some(HostMode::Hosted)).is_ok());
+        saved.as_object_mut().unwrap().remove("POCKYMOE_HOST_MODE");
+        saved["POCKYMOE_RELAY_AGENT_TOKEN"] = json!("synthetic-token");
+        write_device_config(&config, &saved).unwrap();
+        let env = load_environment(&config).unwrap();
+        assert!(!env.contains_key("POCKYMOE_HOST_MODE"));
+        assert_eq!(env["POCKYMOE_MODE"], "relay");
+    }
+
     #[tokio::test]
     async fn explicit_rebind_of_running_install_preserves_registration_without_installing_again() {
         assert_running_rebind_web_origin(None, None, false).await;

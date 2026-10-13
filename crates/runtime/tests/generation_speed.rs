@@ -6,7 +6,7 @@ use std::sync::Arc;
 #[tokio::test]
 async fn speed_cost_and_history_survive_tool_wait_and_restart() {
     let dir = tempfile::tempdir().unwrap();
-    let mut config = RuntimeConfig::from_env();
+    let mut config = RuntimeConfig::from_env().unwrap();
     config.database_url = dir.path().join("test.sqlite");
     config.workspace_root = dir.path().join("workspaces");
     config.fake_runtime = true;
@@ -131,7 +131,7 @@ async fn speed_cost_and_history_survive_tool_wait_and_restart() {
 #[tokio::test]
 async fn claude_tool_response_has_live_speed_and_late_acp_usage_cannot_replace_it() {
     let dir = tempfile::tempdir().unwrap();
-    let mut config = RuntimeConfig::from_env();
+    let mut config = RuntimeConfig::from_env().unwrap();
     config.database_url = dir.path().join("claude.sqlite");
     config.workspace_root = dir.path().join("workspaces");
     config.fake_runtime = true;

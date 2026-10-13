@@ -646,7 +646,7 @@ mod tests {
     async fn statistics_read_all_persisted_turns_and_use_timeline_prices() {
         use crate::fake::FakeRuntime;
         let dir = tempfile::tempdir().unwrap();
-        let mut config = RuntimeConfig::from_env();
+        let mut config = RuntimeConfig::from_env().unwrap();
         config.database_url = dir.path().join("isolated.sqlite");
         config.workspace_root = dir.path().join("workspaces");
         config.fake_runtime = true;

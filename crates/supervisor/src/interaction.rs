@@ -54,6 +54,7 @@ pub(crate) async fn run(
     input: Value,
     caller: Option<String>,
 ) -> anyhow::Result<Value> {
+    crate::host_policy::require_command(state, &input)?;
     let id = input.get("threadId").and_then(Value::as_str).unwrap_or("");
     let from = input["fromThreadId"].as_str();
     let me = || from.context("this command needs the caller's thread identity; pass --from ID");
@@ -70,7 +71,7 @@ pub(crate) async fn run(
         "info" => {
             let identity = crate::peer_link::relay_identity(state);
             Ok(
-                json!({"deviceId":state.db.host_id,"relayDeviceId":identity.as_ref().map(|i| &i.device_id),"deviceName":identity.as_ref().map(|i| &i.device_name)}),
+                json!({"hostMode":state.config.host_mode,"hostCapabilities":state.host_capabilities,"deviceId":state.db.host_id,"relayDeviceId":identity.as_ref().map(|i| &i.device_id),"deviceName":identity.as_ref().map(|i| &i.device_name)}),
             )
         }
         "skill" => Ok(json!({

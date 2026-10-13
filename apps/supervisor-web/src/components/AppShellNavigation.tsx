@@ -1,3 +1,4 @@
+import { HostFeatureGate } from '../lib/hostCapabilities';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { useEffect, useRef } from 'react';
 import { CircleHelp, MonitorSmartphone, Menu, Settings, X } from 'lucide-react';
@@ -123,7 +124,7 @@ export function AppShellNavigationMenu({
         className="flex flex-col gap-0.5 text-sm"
       >
         {relayModeActive() && (
-          <button
+          <HostFeatureGate feature="relay"><button
             type="button"
             onClick={() => {
               shellNav.closeNav();
@@ -134,7 +135,7 @@ export function AppShellNavigationMenu({
             )}
           >
             <MonitorSmartphone aria-hidden="true" className="h-4 w-4" />
-            {translate("files.deviceManagement")}</button>
+            {translate("files.deviceManagement")}</button></HostFeatureGate>
         )}
         <button
           type="button"

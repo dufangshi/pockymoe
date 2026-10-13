@@ -1,3 +1,5 @@
+import { HostCapabilitiesProvider } from './lib/hostCapabilities';
+import { relayDeviceIdFromPath } from './lib/relayRoutes';
 import { AccountSessionGate } from './components/AccountSessionGate';
 import { SharedInvitePage } from './pages/SharedInvitePage';
 import { WorkspaceDocumentNavigationGuard } from "./components/WorkspaceDocumentNavigationGuard";
@@ -303,6 +305,7 @@ function AppShell({
   };
 
   return (
+    <HostCapabilitiesProvider scope={relayDeviceIdFromPath(location.pathname) ?? 'local'}>
     <AppShellNavContext.Provider value={shellNavValue}>
       <TourProvider>
       <div
@@ -351,6 +354,7 @@ function AppShell({
       <AppShellSettingsDialog />
       </TourProvider>
     </AppShellNavContext.Provider>
+    </HostCapabilitiesProvider>
   );
 }
 

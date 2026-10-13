@@ -6,6 +6,7 @@ use pockymoe_protocol::{Mode, Provider};
 #[derive(Debug, Clone)]
 pub struct RuntimeConfig {
     pub mode: Mode,
+    pub host_mode: crate::host_mode::HostMode,
     pub host: String,
     pub port: u16,
     pub workspace_root: PathBuf,
@@ -27,7 +28,8 @@ pub struct RuntimeConfig {
 }
 
 impl RuntimeConfig {
-    pub fn from_env() -> Self {
+    pub fn from_env() -> anyhow::Result<Self> {
+        let host_mode = crate::host_mode::HostMode::from_env()?;
         let mode = match env::var("POCKYMOE_MODE").unwrap_or_default().as_str() {
             "server" => Mode::Server,
             "relay" => Mode::Relay,
@@ -68,8 +70,9 @@ impl RuntimeConfig {
         let enabled_providers =
             parse_providers(env::var("POCKYMOE_ENABLED_AGENT_PROVIDERS").ok().as_deref());
         let fake_runtime = env_flag("POCKYMOE_E2E_FAKE_RUNTIME");
-        Self {
+        Ok(Self {
             mode,
+            host_mode,
             host,
             port,
             workspace_root,
@@ -94,7 +97,7 @@ impl RuntimeConfig {
             .and_then(|v| v.parse().ok())
             .unwrap_or(10_000),
             fake_runtime,
-        }
+        })
     }
 }
 

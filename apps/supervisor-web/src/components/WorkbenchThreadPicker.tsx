@@ -1,3 +1,4 @@
+import { useHostCapabilities } from '../lib/hostCapabilities';
 import {
   useEffect,
   useId,
@@ -57,6 +58,7 @@ type Location = {
 
 export function WorkbenchThreadPicker(props: WorkbenchThreadPickerProps) {
   useI18n();
+  const { devicePeer } = useHostCapabilities();
   const {
     deviceId,
     workspaceId,
@@ -426,7 +428,7 @@ export function WorkbenchThreadPicker(props: WorkbenchThreadPickerProps) {
                     () => void catalog.loadWorkspaces(deviceId, true),
                     t('workbench.splitNoWorkspaces'),
                   )}
-                  {deviceId && (
+                  {devicePeer && deviceId && (
                     <>
                       <div className="workbench-thread-picker-section-label">
                         {t('workbench.splitOtherDevices')}

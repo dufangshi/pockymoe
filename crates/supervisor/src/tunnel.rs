@@ -53,6 +53,7 @@ impl Drop for RelayClientSession {
 }
 
 pub async fn run_relay_tunnel(state: Arc<Supervisor>) -> Result<()> {
+    pockymoe_runtime::host_mode::require_feature(state.host_capabilities.relay, "relay")?;
     let server_url = state
         .config
         .relay_server_url
@@ -1096,6 +1097,7 @@ pub(crate) mod tests {
     pub(crate) fn state_with_relay_url(relay_url: &str) -> (TempDir, Arc<Supervisor>) {
         let directory = tempfile::tempdir().unwrap();
         let config = RuntimeConfig {
+            host_mode: Default::default(),
             mode: Mode::Relay,
             host: "127.0.0.1".into(),
             port: 0,

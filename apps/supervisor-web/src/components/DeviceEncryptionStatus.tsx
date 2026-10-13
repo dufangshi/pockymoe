@@ -1,3 +1,4 @@
+import { useHostCapabilities } from '../lib/hostCapabilities';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { useEffect, useLayoutEffect, useState, useRef } from 'react';
 import { createPortal } from 'react-dom';
@@ -40,6 +41,7 @@ export function DeviceEncryptionStatus({
   };
 }) {
   useI18n();
+  const { accountBinding } = useHostCapabilities();
   const [status, setStatus] = useState<TransportStatus | undefined>(() =>
     deviceId ? getTransportStatus(deviceId) : undefined,
   );
@@ -235,7 +237,7 @@ export function DeviceEncryptionStatus({
               {status?.role === 'grantee' && <span className="block">{translate(status.identityTrust === 'invite' ? 'sharing.invitePinned' : 'sharing.recipientTofu')}</span>}
               {status?.strict && <span className="block">{translate('auth.ownerStrict')}</span>}
               {protection === 'not-protected' && <span className="block">{translate('devices.protectDeviceHelp')}</span>}
-              {status?.role !== 'grantee' && <button className="relay-button-secondary px-3 py-2" onClick={() => { setOpen(false); setManage(true); }}>{translate('auth.ownerManage')}</button>}
+              {accountBinding && status?.role !== 'grantee' && <button className="relay-button-secondary px-3 py-2" onClick={() => { setOpen(false); setManage(true); }}>{translate('auth.ownerManage')}</button>}
             </span>}
             {deviceId && hasOwnerPin && (!status?.certificateVerified || status?.role === 'grantee') && <button className="relay-button-secondary px-3 py-2" onClick={() => {
               void forgetInviteOwner(deviceId).then(() => resetPinnedDevice(deviceId)).then(() => {
@@ -260,7 +262,7 @@ export function DeviceEncryptionStatus({
           </span>
         </>, document.body
       )}
-      {manage && deviceId && <FormDialog title={translate("auth.ownerManage")} onClose={() => setManage(false)}><DeviceTrustPanel deviceId={deviceId} /></FormDialog>}
+      {accountBinding && manage && deviceId && <FormDialog title={translate("auth.ownerManage")} onClose={() => setManage(false)}><DeviceTrustPanel deviceId={deviceId} /></FormDialog>}
       <ConfirmDialog
         open={Boolean(confirm)}
         title={translate("auth.trustTheReplacementDeviceIdentity")}

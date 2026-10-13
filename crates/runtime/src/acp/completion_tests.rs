@@ -75,7 +75,7 @@ async fn claude_background_wake_output_stays_live_and_persists_after_foreground_
 
         // Use the real durable event persister and history API, with an isolated
         // fake-owned thread. No live account, model call or formal DB is touched.
-        let mut config = RuntimeConfig::from_env();
+        let mut config = RuntimeConfig::from_env().unwrap();
         config.database_url = dir.path().join("history.sqlite");
         config.workspace_root = dir.path().join("workspaces");
         config.fake_runtime = true;

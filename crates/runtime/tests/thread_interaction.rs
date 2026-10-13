@@ -11,6 +11,7 @@ use std::{sync::Arc, time::Duration};
 fn setup() -> (tempfile::TempDir, Arc<Supervisor>) {
     let dir = tempfile::tempdir().unwrap();
     let config = RuntimeConfig {
+        host_mode: Default::default(),
         mode: pockymoe_protocol::Mode::Local,
         host: "127.0.0.1".into(),
         port: 0,

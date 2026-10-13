@@ -243,6 +243,10 @@ pub(crate) fn relay_identity(state: &Supervisor) -> Option<RelayIdentity> {
 /// Devices owned by this device's relay owner, including this one (`self: true`):
 /// `[{deviceId, name, online, self}]`.
 pub(crate) async fn directory(state: &Supervisor) -> Result<Vec<Value>> {
+    pockymoe_runtime::host_mode::require_feature(
+        state.host_capabilities.device_peer,
+        "devicePeer",
+    )?;
     let response = exchange(
         state,
         json!({"type":"peer.directory"}),
@@ -263,6 +267,10 @@ pub(crate) async fn relay_request(
     device_id: &str,
     payload: Value,
 ) -> Result<Value> {
+    pockymoe_runtime::host_mode::require_feature(
+        state.host_capabilities.device_peer,
+        "devicePeer",
+    )?;
     exchange(
         state,
         json!({"type":"peer.request","targetDeviceId":device_id,"payload":payload}),
@@ -282,6 +290,10 @@ pub(crate) async fn request(
     content_type: Option<&str>,
     body: Vec<u8>,
 ) -> Result<PeerResponse> {
+    pockymoe_runtime::host_mode::require_feature(
+        state.host_capabilities.device_peer,
+        "devicePeer",
+    )?;
     require_access(state)?;
     link(state)
         .client

@@ -36,7 +36,7 @@ mod tests {
     #[tokio::test]
     async fn legacy_final_report_survives_summary_and_detail_without_rewriting_history() {
         let dir = tempfile::tempdir().unwrap();
-        let mut config = RuntimeConfig::from_env();
+        let mut config = RuntimeConfig::from_env().unwrap();
         config.database_url = dir.path().join("isolated.sqlite");
         config.workspace_root = dir.path().join("workspaces");
         config.fake_runtime = true;

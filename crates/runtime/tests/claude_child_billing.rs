@@ -6,7 +6,7 @@ use std::sync::Arc;
 #[tokio::test]
 async fn child_request_prices_survive_updates_final_fallback_and_database_reload() {
     let dir = tempfile::tempdir().unwrap();
-    let mut config = RuntimeConfig::from_env();
+    let mut config = RuntimeConfig::from_env().unwrap();
     config.database_url = dir.path().join("billing.sqlite");
     config.workspace_root = dir.path().join("workspaces");
     config.fake_runtime = true;

@@ -1,3 +1,4 @@
+import { HostFeatureGate } from '../lib/hostCapabilities';
 import { useEffect, useState } from 'react';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { prepareDeviceEnrollment } from '../lib/deviceEnrollment';
@@ -17,7 +18,11 @@ import {
 } from '../lib/deviceSetupCommands';
 
 /** Binding is a local command and must also be available while the device is offline. */
-export function DeviceBindingPanel({
+export function DeviceBindingPanel(props: { deviceId: string; repair?: boolean; device?: RelayDeviceDto }) {
+  return <HostFeatureGate feature="accountBinding"><DeviceBindingContent {...props} /></HostFeatureGate>;
+}
+
+function DeviceBindingContent({
   deviceId,
   repair = false,
   device,
