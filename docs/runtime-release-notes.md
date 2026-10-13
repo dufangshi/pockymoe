@@ -1,30 +1,24 @@
-Account-key trust: a compromised relay can no longer command a protected device
-or read its traffic. The account password unlocks, in the browser, an account
-key that the relay stores only encrypted (Argon2id); the relay never receives
-the password again after a one-time upgrade. Each browser gets its own
-non-expiring certificate, so a browser stays signed in until it is removed in
-Account → Security. Devices are bound to the account key once: new installs bind
-during setup, existing devices with "Protect this device" (local `pockymoe bind`
-command) or "Protect all devices" (one click, trusting the relay only at that
-moment). A protected device refuses plaintext and unsigned relay requests.
+Harness processes are now released when nobody needs them, instead of staying
+loaded until the Supervisor exits. Opening a thread loads its harness; leaving
+it without sending a message releases it about 10 seconds later. A thread that
+no page shows and that has no work in progress (running turn, pending approval
+or question, queued input, background task, subagent, goal, Claude scheduled
+loop or wakeup) is released after 10 idle minutes. The next message reloads it
+as before. Releasing a Codex thread also drops its writer lock, so the Codex
+desktop app no longer reports the thread as in use by Pockymoe.
 
-Sharing is enforced by the device itself through grants the owner's browser
-signs; the relay cannot create or widen a share. Recipients verify the owner
-with a safety code or an invite link. Devices of one account authenticate each
-other with account-signed certificates for cross-device messages and files.
-Public links are encrypted with a key that stays in the link. Port previews on
-protected devices need an owner-issued lease.
+Settings → Resources sets the idle time and optional limits on loaded threads
+and harness memory. The device monitor's Memory row expands to the
+Supervisor's total and each loaded thread's adapter, agent, MCP and tool
+processes, with an End button. Only the owner and device-scoped grants can see
+the list or change the settings; read-only viewers never keep a harness
+loaded. A new thread that was released before its first message starts a fresh
+session on that message. Explorer previews now show PDFs and linked Markdown
+images on the static Web origin.
 
-The Web is now a static site at https://app.lnz-study.com (GitHub Pages); the
-relay at https://remote.lnz-study.com serves only the API and redirects old
-pages. On first sign-in, existing accounts choose "First sign-in since the
-security upgrade" and save a recovery code; passwords shorter than 12
-characters must be changed, and Google/GitHub accounts set an unlock password.
-Administrators can still issue a temporary password, but regaining device
-access then needs the user's recovery code.
-
-Validated with Rust protocol/relay/Supervisor/runtime/CLI suites, Web unit
-tests, desktop and mobile Chromium end-to-end runs (account keys, enrollment,
-one-click protection, sharing, peers, previews) and a live trial deployment.
-Unbound devices keep working as before. Windows Device Manager is unchanged.
-This release does not force-update or reinstall the current device.
+Validated with the runtime and Supervisor suites, Web unit tests, and a live
+run against real Claude and Codex adapters on an isolated Supervisor
+(release, view, idle, limit, delete, Codex writer lock, and the browser
+monitor and settings). The mobile apps do not yet report which thread is on
+screen, so a thread left open there is released after the idle time and
+reloads on the next message. Windows Device Manager is unchanged.
