@@ -69,7 +69,7 @@ impl Supervisor {
             .collect::<HashSet<_>>()
         {
             self.bus.emit(ThreadEventEnvelope {
-                event_type: "thread.updated".into(),
+                event_type: pockymoe_protocol::ThreadEventType::ThreadUpdated,
                 thread_id: thread_id.into(),
                 timestamp: now.clone(),
                 payload: json!({"reason":"child_deleted","deletedThreadId":id}),

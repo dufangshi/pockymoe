@@ -118,9 +118,14 @@ fn efforts() -> Vec<ReasoningEffortOptionDto> {
         .collect()
 }
 
-fn emit(bus: &EventBus, thread_id: &str, event_type: &str, payload: serde_json::Value) {
+fn emit(
+    bus: &EventBus,
+    thread_id: &str,
+    event_type: pockymoe_protocol::ThreadEventType,
+    payload: serde_json::Value,
+) {
     bus.emit(ThreadEventEnvelope {
-        event_type: event_type.into(),
+        event_type,
         thread_id: thread_id.into(),
         timestamp: now_rfc3339(),
         payload,
@@ -284,7 +289,7 @@ impl AgentRuntime for FakeRuntime {
         emit(
             &bus,
             &input.thread_id,
-            "thread.turn.started",
+            pockymoe_protocol::ThreadEventType::ThreadTurnStarted,
             json!({ "turnId": input.turn_id }),
         );
         let slow = input.prompt.len() > 180
@@ -295,7 +300,7 @@ impl AgentRuntime for FakeRuntime {
         if slow {
             tokio::select! {
                 _ = cancel.cancelled() => {
-                    emit(&bus, &input.thread_id, "thread.turn.completed", json!({
+                    emit(&bus, &input.thread_id, pockymoe_protocol::ThreadEventType::ThreadTurnCompleted, json!({
                         "turnId": input.turn_id,
                         "status": "interrupted",
                         "error": null
@@ -310,7 +315,7 @@ impl AgentRuntime for FakeRuntime {
                     emit(
                         &bus,
                         &input.thread_id,
-                        "thread.turn.completed",
+                        pockymoe_protocol::ThreadEventType::ThreadTurnCompleted,
                         json!({
                             "turnId": input.turn_id,
                             "status": "interrupted",
@@ -322,7 +327,7 @@ impl AgentRuntime for FakeRuntime {
                 emit(
                     &bus,
                     &input.thread_id,
-                    "thread.output.delta",
+                    pockymoe_protocol::ThreadEventType::ThreadOutputDelta,
                     json!({
                         "turnId": input.turn_id,
                         "itemId": item_id,
@@ -337,13 +342,13 @@ impl AgentRuntime for FakeRuntime {
         emit(
             &bus,
             &input.thread_id,
-            "thread.item.completed",
+            pockymoe_protocol::ThreadEventType::ThreadItemCompleted,
             json!({ "turnId": input.turn_id, "item": final_item }),
         );
         emit(
             &bus,
             &input.thread_id,
-            "thread.turn.completed",
+            pockymoe_protocol::ThreadEventType::ThreadTurnCompleted,
             json!({
                 "turnId": input.turn_id,
                 "status": "completed",
@@ -489,7 +494,7 @@ fn item(id: &str, text: &str, status: Option<&str>) -> ThreadHistoryItemDto {
     ThreadHistoryItemDto {
         id: id.into(),
         created_at: Some(now_rfc3339()),
-        kind: "agentMessage".into(),
+        kind: pockymoe_protocol::ThreadItemKind::AgentMessage,
         text: text.into(),
         preview_text: None,
         detail_text: None,

@@ -449,7 +449,7 @@ impl Supervisor {
             Ok(receipt)
         })?;
         self.bus.emit(ThreadEventEnvelope {
-            event_type: "thread.updated".into(),
+            event_type: pockymoe_protocol::ThreadEventType::ThreadUpdated,
             thread_id: id.into(),
             timestamp: now,
             payload: json!({"reason":"pending_steer_updated"}),

@@ -535,7 +535,7 @@ impl Supervisor {
                             .unwrap_or(&event.timestamp)
                             .into(),
                     ),
-                    kind: "agentMessage".into(),
+                    kind: pockymoe_protocol::ThreadItemKind::AgentMessage,
                     text: String::new(),
                     preview_text: None,
                     detail_text: None,
@@ -621,7 +621,7 @@ impl Supervisor {
         };
         if let Some(context) = crate::usage::context_usage(raw, &event.timestamp) {
             self.bus.emit(pockymoe_protocol::ThreadEventEnvelope {
-                event_type: "thread.context.updated".into(),
+                event_type: pockymoe_protocol::ThreadEventType::ThreadContextUpdated,
                 thread_id: event.thread_id.clone(),
                 timestamp: event.timestamp.clone(),
                 payload: json!({"contextUsage":context}),
@@ -711,7 +711,7 @@ impl Supervisor {
         })?;
         if let Some(payload) = payload {
             self.bus.emit(pockymoe_protocol::ThreadEventEnvelope {
-                event_type: "thread.turn.token.updated".into(),
+                event_type: pockymoe_protocol::ThreadEventType::ThreadTurnTokenUpdated,
                 thread_id: event.thread_id.clone(),
                 timestamp: event.timestamp.clone(),
                 payload,
@@ -1131,7 +1131,7 @@ impl Supervisor {
         }
         thread.active_turn_id = self.active_turn_id(id)?;
         if thread.active_turn_id.is_some() {
-            thread.status = "running".into();
+            thread.status = pockymoe_protocol::ThreadStatus::Running;
         }
         Ok(thread)
     }
@@ -1268,7 +1268,7 @@ impl Supervisor {
         })?;
         let thread = self.get_thread(&id)?;
         self.bus.emit(pockymoe_protocol::ThreadEventEnvelope {
-            event_type: "thread.updated".into(),
+            event_type: pockymoe_protocol::ThreadEventType::ThreadUpdated,
             thread_id: id.clone(),
             timestamp: now_rfc3339(),
             payload: json!({"reason":"thread_created"}),
@@ -1282,7 +1282,7 @@ impl Supervisor {
         .collect::<HashSet<_>>()
         {
             self.bus.emit(pockymoe_protocol::ThreadEventEnvelope {
-                event_type: "thread.updated".into(),
+                event_type: pockymoe_protocol::ThreadEventType::ThreadUpdated,
                 thread_id: parent.clone(),
                 timestamp: now_rfc3339(),
                 payload: json!({"reason":"children_changed"}),
@@ -1519,10 +1519,10 @@ impl Supervisor {
                     params![
                         turn_id,
                         thread_id,
-                        if turn.status.trim().is_empty() {
+                        if turn.status.as_str().trim().is_empty() {
                             "completed".to_string()
                         } else {
-                            turn.status.clone()
+                            turn.status.to_string()
                         },
                         turn.error.clone(),
                         turn.model.clone(),
@@ -2108,7 +2108,7 @@ impl Supervisor {
                         id: row.get(0)?,
                         started_at: row.get(6)?,
                         completed_at: row.get(7)?,
-                        status: row.get(1)?,
+                        status: row.get::<_, String>(1)?.into(),
                         error: row.get(2)?,
                         model: row.get(3)?,
                         reasoning_effort: row.get(4)?,
@@ -2367,7 +2367,7 @@ impl Supervisor {
             let user_item = ThreadHistoryItemDto {
                 id: format!("{turn_id}:user"),
                 created_at: Some(now.clone()),
-                kind: "userMessage".into(),
+                kind: pockymoe_protocol::ThreadItemKind::UserMessage,
                 text: prompt.clone(),
                 preview_text: None,
                 detail_text: None,
@@ -2409,7 +2409,7 @@ impl Supervisor {
             Ok(())
         })?;
         self.bus.emit(pockymoe_protocol::ThreadEventEnvelope {
-            event_type: "thread.updated".into(),
+            event_type: pockymoe_protocol::ThreadEventType::ThreadUpdated,
             thread_id: thread.id.clone(),
             timestamp: now.clone(),
             payload: json!({ "status": "running", "turnId": turn_id, "title": title }),
@@ -2532,7 +2532,7 @@ impl Supervisor {
             "idle"
         };
         self.bus.emit(pockymoe_protocol::ThreadEventEnvelope {
-            event_type: "thread.updated".into(),
+            event_type: pockymoe_protocol::ThreadEventType::ThreadUpdated,
             thread_id: thread.id.clone(),
             timestamp: completed_at.clone(),
             payload: json!({
@@ -2618,7 +2618,7 @@ impl Supervisor {
             Ok(())
         })?;
         self.bus.emit(pockymoe_protocol::ThreadEventEnvelope {
-            event_type: "thread.updated".into(),
+            event_type: pockymoe_protocol::ThreadEventType::ThreadUpdated,
             thread_id: thread_id.into(),
             timestamp: now.into(),
             payload: json!({ "status": if status == "completed" { "idle" } else { status }, "turnId": turn_id }),
@@ -2753,7 +2753,7 @@ impl Supervisor {
             bail!("Pending queued prompt was not found.");
         }
         self.bus.emit(pockymoe_protocol::ThreadEventEnvelope {
-            event_type: "thread.updated".into(),
+            event_type: pockymoe_protocol::ThreadEventType::ThreadUpdated,
             thread_id: thread_id.into(),
             timestamp: now_rfc3339(),
             payload: json!({ "reason": "pending_steer_updated" }),
@@ -2838,7 +2838,7 @@ impl Supervisor {
         let now = now_rfc3339();
         let item = ThreadHistoryItemDto {
             id: format!("steer:{}", pending.id),
-            kind: "userMessage".into(),
+            kind: pockymoe_protocol::ThreadItemKind::UserMessage,
             text: pending.display_prompt.clone(),
             created_at: Some(submitted_at.clone()),
             source_turn_id: Some(active_turn_id.into()),
@@ -2868,7 +2868,7 @@ impl Supervisor {
             Ok(())
         })?;
         self.bus.emit(pockymoe_protocol::ThreadEventEnvelope {
-            event_type: "thread.updated".into(),
+            event_type: pockymoe_protocol::ThreadEventType::ThreadUpdated,
             thread_id: thread_id.into(),
             timestamp: now,
             payload: json!({
@@ -2915,7 +2915,7 @@ impl Supervisor {
             let reconciled = self.reconcile_stale_turns(Some(thread_id), true)?;
             if reconciled > 0 {
                 self.bus.emit(pockymoe_protocol::ThreadEventEnvelope {
-                    event_type: "thread.updated".into(),
+                    event_type: pockymoe_protocol::ThreadEventType::ThreadUpdated,
                     thread_id: thread_id.into(),
                     timestamp: now_rfc3339(),
                     payload: json!({ "status": "interrupted" }),
@@ -3208,7 +3208,7 @@ impl Supervisor {
                     params![
                         new_turn_id,
                         new_id,
-                        turn.status,
+                        turn.status.as_str(),
                         turn.error,
                         turn.model,
                         turn.reasoning_effort,
@@ -3554,7 +3554,7 @@ impl Supervisor {
             .respond_permission(request_id, allow, answer)
             .await?;
         self.bus.emit(pockymoe_protocol::ThreadEventEnvelope {
-            event_type: "thread.request.resolved".into(),
+            event_type: pockymoe_protocol::ThreadEventType::ThreadRequestResolved,
             thread_id: id.into(),
             timestamp: now_rfc3339(),
             payload: json!({ "requestId": request_id }),
@@ -3894,7 +3894,8 @@ fn thread_from_row(row: &rusqlite::Row<'_>) -> ThreadDto {
             .get::<_, Option<String>>(13)
             .ok()
             .flatten()
-            .unwrap_or_else(|| "idle".into()),
+            .unwrap_or_else(|| "idle".into())
+            .into(),
         summary_text: row.get(14).unwrap_or(None),
         last_error: row.get(15).unwrap_or(None),
         active_turn_id: None,

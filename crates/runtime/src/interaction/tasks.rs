@@ -127,7 +127,7 @@ impl Supervisor {
     fn touched(&self, threads: impl IntoIterator<Item = String>) {
         for thread in threads {
             self.bus.emit(ThreadEventEnvelope {
-                event_type: "thread.updated".into(),
+                event_type: pockymoe_protocol::ThreadEventType::ThreadUpdated,
                 thread_id: thread,
                 timestamp: now_rfc3339(),
                 payload: json!({"reason":"task_updated"}),

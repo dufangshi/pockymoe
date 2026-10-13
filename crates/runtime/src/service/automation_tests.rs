@@ -147,7 +147,7 @@ async fn automation_busy_two_and_half_periods_coalesces_until_whole_turn_ends() 
     s.drain_steers(&t).await.unwrap();
     assert_eq!(pending(&s, &t), 1);
     // Tool/item progress is deliberately not a completion boundary.
-    s.bus.emit(pockymoe_protocol::ThreadEventEnvelope{event_type:"thread.item.completed".into(),thread_id:t.clone(),timestamp:"2030-01-01T02:00:00Z".into(),payload:json!({"turnId":"user-turn","item":{"id":"tool","kind":"toolCall","text":"batch finished","status":"completed"}})});
+    s.bus.emit(pockymoe_protocol::ThreadEventEnvelope{event_type:pockymoe_protocol::ThreadEventType::ThreadItemCompleted,thread_id:t.clone(),timestamp:"2030-01-01T02:00:00Z".into(),payload:json!({"turnId":"user-turn","item":{"id":"tool","kind":"toolCall","text":"batch finished","status":"completed"}})});
     s.automation_tick("2030-01-01T03:30:00Z").await.unwrap();
     s.drain_steers(&t).await.unwrap();
     let r = runs(&s, &t, id);
@@ -260,7 +260,7 @@ async fn automation_thread_ended_cross_thread_repeats_only_for_new_complete_sour
     finish(&s, &c, "unrelated-c", "completed");
     turn(&s, &b, "first-b", "inProgress");
     s.bus.emit(ThreadEventEnvelope {
-        event_type: "thread.item.completed".into(), thread_id: b.clone(),
+        event_type: pockymoe_protocol::ThreadEventType::ThreadItemCompleted, thread_id: b.clone(),
         timestamp: "2030-01-01T03:30:00Z".into(),
         payload: json!({"turnId":"first-b","item":{"id":"tool","kind":"toolCall","status":"completed"}}),
     });
@@ -310,7 +310,7 @@ async fn automation_thread_ended_prompt_waits_for_whole_target_turn() {
     s.drain_steers(&a).await.unwrap();
     assert_eq!(pending(&s, &a), 1);
     s.bus.emit(ThreadEventEnvelope {
-        event_type: "thread.item.completed".into(),
+        event_type: pockymoe_protocol::ThreadEventType::ThreadItemCompleted,
         thread_id: a.clone(),
         timestamp: "2030-01-01T03:30:00Z".into(),
         payload: json!({"turnId":"busy-a"}),

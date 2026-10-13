@@ -1989,7 +1989,7 @@ impl AgentRuntime for AcpRuntime {
             // Settings may have reloaded the process; identify the actual writer
             // selected for this turn, rather than the one before preflight.
             bus.emit(ThreadEventEnvelope {
-                event_type: "thread.harness.ready".into(),
+                event_type: pockymoe_protocol::ThreadEventType::ThreadHarnessReady,
                 thread_id: input.thread_id.clone(),
                 timestamp: now_rfc3339(),
                 payload: json!({"turnId":input.turn_id,"instanceId":process.id}),
@@ -2056,7 +2056,7 @@ impl AgentRuntime for AcpRuntime {
         let mut mapper = TurnMapper::new(&input.turn_id);
         if !input.hidden {
             bus.emit(ThreadEventEnvelope {
-                event_type: "thread.turn.started".into(),
+                event_type: pockymoe_protocol::ThreadEventType::ThreadTurnStarted,
                 thread_id: input.thread_id.clone(),
                 timestamp: now_rfc3339(),
                 payload: json!({ "turnId": input.turn_id }),
@@ -2286,7 +2286,7 @@ impl AgentRuntime for AcpRuntime {
                                     .is_some();
                                 if left_plan {
                                     bus.emit(ThreadEventEnvelope {
-                                        event_type: "thread.collaboration.updated".into(),
+                                        event_type: pockymoe_protocol::ThreadEventType::ThreadCollaborationUpdated,
                                         thread_id: input.thread_id.clone(),
                                         timestamp: now_rfc3339(),
                                         payload: json!({"turnId": input.turn_id, "collaborationMode": "default"}),
@@ -2457,7 +2457,7 @@ impl AgentRuntime for AcpRuntime {
                 live.context_thread_id = Some(input.thread_id.clone());
                 // Persisted by the service, so a resumed session keeps knowing.
                 bus.emit(ThreadEventEnvelope {
-                    event_type: "thread.context.delivered".into(),
+                    event_type: pockymoe_protocol::ThreadEventType::ThreadContextDelivered,
                     thread_id: input.thread_id.clone(),
                     timestamp: now_rfc3339(),
                     payload: json!({"providerSessionId": input.provider_session_id}),
@@ -2522,21 +2522,21 @@ impl AgentRuntime for AcpRuntime {
         }
         if !input.hidden {
             bus.emit(ThreadEventEnvelope {
-                event_type: "thread.subagents.updated".into(),
+                event_type: pockymoe_protocol::ThreadEventType::ThreadSubagentsUpdated,
                 thread_id: input.thread_id.clone(),
                 timestamp: now_rfc3339(),
                 payload: json!({ "turnId": input.turn_id, "activeSubagents": [] }),
             });
             for item in &items {
                 bus.emit(ThreadEventEnvelope {
-                    event_type: "thread.item.completed".into(),
+                    event_type: pockymoe_protocol::ThreadEventType::ThreadItemCompleted,
                     thread_id: input.thread_id.clone(),
                     timestamp: now_rfc3339(),
                     payload: json!({ "turnId": input.turn_id, "item": item }),
                 });
             }
             bus.emit(ThreadEventEnvelope {
-                event_type: "thread.turn.completed".into(),
+                event_type: pockymoe_protocol::ThreadEventType::ThreadTurnCompleted,
                 thread_id: input.thread_id,
                 timestamp: now_rfc3339(),
                 payload: json!({
@@ -3707,7 +3707,7 @@ async fn ask_permission(
             .or_default()
             .push(dto.clone());
         bus.emit(ThreadEventEnvelope {
-            event_type: "thread.request.created".into(),
+            event_type: pockymoe_protocol::ThreadEventType::ThreadRequestCreated,
             thread_id: thread_id.clone(),
             timestamp: now_rfc3339(),
             payload: json!({ "request": dto }),
@@ -3726,7 +3726,7 @@ async fn ask_permission(
             list.retain(|request| request.id != request_id);
         }
         bus.emit(ThreadEventEnvelope {
-            event_type: "thread.request.resolved".into(),
+            event_type: pockymoe_protocol::ThreadEventType::ThreadRequestResolved,
             thread_id: thread_id.clone(),
             timestamp: now_rfc3339(),
             payload: json!({"requestId":request_id,"turnId":turn_id}),
@@ -4029,7 +4029,7 @@ async fn ask_user(
         .or_default()
         .push(dto.clone());
     bus.emit(ThreadEventEnvelope {
-        event_type: "thread.request.created".into(),
+        event_type: pockymoe_protocol::ThreadEventType::ThreadRequestCreated,
         thread_id: thread_id.clone(),
         timestamp: now_rfc3339(),
         payload: json!({"request":dto}),
@@ -4059,7 +4059,7 @@ async fn ask_user(
 
 fn emit_request_resolved((thread_id, _, bus): &(String, String, EventBus), request_id: &str) {
     bus.emit(ThreadEventEnvelope {
-        event_type: "thread.request.resolved".into(),
+        event_type: pockymoe_protocol::ThreadEventType::ThreadRequestResolved,
         thread_id: thread_id.clone(),
         timestamp: now_rfc3339(),
         payload: json!({"requestId":request_id}),
@@ -4370,7 +4370,7 @@ fn emit_mapped(bus: &EventBus, thread_id: &str, turn_id: &str, mapped: MappedUpd
     }
     if let Some(active_subagents) = mapped.active_subagents {
         bus.emit(ThreadEventEnvelope {
-            event_type: "thread.subagents.updated".into(),
+            event_type: pockymoe_protocol::ThreadEventType::ThreadSubagentsUpdated,
             thread_id: thread_id.into(),
             timestamp: now_rfc3339(),
             payload: json!({
@@ -4381,7 +4381,7 @@ fn emit_mapped(bus: &EventBus, thread_id: &str, turn_id: &str, mapped: MappedUpd
     }
     for (item_id, delta, sequence) in mapped.deltas {
         bus.emit(ThreadEventEnvelope {
-            event_type: "thread.output.delta".into(),
+            event_type: pockymoe_protocol::ThreadEventType::ThreadOutputDelta,
             thread_id: thread_id.into(),
             timestamp: now_rfc3339(),
             payload: json!({
@@ -4399,9 +4399,9 @@ fn emit_mapped(bus: &EventBus, thread_id: &str, turn_id: &str, mapped: MappedUpd
         );
         bus.emit(ThreadEventEnvelope {
             event_type: if completed {
-                "thread.item.completed".into()
+                pockymoe_protocol::ThreadEventType::ThreadItemCompleted
             } else {
-                "thread.item.started".into()
+                pockymoe_protocol::ThreadEventType::ThreadItemStarted
             },
             thread_id: thread_id.into(),
             timestamp: now_rfc3339(),
@@ -4410,7 +4410,7 @@ fn emit_mapped(bus: &EventBus, thread_id: &str, turn_id: &str, mapped: MappedUpd
     }
     if let Some(plan) = mapped.plan {
         bus.emit(ThreadEventEnvelope {
-            event_type: "thread.plan.updated".into(),
+            event_type: pockymoe_protocol::ThreadEventType::ThreadPlanUpdated,
             thread_id: thread_id.into(),
             timestamp: now_rfc3339(),
             payload: json!({
@@ -4431,7 +4431,7 @@ fn emit_usage(bus: &EventBus, thread_id: &str, turn_id: &str, usage: Value, hidd
     }
     if let Some(context) = crate::usage::context_usage(&usage, &now_rfc3339()) {
         bus.emit(ThreadEventEnvelope {
-            event_type: "thread.context.updated".into(),
+            event_type: pockymoe_protocol::ThreadEventType::ThreadContextUpdated,
             thread_id: thread_id.into(),
             timestamp: now_rfc3339(),
             payload: json!({"contextUsage":context}),
@@ -4439,7 +4439,7 @@ fn emit_usage(bus: &EventBus, thread_id: &str, turn_id: &str, usage: Value, hidd
     }
     if crate::usage::normalize_usage(&usage).is_some() {
         bus.emit(ThreadEventEnvelope {
-            event_type: "runtime.usage.updated".into(),
+            event_type: pockymoe_protocol::ThreadEventType::RuntimeUsageUpdated,
             thread_id: thread_id.into(),
             timestamp: now_rfc3339(),
             payload: json!({"turnId":turn_id,"usage":usage}),

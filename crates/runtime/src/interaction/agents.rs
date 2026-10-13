@@ -616,7 +616,7 @@ impl Supervisor {
             Ok(())
         })?;
         self.bus.emit(ThreadEventEnvelope {
-            event_type: "thread.updated".into(),
+            event_type: pockymoe_protocol::ThreadEventType::ThreadUpdated,
             thread_id: id.into(),
             timestamp: now.clone(),
             payload: json!({"reason":"closed"}),
@@ -746,7 +746,7 @@ impl Supervisor {
                 Ok(())
             })?;
             self.bus.emit(ThreadEventEnvelope {
-                event_type: "thread.updated".into(),
+                event_type: pockymoe_protocol::ThreadEventType::ThreadUpdated,
                 thread_id: caller,
                 timestamp: now,
                 payload: json!({"reason":"pending_steer_updated"}),

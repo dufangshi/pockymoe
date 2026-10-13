@@ -11,6 +11,7 @@
   "scripts": {
     "build": "tsup src/index.ts --format esm --dts",
     "lint": "eslint src --ext .ts",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test tests/thread-schema-contract.test.mjs"
   }
 }
