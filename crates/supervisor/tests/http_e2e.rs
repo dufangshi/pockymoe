@@ -438,13 +438,32 @@ async fn harness_processes_release_and_capabilities_without_loading_over_http() 
     let interrupted = release(Some(json!({"interrupt": true}))).await.unwrap();
     assert_eq!(interrupted.status(), 200);
     assert_eq!(interrupted.json::<Value>().await.unwrap()["released"], true);
+    let settings = format!("{base}/api/harness-resources/settings");
     let invalid = client
-        .put(format!("{base}/api/harness-resources/settings"))
+        .put(&settings)
         .json(&json!({"idleReleaseMinutes": 10, "maxLoadedThreads": null, "maxHarnessMemoryBytes": 1}))
         .send()
         .await
         .unwrap();
     assert_eq!(invalid.status(), 400);
+    // A partial body must not silently turn the idle rule off.
+    let partial = client
+        .put(&settings)
+        .json(&json!({"maxLoadedThreads": 5}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(partial.status(), 400);
+    let body = partial.json::<Value>().await.unwrap();
+    assert_eq!(body["code"], "invalid_settings");
+    assert!(body["message"]
+        .as_str()
+        .unwrap()
+        .contains("idleReleaseMinutes"));
+    assert_eq!(
+        json(&client, client.get(&settings)).await["idleReleaseMinutes"],
+        10
+    );
 }
 
 #[tokio::test]

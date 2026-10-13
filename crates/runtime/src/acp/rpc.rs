@@ -123,8 +123,22 @@ impl AcpProcess {
         let mut child = self.child.lock().await;
         // A root reaped earlier may have freed its PID for another process group.
         let running = child.try_wait()?.is_none();
+        // Tool commands may run in their own session or process group (Claude's
+        // Bash commands, codex-code-mode-host). Record the tree while it is
+        // intact; once the adapter exits they are reparented and unreachable.
+        #[cfg(unix)]
+        let tree = match self.pid.filter(|_| running) {
+            Some(pid) => tokio::task::spawn_blocking(move || {
+                crate::harness_processes::tree_now(&[(pid, None)])
+            })
+            .await
+            .unwrap_or_default(),
+            None => Vec::new(),
+        };
         if running {
             terminate_tree(&child);
+            #[cfg(unix)]
+            crate::harness_processes::signal(&tree, libc::SIGTERM);
             let deadline = tokio::time::Instant::now() + grace;
             while child.try_wait()?.is_none() && tokio::time::Instant::now() < deadline {
                 tokio::time::sleep(Duration::from_millis(50)).await;
@@ -132,10 +146,15 @@ impl AcpProcess {
         }
         #[cfg(unix)]
         if let Some(pid) = self.pid.filter(|_| running) {
-            // Tool commands and MCP servers that ignored SIGTERM.
             unsafe {
                 libc::kill(-(pid as i32), libc::SIGKILL);
             }
+            // Whatever ignored SIGTERM, and what it started meanwhile.
+            let late =
+                tokio::task::spawn_blocking(move || crate::harness_processes::tree_now(&tree))
+                    .await
+                    .unwrap_or_default();
+            crate::harness_processes::signal(&late, libc::SIGKILL);
         }
         if child.try_wait()?.is_none() {
             child.kill().await?;

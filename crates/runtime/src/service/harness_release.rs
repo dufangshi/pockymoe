@@ -14,7 +14,7 @@ use pockymoe_protocol::{
 use tokio::sync::{broadcast, OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
 
 use crate::actor::{LoadedSession, ReleaseReason, ReleaseScope, SessionLifecycle, TurnRunning};
-use crate::harness_processes::ProcessSample;
+use crate::harness_processes::{ProcessKey, ProcessSample};
 
 /// After the last viewer leaves, how long a harness loaded only for viewing stays.
 pub(crate) const VIEW_RELEASE_DELAY: Duration = Duration::from_secs(10);
@@ -25,7 +25,8 @@ const PROCESSES_CACHE: Duration = Duration::from_secs(2);
 const ORPHAN_GRACE: chrono::TimeDelta = chrono::TimeDelta::minutes(1);
 /// Limits leave loads younger than this alone; the next check revisits them.
 const RECENT_LOAD: Duration = Duration::from_secs(30);
-const MAX_VIEWED_THREADS: usize = 64;
+/// Threads one connection may report as displayed.
+pub const MAX_VIEWED_THREADS: usize = 64;
 const MIN_MEMORY_LIMIT: u64 = 256 * 1024 * 1024;
 /// How long explicit release waits for an interrupted turn or a running
 /// operation (such as a capability load) on the same thread.
@@ -102,8 +103,15 @@ impl DisplayState {
     }
 }
 
+/// Settings rejected for their values (HTTP 400), not for storage failures.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub struct InvalidSettings(pub String);
+
 pub struct HarnessState {
     display: std::sync::Mutex<DisplayState>,
+    /// Per process: its tree while no session on it had been prompted yet.
+    baselines: std::sync::Mutex<HashMap<String, HashSet<ProcessKey>>>,
     display_changes: broadcast::Sender<DisplayChange>,
     next_viewer: AtomicU64,
     /// Readers are operations that use a thread's harness; release writes.
@@ -129,6 +137,7 @@ impl Default for HarnessState {
     fn default() -> Self {
         Self {
             display: Default::default(),
+            baselines: Default::default(),
             display_changes: broadcast::channel(256).0,
             next_viewer: AtomicU64::new(1),
             gates: Default::default(),
@@ -311,25 +320,57 @@ pub(crate) fn limit_victims(
 }
 
 pub(crate) fn validate_settings(settings: &HarnessResourceSettingsDto) -> Result<()> {
+    let invalid = |message: &str| Err(InvalidSettings(message.into()).into());
     if settings
         .idle_release_minutes
         .is_some_and(|minutes| !(1..=1440).contains(&minutes))
     {
-        bail!("idleReleaseMinutes must be between 1 and 1440, or null");
+        return invalid("idleReleaseMinutes must be between 1 and 1440, or null");
     }
     if settings
         .max_loaded_threads
         .is_some_and(|count| !(1..=200).contains(&count))
     {
-        bail!("maxLoadedThreads must be between 1 and 200, or null");
+        return invalid("maxLoadedThreads must be between 1 and 200, or null");
     }
     if settings
         .max_harness_memory_bytes
         .is_some_and(|bytes| bytes < MIN_MEMORY_LIMIT)
     {
-        bail!("maxHarnessMemoryBytes must be at least 256 MiB, or null");
+        return invalid("maxHarnessMemoryBytes must be at least 256 MiB, or null");
+    }
+    if settings
+        .max_harness_memory_bytes
+        .is_some_and(|bytes| i64::try_from(bytes).is_err())
+    {
+        return invalid("maxHarnessMemoryBytes is too large");
     }
     Ok(())
+}
+
+/// Native subagents still running, or a transcript scan still in progress.
+pub(crate) fn native_activity(listing: &Value) -> bool {
+    listing["refreshing"] == true
+        || listing["agents"]
+            .as_array()
+            .is_some_and(|agents| agents.iter().any(|agent| agent["status"] == "running"))
+}
+
+/// Harness memory for the memory limit, counting each process once. None when
+/// the sample is partly RSS on a PSS platform: it overstates memory, and
+/// releasing on it would end threads that are under the limit.
+pub(crate) fn limit_bytes(
+    sample: &ProcessSample,
+    roots: impl IntoIterator<Item = u32>,
+) -> Option<u64> {
+    if sample.degraded {
+        return None;
+    }
+    let pids: HashSet<u32> = roots
+        .into_iter()
+        .flat_map(|root| sample.descendants(root))
+        .collect();
+    sample.total(pids)
 }
 
 fn rfc3339(time: DateTime<Utc>) -> String {
@@ -473,9 +514,7 @@ impl Supervisor {
         validate_settings(&settings)?;
         let bytes = settings
             .max_harness_memory_bytes
-            .map(i64::try_from)
-            .transpose()
-            .map_err(|_| anyhow!("maxHarnessMemoryBytes is too large"))?;
+            .and_then(|bytes| i64::try_from(bytes).ok());
         self.db.with(|conn| {
             conn.execute(
                 "INSERT INTO harness_resource_settings(id, idle_release_minutes, max_loaded_threads, max_harness_memory_bytes, updated_at)
@@ -536,13 +575,23 @@ impl Supervisor {
         }
         self.native_subagents(&thread.id, None)
             .await
-            .ok()
-            .and_then(|value| value["agents"].as_array().cloned())
-            .is_some_and(|agents| {
-                agents
-                    .iter()
-                    .any(|agent| agent["agent"]["status"] == "running")
-            })
+            .is_ok_and(|listing| native_activity(&listing))
+    }
+
+    /// The tree a process had before any of its sessions was prompted: the
+    /// runtime's snapshot at the first prompt plus the Supervisor's own.
+    fn baseline(&self, session: &LoadedSession) -> HashSet<ProcessKey> {
+        let mut baseline: HashSet<ProcessKey> = session.baseline.iter().copied().collect();
+        if let Some(own) = self
+            .harness
+            .baselines
+            .lock()
+            .unwrap()
+            .get(&session.process_id)
+        {
+            baseline.extend(own.iter().copied());
+        }
+        baseline
     }
 
     /// Every loaded session with its busy reasons, display and memory.
@@ -579,6 +628,24 @@ impl Supervisor {
         let sample = tokio::task::spawn_blocking(move || ProcessSample::collect(memory))
             .await
             .ok();
+        if let Some(sample) = &sample {
+            // Before any prompt the agent cannot have started a command.
+            let mut baselines = self.harness.baselines.lock().unwrap();
+            for (_, _, session) in &sessions {
+                let untouched = sessions
+                    .iter()
+                    .filter(|(_, _, other)| other.process_id == session.process_id)
+                    .all(|(_, _, other)| !other.prompted && !other.busy.contains(&Busy::Turn));
+                if let (true, Some(root)) = (untouched, session.root_pid) {
+                    baselines
+                        .entry(session.process_id.clone())
+                        .or_default()
+                        .extend(sample.tree_keys(&[root]));
+                }
+            }
+            baselines
+                .retain(|process, _| sessions.iter().any(|(_, _, s)| &s.process_id == process));
+        }
         let mut members = Vec::new();
         for (provider, runtime, session) in sessions {
             let thread = Self::session_thread(&by_session, &session);
@@ -599,15 +666,17 @@ impl Supervisor {
             let root = session.root_pid;
             // Commands the agent started (a dev server, a build) would die with it.
             if let (Some(sample), Some(root)) = (&sample, root) {
-                if sample.runs_tools(root) {
+                if sample.runs_tools(root, &self.baseline(&session)) {
                     add_busy(&mut busy, Busy::BackgroundTask);
                 }
             }
-            // Reads native transcripts, so only when nothing else holds it.
+            // These read native transcripts, so only when nothing else holds it.
             if busy.is_empty() {
                 if let Some(thread) = &thread {
                     if self.native_subagent_running(thread).await {
                         add_busy(&mut busy, Busy::Subagent);
+                    } else if self.claude_schedules_pending(thread).await {
+                        add_busy(&mut busy, Busy::BackgroundTask);
                     }
                 }
             }
@@ -700,7 +769,11 @@ impl Supervisor {
         }
         let runtime = self.runtime(first.provider)?.clone();
         let released = match runtime
-            .release_loaded(&first.session.session_id, ReleaseScope::Process)
+            .release_loaded(
+                &current[0].session.session_id,
+                ReleaseScope::Process,
+                Some(&first.session.process_id),
+            )
             .await
         {
             Ok(released) => released,
@@ -785,12 +858,7 @@ impl Supervisor {
         let memory = settings.max_harness_memory_bytes.is_some();
         let (members, sample, _) = self.harness_members(memory, &HashSet::new()).await?;
         let harness_bytes = sample.as_ref().filter(|_| memory).and_then(|sample| {
-            let pids: HashSet<u32> = members
-                .iter()
-                .filter_map(|m| m.session.root_pid)
-                .flat_map(|root| sample.descendants(root))
-                .collect();
-            sample.total(pids)
+            limit_bytes(sample, members.iter().filter_map(|m| m.session.root_pid))
         });
         let groups = groups(members);
         let recent = self.harness.recent_load();
@@ -943,11 +1011,13 @@ impl Supervisor {
         });
     }
 
-    /// `POST /api/threads/{id}/release`.
+    /// `POST /api/threads/{id}/release`. `may_release` limits a shared caller
+    /// to threads it controls; None is the owner.
     pub async fn release_thread_harness(
         &self,
         id: &str,
         interrupt: bool,
+        may_release: Option<&(dyn Fn(&str) -> bool + Send + Sync)>,
     ) -> Result<ReleaseThreadResultDto> {
         let thread = self.get_thread(id)?;
         let unloaded = ReleaseThreadResultDto {
@@ -976,6 +1046,18 @@ impl Supervisor {
         if !mates.iter().any(|mate| mate == id) {
             mates.push(id.into());
         }
+        let sessions_on_process = loaded
+            .iter()
+            .filter(|s| s.process_id == target.process_id)
+            .count();
+        if let Some(may_release) = may_release {
+            // A fork on the same process may be outside this caller's access.
+            if mates.len() < sessions_on_process || !mates.iter().all(|mate| may_release(mate)) {
+                bail!(
+                    "conflict: This harness also serves a thread you cannot release; ask the owner"
+                );
+            }
+        }
         if interrupt && self.live.lock().await.contains_key(id) {
             self.interrupt(id).await?;
             if !self.wait_for_turn_end(id, RELEASE_WAIT).await {
@@ -1000,7 +1082,11 @@ impl Supervisor {
             tokio::time::sleep(Duration::from_millis(50)).await;
         };
         let released = runtime
-            .release_loaded(&target.session_id, ReleaseScope::Process)
+            .release_loaded(
+                &target.session_id,
+                ReleaseScope::Process,
+                Some(&target.process_id),
+            )
             .await?;
         let mut released_threads = Vec::new();
         for session in &released {
@@ -1033,7 +1119,10 @@ impl Supervisor {
         let _guards = self
             .claim(std::slice::from_ref(&thread.id), RELEASE_WAIT)
             .await;
-        match runtime.release_loaded(session, ReleaseScope::Session).await {
+        match runtime
+            .release_loaded(session, ReleaseScope::Session, None)
+            .await
+        {
             Ok(released) if !released.is_empty() => {
                 self.emit_released(&thread.id, reason);
                 self.forget_processes().await;
@@ -1094,7 +1183,7 @@ impl Supervisor {
             let processes = member
                 .session
                 .root_pid
-                .map(|root| sample.harness_tree(root))
+                .map(|root| sample.harness_tree(root, &self.baseline(&member.session)))
                 .unwrap_or_default();
             attributed.extend(processes.iter().map(|process| process.pid));
             let bytes = (!processes.is_empty())

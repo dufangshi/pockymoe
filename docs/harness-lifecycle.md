@@ -27,8 +27,9 @@ Supervisor decides when to release (`service/harness_release.rs`).
 Reading thread details and history, `capabilities?load=false`, settings
 changes on an unloaded thread and native subagent views never start a process.
 The record also keeps the load time, the last activity (prompt, steer, turn
-end, approval, goal or harness action), whether a prompt was sent since the
-load, and the adapter's root PID.
+end, approval, goal or harness action, and a recovered Claude scheduled turn),
+whether a prompt was sent since the load, the adapter's root PID, and the
+process tree just before the first prompt (see tool processes below).
 
 ## What keeps a harness loaded
 
@@ -39,14 +40,28 @@ while it is busy. Busy reasons (`HarnessBusyReason`):
 - `pendingRequest`: an approval or question waiting for an answer;
 - `queuedInput`: queued prompts that will be delivered (held CLI steers do not
   count), or a steer being handed to the running turn;
-- `backgroundTask`: Claude SDK background tasks (Bash, Monitor, async Agent;
-  see [Claude background waits](claude-background-wake.md)), DSH work outside a
-  turn, ACP terminals still running, or any process in the tree that is not the
-  adapter, agent, bridge or an MCP server, such as a dev server or build the
-  agent started;
-- `subagent`: subagents of the running turn, or Claude/Codex
-  [native subagents](native-subagents.md) still marked running;
+- `backgroundTask`:
+  - Claude SDK background tasks (Bash, Monitor, async Agent; see
+    [Claude background waits](claude-background-wake.md)), or the SDK working
+    without a Pockymoe turn;
+  - Claude session timers that the live process fires between prompts
+    ([scheduled history](claude-scheduled-history.md)): a `CronCreate` / `/loop`
+    job until it is deleted, expires or ends with its process (unknown jobs
+    count), and a `ScheduleWakeup` until 5 minutes past its due time;
+  - DSH work outside a turn, ACP terminals still running;
+  - a tool process in the tree, such as a dev server or build the agent
+    started.
+- `subagent`: subagents of the running turn, Claude/Codex
+  [native subagents](native-subagents.md) still marked running, or a native
+  transcript scan that has not finished;
 - `goal`: an active goal.
+
+**Tool processes.** The tree before the first prompt after loading holds only
+the harness and its MCP servers: the runtime records it at that prompt, and the
+Supervisor while no session on the process has been prompted. Later processes
+are tools unless they are known harness executables, named for MCP (program or
+script name, not other arguments), or descendants of an MCP server. Processes
+are identified by PID and start time, so a reused PID never matches.
 
 An operation that loads or uses a harness (turn admission, capability load,
 reconnect, fork, settings change, compact, goal control) holds the thread while
@@ -69,16 +84,19 @@ whichever is later.
 `maxLoadedThreads`, or the harness trees use more than
 `maxHarnessMemoryBytes`, the least recently used threads that are neither
 displayed nor busy are released (reason `limit`). The load that triggered the
-check and loads younger than 30 seconds are kept. Limits never block a
-prompt: without a releasable thread the Supervisor stays over the limit and the
-monitor reports `overThreadLimit` / `overMemoryLimit`.
+check and loads younger than 30 seconds are kept. The memory limit is not
+applied to a Linux sample where some PSS was unreadable (see below). Limits
+never block a prompt: without a releasable thread the Supervisor stays over the
+limit and the monitor reports `overThreadLimit` / `overMemoryLimit`.
 
 **Shared processes.** A Claude or Grok fork is served by its source's process
 until it is loaded on its own. Such a process is released only when every
 session on it may be released, and all of them are released together.
 
 **Explicit, delete and close.** `POST /api/threads/{id}/release` releases at
-once (reason `explicit`), including busy threads other than a running turn.
+once (reason `explicit`), including busy threads other than a running turn. A
+shared caller gets 409 when the process also serves a thread it could not
+release itself.
 Deleting a top-level thread stops its running turn and releases it (`deleted`);
 closing an agent thread releases it (`closed`); deleting a child thread
 releases it as before. Delete and close end only that thread's session when it
@@ -91,11 +109,20 @@ does not release anything.
 
 1. When the adapter advertises `session/close`, send it for each session
    (codex-acp then unsubscribes the native thread and drops its writer lock).
-2. Send SIGTERM to the adapter's process group, wait up to 2 seconds for the
-   adapter to exit, then SIGKILL the group. Windows ends the process tree.
-   Commands the agent started in the group end with it; ACP terminals the
-   Supervisor ran for that process are stopped too.
-3. Remove the sessions and emit `thread.runtime.released`.
+   The whole request, including the write, times out after 2 seconds.
+2. Record the adapter's process tree (PID and start time) while it is intact.
+   Claude runs each Bash command in its own session and `codex-code-mode-host`
+   runs in its own process group, so the process group alone does not reach
+   them, and once the adapter exits they are reparented out of the tree.
+3. Send SIGTERM to the process group and to every recorded process, wait up to
+   2 seconds for the adapter to exit, then SIGKILL the group, the recorded
+   processes and anything they started meanwhile. Windows ends the process
+   tree with `taskkill /T`. ACP terminals the Supervisor ran for that process
+   are stopped too.
+4. Remove the sessions and emit `thread.runtime.released`.
+
+A process that detached from the tree before the release (a daemon that forked
+away) is not reached.
 
 The next request that needs the session resumes it as usual, a few seconds
 slower, with fresh MCP servers.
@@ -123,7 +150,7 @@ Types: `crates/protocol/src/harness_resources.rs`, mirrored in
 | --- | --- | --- |
 | `GET /api/device/processes` | `HarnessProcessesDto`, sampled on request, cached 2 s, `Cache-Control: no-store` | Owner and device grants, like `/api/device/metrics`; thread and workspace grants get 403 |
 | `GET /api/harness-resources/settings` | `HarnessResourceSettingsDto` | Same |
-| `PUT /api/harness-resources/settings` | The saved settings; invalid values return 400 `invalid_settings` | Owner and device grants with control |
+| `PUT /api/harness-resources/settings` | The saved settings. All three keys are required (`null` turns a rule off); a missing key or invalid value returns 400 `invalid_settings`, a storage failure 500 | Owner and device grants with control |
 | `POST /api/threads/{id}/release` | `ReleaseThreadResultDto`; body `{"interrupt": true}` interrupts a running turn first, otherwise a running turn returns 409 `turn_running`; an unloaded thread returns `released: false` | Like `/interrupt`: thread control |
 | `GET /api/threads/{id}/capabilities?load=false` | Session capabilities when loaded, provider capabilities otherwise, without starting a process | Unchanged |
 
@@ -135,7 +162,7 @@ WebSocket (`/ws`, and relay clients through the same session code):
   panels are not listed. The Supervisor keeps the set per connection and clears
   it when the connection, relay client or tunnel ends. A shared connection counts
   only threads it controls, judged like `/interrupt`: a read-only viewer never
-  keeps the owner's harness loaded. At most 64 IDs are kept.
+  keeps the owner's harness loaded. Only the first 64 IDs are considered.
 - The Supervisor emits `thread.runtime.loaded` with `{loadReason}` and
   `thread.runtime.released` with `{reason}` (`view`, `idle`, `limit`,
   `explicit`, `deleted`, `closed`).
@@ -144,12 +171,15 @@ WebSocket (`/ws`, and relay clients through the same session code):
 
 `HarnessProcessesDto.metric` names the measure. Linux reads PSS from
 `/proc/<pid>/smaps_rollup`, so shared pages are divided among processes and the
-sums are meaningful; if any process cannot be read, every value falls back to
-RSS. Other platforms report RSS from `sysinfo`. Each loaded thread lists its
-tree: the root is the `adapter`; `claude` and native `codex` binaries and
-`codex-*` helpers other than `codex-linux-sandbox` are `agent`; our `app-server` bridge and the npm `codex`
-launcher are `bridge`; a process whose command line contains `mcp`, and its
-descendants, is `mcp`; everything else is `tool`. A process name is the
+sums are meaningful. A process whose PSS cannot be read reports its own RSS;
+the sample then reports `rss`, and the memory limit waits for a complete
+sample, since RSS counts shared pages in every process. Other platforms report
+RSS from `sysinfo`, the measure the limit is set in there. Each loaded thread
+lists its tree: the root is the `adapter`; `claude` and native `codex` binaries
+and `codex-*` helpers other than `codex-linux-sandbox` are `agent`; our
+`app-server` bridge and the npm `codex` launcher are `bridge`; MCP servers (see
+tool processes above) and their descendants are `mcp`; everything else is
+`tool`. A process name is the
 executable plus one short distinguishing argument, never the command line,
 which may hold secrets. `harnessBytes` counts each process once; `other` lists
 Supervisor descendants outside loaded threads (probes, shells, ACP terminals).

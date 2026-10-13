@@ -14,6 +14,8 @@ pub(super) struct ClaudeLifecycle {
     background_seen: bool,
     successful_autonomous_result: Option<u64>,
     idle: bool,
+    /// The SDK reported its session state at least once.
+    state_seen: bool,
     draining: bool,
 }
 
@@ -29,6 +31,12 @@ impl ClaudeLifecycle {
     // removing the last task alone precedes the autonomous model execution.
     pub fn background_pending(&self) -> bool {
         self.background_seen && (!self.tasks_known || !self.tasks.is_empty() || !self.idle)
+    }
+
+    /// The SDK is working without a Pockymoe turn: a `/loop`, `CronCreate` or
+    /// `ScheduleWakeup` turn. Meaningful only while no turn is active.
+    pub fn autonomous_running(&self) -> bool {
+        self.state_seen && !self.idle
     }
 
     /// SDK tasks (background Bash, Monitor, async Agent) still running in this
@@ -109,6 +117,7 @@ impl ClaudeLifecycle {
                     self.successful_autonomous_result = None;
                 }
                 Some("session_state_changed") => {
+                    self.state_seen = true;
                     self.idle = message["state"] == "idle";
                 }
                 Some("background_tasks_changed") => {
@@ -210,6 +219,21 @@ mod tests {
             !state.background_pending(),
             "ordinary turns do not inherit a stale hold"
         );
+    }
+
+    #[test]
+    fn release_waits_for_a_scheduled_turn_running_between_prompts() {
+        let mut state = ClaudeLifecycle::default();
+        assert!(!state.autonomous_running(), "no state reported yet");
+        state.record(&json!({"type":"system","subtype":"init"}));
+        state.record(&json!({"type":"system","subtype":"session_state_changed","state":"idle"}));
+        assert!(!state.autonomous_running());
+        // A CronCreate or ScheduleWakeup timer fires in the live process.
+        state.record(&json!({"type":"system","subtype":"session_state_changed","state":"running"}));
+        assert!(state.autonomous_running());
+        state.record(&json!({"type":"result","subtype":"success","is_error":false,"num_turns":1}));
+        state.record(&json!({"type":"system","subtype":"session_state_changed","state":"idle"}));
+        assert!(!state.autonomous_running());
     }
 
     #[test]

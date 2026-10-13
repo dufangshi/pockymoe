@@ -268,6 +268,7 @@ impl Supervisor {
         {
             return Ok(());
         }
+        let mut ran = 0;
         let imported = self.db.with(|conn| {
             let tx = conn.unchecked_transaction()?;
             let mut imported = 0;
@@ -289,6 +290,7 @@ impl Supervisor {
                 }
                 tx.execute("UPDATE thread_turns SET ordinal=ordinal+1 WHERE thread_id=?1 AND id<>?2 AND ordinal>=?3", params![id,turn.id,ordinal])?;
                 imported += 1;
+                ran += 1;
                 let user: ThreadHistoryItemDto = serde_json::from_value(json!({"id":format!("{}:user",turn.id),"kind":"userMessage","text":turn.prompt,"status":"completed","createdAt":turn.started,"sourceTurnId":turn.id,"sequence":0}))?;
                 for item in std::iter::once(&user).chain(turn.items.iter()) {
                     tx.execute("INSERT INTO thread_history_items(id,thread_id,turn_id,item_id,item_json,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7)", params![Uuid::new_v4().to_string(),id,turn.id,item.id,serde_json::to_string(item)?,item.created_at.as_deref().unwrap_or(&turn.started),turn.completed])?;
@@ -302,6 +304,12 @@ impl Supervisor {
             entry.stamp = Some(stamp);
         }
         drop(live);
+        if ran > 0 {
+            // A scheduled turn is activity, though no Pockymoe prompt started it.
+            if let Some(session) = thread.provider_session_id.as_deref() {
+                self.runtime(thread.provider)?.touch_session(session).await;
+            }
+        }
         if imported > 0 {
             self.bus.emit(pockymoe_protocol::ThreadEventEnvelope {
                 event_type: "thread.updated".into(),

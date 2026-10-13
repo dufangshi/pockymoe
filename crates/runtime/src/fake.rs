@@ -67,6 +67,7 @@ impl FakeRuntime {
             loaded_at: now,
             last_activity_at: now,
             prompted: false,
+            baseline: Vec::new(),
             busy: Vec::new(),
         };
         let _ = self.lifecycle.send(SessionLifecycle::Loaded {
@@ -79,6 +80,16 @@ impl FakeRuntime {
             .lock()
             .unwrap()
             .insert(session_id.into(), session);
+    }
+
+    /// Serve `fork` from `parent`'s process, as Claude and Grok forks are.
+    pub fn share_process(&self, parent: &str, fork: &str) {
+        let mut loads = self.loads.lock().unwrap();
+        if let Some(process) = loads.get(parent).map(|load| load.process_id.clone()) {
+            if let Some(load) = loads.get_mut(fork) {
+                load.process_id = process;
+            }
+        }
     }
 
     fn touch(&self, session_id: &str, prompted: bool) {
@@ -557,7 +568,8 @@ impl AgentRuntime for FakeRuntime {
     async fn release_loaded(
         &self,
         session_id: &str,
-        _scope: ReleaseScope,
+        scope: ReleaseScope,
+        process_id: Option<&str>,
     ) -> Result<Vec<LoadedSession>> {
         let key = self
             .sessions
@@ -572,18 +584,47 @@ impl AgentRuntime for FakeRuntime {
         if self.active.lock().unwrap().contains_key(&key) {
             return Err(TurnRunning.into());
         }
-        self.sessions.lock().unwrap().remove(&key);
-        Ok(self
-            .loads
-            .lock()
-            .unwrap()
-            .remove(&key)
-            .into_iter()
+        if process_id.is_some_and(|expected| {
+            self.loads
+                .lock()
+                .unwrap()
+                .get(&key)
+                .is_some_and(|load| load.process_id != expected)
+        }) {
+            bail!("conflict: The harness was reloaded; check it again");
+        }
+        let mut loads = self.loads.lock().unwrap();
+        let process = loads.get(&key).map(|load| load.process_id.clone());
+        let keys: Vec<String> = match scope {
+            ReleaseScope::Session => vec![key],
+            ReleaseScope::Process => loads
+                .values()
+                .filter(|load| Some(&load.process_id) == process.as_ref())
+                .map(|load| load.session_id.clone())
+                .collect(),
+        };
+        if keys
+            .iter()
+            .any(|key| self.active.lock().unwrap().contains_key(key))
+        {
+            return Err(TurnRunning.into());
+        }
+        let mut sessions = self.sessions.lock().unwrap();
+        Ok(keys
+            .iter()
+            .filter_map(|key| {
+                sessions.remove(key);
+                loads.remove(key)
+            })
             .collect())
     }
 
     fn lifecycle(&self) -> Option<tokio::sync::broadcast::Receiver<SessionLifecycle>> {
         Some(self.lifecycle.subscribe())
+    }
+
+    async fn touch_session(&self, session_id: &str) {
+        self.touch(session_id, false);
     }
 }
 

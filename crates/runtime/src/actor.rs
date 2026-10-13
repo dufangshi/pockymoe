@@ -68,6 +68,9 @@ pub struct LoadedSession {
     pub loaded_at: DateTime<Utc>,
     pub last_activity_at: DateTime<Utc>,
     pub prompted: bool,
+    /// Processes (PID, start time) in the tree just before the first prompt:
+    /// the harness itself and its MCP servers, never tool commands.
+    pub baseline: Vec<(u32, Option<u64>)>,
     /// What the runtime itself can see: turns, steers, harness background
     /// tasks and terminals, subagents of the running turn, active goals.
     pub busy: Vec<HarnessBusyReason>,
@@ -337,15 +340,19 @@ pub trait AgentRuntime: Send + Sync {
         Vec::new()
     }
     /// End a loaded session: send `session/close` when the adapter supports
-    /// it, then stop its process group. Fails with [`TurnRunning`] while an
-    /// affected session runs a turn. Returns the sessions that were removed.
+    /// it, then stop its process tree. Fails with [`TurnRunning`] while an
+    /// affected session runs a turn, and with a conflict when `process_id` no
+    /// longer serves the session. Returns the sessions that were removed.
     async fn release_loaded(
         &self,
         _session_id: &str,
         _scope: ReleaseScope,
+        _process_id: Option<&str>,
     ) -> Result<Vec<LoadedSession>> {
         Ok(Vec::new())
     }
+    /// Record activity the runtime did not see, such as a scheduled turn.
+    async fn touch_session(&self, _session_id: &str) {}
     fn lifecycle(&self) -> Option<broadcast::Receiver<SessionLifecycle>> {
         None
     }

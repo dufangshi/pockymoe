@@ -2013,6 +2013,24 @@ impl AgentRuntime for AcpRuntime {
         }
         let mut updates = self.inner.updates.subscribe();
         let (continuation_tx, mut continuation_rx) = mpsc::unbounded_channel();
+        // Before the first prompt after loading, the tree holds only the harness
+        // and its MCP servers; later processes are the agent's tool commands.
+        let first_prompt = !input.hidden
+            && self
+                .inner
+                .sessions
+                .lock()
+                .await
+                .get(&input.provider_session_id)
+                .is_some_and(|live| !live.load.prompted);
+        let baseline = match process.pid.filter(|_| first_prompt) {
+            Some(pid) => tokio::task::spawn_blocking(move || {
+                crate::harness_processes::tree_now(&[(pid, None)])
+            })
+            .await
+            .unwrap_or_default(),
+            None => Vec::new(),
+        };
         let claude_sequence = {
             let mut sessions = self.inner.sessions.lock().await;
             let live = sessions
@@ -2033,6 +2051,9 @@ impl AgentRuntime for AcpRuntime {
             if input.hidden {
                 live.load.touch();
             } else {
+                if !live.load.prompted {
+                    live.load.baseline.extend(baseline);
+                }
                 live.load.prompt();
             }
             live.active_subagents.clear();
@@ -3454,8 +3475,13 @@ impl AgentRuntime for AcpRuntime {
         &self,
         session_id: &str,
         scope: crate::actor::ReleaseScope,
+        process_id: Option<&str>,
     ) -> Result<Vec<crate::actor::LoadedSession>> {
-        self.release(session_id, scope).await
+        self.release(session_id, scope, process_id).await
+    }
+
+    async fn touch_session(&self, session_id: &str) {
+        self.touch(session_id).await;
     }
 
     fn lifecycle(&self) -> Option<broadcast::Receiver<crate::actor::SessionLifecycle>> {

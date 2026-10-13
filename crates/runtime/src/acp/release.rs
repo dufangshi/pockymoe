@@ -18,6 +18,8 @@ pub(super) struct LoadRecord {
     pub loaded_at: DateTime<Utc>,
     pub last_activity_at: DateTime<Utc>,
     pub prompted: bool,
+    /// The process tree just before the first prompt: no tool ran yet.
+    pub baseline: Vec<crate::harness_processes::ProcessKey>,
 }
 
 impl LoadRecord {
@@ -34,6 +36,7 @@ impl LoadRecord {
             loaded_at: now,
             last_activity_at: now,
             prompted: false,
+            baseline: Vec::new(),
         }
     }
 
@@ -79,6 +82,18 @@ impl AcpRuntime {
         });
     }
 
+    /// A scheduled Claude turn ran in the live process without a client prompt.
+    pub(super) async fn touch(&self, session_id: &str) {
+        if let Some(live) = self.inner.sessions.lock().await.values_mut().find(|live| {
+            session_ids_match(
+                &Self::scoped_id(&live.adapter_id, &live.session_id),
+                session_id,
+            )
+        }) {
+            live.load.touch();
+        }
+    }
+
     /// Approvals and answers belong to running turns.
     pub(super) async fn touch_active_sessions(&self) {
         for live in self.inner.sessions.lock().await.values_mut() {
@@ -106,6 +121,7 @@ impl AcpRuntime {
                             loaded_at: live.load.loaded_at,
                             last_activity_at: live.load.last_activity_at,
                             prompted: live.load.prompted,
+                            baseline: live.load.baseline.clone(),
                             busy: session_busy(
                                 live,
                                 self.inner.terminals.running(&live.process.id),
@@ -136,6 +152,7 @@ impl AcpRuntime {
         &self,
         session_id: &str,
         scope: ReleaseScope,
+        expected_process: Option<&str>,
     ) -> Result<Vec<LoadedSession>> {
         let _lifecycle = self.inner.lifecycle.lock().await;
         let before = self.loaded().await;
@@ -151,6 +168,10 @@ impl AcpRuntime {
             return Ok(Vec::new());
         };
         let process = sessions[&key].process.clone();
+        // The caller checked this process; a reload since then is another one.
+        if expected_process.is_some_and(|expected| expected != process.id) {
+            bail!("conflict: The harness was reloaded; check it again");
+        }
         let sharing: Vec<String> = sessions
             .iter()
             .filter(|(_, live)| Arc::ptr_eq(&live.process, &process))
@@ -181,16 +202,22 @@ impl AcpRuntime {
         drop(sessions);
         for (_, live) in &removed {
             if live.negotiated.close {
-                // codex-acp unsubscribes the native thread, which drops its writer lock.
-                let closed = process
-                    .request_with_timeout(
-                        "session/close",
-                        json!({ "sessionId": live.session_id }),
-                        Some(CLOSE_TIMEOUT),
-                    )
-                    .await;
-                if let Err(error) = closed {
-                    tracing::debug!(%error, session = %live.session_id, "ACP session/close failed");
+                // codex-acp unsubscribes the native thread, which drops its writer
+                // lock. Bound the whole exchange: a stuck adapter can block the
+                // stdin write itself while this holds the lifecycle lock.
+                let closed = tokio::time::timeout(
+                    CLOSE_TIMEOUT,
+                    process.request("session/close", json!({ "sessionId": live.session_id })),
+                )
+                .await;
+                match closed {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(error)) => {
+                        tracing::debug!(%error, session = %live.session_id, "ACP session/close failed")
+                    }
+                    Err(_) => {
+                        tracing::debug!(session = %live.session_id, "ACP session/close timed out")
+                    }
                 }
             }
         }
@@ -227,6 +254,7 @@ pub(super) fn session_busy(live: &LiveSession, running_terminals: usize) -> Vec<
         .as_ref()
         .is_some_and(|turn| turn.background_owned)
         || live.claude_lifecycle.holds_background_work()
+        || (live.active.is_none() && live.claude_lifecycle.autonomous_running())
         || live.dsh_running
         || running_terminals > 0
     {

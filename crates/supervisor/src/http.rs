@@ -665,22 +665,55 @@ async fn device_processes(State(state): State<AppState>) -> Response {
     }
 }
 
+fn settings_storage_error(error: anyhow::Error) -> ApiErr {
+    err(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "settings_unavailable",
+        error.to_string(),
+    )
+}
+
 async fn harness_resource_settings(
     State(state): State<AppState>,
 ) -> Result<Json<HarnessResourceSettingsDto>, ApiErr> {
-    Ok(Json(state.harness_resource_settings().map_err(map_err)?))
+    Ok(Json(
+        state
+            .harness_resource_settings()
+            .map_err(settings_storage_error)?,
+    ))
 }
 
+/// The body replaces the policy, so every key must be present: a missing
+/// one must not silently turn a rule off.
 async fn put_harness_resource_settings(
     State(state): State<AppState>,
-    body: Result<Json<HarnessResourceSettingsDto>, axum::extract::rejection::JsonRejection>,
+    body: Bytes,
 ) -> Result<Json<HarnessResourceSettingsDto>, ApiErr> {
-    let Json(settings) =
-        body.map_err(|e| err(StatusCode::BAD_REQUEST, "invalid_settings", e.body_text()))?;
+    let invalid = |message: String| err(StatusCode::BAD_REQUEST, "invalid_settings", message);
+    let value: Value = serde_json::from_slice(&body).map_err(|e| invalid(e.to_string()))?;
+    for key in [
+        "idleReleaseMinutes",
+        "maxLoadedThreads",
+        "maxHarnessMemoryBytes",
+    ] {
+        if value.get(key).is_none() {
+            return Err(invalid(format!(
+                "{key} is required (null turns the rule off)"
+            )));
+        }
+    }
+    let settings: HarnessResourceSettingsDto =
+        serde_json::from_value(value).map_err(|e| invalid(e.to_string()))?;
     state
         .update_harness_resource_settings(settings)
         .map(Json)
-        .map_err(|e| err(StatusCode::BAD_REQUEST, "invalid_settings", e.to_string()))
+        .map_err(|e| {
+            if e.is::<pockymoe_runtime::service::InvalidSettings>() {
+                invalid(e.to_string())
+            } else {
+                settings_storage_error(e)
+            }
+        })
 }
 
 async fn runtime_config(State(state): State<AppState>) -> Json<RuntimeConfigDto> {
@@ -1865,6 +1898,7 @@ async fn thread_interrupt(
 async fn thread_release(
     Path(id): Path<String>,
     State(state): State<AppState>,
+    principal: Option<axum::Extension<crate::owner_trust::BrowserPrincipal>>,
     body: Bytes,
 ) -> Result<Json<ReleaseThreadResultDto>, ApiErr> {
     let input = if body.iter().all(u8::is_ascii_whitespace) {
@@ -1873,8 +1907,27 @@ async fn thread_release(
         serde_json::from_slice(&body)
             .map_err(|e| err(StatusCode::BAD_REQUEST, "bad_request", e.to_string()))?
     };
+    // A shared caller may end only threads it could release one by one.
+    let shared = principal.map(|p| p.0).filter(|p| !p.is_owner());
+    let may_release = |thread: &str| {
+        shared.as_ref().is_none_or(|p| {
+            crate::grants::authorize_path(
+                &state,
+                p,
+                "POST",
+                &format!("/api/threads/{thread}/release"),
+            )
+            .is_ok()
+        })
+    };
     state
-        .release_thread_harness(&id, input.interrupt)
+        .release_thread_harness(
+            &id,
+            input.interrupt,
+            shared
+                .is_some()
+                .then_some(&may_release as &(dyn Fn(&str) -> bool + Send + Sync)),
+        )
         .await
         .map(Json)
         .map_err(|e| {

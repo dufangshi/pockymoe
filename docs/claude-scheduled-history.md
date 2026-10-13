@@ -22,6 +22,10 @@ history readers. New recovered turns emit `thread.updated` after the transaction
 commits, so an already-open idle page refreshes without a manual reload. Repeated
 checks of the same completed turn emit no duplicate update.
 
+Pending session timers keep the Claude harness loaded, and a recovered
+scheduled turn counts as activity for the idle rule
+([harness lifecycle](harness-lifecycle.md)).
+
 This is a read-only recovery path, not a second scheduler or a second writer.
 It does not wake the agent, modify its native logs, import ordinary prompts or
 subagent transcripts, or claim that a still-running task has finished. Recovery

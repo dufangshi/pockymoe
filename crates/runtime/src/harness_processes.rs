@@ -5,10 +5,14 @@ use std::collections::{HashMap, HashSet};
 
 use pockymoe_protocol::{HarnessProcessDto, HarnessProcessRole, ProcessMemoryMetric};
 
+/// A PID with its start time, so a reused PID is never mistaken for it.
+pub(crate) type ProcessKey = (u32, Option<u64>);
+
 #[derive(Debug, Clone)]
 pub(crate) struct ProcessEntry {
     pub pid: u32,
     pub ppid: Option<u32>,
+    pub start: Option<u64>,
     /// Used for classification only; never returned.
     pub argv: Vec<String>,
     pub bytes: Option<u64>,
@@ -16,6 +20,9 @@ pub(crate) struct ProcessEntry {
 
 pub(crate) struct ProcessSample {
     pub metric: ProcessMemoryMetric,
+    /// Some processes had no readable PSS; their RSS stands in, so sums
+    /// overstate memory and must not drive a memory limit.
+    pub degraded: bool,
     pub supervisor_pid: u32,
     entries: HashMap<u32, ProcessEntry>,
     children: HashMap<u32, Vec<u32>>,
@@ -25,8 +32,13 @@ impl ProcessSample {
     /// Blocking: reads the process table. Memory is read only when asked.
     pub fn collect(memory: bool) -> Self {
         let supervisor_pid = std::process::id();
-        let (entries, metric) = platform::collect(supervisor_pid, memory);
-        Self::from_entries(supervisor_pid, entries, metric)
+        let (entries, degraded) = platform::collect(supervisor_pid, memory);
+        let mut sample = Self::from_entries(supervisor_pid, entries, platform::METRIC);
+        if degraded {
+            sample.metric = ProcessMemoryMetric::Rss;
+            sample.degraded = true;
+        }
+        sample
     }
 
     pub fn from_entries(
@@ -45,6 +57,7 @@ impl ProcessSample {
         }
         Self {
             metric,
+            degraded: false,
             supervisor_pid,
             entries: entries
                 .into_iter()
@@ -77,6 +90,21 @@ impl ProcessSample {
         self.entries.get(&pid).and_then(|entry| entry.bytes)
     }
 
+    pub fn key(&self, pid: u32) -> Option<ProcessKey> {
+        self.entries.get(&pid).map(|entry| (entry.pid, entry.start))
+    }
+
+    /// Every process under `roots`, roots included.
+    pub fn tree_keys(&self, roots: &[u32]) -> Vec<ProcessKey> {
+        let mut seen = HashSet::new();
+        roots
+            .iter()
+            .flat_map(|root| self.descendants(*root))
+            .filter(|pid| seen.insert(*pid))
+            .filter_map(|pid| self.key(pid))
+            .collect()
+    }
+
     /// Sum over `pids`; None when any of them could not be measured.
     pub fn total(&self, pids: impl IntoIterator<Item = u32>) -> Option<u64> {
         pids.into_iter()
@@ -84,7 +112,13 @@ impl ProcessSample {
     }
 
     /// The harness rooted at `root` (the adapter we spawned), classified.
-    pub fn harness_tree(&self, root: u32) -> Vec<HarnessProcessDto> {
+    /// `baseline` holds processes that ran before the agent could act: the
+    /// harness's own processes and MCP servers, never tool commands.
+    pub fn harness_tree(
+        &self,
+        root: u32,
+        baseline: &HashSet<ProcessKey>,
+    ) -> Vec<HarnessProcessDto> {
         let mut roles: HashMap<u32, HarnessProcessRole> = HashMap::new();
         self.descendants(root)
             .into_iter()
@@ -94,7 +128,11 @@ impl ProcessSample {
                 let role = if pid == root {
                     HarnessProcessRole::Adapter
                 } else {
-                    role_of(&entry.argv, parent)
+                    role_of(
+                        &entry.argv,
+                        parent,
+                        baseline.contains(&(entry.pid, entry.start)),
+                    )
                 };
                 roles.insert(pid, role);
                 Some(HarnessProcessDto {
@@ -108,8 +146,8 @@ impl ProcessSample {
     }
 
     /// Processes the agent started with its tools, which a release would end.
-    pub fn runs_tools(&self, root: u32) -> bool {
-        self.harness_tree(root)
+    pub fn runs_tools(&self, root: u32, baseline: &HashSet<ProcessKey>) -> bool {
+        self.harness_tree(root, baseline)
             .iter()
             .any(|process| process.role == HarnessProcessRole::Tool)
     }
@@ -122,7 +160,7 @@ impl ProcessSample {
             .filter(|pid| !attributed.contains(pid))
             .filter_map(|pid| {
                 let entry = self.entries.get(&pid)?;
-                let role = match role_of(&entry.argv, None) {
+                let role = match role_of(&entry.argv, None, false) {
                     role @ (HarnessProcessRole::Mcp | HarnessProcessRole::Adapter) => role,
                     _ => HarnessProcessRole::Other,
                 };
@@ -245,17 +283,19 @@ pub(crate) fn name_of(argv: &[String]) -> String {
     }
 }
 
-pub(crate) fn role_of(argv: &[String], parent: Option<HarnessProcessRole>) -> HarnessProcessRole {
+/// Known harness executables by name; then MCP servers, which are named
+/// for MCP or ran before the agent could act; everything else is a tool.
+/// Only the program and its script count: a tool working in a directory
+/// called `mcp` is still a tool.
+pub(crate) fn role_of(
+    argv: &[String],
+    parent: Option<HarnessProcessRole>,
+    in_baseline: bool,
+) -> HarnessProcessRole {
     if parent == Some(HarnessProcessRole::Mcp) {
         return HarnessProcessRole::Mcp;
     }
     let words = words(argv);
-    if words
-        .iter()
-        .any(|word| word.to_ascii_lowercase().contains("mcp"))
-    {
-        return HarnessProcessRole::Mcp;
-    }
     let Some(program) = words
         .first()
         .map(|word| basename(word).to_ascii_lowercase())
@@ -266,6 +306,7 @@ pub(crate) fn role_of(argv: &[String], parent: Option<HarnessProcessRole>) -> Ha
         .then(|| script_of(&words).map(|script| script.to_ascii_lowercase()))
         .flatten();
     let app_server = words.iter().any(|word| word == "app-server");
+    let mcp = program.contains("mcp") || script.as_deref().is_some_and(|s| s.contains("mcp"));
     match (program.as_str(), script.as_deref()) {
         (_, Some("codex-acp" | "claude-agent-acp")) | ("codex-acp" | "claude-agent-acp", _) => {
             HarnessProcessRole::Adapter
@@ -282,7 +323,36 @@ pub(crate) fn role_of(argv: &[String], parent: Option<HarnessProcessRole>) -> Ha
         {
             HarnessProcessRole::Bridge
         }
+        _ if mcp || in_baseline => HarnessProcessRole::Mcp,
         _ => HarnessProcessRole::Tool,
+    }
+}
+
+/// Blocking: every process under `roots` now, roots included. A root whose
+/// PID now belongs to another process (a different start time) is skipped.
+pub(crate) fn tree_now(roots: &[ProcessKey]) -> Vec<ProcessKey> {
+    let sample = ProcessSample::from_entries(0, platform::table(), platform::METRIC);
+    let live: Vec<u32> = roots
+        .iter()
+        .filter(|key| {
+            sample
+                .key(key.0)
+                .is_some_and(|now| key.1.is_none() || now == **key)
+        })
+        .map(|key| key.0)
+        .collect();
+    sample.tree_keys(&live)
+}
+
+/// Send `signal` to each process that still has the same start time.
+#[cfg(unix)]
+pub(crate) fn signal(keys: &[ProcessKey], signal: i32) {
+    for (pid, start) in keys {
+        if start.is_none() || platform::start_time(*pid) == *start {
+            unsafe {
+                libc::kill(*pid as i32, signal);
+            }
+        }
     }
 }
 
@@ -290,18 +360,25 @@ pub(crate) fn role_of(argv: &[String], parent: Option<HarnessProcessRole>) -> Ha
 mod platform {
     use super::*;
 
+    pub(super) const METRIC: ProcessMemoryMetric = ProcessMemoryMetric::Pss;
+
     fn read(pid: u32, file: &str) -> Option<String> {
         std::fs::read_to_string(format!("/proc/{pid}/{file}")).ok()
     }
 
-    /// The parent PID; `comm` may contain spaces and parentheses.
-    fn parent(stat: &str) -> Option<u32> {
+    /// A field after `comm`, which may contain spaces and parentheses:
+    /// 1 is the parent PID, 19 the start time in clock ticks.
+    fn stat_field(stat: &str, index: usize) -> Option<u64> {
         stat.rsplit_once(')')?
             .1
             .split_whitespace()
-            .nth(1)?
+            .nth(index)?
             .parse()
             .ok()
+    }
+
+    pub(super) fn start_time(pid: u32) -> Option<u64> {
+        stat_field(&read(pid, "stat")?, 19)
     }
 
     fn argv(pid: u32) -> Vec<String> {
@@ -313,6 +390,17 @@ mod platform {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    /// PSS when readable, else this process's own RSS; and whether it was PSS.
+    pub(super) fn memory_of(
+        (rss, pss): (Option<u64>, Option<u64>),
+        statm: impl FnOnce() -> Option<u64>,
+    ) -> (Option<u64>, bool) {
+        match pss {
+            Some(pss) => (Some(pss), true),
+            None => (rss.or_else(statm), false),
+        }
     }
 
     /// `(rss, pss)` in bytes.
@@ -343,63 +431,88 @@ mod platform {
         )
     }
 
-    pub(super) fn collect(
-        supervisor_pid: u32,
-        memory: bool,
-    ) -> (Vec<ProcessEntry>, ProcessMemoryMetric) {
-        let mut entries: Vec<ProcessEntry> = std::fs::read_dir("/proc")
+    /// Every process with its parent and start time only.
+    pub(super) fn table() -> Vec<ProcessEntry> {
+        std::fs::read_dir("/proc")
             .into_iter()
             .flatten()
             .filter_map(|entry| entry.ok()?.file_name().to_str()?.parse::<u32>().ok())
             .filter_map(|pid| {
+                let stat = read(pid, "stat")?;
                 Some(ProcessEntry {
                     pid,
-                    ppid: parent(&read(pid, "stat")?),
+                    ppid: stat_field(&stat, 1).and_then(|ppid| u32::try_from(ppid).ok()),
+                    start: stat_field(&stat, 19),
                     argv: Vec::new(),
                     bytes: None,
                 })
             })
-            .collect();
+            .collect()
+    }
+
+    /// Entries and whether any PSS was unreadable.
+    pub(super) fn collect(supervisor_pid: u32, memory: bool) -> (Vec<ProcessEntry>, bool) {
+        let mut entries = table();
         let tree: HashSet<u32> =
             ProcessSample::from_entries(supervisor_pid, entries.clone(), ProcessMemoryMetric::Pss)
                 .descendants(supervisor_pid)
                 .into_iter()
                 .collect();
         entries.retain(|entry| tree.contains(&entry.pid));
-        let mut all_pss = true;
-        let mut rss = HashMap::new();
+        let mut degraded = false;
         for entry in &mut entries {
             entry.argv = argv(entry.pid);
             if !memory {
                 continue;
             }
-            let (rollup_rss, pss) = read(entry.pid, "smaps_rollup")
+            let rollup = read(entry.pid, "smaps_rollup")
                 .map(|text| smaps_rollup(&text))
                 .unwrap_or_default();
-            all_pss &= pss.is_some();
-            entry.bytes = pss;
-            rss.insert(entry.pid, rollup_rss.or_else(|| statm_rss(entry.pid)));
+            let (bytes, pss) = memory_of(rollup, || statm_rss(entry.pid));
+            degraded |= !pss;
+            entry.bytes = bytes;
         }
-        if !memory || all_pss {
-            return (entries, ProcessMemoryMetric::Pss);
-        }
-        // One unreadable PSS would make the sum meaningless: use RSS throughout.
-        for entry in &mut entries {
-            entry.bytes = rss.get(&entry.pid).copied().flatten();
-        }
-        (entries, ProcessMemoryMetric::Rss)
+        (entries, degraded)
     }
 }
 
 #[cfg(not(target_os = "linux"))]
 mod platform {
     use super::*;
-    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 
-    pub(super) fn collect(
-        _supervisor_pid: u32,
-        memory: bool,
-    ) -> (Vec<ProcessEntry>, ProcessMemoryMetric) {
+    pub(super) const METRIC: ProcessMemoryMetric = ProcessMemoryMetric::Rss;
+
+    #[cfg_attr(not(unix), allow(dead_code))]
+    pub(super) fn start_time(pid: u32) -> Option<u64> {
+        let mut system = System::new();
+        let pid = Pid::from_u32(pid);
+        system.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
+        system.process(pid).map(|process| process.start_time())
+    }
+
+    pub(super) fn table() -> Vec<ProcessEntry> {
+        let mut system = System::new();
+        system.refresh_processes_specifics(
+            ProcessesToUpdate::All,
+            true,
+            ProcessRefreshKind::nothing().without_tasks(),
+        );
+        system
+            .processes()
+            .values()
+            .filter(|process| process.thread_kind().is_none())
+            .map(|process| ProcessEntry {
+                pid: process.pid().as_u32(),
+                ppid: process.parent().map(|parent| parent.as_u32()),
+                start: Some(process.start_time()),
+                argv: Vec::new(),
+                bytes: None,
+            })
+            .collect()
+    }
+
+    pub(super) fn collect(_supervisor_pid: u32, memory: bool) -> (Vec<ProcessEntry>, bool) {
         let mut system = System::new();
         let mut kind = ProcessRefreshKind::nothing()
             .without_tasks()
@@ -415,6 +528,7 @@ mod platform {
             .map(|process| ProcessEntry {
                 pid: process.pid().as_u32(),
                 ppid: process.parent().map(|parent| parent.as_u32()),
+                start: Some(process.start_time()),
                 argv: process
                     .cmd()
                     .iter()
@@ -423,7 +537,7 @@ mod platform {
                 bytes: memory.then(|| process.memory()),
             })
             .collect();
-        (entries, ProcessMemoryMetric::Rss)
+        (entries, false)
     }
 }
 
@@ -435,9 +549,14 @@ mod tests {
         ProcessEntry {
             pid,
             ppid: Some(ppid),
+            start: Some(u64::from(pid) * 10),
             argv: argv.split(' ').map(str::to_owned).collect(),
             bytes: Some(bytes),
         }
+    }
+
+    fn none() -> HashSet<ProcessKey> {
+        HashSet::new()
     }
 
     /// The trees measured on a live device: a Claude thread with its MCP
@@ -488,7 +607,7 @@ mod tests {
     #[test]
     fn processes_are_classified_by_executable_and_mcp_descendants() {
         let sample = sample();
-        let claude = sample.harness_tree(10);
+        let claude = sample.harness_tree(10, &none());
         let roles: Vec<_> = claude.iter().map(|p| (p.pid, p.role)).collect();
         assert_eq!(
             roles,
@@ -500,8 +619,12 @@ mod tests {
                 (14, HarnessProcessRole::Mcp),
             ]
         );
-        assert!(!sample.runs_tools(10));
-        let codex: Vec<_> = sample.harness_tree(20).iter().map(|p| p.role).collect();
+        assert!(!sample.runs_tools(10, &none()));
+        let codex: Vec<_> = sample
+            .harness_tree(20, &none())
+            .iter()
+            .map(|p| p.role)
+            .collect();
         assert_eq!(
             codex,
             [
@@ -512,8 +635,11 @@ mod tests {
                 HarnessProcessRole::Agent,
             ]
         );
-        assert!(!sample.runs_tools(20));
-        assert!(sample.runs_tools(30), "a dev server keeps the harness busy");
+        assert!(!sample.runs_tools(20, &none()));
+        assert!(
+            sample.runs_tools(30, &none()),
+            "a dev server keeps the harness busy"
+        );
         assert_eq!(sample.total(sample.descendants(20)), Some(182));
         let other = sample.unattributed(
             &sample
@@ -535,7 +661,7 @@ mod tests {
         let sample = sample();
         let names: HashMap<u32, String> = [10, 20, 30]
             .into_iter()
-            .flat_map(|root| sample.harness_tree(root))
+            .flat_map(|root| sample.harness_tree(root, &none()))
             .map(|p| (p.pid, p.name))
             .collect();
         assert_eq!(names[&10], "node claude-agent-acp");
@@ -562,6 +688,64 @@ mod tests {
         }
     }
 
+    #[test]
+    fn processes_present_before_the_first_prompt_are_mcp_servers_not_tools() {
+        let sample = ProcessSample::from_entries(
+            1,
+            vec![
+                entry(1, 0, "remote-codex device-run", 80),
+                entry(10, 1, "node /a/bin/claude-agent-acp", 40),
+                entry(11, 10, "/a/sdk/claude --output-format stream-json", 200),
+                ProcessEntry {
+                    argv: vec!["npm exec @modelcontextprotocol/server-filesystem /w".into()],
+                    ..entry(12, 11, "", 30)
+                },
+                entry(
+                    13,
+                    12,
+                    "node /npx/abc/node_modules/.bin/server-filesystem /w",
+                    35,
+                ),
+                entry(14, 11, "node /home/u/mcp-work/build.js", 50),
+            ],
+            ProcessMemoryMetric::Pss,
+        );
+        let roles = |baseline: &HashSet<ProcessKey>| -> Vec<_> {
+            let mut roles: Vec<_> = sample
+                .harness_tree(10, baseline)
+                .iter()
+                .map(|p| (p.pid, p.role))
+                .collect();
+            roles.sort_by_key(|(pid, _)| *pid);
+            roles
+        };
+        // Without a baseline the unnamed MCP server looks like a tool.
+        assert!(roles(&none()).contains(&(12, HarnessProcessRole::Tool)));
+        // The tree as it was before the first prompt; the build came later.
+        let baseline: HashSet<_> = [10, 11, 12, 13]
+            .into_iter()
+            .filter_map(|pid| sample.key(pid))
+            .collect();
+        assert_eq!(
+            roles(&baseline),
+            [
+                (10, HarnessProcessRole::Adapter),
+                (11, HarnessProcessRole::Agent),
+                (12, HarnessProcessRole::Mcp),
+                (13, HarnessProcessRole::Mcp),
+                (14, HarnessProcessRole::Tool),
+            ],
+            "a later command in a directory named mcp is still a tool"
+        );
+        assert!(sample.runs_tools(10, &baseline));
+        // A reused PID with another start time is not the baseline process.
+        let reused: HashSet<_> = baseline
+            .iter()
+            .map(|(pid, start)| (*pid, start.map(|start| start + 1)))
+            .collect();
+        assert!(roles(&reused).contains(&(12, HarnessProcessRole::Tool)));
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn linux_processes_sample_reads_pss_for_the_current_process() {
@@ -577,5 +761,21 @@ mod tests {
             sample.metric,
             ProcessMemoryMetric::Pss | ProcessMemoryMetric::Rss
         ));
+        assert_eq!(sample.degraded, sample.metric == ProcessMemoryMetric::Rss);
+        // One unreadable PSS costs only that process its precision.
+        assert_eq!(
+            platform::memory_of((Some(300), Some(120)), || None),
+            (Some(120), true)
+        );
+        assert_eq!(
+            platform::memory_of((Some(300), None), || Some(1)),
+            (Some(300), false)
+        );
+        assert_eq!(
+            platform::memory_of((None, None), || Some(7)),
+            (Some(7), false)
+        );
+        let own = sample.key(std::process::id()).unwrap();
+        assert_eq!(own.1, platform::start_time(std::process::id()));
     }
 }

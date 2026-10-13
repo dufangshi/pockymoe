@@ -175,7 +175,9 @@ fn viewed_threads(
         .into_iter()
         .flatten()
         .filter_map(Value::as_str)
-        .filter(|id| !id.contains(['/', '?', '#']))
+        .filter(|id| !id.is_empty() && id.len() <= 128 && !id.contains(['/', '?', '#']))
+        // Bound the per-thread access checks before running them.
+        .take(pockymoe_runtime::service::MAX_VIEWED_THREADS)
         .filter(|id| match principal {
             Some(p) if !p.is_owner() => {
                 configured_thread.is_none_or(|configured| configured == *id)
@@ -452,6 +454,19 @@ mod tests {
         // A closed browser tab or a relay client that went away.
         drop(session);
         eventually(|| !state.thread_displayed("b")).await;
+    }
+
+    #[tokio::test]
+    async fn thread_view_keeps_at_most_64_threads_before_checking_access() {
+        let (_dir, state) = crate::tunnel::tests::state_with_relay_url("http://127.0.0.1:1");
+        let ids: Vec<_> = (0..100).map(|n| format!("t{n}")).collect();
+        let message = json!({"type":"thread.view","threadIds":ids});
+        assert_eq!(viewed_threads(&state, None, None, &message).len(), 64);
+        let (output, _outgoing) = mpsc::channel();
+        let session = SocketSession::spawn(state.clone(), output);
+        assert!(session.send(message));
+        eventually(|| state.thread_displayed("t63")).await;
+        assert!(!state.thread_displayed("t64"));
     }
 
     #[test]

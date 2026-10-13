@@ -77,7 +77,11 @@ async fn wait_exited(pid: u32) -> bool {
 }
 
 fn tool_pid(dir: &std::path::Path) -> u32 {
-    std::fs::read_to_string(dir.join("tool.pid"))
+    pid_file(dir, "tool")
+}
+
+fn pid_file(dir: &std::path::Path, name: &str) -> u32 {
+    std::fs::read_to_string(dir.join(format!("{name}.pid")))
         .unwrap()
         .trim()
         .parse()
@@ -119,6 +123,11 @@ async fn release_records_the_load_then_closes_the_session_and_ends_the_process_g
     assert!(!loaded.prompted && loaded.busy.is_empty());
     let root = loaded.root_pid.unwrap();
     let tool = tool_pid(dir.path());
+    let (own_session, own_group) = (
+        pid_file(dir.path(), "session"),
+        pid_file(dir.path(), "group"),
+    );
+    assert!(loaded.baseline.is_empty());
 
     runtime
         .start_turn(
@@ -134,9 +143,23 @@ async fn release_records_the_load_then_closes_the_session_and_ends_the_process_g
         "a prompt turns a view load into an idle-rule load"
     );
     assert!(prompted.last_activity_at >= loaded.last_activity_at);
+    // The tree before the first prompt is the harness's own.
+    let baseline: Vec<u32> = prompted.baseline.iter().map(|(pid, _)| *pid).collect();
+    for pid in [root, tool, own_session, own_group] {
+        assert!(baseline.contains(&pid), "{pid} in {baseline:?}");
+    }
+    runtime
+        .start_turn(
+            turn(&session, "t2"),
+            EventBus::new(),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(only(&runtime).await.baseline, prompted.baseline);
 
     let released = runtime
-        .release_loaded(&session, ReleaseScope::Process)
+        .release_loaded(&session, ReleaseScope::Process, None)
         .await
         .unwrap();
     assert_eq!(released.len(), 1);
@@ -151,10 +174,14 @@ async fn release_records_the_load_then_closes_the_session_and_ends_the_process_g
         wait_exited(tool).await,
         "a tool ignoring SIGTERM is killed with the group"
     );
+    // Claude's Bash commands run in their own session, codex-code-mode-host
+    // in its own group: the recorded tree reaches them too.
+    assert!(wait_exited(own_session).await, "own session");
+    assert!(wait_exited(own_group).await, "own process group");
     assert!(runtime.loaded_sessions().await.is_empty());
     assert!(!runtime.session_loaded(&session));
     assert!(runtime
-        .release_loaded(&session, ReleaseScope::Process)
+        .release_loaded(&session, ReleaseScope::Process, None)
         .await
         .unwrap()
         .is_empty());
@@ -167,12 +194,55 @@ async fn release_skips_session_close_the_adapter_does_not_advertise() {
     let session = start(&runtime, dir.path(), "thread-1").await;
     let root = only(&runtime).await.root_pid.unwrap();
     runtime
-        .release_loaded(&session, ReleaseScope::Process)
+        .release_loaded(&session, ReleaseScope::Process, None)
         .await
         .unwrap();
     assert!(!dir.path().join("closed.jsonl").exists());
     assert!(wait_exited(root).await);
     assert!(wait_exited(tool_pid(dir.path())).await);
+}
+
+#[tokio::test]
+async fn release_does_not_wait_on_an_adapter_that_never_answers_close() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = runtime(dir.path(), "--hang-close").await;
+    let session = start(&runtime, dir.path(), "thread-1").await;
+    let root = only(&runtime).await.root_pid.unwrap();
+    let started = std::time::Instant::now();
+    runtime
+        .release_loaded(&session, ReleaseScope::Process, None)
+        .await
+        .unwrap();
+    assert!(
+        started.elapsed() < Duration::from_secs(6),
+        "{:?}",
+        started.elapsed()
+    );
+    assert!(dir.path().join("closed.jsonl").exists());
+    assert!(wait_exited(root).await);
+}
+
+#[tokio::test]
+async fn release_refuses_a_session_now_served_by_another_process() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = runtime(dir.path(), "").await;
+    let session = start(&runtime, dir.path(), "thread-1").await;
+    let loaded = only(&runtime).await;
+    let error = runtime
+        .release_loaded(
+            &session,
+            ReleaseScope::Process,
+            Some("checked-before-a-reload"),
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().starts_with("conflict:"), "{error:#}");
+    assert!(runtime.session_loaded(&session));
+    runtime
+        .release_loaded(&session, ReleaseScope::Process, Some(&loaded.process_id))
+        .await
+        .unwrap();
+    assert!(!runtime.session_loaded(&session));
 }
 
 #[tokio::test]
@@ -279,7 +349,7 @@ async fn release_reports_each_runtime_busy_reason() {
         ]
     );
     let error = runtime
-        .release_loaded(&session, ReleaseScope::Process)
+        .release_loaded(&session, ReleaseScope::Process, None)
         .await
         .unwrap_err();
     assert!(error.is::<TurnRunning>(), "{error:#}");
@@ -292,7 +362,7 @@ async fn release_reports_each_runtime_busy_reason() {
         .unwrap()
         .active = None;
     runtime
-        .release_loaded(&session, ReleaseScope::Process)
+        .release_loaded(&session, ReleaseScope::Process, None)
         .await
         .unwrap();
 }
@@ -357,7 +427,7 @@ async fn release_of_a_shared_fork_process_waits_for_every_session() {
         continuations: mpsc::unbounded_channel().0,
     });
     let error = runtime
-        .release_loaded("custom::fork-session", ReleaseScope::Process)
+        .release_loaded("custom::fork-session", ReleaseScope::Process, None)
         .await
         .unwrap_err();
     assert!(
@@ -373,7 +443,7 @@ async fn release_of_a_shared_fork_process_waits_for_every_session() {
         .unwrap()
         .active = None;
     let released = runtime
-        .release_loaded("custom::fork-session", ReleaseScope::Process)
+        .release_loaded("custom::fork-session", ReleaseScope::Process, None)
         .await
         .unwrap();
     let mut ids: Vec<_> = released.iter().map(|s| s.session_id.as_str()).collect();
@@ -415,7 +485,7 @@ async fn release_of_one_session_keeps_a_process_shared_with_another() {
         .await
         .insert("custom::fork-session".into(), fork);
     let released = runtime
-        .release_loaded("custom::fork-session", ReleaseScope::Session)
+        .release_loaded("custom::fork-session", ReleaseScope::Session, None)
         .await
         .unwrap();
     assert_eq!(released.len(), 1);
@@ -425,7 +495,7 @@ async fn release_of_one_session_keeps_a_process_shared_with_another() {
     );
     assert_eq!(runtime.loaded_sessions().await.len(), 1);
     runtime
-        .release_loaded(&parent, ReleaseScope::Session)
+        .release_loaded(&parent, ReleaseScope::Session, None)
         .await
         .unwrap();
     assert!(!shared.connection_open().await);

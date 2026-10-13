@@ -1,4 +1,5 @@
 use super::*;
+use crate::actor::AgentRuntime;
 use crate::fake::FakeRuntime;
 use pockymoe_protocol::ThreadEventEnvelope;
 
@@ -21,6 +22,7 @@ fn member(session: &str, process: &str, reason: HarnessLoadReason) -> Member {
             loaded_at: at(3600),
             last_activity_at: at(3600),
             prompted: false,
+            baseline: Vec::new(),
             busy: Vec::new(),
         },
         thread_id: Some(format!("thread-{session}")),
@@ -329,25 +331,37 @@ fn config(dir: &Path) -> RuntimeConfig {
 }
 
 fn supervisor(dir: &Path) -> Arc<Supervisor> {
-    let config = config(dir);
+    supervisor_with(dir, Provider::Codex).0
+}
+
+fn supervisor_with(dir: &Path, provider: Provider) -> (Arc<Supervisor>, Arc<FakeRuntime>) {
+    let mut config = config(dir);
+    config.enabled_providers = vec![provider];
     let db = Database::open(&config.database_url).unwrap();
+    let fake = Arc::new(FakeRuntime::new(provider));
     let s = Arc::new(
-        Supervisor::new(
-            config,
-            db,
-            vec![Arc::new(FakeRuntime::new(Provider::Codex))],
-        )
-        .with_local_session_homes(LocalSessionHomes {
-            codex_home: dir.join("codex-home"),
-            grok_home: dir.join("grok-home"),
-            claude_home: dir.join("claude-home"),
-        }),
+        Supervisor::new(config, db, vec![fake.clone()]).with_local_session_homes(
+            LocalSessionHomes {
+                codex_home: dir.join("codex-home"),
+                grok_home: dir.join("grok-home"),
+                claude_home: dir.join("claude-home"),
+            },
+        ),
     );
     s.spawn_live_item_persister();
-    s
+    (s, fake)
 }
 
 async fn thread(s: &Supervisor, dir: &Path, parent: Option<&str>) -> String {
+    thread_for(s, dir, parent, Provider::Codex).await
+}
+
+async fn thread_for(
+    s: &Supervisor,
+    dir: &Path,
+    parent: Option<&str>,
+    provider: Provider,
+) -> String {
     let workspace = s
         .list_workspaces()
         .unwrap()
@@ -365,7 +379,7 @@ async fn thread(s: &Supervisor, dir: &Path, parent: Option<&str>) -> String {
     s.create_thread(pockymoe_protocol::CreateThreadInput {
         workspace_id: workspace.id,
         title: Some("Release".into()),
-        provider: Some(Provider::Codex),
+        provider: Some(provider),
         agent_id: None,
         model: "ios-e2e-stream".into(),
         reasoning_effort: None,
@@ -378,7 +392,13 @@ async fn thread(s: &Supervisor, dir: &Path, parent: Option<&str>) -> String {
 }
 
 async fn loaded(s: &Supervisor) -> Vec<LoadedSession> {
-    s.runtime(Provider::Codex).unwrap().loaded_sessions().await
+    let mut all = Vec::new();
+    for provider in [Provider::Codex, Provider::Claude] {
+        if let Ok(runtime) = s.runtime(provider) {
+            all.extend(runtime.loaded_sessions().await);
+        }
+    }
+    all
 }
 
 async fn next_runtime_event(
@@ -448,12 +468,17 @@ async fn release_explicitly_with_load_reasons_and_events() {
     );
     assert_eq!(loaded(&s).await[0].load_reason, HarnessLoadReason::Create);
 
-    let result = s.release_thread_harness(&id, false).await.unwrap();
+    let result = s.release_thread_harness(&id, false, None).await.unwrap();
     assert!(result.released && result.also_released.is_empty());
     let event = next_runtime_event(&mut events, "thread.runtime.released").await;
     assert_eq!(event.payload, json!({"reason":"explicit"}));
     assert!(loaded(&s).await.is_empty());
-    assert!(!s.release_thread_harness(&id, false).await.unwrap().released);
+    assert!(
+        !s.release_thread_harness(&id, false, None)
+            .await
+            .unwrap()
+            .released
+    );
 
     // Capabilities without loading start nothing; the page load is a view.
     s.thread_capabilities(&id, false).await.unwrap();
@@ -508,9 +533,12 @@ async fn release_refuses_a_running_turn_unless_interrupting() {
     .unwrap();
     let (members, _, _) = s.harness_members(false, &HashSet::new()).await.unwrap();
     assert!(members[0].busy.contains(&Busy::Turn));
-    let error = s.release_thread_harness(&id, false).await.unwrap_err();
+    let error = s
+        .release_thread_harness(&id, false, None)
+        .await
+        .unwrap_err();
     assert!(error.is::<TurnRunning>(), "{error:#}");
-    let result = s.release_thread_harness(&id, true).await.unwrap();
+    let result = s.release_thread_harness(&id, true, None).await.unwrap();
     assert!(result.released);
     assert!(loaded(&s).await.is_empty());
     let _ = turn.await;
@@ -554,7 +582,7 @@ async fn release_when_the_viewer_leaves_a_view_load() {
     let s = supervisor(dir.path());
     s.harness.view_delay_ms.store(100, Ordering::Relaxed);
     let id = thread(&s, dir.path(), None).await;
-    s.release_thread_harness(&id, false).await.unwrap();
+    s.release_thread_harness(&id, false, None).await.unwrap();
     s.spawn_harness_release();
     let mut events = s.bus.subscribe();
     let viewer = s.harness_viewer();
@@ -651,5 +679,209 @@ async fn release_on_delete_and_close() {
         (event.thread_id.as_str(), &event.payload),
         (root.as_str(), &json!({"reason":"deleted"}))
     );
+    assert!(loaded(&s).await.is_empty());
+}
+
+#[test]
+fn release_counts_running_native_subagents_and_unfinished_scans() {
+    let agent = pockymoe_protocol::NativeSubagentDto {
+        agent: pockymoe_protocol::ThreadSubagentDto {
+            id: "worker".into(),
+            name: None,
+            status: "running".into(),
+            started_at: None,
+            completed_at: None,
+            parent_tool_call_id: None,
+            is_background: None,
+        },
+        provider: "codex".into(),
+        native_session_id: None,
+        model: None,
+        prompt: None,
+        updated_at: None,
+        latest_activity: None,
+        token_usage: None,
+        price_estimate: None,
+        activity_count: 0,
+        details_available: false,
+    };
+    let running = serde_json::to_value(&agent).unwrap();
+    assert!(native_activity(
+        &json!({"agents":[running],"refreshing":false})
+    ));
+    let mut done = running.clone();
+    done["status"] = json!("completed");
+    assert!(!native_activity(
+        &json!({"agents":[done.clone()],"refreshing":false})
+    ));
+    assert!(
+        native_activity(&json!({"agents":[done],"refreshing":true})),
+        "a large transcript still being read may hold running agents"
+    );
+}
+
+#[test]
+fn release_memory_limit_ignores_partly_rss_samples() {
+    let entry = |pid, ppid, bytes| crate::harness_processes::ProcessEntry {
+        pid,
+        ppid: Some(ppid),
+        start: Some(1),
+        argv: vec!["node".into()],
+        bytes: Some(bytes),
+    };
+    let mut sample = ProcessSample::from_entries(
+        1,
+        vec![
+            entry(1, 0, 80),
+            entry(10, 1, 300),
+            entry(11, 10, 200),
+            entry(20, 1, 50),
+        ],
+        pockymoe_protocol::ProcessMemoryMetric::Pss,
+    );
+    assert_eq!(limit_bytes(&sample, [10, 20, 10]), Some(550));
+    sample.degraded = true;
+    assert_eq!(limit_bytes(&sample, [10, 20]), None);
+}
+
+async fn busy_of(s: &Supervisor, thread: &str) -> Vec<Busy> {
+    s.harness_members(false, &HashSet::new())
+        .await
+        .unwrap()
+        .0
+        .into_iter()
+        .find(|member| member.thread_id.as_deref() == Some(thread))
+        .unwrap()
+        .busy
+}
+
+#[tokio::test]
+async fn release_waits_for_claude_session_crons_and_wakeups() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, _) = supervisor_with(dir.path(), Provider::Claude);
+    let id = thread_for(&s, dir.path(), None, Provider::Claude).await;
+    assert!(busy_of(&s, &id).await.is_empty());
+    let mut at = Utc::now();
+    let record = |at: DateTime<Utc>, text: &str, input: Value, result: &str| {
+        let item = json!({"id":format!("{text}-{}", at.timestamp_millis()),"createdAt":rfc3339(at),"kind":"toolCall","text":text,"status":"completed",
+            "detailText":format!("Tool: {text}\n\nStatus: completed\n\nInput:\n{input}\n\nResult:\n{result}")});
+        s.db.with(|c| {
+            c.execute("INSERT INTO thread_history_items(id,thread_id,turn_id,item_id,item_json,created_at,updated_at) VALUES(?1,?2,'turn',?1,?3,?4,?4)",
+                params![item["id"].as_str().unwrap(), id, item.to_string(), rfc3339(at)])?;
+            Ok(())
+        })
+        .unwrap();
+    };
+    record(
+        at,
+        "CronCreate",
+        json!({"cron":"*/5 * * * *","prompt":"Check the build","recurring":true}),
+        "Scheduled recurring job job1 (*/5 * * * *). Auto-expires after 7 days.",
+    );
+    assert_eq!(
+        busy_of(&s, &id).await,
+        [Busy::BackgroundTask],
+        "a /loop cron"
+    );
+    at += chrono::TimeDelta::seconds(1);
+    record(
+        at,
+        "CronDelete",
+        json!({"id":"job1"}),
+        "Cancelled job job1.",
+    );
+    assert!(busy_of(&s, &id).await.is_empty(), "the cron was deleted");
+    at += chrono::TimeDelta::seconds(1);
+    record(
+        at,
+        "ScheduleWakeup",
+        json!({"delaySeconds":600,"prompt":"continue","reason":"waiting for CI"}),
+        "Wakeup scheduled.",
+    );
+    assert_eq!(
+        busy_of(&s, &id).await,
+        [Busy::BackgroundTask],
+        "a pending wakeup"
+    );
+}
+
+#[tokio::test]
+async fn release_counts_a_scheduled_claude_turn_as_activity() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, fake) = supervisor_with(dir.path(), Provider::Claude);
+    let id = thread_for(&s, dir.path(), None, Provider::Claude).await;
+    let session = Uuid::new_v4().to_string();
+    s.db.with(|c| {
+        c.execute(
+            "UPDATE threads SET provider_session_id=?1 WHERE id=?2",
+            params![session, id],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    fake.resume_session(&session, None, Default::default())
+        .await
+        .unwrap();
+    let activity = |loaded: Vec<LoadedSession>| {
+        loaded
+            .into_iter()
+            .find(|load| load.session_id == session)
+            .unwrap()
+            .last_activity_at
+    };
+    let before = activity(loaded(&s).await);
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let at = rfc3339(Utc::now());
+    let rows = [
+        json!({"type":"user","uuid":"timer-1","turnOrigin":"scheduled","sessionId":session,"timestamp":at,"message":{"content":"Check the build"}}),
+        json!({"type":"assistant","sessionId":session,"timestamp":at,"message":{"id":"reply","content":[{"type":"text","text":"Still green."}],"stop_reason":"end_turn"}}),
+    ];
+    let project = dir.path().join("claude-home/projects/workspace");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::write(
+        project.join(format!("{session}.jsonl")),
+        rows.iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+    .unwrap();
+    s.sync_claude_scheduled_history(&id).await.unwrap();
+    assert!(
+        activity(loaded(&s).await) > before,
+        "a timer turn between prompts restarts the idle clock"
+    );
+}
+
+#[tokio::test]
+async fn release_by_a_shared_caller_never_ends_a_thread_outside_its_access() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, fake) = supervisor_with(dir.path(), Provider::Codex);
+    let parent = thread(&s, dir.path(), None).await;
+    let fork = thread(&s, dir.path(), None).await;
+    let session = |id: &str| s.get_thread(id).unwrap().provider_session_id.unwrap();
+    fake.share_process(&session(&parent), &session(&fork));
+    let only_parent = |thread: &str| thread == parent;
+    let error = s
+        .release_thread_harness(
+            &parent,
+            false,
+            Some(&only_parent as &(dyn Fn(&str) -> bool + Send + Sync)),
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().starts_with("conflict:"), "{error:#}");
+    assert_eq!(loaded(&s).await.len(), 2);
+    let both = |thread: &str| thread == parent || thread == fork;
+    let result = s
+        .release_thread_harness(
+            &parent,
+            false,
+            Some(&both as &(dyn Fn(&str) -> bool + Send + Sync)),
+        )
+        .await
+        .unwrap();
+    assert!(result.released);
+    assert_eq!(result.also_released, std::slice::from_ref(&fork));
     assert!(loaded(&s).await.is_empty());
 }
