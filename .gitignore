@@ -52,3 +52,6 @@ apps/ios/DerivedData/
 apps/.local-does-not-exist
 apps/windows-device-manager/bin/
 apps/windows-device-manager/obj/
+
+# Third-party projects cloned for comparison
+/reference/
