@@ -438,7 +438,8 @@ mod platform {
             .flatten()
             .filter_map(|entry| entry.ok()?.file_name().to_str()?.parse::<u32>().ok())
             .filter_map(|pid| {
-                let stat = read(pid, "stat")?;
+                // Zombies have exited: no memory, no tool still running.
+                let stat = read(pid, "stat").filter(|stat| !exited(stat))?;
                 Some(ProcessEntry {
                     pid,
                     ppid: stat_field(&stat, 1).and_then(|ppid| u32::try_from(ppid).ok()),
@@ -460,6 +461,7 @@ mod platform {
                 .collect();
         entries.retain(|entry| tree.contains(&entry.pid));
         let mut degraded = false;
+        let mut gone = HashSet::new();
         for entry in &mut entries {
             entry.argv = argv(entry.pid);
             if !memory {
@@ -467,12 +469,32 @@ mod platform {
             }
             let rollup = read(entry.pid, "smaps_rollup")
                 .map(|text| smaps_rollup(&text))
-                .unwrap_or_default();
-            let (bytes, pss) = memory_of(rollup, || statm_rss(entry.pid));
+                .filter(|(_, pss)| pss.is_some());
+            // Claude starts short-lived helpers that can exit mid-scan. A process
+            // that is gone, reused or a zombie has no memory to fall back on.
+            if rollup.is_none() && !alive(entry.pid, entry.start) {
+                gone.insert(entry.pid);
+                continue;
+            }
+            let (bytes, pss) = memory_of(rollup.unwrap_or_default(), || statm_rss(entry.pid));
             degraded |= !pss;
             entry.bytes = bytes;
         }
+        entries.retain(|entry| !gone.contains(&entry.pid));
         (entries, degraded)
+    }
+
+    fn exited(stat: &str) -> bool {
+        matches!(
+            stat.rsplit_once(')')
+                .and_then(|(_, rest)| rest.split_whitespace().next()),
+            Some("Z" | "X")
+        )
+    }
+
+    /// Still the same running process: present, same start time, not a zombie.
+    fn alive(pid: u32, start: Option<u64>) -> bool {
+        read(pid, "stat").is_some_and(|stat| !exited(&stat) && stat_field(&stat, 19) == start)
     }
 }
 
@@ -775,6 +797,19 @@ mod tests {
             platform::memory_of((None, None), || Some(7)),
             (Some(7), false)
         );
+        // A child that already exited (a zombie until reaped) is skipped, not
+        // counted as an RSS fallback.
+        let mut exited = std::process::Command::new("true").spawn().unwrap();
+        while std::fs::read_to_string(format!("/proc/{}/stat", exited.id()))
+            .is_ok_and(|stat| !stat.contains(") Z"))
+        {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let sample = ProcessSample::collect(true);
+        assert!(sample.key(exited.id()).is_none());
+        assert!(!sample.degraded);
+        assert_eq!(sample.metric, ProcessMemoryMetric::Pss);
+        exited.wait().unwrap();
         let own = sample.key(std::process::id()).unwrap();
         assert_eq!(own.1, platform::start_time(std::process::id()));
     }

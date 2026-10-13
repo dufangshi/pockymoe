@@ -403,6 +403,10 @@ async fn harness_processes_release_and_capabilities_without_loading_over_http() 
         processes().await.threads.is_empty(),
         "load=false starts nothing"
     );
+    // Never prompted, so its session was never saved: the release forgot it,
+    // and loading capabilities starts nothing either.
+    let detail = json(&client, client.get(format!("{base}/api/threads/{id}"))).await;
+    assert!(detail["thread"]["providerSessionId"].is_null(), "{detail}");
     json(
         &client,
         client.get(format!("{base}/api/threads/{id}/capabilities")),
@@ -410,10 +414,7 @@ async fn harness_processes_release_and_capabilities_without_loading_over_http() 
     .await;
     // Without the release worker nothing invalidates the 2 second sample.
     tokio::time::sleep(Duration::from_millis(2100)).await;
-    assert_eq!(
-        processes().await.threads[0].load_reason,
-        pockymoe_protocol::HarnessLoadReason::View
-    );
+    assert!(processes().await.threads.is_empty());
 
     json(
         &client,
@@ -429,6 +430,13 @@ async fn harness_processes_release_and_capabilities_without_loading_over_http() 
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+    // The first prompt started a new session.
+    let detail = json(&client, client.get(format!("{base}/api/threads/{id}"))).await;
+    assert!(
+        detail["thread"]["providerSessionId"].is_string(),
+        "{detail}"
+    );
+    assert!(detail["thread"]["lastError"].is_null(), "{detail}");
     let refused = release(None).await.unwrap();
     assert_eq!(refused.status(), 409);
     assert_eq!(

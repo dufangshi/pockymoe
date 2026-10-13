@@ -90,6 +90,8 @@ pub enum SessionLifecycle {
         session_id: String,
         thread_id: Option<String>,
         reason: ReleaseReason,
+        load_reason: HarnessLoadReason,
+        prompted: bool,
     },
 }
 

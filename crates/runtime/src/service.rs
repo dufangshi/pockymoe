@@ -2273,9 +2273,15 @@ impl Supervisor {
         // Released only after the turn; the queue drain below takes its own.
         let harness = self.hold_harness(&thread.id).await;
         self.ensure_not_updating()?;
-        if self.get_thread(&thread.id)?.status == "recovering" {
+        // A release before the gate may have forgotten an unsaved session.
+        let current = self.get_thread(&thread.id)?;
+        if current.status == "recovering" {
             bail!("conflict: Reconnect to confirm backend state before starting another turn");
         }
+        let thread = ThreadDto {
+            provider_session_id: current.provider_session_id,
+            ..thread
+        };
         let provider = thread.provider;
         let _maintenance = self
             .maintenance_gate
@@ -2292,10 +2298,7 @@ impl Supervisor {
             .try_read()
             .map_err(|_| anyhow!("conflict: Harness maintenance in progress"))?;
         let runtime = self.runtime(provider)?.clone();
-        let session_id = thread
-            .provider_session_id
-            .clone()
-            .ok_or_else(|| anyhow!("thread has no provider session"))?;
+        let session_id = self.ensure_thread_session(&thread).await?;
         if !runtime.session_loaded(&session_id) {
             let cwd = self.session_cwd(&thread);
             // Callers that queue or automate the turn say so with their own intent.
@@ -3178,13 +3181,11 @@ impl Supervisor {
         &self,
         detail: &ThreadDetailDto,
     ) -> Result<(ThreadDto, Option<String>, Option<u32>)> {
-        let session = detail
-            .thread
-            .provider_session_id
-            .clone()
-            .ok_or_else(|| anyhow!("thread has no provider session"))?;
         let runtime = self.runtime(detail.thread.provider)?;
         let _harness = self.hold_harness(&detail.thread.id).await;
+        let session = self
+            .ensure_thread_session(&self.get_thread(&detail.thread.id)?)
+            .await?;
         self.with_load(
             &detail.thread.id,
             HarnessLoadReason::Fork,
@@ -3368,9 +3369,9 @@ impl Supervisor {
     }
 
     async fn reconnect_thread(&self, id: &str) -> Result<()> {
+        let harness = self.hold_harness(id).await;
         let thread = self.get_thread(id)?;
         let cwd = self.session_cwd(&thread);
-        let harness = self.hold_harness(id).await;
         if let Some(session) = &thread.provider_session_id {
             let runtime = self.runtime(thread.provider)?;
             self.with_load(
@@ -3457,18 +3458,16 @@ impl Supervisor {
         }) {
             bail!("invalid goal status");
         }
-        let thread = self.get_thread(id)?;
-        let runtime = self.runtime(thread.provider)?;
-        let session = thread
-            .provider_session_id
-            .as_deref()
-            .ok_or_else(|| anyhow!("thread has no provider session"))?;
         if objective.is_none() && status.as_deref() != Some("active") {
             return self
                 .thread_goal(id, objective, status, token_budget, false)
                 .await;
         }
         let harness = self.hold_harness(id).await;
+        let thread = self.get_thread(id)?;
+        let runtime = self.runtime(thread.provider)?;
+        let session = self.ensure_thread_session(&thread).await?;
+        let session = session.as_str();
         if !runtime.session_loaded(session) {
             let cwd = self.session_cwd(&thread);
             self.with_load(
@@ -3551,15 +3550,15 @@ impl Supervisor {
     ) -> Result<serde_json::Value> {
         let _harness = self.hold_harness(id).await;
         let thread = self.get_thread(id)?;
-        let session = thread
-            .provider_session_id
-            .clone()
-            .ok_or_else(|| anyhow!("thread has no provider session"))?;
+        // None until the first prompt when an unsaved first session was released.
+        let session = thread.provider_session_id.clone();
         let runtime = self.runtime(thread.provider)?;
         if clear {
-            runtime
-                .set_goal(&session, None, Some("clear".into()))
-                .await?;
+            if let Some(session) = &session {
+                runtime
+                    .set_goal(session, None, Some("clear".into()))
+                    .await?;
+            }
             self.delete_stored_goal(id)?;
             return Ok(json!({ "cleared": true, "goalHistory": [] }));
         }
@@ -3583,12 +3582,15 @@ impl Supervisor {
 
         let stored = self.stored_goal(id)?;
         let updates_goal = objective.is_some() || status.is_some() || token_budget.is_some();
-        let runtime_goal = if objective.is_some() || status.is_some() {
-            runtime
-                .set_goal(&session, objective, status.clone())
-                .await?
-        } else {
-            runtime.get_goal(&session).await?
+        let runtime_goal = match &session {
+            Some(session) if objective.is_some() || status.is_some() => {
+                runtime.set_goal(session, objective, status.clone()).await?
+            }
+            Some(session) => runtime.get_goal(session).await?,
+            None if objective.is_some() || status.is_some() => {
+                bail!("conflict: Send the thread's first prompt before changing its goal")
+            }
+            None => None,
         };
         let runtime_goal = runtime_goal.or_else(|| {
             stored.as_ref().map(|goal| GoalState {
@@ -3682,6 +3684,12 @@ impl Supervisor {
         id: &str,
         load: bool,
     ) -> Result<AgentCapabilitySnapshotDto> {
+        // Read after the gate: a release may just have forgotten the session.
+        let _harness = if load {
+            Some(self.hold_harness(id).await)
+        } else {
+            None
+        };
         let thread = self.get_thread(id)?;
         let runtime = self.runtime(thread.provider)?;
         let Some(session) = thread.provider_session_id.as_deref() else {
@@ -3693,7 +3701,6 @@ impl Supervisor {
                 .await;
         }
         let cwd = self.session_cwd(&thread);
-        let _harness = self.hold_harness(id).await;
         self.with_load(
             &thread.id,
             HarnessLoadReason::View,
@@ -3720,14 +3727,12 @@ impl Supervisor {
         id: &str,
         action: serde_json::Value,
     ) -> Result<serde_json::Value> {
+        let _harness = self.hold_harness(id).await;
         let thread = self.get_thread(id)?;
         let runtime = self.runtime(thread.provider)?;
-        let session = thread
-            .provider_session_id
-            .as_deref()
-            .ok_or_else(|| anyhow!("thread has no provider session"))?;
+        let session = self.ensure_thread_session(&thread).await?;
+        let session = session.as_str();
         let cwd = self.session_cwd(&thread);
-        let _harness = self.hold_harness(id).await;
         self.with_load(
             &thread.id,
             HarnessLoadReason::View,

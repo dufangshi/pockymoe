@@ -31,6 +31,8 @@ pub struct FakeRuntime {
     /// What each loaded session would report as a process-backed harness.
     loads: Mutex<HashMap<String, LoadedSession>>,
     lifecycle: tokio::sync::broadcast::Sender<SessionLifecycle>,
+    /// Every `session/new`, for tests of the settings a session starts with.
+    starts: Mutex<Vec<StartSessionInput>>,
     started_at: Mutex<Option<String>>,
     goal: Mutex<Option<GoalState>>,
     import_sessions: Mutex<Vec<ImportSessionMeta>>,
@@ -44,6 +46,7 @@ impl FakeRuntime {
             sessions: Mutex::new(HashMap::new()),
             loads: Mutex::new(HashMap::new()),
             lifecycle: tokio::sync::broadcast::channel(64).0,
+            starts: Mutex::new(Vec::new()),
             started_at: Mutex::new(None),
             goal: Mutex::new(None),
             import_sessions: Mutex::new(Vec::new()),
@@ -80,6 +83,10 @@ impl FakeRuntime {
             .lock()
             .unwrap()
             .insert(session_id.into(), session);
+    }
+
+    pub fn started_sessions(&self) -> Vec<StartSessionInput> {
+        self.starts.lock().unwrap().clone()
     }
 
     /// Serve `fork` from `parent`'s process, as Claude and Grok forks are.
@@ -269,6 +276,7 @@ impl AgentRuntime for FakeRuntime {
 
     async fn start_session(&self, input: StartSessionInput) -> Result<StartSessionResult> {
         let id = format!("e2e-session-{}", Uuid::new_v4());
+        self.starts.lock().unwrap().push(input.clone());
         self.sessions.lock().unwrap().insert(id.clone(), input.cwd);
         self.record_load(&id, None);
         Ok(StartSessionResult {
