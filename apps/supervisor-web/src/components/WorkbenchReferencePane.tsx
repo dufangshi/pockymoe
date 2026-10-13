@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { GraphChatThreadChatPanel, createWorkspacePathResolver, type ThreadComposerProps } from '@pockymoe/thread-ui';
+import { GraphChatThreadChatPanel, ThreadLoadingIndicator, createWorkspacePathResolver, type ThreadComposerProps } from '@pockymoe/thread-ui';
 import { translate as t, useI18n } from '@pockymoe/thread-ui/i18n';
 import {
   buildThreadImageAssetUrl,
@@ -124,9 +124,7 @@ export function WorkbenchReferencePane({
         </>
       ) : (
         !error && (
-          <p className="workbench-reference-status">
-            {t('workbench.loadingThreadDetail')}
-          </p>
+          <ThreadLoadingIndicator />
         )
       )}
     </>

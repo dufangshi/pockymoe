@@ -351,3 +351,64 @@ test('substantial answers survive refresh between folded work sections', async (
   await expect(turn.getByText('先回答你的问题', { exact: true })).toBeVisible();
   await expect(turn.getByText('Implementation verified.', { exact: true })).toBeVisible();
 });
+
+for (const preset of ['classic', 'plum-pocket'] as const) test(`thread loading stays visible until content arrives (${preset})`, async ({ page, request }, testInfo) => {
+  const id = await createThread(request);
+  const detail = await (await request.get(`${base}/api/threads/${id}`)).json();
+  const at = new Date().toISOString();
+  const fullTurn = {
+    id: `${id}-loading`, threadId: id, status: 'completed', startedAt: at, completedAt: at,
+    items: [
+      { id: 'prompt', kind: 'userMessage', text: 'Inspect this project', status: 'completed', createdAt: at },
+      { id: 'command', kind: 'commandExecution', text: 'git status', status: 'completed', createdAt: at },
+      { id: 'final', kind: 'agentMessage', text: 'Project inspected.', responsePhase: 'final', status: 'completed', createdAt: at },
+    ],
+  };
+  const summary = { ...fullTurn, items: [fullTurn.items[0], fullTurn.items[2]], hasDeferredItems: true, deferredItemCount: 1 };
+  let releaseInitial!: () => void;
+  let releaseHistory!: () => void;
+  const initialGate = new Promise<void>(resolve => { releaseInitial = resolve; });
+  const historyGate = new Promise<void>(resolve => { releaseHistory = resolve; });
+  await page.addInitScript(value => {
+    localStorage.setItem('pockymoe-theme-preset', value);
+    localStorage.setItem('remote-codex-theme-mode', 'dark');
+    localStorage.setItem(`pockymoe.onboarding.v1:${JSON.stringify([window.location.origin, 'local:owner'])}`, JSON.stringify({ welcomeDismissed: true, completed: [], resume: {} }));
+  }, preset);
+  await page.route(new RegExp(`/api/threads/${id}\\?`), async route => {
+    await initialGate;
+    await route.fulfill({ json: { ...detail, turns: [summary], totalTurnCount: 1 } });
+  });
+  await page.route(`**/api/threads/${id}/turns/${fullTurn.id}/detail?*`, async route => {
+    await historyGate;
+    await route.fulfill({ json: fullTurn });
+  });
+  try {
+    await page.goto(`/threads/${id}`);
+    const indicator = page.locator('.thread-loading-indicator:not(.is-inline)');
+    await expect(indicator).toBeVisible();
+    await expect(indicator).toHaveAttribute('role', 'status');
+    await expect(indicator.locator('.thread-loading-ring')).toHaveCSS('animation-name', 'thread-loading-rotate');
+    await expect(page.getByText('Send the first prompt to start the thread.', { exact: true })).toHaveCount(0);
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    await expect(indicator.locator('.thread-loading-ring')).toHaveCSS('animation-name', 'none');
+    await page.emulateMedia({ reducedMotion: 'no-preference' });
+    await page.screenshot({ path: testInfo.outputPath(`thread-loading-${preset}.png`), scale: 'css' });
+    releaseInitial();
+    await expect(indicator).toHaveCount(0);
+    await expect(page.getByText('Project inspected.', { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Thread tools', exact: true }).click();
+    const actions = page.locator('.matter-thread-actions');
+    await expect(actions.getByRole('button', { name: 'Download transcript', exact: true })).toBeVisible();
+    await expect(actions.locator('.matter-thread-menu')).toHaveCount(0);
+    const worked = page.locator('.thread-graph-worked-summary button[aria-expanded]');
+    await worked.click();
+    await expect(worked).toHaveAttribute('aria-busy', 'true');
+    await expect(worked.locator('.thread-loading-indicator.is-inline')).toBeVisible();
+    await expect(worked).toBeDisabled();
+    releaseHistory();
+    await expect(worked).toHaveAttribute('aria-busy', 'false');
+    await expect(worked.locator('.thread-loading-indicator')).toHaveCount(0);
+    await expect(worked).toBeEnabled();
+    await expect(page.getByText('git status', { exact: true })).toBeVisible();
+  } finally { releaseInitial(); releaseHistory(); }
+});

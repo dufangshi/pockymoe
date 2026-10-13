@@ -83,6 +83,10 @@ test('device monitor shows cores, memory and real watts, and marks failed sample
           },
         }),
   );
+  await page.addInitScript(() => {
+    localStorage.setItem('pockymoe-theme-preset', 'plum-pocket');
+    localStorage.setItem('remote-codex-theme-mode', 'dark');
+  });
   await page.goto(`/threads/${thread.id ?? thread.thread.id}`);
   const monitor = page.getByRole('button', {
     name: 'Device monitor',
@@ -92,6 +96,10 @@ test('device monitor shows cores, memory and real watts, and marks failed sample
   await expect(monitor.locator('[aria-label^=DRAM]')).toHaveText('25.4/60.9G');
   await expect(monitor.locator('[aria-label^=VRAM]')).toHaveText('1.0/8.0G');
   const mobile = testInfo.project.name === 'mobile-chromium';
+  if (!mobile) {
+    expect(await monitor.locator('[aria-label^=DRAM] b').evaluate(value => parseFloat(getComputedStyle(value).fontSize))).toBeGreaterThanOrEqual(8);
+    expect(await monitor.locator('[aria-label^=CPU] b').evaluate(value => parseFloat(getComputedStyle(value).fontSize))).toBeGreaterThanOrEqual(8.5);
+  }
   await expect(
     mobile
       ? page
@@ -122,6 +130,7 @@ test('device monitor shows cores, memory and real watts, and marks failed sample
     expect(cell.top).toBeGreaterThanOrEqual(0);
     expect(cell.bottom).toBeGreaterThanOrEqual(0);
   }
+  await page.screenshot({ path: testInfo.outputPath('device-monitor-rail.png'), scale: 'css' });
   await monitor.click();
   const dialog = page.getByRole('dialog', { name: 'Device monitor' });
   // Freshness, platform and environment fit beside the title; the environment's
@@ -172,6 +181,7 @@ test('device monitor shows cores, memory and real watts, and marks failed sample
       () => document.documentElement.scrollWidth <= innerWidth,
     ),
   ).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath('device-monitor-rail-stale.png'), scale: 'css' });
   await monitor.click();
   await expect(dialog).toBeVisible();
   expect(

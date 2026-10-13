@@ -4106,10 +4106,6 @@ export function ThreadDetailPage() {
         ? { onShellThemeModeChange: shellNav.setThemeMode }
         : {})}
       onShellStateChange={setShellControlState}
-      loadingContent={
-        <div className="host-muted flex flex-1 items-center justify-center px-6 py-12 text-center">
-          {translate("workbench.loadingThreadDetail")}</div>
-      }
       emptyContent={
         <div className="host-muted flex flex-1 items-center justify-center px-6 py-12 text-center">
           {translate("workbench.unableToResolveThisThread")}</div>

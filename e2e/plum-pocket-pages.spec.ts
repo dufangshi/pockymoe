@@ -101,6 +101,12 @@ for (const [preset, width] of [['plum-pocket', 360], ['plum-pocket', 320], ['cla
         return { overflow: row.scrollWidth - row.clientWidth, top: r.top - box.top, bottom: box.bottom - r.bottom };
       });
     });
+    const pairGaps = await monitor.locator('.dm-summary-row').evaluateAll(rows => rows.map(row => {
+      const separator = row.querySelector('.dm-summary-separator')!.getBoundingClientRect();
+      const memory = row.querySelector('.dm-summary-capacity svg')!.getBoundingClientRect();
+      return memory.left - separator.right;
+    }));
+    for (const gap of pairGaps) expect(gap).toBeLessThanOrEqual(3);
     for (const row of fit) {
       expect(row.overflow, JSON.stringify(fit)).toBeLessThanOrEqual(0);
       expect(row.top).toBeGreaterThanOrEqual(0);

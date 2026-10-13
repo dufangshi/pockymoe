@@ -238,3 +238,9 @@ commands and their outputs continue to load on demand.
 
 The compact model menu shows reported context use and capacity in thousands of
 tokens below the reasoning controls. Missing readings show a dash.
+
+Thread loading uses a quiet spinner and placeholder lines until the initial
+conversation is ready, including the secondary split pane. Expanding deferred
+execution history shows an inline spinner until that request settles. Reduced
+motion disables these animations. The thread tools bar keeps its direct actions
+without a duplicate overflow menu.

@@ -16,7 +16,8 @@
 }
 .device-monitor-button .dm-summary-row {
   display: grid;
-  grid-template-columns: auto auto minmax(0, 1fr);
+  grid-template-columns: repeat(3, max-content);
+  justify-content: center;
   align-items: center;
   column-gap: 2px;
   white-space: nowrap;
@@ -50,12 +51,12 @@
   min-height: 40px;
   padding: 4px 1px;
   gap: 3px;
-  font-size: 7.5px;
-  line-height: 8.5px;
+  font-size: 8.5px;
+  line-height: 10px;
 }
 .thread-ui-shell .matter-workbench .matter-rail .dm-summary-row { grid-template-columns: 1fr; row-gap: 1px; }
 .thread-ui-shell .matter-workbench .matter-rail .dm-summary-separator { display: none; }
-.thread-ui-shell .matter-workbench .matter-rail .dm-summary-capacity b { font-size: 7px; }
+.thread-ui-shell .matter-workbench .matter-rail .dm-summary-capacity b { font-size: 8px; }
 .thread-ui-shell .matter-workbench .matter-rail .dm-summary-reading {
   flex-direction: row;
   align-items: center;

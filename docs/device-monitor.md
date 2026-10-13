@@ -56,7 +56,8 @@ The compact monitor uses CPU/memory icons with CPU utilization and used/total
 physical memory on its first row. A second row appears when a GPU reports
 utilization or memory, showing GPU utilization and used/total VRAM. Capacities
 use one decimal in GiB (compact `G`); the tooltip spells out the unit. Missing
-or stale readings show a dash. The narrow desktop rail stacks the same readings.
+or stale readings show a dash. Mobile pairs stay together at their content width;
+the narrow desktop rail stacks the same readings with slightly larger type.
 
 ## Linux sensor access
 
