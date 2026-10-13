@@ -1871,5 +1871,18 @@ export function mergeThreadHistoryItem(
   };
 }
 export type { DeviceMetricsDto, MemoryMetricsDto, GpuMetricsDto, PowerReadingDto, TemperatureReadingDto } from './deviceMetrics';
+export type {
+  HarnessBusyReason,
+  HarnessLoadReason,
+  HarnessProcessDto,
+  HarnessProcessesDto,
+  HarnessProcessRole,
+  HarnessResourceSettingsDto,
+  LoadedThreadDto,
+  ProcessMemoryMetric,
+  ReleaseThreadInput,
+  ReleaseThreadResultDto,
+  ThreadViewMessage,
+} from './harnessResources';
 
 export type { AutomationTrigger, AutomationCondition, AutomationCommandSpec, AutomationAction, AutomationDefinition, AutomationDto, AutomationRunDto } from "./automation";

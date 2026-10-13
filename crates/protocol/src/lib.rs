@@ -1,6 +1,8 @@
 pub mod access;
 mod automation;
 pub use automation::*;
+mod harness_resources;
+pub use harness_resources::*;
 mod interaction;
 mod metrics;
 pub use interaction::{
