@@ -1128,8 +1128,9 @@ export function fetchLinkedFilePreview(threadId: string, input: {path: string; o
 }
 export async function downloadLinkedFile(threadId: string, path: string,
   deviceId?: string | null,
+  signal?: AbortSignal,
 ) {
-  const result = await deviceDownload(deviceId, `/api/threads/${encodeURIComponent(threadId)}/linked-files/raw?${new URLSearchParams({path})}`);
+  const result = await deviceDownload(deviceId, `/api/threads/${encodeURIComponent(threadId)}/linked-files/raw?${new URLSearchParams({path})}`, signal ? { signal } : undefined);
   return { ...result, filename: path.replace(/\\/g, '/').split('/').pop() || 'download' };
 }
 
@@ -1211,12 +1212,14 @@ export function downloadWorkspaceFile(
   workspaceId: string,
   input: { path: string },
   deviceId?: string | null,
+  signal?: AbortSignal,
 ) {
   const params = new URLSearchParams({ path: input.path });
   return deviceDownload(deviceId,
     `/api/workspaces/${encodeURIComponent(workspaceId)}/files/download?${params.toString()}`,
     {
       cache: 'no-store',
+      ...(signal ? { signal } : {}),
     },
   );
 }
