@@ -59,10 +59,10 @@ beforeEach(() => {
   state.paired.mockResolvedValue(true);
   current = row;
   state.request.mockImplementation(async (path: string) => {
-    if (path === '/relay/portal')
+    if (path === 'relay/portal')
       return { sharedByMe: [current], grantsByMe: [current] };
     if (path.endsWith('/recipient-account')) return account;
-    if (path === '/api/transport/grants') return { grants: [] };
+    if (path === 'api/transport/grants') return { grants: [] };
     return {};
   });
 });
@@ -84,7 +84,7 @@ describe('signed grant sharing', () => {
     expect(mutate).toHaveBeenCalledOnce();
     const put = state.request.mock.calls.find((c) => c[1]?.method === 'PUT')!;
     const grant = JSON.parse(put[1].body);
-    expect(put[0]).toBe('/api/transport/grants/' + grant.grantId);
+    expect(put[0]).toBe('api/transport/grants/' + grant.grantId);
     expect(put[2]).toEqual({ deviceId: 'device' });
     expect(grant).toEqual(
       grantForRow('share', row, account, grant.grantId),
@@ -103,7 +103,7 @@ describe('signed grant sharing', () => {
     const existing = grantForRow('grant', deviceRow, account, 'existing');
     const server = state.request.getMockImplementation()!;
     state.request.mockImplementation(async (path, ...args) =>
-      path === '/api/transport/grants'
+      path === 'api/transport/grants'
         ? { grants: [existing] }
         : server(path, ...args),
     );
@@ -132,7 +132,7 @@ describe('signed grant sharing', () => {
         }), input),
       ).rejects.toThrow(/rolled back/);
       expect(state.request).toHaveBeenLastCalledWith(
-        `/relay/${kind === 'share' ? 'shares' : 'grants'}/row`,
+        `relay/${kind === 'share' ? 'shares' : 'grants'}/row`,
         { method: 'DELETE' },
       );
       expect(state.request.mock.calls.some((c) => c[1]?.method === 'PUT')).toBe(
@@ -152,7 +152,7 @@ describe('signed grant sharing', () => {
         return {};
       }, { ...sharingEditInput('share', row), threadAccess: 'control' }),
     ).rejects.toThrow(/Device offline/);
-    expect(state.request).toHaveBeenLastCalledWith('/relay/shares/row', {
+    expect(state.request).toHaveBeenLastCalledWith('relay/shares/row', {
       method: 'PATCH',
       body: JSON.stringify(row),
     });
@@ -174,14 +174,14 @@ describe('signed grant sharing', () => {
     const grant = grantForRow('share', row, account, 'grant');
     const server = state.request.getMockImplementation()!;
     state.request.mockImplementation(async (path, ...args) =>
-      path === '/api/transport/grants'
+      path === 'api/transport/grants'
         ? { grants: [grant] }
         : server(path, ...args),
     );
     const mutate = vi.fn(async () => ({}));
     await sharingMutation('share', 'revoke', row.id, mutate);
     expect(state.request).toHaveBeenLastCalledWith(
-      '/api/transport/grants/grant',
+      'api/transport/grants/grant',
       { method: 'DELETE' },
       { deviceId: 'device' },
     );
@@ -189,7 +189,7 @@ describe('signed grant sharing', () => {
     mutate.mockClear();
     state.request.mockImplementation(async (path, init, ...args) => {
       if (init?.method === 'DELETE') throw new Error('Offline');
-      if (path === '/api/transport/grants') return { grants: [grant] };
+      if (path === 'api/transport/grants') return { grants: [grant] };
       return server(path, init, ...args);
     });
     await expect(
@@ -203,12 +203,12 @@ describe('signed grant sharing', () => {
     await sharingMutation('share', 'create', undefined, async () => ({
       id: row.id,
     }), input);
-    expect(state.request.mock.calls.map((c) => c[0])).toEqual(['/relay/portal']);
+    expect(state.request.mock.calls.map((c) => c[0])).toEqual(['relay/portal']);
     state.paired.mockResolvedValue(true);
     state.request.mockImplementation(async (path) => {
-      if (path === '/relay/portal') return { sharedByMe: [current] };
+      if (path === 'relay/portal') return { sharedByMe: [current] };
       if (path.endsWith('/recipient-account')) return account;
-      if (path === '/api/transport/grants') throw { statusCode: 503 };
+      if (path === 'api/transport/grants') throw { statusCode: 503 };
       return {};
     });
     await expect(
@@ -256,7 +256,7 @@ describe('signed grant sharing', () => {
   it('explains that protected devices must be online even when relay presence is stale', async () => {
     const server = state.request.getMockImplementation()!;
     state.request.mockImplementation(async (path, ...args) => {
-      if (path === '/api/transport/grants') throw { statusCode: 503 };
+      if (path === 'api/transport/grants') throw { statusCode: 503 };
       return server(path, ...args);
     });
     await expect(
@@ -290,7 +290,7 @@ it.each([
   await expect(sharingMutation('share', 'create', undefined, async () => ({ id: row.id }), input)).rejects.toThrow(/differ from your choices/);
   expect(state.request.mock.calls.some(c => c[1]?.method === 'PUT')).toBe(false);
   expect(state.approve).not.toHaveBeenCalled();
-  expect(state.request).toHaveBeenLastCalledWith('/relay/shares/row', { method: 'DELETE' });
+  expect(state.request).toHaveBeenLastCalledWith('relay/shares/row', { method: 'DELETE' });
 });
 it.each([
   { scope: 'device' }, { workspaceScope: 'selected' },
@@ -324,14 +324,14 @@ it('checks every certified device even when the portal hides or reassigns the ro
   state.certified.mockResolvedValue(['hidden-device', 'other-device']);
   const grant = grantForRow('share', row, account, 'hidden');
   state.request.mockImplementation(async (path, _init, options) => {
-    if (path === '/relay/portal') throw new Error('Portal must not supply revocation identity');
-    if (path === '/api/transport/grants') return { grants: options.deviceId === 'hidden-device' ? [grant] : [] };
+    if (path === 'relay/portal') throw new Error('Portal must not supply revocation identity');
+    if (path === 'api/transport/grants') return { grants: options.deviceId === 'hidden-device' ? [grant] : [] };
     return {};
   });
   const mutate = vi.fn(async () => ({}));
   await sharingMutation('share', 'revoke', row.id, mutate);
-  expect(state.request).toHaveBeenCalledWith('/api/transport/grants/hidden', { method: 'DELETE' }, { deviceId: 'hidden-device' });
-  expect(state.request).toHaveBeenCalledWith('/api/transport/grants', undefined, { deviceId: 'other-device' });
+  expect(state.request).toHaveBeenCalledWith('api/transport/grants/hidden', { method: 'DELETE' }, { deviceId: 'hidden-device' });
+  expect(state.request).toHaveBeenCalledWith('api/transport/grants', undefined, { deviceId: 'other-device' });
   expect(mutate).toHaveBeenCalledOnce();
 });
 it('keeps the relay row if any certified device is offline, even when no grant is visible elsewhere', async () => {
@@ -356,7 +356,7 @@ it('does not sign grants when automatic title metadata is refreshed', async () =
 it('uses only dialog permissions even when a full mutation reply is followed by an altered portal', async () => {
   current = { ...row, deviceId: 'relay-selected', threadAccess: 'control' };
   await sharingMutation('share', 'create', undefined, async () => ({ ...row }), input);
-  expect(state.request).not.toHaveBeenCalledWith('/relay/portal');
+  expect(state.request).not.toHaveBeenCalledWith('relay/portal');
   const put = state.request.mock.calls.find(c => c[1]?.method === 'PUT')!;
   expect(put[2].deviceId).toBe('device');
   expect(JSON.parse(put[1].body)).toMatchObject({ scope: 'thread', threadId: 'thread', threadAccess: 'read', workspaceAccess: 'none', canCreateThreads: false });
@@ -371,7 +371,7 @@ it('refuses a relay edit reply that reassigns the device or recipient', async ()
 it('rolls back a new row if the owner cancels first-grant acknowledgement', async () => {
   state.approve.mockReturnValue(false);
   await expect(sharingMutation('share', 'create', undefined, async () => ({ ...row }), input)).rejects.toThrow(/cancelled/);
-  expect(state.request).toHaveBeenLastCalledWith('/relay/shares/row', { method: 'DELETE' });
+  expect(state.request).toHaveBeenLastCalledWith('relay/shares/row', { method: 'DELETE' });
   expect(state.request.mock.calls.some(c => c[1]?.method === 'PUT')).toBe(false);
 });
 it('reviews the current account key again instead of reusing a stale verified status', async () => {

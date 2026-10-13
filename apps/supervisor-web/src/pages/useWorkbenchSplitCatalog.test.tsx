@@ -26,7 +26,7 @@ beforeEach(() => vi.mocked(request).mockReset());
 describe('split catalog transport', () => {
   it('waits until opening, then loads remote workspaces and threads only as their branches expand', async () => {
     vi.mocked(request).mockImplementation(async (path) =>
-      String(path) === '/relay/portal'
+      String(path) === 'relay/portal'
         ? {
             devices: [
               { id: 'host', name: 'Host' },
@@ -49,9 +49,9 @@ describe('split catalog transport', () => {
     ]);
     expect(vi.mocked(request).mock.calls.map(([path]) => path)).toEqual(
       expect.arrayContaining([
-        '/relay/portal',
-        '/relay/devices/host/api/workspaces',
-        '/relay/devices/host/api/threads?includeAgentThreads=true',
+        'relay/portal',
+        'relay/devices/host/api/workspaces',
+        'relay/devices/host/api/threads?includeAgentThreads=true',
       ]),
     );
     expect(
@@ -61,7 +61,7 @@ describe('split catalog transport', () => {
     ).toBe(false);
     await act(() => result.current.loadWorkspaces('remote'));
     expect(request).toHaveBeenCalledWith(
-      '/relay/devices/remote/api/workspaces',
+      'relay/devices/remote/api/workspaces',
       expect.any(Object),
     );
     expect(
@@ -73,7 +73,7 @@ describe('split catalog transport', () => {
     ).toBe(false);
     await act(() => result.current.loadThreads('remote'));
     expect(request).toHaveBeenCalledWith(
-      '/relay/devices/remote/api/threads?includeAgentThreads=true',
+      'relay/devices/remote/api/threads?includeAgentThreads=true',
       expect.any(Object),
     );
     const count = vi.mocked(request).mock.calls.length;
@@ -83,7 +83,7 @@ describe('split catalog transport', () => {
   it('uses local paths, exposes permission errors with retry and ignores a late previous-scope response', async () => {
     let finish!: (value: unknown) => void;
     vi.mocked(request).mockImplementation(async (path) => {
-      if (String(path).startsWith('/relay/devices/old'))
+      if (String(path).startsWith('relay/devices/old'))
         return await new Promise((resolve) => {
           finish = resolve;
         });
@@ -101,7 +101,7 @@ describe('split catalog transport', () => {
       ),
     );
     expect(request).toHaveBeenCalledWith(
-      '/api/threads?includeAgentThreads=true',
+      'api/threads?includeAgentThreads=true',
       expect.any(Object),
     );
     await act(async () => finish([thread('private-old-device')]));

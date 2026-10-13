@@ -1,4 +1,4 @@
-import { appPathname, appUrl, supervisorPath } from './webBase';
+import { appPathname, appUrl } from './webBase';
 import { deviceRoute } from './relayTransportCrypto';
 import { markOwnedDevices } from './accountTransport';
 import { sharingMutation, type SharingInput } from './signedSharing';
@@ -233,23 +233,23 @@ export function setSelectedRelayThreadId(threadId: string | null) {
 }
 
 function apiPath(path: string, deviceId?: string | null) {
-  if (!/^(?:[a-z][a-z\d+.-]*:|\/\/)/i.test(path)) path = `/${path.replace(/^\//, '')}`;
+  if (/^(?:[a-z][a-z\d+.-]*:|\/\/)/i.test(path)) return path;
+  // Normalize logical inputs before selecting a device. Keep the result relative
+  // so a mount named /api/ or /relay/ cannot be mistaken for part of this path.
+  const logical = new URL(path, globalThis.location?.origin ?? 'http://localhost');
+  path = `${logical.pathname}${logical.search}${logical.hash}`;
   // Explicit targets are captured by each pane; never mutate global navigation.
   if (deviceId !== undefined) {
     return deviceId && deviceId !== 'local' && path.startsWith('/api/')
-      ? supervisorPath(`relay/devices/${encodeURIComponent(deviceId)}${path}`) : path;
+      ? `relay/devices/${encodeURIComponent(deviceId)}${path}` : path.slice(1);
   }
-  if (!relayModeEnabled()) {
-    return path;
+  if (relayModeEnabled() && path.startsWith('/api/')) {
+    const selectedDevice = readSelectedRelayDeviceId();
+    return selectedDevice
+      ? `relay/devices/${encodeURIComponent(selectedDevice)}${path}`
+      : `relay${path}`;
   }
-  if (path.startsWith('/api/')) {
-    const deviceId = readSelectedRelayDeviceId();
-    if (deviceId) {
-      return supervisorPath(`relay/devices/${encodeURIComponent(deviceId)}${path}`);
-    }
-    return supervisorPath(`relay${path}`);
-  }
-  return path;
+  return path.slice(1);
 }
 
 export function buildApiUrl(path: string) {
@@ -1834,10 +1834,9 @@ function buildSocketUrl(protocol: 'ws:' | 'wss:', target?: { deviceId: string | 
   url.protocol = protocol;
   if (relayModeEnabled()) {
     const deviceId = target ? target.deviceId : readSelectedRelayDeviceId();
-    url.pathname = deviceId
-      ? supervisorPath(`relay/devices/${encodeURIComponent(deviceId)}/ws`)
-      : supervisorPath('relay/ws');
-    const relay = new URL(relaySocketUrl(url.pathname));
+    const relay = new URL(relaySocketUrl(deviceId
+      ? `relay/devices/${encodeURIComponent(deviceId)}/ws`
+      : 'relay/ws'));
     url.protocol = relay.protocol;
     url.hostname = relay.hostname;
     url.port = relay.port;

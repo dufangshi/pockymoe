@@ -1,4 +1,4 @@
-import { supervisorPath } from './webBase';
+import { appPathname, supervisorPath } from './webBase';
 import { listPendingEnrollments } from './pendingEnrollmentStore';
 import { relayUrl, relayPathname } from './relayOrigin';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
@@ -168,7 +168,7 @@ export function deviceRoute(url: URL) {
     : null;
 }
 export function scopeFromPage(url: string, targetDeviceId?: string) {
-  const match = new URL(url).pathname.match(/\/devices\/([^/]+)\/threads\/([^/]+)/);
+  const match = appPathname(new URL(url).pathname).match(/^\/devices\/([^/]+)\/threads\/([^/]+)/);
   // A page's primary thread grants no scope on a different device.
   if (targetDeviceId && match && decodeURIComponent(match[1]!) !== targetDeviceId) return undefined;
   return match?.[2];

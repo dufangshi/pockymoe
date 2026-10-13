@@ -58,7 +58,9 @@ ending in `/` before the asset tags. Keep the base fixed for the document lifeti
 
 Use `appUrl` for browser links/assets and logical relative paths such as
 `api/threads/...` for request helpers. Router links stay logical; `BrowserRouter`
-adds the basename. Supervisor protocol paths remain rooted via `supervisorPath`.
+adds the basename. URL routing normalizes logical paths before selecting a device;
+relative inputs also distinguish endpoints from mounts named `/api/` or `/relay/`.
+Supervisor protocol paths remain rooted via `supervisorPath`.
 Same-origin relay device paths compose with the mount. A configured separate
 `VITE_POCKYMOE_RELAY_ORIGIN` retains its own root paths. Root deployment keeps the
 same request and navigation URLs. GitHub Pages' static build retains its root
@@ -66,7 +68,8 @@ base, CSP, SPA fallback and separate relay origin; deployment workflows do not
 need changes.
 
 The unit suite's `webUrlGuard.test.ts` rejects root-absolute `/api`, `/ws` and
-`/relay` URL literals, including indirect constructions, outside tests. To verify the installed bundle behind a stripping proxy, build the Web app and
+`/relay` URL literals, including indirect constructions, outside tests. To verify
+the installed bundle behind a stripping proxy, build the Web app and
 run `e2e/web-base.spec.ts` with `playwright.web-base.config.ts` and the
 `desktop-chromium` project, using isolated `E2E_API_PORT`, `E2E_DATABASE_URL` and
 `E2E_WORKSPACE_ROOT` values.

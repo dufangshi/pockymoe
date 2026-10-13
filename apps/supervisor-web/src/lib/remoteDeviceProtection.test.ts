@@ -409,7 +409,7 @@ describe('one-click protection batches', () => {
       updateAndProtectDevice('upgrade'),
     ]);
     expect(request).toHaveBeenCalledExactlyOnceWith(
-      '/relay/devices/upgrade/api/management/supervisor/update',
+      'relay/devices/upgrade/api/management/supervisor/update',
       { method: 'POST', body: '{}' },
     );
     expect(pending('upgrade').remoteProtection?.phase).toBe('updating');

@@ -143,9 +143,9 @@ export function useWorkbenchSplitCatalog(
         return;
       map.set(key, { ...previous, loading: true, error: null });
       publish();
-      const base = id ? `relay/devices/${encodeURIComponent(id)}` : '';
+      const base = id ? `relay/devices/${encodeURIComponent(id)}/` : '';
       try {
-        const items = await request<T[]>(`${base}/${path.replace(/^\//, '')}`, {
+        const items = await request<T[]>(`${base}${path.replace(/^\//, '')}`, {
           signal: AbortSignal.timeout(15_000),
           cache: 'no-store',
         });

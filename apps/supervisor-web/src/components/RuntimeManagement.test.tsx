@@ -73,27 +73,27 @@ it('offers repair when npm is old but the running process already matches latest
   expect(await screen.findByText(/Installed 0.12.30; running 0.12.32/)).toBeVisible();
   fireEvent.click(screen.getByRole('button', { name: 'Update' }));
   fireEvent.click(screen.getByRole('button', { name: 'Update' }));
-  await waitFor(() => expect(api.request).toHaveBeenCalledWith('/relay/devices/a/api/management/supervisor/update', expect.objectContaining({method:'POST'})));
+  await waitFor(() => expect(api.request).toHaveBeenCalledWith('relay/devices/a/api/management/supervisor/update', expect.objectContaining({method:'POST'})));
 });
 describe('device-scoped runtime settings', () => {
   it('pins requests to the route and discards old device state and late responses', async () => {
     let resolveOld!: (value: unknown) => void;
     api.request.mockImplementation((path: string) => {
-      if (path === '/relay/devices/a/api/management/supervisor') return new Promise(resolve => { resolveOld = resolve; });
+      if (path === 'relay/devices/a/api/management/supervisor') return new Promise(resolve => { resolveOld = resolve; });
       return Promise.resolve(path.endsWith('/harnesses') ? [] : {runningVersion:'B-version', canUpdate:true});
     });
     mount('/devices/a/threads/thread-a');
-    await waitFor(() => expect(api.request).toHaveBeenCalledWith('/relay/devices/a/api/management/harnesses', expect.anything()));
+    await waitFor(() => expect(api.request).toHaveBeenCalledWith('relay/devices/a/api/management/harnesses', expect.anything()));
     fireEvent.click(screen.getByRole('link', {name:'Device B'}));
     expect(await screen.findByText('Running B-version')).toBeVisible();
     await act(async () => resolveOld({runningVersion:'OLD-A-version',canUpdate:true}));
     expect(screen.queryByText(/OLD-A-version/)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', {name:'Check updates'}));
-    await waitFor(() => expect(api.request).toHaveBeenCalledWith('/relay/devices/b/api/management/supervisor/check', expect.objectContaining({method:'POST'})));
+    await waitFor(() => expect(api.request).toHaveBeenCalledWith('relay/devices/b/api/management/supervisor/check', expect.objectContaining({method:'POST'})));
     fireEvent.click(screen.getByRole('link', {name:'Devices'}));
     expect(screen.getByText(/Open a device to view/)).toBeVisible();
     expect(screen.queryByText('Running B-version')).not.toBeInTheDocument();
-    expect(api.request.mock.calls.every(([path]) => String(path).startsWith('/relay/devices/a/') || String(path).startsWith('/relay/devices/b/'))).toBe(true);
+    expect(api.request.mock.calls.every(([path]) => String(path).startsWith('relay/devices/a/') || String(path).startsWith('relay/devices/b/'))).toBe(true);
   });
 });
 it('shared device access exposes no restart or update controls', async () => {
@@ -119,7 +119,7 @@ it('shows a missing adapter and its install action after a successful base updat
   expect(screen.queryByText(/^Ready/)).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole('button',{name:'Install OpenAI Codex adapter'}));
   fireEvent.click(screen.getByRole('button',{name:/^Install$/}));
-  await waitFor(()=>expect(api.request).toHaveBeenCalledWith('/relay/devices/a/api/management/harnesses/codex',expect.objectContaining({method:'POST',body:JSON.stringify({action:'update',component:'adapter'})})));
+  await waitFor(()=>expect(api.request).toHaveBeenCalledWith('relay/devices/a/api/management/harnesses/codex',expect.objectContaining({method:'POST',body:JSON.stringify({action:'update',component:'adapter'})})));
 });
 
 it('keeps the repair entry visible for an older device returning adapter null', async () => {
@@ -130,7 +130,7 @@ it('keeps the repair entry visible for an older device returning adapter null', 
   expect(install).toBeVisible();
   fireEvent.click(install);
   fireEvent.click(screen.getByRole('button',{name:/^Install$/}));
-  await waitFor(()=>expect(api.request).toHaveBeenCalledWith('/relay/devices/a/api/agent-runtimes/acp/install?agentId=codex',expect.objectContaining({method:'POST'})));
+  await waitFor(()=>expect(api.request).toHaveBeenCalledWith('relay/devices/a/api/agent-runtimes/acp/install?agentId=codex',expect.objectContaining({method:'POST'})));
 });
 
 it('explains a command missing from PATH and blocks the adapter until it is installed', async () => {

@@ -19,7 +19,10 @@ export function relayUrl(
   configured = import.meta.env.VITE_POCKYMOE_RELAY_ORIGIN ?? '',
 ): string {
   const target = new URL(path, webOrigin);
-  const logicalPath = appPathname(target.pathname);
+  // Relative inputs are logical application paths, even when the mount is
+  // itself /relay/ or /api/. Rooted/absolute inputs may already be resolved.
+  const logicalPath = path.startsWith('/') || /^[a-z][a-z\d+.-]*:/i.test(path)
+    ? appPathname(target.pathname) : target.pathname;
   // Do not retarget external URLs or local Supervisor APIs.
   if (target.origin !== webOrigin) return path;
   const local = `${appUrl(logicalPath)}${target.search}${target.hash}`;

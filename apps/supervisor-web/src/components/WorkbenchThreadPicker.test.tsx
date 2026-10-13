@@ -35,20 +35,20 @@ describe('hierarchical split picker', () => {
       thread('elsewhere', 'other-workspace'),
     ];
     vi.mocked(request).mockImplementation(async (path) => {
-      if (path === '/relay/portal')
+      if (path === 'relay/portal')
         return {
           devices: [
             { id: 'host', name: 'Host' },
             { id: 'remote', name: 'Second device', connected: true },
           ],
         };
-      if (path === '/relay/devices/host/api/workspaces')
+      if (path === 'relay/devices/host/api/workspaces')
         return [workspace('current'), workspace('other-workspace')];
-      if (path === '/relay/devices/host/api/threads?includeAgentThreads=true')
+      if (path === 'relay/devices/host/api/threads?includeAgentThreads=true')
         return peers;
-      if (path === '/relay/devices/remote/api/workspaces')
+      if (path === 'relay/devices/remote/api/workspaces')
         return [workspace('remote-workspace')];
-      if (path === '/relay/devices/remote/api/threads?includeAgentThreads=true')
+      if (path === 'relay/devices/remote/api/threads?includeAgentThreads=true')
         return [thread('remote-peer', 'remote-workspace')];
       throw new Error(`Unexpected request: ${path}`);
     });
@@ -112,11 +112,11 @@ describe('hierarchical split picker', () => {
   it('supports local workspaces, retry, keyboard back and Escape without changing the selected route', async () => {
     let denied = true;
     vi.mocked(request).mockImplementation(async (path) => {
-      if (path === '/api/workspaces') {
+      if (path === 'api/workspaces') {
         if (denied) throw new Error('Access denied');
         return [workspace('current'), workspace('other')];
       }
-      if (path === '/api/threads?includeAgentThreads=true')
+      if (path === 'api/threads?includeAgentThreads=true')
         return [thread('local-peer', 'other')];
       throw new Error(`Unexpected request: ${path}`);
     });
@@ -148,7 +148,7 @@ describe('hierarchical split picker', () => {
     expect(
       vi
         .mocked(request)
-        .mock.calls.every(([path]) => String(path).startsWith('/api/')),
+        .mock.calls.every(([path]) => String(path).startsWith('api/')),
     ).toBe(true);
   });
   it('keeps one toolbar trigger and places restore and close inside its menu', async () => {
