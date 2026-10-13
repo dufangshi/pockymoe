@@ -120,6 +120,14 @@ does not release anything.
    tree with `taskkill /T`. ACP terminals the Supervisor ran for that process
    are stopped too.
 4. Remove the sessions and emit `thread.runtime.released`.
+5. Forget a session that cannot be resumed. Claude and Codex save a session
+   with its first message, so one created by this process (`create`) and never
+   prompted exists only in that process. When its thread has no turns and is
+   not an import, the thread's `providerSessionId` is cleared: capabilities
+   then report the provider's and start nothing, and the first prompt (or goal,
+   or harness action) starts a new session with the thread's saved model,
+   reasoning effort, approval and sandbox modes. Forks, imports and threads with
+   any turn keep their session. This also applies after a harness restart.
 
 A process that detached from the tree before the release (a daemon that forked
 away) is not reached.
@@ -171,7 +179,9 @@ WebSocket (`/ws`, and relay clients through the same session code):
 
 `HarnessProcessesDto.metric` names the measure. Linux reads PSS from
 `/proc/<pid>/smaps_rollup`, so shared pages are divided among processes and the
-sums are meaningful. A process whose PSS cannot be read reports its own RSS;
+sums are meaningful. A process that exits during the scan (Claude starts
+short-lived helpers) or is a zombie is left out. A live process whose PSS
+cannot be read reports its own RSS;
 the sample then reports `rss`, and the memory limit waits for a complete
 sample, since RSS counts shared pages in every process. Other platforms report
 RSS from `sysinfo`, the measure the limit is set in there. Each loaded thread

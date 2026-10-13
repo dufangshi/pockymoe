@@ -79,6 +79,8 @@ impl AcpRuntime {
             session_id: session_id.into(),
             thread_id: live.load.thread_id.clone(),
             reason,
+            load_reason: live.load.reason,
+            prompted: live.load.prompted,
         });
     }
 

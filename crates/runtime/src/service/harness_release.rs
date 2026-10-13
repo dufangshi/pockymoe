@@ -784,6 +784,7 @@ impl Supervisor {
             }
             Err(error) => return Err(error),
         };
+        self.forget_released(&released);
         for session in &released {
             if let Some(thread) = current
                 .iter()
@@ -921,7 +922,14 @@ impl Supervisor {
                 session_id,
                 thread_id,
                 reason,
+                load_reason,
+                prompted,
             } => {
+                if let Err(error) =
+                    self.forget_unsaved_sessions([(session_id.as_str(), load_reason, prompted)])
+                {
+                    tracing::warn!(%error, "could not forget an unsaved harness session");
+                }
                 let thread = thread_id.or_else(|| {
                     self.threads_by_session().ok().and_then(|threads| {
                         threads
@@ -1011,6 +1019,97 @@ impl Supervisor {
         });
     }
 
+    /// The thread's harness session, starting a new one with the thread's saved
+    /// settings when it has none (its unsaved first session was released).
+    pub(crate) async fn ensure_thread_session(&self, thread: &ThreadDto) -> Result<String> {
+        if let Some(session) = &thread.provider_session_id {
+            return Ok(session.clone());
+        }
+        let runtime = self.runtime(thread.provider)?.clone();
+        let cwd = self
+            .session_cwd(thread)
+            .ok_or_else(|| anyhow!("workspace not found"))?;
+        let started = self
+            .with_load(
+                &thread.id,
+                HarnessLoadReason::Create,
+                runtime.start_session(crate::actor::StartSessionInput {
+                    cwd,
+                    agent_id: thread.agent_id.clone(),
+                    model: thread.model.clone().unwrap_or_else(|| "default".into()),
+                    reasoning_effort: thread.reasoning_effort.clone(),
+                    approval_mode: thread.approval_mode.clone(),
+                    sandbox_mode: thread.sandbox_mode.clone(),
+                }),
+            )
+            .await?;
+        let saved = self.db.with(|conn| {
+            Ok(conn.execute(
+                "UPDATE threads SET provider_session_id=?1 WHERE id=?2 AND provider_session_id IS NULL",
+                params![started.provider_session_id, thread.id],
+            )?)
+        })?;
+        if saved == 0 {
+            // Another request gave the thread a session first; use that one.
+            let _ = runtime
+                .release_loaded(&started.provider_session_id, ReleaseScope::Process, None)
+                .await;
+            return self
+                .get_thread(&thread.id)?
+                .provider_session_id
+                .ok_or_else(|| anyhow!("thread has no provider session"));
+        }
+        Ok(started.provider_session_id)
+    }
+
+    /// Claude and Codex save a session with its first message. One created by
+    /// this process and never prompted exists only in that process, so once it
+    /// is released it can never be resumed: forget it, and the thread's first
+    /// prompt starts a new one. Forks, imports and threads with turns keep theirs.
+    pub(crate) fn forget_unsaved_sessions<'a>(
+        &self,
+        released: impl IntoIterator<Item = (&'a str, HarnessLoadReason, bool)>,
+    ) -> Result<Vec<String>> {
+        let unsaved: Vec<&str> = released
+            .into_iter()
+            .filter(|(_, reason, prompted)| *reason == HarnessLoadReason::Create && !*prompted)
+            .map(|(session, _, _)| session)
+            .collect();
+        if unsaved.is_empty() {
+            return Ok(Vec::new());
+        }
+        let threads = self.threads_by_session()?;
+        let mut forgotten = Vec::new();
+        for session in unsaved {
+            let Some(thread) = threads.get(crate::import_id::raw_session_id(session)) else {
+                continue;
+            };
+            let cleared = self.db.with(|conn| {
+                Ok(conn.execute(
+                    "UPDATE threads SET provider_session_id=NULL
+                     WHERE id=?1 AND provider_session_id=?2
+                       AND source NOT IN ('local_codex_import','local_provider_import')
+                       AND NOT EXISTS(SELECT 1 FROM thread_turns WHERE thread_id=?1)",
+                    params![thread.id, thread.provider_session_id],
+                )?)
+            })?;
+            if cleared > 0 {
+                forgotten.push(thread.id.clone());
+            }
+        }
+        Ok(forgotten)
+    }
+
+    fn forget_released(&self, released: &[LoadedSession]) {
+        if let Err(error) = self.forget_unsaved_sessions(
+            released
+                .iter()
+                .map(|s| (s.session_id.as_str(), s.load_reason, s.prompted)),
+        ) {
+            tracing::warn!(%error, "could not forget unsaved harness sessions");
+        }
+    }
+
     /// `POST /api/threads/{id}/release`. `may_release` limits a shared caller
     /// to threads it controls; None is the owner.
     pub async fn release_thread_harness(
@@ -1088,6 +1187,7 @@ impl Supervisor {
                 Some(&target.process_id),
             )
             .await?;
+        self.forget_released(&released);
         let mut released_threads = Vec::new();
         for session in &released {
             if let Some(thread) = Self::session_thread(&threads, session) {
@@ -1124,6 +1224,7 @@ impl Supervisor {
             .await
         {
             Ok(released) if !released.is_empty() => {
+                self.forget_released(&released);
                 self.emit_released(&thread.id, reason);
                 self.forget_processes().await;
             }

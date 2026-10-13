@@ -401,6 +401,22 @@ async fn loaded(s: &Supervisor) -> Vec<LoadedSession> {
     all
 }
 
+async fn prompt(s: &Supervisor, id: &str, text: &str) {
+    s.prompt(
+        id,
+        pockymoe_protocol::SendThreadPromptInput {
+            prompt: text.into(),
+            client_request_id: None,
+            model: None,
+            reasoning_effort: None,
+            collaboration_mode: None,
+            images: Vec::new(),
+        },
+    )
+    .await
+    .unwrap();
+}
+
 async fn next_runtime_event(
     events: &mut broadcast::Receiver<ThreadEventEnvelope>,
     kind: &str,
@@ -480,7 +496,11 @@ async fn release_explicitly_with_load_reasons_and_events() {
             .released
     );
 
-    // Capabilities without loading start nothing; the page load is a view.
+    // A thread with history: capabilities without loading start nothing, and
+    // the page load is a view.
+    prompt(&s, &id, "hello").await;
+    next_runtime_event(&mut events, "thread.runtime.loaded").await;
+    s.release_thread_harness(&id, false, None).await.unwrap();
     s.thread_capabilities(&id, false).await.unwrap();
     assert!(loaded(&s).await.is_empty());
     s.thread_capabilities(&id, true).await.unwrap();
@@ -582,6 +602,7 @@ async fn release_when_the_viewer_leaves_a_view_load() {
     let s = supervisor(dir.path());
     s.harness.view_delay_ms.store(100, Ordering::Relaxed);
     let id = thread(&s, dir.path(), None).await;
+    prompt(&s, &id, "hello").await;
     s.release_thread_harness(&id, false, None).await.unwrap();
     s.spawn_harness_release();
     let mut events = s.bus.subscribe();
@@ -651,7 +672,8 @@ async fn release_over_the_thread_limit_after_a_load() {
     // A displayed thread is not evicted; the limit is then exceeded.
     let viewer = s.harness_viewer();
     viewer.set([second.clone()]);
-    s.thread_capabilities(&first, true).await.unwrap();
+    // The released `first` was never prompted; its first prompt starts a session.
+    prompt(&s, &first, "hello").await;
     tokio::time::sleep(Duration::from_millis(300)).await;
     let processes = s.harness_processes().await.unwrap();
     assert_eq!(processes.threads.len(), 2);
@@ -884,4 +906,116 @@ async fn release_by_a_shared_caller_never_ends_a_thread_outside_its_access() {
     assert!(result.released);
     assert_eq!(result.also_released, std::slice::from_ref(&fork));
     assert!(loaded(&s).await.is_empty());
+}
+
+#[tokio::test]
+async fn release_forgets_an_unsaved_first_session_and_the_first_prompt_starts_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, fake) = supervisor_with(dir.path(), Provider::Codex);
+    let id = thread(&s, dir.path(), None).await;
+    s.update_settings(
+        &id,
+        Some("gpt-5.4".into()),
+        Some("high".into()),
+        None,
+        Some("plan".into()),
+        Some("workspace-write".into()),
+    )
+    .await
+    .unwrap();
+    let original = s.get_thread(&id).unwrap().provider_session_id.unwrap();
+    assert!(
+        s.release_thread_harness(&id, false, None)
+            .await
+            .unwrap()
+            .released
+    );
+    // Claude and Codex save a session with its first message: this one is gone.
+    assert_eq!(s.get_thread(&id).unwrap().provider_session_id, None);
+    let caps = s.thread_capabilities(&id, true).await.unwrap();
+    assert!(caps.effective_capabilities.is_some());
+    assert!(loaded(&s).await.is_empty(), "capabilities start no process");
+    assert_eq!(
+        s.thread_goal(&id, None, None, None, false).await.unwrap()["goal"],
+        Value::Null
+    );
+
+    prompt(&s, &id, "hello").await;
+    let thread = s.get_thread(&id).unwrap();
+    let session = thread.provider_session_id.clone().unwrap();
+    assert_ne!(session, original);
+    let detail = s.get_thread_detail(&id, None).await.unwrap();
+    assert_eq!(detail.turns.len(), 1);
+    assert_eq!(detail.turns[0].status, "completed");
+    assert!(thread.last_error.is_none());
+    let start = fake.started_sessions().pop().unwrap();
+    assert_eq!(
+        (
+            start.model.as_str(),
+            start.reasoning_effort.as_deref(),
+            start.approval_mode.as_str(),
+            start.sandbox_mode.as_deref()
+        ),
+        ("gpt-5.4", Some("high"), "guarded", Some("workspace-write")),
+        "the new session keeps the thread's saved settings"
+    );
+    let load = loaded(&s).await.into_iter().next().unwrap();
+    assert_eq!(load.load_reason, HarnessLoadReason::Create);
+    assert!(load.prompted);
+    // Now it has history: a release keeps the session.
+    s.release_thread_harness(&id, false, None).await.unwrap();
+    assert_eq!(
+        s.get_thread(&id).unwrap().provider_session_id,
+        Some(session)
+    );
+}
+
+#[tokio::test]
+async fn release_keeps_sessions_of_forks_imports_and_threads_with_history() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, _) = supervisor_with(dir.path(), Provider::Claude);
+    let session = |id: &str| s.get_thread(id).unwrap().provider_session_id;
+    // A fork of an empty thread has no turns but a session made by session/fork.
+    let source = thread_for(&s, dir.path(), None, Provider::Claude).await;
+    let fork = s.fork_thread(&source).await.unwrap();
+    s.release_thread_harness(&source, false, None)
+        .await
+        .unwrap();
+    let forked = session(&fork.id);
+    assert!(forked.is_some());
+    s.thread_capabilities(&fork.id, true).await.unwrap();
+    s.release_thread_harness(&fork.id, false, None)
+        .await
+        .unwrap();
+    assert_eq!(session(&fork.id), forked, "forks keep their session");
+    // An import, even before any turn is copied.
+    let imported = thread_for(&s, dir.path(), None, Provider::Claude).await;
+    s.db.with(|c| {
+        c.execute(
+            "UPDATE threads SET source='local_provider_import' WHERE id=?1",
+            [&imported],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let kept = session(&imported);
+    s.release_thread_harness(&imported, false, None)
+        .await
+        .unwrap();
+    assert_eq!(session(&imported), kept);
+    // Any turn, even a failed one, means the session was written.
+    let with_turn = thread_for(&s, dir.path(), None, Provider::Claude).await;
+    s.db.with(|c| {
+        c.execute(
+            "INSERT INTO thread_turns(id,thread_id,status,ordinal) VALUES('t1',?1,'failed',1)",
+            [&with_turn],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let kept = session(&with_turn);
+    s.release_thread_harness(&with_turn, false, None)
+        .await
+        .unwrap();
+    assert_eq!(session(&with_turn), kept);
 }
