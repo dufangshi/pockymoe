@@ -82,7 +82,7 @@ it('keeps a cross-device conversation, its event subscription and mutations scop
   vi.mocked(api.relayModeActive).mockReturnValue(true);
   vi.mocked(api.fetchRelayAccess).mockResolvedValue({ kind:'owner' } as never);
   const close = vi.fn();
-  vi.mocked(api.connectSupervisorEvents).mockReturnValue({close} as never);
+  vi.mocked(api.connectSupervisorEvents).mockReturnValue({close, addEventListener: vi.fn()} as never);
   const {result,rerender,unmount} = renderHook(({device}) => useWorkbenchReference(device,'same-id','host'),{initialProps:{device:'peer-a'}});
   await waitFor(() => expect(result.current.canControl && result.current.detail?.thread.id === 'same-id').toBe(true));
   expect(api.fetchThreadDetail).toHaveBeenCalledWith('same-id',{limit:3},'peer-a');
@@ -97,4 +97,22 @@ it('keeps a cross-device conversation, its event subscription and mutations scop
   expect(api.sendThreadPrompt).toHaveBeenCalledTimes(1);
   expect(close).toHaveBeenCalledTimes(1);
   unmount(); expect(close).toHaveBeenCalledTimes(2);
+});
+it('reads reference capabilities without loading, and reports a shown cross-device reference only when controllable', async () => {
+  vi.mocked(api.relayModeActive).mockReturnValue(true);
+  vi.mocked(api.fetchRelayAccess).mockResolvedValue({ kind: 'shared', threadAccess: 'read' } as never);
+  const listeners: Record<string, () => void> = {};
+  const socket = { readyState: 1, send: vi.fn(), close: vi.fn(), addEventListener: vi.fn((type: string, listener: () => void) => { listeners[type] = listener; }) };
+  vi.mocked(api.connectSupervisorEvents).mockReturnValue(socket as never);
+  const { result, rerender } = renderHook(({ shown }) => useWorkbenchReference('peer', 'ref', 'host', shown), { initialProps: { shown: true } });
+  await waitFor(() => expect(result.current.accessReady).toBe(true));
+  expect(api.fetchThreadCapabilitySnapshot).toHaveBeenCalledWith('ref', 'peer', { load: false });
+  act(() => listeners.open?.());
+  expect(socket.send).not.toHaveBeenCalled();
+  vi.mocked(api.fetchRelayAccess).mockResolvedValue({ kind: 'owner' } as never);
+  act(() => result.current.retry());
+  await waitFor(() => expect(result.current.canControl).toBe(true));
+  await waitFor(() => expect(socket.send).toHaveBeenLastCalledWith(JSON.stringify({ type: 'thread.view', threadIds: ['ref'] })));
+  rerender({ shown: false });
+  await waitFor(() => expect(socket.send).toHaveBeenLastCalledWith(JSON.stringify({ type: 'thread.view', threadIds: [] })));
 });
