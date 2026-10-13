@@ -155,6 +155,8 @@ POCKYMOE_WEB_ORIGIN=https://app.example.com          # 静态网页
 
 Relay 的 Cookie 仍然只属于 Relay 主机（host-only），带 `Secure`、`HttpOnly` 和 `SameSite=Lax`。只有两个 origin 属于同一站点（同一个可注册域名，例如 `app.example.com` 和 `relay.example.com`）时，浏览器才会在网页发出的请求中带上它们。开发时可以用 `localhost` 的不同端口。
 
+设备上的文件经 Web origin 的 service worker 到达页面，它只加密页面自己发出的请求：`fetch` 调用和子资源，例如 Markdown 文件里的图片、聊天照片和文件浏览器的图片预览。打开 Relay 地址的框架或标签页属于 Relay origin 上的导航，这个 worker 看不到，Relay 也拒绝被嵌入框架。因此网页对浏览器本会直接导航打开的预览（例如 PDF）改为经加密 API 读取，再用 `blob:` 地址显示（`frame-src 'self' blob:`）；框架里没有 PDF 查看器的浏览器（例如 Android 版 Chrome）改为显示**打开**和**下载**按钮。
+
 浏览器密钥和每个浏览器已核对过的账户数据保存在 Web origin 的存储里。把网页移到另一个 origin 后，每个浏览器都要作为新浏览器重新登录。已有用户和设备的 Relay 要迁移，请按[迁移到独立的 Web origin](account-key-trust.md#moving-to-a-separate-web-origin)操作。
 
 ### 构建静态网页

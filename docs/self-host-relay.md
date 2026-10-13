@@ -233,6 +233,16 @@ Relay cookies remain host-only on the relay host, `Secure`, `HttpOnly` and
 origins are on the same site (registrable domain), such as `app.example.com` and
 `relay.example.com`. Different ports on `localhost` work for development.
 
+Device files reach the page through the Web origin's service worker, which
+encrypts the requests the page makes itself: `fetch` calls and subresources such
+as the images in Markdown files, chat photos and the Explorer's image preview.
+A frame or tab that opens a relay URL is a navigation on the relay origin, which
+that worker never sees and which the relay refuses to frame. The Web therefore
+reads previews a browser would navigate to, such as PDFs, through the encrypted
+API and shows them from a `blob:` URL (`frame-src 'self' blob:`); browsers without
+a PDF viewer in frames, such as Chrome on Android, show **Open** and **Download**
+buttons instead.
+
 Browser keys and the account data each browser has verified live in the Web
 origin's storage. Moving the Web UI to another origin makes every browser sign in
 again as a new browser. To move an existing relay with users and devices, follow

@@ -80,6 +80,15 @@ export function useThreadWorkspaceAdapter({
       },
       getRawFileUrl: (input) =>
         isLinked(input.path) && allowLinkedFiles ? buildLinkedFileUrl(input.threadId, input.path, deviceId) : buildWorkspaceRawFileUrl(workspaceId, { path: input.path }, deviceId),
+      // Frames and new tabs pointing at a relay URL bypass the Web origin's
+      // encrypted transport; previews such as PDFs load their bytes here.
+      readRawFile: async (input) => {
+        if (isLinked(input.path) && !allowLinkedFiles) throw new Error(translate("files.linkedFileAccessIsUnavailable"));
+        const result = isLinked(input.path)
+          ? await downloadLinkedFile(input.threadId, input.path, deviceId, input.signal)
+          : await downloadWorkspaceFile(workspaceId, { path: input.path }, deviceId, input.signal);
+        return result.blob;
+      },
       ...(access === 'write'
         ? {
             createFile: async (input) => {

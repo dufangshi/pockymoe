@@ -226,3 +226,24 @@ test('GitHub README HTML renders centered badges and workspace illustrations', a
   await files.getByRole('button', { name: 'Back to README.md', exact: true }).click();
   await expect(markdown.locator('h1')).toHaveText('Pockymoe');
 });
+
+test('a local PDF preview frames bytes read through the API, not a navigable file URL', async ({ page, request, isMobile }) => {
+  test.skip(isMobile, 'The phone fallback is covered on the static origin');
+  const absPath = path.resolve(process.env.E2E_WORKSPACE_ROOT!, randomUUID());
+  await mkdir(absPath, { recursive: true });
+  await writeFile(path.join(absPath, 'report.pdf'), '%PDF-1.4\n1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n2 0 obj << /Type /Pages /Kids [] /Count 0 >> endobj\ntrailer << /Root 1 0 R >>\n%%EOF\n');
+  const workspace = await (await request.post(`${base}/api/workspaces`, { data: { absPath, label: 'Local PDF' } })).json();
+  const started = await (await request.post(`${base}/api/threads/start`, { data: { workspaceId: workspace.id, title: 'Local PDF', provider: 'acp', agentId: 'codex', model: 'ios-e2e-stream', approvalMode: 'yolo' } })).json();
+  await page.addInitScript(() => {
+    localStorage.setItem('pockymoe.onboarding.v1:' + JSON.stringify([location.origin, 'local:owner']), JSON.stringify({ welcomeDismissed: true, completed: [], resume: {} }));
+    // Headless Chromium has no PDF plugin; emulate a desktop browser that has one.
+    Object.defineProperty(Navigator.prototype, 'pdfViewerEnabled', { configurable: true, get: () => true });
+  });
+  await page.goto(`/threads/${started.id ?? started.thread.id}`);
+  await page.locator('.matter-rail').getByRole('button', { name: 'Toggle Explorer', exact: true }).click();
+  const files = page.getByTestId('workspace-panel');
+  const download = page.waitForResponse(response => response.url().includes('/files/download?') && response.status() === 200);
+  await files.getByRole('treeitem', { name: 'report.pdf', exact: true }).getByRole('button', { name: 'report.pdf', exact: true }).click();
+  await download;
+  await expect(files.locator('iframe[title^="PDF preview"]')).toHaveAttribute('src', /^blob:/);
+});
