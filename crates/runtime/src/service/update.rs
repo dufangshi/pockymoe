@@ -108,7 +108,12 @@ impl Supervisor {
                     if latest == Some((source_turn, "interrupted".into())) && thread.status == "interrupted" {
                         // Insertion of the new turn and removal of this marker happen in
                         // the same transaction inside run_turn; recovery is consumed once.
-                        state.run_turn(thread, prompt, None, None, Vec::new(), Some(&id), None).await?;
+                        crate::actor::with_load_intent(
+                            &thread_id,
+                            pockymoe_protocol::HarnessLoadReason::Resume,
+                            state.run_turn(thread, prompt, None, None, Vec::new(), Some(&id), None),
+                        )
+                        .await?;
                     } else {
                         state.db.with(|conn| {conn.execute("DELETE FROM thread_pending_steers WHERE id=?1",params![id])?;Ok(())})?;
                         if thread.status != "running" {state.drain_steers(&thread_id).await?;}

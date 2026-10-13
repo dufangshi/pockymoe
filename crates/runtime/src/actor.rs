@@ -1,14 +1,110 @@
+use std::future::Future;
 use std::sync::{Arc, RwLock};
 
 use anyhow::Result;
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use pockymoe_protocol::{
-    AgentBackendDto, AgentCapabilitySnapshotDto, AgentProviderCapabilitiesDto, ModelOptionDto,
-    Provider, ThreadActionRequestDto, ThreadEventEnvelope, ThreadHistoryItemDto, ThreadSubagentDto,
-    ThreadTurnDto, ToolboxItemDto,
+    AgentBackendDto, AgentCapabilitySnapshotDto, AgentProviderCapabilitiesDto, HarnessBusyReason,
+    HarnessLoadReason, ModelOptionDto, Provider, ThreadActionRequestDto, ThreadEventEnvelope,
+    ThreadHistoryItemDto, ThreadSubagentDto, ThreadTurnDto, ToolboxItemDto,
 };
+use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
+
+/// Why a loaded harness was released (`thread.runtime.released`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ReleaseReason {
+    View,
+    Idle,
+    Limit,
+    Explicit,
+    Deleted,
+    Closed,
+}
+
+/// The thread a caller loads a harness for, and why. A runtime records it on
+/// any session it starts inside [`with_load_intent`].
+#[derive(Debug, Clone)]
+pub struct LoadIntent {
+    pub thread_id: String,
+    pub reason: HarnessLoadReason,
+    pub requested_at: DateTime<Utc>,
+}
+
+tokio::task_local! { static LOAD_INTENT: LoadIntent; }
+
+pub async fn with_load_intent<T>(
+    thread_id: &str,
+    reason: HarnessLoadReason,
+    future: impl Future<Output = T>,
+) -> T {
+    let intent = LoadIntent {
+        thread_id: thread_id.into(),
+        reason,
+        requested_at: Utc::now(),
+    };
+    LOAD_INTENT.scope(intent, future).await
+}
+
+pub fn load_intent() -> Option<LoadIntent> {
+    LOAD_INTENT.try_with(Clone::clone).ok()
+}
+
+/// A session that currently holds a harness process.
+#[derive(Debug, Clone)]
+pub struct LoadedSession {
+    pub session_id: String,
+    /// Known when the load ran inside [`with_load_intent`]; a fork has none yet.
+    pub thread_id: Option<String>,
+    /// Sessions with the same value share one process.
+    pub process_id: String,
+    pub root_pid: Option<u32>,
+    pub load_reason: HarnessLoadReason,
+    /// When the caller asked for the load; `loaded_at` is when it finished.
+    pub requested_at: DateTime<Utc>,
+    pub loaded_at: DateTime<Utc>,
+    pub last_activity_at: DateTime<Utc>,
+    pub prompted: bool,
+    /// Processes (PID, start time) in the tree just before the first prompt:
+    /// the harness itself and its MCP servers, never tool commands.
+    pub baseline: Vec<(u32, Option<u64>)>,
+    /// What the runtime itself can see: turns, steers, harness background
+    /// tasks and terminals, subagents of the running turn, active goals.
+    pub busy: Vec<HarnessBusyReason>,
+}
+
+#[derive(Debug, Clone)]
+pub enum SessionLifecycle {
+    Loaded {
+        session_id: String,
+        thread_id: Option<String>,
+        reason: HarnessLoadReason,
+        requested_at: DateTime<Utc>,
+    },
+    /// A session ended outside [`AgentRuntime::release_loaded`], such as a
+    /// harness restart from Settings.
+    Released {
+        session_id: String,
+        thread_id: Option<String>,
+        reason: ReleaseReason,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReleaseScope {
+    /// The session and every session that shares its process.
+    Process,
+    /// Only this session. A process it shares with others keeps running.
+    Session,
+}
+
+/// Release refused because an affected session is running a turn.
+#[derive(Debug, thiserror::Error)]
+#[error("conflict: A turn is running; interrupt it before releasing the harness")]
+pub struct TurnRunning;
 
 #[derive(Clone)]
 pub struct EventBus {
@@ -239,6 +335,26 @@ pub trait AgentRuntime: Send + Sync {
     /// Release an idle session's owned process during explicit thread cleanup.
     async fn release_session(&self, _session_id: &str) -> Result<()> {
         Ok(())
+    }
+    async fn loaded_sessions(&self) -> Vec<LoadedSession> {
+        Vec::new()
+    }
+    /// End a loaded session: send `session/close` when the adapter supports
+    /// it, then stop its process tree. Fails with [`TurnRunning`] while an
+    /// affected session runs a turn, and with a conflict when `process_id` no
+    /// longer serves the session. Returns the sessions that were removed.
+    async fn release_loaded(
+        &self,
+        _session_id: &str,
+        _scope: ReleaseScope,
+        _process_id: Option<&str>,
+    ) -> Result<Vec<LoadedSession>> {
+        Ok(Vec::new())
+    }
+    /// Record activity the runtime did not see, such as a scheduled turn.
+    async fn touch_session(&self, _session_id: &str) {}
+    fn lifecycle(&self) -> Option<broadcast::Receiver<SessionLifecycle>> {
+        None
     }
     async fn respond_permission(
         &self,

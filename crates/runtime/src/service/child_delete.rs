@@ -17,9 +17,16 @@ impl Supervisor {
         self.db.with(|conn| validate(conn, parent, id))?;
         let thread = self.get_thread(id)?;
         if let Some(session) = thread.provider_session_id.as_deref() {
-            self.runtime(thread.provider)?
-                .release_session(session)
-                .await?;
+            let runtime = self.runtime(thread.provider)?;
+            let loaded = runtime
+                .loaded_sessions()
+                .await
+                .iter()
+                .any(|loaded| session_ids_match(&loaded.session_id, session));
+            runtime.release_session(session).await?;
+            if loaded {
+                self.emit_released(id, crate::actor::ReleaseReason::Deleted);
+            }
         }
         let now = now_rfc3339();
         let root = self.db.with(|conn| {

@@ -190,6 +190,22 @@ const RUNTIME_MIGRATIONS: &[Migration] = &[
             Ok(())
         },
     },
+    Migration {
+        version: 17,
+        name: "harness_resource_settings",
+        apply: |conn| {
+            // One row; absent means the defaults. A NULL column disables that rule.
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS harness_resource_settings (
+                   id INTEGER PRIMARY KEY CHECK (id = 1),
+                   idle_release_minutes INTEGER,
+                   max_loaded_threads INTEGER,
+                   max_harness_memory_bytes INTEGER,
+                   updated_at TEXT NOT NULL);",
+            )?;
+            Ok(())
+        },
+    },
 ];
 
 const NODE_0030_MIGRATIONS: &[&str] = &[

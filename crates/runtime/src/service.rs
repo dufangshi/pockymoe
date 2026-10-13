@@ -4,6 +4,7 @@ mod child_delete;
 mod claude_history;
 mod claude_reply_phases;
 mod generation;
+mod harness_release;
 mod inbox_reminder;
 pub(crate) mod peer_work;
 mod reliability;
@@ -41,6 +42,8 @@ use crate::import_id::{
     bind_import_target, parse_session_ref, scoped_session_id, session_ids_match,
 };
 use crate::local_sessions::{find_local_session, list_local_sessions, LocalSessionHomes};
+pub use harness_release::{DisplayChange, HarnessViewer, InvalidSettings, MAX_VIEWED_THREADS};
+use pockymoe_protocol::HarnessLoadReason;
 
 fn thread_session_settings(thread: &ThreadDto) -> SessionSettings {
     SessionSettings {
@@ -322,6 +325,7 @@ pub struct Supervisor {
         Arc<std::sync::Mutex<crate::native_subagents::NativeSubagentsCache>>,
     pub subscription_usage: crate::subscription::SubscriptionUsage,
     pub device_monitor: crate::device_metrics::DeviceMonitor,
+    pub(crate) harness: harness_release::HarnessState,
 }
 
 fn harness_context_key(thread_id: &str) -> String {
@@ -384,6 +388,7 @@ impl Supervisor {
             native_subagents: Default::default(),
             subscription_usage: Default::default(),
             device_monitor: Default::default(),
+            harness: Default::default(),
         };
         if let Err(error) = supervisor.reconcile_stale_turns(None, false) {
             tracing::warn!(%error, "failed to reconcile stale turns at startup");
@@ -1204,8 +1209,9 @@ impl Supervisor {
             .map(|w| w.path.to_string_lossy().into_owned())
             .unwrap_or_else(|| workspace.abs_path.clone());
         let started = match self
-            .with_cli_context(
+            .with_load(
                 &id,
+                HarnessLoadReason::Create,
                 runtime.start_session(StartSessionInput {
                     cwd,
                     agent_id: input.agent_id.clone(),
@@ -2264,6 +2270,8 @@ impl Supervisor {
         pending_steer_id: Option<&str>,
         goal_submission: Option<GoalSubmission>,
     ) -> Result<()> {
+        // Released only after the turn; the queue drain below takes its own.
+        let harness = self.hold_harness(&thread.id).await;
         self.ensure_not_updating()?;
         if self.get_thread(&thread.id)?.status == "recovering" {
             bail!("conflict: Reconnect to confirm backend state before starting another turn");
@@ -2290,8 +2298,13 @@ impl Supervisor {
             .ok_or_else(|| anyhow!("thread has no provider session"))?;
         if !runtime.session_loaded(&session_id) {
             let cwd = self.session_cwd(&thread);
-            self.with_cli_context(
+            // Callers that queue or automate the turn say so with their own intent.
+            let reason = crate::actor::load_intent()
+                .filter(|intent| intent.thread_id == thread.id)
+                .map_or(HarnessLoadReason::Turn, |intent| intent.reason);
+            self.with_load(
                 &thread.id,
+                reason,
                 runtime.resume_session(
                     &session_id,
                     cwd.as_deref(),
@@ -2541,6 +2554,7 @@ impl Supervisor {
                 "completedAt": completed_at
             }),
         });
+        drop(harness);
         self.drain_steers(&thread.id).await?;
         Ok(())
     }
@@ -2655,7 +2669,7 @@ impl Supervisor {
             let next = self.db.with(|conn| {
                 Ok(conn
                     .query_row(
-                        "SELECT id,submitted_prompt,payload_json FROM thread_pending_steers
+                        "SELECT id,submitted_prompt,payload_json,turn_id FROM thread_pending_steers
                  WHERE thread_id=?1 AND delivery='continuation' ORDER BY created_at,rowid LIMIT 1",
                         params![thread_id],
                         |r| {
@@ -2663,14 +2677,34 @@ impl Supervisor {
                                 r.get::<_, String>(0)?,
                                 r.get::<_, String>(1)?,
                                 r.get::<_, Option<String>>(2)?,
+                                r.get::<_, Option<String>>(3)?.unwrap_or_default(),
                             ))
                         },
                     )
                     .optional()?)
             })?;
-            let Some((id, prompt, payload)) = next else {
+            let Some((id, prompt, payload, queued_behind)) = next else {
                 return Ok(());
             };
+            let load_reason = self.db.with(|conn| {
+                let automated = conn
+                    .query_row(
+                        "SELECT 1 FROM automation_runs WHERE pending_id=?1",
+                        params![id],
+                        |_| Ok(()),
+                    )
+                    .optional()?
+                    .is_some();
+                // A prompt submitted while the thread was idle is a turn; one that
+                // waited behind a turn, or came from another thread, was queued.
+                Ok(if automated {
+                    HarnessLoadReason::Automation
+                } else if payload.is_some() && queued_behind.is_empty() {
+                    HarnessLoadReason::Turn
+                } else {
+                    HarnessLoadReason::Queue
+                })
+            })?;
             let allowed = self.db.with(|c| {
                 let tx = c.unchecked_transaction()?;
                 let allowed = automation::pending_allowed(&tx, &id, &now_rfc3339())?;
@@ -2696,7 +2730,12 @@ impl Supervisor {
                         .collect()
                 })
                 .unwrap_or_default();
-            Box::pin(self.run_turn(thread, prompt, model, effort, images, Some(&id), None)).await?;
+            Box::pin(crate::actor::with_load_intent(
+                thread_id,
+                load_reason,
+                self.run_turn(thread, prompt, model, effort, images, Some(&id), None),
+            ))
+            .await?;
         }
     }
 
@@ -2978,6 +3017,7 @@ impl Supervisor {
                 "guarded".to_string()
             }
         });
+        let _harness = self.hold_harness(id).await;
         if let Some(session) = thread.provider_session_id.as_deref() {
             let runtime = self.runtime(thread.provider)?;
             if fast == Some(true)
@@ -3098,8 +3138,11 @@ impl Supervisor {
             .provider_session_id
             .as_deref()
             .ok_or_else(|| anyhow!("thread has no provider session"))?;
-        self.with_cli_context(
+        // Until the fork is saved, its session shares the source's process.
+        let _harness = self.hold_harness(&detail.thread.id).await;
+        self.with_load(
             &detail.thread.id,
+            HarnessLoadReason::Fork,
             runtime.resume_session(
                 session,
                 Some(&detail.workspace.abs_path),
@@ -3120,13 +3163,15 @@ impl Supervisor {
             .unwrap_or(u32::MAX)
             .saturating_sub(selected.turn_index);
         let forked = runtime.fork_session_at(&session, rollback_count).await?;
-        self.persist_forked_thread(
+        let saved = self.persist_forked_thread(
             &detail,
             forked,
             usize::try_from(selected.turn_index).unwrap_or(usize::MAX),
             Some(selected.turn_id.clone()),
             Some(selected.turn_index),
-        )
+        )?;
+        self.announce_fork_load(&saved.0).await;
+        Ok(saved)
     }
 
     async fn fork_empty_thread(
@@ -3139,8 +3184,10 @@ impl Supervisor {
             .clone()
             .ok_or_else(|| anyhow!("thread has no provider session"))?;
         let runtime = self.runtime(detail.thread.provider)?;
-        self.with_cli_context(
+        let _harness = self.hold_harness(&detail.thread.id).await;
+        self.with_load(
             &detail.thread.id,
+            HarnessLoadReason::Fork,
             runtime.resume_session(
                 &session,
                 Some(&detail.workspace.abs_path),
@@ -3153,7 +3200,25 @@ impl Supervisor {
             bail!("this harness does not support session/fork");
         }
         let forked = runtime.fork_session(&session).await?;
-        self.persist_forked_thread(detail, forked, 0, None, None)
+        let saved = self.persist_forked_thread(detail, forked, 0, None, None)?;
+        self.announce_fork_load(&saved.0).await;
+        Ok(saved)
+    }
+
+    /// A Claude or Grok fork is served by its source's process until reloaded.
+    async fn announce_fork_load(&self, fork: &ThreadDto) {
+        let (Some(session), Ok(runtime)) = (&fork.provider_session_id, self.runtime(fork.provider))
+        else {
+            return;
+        };
+        if runtime
+            .loaded_sessions()
+            .await
+            .iter()
+            .any(|loaded| session_ids_match(&loaded.session_id, session))
+        {
+            self.emit_loaded(&fork.id, HarnessLoadReason::Fork);
+        }
     }
 
     fn persist_forked_thread(
@@ -3255,6 +3320,7 @@ impl Supervisor {
     }
 
     pub async fn compact_thread(&self, id: &str) -> Result<ThreadDto> {
+        let _harness = self.hold_harness(id).await;
         let thread = self.get_thread(id)?;
         let session = thread
             .provider_session_id
@@ -3304,10 +3370,12 @@ impl Supervisor {
     async fn reconnect_thread(&self, id: &str) -> Result<()> {
         let thread = self.get_thread(id)?;
         let cwd = self.session_cwd(&thread);
+        let harness = self.hold_harness(id).await;
         if let Some(session) = &thread.provider_session_id {
             let runtime = self.runtime(thread.provider)?;
-            self.with_cli_context(
+            self.with_load(
                 &thread.id,
+                HarnessLoadReason::Resume,
                 runtime.resume_session(session, cwd.as_deref(), thread_session_settings(&thread)),
             )
             .await?;
@@ -3325,6 +3393,7 @@ impl Supervisor {
                 )
                 .await?;
         }
+        drop(harness);
         self.settle_reconnected_execution(id).await
     }
 
@@ -3399,10 +3468,12 @@ impl Supervisor {
                 .thread_goal(id, objective, status, token_budget, false)
                 .await;
         }
+        let harness = self.hold_harness(id).await;
         if !runtime.session_loaded(session) {
             let cwd = self.session_cwd(&thread);
-            self.with_cli_context(
+            self.with_load(
                 &thread.id,
+                HarnessLoadReason::Turn,
                 runtime.resume_session(session, cwd.as_deref(), thread_session_settings(&thread)),
             )
             .await?;
@@ -3441,6 +3512,7 @@ impl Supervisor {
             accepted,
         };
         let background = self.clone();
+        drop(harness);
         let task = tokio::spawn(async move {
             background
                 .run_turn(
@@ -3477,6 +3549,7 @@ impl Supervisor {
         token_budget: Option<Option<u64>>,
         clear: bool,
     ) -> Result<serde_json::Value> {
+        let _harness = self.hold_harness(id).await;
         let thread = self.get_thread(id)?;
         let session = thread
             .provider_session_id
@@ -3602,15 +3675,28 @@ impl Supervisor {
         self.runtime(provider)?.capabilities(agent_id).await
     }
 
-    pub async fn thread_capabilities(&self, id: &str) -> Result<AgentCapabilitySnapshotDto> {
+    /// With `load` false, a thread without a harness gets the provider's
+    /// capabilities and no process is started.
+    pub async fn thread_capabilities(
+        &self,
+        id: &str,
+        load: bool,
+    ) -> Result<AgentCapabilitySnapshotDto> {
         let thread = self.get_thread(id)?;
         let runtime = self.runtime(thread.provider)?;
         let Some(session) = thread.provider_session_id.as_deref() else {
             return runtime.capabilities(thread.agent_id.as_deref()).await;
         };
+        if !load {
+            return runtime
+                .session_capabilities(thread.agent_id.as_deref(), session)
+                .await;
+        }
         let cwd = self.session_cwd(&thread);
-        self.with_cli_context(
+        let _harness = self.hold_harness(id).await;
+        self.with_load(
             &thread.id,
+            HarnessLoadReason::View,
             runtime.resume_session(session, cwd.as_deref(), thread_session_settings(&thread)),
         )
         .await?;
@@ -3641,8 +3727,10 @@ impl Supervisor {
             .as_deref()
             .ok_or_else(|| anyhow!("thread has no provider session"))?;
         let cwd = self.session_cwd(&thread);
-        self.with_cli_context(
+        let _harness = self.hold_harness(id).await;
+        self.with_load(
             &thread.id,
+            HarnessLoadReason::View,
             runtime.resume_session(session, cwd.as_deref(), thread_session_settings(&thread)),
         )
         .await?;
