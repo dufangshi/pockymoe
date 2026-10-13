@@ -1,3 +1,4 @@
+import { appUrl, webBase } from './lib/webBase';
 import { AccountSessionGate } from './components/AccountSessionGate';
 import { SharedInvitePage } from './pages/SharedInvitePage';
 import { WorkspaceDocumentNavigationGuard } from "./components/WorkspaceDocumentNavigationGuard";
@@ -285,7 +286,7 @@ function AppShell({
     closeSettings: () => {
       setSettingsOpen(false);
       if (isSettingsRoute && isNativeApp) {
-        window.location.assign('/__native/close');
+        window.location.assign(appUrl('__native/close'));
       }
     },
     themeMode,
@@ -629,7 +630,7 @@ export function App() {
 
   return (
     <div className="theme-shell theme-scrollbar">
-      <BrowserRouter>
+      <BrowserRouter basename={webBase}>
         <WorkspaceDocumentNavigationGuard>
         <DocumentTitleUpdater />
         <AccountUnlockPrompt />

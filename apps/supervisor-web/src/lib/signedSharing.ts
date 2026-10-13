@@ -40,7 +40,7 @@ const collection = (kind: ShareKind) =>
   kind === 'share' ? 'shares' : 'grants';
 export const recipientAccount = (kind: ShareKind, id: string) =>
   request<PublicAccount>(
-    `/relay/${collection(kind)}/${encodeURIComponent(id)}/recipient-account`,
+    `relay/${collection(kind)}/${encodeURIComponent(id)}/recipient-account`,
   ).then(validatePublicAccount).catch((error: unknown) => {
     if (error && typeof error === 'object' && 'code' in error && error.code === 'recipient_account_missing')
       throw new Error(translate('sharing.recipientNeedsAccount'));
@@ -49,12 +49,12 @@ export const recipientAccount = (kind: ShareKind, id: string) =>
 export const deviceGrants = (deviceId: string) =>
   deviceRequest<{ grants: DeviceGrant[] }>(
     deviceId,
-    '/api/transport/grants',
+    'api/transport/grants',
   ).then((r) => r.grants);
 export const deleteDeviceGrant = (deviceId: string, grantId: string) =>
   deviceRequest(
     deviceId,
-    '/api/transport/grants/' + encodeURIComponent(grantId),
+    'api/transport/grants/' + encodeURIComponent(grantId),
     { method: 'DELETE' },
   );
 async function deviceRequest<T>(
@@ -89,7 +89,7 @@ export async function confirmRecipient(account: PublicAccount, userId: string) {
   await sharingTrustStore('recipient-confirmed:' + JSON.stringify([userId, checked.accountKeyId]), true);
 }
 export async function findRelayRow(kind: ShareKind, id: string) {
-  const portal = await request<RelayPortalSummaryDto>('/relay/portal');
+  const portal = await request<RelayPortalSummaryDto>('relay/portal');
   const row = (
     kind === 'share' ? portal.sharedByMe : (portal.grantsByMe ?? [])
   ).find((r) => r.id === id);
@@ -217,7 +217,7 @@ export async function syncDeviceGrant(kind: ShareKind, source: ShareRow) {
   await approveDeviceGrant(row.deviceId, row.deviceName, grant, existing);
   await deviceRequest(
     row.deviceId,
-    '/api/transport/grants/' + encodeURIComponent(grant.grantId),
+    'api/transport/grants/' + encodeURIComponent(grant.grantId),
     { method: 'PUT', body: JSON.stringify(grant) },
   );
   return grant;
@@ -299,7 +299,7 @@ export async function sharingMutation<T>(
   } catch (error) {
     try {
       await request(
-        `/relay/${collection(kind)}/${encodeURIComponent(rowId)}`,
+        `relay/${collection(kind)}/${encodeURIComponent(rowId)}`,
         previous
           ? { method: 'PATCH', body: JSON.stringify(previous) }
           : { method: 'DELETE' },

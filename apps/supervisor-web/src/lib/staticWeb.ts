@@ -1,9 +1,10 @@
+import { appUrl, webBase } from './webBase';
 export const STATIC_RELAY_WORKER_PATH = '/relayServiceWorker.js';
 
 export function relayWorkerRegistration(bundledUrl: string, staticWeb: boolean) {
   return {
-    url: staticWeb ? STATIC_RELAY_WORKER_PATH : bundledUrl,
-    options: { scope: '/', type: 'module' as const },
+    url: staticWeb ? appUrl(STATIC_RELAY_WORKER_PATH) : bundledUrl,
+    options: { scope: webBase, type: 'module' as const },
   };
 }
 

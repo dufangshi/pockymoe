@@ -93,15 +93,27 @@ export default defineConfig(({ mode }) => {
   });
 
   return {
+    base: staticWeb ? '/' : './',
     worker: {
       format: 'es',
-      ...(staticWeb ? { rollupOptions: { output: {
+      rollupOptions: { output: {
         entryFileNames: (chunk: { name: string }) => chunk.name === 'relayServiceWorker'
           ? 'relayServiceWorker.js' : 'assets/[name]-[hash].js',
-      } } } : {}),
+      } },
     },
     define: staticWeb ? { 'import.meta.env.VITE_POCKYMOE_STATIC_WEB': JSON.stringify('true') } : {},
     plugins: [
+      {
+        name: 'runtime-web-base',
+        transformIndexHtml: {
+          order: 'post',
+          handler(html, context) {
+            return staticWeb ? html.replace('<base href="/" data-pockymoe-base />', '') : context.bundle
+              ? html.replace('<base href="/" data-pockymoe-base />', '<base href="./" data-pockymoe-base />')
+              : html;
+          },
+        },
+      },
       ...(staticWeb ? [staticHosting(
         env.VITE_POCKYMOE_RELAY_ORIGIN ?? process.env.VITE_POCKYMOE_RELAY_ORIGIN ?? '',
         process.env.POCKYMOE_WEB_DOMAIN ?? '',

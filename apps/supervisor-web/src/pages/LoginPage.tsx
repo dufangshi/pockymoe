@@ -1,3 +1,4 @@
+import { appUrl } from '../lib/webBase';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { LanguageSwitcher } from '@pockymoe/thread-ui/i18n';
 import { FormEvent, useState } from 'react';
@@ -46,7 +47,7 @@ export function LoginPage({
       <section className="w-full max-w-sm rounded-lg border border-[var(--theme-border)] bg-[var(--theme-panel)] p-5 shadow-[var(--theme-shadow)] sm:p-6">
         <div className="mb-5"><LanguageSwitcher className="mb-4" />
           <div className="mb-5 flex items-center gap-3 border-b border-[var(--theme-border)] pb-4">
-            <img src="/icon-192.png?v=pockymoe" alt="" className="h-10 w-10 rounded-md" />
+            <img src={appUrl('icon-192.png?v=pockymoe')} alt="" className="h-10 w-10 rounded-md" />
             <div>
               <p className="text-sm font-semibold text-[var(--theme-fg)]">Pockymoe</p>
               <p className="text-xs text-[var(--theme-fg-muted)]">{eyebrow}</p>

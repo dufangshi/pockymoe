@@ -277,7 +277,7 @@ export function RelayDevicesPage() {
       if (!verified) {const status=await securityRequest<SecurityStatus>(''); if (!status.recentlyVerified) {setRotationVerification(status);return;}}
       const binding = await prepareDeviceEnrollment(rotatingDevice.id);
       setCreatedBinding(binding);
-      const result=await request<RelayCreateDeviceResultDto>(`/relay/devices/${rotatingDevice.id}/token`,{method:'POST'});
+      const result=await request<RelayCreateDeviceResultDto>(`relay/devices/${rotatingDevice.id}/token`,{method:'POST'});
       validateDeviceSetupToken(result.token);
       setCreatedDevice(result);setAddDeviceOpen(true);setRotatingDevice(null);setRotationVerification(null);await load({showLoading:false});
     } catch(e) {setError(errorMessage(e,translate("devices.tokenRotationFailed")));}
@@ -677,7 +677,7 @@ export function RelayDevicesPage() {
     try {
       const command = prepareDeviceEnrollment(device.id).then(async binding => {
         const { token } = await withSetupReverification(() =>
-          request<{ token: string }>(`/relay/devices/${device.id}/setup-token`, { method: 'POST' }),
+          request<{ token: string }>(`relay/devices/${device.id}/setup-token`, { method: 'POST' }),
         );
         return relaySupervisorCommand(token, platform, binding);
       });

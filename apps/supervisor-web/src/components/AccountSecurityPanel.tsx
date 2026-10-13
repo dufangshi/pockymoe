@@ -1,3 +1,4 @@
+import { appUrl } from '../lib/webBase';
 import { SecurityVerification } from './RelaySecurity';
 import { securityRequest, type SecurityStatus } from '../lib/relaySecurity';
 import { getLocale, translate, useI18n } from '@pockymoe/thread-ui/i18n';
@@ -19,7 +20,7 @@ export function AccountSecurityPanel() {
   async function load() {
     setRecoverySession(!!(await accountSessionState())?.recovery);
     const account = await currentAccount(); if (!account) return;
-    const data = await accountRequest<{ browsers: BrowserRow[] }>('/relay/account/browsers');
+    const data = await accountRequest<{ browsers: BrowserRow[] }>('relay/account/browsers');
     if (!Array.isArray(data.browsers)) throw new Error(translate('auth.accountCertificateInvalid'));
     for (const row of data.browsers) if (!await verifyBrowserCertificate(row.certificate, account)) throw new Error(translate('auth.accountCertificateInvalid'));
     const revocations = await accountRevocations(true);
@@ -70,7 +71,7 @@ export function AccountSecurityPanel() {
       {action !== 'reset' && <p className="text-sm text-[var(--theme-fg-muted)]">{translate('auth.accountSecretRotationWarning')}</p>}
       <form className="space-y-4" onSubmit={e => { e.preventDefault(); void run(async () => {
         if (action === 'password') { await changeAccountPassword(password, await isOAuthAccount()); setMessage(translate('auth.passwordChanged')); }
-        else if (action === 'reset') { await startAccountOver(recoverySession ? undefined : password); location.assign('/relay-portal'); }
+        else if (action === 'reset') { await startAccountOver(recoverySession ? undefined : password); location.assign(appUrl('relay-portal')); }
         else setRecovery(await regenerateRecoveryCode());
         setAction(undefined);
       }); }}>

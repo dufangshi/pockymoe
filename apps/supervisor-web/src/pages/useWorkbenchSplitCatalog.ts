@@ -143,9 +143,9 @@ export function useWorkbenchSplitCatalog(
         return;
       map.set(key, { ...previous, loading: true, error: null });
       publish();
-      const base = id ? `/relay/devices/${encodeURIComponent(id)}` : '';
+      const base = id ? `relay/devices/${encodeURIComponent(id)}` : '';
       try {
-        const items = await request<T[]>(`${base}${path}`, {
+        const items = await request<T[]>(`${base}/${path.replace(/^\//, '')}`, {
           signal: AbortSignal.timeout(15_000),
           cache: 'no-store',
         });
@@ -164,12 +164,12 @@ export function useWorkbenchSplitCatalog(
   );
   const loadWorkspaces = useCallback(
     (id: string | null, retry = false) =>
-      load(current.workspaces, id, '/api/workspaces', retry),
+      load(current.workspaces, id, 'api/workspaces', retry),
     [current, load],
   );
   const loadThreads = useCallback(
     (id: string | null, retry = false) =>
-      load(current.threads, id, '/api/threads?includeAgentThreads=true', retry),
+      load(current.threads, id, 'api/threads?includeAgentThreads=true', retry),
     [current, load],
   );
   const loadDevices = useCallback(
@@ -184,7 +184,7 @@ export function useWorkbenchSplitCatalog(
       current.devices = { ...current.devices, loading: true, error: null };
       publish();
       try {
-        const portal = await request<RelayPortalSummaryDto>('/relay/portal', {
+        const portal = await request<RelayPortalSummaryDto>('relay/portal', {
           signal: AbortSignal.timeout(15_000),
           cache: 'no-store',
         });

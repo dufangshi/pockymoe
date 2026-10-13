@@ -48,7 +48,7 @@ export function useDevicePresence(raw: RelayPortalSummaryDto | null) {
         entry.nextProbe = now + PROBE_INTERVAL_MS;
         const timeout = window.setTimeout(() => controller.abort(), LIVE_FOR_MS);
         void request<{ connected: boolean }>(
-          `/relay/devices/${encodeURIComponent(entry.id)}/presence?${entry.query}`,
+          `relay/devices/${encodeURIComponent(entry.id)}/presence?${entry.query}`,
           { signal: controller.signal, cache: 'no-store' },
         ).then(result => {
           // A delayed response cannot extend reachability past the lifetime of

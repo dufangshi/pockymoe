@@ -1,3 +1,4 @@
+import { supervisorPath } from './webBase';
 import { boundDevices } from './accountVault';
 import { accountRevocations } from './accountVaultState';
 import { verifySharedDeviceRole } from './accountTransport';
@@ -32,9 +33,9 @@ export function probeDeviceEncryption(deviceId: string): Promise<void> {
     try {
       const scope = scopeFromPage(window.location.href, deviceId);
       const recipient = await verifySharedDeviceRole(deviceId, scope);
-      const path = recipient ? scope ? `/api/threads/${encodeURIComponent(scope)}` : '/api/workspaces' : '/api/version';
+      const path = recipient ? scope ? supervisorPath(`api/threads/${encodeURIComponent(scope)}`) : supervisorPath('api/workspaces') : supervisorPath('api/version');
       const { response } = await exchange(new Request(
-        new URL(relayUrl(`/relay/devices/${encodeURIComponent(deviceId)}${path}`), window.location.href),
+        new URL(relayUrl(`relay/devices/${encodeURIComponent(deviceId)}${path}`), window.location.href),
         { credentials: 'include', signal: controller.signal },
       ), scope);
       if (!response.ok) throw new Error(translate("workbench.deviceEncryptionCheckFailed"));
@@ -155,7 +156,7 @@ class EncryptedRelaySocket extends EventTarget {
         deviceId = url.pathname.match(/\/devices\/([^/]+)\/ws$/)?.[1];
       if (!deviceId) throw new Error(translate("workbench.selectADeviceBeforeConnecting"));
       const threadId = url.searchParams.get('threadId');
-      const prefix = `/relay/devices/${deviceId}/api${threadId ? `/threads/${encodeURIComponent(threadId)}` : ''}`;
+      const prefix = `relay/devices/${deviceId}/api${threadId ? `/threads/${encodeURIComponent(threadId)}` : ''}`;
       const request = new Request(
         new URL(relayUrl(`${prefix}/transport/session`), window.location.href),
         {
@@ -292,7 +293,7 @@ const revocationsChanged = () => {
       if (owned.includes(id) && revocations.some(r => r.kind === 'device' && r.subjectId === id)) continue;
       const list = owned.includes(id) ? revocations : revocations.filter(r => r.kind === 'browser');
       // Best effort now; exchange also synchronizes before the next request.
-      void encryptedBrowserFetch(`/relay/devices/${encodeURIComponent(id)}/api/transport/revocations`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ revocations: list }) }).catch(() => {});
+      void encryptedBrowserFetch(`relay/devices/${encodeURIComponent(id)}/api/transport/revocations`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ revocations: list }) }).catch(() => {});
     }
   }).catch(() => {});
 };

@@ -154,7 +154,7 @@ export function RuntimeManagement({
       view={view}
       key={deviceId ?? 'local'}
       apiRoot={
-        deviceId ? `/relay/devices/${encodeURIComponent(deviceId)}/api` : '/api'
+        deviceId ? `relay/devices/${encodeURIComponent(deviceId)}/api` : 'api'
       }
     />
   );

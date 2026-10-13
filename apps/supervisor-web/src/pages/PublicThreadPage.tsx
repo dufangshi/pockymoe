@@ -33,7 +33,7 @@ export function PublicThreadPage() {
     setError('');
     async function refresh() {
       try {
-        const response = await fetch(relayUrl(`/relay/public-links/${encodeURIComponent(id ?? '')}`), {
+        const response = await fetch(relayUrl(`relay/public-links/${encodeURIComponent(id ?? '')}`), {
           signal: controller.signal,
           // Public links never identify the visitor, on either origin layout.
           credentials: 'omit',

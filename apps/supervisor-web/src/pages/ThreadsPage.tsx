@@ -11,6 +11,8 @@ import { RecentThreadMenu } from '../components/RecentThreadMenu';
 import { TourLauncherButton } from '../components/onboarding/TourProvider';
 import { useWorkbenchNavigation } from './useWorkbenchNavigation';
 import { useThreadListPolling } from './useThreadListPolling';
+import { appUrl } from '../lib/webBase';
+import { workbenchUrls } from '../lib/workbenchUrls';
 
 // Legacy workspace-list URLs now resolve directly into the conversation shell.
 export function ThreadsPage() {
@@ -49,9 +51,9 @@ export function ThreadsPage() {
   const createHref = currentNewThreadHref(workspaceId);
   return <div className="thread-ui-shell thread-ui-viewport-constrained h-full" data-theme-effective={shell?.effectiveTheme ?? 'light'} data-theme-mode={shell?.themeMode ?? 'system'}>
     <MatterWorkbench
-      title={workspace?.label ?? translate("workbench.workspace")} homeHref={currentWorkspacesHref()}
-      options={{ ...navigation, emptyWorkspace: true, workspacePath: workspace?.absPath ?? '', activeView: 'chat', terminalEnabled: false, onViewChange: () => {}, onSearch: () => {}, onNavigate: navigate,
-        renderThreadMenu: thread => <RecentThreadMenu thread={thread} currentKey={navigation.currentKey} onFavorite={navigation.onToggleThreadFavorite} onRenamed={navigation.onThreadRenamed} onRemoved={navigation.onThreadRemoved} onNavigate={navigate} /> }}
+      title={workspace?.label ?? translate("workbench.workspace")} homeHref={appUrl(currentWorkspacesHref())}
+      options={workbenchUrls({ ...navigation, emptyWorkspace: true, workspacePath: workspace?.absPath ?? '', activeView: 'chat', terminalEnabled: false, onViewChange: () => {}, onSearch: () => {}, onNavigate: navigate,
+        renderThreadMenu: thread => <RecentThreadMenu thread={thread} currentKey={navigation.currentKey} onFavorite={navigation.onToggleThreadFavorite} onRenamed={navigation.onThreadRenamed} onRemoved={navigation.onThreadRemoved} onNavigate={navigate} /> })}
       deviceMonitor={<TourLauncherButton />}
       settings={<button aria-label={translate("workbench.openSettings")} onClick={shell?.openSettings}><Settings /></button>}
       newThread={!loading && !error && <Link to={createHref} aria-label={translate("workbench.newThread_02057e")}><Plus /></Link>}

@@ -1,3 +1,4 @@
+import { appUrl } from './webBase';
 import { translate } from '@pockymoe/thread-ui/i18n';
 import { pinInviteOwner } from './sharedDeviceTrust';
 export interface SharedInvite {
@@ -30,7 +31,7 @@ export function sharedInviteUrl(origin: string, invite: SharedInvite) {
     owner: invite.ownerAccountKeyId,
   });
   if (invite.threadId) params.set('thread', invite.threadId);
-  return `${origin}/shared#${params}`;
+  return `${origin}${appUrl('shared')}#${params}`;
 }
 export async function acceptSharedInvite(invite: SharedInvite) {
   await pinInviteOwner(invite.deviceId, invite.ownerAccountKeyId);

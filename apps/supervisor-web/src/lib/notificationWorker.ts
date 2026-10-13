@@ -1,4 +1,5 @@
 /// <reference lib="webworker" />
+import { appPathname, appUrl } from './webBase';
 import { translate } from '@pockymoe/thread-ui/i18n';
 const threadPath = /^\/devices\/[0-9a-f-]{36}\/threads\/[0-9a-f-]{36}\/?$/i;
 export function notificationThreadUrl(
@@ -7,8 +8,8 @@ export function notificationThreadUrl(
 ): URL | null {
   if (typeof raw !== 'string') return null;
   try {
-    const url = new URL(raw, origin);
-    return url.origin === origin && threadPath.test(url.pathname) ? url : null;
+    const url = new URL(raw.startsWith('/') ? appUrl(appPathname(raw)) : raw, origin);
+    return url.origin === origin && threadPath.test(appPathname(url.pathname)) ? url : null;
   } catch {
     return null;
   }
@@ -82,8 +83,8 @@ export function installPushHandlers(worker: ServiceWorkerGlobalScope) {
               ? payload.body
               : translate('workbench.threadUpdateFallback'),
           tag: typeof payload.tag === 'string' ? payload.tag : '',
-          icon: '/icon-192.png',
-          badge: '/favicon-48x48.png?v=pockymoe',
+          icon: appUrl('icon-192.png'),
+          badge: appUrl('favicon-48x48.png?v=pockymoe'),
           data: { url: payload.url, userId: payload.userId },
         });
       })(),

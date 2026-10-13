@@ -37,7 +37,7 @@ export function PortMappingsControl({ deviceId, open: controlledOpen, onOpenChan
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
   const lifetime = useRef<AbortController | null>(null);
-  const api = `/relay/devices/${encodeURIComponent(deviceId)}/api/port-mappings`;
+  const api = `relay/devices/${encodeURIComponent(deviceId)}/api/port-mappings`;
   useEffect(() => {
     const controller = new AbortController();
     lifetime.current = controller;
@@ -66,7 +66,7 @@ export function PortMappingsControl({ deviceId, open: controlledOpen, onOpenChan
     setError(null);
     void Promise.all([
       request<{ mappings: Mapping[] }>(api, { signal: controller.signal }),
-      request<{ available: boolean }>('/relay/port-mappings/config', { signal: controller.signal }),
+      request<{ available: boolean }>('relay/port-mappings/config', { signal: controller.signal }),
     ]).then(([list, config]) => {
       if (!controller.signal.aborted) { setMappings(list.mappings); setAvailable(config.available); }
     }).catch(cause => {

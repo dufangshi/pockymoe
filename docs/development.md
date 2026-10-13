@@ -41,6 +41,38 @@ POCKYMOE_MODE=relay POCKYMOE_RELAY_SERVER_URL=ws://127.0.0.1:8788 \
 
 Running a public relay is described in [Self-hosting a relay](self-host-relay.md).
 
+## Web UI under a proxy path
+
+The installed Web bundle supports any mount ending in `/`, for example
+`https://proxy.example/api/workspaces/W/agents/A/interface/ui/`. Forward everything
+under that mount, including WebSocket upgrades, to the Supervisor with the mount
+stripped. Redirect the mount without its trailing slash to the slash form.
+
+The SPA fallback inserts a relative `<base href>` that ascends the stripped
+route's directories. On a direct `/threads/<id>` load, `../` resolves to the
+external mount; the server does not need to know the proxy prefix or trust a
+forwarded header. The build emits relative assets, and the browser resolves one
+runtime base from `document.baseURI` before initializing transport and the router.
+A proxy serving its own index may instead inject a same-origin `<base href>`
+ending in `/` before the asset tags. Keep the base fixed for the document lifetime.
+
+Use `appUrl` for browser links/assets and logical relative paths such as
+`api/threads/...` for request helpers. Router links stay logical; `BrowserRouter`
+adds the basename. Supervisor protocol paths remain rooted via `supervisorPath`.
+Same-origin relay device paths compose with the mount. A configured separate
+`VITE_POCKYMOE_RELAY_ORIGIN` retains its own root paths. Root deployment keeps the
+same request and navigation URLs. GitHub Pages' static build retains its root
+base, CSP, SPA fallback and separate relay origin; deployment workflows do not
+need changes.
+
+The unit suite's `webUrlGuard.test.ts` rejects root-absolute `/api`, `/ws` and
+`/relay` URL literals, including indirect constructions, outside tests. Its one
+legacy DeviceMonitor call still passes through the base-aware request helper.
+To verify the installed bundle behind a stripping proxy, build the Web app and
+run `e2e/web-base.spec.ts` with `playwright.web-base.config.ts` and the
+`desktop-chromium` project, using isolated `E2E_API_PORT`, `E2E_DATABASE_URL` and
+`E2E_WORKSPACE_ROOT` values.
+
 ## Installation and releases
 
 The native Supervisor serves the Web UI itself. Copy a setup command from the

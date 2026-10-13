@@ -169,7 +169,7 @@ function AutomationCard({
   const [runs, setRuns] = useState<AutomationRunDto[]>([]);
   const [output, setOutput] = useState('');
   const [error, setError] = useState('');
-  const base = `/api/threads/${encodeURIComponent(threadId)}/automations/${encodeURIComponent(a.id)}`;
+  const base = `api/threads/${encodeURIComponent(threadId)}/automations/${encodeURIComponent(a.id)}`;
   const date = (v: string | null) =>
     v ? new Date(v).toLocaleString(locale) : t('automation.none');
   const state = (v: string) =>
@@ -375,7 +375,7 @@ function AutomationCard({
                   className={button}
                   onClick={() => {
                     void request<Record<string, unknown>>(
-                      `/api/threads/${encodeURIComponent(threadId)}/commands/${encodeURIComponent(r.commandId!)}`,
+                      `api/threads/${encodeURIComponent(threadId)}/commands/${encodeURIComponent(r.commandId!)}`,
                     )
                       .then((v) =>
                         setOutput(
@@ -438,13 +438,13 @@ export function ThreadAutomationsControl({ thread }: { thread: ThreadDto }) {
       setRefreshing(true);
       const results = await Promise.allSettled([
         request<{ automations: AutomationDto[] }>(
-          `/api/threads/${encodeURIComponent(thread.id)}/automations`,
+          `api/threads/${encodeURIComponent(thread.id)}/automations`,
           { signal: controller.signal, cache: 'no-store' },
         ),
         ...(isClaude
           ? [
               request<{ watches: NativeWatch[]; timezone?: string }>(
-                `/api/threads/${encodeURIComponent(thread.id)}/watches`,
+                `api/threads/${encodeURIComponent(thread.id)}/watches`,
                 { signal: controller.signal, cache: 'no-store' },
               ),
             ]

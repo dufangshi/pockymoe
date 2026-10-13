@@ -340,7 +340,7 @@ async function complete(
   if (!(await pendingIsCurrent(pending))) return false;
   const response = await fetch(
     relayUrl(
-      `/relay/devices/${encodeURIComponent(pending.deviceId)}/certificate`,
+      `relay/devices/${encodeURIComponent(pending.deviceId)}/certificate`,
     ),
     {
       method: 'PUT',
@@ -417,7 +417,7 @@ export async function revokeDevice(deviceId: string) {
     ...fields,
     signature: await account.sign(signingInput.revocation(fields)),
   };
-  const response = await fetch(relayUrl('/relay/account/revocations'), {
+  const response = await fetch(relayUrl('relay/account/revocations'), {
     method: 'POST',
     credentials: 'include',
     headers: { 'content-type': 'application/json' },

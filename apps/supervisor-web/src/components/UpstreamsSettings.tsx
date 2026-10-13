@@ -24,8 +24,8 @@ export function UpstreamsSettings() {
     );
   }
   const apiRoot = deviceId
-    ? `/relay/devices/${encodeURIComponent(deviceId)}/api`
-    : '/api';
+    ? `relay/devices/${encodeURIComponent(deviceId)}/api`
+    : 'api';
   return <DeviceUpstreams key={apiRoot} apiRoot={apiRoot} />;
 }
 
