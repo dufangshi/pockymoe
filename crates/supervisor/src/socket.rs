@@ -161,7 +161,9 @@ async fn run_socket_session(
     }
 }
 
-/// The threads a `thread.view` message lists that this connection may read.
+/// The threads a `thread.view` message lists that this connection controls,
+/// judged like the interrupt endpoint: a read-only viewer must not keep the
+/// owner's harness loaded.
 fn viewed_threads(
     state: &Supervisor,
     principal: Option<&crate::owner_trust::BrowserPrincipal>,
@@ -173,13 +175,17 @@ fn viewed_threads(
         .into_iter()
         .flatten()
         .filter_map(Value::as_str)
+        .filter(|id| !id.contains(['/', '?', '#']))
         .filter(|id| match principal {
             Some(p) if !p.is_owner() => {
                 configured_thread.is_none_or(|configured| configured == *id)
-                    && crate::grants::effective_access(state, p, Some(id), None)
-                        .ok()
-                        .flatten()
-                        .is_some()
+                    && crate::grants::authorize_path(
+                        state,
+                        p,
+                        "POST",
+                        &format!("/api/threads/{id}/interrupt"),
+                    )
+                    .is_ok()
             }
             _ => true,
         })

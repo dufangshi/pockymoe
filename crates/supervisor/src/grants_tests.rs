@@ -661,7 +661,28 @@ async fn harness_processes_settings_and_thread_view_follow_grant_scope() {
             "{method} {path}"
         );
     }
-    // Its relay connection displays only the shared thread.
+    // A read-only viewer never keeps the owner's harness loaded.
+    let (output, mut outgoing) = crate::bounded_channel::channel();
+    let socket = crate::socket::SocketSession::spawn_authorized(
+        state.clone(),
+        output,
+        Some(p.clone()),
+        Some("root".into()),
+    );
+    assert!(socket.send(json!({"type":"thread.view","threadIds":["root","other"]})));
+    // The connection handles messages in order: the pong follows the view.
+    assert!(socket.send(json!({"type":"supervisor.ping"})));
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while outgoing.recv().await.unwrap()["type"] != "supervisor.pong" {}
+    })
+    .await
+    .unwrap();
+    assert!(!state.thread_displayed("root"));
+    assert!(!state.thread_displayed("other"));
+    drop(socket);
+    // With control, its relay connection displays only the shared thread.
+    g.thread_access = "control".into();
+    put(&state.db, &g.grant_id, &g, &owner, owner_trust::now()).unwrap();
     let (output, _outgoing) = crate::bounded_channel::channel();
     let socket = crate::socket::SocketSession::spawn_authorized(
         state.clone(),
@@ -686,6 +707,7 @@ async fn harness_processes_settings_and_thread_view_follow_grant_scope() {
     })
     .await
     .unwrap();
+    g.thread_access = "read".into();
 
     g.relay_ref.kind = "grant".into();
     g.scope = "device".into();

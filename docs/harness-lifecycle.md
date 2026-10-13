@@ -133,8 +133,9 @@ WebSocket (`/ws`, and relay clients through the same session code):
   set of threads the page displays whenever it changes, after reconnecting, and
   an empty list once the tab has been hidden for 60 seconds. Read-only reference
   panels are not listed. The Supervisor keeps the set per connection and clears
-  it when the connection, relay client or tunnel ends. Shared connections count
-  only threads their grant can read. At most 64 IDs are kept.
+  it when the connection, relay client or tunnel ends. A shared connection counts
+  only threads it controls, judged like `/interrupt`: a read-only viewer never
+  keeps the owner's harness loaded. At most 64 IDs are kept.
 - The Supervisor emits `thread.runtime.loaded` with `{loadReason}` and
   `thread.runtime.released` with `{reason}` (`view`, `idle`, `limit`,
   `explicit`, `deleted`, `closed`).
