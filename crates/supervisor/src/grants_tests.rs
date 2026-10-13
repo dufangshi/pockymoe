@@ -597,6 +597,113 @@ async fn thread_lineage_and_route_access_are_local_read_and_control() {
 }
 
 #[tokio::test]
+async fn harness_processes_settings_and_thread_view_follow_grant_scope() {
+    let (_dir, state, owner, mut g, _r, key, p) = fixture().await;
+    let owner_key = crate::owner_trust::tests::session_key();
+    let settings = "/api/harness-resources/settings";
+    let (status, body) = request(
+        &state,
+        Some(&owner),
+        &owner_key,
+        "GET",
+        "/api/device/processes",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["supervisorPid"], std::process::id());
+    assert!(body["threads"].is_array() && body["metric"].is_string());
+    let (status, body) = request(
+        &state,
+        Some(&owner),
+        &owner_key,
+        "GET",
+        settings,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(
+        (status, body),
+        (
+            200,
+            json!({"idleReleaseMinutes":10,"maxLoadedThreads":null,"maxHarnessMemoryBytes":null})
+        )
+    );
+    let invalid =
+        json!({"idleReleaseMinutes":0,"maxLoadedThreads":null,"maxHarnessMemoryBytes":null});
+    let (status, body) = request(&state, Some(&owner), &owner_key, "PUT", settings, invalid).await;
+    assert_eq!(
+        (status, body["code"].as_str()),
+        (400, Some("invalid_settings"))
+    );
+    let valid = json!({"idleReleaseMinutes":30,"maxLoadedThreads":5,"maxHarnessMemoryBytes":null});
+    let (status, body) = request(
+        &state,
+        Some(&owner),
+        &owner_key,
+        "PUT",
+        settings,
+        valid.clone(),
+    )
+    .await;
+    assert_eq!((status, body), (200, valid));
+
+    // A thread share must not see other threads' titles or change the policy.
+    for (method, path) in [
+        ("GET", "/api/device/processes"),
+        ("GET", settings),
+        ("PUT", settings),
+    ] {
+        let (status, body) = request(&state, Some(&p), &key, method, path, json!({})).await;
+        assert_eq!(
+            (status, body["code"].as_str()),
+            (403, Some("grant_denied")),
+            "{method} {path}"
+        );
+    }
+    // Its relay connection displays only the shared thread.
+    let (output, _outgoing) = crate::bounded_channel::channel();
+    let socket = crate::socket::SocketSession::spawn_authorized(
+        state.clone(),
+        output,
+        Some(p.clone()),
+        Some("root".into()),
+    );
+    assert!(socket.send(json!({"type":"thread.view","threadIds":["root","other"]})));
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while !state.thread_displayed("root") {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(!state.thread_displayed("other"));
+    drop(socket);
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while state.thread_displayed("root") {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+
+    g.relay_ref.kind = "grant".into();
+    g.scope = "device".into();
+    g.workspace_scope = "all".into();
+    g.thread_id = None;
+    put(&state.db, &g.grant_id, &g, &owner, owner_trust::now()).unwrap();
+    assert!(authorize_path(&state, &p, "GET", "/api/device/processes").is_ok());
+    assert!(authorize_path(&state, &p, "GET", settings).is_ok());
+    assert!(
+        authorize_path(&state, &p, "PUT", settings).is_err(),
+        "read-only device access cannot change the policy"
+    );
+    g.thread_access = "control".into();
+    put(&state.db, &g.grant_id, &g, &owner, owner_trust::now()).unwrap();
+    assert!(authorize_path(&state, &p, "PUT", settings).is_ok());
+}
+
+#[tokio::test]
 async fn websocket_filters_threads_unknown_messages_and_live_changes() {
     let (_dir, state, owner, mut g, _r, _key, p) = fixture().await;
     assert!(websocket_message_allowed(

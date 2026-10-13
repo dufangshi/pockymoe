@@ -133,12 +133,25 @@ pub fn access_allows(access: &EffectiveAccess, method: &str, path: &str) -> bool
             access.workspace_access == "write",
         );
     }
+    // Harness processes and their release policy list every thread's title.
+    if access.scope == "device" && method == "PUT" && pathname == "/api/harness-resources/settings"
+    {
+        return access.thread_access == "control";
+    }
     access.scope == "device"
         && method == "GET"
         // Collection pages cannot use a thread/workspace-scoped handshake before
         // they have loaded the collection. This publishes only the device's signed
         // recipient key; each subsequent request still goes through this ACL.
-        && matches!(pathname, "/api/threads" | "/api/workspaces" | "/api/transport/key" | "/api/device/metrics")
+        && matches!(
+            pathname,
+            "/api/threads"
+                | "/api/workspaces"
+                | "/api/transport/key"
+                | "/api/device/metrics"
+                | "/api/device/processes"
+                | "/api/harness-resources/settings"
+        )
 }
 
 pub fn shared_runtime_metadata_allowed(method: &str, pathname: &str) -> bool {
@@ -238,6 +251,7 @@ pub fn shared_thread_path_allowed(
                     | "/resume"
                     | "/prompt"
                     | "/interrupt"
+                    | "/release"
                     | "/compact"
                     | "/fork"
                     | "/hooks"
@@ -635,6 +649,40 @@ mod tests {
             &[]
         ));
     }
+    #[test]
+    fn harness_processes_and_settings_follow_device_metrics_access() {
+        let thread = shared("thread", "control", "write");
+        let workspace = shared("workspace", "control", "write");
+        let device_read = shared("device", "read", "none");
+        let device_control = shared("device", "control", "none");
+        for path in ["/api/device/processes", "/api/harness-resources/settings"] {
+            assert!(!access_allows(&thread, "GET", path), "{path}");
+            assert!(!access_allows(&workspace, "GET", path), "{path}");
+            assert!(access_allows(&device_read, "GET", path), "{path}");
+        }
+        let settings = "/api/harness-resources/settings";
+        assert!(!access_allows(&thread, "PUT", settings));
+        assert!(!access_allows(&device_read, "PUT", settings));
+        assert!(access_allows(&device_control, "PUT", settings));
+        assert!(!access_allows(
+            &device_control,
+            "POST",
+            "/api/device/processes"
+        ));
+        // Release is a control action on the thread, like interrupt.
+        assert!(access_allows(&thread, "POST", "/api/threads/root/release"));
+        assert!(!access_allows(
+            &shared("thread", "read", "read"),
+            "POST",
+            "/api/threads/root/release"
+        ));
+        assert!(!access_allows(
+            &thread,
+            "POST",
+            "/api/threads/other/release"
+        ));
+    }
+
     #[test]
     fn read_control_workspace_search_and_owner_routes_share_one_allowlist() {
         let read = shared("thread", "read", "read");

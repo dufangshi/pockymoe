@@ -40,6 +40,7 @@ pub async fn serve(state: Arc<Supervisor>) -> Result<()> {
     auth::validate_config(&state.config)?;
     state.spawn_live_item_persister();
     state.spawn_execution_observer();
+    state.spawn_harness_release();
     let addr: SocketAddr = format!("{}:{}", state.config.host, state.config.port).parse()?;
     let listener = TcpListener::bind(addr).await?;
     let cli = state.configure_cli(format!(

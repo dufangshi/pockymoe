@@ -326,6 +326,128 @@ async fn device_metrics_api_returns_warmed_cached_native_samples() {
 }
 
 #[tokio::test]
+async fn harness_processes_release_and_capabilities_without_loading_over_http() {
+    let (_dir, port, ws_root) = spawn_supervisor(vec![Provider::Codex]).await;
+    let base = format!("http://127.0.0.1:{port}");
+    let client = reqwest::Client::new();
+    let workspace = json(
+        &client,
+        client
+            .post(format!("{base}/api/workspaces"))
+            .json(&json!({"absPath": ws_root, "label": "Release"})),
+    )
+    .await;
+    let thread = json(
+        &client,
+        client
+            .post(format!("{base}/api/threads/start"))
+            .json(&json!({
+                "workspaceId": workspace["id"],
+                "provider": "codex",
+                "model": "ios-e2e-stream",
+                "approvalMode": "yolo"
+            })),
+    )
+    .await;
+    let id = thread["id"].as_str().unwrap();
+    let processes = || async {
+        let response = client
+            .get(format!("{base}/api/device/processes"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        assert_eq!(response.headers()["cache-control"], "no-store");
+        response
+            .json::<pockymoe_protocol::HarnessProcessesDto>()
+            .await
+            .unwrap()
+    };
+    let listed = processes().await;
+    assert_eq!(listed.threads.len(), 1);
+    assert_eq!(listed.threads[0].thread_id, id);
+    assert_eq!(
+        listed.threads[0].load_reason,
+        pockymoe_protocol::HarnessLoadReason::Create
+    );
+    let release = |body: Option<Value>| {
+        let request = client.post(format!("{base}/api/threads/{id}/release"));
+        match body {
+            Some(body) => request.json(&body),
+            None => request,
+        }
+        .send()
+    };
+    let released = release(None).await.unwrap();
+    assert_eq!(released.status(), 200);
+    assert_eq!(
+        released.json::<Value>().await.unwrap(),
+        json!({"threadId": id, "released": true, "alsoReleased": []})
+    );
+    assert_eq!(
+        release(Some(json!({})))
+            .await
+            .unwrap()
+            .json::<Value>()
+            .await
+            .unwrap()["released"],
+        false
+    );
+    let caps = client
+        .get(format!("{base}/api/threads/{id}/capabilities?load=false"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(caps.status(), 200);
+    assert!(
+        processes().await.threads.is_empty(),
+        "load=false starts nothing"
+    );
+    json(
+        &client,
+        client.get(format!("{base}/api/threads/{id}/capabilities")),
+    )
+    .await;
+    // Without the release worker nothing invalidates the 2 second sample.
+    tokio::time::sleep(Duration::from_millis(2100)).await;
+    assert_eq!(
+        processes().await.threads[0].load_reason,
+        pockymoe_protocol::HarnessLoadReason::View
+    );
+
+    json(
+        &client,
+        client.post(format!("{base}/api/threads/{id}/prompt")).json(
+            &json!({"prompt": "Inspect this repository in depth and keep the turn running."}),
+        ),
+    )
+    .await;
+    for _ in 0..100 {
+        let detail = json(&client, client.get(format!("{base}/api/threads/{id}"))).await;
+        if detail["thread"]["status"] == "running" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let refused = release(None).await.unwrap();
+    assert_eq!(refused.status(), 409);
+    assert_eq!(
+        refused.json::<Value>().await.unwrap()["code"],
+        "turn_running"
+    );
+    let interrupted = release(Some(json!({"interrupt": true}))).await.unwrap();
+    assert_eq!(interrupted.status(), 200);
+    assert_eq!(interrupted.json::<Value>().await.unwrap()["released"], true);
+    let invalid = client
+        .put(format!("{base}/api/harness-resources/settings"))
+        .json(&json!({"idleReleaseMinutes": 10, "maxLoadedThreads": null, "maxHarnessMemoryBytes": 1}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(invalid.status(), 400);
+}
+
+#[tokio::test]
 async fn cli_delete_authenticates_the_parent_and_refuses_arbitrary_targets_and_spoofing() {
     let (dir, port, root, state) = spawn_supervisor_state(vec![Provider::Codex], |_| {}).await;
     let ws = state

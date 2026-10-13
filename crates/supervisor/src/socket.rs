@@ -82,6 +82,8 @@ async fn run_socket_session(
     thread: Option<String>,
 ) {
     let mut client_state = SocketClientState::default();
+    // Dropped with this task, also when a relay client or the tunnel goes away.
+    let viewer = state.harness_viewer();
     let mut events = state.bus.subscribe();
     let mut shells = crate::shells::hub().subscribe_all();
     if output
@@ -108,6 +110,11 @@ async fn run_socket_session(
                 let Some(message) = message else {
                     break;
                 };
+                if message["type"] == "thread.view" {
+                    if principal.as_ref().is_some_and(|p| !p.valid(&state)) { break; }
+                    viewer.set(viewed_threads(&state, principal.as_ref(), thread.as_deref(), &message));
+                    continue;
+                }
                 if principal.as_ref().is_some_and(|p| !p.valid(&state) || !crate::grants::websocket_message_allowed(&state,p,thread.as_deref(),&message)) { break; }
                 for response in handle_client_message(&message, &mut client_state) {
                     if principal.as_ref().is_some_and(|p| !crate::grants::websocket_event_allowed(&state,p,thread.as_deref(),&response)) { continue; }
@@ -152,6 +159,32 @@ async fn run_socket_session(
             }
         }
     }
+}
+
+/// The threads a `thread.view` message lists that this connection may read.
+fn viewed_threads(
+    state: &Supervisor,
+    principal: Option<&crate::owner_trust::BrowserPrincipal>,
+    configured_thread: Option<&str>,
+    message: &Value,
+) -> Vec<String> {
+    message["threadIds"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter(|id| match principal {
+            Some(p) if !p.is_owner() => {
+                configured_thread.is_none_or(|configured| configured == *id)
+                    && crate::grants::effective_access(state, p, Some(id), None)
+                        .ok()
+                        .flatten()
+                        .is_some()
+            }
+            _ => true,
+        })
+        .map(str::to_owned)
+        .collect()
 }
 
 #[derive(Default)]
@@ -388,6 +421,31 @@ mod tests {
             }
         }
         panic!("expected shell message never arrived; saw {seen:?}");
+    }
+
+    async fn eventually(check: impl Fn() -> bool) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !check() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("condition never held");
+    }
+
+    #[tokio::test]
+    async fn thread_view_replaces_the_set_and_clears_when_the_connection_ends() {
+        let (_dir, state) = crate::tunnel::tests::state_with_relay_url("http://127.0.0.1:1");
+        let (output, _outgoing) = mpsc::channel();
+        let session = SocketSession::spawn(state.clone(), output);
+        assert!(session.send(json!({"type":"thread.view","threadIds":["a","b"]})));
+        eventually(|| state.thread_displayed("a") && state.thread_displayed("b")).await;
+        assert!(session.send(json!({"type":"thread.view","threadIds":["b"]})));
+        eventually(|| !state.thread_displayed("a")).await;
+        assert!(state.thread_displayed("b"));
+        // A closed browser tab or a relay client that went away.
+        drop(session);
+        eventually(|| !state.thread_displayed("b")).await;
     }
 
     #[test]

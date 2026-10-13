@@ -45,6 +45,14 @@ use super::terminal::AgentTerminals;
 #[path = "fork_tests.rs"]
 mod fork_tests;
 
+#[path = "release.rs"]
+mod release;
+use release::LoadRecord;
+
+#[cfg(all(test, unix))]
+#[path = "release_tests.rs"]
+mod release_tests;
+
 #[cfg(all(test, unix))]
 #[path = "completion_tests.rs"]
 mod completion_tests;
@@ -113,6 +121,7 @@ struct LiveSession {
     active_subagents: HashMap<String, ThreadSubagentDto>,
     claude_lifecycle: super::claude_lifecycle::ClaudeLifecycle,
     upstream_revision: Option<Vec<u8>>,
+    load: LoadRecord,
 }
 
 struct PendingPermission {
@@ -140,6 +149,7 @@ struct Inner {
     terminals: AgentTerminals,
     /// Latest DSH run modes and features, for thread creation forms.
     dsh_catalog: Mutex<Option<Value>>,
+    load_events: broadcast::Sender<crate::actor::SessionLifecycle>,
 }
 
 pub struct AcpRuntime {
@@ -210,6 +220,7 @@ impl AcpRuntime {
                 updates,
                 terminals: AgentTerminals::default(),
                 dsh_catalog: Mutex::new(None),
+                load_events: broadcast::channel(256).0,
             }),
         }
     }
@@ -503,6 +514,7 @@ impl AcpRuntime {
             current_mode_id,
             context_thread_id: None,
             active_subagents: HashMap::new(),
+            load: LoadRecord::from_intent(),
         };
         Self::apply_product_mode(&live.process.clone(), &mut live).await?;
         startup_process.0 = None;
@@ -1207,6 +1219,7 @@ impl AcpRuntime {
             return Err(error);
         }
         replacement.goal = live.goal.clone();
+        replacement.load = live.load.clone();
         live.process.shutdown().await?;
         *live = replacement;
         Ok(())
@@ -1436,6 +1449,7 @@ impl AgentRuntime for AcpRuntime {
         for key in &keys {
             if let Some(live) = sessions.remove(key) {
                 live.process.shutdown().await?;
+                self.announce_release(key, &live, crate::actor::ReleaseReason::Explicit);
             }
         }
         self.inner
@@ -1741,6 +1755,7 @@ impl AgentRuntime for AcpRuntime {
         }
         let model = live.model.clone().or(Some(input.model.clone()));
         let effort = live.reasoning_effort.clone();
+        self.announce_load(&scoped, &live);
         self.inner
             .sessions
             .lock()
@@ -1829,6 +1844,7 @@ impl AgentRuntime for AcpRuntime {
                 None,
             )
             .await?;
+        self.announce_load(&scoped, &live);
         self.inner
             .sessions
             .lock()
@@ -2014,6 +2030,11 @@ impl AgentRuntime for AcpRuntime {
                 pending_prompts: 0,
                 continuations: continuation_tx,
             });
+            if input.hidden {
+                live.load.touch();
+            } else {
+                live.load.prompt();
+            }
             live.active_subagents.clear();
             if let Some(meta) = live.dsh_session.as_object_mut() {
                 // DSH fixes the run mode at its first turn; the next read confirms.
@@ -2452,6 +2473,7 @@ impl AgentRuntime for AcpRuntime {
             {
                 live.active = None;
             }
+            live.load.touch();
             live.active_subagents.clear();
             if include_context && prompt_done {
                 live.context_thread_id = Some(input.thread_id.clone());
@@ -2627,6 +2649,7 @@ impl AgentRuntime for AcpRuntime {
         for list in self.inner.pending_dtos.lock().await.values_mut() {
             list.retain(|item| item.id != request_id);
         }
+        self.touch_active_sessions().await;
         Ok(())
     }
 
@@ -2871,8 +2894,18 @@ impl AgentRuntime for AcpRuntime {
                 context_thread_id: None,
                 active_subagents: HashMap::new(),
                 upstream_revision: None,
+                load: LoadRecord::fork(),
             },
         );
+        let _ = self
+            .inner
+            .load_events
+            .send(crate::actor::SessionLifecycle::Loaded {
+                session_id: scoped.clone(),
+                thread_id: None,
+                reason: pockymoe_protocol::HarnessLoadReason::Fork,
+                requested_at: chrono::Utc::now(),
+            });
         Ok(StartSessionResult {
             provider_session_id: scoped,
             model,
@@ -2904,6 +2937,7 @@ impl AgentRuntime for AcpRuntime {
             if live.adapter_id == "claude" && !live.claude_lifecycle.steering_started() {
                 bail!("conflict: The active turn is finishing; send this prompt as a new turn.");
             }
+            live.load.prompt();
             (
                 live.process.clone(),
                 live.session_id.clone(),
@@ -3098,6 +3132,7 @@ impl AgentRuntime for AcpRuntime {
             .get_mut(session_id)
             .filter(|live| Arc::ptr_eq(&live.process, &process))
             .ok_or_else(|| anyhow!("ACP session changed during goal control"))?;
+        live.load.touch();
         if action == "set" {
             live.goal = Some(GoalState {
                 objective: objective.unwrap_or_default(),
@@ -3281,6 +3316,7 @@ impl AgentRuntime for AcpRuntime {
                 // The next request resumes the session with the saved profile.
                 if let Some(live) = removed {
                     live.process.shutdown().await?;
+                    self.announce_release(session_id, &live, crate::actor::ReleaseReason::Explicit);
                 }
                 return Ok(json!({"result": {"restarted": true}}));
             }
@@ -3295,6 +3331,7 @@ impl AgentRuntime for AcpRuntime {
             .get_mut(session_id)
             .filter(|live| Arc::ptr_eq(&live.process, &process))
             .ok_or_else(|| anyhow!("ACP session changed during the harness action"))?;
+        live.load.touch();
         Self::store_dsh_session(live, &state);
         if let Some(info) = live.harness_info.as_mut() {
             // Launch facts the bridge snapshot does not carry.
@@ -3407,6 +3444,22 @@ impl AgentRuntime for AcpRuntime {
         live.process.shutdown().await?;
         sessions.remove(&key);
         Ok(())
+    }
+
+    async fn loaded_sessions(&self) -> Vec<crate::actor::LoadedSession> {
+        self.loaded().await
+    }
+
+    async fn release_loaded(
+        &self,
+        session_id: &str,
+        scope: crate::actor::ReleaseScope,
+    ) -> Result<Vec<crate::actor::LoadedSession>> {
+        self.release(session_id, scope).await
+    }
+
+    fn lifecycle(&self) -> Option<broadcast::Receiver<crate::actor::SessionLifecycle>> {
+        Some(self.inner.load_events.subscribe())
     }
 
     async fn session_instance_id(&self, session_id: &str) -> Option<String> {
@@ -3945,7 +3998,14 @@ async fn handle_agent_request(
                 .unwrap_or(cwd);
             let id = inner
                 .terminals
-                .create(command, &args, term_cwd, &env, output_byte_limit)
+                .create(
+                    &process.id,
+                    command,
+                    &args,
+                    term_cwd,
+                    &env,
+                    output_byte_limit,
+                )
                 .await?;
             process.respond(req_id, json!({ "terminalId": id })).await?;
         }

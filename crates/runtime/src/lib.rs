@@ -39,6 +39,7 @@ pub async fn boot() -> Result<Arc<Supervisor>> {
 
 mod usage;
 
+mod harness_processes;
 mod native_subagents;
 mod usage_history;
 

@@ -31,6 +31,12 @@ impl ClaudeLifecycle {
         self.background_seen && (!self.tasks_known || !self.tasks.is_empty() || !self.idle)
     }
 
+    /// SDK tasks (background Bash, Monitor, async Agent) still running in this
+    /// process, including after an interrupted turn. Unknown task state counts.
+    pub fn holds_background_work(&self) -> bool {
+        !self.tasks.is_empty() || (self.background_seen && !self.tasks_known)
+    }
+
     pub fn waiting_count(&self) -> usize {
         if self.idle {
             self.tasks.len()
@@ -204,6 +210,24 @@ mod tests {
             !state.background_pending(),
             "ordinary turns do not inherit a stale hold"
         );
+    }
+
+    #[test]
+    fn release_waits_for_tasks_left_running_after_the_turn() {
+        let mut state = ClaudeLifecycle::default();
+        state.begin_turn();
+        state.record(&json!({"type":"system","subtype":"init"}));
+        assert!(!state.holds_background_work());
+        state.record(&json!({"type":"system","subtype":"task_started","task_id":"dev-server"}));
+        // An interrupted turn ends while the background shell keeps running.
+        state.begin_turn();
+        assert!(state.holds_background_work());
+        state.record(&json!({"type":"system","subtype":"task_notification","task_id":"dev-server","status":"killed"}));
+        assert!(!state.holds_background_work());
+        state.record(&json!({"type":"system","subtype":"task_started","task_id":"build"}));
+        state.record(&json!({"type":"system","subtype":"worker_shutdown"}));
+        state.record(&json!({"type":"system","subtype":"background_tasks_changed","tasks":[]}));
+        assert!(!state.holds_background_work());
     }
 
     #[test]

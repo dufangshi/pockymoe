@@ -236,10 +236,14 @@ async fn parent_can_delete_finished_direct_children_only_and_preserve_the_result
         .unwrap()
         .to_string()
         .contains("CHILD_RESULT_RETAINED"));
+    let emitted: Vec<_> = std::iter::from_fn(|| events.try_recv().ok()).collect();
+    // The child's harness is released before its rows are deleted.
+    assert_eq!(emitted[0].event_type, "thread.runtime.released");
     assert_eq!(
-        events.try_recv().unwrap().payload["deletedThreadId"],
-        child.id
+        (emitted[0].thread_id.as_str(), &emitted[0].payload),
+        (child.id.as_str(), &json!({"reason":"deleted"}))
     );
+    assert_eq!(emitted[1].payload["deletedThreadId"], child.id);
     assert_eq!(
         s.list_threads(Some(&ws), false)
             .unwrap()
