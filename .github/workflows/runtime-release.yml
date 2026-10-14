@@ -155,6 +155,11 @@ jobs:
             cargo +"${RUST_VERSION}" build --locked --release --package pockymoe --target '${{ matrix.target }}'
           fi
 
+      - name: Verify Windows detached workers survive normal stderr and stop correctly
+        if: runner.os == 'Windows'
+        shell: bash
+        run: cargo +"${RUST_VERSION}" test --locked --release --package pockymoe-supervisor --target '${{ matrix.cargo_target }}' distribution::service::tests::windows_native_stderr_survives -- --exact
+
       - name: Smoke native executable
         if: matrix.runnable
         shell: bash
