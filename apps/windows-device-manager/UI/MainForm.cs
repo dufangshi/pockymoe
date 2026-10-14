@@ -52,7 +52,10 @@ internal sealed class MainForm : Form
         _statusTitle = Label("Checking device…", true); _statusDetail = Label("", muted: true);
         statusGrid.Controls.Add(_statusDot, 0, 0); statusGrid.SetRowSpan(_statusDot, 2);
         statusGrid.Controls.Add(_statusTitle, 1, 0); statusGrid.Controls.Add(_statusDetail, 1, 1); status.Controls.Add(statusGrid); root.Controls.Add(status, 0, 1);
-        var body = Grid(1, DockStyle.Fill); body.AutoScroll = true;
+        var body = Grid(1, DockStyle.Top); body.AutoSize = true; body.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+        var scroll = new Panel { Dock = DockStyle.Fill, AutoScroll = true, Margin = Padding.Empty };
+        scroll.Controls.Add(body);
+        scroll.Layout += (_, _) => { body.MaximumSize = new Size(Math.Max(1, scroll.ClientSize.Width - SystemInformation.VerticalScrollBarWidth), 0); };
         foreach (var height in new[] { 28, 76, 28, 40, 36, 30, 0, 92 }) body.RowStyles.Add(new RowStyle(height == 0 ? SizeType.AutoSize : SizeType.Absolute, height));
         body.Controls.Add(Label("Connect this computer", true), 0, 0);
         var pasteGrid = Grid(2, DockStyle.Fill); pasteGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); pasteGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 108));
@@ -88,7 +91,7 @@ internal sealed class MainForm : Form
         _checkUpdateButton = CreateNeutralButton("Check", 84); _checkUpdateButton.Dock = DockStyle.Fill; _checkUpdateButton.Click += CheckUpdateClicked;
         _updateButton = CreateNeutralButton("Update", 84); _updateButton.Dock = DockStyle.Fill; _updateButton.Click += UpdateRuntimeClicked;
         runtimeGrid.Controls.Add(_runtimeValue, 0, 0); runtimeGrid.Controls.Add(_checkUpdateButton, 1, 0); runtimeGrid.Controls.Add(_updateButton, 2, 0); runtimeGrid.Controls.Add(_runtimeUpdateLabel, 0, 1); runtimeGrid.SetColumnSpan(_runtimeUpdateLabel, 3);
-        runtime.Controls.Add(runtimeGrid); body.Controls.Add(runtime, 0, 7); root.Controls.Add(body, 0, 2);
+        runtime.Controls.Add(runtimeGrid); body.Controls.Add(runtime, 0, 7); root.Controls.Add(scroll, 0, 2);
         var progress = new Panel { Dock = DockStyle.Fill, Padding = new Padding(0, 10, 0, 0) };
         _stepLabel = Label("Ready", muted: true); _stepLabel.Dock = DockStyle.Top; _stepLabel.Height = 25;
         _progressBar = new ThemedProgress { Dock = DockStyle.Bottom, Height = 4 };

@@ -209,7 +209,7 @@ internal static class SelfTest
                     using var bitmap = new Bitmap(form.Width, form.Height); form.DrawToBitmap(bitmap, new Rectangle(Point.Empty, form.Size));
                     bitmap.Save(Path.Combine(directory, $"manager-{theme}-{scale * 100:0}.png"), System.Drawing.Imaging.ImageFormat.Png);
                     foreach (var child in Descendants(form).Where(c => c.Visible && c.Parent is TableLayoutPanel))
-                        Require(child.Left >= -1 && child.Right <= child.Parent!.ClientSize.Width + 1, $"Horizontal overflow: {child.GetType().Name} {child.Text}");
+                        Require(child.Left >= -1 && child.Right <= child.Parent!.ClientSize.Width + 1, $"Horizontal overflow ({theme}, {scale}): {child.GetType().Name} {child.Left}/{child.Right} parent {child.Parent!.ClientSize.Width}");
                     foreach (var button in Descendants(form).OfType<Button>().Where(b => b.Visible)) Require(button.Width >= 40 * scale && button.Height >= 20 * scale, "Action clipped");
                     Require(Descendants(form).OfType<TextBox>().Single(t => t.AccessibleName == "Device token").UseSystemPasswordChar, "Token masked");
                     form.Hide();
