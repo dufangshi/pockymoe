@@ -380,7 +380,7 @@ async fn browser_security_response(
         .trim_end_matches("</script>");
     let bootstrap_hash =
         base64::engine::general_purpose::STANDARD.encode(Sha256::digest(bootstrap.as_bytes()));
-    h.entry(header::CONTENT_SECURITY_POLICY).or_insert(format!("default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'sha256-{bootstrap_hash}'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; worker-src 'self'; frame-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'").parse().unwrap());
+    h.entry(header::CONTENT_SECURITY_POLICY).or_insert(format!("default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'sha256-{bootstrap_hash}'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; worker-src 'self'; frame-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'").parse().unwrap());
     if h.contains_key(header::SET_COOKIE) {
         h.insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
     }

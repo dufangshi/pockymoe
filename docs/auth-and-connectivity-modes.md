@@ -31,6 +31,11 @@ use the host capabilities; disabled HTTP routes and CLI operations return
 still enabled. The local CLI discovery file also records the capabilities so
 `bind` cannot change the account trust of a hosted installation.
 
+The Web reads the capabilities before mounting a local Supervisor's routes and
+shows a retry message if it cannot. Through a relay it reads them from the device
+in the page address; relay pages that belong to no device (devices, account,
+settings) use the full set, and a device that cannot answer keeps the full set.
+
 A `device-run` private JSON config can save `POCKYMOE_HOST_MODE`; an explicit
 `--host-mode` overrides it. Other saved device settings keep their existing
 precedence. Hosted device configs do not require a relay agent token, while

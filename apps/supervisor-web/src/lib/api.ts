@@ -568,8 +568,8 @@ function normalizedUploadFileName(
     : `file-${index + 1}`;
 }
 
-export function fetchRuntimeConfig() {
-  return request<RuntimeConfigDto>('api/config/runtime');
+export function fetchRuntimeConfig(deviceId?: string) {
+  return request<RuntimeConfigDto>('api/config/runtime', undefined, { deviceId });
 }
 
 let workspaceActorScope = "local:owner";

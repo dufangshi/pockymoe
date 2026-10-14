@@ -213,8 +213,19 @@ pub(crate) fn session_json(
         // Whether vault creation and OAuth slot changes are allowed without
         // signing in again; the Web asks for a fresh sign-in before setup otherwise.
         "recentAuth":crate::auth_factors::recent(conn, token),
+        // A bound session only accepts that browser's certificate, so a browser
+        // that lost its key must sign in again instead of unlocking.
+        "browserBound":session_browser_bound(conn, token),
     });
     value
+}
+fn session_browser_bound(conn: &Connection, token: &str) -> bool {
+    conn.query_row(
+        "SELECT account_browser_id IS NOT NULL FROM relay_auth_sessions WHERE token_hash=?1",
+        [security::token_hash(token)],
+        |r| r.get(0),
+    )
+    .unwrap_or(false)
 }
 
 pub(crate) fn valid_key(key: &str) -> bool {

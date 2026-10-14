@@ -13,7 +13,7 @@ type Gate =
   | { kind: 'loading' }
   | { kind: 'ready' }
   | { kind: 'setup' }
-  | { kind: 'reauth' }
+  | { kind: 'reauth'; keyLost?: boolean }
   | { kind: 'unlock'; removed: boolean }
   | { kind: 'reset' }
   | { kind: 'error'; message: string };
@@ -37,13 +37,15 @@ export function AccountSessionGate({ children }: { children: ReactNode }) {
       const session = await fetchRelaySession();
       if (!session.authenticated || !session.user) { goToSignIn(); return; }
       setName(session.user.username || session.user.email || null);
-      const account = (session as typeof session & { account?: AccountSessionState & { recentAuth?: boolean } }).account;
+      const account = (session as typeof session & { account?: AccountSessionState & { recentAuth?: boolean; browserBound?: boolean } }).account;
       setOAuth(account?.mode === 'oauth' || await isOAuthAccount());
       if (account?.recovery) { setGate({ kind: 'reset' }); return; }
       // Relays without `recentAuth` leave it to the setup request to ask for reauthentication.
       if (!account?.hasVault) { setGate({ kind: account?.recentAuth === false ? 'reauth' : 'setup' }); return; }
       const browser = await currentBrowser();
-      if (!browser) { setGate({ kind: 'unlock', removed: false }); return; }
+      // The session only accepts the browser key it was bound to; once that key
+      // is gone (site data cleared), unlocking cannot help and a new sign-in can.
+      if (!browser) { setGate(account?.browserBound ? { kind: 'reauth', keyLost: true } : { kind: 'unlock', removed: false }); return; }
       // A removed browser learns it from the account-signed list and must unlock
       // again; check first so registration never opens a second prompt.
       const revoked = (await accountRevocations(true)).some(r => r.kind === 'browser' && r.subjectId === browser.browserId);
@@ -83,7 +85,7 @@ export function AccountSessionGate({ children }: { children: ReactNode }) {
     case 'reauth':
       return (
         <AuthShell>
-          <AuthCard footer={footer} icon={<ShieldAlert aria-hidden="true" className="h-8 w-8" />} subtitle={translate('auth.ui.reauthBody')} title={translate('auth.ui.reauthTitle')}>
+          <AuthCard footer={footer} icon={<ShieldAlert aria-hidden="true" className="h-8 w-8" />} subtitle={translate(gate.keyLost ? 'auth.ui.browserKeyLostBody' : 'auth.ui.reauthBody')} title={translate('auth.ui.reauthTitle')}>
             <button className="relay-button-primary auth-submit h-11 w-full" disabled={signingOut} onClick={() => void signOut()} type="button">
               {translate('auth.ui.reauthAction')}
             </button>
@@ -91,7 +93,7 @@ export function AccountSessionGate({ children }: { children: ReactNode }) {
         </AuthShell>
       );
     case 'unlock':
-      return <AuthShell><UnlockCard footer={footer} oauth={oauth} onDone={ready} removed={gate.removed} /></AuthShell>;
+      return <AuthShell><UnlockCard footer={footer} oauth={oauth} onDone={ready} onKeyLost={() => setGate({ kind: 'reauth', keyLost: true })} removed={gate.removed} /></AuthShell>;
     case 'reset':
       return <AuthShell><ResetCard footer={footer} oauth={oauth} onDone={ready} onStartedOver={() => { setGate({ kind: 'loading' }); void evaluate(); }} /></AuthShell>;
     case 'error':
@@ -108,7 +110,7 @@ export function AccountSessionGate({ children }: { children: ReactNode }) {
   }
 }
 
-function UnlockCard({ oauth, removed, footer, onDone }: { oauth: boolean; removed: boolean; footer: ReactNode; onDone: () => void }) {
+function UnlockCard({ oauth, removed, footer, onDone, onKeyLost }: { oauth: boolean; removed: boolean; footer: ReactNode; onDone: () => void; onKeyLost: () => void }) {
   useI18n();
   const [secret, setSecret] = useState(''), [recovery, setRecovery] = useState(false);
   const [busy, setBusy] = useState(false), [error, setError] = useState<string>();
@@ -120,7 +122,11 @@ function UnlockCard({ oauth, removed, footer, onDone }: { oauth: boolean; remove
       await unlockAccount(secret, recovery);
       if (recovery) { setNewPassword('ask'); return; }
       await registerBrowser(); onDone();
-    } catch (caught) { setError(message(caught)); }
+    } catch (caught) {
+      // A relay without `browserBound` refuses the new key for a bound session.
+      if (caught instanceof AccountTrustError && caught.code === 'forbidden') { onKeyLost(); return; }
+      setError(message(caught));
+    }
     finally { setBusy(false); }
   }
   return (

@@ -2,13 +2,13 @@ import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import type { RuntimeConfigDto } from '@pockymoe/shared';
 import { HostCapabilitiesProvider, HostFeatureGate } from './hostCapabilities';
-import { fetchRuntimeConfig } from './api';
+import { fetchRuntimeConfig, relayModeActive } from './api';
 
-vi.mock('./api', () => ({ fetchRuntimeConfig: vi.fn() }));
-afterEach(() => { cleanup(); vi.mocked(fetchRuntimeConfig).mockReset(); });
+vi.mock('./api', () => ({ fetchRuntimeConfig: vi.fn(), relayModeActive: vi.fn(() => false) }));
+afterEach(() => { cleanup(); vi.mocked(fetchRuntimeConfig).mockReset(); vi.mocked(relayModeActive).mockReturnValue(false); });
 
-function Entries() {
-  return <HostCapabilitiesProvider scope="local">
+function Entries({ scope = 'local' }: { scope?: string }) {
+  return <HostCapabilitiesProvider scope={scope}>
     <button>Local threads</button>
     <HostFeatureGate feature="relay"><button>Device management</button></HostFeatureGate>
     <HostFeatureGate feature="accountBinding"><button>Bind account</button></HostFeatureGate>
@@ -34,4 +34,27 @@ it('retains standalone and older Supervisor entry points', async () => {
   render(<Entries />);
   await waitFor(() => expect(fetchRuntimeConfig).toHaveBeenCalledOnce());
   expect(screen.getAllByRole('button')).toHaveLength(5);
+});
+
+it('does not ask an arbitrary relay device to describe relay pages', async () => {
+  vi.mocked(relayModeActive).mockReturnValue(true);
+  render(<Entries />);
+  expect(screen.getAllByRole('button')).toHaveLength(5);
+  expect(fetchRuntimeConfig).not.toHaveBeenCalled();
+});
+
+it('asks the device in the path and keeps its pages when it cannot answer', async () => {
+  vi.mocked(relayModeActive).mockReturnValue(true);
+  vi.mocked(fetchRuntimeConfig).mockRejectedValue(new Error('offline'));
+  render(<Entries scope="device-1" />);
+  expect(await screen.findByRole('button', { name: 'Local threads' })).toBeVisible();
+  expect(fetchRuntimeConfig).toHaveBeenCalledWith('device-1');
+  expect(screen.queryByRole('alert')).toBeNull();
+});
+
+it('still blocks a local host whose scope is unknown', async () => {
+  vi.mocked(fetchRuntimeConfig).mockRejectedValue(new Error('offline'));
+  render(<Entries />);
+  expect(await screen.findByRole('alert')).toBeVisible();
+  expect(screen.queryByRole('button', { name: 'Local threads' })).toBeNull();
 });

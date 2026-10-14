@@ -4141,6 +4141,13 @@ async fn forward_server_message_to_client(
 const RELAY_BOOTSTRAP: &str = r#"<script>window.__POCKYMOE_BOOTSTRAP__={"mode":"relay"};</script>"#;
 
 fn inject_bootstrap(html: &str) -> String {
+    // The relay serves the Web UI at its root. The installed index carries a
+    // relative <base> that would otherwise resolve against a deep link.
+    let html = html.replacen(
+        r#"<base href="./" data-pockymoe-base />"#,
+        r#"<base href="/" data-pockymoe-base />"#,
+        1,
+    );
     if html.contains("</head>") {
         html.replacen("</head>", &format!("{RELAY_BOOTSTRAP}</head>"), 1)
     } else {
@@ -4177,6 +4184,15 @@ fn mime_for(path: &FsPath) -> &'static str {
 #[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn served_index_resolves_assets_from_the_root_on_deep_links() {
+        let html = inject_bootstrap(
+            r#"<head><base href="./" data-pockymoe-base /><script src="./assets/app.js"></script></head>"#,
+        );
+        assert!(html.contains(r#"<base href="/" data-pockymoe-base />"#));
+        assert!(html.contains(RELAY_BOOTSTRAP));
+    }
 
     fn temporary_test_dir(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("pockymoe-relay-{name}-{}", Uuid::new_v4().simple()))

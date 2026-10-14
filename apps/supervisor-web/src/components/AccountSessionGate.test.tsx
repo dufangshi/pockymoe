@@ -110,6 +110,29 @@ it('unlocks a browser without a key and always offers sign out', async () => {
   expect(state.unlock).toHaveBeenCalledWith('my password', false);
 });
 
+it('asks a session bound to a cleared browser key to sign in again instead of unlocking', async () => {
+  state.current.mockResolvedValue(null);
+  state.session.mockResolvedValue(account({ browserBound: true }));
+  renderGate();
+  expect(await screen.findByText(translate('auth.ui.browserKeyLostBody'))).toBeVisible();
+  expect(screen.queryByLabelText(translate('auth.password'))).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: translate('auth.ui.reauthAction') }));
+  expect(await screen.findByText('Sign-in page')).toBeVisible();
+  expect(state.logout).toHaveBeenCalledOnce();
+});
+
+it('turns a refused browser registration into a sign-in-again prompt', async () => {
+  const { AccountTrustError } = await import('../lib/accountVaultState');
+  state.current.mockResolvedValue(null);
+  state.register.mockRejectedValue(new AccountTrustError('forbidden'));
+  renderGate();
+  await screen.findByRole('heading', { name: translate('auth.ui.unlockTitle') });
+  fireEvent.change(screen.getByLabelText(translate('auth.password')), { target: { value: 'my password' } });
+  fireEvent.click(screen.getByRole('button', { name: translate('auth.ui.unlock') }));
+  expect(await screen.findByText(translate('auth.ui.browserKeyLostBody'))).toBeVisible();
+  expect(screen.queryByRole('alert')).toBeNull();
+});
+
 it('explains a removed browser from the account-signed list without registering it', async () => {
   state.revocations.mockResolvedValue([{ kind: 'browser', subjectId: 'b1' }]);
   renderGate();

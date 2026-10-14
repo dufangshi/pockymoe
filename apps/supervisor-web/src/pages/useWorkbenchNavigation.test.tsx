@@ -6,14 +6,14 @@ import { act, renderHook, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type { ThreadDetailDto, ThreadDto } from '@pockymoe/shared';
 import { useWorkbenchNavigation, workbenchThreadStatus } from './useWorkbenchNavigation';
-import { ApiError, request, fetchRuntimeConfig } from '../lib/api';
+import { ApiError, request, fetchRuntimeConfig, relayModeActive } from '../lib/api';
 import { useScopedState } from './useScopedState';
 
 vi.mock('../lib/api', async original => ({
   ...(await original<typeof import('../lib/api')>()),
   request: vi.fn(),
   fetchRuntimeConfig: vi.fn(),
-  relayModeActive: () => true,
+  relayModeActive: vi.fn(() => true),
 }));
 
 describe('account thread navigation', () => {
@@ -348,6 +348,8 @@ describe('account thread navigation', () => {
 
 it('opens saved threads from every bound Agent on this hub and silently drops forbidden/missing references', async () => {
   localStorage.clear();
+  // A Treer hub serves its Web UI locally, not through a relay.
+  vi.mocked(relayModeActive).mockReturnValue(false);
   const scope = { kind: 'treerAgent', boundThreadId: 'root', hubId: 'hub-one' } as NonNullable<RuntimeConfigDto['hostScope']>;
   const root = { id: 'root', workspaceId: 'project', title: 'Root', status: 'idle' } as ThreadDto;
   const child = { ...root, id: 'child', parentThreadId: 'root', rootThreadId: 'root', workspaceId: 'child-project' };
@@ -384,6 +386,7 @@ it('opens saved threads from every bound Agent on this hub and silently drops fo
   expect(otherHub.result.current.threads.map(thread => thread.key)).toEqual(['local:other-root']);
   expect(otherHub.result.current.threads[0]?.favorite).toBe(true);
   otherHub.unmount(); localStorage.clear();
+  vi.mocked(relayModeActive).mockReturnValue(true);
 });
 
 it('isolates navigation by hub and mount without importing legacy shortcuts', () => {

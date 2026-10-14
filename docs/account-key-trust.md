@@ -1071,7 +1071,7 @@ Login, register and recover answers include `{token, account, session}`, and
 ```text
 { "mode": "account" | "legacy" | "oauth", "setupRequired": false,
   "recovery": false, "hasVault": true, "accountKeyId": "…" | null,
-  "recentAuth": true }
+  "recentAuth": true, "browserBound": true }
 ```
 
 `mode` is `oauth` for an OAuth-only account (with or without a vault), `account`
@@ -1080,6 +1080,10 @@ administrator. `recentAuth` is true when the session signed in or confirmed a
 second factor within the last 10 minutes, so vault creation and OAuth slot
 changes will not answer `reauthentication_required`; the Web asks a setup
 session without it to sign in again before showing the setup form.
+`browserBound` is true once a browser certificate was registered on the session.
+A bound session refuses any other browser's certificate (403 `forbidden`), so a
+browser that lost its key (for example after its site data was cleared while
+the relay cookie stayed) is asked to sign in again instead of unlocking.
 
 | Session | Created by | Allowed requests |
 | --- | --- | --- |

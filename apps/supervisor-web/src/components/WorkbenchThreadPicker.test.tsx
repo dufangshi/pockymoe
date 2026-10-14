@@ -12,7 +12,7 @@ import type { ThreadDto, WorkspaceDto } from '@pockymoe/shared';
 import { setLocale } from '@pockymoe/thread-ui/i18n';
 import { request, fetchRuntimeConfig } from '../lib/api';
 import { WorkbenchThreadPicker } from './WorkbenchThreadPicker';
-vi.mock('../lib/api', () => ({ request: vi.fn(), fetchRuntimeConfig: vi.fn() }));
+vi.mock('../lib/api', () => ({ request: vi.fn(), fetchRuntimeConfig: vi.fn(), relayModeActive: () => false }));
 const thread = (id: string, workspaceId = 'current'): ThreadDto =>
   ({
     id,

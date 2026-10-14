@@ -659,6 +659,43 @@ async fn setup_and_recovery_mode_survive_second_factor_challenges() {
 }
 
 #[tokio::test]
+async fn session_reports_when_it_is_bound_to_a_browser() {
+    let f = Fixture::new("account-browser-bound").await;
+    let token = f.register().await;
+    let bound = |v: Value| v["account"]["browserBound"].clone();
+    let session = f
+        .json(
+            Method::GET,
+            "/relay/auth/session",
+            Some(&token),
+            json!(null),
+        )
+        .await;
+    assert_eq!(bound(session.1), false);
+    let cert = &vectors()["browserCertificate"]["certificate"];
+    let (status, _) = f
+        .json(
+            Method::POST,
+            "/relay/account/browsers",
+            Some(&token),
+            json!({"certificate":cert,"label":"Browser"}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    // A browser that lost this key cannot register another one on this
+    // session; the Web reads the flag and asks for a new sign-in instead.
+    let session = f
+        .json(
+            Method::GET,
+            "/relay/auth/session",
+            Some(&token),
+            json!(null),
+        )
+        .await;
+    assert_eq!(bound(session.1), true);
+}
+
+#[tokio::test]
 async fn browser_registry_checks_vectors_labels_and_permanent_revocations() {
     let f = Fixture::new("account-browsers").await;
     let token = f.register().await;
@@ -1402,7 +1439,7 @@ async fn account_state_is_present_in_session_login_register_recover_and_oauth_an
     assert_eq!(s, StatusCode::OK);
     assert_eq!(
         v["account"],
-        json!({"mode":"legacy","setupRequired":true,"recovery":false,"hasVault":false,"accountKeyId":null,"recentAuth":true})
+        json!({"mode":"legacy","setupRequired":true,"recovery":false,"hasVault":false,"accountKeyId":null,"recentAuth":true,"browserBound":false})
     );
     assert_eq!(v["account"], v["session"]["account"]);
     let (s, v) = f
@@ -1416,7 +1453,7 @@ async fn account_state_is_present_in_session_login_register_recover_and_oauth_an
     assert_eq!(s, StatusCode::OK);
     assert_eq!(
         v["account"],
-        json!({"mode":"account","setupRequired":false,"recovery":false,"hasVault":true,"accountKeyId":vectors()["account"]["accountKeyId"],"recentAuth":true})
+        json!({"mode":"account","setupRequired":false,"recovery":false,"hasVault":true,"accountKeyId":vectors()["account"]["accountKeyId"],"recentAuth":true,"browserBound":false})
     );
     assert_eq!(v["account"], v["session"]["account"]);
     let session: Value = f
@@ -1466,7 +1503,7 @@ async fn account_state_is_present_in_session_login_register_recover_and_oauth_an
         serde_json::from_slice(&to_bytes(response.into_body(), 16 * 1024).await.unwrap()).unwrap();
     assert_eq!(
         v["account"],
-        json!({"mode":"oauth","setupRequired":true,"recovery":false,"hasVault":false,"accountKeyId":null,"recentAuth":true})
+        json!({"mode":"oauth","setupRequired":true,"recovery":false,"hasVault":false,"accountKeyId":null,"recentAuth":true,"browserBound":false})
     );
 }
 
@@ -1739,7 +1776,7 @@ async fn reset_session_can_delete_vault_without_current_key_and_temporary_passwo
         .unwrap();
     assert_eq!(
         state["account"],
-        json!({"mode":"legacy","setupRequired":true,"recovery":false,"hasVault":false,"accountKeyId":null,"recentAuth":true})
+        json!({"mode":"legacy","setupRequired":true,"recovery":false,"hasVault":false,"accountKeyId":null,"recentAuth":true,"browserBound":false})
     );
     assert_eq!(f.json(Method::PUT,"/relay/account/vault",Some(token),json!({"vault":test_vault(ACCOUNT_USER,1),"expectedRevision":0,"authKey":auth_key(),"recoveryAuthKey":recovery_key()})).await.0,StatusCode::OK);
 }
@@ -3446,7 +3483,7 @@ async fn documentation_admin_reset_without_vault_logs_in_once_to_setup_without_u
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
         body["account"],
-        json!({"mode":"legacy","setupRequired":true,"recovery":false,"hasVault":false,"accountKeyId":null,"recentAuth":true})
+        json!({"mode":"legacy","setupRequired":true,"recovery":false,"hasVault":false,"accountKeyId":null,"recentAuth":true,"browserBound":false})
     );
     let token = body["token"].as_str().unwrap();
     for upgrade in [false, true] {

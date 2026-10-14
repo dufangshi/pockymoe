@@ -12,7 +12,7 @@ const model = (label: string) => `<mxGraphModel><root><mxCell id="0"/><mxCell id
 test('draw.io renders under the public relay CSP without inline scripts or eval', async ({ page }) => {
   // srcdoc inherits the public site's HTTP CSP. A meta policy cannot relax it.
   // Serve a minimal parent instead of Vite's development-only inline preamble.
-  const csp = "default-src 'self'; script-src 'self' 'sha256-J/u35pSjfPx+3XnEQrievRBlloQ59CziqpHF08KUmhU='; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; worker-src 'self'; frame-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'";
+  const csp = "default-src 'self'; script-src 'self' 'sha256-J/u35pSjfPx+3XnEQrievRBlloQ59CziqpHF08KUmhU='; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; worker-src 'self'; frame-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'";
   // Use a public HTTPS origin: fulfilling a localhost navigation gives Chromium
   // a synthetic public address space and incorrectly triggers loopback access checks.
   await page.route('https://drawio-csp.example/**', async (route) => {
