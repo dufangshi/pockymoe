@@ -450,12 +450,15 @@ pub fn client_message_allowed(access: &EffectiveAccess, kind: &str) -> bool {
     matches!(
         kind,
         "supervisor.ping"
+            | "thread.view"
             | "shell.attach"
             | "shell.detach"
             | "shell.input"
             | "shell.resize"
             | "shell.clear"
-    ) && (kind == "supervisor.ping" || access.kind == "owner" || access.thread_access == "control")
+    ) && (matches!(kind, "supervisor.ping" | "thread.view")
+        || access.kind == "owner"
+        || access.thread_access == "control")
 }
 
 pub fn outbound_event_in_scope(
@@ -724,6 +727,15 @@ mod tests {
             "/api/workspaces/any/files/raw"
         ));
         assert!(client_message_allowed(&read, "supervisor.ping"));
+        // Viewer reports are transport control messages. The Supervisor checks
+        // every listed thread and ignores read-only viewers for harness retention.
+        assert!(client_message_allowed(&read, "thread.view"));
+        assert!(client_message_allowed(&control, "thread.view"));
+        let owner = EffectiveAccess {
+            kind: "owner".into(),
+            ..read.clone()
+        };
+        assert!(client_message_allowed(&owner, "thread.view"));
         assert!(!client_message_allowed(&read, "shell.attach"));
         assert!(client_message_allowed(&control, "shell.attach"));
         assert!(!client_message_allowed(&control, "thread.prompt"));
