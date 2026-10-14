@@ -56,9 +56,20 @@ describe('combined device connection indicator', () => {
     }} />);
     report('encrypted', 'verified-fingerprint');
     expect(screen.queryByRole('button')).toBeNull();
+    expect(document.querySelector('.device-connection-slot')).toBeInTheDocument();
     report('identity-changed', 'replacement-fingerprint');
     fireEvent.click(screen.getByRole('button', { name: /Device identity changed/ }));
     expect(await screen.findByRole('button', { name: 'Trust replacement identity…' })).toBeVisible();
+  });
+  it('keeps connection information accessible while an unrelated thread action is busy', () => {
+    render(<DeviceEncryptionStatus hideHealthy connection={{
+      loaded: true, busy: true, state: 'offline', label: 'Offline', onConnect: vi.fn(),
+    }} />);
+    const button = screen.getByRole('button', { name: /Offline/ });
+    expect(button).toBeEnabled();
+    expect(button.querySelector('.animate-spin')).toBeNull();
+    fireEvent.click(button);
+    expect(screen.getByText('Offline', { selector: '.device-connection-state' })).toBeVisible();
   });
   it('checks each online device without needing a previous thread visit', () => {
     vi.mocked(probeDeviceEncryption).mockClear();

@@ -117,7 +117,7 @@ export function DeviceEncryptionStatus({
   const locked = status?.state === 'unlock-required';
   const encrypted = status?.state === 'encrypted',
     changed = status?.state === 'identity-changed';
-  if (hideHealthy && protection !== 'certificate-missing' && protection !== 'pending' && status?.role !== 'grantee' && !changed && !locked && connection?.loaded && connection.state === 'connected') return null;
+  if (hideHealthy && protection !== 'certificate-missing' && protection !== 'pending' && status?.role !== 'grantee' && !changed && !locked && connection?.loaded && connection.state === 'connected') return <span className="device-connection-slot" aria-hidden="true" />;
   const label = !deviceId ? translate("auth.localDeviceConnection") : locked ? translate("auth.accountUnlock") : encrypted
     ? translate(status?.role === 'grantee' ? status.identityTrust === 'invite' ? 'sharing.granteeConnectionPinned' : 'sharing.granteeConnectionTofu' : 'auth.deviceConnectionEncrypted')
     : changed
@@ -126,7 +126,7 @@ export function DeviceEncryptionStatus({
         ? translate("auth.connectionIsNotEndToEndEncrypted")
         : translate("auth.deviceEncryptionNotVerified");
   return (
-    <span className="relative inline-flex">
+    <span className={`relative inline-flex${hideHealthy ? ' device-connection-slot' : ''}`}>
       <button
         ref={trigger}
         aria-expanded={open}
@@ -141,7 +141,7 @@ export function DeviceEncryptionStatus({
             : label
         }
         title={connection ? `${connection.label} · ${label}` : label}
-        disabled={connection?.busy}
+        disabled={connection?.busy && !connection.loaded}
         data-connection={
           connection
             ? !connection.loaded
@@ -169,7 +169,7 @@ export function DeviceEncryptionStatus({
       >
         {connection ? (
           <>
-            {connection.busy || connection.state === 'reconnecting' ? (
+            {(connection.busy && !connection.loaded) || connection.state === 'reconnecting' ? (
               <LoaderCircle size={19} className="animate-spin" />
             ) : connection.state === 'offline' ? (
               <WifiOff size={19} />

@@ -884,14 +884,14 @@
   :theme .matter-agent-threads-menu .matter-agent-threads-item { min-height: 48px; }
 }
 
-/* Reserve the paired monitor's width on the narrowest phones. */
+/* Reserve the paired monitor and connection-status slot on narrow phones. */
 @media (max-width: 359px) {
   :theme .thread-ui-shell .matter-workbench .matter-topbar :where(button, a):not(.device-monitor-button):not(:is(.workbench-search-field, .workbench-search-dropdown) *),
   :theme .thread-ui-shell .matter-workbench .matter-topbar-end.matter-topbar-end > :is(button, [data-slot='dialog-trigger']):not(.device-monitor-button),
   :theme .thread-ui-shell .matter-workbench .matter-topbar .matter-search-trigger.matter-search-trigger {
-    flex-basis: 30px;
-    width: 30px;
-    min-width: 30px;
+    flex-basis: 27px;
+    width: 27px;
+    min-width: 27px;
   }
 
   :theme .thread-ui-shell .matter-workbench .matter-topbar-end > button.device-monitor-button {

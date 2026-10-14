@@ -1,3 +1,4 @@
+import { SupervisorHeartbeat, SUPERVISOR_HEARTBEAT_TIMEOUT_MS } from '../lib/supervisorHeartbeat';
 import { sharingEditInput, type SharingInput } from '../lib/signedSharing';
 import { SignedShareDetails } from '../components/SignedShareDetails';
 import { useThreadDrafts } from './useThreadDrafts';
@@ -165,7 +166,7 @@ const INITIAL_DETAIL_TURN_PAGE_SIZE = 3;
 const DETAIL_TURN_PAGE_SIZE = 3;
 const SUPERVISOR_SOCKET_RECONNECT_DELAY_MS = 1_000;
 const SUPERVISOR_HEALTHCHECK_INTERVAL_MS = 2_000;
-const SUPERVISOR_CONNECTION_STALE_MS = 5_500;
+const SUPERVISOR_CONNECTION_STALE_MS = SUPERVISOR_HEARTBEAT_TIMEOUT_MS;
 /** Summary re-read while a turn runs and no socket delivers its events. */
 const ACTIVE_THREAD_REFRESH_INTERVAL_MS = 3_000;
 /** Capability snapshot fallback; events and connection changes refresh it sooner. */
@@ -465,7 +466,7 @@ export function ThreadDetailPage() {
   const supervisorReconnectTimerRef = useRef<number | null>(null);
   const supervisorHealthInFlightRef = useRef(false);
   const supervisorHealthOkAtRef = useRef<string | null>(null);
-  const supervisorPongAtRef = useRef<number | null>(null);
+  const supervisorHeartbeatRef = useRef(new SupervisorHeartbeat());
   const supervisorBrowserOnlineRef = useRef(
     typeof navigator === 'undefined' ? true : navigator.onLine,
   );
@@ -1720,8 +1721,7 @@ export function ThreadDetailPage() {
       supervisorHealthOkAtRef.current !== null &&
       now - Date.parse(supervisorHealthOkAtRef.current) <= SUPERVISOR_CONNECTION_STALE_MS;
     const hasRecentPong =
-      supervisorPongAtRef.current !== null &&
-      now - supervisorPongAtRef.current <= SUPERVISOR_CONNECTION_STALE_MS;
+      supervisorHeartbeatRef.current.responsive(now);
 
     let status: RealtimeConnectionStatus;
     if (!browserOnline) {
@@ -1779,7 +1779,7 @@ export function ThreadDetailPage() {
     terminalTurnPendingRef.current = null;
     resolvedRequestIdsRef.current = new Set();
     supervisorHealthOkAtRef.current = null;
-    supervisorPongAtRef.current = null;
+    supervisorHeartbeatRef.current.reset();
     supervisorRecoveryPendingRef.current = false;
     supervisorBrowserOnlineRef.current =
       typeof navigator === 'undefined' ? true : navigator.onLine;
@@ -2300,6 +2300,7 @@ export function ThreadDetailPage() {
         syncRealtimeConnectionState();
         return;
       }
+      if (document.visibilityState === 'hidden') return;
 
       const socketState = supervisorSocketRef.current?.readyState ?? SOCKET_CLOSED;
       if (socketState === SOCKET_CONNECTING || socketState === SOCKET_OPEN) {
@@ -2324,7 +2325,7 @@ export function ThreadDetailPage() {
             parsed.type === 'supervisor.connected' ||
             parsed.type === 'supervisor.pong'
           ) {
-            supervisorPongAtRef.current = Date.now();
+            supervisorHeartbeatRef.current.receive(Date.now());
             syncRealtimeConnectionState();
           }
         } catch {
@@ -2337,6 +2338,7 @@ export function ThreadDetailPage() {
           return;
         }
 
+        supervisorHeartbeatRef.current.probe(Date.now());
         const reconnected = socketOpenedBefore;
         socketOpenedBefore = true;
         supervisorRecoveryPendingRef.current = false;
@@ -2361,18 +2363,16 @@ export function ThreadDetailPage() {
       });
 
       nextSocket.addEventListener('close', () => {
-        if (supervisorSocketRef.current === nextSocket) {
-          supervisorSocketRef.current = null;
-        }
+        if (isDisposed || supervisorSocketRef.current !== nextSocket) return;
+        closeSupervisorSocket();
         supervisorRecoveryPendingRef.current = true;
         scheduleReconnect();
         syncRealtimeConnectionState();
       });
 
       nextSocket.addEventListener('error', () => {
-        if (supervisorSocketRef.current === nextSocket) {
-          supervisorSocketRef.current = null;
-        }
+        if (isDisposed || supervisorSocketRef.current !== nextSocket) return;
+        closeSupervisorSocket();
         supervisorRecoveryPendingRef.current = true;
         scheduleReconnect();
         syncRealtimeConnectionState();
@@ -2425,7 +2425,7 @@ export function ThreadDetailPage() {
     const handleBrowserOffline = () => {
       supervisorBrowserOnlineRef.current = false;
       supervisorHealthOkAtRef.current = null;
-      supervisorPongAtRef.current = null;
+      supervisorHeartbeatRef.current.reset();
       supervisorRecoveryPendingRef.current = true;
       clearReconnectTimer();
       closeSupervisorSocket();
@@ -2437,17 +2437,12 @@ export function ThreadDetailPage() {
         syncRealtimeConnectionState();
         return;
       }
+      if (document.visibilityState === 'hidden') return;
 
       const socketState = supervisorSocketRef.current?.readyState ?? SOCKET_CLOSED;
-      const lastPongAge =
-        supervisorPongAtRef.current === null
-          ? null
-          : Date.now() - supervisorPongAtRef.current;
-
       if (
         socketState === SOCKET_OPEN &&
-        lastPongAge !== null &&
-        lastPongAge > SUPERVISOR_CONNECTION_STALE_MS
+        supervisorHeartbeatRef.current.timedOut(Date.now())
       ) {
         supervisorRecoveryPendingRef.current = true;
         closeSupervisorSocket();
@@ -2460,17 +2455,17 @@ export function ThreadDetailPage() {
 
       // The socket's pongs prove the Supervisor is reachable; check HTTP
       // health only while it is down, and not from a hidden tab.
-      if (
-        (supervisorSocketRef.current?.readyState ?? SOCKET_CLOSED) !== SOCKET_OPEN &&
-        document.visibilityState !== 'hidden'
-      ) {
+      if ((supervisorSocketRef.current?.readyState ?? SOCKET_CLOSED) !== SOCKET_OPEN) {
         void runHealthCheck();
       }
       syncRealtimeConnectionState();
     };
 
     const handleVisibilityChange = () => {
-      if (document.visibilityState !== 'hidden') runHeartbeat();
+      if (document.visibilityState !== 'hidden') {
+        supervisorHeartbeatRef.current.probe(Date.now());
+        runHeartbeat();
+      }
     };
 
     window.addEventListener('online', handleBrowserOnline);

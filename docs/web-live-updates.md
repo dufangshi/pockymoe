@@ -30,7 +30,12 @@ device, and re-reads other devices' lists every 30 s and on return to the tab.
 Thread renames and deletions made elsewhere emit no event; they appear on the
 list fallback or on return to the tab. A rename in this browser updates locally.
 
-Socket pings run every 2 s; a socket without a pong for 5.5 s is replaced.
+Socket pings run every 2 s while visible; an unanswered foreground probe gets
+30 s before the socket is replaced. Returning from a hidden or suspended tab
+first sends a fresh probe instead of rejecting the connection for an old pong.
+Close/error events from an already replaced socket cannot restart the new one.
+The topbar reserves a fixed connection-status slot even when healthy status is
+hidden, so connecting/offline/security indicators never shift the other buttons.
 
 The page also tells its socket which threads it displays, so the Supervisor
 keeps their harnesses loaded: `{"type":"thread.view","threadIds":[...]}` with the
