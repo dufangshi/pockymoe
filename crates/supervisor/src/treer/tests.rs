@@ -299,6 +299,16 @@ async fn ais_prompt_idempotency_queue_cancel_steer_transcript_and_detach_release
         .unwrap();
     assert_eq!(manifest["protocol"], TREER_AGENT_INTERFACE_PROTOCOL);
     assert_eq!(manifest["instance_id"], h.instance_id);
+    for capability in ["prompt.queue", "prompt.queue.read", "prompt.notify"] {
+        assert!(manifest["capabilities"]
+            .as_array()
+            .unwrap()
+            .contains(&json!(capability)));
+        assert!(bound["capabilities"]
+            .as_array()
+            .unwrap()
+            .contains(&json!(capability)));
+    }
     assert_eq!(
         request(&f, &h, reqwest::Method::GET, "/v1/health", false)
             .send()
@@ -856,10 +866,10 @@ async fn failed_attach_persistence_releases_the_new_identity_bearing_harness() {
 #[tokio::test]
 async fn notifications_retry_durably_using_only_the_live_bound_identity() {
     use std::os::unix::fs::PermissionsExt;
-    let f = fixture().await;
+    let mut f = fixture().await;
     let h = hello(&f, "ag-notify");
     let (mut ws, reply) = attach_client(&f, &h).await;
-    let root = reply["threadId"].as_str().unwrap();
+    let root = reply["threadId"].as_str().unwrap().to_owned();
     let prompt = json!({"operation_id":"notify-op","text":"hello","mode":"prompt","delivery":"queue","sender":{"agent_id":"sender","path":"/sender","name":"Sender"},"notify":{"on":["done"],"to":null}});
     let receipt: Value = request(&f, &h, reqwest::Method::POST, "/v1/prompts", false)
         .json(&prompt)
@@ -869,8 +879,8 @@ async fn notifications_retry_durably_using_only_the_live_bound_identity() {
         .json()
         .await
         .unwrap();
-    let id = receipt["submission"]["id"].as_str().unwrap();
-    wait_until(|| f.hub.submission(root, id).unwrap().unwrap()["state"] == "done").await;
+    let id = receipt["submission"]["id"].as_str().unwrap().to_owned();
+    wait_until(|| f.hub.submission(&root, &id).unwrap().unwrap()["state"] == "done").await;
     let executable = f._dir.path().join("fake-treer");
     let marker = f._dir.path().join("attempt");
     let payload = f._dir.path().join("message.json");
@@ -880,24 +890,71 @@ async fn notifications_retry_durably_using_only_the_live_bound_identity() {
     f.hub
         .deliver_notifications_with(executable.as_os_str())
         .await;
-    let notified = || {
-        f.hub
-            .state
-            .db
-            .with(|c| {
-                Ok(c.query_row(
-                    "SELECT notified FROM treer_submissions WHERE id=?1",
-                    [id],
-                    |r| r.get::<_, bool>(0),
-                )?)
-            })
-            .unwrap()
-    };
-    assert!(!notified());
+    fn delivery_state(hub: &Hub, id: &str) -> (bool, u32, i64) {
+        hub.state.db.with(|c| {
+            Ok(c.query_row(
+                "SELECT notified,notification_attempts,notification_next_attempt FROM treer_submissions WHERE id=?1",
+                [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )?)
+        }).unwrap()
+    }
+    let scheduled = delivery_state(&f.hub, &id);
+    assert!(!scheduled.0);
+    assert_eq!(scheduled.1, 1);
+    assert!(scheduled.2 > chrono::Utc::now().timestamp_millis());
     f.hub
         .deliver_notifications_with(executable.as_os_str())
         .await;
-    assert!(notified());
+    assert_eq!(delivery_state(&f.hub, &id), scheduled);
+    assert!(!payload.exists());
+
+    // A new hub retains the retry schedule and terminal result, and never reruns
+    // the completed task. A changed socket instance supplies the current identity.
+    ws.close(None).await.unwrap();
+    wait_until(|| f.hub.live.lock().unwrap().is_empty()).await;
+    let dir = std::mem::replace(&mut f._dir, tempfile::tempdir().unwrap());
+    let old_state = Arc::downgrade(&f.hub.state);
+    let server = std::mem::replace(&mut f.server, tokio::spawn(async {}));
+    server.abort();
+    let _ = server.await;
+    drop(f);
+    wait_until(|| old_state.upgrade().is_none()).await;
+    let f = fixture_in(dir).await;
+    assert_eq!(delivery_state(&f.hub, &id), scheduled);
+    assert_eq!(
+        f.hub.submission(&root, &id).unwrap().unwrap()["state"],
+        "done"
+    );
+    let mut h = hello(&f, "ag-notify");
+    h.instance_id = "replacement-instance".into();
+    let (mut ws, bound) = attach_client(&f, &h).await;
+    assert_eq!(bound["threadId"], root);
+    assert_eq!(
+        f.hub
+            .state
+            .get_thread_detail(&root, None)
+            .await
+            .unwrap()
+            .turns
+            .len(),
+        1
+    );
+    // Advance only the persisted deadline instead of sleeping through backoff.
+    f.hub
+        .state
+        .db
+        .with(|c| {
+            c.execute(
+                "UPDATE treer_submissions SET notification_next_attempt=0 WHERE id=?1",
+                [&id],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    f.hub
+        .deliver_notifications_with(executable.as_os_str())
+        .await;
+    assert!(delivery_state(&f.hub, &id).0);
     let message: Value = serde_json::from_slice(&std::fs::read(&payload).unwrap()).unwrap();
     assert_eq!(message["submission_id"], id);
     assert_eq!(message["status"], "done");
@@ -1030,4 +1087,33 @@ async fn detach_interrupts_even_when_the_harness_is_already_unloaded() {
             .status,
         "interrupted"
     );
+}
+
+#[tokio::test]
+async fn notification_retry_schema_upgrades_existing_hubs() {
+    let f = fixture().await;
+    f.hub
+        .state
+        .db
+        .with(|c| {
+            c.execute_batch(
+                "ALTER TABLE treer_submissions DROP COLUMN notification_attempts;
+             ALTER TABLE treer_submissions DROP COLUMN notification_next_attempt;",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    for _ in 0..2 {
+        let upgraded = Hub::new(f.hub.state.clone(), f.port).unwrap().unwrap();
+        upgraded
+            .state
+            .db
+            .with(|c| {
+                c.prepare(
+                    "SELECT notification_attempts,notification_next_attempt FROM treer_submissions",
+                )?;
+                Ok(())
+            })
+            .unwrap();
+    }
 }

@@ -337,6 +337,10 @@ read-only page dependencies. Management, device APIs, global settings writes and
 other threads remain forbidden; WebSocket events are filtered by the same scope.
 Approval/question replies verify that the request belongs to the addressed thread.
 The UI entry redirects to a relative thread URL so external path prefixes survive.
+Queued AIS submissions retain durable receipts. Completion notifications use the
+bound Agent identity through `treer message send`, with a stable idempotency key
+and durable exponential retry scheduling capped at 60 seconds. Delivery failures
+never rerun a completed prompt.
 
 Headers on other transports never create this scope. Invalid or incomplete Treer
 markers fail closed, including when the integration is disabled. Validated Treer

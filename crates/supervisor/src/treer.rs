@@ -153,6 +153,17 @@ impl Hub {
         );
         state.db.with(|c| {
             c.execute_batch(include_str!("treer/schema.sql"))?;
+            // Upgrade hubs created before notification retry scheduling existed.
+            let columns = c.prepare("PRAGMA table_info(treer_submissions)")?
+                .query_map([], |row| row.get::<_, String>(1))?
+                .collect::<Result<Vec<_>, _>>()?;
+            for column in ["notification_attempts", "notification_next_attempt"] {
+                if !columns.iter().any(|existing| existing == column) {
+                    c.execute_batch(&format!(
+                        "ALTER TABLE treer_submissions ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0"
+                    ))?;
+                }
+            }
             Ok(())
         })?;
         let bound = state.db.with(|c| {
@@ -892,7 +903,15 @@ impl Hub {
             .cloned()
             .collect::<Vec<_>>();
         for b in bindings {
-            let records=self.state.db.with(|c| {let mut stmt=c.prepare("SELECT id,request_json FROM treer_submissions WHERE thread_id=?1 AND notified=0")?;let rows=stmt.query_map([&b.thread],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))?.collect::<Result<Vec<_>,_>>()?;Ok(rows)});
+            let records = self.state.db.with(|c| {
+                let mut stmt = c.prepare(
+                    "SELECT id,request_json FROM treer_submissions WHERE thread_id=?1 AND notified=0 AND notification_next_attempt<=?2"
+                )?;
+                let rows = stmt.query_map(params![b.thread, chrono::Utc::now().timestamp_millis()], |r| {
+                    Ok((r.get::<_,String>(0)?, r.get::<_,String>(1)?))
+                })?.collect::<Result<Vec<_>,_>>()?;
+                Ok(rows)
+            });
             let Ok(records) = records else { continue };
             for (id, raw) in records {
                 let Ok(prompt) = serde_json::from_str::<Prompt>(&raw) else {
@@ -946,6 +965,7 @@ impl Hub {
                     .stderr(std::process::Stdio::null())
                     .kill_on_drop(true);
                 let Ok(mut child) = command.spawn() else {
+                    self.defer_notification(&id);
                     continue;
                 };
                 let body=json!({"type":"treer.prompt.completed","status":outcome,"submission_id":id,"turn_id":submission["turn_id"],"assistant_preview":submission["assistant_preview"],"error":submission["error"]}).to_string()+"\n";
@@ -958,9 +978,26 @@ impl Hub {
                         c.execute("UPDATE treer_submissions SET notified=1 WHERE id=?1", [&id])?;
                         Ok(())
                     });
+                } else {
+                    self.defer_notification(&id);
                 }
             }
         }
+    }
+    fn defer_notification(&self, id: &str) {
+        let _ = self.state.db.with(|c| {
+            let attempts = c.query_row(
+                "SELECT notification_attempts FROM treer_submissions WHERE id=?1", [id],
+                |row| row.get::<_, u32>(0),
+            )?;
+            let delay_ms = (1000_i64 << attempts.min(6)).min(60_000);
+            c.execute(
+                "UPDATE treer_submissions SET notification_attempts=?2,notification_next_attempt=?3 WHERE id=?1 AND notified=0",
+                params![id, attempts.saturating_add(1), chrono::Utc::now().timestamp_millis() + delay_ms],
+            )?;
+            Ok(())
+        });
+        tracing::warn!(submission_id = id, "Treer completion notification deferred");
     }
 }
 fn bounded(s: &str, max: usize) -> String {
