@@ -135,6 +135,30 @@ node /home/ubuntu/dev/remoteCodex/reference/treer/web/node_modules/@playwright/t
 Install that Playwright version's Chromium if it is unavailable. Traces, video,
 storage-state files and credential-bearing failure output are disabled.
 
+### Bidirectional thread/Agent synchronization
+
+For the candidate that exposes all bound hub threads through each authenticated
+Agent page, use the focused sync driver instead of `e2e.mjs --full` (that older
+driver asserts the original single-thread browser policy):
+
+```bash
+node scripts/treer-lab/bidirectional-e2e.mjs
+```
+
+Start with the candidate binary/Web already installed in the fake hub and two
+bound Agents recorded in `.local/treer-lab/browser.json`. The driver verifies
+authentication and scoped runtime config, creates its own managed CLI worker,
+and selects only `bidirectional.spec.mjs` with `desktop-chromium`. It checks UI
+creation/prompt/rename, Treer Launch, tab/split navigation, hidden unbound threads,
+favorites and stale storage, deletion of another Agent and the page's own Agent,
+management/AIS isolation, and attach waiting/error diagnostics in Treer's PTY.
+The PTY check briefly creates a separate fake hub on device port 18881 with only
+Codex enabled, verifies the disabled-Claude error, then deletes that App and Agent.
+The driver stops its worker afterward and leaves the lab
+running. It does not replace the device container or change the setup-created App.
+Evidence goes to `.scratch/treer-bidirectional/`; set
+`TREER_LAB_SYNC_EVIDENCE_DIR` to select another ignored evidence directory.
+
 ## One-command setup against a real release
 
 `setup-e2e.mjs` exercises the public setup flow through two plain command Agents
