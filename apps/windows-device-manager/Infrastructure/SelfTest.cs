@@ -67,6 +67,10 @@ internal static class SelfTest
             Require(File.ReadAllText(database) == "preserve-device-and-history", "History preserved");
             var update = Path.Combine(AppPaths.RelayDataRoot, "updates"); Directory.CreateDirectory(update); File.WriteAllText(Path.Combine(update, "supervisor-update.json"), "{\"phase\":\"restarting\"}");
             Require(RelaySupervisorService.MaintenancePending(), "No competing restart during maintenance");
+            File.WriteAllText(Path.Combine(update, "supervisor-update.json"), "{\"phase\":\"restarting\",\"workerPid\":2147483647}");
+            Require(!RelaySupervisorService.MaintenancePending(), "A dead maintenance worker does not prevent recovery");
+            File.WriteAllText(Path.Combine(update, "supervisor-update.json"), JsonSerializer.Serialize(new { phase = "scheduled", updatedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - 60_000 }));
+            Require(!RelaySupervisorService.MaintenancePending(), "Stale scheduled maintenance does not block migration");
             var redacted = AppLogger.Redact("POCKYMOE_ENROLL_SECRET=synthetic-secret TOKEN=synthetic-token rcd_synthetic Authorization synthetic-auth");
             Require(!redacted.Contains("synthetic-secret") && !redacted.Contains("synthetic-token") && !redacted.Contains("synthetic-auth"), "Secret redaction");
             return 0;
@@ -157,22 +161,8 @@ internal static class SelfTest
             File.WriteAllText(AppPaths.RelayConfigPath, JsonSerializer.Serialize(saved));
             var configuration = new DeviceConfiguration(origin, token, workspace, devicePort, AccountKey: publicKey, EnrollmentSecret: RandomKey(32), WebOrigin: origin);
             logger.Info("Native acceptance: verified account-bound setup.");
-            // Retain the isolated launch template before WMI consumes it, for failure diagnostics.
-            var diagnostics = Path.Combine(AppPaths.RelayDataRoot, "manager-startup-diagnostic");
-            Directory.CreateDirectory(diagnostics); Directory.CreateDirectory(Path.GetDirectoryName(AppPaths.RelayLogPath)!);
-            using var capture = new CancellationTokenSource();
             using var setupDeadline = new CancellationTokenSource(TimeSpan.FromMinutes(2));
-            var monitor = Task.Run(async () =>
-            {
-                while (!capture.IsCancellationRequested)
-                {
-                    foreach (var file in Directory.GetFiles(Path.GetDirectoryName(AppPaths.RelayLogPath)!, "*.launch.*"))
-                        try { File.Copy(file, Path.Combine(diagnostics, Path.GetFileName(file)), true); } catch (IOException) { }
-                    try { await Task.Delay(50, capture.Token); } catch (OperationCanceledException) { break; }
-                }
-            });
-            try { runtime = await new RuntimeProvisioner(logger, runner).SetupAsync(configuration, new Progress<ProvisioningProgress>(), setupDeadline.Token); }
-            finally { capture.Cancel(); await monitor; }
+            runtime = await new RuntimeProvisioner(logger, runner).SetupAsync(configuration, new Progress<ProvisioningProgress>(), setupDeadline.Token);
             var state = await service.GetStateAsync(runtime, CancellationToken.None); Require(state == SupervisorState.Running, "Native setup connects Relay");
             logger.Info("Native acceptance: apply workspace through maintenance.");
             await service.ConfigureWorkspaceAsync(workspace, CancellationToken.None);
@@ -211,24 +201,6 @@ internal static class SelfTest
         catch (Exception e)
         {
             logger.Error("Native acceptance failed", e);
-            var diagnostics = Path.Combine(AppPaths.RelayDataRoot, "manager-startup-diagnostic");
-            logger.Warning($"Isolated native startup log bytes: {(File.Exists(AppPaths.RelayLogPath) ? new FileInfo(AppPaths.RelayLogPath).Length : -1)}");
-            if (Directory.Exists(diagnostics))
-                foreach (var launcher in Directory.GetFiles(diagnostics, "*.launch.ps1").Take(1))
-                {
-                    try
-                    {
-                        var payload = Path.ChangeExtension(launcher, ".json");
-                        var source = File.ReadAllText(launcher);
-                        var originalPayload = System.Text.RegularExpressions.Regex.Match(source, @"Get-Content -LiteralPath '(?<payload>(?:[^']|'')+)'").Groups["payload"].Value;
-                        Require(originalPayload.Length > 0, "Diagnostic launcher payload");
-                        source = source.Replace(originalPayload, payload.Replace("'", "''"));
-                        File.WriteAllText(launcher, source);
-                        var diagnostic = await runner.RunAsync("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", launcher], TimeSpan.FromSeconds(15));
-                        logger.Warning("Isolated launcher diagnostic: " + System.Text.RegularExpressions.Regex.Replace(diagnostic.CombinedOutput, @"[A-Za-z0-9_+/=-]{24,}", "[opaque]"));
-                    }
-                    catch (Exception diagnostic) { logger.Warning("Isolated launcher diagnostic: " + diagnostic.GetType().Name); }
-                }
             if (File.Exists(AppPaths.RelayLogPath))
                 foreach (var line in File.ReadLines(AppPaths.RelayLogPath).TakeLast(20))
                     logger.Warning("Isolated Supervisor: " + line);

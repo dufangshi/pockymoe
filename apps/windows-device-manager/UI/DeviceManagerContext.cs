@@ -130,7 +130,7 @@ internal sealed class DeviceManagerContext : ApplicationContext
             ShowMainWindow();
             if (!_controller.HasSavedToken)
             {
-                _mainForm.FocusToken();
+                _mainForm.FocusSetupCommand();
             }
         }
         _monitorTimer.Start();
@@ -142,7 +142,7 @@ internal sealed class DeviceManagerContext : ApplicationContext
         if (!_controller.HasSavedToken)
         {
             ShowMainWindow();
-            _mainForm.FocusToken();
+            _mainForm.FocusSetupCommand();
             return;
         }
 

@@ -46,7 +46,7 @@ internal sealed class RelaySupervisorService(ProcessRunner runner, AppLogger log
             var health = await HealthAsync(cancellationToken);
             return health.TryGetProperty("relayConnected", out var connected) && connected.ValueKind == JsonValueKind.False ? SupervisorState.Starting : SupervisorState.Running;
         }
-        catch (HttpRequestException) { return SupervisorState.Stopped; }
+        catch (HttpRequestException e) { return e.StatusCode is null ? SupervisorState.Stopped : SupervisorState.Unknown; }
         catch (TaskCanceledException) when (!cancellationToken.IsCancellationRequested) { return SupervisorState.Unknown; }
     }
     internal async Task<JsonElement> HealthAsync(CancellationToken cancellationToken)
@@ -55,7 +55,7 @@ internal sealed class RelaySupervisorService(ProcessRunner runner, AppLogger log
         using var response = await client.GetAsync($"http://127.0.0.1:{Port}/healthz", cancellationToken);
         response.EnsureSuccessStatusCode();
         using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
-        if (!doc.RootElement.TryGetProperty("status", out var status) || status.GetString() != "ok") throw new HttpRequestException("Unexpected local service.");
+        if (!doc.RootElement.TryGetProperty("status", out var status) || status.GetString() != "ok") throw new InvalidOperationException("The local port belongs to an unrecognized service.");
         return doc.RootElement.Clone();
     }
     internal static SupervisorState ParseState(ProcessResult result) => result.Success && result.CombinedOutput.Split(['\r', '\n']).Any(s => s.Trim().Equals("Relay supervisor: running", StringComparison.OrdinalIgnoreCase)) ? SupervisorState.Running : SupervisorState.Stopped;
@@ -66,6 +66,7 @@ internal sealed class RelaySupervisorService(ProcessRunner runner, AppLogger log
         // Resolve current.json on every launch: updates must never restart a pinned old executable.
         var state = await GetStateAsync(runtime, cancellationToken);
         if (state is SupervisorState.Running or SupervisorState.Starting) { await ManagementAsync("", false, cancellationToken); return; }
+        if (state == SupervisorState.Unknown) throw new InvalidOperationException("The local Supervisor is not responding. Wait for it or inspect Web Settings before reconnecting.");
         if (MaintenancePending()) throw new InvalidOperationException("Supervisor maintenance is still in progress. Wait for it to finish.");
         var script = Path.Combine(AppPaths.RuntimeRoot, $"start-{Guid.NewGuid():N}.ps1");
         static string Quote(string value) => "'" + value.Replace("'", "''") + "'";
@@ -129,7 +130,16 @@ internal sealed class RelaySupervisorService(ProcessRunner runner, AppLogger log
             var statusFile = Path.Combine(Path.GetDirectoryName(db)!, "updates", "supervisor-update.json");
             using var doc = JsonDocument.Parse(File.ReadAllText(statusFile));
             var phase = doc.RootElement.GetProperty("phase").GetString();
-            return phase is "scheduled" or "preparing" or "installing" or "restarting" or "verifying";
+            if (phase is not ("scheduled" or "preparing" or "installing" or "restarting" or "verifying")) return false;
+            if (doc.RootElement.TryGetProperty("workerPid", out var worker) && worker.TryGetInt32(out var pid) && pid > 0)
+            {
+                try { using var process = Process.GetProcessById(pid); return !process.HasExited; }
+                catch (ArgumentException) { return false; }
+                catch (System.ComponentModel.Win32Exception) { return true; }
+            }
+            if (phase == "scheduled" && doc.RootElement.TryGetProperty("updatedAt", out var updated) && updated.TryGetInt64(out var at))
+                return DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - at <= 30_000;
+            return true;
         }
         catch { return false; }
     }

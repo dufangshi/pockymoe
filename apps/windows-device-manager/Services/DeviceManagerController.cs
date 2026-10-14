@@ -59,17 +59,12 @@ internal sealed class DeviceManagerController
         {
             State = SupervisorState.Stopped;
         }
-        Progress = State == SupervisorState.Running
-            ? new ProvisioningProgress(
-                "Running",
-                "Relay Supervisor is running and maintaining the outbound tunnel.",
-                ProvisioningStepState.Complete,
-                100)
-            : new ProvisioningProgress(
-                "Ready",
-                "Waiting for a device setup command.",
-                ProvisioningStepState.Pending,
-                0);
+        Progress = State switch
+        {
+            SupervisorState.Running => new("Running", "Supervisor is connected to the Relay.", ProvisioningStepState.Complete, 100),
+            SupervisorState.Starting => new("Connection", "Supervisor is reconnecting to the Relay…", ProvisioningStepState.Running, 80),
+            _ => new("Ready", HasSavedToken ? "Saved registration is ready to connect." : "Waiting for a device setup command.", ProvisioningStepState.Pending, 0)
+        };
         if (RequiresNativeMigration) RuntimeUpdateMessage = NativeMigrationMessage;
         OnChanged();
 
@@ -303,7 +298,11 @@ internal sealed class DeviceManagerController
             var state = await _supervisor.GetStateAsync(Runtime, cancellationToken);
             if (state == SupervisorState.Starting || state == SupervisorState.Unknown)
             {
-                if (State != state) { State = state; OnChanged(); }
+                if (State != state)
+                {
+                    State = state;
+                    Report(new("Connection", state == SupervisorState.Starting ? "Supervisor is reconnecting to the Relay…" : "Waiting for the local Supervisor to respond…", ProvisioningStepState.Running, 80));
+                }
                 return;
             }
             if (state == SupervisorState.Running)

@@ -80,7 +80,7 @@ internal sealed class MainForm : Form
         _workspaceTextBox = CreateTextBox(); _workspaceTextBox.AccessibleName = "Workspace folder";
         var browse = _browseButton = CreateNeutralButton("Browse", 100); browse.Dock = DockStyle.Fill; browse.Click += BrowseWorkspace;
         workspaceGrid.Controls.Add(Label("Workspace"), 0, 0); workspaceGrid.Controls.Add(_workspaceTextBox, 1, 0); workspaceGrid.Controls.Add(browse, 2, 0); body.Controls.Add(workspaceGrid, 0, 3);
-        _startWithWindowsCheckBox = new CheckBox { Text = "Keep this device online when I sign in to Windows", AutoSize = true, Dock = DockStyle.Fill };
+        _startWithWindowsCheckBox = new CheckBox { Text = "Start Manager when I sign in to Windows", AutoSize = true, Dock = DockStyle.Fill };
         body.Controls.Add(_startWithWindowsCheckBox, 0, 4);
         var manual = Grid(3, DockStyle.Top); manual.AutoSize = true; manual.Visible = false;
         manual.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 110)); manual.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); manual.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 108));
@@ -142,11 +142,7 @@ internal sealed class MainForm : Form
         await ConnectCurrentConfigurationAsync();
     }
 
-    public void FocusToken()
-    {
-        _tokenTextBox.Clear();
-        _tokenTextBox.Focus();
-    }
+    public void FocusSetupCommand() => _pasteConfigurationTextBox.Focus();
 
     public void AllowCloseAndExit()
     {
@@ -345,7 +341,7 @@ internal sealed class MainForm : Form
         {
             SupervisorState.Running => ("Supervisor running", "This computer is available through the Relay.", OnlineColor),
             SupervisorState.Starting => ("Connecting device", _controller.Progress.Message, ManagerTheme.Get(_themeName).Accent),
-            SupervisorState.Stopped => ("Device offline", "Paste a setup command from the Devices page to connect.", Color.FromArgb(100, 116, 139)),
+            SupervisorState.Stopped => ("Device offline", _controller.HasSavedToken ? "Saved registration is ready. Connect to bring this device online." : "Paste a setup command from the Devices page to connect.", Color.FromArgb(100, 116, 139)),
             SupervisorState.Error => ("Connection needs attention", _controller.LastError ?? _controller.Progress.Message, ErrorColor),
             _ => ("Checking status", "Waiting for the local supervisor.", Color.FromArgb(148, 163, 184)),
         };
