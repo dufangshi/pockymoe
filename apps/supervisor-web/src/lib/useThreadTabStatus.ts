@@ -1,3 +1,4 @@
+import { useBrowserStateKey } from './browserStateScope';
 import { useEffect } from 'react';
 import type { ThreadDto } from '@pockymoe/shared';
 
@@ -20,9 +21,10 @@ const iconShapes = {
 };
 
 export function useThreadTabStatus(thread: ThreadDto | null) {
+  const seenKey = useBrowserStateKey(`remote-codex:thread-seen:${window.location.pathname}`);
   useEffect(() => {
     if (!thread || !window.location.pathname.endsWith('/' + thread.id)) return;
-    const key = `remote-codex:thread-seen:${window.location.pathname}`;
+    const key = seenKey;
     const completed = Date.parse(thread.lastTurnCompletedAt ?? '') || 0;
     let memorySeen = 0;
     const icons = Array.from(
@@ -79,5 +81,5 @@ export function useThreadTabStatus(thread: ThreadDto | null) {
         document.head.append(old);
       });
     };
-  }, [thread?.id, thread?.title, thread?.status, thread?.lastTurnCompletedAt]);
+  }, [seenKey, thread?.id, thread?.title, thread?.status, thread?.lastTurnCompletedAt]);
 }

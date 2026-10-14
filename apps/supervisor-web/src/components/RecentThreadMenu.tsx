@@ -1,10 +1,11 @@
+import { useHostScope } from '../lib/hostCapabilities';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Copy, ExternalLink, MoreHorizontal, Pencil, Star, Trash2 } from 'lucide-react';
 import type { ThreadDetailDto } from '@pockymoe/shared';
 import type { WorkbenchThread } from '@pockymoe/thread-ui';
-import { fetchRelayAccess, request } from '../lib/api';
+import { fetchRelayAccess, isInvisibleThreadError, request } from '../lib/api';
 import { RenameDialog } from './RenameDialog';
 import { ConfirmDialog } from './ConfirmDialog';
 import { threadsHref } from '../lib/relayRoutes';
@@ -18,6 +19,7 @@ export function RecentThreadMenu({ thread, onFavorite, onRenamed, onRemoved, onN
   onNavigate: (href: string, options?: { replace?: boolean }) => void;
 }) {
   useI18n();
+  const hostScope = useHostScope();
   const [position, setPosition] = useState<{ top: number; left: number } | null>(null);
   const [detail, setDetail] = useState<ThreadDetailDto | null>(null);
   const [owner, setOwner] = useState(false);
@@ -40,7 +42,7 @@ export function RecentThreadMenu({ thread, onFavorite, onRenamed, onRemoved, onN
       request<ThreadDetailDto>(`${base}?view=summary&limit=1&compact=1`),
       device === 'local' ? Promise.resolve({ kind: 'owner' }) : fetchRelayAccess({ deviceId: device, threadId: id }),
     ]).then(([value, access]) => { if (active) { setDetail(value); setOwner(access.kind === 'owner'); } })
-      .catch(() => { if (active) setNotice(translate("workbench.deviceUnavailableYouCanStillManageThis")); });
+      .catch(error => { if (active && hostScope && isInvisibleThreadError(error)) { void onRemoved(thread.key); setPosition(null); return; } if (active) setNotice(translate("workbench.deviceUnavailableYouCanStillManageThis")); });
     const close = (event: Event) => {
       if (event.type === 'keydown' && (event as KeyboardEvent).key !== 'Escape') return;
       if (event.type === 'pointerdown' && (menu.current?.contains(event.target as Node) || trigger.current?.contains(event.target as Node))) return;

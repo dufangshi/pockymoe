@@ -1,5 +1,6 @@
+import { HostScopeRouteGate } from './components/HostScopeRouteGate';
 import { appUrl, webBase } from './lib/webBase';
-import { HostCapabilitiesProvider } from './lib/hostCapabilities';
+import { HostCapabilitiesProvider, UnscopedOnly, useHostScope } from './lib/hostCapabilities';
 import { relayDeviceIdFromPath } from './lib/relayRoutes';
 import { AccountSessionGate } from './components/AccountSessionGate';
 import { SharedInvitePage } from './pages/SharedInvitePage';
@@ -216,6 +217,10 @@ function systemThemePreference(): 'light' | 'dark' {
   return 'light';
 }
 
+function ScopedTourProvider({ children }: { children: ReactNode }) {
+  return useHostScope() ? children : <TourProvider>{children}</TourProvider>;
+}
+
 function AppShell({
   themeMode,
   setThemeMode,
@@ -316,7 +321,7 @@ function AppShell({
   return (
     <HostCapabilitiesProvider scope={relayDeviceIdFromPath(location.pathname) ?? 'local'}>
     <AppShellNavContext.Provider value={shellNavValue}>
-      <TourProvider>
+      <ScopedTourProvider>
       <div
         className={`bg-[var(--app-bg)] text-[var(--app-fg)] ${
           isViewportLockedRoute || isSettingsRoute
@@ -356,12 +361,12 @@ function AppShell({
                 : ''
             }`}
           >
-            <Outlet />
+            <HostScopeRouteGate><Outlet /></HostScopeRouteGate>
           </section>
         </main>
       </div>
-      <AppShellSettingsDialog />
-      </TourProvider>
+      <UnscopedOnly><AppShellSettingsDialog /></UnscopedOnly>
+      </ScopedTourProvider>
     </AppShellNavContext.Provider>
     </HostCapabilitiesProvider>
   );

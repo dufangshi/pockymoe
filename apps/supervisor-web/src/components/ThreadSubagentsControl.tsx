@@ -1,3 +1,4 @@
+import { useBrowserStateKey } from '../lib/browserStateScope';
 import { getLocale, translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { useEffect, useRef, useState } from 'react';
 import {
@@ -54,9 +55,9 @@ function isFinished(agent: NativeSubagentDto) {
 function resultKey(agent: NativeSubagentDto) {
   return `${agent.status}:${agent.completedAt ?? agent.startedAt ?? ''}`;
 }
-function readSeenAgents(threadId: string): Record<string, string> {
+function readSeenAgents(storageKey: string): Record<string, string> {
   try {
-    const value: unknown = JSON.parse(localStorage.getItem(`pockymoe.subagents.seen.v1:${threadId}`) ?? '{}');
+    const value: unknown = JSON.parse(localStorage.getItem(storageKey) ?? '{}');
     return value && typeof value === 'object' && !Array.isArray(value)
       ? Object.fromEntries(Object.entries(value).filter(([, key]) => typeof key === 'string')) : {};
   } catch { return {}; }
@@ -156,7 +157,8 @@ function NativeSubagentsControl({ detail }: { detail: ThreadDetailDto }) {
       ? (detail.thread.agentId ?? '')
       : detail.thread.provider;
   const threadId = detail.thread.id;
-  const [seenBeforeVisit, setSeenBeforeVisit] = useState(() => readSeenAgents(threadId));
+  const seenStorageKey = useBrowserStateKey(`pockymoe.subagents.seen.v1:${threadId}`);
+  const [seenBeforeVisit, setSeenBeforeVisit] = useState(() => readSeenAgents(seenStorageKey));
   const [historyExpanded, setHistoryExpanded] = useState(false);
   const [agents, setAgents] = useState<NativeSubagentDto[] | null>(null);
   const [discovering, setDiscovering] = useState(false);
@@ -191,7 +193,7 @@ function NativeSubagentsControl({ detail }: { detail: ThreadDetailDto }) {
   // stable; the newly seen cards move into history on the next opening.
   useEffect(() => {
     if (!open || selected) return;
-    const seen = readSeenAgents(threadId);
+    const seen = readSeenAgents(seenStorageKey);
     let changed = false;
     for (const agent of rows) {
       if (isFinished(agent) && seen[agent.id] !== resultKey(agent)) {
@@ -200,21 +202,21 @@ function NativeSubagentsControl({ detail }: { detail: ThreadDetailDto }) {
       }
     }
     if (changed) {
-      try { localStorage.setItem(`pockymoe.subagents.seen.v1:${threadId}`, JSON.stringify(seen)); }
+      try { localStorage.setItem(seenStorageKey, JSON.stringify(seen)); }
       catch { /* A denied browser store must not block inspection. */ }
     }
-  }, [open, selected, rows, threadId]);
+  }, [open, selected, rows, threadId, seenStorageKey]);
 
   useEffect(() => {
     setOpen(false);
-    setSeenBeforeVisit(readSeenAgents(threadId));
+    setSeenBeforeVisit(readSeenAgents(seenStorageKey));
     setHistoryExpanded(false);
     setSelected(null);
     setInspect(null);
     setAgents(null);
     setDiscovering(false);
     setError(null);
-  }, [threadId]);
+  }, [threadId, seenStorageKey]);
   useEffect(() => {
     if (!['codex', 'claude'].includes(provider) && !fallback.length) return;
     let stopped = false;
@@ -432,7 +434,7 @@ function NativeSubagentsControl({ detail }: { detail: ThreadDetailDto }) {
             setSelected(null);
             setInspect(null);
             setError(null);
-            setSeenBeforeVisit(readSeenAgents(threadId));
+            setSeenBeforeVisit(readSeenAgents(seenStorageKey));
             setHistoryExpanded(false);
           }
           setOpen(value => !value);

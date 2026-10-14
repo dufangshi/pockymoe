@@ -93,9 +93,52 @@ pub fn source(source: &str, host: &str, port: u16, origin: bool, fetch: bool) ->
     }
 }
 
+/// The only thread visibility decision for Treer entry points.
+/// A Treer machine belongs to one workspace; browser humans currently have
+/// workspace-wide Agent UI access. Unbound hub threads never join that scope.
+pub fn thread_in_scope(
+    source: Source,
+    bound_thread: &str,
+    thread: &str,
+    root: Option<&str>,
+    root_has_binding: bool,
+    root_is_creating: bool,
+) -> bool {
+    let root = root.unwrap_or(thread);
+    match source {
+        Source::Controller => root == bound_thread,
+        // FUTURE TREER POLICY HOOK: intersect this result with policy/check and
+        // per-node permission bits when Treer supplies a verified browser human.
+        // Ask Treer at request time; do not add a second ACL or cache policy here.
+        Source::ProxyUi => root_has_binding || root_is_creating,
+    }
+}
+
+/// Keep labels valid path components; the thread ID distinguishes siblings.
+pub fn agent_label(title: &str, thread: &str) -> String {
+    let mut title: String = title
+        .chars()
+        .filter(|c| !c.is_control() && *c != '/')
+        .take(80)
+        .collect::<String>()
+        .trim()
+        .to_owned();
+    if title.is_empty()
+        || matches!(title.as_str(), "self" | "." | "..")
+        || title.starts_with("ag_")
+        || title.starts_with("app_")
+    {
+        title = format!("Pockymoe {title}").trim().to_owned();
+    }
+    format!("{title}-{thread}")
+}
+
 /// Default deny. Collection responses are supplied separately by the scoped hub middleware.
 pub fn gate(method: &str, path: &str, allowed_thread: impl Fn(&str) -> bool) -> bool {
     let read = method == "GET" || method == "HEAD";
+    if method == "POST" && path == "/api/threads/start" {
+        return true; // The scoped handler creates the corresponding Treer Agent.
+    }
     if let Some(tail) = path.strip_prefix("/api/threads/") {
         let mut parts = tail.split('/');
         let id = parts.next().unwrap_or_default();
@@ -121,8 +164,10 @@ pub fn gate(method: &str, path: &str, allowed_thread: impl Fn(&str) -> bool) -> 
                 ) || action.starts_with("requests/")
                     || action.starts_with("pending-steers/")
             }
-            "PATCH" => action.is_empty() || action == "settings",
-            "DELETE" => action.starts_with("pending-steers/") || action == "goal",
+            "PATCH" => action.is_empty() || action == "settings" || action == "goal",
+            "DELETE" => {
+                action.is_empty() || action.starts_with("pending-steers/") || action == "goal"
+            }
             _ => false,
         };
     }
@@ -138,12 +183,13 @@ pub fn gate(method: &str, path: &str, allowed_thread: impl Fn(&str) -> bool) -> 
             | "/api/config/model-pricing"
             | "/api/agent-runtimes"
             | "/api/plugins"
+            | "/threads"
     ) || path.starts_with("/assets/")
         || path.starts_with("/fonts/")
         || path == "/favicon.ico"
         || path
             .strip_prefix("/threads/")
-            .is_some_and(|id| allowed_thread(id)))
+            .is_some_and(|id| id == "new" || allowed_thread(id)))
 }
 
 pub fn event_allowed(event: &Value, allowed_thread: impl Fn(&str) -> bool) -> bool {
@@ -348,6 +394,43 @@ pub fn transcript_page(
 mod tests {
     use super::*;
     #[test]
+    fn bound_workspace_scope_matrix_and_labels() {
+        for (root, bound, creating, expected) in [
+            (None, true, false, true),
+            (Some("other"), true, false, true),
+            (None, false, false, false),
+            (Some("unbound"), false, false, false),
+            (None, false, true, true),
+        ] {
+            assert_eq!(
+                thread_in_scope(Source::ProxyUi, "x", "thread", root, bound, creating),
+                expected
+            );
+        }
+        assert!(thread_in_scope(
+            Source::Controller,
+            "x",
+            "child",
+            Some("x"),
+            true,
+            false
+        ));
+        assert!(!thread_in_scope(
+            Source::Controller,
+            "x",
+            "other",
+            None,
+            true,
+            false
+        ));
+        for title in ["self", ".", "..", "ag_bad", "app_bad", " /\n", ""] {
+            let label = agent_label(title, "thread-id");
+            assert!(!label.contains('/') && !label.chars().any(char::is_control));
+            assert!(!label.starts_with("ag_") && !label.starts_with("app_"));
+            assert!(label.ends_with("-thread-id"));
+        }
+    }
+    #[test]
     fn gate_matrix_and_events() {
         for (m, p, ok) in [
             ("GET", "/api/threads/root", true),
@@ -357,6 +440,13 @@ mod tests {
             ("PATCH", "/api/config/workspace-settings", false),
             ("GET", "/api/workspaces", false),
             ("POST", "/api/threads/root/fork", false),
+            ("POST", "/api/threads/start", true),
+            ("PATCH", "/api/threads/root", true),
+            ("DELETE", "/api/threads/root", true),
+            ("PATCH", "/api/threads/root/settings", true),
+            ("PATCH", "/api/threads/root/goal", true),
+            ("POST", "/api/threads/root/harness", false),
+            ("POST", "/api/agent-runtimes/codex/install", false),
             ("POST", "/api/threads/root/prompt", true),
             ("GET", "/ws", true),
             ("POST", "/api/cli", false),

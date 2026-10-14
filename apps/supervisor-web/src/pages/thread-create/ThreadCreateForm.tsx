@@ -1,3 +1,4 @@
+import { useHostScope } from '../../lib/hostCapabilities';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import type { FormEvent, ReactNode } from 'react';
 import { useEffect, useId, useRef, useState } from 'react';
@@ -112,6 +113,7 @@ export function ThreadCreateForm({
     : 'host-form-control mt-2 w-full rounded-lg border px-4 py-3 outline-none transition';
   const defaultBackend = shellNav?.defaultBackend ?? defaultAgentBackendId;
 
+  const hostScope = useHostScope();
   const [workspaces, setWorkspaces] = useState<WorkspaceDto[]>([]);
   const [backends, setBackends] = useState<AgentBackendDto[]>([]);
   const [agentOptions, setAgentOptions] = useState<ModelOptionDto[]>([]);
@@ -258,7 +260,7 @@ export function ThreadCreateForm({
       .then((records) => {
         if (cancelled) return;
         applyModels(records);
-        if (agentId !== 'deepseek') return;
+        if (hostScope || agentId !== 'deepseek') return;
         // The model probe booted DSH, so its run modes are cached by now.
         // They are optional: without them the thread uses DSH's default mode.
         // Applying one is a device-owner action on Relay.
@@ -384,6 +386,7 @@ export function ThreadCreateForm({
       setError(translate("workbench.chooseAnAvailableBackendBeforeCreatingA"));
       return;
     }
+    if (hostScope && selectedAgent?.acpAgent?.availability === 'adapter_missing') return;
     if (provider === 'acp' && selectedAgent?.acpAgent?.availability === 'adapter_missing') {
       askAdapterInstall(selectedAgent, true);
       return;
@@ -410,7 +413,7 @@ export function ThreadCreateForm({
 
   const backendUnavailable = selectedBackend && !canStart(selectedBackend);
   const selectedBackendAction = selectedBackend?.installation.installed ? translate("workbench.update") : translate("workbench.install");
-  const selectedBackendActionAvailable = selectedBackend
+  const selectedBackendActionAvailable = !hostScope && selectedBackend
     ? selectedBackend.installation.installed
       ? Boolean(selectedBackend.installation.updateCommand)
       : Boolean(selectedBackend.installation.installCommand)
@@ -528,7 +531,7 @@ export function ThreadCreateForm({
             </option>
           ))}
         </select>
-        {workspaces.length === 0 ? (
+        {!hostScope && workspaces.length === 0 ? (
           <p className="mt-2 text-xs leading-5 text-[var(--theme-fg-muted)]">
             {translate("workbench.addAWorkspaceBeforeCreatingAThread")}{' '}
             <Link className="font-semibold text-[var(--theme-accent-strong)] hover:underline" to={currentRelayScopedPath('/workspaces/new')}>
@@ -591,7 +594,7 @@ export function ThreadCreateForm({
                       {meta?.serverCommand ?? translate("workbench.unavailable")}
                     </span>
                   </label>
-                  {adapterMissing && meta?.installCommand ? (
+                  {!hostScope && adapterMissing && meta?.installCommand ? (
                     <button
                       type="button"
                       onClick={() => askAdapterInstall(entry, false)}
@@ -706,6 +709,7 @@ export function ThreadCreateForm({
           type="submit"
           disabled={
             busy ||
+            Boolean(hostScope && selectedAgent?.acpAgent?.availability === 'adapter_missing') ||
             !selectedBackend ||
             !canStart(selectedBackend) ||
             !workspaceId ||

@@ -11,10 +11,12 @@ vi.mock('../../lib/api', async original => ({
   fetchAgentHarnessCatalog: api.catalog, postThreadHarnessAction: api.harness,
 }));
 vi.mock('../../components/AppShellNavContext', () => ({ useAppShellNav: () => ({ defaultBackend: 'acp' }) }));
+const host = vi.hoisted(() => ({ scoped: false }));
+vi.mock('../../lib/hostCapabilities', () => ({ useHostScope: () => host.scoped ? { kind:'treerAgent' } : null }));
 let installed: boolean;
 const agent = (ready: boolean) => ({ id: 'codex', model: 'codex', displayName: 'OpenAI Codex', isDefault: true, selectionKind: 'agent', acpAgent: { availability: ready ? 'ready' : 'adapter_missing', serverCommand: 'codex-acp', installCommand: 'npm install fixture', statusMessage: 'Ready' } });
 beforeEach(() => {
-  vi.clearAllMocks(); installed = false;
+  vi.clearAllMocks(); installed = false; host.scoped = false;
   api.workspaces.mockResolvedValue([{ id: 'workspace-a', name: 'Project A', absPath: '/project-a' }]);
   api.backends.mockResolvedValue([{ provider: 'acp', displayName: 'ACP', enabled: true, capabilities: { sessions: { resume: true }, turns: { start: true } }, installation: { installed: true } }]);
   api.agents.mockImplementation(async () => [agent(installed)]);
@@ -88,4 +90,23 @@ it('keeps a created DSH thread when its run mode fails and retries only the mode
   expect(api.create).toHaveBeenCalledTimes(1);
   expect(api.harness).toHaveBeenCalledTimes(2);
   expect(api.harness).toHaveBeenLastCalledWith('created-thread', { kind: 'selectRunMode', id: 'plan' });
+});
+
+it('creates a scoped thread in the same page and hides runtime administration', async () => {
+  host.scoped = true; installed = true;
+  api.backends.mockResolvedValue([{ provider: 'acp', displayName: 'ACP', enabled: true, capabilities: { sessions: { resume: true }, turns: { start: true } }, installation: { installed: true, updateCommand:'fixture update' } }]);
+  const created = mount();
+  const create = await screen.findByRole('button', { name: /Create thread/i });
+  await waitFor(() => expect(create).toBeEnabled());
+  expect(screen.queryByRole('button', { name: /Update ACP/i })).toBeNull();
+  fireEvent.click(create);
+  await waitFor(() => expect(created).toHaveBeenCalledWith({ id:'created-thread' }));
+  expect(api.install).not.toHaveBeenCalled(); expect(api.harness).not.toHaveBeenCalled();
+});
+it('does not offer denied adapter installation in a scoped form', async () => {
+  host.scoped = true; mount();
+  const create = await screen.findByRole('button', { name: /Create thread/i });
+  await waitFor(() => expect(api.agents).toHaveBeenCalled());
+  expect(create).toBeDisabled(); expect(screen.queryByRole('button',{name:'Install adapter'})).toBeNull();
+  expect(api.install).not.toHaveBeenCalled();
 });
