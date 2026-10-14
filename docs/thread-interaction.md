@@ -208,6 +208,14 @@ question and that round's execution history; opening the parent task alone does
 not fetch all continuation details. Viewing a question does not acknowledge or
 answer its inbox record.
 
+Result notifications from a registered wait have a separate **Delegate wake**
+label and bell icon. The collapsed row names the triggering delegates; expanding
+it shows each source, a localized execution state and its closing report, then
+**Work after wake** above the receiving agent's execution history. `idle` means
+execution ended, not that the task succeeded. The UI reads reports from the
+original wake envelope when older devices supply only state metadata, and shows
+an explicit missing-report message if no report was included.
+
 The physical execution turns and their billing remain separate. The task header
 adds known usage and costs across its visible continuations; an unknown cost is
 not treated as zero. The latest active progress or final reply stays outside the
