@@ -18,6 +18,7 @@ internal sealed record ManagerTheme(Color Background, Color Surface, Color Input
         control.BackColor = control.Parent?.BackColor ?? theme.Background;
         if (control is ThemedPanel panel) { panel.Theme = theme; panel.BackColor = theme.Surface; }
         if (control is ThemedButton button) { button.Theme = theme; button.BackColor = theme.Surface; }
+        if (control is ThemedProgress progress) progress.Theme = theme;
         if (control is TextBox or NumericUpDown or ComboBox) control.BackColor = theme.Input;
         if (control is Label label && label.Tag as string == "muted") label.ForeColor = theme.Muted;
         foreach (Control child in control.Controls) Apply(child, theme);
@@ -61,5 +62,19 @@ internal sealed class ThemedButton : Button
         e.Graphics.DrawPath(border, path);
         TextRenderer.DrawText(e.Graphics, Text, Font, ClientRectangle, !Enabled ? Theme.Muted : Primary ? Theme.AccentText : Theme.Text,
             TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+    }
+}
+
+internal sealed class ThemedProgress : Control
+{
+    public ManagerTheme Theme { get; set; } = ManagerTheme.Get("plum-dark");
+    private int _value;
+    public int Value { get => _value; set { _value = Math.Clamp(value, 0, 100); Invalidate(); } }
+    public ThemedProgress() { DoubleBuffered = true; }
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        e.Graphics.Clear(Theme.Input);
+        using var fill = new SolidBrush(Theme.Accent);
+        e.Graphics.FillRectangle(fill, 0, 0, Width * Value / 100, Height);
     }
 }

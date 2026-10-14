@@ -17,7 +17,7 @@ internal sealed class MainForm : Form
     private readonly CheckBox _startWithWindowsCheckBox;
     private readonly Button _connectButton, _disconnectButton, _checkUpdateButton, _updateButton;
     private readonly Panel _statusDot;
-    private readonly ProgressBar _progressBar;
+    private readonly ThemedProgress _progressBar;
     private ParsedRelayConfiguration? _parsed;
     private bool _allowClose, _isApplyingPaste;
     private string _themeName;
@@ -89,7 +89,7 @@ internal sealed class MainForm : Form
         runtime.Controls.Add(runtimeGrid); body.Controls.Add(runtime, 0, 7); root.Controls.Add(body, 0, 2);
         var progress = new Panel { Dock = DockStyle.Fill, Padding = new Padding(0, 10, 0, 0) };
         _stepLabel = Label("Ready", muted: true); _stepLabel.Dock = DockStyle.Top; _stepLabel.Height = 25;
-        _progressBar = new ProgressBar { Dock = DockStyle.Bottom, Height = 4, Maximum = 100 };
+        _progressBar = new ThemedProgress { Dock = DockStyle.Bottom, Height = 4 };
         progress.Controls.Add(_stepLabel); progress.Controls.Add(_progressBar); root.Controls.Add(progress, 0, 3);
         var actions = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft, WrapContents = false, Padding = new Padding(0, 8, 0, 0) };
         _connectButton = new ThemedButton { Text = "Connect", Primary = true, Size = new Size(110, 36) }; _connectButton.Click += ConnectClicked;
@@ -321,7 +321,7 @@ internal sealed class MainForm : Form
         _progressBar.Value = Math.Clamp(_controller.Progress.Percent, 0, 100);
         _connectButton.Text = _controller.Runtime?.IsUsable == true ? "Connect" : "Install && connect";
         _connectButton.Enabled = !_controller.IsBusy;
-        _disconnectButton.Enabled = !_controller.IsBusy && _controller.State == SupervisorState.Running;
+        _disconnectButton.Enabled = !_controller.IsBusy && _controller.Runtime?.IsUsable == true && _controller.State != SupervisorState.Stopped;
         _relayUrlTextBox.Enabled = !_controller.IsBusy;
         _tokenTextBox.Enabled = !_controller.IsBusy;
         _workspaceTextBox.Enabled = !_controller.IsBusy;
@@ -348,6 +348,13 @@ internal sealed class MainForm : Form
     {
         grid.Controls.Add(Label(name), 0, row); grid.Controls.Add(control, 1, row);
         if (spanRemainingColumns) grid.SetColumnSpan(control, 2);
+    }
+    protected override void OnShown(EventArgs e)
+    {
+        base.OnShown(e);
+        var available = Screen.FromControl(this).WorkingArea;
+        MinimumSize = new Size(Math.Min(MinimumSize.Width, available.Width - 16), Math.Min(MinimumSize.Height, available.Height - 16));
+        Size = new Size(Math.Min(Width, available.Width - 16), Math.Min(Height, available.Height - 16));
     }
     protected override void Dispose(bool disposing)
     {

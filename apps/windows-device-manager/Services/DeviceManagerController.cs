@@ -232,6 +232,7 @@ internal sealed class DeviceManagerController
             var accepted = await _supervisor.ManagementAsync("/update", true, cancellationToken);
             if (accepted.TryGetProperty("canUpdate", out var allowed) && allowed.ValueKind == System.Text.Json.JsonValueKind.False)
                 throw new InvalidOperationException(accepted.GetProperty("reason").GetString());
+            State = SupervisorState.Starting;
             Report(new("Update", "Supervisor is updating; tasks will resume after restart…", ProvisioningStepState.Running, 70));
             for (var i = 0; i < 600; i++)
             {
@@ -279,7 +280,11 @@ internal sealed class DeviceManagerController
             Runtime = RuntimeState.FromNative() ?? Runtime;
             if (RelaySupervisorService.MaintenancePending()) return;
             var state = await _supervisor.GetStateAsync(Runtime, cancellationToken);
-            if (state == SupervisorState.Starting || state == SupervisorState.Unknown) return;
+            if (state == SupervisorState.Starting || state == SupervisorState.Unknown)
+            {
+                if (State != state) { State = state; OnChanged(); }
+                return;
+            }
             if (state == SupervisorState.Running)
             {
                 if (State != SupervisorState.Running)

@@ -247,7 +247,7 @@ internal sealed class DeviceManagerContext : ApplicationContext
         };
         _trayStatusItem.Text = status;
         _connectItem.Enabled = !_controller.IsBusy && _controller.State != SupervisorState.Running;
-        _disconnectItem.Enabled = !_controller.IsBusy && _controller.State == SupervisorState.Running;
+        _disconnectItem.Enabled = !_controller.IsBusy && _controller.Runtime?.IsUsable == true && _controller.State != SupervisorState.Stopped;
         _startWithWindowsItem.CheckedChanged -= StartWithWindowsChanged;
         _startWithWindowsItem.Checked = _controller.Settings.StartWithWindows;
         _startWithWindowsItem.CheckedChanged += StartWithWindowsChanged;
