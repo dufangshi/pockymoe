@@ -1,9 +1,11 @@
 """Offline release fixtures; never installs into the real home or calls Treer."""
 import hashlib
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 import io
 import json
 from pathlib import Path
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 import zipfile
@@ -81,6 +83,42 @@ class PackagingTests(unittest.TestCase):
         self.assertIn("acp", calls[3])
         self.assertIn("grok", calls[3])
         self.assertTrue(all("/data/treer-attach.token" in call for call in calls[1:]))
+
+    def test_test_only_loopback_mirror_still_verifies_checksums(self):
+        class QuietHandler(SimpleHTTPRequestHandler):
+            def log_message(self, *_args):
+                pass
+
+        for corrupt in (False, True):
+            with self.subTest(corrupt=corrupt), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                release = root / "mirror/v9.8.7"
+                release.mkdir(parents=True)
+                for name, content in self.assets(corrupt=corrupt).items():
+                    (release / name).write_bytes(content)
+                server = ThreadingHTTPServer(("127.0.0.1", 0),
+                                            lambda *args, **kwargs: QuietHandler(*args, directory=root / "mirror", **kwargs))
+                worker = threading.Thread(target=server.serve_forever, daemon=True)
+                worker.start()
+                try:
+                    with patch.dict(install.os.environ, {"POCKYMOE_RELEASE_BASE_URL": f"http://127.0.0.1:{server.server_port}"}):
+                        if corrupt:
+                            with self.assertRaisesRegex(ValueError, "checksum mismatch"):
+                                install.install("9.8.7", root / "home")
+                            self.assertFalse((root / "home/.local/bin/pockymoe").exists())
+                        else:
+                            self.assertTrue(install.install("9.8.7", root / "home").is_file())
+                finally:
+                    server.shutdown()
+                    worker.join()
+                    server.server_close()
+
+    def test_test_only_mirror_rejects_remote_http_and_credentials(self):
+        for base in ("http://example.com", "https://user:secret@example.com", "file:///tmp",
+                     "https://example.com?token=secret", "https://example.com#fragment"):
+            with self.subTest(base=base), patch.dict(install.os.environ, {"POCKYMOE_RELEASE_BASE_URL": base}):
+                with self.assertRaises(ValueError):
+                    install.release_base("9.8.7")
 
 
 if __name__ == "__main__":
