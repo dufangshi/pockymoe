@@ -2508,6 +2508,7 @@ main:has(.product-navigation) { padding-top: 0 !important; }
   padding: env(safe-area-inset-top) 12px 0; margin: 0; min-height: 64px;
   gap: 8px; border: 0; border-bottom: 1px solid var(--theme-border); border-radius: 0;
 }
+.device-connection-slot { display: inline-flex; flex: 0 0 28px; width: 28px; height: 28px; }
 .device-connection-button {
   position: relative; display: inline-flex; width: 36px; height: 36px; flex-shrink: 0;
   align-items: center; justify-content: center; border-radius: 12px;
