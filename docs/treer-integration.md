@@ -8,7 +8,7 @@ Each Agent gets a fresh interface instance ID on process start. The hub dispatch
 Agent requests by Treer's `x-treer-agent-id` and `x-treer-interface-instance`
 headers, rather than opening a separate listener for every thread.
 
-Child threads stay inside their parent Agent's scope; they are not separate
+Child threads stay inside their top-level thread's scope; they are not separate
 Treer Agents. The hub is a Treer Managed App, so the Host owns its process and
 relaunches it after an update. Attach remains alive across hub restarts and
 rebinds the same thread.
@@ -154,7 +154,10 @@ stay in memory; only their counts are printed. The hub's declared capabilities
 must be supported by that Controller.
 
 Attach sends `AttachHello` on `/api/treer/attach`, with the private token in the
-WebSocket upgrade's Bearer header, and waits for `AttachReply`. After creation,
+WebSocket upgrade's Bearer header, and waits for `AttachReply`. It prints a waiting
+line immediately and a reminder every thirty seconds; first-launch runtime and
+ACP adapter setup can take several minutes. The socket stays open during setup
+and answers pings. After creation,
 it saves `treer agent startup set --cwd ... -- <stable pockymoe> attach --thread ...`
 **before** registering the interface. The saved command includes the explicit
 hub URL and token-file path, never token contents or Treer credentials. If only
@@ -174,8 +177,10 @@ are reread on reconnect. A missing token file is retried while the hub starts.
 A rejected binding, authentication failure, invalid configuration or unknown
 contract exits nonzero. There is no successful exit path: Treer disables Agent
 recovery after exit code 0. Short status lines remain available in Treer's PTY
-fallback. Raw hub error messages and Treer subprocess output are suppressed,
-and attach disables tracing even if `RUST_LOG=trace` to protect the hello payload.
+fallback. Hub rejection diagnostics include the hub's error code and message, with known
+credentials redacted, control characters stripped and code/message lengths capped
+at 96/512 characters (plus a truncation marker). Treer subprocess output stays
+suppressed, and attach disables tracing even if `RUST_LOG=trace` to protect the hello payload.
 
 ## Lifecycle mapping
 
@@ -184,7 +189,7 @@ and attach disables tracing even if `RUST_LOG=trace` to protect the hello payloa
 | Agent stop | Attach is terminated; the socket closes. The hub interrupts the bound turn and releases its harness, retaining history. |
 | Agent start / restore | The saved `attach --thread` command rebinds the same thread. Harness recovery is demand driven. |
 | Agent restart | Stop followed by start with a fresh process instance ID. |
-| Agent delete | Identity/credentials are revoked in Treer. Thread history is retained; deletion reconciliation is not part of attach. |
+| Agent delete in Treer | Identity/credentials are revoked. Thread history is retained because attach cannot distinguish deletion from stop. Deleting a thread in the scoped Web instead deletes its Agent first, then its history. |
 | Hub update / restart | Attach waits, reconnects and re-registers. It does not create another thread. |
 
 Attach cannot reliably send a final notification within Treer's short stop
@@ -210,23 +215,28 @@ Treer's injected source/Agent/instance markers are provenance, not secrets.
 They support browser and routing checks but do not authenticate an OS process.
 A process running as the same OS user can inspect environments, read private
 files, or forge markers. This integration is not an isolation boundary against
-that user. Agent UI requests must remain confined to their bound thread and
-its children; user-supplied thread IDs must never widen that scope. Unknown
-bindings fail closed.
+that user. Unknown or disconnected requesting bindings fail closed.
 
-Treer's Agent UI entry does not supply a human identity with per-Agent policy
-checks. A full workspace App UI therefore needs separate verified human
-identity and visibility filtering. Until that exists, an App route must not
-expose the unrestricted workbench. This limit is independent of hosted mode:
-local HTTP authentication alone does not provide Agent scoping.
+A Treer machine belongs to one workspace. Treer currently authorizes browser
+humans at workspace level: any workspace member can open every Agent's UI.
+Consequently a live Agent UI tunnel may access every top-level thread on this
+hub with a persisted Treer binding (live or detached), and all their descendants.
+It exposes nothing a member cannot already open through Treer. Unbound hub
+threads remain invisible, including in collections and WebSocket events.
+`pockymoe_treer::thread_in_scope` is the single thread-policy decision, with a
+marked hook to intersect future Treer `policy/check` results and per-node
+permission bits. Controller AIS access remains limited to its own Agent family.
+Management, global settings writes, devices, upstreams and harness administration stay
+denied. An unrestricted App/workbench still requires verified human identity and
+visibility filtering; local HTTP authentication alone does not supply that.
 
 ## Unsupported scope
 
 - A shared hub across isolated containers or devices without shared loopback.
 - Windows installation/profile wrappers in this Unix packaging; Windows needs
   a stable owner-controlled launcher that follows `native/current.json`.
-- Creating Treer Agents automatically from new hub UI threads, and Agent-delete
-  reconciliation/archive policy.
+- Treer-side Agent-delete reconciliation: deletion is indistinguishable from
+  stop/disconnection today, so the hub retains the thread and its history.
 - Core Message bridging, child Agent registration, cross-device split views,
   and fine-grained human/App authorization.
 - Release rollback, automated profile upgrades, or replacing a running
@@ -273,10 +283,38 @@ never reruns the task. Transcript `page`/`cursor` are turn offsets (default limi
 while the thread has a pending approval or question.
 
 **Browser UI tunnel.** A `proxy-ui` request needs a live binding and the hub's
-loopback Host. `/` redirects relatively to the bound thread. Access covers the
-bound thread, its descendants, and the minimum global reads the page needs
-(plugins, runtime config, models, capabilities, assets). Collections are
-filtered to permitted threads and WebSocket events to those threads. Management,
-device metrics, subscription usage and other threads are denied. These provenance
-headers are browser defenses supplied by Treer, not authentication against a
-hostile process of the same OS user.
+loopback Host. `/` redirects relatively to the requesting Agent's bound thread.
+Collections list only bound top-level threads and descendants; detached bindings
+remain visible. The workbench supports tabs, split views, favorites, thread
+settings, rename, delete and new conversations across that set. Files are
+read-only. Fork/import, sharing, terminal, device/global settings and harness
+administration controls are hidden. Denied requests with
+`thread_scope_forbidden` have a clear fallback message.
+
+Scoped runtime config responses include camelCase `hostScope` with kind
+`treerAgent`, `boundThreadId`, stable non-secret `hubId` and allowed operations;
+ordinary requests omit it. Browser navigation, favorites, presentation and seen
+markers use hub + tunnel mount keys, without importing old shared-origin
+shortcuts. Definitive scope-denied/404 references are silently removed; transient
+or offline failures do not discard shortcuts.
+
+**Browser thread/Agent synchronization.** Creating a top-level thread also runs
+`treer agent admin create --machine <machine> --kind command --name <label>
+--cwd <relative-cwd> -- <stable-pockymoe> attach --thread <id> --hub <loopback-url>
+--hub-token-file <path>` using the requesting Agent's live in-memory identity.
+`treer whoami` supplies the machine root; the workspace cwd must be within it.
+Omitting `--folder` inherits the requesting Agent's Treer tree folder. Labels
+come from the title with invalid characters removed and a thread-ID suffix for
+sibling uniqueness. A failed Agent creation rolls back the new thread. The new
+thread pauses until its own Agent attaches; it never receives the caller's Treer
+credentials. The Web opens the result in the same page.
+
+Renaming a bound top-level thread runs `treer agent admin rename` before changing
+its title. Deleting one runs `treer agent admin delete` before deleting its thread
+and descendants; failed Treer operations preserve the thread. Both use the
+requesting Agent's live identity, including when targeting another bound Agent.
+Deleting the requesting Agent's own thread is allowed after normal confirmation
+and may close the page. Child thread changes do not create/delete Treer Agents.
+Deleting an Agent from Treer itself currently retains its thread because the hub
+cannot distinguish deletion from stop. Provenance headers remain browser defenses,
+not authentication against a hostile process of the same OS user.

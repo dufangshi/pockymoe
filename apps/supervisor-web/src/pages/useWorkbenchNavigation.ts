@@ -1,3 +1,5 @@
+import { useBrowserStateKey } from '../lib/browserStateScope';
+import { useHostScope } from '../lib/hostCapabilities';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ThreadDetailDto, ThreadDto } from '@pockymoe/shared';
@@ -5,7 +7,7 @@ import type {
   WorkbenchNotification,
   WorkbenchThread,
 } from '@pockymoe/thread-ui';
-import { ApiError, relayModeActive, request } from '../lib/api';
+import { ApiError, isInvisibleThreadError, relayModeActive, request } from '../lib/api';
 import { threadHref } from '../lib/relayRoutes';
 import { threadThemeAgentKey } from '@pockymoe/thread-ui';
 
@@ -43,10 +45,10 @@ interface NavigationSnapshot {
 const LOCAL_KEY = 'remote-codex.local-workbench.v1';
 const referenceKey = (r: { deviceId: string | null; threadId: string }) =>
   `${r.deviceId ?? 'local'}:${r.threadId}`;
-function loadLocal(): NavigationSnapshot {
+function loadLocal(storageKey: string): NavigationSnapshot {
   try {
     const value = JSON.parse(
-      localStorage.getItem(LOCAL_KEY) ?? '{}',
+      localStorage.getItem(storageKey) ?? '{}',
     ) as NavigationSnapshot;
     return {
       threads: Array.isArray(value.threads) ? value.threads : [],
@@ -75,11 +77,13 @@ export function useWorkbenchNavigation(
     sharesDeviceThreads?: boolean;
   } = {},
 ) {
+  const hostScope = useHostScope();
+  const storageKey = useBrowserStateKey(LOCAL_KEY);
   const sharesDeviceThreads = options.sharesDeviceThreads === true;
   const threadsRef = useRef(threads);
   threadsRef.current = threads;
   useI18n();
-  const relay = relayModeActive();
+  const relay = !hostScope && relayModeActive();
   const [snapshot, setSnapshot] = useState<NavigationSnapshot>({
     threads: [],
     notifications: [],
@@ -114,7 +118,20 @@ export function useWorkbenchNavigation(
           ? await request<NavigationSnapshot>('relay/account/workbench', {
               signal: controller.signal,
             })
-          : loadLocal();
+          : loadLocal(storageKey);
+        if (!relay && hostScope) {
+          const missing = new Set<string>();
+          await Promise.all(next.threads.map(async r => {
+            if (r.deviceId !== null) { missing.add(referenceKey(r)); return; }
+            if (threadsRef.current.some(t => t.id === r.threadId)) return;
+            try { await request(`api/threads/${encodeURIComponent(r.threadId)}?view=summary&limit=1&compact=1`, { signal: controller.signal }); }
+            catch (error) { if (isInvisibleThreadError(error)) missing.add(referenceKey(r)); }
+          }));
+          if (alive && startedAtRevision === revision.current && missing.size) {
+            next.threads = next.threads.filter(r => !missing.has(referenceKey(r)));
+            localStorage.setItem(storageKey, JSON.stringify(next));
+          }
+        }
         if (!alive) return;
         if (startedAtRevision === revision.current) { setSnapshot(next); setNavigationReady(true); }
         setError(null);
@@ -231,7 +248,7 @@ export function useWorkbenchNavigation(
       document.removeEventListener('visibilitychange', onVisible);
       window.removeEventListener('storage', onVisible);
     };
-  }, [relay, deviceId, sharesDeviceThreads]);
+  }, [relay, deviceId, sharesDeviceThreads, storageKey, hostScope]);
 
   const save = useCallback(
     async (favorite?: boolean, markRead = false, target?: ThreadReference) => {
@@ -254,7 +271,7 @@ export function useWorkbenchNavigation(
         );
         if (writeRevision === revision.current) { setSnapshot(next); setNavigationReady(true); }
       } else {
-        const next = loadLocal();
+        const next = loadLocal(storageKey);
         const previous = next.threads.find(
           (t) => referenceKey(t) === referenceKey(reference),
         );
@@ -270,12 +287,12 @@ export function useWorkbenchNavigation(
             (t) => referenceKey(t) !== referenceKey(record),
           ),
         ].slice(0, 100);
-        localStorage.setItem(LOCAL_KEY, JSON.stringify(next));
+        localStorage.setItem(storageKey, JSON.stringify(next));
         setSnapshot(next);
         setNavigationReady(true);
       }
     },
-    [deviceId, relay],
+    [deviceId, relay, storageKey],
   );
   useEffect(() => {
     if (!threadId || (routeThreadId && routeThreadId !== threadId)) return;
@@ -312,7 +329,8 @@ export function useWorkbenchNavigation(
       setBusy(false);
     }
   };
-  const refs = [...snapshot.threads];
+  const refs = hostScope ? snapshot.threads.filter(r => r.deviceId === null &&
+    (r.threadId === detail?.thread.id || threads.some(thread => thread.id === r.threadId))) : [...snapshot.threads];
   if (detail && !refs.some((r) => referenceKey(r) === currentKey))
     refs.unshift({
       deviceId,
@@ -451,14 +469,14 @@ export function useWorkbenchNavigation(
     },
     onThreadRemoved: async (key: string) => {
       const target = snapshot.threads.find(t => referenceKey(t) === key);
-      if (!target) return;
+      if (relay && !target) return;
       ++revision.current;
-      if (relay) {
+      if (relay && target) {
         setSnapshot(await request<NavigationSnapshot>('relay/account/workbench', { method: 'DELETE', body: JSON.stringify({ deviceId: target.deviceId, threadId: target.threadId }) }));
       } else {
-        const next = loadLocal();
+        const next = loadLocal(storageKey);
         next.threads = next.threads.filter(t => referenceKey(t) !== key);
-        localStorage.setItem(LOCAL_KEY, JSON.stringify(next));
+        localStorage.setItem(storageKey, JSON.stringify(next));
         setSnapshot(next);
       }
     },

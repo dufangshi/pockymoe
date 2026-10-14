@@ -254,7 +254,8 @@ async fn hub_error_reply_exits_nonzero_without_echoing_secrets() {
     let (mut ws, _) = f.accept().await;
     let reply = AttachReply::Error {
         code: "bad-binding".into(),
-        message: "synthetic-workload-secret".into(),
+        message: "Invalid thread target\n\x1b: synthetic-workload-secret; synthetic-attach-secret"
+            .into(),
     };
     ws.send(Message::Text(serde_json::to_string(&reply).unwrap().into()))
         .await
@@ -268,7 +269,11 @@ async fn hub_error_reply_exits_nonzero_without_echoing_secrets() {
     assert!(!status.success());
     let mut output = String::new();
     stderr.read_to_string(&mut output).await.unwrap();
-    assert!(output.contains("Hub rejected attach binding"));
+    assert!(output.contains(
+        "Hub rejected attach binding [bad-binding]: Invalid thread target: [redacted]; [redacted]"
+    ));
+    assert!(!output.contains("synthetic-attach-secret"));
+    assert!(!output.contains('\x1b'));
     assert!(!output.contains("synthetic-workload-secret"));
 }
 
@@ -289,4 +294,59 @@ async fn unknown_contract_fails_before_connecting() {
             .await
             .is_err()
     );
+}
+
+#[tokio::test]
+async fn delayed_hub_reply_reports_progress_and_stays_on_the_same_socket() {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    let mut f = Fixture::new(&["--provider", "codex"], None).await;
+    let (mut ws, _) = f.accept().await;
+    let mut lines = BufReader::new(f.child.stdout.take().unwrap()).lines();
+    time::timeout(Duration::from_secs(5), async {
+        while let Some(line) = lines.next_line().await.unwrap() {
+            assert!(!line.contains("synthetic-workload-secret"));
+            assert!(!line.contains("synthetic-attach-secret"));
+            if line.contains("waiting for hub reply (") {
+                return;
+            }
+        }
+        panic!("attach exited before announcing the wait");
+    })
+    .await
+    .unwrap();
+    // This spans the old 15-second timeout and the first 30-second progress tick.
+    time::timeout(Duration::from_secs(35), async {
+        loop {
+            let line = lines
+                .next_line()
+                .await
+                .unwrap()
+                .expect("attach must keep waiting");
+            if line.contains("still waiting for hub reply") {
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert!(f.child.try_wait().unwrap().is_none());
+    assert!(
+        time::timeout(Duration::from_millis(100), f.listener.accept())
+            .await
+            .is_err()
+    );
+    ws.send(Message::Ping(b"delayed-setup".to_vec().into()))
+        .await
+        .unwrap();
+    assert_eq!(
+        time::timeout(Duration::from_secs(2), ws.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap(),
+        Message::Pong(b"delayed-setup".to_vec().into())
+    );
+    Fixture::bound(&mut ws, true).await;
+    f.wait_calls(1).await;
+    assert!(f.child.try_wait().unwrap().is_none());
 }

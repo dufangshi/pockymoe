@@ -1,10 +1,11 @@
+import { useHostScope } from '../lib/hostCapabilities';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   AgentProviderCapabilitiesDto, ModelOptionDto, RelayEffectiveAccessDto,
   ThreadDetailDto, ThreadEventEnvelope, UpdateThreadSettingsInput,
 } from '@pockymoe/shared';
 import {
-  connectSupervisorEvents, cancelPendingSteer, fetchRelayAccess, fetchThreadCapabilitySnapshot,
+  isInvisibleThreadError, connectSupervisorEvents, cancelPendingSteer, fetchRelayAccess, fetchThreadCapabilitySnapshot,
   fetchThreadDetail, fetchThreadModels, interruptThread, relayModeActive,
   respondToThreadRequest, resumeThread, sendThreadPrompt, steerPendingPrompt,
   steerSubmittedPrompt, updateThreadSettings, type SendThreadPromptRequestInput,
@@ -18,6 +19,8 @@ import { useScopedState } from './useScopedState';
  * acknowledges reads, mounts device management, or changes the host route. */
 /** `displayed`: the split shows this conversation, so a controllable one counts as viewed. */
 export function useWorkbenchReference(device: string, threadId: string | null, hostDevice = device, displayed = false) {
+  const hostScope = useHostScope();
+  const [unavailable, setUnavailable] = useScopedState(`${device}:${threadId ?? ''}`, false);
   const source = `${device}:${threadId ?? ''}`;
   const [detail, setDetail] = useScopedState<ThreadDetailDto | null>(source, null);
   const [error, setError] = useScopedState<string | null>(source, null);
@@ -79,7 +82,10 @@ export function useWorkbenchReference(device: string, threadId: string | null, h
         const next = await fetchThreadDetail(threadId!, { limit: 3 }, device);
         if (alive && isCurrent() && version === owner.version) mergeDetail(next);
       } catch (caught) {
-        if (alive && isCurrent()) setError(caught instanceof Error ? caught.message : String(caught));
+        if (alive && isCurrent()) {
+          if (hostScope && isInvisibleThreadError(caught)) setUnavailable(true);
+          else setError(caught instanceof Error ? caught.message : String(caught));
+        }
       } finally { pending = false; }
     }
     refreshRef.current = () => {
@@ -93,7 +99,7 @@ export function useWorkbenchReference(device: string, threadId: string | null, h
       alive = false; clearInterval(interval); clearTimeout(timer);
       refreshRef.current = () => {};
     };
-  }, [threadId, owner, revision, mergeDetail, setError, device]);
+  }, [threadId, owner, revision, mergeDetail, setError, device, hostScope, setUnavailable]);
   const onEvent = useCallback((event: ThreadEventEnvelope) => {
     if (device === hostDevice && event.threadId === threadId) refreshRef.current();
   }, [threadId, device, hostDevice]);
@@ -176,6 +182,7 @@ export function useWorkbenchReference(device: string, threadId: string | null, h
     }
   }, [threadId, owner, setDetail, setError, setLoadingEarlier, device]);
   return {
+    unavailable,
     deviceId: device, detail, error, busy, canControl, access, accessReady, disabledReason, capabilities, models,
     onEvent, loadEarlier, loadingEarlier, respondingRequestId, send,
     interrupt: () => mutate(() => interruptThread(threadId!, {}, device)),

@@ -1,3 +1,4 @@
+import { useHostScope } from '../lib/hostCapabilities';
 import {
   ThreadCards,
   ThreadWorkspaceLayout as SharedThreadWorkspaceLayout,
@@ -38,6 +39,7 @@ export function ThreadWorkspaceLayout({
   ...props
 }: ThreadWorkspaceLayoutProps) {
   const navigate = useNavigate();
+  const hostScope = useHostScope();
   const location = useLocation();
   const deviceId = relayDeviceIdFromPath(location.pathname) ?? 'local';
   const shellNav = useAppShellNav();
@@ -50,7 +52,8 @@ export function ThreadWorkspaceLayout({
     <SharedThreadWorkspaceLayout
       {...props}
       {...(props.workbench ? { workbench: workbenchUrls(props.workbench) } : {})}
-      deviceMonitor={<><DeviceMonitor key={deviceId} /><TourLauncherButton /></>}
+      restrictedNavigation={Boolean(hostScope)}
+      deviceMonitor={hostScope ? null : <><DeviceMonitor key={deviceId} /><TourLauncherButton /></>}
       workspaceReturnHref={appUrl(props.workspaceReturnHref ?? currentWorkspacesHref())}
       settingsSections={props.settingsSections ?? appSettingsSections()}
       {...(effectiveTheme ? { effectiveTheme } : {})}

@@ -1,7 +1,8 @@
+import { useBrowserStateKey } from '../lib/browserStateScope';
 import { SupervisorHeartbeat, SUPERVISOR_HEARTBEAT_TIMEOUT_MS } from '../lib/supervisorHeartbeat';
 import { appUrl } from '../lib/webBase';
 import { workbenchUrls } from '../lib/workbenchUrls';
-import { HostFeatureGate } from '../lib/hostCapabilities';
+import { HostFeatureGate, useHostScope, UnscopedOnly } from '../lib/hostCapabilities';
 import { sharingEditInput, type SharingInput } from '../lib/signedSharing';
 import { SignedShareDetails } from '../components/SignedShareDetails';
 import { useThreadDrafts } from './useThreadDrafts';
@@ -73,6 +74,7 @@ import {
 } from '@pockymoe/thread-ui';
 import { usePlugins } from '@pockymoe/thread-ui';
 import {
+  isInvisibleThreadError,
   ApiError,
   compactThread,
   connectSupervisorEvents,
@@ -449,6 +451,7 @@ function writeTerminalOpen(routeKey: string, open: boolean) {
 }
 
 export function ThreadDetailPage() {
+  const hostScope = useHostScope();
   const { locale: i18nLocale } = useI18n();
   const { id = '' } = useParams();
   const activeThreadIdRef = useRef(id);
@@ -507,7 +510,7 @@ export function ThreadDetailPage() {
   const subscriptionUsage = useSubscriptionUsage({
     deviceId: relayRouteDeviceId,
     threadId: id,
-    provider: detail?.thread.provider,
+    provider: hostScope ? undefined : detail?.thread.provider,
     agentId: detail?.thread.agentId,
   });
   const [backendManagementSchema, setBackendManagementSchema] =
@@ -562,7 +565,7 @@ export function ThreadDetailPage() {
   const [actionMode, setActionMode] = useState<'share' | 'link' | 'html'>('share');
   const [workspaceFocusPathRequest, setWorkspaceFocusPathRequest] =
     useState<WorkspaceFocusPathRequest | null>(null);
-  const terminalPluginEnabled = plugins.getThreadPanels().some(
+  const terminalPluginEnabled = !hostScope && plugins.getThreadPanels().some(
     (panel) => panel.kind === 'terminal',
   );
   useEffect(() => { if (!terminalPluginEnabled) setActiveView('chat'); }, [terminalPluginEnabled]);
@@ -716,9 +719,9 @@ export function ThreadDetailPage() {
     relayModeActive() && Boolean(relayRouteDeviceId);
   const relayAccess = relayAccessState.access;
   const relayThreadIsOwner =
-    !relayDeviceRouteActive || relayAccess?.kind === 'owner';
+    !hostScope && (!relayDeviceRouteActive || relayAccess?.kind === 'owner');
   const relayThreadCanControl =
-    relayThreadIsOwner ||
+    Boolean(hostScope) || relayThreadIsOwner ||
     (relayAccess?.kind === 'shared' && relayAccess.threadAccess === 'control');
   const relayThreadCanShare =
     relayDeviceRouteActive && relayAccess?.kind === 'owner';
@@ -736,12 +739,20 @@ export function ThreadDetailPage() {
   // Keep the workspace profile through a primary swap while the route is loading.
   const presentationWorkspace = useRef<{ device: string | null; id: string | null }>({ device: relayRouteDeviceId, id: currentWorkspaceId });
   if (presentationWorkspace.current.device !== relayRouteDeviceId || currentWorkspaceId) presentationWorkspace.current = { device: relayRouteDeviceId, id: currentWorkspaceId };
-  const presentationScope = presentationAccount && presentationWorkspace.current.id ? `remote-codex.presentation.v1:${JSON.stringify([window.location.origin, presentationAccount, relayRouteDeviceId ?? 'local', presentationWorkspace.current.id])}` : null;
+  const browserStateScope = useBrowserStateKey('remote-codex.presentation.v1');
+  const presentationScope = presentationAccount && presentationWorkspace.current.id ? `${browserStateScope}:${JSON.stringify([window.location.origin, presentationAccount, relayRouteDeviceId ?? 'local', presentationWorkspace.current.id])}` : null;
   const workbenchPresentation = useWorkbenchPresentation(presentationScope, routeKey);
   const referenceDevice = workbenchPresentation.value.referenceDeviceId ?? relayRouteDeviceId ?? 'local';
-  const referenceId = workbenchPresentation.value.referenceId === id && referenceDevice === (relayRouteDeviceId ?? 'local') ? null : workbenchPresentation.value.referenceId;
+  const referenceAllowed = !hostScope || !workbenchPresentation.value.referenceId || (
+    referenceDevice === 'local' && threads.some(thread =>
+      thread.id === workbenchPresentation.value.referenceId)
+  );
+  const referenceId = !referenceAllowed || (
+    workbenchPresentation.value.referenceId === id && referenceDevice === (relayRouteDeviceId ?? 'local')
+  ) ? null : workbenchPresentation.value.referenceId;
   const [focusedPane, setFocusedPane] = useScopedState<'primary' | 'reference'>(`${routeKey}:${referenceDevice}:${referenceId ?? ''}`, 'primary');
-  const [terminalOpen, setTerminalOpenState] = useScopedState(routeKey, readTerminalOpen(routeKey));
+  const [storedTerminalOpen, setTerminalOpenState] = useScopedState(routeKey, readTerminalOpen(routeKey));
+  const terminalOpen = !hostScope && storedTerminalOpen;
   // One tools drawer: the terminal or a plugin panel (DeepSeek Harness).
   const [dshOpen, setDshOpen] = useScopedState(routeKey, false);
   // Restored after a reload; an explicit open also focuses and may create a terminal.
@@ -756,6 +767,12 @@ export function ThreadDetailPage() {
   const [chatDraft, setChatDraft, referenceDraft, setReferenceDraft] = useThreadDrafts(routeKey, `${referenceDevice}:${referenceId ?? ''}`);
   const referenceShown = Boolean(referenceId) && workbenchPresentation.value.mode === 'thread';
   const referenceController = useWorkbenchReference(referenceDevice, referenceId, relayRouteDeviceId ?? 'local', referenceShown);
+  useEffect(() => {
+    if (!hostScope || !referenceId || !referenceController.unavailable) return;
+    void workbenchNavigation.onThreadRemoved(`local:${referenceId}`);
+    setThreads(previous => previous.filter(thread => thread.id !== referenceId));
+    workbenchPresentation.update({ referenceId: null, mode: 'focus' });
+  }, [hostScope, referenceId, referenceController.unavailable, workbenchPresentation.update]);
   // The Supervisor keeps displayed harnesses loaded: the primary thread and a
   // split showing a conversation on the same device (the split reports its own
   // device). View-only shares never count.
@@ -782,7 +799,7 @@ export function ThreadDetailPage() {
     });
   };
   const effectiveWorkspaceAccess: 'none' | 'read' | 'write' =
-    !relayDeviceRouteActive
+    hostScope ? 'read' : !relayDeviceRouteActive
       ? 'write'
       : relayAccess?.kind === 'owner'
         ? 'write'
@@ -848,7 +865,7 @@ export function ThreadDetailPage() {
     setTerminalOpen(!terminalOpen);
   }, [setTerminalOpen, setDshOpen, terminalOpen, toolsTargetKey]);
   const loadToolsCapabilities = useCallback(() => fetchThreadCapabilitySnapshot(toolsDetail!.thread.id, toolsDevice), [toolsDetail?.thread.id, toolsDevice]);
-  const dshPanelAvailable = toolsDetail?.thread.agentId === 'deepseek'
+  const dshPanelAvailable = !hostScope && toolsDetail?.thread.agentId === 'deepseek'
     && plugins.getThreadPanels().some(panel => panel.kind === DEEPSEEK_HARNESS_PANEL_KIND);
   const dshPanelOpen = dshOpen && dshPanelAvailable;
   const toggleDshPanel = useCallback(() => {
@@ -856,7 +873,7 @@ export function ThreadDetailPage() {
     setDshOpen(!dshPanelOpen);
   }, [dshPanelOpen, setDshOpen, setTerminalOpen]);
   // Harness panel actions edit the device's DSH profile: owner-only on Relay.
-  const referenceHarnessOwner = referenceController.canControl
+  const referenceHarnessOwner = !hostScope && referenceController.canControl
     && (referenceController.access?.kind === 'owner' || referenceDevice === 'local' || !relayModeActive());
   const toolsHarnessOwner = toolsUseReference ? referenceHarnessOwner : relayThreadIsOwner;
   // Harness panel actions stay on the device that owns the thread.
@@ -1600,9 +1617,14 @@ export function ThreadDetailPage() {
           }
         }
       } catch (caught) {
-        if (loadRequestIdRef.current !== requestId || !reportError) {
+        if (loadRequestIdRef.current !== requestId || activeRouteRef.current !== routeKey) return;
+        if (hostScope && isInvisibleThreadError(caught)) {
+          await workbenchNavigation.onThreadRemoved(`local:${id}`);
+          setThreads(previous => previous.filter(thread => thread.id !== id));
+          navigate('/threads', { replace: true });
           return;
         }
+        if (!reportError) return;
         setError(
           caught instanceof Error
             ? caught.message
@@ -1615,7 +1637,7 @@ export function ThreadDetailPage() {
         }
       }
     },
-    [applyDetailResponse, id, loadPageContext, routeKey],
+    [applyDetailResponse, id, loadPageContext, routeKey, hostScope, navigate],
   );
 
   // A first load that failed retries with backoff while the tab is visible.
@@ -3652,8 +3674,8 @@ export function ThreadDetailPage() {
   );
   const threadActionsButton = <div>
     {relayThreadIsOwner && relayRouteDeviceId && <HostFeatureGate feature="previews"><button aria-label={translate("workbench.portMappings")} title={translate("workbench.portMappings")} onClick={() => setPortsOpen(true)}><Network /></button></HostFeatureGate>}
-    <button aria-label={translate("workbench.shareAsLink")} title={translate("workbench.createAndCopyReadOnlyLink")} onClick={() => { setActionMode('link'); setExportDialogOpen(true); }}><Link2 /></button>
-    <button aria-label={translate("workbench.sharingPermissions")} title={translate("workbench.sharingPermissions")} onClick={() => { setActionMode('share'); setExportDialogOpen(true); }}><Users /></button>
+    {!hostScope && <button aria-label={translate("workbench.shareAsLink")} title={translate("workbench.createAndCopyReadOnlyLink")} onClick={() => { setActionMode('link'); setExportDialogOpen(true); }}><Link2 /></button>}
+    {!hostScope && <button aria-label={translate("workbench.sharingPermissions")} title={translate("workbench.sharingPermissions")} onClick={() => { setActionMode('share'); setExportDialogOpen(true); }}><Users /></button>}
     <button aria-label={translate("workbench.downloadTranscript")} title={translate("workbench.downloadTranscript")} disabled={!detail} onClick={() => { setActionMode('html'); setExportDialogOpen(true); }}><Download /></button>
   </div>;
   const mobileSessionConnectionButton = useMemo(
@@ -3740,8 +3762,8 @@ export function ThreadDetailPage() {
         modelOptions,
         contextUsage: resolveThreadContextUsage(detail),
         subscriptionUsage,
-        capabilities: backendCapabilities,
-        toolboxItems: backendManagementSchema?.toolboxItems ?? [],
+        capabilities: hostScope && backendCapabilities ? { ...backendCapabilities, branching: { ...backendCapabilities.branching, fork: false, forkAt: false, resumeAt: false }, management: { ...backendCapabilities.management, hooks: false, hostConfigFiles: false } } : backendCapabilities,
+        toolboxItems: hostScope ? [] : backendManagementSchema?.toolboxItems ?? [],
         onOpenHarness: (composerFocusOwner?: string) => setHarnessSettingsTarget({ pane: 'primary', deviceId: relayRouteDeviceId ?? 'local', threadId: id, ...(composerFocusOwner ? {composerFocusOwner} : {}) }),
         hookCommandTemplates:
           backendManagementSchema?.hookCommandTemplates ?? [],
@@ -3764,16 +3786,20 @@ export function ThreadDetailPage() {
         ...(relayThreadCanControl
           ? {
               onCompact: handleCompactThread,
-              onOpenForkTurns: handleOpenForkTurns,
-              onForkLatest: handleForkLatest,
-              onForkTurn: handleForkTurn,
+              ...(!hostScope ? {
+                onOpenForkTurns: handleOpenForkTurns,
+                onForkLatest: handleForkLatest,
+                onForkTurn: handleForkTurn,
+              } : {}),
               onOpenSkills: handleOpenSkills,
               onOpenMcp: handleOpenMcp,
-              onOpenHooks: handleOpenHooks,
-              onCreateHook: handleCreateHook,
-              onUpdateHook: handleUpdateHook,
-              onTrustHook: handleTrustHook,
-              onUntrustHook: handleUntrustHook,
+              ...(!hostScope ? { onOpenHooks: handleOpenHooks } : {}),
+              ...(!hostScope ? {
+                onCreateHook: handleCreateHook,
+                onUpdateHook: handleUpdateHook,
+                onTrustHook: handleTrustHook,
+                onUntrustHook: handleUntrustHook,
+              } : {}),
             }
           : {}),
         goalState,
@@ -3830,8 +3856,8 @@ export function ThreadDetailPage() {
         settingsBusy: false,
         error: detail.thread.isLoaded ? shellControlState?.error ?? null : null,
         followTail: false,
-        capabilities: backendCapabilities,
-        toolboxItems: backendManagementSchema?.toolboxItems ?? [],
+        capabilities: hostScope && backendCapabilities ? { ...backendCapabilities, branching: { ...backendCapabilities.branching, fork: false, forkAt: false, resumeAt: false }, management: { ...backendCapabilities.management, hooks: false, hostConfigFiles: false } } : backendCapabilities,
+        toolboxItems: hostScope ? [] : backendManagementSchema?.toolboxItems ?? [],
         onOpenHarness: (composerFocusOwner?: string) => setHarnessSettingsTarget({ pane: 'primary', deviceId: relayRouteDeviceId ?? 'local', threadId: id, ...(composerFocusOwner ? {composerFocusOwner} : {}) }),
         hookCommandTemplates:
           backendManagementSchema?.hookCommandTemplates ?? [],
@@ -3862,8 +3888,8 @@ export function ThreadDetailPage() {
     setError,
     workspaceId: toolsDetail?.workspace.id ?? null,
     deviceId: toolsDevice,
-    access: toolsWorkspaceAccess,
-    allowLinkedFiles: !toolsRelay || toolsAccess?.kind === 'owner',
+    access: hostScope ? 'read' : toolsWorkspaceAccess,
+    allowLinkedFiles: !hostScope && (!toolsRelay || toolsAccess?.kind === 'owner'),
   });
   const handleOpenWorkspaceFile = useCallback(
     (input: { path: string; line?: number }) => {
@@ -3898,8 +3924,8 @@ export function ThreadDetailPage() {
       getThreadHref,
       getNewThreadHref,
       renderNewThreadDialogContent,
-      ...(relayThreadIsOwner ? { renameThread: handleRenameThread } : {}),
-      ...(relayThreadIsOwner ? { deleteThread: setDeletingThread } : {}),
+      ...(relayThreadIsOwner || hostScope ? { renameThread: handleRenameThread } : {}),
+      ...(relayThreadIsOwner || hostScope ? { deleteThread: setDeletingThread } : {}),
       ...(relayThreadCanControl ? { cancelPendingSteer: handleCancelPendingSteer } : {}),
       ...(relayThreadCanControl
         ? { steerPendingPrompt: handleSteerPendingPrompt }
@@ -3936,6 +3962,7 @@ export function ThreadDetailPage() {
       openThread,
       relayThreadCanControl,
       relayThreadIsOwner,
+      hostScope,
       primaryWorkspaceAdapter,
     ],
   );
@@ -4014,14 +4041,15 @@ export function ThreadDetailPage() {
     {nativeResult && <LongTextDialog open title={nativeResult.title} text={nativeResult.text} onClose={() => setNativeResult(null)} />}
     {relayThreadIsOwner && relayRouteDeviceId && <HostFeatureGate feature="previews"><PortMappingsControl key={relayRouteDeviceId} deviceId={relayRouteDeviceId} open={portsOpen} onOpenChange={setPortsOpen} /></HostFeatureGate>}
     <ThreadDetailSurface
-      deviceMonitor={<><DeviceMonitor key={relayRouteDeviceId ?? 'local'} /><TourLauncherButton /></>}
+      restrictedNavigation={Boolean(hostScope)}
+      deviceMonitor={hostScope ? null : <><DeviceMonitor key={relayRouteDeviceId ?? 'local'} /><TourLauncherButton /></>}
       workbench={workbenchUrls({ ...workbenchNavigation, panels: {
         deviceLabel: presentationDeviceName ?? (relayRouteDeviceId ? relayRouteDeviceId.slice(0, 8) : translate('workbench.localDeviceName')),
         workspaceLabel: detail?.workspace.label ?? workbenchNavigation.workspacePath,
         primaryTitle: detail?.thread.title ?? translate('workbench.loadingThreadDetail'),
         primaryHarness: detail?.thread.agentId ?? detail?.thread.provider ?? '',
         primaryStatus: detail ? threadStatusLabel(detail.thread.status) : '',
-        presentation: workbenchPresentation.value.referenceId === id && referenceDevice === (relayRouteDeviceId ?? 'local') ? { ...workbenchPresentation.value, mode: workbenchPresentation.value.mode === 'thread' ? 'focus' : workbenchPresentation.value.mode } : workbenchPresentation.value,
+        presentation: !referenceAllowed ? { ...workbenchPresentation.value, mode: 'focus' } : workbenchPresentation.value.referenceId === id && referenceDevice === (relayRouteDeviceId ?? 'local') ? { ...workbenchPresentation.value, mode: workbenchPresentation.value.mode === 'thread' ? 'focus' : workbenchPresentation.value.mode } : workbenchPresentation.value,
         onPresentationChange: changePresentation,
         candidates: threads.filter(thread => thread.id !== id).map(thread => ({ id: thread.id, title: thread.title })),
         referenceTitle: referenceController.detail?.thread.title ?? threads.find(thread => thread.id === referenceId)?.title ?? translate('workbench.loadingThreadDetail'),
@@ -4053,10 +4081,10 @@ export function ThreadDetailPage() {
         </>,
         onCloseTools: closeTerminal,
         storageFailed: workbenchPresentation.storageFailed,
-      }, statusActions: detail ? <><ThreadSubagentsControl key={`subagents-${detail.thread.id}`} detail={detail} /><ThreadWatchesControl key={`watches-${detail.thread.id}`} thread={detail.thread} /><WorkbenchThreadPicker deviceId={relayRouteDeviceId} workspaceId={detail.workspace.id} threadId={detail.thread.id} threads={threads} navigationThreads={workbenchNavigation.threads} reference={referenceId ? {deviceId: referenceDevice === 'local' ? null : referenceDevice, threadId:referenceId} : null} splitActive={Boolean(referenceId && ['thread','files'].includes(workbenchPresentation.value.mode))} onSelect={selectSplitThread} onRestore={() => changePresentation({mode:'thread'})} onClose={() => changePresentation({mode:'focus'})} onCollaboration={() => changePresentation({mode:'collaboration'})} /></> : null, renderThreadMenu: thread => <RecentThreadMenu thread={thread} currentKey={workbenchNavigation.currentKey} onFavorite={workbenchNavigation.onToggleThreadFavorite} onRenamed={workbenchNavigation.onThreadRenamed} onRemoved={workbenchNavigation.onThreadRemoved} onNavigate={navigate} />, harnessSessionId: detail?.thread.providerSessionId ?? null, harnessSessionUrl: detail?.thread.providerSessionId && (detail.thread.provider === 'codex' || detail.thread.agentId === 'codex') ? `codex://threads/${encodeURIComponent(detail.thread.providerSessionId)}` : null, activeView: terminalOpen ? 'shell' : 'chat', terminalEnabled: terminalPluginEnabled, onViewChange: view => { if (view === 'shell') toggleTerminal(); },
+      }, statusActions: detail ? <><ThreadSubagentsControl key={`subagents-${detail.thread.id}`} detail={detail} /><UnscopedOnly><ThreadWatchesControl key={`watches-${detail.thread.id}`} thread={detail.thread} /></UnscopedOnly><WorkbenchThreadPicker deviceId={relayRouteDeviceId} workspaceId={detail.workspace.id} threadId={detail.thread.id} threads={threads} navigationThreads={workbenchNavigation.threads} reference={referenceId ? {deviceId: referenceDevice === 'local' ? null : referenceDevice, threadId:referenceId} : null} splitActive={Boolean(referenceId && ['thread','files'].includes(workbenchPresentation.value.mode))} onSelect={selectSplitThread} onRestore={() => changePresentation({mode:'thread'})} onClose={() => changePresentation({mode:'focus'})} onCollaboration={() => changePresentation({mode:'collaboration'})} /></> : null, renderThreadMenu: thread => <RecentThreadMenu thread={thread} currentKey={workbenchNavigation.currentKey} onFavorite={workbenchNavigation.onToggleThreadFavorite} onRenamed={workbenchNavigation.onThreadRenamed} onRemoved={workbenchNavigation.onThreadRemoved} onNavigate={navigate} />, harnessSessionId: detail?.thread.providerSessionId ?? null, harnessSessionUrl: detail?.thread.providerSessionId && (detail.thread.provider === 'codex' || detail.thread.agentId === 'codex') ? `codex://threads/${encodeURIComponent(detail.thread.providerSessionId)}` : null, activeView: terminalOpen ? 'shell' : 'chat', terminalEnabled: terminalPluginEnabled, onViewChange: view => { if (view === 'shell') toggleTerminal(); },
         toolPanels: dshPanelAvailable ? [{ id: 'deepseek-harness', label: translate('workbench.deepseekHarness'), icon: <Puzzle />, active: dshPanelOpen, onToggle: toggleDshPanel }] : [], onNavigate: navigate, onSearch: () => setSearchOpen(true), searchOpen, search: id && detail ? <ConversationSearch key={id} threadId={id} workspaceId={detail.thread.workspaceId}
         deviceLabel={relayRouteDeviceId ?? searchLabels.localDevice}
-        allowGlobal={relayThreadIsOwner || (relayAccess?.scope === 'device' && (relayAccess.threadAccess === 'read' || relayAccess.threadAccess === 'control'))}
+        allowGlobal={!hostScope && (relayThreadIsOwner || (relayAccess?.scope === 'device' && (relayAccess.threadAccess === 'read' || relayAccess.threadAccess === 'control')))}
         onNavigate={match => {
           const params = new URLSearchParams();
           if (match.turnId && match.itemId) { params.set('searchTurn', match.turnId); params.set('searchItem', match.itemId); }

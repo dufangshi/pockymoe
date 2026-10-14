@@ -1,3 +1,5 @@
+import { HostCapabilitiesProvider } from '../lib/hostCapabilities';
+import type { RuntimeConfigDto } from '@pockymoe/shared';
 import {
   fireEvent,
   render,
@@ -8,9 +10,9 @@ import {
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ThreadDto, WorkspaceDto } from '@pockymoe/shared';
 import { setLocale } from '@pockymoe/thread-ui/i18n';
-import { request } from '../lib/api';
+import { request, fetchRuntimeConfig } from '../lib/api';
 import { WorkbenchThreadPicker } from './WorkbenchThreadPicker';
-vi.mock('../lib/api', () => ({ request: vi.fn() }));
+vi.mock('../lib/api', () => ({ request: vi.fn(), fetchRuntimeConfig: vi.fn() }));
 const thread = (id: string, workspaceId = 'current'): ThreadDto =>
   ({
     id,
@@ -181,4 +183,24 @@ describe('hierarchical split picker', () => {
     expect(close).toHaveBeenCalledOnce();
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
+});
+
+it('keeps scoped split selection across bound workspaces and hides devices', async () => {
+  vi.mocked(fetchRuntimeConfig).mockResolvedValue({ hostScope: { kind: 'treerAgent', boundThreadId: 'root' } } as RuntimeConfigDto);
+  const peers = [thread('root'), { ...thread('child'), rootThreadId: 'root', parentThreadId: 'root' }];
+  vi.mocked(request).mockImplementation(async path => {
+    if (path === 'api/workspaces') return [workspace('current')];
+    if (path === 'api/threads?includeAgentThreads=true') return peers;
+    throw new Error(`Unexpected scoped request: ${path}`);
+  });
+  const selected = vi.fn();
+  render(<HostCapabilitiesProvider scope="local"><WorkbenchThreadPicker deviceId={null}
+    workspaceId="current" threadId="root" threads={peers} onSelect={selected} />
+  </HostCapabilitiesProvider>);
+  fireEvent.click(await screen.findByRole('button', { name: 'Split conversation' }));
+  expect(screen.getByText('OTHER WORKSPACES · THIS DEVICE')).toBeVisible();
+  expect(screen.queryByText('OTHER DEVICES')).toBeNull();
+  fireEvent.click(await screen.findByRole('button', { name: /child/ }));
+  expect(selected).toHaveBeenCalledWith({ deviceId: null, workspaceId: 'current', threadId: 'child', title: 'child' });
+  expect(vi.mocked(request).mock.calls.some(([path]) => String(path).startsWith('relay/'))).toBe(false);
 });

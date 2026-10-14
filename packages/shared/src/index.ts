@@ -24,6 +24,7 @@ export type ApiErrorCode =
   | 'confirmation_required'
   | 'provider_goal_error'
   | 'forbidden'
+  | 'thread_scope_forbidden'
   | 'unauthorized'
   | 'invalid_route_token'
   | 'gateway_unavailable'
@@ -67,7 +68,22 @@ export interface HostCapabilitiesDto {
   previews: boolean;
 }
 
+export interface HostScopeDto {
+  kind: 'treerAgent';
+  boundThreadId: string;
+  hubId: string;
+  allowed: {
+    boundThreads: boolean;
+    childThreads: boolean;
+    topLevelThreads: boolean;
+    workspaceCreation: boolean;
+    management: boolean;
+    workspaceFiles: 'read';
+  };
+}
+
 export interface RuntimeConfigDto {
+  hostScope?: HostScopeDto;
   hostMode?: 'standalone' | 'hosted';
   hostCapabilities?: HostCapabilitiesDto;
   appName: string;

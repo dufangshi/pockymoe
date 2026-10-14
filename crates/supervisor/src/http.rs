@@ -785,7 +785,10 @@ async fn put_harness_resource_settings(
         })
 }
 
-async fn runtime_config(State(state): State<AppState>) -> Json<Value> {
+async fn runtime_config(
+    State(state): State<AppState>,
+    scope: Option<axum::Extension<crate::treer::Scope>>,
+) -> Json<Value> {
     let mut config = serde_json::to_value(RuntimeConfigDto {
         app_name: state.config.app_name.clone(),
         app_version: state.config.app_version.clone(),
@@ -806,6 +809,21 @@ async fn runtime_config(State(state): State<AppState>) -> Json<Value> {
     .expect("runtime config is serializable");
     config["hostMode"] = json!(state.config.host_mode);
     config["hostCapabilities"] = json!(state.host_capabilities);
+    if let Some(scope) = scope {
+        config["hostScope"] = json!({
+            "kind": "treerAgent",
+            "boundThreadId": scope.thread,
+            "hubId": scope.hub.hub_id,
+            "allowed": {
+                "boundThreads": true,
+                "childThreads": true,
+                "topLevelThreads": true,
+                "workspaceCreation": false,
+                "management": false,
+                "workspaceFiles": "read"
+            }
+        });
+    }
     Json(config)
 }
 
@@ -1382,11 +1400,19 @@ async fn list_threads(
 
 async fn start_thread(
     State(state): State<AppState>,
+    scope: Option<axum::Extension<crate::treer::Scope>>,
     Json(body): Json<CreateThreadInput>,
 ) -> Result<Json<Value>, ApiErr> {
-    Ok(Json(
-        serde_json::to_value(state.create_thread(body).await.map_err(map_err)?).unwrap(),
-    ))
+    let thread = if let Some(scope) = scope {
+        scope
+            .hub
+            .create_browser_thread(&scope, body)
+            .await
+            .map_err(|e| err(e.status, e.code, e.message))?
+    } else {
+        state.create_thread(body).await.map_err(map_err)?
+    };
+    Ok(Json(serde_json::to_value(thread).unwrap()))
 }
 
 async fn import_thread(
@@ -1741,18 +1767,35 @@ struct RenameBody {
 async fn rename_thread(
     Path(id): Path<String>,
     State(state): State<AppState>,
+    scope: Option<axum::Extension<crate::treer::Scope>>,
     Json(body): Json<RenameBody>,
 ) -> Result<Json<Value>, ApiErr> {
-    Ok(Json(
-        serde_json::to_value(state.rename_thread(&id, &body.title).map_err(map_err)?).unwrap(),
-    ))
+    let thread = if let Some(scope) = scope {
+        scope
+            .hub
+            .rename_browser_thread(&scope, &id, &body.title)
+            .await
+            .map_err(|e| err(e.status, e.code, e.message))?
+    } else {
+        state.rename_thread(&id, &body.title).map_err(map_err)?
+    };
+    Ok(Json(serde_json::to_value(thread).unwrap()))
 }
 
 async fn delete_thread(
     Path(id): Path<String>,
     State(state): State<AppState>,
+    scope: Option<axum::Extension<crate::treer::Scope>>,
 ) -> Result<StatusCode, ApiErr> {
-    state.delete_thread_releasing(&id).await.map_err(map_err)?;
+    if let Some(scope) = scope {
+        scope
+            .hub
+            .delete_browser_thread(&scope, &id)
+            .await
+            .map_err(|e| err(e.status, e.code, e.message))?;
+    } else {
+        state.delete_thread_releasing(&id).await.map_err(map_err)?;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
