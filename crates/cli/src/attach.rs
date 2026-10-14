@@ -301,8 +301,26 @@ impl Session {
                 retry(&mut delay).await;
                 continue;
             }
-            let reply = time::timeout(Duration::from_secs(15), async {
-                while let Some(frame) = socket.next().await {
+            println!(
+                "Pockymoe attach: waiting for hub reply (thread setup may take a few minutes)."
+            );
+            let mut progress = time::interval_at(
+                time::Instant::now() + Duration::from_secs(30),
+                Duration::from_secs(30),
+            );
+            progress.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
+            let reply = async {
+                loop {
+                    let frame = tokio::select! {
+                        frame = socket.next() => frame,
+                        _ = progress.tick() => {
+                            println!("Pockymoe attach: still waiting for hub reply.");
+                            continue;
+                        }
+                    };
+                    let Some(frame) = frame else {
+                        return Ok(None);
+                    };
                     match frame {
                         Ok(Message::Text(text)) => return Ok(Some(text)),
                         Ok(Message::Ping(payload)) => {
@@ -313,11 +331,10 @@ impl Session {
                         _ => {}
                     }
                 }
-                Ok(None)
-            })
+            }
             .await;
             let text = match reply {
-                Ok(Ok(Some(text))) => text,
+                Ok(Some(text)) => text,
                 _ => {
                     retry(&mut delay).await;
                     continue;
@@ -326,8 +343,19 @@ impl Session {
             let reply: AttachReply = serde_json::from_str(&text)
                 .map_err(|_| anyhow::anyhow!("Hub returned an invalid attach reply"))?;
             let (thread_id, created, port, ui_path, capabilities) = match reply {
-                AttachReply::Error { .. } => {
-                    bail!("Hub rejected attach binding; check thread and Treer identity")
+                AttachReply::Error { code, message } => {
+                    let secrets = [
+                        Some(token),
+                        self.hello.treer.workload_credential.as_deref(),
+                        self.hello.treer.agent_server_url.as_deref(),
+                        self.hello.treer.workspace_id.as_deref(),
+                        self.hello.treer.server_id.as_deref(),
+                    ];
+                    bail!(
+                        "Hub rejected attach binding [{}]: {}",
+                        diagnostic(&code, &secrets, 96),
+                        diagnostic(&message, &secrets, 512)
+                    );
                 }
                 AttachReply::Bound {
                     thread_id,
@@ -414,6 +442,37 @@ impl Session {
             retry(&mut delay).await;
         }
     }
+}
+
+// Remove terminal controls before redacting, so controls cannot split a known secret.
+fn diagnostic(value: &str, secrets: &[Option<&str>], limit: usize) -> String {
+    fn clean(value: &str) -> String {
+        value
+            .chars()
+            .filter(|c| {
+                !c.is_control()
+                    && !matches!(*c,
+            '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+            })
+            .collect()
+    }
+    let mut value = clean(value);
+    let mut secrets: Vec<_> = secrets
+        .iter()
+        .flatten()
+        .map(|s| clean(s))
+        .filter(|s| !s.is_empty())
+        .collect();
+    secrets.sort_by_key(|s| std::cmp::Reverse(s.len()));
+    for secret in secrets {
+        value = value.replace(&secret, "[redacted]");
+    }
+    let truncated = value.chars().count() > limit;
+    let mut value: String = value.chars().take(limit).collect();
+    if truncated {
+        value.push('…');
+    }
+    value
 }
 
 async fn retry(delay: &mut Duration) {
@@ -519,6 +578,25 @@ mod tests {
             from: None,
             cli_config: Some(path),
         }
+    }
+
+    #[test]
+    fn diagnostics_strip_controls_redact_before_truncating_and_cap_length() {
+        assert_eq!(
+            diagnostic(
+                "bad\n\x1b\u{202e}synthetic-secret",
+                &[Some("synthetic-secret")],
+                96
+            ),
+            "bad[redacted]"
+        );
+        assert_eq!(
+            diagnostic("synthetic-secret", &[Some("synthetic-secret")], 5),
+            "[reda…"
+        );
+        let text = diagnostic(&"é".repeat(1000), &[], 512);
+        assert_eq!(text.chars().count(), 513);
+        assert!(text.ends_with('…'));
     }
 
     #[test]

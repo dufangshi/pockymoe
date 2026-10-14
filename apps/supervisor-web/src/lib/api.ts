@@ -108,6 +108,12 @@ export class ApiError extends Error {
   }
 }
 
+/** A definitive response removes stale shortcuts; offline/transient errors do not. */
+export function isInvisibleThreadError(error: unknown) {
+  return error instanceof ApiError && (error.statusCode === 404 ||
+    (error.statusCode === 403 && error.payload.code === 'thread_scope_forbidden'));
+}
+
 const AUTH_TOKEN_STORAGE_KEY = 'remote-codex-auth-token';
 const RELAY_TOKEN_STORAGE_KEY = 'remote-codex-relay-token';
 const RELAY_ADMIN_TOKEN_STORAGE_KEY = 'remote-codex-relay-admin-token';
@@ -343,6 +349,7 @@ function normalizedApiErrorPayload(
   fallbackMessage: string,
 ): ApiErrorShape {
   const message =
+    String(payload?.code) === 'thread_scope_forbidden' ? translate('workbench.treerScopeForbidden') :
     String(payload?.code) === 'grant_denied' ? translate('sharing.grantDenied') :
     String(payload?.code) === 'owner_required' ? translate('sharing.ownerRequired') :
     typeof payload?.message === 'string' && payload.message.trim()

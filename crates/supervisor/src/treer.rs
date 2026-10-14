@@ -21,7 +21,7 @@ use rand::RngCore;
 use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Value};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     net::SocketAddr,
     sync::{Arc, Mutex},
 };
@@ -31,8 +31,12 @@ pub(crate) struct Hub {
     pub state: Arc<Supervisor>,
     port: u16,
     token: String,
+    pub hub_id: String,
+    browser_operations: tokio::sync::Mutex<()>,
     live: Mutex<HashMap<String, Binding>>,
     lifecycle: tokio::sync::Mutex<()>,
+    creating: Mutex<HashSet<String>>,
+    browser_commands: Mutex<browser::Commands>,
 }
 #[derive(Clone)]
 struct Binding {
@@ -66,13 +70,39 @@ impl Scope {
     pub fn allows(&self, id: &str) -> bool {
         self.valid()
             && self.hub.state.get_thread(id).is_ok_and(|t| {
-                t.id == self.thread || t.root_thread_id.as_deref() == Some(&self.thread)
+                let root = t.root_thread_id.as_deref().unwrap_or(&t.id);
+                let bound = self
+                    .hub
+                    .state
+                    .db
+                    .with(|c| {
+                        Ok(c.query_row(
+                            "SELECT EXISTS(SELECT 1 FROM treer_bindings WHERE thread_id=?1)",
+                            [root],
+                            |r| r.get::<_, bool>(0),
+                        )?)
+                    })
+                    .unwrap_or(false);
+                pockymoe_treer::thread_in_scope(
+                    if self.controller {
+                        Source::Controller
+                    } else {
+                        Source::ProxyUi
+                    },
+                    &self.thread,
+                    &t.id,
+                    t.root_thread_id.as_deref(),
+                    bound,
+                    self.hub.creating.lock().unwrap().contains(root),
+                )
             })
     }
     pub fn event(&self, value: &Value) -> bool {
         self.valid() && pockymoe_treer::event_allowed(value, |id| self.allows(id))
     }
 }
+mod browser;
+
 fn failure(status: StatusCode, code: &str) -> Response {
     (status, Json(json!({"error":code,"code":code}))).into_response()
 }
@@ -96,6 +126,47 @@ fn map_failure(error: anyhow::Error) -> Response {
             "invalid_request"
         },
     )
+}
+
+fn attach_failure(error: &anyhow::Error) -> AttachReply {
+    // Only fixed, recognized diagnostics may cross the attach boundary. Runtime
+    // errors can otherwise contain credentials, local paths or subprocess output.
+    let (code, message) = match error.to_string().as_str() {
+        "unsupported_protocol" => ("unsupported_protocol", "Unsupported attach protocol"),
+        "codex is not enabled" => ("provider_unavailable", "codex is not enabled on this hub."),
+        "claude is not enabled" => ("provider_unavailable", "claude is not enabled on this hub."),
+        "opencode is not enabled" => (
+            "provider_unavailable",
+            "opencode is not enabled on this hub.",
+        ),
+        "acp is not enabled" => ("provider_unavailable", "acp is not enabled on this hub."),
+        "Install the base agent first: codex" => {
+            ("base_agent_missing", "Install the base agent first: codex")
+        }
+        "Install the base agent first: claude" => {
+            ("base_agent_missing", "Install the base agent first: claude")
+        }
+        "Install the base agent first: grok" => {
+            ("base_agent_missing", "Install the base agent first: grok")
+        }
+        "Install the base agent first: opencode" => (
+            "base_agent_missing",
+            "Install the base agent first: opencode",
+        ),
+        "thread not found" => (
+            "thread_not_found",
+            "The requested thread no longer exists on this hub.",
+        ),
+        "thread_already_live" => (
+            "thread_already_live",
+            "This thread is already attached to a running Treer Agent.",
+        ),
+        _ => ("binding_refused", "Attach binding refused"),
+    };
+    AttachReply::Error {
+        code: code.into(),
+        message: message.into(),
+    }
 }
 impl Hub {
     pub(crate) fn new(state: Arc<Supervisor>, port: u16) -> anyhow::Result<Option<Arc<Self>>> {
@@ -176,12 +247,27 @@ impl Hub {
         for id in bound {
             state.pause_integration_thread(&id);
         }
+        let hub_id = state.db.with(|c| {
+            c.execute(
+                "INSERT OR IGNORE INTO treer_hub_identity(id,hub_id) VALUES(1,?1)",
+                [uuid::Uuid::new_v4().to_string()],
+            )?;
+            Ok(c.query_row(
+                "SELECT hub_id FROM treer_hub_identity WHERE id=1",
+                [],
+                |r| r.get::<_, String>(0),
+            )?)
+        })?;
         let hub = Arc::new(Self {
+            hub_id,
+            browser_operations: Default::default(),
             state,
             port,
             token,
             live: Default::default(),
             lifecycle: Default::default(),
+            creating: Default::default(),
+            browser_commands: Default::default(),
         });
         let weak = Arc::downgrade(&hub);
         tokio::spawn(async move {
@@ -462,28 +548,54 @@ pub(crate) async fn gate(
                         .collect::<Vec<_>>())
                 })
             } else {
-                hub.state
-                    .get_thread(&scope.thread)
-                    .and_then(|t| hub.state.get_workspace(&t.workspace_id))
-                    .map(|w| json!([w]))
+                hub.state.list_threads(None, true).and_then(|threads| {
+                    let ids: HashSet<_> = threads
+                        .into_iter()
+                        .filter(|t| scope.allows(&t.id))
+                        .map(|t| t.workspace_id)
+                        .collect();
+                    Ok(json!(hub
+                        .state
+                        .list_workspaces()?
+                        .into_iter()
+                        .filter(|w| ids.contains(&w.id))
+                        .collect::<Vec<_>>()))
+                })
             };
             return result
                 .map(|v| Json(v).into_response())
                 .unwrap_or_else(map_failure);
         }
         let scoped_global = if request.method() == axum::http::Method::GET {
-            hub.state.get_thread(&scope.thread).is_ok_and(|thread| {
-                path == format!("/api/workspaces/{}", thread.workspace_id)
-                    || path.starts_with(&format!("/api/workspaces/{}/files/", thread.workspace_id))
-                    || path
-                        .strip_prefix(&format!(
-                            "/api/agent-runtimes/{}/",
-                            thread.provider.as_str()
-                        ))
-                        .is_some_and(|action| {
-                            matches!(action, "status" | "models" | "agents" | "capabilities")
-                        })
-            })
+            let workspace = path
+                .strip_prefix("/api/workspaces/")
+                .and_then(|tail| tail.split('/').next());
+            let allowed_workspace = workspace.is_some_and(|id| {
+                hub.state.list_threads(None, true).is_ok_and(|threads| {
+                    threads
+                        .iter()
+                        .any(|t| t.workspace_id == id && scope.allows(&t.id))
+                })
+            });
+            (allowed_workspace
+                && workspace.is_some_and(|id| {
+                    path == format!("/api/workspaces/{id}")
+                        || path.starts_with(&format!("/api/workspaces/{id}/files/"))
+                }))
+                || path
+                    .strip_prefix("/api/agent-runtimes/")
+                    .is_some_and(|tail| {
+                        let Some((provider, action)) = tail.split_once('/') else {
+                            return false;
+                        };
+                        // Creation needs model/capability reads for every enabled harness.
+                        hub.state
+                            .config
+                            .enabled_providers
+                            .iter()
+                            .any(|p| p.as_str() == provider)
+                            && matches!(action, "status" | "models" | "agents" | "capabilities")
+                    })
         } else {
             false
         };
@@ -542,15 +654,7 @@ async fn attach_loop(hub: Arc<Hub>, mut socket: WebSocket) {
     let (binding, created) = match hub.bind(hello).await {
         Ok(b) => b,
         Err(e) => {
-            let code = if e.to_string() == "unsupported_protocol" {
-                "unsupported_protocol"
-            } else {
-                "binding_refused"
-            };
-            let reply = AttachReply::Error {
-                code: code.into(),
-                message: "Attach binding refused".into(),
-            };
+            let reply = attach_failure(&e);
             let _ = socket
                 .send(Message::Text(serde_json::to_string(&reply).unwrap().into()))
                 .await;
@@ -576,6 +680,7 @@ async fn attach_loop(hub: Arc<Hub>, mut socket: WebSocket) {
         let mut last = tokio::time::Instant::now();
         loop {
             tokio::select! {
+                _ = binding.cancelled.cancelled() => break,
                 msg=socket.next()=>match msg {None|Some(Err(_))|Some(Ok(Message::Close(_)))=>break,Some(Ok(Message::Ping(v)))=>{last=tokio::time::Instant::now();if socket.send(Message::Pong(v)).await.is_err(){break;}},Some(Ok(_))=>{last=tokio::time::Instant::now();}},
                 _=heartbeat.tick()=>{if last.elapsed()>std::time::Duration::from_secs(60){break;} if socket.send(Message::Ping(Vec::new().into())).await.is_err(){break;} let _=hub.state.db.with(|c|{c.execute("UPDATE treer_bindings SET last_seen_at=?2 WHERE thread_id=?1",params![binding.thread,now_rfc3339()])?;Ok(())});}
             }

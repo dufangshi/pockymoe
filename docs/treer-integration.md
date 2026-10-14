@@ -8,7 +8,7 @@ Each Agent gets a fresh interface instance ID on process start. The hub dispatch
 Agent requests by Treer's `x-treer-agent-id` and `x-treer-interface-instance`
 headers, rather than opening a separate listener for every thread.
 
-Child threads stay inside their parent Agent's scope; they are not separate
+Child threads stay inside their top-level thread's scope; they are not separate
 Treer Agents. The hub is a Treer Managed App, so the Host owns its process and
 relaunches it after an update. Attach remains alive across hub restarts and
 rebinds the same thread.
@@ -18,14 +18,15 @@ rebinds the same thread.
 Open any installer or terminal Agent on the enrolled Treer machine and run:
 
 ```sh
-curl -fsSL 'https://raw.githubusercontent.com/dufangshi/pockymoe/529c6e59f5d93bf604175e13e79cafed3bd8b705/integrations/treer/treer-setup.sh' -o treer-setup.sh && sh treer-setup.sh --version 0.13.2
+curl -fsSL 'https://raw.githubusercontent.com/dufangshi/pockymoe/<PINNED_COMMIT_AFTER_MERGE>/integrations/treer/treer-setup.sh' -o treer-setup.sh && sh treer-setup.sh --version 0.13.2
 ```
 
-The URL is pinned to commit `529c6e59`; a newer script gets a new pinned URL. The public URL points to one
+**Pinned URL placeholder:** replace `<PINNED_COMMIT_AFTER_MERGE>` with the final
+merged commit SHA before sharing this command. The public URL points to one
 self-contained POSIX shell script; no other setup scripts are downloaded.
 Its bundled Python sources and profile template are extracted into a private
-temporary directory and removed when setup exits. Only the pinned native
-runtime and Web release assets are downloaded.
+temporary directory and removed when setup exits. Runtime and Web downloads use
+the pinned release; the hub also downloads current managed ACP adapters when needed.
 
 Setup needs Python 3.11 or later and supports Linux x64/ARM64 and Apple Silicon.
 Treer must be on PATH and the Agent must have its normal `TREER_*` workload
@@ -33,7 +34,7 @@ environment. Setup waits for `treer whoami` discovery with backoff up to thirty
 seconds between retries. It verifies the same explicit AIS v1 capability/feature
 contract as attach, including `agent.interface-provenance.v1` and
 `agent.prompt-delivery.v1`, before creating anything.
-Install and authenticate the desired harness and ACP adapter separately; see
+Install and authenticate the desired base harness separately; see
 [device setup](device-setup.md) and [managed adapters](managed-acp-adapters.md).
 The hub creates a thread only when that profile's base agent CLI (`codex`,
 `claude` or `grok`) is on its PATH; otherwise Launch fails with "Install the base
@@ -42,9 +43,10 @@ Treer and the hub must share the same OS account and loopback network namespace.
 
 `--version` is required and accepts only an exact stable release, optionally
 prefixed with `v`; `latest` and moving references are rejected. If
-`~/.local/bin/pockymoe version` matches, setup reuses it. A different installed
-version stops setup: update through **Pockymoe Settings → Supervisor → Update**,
-then rerun. Setup never replaces a running installation.
+`~/.local/bin/pockymoe version` matches, setup reuses it. An older installed
+version is upgraded through the running setup-created hub's management API,
+as described below. A newer installed version is refused; setup never downgrades
+or replaces an existing installation directly.
 
 Setup creates the hub Managed App named `pockymoe` and the **Pockymoe Codex**,
 **Pockymoe Claude**, and **Pockymoe Grok** launch profiles. In Treer, choose
@@ -56,6 +58,24 @@ duplicate names, a hub on another machine, or different hub settings stop setup
 for inspection. The App's saved command is retained because Treer provides no
 App update command.
 
+After configuring the App and profiles, setup waits up to 60 seconds for hub
+health on `127.0.0.1:<hub-port>`. It reads the local-mode hub's harness inventory
+and checks the Codex and Claude ACP adapters whenever their base CLI is installed
+in the hub. Missing, external, or unverified adapters are updated through the
+hub's management API to the current Pockymoe-managed installation. Each update
+has an eight-minute setup wait limit and must report a successful ACP connection
+verification. Progress appears about every twenty seconds while waiting. A
+managed adapter whose last adapter update was verified is skipped on reruns;
+the hub's verification job record is in memory, so a hub restart requires a
+fresh adapter update and verification. Missing base CLIs are noted and skipped.
+Grok uses native ACP and needs no adapter installation.
+
+Setup prints each checked adapter's version, selected path, and verification
+result. Any adapter failure exits nonzero after preserving the App and profiles,
+so a rerun can finish setup. Repair through **Pockymoe Settings → Harnesses → ACP
+adapter → Install**, or rerun setup. If the setup wait limit expires, the hub job
+may still be running; check its status in Settings before retrying.
+
 Without `--hub-port`, a new hub uses the first free IPv4 loopback port from 8787
 upward; an existing hub keeps its port. Pass `--hub-port N` for an explicit port.
 `--data-dir` defaults to `~/.local/share/remote-codex/treer` and must match on
@@ -63,6 +83,40 @@ reruns. The App and profiles use stable executable and Web paths through
 `~/.local/bin/pockymoe` and `native/current/web`, never `releases/<version>`.
 `TREER_BIN` optionally selects the Treer executable. Setup prints progress and a
 Launch summary, suppresses raw Treer responses, and exits nonzero on failure.
+
+### Updating
+
+Inside a Treer installer or terminal Agent, rerun the same setup script with the
+desired exact release:
+
+```sh
+sh treer-setup.sh --version "$POCKYMOE_PINNED_VERSION"
+```
+
+For an older installation, setup requires the existing App named `pockymoe` on
+this machine, with the setup-created stable launch command, data directory, and
+host-managed restart configuration. The hub must be running and reachable on
+its loopback port. If the App is stopped, start it in Treer and rerun; setup does
+not install over it. A different App configuration, mismatched running/installed
+versions, or an update already in progress stops setup for inspection. Keep the
+same `--data-dir` and, if specified, `--hub-port` as the original setup.
+
+The current Supervisor API updates to GitHub latest and accepts no target-version
+argument. Setup calls **Check updates** first and refuses to request an update
+unless `latestVersion` exactly equals `--version`. It then calls **Update** through
+the loopback management API. The hub verifies and installs the release, switches
+`current`, and exits; Treer relaunches it using the saved stable path. Setup polls
+through restart disconnects for up to ten minutes, with progress about every
+twenty seconds, until management reports the requested `runningVersion` and
+startup verification has finished. It then converges profiles and checks ACP
+adapters. A changed update target or reported failure stops setup; inspect
+**Pockymoe Settings → Supervisor**. A timeout does not cancel the hub's update:
+check the App and update status before rerunning. See [update recovery](supervisor-update-recovery.md).
+
+Running attach Agents are not restarted by setup. They reconnect automatically
+when the hub returns and continue using their existing attach process. They pick
+up the updated attach binary on their next Treer restart. The hub handles pausing
+and recovering affected coding turns through its normal update contract.
 
 ### Advanced: separate install and configuration
 
@@ -154,7 +208,10 @@ stay in memory; only their counts are printed. The hub's declared capabilities
 must be supported by that Controller.
 
 Attach sends `AttachHello` on `/api/treer/attach`, with the private token in the
-WebSocket upgrade's Bearer header, and waits for `AttachReply`. After creation,
+WebSocket upgrade's Bearer header, and waits for `AttachReply`. It prints a waiting
+line immediately and a reminder every thirty seconds; first-launch runtime and
+ACP adapter setup can take several minutes. The socket stays open during setup
+and answers pings. After creation,
 it saves `treer agent startup set --cwd ... -- <stable pockymoe> attach --thread ...`
 **before** registering the interface. The saved command includes the explicit
 hub URL and token-file path, never token contents or Treer credentials. If only
@@ -174,8 +231,14 @@ are reread on reconnect. A missing token file is retried while the hub starts.
 A rejected binding, authentication failure, invalid configuration or unknown
 contract exits nonzero. There is no successful exit path: Treer disables Agent
 recovery after exit code 0. Short status lines remain available in Treer's PTY
-fallback. Raw hub error messages and Treer subprocess output are suppressed,
-and attach disables tracing even if `RUST_LOG=trace` to protect the hello payload.
+fallback. Known setup failures identify a disabled provider, missing base agent,
+missing thread, or a thread already attached elsewhere using fixed messages.
+Unknown internal errors retain a generic binding refusal; raw runtime errors
+and subprocess output are never forwarded.
+Hub rejection diagnostics include the hub's error code and message, with known
+credentials redacted, control characters stripped and code/message lengths capped
+at 96/512 characters (plus a truncation marker). Treer subprocess output stays
+suppressed, and attach disables tracing even if `RUST_LOG=trace` to protect the hello payload.
 
 ## Lifecycle mapping
 
@@ -184,7 +247,7 @@ and attach disables tracing even if `RUST_LOG=trace` to protect the hello payloa
 | Agent stop | Attach is terminated; the socket closes. The hub interrupts the bound turn and releases its harness, retaining history. |
 | Agent start / restore | The saved `attach --thread` command rebinds the same thread. Harness recovery is demand driven. |
 | Agent restart | Stop followed by start with a fresh process instance ID. |
-| Agent delete | Identity/credentials are revoked in Treer. Thread history is retained; deletion reconciliation is not part of attach. |
+| Agent delete in Treer | Identity/credentials are revoked. Thread history is retained because attach cannot distinguish deletion from stop. Deleting a thread in the scoped Web instead deletes its Agent first, then its history. |
 | Hub update / restart | Attach waits, reconnects and re-registers. It does not create another thread. |
 
 Attach cannot reliably send a final notification within Treer's short stop
@@ -210,23 +273,28 @@ Treer's injected source/Agent/instance markers are provenance, not secrets.
 They support browser and routing checks but do not authenticate an OS process.
 A process running as the same OS user can inspect environments, read private
 files, or forge markers. This integration is not an isolation boundary against
-that user. Agent UI requests must remain confined to their bound thread and
-its children; user-supplied thread IDs must never widen that scope. Unknown
-bindings fail closed.
+that user. Unknown or disconnected requesting bindings fail closed.
 
-Treer's Agent UI entry does not supply a human identity with per-Agent policy
-checks. A full workspace App UI therefore needs separate verified human
-identity and visibility filtering. Until that exists, an App route must not
-expose the unrestricted workbench. This limit is independent of hosted mode:
-local HTTP authentication alone does not provide Agent scoping.
+A Treer machine belongs to one workspace. Treer currently authorizes browser
+humans at workspace level: any workspace member can open every Agent's UI.
+Consequently a live Agent UI tunnel may access every top-level thread on this
+hub with a persisted Treer binding (live or detached), and all their descendants.
+It exposes nothing a member cannot already open through Treer. Unbound hub
+threads remain invisible, including in collections and WebSocket events.
+`pockymoe_treer::thread_in_scope` is the single thread-policy decision, with a
+marked hook to intersect future Treer `policy/check` results and per-node
+permission bits. Controller AIS access remains limited to its own Agent family.
+Management, global settings writes, devices, upstreams and harness administration stay
+denied. An unrestricted App/workbench still requires verified human identity and
+visibility filtering; local HTTP authentication alone does not supply that.
 
 ## Unsupported scope
 
 - A shared hub across isolated containers or devices without shared loopback.
 - Windows installation/profile wrappers in this Unix packaging; Windows needs
   a stable owner-controlled launcher that follows `native/current.json`.
-- Creating Treer Agents automatically from new hub UI threads, and Agent-delete
-  reconciliation/archive policy.
+- Treer-side Agent-delete reconciliation: deletion is indistinguishable from
+  stop/disconnection today, so the hub retains the thread and its history.
 - Core Message bridging, child Agent registration, cross-device split views,
   and fine-grained human/App authorization.
 - Release rollback, automated profile upgrades, or replacing a running
@@ -273,10 +341,38 @@ never reruns the task. Transcript `page`/`cursor` are turn offsets (default limi
 while the thread has a pending approval or question.
 
 **Browser UI tunnel.** A `proxy-ui` request needs a live binding and the hub's
-loopback Host. `/` redirects relatively to the bound thread. Access covers the
-bound thread, its descendants, and the minimum global reads the page needs
-(plugins, runtime config, models, capabilities, assets). Collections are
-filtered to permitted threads and WebSocket events to those threads. Management,
-device metrics, subscription usage and other threads are denied. These provenance
-headers are browser defenses supplied by Treer, not authentication against a
-hostile process of the same OS user.
+loopback Host. `/` redirects relatively to the requesting Agent's bound thread.
+Collections list only bound top-level threads and descendants; detached bindings
+remain visible. The workbench supports tabs, split views, favorites, thread
+settings, rename, delete and new conversations across that set. Files are
+read-only. Fork/import, sharing, terminal, device/global settings and harness
+administration controls are hidden. Denied requests with
+`thread_scope_forbidden` have a clear fallback message.
+
+Scoped runtime config responses include camelCase `hostScope` with kind
+`treerAgent`, `boundThreadId`, stable non-secret `hubId` and allowed operations;
+ordinary requests omit it. Browser navigation, favorites, presentation and seen
+markers use hub + tunnel mount keys, without importing old shared-origin
+shortcuts. Definitive scope-denied/404 references are silently removed; transient
+or offline failures do not discard shortcuts.
+
+**Browser thread/Agent synchronization.** Creating a top-level thread also runs
+`treer agent admin create --machine <machine> --kind command --name <label>
+--cwd <relative-cwd> -- <stable-pockymoe> attach --thread <id> --hub <loopback-url>
+--hub-token-file <path>` using the requesting Agent's live in-memory identity.
+`treer whoami` supplies the machine root; the workspace cwd must be within it.
+Omitting `--folder` inherits the requesting Agent's Treer tree folder. Labels
+come from the title with invalid characters removed and a thread-ID suffix for
+sibling uniqueness. A failed Agent creation rolls back the new thread. The new
+thread pauses until its own Agent attaches; it never receives the caller's Treer
+credentials. The Web opens the result in the same page.
+
+Renaming a bound top-level thread runs `treer agent admin rename` before changing
+its title. Deleting one runs `treer agent admin delete` before deleting its thread
+and descendants; failed Treer operations preserve the thread. Both use the
+requesting Agent's live identity, including when targeting another bound Agent.
+Deleting the requesting Agent's own thread is allowed after normal confirmation
+and may close the page. Child thread changes do not create/delete Treer Agents.
+Deleting an Agent from Treer itself currently retains its thread because the hub
+cannot distinguish deletion from stop. Provenance headers remain browser defenses,
+not authentication against a hostile process of the same OS user.

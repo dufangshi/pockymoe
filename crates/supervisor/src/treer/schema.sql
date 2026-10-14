@@ -18,3 +18,5 @@ CREATE TABLE IF NOT EXISTS treer_submissions (
     notification_next_attempt INTEGER NOT NULL DEFAULT 0,
     UNIQUE(thread_id, operation_id)
 );
+
+CREATE TABLE IF NOT EXISTS treer_hub_identity (id INTEGER PRIMARY KEY CHECK(id=1), hub_id TEXT NOT NULL);

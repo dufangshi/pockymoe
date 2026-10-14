@@ -1,14 +1,19 @@
+import { browserStateKey } from '../lib/browserStateScope';
+import { HostCapabilitiesProvider } from '../lib/hostCapabilities';
+import type { ReactNode } from 'react';
+import type { RuntimeConfigDto } from '@pockymoe/shared';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type { ThreadDetailDto, ThreadDto } from '@pockymoe/shared';
 import { useWorkbenchNavigation, workbenchThreadStatus } from './useWorkbenchNavigation';
-import { ApiError, request } from '../lib/api';
+import { ApiError, request, fetchRuntimeConfig } from '../lib/api';
 import { useScopedState } from './useScopedState';
 
-vi.mock('../lib/api', () => ({
+vi.mock('../lib/api', async original => ({
+  ...(await original<typeof import('../lib/api')>()),
   request: vi.fn(),
+  fetchRuntimeConfig: vi.fn(),
   relayModeActive: () => true,
-  ApiError: class extends Error { constructor(public statusCode: number, public payload: { message: string }) { super(payload.message); } },
 }));
 
 describe('account thread navigation', () => {
@@ -339,4 +344,52 @@ describe('account thread navigation', () => {
       method: 'POST', body: expect.stringContaining('"deviceId":"wsl"'),
     }));
   });
+});
+
+it('opens saved threads from every bound Agent on this hub and silently drops forbidden/missing references', async () => {
+  localStorage.clear();
+  const scope = { kind: 'treerAgent', boundThreadId: 'root', hubId: 'hub-one' } as NonNullable<RuntimeConfigDto['hostScope']>;
+  const root = { id: 'root', workspaceId: 'project', title: 'Root', status: 'idle' } as ThreadDto;
+  const child = { ...root, id: 'child', parentThreadId: 'root', rootThreadId: 'root', workspaceId: 'child-project' };
+  const other = { ...root, id: '333', title: 'Other bound Agent' };
+  const key = browserStateKey('remote-codex.local-workbench.v1', scope);
+  const stored = { threads: [root,child,other,{...root,id:'forbidden'},{...root,id:'missing'}].map(thread => ({
+    deviceId: null, threadId: thread.id, title: thread.title, workspaceLabel: 'Project', favorite: true,
+  })), notifications: [] };
+  localStorage.setItem(key, JSON.stringify(stored));
+  localStorage.setItem('remote-codex.local-workbench.v1', JSON.stringify({ threads: [{ deviceId:null,threadId:'leaked-old-state' }],notifications:[] }));
+  vi.mocked(fetchRuntimeConfig).mockResolvedValue({ hostScope: scope } as RuntimeConfigDto);
+  vi.mocked(request).mockImplementation(async path => {
+    if (String(path).includes('forbidden')) throw new ApiError(403, { code:'thread_scope_forbidden',message:'Denied' });
+    if (String(path).includes('missing')) throw new ApiError(404, { code:'not_found',message:'Missing' });
+    throw new Error(`Unexpected request ${path}`);
+  });
+  const detail = { thread: child, workspace: { label: 'Child project' } } as ThreadDetailDto;
+  const wrapper = ({ children }: { children: ReactNode }) => <HostCapabilitiesProvider scope="local">{children}</HostCapabilitiesProvider>;
+  const { result, unmount } = renderHook(() => useWorkbenchNavigation(detail, [root, child, other], null), { wrapper });
+  await waitFor(() => expect(result.current?.navigationReady).toBe(true));
+  expect(result.current.threads.map(thread => thread.key).sort()).toEqual(['local:333','local:child','local:root']);
+  expect(result.current.threads.find(thread => thread.key === 'local:333')).toMatchObject({href:'/threads/333',favorite:true});
+  expect(JSON.parse(localStorage.getItem(key)!).threads.map((r: {threadId:string}) => r.threadId)).toEqual(['root','child','333']);
+  expect(result.current.error).toBeNull();
+  unmount();
+  const otherScope = { ...scope, hubId:'different-hub',boundThreadId:'other-root' };
+  const otherRoot = { ...root,id:'other-root' };
+  localStorage.setItem(browserStateKey('remote-codex.local-workbench.v1',otherScope), JSON.stringify({threads:[{
+    deviceId:null,threadId:otherRoot.id,title:'Other hub',workspaceLabel:'Other hub',favorite:true,
+  }],notifications:[]}));
+  vi.mocked(fetchRuntimeConfig).mockResolvedValue({hostScope:otherScope} as RuntimeConfigDto);
+  const otherHub = renderHook(() => useWorkbenchNavigation(null,[otherRoot],null),{wrapper});
+  await waitFor(() => expect(otherHub.result.current?.navigationReady).toBe(true));
+  expect(otherHub.result.current.threads.map(thread => thread.key)).toEqual(['local:other-root']);
+  expect(otherHub.result.current.threads[0]?.favorite).toBe(true);
+  otherHub.unmount(); localStorage.clear();
+});
+
+it('isolates navigation by hub and mount without importing legacy shortcuts', () => {
+  const scope = { kind:'treerAgent',boundThreadId:'x',hubId:'hub-a' } as NonNullable<RuntimeConfigDto['hostScope']>;
+  const key = (hubId: string, mount: string) => browserStateKey('remote-codex.local-workbench.v1',{...scope,hubId},mount);
+  expect(new Set([key('hub-a','/agent-a/'),key('hub-a','/agent-b/'),key('hub-b','/agent-a/')]).size).toBe(3);
+  expect(key('hub-a','/agent-a/')).not.toBe('remote-codex.local-workbench.v1');
+  expect(browserStateKey('test',null)).toBe('test');
 });

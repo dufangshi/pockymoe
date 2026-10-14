@@ -155,6 +155,40 @@ async fn wait_until(mut predicate: impl FnMut() -> bool) {
     .unwrap();
 }
 #[tokio::test]
+async fn attach_reports_known_setup_failures_without_exposing_internal_errors() {
+    let f = fixture().await;
+    let mut h = hello(&f, "ag-disabled-provider");
+    h.create.as_mut().unwrap().provider = "claude".into();
+    let (_, reply) = attach_client(&f, &h).await;
+    assert_eq!(reply["code"], "provider_unavailable");
+    assert_eq!(reply["message"], "claude is not enabled on this hub.");
+    assert!(f.hub.state.list_threads(None, true).unwrap().is_empty());
+
+    h.agent_id = "ag-missing-thread".into();
+    h.create = None;
+    h.thread_id = Some("missing-thread".into());
+    let (_, reply) = attach_client(&f, &h).await;
+    assert_eq!(reply["code"], "thread_not_found");
+
+    let known = serde_json::to_value(attach_failure(&anyhow::anyhow!(
+        "Install the base agent first: grok"
+    )))
+    .unwrap();
+    assert_eq!(known["code"], "base_agent_missing");
+    assert_eq!(known["message"], "Install the base agent first: grok");
+    for detail in [
+        "subprocess failed: fixture-private-credential",
+        "Install the base agent first: fixture-private-credential",
+        "claude is not enabled: fixture-private-credential",
+    ] {
+        let reply = serde_json::to_value(attach_failure(&anyhow::anyhow!(detail))).unwrap();
+        assert_eq!(reply["code"], "binding_refused");
+        assert_eq!(reply["message"], "Attach binding refused");
+        assert!(!reply.to_string().contains("fixture-private-credential"));
+    }
+}
+
+#[tokio::test]
 async fn attach_create_rebind_refuse_version_token_and_identity() {
     let f = fixture().await;
     let h = hello(&f, "ag-one");
@@ -524,8 +558,35 @@ async fn gate_provenance_matrix_http_and_websocket() {
         })
         .await
         .unwrap();
+    let hidden_dir = f._dir.path().join("hidden-workspace");
+    std::fs::create_dir(&hidden_dir).unwrap();
+    let hidden_workspace = f
+        .hub
+        .state
+        .create_workspace(CreateWorkspaceInput {
+            abs_path: Some(hidden_dir.to_string_lossy().into()),
+            label: None,
+            git_url: None,
+        })
+        .unwrap();
+    let unbound = f
+        .hub
+        .state
+        .create_thread(CreateThreadInput {
+            workspace_id: hidden_workspace.id.clone(),
+            title: Some("Unbound".into()),
+            provider: Some(Provider::Codex),
+            agent_id: None,
+            model: "ios-e2e-stream".into(),
+            reasoning_effort: None,
+            approval_mode: "yolo".into(),
+            parent_thread_id: None,
+        })
+        .await
+        .unwrap();
     for path in [
         format!("/api/threads/{root}"),
+        format!("/api/threads/{other_id}"),
         format!("/api/threads/{}", child.id),
         "/api/auth/session".into(),
         "/api/config/runtime".into(),
@@ -541,7 +602,7 @@ async fn gate_provenance_matrix_http_and_websocket() {
         );
     }
     for (method, path) in [
-        (reqwest::Method::GET, format!("/api/threads/{other_id}")),
+        (reqwest::Method::GET, format!("/api/threads/{}", unbound.id)),
         (reqwest::Method::GET, "/api/management/supervisor".into()),
         (
             reqwest::Method::PATCH,
@@ -606,12 +667,30 @@ async fn gate_provenance_matrix_http_and_websocket() {
         .json()
         .await
         .unwrap();
-    assert_eq!(listing.as_array().unwrap().len(), 2);
-    assert!(!listing
+    assert_eq!(listing.as_array().unwrap().len(), 3);
+    assert!(listing
         .as_array()
         .unwrap()
         .iter()
         .any(|t| t["id"] == other_id));
+    assert!(!listing
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|t| t["id"] == unbound.id));
+    let workspaces: Value = request(&f, &h, reqwest::Method::GET, "/api/workspaces", true)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(workspaces.as_array().unwrap().len(), 1);
+    assert!(!workspaces
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|w| w["id"] == hidden_workspace.id));
     let redirect = request(&f, &h, reqwest::Method::GET, "/", true)
         .send()
         .await
@@ -665,7 +744,7 @@ async fn gate_provenance_matrix_http_and_websocket() {
     let (mut socket, _) = tokio_tungstenite::connect_async(req).await.unwrap();
     let event = socket.next().await.unwrap().unwrap();
     assert!(event.to_text().unwrap().contains("supervisor.connected"));
-    for id in [other_id, root, child.id.as_str()] {
+    for id in [unbound.id.as_str(), other_id, root, child.id.as_str()] {
         f.hub
             .state
             .bus
@@ -676,7 +755,7 @@ async fn gate_provenance_matrix_http_and_websocket() {
                 payload: json!({"marker":id}),
             });
     }
-    for expected in [root, child.id.as_str()] {
+    for expected in [other_id, root, child.id.as_str()] {
         let event = tokio::time::timeout(std::time::Duration::from_secs(2), socket.next())
             .await
             .unwrap()
@@ -1116,4 +1195,380 @@ async fn notification_retry_schema_upgrades_existing_hubs() {
             })
             .unwrap();
     }
+}
+
+#[tokio::test]
+async fn runtime_config_exposes_scope_only_to_bound_proxy_ui() {
+    let f = fixture().await;
+    let h = hello(&f, "ag-scope-config");
+    let (_ws, reply) = attach_client(&f, &h).await;
+    let scoped: Value = request(&f, &h, reqwest::Method::GET, "/api/config/runtime", true)
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        scoped["hostScope"],
+        json!({
+            "kind": "treerAgent", "boundThreadId": reply["threadId"],
+            "hubId": f.hub.hub_id,
+            "allowed": {"boundThreads":true,"childThreads":true,"topLevelThreads":true,
+                "workspaceCreation":false,"management":false,"workspaceFiles":"read"}
+        })
+    );
+    let unscoped: Value = reqwest::get(format!("http://127.0.0.1:{}/api/config/runtime", f.port))
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(unscoped.get("hostScope").is_none());
+    for (method, path) in [
+        (reqwest::Method::POST, "/api/threads"),
+        (reqwest::Method::POST, "/api/workspaces"),
+        (reqwest::Method::GET, "/api/management/supervisor"),
+    ] {
+        let response = request(&f, &h, method, path, true).send().await.unwrap();
+        assert_eq!(response.status(), 403);
+        assert_eq!(
+            response.json::<Value>().await.unwrap()["code"],
+            "thread_scope_forbidden"
+        );
+    }
+    assert_eq!(
+        request(&f, &h, reqwest::Method::GET, "/api/config/runtime", false)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        403
+    );
+    assert_eq!(
+        request(&f, &h, reqwest::Method::GET, "/api/config/runtime", true)
+            .header("x-treer-agent-id", "unknown")
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        403
+    );
+}
+
+#[cfg(unix)]
+fn fake_browser_treer(f: &Fixture, fail: bool) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let script = f._dir.path().join("fake-treer");
+    let log = f._dir.path().join("treer-argv.jsonl");
+    // The fake checks credentials internally and records only non-secret argv.
+    std::fs::write(
+        &script,
+        format!(
+            r##"#!/usr/bin/env python3
+import json, os, sys, sqlite3
+assert os.environ['TREER_AGENT_ID'] == 'ag-browser'
+assert os.environ['TREER_WORKLOAD_CREDENTIAL'] == 'fixture-credential'
+assert 'TREER_OPERATOR_CREDENTIAL' not in os.environ
+args=sys.argv[1:]
+if args == ['whoami']:
+    print(json.dumps({{'machine': {{'server_id':'server', 'root': {root}}}}}))
+else:
+    db=sqlite3.connect({db})
+    ids=[r[0] for r in db.execute('SELECT id FROM threads')]
+    with open({log}, 'a') as out: out.write(json.dumps({{'args':args, 'existing':ids}})+'\n')
+    if {fail}: sys.exit(1)
+    print(json.dumps({{'agent_id':'ag-created'}}))
+"##,
+            root = serde_json::to_string(&f._dir.path().to_string_lossy()).unwrap(),
+            db = serde_json::to_string(&f.hub.state.config.database_url.to_string_lossy()).unwrap(),
+            log = serde_json::to_string(&log.to_string_lossy()).unwrap(),
+            fail = if fail { "True" } else { "False" }
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+    *f.hub.browser_commands.lock().unwrap() = browser::Commands {
+        treer: script,
+        pockymoe: Some("/stable/pockymoe".into()),
+    };
+    log
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn browser_create_rename_delete_sync_agents_with_live_identity() {
+    let f = fixture().await;
+    let h = hello(&f, "ag-browser");
+    let (_ws, reply) = attach_client(&f, &h).await;
+    let root = reply["threadId"].as_str().unwrap();
+    let workspace = f.hub.state.get_thread(root).unwrap().workspace_id;
+    let log = fake_browser_treer(&f, false);
+    let response = request(&f, &h, reqwest::Method::POST, "/api/threads/start", true)
+        .json(&json!({"workspaceId":workspace,"provider":"codex","model":"ios-e2e-stream","title":"reply / 1"}))
+        .send().await.unwrap();
+    assert_eq!(response.status(), 200);
+    let created: Value = response.json().await.unwrap();
+    let id = created["id"].as_str().unwrap();
+    let records = || {
+        std::fs::read_to_string(&log)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>()
+    };
+    let args = records()[0]["args"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        &args[..7],
+        [
+            "agent",
+            "admin",
+            "create",
+            "--machine",
+            "server",
+            "--kind",
+            "command"
+        ]
+    );
+    assert_eq!(args[9], "--cwd");
+    assert_eq!(args[10], ".");
+    assert_eq!(
+        &args[11..],
+        [
+            "--",
+            "/stable/pockymoe",
+            "attach",
+            "--thread",
+            id,
+            "--hub",
+            &format!("http://127.0.0.1:{}", f.port),
+            "--hub-token-file",
+            f._dir
+                .path()
+                .join(TREER_ATTACH_TOKEN_FILE)
+                .to_str()
+                .unwrap()
+        ]
+    );
+    assert!(!args.iter().any(|a| a == "--folder"));
+    let env = f
+        .hub
+        .state
+        .with_cli_context(id, async { pockymoe_runtime::interaction::launch_env() })
+        .await;
+    assert!(!env.iter().any(|(key, _)| key.starts_with("TREER_")));
+    // Its detached binding is already visible, and its later attach reuses it.
+    let list: Value = request(&f, &h, reqwest::Method::GET, "/api/threads", true)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(list.as_array().unwrap().iter().any(|t| t["id"] == id));
+    let mut new_hello = hello(&f, "ag-created");
+    new_hello.create = None;
+    new_hello.thread_id = Some(id.into());
+    let (_created_socket, bound) = attach_client(&f, &new_hello).await;
+    assert_eq!(bound["threadId"], id);
+    assert_eq!(bound["created"], false);
+    assert_eq!(
+        request(
+            &f,
+            &h,
+            reqwest::Method::PATCH,
+            &format!("/api/threads/{id}"),
+            true
+        )
+        .json(&json!({"title":"renamed"}))
+        .send()
+        .await
+        .unwrap()
+        .status(),
+        200
+    );
+    assert_eq!(f.hub.state.get_thread(id).unwrap().title, "renamed");
+    assert_eq!(
+        records()[1]["args"],
+        json!([
+            "agent",
+            "admin",
+            "rename",
+            "ag-created",
+            pockymoe_treer::agent_label("renamed", id)
+        ])
+    );
+    // A failed Treer delete/rename must preserve the Pockymoe thread and title.
+    fake_browser_treer(&f, true);
+    assert_eq!(
+        request(
+            &f,
+            &h,
+            reqwest::Method::PATCH,
+            &format!("/api/threads/{id}"),
+            true
+        )
+        .json(&json!({"title":"failed rename"}))
+        .send()
+        .await
+        .unwrap()
+        .status(),
+        502
+    );
+    assert_eq!(f.hub.state.get_thread(id).unwrap().title, "renamed");
+    assert_eq!(
+        request(
+            &f,
+            &h,
+            reqwest::Method::DELETE,
+            &format!("/api/threads/{id}"),
+            true
+        )
+        .send()
+        .await
+        .unwrap()
+        .status(),
+        502
+    );
+    assert!(f.hub.state.get_thread(id).is_ok());
+    fake_browser_treer(&f, false);
+    assert_eq!(
+        request(
+            &f,
+            &h,
+            reqwest::Method::DELETE,
+            &format!("/api/threads/{id}"),
+            true
+        )
+        .send()
+        .await
+        .unwrap()
+        .status(),
+        204
+    );
+    let records = records();
+    let deletion = records.last().unwrap();
+    assert_eq!(
+        deletion["args"],
+        json!(["agent", "admin", "delete", "ag-created"])
+    );
+    assert!(deletion["existing"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|v| v == id));
+    assert!(f.hub.state.get_thread(id).is_err());
+    // The requesting Agent's own top-level thread can also be deleted.
+    assert_eq!(
+        request(
+            &f,
+            &h,
+            reqwest::Method::DELETE,
+            &format!("/api/threads/{root}"),
+            true
+        )
+        .send()
+        .await
+        .unwrap()
+        .status(),
+        204
+    );
+    assert!(f.hub.state.get_thread(root).is_err());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn browser_create_rolls_back_when_treer_fails_and_rejects_unbound_workspace() {
+    let f = fixture().await;
+    let h = hello(&f, "ag-browser");
+    let (_ws, reply) = attach_client(&f, &h).await;
+    let workspace = f
+        .hub
+        .state
+        .get_thread(reply["threadId"].as_str().unwrap())
+        .unwrap()
+        .workspace_id;
+    fake_browser_treer(&f, true);
+    let response = request(&f, &h, reqwest::Method::POST, "/api/threads/start", true)
+        .json(&json!({"workspaceId":workspace,"model":"ios-e2e-stream"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 502);
+    let body = response.text().await.unwrap();
+    assert!(body.contains("treer_agent_operation_failed"));
+    assert!(body.contains("Treer could not update"));
+    assert!(!body.contains("fixture-credential"));
+    assert_eq!(f.hub.state.list_threads(None, true).unwrap().len(), 1);
+    assert!(f.hub.creating.lock().unwrap().is_empty());
+    assert_eq!(
+        request(&f, &h, reqwest::Method::POST, "/api/threads/start", true)
+            .json(&json!({"workspaceId":"unbound","model":"ios-e2e-stream"}))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        403
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn browser_self_delete_finishes_when_treer_closes_the_callers_attach() {
+    let f = fixture().await;
+    let h = hello(&f, "ag-browser");
+    let (mut socket, reply) = attach_client(&f, &h).await;
+    fake_browser_treer(&f, false);
+    let script = f._dir.path().join("fake-treer");
+    let signal = f._dir.path().join("delete-started");
+    let finish = f._dir.path().join("delete-finish");
+    let text=std::fs::read_to_string(&script).unwrap().replace("    print(json.dumps({'agent_id':'ag-created'}))", &format!("    import time\n    open({}, 'w').close()\n    while not os.path.exists({}): time.sleep(0.01)\n    print(json.dumps({{'agent_id':'ag-created'}}))", serde_json::to_string(&signal.to_string_lossy()).unwrap(), serde_json::to_string(&finish.to_string_lossy()).unwrap()));
+    std::fs::write(&script, text).unwrap();
+    let id = reply["threadId"].as_str().unwrap();
+    let deletion = tokio::spawn(
+        request(
+            &f,
+            &h,
+            reqwest::Method::DELETE,
+            &format!("/api/threads/{id}"),
+            true,
+        )
+        .send(),
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        while !signal.exists() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    socket.close(None).await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            if f.hub
+                .live
+                .lock()
+                .unwrap()
+                .get(&h.agent_id)
+                .is_some_and(|b| b.cancelled.is_cancelled())
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    std::fs::write(finish, "").unwrap();
+    assert_eq!(deletion.await.unwrap().unwrap().status(), 204);
+    assert!(f.hub.state.get_thread(id).is_err());
 }

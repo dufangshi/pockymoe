@@ -1,4 +1,4 @@
-import { HostFeatureGate } from '../lib/hostCapabilities';
+import { HostFeatureGate, useHostScope } from '../lib/hostCapabilities';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { useEffect, useRef } from 'react';
 import { CircleHelp, MonitorSmartphone, Menu, Settings, X } from 'lucide-react';
@@ -13,8 +13,9 @@ export { AppShellSettingsDialog } from './AppShellSettingsDialog';
 export function AppShellMenuButton({ className = '' }: { className?: string }) {
   const { locale: i18nLocale } = useI18n();
   const shellNav = useAppShellNav();
+  const hostScope = useHostScope();
 
-  if (!shellNav) {
+  if (!shellNav || hostScope) {
     return null;
   }
 
@@ -43,6 +44,7 @@ export function AppShellNavigationMenu({
 }) {
   const { locale: i18nLocale } = useI18n();
   const shellNav = useAppShellNav();
+  const hostScope = useHostScope();
   const location = useLocation();
   const navigate = useNavigate();
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -100,7 +102,7 @@ export function AppShellNavigationMenu({
     };
   }, [shellNav]);
 
-  if (!shellNav?.navOpen) {
+  if (!shellNav?.navOpen || hostScope) {
     return null;
   }
 

@@ -2,7 +2,8 @@ import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, expect, it, vi } from 'vitest';
 import { useWorkbenchReference } from './useWorkbenchReference';
 import * as api from '../lib/api';
-vi.mock('../lib/api', () => ({
+vi.mock('../lib/api', async original => ({
+  ...(await original<typeof import('../lib/api')>()),
   relayModeActive: vi.fn(() => true), fetchRelayAccess: vi.fn(), connectSupervisorEvents: vi.fn(),
   fetchThreadCapabilitySnapshot: vi.fn(async () => ({ effectiveCapabilities: null })),
   fetchThreadModels: vi.fn(async () => []), fetchThreadDetail: vi.fn(),
@@ -10,9 +11,11 @@ vi.mock('../lib/api', () => ({
   cancelPendingSteer: vi.fn(), steerPendingPrompt: vi.fn(), steerSubmittedPrompt: vi.fn(),
   respondToThreadRequest: vi.fn(), updateThreadSettings: vi.fn(),
 }));
+const host = vi.hoisted(() => ({ scoped:false }));
+vi.mock('../lib/hostCapabilities', () => ({ useHostScope: () => host.scoped ? {kind:'treerAgent'} : null }));
 const detail = (id: string) => ({ thread: { id, isLoaded: true, status: 'idle', collaborationMode: 'default' }, turns: [], pendingRequests: [] });
 beforeEach(() => {
-  vi.clearAllMocks();
+  vi.clearAllMocks(); host.scoped = false;
   vi.mocked(api.fetchThreadDetail).mockImplementation(async id => detail(id) as never);
 });
 it('checks the secondary thread ACL independently and fails closed while unresolved, read only, or failed', async () => {
@@ -115,4 +118,12 @@ it('reads reference capabilities without loading, and reports a shown cross-devi
   await waitFor(() => expect(socket.send).toHaveBeenLastCalledWith(JSON.stringify({ type: 'thread.view', threadIds: ['ref'] })));
   rerender({ shown: false });
   await waitFor(() => expect(socket.send).toHaveBeenLastCalledWith(JSON.stringify({ type: 'thread.view', threadIds: [] })));
+});
+
+it.each([403,404])('silently marks a vanished scoped reference unavailable (%s)', async status => {
+  host.scoped = true;
+  vi.mocked(api.fetchThreadDetail).mockRejectedValue(new api.ApiError(status,{code:'thread_scope_forbidden',message:'Denied'}));
+  const { result } = renderHook(() => useWorkbenchReference('local','vanished'));
+  await waitFor(() => expect(result.current.unavailable).toBe(true));
+  expect(result.current.error).toBeNull();
 });
