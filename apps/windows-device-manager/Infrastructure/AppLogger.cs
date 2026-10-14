@@ -59,7 +59,7 @@ internal sealed partial class AppLogger
     [GeneratedRegex(@"rcd_[A-Za-z0-9_-]+", RegexOptions.CultureInvariant)]
     private static partial Regex DeviceTokenPattern();
 
-    [GeneratedRegex(@"(?i)\b(TOKEN|PASSWORD|SECRET|controlToken)\s*[:=]\s*[^\s,;]+", RegexOptions.CultureInvariant)]
+    [GeneratedRegex(@"(?i)\b((?:POCKYMOE_|REMOTE_CODEX_)[A-Za-z_]*(?:TOKEN|PASSWORD|SECRET)|TOKEN|PASSWORD|SECRET|controlToken)\s*[:=]\s*[^\s,;]+", RegexOptions.CultureInvariant)]
     private static partial Regex SecretAssignmentPattern();
 
     [GeneratedRegex(@"(?i)\b(Authorization)\s+[^\s,;]+", RegexOptions.CultureInvariant)]

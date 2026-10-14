@@ -88,10 +88,10 @@ contains all four supported binaries, the pinned Web bundle,
 [native installation and releases](github-runtime.md) and the
 [release skill](../.agents/skills/release-runtime/SKILL.md).
 
-The Windows Device Manager is an independently released legacy bootstrap. Prefer
-the PowerShell setup and Web Settings for native installation and updates.
-Existing npm installations need the one-time migration described in
-[native installation and releases](github-runtime.md).
+The independently released Windows Device Manager uses the same native GitHub
+runtime and management APIs. It keeps the device online at Windows sign-in and
+preserves legacy device data; see [Windows Device Manager](windows-device-manager.md).
+Agents are installed and configured in Web Settings.
 
 ## Updating a running Supervisor
 

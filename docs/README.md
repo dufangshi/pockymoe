@@ -14,6 +14,7 @@ Maintained documentation for Pockymoe. For the product overview, start with the
 
 **Development**
 
+- [Windows Device Manager](windows-device-manager.md) — native Windows installation, themes, migration and independent releases.
 - [Development](development.md): layout, running locally, tests, the update API
 - [Architecture](architecture.md) and [code structure](code-structure.md)
 - [CI scope](ci.md)

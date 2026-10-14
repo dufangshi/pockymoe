@@ -20,20 +20,10 @@ internal static class Program
             return;
         }
 
-        var runtimeSelfTestIndex = Array.FindIndex(
-            args,
-            value => value.Equals("--runtime-self-test", StringComparison.OrdinalIgnoreCase));
-        if (runtimeSelfTestIndex >= 0)
+        var nativeIndex = Array.FindIndex(args, value => value == "--native-self-test");
+        if (nativeIndex >= 0)
         {
-            Environment.ExitCode = runtimeSelfTestIndex + 1 < args.Length
-                ? await SelfTest.RunRuntimeProvisioningAsync(args[runtimeSelfTestIndex + 1])
-                : 1;
-            return;
-        }
-
-        if (args.Contains("--node-self-test", StringComparer.OrdinalIgnoreCase))
-        {
-            Environment.ExitCode = await SelfTest.RunNodeProvisioningAsync();
+            Environment.ExitCode = nativeIndex + 1 < args.Length ? await SelfTest.RunNativeAsync(args[nativeIndex + 1]) : 1;
             return;
         }
 

@@ -38,7 +38,7 @@ internal sealed class DeviceManagerController
     public bool IsBusy { get; private set; }
     public bool HasSavedToken => RelayConfiguration.HasToken;
     public string? AvailableRemoteCodexVersion { get; private set; }
-    public string RuntimeUpdateMessage { get; private set; } = "Check npm for a newer Pockymoe release.";
+    public string RuntimeUpdateMessage { get; private set; } = "Updates come from GitHub Releases.";
     public string CurrentRemoteCodexVersion => Runtime?.RemoteCodexVersion
         ?? ProductManifest.RemoteCodexVersion;
 
@@ -69,7 +69,7 @@ internal sealed class DeviceManagerController
                 0);
         OnChanged();
 
-        if (Settings.KeepOnline && HasSavedToken && Runtime?.IsUsable == true && State != SupervisorState.Running)
+        if (Settings.KeepOnline && HasSavedToken && Runtime?.IsNative == true && Runtime.IsUsable && State != SupervisorState.Running)
         {
             await MaintainConnectionAsync(cancellationToken);
         }
@@ -95,20 +95,24 @@ internal sealed class DeviceManagerController
             State = SupervisorState.Starting;
             Report(new("Setup", "Preparing this Windows device...", ProvisioningStepState.Running, 2));
 
-            Runtime = await _provisioner.EnsureAsync(
-                new Progress<ProvisioningProgress>(Report),
-                cancellationToken);
-
-            var currentState = await _supervisor.GetStateAsync(Runtime, cancellationToken);
-            if (currentState == SupervisorState.Running)
+            if (Runtime?.IsNative == true && Runtime.IsUsable && string.IsNullOrEmpty(configuration.DeviceToken) && string.IsNullOrEmpty(configuration.SetupCode))
             {
-                Report(new("Relay Supervisor", "Applying the device configuration...", ProvisioningStepState.Running, 82));
-                await _supervisor.StopAsync(Runtime, cancellationToken);
+                if (!string.Equals(configuration.HttpRelayUrl, ConfigurationFromSettings().HttpRelayUrl, StringComparison.OrdinalIgnoreCase)
+                    || configuration.SupervisorPort != Settings.SupervisorPort)
+                    throw new InvalidOperationException("Paste a setup command to change device registration. Saved registration will not be overwritten.");
+                await _supervisor.StartAsync(Runtime, configuration, cancellationToken);
+            }
+            else
+            {
+                if (Runtime is { IsNative: false, IsUsable: true }
+                    && await _supervisor.GetStateAsync(Runtime, cancellationToken) == SupervisorState.Running)
+                    throw new InvalidOperationException("Disconnect the legacy device before migrating. Its configuration and data will be retained.");
+                if (string.IsNullOrEmpty(configuration.DeviceToken) && string.IsNullOrEmpty(configuration.SetupCode))
+                    configuration = configuration with { DeviceToken = RelaySupervisorService.Saved("POCKYMOE_RELAY_AGENT_TOKEN") };
+                Runtime = await _provisioner.SetupAsync(configuration, new Progress<ProvisioningProgress>(Report), cancellationToken);
             }
 
-            Report(new("Relay Supervisor", "Starting the background device connection...", ProvisioningStepState.Running, 88));
-            await _supervisor.StartAsync(Runtime, configuration, cancellationToken);
-
+            await _supervisor.ConfigureWorkspaceAsync(configuration.WorkspaceRoot, cancellationToken);
             Settings = Settings with
             {
                 RelayUrl = configuration.RelayUrl.Trim(),
@@ -183,10 +187,14 @@ internal sealed class DeviceManagerController
         {
             SetBusy(true);
             AvailableRemoteCodexVersion = null;
-            RuntimeUpdateMessage = "Checking npm for updates...";
+            RuntimeUpdateMessage = "Checking GitHub Releases…";
             OnChanged();
 
-            var latestVersion = await _provisioner.GetLatestRemoteCodexVersionAsync(cancellationToken);
+            if (Runtime?.IsNative != true) throw new InvalidOperationException("Migrate this legacy device using a setup command from the Devices page.");
+            var status = await _supervisor.ManagementAsync("/check", true, cancellationToken);
+            if (status.TryGetProperty("canUpdate", out var allowed) && allowed.ValueKind == System.Text.Json.JsonValueKind.False)
+                throw new InvalidOperationException(status.GetProperty("reason").GetString());
+            var latestVersion = status.GetProperty("latestVersion").GetString()!;
             if (RuntimeProvisioner.IsNewerVersion(latestVersion, CurrentRemoteCodexVersion))
             {
                 AvailableRemoteCodexVersion = latestVersion;
@@ -215,81 +223,48 @@ internal sealed class DeviceManagerController
 
     public async Task UpdateRemoteCodexAsync(CancellationToken cancellationToken = default)
     {
-        if (Runtime?.IsUsable != true || string.IsNullOrWhiteSpace(AvailableRemoteCodexVersion))
-        {
-            throw new InvalidOperationException("Check for an available Pockymoe update first.");
-        }
-
+        if (Runtime?.IsNative != true || string.IsNullOrEmpty(AvailableRemoteCodexVersion))
+            throw new InvalidOperationException("Start a native device and check for updates first.");
         await _operationLock.WaitAsync(cancellationToken);
-        var originalRuntime = Runtime;
-        var wasRunning = false;
         try
         {
             SetBusy(true);
-            LastError = null;
-            wasRunning = await _supervisor.GetStateAsync(originalRuntime, cancellationToken) == SupervisorState.Running;
-            if (wasRunning)
+            var accepted = await _supervisor.ManagementAsync("/update", true, cancellationToken);
+            if (accepted.TryGetProperty("canUpdate", out var allowed) && allowed.ValueKind == System.Text.Json.JsonValueKind.False)
+                throw new InvalidOperationException(accepted.GetProperty("reason").GetString());
+            Report(new("Update", "Supervisor is updating; tasks will resume after restart…", ProvisioningStepState.Running, 70));
+            for (var i = 0; i < 600; i++)
             {
-                State = SupervisorState.Starting;
-                Report(new("Pockymoe", "Stopping the Supervisor before updating...", ProvisioningStepState.Running, 10));
-                await _supervisor.StopAsync(originalRuntime, cancellationToken);
-            }
-
-            var targetVersion = AvailableRemoteCodexVersion;
-            Runtime = await _provisioner.UpdateRemoteCodexAsync(
-                originalRuntime,
-                targetVersion,
-                new Progress<ProvisioningProgress>(Report),
-                cancellationToken);
-
-            if (wasRunning)
-            {
-                Report(new("Pockymoe", "Restarting the Supervisor with the updated runtime...", ProvisioningStepState.Running, 90));
-                await _supervisor.StartAsync(Runtime, ConfigurationFromSettings(), cancellationToken);
-                State = SupervisorState.Running;
-            }
-            else
-            {
-                State = SupervisorState.Stopped;
-            }
-
-            AvailableRemoteCodexVersion = null;
-            RuntimeUpdateMessage = $"Pockymoe {Runtime.RemoteCodexVersion} is installed.";
-            Report(new("Ready", RuntimeUpdateMessage, ProvisioningStepState.Complete, 100));
-            _logger.Info("Pockymoe update completed successfully.");
-        }
-        catch (Exception exception)
-        {
-            Runtime = originalRuntime;
-            RuntimeUpdateMessage = $"Update failed: {AppLogger.Redact(exception.Message)}";
-            LastError = AppLogger.Redact(exception.Message);
-            if (wasRunning)
-            {
-                try
+                await Task.Delay(1000, cancellationToken);
+                System.Text.Json.JsonElement status;
+                try { status = await _supervisor.ManagementAsync("", false, cancellationToken); }
+                catch (Exception e) when (e is HttpRequestException or TaskCanceledException) { continue; }
+                if (status.TryGetProperty("job", out var job) && job.TryGetProperty("phase", out var phase))
                 {
-                    await _supervisor.StartAsync(originalRuntime, ConfigurationFromSettings(), cancellationToken);
-                    State = SupervisorState.Running;
+                    if (phase.GetString() == "failed") throw new InvalidOperationException("Supervisor update failed. Open Web Settings for the recovery details.");
+                    if (phase.GetString() != "completed") continue;
                 }
-                catch (Exception restartException)
-                {
-                    State = SupervisorState.Error;
-                    _logger.Error("Unable to restore the previous Supervisor after an update failure", restartException);
-                }
+                if (status.GetProperty("runningVersion").GetString() != AvailableRemoteCodexVersion) continue;
+                Runtime = RuntimeState.FromNative() ?? Runtime;
+                Runtime.Save(); AvailableRemoteCodexVersion = null;
+                State = await _supervisor.GetStateAsync(Runtime, cancellationToken);
+                RuntimeUpdateMessage = $"Pockymoe {Runtime.RemoteCodexVersion} is running.";
+                Report(new("Updated", RuntimeUpdateMessage, ProvisioningStepState.Complete, 100));
+                return;
             }
-            _logger.Error("Pockymoe update failed", exception);
-            OnChanged();
-            throw;
+            throw new TimeoutException("Update is still pending. Follow its progress in Web Settings.");
         }
-        finally
+        catch (Exception e)
         {
-            SetBusy(false);
-            _operationLock.Release();
+            LastError = AppLogger.Redact(e.Message); RuntimeUpdateMessage = LastError;
+            OnChanged(); throw;
         }
+        finally { SetBusy(false); _operationLock.Release(); }
     }
 
     public async Task MaintainConnectionAsync(CancellationToken cancellationToken = default)
     {
-        if (IsBusy || !Settings.KeepOnline || !HasSavedToken || Runtime?.IsUsable != true)
+        if (IsBusy || !Settings.KeepOnline || !HasSavedToken || Runtime?.IsUsable != true || !Runtime.IsNative)
         {
             return;
         }
@@ -301,7 +276,10 @@ internal sealed class DeviceManagerController
 
         try
         {
+            Runtime = RuntimeState.FromNative() ?? Runtime;
+            if (RelaySupervisorService.MaintenancePending()) return;
             var state = await _supervisor.GetStateAsync(Runtime, cancellationToken);
+            if (state == SupervisorState.Starting || state == SupervisorState.Unknown) return;
             if (state == SupervisorState.Running)
             {
                 if (State != SupervisorState.Running)
@@ -337,6 +315,11 @@ internal sealed class DeviceManagerController
         {
             _operationLock.Release();
         }
+    }
+
+    public void SetTheme(string theme)
+    {
+        Settings = Settings with { Theme = theme }; Settings.Save(); OnChanged();
     }
 
     public void SetStartWithWindows(bool enabled)

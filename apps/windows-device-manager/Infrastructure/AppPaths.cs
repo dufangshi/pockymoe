@@ -3,7 +3,7 @@ namespace RemoteCodex.DeviceManager.Infrastructure;
 internal static class AppPaths
 {
     private static string? TestRoot { get; } = Environment.GetEnvironmentVariable(
-        "REMOTE_CODEX_DEVICE_MANAGER_TEST_ROOT");
+        "POCKYMOE_DEVICE_MANAGER_TEST_ROOT") ?? Environment.GetEnvironmentVariable("REMOTE_CODEX_DEVICE_MANAGER_TEST_ROOT");
 
     public static bool IsTestEnvironment => TestRoot is { Length: > 0 };
 
@@ -28,6 +28,9 @@ internal static class AppPaths
     public static string RuntimeStatePath { get; } = Path.Combine(DeviceManagerRoot, "runtime-state.json");
 
     public static string RelayDataRoot { get; } = Path.Combine(UserProfileRoot, ".remote-codex");
+    public static string NativeRoot { get; } = Path.Combine(UserProfileRoot, ".local", "share", "remote-codex", "native");
+    public static string NativeCurrentPath { get; } = Path.Combine(NativeRoot, "current.json");
+    public static string UserHome => UserProfileRoot;
     public static string DefaultWorkspaceRoot { get; } = UserProfileRoot;
 
     public static string RelayConfigPath { get; } = Path.Combine(RelayDataRoot, "relay-supervisor.json");

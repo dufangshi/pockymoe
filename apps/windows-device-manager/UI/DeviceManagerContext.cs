@@ -182,7 +182,7 @@ internal sealed class DeviceManagerContext : ApplicationContext
     private async void ChangeToken(object? sender, EventArgs eventArgs)
     {
         string token;
-        using (var dialog = new TokenDialog())
+        using (var dialog = new TokenDialog(_controller.Settings.Theme))
         {
             if (dialog.ShowDialog(_mainForm.Visible ? _mainForm : null) != DialogResult.OK)
             {
@@ -310,20 +310,6 @@ internal sealed class DeviceManagerContext : ApplicationContext
 
     private void OpenRelayPortal()
     {
-        var relayUri = Uri.TryCreate(_controller.Settings.RelayUrl, UriKind.Absolute, out var configured)
-            ? configured
-            : ProductManifest.RelayPortalUri;
-        var portal = new UriBuilder(relayUri)
-        {
-            Scheme = relayUri.Scheme.Equals(Uri.UriSchemeWss, StringComparison.OrdinalIgnoreCase)
-                ? Uri.UriSchemeHttps
-                : relayUri.Scheme.Equals(Uri.UriSchemeWs, StringComparison.OrdinalIgnoreCase)
-                    ? Uri.UriSchemeHttp
-                    : relayUri.Scheme,
-            Path = "/relay-portal",
-            Query = string.Empty,
-            Fragment = string.Empty,
-        }.Uri;
-        Process.Start(new ProcessStartInfo { FileName = portal.AbsoluteUri, UseShellExecute = true });
+        Process.Start(new ProcessStartInfo { FileName = ProductManifest.RelayPortalUri.AbsoluteUri, UseShellExecute = true });
     }
 }

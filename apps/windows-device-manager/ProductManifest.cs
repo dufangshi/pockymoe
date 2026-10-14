@@ -2,18 +2,10 @@ namespace RemoteCodex.DeviceManager;
 
 internal static class ProductManifest
 {
-    public const string ProductName = "Pockymoe Device";
-    public const string DefaultRelayUrl = "wss://remote-codex.lnz-study.com";
+    public const string ProductName = "Pockymoe Device Manager";
+    public const string DefaultRelayUrl = "https://remote.lnz-study.com";
     public const int DefaultSupervisorPort = 45680;
-
-    public const string NodeVersion = "22.23.2";
-    public const string NodeArchiveName = "node-v22.23.2-win-x64.zip";
-    public const string NodeArchiveSha256 = "1177b4137ba5adaa56354ae40f1080c7450e8ae09cecb47da459d1c52ac99f97";
-    public static readonly Uri NodeArchiveUri = new($"https://nodejs.org/dist/v{NodeVersion}/{NodeArchiveName}");
-
-    public const string RemoteCodexVersion = "0.12.5";
-    public const string CodexAcpVersion = "1.9.0";
-    public const string CodexVersion = "0.153.2";
-    public static readonly Uri RemoteCodexLatestMetadataUri = new("https://registry.npmjs.org/remote-codex/latest");
-    public static readonly Uri RelayPortalUri = new("https://remote-codex.lnz-study.com/relay-portal");
+    public const string RemoteCodexVersion = "0.13.2";
+    public const string ReleaseRepository = "https://github.com/dufangshi/pockymoe";
+    public static readonly Uri RelayPortalUri = new("https://app.lnz-study.com/devices");
 }

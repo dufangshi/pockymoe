@@ -1,0 +1,77 @@
+name: Windows Device Manager
+on:
+  push:
+    paths:
+      - 'apps/windows-device-manager/**'
+      - 'scripts/windows/**'
+      - '.github/workflows/windows-manager-release.yml'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the independently versioned Manager after Windows gates
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: windows-manager-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '8.0.x'
+      - name: Build, self-test and render all themes
+        shell: pwsh
+        run: ./scripts/windows/build-device-manager.ps1
+      - name: Validate current native Windows runtime and Manager lifecycle
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $base = 'https://github.com/dufangshi/pockymoe/releases'
+          $version = (Invoke-WebRequest -UseBasicParsing "$base/latest/download/runtime-version.txt").Content.Trim()
+          if ($version -notmatch '^\d+\.\d+\.\d+$') { throw 'Invalid runtime version.' }
+          $asset = 'remote-codex-win32-x64-msvc-cli.exe'
+          $sums = (Invoke-WebRequest -UseBasicParsing "$base/download/v$version/SHA256SUMS").Content
+          $matches = @($sums -split "`n" | Where-Object { $_ -match "^([0-9a-fA-F]{64})\s+\*?$([regex]::Escape($asset))\s*$" })
+          if ($matches.Count -ne 1) { throw 'Missing or ambiguous checksum.' }
+          $binary = Join-Path $env:RUNNER_TEMP 'pockymoe.exe'
+          Invoke-WebRequest -UseBasicParsing "$base/download/v$version/$asset" -OutFile $binary
+          if ((Get-FileHash $binary -Algorithm SHA256).Hash.ToLowerInvariant() -ne ($matches[0] -split '\s+')[0].ToLowerInvariant()) { throw 'Checksum mismatch.' }
+          if ((& $binary version).Trim() -ne $version -or $LASTEXITCODE -ne 0) { throw 'Version mismatch.' }
+          $env:POCKYMOE_DEVICE_MANAGER_TEST_ROOT = Join-Path $env:RUNNER_TEMP 'manager-native-acceptance'
+          try {
+            $exe = Join-Path $PWD 'artifacts/windows-device-manager/win-x64/RemoteCodex.DeviceManager.exe'
+            $p = Start-Process $exe -ArgumentList @('--native-self-test', $binary) -Wait -PassThru
+            if ($p.ExitCode -ne 0) {
+              Get-Content (Join-Path $env:POCKYMOE_DEVICE_MANAGER_TEST_ROOT 'local-app-data/RemoteCodex/logs/device-manager.log') -Tail 30
+              throw 'Native Manager lifecycle failed.'
+            }
+            "Native lifecycle verified against Pockymoe $version" >> $env:GITHUB_STEP_SUMMARY
+          } finally { Remove-Item Env:POCKYMOE_DEVICE_MANAGER_TEST_ROOT -ErrorAction SilentlyContinue }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-device-manager-${{ github.sha }}
+          path: artifacts/windows-device-manager/win-x64/
+          if-no-files-found: error
+      - name: Publish immutable Manager release without changing runtime latest
+        if: github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/main'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          [xml]$project = Get-Content apps/windows-device-manager/RemoteCodex.DeviceManager.csproj
+          $version = [string]$project.Project.PropertyGroup.Version | Where-Object { $_ }
+          $tag = "windows-device-manager-v$version"
+          $out = 'artifacts/windows-device-manager/win-x64'
+          $notes = 'scripts/windows/release-notes.md'
+          gh release create $tag "$out/RemoteCodex.DeviceManager.exe" "$out/RemoteCodex.DeviceManager.exe.sha256" --target $env:GITHUB_SHA --title "Pockymoe Windows Device Manager $version" --notes-file $notes --latest=false --repo $env:GITHUB_REPOSITORY
+          if ($LASTEXITCODE -ne 0) { throw 'Manager release failed.' }
+    permissions:
+      contents: write

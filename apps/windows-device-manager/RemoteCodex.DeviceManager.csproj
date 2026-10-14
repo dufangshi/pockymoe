@@ -17,7 +17,7 @@
     <PublishTrimmed>false</PublishTrimmed>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <DebugType>embedded</DebugType>
-    <Version>0.1.5</Version>
+    <Version>0.2.0</Version>
     <AssemblyTitle>Pockymoe Device Manager</AssemblyTitle>
     <Product>Pockymoe Device Manager</Product>
     <Description>Windows tray application for a Pockymoe Relay Device.</Description>
@@ -26,17 +26,4 @@
     <RepositoryUrl>https://github.com/dufangshi/pockymoe</RepositoryUrl>
   </PropertyGroup>
 
-  <PropertyGroup>
-    <BundledRemoteCodexBinary Condition="'$(BundledRemoteCodexBinary)' == ''">$(MSBuildThisFileDirectory)..\..\target\release\remote-codex.exe</BundledRemoteCodexBinary>
-  </PropertyGroup>
-
-  <ItemGroup>
-    <EmbeddedResource Include="$(MSBuildThisFileDirectory)..\..\npm\remote-codex\bin\remote-codex.mjs" LogicalName="RemoteCodex.DeviceManager.BundledRuntime.remote-codex.mjs" />
-    <EmbeddedResource Include="$(MSBuildThisFileDirectory)..\..\npm\remote-codex\package.json" LogicalName="RemoteCodex.DeviceManager.BundledRuntime.package.json" />
-    <EmbeddedResource Include="$(BundledRemoteCodexBinary)" LogicalName="RemoteCodex.DeviceManager.BundledRuntime.remote-codex.exe" />
-  </ItemGroup>
-
-  <Target Name="ValidateBundledRemoteCodex" BeforeTargets="PrepareForBuild">
-    <Error Condition="!Exists('$(BundledRemoteCodexBinary)')" Text="Build the current Windows remote-codex.exe before publishing Device Manager: $(BundledRemoteCodexBinary)" />
-  </Target>
 </Project>

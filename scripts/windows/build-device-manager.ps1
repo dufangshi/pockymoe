@@ -1,115 +1,27 @@
-[CmdletBinding()]
-param(
-  [string]$Configuration = 'Release',
-  [string]$Runtime = 'win-x64',
-  [string]$OutputPath = (Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path 'artifacts\windows-device-manager\win-x64'),
-  [string]$BundledPockymoeBinary = (Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path 'target\release\pockymoe.exe')
-)
-
+param([string]$Configuration = 'Release', [string]$Runtime = 'win-x64', [string]$OutputPath)
 $ErrorActionPreference = 'Stop'
-$repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
-$projectPath = Join-Path $repositoryRoot 'apps\windows-device-manager\Pockymoe.DeviceManager.csproj'
-$BundledPockymoeBinary = [IO.Path]::GetFullPath($BundledPockymoeBinary)
-if (-not $PSBoundParameters.ContainsKey('BundledPockymoeBinary')) {
-  & cargo build --locked --release --package pockymoe --bin pockymoe
-  if ($LASTEXITCODE -ne 0) {
-    throw "The bundled Pockymoe CLI build failed with exit code $LASTEXITCODE."
-  }
-}
-if (-not (Test-Path -LiteralPath $BundledPockymoeBinary -PathType Leaf)) {
-  throw "The bundled Pockymoe CLI was not found: $BundledPockymoeBinary"
-}
-$expectedRuntimeVersion = (Get-Content (Join-Path $repositoryRoot 'package.json') | ConvertFrom-Json).version
-$actualRuntimeVersion = (& $BundledPockymoeBinary version).Trim()
-if ($LASTEXITCODE -ne 0 -or $actualRuntimeVersion -ne $expectedRuntimeVersion) {
-  throw "Bundled Pockymoe CLI version mismatch: expected $expectedRuntimeVersion, got $actualRuntimeVersion"
-}
-$dotnet = (Get-Command dotnet.exe -ErrorAction SilentlyContinue)
-if (-not $dotnet) {
-  $dotnet = (Get-Command dotnet -ErrorAction Stop)
-}
-
-& $dotnet.Source publish $projectPath `
-  --configuration $Configuration `
-  --runtime $Runtime `
-  --self-contained true `
-  -p:PublishSingleFile=true `
-  "-p:BundledPockymoeBinary=$BundledPockymoeBinary" `
-  --output $OutputPath
-if ($LASTEXITCODE -ne 0) {
-  throw "dotnet publish failed with exit code $LASTEXITCODE."
-}
-
-$executable = Join-Path $OutputPath 'Pockymoe.DeviceManager.exe'
-if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
-  throw "Published executable was not found: $executable"
-}
-
-$validationProfile = Join-Path $OutputPath '.validation-profile'
-$originalTestRoot = $env:POCKYMOE_DEVICE_MANAGER_TEST_ROOT
+$root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
+if (-not $OutputPath) { $OutputPath = Join-Path $root 'artifacts\windows-device-manager\win-x64' }
+$project = Join-Path $root 'apps\windows-device-manager\RemoteCodex.DeviceManager.csproj'
+& dotnet publish $project -c $Configuration -r $Runtime --self-contained true -o $OutputPath -p:PublishSingleFile=true
+if ($LASTEXITCODE -ne 0) { throw 'Device Manager publish failed.' }
+$exe = Join-Path $OutputPath 'RemoteCodex.DeviceManager.exe'
+$profile = Join-Path ([IO.Path]::GetTempPath()) ('pockymoe-manager-test-' + [Guid]::NewGuid().ToString('N'))
+$old = $env:POCKYMOE_DEVICE_MANAGER_TEST_ROOT
 try {
-  New-Item -ItemType Directory -Force -Path $validationProfile | Out-Null
-  $env:POCKYMOE_DEVICE_MANAGER_TEST_ROOT = $validationProfile
-
-  $selfTest = Start-Process -FilePath $executable -ArgumentList '--self-test' -Wait -PassThru
-  if ($selfTest.ExitCode -ne 0) {
-    $selfTestLog = Join-Path $validationProfile 'local-app-data\Pockymoe\logs\device-manager.log'
-    if (Test-Path -LiteralPath $selfTestLog -PathType Leaf) {
-      Write-Host 'Self-test diagnostics:'
-      Get-Content -LiteralPath $selfTestLog -Tail 50
+    $env:POCKYMOE_DEVICE_MANAGER_TEST_ROOT = $profile
+    foreach ($arguments in @(@('--self-test'), @('--render-preview', (Join-Path $OutputPath 'previews\manager.png')))) {
+        $p = Start-Process -FilePath $exe -ArgumentList $arguments -Wait -PassThru
+        if ($p.ExitCode -ne 0) {
+            $log = Join-Path $profile 'local-app-data\RemoteCodex\logs\device-manager.log'
+            if (Test-Path $log) { Get-Content $log -Tail 30 }
+            throw "Device Manager verification failed: $($arguments[0])"
+        }
     }
-    throw "Pockymoe Device self-test failed with exit code $($selfTest.ExitCode)."
-  }
-
-  $nodeTest = Start-Process -FilePath $executable -ArgumentList '--node-self-test' -Wait -PassThru
-  if ($nodeTest.ExitCode -ne 0) {
-    $nodeTestLog = Join-Path $validationProfile 'local-app-data\Pockymoe\logs\device-manager.log'
-    if (Test-Path -LiteralPath $nodeTestLog -PathType Leaf) {
-      Write-Host 'Node.js self-test diagnostics:'
-      Get-Content -LiteralPath $nodeTestLog -Tail 80
-    }
-    throw "Pockymoe Node.js self-test failed with exit code $($nodeTest.ExitCode)."
-  }
-
-  $managedNode = Join-Path $validationProfile 'local-app-data\Pockymoe\runtime\node-v22.23.2-win-x64\node.exe'
-  if (-not (Test-Path -LiteralPath $managedNode -PathType Leaf)) {
-    throw "Managed Node.js self-test output was not found: $managedNode"
-  }
-  $runtimeTest = Start-Process `
-    -FilePath $executable `
-    -ArgumentList @('--runtime-self-test', ('"{0}"' -f $managedNode)) `
-    -Wait `
-    -PassThru
-  if ($runtimeTest.ExitCode -ne 0) {
-    $runtimeTestLog = Join-Path $validationProfile 'local-app-data\Pockymoe\logs\device-manager.log'
-    if (Test-Path -LiteralPath $runtimeTestLog -PathType Leaf) {
-      Write-Host 'Runtime self-test diagnostics:'
-      Get-Content -LiteralPath $runtimeTestLog -Tail 80
-    }
-    throw "Pockymoe runtime self-test failed with exit code $($runtimeTest.ExitCode)."
-  }
-
-  $previewPath = Join-Path $OutputPath 'Pockymoe.DeviceManager.preview.png'
-  $previewTest = Start-Process `
-    -FilePath $executable `
-    -ArgumentList @('--render-preview', ('"{0}"' -f $previewPath)) `
-    -Wait `
-    -PassThru
-  if ($previewTest.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $previewPath -PathType Leaf)) {
-    throw "Pockymoe Device preview render failed with exit code $($previewTest.ExitCode)."
-  }
+} finally {
+    $env:POCKYMOE_DEVICE_MANAGER_TEST_ROOT = $old
+    Remove-Item -LiteralPath $profile -Recurse -Force -ErrorAction SilentlyContinue
 }
-finally {
-  $env:POCKYMOE_DEVICE_MANAGER_TEST_ROOT = $originalTestRoot
-  if (Test-Path -LiteralPath $validationProfile) {
-    Remove-Item -LiteralPath $validationProfile -Recurse -Force
-  }
-}
-
-$hash = Get-FileHash -LiteralPath $executable -Algorithm SHA256
-$hashLine = '{0}  {1}' -f $hash.Hash.ToLowerInvariant(), (Split-Path -Leaf $executable)
-$hashPath = Join-Path $OutputPath 'Pockymoe.DeviceManager.exe.sha256'
-[IO.File]::WriteAllText($hashPath, "$hashLine`n", [Text.UTF8Encoding]::new($false))
-
-Write-Host "Built: $executable"
-Write-Host "SHA-256: $($hash.Hash.ToLowerInvariant())"
+$hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash.ToLowerInvariant()
+"$hash  RemoteCodex.DeviceManager.exe" | Set-Content -LiteralPath "$exe.sha256" -Encoding ascii
+Write-Host "Verified: $exe"

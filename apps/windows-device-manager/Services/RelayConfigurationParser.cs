@@ -2,87 +2,45 @@ using System.Text.RegularExpressions;
 
 namespace RemoteCodex.DeviceManager.Services;
 
-internal sealed record ParsedRelayConfiguration(string RelayUrl, string DeviceToken, int? SupervisorPort);
+internal sealed record ParsedRelayConfiguration(string RelayUrl, string DeviceToken, int? SupervisorPort,
+    string? SetupCode = null, string? AccountKey = null, string? EnrollmentSecret = null, string? WebOrigin = null);
 
 internal static partial class RelayConfigurationParser
 {
-    private const string RelayUrlKey = "REMOTE_CODEX_RELAY_SERVER_URL";
-    private const string AgentTokenKey = "REMOTE_CODEX_RELAY_AGENT_TOKEN";
-    private const string SupervisorPortKey = "REMOTE_CODEX_RELAY_SUPERVISOR_PORT";
-
-    public static bool TryParse(
-        string text,
-        out ParsedRelayConfiguration? configuration,
-        out string error)
+    public static bool TryParse(string text, out ParsedRelayConfiguration? configuration, out string error)
     {
         configuration = null;
-        error = string.Empty;
-        if (string.IsNullOrWhiteSpace(text))
-        {
-            error = "Paste the device setup command from the Relay portal.";
-            return false;
-        }
-
-        var normalized = NormalizeEscapedText(text);
-        var relayUrl = ExtractValue(normalized, RelayUrlKey);
-        var token = ExtractValue(normalized, AgentTokenKey);
-        var portText = ExtractValue(normalized, SupervisorPortKey);
-
-        if (!Uri.TryCreate(relayUrl, UriKind.Absolute, out var relayUri)
-            || (relayUri.Scheme != Uri.UriSchemeWs && relayUri.Scheme != Uri.UriSchemeWss))
-        {
-            error = $"The pasted configuration does not contain a valid {RelayUrlKey}.";
-            return false;
-        }
-        if (string.IsNullOrWhiteSpace(token) || !token.StartsWith("rcd_", StringComparison.Ordinal))
-        {
-            error = $"The pasted configuration does not contain a valid {AgentTokenKey}.";
-            return false;
-        }
-
+        error = "Paste the PowerShell setup command from the Devices page.";
+        if (string.IsNullOrWhiteSpace(text)) return false;
+        var normalized = Regex.Replace(text, @"\([_:/])", "$1");
+        string? Env(string suffix) => Assignment(normalized, "POCKYMOE_" + suffix) ?? Assignment(normalized, "REMOTE_CODEX_" + suffix);
+        string? Flag(string name) => Extract(normalized, $@"(?<![A-Za-z0-9_])--?{Regex.Escape(name)}\s+");
+        var relay = Flag("Relay") ?? Env("RELAY_SERVER_URL");
+        var token = Flag("Token") ?? Env("RELAY_AGENT_TOKEN") ?? "";
+        var code = Flag("Code");
+        var account = Flag("AccountKey") ?? Flag("account-key");
+        var enroll = Env("ENROLL_SECRET");
+        var web = Flag("WebOrigin") ?? Flag("web-origin");
+        var portText = Flag("Port") ?? Env("RELAY_SUPERVISOR_PORT");
+        if (string.IsNullOrWhiteSpace(relay) || (string.IsNullOrWhiteSpace(token) == string.IsNullOrWhiteSpace(code))) return false;
+        var http = relay.Replace("wss://", "https://").Replace("ws://", "http://");
+        if (!Uri.TryCreate(http, UriKind.Absolute, out var uri) || (uri.Scheme != "https" && !(uri.Scheme == "http" && uri.IsLoopback))
+            || uri.UserInfo.Length > 0 || uri.Query.Length > 0 || uri.Fragment.Length > 0) { error = "Invalid Relay URL."; return false; }
         int? port = null;
-        if (!string.IsNullOrWhiteSpace(portText))
+        if (portText is not null)
         {
-            if (!int.TryParse(portText, out var parsedPort) || parsedPort is < 1024 or > 65535)
-            {
-                error = $"{SupervisorPortKey} must be between 1024 and 65535.";
-                return false;
-            }
-            port = parsedPort;
+            if (!int.TryParse(portText, out var n) || n is < 1024 or > 65535) { error = "Invalid local port."; return false; }
+            port = n;
         }
-
-        configuration = new ParsedRelayConfiguration(relayUri.AbsoluteUri.TrimEnd('/'), token, port);
+        if (string.IsNullOrWhiteSpace(account) != string.IsNullOrWhiteSpace(enroll)) { error = "The setup command is missing account enrollment information."; return false; }
+        configuration = new(uri.AbsoluteUri.TrimEnd('/'), token, port, code, account, enroll, web);
+        error = "";
         return true;
     }
-
-    private static string? ExtractValue(string text, string key)
+    private static string? Assignment(string text, string name) => Extract(text, $@"\b{Regex.Escape(name)}\s*=\s*");
+    private static string? Extract(string text, string prefix)
     {
-        var match = AssignmentRegex(key).Match(text);
-        if (!match.Success)
-        {
-            return null;
-        }
-
-        foreach (var groupName in new[] { "single", "double", "bare" })
-        {
-            var value = match.Groups[groupName];
-            if (value.Success)
-            {
-                return value.Value.Trim();
-            }
-        }
-        return null;
+        var match = Regex.Match(text, prefix + "(?:'(?<value>(?:[^']|'')*)'|\"(?<value>[^\"]*)\"|(?<value>[^\\s;\\}]+))", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        return match.Success ? match.Groups["value"].Value.Replace("''", "'").Trim() : null;
     }
-
-    private static Regex AssignmentRegex(string key) => new(
-        $"""{Regex.Escape(key)}\s*=\s*(?:'(?<single>[^']*)'|"(?<double>[^"]*)"|(?<bare>[^\s\\;]+))""",
-        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-
-    private static string NormalizeEscapedText(string text)
-    {
-        return MarkdownEscapeRegex().Replace(text, "$1");
-    }
-
-    [GeneratedRegex(@"\\([_:/])", RegexOptions.CultureInvariant)]
-    private static partial Regex MarkdownEscapeRegex();
 }

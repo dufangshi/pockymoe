@@ -1,0 +1,66 @@
+using System.Drawing.Drawing2D;
+
+namespace RemoteCodex.DeviceManager.UI;
+
+internal sealed record ManagerTheme(Color Background, Color Surface, Color Input, Color Text, Color Muted, Color Border, Color Accent, Color AccentText, bool Plum)
+{
+    private static Color Hex(string hex) => ColorTranslator.FromHtml(hex);
+    public static ManagerTheme Get(string name) => name switch
+    {
+        "plum-light" => new(Hex("#fbf5e9"), Hex("#fffdf7"), Hex("#f4e9d1"), Hex("#402449"), Hex("#817087"), Hex("#ddbe7d"), Hex("#efb445"), Hex("#352038"), true),
+        "classic-light" => new(Hex("#f7f9f8"), Color.White, Hex("#eef2f0"), Hex("#1e2924"), Hex("#67766e"), Hex("#cbd5cf"), Hex("#008b5c"), Color.White, false),
+        "classic-dark" => new(Hex("#0c1012"), Hex("#151b20"), Hex("#202830"), Hex("#e8eeeb"), Hex("#a1ada8"), Hex("#33413c"), Hex("#00c985"), Hex("#08291d"), false),
+        _ => new(Hex("#1a1022"), Hex("#291b33"), Hex("#362441"), Hex("#f7ebd5"), Hex("#bba7c5"), Hex("#604171"), Hex("#f0b54a"), Hex("#2a1530"), true),
+    };
+    public static void Apply(Control control, ManagerTheme theme)
+    {
+        control.ForeColor = theme.Text;
+        control.BackColor = theme.Background;
+        if (control is ThemedPanel panel) { panel.Theme = theme; panel.BackColor = theme.Surface; }
+        if (control is ThemedButton button) { button.Theme = theme; button.BackColor = theme.Surface; }
+        if (control is TextBox or NumericUpDown or ComboBox) control.BackColor = theme.Input;
+        if (control is Label label && label.Tag as string == "muted") label.ForeColor = theme.Muted;
+        foreach (Control child in control.Controls) Apply(child, theme);
+        if (control.Parent is ThemedPanel && control is not TextBox && control is not Button && control is not ComboBox && control is not NumericUpDown) control.BackColor = theme.Surface;
+        control.Invalidate();
+    }
+    internal static GraphicsPath Round(Rectangle bounds, int radius)
+    {
+        var path = new GraphicsPath(); var d = Math.Min(radius * 2, Math.Min(bounds.Width, bounds.Height));
+        if (d <= 0) { path.AddRectangle(bounds); return path; }
+        path.AddArc(bounds.X, bounds.Y, d, d, 180, 90);
+        path.AddArc(bounds.Right - d, bounds.Y, d, d, 270, 90);
+        path.AddArc(bounds.Right - d, bounds.Bottom - d, d, d, 0, 90);
+        path.AddArc(bounds.X, bounds.Bottom - d, d, d, 90, 90); path.CloseFigure(); return path;
+    }
+}
+internal sealed class ThemedPanel : Panel
+{
+    public ManagerTheme Theme { get; set; } = ManagerTheme.Get("plum-dark");
+    public ThemedPanel() { DoubleBuffered = true; Padding = new Padding(16, 12, 16, 12); }
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        base.OnPaint(e); e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        using var path = ManagerTheme.Round(new Rectangle(1, 1, Width - 3, Height - 3), Theme.Plum ? 16 : 10);
+        using var pen = new Pen(Theme.Border, 1) { DashStyle = Theme.Plum ? DashStyle.Dash : DashStyle.Solid };
+        e.Graphics.DrawPath(pen, path);
+    }
+}
+internal sealed class ThemedButton : Button
+{
+    public ManagerTheme Theme { get; set; } = ManagerTheme.Get("plum-dark");
+    public bool Primary { get; set; }
+    public ThemedButton() { FlatStyle = FlatStyle.Flat; FlatAppearance.BorderSize = 0; DoubleBuffered = true; Cursor = Cursors.Hand; }
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        e.Graphics.Clear(Parent?.BackColor ?? Theme.Background);
+        e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        using var path = ManagerTheme.Round(new Rectangle(1, 1, Width - 3, Height - 3), Theme.Plum ? 12 : 8);
+        using var fill = new SolidBrush(Primary && Enabled ? Theme.Accent : Theme.Input);
+        e.Graphics.FillPath(fill, path);
+        using var border = new Pen(Focused ? Theme.Accent : Theme.Border, Focused ? 2 : 1);
+        e.Graphics.DrawPath(border, path);
+        TextRenderer.DrawText(e.Graphics, Text, Font, ClientRectangle, !Enabled ? Theme.Muted : Primary ? Theme.AccentText : Theme.Text,
+            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+    }
+}

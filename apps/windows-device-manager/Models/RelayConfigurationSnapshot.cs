@@ -37,13 +37,13 @@ internal sealed record RelayConfigurationSnapshot(
         => !string.IsNullOrWhiteSpace(GetString(root, propertyName));
 
     private static string? GetString(JsonElement root, string propertyName)
-        => root.TryGetProperty(propertyName, out var property) && property.ValueKind == JsonValueKind.String
+        => (root.TryGetProperty(propertyName.Replace("REMOTE_CODEX_", "POCKYMOE_"), out var property) || root.TryGetProperty(propertyName, out property)) && property.ValueKind == JsonValueKind.String
             ? property.GetString()
             : null;
 
     private static int? GetInt32(JsonElement root, string propertyName)
     {
-        if (!root.TryGetProperty(propertyName, out var property))
+        if (!root.TryGetProperty(propertyName.Replace("REMOTE_CODEX_", "POCKYMOE_"), out var property) && !root.TryGetProperty(propertyName, out property))
         {
             return null;
         }

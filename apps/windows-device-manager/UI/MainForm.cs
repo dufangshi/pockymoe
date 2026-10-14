@@ -8,401 +8,100 @@ namespace RemoteCodex.DeviceManager.UI;
 
 internal sealed class MainForm : Form
 {
-    private static readonly Color TextColor = Color.FromArgb(31, 35, 33);
-    private static readonly Color MutedColor = Color.FromArgb(91, 99, 95);
-    private static readonly Color AccentColor = Color.FromArgb(180, 83, 9);
-    private static readonly Color OnlineColor = Color.FromArgb(22, 128, 74);
-    private static readonly Color ErrorColor = Color.FromArgb(185, 28, 28);
-    private static readonly Color WindowColor = Color.FromArgb(252, 252, 249);
-    private static readonly Color SurfaceColor = Color.FromArgb(246, 247, 244);
-    private static readonly Color BorderColor = Color.FromArgb(204, 208, 203);
-
+    private static readonly Color OnlineColor = Color.FromArgb(60, 181, 128);
+    private static readonly Color ErrorColor = Color.FromArgb(222, 101, 129);
     private readonly DeviceManagerController _controller;
-    private readonly TextBox _pasteConfigurationTextBox;
-    private readonly Label _pasteStateLabel;
-    private readonly TextBox _relayUrlTextBox;
-    private readonly TextBox _tokenTextBox;
-    private readonly Label _tokenStateLabel;
-    private readonly TextBox _workspaceTextBox;
+    private readonly TextBox _pasteConfigurationTextBox, _relayUrlTextBox, _tokenTextBox, _workspaceTextBox;
+    private readonly Label _pasteStateLabel, _tokenStateLabel, _statusTitle, _statusDetail, _stepLabel, _runtimeValue, _runtimeUpdateLabel;
     private readonly NumericUpDown _portInput;
     private readonly CheckBox _startWithWindowsCheckBox;
-    private readonly Button _connectButton;
-    private readonly Button _disconnectButton;
+    private readonly Button _connectButton, _disconnectButton, _checkUpdateButton, _updateButton;
     private readonly Panel _statusDot;
-    private readonly Label _statusTitle;
-    private readonly Label _statusDetail;
-    private readonly Label _stepLabel;
     private readonly ProgressBar _progressBar;
-    private readonly Label _runtimeValue;
-    private readonly Label _runtimeUpdateLabel;
-    private readonly Button _checkUpdateButton;
-    private readonly Button _updateButton;
-    private bool _allowClose;
-    private bool _isApplyingPaste;
+    private ParsedRelayConfiguration? _parsed;
+    private bool _allowClose, _isApplyingPaste;
+    private string _themeName;
 
     public MainForm(DeviceManagerController controller)
     {
-        _controller = controller;
+        _controller = controller; _themeName = controller.Settings.Theme;
         Text = ProductManifest.ProductName;
         StartPosition = FormStartPosition.CenterScreen;
-        MinimumSize = new Size(760, 800);
-        ClientSize = new Size(820, 900);
-        BackColor = WindowColor;
-        ForeColor = TextColor;
-        Font = new Font("Segoe UI", 10F);
         AutoScaleMode = AutoScaleMode.Dpi;
+        Font = new Font("Segoe UI", 10F);
+        ClientSize = new Size(760, 710); MinimumSize = new Size(700, 700);
         Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath) ?? SystemIcons.Application;
-
-        var root = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            BackColor = WindowColor,
-            Padding = new Padding(30, 24, 30, 22),
-            ColumnCount = 1,
-            RowCount = 5,
-        };
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 68));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 92));
-        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 64));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 54));
-
-        var header = new Panel { Dock = DockStyle.Fill };
-        header.Controls.Add(new Label
-        {
-            AutoSize = true,
-            Font = new Font("Segoe UI", 18F, FontStyle.Bold),
-            Location = new Point(0, 0),
-            Text = "Pockymoe device",
-        });
-        header.Controls.Add(new Label
-        {
-            AutoSize = true,
-            ForeColor = MutedColor,
-            Location = new Point(2, 39),
-            Text = "Windows Relay connection",
-        });
-
-        var statusPanel = new Panel
-        {
-            Dock = DockStyle.Fill,
-            BackColor = SurfaceColor,
-            Padding = new Padding(18, 14, 18, 14),
-        };
-        var statusLayout = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            BackColor = SurfaceColor,
-            ColumnCount = 2,
-            RowCount = 2,
-            Margin = Padding.Empty,
-            Padding = Padding.Empty,
-        };
-        statusLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 24));
-        statusLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        statusLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 26));
-        statusLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
-        _statusDot = new Panel
-        {
-            BackColor = Color.FromArgb(148, 163, 184),
-            Anchor = AnchorStyles.None,
-            Size = new Size(10, 10),
-        };
-        _statusTitle = new Label
-        {
-            AutoSize = false,
-            Dock = DockStyle.Fill,
-            Font = new Font(Font, FontStyle.Bold),
-            Margin = Padding.Empty,
-            TextAlign = ContentAlignment.MiddleLeft,
-            Text = "Checking status",
-        };
-        _statusDetail = new Label
-        {
-            AutoEllipsis = true,
-            Dock = DockStyle.Fill,
-            ForeColor = MutedColor,
-            Margin = Padding.Empty,
-            TextAlign = ContentAlignment.MiddleLeft,
-            Text = "Waiting for the local supervisor.",
-        };
-        statusLayout.Controls.Add(_statusDot, 0, 0);
-        statusLayout.SetRowSpan(_statusDot, 2);
-        statusLayout.Controls.Add(_statusTitle, 1, 0);
-        statusLayout.Controls.Add(_statusDetail, 1, 1);
-        statusPanel.Controls.Add(statusLayout);
-
-        var formGrid = new TableLayoutPanel
-        {
-            AutoScroll = true,
-            Dock = DockStyle.Fill,
-            Padding = new Padding(0, 18, 0, 8),
-            ColumnCount = 3,
-            RowCount = 12,
-        };
-        formGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 146));
-        formGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        formGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 126));
-        formGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
-        formGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 92));
-        formGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
-        formGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
-        formGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
-        formGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
-        formGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
-        formGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
-        formGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
-        formGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
-        formGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 92));
-        formGrid.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-
-        var pasteLabel = new Label
-        {
-            AutoSize = true,
-            Dock = DockStyle.Fill,
-            Font = new Font(Font, FontStyle.Bold),
-            Text = "Paste device setup command",
-        };
-        formGrid.Controls.Add(pasteLabel, 0, 0);
-        formGrid.SetColumnSpan(pasteLabel, 3);
-
-        _pasteConfigurationTextBox = new TextBox
-        {
-            AcceptsReturn = true,
-            AccessibleName = "Device setup command",
-            Dock = DockStyle.Fill,
-            Multiline = true,
-            PlaceholderText = "Paste the PowerShell or shell command from the Relay portal",
-            ScrollBars = ScrollBars.Vertical,
-            WordWrap = false,
-        };
-        _pasteConfigurationTextBox.TextChanged += (_, _) => TryApplyPastedConfiguration(showErrors: false);
-        formGrid.Controls.Add(_pasteConfigurationTextBox, 0, 1);
-        formGrid.SetColumnSpan(_pasteConfigurationTextBox, 2);
-
-        var pasteButton = CreateNeutralButton("Paste && fill", 118);
-        pasteButton.AccessibleName = "Paste configuration and fill connection details";
-        pasteButton.Dock = DockStyle.Fill;
-        pasteButton.Margin = new Padding(10, 0, 0, 4);
-        pasteButton.Click += PasteConfigurationClicked;
-        formGrid.Controls.Add(pasteButton, 2, 1);
-
-        _pasteStateLabel = new Label
-        {
-            AutoEllipsis = true,
-            Dock = DockStyle.Fill,
-            ForeColor = MutedColor,
-            Padding = new Padding(2, 4, 0, 0),
-            Text = "PowerShell and shell formats supported. Parsed locally, never executed.",
-        };
-        formGrid.Controls.Add(_pasteStateLabel, 0, 2);
-        formGrid.SetColumnSpan(_pasteStateLabel, 3);
-
-        _relayUrlTextBox = CreateTextBox();
-        _tokenTextBox = CreateTextBox();
-        _tokenTextBox.UseSystemPasswordChar = true;
-        _tokenTextBox.AccessibleName = "Relay device token";
-        _tokenStateLabel = new Label
-        {
-            AutoSize = true,
-            Dock = DockStyle.Fill,
-            ForeColor = MutedColor,
-            Padding = new Padding(3, 2, 0, 0),
-        };
-        _workspaceTextBox = CreateTextBox();
-        _portInput = new NumericUpDown
-        {
-            Dock = DockStyle.Fill,
-            Minimum = 1024,
-            Maximum = 65535,
-            ThousandsSeparator = false,
-            AccessibleName = "Local supervisor port",
-        };
-        _startWithWindowsCheckBox = new CheckBox
-        {
-            AutoSize = true,
-            Dock = DockStyle.Fill,
-            Text = "Start with Windows sign-in",
-        };
-
-        var showToken = new CheckBox
-        {
-            AutoSize = true,
-            Dock = DockStyle.Fill,
-            Text = "Show",
-        };
-        showToken.CheckedChanged += (_, _) => _tokenTextBox.UseSystemPasswordChar = !showToken.Checked;
-
-        var browseButton = new Button
-        {
-            Dock = DockStyle.Fill,
-            Margin = new Padding(8, 0, 0, 6),
-            Text = "Browse...",
-        };
-        browseButton.Click += BrowseWorkspace;
-
-        AddField(formGrid, "Workspace root", _workspaceTextBox, row: 3, spanRemainingColumns: false);
-        formGrid.Controls.Add(browseButton, 2, 3);
-        formGrid.Controls.Add(_startWithWindowsCheckBox, 1, 4);
-        formGrid.SetColumnSpan(_startWithWindowsCheckBox, 2);
-
-        var manualSettingsLabel = new Label
-        {
-            AutoSize = true,
-            Dock = DockStyle.Fill,
-            ForeColor = MutedColor,
-            Margin = Padding.Empty,
-            Padding = new Padding(0, 3, 0, 0),
-            Text = "Manual settings (optional)",
-        };
-        formGrid.Controls.Add(manualSettingsLabel, 0, 5);
-        formGrid.SetColumnSpan(manualSettingsLabel, 3);
-        AddField(formGrid, "Relay URL", _relayUrlTextBox, row: 6);
-        AddField(formGrid, "Device token", _tokenTextBox, row: 7, spanRemainingColumns: false);
-        formGrid.Controls.Add(showToken, 2, 7);
-        formGrid.Controls.Add(_tokenStateLabel, 1, 8);
-        formGrid.SetColumnSpan(_tokenStateLabel, 2);
-        AddField(formGrid, "Local port", _portInput, row: 9);
-
-        var runtimePanel = new Panel
-        {
-            Dock = DockStyle.Fill,
-            BackColor = SurfaceColor,
-            Padding = new Padding(14, 10, 14, 8),
-            Margin = new Padding(0, 4, 0, 4),
-        };
-        var runtimeLayout = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            BackColor = SurfaceColor,
-            ColumnCount = 4,
-            RowCount = 2,
-            Margin = Padding.Empty,
-        };
-        runtimeLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 92));
-        runtimeLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        runtimeLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 96));
-        runtimeLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 96));
-        runtimeLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
-        runtimeLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
-        runtimeLayout.Controls.Add(new Label
-        {
-            AutoSize = true,
-            Dock = DockStyle.Fill,
-            Font = new Font(Font, FontStyle.Bold),
-            Margin = Padding.Empty,
-            Text = "Runtime",
-        }, 0, 0);
-        _runtimeValue = new Label
-        {
-            AutoEllipsis = true,
-            Dock = DockStyle.Fill,
-            ForeColor = MutedColor,
-            Margin = Padding.Empty,
-            Text = "Node.js, Codex, codex-acp and Pockymoe will be checked on connect.",
-        };
-        runtimeLayout.Controls.Add(_runtimeValue, 1, 0);
-        _checkUpdateButton = CreateNeutralButton("Check", 88);
-        _checkUpdateButton.AccessibleName = "Check for Pockymoe updates";
-        _checkUpdateButton.Dock = DockStyle.Fill;
-        _checkUpdateButton.Margin = new Padding(8, 0, 0, 2);
-        _checkUpdateButton.Click += CheckUpdateClicked;
-        runtimeLayout.Controls.Add(_checkUpdateButton, 2, 0);
-        _updateButton = CreateNeutralButton("Update", 74);
-        _updateButton.Dock = DockStyle.Fill;
-        _updateButton.Margin = new Padding(8, 0, 0, 2);
-        _updateButton.Enabled = false;
-        _updateButton.Click += UpdateRuntimeClicked;
-        runtimeLayout.Controls.Add(_updateButton, 3, 0);
-        _runtimeUpdateLabel = new Label
-        {
-            AutoEllipsis = true,
-            Dock = DockStyle.Fill,
-            ForeColor = MutedColor,
-            Margin = Padding.Empty,
-            Text = "Check npm for a newer Pockymoe release.",
-        };
-        runtimeLayout.Controls.Add(_runtimeUpdateLabel, 1, 1);
-        runtimeLayout.SetColumnSpan(_runtimeUpdateLabel, 3);
-        runtimePanel.Controls.Add(runtimeLayout);
-        formGrid.Controls.Add(runtimePanel, 0, 10);
-        formGrid.SetColumnSpan(runtimePanel, 3);
-
-        var progressPanel = new Panel { Dock = DockStyle.Fill, Padding = new Padding(0, 8, 0, 6) };
-        _stepLabel = new Label
-        {
-            AutoEllipsis = true,
-            Dock = DockStyle.Top,
-            Height = 28,
-            ForeColor = MutedColor,
-            TextAlign = ContentAlignment.MiddleLeft,
-            Text = "Ready",
-        };
-        _progressBar = new ProgressBar
-        {
-            Dock = DockStyle.Top,
-            Height = 7,
-            Maximum = 100,
-            Style = ProgressBarStyle.Continuous,
-        };
-        progressPanel.Controls.Add(_progressBar);
-        progressPanel.Controls.Add(_stepLabel);
-
-        var actions = new FlowLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            FlowDirection = FlowDirection.RightToLeft,
-            WrapContents = false,
-            Padding = new Padding(0, 8, 0, 0),
-        };
-        _connectButton = new Button
-        {
-            AutoSize = false,
-            BackColor = AccentColor,
-            FlatStyle = FlatStyle.Flat,
-            ForeColor = Color.FromArgb(255, 252, 247),
-            Margin = new Padding(8, 0, 0, 0),
-            Size = new Size(100, 36),
-            Text = "Start",
-        };
-        _connectButton.FlatAppearance.BorderSize = 0;
-        _connectButton.Click += ConnectClicked;
-        _disconnectButton = new Button
-        {
-            AutoSize = false,
-            BackColor = WindowColor,
-            FlatStyle = FlatStyle.Flat,
-            Margin = new Padding(8, 0, 0, 0),
-            Size = new Size(120, 36),
-            Text = "Disconnect",
-        };
-        _disconnectButton.FlatAppearance.BorderColor = BorderColor;
-        _disconnectButton.Click += DisconnectClicked;
-        var openLogsButton = CreateNeutralButton("Open logs", 120);
-        openLogsButton.Margin = new Padding(8, 0, 0, 0);
-        openLogsButton.Click += (_, _) => OpenLogs();
-        actions.Controls.AddRange([_connectButton, _disconnectButton, openLogsButton]);
-
-        root.Controls.Add(header, 0, 0);
-        root.Controls.Add(statusPanel, 0, 1);
-        root.Controls.Add(formGrid, 0, 2);
-        root.Controls.Add(progressPanel, 0, 3);
-        root.Controls.Add(actions, 0, 4);
-        Controls.Add(root);
-        AcceptButton = _connectButton;
-
-        _controller.Changed += ControllerChanged;
-        LoadSettings();
-        UpdateState();
-        Resize += (_, _) =>
-        {
-            if (WindowState == FormWindowState.Minimized)
-            {
-                Hide();
-            }
-        };
+        var root = Grid(1, DockStyle.Fill); root.Padding = new Padding(24, 18, 24, 18);
+        foreach (var height in new[] { 64, 84, 0, 50, 48 }) root.RowStyles.Add(new RowStyle(height == 0 ? SizeType.Percent : SizeType.Absolute, height == 0 ? 100 : height));
+        var header = Grid(2, DockStyle.Fill); header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 170));
+        var brand = new Panel { Dock = DockStyle.Fill };
+        brand.Controls.Add(new Label { Text = "Pockymoe", Font = new Font("Segoe UI", 22F, FontStyle.Bold), AutoSize = true, Location = Point.Empty });
+        brand.Controls.Add(new Label { Text = "Windows Device Manager  ·  0.2.0", Tag = "muted", AutoSize = true, Location = new Point(2, 40) });
+        var themes = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Top, AccessibleName = "Color theme", Margin = new Padding(0, 10, 0, 0) };
+        themes.Items.AddRange(["Plum · Dark", "Plum · Light", "Classic · Dark", "Classic · Light"]);
+        var names = new[] { "plum-dark", "plum-light", "classic-dark", "classic-light" };
+        themes.SelectedIndex = Math.Max(0, Array.IndexOf(names, _themeName));
+        themes.SelectedIndexChanged += (_, _) => { _themeName = names[themes.SelectedIndex]; _controller.SetTheme(_themeName); ManagerTheme.Apply(this, ManagerTheme.Get(_themeName)); UpdateState(); };
+        header.Controls.Add(brand, 0, 0); header.Controls.Add(themes, 1, 0); root.Controls.Add(header, 0, 0);
+        var status = new ThemedPanel { Dock = DockStyle.Fill, Margin = new Padding(0, 4, 0, 10) };
+        var statusGrid = Grid(2, DockStyle.Fill); statusGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 28)); statusGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        statusGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 24)); statusGrid.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        _statusDot = new Panel { Size = new Size(10, 10), Anchor = AnchorStyles.None };
+        _statusTitle = Label("Checking device…", true); _statusDetail = Label("", muted: true);
+        statusGrid.Controls.Add(_statusDot, 0, 0); statusGrid.SetRowSpan(_statusDot, 2);
+        statusGrid.Controls.Add(_statusTitle, 1, 0); statusGrid.Controls.Add(_statusDetail, 1, 1); status.Controls.Add(statusGrid); root.Controls.Add(status, 0, 1);
+        var body = Grid(1, DockStyle.Fill); body.AutoScroll = true;
+        foreach (var height in new[] { 28, 76, 28, 40, 36, 30, 0, 92 }) body.RowStyles.Add(new RowStyle(height == 0 ? SizeType.AutoSize : SizeType.Absolute, height));
+        body.Controls.Add(Label("Connect this computer", true), 0, 0);
+        var pasteGrid = Grid(2, DockStyle.Fill); pasteGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); pasteGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 108));
+        _pasteConfigurationTextBox = CreateTextBox(); _pasteConfigurationTextBox.Multiline = true; _pasteConfigurationTextBox.UseSystemPasswordChar = false;
+        _pasteConfigurationTextBox.WordWrap = true; _pasteConfigurationTextBox.ScrollBars = ScrollBars.Vertical;
+        _pasteConfigurationTextBox.PlaceholderText = "Paste a Windows setup command from the Devices page"; _pasteConfigurationTextBox.AccessibleName = "Device setup command";
+        _pasteConfigurationTextBox.TextChanged += (_, _) => TryApplyPastedConfiguration(false);
+        var paste = CreateNeutralButton("Paste", 100); paste.Dock = DockStyle.Fill; paste.Click += PasteConfigurationClicked;
+        pasteGrid.Controls.Add(_pasteConfigurationTextBox, 0, 0); pasteGrid.Controls.Add(paste, 1, 0); body.Controls.Add(pasteGrid, 0, 1);
+        _pasteStateLabel = Label("Parsed locally. Commands are never executed.", muted: true); body.Controls.Add(_pasteStateLabel, 0, 2);
+        var workspaceGrid = Grid(3, DockStyle.Fill); workspaceGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 110)); workspaceGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); workspaceGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 108));
+        _workspaceTextBox = CreateTextBox(); _workspaceTextBox.AccessibleName = "Workspace folder";
+        var browse = CreateNeutralButton("Browse", 100); browse.Dock = DockStyle.Fill; browse.Click += BrowseWorkspace;
+        workspaceGrid.Controls.Add(Label("Workspace"), 0, 0); workspaceGrid.Controls.Add(_workspaceTextBox, 1, 0); workspaceGrid.Controls.Add(browse, 2, 0); body.Controls.Add(workspaceGrid, 0, 3);
+        _startWithWindowsCheckBox = new CheckBox { Text = "Keep this device online when I sign in to Windows", AutoSize = true, Dock = DockStyle.Fill };
+        body.Controls.Add(_startWithWindowsCheckBox, 0, 4);
+        var manual = Grid(3, DockStyle.Top); manual.AutoSize = true; manual.Visible = false;
+        manual.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 110)); manual.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); manual.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 108));
+        foreach (var h in new[] { 36, 36, 26, 36 }) manual.RowStyles.Add(new RowStyle(SizeType.Absolute, h));
+        _relayUrlTextBox = CreateTextBox(); _tokenTextBox = CreateTextBox(); _tokenTextBox.UseSystemPasswordChar = true; _tokenTextBox.AccessibleName = "Device token";
+        _tokenTextBox.TextChanged += (_, _) => { if (!_isApplyingPaste) _parsed = null; };
+        _tokenStateLabel = Label("", muted: true);
+        _portInput = new NumericUpDown { Dock = DockStyle.Fill, Minimum = 1024, Maximum = 65535, AccessibleName = "Local port" };
+        AddField(manual, "Relay", _relayUrlTextBox, 0); AddField(manual, "Token", _tokenTextBox, 1, false);
+        var show = new CheckBox { Text = "Show", AutoSize = true, Dock = DockStyle.Fill }; show.CheckedChanged += (_, _) => _tokenTextBox.UseSystemPasswordChar = !show.Checked; manual.Controls.Add(show, 2, 1);
+        manual.Controls.Add(_tokenStateLabel, 1, 2); manual.SetColumnSpan(_tokenStateLabel, 2); AddField(manual, "Local port", _portInput, 3);
+        var advanced = CreateNeutralButton("Connection details  ▾", 200); advanced.Height = 28; advanced.Anchor = AnchorStyles.Left; advanced.Click += (_, _) => { manual.Visible = !manual.Visible; advanced.Text = manual.Visible ? "Connection details  ▴" : "Connection details  ▾"; };
+        body.Controls.Add(advanced, 0, 5); body.Controls.Add(manual, 0, 6);
+        var runtime = new ThemedPanel { Dock = DockStyle.Fill, Margin = new Padding(0, 8, 0, 0) };
+        var runtimeGrid = Grid(3, DockStyle.Fill); runtimeGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); runtimeGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 92)); runtimeGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 92));
+        runtimeGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 32)); runtimeGrid.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        _runtimeValue = Label("Native runtime", true); _runtimeUpdateLabel = Label("GitHub Releases", muted: true);
+        _checkUpdateButton = CreateNeutralButton("Check", 84); _checkUpdateButton.Dock = DockStyle.Fill; _checkUpdateButton.Click += CheckUpdateClicked;
+        _updateButton = CreateNeutralButton("Update", 84); _updateButton.Dock = DockStyle.Fill; _updateButton.Click += UpdateRuntimeClicked;
+        runtimeGrid.Controls.Add(_runtimeValue, 0, 0); runtimeGrid.Controls.Add(_checkUpdateButton, 1, 0); runtimeGrid.Controls.Add(_updateButton, 2, 0); runtimeGrid.Controls.Add(_runtimeUpdateLabel, 0, 1); runtimeGrid.SetColumnSpan(_runtimeUpdateLabel, 3);
+        runtime.Controls.Add(runtimeGrid); body.Controls.Add(runtime, 0, 7); root.Controls.Add(body, 0, 2);
+        var progress = new Panel { Dock = DockStyle.Fill, Padding = new Padding(0, 10, 0, 0) };
+        _stepLabel = Label("Ready", muted: true); _stepLabel.Dock = DockStyle.Top; _stepLabel.Height = 25;
+        _progressBar = new ProgressBar { Dock = DockStyle.Bottom, Height = 4, Maximum = 100 };
+        progress.Controls.Add(_stepLabel); progress.Controls.Add(_progressBar); root.Controls.Add(progress, 0, 3);
+        var actions = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft, WrapContents = false, Padding = new Padding(0, 8, 0, 0) };
+        _connectButton = new ThemedButton { Text = "Connect", Primary = true, Size = new Size(110, 36) }; _connectButton.Click += ConnectClicked;
+        _disconnectButton = CreateNeutralButton("Disconnect", 110); _disconnectButton.Click += DisconnectClicked;
+        var web = CreateNeutralButton("Open Web", 110); web.Click += (_, _) => Process.Start(new ProcessStartInfo { FileName = ProductManifest.RelayPortalUri.AbsoluteUri, UseShellExecute = true });
+        var logs = CreateNeutralButton("Logs", 80); logs.Click += (_, _) => OpenLogs();
+        actions.Controls.AddRange([_connectButton, _disconnectButton, web, logs]); root.Controls.Add(actions, 0, 4); Controls.Add(root);
+        _controller.Changed += ControllerChanged; LoadSettings(); ManagerTheme.Apply(this, ManagerTheme.Get(_themeName)); UpdateState();
+        Resize += (_, _) => { if (WindowState == FormWindowState.Minimized) Hide(); };
     }
-
+    private static TableLayoutPanel Grid(int columns, DockStyle dock) => new() { ColumnCount = columns, Dock = dock, Margin = Padding.Empty, Padding = Padding.Empty };
+    private static Label Label(string text, bool bold = false, bool muted = false) => new() { Text = text, Dock = DockStyle.Fill, AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft, Margin = Padding.Empty, Tag = muted ? "muted" : null, Font = new Font("Segoe UI", 10F, bold ? FontStyle.Bold : FontStyle.Regular) };
     public async Task ApplyTokenAsync(string token)
     {
         _tokenTextBox.Text = token;
@@ -495,6 +194,8 @@ internal sealed class MainForm : Form
             return;
         }
 
+        _isApplyingPaste = true;
+        _parsed = configuration;
         _relayUrlTextBox.Text = configuration!.RelayUrl;
         _tokenTextBox.Text = configuration.DeviceToken;
         if (configuration.SupervisorPort is { } port)
@@ -543,9 +244,11 @@ internal sealed class MainForm : Form
                 _relayUrlTextBox.Text,
                 _tokenTextBox.Text,
                 _workspaceTextBox.Text,
-                decimal.ToInt32(_portInput.Value));
+                decimal.ToInt32(_portInput.Value),
+                _parsed?.SetupCode, _parsed?.AccountKey, _parsed?.EnrollmentSecret, _parsed?.WebOrigin);
             await _controller.ConnectAsync(configuration, _startWithWindowsCheckBox.Checked);
             _tokenTextBox.Clear();
+            _parsed = null;
         }
         catch (OperationCanceledException)
         {
@@ -605,9 +308,9 @@ internal sealed class MainForm : Form
     {
         var (title, detail, color) = _controller.State switch
         {
-            SupervisorState.Running => ("Supervisor running", "The outbound Relay tunnel is maintained in the background.", OnlineColor),
-            SupervisorState.Starting => ("Connecting device", _controller.Progress.Message, AccentColor),
-            SupervisorState.Stopped => ("Device offline", "Paste a device setup command, then start this Windows computer.", Color.FromArgb(100, 116, 139)),
+            SupervisorState.Running => ("Supervisor running", "This computer is available through the Relay.", OnlineColor),
+            SupervisorState.Starting => ("Connecting device", _controller.Progress.Message, ManagerTheme.Get(_themeName).Accent),
+            SupervisorState.Stopped => ("Device offline", "Paste a setup command from the Devices page to connect.", Color.FromArgb(100, 116, 139)),
             SupervisorState.Error => ("Connection needs attention", _controller.LastError ?? _controller.Progress.Message, ErrorColor),
             _ => ("Checking status", "Waiting for the local supervisor.", Color.FromArgb(148, 163, 184)),
         };
@@ -616,7 +319,7 @@ internal sealed class MainForm : Form
         _statusDot.BackColor = color;
         _stepLabel.Text = $"{_controller.Progress.Step}: {_controller.Progress.Message}";
         _progressBar.Value = Math.Clamp(_controller.Progress.Percent, 0, 100);
-        _connectButton.Text = "Start";
+        _connectButton.Text = _controller.Runtime?.IsUsable == true ? "Connect" : "Install && connect";
         _connectButton.Enabled = !_controller.IsBusy;
         _disconnectButton.Enabled = !_controller.IsBusy && _controller.State == SupervisorState.Running;
         _relayUrlTextBox.Enabled = !_controller.IsBusy;
@@ -625,59 +328,30 @@ internal sealed class MainForm : Form
         _portInput.Enabled = !_controller.IsBusy;
         _startWithWindowsCheckBox.Enabled = !_controller.IsBusy;
         _pasteConfigurationTextBox.Enabled = !_controller.IsBusy;
-        _checkUpdateButton.Enabled = !_controller.IsBusy && _controller.Runtime?.IsUsable == true;
+        _checkUpdateButton.Enabled = !_controller.IsBusy && _controller.Runtime?.IsNative == true && _controller.State == SupervisorState.Running;
         _updateButton.Enabled = !_controller.IsBusy
-            && _controller.Runtime?.IsUsable == true
+            && _controller.Runtime?.IsNative == true
+            && _controller.State == SupervisorState.Running
             && !string.IsNullOrWhiteSpace(_controller.AvailableRemoteCodexVersion);
         _tokenStateLabel.Text = _controller.HasSavedToken
-            ? "A token is configured. Leave this blank to keep it."
-            : "Paste the one-time-visible token from the Relay portal.";
-        _runtimeValue.Text = _controller.Runtime?.IsUsable == true
-            ? $"Node.js 22  |  Codex  |  codex-acp  |  Pockymoe {_controller.CurrentRemoteCodexVersion}"
-            : "Node.js, Codex, codex-acp and Pockymoe will be checked on connect.";
+            ? "Leave blank to keep the saved device registration."
+            : "Use the setup command from the Devices page.";
+        _runtimeValue.Text = _controller.Runtime?.IsNative == true
+            ? $"Pockymoe {RuntimeState.ResolveNative()?.Version ?? _controller.CurrentRemoteCodexVersion}  ·  Native"
+            : _controller.Runtime?.IsUsable == true ? "Legacy npm installation" : "Native runtime  ·  Not installed";
         _runtimeUpdateLabel.Text = _controller.RuntimeUpdateMessage;
     }
 
-    private static TextBox CreateTextBox() => new()
+    private static TextBox CreateTextBox() => new() { Dock = DockStyle.Fill, BorderStyle = BorderStyle.FixedSingle, Margin = new Padding(2, 4, 8, 4) };
+    private static Button CreateNeutralButton(string text, int width) => new ThemedButton { Text = text, Size = new Size(width, 36), Margin = new Padding(4, 0, 0, 0) };
+    private static void AddField(TableLayoutPanel grid, string name, Control control, int row, bool spanRemainingColumns = true)
     {
-        Dock = DockStyle.Fill,
-        Margin = new Padding(0, 0, 0, 6),
-    };
-
-    private static Button CreateNeutralButton(string text, int width)
-    {
-        var button = new Button
-        {
-            AutoSize = false,
-            BackColor = WindowColor,
-            FlatStyle = FlatStyle.Flat,
-            ForeColor = TextColor,
-            Size = new Size(width, 36),
-            Text = text,
-        };
-        button.FlatAppearance.BorderColor = BorderColor;
-        button.FlatAppearance.MouseOverBackColor = SurfaceColor;
-        return button;
+        grid.Controls.Add(Label(name), 0, row); grid.Controls.Add(control, 1, row);
+        if (spanRemainingColumns) grid.SetColumnSpan(control, 2);
     }
-
-    private static void AddField(
-        TableLayoutPanel grid,
-        string labelText,
-        Control control,
-        int row,
-        bool spanRemainingColumns = true)
+    protected override void Dispose(bool disposing)
     {
-        grid.Controls.Add(new Label
-        {
-            AutoSize = true,
-            Dock = DockStyle.Fill,
-            Padding = new Padding(0, 5, 12, 0),
-            Text = labelText,
-        }, 0, row);
-        grid.Controls.Add(control, 1, row);
-        if (spanRemainingColumns)
-        {
-            grid.SetColumnSpan(control, 2);
-        }
+        if (disposing) _controller.Changed -= ControllerChanged;
+        base.Dispose(disposing);
     }
 }

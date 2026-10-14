@@ -11,6 +11,7 @@ internal sealed record AppSettings
     public int SupervisorPort { get; init; } = ProductManifest.DefaultSupervisorPort;
     public bool StartWithWindows { get; init; } = true;
     public bool KeepOnline { get; init; }
+    public string Theme { get; init; } = "plum-dark";
 
     public static AppSettings Load(AppLogger logger)
     {

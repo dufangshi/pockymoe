@@ -4,7 +4,7 @@ internal sealed class TokenDialog : Form
 {
     private readonly TextBox _tokenTextBox;
 
-    public TokenDialog()
+    public TokenDialog(string themeName)
     {
         Text = "Change device token";
         StartPosition = FormStartPosition.CenterParent;
@@ -53,9 +53,9 @@ internal sealed class TokenDialog : Form
         };
         applyButton.Click += (_, eventArgs) =>
         {
-            if (!DeviceToken.StartsWith("rcd_", StringComparison.Ordinal))
+            if (string.IsNullOrWhiteSpace(DeviceToken))
             {
-                MessageBox.Show(this, "The device token must begin with rcd_.", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show(this, "Enter a device token.", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 DialogResult = DialogResult.None;
             }
         };
@@ -63,6 +63,7 @@ internal sealed class TokenDialog : Form
         AcceptButton = applyButton;
         CancelButton = cancelButton;
         Controls.AddRange([title, _tokenTextBox, showToken, cancelButton, applyButton]);
+        ManagerTheme.Apply(this, ManagerTheme.Get(themeName));
     }
 
     public string DeviceToken => _tokenTextBox.Text.Trim();

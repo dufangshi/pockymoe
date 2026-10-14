@@ -1,652 +1,84 @@
-using System.IO.Compression;
-using System.Reflection;
 using System.Security.Cryptography;
-using System.Text.Json;
+using System.Text.RegularExpressions;
 using RemoteCodex.DeviceManager.Infrastructure;
 using RemoteCodex.DeviceManager.Models;
 
 namespace RemoteCodex.DeviceManager.Services;
 
-internal sealed class RuntimeProvisioner
+internal sealed class RuntimeProvisioner(AppLogger logger, ProcessRunner runner)
 {
-    private sealed record RemoteCodexRuntime(
-        string EntryPath,
-        string Version,
-        string CodexCommandPath,
-        string? NativeBinaryPath);
-
-    private const string BundledLauncherResource =
-        "RemoteCodex.DeviceManager.BundledRuntime.remote-codex.mjs";
-    private const string BundledPackageResource =
-        "RemoteCodex.DeviceManager.BundledRuntime.package.json";
-    private const string BundledNativeResource =
-        "RemoteCodex.DeviceManager.BundledRuntime.remote-codex.exe";
-
-    private readonly AppLogger _logger;
-    private readonly ProcessRunner _runner;
-    private readonly HttpClient _httpClient;
-
-    public RuntimeProvisioner(AppLogger logger, ProcessRunner runner)
+    private static readonly HttpClient Client = CreateClient();
+    private static HttpClient CreateClient()
     {
-        _logger = logger;
-        _runner = runner;
-        _httpClient = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
-        _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("RemoteCodex-DeviceManager/0.1");
+        var client = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("Pockymoe-DeviceManager/0.2.0");
+        return client;
     }
-
-    public async Task<RuntimeState> EnsureAsync(
-        IProgress<ProvisioningProgress> progress,
-        CancellationToken cancellationToken)
-    {
-        AppPaths.EnsureDirectories();
-        var nodePath = await EnsureNodeAsync(progress, cancellationToken);
-        var remoteCodex = await EnsureRemoteCodexAsync(nodePath, progress, cancellationToken);
-
-        var state = new RuntimeState(
-            nodePath,
-            remoteCodex.EntryPath,
-            remoteCodex.CodexCommandPath,
-            DateTimeOffset.UtcNow,
-            remoteCodex.Version,
-            remoteCodex.NativeBinaryPath);
-        state.Save();
-        progress.Report(new("Ready", "All runtime checks passed.", ProvisioningStepState.Complete, 100));
-        return state;
-    }
-
     public async Task<string> GetLatestRemoteCodexVersionAsync(CancellationToken cancellationToken)
     {
-        using var response = await _httpClient.GetAsync(ProductManifest.RemoteCodexLatestMetadataUri, cancellationToken);
-        response.EnsureSuccessStatusCode();
-        await using var content = await response.Content.ReadAsStreamAsync(cancellationToken);
-        using var metadata = await JsonDocument.ParseAsync(content, cancellationToken: cancellationToken);
-        if (!metadata.RootElement.TryGetProperty("version", out var versionElement)
-            || versionElement.GetString() is not { Length: > 0 } version
-            || !TryParseVersion(version, out _))
-        {
-            throw new InvalidOperationException("The npm registry returned an invalid Pockymoe version.");
-        }
-        return version;
+        var raw = (await Client.GetStringAsync($"{ProductManifest.ReleaseRepository}/releases/latest/download/runtime-version.txt", cancellationToken)).Trim();
+        if (!Regex.IsMatch(raw, @"^[0-9]+\.[0-9]+\.[0-9]+$") || !Version.TryParse(raw, out _))
+            throw new InvalidOperationException("GitHub returned an invalid runtime version.");
+        return raw;
     }
+    public Task<RuntimeState?> TryRecoverBundledRuntimeAsync(CancellationToken cancellationToken) => Task.FromResult(RuntimeState.FromNative());
+    public static bool IsNewerVersion(string candidate, string current) => Version.TryParse(candidate, out var a) && Version.TryParse(current, out var b) && a > b;
 
-    public async Task<RuntimeState?> TryRecoverBundledRuntimeAsync(
-        CancellationToken cancellationToken)
+    internal static string Checksum(string text, string asset)
     {
-        var nodePath = Path.Combine(
-            AppPaths.RuntimeRoot,
-            $"node-v{ProductManifest.NodeVersion}-win-x64",
-            "node.exe");
-        if (!await IsCompatibleNodeAsync(nodePath, cancellationToken))
-        {
-            return null;
-        }
-        var prefix = Path.Combine(
-            AppPaths.AppRoot,
-            $"remote-codex-{ProductManifest.RemoteCodexVersion}");
-        var entryPath = Path.Combine(
-            prefix,
-            "node_modules",
-            "remote-codex",
-            "bin",
-            "remote-codex.mjs");
-        var nativeBinaryPath = Path.Combine(prefix, "remote-codex-native.exe");
-        var codexCommandPath = Path.Combine(prefix, "codex.cmd");
-        if (!await BundledNativeMatchesAsync(nativeBinaryPath, cancellationToken)
-            || !await IsExpectedRemoteCodexAsync(
-                nodePath,
-                entryPath,
-                ProductManifest.RemoteCodexVersion,
-                cancellationToken))
-        {
-            return null;
-        }
-        var recovered = new RuntimeState(
-            nodePath,
-            entryPath,
-            codexCommandPath,
-            DateTimeOffset.UtcNow,
-            ProductManifest.RemoteCodexVersion,
-            nativeBinaryPath);
-        recovered.Save();
-        return recovered;
+        var matches = Regex.Matches(text, $@"(?m)^([0-9a-fA-F]{{64}})\s+\*?{Regex.Escape(asset)}\s*$");
+        if (matches.Count != 1) throw new InvalidOperationException("Missing or ambiguous runtime checksum.");
+        return matches[0].Groups[1].Value.ToLowerInvariant();
     }
-
-    public async Task<RuntimeState> UpdateRemoteCodexAsync(
-        RuntimeState runtime,
-        string version,
-        IProgress<ProvisioningProgress> progress,
-        CancellationToken cancellationToken)
+    public async Task<RuntimeState> SetupAsync(DeviceConfiguration configuration,
+        IProgress<ProvisioningProgress> progress, CancellationToken cancellationToken)
     {
-        if (!TryParseVersion(version, out _))
-        {
-            throw new ArgumentException("The requested Pockymoe version is invalid.", nameof(version));
-        }
-
-        var remoteCodex = await EnsureRemoteCodexVersionAsync(
-            runtime.NodePath,
-            version,
-            progress,
-            cancellationToken);
-        var updated = runtime with
-        {
-            RemoteCodexEntryPath = remoteCodex.EntryPath,
-            RemoteCodexVersion = remoteCodex.Version,
-            CodexCommandPath = remoteCodex.CodexCommandPath,
-            NativeBinaryPath = remoteCodex.NativeBinaryPath,
-            UpdatedAt = DateTimeOffset.UtcNow,
-        };
-        updated.Save();
-        return updated;
-    }
-
-    public static bool IsNewerVersion(string candidate, string current)
-    {
-        return TryParseVersion(candidate, out var candidateVersion)
-            && TryParseVersion(current, out var currentVersion)
-            && candidateVersion > currentVersion;
-    }
-
-    internal static IReadOnlyList<string> ManagedPackageSpecs(string remoteCodexVersion) =>
-    [
-        $"remote-codex@{remoteCodexVersion}",
-        $"@agentclientprotocol/codex-acp@{ProductManifest.CodexAcpVersion}",
-        $"@openai/codex@{ProductManifest.CodexVersion}",
-    ];
-
-    internal async Task<RuntimeState> ProvisionBundledRuntimeForTestAsync(
-        string nodePath,
-        CancellationToken cancellationToken)
-    {
-        var remoteCodex = await EnsureRemoteCodexVersionAsync(
-            nodePath,
-            ProductManifest.RemoteCodexVersion,
-            new Progress<ProvisioningProgress>(),
-            cancellationToken);
-        return new RuntimeState(
-            nodePath,
-            remoteCodex.EntryPath,
-            remoteCodex.CodexCommandPath,
-            DateTimeOffset.UtcNow,
-            remoteCodex.Version,
-            remoteCodex.NativeBinaryPath);
-    }
-
-    internal Task<string> ProvisionNodeForTestAsync(CancellationToken cancellationToken) =>
-        EnsureNodeAsync(new Progress<ProvisioningProgress>(), cancellationToken);
-
-    private async Task<string> EnsureNodeAsync(
-        IProgress<ProvisioningProgress> progress,
-        CancellationToken cancellationToken)
-    {
-        progress.Report(new("Node.js", "Checking for a compatible Node.js 22 runtime...", ProvisioningStepState.Running, 8));
-
-        var privateNodePath = Path.Combine(
-            AppPaths.RuntimeRoot,
-            $"node-v{ProductManifest.NodeVersion}-win-x64",
-            "node.exe");
-        var candidates = new List<string>();
-        if (File.Exists(privateNodePath))
-        {
-            candidates.Add(privateNodePath);
-        }
-        if (!AppPaths.IsTestEnvironment)
-        {
-            candidates.AddRange(await LocateCommandsAsync("node.exe", cancellationToken));
-        }
-
-        foreach (var candidate in candidates.Distinct(StringComparer.OrdinalIgnoreCase))
-        {
-            if (await IsCompatibleNodeAsync(candidate, cancellationToken))
-            {
-                progress.Report(new("Node.js", $"Using Node.js 22 from {candidate}", ProvisioningStepState.Complete, 18));
-                return candidate;
-            }
-        }
-
-        progress.Report(new("Node.js", $"Installing a private Node.js {ProductManifest.NodeVersion} runtime...", ProvisioningStepState.Running, 12));
-        await InstallPrivateNodeAsync(privateNodePath, progress, cancellationToken);
-        if (!await IsCompatibleNodeAsync(privateNodePath, cancellationToken))
-        {
-            throw new InvalidOperationException("The private Node.js runtime failed verification after installation.");
-        }
-
-        progress.Report(new("Node.js", $"Installed private Node.js {ProductManifest.NodeVersion}.", ProvisioningStepState.Complete, 18));
-        return privateNodePath;
-    }
-
-    private async Task<bool> IsCompatibleNodeAsync(string nodePath, CancellationToken cancellationToken)
-    {
-        if (!File.Exists(nodePath))
-        {
-            return false;
-        }
-
+        AppPaths.EnsureDirectories();
+        progress.Report(new("GitHub", "Checking the current native release…", ProvisioningStepState.Running, 8));
+        var version = await GetLatestRemoteCodexVersionAsync(cancellationToken);
+        var installed = RuntimeState.ResolveNative();
+        if (installed is not null && IsNewerVersion(installed.Version, version))
+            throw new InvalidOperationException("The installed runtime is newer than GitHub latest. Automatic downgrade is disabled.");
+        const string asset = "remote-codex-win32-x64-msvc-cli.exe";
+        var baseUrl = $"{ProductManifest.ReleaseRepository}/releases/download/v{version}";
+        var sum = Checksum(await Client.GetStringAsync($"{baseUrl}/SHA256SUMS", cancellationToken), asset);
+        var stage = Path.Combine(AppPaths.DownloadsRoot, Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(stage);
         try
         {
-            var version = await _runner.RunAsync(
-                nodePath,
-                ["--version"],
-                TimeSpan.FromSeconds(5),
-                cancellationToken: cancellationToken);
-            var architecture = await _runner.RunAsync(
-                nodePath,
-                ["-p", "process.arch"],
-                TimeSpan.FromSeconds(5),
-                cancellationToken: cancellationToken);
-            var npmCliPath = NpmCliPathFor(nodePath);
-            return version.Success
-                && version.StandardOutput.TrimStart().StartsWith("v22.", StringComparison.Ordinal)
-                && architecture.Success
-                && architecture.StandardOutput.Trim().Equals("x64", StringComparison.OrdinalIgnoreCase)
-                && File.Exists(npmCliPath);
-        }
-        catch (Exception exception)
-        {
-            _logger.Warning($"Node.js candidate failed validation: {exception.Message}");
-            return false;
-        }
-    }
-
-    private async Task InstallPrivateNodeAsync(
-        string expectedNodePath,
-        IProgress<ProvisioningProgress> progress,
-        CancellationToken cancellationToken)
-    {
-        var archivePath = Path.Combine(AppPaths.DownloadsRoot, ProductManifest.NodeArchiveName);
-        if (!File.Exists(archivePath) || !await HasExpectedSha256Async(archivePath, ProductManifest.NodeArchiveSha256, cancellationToken))
-        {
-            var partialPath = $"{archivePath}.partial";
-            File.Delete(partialPath);
-            await DownloadAsync(ProductManifest.NodeArchiveUri, partialPath, progress, 12, 16, cancellationToken);
-            if (!await HasExpectedSha256Async(partialPath, ProductManifest.NodeArchiveSha256, cancellationToken))
+            var binary = Path.Combine(stage, "pockymoe.exe");
+            progress.Report(new("Download", $"Downloading Pockymoe {version}…", ProvisioningStepState.Running, 25));
+            using (var response = await Client.GetAsync($"{baseUrl}/{asset}", HttpCompletionOption.ResponseHeadersRead, cancellationToken))
             {
-                File.Delete(partialPath);
-                throw new InvalidDataException("The Node.js download failed SHA-256 verification.");
+                response.EnsureSuccessStatusCode();
+                await using var stream = File.Create(binary);
+                await response.Content.CopyToAsync(stream, cancellationToken);
             }
-            File.Move(partialPath, archivePath, overwrite: true);
-        }
-
-        var archiveDirectoryName = Path.GetFileNameWithoutExtension(ProductManifest.NodeArchiveName);
-        var destinationDirectory = Path.GetDirectoryName(expectedNodePath)!;
-        var stagingRoot = Path.Combine(AppPaths.RuntimeRoot, $".node-staging-{Environment.ProcessId}");
-        if (Directory.Exists(stagingRoot))
-        {
-            Directory.Delete(stagingRoot, recursive: true);
-        }
-
-        try
-        {
-            ZipFile.ExtractToDirectory(archivePath, stagingRoot);
-            var extractedDirectory = Path.Combine(stagingRoot, archiveDirectoryName);
-            if (!File.Exists(Path.Combine(extractedDirectory, "node.exe")))
+            await using (var stream = File.OpenRead(binary))
+                if (Convert.ToHexString(await SHA256.HashDataAsync(stream, cancellationToken)).ToLowerInvariant() != sum)
+                    throw new InvalidOperationException("Runtime checksum mismatch. Nothing was installed.");
+            var actual = await runner.RunAsync(binary, ["version"], TimeSpan.FromSeconds(15), cancellationToken: cancellationToken);
+            if (!actual.Success || actual.StandardOutput.Trim() != version) throw new InvalidOperationException("Downloaded runtime version mismatch.");
+            progress.Report(new("Setup", "Installing the verified runtime and Web UI…", ProvisioningStepState.Running, 60));
+            var args = new List<string> { "setup", "--relay", configuration.HttpRelayUrl, "--port", configuration.SupervisorPort.ToString() };
+            if (configuration.SetupCode is { Length: > 0 } code) args.AddRange(["--code", code]);
+            else args.AddRange(["--token", configuration.DeviceToken]);
+            if (configuration.AccountKey is { Length: > 0 } key) args.AddRange(["--account-key", key]);
+            if (configuration.WebOrigin is { Length: > 0 } origin) args.AddRange(["--web-origin", origin]);
+            var env = new Dictionary<string, string?>
             {
-                throw new InvalidDataException("The Node.js archive did not contain node.exe.");
-            }
-
-            if (Directory.Exists(destinationDirectory))
-            {
-                Directory.Delete(destinationDirectory, recursive: true);
-            }
-            Directory.Move(extractedDirectory, destinationDirectory);
+                ["POCKYMOE_ENROLL_SECRET"] = configuration.EnrollmentSecret,
+                ["WORKSPACE_ROOT"] = configuration.WorkspaceRoot,
+                ["HOME"] = AppPaths.UserHome,
+                ["USERPROFILE"] = AppPaths.UserHome
+            };
+            var result = await runner.RunAsync(binary, args, TimeSpan.FromMinutes(10), env, cancellationToken: cancellationToken);
+            if (!result.Success) throw new InvalidOperationException("Native setup failed. " + AppLogger.Redact(result.CombinedOutput));
+            var runtime = RuntimeState.FromNative() ?? throw new InvalidOperationException("Native setup did not produce a valid installation.");
+            runtime.Save();
+            logger.Info("Native setup completed.");
+            return runtime;
         }
-        finally
-        {
-            if (Directory.Exists(stagingRoot))
-            {
-                Directory.Delete(stagingRoot, recursive: true);
-            }
-        }
+        finally { Directory.Delete(stage, true); }
     }
-
-    private async Task<RemoteCodexRuntime> EnsureRemoteCodexAsync(
-        string nodePath,
-        IProgress<ProvisioningProgress> progress,
-        CancellationToken cancellationToken)
-    {
-        progress.Report(new("Pockymoe", "Checking the managed Pockymoe runtime...", ProvisioningStepState.Running, 56));
-        var savedState = RuntimeState.Load(_logger);
-        if (savedState?.IsUsable == true
-            && !string.IsNullOrWhiteSpace(savedState.RemoteCodexVersion)
-            && !IsNewerVersion(ProductManifest.RemoteCodexVersion, savedState.RemoteCodexVersion)
-            && await IsExpectedRemoteCodexAsync(
-                nodePath,
-                savedState.RemoteCodexEntryPath,
-                savedState.RemoteCodexVersion,
-                cancellationToken))
-        {
-            progress.Report(new(
-                "Pockymoe",
-                $"Pockymoe {savedState.RemoteCodexVersion} is ready.",
-                ProvisioningStepState.Complete,
-                76));
-            return new RemoteCodexRuntime(
-                savedState.RemoteCodexEntryPath,
-                savedState.RemoteCodexVersion,
-                savedState.CodexCommandPath,
-                savedState.NativeBinaryPath);
-        }
-
-        return await EnsureRemoteCodexVersionAsync(
-            nodePath,
-            ProductManifest.RemoteCodexVersion,
-            progress,
-            cancellationToken);
-    }
-
-    private async Task<RemoteCodexRuntime> EnsureRemoteCodexVersionAsync(
-        string nodePath,
-        string version,
-        IProgress<ProvisioningProgress> progress,
-        CancellationToken cancellationToken)
-    {
-        var prefix = Path.Combine(AppPaths.AppRoot, $"remote-codex-{version}");
-        var entryPath = Path.Combine(prefix, "node_modules", "remote-codex", "bin", "remote-codex.mjs");
-        var codexCommandPath = Path.Combine(prefix, "codex.cmd");
-        var bundled = string.Equals(version, ProductManifest.RemoteCodexVersion, StringComparison.Ordinal);
-        var nativeBinaryPath = bundled
-            ? Path.Combine(prefix, "remote-codex-native.exe")
-            : null;
-        if (File.Exists(codexCommandPath)
-            && (!bundled || await BundledNativeMatchesAsync(nativeBinaryPath!, cancellationToken))
-            && await IsExpectedRemoteCodexAsync(nodePath, entryPath, version, cancellationToken))
-        {
-            progress.Report(new("Pockymoe", $"Pockymoe {version} is ready.", ProvisioningStepState.Complete, 76));
-            return new RemoteCodexRuntime(entryPath, version, codexCommandPath, nativeBinaryPath);
-        }
-
-        progress.Report(new("Pockymoe", $"Installing Pockymoe {version} privately...", ProvisioningStepState.Running, 62));
-        var npmCliPath = NpmCliPathFor(nodePath);
-        if (!File.Exists(npmCliPath))
-        {
-            throw new FileNotFoundException("npm-cli.js was not found beside the selected Node.js runtime.", npmCliPath);
-        }
-
-        var stagingPrefix = Path.Combine(AppPaths.AppRoot, $".remote-codex-staging-{Environment.ProcessId}");
-        if (Directory.Exists(stagingPrefix))
-        {
-            Directory.Delete(stagingPrefix, recursive: true);
-        }
-
-        try
-        {
-            Directory.CreateDirectory(stagingPrefix);
-            if (bundled)
-            {
-                await ExtractBundledRemoteCodexAsync(stagingPrefix, cancellationToken);
-            }
-            var packageSpecs = bundled
-                ? [
-                    $"@agentclientprotocol/codex-acp@{ProductManifest.CodexAcpVersion}",
-                    $"@openai/codex@{ProductManifest.CodexVersion}",
-                ]
-                : ManagedPackageSpecs(version);
-            var install = await _runner.RunAsync(
-                nodePath,
-                [
-                    npmCliPath,
-                    "install",
-                    "--global",
-                    "--prefix",
-                    stagingPrefix,
-                    .. packageSpecs,
-                    "--no-audit",
-                    "--no-fund",
-                    "--loglevel=error",
-                ],
-                TimeSpan.FromMinutes(15),
-                environment: BuildNodeEnvironment(nodePath),
-                cancellationToken: cancellationToken);
-            var stagedEntry = Path.Combine(stagingPrefix, "node_modules", "remote-codex", "bin", "remote-codex.mjs");
-            var stagedNative = bundled
-                ? Path.Combine(stagingPrefix, "remote-codex-native.exe")
-                : null;
-            var nativeReady = !bundled
-                || await BundledNativeMatchesAsync(stagedNative!, cancellationToken);
-            var runtimeReady = await IsExpectedRemoteCodexAsync(
-                nodePath,
-                stagedEntry,
-                version,
-                cancellationToken);
-            if (!install.Success || !nativeReady || !runtimeReady)
-            {
-                throw new InvalidOperationException(
-                    $"Pockymoe installation failed (npm={install.Success}, native={nativeReady}, runtime={runtimeReady}). {install.CombinedOutput}".Trim());
-            }
-
-            if (Directory.Exists(prefix))
-            {
-                Directory.Delete(prefix, recursive: true);
-            }
-            Directory.Move(stagingPrefix, prefix);
-        }
-        finally
-        {
-            if (Directory.Exists(stagingPrefix))
-            {
-                Directory.Delete(stagingPrefix, recursive: true);
-            }
-        }
-
-        if (!await IsExpectedRemoteCodexAsync(nodePath, entryPath, version, cancellationToken))
-        {
-            throw new InvalidOperationException("Pockymoe failed verification after installation.");
-        }
-
-        progress.Report(new("Pockymoe", $"Pockymoe {version} installed.", ProvisioningStepState.Complete, 76));
-        return new RemoteCodexRuntime(entryPath, version, codexCommandPath, nativeBinaryPath);
-    }
-
-    private static async Task ExtractBundledRemoteCodexAsync(
-        string prefix,
-        CancellationToken cancellationToken)
-    {
-        var packageRoot = Path.Combine(prefix, "node_modules", "remote-codex");
-        await ExtractResourceAsync(
-            BundledLauncherResource,
-            Path.Combine(packageRoot, "bin", "remote-codex.mjs"),
-            cancellationToken);
-        await ExtractResourceAsync(
-            BundledPackageResource,
-            Path.Combine(packageRoot, "package.json"),
-            cancellationToken);
-        await ExtractResourceAsync(
-            BundledNativeResource,
-            Path.Combine(prefix, "remote-codex-native.exe"),
-            cancellationToken);
-    }
-
-    private static async Task<bool> BundledNativeMatchesAsync(
-        string path,
-        CancellationToken cancellationToken)
-    {
-        if (!File.Exists(path))
-        {
-            return false;
-        }
-        await using var expected = Assembly.GetExecutingAssembly().GetManifestResourceStream(
-            BundledNativeResource);
-        if (expected is null)
-        {
-            return false;
-        }
-        await using var actual = File.OpenRead(path);
-        var expectedHash = await SHA256.HashDataAsync(expected, cancellationToken);
-        var actualHash = await SHA256.HashDataAsync(actual, cancellationToken);
-        return CryptographicOperations.FixedTimeEquals(expectedHash, actualHash);
-    }
-
-    private static async Task ExtractResourceAsync(
-        string resourceName,
-        string destination,
-        CancellationToken cancellationToken)
-    {
-        await using var source = Assembly.GetExecutingAssembly().GetManifestResourceStream(resourceName)
-            ?? throw new InvalidOperationException($"Bundled runtime resource is missing: {resourceName}");
-        Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
-        await using var output = new FileStream(
-            destination,
-            FileMode.CreateNew,
-            FileAccess.Write,
-            FileShare.None,
-            128 * 1024,
-            useAsync: true);
-        await source.CopyToAsync(output, cancellationToken);
-        await output.FlushAsync(cancellationToken);
-    }
-
-    private async Task<bool> IsExpectedRemoteCodexAsync(
-        string nodePath,
-        string entryPath,
-        string expectedVersion,
-        CancellationToken cancellationToken)
-    {
-        if (!File.Exists(entryPath))
-        {
-            return false;
-        }
-
-        try
-        {
-            var version = await _runner.RunAsync(
-                nodePath,
-                [entryPath, "--version"],
-                TimeSpan.FromSeconds(30),
-                cancellationToken: cancellationToken);
-            if (!version.Success || !version.StandardOutput.Trim().Equals(expectedVersion, StringComparison.Ordinal))
-            {
-                return false;
-            }
-
-            var prefix = new FileInfo(entryPath)
-                .Directory?
-                .Parent?
-                .Parent?
-                .Parent?
-                .FullName;
-            if (prefix is null)
-            {
-                return false;
-            }
-
-            var acpCommandPath = Path.Combine(prefix, "codex-acp.cmd");
-            var codexCommandPath = Path.Combine(prefix, "codex.cmd");
-            if (!File.Exists(acpCommandPath) || !File.Exists(codexCommandPath))
-            {
-                _logger.Warning(
-                    $"Managed command shims are incomplete. codex-acp={File.Exists(acpCommandPath)}, codex={File.Exists(codexCommandPath)}, prefix={prefix}");
-                return false;
-            }
-            var adapter = await _runner.RunAsync(
-                acpCommandPath,
-                ["--version"],
-                TimeSpan.FromSeconds(30),
-                environment: BuildNodeEnvironment(nodePath),
-                cancellationToken: cancellationToken);
-            var codex = await _runner.RunAsync(
-                codexCommandPath,
-                ["--version"],
-                TimeSpan.FromSeconds(30),
-                environment: BuildNodeEnvironment(nodePath),
-                cancellationToken: cancellationToken);
-            return adapter.Success
-                && adapter.StandardOutput.Contains(
-                    ProductManifest.CodexAcpVersion,
-                    StringComparison.Ordinal)
-                && codex.Success
-                && codex.StandardOutput.Contains("codex", StringComparison.OrdinalIgnoreCase);
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
-    private static bool TryParseVersion(string value, out Version version)
-    {
-        var coreVersion = value.Split('-', 2, StringSplitOptions.TrimEntries)[0];
-        return Version.TryParse(coreVersion, out version!);
-    }
-
-    private static IReadOnlyDictionary<string, string?> BuildNodeEnvironment(string nodePath)
-    {
-        var nodeDirectory = Path.GetDirectoryName(nodePath)
-            ?? throw new InvalidOperationException("The selected Node.js path has no parent directory.");
-        var currentPath = Environment.GetEnvironmentVariable("PATH");
-        return new Dictionary<string, string?>
-        {
-            ["PATH"] = string.IsNullOrWhiteSpace(currentPath)
-                ? nodeDirectory
-                : $"{nodeDirectory}{Path.PathSeparator}{currentPath}",
-        };
-    }
-
-    private async Task<IReadOnlyList<string>> LocateCommandsAsync(
-        string command,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            var result = await _runner.RunAsync(
-                "where.exe",
-                [command],
-                TimeSpan.FromSeconds(5),
-                cancellationToken: cancellationToken);
-            return result.Success
-                ? result.StandardOutput.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                : [];
-        }
-        catch
-        {
-            return [];
-        }
-    }
-
-    private async Task DownloadAsync(
-        Uri uri,
-        string destinationPath,
-        IProgress<ProvisioningProgress> progress,
-        int progressStart,
-        int progressEnd,
-        CancellationToken cancellationToken)
-    {
-        using var response = await _httpClient.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-        response.EnsureSuccessStatusCode();
-        var totalBytes = response.Content.Headers.ContentLength;
-        await using var source = await response.Content.ReadAsStreamAsync(cancellationToken);
-        await using var destination = new FileStream(destinationPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 128 * 1024, useAsync: true);
-        var buffer = new byte[128 * 1024];
-        long receivedBytes = 0;
-        while (true)
-        {
-            var bytesRead = await source.ReadAsync(buffer, cancellationToken);
-            if (bytesRead == 0)
-            {
-                break;
-            }
-            await destination.WriteAsync(buffer.AsMemory(0, bytesRead), cancellationToken);
-            receivedBytes += bytesRead;
-            if (totalBytes is > 0)
-            {
-                var percent = Math.Clamp(
-                    progressStart + (int)(receivedBytes * (progressEnd - progressStart) / totalBytes.Value),
-                    progressStart,
-                    progressEnd);
-                progress.Report(new("Download", $"Downloading {Path.GetFileName(destinationPath).Replace(".partial", string.Empty)}...", ProvisioningStepState.Running, percent));
-            }
-        }
-    }
-
-    private static async Task<bool> HasExpectedSha256Async(
-        string path,
-        string expectedHash,
-        CancellationToken cancellationToken)
-    {
-        await using var stream = File.OpenRead(path);
-        var hash = await SHA256.HashDataAsync(stream, cancellationToken);
-        return Convert.ToHexString(hash).Equals(expectedHash, StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static string NpmCliPathFor(string nodePath)
-        => Path.Combine(Path.GetDirectoryName(nodePath)!, "node_modules", "npm", "bin", "npm-cli.js");
-
 }

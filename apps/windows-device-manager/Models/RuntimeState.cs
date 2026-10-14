@@ -4,64 +4,46 @@ using RemoteCodex.DeviceManager.Infrastructure;
 
 namespace RemoteCodex.DeviceManager.Models;
 
-internal sealed record RuntimeState(
-    string NodePath,
-    string RemoteCodexEntryPath,
-    string CodexCommandPath,
-    DateTimeOffset UpdatedAt,
-    string? RemoteCodexVersion = null,
-    string? NativeBinaryPath = null)
+// Keep legacy fields so upgrading the tray app can read existing installations.
+internal sealed record RuntimeState(string NodePath, string RemoteCodexEntryPath,
+    string CodexCommandPath, DateTimeOffset UpdatedAt, string? RemoteCodexVersion = null,
+    string? NativeBinaryPath = null, string? Distribution = null)
 {
-    [JsonIgnore]
-    public string? ManagedNpmPrefix => new FileInfo(RemoteCodexEntryPath)
-        .Directory?
-        .Parent?
-        .Parent?
-        .Parent?
-        .FullName;
-
-    [JsonIgnore]
-    public string? AcpCommandPath => ManagedNpmPrefix is { Length: > 0 } prefix
-        ? Path.Combine(prefix, "codex-acp.cmd")
-        : null;
-
-    public bool IsUsable => File.Exists(NodePath)
-        && File.Exists(RemoteCodexEntryPath)
-        && File.Exists(CodexCommandPath)
-        && AcpCommandPath is { } acpCommandPath
-        && File.Exists(acpCommandPath)
-        && (string.IsNullOrWhiteSpace(NativeBinaryPath) || File.Exists(NativeBinaryPath));
-
+    public bool IsNative => Distribution == "github-release";
+    public bool IsUsable => IsNative ? ResolveNative() is not null
+        : File.Exists(NodePath) && File.Exists(RemoteCodexEntryPath);
+    [JsonIgnore] public string? ManagedNpmPrefix => new FileInfo(RemoteCodexEntryPath).Directory?.Parent?.Parent?.Parent?.FullName;
+    public static NativeInstallation? ResolveNative()
+    {
+        try
+        {
+            var installed = JsonSerializer.Deserialize<NativeInstallation>(File.ReadAllText(AppPaths.NativeCurrentPath), JsonOptions);
+            if (installed is null || !Version.TryParse(installed.Version, out _)) return null;
+            var releases = Path.GetFullPath(Path.Combine(AppPaths.NativeRoot, "releases")) + Path.DirectorySeparatorChar;
+            return Path.GetFullPath(installed.Executable).StartsWith(releases, StringComparison.OrdinalIgnoreCase)
+                && Path.GetFullPath(installed.WebDist).StartsWith(releases, StringComparison.OrdinalIgnoreCase)
+                && File.Exists(installed.Executable) && File.Exists(Path.Combine(installed.WebDist, "index.html")) ? installed : null;
+        }
+        catch { return null; }
+    }
+    public static RuntimeState? FromNative() => ResolveNative() is { } n
+        ? new("", "", "", DateTimeOffset.UtcNow, n.Version, n.Executable, "github-release") : null;
     public void Save()
     {
         AppPaths.EnsureDirectories();
-        var temporaryPath = $"{AppPaths.RuntimeStatePath}.{Environment.ProcessId}.tmp";
-        File.WriteAllText(temporaryPath, JsonSerializer.Serialize(this, JsonOptions));
-        File.Move(temporaryPath, AppPaths.RuntimeStatePath, overwrite: true);
+        var temporary = $"{AppPaths.RuntimeStatePath}.{Environment.ProcessId}.tmp";
+        File.WriteAllText(temporary, JsonSerializer.Serialize(this, JsonOptions));
+        File.Move(temporary, AppPaths.RuntimeStatePath, true);
     }
-
     public static RuntimeState? Load(AppLogger logger)
     {
         try
         {
-            if (!File.Exists(AppPaths.RuntimeStatePath))
-            {
-                return null;
-            }
-
-            return JsonSerializer.Deserialize<RuntimeState>(File.ReadAllText(AppPaths.RuntimeStatePath), JsonOptions);
+            return FromNative() ?? (File.Exists(AppPaths.RuntimeStatePath)
+            ? JsonSerializer.Deserialize<RuntimeState>(File.ReadAllText(AppPaths.RuntimeStatePath), JsonOptions) : null);
         }
-        catch (Exception exception)
-        {
-            logger.Warning($"Ignoring invalid runtime state: {exception.Message}");
-            return null;
-        }
+        catch (Exception e) { logger.Warning($"Invalid runtime state: {e.Message}"); return null; }
     }
-
-    private static JsonSerializerOptions JsonOptions { get; } = new()
-    {
-        WriteIndented = true,
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        UnmappedMemberHandling = JsonUnmappedMemberHandling.Skip,
-    };
+    internal static JsonSerializerOptions JsonOptions { get; } = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, WriteIndented = true };
 }
+internal sealed record NativeInstallation(string Version, string Executable, string WebDist);
