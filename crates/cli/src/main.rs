@@ -1,3 +1,4 @@
+mod attach;
 mod automations;
 mod legacy_env;
 mod threads;
@@ -358,6 +359,8 @@ mod tests {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Bind one Treer Agent to a hub thread and keep its interface registered.
+    Attach(attach::Options),
     /// Reserve, inspect and diagnose private device web previews.
     #[command(after_long_help = r#"More: pockymoe guide preview"#)]
     Preview {
@@ -587,14 +590,18 @@ async fn run() -> Result<()> {
     {
         return pockymoe_runtime::acp::run_codex_app_server_bridge().await;
     }
+    let cli = Cli::parse();
+    // WebSocket trace diagnostics may contain the attach identity payload.
+    let filter = if matches!(cli.command, Commands::Attach(_)) {
+        tracing_subscriber::EnvFilter::new("off")
+    } else {
+        tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| "info,rusqlite=warn,hyper=warn".into())
+    };
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info,rusqlite=warn,hyper=warn".into()),
-        )
+        .with_env_filter(filter)
         .init();
-    let cli = Cli::parse();
     if let Some(mode) = cli.host_mode {
         std::env::set_var("POCKYMOE_HOST_MODE", mode.to_string());
     }
@@ -603,6 +610,7 @@ async fn run() -> Result<()> {
         pockymoe_runtime::host_mode::require_feature(caps.account_binding, "accountBinding")?;
     }
     match cli.command {
+        Commands::Attach(options) => attach::run(options, cli.connection).await?,
         Commands::Preview { command } => {
             let value = threads::Client::new(cli.connection)?
                 .preview(command)
