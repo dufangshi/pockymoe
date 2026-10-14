@@ -23,7 +23,7 @@ internal sealed record RelayConfigurationSnapshot(
             return new RelayConfigurationSnapshot(
                 HasNonEmptyString(root, "REMOTE_CODEX_RELAY_AGENT_TOKEN"),
                 GetString(root, "REMOTE_CODEX_RELAY_SERVER_URL"),
-                GetString(root, "WORKSPACE_ROOT"),
+                GetString(root, "REMOTE_CODEX_WORKSPACE_ROOT") ?? GetString(root, "WORKSPACE_ROOT"),
                 GetInt32(root, "REMOTE_CODEX_RELAY_SUPERVISOR_PORT"));
         }
         catch (Exception exception)

@@ -57,7 +57,7 @@ internal sealed class MainForm : Form
         scroll.Controls.Add(body);
         scroll.Layout += (_, _) => { body.MaximumSize = new Size(Math.Max(1, scroll.ClientSize.Width - SystemInformation.VerticalScrollBarWidth), 0); };
         foreach (var height in new[] { 28, 76, 28, 40, 36, 30, 0, 92 }) body.RowStyles.Add(new RowStyle(height == 0 ? SizeType.AutoSize : SizeType.Absolute, height));
-        body.Controls.Add(Label("Connect this computer", true), 0, 0);
+        body.Controls.Add(Label("Paste a Windows setup command", true), 0, 0);
         var pasteGrid = Grid(2, DockStyle.Fill); pasteGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); pasteGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 108));
         _pasteConfigurationTextBox = CreateTextBox(); _pasteConfigurationTextBox.Multiline = true; _pasteConfigurationTextBox.UseSystemPasswordChar = false;
         _pasteConfigurationTextBox.WordWrap = true; _pasteConfigurationTextBox.ScrollBars = ScrollBars.Vertical;
@@ -96,8 +96,8 @@ internal sealed class MainForm : Form
         _stepLabel = Label("Ready", muted: true); _stepLabel.Dock = DockStyle.Top; _stepLabel.Height = 25;
         _progressBar = new ThemedProgress { Dock = DockStyle.Bottom, Height = 4 };
         progress.Controls.Add(_stepLabel); progress.Controls.Add(_progressBar); root.Controls.Add(progress, 0, 3);
-        var actions = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft, WrapContents = false, Padding = new Padding(0, 8, 0, 0) };
-        _connectButton = new ThemedButton { Text = "Connect", Primary = true, Size = new Size(110, 36) }; _connectButton.Click += ConnectClicked;
+        var actions = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft, WrapContents = false, Margin = Padding.Empty, Padding = Padding.Empty };
+        _connectButton = new ThemedButton { Text = "Connect", Primary = true, Size = new Size(110, 36), Margin = new Padding(4, 0, 0, 0) }; _connectButton.Click += ConnectClicked;
         _disconnectButton = CreateNeutralButton("Disconnect", 110); _disconnectButton.Click += DisconnectClicked;
         var web = CreateNeutralButton("Open Web", 110); web.Click += (_, _) => Process.Start(new ProcessStartInfo { FileName = ProductManifest.RelayPortalUri.AbsoluteUri, UseShellExecute = true });
         var logs = CreateNeutralButton("Logs", 80); logs.Click += (_, _) => OpenLogs();
@@ -227,13 +227,14 @@ internal sealed class MainForm : Form
             _portInput.Value = Math.Clamp(port, (int)_portInput.Minimum, (int)_portInput.Maximum);
         }
 
-        _isApplyingPaste = true;
         _pasteConfigurationTextBox.Clear();
         _isApplyingPaste = false;
         _pasteStateLabel.ForeColor = OnlineColor;
-        _pasteStateLabel.Text = configuration.SupervisorPort is null
-            ? "Configuration parsed: Relay URL and device token filled."
-            : "Configuration parsed: Relay URL, device token and local port filled.";
+        _pasteStateLabel.Text = configuration.SetupCode is not null
+            ? "Setup code ready. Connect to enroll this device."
+            : configuration.AccountKey is not null
+                ? "Account-bound configuration ready. Connect to continue."
+                : "Device configuration ready. Connect to continue.";
     }
 
     private async void CheckUpdateClicked(object? sender, EventArgs eventArgs)
@@ -343,7 +344,7 @@ internal sealed class MainForm : Form
         _statusDot.BackColor = color;
         _stepLabel.Text = $"{_controller.Progress.Step}: {_controller.Progress.Message}";
         _progressBar.Value = Math.Clamp(_controller.Progress.Percent, 0, 100);
-        _connectButton.Text = _controller.Runtime?.IsUsable == true ? "Connect" : "Install && connect";
+        _connectButton.Text = "Connect";
         _connectButton.Enabled = !_controller.IsBusy;
         _disconnectButton.Enabled = !_controller.IsBusy && _controller.Runtime?.IsUsable == true && _controller.State != SupervisorState.Stopped;
         _relayUrlTextBox.Enabled = !_controller.IsBusy;

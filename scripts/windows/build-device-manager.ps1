@@ -6,6 +6,9 @@ $project = Join-Path $root 'apps\windows-device-manager\RemoteCodex.DeviceManage
 & dotnet publish $project -c $Configuration -r $Runtime --self-contained true -o $OutputPath -p:PublishSingleFile=true
 if ($LASTEXITCODE -ne 0) { throw 'Device Manager publish failed.' }
 $exe = Join-Path $OutputPath 'RemoteCodex.DeviceManager.exe'
+[xml]$metadata = Get-Content $project
+$version = [string]$metadata.Project.PropertyGroup.Version
+if ([Diagnostics.FileVersionInfo]::GetVersionInfo($exe).ProductVersion.Split('+')[0] -ne $version) { throw 'Manager EXE version mismatch.' }
 $profile = Join-Path ([IO.Path]::GetTempPath()) ('pockymoe-manager-test-' + [Guid]::NewGuid().ToString('N'))
 $old = $env:POCKYMOE_DEVICE_MANAGER_TEST_ROOT
 try {

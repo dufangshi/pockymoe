@@ -38,7 +38,8 @@ internal static class SelfTest
             var service = new RelaySupervisorService(runner, new AppLogger());
             var tcp = new TcpListener(IPAddress.Loopback, 0); tcp.Start(); var port = ((IPEndPoint)tcp.LocalEndpoint).Port; tcp.Stop();
             var database = Path.Combine(AppPaths.RelayDataRoot, "preserved.sqlite"); File.WriteAllText(database, "preserve-device-and-history");
-            File.WriteAllText(AppPaths.RelayConfigPath, JsonSerializer.Serialize(new Dictionary<string, object> { ["REMOTE_CODEX_RELAY_SUPERVISOR_PORT"] = port.ToString(), ["REMOTE_CODEX_ADMIN_USERNAME"] = "admin", ["REMOTE_CODEX_ADMIN_PASSWORD"] = "synthetic-password", ["REMOTE_CODEX_RELAY_AGENT_TOKEN"] = "synthetic-token", ["REMOTE_CODEX_DATABASE_PATH"] = database }));
+            File.WriteAllText(AppPaths.RelayConfigPath, JsonSerializer.Serialize(new Dictionary<string, object> { ["REMOTE_CODEX_RELAY_SUPERVISOR_PORT"] = port.ToString(), ["REMOTE_CODEX_ADMIN_USERNAME"] = "admin", ["REMOTE_CODEX_ADMIN_PASSWORD"] = "synthetic-password", ["REMOTE_CODEX_RELAY_AGENT_TOKEN"] = "synthetic-token", ["REMOTE_CODEX_DATABASE_PATH"] = database, ["POCKYMOE_WORKSPACE_ROOT"] = AppPaths.UserHome }));
+            Require(RelayConfigurationSnapshot.Load(new AppLogger()).WorkspaceRoot == AppPaths.UserHome, "Native workspace discovery");
             using var server = new HttpListener(); server.Prefixes.Add($"http://127.0.0.1:{port}/"); server.Start();
             var served = Task.Run(async () =>
             {
@@ -149,12 +150,15 @@ internal static class SelfTest
             };
             File.WriteAllText(AppPaths.RelayConfigPath, JsonSerializer.Serialize(saved));
             var configuration = new DeviceConfiguration(origin, token, AppPaths.UserHome, devicePort, AccountKey: publicKey, EnrollmentSecret: RandomKey(32), WebOrigin: origin);
+            logger.Info("Native acceptance: verified account-bound setup.");
             runtime = await new RuntimeProvisioner(logger, runner).SetupAsync(configuration, new Progress<ProvisioningProgress>(), CancellationToken.None);
             var state = await service.GetStateAsync(runtime, CancellationToken.None); Require(state == SupervisorState.Running, "Native setup connects Relay");
+            logger.Info("Native acceptance: apply workspace through maintenance.");
             await service.ConfigureWorkspaceAsync(AppPaths.UserHome, CancellationToken.None);
             Require(RelaySupervisorService.Saved("POCKYMOE_WORKSPACE_ROOT") == AppPaths.UserHome, "Workspace preference applied");
             var status = await service.ManagementAsync("/check", true, CancellationToken.None);
             Require(status.GetProperty("canUpdate").GetBoolean(), "Native updates available");
+            logger.Info("Native acceptance: authenticated Check and restart.");
             var beforePid = (await service.ManagementAsync("", false, CancellationToken.None)).GetProperty("processId").GetInt32();
             var identity = Directory.GetFiles(AppPaths.RelayDataRoot, "*.transport-identity").Single();
             var identityBytes = File.ReadAllBytes(identity);
@@ -173,6 +177,7 @@ internal static class SelfTest
             var installed = RuntimeState.ResolveNative()!; var next = Path.Combine(Path.GetDirectoryName(installed.Executable)!, "next-launch.exe");
             File.Copy(installed.Executable, next, true);
             File.WriteAllText(AppPaths.NativeCurrentPath, JsonSerializer.Serialize(installed with { Executable = next }, RuntimeState.JsonOptions));
+            logger.Info("Native acceptance: reconnect using current.json.");
             await service.StartAsync(runtime, configuration, CancellationToken.None);
             var relaunched = await service.ManagementAsync("", false, CancellationToken.None);
             Require(string.Equals(relaunched.GetProperty("path").GetString(), next, StringComparison.OrdinalIgnoreCase), "Launch follows installed current.json");
@@ -182,7 +187,14 @@ internal static class SelfTest
             logger.Info("Native acceptance passed: setup, account binding, auth, Check, restart, reconnect, identity preservation.");
             return 0;
         }
-        catch (Exception e) { logger.Error("Native acceptance failed", e); return 1; }
+        catch (Exception e)
+        {
+            logger.Error("Native acceptance failed", e);
+            if (File.Exists(AppPaths.RelayLogPath))
+                foreach (var line in File.ReadLines(AppPaths.RelayLogPath).TakeLast(20))
+                    logger.Warning("Isolated Supervisor: " + line);
+            return 1;
+        }
         finally
         {
             if (runtime is not null) try { await service.StopAsync(runtime, CancellationToken.None); } catch { }
@@ -203,6 +215,7 @@ internal static class SelfTest
                 {
                     var controller = new DeviceManagerController(logger, new RuntimeProvisioner(logger, runner), new RelaySupervisorService(runner, logger), new StartupRegistrationService());
                     controller.SetTheme(theme);
+                    controller.InitializeAsync().GetAwaiter().GetResult();
                     using var form = new MainForm(controller);
                     form.StartPosition = FormStartPosition.Manual; form.Location = new Point(-20000, -20000); form.ShowInTaskbar = false;
                     form.Scale(new SizeF(scale, scale)); form.Show(); Application.DoEvents(); form.PerformLayout(); form.Refresh(); Application.DoEvents();
@@ -210,8 +223,23 @@ internal static class SelfTest
                     bitmap.Save(Path.Combine(directory, $"manager-{theme}-{scale * 100:0}.png"), System.Drawing.Imaging.ImageFormat.Png);
                     foreach (var child in Descendants(form).Where(c => c.Visible && c.Parent is TableLayoutPanel))
                         Require(child.Left >= -1 && child.Right <= child.Parent!.ClientSize.Width + 1, $"Horizontal overflow ({theme}, {scale}): {child.GetType().Name} {child.Left}/{child.Right} parent {child.Parent!.ClientSize.Width}");
-                    foreach (var button in Descendants(form).OfType<Button>().Where(b => b.Visible)) Require(button.Width >= 40 * scale && button.Height >= 20 * scale, "Action clipped");
+                    foreach (var button in Descendants(form).OfType<Button>().Where(b => b.Visible))
+                    {
+                        Require(button.Width >= 40 * scale && button.Height >= 20 * scale, "Action too small");
+                        if (button.Parent is FlowLayoutPanel actions)
+                            Require(button.Bottom <= actions.ClientSize.Height && button.Left >= 0, "Primary action clipped");
+                    }
                     Require(Descendants(form).OfType<TextBox>().Single(t => t.AccessibleName == "Device token").UseSystemPasswordChar, "Token masked");
+                    if (scale == 1F)
+                    {
+                        Descendants(form).OfType<Button>().Single(b => b.Text.StartsWith("Connection details")).PerformClick();
+                        form.PerformLayout(); Application.DoEvents();
+                        using var expanded = new Bitmap(form.Width, form.Height);
+                        form.DrawToBitmap(expanded, new Rectangle(Point.Empty, form.Size));
+                        expanded.Save(Path.Combine(directory, $"manager-{theme}-details.png"), System.Drawing.Imaging.ImageFormat.Png);
+                        foreach (var child in Descendants(form).Where(c => c.Visible && c.Parent is TableLayoutPanel))
+                            Require(child.Left >= -1 && child.Right <= child.Parent!.ClientSize.Width + 1, "Expanded connection details overflow");
+                    }
                     form.Hide();
                 }
             return 0;
