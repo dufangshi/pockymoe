@@ -89,6 +89,7 @@ internal static class SelfTest
             start.Environment["HOST"] = "127.0.0.1"; start.Environment["PORT"] = relayPort.ToString();
             start.Environment["POCKYMOE_RELAY_DATA_DIR"] = Path.Combine(AppPaths.UserHome, "fixture-relay");
             start.Environment["POCKYMOE_ADMIN_USERNAME"] = "fixtureadmin"; start.Environment["POCKYMOE_ADMIN_PASSWORD"] = password;
+            start.Environment["POCKYMOE_RELAY_REGISTRATION_ENABLED"] = "true";
             start.Environment["POCKYMOE_RELAY_SESSION_SECRET"] = Guid.NewGuid().ToString("N");
             relay = System.Diagnostics.Process.Start(start)!;
             using var client = new HttpClient(new HttpClientHandler { UseProxy = false }) { Timeout = TimeSpan.FromSeconds(15) };
@@ -104,7 +105,33 @@ internal static class SelfTest
                 Require(response.IsSuccessStatusCode, $"Fixture Relay HTTP {(int)response.StatusCode} at {route}");
                 using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync()); return json.RootElement.Clone();
             }
-            var login = await Post("/relay/auth/login", new { username = "fixtureadmin", password });
+            static string B64(byte[] data) => Convert.ToBase64String(data).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+            static string RandomKey(int count) => B64(System.Security.Cryptography.RandomNumberGenerator.GetBytes(count));
+            using var account = System.Security.Cryptography.ECDsa.Create(System.Security.Cryptography.ECCurve.NamedCurves.nistP256);
+            var publicKey = B64(account.ExportSubjectPublicKeyInfo());
+            var userId = Guid.NewGuid().ToString(); var authKey = RandomKey(32);
+            var encrypted = new { iv = RandomKey(12), ciphertext = RandomKey(32) };
+            // The Relay stores opaque ciphertext; the fixture does not need to decrypt it.
+            await Post("/relay/auth/register", new
+            {
+                userId,
+                username = "fixtureowner",
+                email = "fixtureowner@example.test",
+                authKey,
+                recoveryAuthKey = RandomKey(32),
+                vault = new
+                {
+                    version = 1,
+                    revision = 1,
+                    userId,
+                    accountPublicKey = publicKey,
+                    accountKeyId = B64(System.Security.Cryptography.SHA256.HashData(account.ExportSubjectPublicKeyInfo())),
+                    kdf = new { name = "argon2id", memoryKiB = 65536, iterations = 3, parallelism = 1, salt = RandomKey(16) },
+                    slots = new { password = encrypted, recovery = encrypted },
+                    body = encrypted
+                }
+            });
+            var login = await Post("/relay/auth/login", new { username = "fixtureowner", authKey });
             client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", login.GetProperty("token").GetString());
             var device = await Post("/relay/devices", new { name = "Isolated Windows Manager acceptance" });
             var token = device.GetProperty("token").GetString()!;
@@ -121,9 +148,7 @@ internal static class SelfTest
                 ["retainedCustomSetting"] = "keep"
             };
             File.WriteAllText(AppPaths.RelayConfigPath, JsonSerializer.Serialize(saved));
-            using var account = System.Security.Cryptography.ECDsa.Create(System.Security.Cryptography.ECCurve.NamedCurves.nistP256);
-            var publicKey = Convert.ToBase64String(account.ExportSubjectPublicKeyInfo()).TrimEnd('=').Replace('+', '-').Replace('/', '_');
-            var configuration = new DeviceConfiguration(origin, token, AppPaths.UserHome, devicePort, AccountKey: publicKey, EnrollmentSecret: Guid.NewGuid().ToString("N"), WebOrigin: origin);
+            var configuration = new DeviceConfiguration(origin, token, AppPaths.UserHome, devicePort, AccountKey: publicKey, EnrollmentSecret: RandomKey(32), WebOrigin: origin);
             runtime = await new RuntimeProvisioner(logger, runner).SetupAsync(configuration, new Progress<ProvisioningProgress>(), CancellationToken.None);
             var state = await service.GetStateAsync(runtime, CancellationToken.None); Require(state == SupervisorState.Running, "Native setup connects Relay");
             await service.ConfigureWorkspaceAsync(AppPaths.UserHome, CancellationToken.None);

@@ -42,7 +42,7 @@ internal sealed class MainForm : Form
         var names = new[] { "plum-dark", "plum-light", "classic-dark", "classic-light" };
         themes.SelectedIndex = Math.Max(0, Array.IndexOf(names, _themeName));
         themes.DrawMode = DrawMode.OwnerDrawFixed;
-        themes.DrawItem += (_, e) => { if (e.Index < 0) return; var t = ManagerTheme.Get(_themeName); using var fill = new SolidBrush(t.Input); e.Graphics.FillRectangle(fill, e.Bounds); TextRenderer.DrawText(e.Graphics, themes.Items[e.Index].ToString(), themes.Font, e.Bounds, t.Text, TextFormatFlags.Left | TextFormatFlags.VerticalCenter); };
+        themes.DrawItem += (_, e) => { if (e.Index < 0) return; var t = ManagerTheme.Get(_themeName); using var fill = new SolidBrush(t.Input); e.Graphics?.FillRectangle(fill, e.Bounds); TextRenderer.DrawText(e.Graphics!, themes.Items[e.Index]?.ToString() ?? "", themes.Font, e.Bounds, t.Text, TextFormatFlags.Left | TextFormatFlags.VerticalCenter); };
         themes.SelectedIndexChanged += (_, _) => { _themeName = names[themes.SelectedIndex]; _controller.SetTheme(_themeName); ManagerTheme.Apply(this, ManagerTheme.Get(_themeName)); ApplyTitleBar(); UpdateState(); };
         header.Controls.Add(brand, 0, 0); header.Controls.Add(themes, 1, 0); root.Controls.Add(header, 0, 0);
         var status = new ThemedPanel { Dock = DockStyle.Fill, Margin = new Padding(0, 4, 0, 10) };
