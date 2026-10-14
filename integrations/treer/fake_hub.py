@@ -18,6 +18,13 @@ class FakeHub:
         self.running_polls = 1
         self.pending = {}
         self.post_error = None
+        self.supervisor = {"runningVersion": "0.13.2", "installedVersion": "0.13.2",
+                           "restartStrategy": "host-managed", "canUpdate": True, "job": None}
+        self.latest_version = "0.13.2"
+        self.supervisor_available = True
+        self.supervisor_polls = []
+        self.supervisor_update_started = False
+        self.on_supervisor_completed = None
         fixture = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -42,6 +49,20 @@ class FakeHub:
                         self.reply({"status": "ok" if fixture.healthy else "starting"})
                 elif self.path == "/api/management/harnesses":
                     self.reply(fixture.rows)
+                elif self.path == "/api/management/supervisor":
+                    if not fixture.supervisor_available:
+                        self.reply({"message": "Hub unavailable"}, 503)
+                        return
+                    if fixture.supervisor_update_started and fixture.supervisor_polls:
+                        snapshot = fixture.supervisor_polls.pop(0)
+                        if isinstance(snapshot, int):
+                            self.reply({"message": "Hub restarting"}, snapshot)
+                            return
+                        fixture.supervisor.update(snapshot)
+                    if (fixture.supervisor.get("job") or {}).get("phase") == "completed" and fixture.on_supervisor_completed:
+                        fixture.on_supervisor_completed(fixture.supervisor["runningVersion"])
+                        fixture.on_supervisor_completed = None
+                    self.reply(fixture.supervisor)
                 elif self.path == "/api/management/jobs":
                     for agent, count in list(fixture.pending.items()):
                         row = fixture.row(agent)
@@ -61,6 +82,15 @@ class FakeHub:
             def do_POST(self):
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 fixture.requests.append(("POST", self.path, body))
+                if self.path == "/api/management/supervisor/check":
+                    self.reply({**fixture.supervisor, "latestVersion": fixture.latest_version})
+                    return
+                if self.path == "/api/management/supervisor/update":
+                    fixture.supervisor_update_started = True
+                    fixture.supervisor["job"] = {"phase": "preparing", "action": "update",
+                                                 "targetVersion": fixture.latest_version}
+                    self.reply({**fixture.supervisor, "latestVersion": fixture.latest_version}, 202)
+                    return
                 if fixture.post_error:
                     self.reply({"message": fixture.post_error}, 409)
                     return

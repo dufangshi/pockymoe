@@ -95,6 +95,7 @@ class SetupTests(unittest.TestCase):
         configuration.write_text(configuration.read_text()
                                  .replace("HUB_HEALTH_TIMEOUT = 60", "HUB_HEALTH_TIMEOUT = 0.2")
                                  .replace("ADAPTER_TIMEOUT = 8 * 60", "ADAPTER_TIMEOUT = 0.25")
+                                 .replace("SUPERVISOR_TIMEOUT = 10 * 60", "SUPERVISOR_TIMEOUT = 0.25")
                                  .replace("HUB_POLL_INTERVAL = 2", "HUB_POLL_INTERVAL = 0.01")
                                  .replace("HUB_PROGRESS_INTERVAL = 20", "HUB_PROGRESS_INTERVAL = 0.05"))
         installer = self.bundle / "install.py"
@@ -210,6 +211,127 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(self.state()["profiles"], [])
         self.assertFalse((self.home / "installer-version").exists())
 
+    def existing_upgrade_hub(self, version="0.13.1"):
+        self.installed(version)
+        definitions = json.loads((SOURCE / "profiles.json").read_text())
+        # Generate the same saved App command while retaining this fake home's paths.
+        with patch.object(Path, "home", return_value=self.home):
+            invocation = configure.commands(definitions, self.home / ".local/bin/pockymoe",
+                                            self.home / ".local/share/remote-codex/treer",
+                                            self.hub.port, ".", "treer", True)[0]
+        state = self.state()
+        state["apps"] = [{"app_id": "hub-id", "name": "pockymoe", "server_id": "test-machine",
+                          "port": self.hub.port, "cwd": ".", "command": "/usr/bin/env",
+                          "args": invocation[invocation.index("--") + 1:]}]
+        self.save(state)
+        self.hub.supervisor.update(runningVersion=version, installedVersion=version)
+
+    def supervisor_updates(self):
+        return [request for request in self.hub.requests
+                if request[:2] == ("POST", "/api/management/supervisor/update")]
+
+    def test_upgrade_success_waits_for_running_version_then_converges_and_verifies_adapters(self):
+        self.existing_upgrade_hub()
+        self.hub.supervisor_polls = [
+            {"job": {"phase": "installing", "targetVersion": "0.13.2"}},
+            503, 503, 503, 503,  # Treer host-managed restart disconnect.
+            {"runningVersion": "0.13.2", "installedVersion": "0.13.2",
+             "job": {"phase": "verifying", "targetVersion": "0.13.2"}},
+            {"job": {"phase": "completed", "targetVersion": "0.13.2"}}]
+        self.hub.on_supervisor_completed = self.installed
+        self.hub.row("codex")["base"] = {"path": "/fixture/bin/codex"}
+        result = self.run_setup("--version", "0.13.2")
+        self.assertEqual(self.supervisor_updates(), [("POST", "/api/management/supervisor/update", {})])
+        self.assertIn(("POST", "/api/management/supervisor/check", {}), self.hub.requests)
+        self.assertIn("waiting for Treer hub restart and running version 0.13.2", result.stdout)
+        self.assertLess(result.stdout.index("running hub verified at version 0.13.2"),
+                        result.stdout.index("creating profile Pockymoe Codex"))
+        self.assertLess(result.stdout.index("running hub verified at version 0.13.2"),
+                        result.stdout.index("updating codex ACP adapter"))
+        self.assertIn("ACP adapter codex: version 1.2.3", result.stdout)
+        self.assertIn("Pockymoe ready:", result.stdout)
+        self.assertEqual(len(self.state()["apps"]), 1)
+        self.assertEqual(len(self.state()["profiles"]), 3)
+        self.assertFalse(any(call[:2] in (["app", "restart"], ["agent", "restart"])
+                             for call in self.state()["calls"]))
+        self.assertFalse((self.home / "installer-version").exists())
+        self.hub.requests.clear()
+        self.run_setup("--version", "0.13.2")
+        self.assertEqual(self.supervisor_updates(), [])
+        self.assertEqual(self.adapter_updates(), [])
+
+    def test_upgrade_latest_mismatch_refuses_without_mutations(self):
+        self.existing_upgrade_hub()
+        binary = self.home / ".local/bin/pockymoe"
+        before = binary.read_bytes()
+        self.hub.latest_version = "0.13.3"
+        result = self.run_setup("--version", "0.13.2", success=False)
+        self.assertIn("API supports latest only; latest is 0.13.3, requested 0.13.2", result.stderr)
+        self.assertIn("No update requested", result.stderr)
+        self.assertEqual(self.supervisor_updates(), [])
+        self.assertEqual(self.state()["profiles"], [])
+        self.assertEqual(binary.read_bytes(), before)
+
+    def test_upgrade_timeout_preserves_hub_and_profiles(self):
+        self.existing_upgrade_hub()
+        before = self.state()
+        binary = self.home / ".local/bin/pockymoe"
+        contents = binary.read_bytes()
+        result = self.run_setup("--version", "0.13.2", success=False)
+        self.assertIn("Hub upgrade timed out waiting for running version 0.13.2", result.stderr)
+        self.assertIn("hub job may still be running", result.stderr)
+        self.assertIn("Settings -> Supervisor", result.stderr)
+        self.assertEqual(len(self.supervisor_updates()), 1)
+        self.assertEqual(self.state()["apps"], before["apps"])
+        self.assertEqual(self.state()["profiles"], before["profiles"])
+        self.assertEqual(binary.read_bytes(), contents)
+        self.assertEqual(self.adapter_updates(), [])
+
+    def test_downgrade_refusal_compares_numeric_versions(self):
+        self.existing_upgrade_hub("0.13.10")
+        result = self.run_setup("--version", "0.13.2", success=False)
+        self.assertIn("Installed Pockymoe 0.13.10 is newer than requested 0.13.2", result.stderr)
+        self.assertIn("never downgrades", result.stderr)
+        self.assertEqual(self.hub.requests, [])
+        self.assertEqual(self.state()["profiles"], [])
+
+    def test_upgrade_refuses_when_existing_app_is_not_running(self):
+        self.existing_upgrade_hub()
+        self.hub.supervisor_available = False
+        result = self.run_setup("--version", "0.13.2", success=False)
+        self.assertIn("No reachable running setup-created hub", result.stderr)
+        self.assertIn("Start App pockymoe in Treer and rerun setup", result.stderr)
+        self.assertEqual(self.supervisor_updates(), [])
+        self.assertEqual(self.state()["profiles"], [])
+
+    def test_upgrade_refuses_app_with_wrong_stable_configuration(self):
+        self.existing_upgrade_hub()
+        state = self.state()
+        state["apps"][0]["args"][-2] = "/native/releases/0.13.1/remote-codex"
+        self.save(state)
+        result = self.run_setup("--version", "0.13.2", success=False)
+        self.assertIn("App configuration differs", result.stderr)
+        self.assertEqual(self.hub.requests, [])
+        self.assertEqual(self.state()["profiles"], [])
+
+    def test_upgrade_failure_is_reported_and_sanitized(self):
+        self.existing_upgrade_hub()
+        self.hub.supervisor_polls = [{"job": {"phase": "failed", "targetVersion": "0.13.2",
+                                               "error": "Download failed\x1b\r\n" + "x" * 1000}}]
+        result = self.run_setup("--version", "0.13.2", success=False)
+        self.assertIn("Hub update failed: Download failed", result.stderr)
+        self.assertNotIn("\x1b", result.stdout + result.stderr)
+        self.assertNotIn("x" * 401, result.stderr)
+        self.assertEqual(self.state()["profiles"], [])
+
+    def test_upgrade_detects_latest_changed_after_check(self):
+        self.existing_upgrade_hub()
+        self.hub.supervisor_polls = [{"job": {"phase": "installing", "targetVersion": "0.13.3"}}]
+        result = self.run_setup("--version", "0.13.2", success=False)
+        self.assertIn("Hub update target is 0.13.3, not requested 0.13.2", result.stderr)
+        self.assertEqual(self.state()["profiles"], [])
+        self.assertEqual(self.adapter_updates(), [])
+
     def test_contract_refusal_before_install(self):
         bad_contracts = [None, {}, {"protocol": "treer.agent-interface/v2"},
                          {"protocol": "treer.agent-interface/v1", "features": []},
@@ -301,7 +423,8 @@ class SetupTests(unittest.TestCase):
         self.assertFalse(any("create" in call or "update" in call for call in self.state()["calls"]))
 
     def adapter_updates(self):
-        return [request for request in self.hub.requests if request[0] == "POST"]
+        return [request for request in self.hub.requests
+                if request[0] == "POST" and request[1].startswith("/api/management/harnesses/")]
 
     def test_missing_adapter_updates_and_verifies_before_ready(self):
         # Match the current runtime base DTO: successful inspection has path, no installed flag.

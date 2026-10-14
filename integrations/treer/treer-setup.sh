@@ -252,6 +252,7 @@ import install
 DEFAULT_DATA = Path.home() / ".local/share/remote-codex/treer"
 HUB_HEALTH_TIMEOUT = 60
 ADAPTER_TIMEOUT = 8 * 60
+SUPERVISOR_TIMEOUT = 10 * 60
 HUB_REQUEST_TIMEOUT = 30
 HUB_POLL_INTERVAL = 2
 HUB_PROGRESS_INTERVAL = 20
@@ -491,30 +492,38 @@ def free_port():
     raise ValueError("No free loopback hub port is available from 8787 upward.")
 
 
+def existing_hub_port(hub, hub_port, machine):
+    if hub.get("server_id") != machine["server_id"]:
+        raise ValueError("The Pockymoe App belongs to another machine; use that machine's Treer Agent.")
+    port = hub.get("port")
+    if type(port) is not int or not 1 <= port <= 65535:
+        raise ValueError("Existing Pockymoe App has an invalid port.")
+    if hub_port is not None and hub_port != port:
+        raise ValueError("Existing Pockymoe App uses a different port; rerun with its port or omit --hub-port.")
+    return port
+
+
+def check_hub_command(hub, definitions, binary, data, port, cwd, treer):
+    invocation = commands(definitions, binary, data, port, cwd, treer, True)[0]
+    if (hub.get("command") != definitions["hub"]["command"] or hub.get("cwd") != cwd
+            or hub.get("args") != invocation[invocation.index("--") + 1:]):
+        raise ValueError("Existing Pockymoe App configuration differs; inspect its stable command/data directory in Treer before retrying.")
+
+
 def converge(definitions, binary, data, hub_port, cwd, treer, create_hub, machine, dry_run=False):
     apps = named_entries(treer, ("app", "list"), "apps") if create_hub else []
     profiles = named_entries(treer, ("agent", "admin", "profile", "list"), "profiles")
     hub = unique(apps, definitions["hub"]["name"])
     existing = [unique(profiles, profile["name"]) for profile in definitions["profiles"]]
     if hub:
-        if hub.get("server_id") != machine["server_id"]:
-            raise ValueError("The Pockymoe App belongs to another machine; use that machine's Treer Agent.")
-        port = hub.get("port")
-        if type(port) is not int or not 1 <= port <= 65535:
-            raise ValueError("Existing Pockymoe App has an invalid port.")
-        if hub_port is not None and hub_port != port:
-            raise ValueError("Existing Pockymoe App uses a different port; rerun with its port or omit --hub-port.")
-        hub_port = port
+        hub_port = existing_hub_port(hub, hub_port, machine)
     elif hub_port is None:
         hub_port = free_port() if create_hub else 8787
     invocations = commands(definitions, binary, data, hub_port, cwd, treer, create_hub)
     if create_hub:
         invocation = invocations.pop(0)
         if hub:
-            split = invocation.index("--")
-            if (hub.get("command") != definitions["hub"]["command"] or hub.get("cwd") != cwd
-                    or hub.get("args") != invocation[split + 1:]):
-                raise ValueError("Existing Pockymoe App configuration differs; inspect its stable command/data directory in Treer before retrying.")
+            check_hub_command(hub, definitions, binary, data, hub_port, cwd, treer)
             print(f"Pockymoe setup: reusing hub App pockymoe on loopback port {hub_port}.", flush=True)
         else:
             print(f"Pockymoe setup: creating hub App pockymoe on loopback port {hub_port}.", flush=True)
@@ -544,12 +553,16 @@ def installed_runtime(binary, selected, allow_install=True):
     if os.path.lexists(binary):
         try:
             checked = subprocess.run([str(binary), "version"], capture_output=True, timeout=10, check=True)
-            found = checked.stdout.decode().strip()
-        except (OSError, UnicodeError, subprocess.SubprocessError):
+            found = install.version(checked.stdout.decode().strip())
+        except (OSError, ValueError, subprocess.SubprocessError):
             raise ValueError("Existing Pockymoe CLI could not report its version; inspect it before retrying.") from None
-        if found != selected:
-            raise ValueError("A different Pockymoe version is installed. Update it through Pockymoe Settings -> Supervisor -> Update, then rerun; setup never replaces an existing install.")
-        print(f"Pockymoe setup: reusing installed Pockymoe {selected}.", flush=True)
+        if not allow_install and found != selected:
+            raise ValueError("Installer did not create the requested Pockymoe version; inspect the stable CLI before retrying.")
+        if tuple(map(int, found.split("."))) > tuple(map(int, selected.split("."))):
+            raise ValueError(f"Installed Pockymoe {found} is newer than requested {selected}; setup never downgrades. Rerun with the installed version or a newer release.")
+        if found == selected:
+            print(f"Pockymoe setup: reusing installed Pockymoe {selected}.", flush=True)
+        return found
     else:
         if not allow_install:
             raise ValueError("Installer did not create the stable Pockymoe CLI.")
@@ -558,7 +571,75 @@ def installed_runtime(binary, selected, allow_install=True):
                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                        check=True)
         # Verify the stable path after installation too.
-        installed_runtime(binary, selected, allow_install=False)
+        return installed_runtime(binary, selected, allow_install=False)
+
+
+def supervisor_snapshot(port, path="/api/management/supervisor", body=None, timeout=HUB_REQUEST_TIMEOUT):
+    value = hub_request(port, path, body, timeout)
+    if (not isinstance(value, dict) or not isinstance(value.get("runningVersion"), str)
+            or (value.get("job") is not None and not isinstance(value["job"], dict))):
+        raise ValueError("Hub returned an invalid Supervisor status; inspect Settings -> Supervisor before retrying.")
+    return value
+
+
+def check_update_job(status, selected):
+    job = status.get("job") or {}
+    if not isinstance(job, dict):
+        raise ValueError("Hub returned an invalid Supervisor update job.")
+    target = job.get("targetVersion")
+    if target is not None and target != selected:
+        raise ValueError(f"Hub update target is {safe_hub_text(target)}, not requested {selected}; inspect Settings -> Supervisor. Setup cannot pin this API's latest-only update.")
+    if job.get("phase") in ("failed", "rolled-back", "rollback-failed"):
+        raise ValueError("Hub update failed: " + safe_hub_text(job.get("error") or "Unknown update failure.")
+                         + " Check Settings -> Supervisor, then rerun setup.")
+    return job
+
+
+def upgrade_runtime(definitions, binary, data, hub_port, treer, machine, found, selected):
+    hub = unique(named_entries(treer, ("app", "list"), "apps"), definitions["hub"]["name"])
+    if not hub:
+        raise ValueError("An older Pockymoe is installed, but no setup-created hub App exists. Start the existing setup-created App, or use Settings -> Supervisor -> Update; setup never replaces an existing install.")
+    port = existing_hub_port(hub, hub_port, machine)
+    check_hub_command(hub, definitions, binary, data, port, ".", treer)
+    print(f"Pockymoe setup: checking running hub on 127.0.0.1:{port} before upgrading {found} to {selected}.", flush=True)
+    try:
+        status = supervisor_snapshot(port)
+    except ValueError as error:
+        raise ValueError(f"No reachable running setup-created hub on 127.0.0.1:{port}: {safe_hub_text(error)} Start App pockymoe in Treer and rerun setup; the installed runtime was preserved.") from None
+    if status.get("restartStrategy") != "host-managed":
+        raise ValueError("The running hub must use the host-managed restart strategy; inspect App pockymoe and Settings -> Supervisor before retrying.")
+    if status["runningVersion"] != found or status.get("installedVersion") != found:
+        raise ValueError("Hub running/installed versions differ from the stable CLI; inspect Settings -> Supervisor and let any current update finish before rerunning setup.")
+    if (status.get("job") or {}).get("phase") in ("scheduled", "preparing", "installing", "restarting", "verifying"):
+        raise ValueError("A hub update is already running; let it finish and rerun setup.")
+    checked = supervisor_snapshot(port, "/api/management/supervisor/check", {})
+    # The current endpoint has no target-version input and always resolves latest.
+    if checked.get("latestVersion") != selected:
+        raise ValueError(f"The hub update API supports latest only; latest is {safe_hub_text(checked.get('latestVersion') or 'unknown')}, requested {selected}. No update requested. Rerun with the exact latest release if desired.")
+    if checked.get("canUpdate") is not True:
+        raise ValueError("Hub cannot update: " + safe_hub_text(checked.get("reason") or "Inspect Settings -> Supervisor before retrying."))
+    print(f"Pockymoe setup: requesting hub-managed update to {selected} (up to 10 min); Treer will relaunch the hub.", flush=True)
+    deadline = time.monotonic() + SUPERVISOR_TIMEOUT
+    accepted = supervisor_snapshot(port, "/api/management/supervisor/update", {},
+                                   timeout=min(HUB_REQUEST_TIMEOUT, SUPERVISOR_TIMEOUT))
+    check_update_job(accepted, selected)
+    next_progress = time.monotonic() + HUB_PROGRESS_INTERVAL
+    while time.monotonic() < deadline:
+        try:
+            status = supervisor_snapshot(port, timeout=min(5, max(0.001, deadline - time.monotonic())))
+        except ValueError:
+            # A disconnect while Treer relaunches the App is expected.
+            status = None
+        if status is not None:
+            job = check_update_job(status, selected)
+            if status["runningVersion"] == selected and job.get("phase") in (None, "completed"):
+                print(f"Pockymoe setup: running hub verified at version {selected}.", flush=True)
+                return
+        if time.monotonic() >= next_progress:
+            print(f"Pockymoe setup: waiting for Treer hub restart and running version {selected}.", flush=True)
+            next_progress = time.monotonic() + HUB_PROGRESS_INTERVAL
+        time.sleep(min(HUB_POLL_INTERVAL, max(0, deadline - time.monotonic())))
+    raise ValueError(f"Hub upgrade timed out waiting for running version {selected}; the hub job may still be running. Check Treer App pockymoe and Settings -> Supervisor, then rerun setup. Setup did not replace the runtime directly.")
 
 
 def main():
@@ -593,11 +674,13 @@ def main():
         print("Pockymoe setup: Treer Agent identity discovered.", flush=True)
         check_contract(treer)
         print("Pockymoe setup: AIS v1 provenance and prompt-delivery contract verified.", flush=True)
+        definitions = json.loads(Path(__file__).with_name("profiles.json").read_text())
         if setup:
-            installed_runtime(binary, args.version)
+            found = installed_runtime(binary, args.version)
+            if found != args.version:
+                upgrade_runtime(definitions, binary, data, args.hub_port, treer, machine, found, args.version)
         if "releases" in binary.parts or not binary.is_file():
             raise ValueError("pockymoe must be an installed stable executable, never releases/V.")
-        definitions = json.loads(Path(__file__).with_name("profiles.json").read_text())
         port = converge(definitions, binary, data, args.hub_port, "." if setup else args.cwd, treer,
                         setup or args.create_hub, machine, False if setup else args.dry_run)
         if setup:

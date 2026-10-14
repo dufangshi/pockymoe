@@ -43,9 +43,10 @@ Treer and the hub must share the same OS account and loopback network namespace.
 
 `--version` is required and accepts only an exact stable release, optionally
 prefixed with `v`; `latest` and moving references are rejected. If
-`~/.local/bin/pockymoe version` matches, setup reuses it. A different installed
-version stops setup: update through **Pockymoe Settings → Supervisor → Update**,
-then rerun. Setup never replaces a running installation.
+`~/.local/bin/pockymoe version` matches, setup reuses it. An older installed
+version is upgraded through the running setup-created hub's management API,
+as described below. A newer installed version is refused; setup never downgrades
+or replaces an existing installation directly.
 
 Setup creates the hub Managed App named `pockymoe` and the **Pockymoe Codex**,
 **Pockymoe Claude**, and **Pockymoe Grok** launch profiles. In Treer, choose
@@ -82,6 +83,40 @@ reruns. The App and profiles use stable executable and Web paths through
 `~/.local/bin/pockymoe` and `native/current/web`, never `releases/<version>`.
 `TREER_BIN` optionally selects the Treer executable. Setup prints progress and a
 Launch summary, suppresses raw Treer responses, and exits nonzero on failure.
+
+### Updating
+
+Inside a Treer installer or terminal Agent, rerun the same setup script with the
+desired exact release:
+
+```sh
+sh treer-setup.sh --version "$POCKYMOE_PINNED_VERSION"
+```
+
+For an older installation, setup requires the existing App named `pockymoe` on
+this machine, with the setup-created stable launch command, data directory, and
+host-managed restart configuration. The hub must be running and reachable on
+its loopback port. If the App is stopped, start it in Treer and rerun; setup does
+not install over it. A different App configuration, mismatched running/installed
+versions, or an update already in progress stops setup for inspection. Keep the
+same `--data-dir` and, if specified, `--hub-port` as the original setup.
+
+The current Supervisor API updates to GitHub latest and accepts no target-version
+argument. Setup calls **Check updates** first and refuses to request an update
+unless `latestVersion` exactly equals `--version`. It then calls **Update** through
+the loopback management API. The hub verifies and installs the release, switches
+`current`, and exits; Treer relaunches it using the saved stable path. Setup polls
+through restart disconnects for up to ten minutes, with progress about every
+twenty seconds, until management reports the requested `runningVersion` and
+startup verification has finished. It then converges profiles and checks ACP
+adapters. A changed update target or reported failure stops setup; inspect
+**Pockymoe Settings → Supervisor**. A timeout does not cancel the hub's update:
+check the App and update status before rerunning. See [update recovery](supervisor-update-recovery.md).
+
+Running attach Agents are not restarted by setup. They reconnect automatically
+when the hub returns and continue using their existing attach process. They pick
+up the updated attach binary on their next Treer restart. The hub handles pausing
+and recovering affected coding turns through its normal update contract.
 
 ### Advanced: separate install and configuration
 
