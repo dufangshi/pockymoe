@@ -1,4 +1,4 @@
-param([string]$Configuration = 'Release', [string]$Runtime = 'win-x64', [string]$OutputPath)
+param([string]$Configuration = 'Release', [string]$Runtime = 'win-x64', [string]$OutputPath, [switch]$SkipPreview)
 $ErrorActionPreference = 'Stop'
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 if (-not $OutputPath) { $OutputPath = Join-Path $root 'artifacts\windows-device-manager\win-x64' }
@@ -10,7 +10,9 @@ $profile = Join-Path ([IO.Path]::GetTempPath()) ('pockymoe-manager-test-' + [Gui
 $old = $env:POCKYMOE_DEVICE_MANAGER_TEST_ROOT
 try {
     $env:POCKYMOE_DEVICE_MANAGER_TEST_ROOT = $profile
-    foreach ($arguments in @(@('--self-test'), @('--render-preview', (Join-Path $OutputPath 'previews\manager.png')))) {
+    $checks = @(@('--self-test'))
+    if (-not $SkipPreview) { $checks += ,@('--render-preview', (Join-Path $OutputPath 'previews\manager.png')) }
+    foreach ($arguments in $checks) {
         $p = Start-Process -FilePath $exe -ArgumentList $arguments -Wait -PassThru
         if ($p.ExitCode -ne 0) {
             $log = Join-Path $profile 'local-app-data\RemoteCodex\logs\device-manager.log'

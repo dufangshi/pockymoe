@@ -25,9 +25,9 @@ jobs:
       - uses: actions/setup-dotnet@v5
         with:
           dotnet-version: '8.0.x'
-      - name: Build, self-test and render all themes
+      - name: Build and self-test
         shell: pwsh
-        run: ./scripts/windows/build-device-manager.ps1
+        run: ./scripts/windows/build-device-manager.ps1 -SkipPreview
       - name: Validate current native Windows runtime and Manager lifecycle
         shell: pwsh
         run: |
@@ -57,6 +57,21 @@ jobs:
               throw 'Native Manager lifecycle failed.'
             }
             "Native lifecycle verified against Pockymoe $version" >> $env:GITHUB_STEP_SUMMARY
+          } finally { Remove-Item Env:POCKYMOE_DEVICE_MANAGER_TEST_ROOT -ErrorAction SilentlyContinue }
+      - name: Render four themes and verify scaled layout
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:POCKYMOE_DEVICE_MANAGER_TEST_ROOT = Join-Path $env:RUNNER_TEMP 'manager-preview'
+          try {
+            $exe = Join-Path $PWD 'artifacts/windows-device-manager/win-x64/RemoteCodex.DeviceManager.exe'
+            $preview = Join-Path $PWD 'artifacts/windows-device-manager/win-x64/previews/manager.png'
+            $p = Start-Process $exe -ArgumentList @('--render-preview', $preview) -Wait -PassThru
+            if ($p.ExitCode -ne 0) {
+              Get-Content (Join-Path $env:POCKYMOE_DEVICE_MANAGER_TEST_ROOT 'local-app-data/RemoteCodex/logs/device-manager.log') -Tail 15
+              throw 'Manager scaled layout verification failed.'
+            }
           } finally { Remove-Item Env:POCKYMOE_DEVICE_MANAGER_TEST_ROOT -ErrorAction SilentlyContinue }
       - uses: actions/upload-artifact@v4
         if: always()
