@@ -23,6 +23,7 @@ fn supervisor(dir: &Path) -> Arc<Supervisor> {
         acp_command: None,
         acp_startup_timeout_ms: 1000,
         fake_runtime: true,
+        supervisor_restart_strategy: Default::default(),
     };
     let db = Database::open(&config.database_url).unwrap();
     let s = Arc::new(Supervisor::new(

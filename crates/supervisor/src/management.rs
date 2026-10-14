@@ -168,6 +168,16 @@ async fn supervisor_action(state: Arc<Supervisor>, restart: bool) -> Response {
                         );
                     }
                     *state.supervisor_update_status.lock().unwrap() = None;
+                    if launched["job"]["restartStrategy"] == "host-managed"
+                        && launched["job"]["phase"] == "restarting"
+                    {
+                        // Both paused-turn intent and the verification handoff
+                        // have been flushed before relinquishing this process.
+                        // Give the accepted HTTP response a chance to flush,
+                        // especially for a restart with no installation work.
+                        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                        std::process::exit(pockymoe_runtime::HOST_MANAGED_RESTART_EXIT_CODE);
+                    }
                     if launched["job"]["phase"].as_str().is_some_and(|phase| {
                         matches!(
                             phase,
@@ -236,6 +246,24 @@ async fn update_response(state: &Supervisor, action: &str) -> Response {
 /// Otherwise a subsequent rollback could interrupt a continuation whose marker
 /// has already been consumed.
 pub(crate) async fn recover_after_update(state: Arc<Supervisor>) {
+    if crate::distribution::host_managed_pending(&state) {
+        let had_paused_tasks = state.defer_update_recovery();
+        match crate::distribution::complete_host_managed_startup(&state).await {
+            Ok(true) => {
+                state.finish_update_attempt();
+                if !had_paused_tasks {
+                    state.spawn_inbox_recovery();
+                }
+            }
+            Ok(false) => tracing::error!(
+                "host-managed restart verification failed; recovery journal retained"
+            ),
+            Err(error) => {
+                tracing::error!(%error, "host-managed restart verification failed; recovery journal retained")
+            }
+        }
+        return;
+    }
     loop {
         let active = updater(&state, "status").await.ok().is_some_and(|status| {
             status["job"]["phase"].as_str().is_some_and(|phase| {

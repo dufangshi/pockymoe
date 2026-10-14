@@ -14,6 +14,7 @@ pub mod local_sessions;
 pub mod management;
 mod node_runtime;
 pub mod publications;
+pub mod restart;
 pub mod service;
 pub mod thread_images;
 pub mod upstreams;
@@ -21,6 +22,7 @@ pub mod upstreams;
 pub use actor::{EventBus, SharedRuntime};
 pub use config::RuntimeConfig;
 pub use db::Database;
+pub use restart::{RestartStrategy, HOST_MANAGED_RESTART_EXIT_CODE};
 pub use service::{bootstrap_runtimes, Supervisor, UploadedPromptAttachment};
 
 use anyhow::Result;

@@ -412,7 +412,10 @@ fn is_database_url(value: &str) -> bool {
 pub async fn run_device(config: PathBuf) -> Result<()> {
     let env = load_environment(&config)?;
     for (key, _) in std::env::vars().filter(|(k, _)| k.starts_with("POCKYMOE_")) {
-        if key != "POCKYMOE_MANAGED_SERVICE" {
+        if !matches!(
+            key.as_str(),
+            "POCKYMOE_MANAGED_SERVICE" | "POCKYMOE_SUPERVISOR_RESTART_STRATEGY"
+        ) {
             std::env::remove_var(key);
         }
     }
@@ -423,10 +426,16 @@ pub async fn run_device(config: PathBuf) -> Result<()> {
     std::env::remove_var("TMUX_PANE");
     std::env::set_var("PATH", user_path());
     if let Ok(installed) = releases::current() {
-        if let Ok(manager) = std::env::var("POCKYMOE_MANAGED_SERVICE") {
-            if std::env::current_exe().ok().as_deref() == Some(installed.executable.as_path()) {
-                if let Err(error) = service::refresh(&manager, &installed, &config) {
-                    tracing::warn!(%error, "could not refresh the service definition");
+        if std::env::var("POCKYMOE_SUPERVISOR_RESTART_STRATEGY")
+            .unwrap_or_default()
+            .parse::<pockymoe_runtime::RestartStrategy>()?
+            != pockymoe_runtime::RestartStrategy::HostManaged
+        {
+            if let Ok(manager) = std::env::var("POCKYMOE_MANAGED_SERVICE") {
+                if std::env::current_exe().ok().as_deref() == Some(installed.executable.as_path()) {
+                    if let Err(error) = service::refresh(&manager, &installed, &config) {
+                        tracing::warn!(%error, "could not refresh the service definition");
+                    }
                 }
             }
         }

@@ -5,6 +5,7 @@ use pockymoe_protocol::{Mode, Provider};
 
 #[derive(Debug, Clone)]
 pub struct RuntimeConfig {
+    pub supervisor_restart_strategy: crate::RestartStrategy,
     pub mode: Mode,
     pub host: String,
     pub port: u16,
@@ -69,6 +70,10 @@ impl RuntimeConfig {
             parse_providers(env::var("POCKYMOE_ENABLED_AGENT_PROVIDERS").ok().as_deref());
         let fake_runtime = env_flag("POCKYMOE_E2E_FAKE_RUNTIME");
         Self {
+            supervisor_restart_strategy: env::var("POCKYMOE_SUPERVISOR_RESTART_STRATEGY")
+                .unwrap_or_default()
+                .parse()
+                .expect("Invalid Supervisor restart configuration"),
             mode,
             host,
             port,
