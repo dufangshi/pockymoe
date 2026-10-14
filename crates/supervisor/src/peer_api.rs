@@ -165,6 +165,7 @@ mod tests {
         let root = dir.path().join("workspace");
         std::fs::create_dir_all(&root).unwrap();
         let config = RuntimeConfig {
+            treer_enabled: false,
             host_mode: Default::default(),
             mode: Mode::Local,
             host: "127.0.0.1".into(),

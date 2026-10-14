@@ -47,9 +47,27 @@ impl HostMode {
         }
     }
 
-    // A3 integration point: map host mode to pockymoe_runtime::RestartStrategy
-    // (ExternalUpdater / HostManaged) via RuntimeConfig.supervisor_restart_strategy.
-    // Wire after A3 merges; host mode currently leaves restart behavior unchanged.
+    pub fn restart_strategy(
+        self,
+        explicit: Option<&str>,
+    ) -> anyhow::Result<crate::RestartStrategy> {
+        match explicit {
+            Some(value) => value.parse(),
+            None if self == Self::Hosted => Ok(crate::RestartStrategy::HostManaged),
+            None => Ok(crate::RestartStrategy::ExternalUpdater),
+        }
+    }
+
+    pub fn treer_enabled(self, hosted_by: Option<&str>) -> anyhow::Result<bool> {
+        match hosted_by {
+            None | Some("") => Ok(false),
+            Some("treer") if self == Self::Hosted => Ok(true),
+            Some("treer") => {
+                anyhow::bail!("POCKYMOE_HOSTED_BY=treer requires POCKYMOE_HOST_MODE=hosted")
+            }
+            Some(_) => anyhow::bail!("Invalid POCKYMOE_HOSTED_BY; expected treer"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -72,4 +90,30 @@ pub fn require_feature(enabled: bool, feature: &'static str) -> anyhow::Result<(
         return Err(FeatureDisabled(feature).into());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn restart_and_enablement() {
+        assert_eq!(
+            HostMode::Hosted.restart_strategy(None).unwrap(),
+            crate::RestartStrategy::HostManaged
+        );
+        assert_eq!(
+            HostMode::Hosted
+                .restart_strategy(Some("external-updater"))
+                .unwrap(),
+            crate::RestartStrategy::ExternalUpdater
+        );
+        assert_eq!(
+            HostMode::Standalone.restart_strategy(None).unwrap(),
+            crate::RestartStrategy::ExternalUpdater
+        );
+        assert!(HostMode::Hosted.restart_strategy(Some("invalid")).is_err());
+        assert!(HostMode::Standalone.treer_enabled(Some("treer")).is_err());
+        assert!(HostMode::Hosted.treer_enabled(Some("treer")).unwrap());
+        assert!(!HostMode::Hosted.treer_enabled(None).unwrap());
+    }
 }

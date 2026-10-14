@@ -35,11 +35,13 @@ A `device-run` private JSON config can save `POCKYMOE_HOST_MODE`; an explicit
 `--host-mode` overrides it. Other saved device settings keep their existing
 precedence. Hosted device configs do not require a relay agent token, while
 standalone configs still do. Changing host mode requires restarting the
-Supervisor. Host mode does not currently change the update restart strategy.
+Supervisor. Hosted mode defaults updates to `host-managed`; an explicit
+`POCKYMOE_SUPERVISOR_RESTART_STRATEGY` overrides that default.
 
 Hosted mode preserves local CLI token checks, login requirements selected by
-`POCKYMOE_MODE`, and existing owner authorization. It neither accepts host-supplied
-identity nor grants anonymous access. Choose `server` or `relay` authentication
+`POCKYMOE_MODE`, and existing owner authorization. Host mode alone does not accept
+host-supplied identity or grant anonymous access. The optional Treer binding scope
+is described below. Choose `server` or `relay` authentication
 and its required credentials when exposing a listener beyond a trusted network.
 
 ## Modes
@@ -310,3 +312,37 @@ Those capabilities should be added on top of the same outbound tunnel rather tha
 - For mobile apps, store tokens in Keychain or Android Keystore.
 
 Relay MFA, trusted browsers, device fingerprints, encrypted transport, and upgrade recovery are described in the [security operations guide](./relay-security-operations.zh.md); account keys and device binding in [account key trust](./account-key-trust.md). Persist the relay session secret alongside a secure database backup: it also derives the key protecting authenticator secrets.
+
+## Treer hosted hub
+
+`POCKYMOE_HOSTED_BY=treer` enables the hub's Treer attach and AIS interfaces and
+requires `POCKYMOE_HOST_MODE=hosted`; startup rejects other combinations.
+Hosted mode defaults Supervisor restarts to `host-managed` unless
+`POCKYMOE_SUPERVISOR_RESTART_STRATEGY` is explicitly set. Connectivity mode still
+controls ordinary requests without Treer markers.
+
+The local attach WebSocket requires loopback and the 0600 `treer-attach.token`
+file alongside the hub database. Each live attach owns one top-level thread.
+Treer credentials live in memory and enter only that thread's harness environment;
+delegated threads receive no Treer identity. Disconnect pauses new inputs and queued
+execution, interrupts the current turn, and releases its harness through the normal
+release API. Thread history and queued work remain available for reattachment.
+
+AIS dispatch requires a live Agent ID and interface instance. Controller semantic
+calls require `Host: agent-interface`, `x-treer-interface-source: controller-api`,
+and no Origin or Sec-Fetch headers. Agent UI calls require `proxy-ui` provenance
+and the hub's loopback Host authority. These calls can access only their bound
+thread and descendants, with scoped thread/workspace lists and a small set of
+read-only page dependencies. Management, device APIs, global settings writes and
+other threads remain forbidden; WebSocket events are filtered by the same scope.
+Approval/question replies verify that the request belongs to the addressed thread.
+The UI entry redirects to a relative thread URL so external path prefixes survive.
+
+Headers on other transports never create this scope. Invalid or incomplete Treer
+markers fail closed, including when the integration is disabled. Validated Treer
+UI scope supplies the embedded session in server mode without a second login.
+Provenance headers defend against ordinary browser requests; they are public
+markers and do not authenticate hostile processes running under the hub's OS user.
+Treer's Proxy/Controller must strip client markers and inject its own target-bound
+headers. App-wide human authorization and cross-Agent browsing require a separate
+Treer authorization contract; the Agent UI scope does not grant either.

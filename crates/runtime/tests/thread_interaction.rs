@@ -11,6 +11,7 @@ use std::{sync::Arc, time::Duration};
 fn setup() -> (tempfile::TempDir, Arc<Supervisor>) {
     let dir = tempfile::tempdir().unwrap();
     let config = RuntimeConfig {
+        treer_enabled: false,
         host_mode: Default::default(),
         mode: pockymoe_protocol::Mode::Local,
         host: "127.0.0.1".into(),
@@ -1206,4 +1207,109 @@ async fn inbox_reminder_worker_starts_a_recorded_turn_for_due_mail() {
         .flat_map(|t| &t.items)
         .any(|i| i.kind == "agentMessage"));
     assert_eq!(state.inbox_unread_count(&b).unwrap(), 1);
+}
+
+#[tokio::test]
+async fn treer_identity_rebind_removal_and_children_use_separate_harness_environments() {
+    use pockymoe_runtime::{
+        acp::AcpRuntime,
+        actor::{AgentRuntime, SessionSettings, StartSessionInput},
+    };
+    let (dir, s) = setup();
+    s.configure_cli("http://127.0.0.1:8787".into());
+    let root = thread(&s, Provider::Codex).await;
+    let child = s
+        .create_thread(CreateThreadInput {
+            workspace_id: s.get_thread(&root).unwrap().workspace_id,
+            title: None,
+            provider: Some(Provider::Codex),
+            agent_id: None,
+            model: "ios-e2e-stream".into(),
+            reasoning_effort: None,
+            approval_mode: "yolo".into(),
+            parent_thread_id: Some(root.clone()),
+        })
+        .await
+        .unwrap()
+        .id;
+    let identity = vec![
+        ("TREER_AGENT_ID".into(), "fixture-agent".into()),
+        (
+            "TREER_WORKLOAD_CREDENTIAL".into(),
+            "fixture-credential".into(),
+        ),
+    ];
+    s.set_thread_cli_identity(&root, identity.clone()).unwrap();
+    assert!(s.set_thread_cli_identity(&child, identity.clone()).is_err());
+    let script = dir.path().join("identity-agent.py");
+    std::fs::write(&script,format!("import os,json\nwith open('identity-context.json','w') as f: json.dump({{'threadId':os.getenv('POCKYMOE_THREAD_ID'),'hasTreerCredential':bool(os.getenv('TREER_WORKLOAD_CREDENTIAL')),'agentId':os.getenv('TREER_AGENT_ID')}},f)\n{}",include_str!("fixtures/fake_acp_agent.py"))).unwrap();
+    let python = which::which("python3")
+        .or_else(|_| which::which("python"))
+        .unwrap();
+    let runtime = AcpRuntime::catalog(
+        Some(format!("\"{}\" \"{}\"", python.display(), script.display())),
+        5000,
+    );
+    let session = s
+        .with_cli_context(
+            &root,
+            runtime.start_session(StartSessionInput {
+                cwd: dir.path().to_string_lossy().into(),
+                agent_id: Some("custom".into()),
+                model: "default".into(),
+                reasoning_effort: None,
+                approval_mode: "yolo".into(),
+                sandbox_mode: None,
+            }),
+        )
+        .await
+        .unwrap()
+        .provider_session_id;
+    let read = || {
+        serde_json::from_str::<Value>(
+            &std::fs::read_to_string(dir.path().join("identity-context.json")).unwrap(),
+        )
+        .unwrap()
+    };
+    assert_eq!(read()["hasTreerCredential"], true);
+    assert_eq!(read()["agentId"], "fixture-agent");
+    s.clear_thread_cli_identity(&root);
+    s.with_cli_context(
+        &root,
+        runtime.resume_session(
+            &session,
+            Some(&dir.path().to_string_lossy()),
+            SessionSettings::default(),
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(read()["threadId"], root);
+    assert_eq!(read()["hasTreerCredential"], false);
+    s.set_thread_cli_identity(&root, identity).unwrap();
+    s.with_cli_context(
+        &root,
+        runtime.resume_session(
+            &session,
+            Some(&dir.path().to_string_lossy()),
+            SessionSettings::default(),
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(read()["hasTreerCredential"], true);
+    s.with_cli_context(
+        &child,
+        runtime.resume_session(
+            &session,
+            Some(&dir.path().to_string_lossy()),
+            SessionSettings::default(),
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(read()["threadId"], child);
+    assert_eq!(read()["hasTreerCredential"], false);
+    assert_eq!(read()["agentId"], Value::Null);
+    runtime.restart("custom").await.unwrap();
 }

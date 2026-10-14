@@ -4534,8 +4534,13 @@ fn emit_usage(bus: &EventBus, thread_id: &str, turn_id: &str, usage: Value, hidd
 }
 
 fn cli_context_matches(existing: &[(String, String)]) -> bool {
-    crate::interaction::launch_env()
+    let expected = crate::interaction::launch_env();
+    expected
         .iter()
-        .filter(|(key, _)| key.starts_with("POCKYMOE_"))
+        .filter(|(key, _)| key.starts_with("POCKYMOE_") || key.starts_with("TREER_"))
         .all(|pair| existing.contains(pair))
+        && existing
+            .iter()
+            .filter(|(key, _)| key.starts_with("TREER_"))
+            .all(|pair| expected.contains(pair))
 }

@@ -15,7 +15,7 @@ Through a relay, use the selected device's `/relay/devices/<deviceId>` prefix an
 
 1. Reject concurrent updates and avoid pausing anything if no update is available.
 2. Block new turns, record the currently running turn IDs in SQLite, and request cancellation. Wait for runtime cancellation and history persistence before installing/restarting.
-3. Use the configured restart strategy. `external-updater` (the default) launches an updater outside the Supervisor's process lifetime: launchd on macOS, systemd user service on Linux, WMI on Windows, or `setsid` on Linux without a user service manager. `host-managed` performs installation in the running process and hands relaunch to its owning process manager; it does not spawn an independent updater or invoke a service manager.
+3. Use the configured restart strategy. `external-updater` (the standalone default) launches an updater outside the Supervisor's process lifetime: launchd on macOS, systemd user service on Linux, WMI on Windows, or `setsid` on Linux without a user service manager. `host-managed` performs installation in the running process and hands relaunch to its owning process manager; it does not spawn an independent updater or invoke a service manager.
 4. Stage an immutable GitHub native release and Web bundle in a versioned user-owned directory and verify SHA256 and the binary version. With `external-updater`, stop the old PID, switch the current installation, start the new Supervisor with its existing configuration, and verify HTTP health, process/version change and relay reconnection in relay mode. With `host-managed`, durably write the startup-verification handoff alongside the existing SQLite paused-turn journal, switch the current installation, then exit with **code 0**. The owner must relaunch on normal exit from a stable launch path. Plain restart uses the same strategy and handoff, without downloading or installing a package. Before relaunch, installation failure can restore the previous installation. Once relaunch is possible, retain the current installation: even an unsuccessful startup may have migrated the database, so a package-only downgrade is unsafe.
 5. On startup, `external-updater` waits for its independent worker to finish verification. With `host-managed`, the new process checks the persisted handoff and its running version after binding the HTTP listener, waits for relay reconnection when applicable, and records `completed` or `failed` through the management API. This also happens when there were no paused turns. The `verifying` phase distinguishes a started process from a verified operation. Automatically continue only tasks carrying an update recovery marker after successful verification; preserve markers on a wrong-version relaunch or failed relay verification. Retain the native session, workspace, model, permission settings and queued instructions. Continuation tells the agent to inspect partial work before resuming; a filesystem operation or external request already completed cannot be rolled back automatically.
 
@@ -28,8 +28,10 @@ This is task continuation, not transparent process checkpointing. Running shell 
 ## Configuring restart ownership
 
 Set `POCKYMOE_SUPERVISOR_RESTART_STRATEGY=host-managed` in the owner's launch environment
-when an external process manager already relaunches the Supervisor on exit. Leave it
-unset, or set `external-updater`, for the existing standalone behavior. Invalid values
+when an external process manager already relaunches the Supervisor on exit.
+`POCKYMOE_HOST_MODE=hosted` defaults to `host-managed`; standalone mode defaults to
+`external-updater`. An explicit `POCKYMOE_SUPERVISOR_RESTART_STRATEGY` overrides
+that host-mode default. Invalid values
 are rejected at startup. Native device configuration can also store this environment
 setting; a saved value takes precedence over the launch environment. The public Rust
 type is `pockymoe_runtime::RestartStrategy`, with the runtime configuration field
