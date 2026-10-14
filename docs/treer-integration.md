@@ -25,8 +25,8 @@ curl -fsSL 'https://raw.githubusercontent.com/dufangshi/pockymoe/<PINNED_COMMIT_
 merged commit SHA before sharing this command. The public URL points to one
 self-contained POSIX shell script; no other setup scripts are downloaded.
 Its bundled Python sources and profile template are extracted into a private
-temporary directory and removed when setup exits. Only the pinned native
-runtime and Web release assets are downloaded.
+temporary directory and removed when setup exits. Runtime and Web downloads use
+the pinned release; the hub also downloads current managed ACP adapters when needed.
 
 Setup needs Python 3.11 or later and supports Linux x64/ARM64 and Apple Silicon.
 Treer must be on PATH and the Agent must have its normal `TREER_*` workload
@@ -34,7 +34,7 @@ environment. Setup waits for `treer whoami` discovery with backoff up to thirty
 seconds between retries. It verifies the same explicit AIS v1 capability/feature
 contract as attach, including `agent.interface-provenance.v1` and
 `agent.prompt-delivery.v1`, before creating anything.
-Install and authenticate the desired harness and ACP adapter separately; see
+Install and authenticate the desired base harness separately; see
 [device setup](device-setup.md) and [managed adapters](managed-acp-adapters.md).
 The hub creates a thread only when that profile's base agent CLI (`codex`,
 `claude` or `grok`) is on its PATH; otherwise Launch fails with "Install the base
@@ -56,6 +56,24 @@ it also completes partially successful runs without creating duplicates. Existin
 duplicate names, a hub on another machine, or different hub settings stop setup
 for inspection. The App's saved command is retained because Treer provides no
 App update command.
+
+After configuring the App and profiles, setup waits up to 60 seconds for hub
+health on `127.0.0.1:<hub-port>`. It reads the local-mode hub's harness inventory
+and checks the Codex and Claude ACP adapters whenever their base CLI is installed
+in the hub. Missing, external, or unverified adapters are updated through the
+hub's management API to the current Pockymoe-managed installation. Each update
+has an eight-minute setup wait limit and must report a successful ACP connection
+verification. Progress appears about every twenty seconds while waiting. A
+managed adapter whose last adapter update was verified is skipped on reruns;
+the hub's verification job record is in memory, so a hub restart requires a
+fresh adapter update and verification. Missing base CLIs are noted and skipped.
+Grok uses native ACP and needs no adapter installation.
+
+Setup prints each checked adapter's version, selected path, and verification
+result. Any adapter failure exits nonzero after preserving the App and profiles,
+so a rerun can finish setup. Repair through **Pockymoe Settings → Harnesses → ACP
+adapter → Install**, or rerun setup. If the setup wait limit expires, the hub job
+may still be running; check its status in Settings before retrying.
 
 Without `--hub-port`, a new hub uses the first free IPv4 loopback port from 8787
 upward; an existing hub keeps its port. Pass `--hub-port N` for an explicit port.

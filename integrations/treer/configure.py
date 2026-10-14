@@ -10,10 +10,163 @@ import socket
 import subprocess
 import sys
 import time
+import unicodedata
+import urllib.error
+import urllib.request
 
 import install
 
 DEFAULT_DATA = Path.home() / ".local/share/remote-codex/treer"
+HUB_HEALTH_TIMEOUT = 60
+ADAPTER_TIMEOUT = 8 * 60
+HUB_REQUEST_TIMEOUT = 30
+HUB_POLL_INTERVAL = 2
+HUB_PROGRESS_INTERVAL = 20
+
+
+def safe_hub_text(value):
+    """Hub diagnostics are non-secret; keep them bounded and terminal-safe."""
+    return "".join(c for c in str(value) if not unicodedata.category(c).startswith("C"))[:400]
+
+
+class NoHubRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise ValueError("Hub redirected a loopback management request; check the local-mode App.")
+
+
+def hub_request(port, path, body=None, timeout=HUB_REQUEST_TIMEOUT):
+    # Bypass inherited proxy settings and redirects: management stays on loopback.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoHubRedirect())
+    request = urllib.request.Request(f"http://127.0.0.1:{port}{path}",
+                                    data=json.dumps(body).encode() if body is not None else None,
+                                    headers={"Content-Type": "application/json"})
+    try:
+        with opener.open(request, timeout=timeout) as response:
+            return json.load(response)
+    except urllib.error.HTTPError as error:
+        message = f"Hub HTTP {error.code}"
+        try:
+            detail = json.load(error).get("message")
+            if detail:
+                message += ": " + safe_hub_text(detail)
+        except (OSError, ValueError, AttributeError):
+            pass
+        raise ValueError(message) from None
+    except (OSError, ValueError) as error:
+        if isinstance(error, ValueError) and not isinstance(error, json.JSONDecodeError):
+            raise
+        raise ValueError("Hub management request failed; check the local-mode App and retry.") from None
+
+
+def wait_for_hub(port):
+    print(f"Pockymoe setup: waiting up to {HUB_HEALTH_TIMEOUT}s for hub health on 127.0.0.1:{port}.", flush=True)
+    deadline = time.monotonic() + HUB_HEALTH_TIMEOUT
+    next_progress = time.monotonic() + HUB_PROGRESS_INTERVAL
+    while time.monotonic() < deadline:
+        try:
+            health = hub_request(port, "/healthz", timeout=min(5, max(0.001, deadline - time.monotonic())))
+            if isinstance(health, dict) and health.get("status") == "ok":
+                print("Pockymoe setup: hub health verified.", flush=True)
+                return
+        except ValueError:
+            pass
+        if time.monotonic() >= next_progress:
+            print("Pockymoe setup: still waiting for hub health.", flush=True)
+            next_progress = time.monotonic() + HUB_PROGRESS_INTERVAL
+        time.sleep(min(HUB_POLL_INTERVAL, max(0, deadline - time.monotonic())))
+    raise ValueError(f"Hub health timed out on 127.0.0.1:{port}; App/profiles remain. Check that the Treer App pockymoe is running in local mode, then rerun setup.")
+
+
+def hub_harnesses(port):
+    rows = hub_request(port, "/api/management/harnesses")
+    if not isinstance(rows, list) or any(
+            not isinstance(row, dict)
+            or not isinstance(row.get("base"), dict)
+            or (row.get("adapter") is not None and not isinstance(row["adapter"], dict))
+            for row in rows):
+        raise ValueError("Hub returned an invalid harness inventory.")
+    return rows
+
+
+def adapter_verified(job):
+    return (isinstance(job, dict) and job.get("action") == "update"
+            and job.get("component") == "adapter" and job.get("state") == "completed"
+            and job.get("connectionVerified") is True)
+
+
+def adapter_managed(adapter):
+    return (isinstance(adapter, dict) and adapter.get("installed") is True
+            and adapter.get("manager") == "pockymoe" and bool(adapter.get("path")))
+
+
+def update_adapter(port, harness_id):
+    print(f"Pockymoe setup: updating {harness_id} ACP adapter and verifying its connection (up to 8 min).", flush=True)
+    deadline = time.monotonic() + ADAPTER_TIMEOUT
+    hub_request(port, f"/api/management/harnesses/{harness_id}",
+                {"action": "update", "component": "adapter"},
+                timeout=min(HUB_REQUEST_TIMEOUT, max(0.001, deadline - time.monotonic())))
+    next_progress = time.monotonic() + HUB_PROGRESS_INTERVAL
+    while time.monotonic() < deadline:
+        jobs = hub_request(port, "/api/management/jobs",
+                           timeout=min(HUB_REQUEST_TIMEOUT, max(0.001, deadline - time.monotonic())))
+        if not isinstance(jobs, dict):
+            raise ValueError("Hub returned invalid management jobs.")
+        job = jobs.get(harness_id)
+        if isinstance(job, dict) and job.get("action") == "update" and job.get("component") == "adapter":
+            if job.get("state") == "failed":
+                raise ValueError(safe_hub_text(job.get("error") or "ACP adapter update failed."))
+            if job.get("state") == "completed":
+                if not adapter_verified(job):
+                    raise ValueError("Adapter update completed without connectionVerified; ACP verification is required.")
+                return
+        if time.monotonic() >= next_progress:
+            print(f"Pockymoe setup: waiting for {harness_id} ACP adapter installation/verification.", flush=True)
+            next_progress = time.monotonic() + HUB_PROGRESS_INTERVAL
+        time.sleep(min(HUB_POLL_INTERVAL, max(0, deadline - time.monotonic())))
+    raise ValueError("ACP adapter installation/verification timed out after 8 min; the hub job may still be running.")
+
+
+def verify_adapters(port):
+    rows = hub_harnesses(port)
+    failures = False
+    for row in rows:
+        harness_id = row.get("id")
+        if row.get("transport") != "adapter" or harness_id not in ("codex", "claude"):
+            continue
+        base = row.get("base") or {}
+        adapter = row.get("adapter") or {}
+        # Current runtime DTOs omit installed=true on successful base inspection.
+        if not base.get("installed", bool(base.get("path"))):
+            print(f"Note: '{harness_id}' is not on PATH in the hub; install and sign in to it before launching Pockymoe {harness_id.title()}. ACP adapter skipped.", flush=True)
+            adapter_summary(harness_id, adapter, "skipped: base CLI missing")
+            continue
+        failure = None
+        try:
+            if adapter_managed(adapter) and adapter_verified(row.get("job")):
+                print(f"Pockymoe setup: {harness_id} ACP adapter already managed and verified; skipped.", flush=True)
+            else:
+                update_adapter(port, harness_id)
+                refreshed = next((r for r in hub_harnesses(port) if r.get("id") == harness_id), {})
+                adapter = refreshed.get("adapter") or {}
+                if not adapter_managed(adapter):
+                    raise ValueError("Update completed but the selected adapter is not a Pockymoe-managed installation.")
+        except ValueError as error:
+            failures = True
+            failure = safe_hub_text(error)
+            # Installation may have succeeded before ACP verification failed.
+            try:
+                refreshed = next((r for r in hub_harnesses(port) if r.get("id") == harness_id), {})
+                adapter = refreshed.get("adapter") or adapter
+            except ValueError:
+                pass
+        adapter_summary(harness_id, adapter, f"failed: {failure}" if failure else "verified")
+    if failures:
+        raise ValueError("ACP adapter setup failed; App/profiles remain. Use Pockymoe Settings -> Harnesses -> ACP adapter -> Install, or rerun setup.")
+
+
+def adapter_summary(harness_id, adapter, result):
+    print(f"ACP adapter {harness_id}: version {safe_hub_text(adapter.get('version') or 'unknown')}, "
+          f"path {safe_hub_text(adapter.get('path') or 'missing')}; {result}", flush=True)
 
 
 def commands(definitions, pockymoe, data_dir, hub_port, cwd, treer, create_hub):
@@ -214,6 +367,11 @@ def main():
         definitions = json.loads(Path(__file__).with_name("profiles.json").read_text())
         port = converge(definitions, binary, data, args.hub_port, "." if setup else args.cwd, treer,
                         setup or args.create_hub, machine, False if setup else args.dry_run)
+        if setup:
+            print("Pockymoe setup: App/profiles configured; checking ACP adapters next.", flush=True)
+            missing_base_notes(definitions)
+            wait_for_hub(port)
+            verify_adapters(port)
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         # Only our own ValueErrors are safe; OS/subprocess diagnostics may contain secrets.
         message = str(error) if isinstance(error, ValueError) else "Installation/configuration failed; inspect the pinned release, installation layout and Treer access before retrying."
@@ -223,13 +381,18 @@ def main():
           else f"Pockymoe profiles ready: hub loopback port {port}.")
     print("Profiles: " + ", ".join(profile["name"] for profile in definitions["profiles"]))
     print("In Treer, choose Launch, select a Pockymoe profile and set your project working directory.")
+    if not setup:
+        missing_base_notes(definitions)
+    return 0
+
+
+def missing_base_notes(definitions):
     # The hub refuses to create a thread whose base agent CLI is not on its PATH.
     for profile in definitions["profiles"]:
         base = base_agent(profile["args"])
         if base and shutil.which(base) is None:
             print(f"Note: '{base}' is not on PATH here; install and sign in to it before "
                   f"launching {profile['name']}.")
-    return 0
 
 
 def base_agent(args):
