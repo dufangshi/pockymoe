@@ -33,10 +33,15 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $base = 'https://github.com/dufangshi/pockymoe/releases'
-          $version = (Invoke-WebRequest -UseBasicParsing "$base/latest/download/runtime-version.txt").Content.Trim()
+          function Read-Text([string]$Url) {
+            $content = (Invoke-WebRequest -UseBasicParsing $Url).Content
+            if ($content -is [byte[]]) { return [Text.Encoding]::UTF8.GetString($content) }
+            return [string]$content
+          }
+          $version = (Read-Text "$base/latest/download/runtime-version.txt").Trim()
           if ($version -notmatch '^\d+\.\d+\.\d+$') { throw 'Invalid runtime version.' }
           $asset = 'remote-codex-win32-x64-msvc-cli.exe'
-          $sums = (Invoke-WebRequest -UseBasicParsing "$base/download/v$version/SHA256SUMS").Content
+          $sums = Read-Text "$base/download/v$version/SHA256SUMS"
           $matches = @($sums -split "`n" | Where-Object { $_ -match "^([0-9a-fA-F]{64})\s+\*?$([regex]::Escape($asset))\s*$" })
           if ($matches.Count -ne 1) { throw 'Missing or ambiguous checksum.' }
           $binary = Join-Path $env:RUNNER_TEMP 'pockymoe.exe'
