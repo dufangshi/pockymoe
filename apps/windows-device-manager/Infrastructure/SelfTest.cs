@@ -155,6 +155,7 @@ internal static class SelfTest
             var diagnostics = Path.Combine(AppPaths.RelayDataRoot, "manager-startup-diagnostic");
             Directory.CreateDirectory(diagnostics); Directory.CreateDirectory(Path.GetDirectoryName(AppPaths.RelayLogPath)!);
             using var capture = new CancellationTokenSource();
+            using var setupDeadline = new CancellationTokenSource(TimeSpan.FromMinutes(2));
             var monitor = Task.Run(async () =>
             {
                 while (!capture.IsCancellationRequested)
@@ -164,7 +165,7 @@ internal static class SelfTest
                     try { await Task.Delay(50, capture.Token); } catch (OperationCanceledException) { break; }
                 }
             });
-            try { runtime = await new RuntimeProvisioner(logger, runner).SetupAsync(configuration, new Progress<ProvisioningProgress>(), CancellationToken.None); }
+            try { runtime = await new RuntimeProvisioner(logger, runner).SetupAsync(configuration, new Progress<ProvisioningProgress>(), setupDeadline.Token); }
             finally { capture.Cancel(); await monitor; }
             var state = await service.GetStateAsync(runtime, CancellationToken.None); Require(state == SupervisorState.Running, "Native setup connects Relay");
             logger.Info("Native acceptance: apply workspace through maintenance.");
@@ -212,8 +213,10 @@ internal static class SelfTest
                     try
                     {
                         var payload = Path.ChangeExtension(launcher, ".json");
-                        var originalPayload = Path.Combine(Path.GetDirectoryName(AppPaths.RelayLogPath)!, Path.GetFileName(payload));
-                        var source = File.ReadAllText(launcher).Replace(originalPayload.Replace("'", "''"), payload.Replace("'", "''"));
+                        var source = File.ReadAllText(launcher);
+                        var originalPayload = System.Text.RegularExpressions.Regex.Match(source, @"Get-Content -LiteralPath '(?<payload>(?:[^']|'')+)'").Groups["payload"].Value;
+                        Require(originalPayload.Length > 0, "Diagnostic launcher payload");
+                        source = source.Replace(originalPayload, payload.Replace("'", "''"));
                         File.WriteAllText(launcher, source);
                         var diagnostic = await runner.RunAsync("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", launcher], TimeSpan.FromSeconds(15));
                         logger.Warning("Isolated launcher diagnostic: " + System.Text.RegularExpressions.Regex.Replace(diagnostic.CombinedOutput, @"[A-Za-z0-9_+/=-]{24,}", "[opaque]"));
