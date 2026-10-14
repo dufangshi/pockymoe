@@ -21,8 +21,8 @@ beforeEach(() => {
   state.store.clear(); state.bound.mockReset().mockResolvedValue([]); state.revocations.mockReset().mockResolvedValue([]);
   state.account.mockReset().mockResolvedValue(vectors.account); state.approve.mockReset().mockResolvedValue(true);
   state.request.mockReset().mockImplementation(async (path: string) => {
-    if (path === '/api/transport/grants') return { grants: [] };
-    if (path === '/relay/portal') return { sharedByMe: [row] };
+    if (path === 'api/transport/grants') return { grants: [] };
+    if (path === 'relay/portal') return { sharedByMe: [row] };
     if (path.endsWith('/recipient-account')) return account;
     return {};
   });
@@ -34,8 +34,8 @@ it('revokes on vault-bound devices with no local certificate and on locally cert
   state.request.mockResolvedValue({ grants: [grant] });
   const mutate = vi.fn(); await sharing.sharingMutation('share', 'revoke', row.id, mutate);
   for (const deviceId of ['bound-only', 'certified'])
-    expect(state.request).toHaveBeenCalledWith('/api/transport/grants/acl', { method: 'DELETE' }, { deviceId });
-  expect(state.request.mock.calls.filter(c => c[0] === '/api/transport/grants')).toHaveLength(2);
+    expect(state.request).toHaveBeenCalledWith('api/transport/grants/acl', { method: 'DELETE' }, { deviceId });
+  expect(state.request.mock.calls.filter(c => c[0] === 'api/transport/grants')).toHaveLength(2);
   expect(mutate).toHaveBeenCalledOnce();
 });
 it('fails closed before relay removal or device deletions if an uncertified bound device cannot be reached', async () => {
@@ -65,7 +65,7 @@ it('never lets an incomplete edit inherit relay-selected scope, target, expiry o
 it('shows the signed old-to-new permission difference for a complete dialog edit', async () => {
   const old = sharing.grantForRow('share', row, account, 'acl');
   const server = state.request.getMockImplementation()!;
-  state.request.mockImplementation(async (path, ...args) => path === '/api/transport/grants' ? { grants: [old] } : server(path, ...args));
+  state.request.mockImplementation(async (path, ...args) => path === 'api/transport/grants' ? { grants: [old] } : server(path, ...args));
   await sharing.sharingMutation('share', 'edit', row.id, async () => ({ ...row, threadAccess: 'control' }), {
     ...row, threadAccess: 'control', scope: 'thread', workspaceScope: 'all', workspaceIds: [], canCreateThreads: false,
   });
@@ -84,8 +84,8 @@ it('binds a verified recipient to both its relay user id and its account key', a
 it('uses the dialog snapshot even when the pre-edit portal row has changed its device, target and permissions', async () => {
   const before = sharing.grantForRow('share', row, account, 'acl');
   state.request.mockImplementation(async (path: string) => {
-    if (path === '/relay/portal') return { sharedByMe: [{ ...row, deviceId: 'substituted', targetUserId: 'attacker', threadAccess: 'control', workspaceAccess: 'write' }] };
-    if (path === '/api/transport/grants') return { grants: [before] };
+    if (path === 'relay/portal') return { sharedByMe: [{ ...row, deviceId: 'substituted', targetUserId: 'attacker', threadAccess: 'control', workspaceAccess: 'write' }] };
+    if (path === 'api/transport/grants') return { grants: [before] };
     if (path.endsWith('/recipient-account')) return account;
     return {};
   });

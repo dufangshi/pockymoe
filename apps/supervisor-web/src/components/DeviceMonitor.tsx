@@ -236,7 +236,7 @@ export function DeviceMonitor() {
       controller = new AbortController();
       const timeout = setTimeout(() => controller?.abort(), 10_000);
       try {
-        const sample = await request<DeviceMetricsDto>('/api/device/metrics', {
+        const sample = await request<DeviceMetricsDto>('api/device/metrics', {
           signal: controller.signal,
         });
         if (!disposed) {

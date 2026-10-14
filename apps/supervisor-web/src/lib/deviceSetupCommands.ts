@@ -1,3 +1,4 @@
+import { appUrl } from './webBase';
 import { translate } from '@pockymoe/thread-ui/i18n';
 import { relayOrigin } from './relayOrigin';
 
@@ -34,10 +35,10 @@ export function relaySupervisorCommand(
   if (platform === 'windows') {
     return powershellEnrollment(
       binding.enrollSecret,
-      `& ([scriptblock]::Create((Invoke-WebRequest -UseBasicParsing ${powershellQuote(webOrigin + '/setup.ps1')}).Content)) -Relay ${powershellQuote(origin)} -Token ${powershellQuote(token)} -Port 45680 -WebOrigin ${powershellQuote(webOrigin)} -AccountKey ${powershellQuote(binding.accountPublicKey)}`,
+      `& ([scriptblock]::Create((Invoke-WebRequest -UseBasicParsing ${powershellQuote(webOrigin + appUrl('setup.ps1'))}).Content)) -Relay ${powershellQuote(origin)} -Token ${powershellQuote(token)} -Port 45680 -WebOrigin ${powershellQuote(webOrigin)} -AccountKey ${powershellQuote(binding.accountPublicKey)}`,
     );
   }
-  return `curl -fsSL ${shellQuote(webOrigin + '/setup.sh')} | POCKYMOE_ENROLL_SECRET=${shellQuote(binding.enrollSecret)} sh -s -- --relay ${shellQuote(origin)} --token ${shellQuote(token)} --port 45679 --web-origin ${shellQuote(webOrigin)} --account-key ${shellQuote(binding.accountPublicKey)}`;
+  return `curl -fsSL ${shellQuote(webOrigin + appUrl('setup.sh'))} | POCKYMOE_ENROLL_SECRET=${shellQuote(binding.enrollSecret)} sh -s -- --relay ${shellQuote(origin)} --token ${shellQuote(token)} --port 45679 --web-origin ${shellQuote(webOrigin)} --account-key ${shellQuote(binding.accountPublicKey)}`;
 }
 
 export function deviceBindCommand(

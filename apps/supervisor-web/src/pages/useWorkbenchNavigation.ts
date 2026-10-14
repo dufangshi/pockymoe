@@ -111,7 +111,7 @@ export function useWorkbenchNavigation(
       const startedAtRevision = revision.current;
       try {
         const next = relay
-          ? await request<NavigationSnapshot>('/relay/account/workbench', {
+          ? await request<NavigationSnapshot>('relay/account/workbench', {
               signal: controller.signal,
             })
           : loadLocal();
@@ -130,7 +130,7 @@ export function useWorkbenchNavigation(
               const id = pendingDevices.shift()!;
               try {
                 const list = await request<ThreadDto[]>(
-                  `/relay/devices/${encodeURIComponent(id)}/api/threads?includeAgentThreads=true`,
+                  `relay/devices/${encodeURIComponent(id)}/api/threads?includeAgentThreads=true`,
                   { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(5000)]), cache: 'no-store' },
                 );
                 if (Array.isArray(list)) deviceSnapshots.set(id, list);
@@ -150,7 +150,7 @@ export function useWorkbenchNavigation(
                 try {
                   const listed = deviceSnapshots.get(r.deviceId!)?.find(thread => thread.id === r.threadId);
                   const value = listed ? { thread: listed } : await request<ThreadDetailDto>(
-                    `/relay/devices/${encodeURIComponent(r.deviceId!)}/api/threads/${encodeURIComponent(r.threadId)}?view=summary&limit=1&compact=1`,
+                    `relay/devices/${encodeURIComponent(r.deviceId!)}/api/threads/${encodeURIComponent(r.threadId)}?view=summary&limit=1&compact=1`,
                     {
                       signal: AbortSignal.any([
                         controller.signal,
@@ -183,7 +183,7 @@ export function useWorkbenchNavigation(
               const root = pendingGroups.shift()!;
               try {
                 const family = await request<ThreadDto[]>(
-                  `/relay/devices/${encodeURIComponent(root.deviceId!)}/api/threads/${encodeURIComponent(root.threadId)}/group`,
+                  `relay/devices/${encodeURIComponent(root.deviceId!)}/api/threads/${encodeURIComponent(root.threadId)}/group`,
                   { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(5000)]), cache: 'no-store' },
                 );
                 if (Array.isArray(family)) familyUpdates[referenceKey(root)] = family;
@@ -199,7 +199,7 @@ export function useWorkbenchNavigation(
             // stale navigation. Offline, timeouts and access errors preserve it.
             for (const r of missing) {
               if (!alive) break;
-              await request('/relay/account/workbench', { method: 'DELETE', body: JSON.stringify({ deviceId: r.deviceId, threadId: r.threadId }), signal: controller.signal });
+              await request('relay/account/workbench', { method: 'DELETE', body: JSON.stringify({ deviceId: r.deviceId, threadId: r.threadId }), signal: controller.signal });
               if (alive) {
                 ++revision.current;
                 setSnapshot(previous => ({ ...previous, threads: previous.threads.filter(t => referenceKey(t) !== referenceKey(r)) }));
@@ -249,7 +249,7 @@ export function useWorkbenchNavigation(
       };
       if (relay) {
         const next = await request<NavigationSnapshot>(
-          '/relay/account/workbench',
+          'relay/account/workbench',
           { method: 'POST', body: JSON.stringify(reference) },
         );
         if (writeRevision === revision.current) { setSnapshot(next); setNavigationReady(true); }
@@ -366,7 +366,7 @@ export function useWorkbenchNavigation(
         // Fetch private previews through the viewer's authenticated device transport.
         const match = notification.href.match(/^\/devices\/([^/]+)\/threads\/([^/?#]+)$/);
         const local = notification.href.match(/^\/threads\/([^/?#]+)$/);
-        const base = match ? `/relay/devices/${match[1]}/api/threads/${match[2]}` : local && !relay ? `/api/threads/${local[1]}` : null;
+        const base = match ? `relay/devices/${match[1]}/api/threads/${match[2]}` : local && !relay ? `api/threads/${local[1]}` : null;
         if (!base) continue;
         try {
           const value = await request<ThreadDetailDto>(`${base}?view=summary&limit=10&compact=1`, { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(5000)]) });
@@ -454,7 +454,7 @@ export function useWorkbenchNavigation(
       if (!target) return;
       ++revision.current;
       if (relay) {
-        setSnapshot(await request<NavigationSnapshot>('/relay/account/workbench', { method: 'DELETE', body: JSON.stringify({ deviceId: target.deviceId, threadId: target.threadId }) }));
+        setSnapshot(await request<NavigationSnapshot>('relay/account/workbench', { method: 'DELETE', body: JSON.stringify({ deviceId: target.deviceId, threadId: target.threadId }) }));
       } else {
         const next = loadLocal();
         next.threads = next.threads.filter(t => referenceKey(t) !== key);

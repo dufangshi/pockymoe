@@ -229,7 +229,7 @@ function NativeSubagentsControl({ detail }: { detail: ThreadDetailDto }) {
         if (document.visibilityState !== 'hidden') {
           if (selected && open) {
             const result = await request<NativeSubagentDetailDto>(
-              `/api/threads/${encodeURIComponent(threadId)}/subagents/${encodeURIComponent(selected)}`,
+              `api/threads/${encodeURIComponent(threadId)}/subagents/${encodeURIComponent(selected)}`,
               { signal: activeController.signal },
             );
             if (!stopped && !activeController.signal.aborted) {
@@ -251,7 +251,7 @@ function NativeSubagentsControl({ detail }: { detail: ThreadDetailDto }) {
             const result = await request<{
               agents: NativeSubagentDto[];
               refreshing?: boolean;
-            }>(`/api/threads/${encodeURIComponent(threadId)}/subagents`, {
+            }>(`api/threads/${encodeURIComponent(threadId)}/subagents`, {
               signal: activeController.signal,
             });
             more = result.refreshing === true;
@@ -352,7 +352,7 @@ function NativeSubagentsControl({ detail }: { detail: ThreadDetailDto }) {
 
   const current = inspect?.agent.id === selected ? inspect : null;
   const agent = current?.agent ?? rows.find((agent) => agent.id === selected);
-  const historyEndpoint = `/api/threads/${encodeURIComponent(threadId)}/subagents/${encodeURIComponent(selected ?? '')}`;
+  const historyEndpoint = `api/threads/${encodeURIComponent(threadId)}/subagents/${encodeURIComponent(selected ?? '')}`;
   async function loadEarlier() {
     const before = current?.items[0]?.sequence;
     if (!before || loadingEarlier) return;

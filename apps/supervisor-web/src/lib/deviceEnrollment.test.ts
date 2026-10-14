@@ -54,7 +54,7 @@ vi.mock('./relayTransportCrypto', () => ({
   reportTransport: vi.fn(),
 }));
 vi.mock('./relayOrigin', () => ({
-  relayUrl: (path: string) => `https://relay.test${path}`,
+  relayUrl: (path: string) => new URL(path, 'https://relay.test').href,
 }));
 const sign = vi.fn(),
   update = vi.fn(),

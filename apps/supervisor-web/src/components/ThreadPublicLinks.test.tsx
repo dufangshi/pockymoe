@@ -65,7 +65,7 @@ it('requires explicit live consent and configures the device before publishing i
   fireEvent.click(screen.getByRole('button', { name: 'Create & copy link' }));
   await screen.findByLabelText('Public share URL');
   const posts = vi.mocked(request).mock.calls.filter(([, init]) => init?.method === 'POST');
-  expect(posts[0]?.[0]).toBe('/api/threads/thread/publications');
+  expect(posts[0]?.[0]).toBe('api/threads/thread/publications');
   expect(JSON.parse(posts[0]![1]!.body as string).turnIds).toEqual(['turn-1', 'turn-2']);
   expect(JSON.parse(posts[0]![1]!.body as string).encryptionKey).toMatch(/^[\w-]{43}$/);
   expect(JSON.parse(posts[1]![1]!.body as string).encryptionKey).toBeUndefined();
@@ -97,8 +97,8 @@ it('rejects older live publishers before forwarding any plaintext to the relay',
   await waitFor(() => expect(screen.getByRole('button', { name: 'Create & copy link' })).toBeEnabled());
   fireEvent.click(screen.getByRole('button', { name: 'Create & copy link' }));
   await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Update the device'));
-  expect(vi.mocked(request).mock.calls.some(([url, init]) => url === '/relay/thread-links' && init?.method === 'POST')).toBe(false);
-  expect(request).toHaveBeenCalledWith('/api/publications/old-capability', { method: 'DELETE' });
+  expect(vi.mocked(request).mock.calls.some(([url, init]) => url === 'relay/thread-links' && init?.method === 'POST')).toBe(false);
+  expect(request).toHaveBeenCalledWith('api/publications/old-capability', { method: 'DELETE' });
 });
 
 it('revokes a persisted live publication through the owner channel as well as the relay', async () => {
@@ -107,7 +107,7 @@ it('revokes a persisted live publication through the owner channel as well as th
   ]);
   render(<ThreadPublicLinks deviceId="mac" threadId="thread" />);
   fireEvent.click(await screen.findByRole('button', { name: 'Revoke share link' }));
-  await waitFor(() => expect(request).toHaveBeenCalledWith('/api/publications/publication-capability', { method: 'DELETE' }));
-  expect(request).toHaveBeenCalledWith('/relay/public-links/revoke-live', { method: 'DELETE' });
+  await waitFor(() => expect(request).toHaveBeenCalledWith('api/publications/publication-capability', { method: 'DELETE' }));
+  expect(request).toHaveBeenCalledWith('relay/public-links/revoke-live', { method: 'DELETE' });
   expect(screen.queryByLabelText('Public share URL')).toBeNull();
 });

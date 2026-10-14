@@ -32,12 +32,12 @@ export async function hasOpenedAccountVault() {
 export function cancelAccountLogin() { if (pendingExpiry) clearTimeout(pendingExpiry); pendingExpiry = undefined; pending?.wrapKey.fill(0); pending = undefined; pendingIdentifier = undefined; closeUnlockWindow(); }
 export async function startAccountLogin(identifier: string, password: string) {
   cancelAccountLogin(); pendingIdentifier = identifier;
-  const info = await accountRequest<{ mode: 'account' | 'legacy'; kdf: Kdf }>(`/relay/auth/kdf?login=${encodeURIComponent(identifier)}`);
+  const info = await accountRequest<{ mode: 'account' | 'legacy'; kdf: Kdf }>(`relay/auth/kdf?login=${encodeURIComponent(identifier)}`);
   if (info.mode === 'legacy') throw new AccountTrustError('accountLoginDowngrade');
   if (info.mode !== 'account') throw new AccountTrustError('accountVaultInvalid');
   const keys = await passwordKeys(password, info.kdf);
   try {
-    const result = await accountRequest<RelayLoginResultDto>('/relay/auth/login', 'POST', { identifier, authKey: keys.authKey });
+    const result = await accountRequest<RelayLoginResultDto>('relay/auth/login', 'POST', { identifier, authKey: keys.authKey });
     pending = { wrapKey: keys.wrapKey, authKey: keys.authKey, kdf: info.kdf, recovery: false, expires: Date.now() + 10 * 60 * 1000 };
     expirePending(); return result;
   } catch (e) { keys.wrapKey.fill(0); throw e; }
@@ -61,12 +61,12 @@ export async function startLegacyUpgrade(login: string, password: string, confir
   if (!legacyUpgradeEnabled() || await knownSecuredLogin(login)) throw new AccountTrustError('accountLoginDowngrade');
   if (await hasOpenedAccountVault() && !confirmedExistingVault) throw new AccountTrustError('accountUpgradeConfirmationRequired');
   pendingIdentifier = login;
-  return accountRequest<RelayLoginResultDto>('/relay/auth/login', 'POST', { login, password, upgrade: true });
+  return accountRequest<RelayLoginResultDto>('relay/auth/login', 'POST', { login, password, upgrade: true });
 }
 export async function startAccountRecovery(login: string, code: string) {
   cancelAccountLogin(); pendingIdentifier = login; const keys = await recoveryKeys(code);
   try {
-    const result = await accountRequest<RelayLoginResultDto>('/relay/auth/recover', 'POST', { login, recoveryAuthKey: keys.recoveryAuthKey });
+    const result = await accountRequest<RelayLoginResultDto>('relay/auth/recover', 'POST', { login, recoveryAuthKey: keys.recoveryAuthKey });
     pending = { wrapKey: keys.recoveryKey, recovery: true, expires: Date.now() + 10 * 60 * 1000 }; expirePending(); return result;
   } catch (e) { keys.recoveryKey.fill(0); throw e; }
 }
@@ -84,7 +84,7 @@ export async function finishAccountLogin(userId: string, user?: { username?: str
   }
   try {
     if (attempt.expires <= Date.now()) throw new AccountTrustError('accountUnlockExpired');
-    const vault = await accountRequest<Vault>('/relay/account/vault'); await checkVault(vault, userId);
+    const vault = await accountRequest<Vault>('relay/account/vault'); await checkVault(vault, userId);
     if (attempt.kdf && (['name', 'memoryKiB', 'iterations', 'parallelism', 'salt'] as const).some(k => attempt.kdf![k] !== vault.kdf[k])) throw new AccountTrustError('accountVaultInvalid');
     const data = await decryptVault(vault, attempt.wrapKey, attempt.recovery ? 'recovery' : 'password', userId);
     await installUnlockedVault(vault, data, attempt.authKey);
@@ -96,7 +96,7 @@ export async function finishAccountLogin(userId: string, user?: { username?: str
 }
 export type PreparedRegistration = Awaited<ReturnType<typeof createVault>>;
 export async function registerAccount(input: { email: string; username: string; registrationPassword?: string }, prepared: PreparedRegistration) {
-  const result = await accountRequest<RelayRegisterResultDto>('/relay/auth/register', 'POST', { ...input,
+  const result = await accountRequest<RelayRegisterResultDto>('relay/auth/register', 'POST', { ...input,
     userId: prepared.vault.userId, vault: prepared.vault, authKey: prepared.authKey, recoveryAuthKey: prepared.recoveryAuthKey });
   for (const identifier of [input.email, input.username]) await accountStore(loginCacheKey(identifier), prepared.vault.userId);
   return result;
@@ -104,7 +104,7 @@ export async function registerAccount(input: { email: string; username: string; 
 export async function setupAccount(prepared: PreparedRegistration, oauthOnly: boolean) {
   const id = await accountStore<string>('active'); if (!id || prepared.vault.userId !== id) throw new AccountTrustError('accountVaultInvalid');
   await checkVault(prepared.vault, id);
-  await accountRequest('/relay/account/vault', 'PUT', { vault: prepared.vault, expectedRevision: 0,
+  await accountRequest('relay/account/vault', 'PUT', { vault: prepared.vault, expectedRevision: 0,
     ...(!oauthOnly ? { authKey: prepared.authKey } : {}), recoveryAuthKey: prepared.recoveryAuthKey });
   if (pendingIdentifier) await accountStore(loginCacheKey(pendingIdentifier), prepared.vault.userId);
   await setAccountSession(prepared.vault.userId, { mode: oauthOnly ? 'oauth' : 'account', setupRequired: false, recovery: false, hasVault: true, accountKeyId: prepared.vault.accountKeyId });
@@ -120,7 +120,7 @@ export async function setAccountSession(userId: string | null, state: AccountSes
 }
 export async function startTemporaryResetLogin(identifier: string, temporaryPassword: string) {
   cancelAccountLogin();
-  return accountRequest<RelayLoginResultDto>('/relay/auth/login', 'POST', { identifier, password: temporaryPassword });
+  return accountRequest<RelayLoginResultDto>('relay/auth/login', 'POST', { identifier, password: temporaryPassword });
 }
 export async function isOAuthAccount() { const id = await accountStore<string>('active'); return !!id && !!await accountStore(`oauth:${id}`); }
 
@@ -133,7 +133,7 @@ export async function accountPasswordProof(password: string, explicitAdmin = fal
   if (explicitAdmin && !await currentAccount()) return { password };
   if (!id) throw new AccountTrustError('accountUnlockRequired');
   if (await isOAuthAccount()) throw new AccountTrustError('accountOAuthFactorRequired');
-  const vault = await accountRequest<Vault>('/relay/account/vault'); await checkVault(vault, id);
+  const vault = await accountRequest<Vault>('relay/account/vault'); await checkVault(vault, id);
   const keys = await passwordKeys(password, vault.kdf);
   try { return { authKey: keys.authKey }; } finally { keys.wrapKey.fill(0); }
 }

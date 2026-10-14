@@ -1,3 +1,4 @@
+import { appUrl } from './webBase';
 import { translate } from '@pockymoe/thread-ui/i18n';
 import type { PublicTranscriptSnapshot } from '@pockymoe/thread-ui';
 
@@ -78,7 +79,7 @@ export function forgetPublicLinkKey(id: string): void {
   try { localStorage.removeItem(storagePrefix + id); } catch { /* Storage may be unavailable. */ }
 }
 export function publicLinkUrl(id: string, version?: number): string | null {
-  const base = `${location.origin}/s/${encodeURIComponent(id)}`;
+  const base = `${location.origin}${appUrl(`s/${encodeURIComponent(id)}`)}`;
   if (version !== 2) return base;
   let key = keys.get(id);
   try { key ??= localStorage.getItem(storagePrefix + id) ?? undefined; } catch { /* Storage may be unavailable. */ }

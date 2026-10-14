@@ -1,3 +1,4 @@
+import { appPathname } from './webBase';
 const RELAY_DEVICE_PATH_RE = /^\/devices\/([^/]+)(?:\/|$)/;
 const THREAD_PATH_RE =
   /^(?:\/devices\/[^/]+)?\/threads\/([^/?#]+)(?:[/?#]|$)/;
@@ -11,7 +12,7 @@ export function currentRelayDeviceIdFromPath() {
   if (typeof window === 'undefined') {
     return null;
   }
-  return relayDeviceIdFromPath(window.location.pathname);
+  return relayDeviceIdFromPath(appPathname(window.location.pathname));
 }
 
 export function threadIdFromPath(pathname: string) {
@@ -23,7 +24,7 @@ export function currentThreadIdFromPath() {
   if (typeof window === 'undefined') {
     return null;
   }
-  return threadIdFromPath(window.location.pathname);
+  return threadIdFromPath(appPathname(window.location.pathname));
 }
 
 export function relayScopedPath(path: string, deviceId?: string | null) {

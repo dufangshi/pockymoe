@@ -1,3 +1,5 @@
+import { appUrl } from '../lib/webBase';
+import { workbenchUrls } from '../lib/workbenchUrls';
 import { sharingEditInput, type SharingInput } from '../lib/signedSharing';
 import { SignedShareDetails } from '../components/SignedShareDetails';
 import { useThreadDrafts } from './useThreadDrafts';
@@ -578,7 +580,7 @@ export function ThreadDetailPage() {
     [],
   );
   const getThreadHref = useCallback(
-    (threadId: string) => currentThreadHref(threadId),
+    (threadId: string) => appUrl(currentThreadHref(threadId)),
     [],
   );
   const openThread = useCallback(
@@ -588,7 +590,7 @@ export function ThreadDetailPage() {
     [navigate],
   );
   const getNewThreadHref = useCallback(
-    (workspaceId?: string | null) => currentNewThreadHref(workspaceId),
+    (workspaceId?: string | null) => appUrl(currentNewThreadHref(workspaceId)),
     [],
   );
   const [harnessSettingsTarget, setHarnessSettingsTarget] = useState<{
@@ -3941,7 +3943,7 @@ export function ThreadDetailPage() {
       primaryWorkspaceAdapter,
     ],
   );
-  const workspaceReturnHref = currentWorkspacesHref();
+  const workspaceReturnHref = appUrl(currentWorkspacesHref());
   const dialogs = useMemo(
     () => (
       <>
@@ -4017,7 +4019,7 @@ export function ThreadDetailPage() {
     {relayThreadIsOwner && relayRouteDeviceId && <PortMappingsControl key={relayRouteDeviceId} deviceId={relayRouteDeviceId} open={portsOpen} onOpenChange={setPortsOpen} />}
     <ThreadDetailSurface
       deviceMonitor={<><DeviceMonitor key={relayRouteDeviceId ?? 'local'} /><TourLauncherButton /></>}
-      workbench={{ ...workbenchNavigation, panels: {
+      workbench={workbenchUrls({ ...workbenchNavigation, panels: {
         deviceLabel: presentationDeviceName ?? (relayRouteDeviceId ? relayRouteDeviceId.slice(0, 8) : translate('workbench.localDeviceName')),
         workspaceLabel: detail?.workspace.label ?? workbenchNavigation.workspacePath,
         primaryTitle: detail?.thread.title ?? translate('workbench.loadingThreadDetail'),
@@ -4071,7 +4073,7 @@ export function ThreadDetailPage() {
             return full && turn.status !== 'inProgress' ? full : turn;
           }), turns) } : current);
           setSearchTarget({ turnId, itemId, key: Date.now() });
-        }} /> : undefined, }}
+        }} /> : undefined, })}
       threads={threads}
       detail={detail}
       status={status}

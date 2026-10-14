@@ -34,8 +34,8 @@ describe('device port mappings', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'Enable and open' })).toBeEnabled());
     fireEvent.click(screen.getByRole('button', { name: 'Enable and open' }));
     await waitFor(() => expect(replace).toHaveBeenCalledWith('https://p-preview.example/a?q=1#b'));
-    expect(request).toHaveBeenCalledWith(`/relay/devices/device-1/api/port-mappings/${mapping.id}/lease`, expect.objectContaining({ method: 'POST' }));
-    expect(request).toHaveBeenCalledWith(`/relay/devices/device-1/port-mappings/${mapping.id}/open?lease=test-lease`, expect.objectContaining({ method: 'POST', body: JSON.stringify({ path: '/a?q=1#b' }) }));
+    expect(request).toHaveBeenCalledWith(`relay/devices/device-1/api/port-mappings/${mapping.id}/lease`, expect.objectContaining({ method: 'POST' }));
+    expect(request).toHaveBeenCalledWith(`relay/devices/device-1/port-mappings/${mapping.id}/open?lease=test-lease`, expect.objectContaining({ method: 'POST', body: JSON.stringify({ path: '/a?q=1#b' }) }));
   });
 
   it('shows configuration failure without creating a mapping, and allows stopping an existing one', async () => {
@@ -47,6 +47,6 @@ describe('device port mappings', () => {
     expect(screen.getByRole('button', { name: 'Enable' })).toBeDisabled();
     fireEvent.click(screen.getByRole('button', { name: 'Stop' }));
     await waitFor(() => expect(screen.queryByText('Test website · 127.0.0.1:4013')).not.toBeInTheDocument());
-    expect(request).toHaveBeenCalledWith(`/relay/devices/device-1/api/port-mappings/${mapping.id}`, expect.objectContaining({ method: 'DELETE' }));
+    expect(request).toHaveBeenCalledWith(`relay/devices/device-1/api/port-mappings/${mapping.id}`, expect.objectContaining({ method: 'DELETE' }));
   });
 });

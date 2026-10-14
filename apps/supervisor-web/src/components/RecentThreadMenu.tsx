@@ -31,7 +31,7 @@ export function RecentThreadMenu({ thread, onFavorite, onRenamed, onRemoved, onN
   const split = thread.key.indexOf(':');
   const device = thread.key.slice(0, split);
   const id = thread.key.slice(split + 1);
-  const base = `${device === 'local' ? '' : `/relay/devices/${encodeURIComponent(device)}`}/api/threads/${encodeURIComponent(id)}`;
+  const base = `${device === 'local' ? '' : `relay/devices/${encodeURIComponent(device)}/`}api/threads/${encodeURIComponent(id)}`;
   useEffect(() => {
     if (!position) return;
     let active = true;

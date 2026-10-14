@@ -1,3 +1,4 @@
+import { appUrl } from '../../lib/webBase';
 import { LanguageSwitcher, translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { Check, Copy, Download, Eye, EyeOff } from 'lucide-react';
 import { useId, useState, type ReactNode } from 'react';
@@ -13,7 +14,7 @@ export function AuthShell({ children }: { children: ReactNode }) {
     <main className="auth-shell flex min-h-[100dvh] flex-col bg-[var(--app-bg)] text-[var(--app-fg)]" data-page="relay-portal">
       <header className="auth-topbar mx-auto flex w-full max-w-5xl items-center justify-between gap-3 px-4 py-4 sm:px-6">
         <Link className="auth-brand flex min-h-11 items-center gap-2.5 text-[15px] font-semibold text-[var(--theme-fg)]" to="/">
-          <img alt="" className="h-8 w-8 rounded-lg" src="/icon-192.png?v=pockymoe" />
+          <img alt="" className="h-8 w-8 rounded-lg" src={appUrl('icon-192.png?v=pockymoe')} />
           <span>Pockymoe</span>
         </Link>
         <div className="flex items-center gap-1">
@@ -167,7 +168,7 @@ function GitHubMark() {
 export function OAuthButtons({ google, github }: { google?: boolean; github?: boolean }) {
   if (!google && !github) return null;
   // Providers return to /relay-portal, which restores the remembered destination.
-  const href = (provider: string) => relayUrl(`/relay/auth/oauth/${provider}/start`);
+  const href = (provider: string) => relayUrl(`relay/auth/oauth/${provider}/start`);
   return (
     <div className="auth-oauth grid gap-2.5">
       {google ? (

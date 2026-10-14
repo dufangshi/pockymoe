@@ -1,3 +1,4 @@
+import { appUrl } from '../lib/webBase';
 import {
   ThreadTimeline as SharedThreadTimeline,
   type ThreadTimelineAdapter,
@@ -23,7 +24,7 @@ export function ThreadTimeline({
     onOpenLinkedThread:
       onOpenThread ??
       ((threadId) => {
-        window.location.assign(currentThreadHref(threadId));
+        window.location.assign(appUrl(currentThreadHref(threadId)));
       }),
     ...(onLoadHistoryItemDetail
       ? { onLoadHistoryItemDetail }

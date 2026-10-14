@@ -93,7 +93,7 @@ export async function verifySharedDeviceRole(deviceId: string, _scope?: string) 
   const account = await currentAccount();
   if (!account) return false;
   try {
-    const owner = await accountRequest<{ accountKeyId: string }>(`/relay/devices/${encodeURIComponent(deviceId)}/owner-account`);
+    const owner = await accountRequest<{ accountKeyId: string }>(`relay/devices/${encodeURIComponent(deviceId)}/owner-account`);
     return owner.accountKeyId !== account.accountKeyId;
   } catch { return false; }
 }

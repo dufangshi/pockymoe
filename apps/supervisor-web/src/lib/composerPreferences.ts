@@ -15,7 +15,7 @@ function checked(preferences: ComposerPreferences) {
 
 export async function fetchComposerPreferences() {
   return checked(
-    await request<ComposerPreferences>('/relay/account/preferences', {
+    await request<ComposerPreferences>('relay/account/preferences', {
       cache: 'no-store',
     }),
   );
@@ -25,7 +25,7 @@ export async function saveComposerPreferences(
   sendShortcut: ComposerSendShortcut,
 ) {
   return checked(
-    await request<ComposerPreferences>('/relay/account/preferences', {
+    await request<ComposerPreferences>('relay/account/preferences', {
       method: 'PATCH',
       body: JSON.stringify({ sendShortcut }),
     }),

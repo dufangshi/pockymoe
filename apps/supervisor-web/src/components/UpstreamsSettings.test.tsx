@@ -88,7 +88,7 @@ it('shows only installed base harnesses and keeps existing upstreams on the sele
     screen.getByLabelText('Harness').querySelectorAll('option'),
   ).toHaveLength(1);
   expect(request).toHaveBeenCalledWith(
-    '/relay/devices/a/api/management/upstreams',
+    'relay/devices/a/api/management/upstreams',
     expect.anything(),
   );
 });
@@ -144,7 +144,7 @@ it('ignores an old inventory response after switching devices', async () => {
   resolveA([{ id: 'codex', name: 'OpenAI Codex', base: { installed: true } }]);
   await waitFor(() =>
     expect(request).toHaveBeenCalledWith(
-      '/relay/devices/b/api/management/upstreams',
+      'relay/devices/b/api/management/upstreams',
       expect.anything(),
     ),
   );

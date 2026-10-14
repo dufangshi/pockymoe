@@ -1,3 +1,4 @@
+import { appUrl } from '../webBase';
 /* The theme registry: Classic, the built-in packs and the packs imported into this
    browser. Applying a pack fills one `<style data-theme-pack>` (created at startup,
    after the app's own stylesheets and before lazily loaded ones, so the cascade
@@ -137,7 +138,7 @@ function releaseImportedCache() {
 }
 
 async function fetchText(url: string) {
-  const response = await fetch(url, { credentials: 'same-origin' });
+  const response = await fetch(appUrl(url), { credentials: 'same-origin' });
   if (!response.ok) throw new Error(`${url}: HTTP ${response.status}`);
   // A missing file can come back as the SPA's index.html.
   if (/text\/html/i.test(response.headers.get('content-type') ?? '')) throw new Error(`${url}: not a stylesheet`);
@@ -300,7 +301,7 @@ async function packFiles(id: string): Promise<ThemePackFiles> {
     const files = new Map<string, Uint8Array>();
     await Promise.all(
       builtin.files.map(async (path) => {
-        const response = await fetch(`${builtin.base}${path}?v=${builtin.hash}`, { credentials: 'same-origin' });
+        const response = await fetch(appUrl(`${builtin.base}${path}?v=${builtin.hash}`), { credentials: 'same-origin' });
         if (!response.ok) throw new Error(`${path}: HTTP ${response.status}`);
         files.set(path, new Uint8Array(await response.arrayBuffer()));
       }),

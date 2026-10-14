@@ -16,6 +16,8 @@ import {
   currentWorkspacesHref,
 } from '../lib/relayRoutes';
 import { ThreadCreateForm } from '../pages/thread-create/ThreadCreateForm';
+import { appUrl } from '../lib/webBase';
+import { workbenchUrls } from '../lib/workbenchUrls';
 
 type ThreadWorkspaceLayoutProps = ComponentProps<
   typeof SharedThreadWorkspaceLayout
@@ -47,17 +49,18 @@ export function ThreadWorkspaceLayout({
   return (
     <SharedThreadWorkspaceLayout
       {...props}
+      {...(props.workbench ? { workbench: workbenchUrls(props.workbench) } : {})}
       deviceMonitor={<><DeviceMonitor key={deviceId} /><TourLauncherButton /></>}
-      workspaceReturnHref={props.workspaceReturnHref ?? currentWorkspacesHref()}
+      workspaceReturnHref={appUrl(props.workspaceReturnHref ?? currentWorkspacesHref())}
       settingsSections={props.settingsSections ?? appSettingsSections()}
       {...(effectiveTheme ? { effectiveTheme } : {})}
       {...(themeMode ? { themeMode } : {})}
       {...(onThemeModeChange ? { onThemeModeChange } : {})}
-      getThreadHref={getThreadHref ?? ((threadId) => currentThreadHref(threadId))}
+      getThreadHref={(threadId) => appUrl(getThreadHref ? getThreadHref(threadId) : currentThreadHref(threadId))}
       onOpenThread={
         onOpenThread ?? ((threadId) => navigate(currentThreadHref(threadId)))
       }
-      getNewThreadHref={getNewThreadHref ?? buildNewThreadHref}
+      getNewThreadHref={(workspaceId) => appUrl((getNewThreadHref ?? buildNewThreadHref)(workspaceId))}
       renderNewThreadDialogContent={
         props.renderNewThreadDialogContent ??
         (({ close, closeNavigation, currentWorkspaceId }) => (

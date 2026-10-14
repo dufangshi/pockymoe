@@ -106,7 +106,7 @@ it('opens native Codex details with tool progress, timestamp and its own usage',
     within(panel).getByText('Review changes and check regressions'),
   ).toBeVisible();
   expect(request).toHaveBeenCalledWith(
-    '/api/threads/parent/subagents/child-1',
+    'api/threads/parent/subagents/child-1',
     expect.objectContaining({ signal: expect.any(AbortSignal) }),
   );
   fireEvent.click(

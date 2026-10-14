@@ -45,19 +45,19 @@ export const securityRequest = <T>(
   realm: SecurityRealm = 'default',
 ) =>
   request<T>(
-    `/relay/account/security${path}`,
+    `relay/account/security${path}`,
     { method, ...(body === undefined ? {} : { body: JSON.stringify(body) }) },
     { auth: realm },
   );
 export const fetchChallenge = () =>
   request<LoginChallenge>(
-    '/relay/auth/challenge',
+    'relay/auth/challenge',
     { cache: 'no-store' },
     { auth: 'none' },
   );
 export const verifyLoginCode = (code: string, rememberBrowser: boolean) =>
   request(
-    '/relay/auth/challenge',
+    'relay/auth/challenge',
     { method: 'POST', body: JSON.stringify({ code, rememberBrowser }) },
     { auth: 'none' },
   );
@@ -154,7 +154,7 @@ export async function authenticatePasskey(
     challengeId: string;
     options: { publicKey: AuthOptions };
   }>(
-    '/relay/auth/passkey/start',
+    'relay/auth/passkey/start',
     { method: 'POST', body: JSON.stringify({ purpose }) },
     { auth: realm },
   );
@@ -171,7 +171,7 @@ export async function authenticatePasskey(
   })) as PublicKeyCredential | null;
   if (!credential) throw new Error(translate("workbench.passkeyVerificationWasCancelled"));
   return request<{ verificationToken?: string }>(
-    '/relay/auth/passkey/finish',
+    'relay/auth/passkey/finish',
     {
       method: 'POST',
       body: JSON.stringify({

@@ -550,7 +550,7 @@ async fn spa_fallback(State(state): State<AppState>, request: Request) -> Respon
     } else {
         dist.join("index.html")
     };
-    let Ok(bytes) = tokio::fs::read(&path).await else {
+    let Ok(mut bytes) = tokio::fs::read(&path).await else {
         return err(
             StatusCode::NOT_FOUND,
             "not_found",
@@ -558,6 +558,9 @@ async fn spa_fallback(State(state): State<AppState>, request: Request) -> Respon
         )
         .into_response();
     };
+    if path.file_name().and_then(|value| value.to_str()) == Some("index.html") {
+        bytes = spa_index_with_base(&bytes, request.uri().path());
+    }
     let cache_control = if path.file_name().and_then(|value| value.to_str()) == Some("index.html") {
         "no-cache"
     } else {
@@ -577,6 +580,57 @@ async fn spa_fallback(State(state): State<AppState>, request: Request) -> Respon
             Body::from(bytes)
         })
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+// The proxy removes its mount prefix. A relative base ascends only the route
+// segments seen here, leaving that external prefix intact in the browser.
+fn spa_index_with_base(bytes: &[u8], request_path: &str) -> Vec<u8> {
+    let depth = request_path
+        .bytes()
+        .filter(|byte| *byte == b'/')
+        .count()
+        .saturating_sub(1);
+    let base = if depth == 0 {
+        "./".to_owned()
+    } else {
+        "../".repeat(depth)
+    };
+    String::from_utf8_lossy(bytes)
+        .replace(
+            "<base href=\"./\" data-pockymoe-base />",
+            &format!("<base href=\"{base}\" data-pockymoe-base />"),
+        )
+        .into_bytes()
+}
+
+#[cfg(test)]
+mod web_base_tests {
+    use super::spa_index_with_base;
+
+    #[test]
+    fn spa_base_ascends_only_the_stripped_route() {
+        let index =
+            b"<base href=\"./\" data-pockymoe-base /><script src=\"./assets/app.js\"></script>";
+        for (route, base) in [
+            ("/", "./"),
+            ("/index.html", "./"),
+            ("/workspaces", "./"),
+            ("/threads/t", "../"),
+            ("/threads/t/", "../../"),
+            ("/devices/d/threads/t", "../../../"),
+        ] {
+            let html = String::from_utf8(spa_index_with_base(index, route)).unwrap();
+            assert!(
+                html.contains(&format!("href=\"{base}\"")),
+                "{route}: {html}"
+            );
+            assert!(html.contains("src=\"./assets/app.js\""));
+        }
+        assert_eq!(
+            spa_index_with_base(b"<base href=\"/injected/\">", "/threads/t"),
+            b"<base href=\"/injected/\">"
+        );
+    }
 }
 
 pub(crate) struct ApiErr(StatusCode, ApiError);

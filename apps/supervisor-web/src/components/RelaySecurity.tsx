@@ -1,3 +1,4 @@
+import { appUrl } from '../lib/webBase';
 import { accountPasswordProof } from '../lib/accountAuth';
 import { getLocale } from '@pockymoe/thread-ui/i18n';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
@@ -156,7 +157,7 @@ export function LoginVerification({
           disabled={busy}
           onClick={() =>
             void request(
-              '/relay/auth/challenge',
+              'relay/auth/challenge',
               { method: 'DELETE' },
               { auth: 'none' },
             )
@@ -386,7 +387,7 @@ export function RelaySecurityPanel({
         'payload' in e &&
         (e as { payload?: { code?: string } }).payload?.code === 'unauthorized'
       )
-        location.assign('/relay');
+        location.assign(appUrl('relay'));
       else setError(securityError(e));
     } finally {
       setBusy(false);

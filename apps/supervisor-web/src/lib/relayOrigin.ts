@@ -1,3 +1,4 @@
+import { appPathname, appUrl, webBase } from './webBase';
 // Network addressing only. Passkey validation, pins and storage use the Web origin.
 export function relayOrigin(
   webOrigin = globalThis.location?.origin ?? 'http://localhost',
@@ -18,16 +19,29 @@ export function relayUrl(
   configured = import.meta.env.VITE_POCKYMOE_RELAY_ORIGIN ?? '',
 ): string {
   const target = new URL(path, webOrigin);
+  // Relative inputs are logical application paths, even when the mount is
+  // itself /relay/ or /api/. Rooted/absolute inputs may already be resolved.
+  const logicalPath = path.startsWith('/') || /^[a-z][a-z\d+.-]*:/i.test(path)
+    ? appPathname(target.pathname) : target.pathname;
   // Do not retarget external URLs or local Supervisor APIs.
-  if (target.origin !== webOrigin || !target.pathname.startsWith('/relay/')) return path;
+  if (target.origin !== webOrigin) return path;
+  const local = `${appUrl(logicalPath)}${target.search}${target.hash}`;
+  if (!logicalPath.startsWith('/relay/')) return local;
   const origin = relayOrigin(webOrigin, configured);
-  return origin === webOrigin ? path : `${origin}${target.pathname}${target.search}${target.hash}`;
+  return origin === webOrigin ? local : `${origin}${logicalPath}${target.search}${target.hash}`;
 }
 
 export function relaySocketUrl(path: string, webOrigin = globalThis.location?.origin ?? 'http://localhost', configured = import.meta.env.VITE_POCKYMOE_RELAY_ORIGIN ?? '') {
-  const url = new URL(path, relayOrigin(webOrigin, configured));
+  const url = new URL(relayUrl(path, webOrigin, configured), webOrigin);
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
   return url.toString();
+}
+
+// Device routes on a separate relay are rooted there; same-origin routes use
+// the Web mount. Keep wire paths (/api/...) independent of that browser mount.
+export function relayPathname(url: URL): string {
+  return url.origin === (globalThis.location?.origin ?? 'http://localhost')
+    ? appPathname(url.pathname, webBase) : url.pathname;
 }
 
 export function relayFetchInit(path: string, init: RequestInit = {}): RequestInit {

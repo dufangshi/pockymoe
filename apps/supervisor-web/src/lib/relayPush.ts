@@ -1,3 +1,4 @@
+import { webBase } from './webBase';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { request } from './api';
 import { ensureRelayWorker } from './relayTransport';
@@ -9,7 +10,7 @@ export interface PushSettings {
   nativePushAvailable?: boolean;
 }
 export const loadPushSettings = () =>
-  request<PushSettings>('/relay/account/notifications');
+  request<PushSettings>('relay/account/notifications');
 export function pushSupported() {
   return (
     window.isSecureContext &&
@@ -29,7 +30,7 @@ export async function subscriptionId(endpoint: string) {
     .replaceAll('=', '');
 }
 export async function currentPushSubscription() {
-  const registration = await navigator.serviceWorker.getRegistration('/');
+  const registration = await navigator.serviceWorker.getRegistration(webBase);
   return registration?.pushManager.getSubscription() ?? null;
 }
 export async function enablePush(
@@ -52,7 +53,7 @@ export async function enablePush(
       applicationServerKey: key,
     });
   }
-  await request('/relay/account/notifications/subscription', {
+  await request('relay/account/notifications/subscription', {
     method: 'POST',
     body: JSON.stringify(sub.toJSON()),
   });
@@ -60,12 +61,12 @@ export async function enablePush(
 export async function disablePush() {
   const sub = await currentPushSubscription();
   if (!sub) return;
-  await request('/relay/account/notifications/subscription', {
+  await request('relay/account/notifications/subscription', {
     method: 'DELETE',
     body: JSON.stringify({ id: await subscriptionId(sub.endpoint) }),
   });
   await sub.unsubscribe();
-  const registration = await navigator.serviceWorker.getRegistration('/');
+  const registration = await navigator.serviceWorker.getRegistration(webBase);
   for (const notification of (await registration?.getNotifications()) ?? [])
     notification.close();
 }

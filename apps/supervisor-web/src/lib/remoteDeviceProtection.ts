@@ -46,7 +46,7 @@ const key = (
 const notify = () =>
   window.dispatchEvent(new Event(REMOTE_PROTECTION_CHANGED_EVENT));
 const apiRoot = (id: string) =>
-  `/relay/devices/${encodeURIComponent(id)}/api/management/supervisor`;
+  `relay/devices/${encodeURIComponent(id)}/api/management/supervisor`;
 const errorCode = (error: unknown) =>
   (error as { code?: string; payload?: { code?: string } } | null)?.code ??
   (error as { payload?: { code?: string } } | null)?.payload?.code;

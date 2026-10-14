@@ -1,3 +1,5 @@
+import { appPathname, appUrl } from './webBase';
+import { deviceRoute } from './relayTransportCrypto';
 import { markOwnedDevices } from './accountTransport';
 import { sharingMutation, type SharingInput } from './signedSharing';
 import { relayOrigin, relayUrl, relaySocketUrl, relayFetchInit } from './relayOrigin';
@@ -166,11 +168,11 @@ function relayModeEnabled() {
     window.__POCKYMOE_BOOTSTRAP__?.mode === 'relay' ||
     import.meta.env.VITE_POCKYMOE_STATIC_WEB === 'true' ||
     !!import.meta.env.VITE_POCKYMOE_RELAY_ORIGIN ||
-    window.location.pathname.startsWith('/relay-portal') ||
-    window.location.pathname.startsWith('/relay-admin') ||
-    window.location.pathname.startsWith('/relay-account') ||
-    window.location.pathname.startsWith('/relay-devices') ||
-    window.location.pathname.startsWith('/relay-guide') ||
+    appPathname(window.location.pathname).startsWith('/relay-portal') ||
+    appPathname(window.location.pathname).startsWith('/relay-admin') ||
+    appPathname(window.location.pathname).startsWith('/relay-account') ||
+    appPathname(window.location.pathname).startsWith('/relay-devices') ||
+    appPathname(window.location.pathname).startsWith('/relay-guide') ||
     window.location.search.includes('relay=1') ||
     window.localStorage.getItem(RELAY_MODE_STORAGE_KEY) === 'true'
   );
@@ -231,22 +233,23 @@ export function setSelectedRelayThreadId(threadId: string | null) {
 }
 
 function apiPath(path: string, deviceId?: string | null) {
+  if (/^(?:[a-z][a-z\d+.-]*:|\/\/)/i.test(path)) return path;
+  // Normalize logical inputs before selecting a device. Keep the result relative
+  // so a mount named /api/ or /relay/ cannot be mistaken for part of this path.
+  const logical = new URL(path, globalThis.location?.origin ?? 'http://localhost');
+  path = `${logical.pathname}${logical.search}${logical.hash}`;
   // Explicit targets are captured by each pane; never mutate global navigation.
   if (deviceId !== undefined) {
     return deviceId && deviceId !== 'local' && path.startsWith('/api/')
-      ? `/relay/devices/${encodeURIComponent(deviceId)}${path}` : path;
+      ? `relay/devices/${encodeURIComponent(deviceId)}${path}` : path.slice(1);
   }
-  if (!relayModeEnabled()) {
-    return path;
+  if (relayModeEnabled() && path.startsWith('/api/')) {
+    const selectedDevice = readSelectedRelayDeviceId();
+    return selectedDevice
+      ? `relay/devices/${encodeURIComponent(selectedDevice)}${path}`
+      : `relay${path}`;
   }
-  if (path.startsWith('/api/')) {
-    const deviceId = readSelectedRelayDeviceId();
-    if (deviceId) {
-      return `/relay/devices/${encodeURIComponent(deviceId)}${path}`;
-    }
-    return `/relay${path}`;
-  }
-  return path;
+  return path.slice(1);
 }
 
 export function buildApiUrl(path: string) {
@@ -420,7 +423,7 @@ function fetchApi(path: string, init: RequestInit, deviceId?: string | null, thr
   const target = relayUrl(url);
   const endpoint = new URL(target, window.location.origin);
   const requestInit = relayFetchInit(target, init);
-  return endpoint.origin === relayOrigin() && /^\/relay\/devices\/[^/]+\/api\//.test(endpoint.pathname) ? encryptedBrowserFetch(target, requestInit, threadScope) : fetch(target, requestInit);
+  return endpoint.origin === relayOrigin() && deviceRoute(endpoint) ? encryptedBrowserFetch(target, requestInit, threadScope) : fetch(target, requestInit);
 }
 
 export async function request<T>(
@@ -559,12 +562,12 @@ function normalizedUploadFileName(
 }
 
 export function fetchRuntimeConfig() {
-  return request<RuntimeConfigDto>('/api/config/runtime');
+  return request<RuntimeConfigDto>('api/config/runtime');
 }
 
 let workspaceActorScope = "local:owner";
 export async function fetchAuthSession() {
-  const result = await request<AuthSessionDto>('/api/auth/session', {
+  const result = await request<AuthSessionDto>('api/auth/session', {
     cache: 'no-store',
   });
   if (result.mode !== 'relay') workspaceActorScope = `local:${result.username??'owner'}`;
@@ -572,7 +575,7 @@ export async function fetchAuthSession() {
 }
 
 export async function login(input: { username: string; password: string }) {
-  const result = await request<AuthLoginResultDto>('/api/auth/login', {
+  const result = await request<AuthLoginResultDto>('api/auth/login', {
     method: 'POST',
     body: JSON.stringify(input),
   });
@@ -582,7 +585,7 @@ export async function login(input: { username: string; password: string }) {
 
 export async function logout() {
   if (!confirmWorkspaceDocumentLeave()) throw new Error(translate('files.keepEditing'));
-  const result = await request<AuthSessionDto>('/api/auth/logout', {
+  const result = await request<AuthSessionDto>('api/auth/logout', {
     method: 'POST',
   });
   setStoredAuthToken(null);
@@ -590,7 +593,7 @@ export async function logout() {
 }
 
 export async function fetchRelaySession() {
-  const result = await request<RelaySessionDto>('/relay/auth/session', {
+  const result = await request<RelaySessionDto>('relay/auth/session', {
     cache: 'no-store',
   });
   workspaceActorScope = `relay:${result.user?.id??'anonymous'}`;
@@ -612,7 +615,7 @@ export async function relayLogin(input: {
 export function fetchRelayAdminSession() {
   enableRelayMode();
   return request<RelaySessionDto>(
-    '/relay/auth/session',
+    'relay/auth/session',
     {
       cache: 'no-store',
     },
@@ -626,7 +629,7 @@ export async function relayAdminLogin(input: {
 }) {
   enableRelayMode();
   const result = await request<RelayLoginResultDto>(
-    '/relay/auth/login',
+    'relay/auth/login',
     {
       method: 'POST',
       body: JSON.stringify({
@@ -641,7 +644,7 @@ export async function relayAdminLogin(input: {
 }
 
 export async function relayAdminLogout() {
-  const result = await request<RelaySessionDto>('/relay/auth/logout', { method: 'POST' }, { auth: 'relay-admin' });
+  const result = await request<RelaySessionDto>('relay/auth/logout', { method: 'POST' }, { auth: 'relay-admin' });
   setStoredRelayAdminToken(null);
   return result;
 }
@@ -649,7 +652,7 @@ export async function relayAdminLogout() {
 export async function relayLogout() {
   if (!confirmWorkspaceDocumentLeave()) throw new Error(translate('files.keepEditing'));
   try {
-    return await request<RelaySessionDto>('/relay/auth/logout', { method: 'POST' });
+    return await request<RelaySessionDto>('relay/auth/logout', { method: 'POST' });
   } finally {
     cancelAccountLogin(); await logoutAccount(); setStoredRelayToken(null);
     setSelectedRelayDeviceId(null); setSelectedRelayThreadId(null);
@@ -657,7 +660,7 @@ export async function relayLogout() {
 }
 
 export async function fetchRelayPortal() {
-  const summary = await request<RelayPortalSummaryDto>('/relay/portal');
+  const summary = await request<RelayPortalSummaryDto>('relay/portal');
   await markOwnedDevices(summary.devices.filter(d => d.ownerUserId === summary.user.id).map(d => d.id));
   return summary;
 }
@@ -676,11 +679,11 @@ export function fetchRelayAccess(input: {
   if (input.workspaceId) {
     params.set('workspaceId', input.workspaceId);
   }
-  return request<RelayEffectiveAccessDto>(`/relay/access?${params.toString()}`);
+  return request<RelayEffectiveAccessDto>(`relay/access?${params.toString()}`);
 }
 
 export function createRelayDevice(input: { name: string }) {
-  return request<RelayCreateDeviceResultDto>('/relay/devices', {
+  return request<RelayCreateDeviceResultDto>('relay/devices', {
     method: 'POST',
     body: JSON.stringify(input),
   });
@@ -688,7 +691,7 @@ export function createRelayDevice(input: { name: string }) {
 
 export function deleteRelayDevice(deviceId: string) {
   return request<{ id: string }>(
-    `/relay/devices/${encodeURIComponent(deviceId)}`,
+    `relay/devices/${encodeURIComponent(deviceId)}`,
     {
       method: 'DELETE',
     },
@@ -696,14 +699,14 @@ export function deleteRelayDevice(deviceId: string) {
 }
 
 export function updateRelayAccount(input: { username?: string; avatarUrl?: string | null }) {
-  return request<RelayUserDto>('/relay/account', {
+  return request<RelayUserDto>('relay/account', {
     method: 'PATCH',
     body: JSON.stringify(input),
   });
 }
 
 export function createRelayShare(input: CreateRelaySessionShareInput) {
-  return sharingMutation('share', 'create', undefined, () => request<RelaySessionShareDto>('/relay/shares', {
+  return sharingMutation('share', 'create', undefined, () => request<RelaySessionShareDto>('relay/shares', {
     method: 'POST',
     body: JSON.stringify(input),
   }), input);
@@ -715,7 +718,7 @@ export function updateRelayShare(
   dialogContext?: SharingInput,
 ) {
   return sharingMutation('share', 'edit', shareId, () => request<RelaySessionShareDto>(
-    `/relay/shares/${encodeURIComponent(shareId)}`,
+    `relay/shares/${encodeURIComponent(shareId)}`,
     {
       method: 'PATCH',
       body: JSON.stringify(input),
@@ -725,7 +728,7 @@ export function updateRelayShare(
 
 export function revokeRelayShare(shareId: string) {
   return sharingMutation('share', 'revoke', shareId, () => request<RelaySessionShareDto>(
-    `/relay/shares/${encodeURIComponent(shareId)}`,
+    `relay/shares/${encodeURIComponent(shareId)}`,
     {
       method: 'DELETE',
     },
@@ -733,7 +736,7 @@ export function revokeRelayShare(shareId: string) {
 }
 
 export function createRelayGrant(input: CreateRelayAccessGrantInput) {
-  return sharingMutation('grant', 'create', undefined, () => request<RelayAccessGrantDto>('/relay/grants', {
+  return sharingMutation('grant', 'create', undefined, () => request<RelayAccessGrantDto>('relay/grants', {
     method: 'POST',
     body: JSON.stringify(input),
   }), input);
@@ -745,7 +748,7 @@ export function updateRelayGrant(
   dialogContext?: SharingInput,
 ) {
   return sharingMutation('grant', 'edit', grantId, () => request<RelayAccessGrantDto>(
-    `/relay/grants/${encodeURIComponent(grantId)}`,
+    `relay/grants/${encodeURIComponent(grantId)}`,
     {
       method: 'PATCH',
       body: JSON.stringify(input),
@@ -755,7 +758,7 @@ export function updateRelayGrant(
 
 export function revokeRelayGrant(grantId: string) {
   return sharingMutation('grant', 'revoke', grantId, () => request<RelayAccessGrantDto>(
-    `/relay/grants/${encodeURIComponent(grantId)}`,
+    `relay/grants/${encodeURIComponent(grantId)}`,
     {
       method: 'DELETE',
     },
@@ -764,7 +767,7 @@ export function revokeRelayGrant(grantId: string) {
 
 export function fetchRelayAdmin(days?: number) {
   const query = days ? `?days=${encodeURIComponent(String(days))}` : '';
-  return request<RelayAdminSummaryDto>(`/relay/admin${query}`, undefined, {
+  return request<RelayAdminSummaryDto>(`relay/admin${query}`, undefined, {
     auth: 'relay-admin',
   });
 }
@@ -776,7 +779,7 @@ export function updateRelayRegistrationSettings(
     registrationEnabled: boolean;
     settings: RelayRegistrationSettingsDto;
   }>(
-    '/relay/admin/settings/registration',
+    'relay/admin/settings/registration',
     {
       method: 'PATCH',
       body: JSON.stringify(input),
@@ -787,7 +790,7 @@ export function updateRelayRegistrationSettings(
 
 export function setRelayUserEnabled(userId: string, enabled: boolean) {
   return request<RelayUserDto>(
-    `/relay/admin/users/${encodeURIComponent(userId)}`,
+    `relay/admin/users/${encodeURIComponent(userId)}`,
     {
       method: 'PATCH',
       body: JSON.stringify({ enabled }),
@@ -798,7 +801,7 @@ export function setRelayUserEnabled(userId: string, enabled: boolean) {
 
 export function deleteRelayAdminUser(userId: string) {
   return request<{ id: string }>(
-    `/relay/admin/users/${encodeURIComponent(userId)}`,
+    `relay/admin/users/${encodeURIComponent(userId)}`,
     {
       method: 'DELETE',
     },
@@ -808,7 +811,7 @@ export function deleteRelayAdminUser(userId: string) {
 
 export function resetRelayAdminUserPassword(userId: string, password: string) {
   return request<RelayUserDto>(
-    `/relay/admin/users/${encodeURIComponent(userId)}/reset-password`,
+    `relay/admin/users/${encodeURIComponent(userId)}/reset-password`,
     {
       method: 'POST',
       body: JSON.stringify({ password }),
@@ -819,7 +822,7 @@ export function resetRelayAdminUserPassword(userId: string, password: string) {
 
 export function approveRelayRegistration(requestId: string) {
   return request<RelayUserDto>(
-    `/relay/admin/registrations/${encodeURIComponent(requestId)}/approve`,
+    `relay/admin/registrations/${encodeURIComponent(requestId)}/approve`,
     {
       method: 'POST',
     },
@@ -829,7 +832,7 @@ export function approveRelayRegistration(requestId: string) {
 
 export function rejectRelayRegistration(requestId: string) {
   return request<{ id: string }>(
-    `/relay/admin/registrations/${encodeURIComponent(requestId)}/reject`,
+    `relay/admin/registrations/${encodeURIComponent(requestId)}/reject`,
     {
       method: 'POST',
     },
@@ -838,27 +841,27 @@ export function rejectRelayRegistration(requestId: string) {
 }
 
 export function fetchWorkspaceSettings() {
-  return request<WorkspaceSettingsDto>('/api/config/workspace-settings', {
+  return request<WorkspaceSettingsDto>('api/config/workspace-settings', {
     cache: 'no-store',
   });
 }
 
 export function updateWorkspaceSettings(input: UpdateWorkspaceSettingsInput) {
-  return request<WorkspaceSettingsDto>('/api/config/workspace-settings', {
+  return request<WorkspaceSettingsDto>('api/config/workspace-settings', {
     method: 'PATCH',
     body: JSON.stringify(input),
   });
 }
 
 export function fetchAgentBackends() {
-  return request<AgentBackendDto[]>('/api/agent-runtimes', {
+  return request<AgentBackendDto[]>('api/agent-runtimes', {
     cache: 'no-store',
   });
 }
 
 export function fetchAgentBackendStatus(provider: AgentBackendIdDto) {
   return request<AgentBackendDto>(
-    `/api/agent-runtimes/${encodeURIComponent(provider)}/status`,
+    `api/agent-runtimes/${encodeURIComponent(provider)}/status`,
     {
       cache: 'no-store',
     },
@@ -867,7 +870,7 @@ export function fetchAgentBackendStatus(provider: AgentBackendIdDto) {
 
 export function fetchAgentSubscriptionUsage(provider: AgentBackendIdDto, agentId?: string | null) {
   return request<{ usage: AgentSubscriptionUsageDto | null; unavailable?: boolean }>(
-    `/api/agent-runtimes/${encodeURIComponent(provider)}/subscription-usage${agentId ? `?agentId=${encodeURIComponent(agentId)}` : ""}`,
+    `api/agent-runtimes/${encodeURIComponent(provider)}/subscription-usage${agentId ? `?agentId=${encodeURIComponent(agentId)}` : ""}`,
     { cache: 'no-store' },
   );
 }
@@ -878,7 +881,7 @@ export function installOrUpdateAgentBackend(
   modelId?: string,
 ) {
   return request<AgentBackendDto>(
-    `/api/agent-runtimes/${encodeURIComponent(provider)}/install${modelId ? `?agentId=${encodeURIComponent(modelId)}` : ''}`,
+    `api/agent-runtimes/${encodeURIComponent(provider)}/install${modelId ? `?agentId=${encodeURIComponent(modelId)}` : ''}`,
     {
       method: 'POST',
       body: JSON.stringify({
@@ -906,7 +909,7 @@ export function fetchAgentBackendModelsFor(
   }
   const suffix = query.size > 0 ? `?${query.toString()}` : '';
   return request<ModelOptionDto[]>(
-    `/api/agent-runtimes/${encodeURIComponent(provider)}/models${suffix}`,
+    `api/agent-runtimes/${encodeURIComponent(provider)}/models${suffix}`,
     {
       cache: 'no-store',
     },
@@ -915,7 +918,7 @@ export function fetchAgentBackendModelsFor(
 
 export function fetchAgentBackendAgents(provider: AgentBackendIdDto) {
   return request<ModelOptionDto[]>(
-    `/api/agent-runtimes/${encodeURIComponent(provider)}/agents`,
+    `api/agent-runtimes/${encodeURIComponent(provider)}/agents`,
     { cache: 'no-store' },
   );
 }
@@ -926,31 +929,31 @@ export function fetchThreadCapabilitySnapshot(threadId: string,
   options: { load?: boolean } = {},
 ) {
   const query = options.load === false ? '?load=false' : '';
-  return deviceRequest<AgentCapabilitySnapshotDto>(deviceId, `/api/threads/${encodeURIComponent(threadId)}/capabilities${query}`, { cache: 'no-store' });
+  return deviceRequest<AgentCapabilitySnapshotDto>(deviceId, `api/threads/${encodeURIComponent(threadId)}/capabilities${query}`, { cache: 'no-store' });
 }
 
 /** Ends a thread's harness processes; `interrupt` first stops a running turn. */
 export function releaseThread(threadId: string, input: ReleaseThreadInput = {},
   deviceId?: string | null,
 ) {
-  return deviceRequest<ReleaseThreadResultDto>(deviceId, `/api/threads/${encodeURIComponent(threadId)}/release`, {
+  return deviceRequest<ReleaseThreadResultDto>(deviceId, `api/threads/${encodeURIComponent(threadId)}/release`, {
     method: 'POST',
     body: JSON.stringify(input),
   });
 }
 
 export function fetchHarnessProcesses(signal?: AbortSignal) {
-  return request<HarnessProcessesDto>('/api/device/processes', { cache: 'no-store', ...(signal ? { signal } : {}) });
+  return request<HarnessProcessesDto>('api/device/processes', { cache: 'no-store', ...(signal ? { signal } : {}) });
 }
 
 export function fetchHarnessResourceSettings(deviceId?: string | null) {
-  return deviceRequest<HarnessResourceSettingsDto>(deviceId, '/api/harness-resources/settings', { cache: 'no-store' });
+  return deviceRequest<HarnessResourceSettingsDto>(deviceId, 'api/harness-resources/settings', { cache: 'no-store' });
 }
 
 export function updateHarnessResourceSettings(input: HarnessResourceSettingsDto,
   deviceId?: string | null,
 ) {
-  return deviceRequest<HarnessResourceSettingsDto>(deviceId, '/api/harness-resources/settings', {
+  return deviceRequest<HarnessResourceSettingsDto>(deviceId, 'api/harness-resources/settings', {
     method: 'PUT',
     body: JSON.stringify(input),
   });
@@ -960,7 +963,7 @@ export function postThreadHarnessAction<T>(threadId: string,
   action: unknown,
   deviceId?: string | null,
 ) {
-  return deviceRequest<T>(deviceId, `/api/threads/${encodeURIComponent(threadId)}/harness`, {
+  return deviceRequest<T>(deviceId, `api/threads/${encodeURIComponent(threadId)}/harness`, {
     method: 'POST',
     body: JSON.stringify(action),
   });
@@ -976,7 +979,7 @@ export function fetchAgentHarnessCatalog<T>(
   if (options.cwd) query.set('cwd', options.cwd);
   const suffix = query.size > 0 ? `?${query.toString()}` : '';
   return request<T | null>(
-    `/api/agent-runtimes/${encodeURIComponent(provider)}/harness${suffix}`,
+    `api/agent-runtimes/${encodeURIComponent(provider)}/harness${suffix}`,
     { cache: 'no-store' },
   );
 }
@@ -1000,7 +1003,7 @@ export async function dshConsoleUrl(
     // login cookie on the token redirect. The proxy listens on IPv4 loopback.
     return `http://${host === '[::1]' ? '127.0.0.1' : host}:${target.port}${target.path}`;
   }
-  const device = `/relay/devices/${encodeURIComponent(deviceId)}`;
+  const device = `relay/devices/${encodeURIComponent(deviceId)}`;
   // The device maps its console port (and drops stopped consoles). Older
   // devices leave it to the browser: one mapping per thread.
   let mappingId = target.mappingId;
@@ -1025,10 +1028,10 @@ export async function dshConsoleUrl(
 export function fetchThreadModels(threadId: string,
   deviceId?: string | null,
 ) {
-  return deviceRequest<ModelOptionDto[]>(deviceId, `/api/threads/${encodeURIComponent(threadId)}/models`, {cache:'no-store'});
+  return deviceRequest<ModelOptionDto[]>(deviceId, `api/threads/${encodeURIComponent(threadId)}/models`, {cache:'no-store'});
 }
 export function fetchThreadGroup(threadId: string) {
-  return request<ThreadDto[]>(`/api/threads/${encodeURIComponent(threadId)}/group`, {cache:'no-store'});
+  return request<ThreadDto[]>(`api/threads/${encodeURIComponent(threadId)}/group`, {cache:'no-store'});
 }
 
 export function fetchProviderHostFile(
@@ -1036,7 +1039,7 @@ export function fetchProviderHostFile(
   name: string,
 ) {
   return request<ProviderHostFileDto>(
-    `/api/config/providers/${encodeURIComponent(provider)}/files/${encodeURIComponent(name)}`,
+    `api/config/providers/${encodeURIComponent(provider)}/files/${encodeURIComponent(name)}`,
     {
       cache: 'no-store',
     },
@@ -1049,7 +1052,7 @@ export function updateProviderHostFile(
   input: UpdateProviderHostFileInput,
 ) {
   return request<ProviderHostFileDto>(
-    `/api/config/providers/${encodeURIComponent(provider)}/files/${encodeURIComponent(name)}`,
+    `api/config/providers/${encodeURIComponent(provider)}/files/${encodeURIComponent(name)}`,
     {
       method: 'PATCH',
       body: JSON.stringify(input),
@@ -1059,7 +1062,7 @@ export function updateProviderHostFile(
 
 export function fetchProviderHostConfigArchives(provider: AgentBackendIdDto) {
   return request<ProviderHostConfigArchiveDto[]>(
-    `/api/config/providers/${encodeURIComponent(provider)}/archives`,
+    `api/config/providers/${encodeURIComponent(provider)}/archives`,
     {
       cache: 'no-store',
     },
@@ -1071,7 +1074,7 @@ export function createProviderHostConfigArchive(
   input: CreateProviderHostConfigArchiveInput = {},
 ) {
   return request<ProviderHostConfigArchiveDto>(
-    `/api/config/providers/${encodeURIComponent(provider)}/archives`,
+    `api/config/providers/${encodeURIComponent(provider)}/archives`,
     {
       method: 'POST',
       body: JSON.stringify(input),
@@ -1085,7 +1088,7 @@ export function renameProviderHostConfigArchive(
   input: RenameProviderHostConfigArchiveInput,
 ) {
   return request<ProviderHostConfigArchiveDto>(
-    `/api/config/providers/${encodeURIComponent(provider)}/archives/${encodeURIComponent(id)}`,
+    `api/config/providers/${encodeURIComponent(provider)}/archives/${encodeURIComponent(id)}`,
     {
       method: 'PATCH',
       body: JSON.stringify(input),
@@ -1098,7 +1101,7 @@ export function applyProviderHostConfigArchive(
   id: string,
 ) {
   return request<ApplyProviderHostConfigArchiveResultDto>(
-    `/api/config/providers/${encodeURIComponent(provider)}/archives/${encodeURIComponent(id)}/apply`,
+    `api/config/providers/${encodeURIComponent(provider)}/archives/${encodeURIComponent(id)}/apply`,
     {
       method: 'POST',
     },
@@ -1112,32 +1115,32 @@ export function fetchSupervisorHealth() {
 }
 
 export function fetchWorkspaces() {
-  return request<WorkspaceDto[]>('/api/workspaces');
+  return request<WorkspaceDto[]>('api/workspaces');
 }
 
 export function fetchLinkedFile(threadId: string, path: string,
   deviceId?: string | null,
 ) {
-  return deviceRequest<ThreadWorkspaceTreeNodeDto>(deviceId, `/api/threads/${encodeURIComponent(threadId)}/linked-files/stat?${new URLSearchParams({path})}`, {cache: 'no-store'});
+  return deviceRequest<ThreadWorkspaceTreeNodeDto>(deviceId, `api/threads/${encodeURIComponent(threadId)}/linked-files/stat?${new URLSearchParams({path})}`, {cache: 'no-store'});
 }
 export function fetchLinkedFilePreview(threadId: string, input: {path: string; offset?: number; limit?: number},
   deviceId?: string | null,
 ) {
   const params = new URLSearchParams({path: input.path, offset: String(input.offset ?? 0), limit: String(input.limit ?? 24000)});
-  return deviceRequest<ThreadWorkspaceFilePreviewDto>(deviceId, `/api/threads/${encodeURIComponent(threadId)}/linked-files/preview?${params}`, {cache: 'no-store'});
+  return deviceRequest<ThreadWorkspaceFilePreviewDto>(deviceId, `api/threads/${encodeURIComponent(threadId)}/linked-files/preview?${params}`, {cache: 'no-store'});
 }
 export async function downloadLinkedFile(threadId: string, path: string,
   deviceId?: string | null,
   signal?: AbortSignal,
 ) {
-  const result = await deviceDownload(deviceId, `/api/threads/${encodeURIComponent(threadId)}/linked-files/raw?${new URLSearchParams({path})}`, signal ? { signal } : undefined);
+  const result = await deviceDownload(deviceId, `api/threads/${encodeURIComponent(threadId)}/linked-files/raw?${new URLSearchParams({path})}`, signal ? { signal } : undefined);
   return { ...result, filename: path.replace(/\\/g, '/').split('/').pop() || 'download' };
 }
 
 export function buildLinkedFileUrl(threadId: string, path: string,
   deviceId?: string | null,
 ) {
-  return buildDeviceMediaUrl(deviceId, `/api/threads/${encodeURIComponent(threadId)}/linked-files/raw?${new URLSearchParams({path})}`);
+  return buildDeviceMediaUrl(deviceId, `api/threads/${encodeURIComponent(threadId)}/linked-files/raw?${new URLSearchParams({path})}`);
 }
 
 export function fetchWorkspaceFileTree(
@@ -1151,7 +1154,7 @@ export function fetchWorkspaceFileTree(
   }
   const suffix = params.size > 0 ? `?${params.toString()}` : '';
   return deviceRequest<ThreadWorkspaceTreeNodeDto>(deviceId,
-    `/api/workspaces/${encodeURIComponent(workspaceId)}/files/tree${suffix}`,
+    `api/workspaces/${encodeURIComponent(workspaceId)}/files/tree${suffix}`,
     {
       cache: 'no-store',
     },
@@ -1172,7 +1175,7 @@ export function fetchWorkspaceFilePreview(
   }
 
   return deviceRequest<ThreadWorkspaceFilePreviewDto>(deviceId,
-    `/api/workspaces/${encodeURIComponent(workspaceId)}/files/preview?${params.toString()}`,
+    `api/workspaces/${encodeURIComponent(workspaceId)}/files/preview?${params.toString()}`,
     {
       cache: 'no-store',
     },
@@ -1186,7 +1189,7 @@ export function buildWorkspaceRawFileUrl(
 ) {
   const params = new URLSearchParams({ path: input.path });
   return buildDeviceApiUrl(deviceId,
-    `/api/workspaces/${encodeURIComponent(workspaceId)}/files/raw?${params.toString()}`,
+    `api/workspaces/${encodeURIComponent(workspaceId)}/files/raw?${params.toString()}`,
   );
 }
 
@@ -1199,12 +1202,12 @@ export function buildThreadImageAssetUrl(
   // Older Supervisors ignore the variant and send the original.
   if (input.variant) params.set('variant', input.variant);
   return buildDeviceMediaUrl(deviceId,
-    `/api/threads/${encodeURIComponent(threadId)}/assets/image?${params.toString()}`,
+    `api/threads/${encodeURIComponent(threadId)}/assets/image?${params.toString()}`,
   );
 }
 
 export async function downloadThreadImage(threadId: string, path: string) {
-  const result = await downloadFile(`/api/threads/${encodeURIComponent(threadId)}/assets/image?${new URLSearchParams({ path })}`);
+  const result = await downloadFile(`api/threads/${encodeURIComponent(threadId)}/assets/image?${new URLSearchParams({ path })}`);
   return result.blob;
 }
 
@@ -1216,7 +1219,7 @@ export function downloadWorkspaceFile(
 ) {
   const params = new URLSearchParams({ path: input.path });
   return deviceDownload(deviceId,
-    `/api/workspaces/${encodeURIComponent(workspaceId)}/files/download?${params.toString()}`,
+    `api/workspaces/${encodeURIComponent(workspaceId)}/files/download?${params.toString()}`,
     {
       cache: 'no-store',
       ...(signal ? { signal } : {}),
@@ -1232,7 +1235,7 @@ export function uploadWorkspaceFile(
   const formData = new FormData();
   formData.append('file', input.file, input.file.name);
   return deviceRequest<ThreadWorkspaceUploadResultDto>(deviceId,
-    `/api/workspaces/${encodeURIComponent(workspaceId)}/files/upload`,
+    `api/workspaces/${encodeURIComponent(workspaceId)}/files/upload`,
     {
       method: 'POST',
       body: formData,
@@ -1245,7 +1248,7 @@ export function writeWorkspaceFile(
   input: { path: string; content: string },
 ) {
   return request<WorkspaceFileDto>(
-    `/api/workspaces/${encodeURIComponent(workspaceId)}/files`,
+    `api/workspaces/${encodeURIComponent(workspaceId)}/files`,
     {
       method: 'PUT',
       body: JSON.stringify(input),
@@ -1254,25 +1257,25 @@ export function writeWorkspaceFile(
 }
 
 export function fetchThreads(includeAgentThreads = false) {
-  return request<ThreadDto[]>(`/api/threads${includeAgentThreads ? '?includeAgentThreads=true' : ''}`);
+  return request<ThreadDto[]>(`api/threads${includeAgentThreads ? '?includeAgentThreads=true' : ''}`);
 }
 
 export function renameWorkspaceNode(workspaceId: string, input: {fromPath: string; toPath: string},
   deviceId?: string | null,
 ) {
-  return deviceRequest(deviceId, `/api/workspaces/${encodeURIComponent(workspaceId)}/files/move`, {method:'PATCH',body:JSON.stringify(input)});
+  return deviceRequest(deviceId, `api/workspaces/${encodeURIComponent(workspaceId)}/files/move`, {method:'PATCH',body:JSON.stringify(input)});
 }
 export function createWorkspaceFile(workspaceId: string, path: string,
   deviceId?: string | null,
 ) {
-  return deviceRequest<{ path: string }>(deviceId, `/api/workspaces/${encodeURIComponent(workspaceId)}/files`, {
+  return deviceRequest<{ path: string }>(deviceId, `api/workspaces/${encodeURIComponent(workspaceId)}/files`, {
     method: 'POST', body: JSON.stringify({ path }),
   });
 }
 export function deleteWorkspaceNode(workspaceId: string, path: string,
   deviceId?: string | null,
 ) {
-  return deviceRequest(deviceId, `/api/workspaces/${encodeURIComponent(workspaceId)}/files?${new URLSearchParams({path})}`, {method:'DELETE'});
+  return deviceRequest(deviceId, `api/workspaces/${encodeURIComponent(workspaceId)}/files?${new URLSearchParams({path})}`, {method:'DELETE'});
 }
 
 export function fetchThreadDetail(
@@ -1290,7 +1293,7 @@ export function fetchThreadDetail(
   }
 
   return deviceRequest<ThreadDetailDto>(deviceId,
-    `/api/threads/${id}?${params.toString()}`,
+    `api/threads/${id}?${params.toString()}`,
   );
 }
 
@@ -1325,7 +1328,7 @@ export interface GlobalConversationSearchResult {
   scope: 'device';
 }
 export function searchConversations(query: string, workspaceId: string | undefined, offset: number, signal?: AbortSignal) {
-  const path = workspaceId ? `/api/workspaces/${encodeURIComponent(workspaceId)}/search` : '/api/search';
+  const path = workspaceId ? `api/workspaces/${encodeURIComponent(workspaceId)}/search` : 'api/search';
   return request<GlobalConversationSearchResult>(
     `${path}?${new URLSearchParams({ q: query, limit: '50', offset: String(offset) })}`,
     { ...(signal ? { signal } : {}), cache: 'no-store' },
@@ -1333,7 +1336,7 @@ export function searchConversations(query: string, workspaceId: string | undefin
 }
 export function searchThreadMessages(id: string, query: string, signal?: AbortSignal) {
   return request<ConversationSearchResult>(
-    `/api/threads/${encodeURIComponent(id)}/search?${new URLSearchParams({ q: query, limit: '50' })}`,
+    `api/threads/${encodeURIComponent(id)}/search?${new URLSearchParams({ q: query, limit: '50' })}`,
     { signal: signal ?? null },
   );
 }
@@ -1342,14 +1345,14 @@ export function searchThreadMessages(id: string, query: string, signal?: AbortSi
 export function fetchThreadConversationPage(id: string, beforeTurnId?: string, signal?: AbortSignal) {
   const params = new URLSearchParams({ view: 'full', limit: '100', compact: '1' });
   if (beforeTurnId) params.set('beforeTurnId', beforeTurnId);
-  return request<ThreadDetailDto>(`/api/threads/${encodeURIComponent(id)}?${params}`, { signal: signal ?? null });
+  return request<ThreadDetailDto>(`api/threads/${encodeURIComponent(id)}?${params}`, { signal: signal ?? null });
 }
 
 export function fetchThreadHistoryItemDetail(id: string, itemId: string,
   deviceId?: string | null,
 ) {
   return deviceRequest<ThreadHistoryItemDetailDto>(deviceId,
-    `/api/threads/${id}/items/${encodeURIComponent(itemId)}/detail`,
+    `api/threads/${id}/items/${encodeURIComponent(itemId)}/detail`,
   );
 }
 
@@ -1357,39 +1360,39 @@ export function fetchThreadTurnDetail(id: string, turnId: string,
   deviceId?: string | null,
 ) {
   return deviceRequest<ThreadTurnDto>(deviceId,
-    `/api/threads/${id}/turns/${encodeURIComponent(turnId)}/detail?compact=1`,
+    `api/threads/${id}/turns/${encodeURIComponent(turnId)}/detail?compact=1`,
   );
 }
 
 export function fetchPlugins() {
-  return request<PluginDto[]>('/api/plugins', {
+  return request<PluginDto[]>('api/plugins', {
     cache: 'no-store',
   });
 }
 
 export function importPlugin(input: ImportPluginInput) {
-  return request<PluginDto>('/api/plugins/import', {
+  return request<PluginDto>('api/plugins/import', {
     method: 'POST',
     body: JSON.stringify(input),
   });
 }
 
 export function updatePlugin(pluginId: string, input: UpdatePluginInput) {
-  return request<PluginDto>(`/api/plugins/${encodeURIComponent(pluginId)}`, {
+  return request<PluginDto>(`api/plugins/${encodeURIComponent(pluginId)}`, {
     method: 'PATCH',
     body: JSON.stringify(input),
   });
 }
 
 export function deletePlugin(pluginId: string) {
-  return request<PluginDto>(`/api/plugins/${encodeURIComponent(pluginId)}`, {
+  return request<PluginDto>(`api/plugins/${encodeURIComponent(pluginId)}`, {
     method: 'DELETE',
   });
 }
 
 export function fetchThreadExportTurns(id: string) {
   return request<ThreadExportTurnOptionsDto>(
-    `/api/threads/${id}/export-turns`,
+    `api/threads/${id}/export-turns`,
     {
       cache: 'no-store',
     },
@@ -1399,11 +1402,11 @@ export function fetchThreadExportTurns(id: string) {
 export function fetchThreadShellState(id: string,
   deviceId?: string | null,
 ) {
-  return deviceRequest<ThreadShellStateDto>(deviceId, `/api/threads/${id}/shell`);
+  return deviceRequest<ThreadShellStateDto>(deviceId, `api/threads/${id}/shell`);
 }
 
 export function createThread(input: CreateThreadInput) {
-  return request<ThreadDto>('/api/threads/start', {
+  return request<ThreadDto>('api/threads/start', {
     method: 'POST',
     body: JSON.stringify(input),
   });
@@ -1413,7 +1416,7 @@ export function importThread(
   input: ImportThreadInput | ImportThreadInput['sessionId'],
 ) {
   const body = typeof input === 'string' ? { sessionId: input } : input;
-  return request<ThreadDetailDto>('/api/threads/import', {
+  return request<ThreadDetailDto>('api/threads/import', {
     method: 'POST',
     body: JSON.stringify(body),
   });
@@ -1428,7 +1431,7 @@ export function fetchImportThreadCandidates(
     query.set('agentId', agentId);
   }
   return request<ImportThreadCandidateDto[]>(
-    `/api/threads/import-candidates?${query.toString()}`,
+    `api/threads/import-candidates?${query.toString()}`,
   );
 }
 
@@ -1437,7 +1440,7 @@ export function createThreadShell(
   input: { cols?: number; rows?: number; label?: string } = {},
   deviceId?: string | null,
 ) {
-  return deviceRequest<ThreadShellStateDto>(deviceId, `/api/threads/${id}/shell`, {
+  return deviceRequest<ThreadShellStateDto>(deviceId, `api/threads/${id}/shell`, {
     method: 'POST',
     ...(Object.keys(input).length > 0 ? { body: JSON.stringify(input) } : {}),
   });
@@ -1447,7 +1450,7 @@ export function terminateShell(id: string,
   deviceId?: string | null,
   threadScope?: string,
 ) {
-  return deviceRequest<ShellSessionDto>(deviceId, `/api/shells/${id}/terminate`, {
+  return deviceRequest<ShellSessionDto>(deviceId, `api/shells/${id}/terminate`, {
     method: 'POST',
   }, threadScope);
 }
@@ -1456,7 +1459,7 @@ export function updateShell(id: string, input: UpdateShellInput,
   deviceId?: string | null,
   threadScope?: string,
 ) {
-  return deviceRequest<ShellSessionDto>(deviceId, `/api/shells/${id}`, {
+  return deviceRequest<ShellSessionDto>(deviceId, `api/shells/${id}`, {
     method: 'PATCH',
     body: JSON.stringify(input),
   }, threadScope);
@@ -1465,14 +1468,14 @@ export function updateShell(id: string, input: UpdateShellInput,
 export function resumeThread(id: string, input: ResumeThreadInput = {},
   deviceId?: string | null,
 ) {
-  return deviceRequest<ThreadDetailDto>(deviceId, `/api/threads/${id}/resume`, {
+  return deviceRequest<ThreadDetailDto>(deviceId, `api/threads/${id}/resume`, {
     method: 'POST',
     ...(Object.keys(input).length > 0 ? { body: JSON.stringify(input) } : {}),
   });
 }
 
 export function disconnectThread(id: string) {
-  return request<ThreadDetailDto>(`/api/threads/${id}/disconnect`, {
+  return request<ThreadDetailDto>(`api/threads/${id}/disconnect`, {
     method: 'POST',
   });
 }
@@ -1485,7 +1488,7 @@ export function sendThreadPrompt(
   const attachments = input.attachments ?? [];
 
   if (attachments.length === 0) {
-    return deviceRequest<ThreadDto>(deviceId, `/api/threads/${id}/prompt`, {
+    return deviceRequest<ThreadDto>(deviceId, `api/threads/${id}/prompt`, {
       method: 'POST',
       body: JSON.stringify(input),
     });
@@ -1526,7 +1529,7 @@ export function sendThreadPrompt(
     );
   }
 
-  return deviceRequest<ThreadDto>(deviceId, `/api/threads/${id}/prompt`, {
+  return deviceRequest<ThreadDto>(deviceId, `api/threads/${id}/prompt`, {
     method: 'POST',
     body: formData,
   });
@@ -1535,21 +1538,21 @@ export function sendThreadPrompt(
 export function interruptThread(id: string, input: InterruptTurnInput = {},
   deviceId?: string | null,
 ) {
-  return deviceRequest<ThreadDto>(deviceId, `/api/threads/${id}/interrupt`, {
+  return deviceRequest<ThreadDto>(deviceId, `api/threads/${id}/interrupt`, {
     method: 'POST',
     body: JSON.stringify(input),
   });
 }
 
 export function updateThread(id: string, input: UpdateThreadInput) {
-  return request<ThreadDto>(`/api/threads/${id}`, {
+  return request<ThreadDto>(`api/threads/${id}`, {
     method: 'PATCH',
     body: JSON.stringify(input),
   });
 }
 
 export function deleteThread(id: string) {
-  return request<{ id: string }>(`/api/threads/${id}`, {
+  return request<{ id: string }>(`api/threads/${id}`, {
     method: 'DELETE',
   });
 }
@@ -1558,7 +1561,7 @@ export function cancelPendingSteer(id: string, pendingSteerId: string,
   deviceId?: string | null,
 ) {
   return deviceRequest<ThreadDetailDto>(deviceId,
-    `/api/threads/${id}/pending-steers/${encodeURIComponent(pendingSteerId)}`,
+    `api/threads/${id}/pending-steers/${encodeURIComponent(pendingSteerId)}`,
     {
       method: 'DELETE',
     },
@@ -1569,7 +1572,7 @@ export async function fetchThreadDelivery(id: string,
   deviceId?: string | null,
 ) {
   try {
-    return await deviceRequest<ThreadDetailDto & {acceptedSteerIds?: string[]}>(deviceId, `/api/threads/${id}?view=delivery`);
+    return await deviceRequest<ThreadDetailDto & {acceptedSteerIds?: string[]}>(deviceId, `api/threads/${id}?view=delivery`);
   } catch (error) {
     // Compatible with devices that have not installed the lightweight endpoint yet.
     if (error instanceof ApiError && error.statusCode === 400) return fetchThreadDetail(id, {limit:1}, deviceId);
@@ -1582,7 +1585,7 @@ export async function steerPendingPrompt(id: string, pendingSteerId: string,
 ) {
   try {
     return await deviceRequest<ThreadDetailDto>(deviceId,
-      `/api/threads/${id}/pending-steers/${encodeURIComponent(pendingSteerId)}/steer`, {method:'POST'},
+      `api/threads/${id}/pending-steers/${encodeURIComponent(pendingSteerId)}/steer`, {method:'POST'},
     );
   } catch (error) {
     if (!(error instanceof TypeError) && !(error instanceof ApiError && [408,502,503,504].includes(error.statusCode))) throw error;
@@ -1624,26 +1627,26 @@ export function updateThreadSettings(
   input: UpdateThreadSettingsInput,
   deviceId?: string | null,
 ) {
-  return deviceRequest<ThreadDto>(deviceId, `/api/threads/${id}/settings`, {
+  return deviceRequest<ThreadDto>(deviceId, `api/threads/${id}/settings`, {
     method: 'PATCH',
     body: JSON.stringify(input),
   });
 }
 
 export function compactThread(id: string) {
-  return request<ThreadDto>(`/api/threads/${id}/compact`, {
+  return request<ThreadDto>(`api/threads/${id}/compact`, {
     method: 'POST',
   });
 }
 
 export function fetchThreadGoal(id: string) {
-  return request<{ goal: ThreadGoalDto | null }>(`/api/threads/${id}/goal`, {
+  return request<{ goal: ThreadGoalDto | null }>(`api/threads/${id}/goal`, {
     cache: 'no-store',
   });
 }
 
 export function updateThreadGoal(id: string, input: UpdateThreadGoalInput) {
-  return request<{ goal: ThreadGoalDto | null }>(`/api/threads/${id}/goal`, {
+  return request<{ goal: ThreadGoalDto | null }>(`api/threads/${id}/goal`, {
     method: 'PATCH',
     body: JSON.stringify(input),
   });
@@ -1651,7 +1654,7 @@ export function updateThreadGoal(id: string, input: UpdateThreadGoalInput) {
 
 export function clearThreadGoal(id: string) {
   return request<{ cleared: boolean; goalHistory?: ThreadGoalDto[] }>(
-    `/api/threads/${id}/goal`,
+    `api/threads/${id}/goal`,
     {
       method: 'DELETE',
     },
@@ -1659,59 +1662,59 @@ export function clearThreadGoal(id: string) {
 }
 
 export function fetchThreadForkTurns(id: string) {
-  return request<ThreadForkTurnOptionDto[]>(`/api/threads/${id}/fork-turns`, {
+  return request<ThreadForkTurnOptionDto[]>(`api/threads/${id}/fork-turns`, {
     cache: 'no-store',
   });
 }
 
 export function forkThread(id: string, input: ForkThreadInput) {
-  return request<ThreadForkResultDto>(`/api/threads/${id}/fork`, {
+  return request<ThreadForkResultDto>(`api/threads/${id}/fork`, {
     method: 'POST',
     body: JSON.stringify(input),
   });
 }
 
 export function fetchThreadSkills(id: string) {
-  return request<ThreadSkillsDto>(`/api/threads/${id}/skills`, {
+  return request<ThreadSkillsDto>(`api/threads/${id}/skills`, {
     cache: 'no-store',
   });
 }
 
 export function fetchThreadMcpServers(id: string) {
-  return request<ThreadMcpServersDto>(`/api/threads/${id}/mcp-servers`, {
+  return request<ThreadMcpServersDto>(`api/threads/${id}/mcp-servers`, {
     cache: 'no-store',
   });
 }
 
 export function fetchThreadHooks(id: string) {
-  return request<ThreadHooksDto>(`/api/threads/${id}/hooks`, {
+  return request<ThreadHooksDto>(`api/threads/${id}/hooks`, {
     cache: 'no-store',
   });
 }
 
 export function createThreadHook(id: string, input: CreateThreadHookInput) {
-  return request<ThreadHooksDto>(`/api/threads/${id}/hooks`, {
+  return request<ThreadHooksDto>(`api/threads/${id}/hooks`, {
     method: 'POST',
     body: JSON.stringify(input),
   });
 }
 
 export function updateThreadHook(id: string, input: UpdateThreadHookInput) {
-  return request<ThreadHooksDto>(`/api/threads/${id}/hooks`, {
+  return request<ThreadHooksDto>(`api/threads/${id}/hooks`, {
     method: 'PUT',
     body: JSON.stringify(input),
   });
 }
 
 export function trustThreadHook(id: string, input: TrustThreadHookInput) {
-  return request<ThreadHooksDto>(`/api/threads/${id}/hooks/trust`, {
+  return request<ThreadHooksDto>(`api/threads/${id}/hooks/trust`, {
     method: 'POST',
     body: JSON.stringify(input),
   });
 }
 
 export function untrustThreadHook(id: string, input: UntrustThreadHookInput) {
-  return request<ThreadHooksDto>(`/api/threads/${id}/hooks/untrust`, {
+  return request<ThreadHooksDto>(`api/threads/${id}/hooks/untrust`, {
     method: 'POST',
     body: JSON.stringify(input),
   });
@@ -1724,7 +1727,7 @@ export function respondToThreadRequest(
   deviceId?: string | null,
 ) {
   return deviceRequest<ThreadDetailDto>(deviceId,
-    `/api/threads/${id}/requests/${encodeURIComponent(requestId)}/respond`,
+    `api/threads/${id}/requests/${encodeURIComponent(requestId)}/respond`,
     {
       method: 'POST',
       body: JSON.stringify(input),
@@ -1733,14 +1736,14 @@ export function respondToThreadRequest(
 }
 
 export function createWorkspace(input: CreateWorkspaceInput) {
-  return request<WorkspaceDto>('/api/workspaces', {
+  return request<WorkspaceDto>('api/workspaces', {
     method: 'POST',
     body: JSON.stringify(input),
   });
 }
 
 export function updateWorkspace(id: string, input: UpdateWorkspaceInput) {
-  return request<WorkspaceDto>(`/api/workspaces/${id}`, {
+  return request<WorkspaceDto>(`api/workspaces/${id}`, {
     method: 'PATCH',
     body: JSON.stringify(input),
   });
@@ -1755,7 +1758,7 @@ export function deleteWorkspace(
   id: string,
   input: DeleteWorkspaceConfirmationInput,
 ) {
-  return request<{ id: string }>(`/api/workspaces/${id}`, {
+  return request<{ id: string }>(`api/workspaces/${id}`, {
     method: 'DELETE',
     body: JSON.stringify(input),
   });
@@ -1765,7 +1768,7 @@ export function updateWorkspaceFavorite(
   id: string,
   input: UpdateWorkspaceFavoriteInput,
 ) {
-  return request<WorkspaceDto>(`/api/workspaces/${id}/favorite`, {
+  return request<WorkspaceDto>(`api/workspaces/${id}/favorite`, {
     method: 'POST',
     body: JSON.stringify(input),
   });
@@ -1830,16 +1833,17 @@ export function connectShellSocket(
 }
 
 function buildSocketUrl(protocol: 'ws:' | 'wss:', target?: { deviceId: string | null; threadId: string | null }) {
-  const url = new URL(`${protocol}//${window.location.host}/ws`);
+  const url = new URL(appUrl('ws'), window.location.origin);
+  url.protocol = protocol;
   if (relayModeEnabled()) {
     const deviceId = target ? target.deviceId : readSelectedRelayDeviceId();
-    url.pathname = deviceId
-      ? `/relay/devices/${encodeURIComponent(deviceId)}/ws`
-      : '/relay/ws';
-    const relay = new URL(relaySocketUrl(url.pathname));
+    const relay = new URL(relaySocketUrl(deviceId
+      ? `relay/devices/${encodeURIComponent(deviceId)}/ws`
+      : 'relay/ws'));
     url.protocol = relay.protocol;
     url.hostname = relay.hostname;
     url.port = relay.port;
+    url.pathname = relay.pathname;
   }
   const token = readStoredAuthToken();
   const relayToken = readStoredRelayToken();
@@ -1884,12 +1888,12 @@ export function workspaceResourceScope(deviceId?: string | null) {
 export function fetchWorkspaceDocument(workspaceId: string, path: string, signal?: AbortSignal,
   deviceId?: string | null,
 ) {
-  return deviceRequest<WorkspaceDocumentSnapshot>(deviceId, `/api/workspaces/${encodeURIComponent(workspaceId)}/files/document?${new URLSearchParams({path})}`, { cache: 'no-store', ...(signal ? {signal} : {}) });
+  return deviceRequest<WorkspaceDocumentSnapshot>(deviceId, `api/workspaces/${encodeURIComponent(workspaceId)}/files/document?${new URLSearchParams({path})}`, { cache: 'no-store', ...(signal ? {signal} : {}) });
 }
 export async function saveWorkspaceDocument(workspaceId: string, input: WorkspaceDocumentSaveInput,
   deviceId?: string | null,
 ): Promise<WorkspaceSaveReceipt> {
-  try { return await deviceRequest<WorkspaceSaveReceipt>(deviceId, `/api/workspaces/${encodeURIComponent(workspaceId)}/files/save`, {method:'POST', body: JSON.stringify(input)}); }
+  try { return await deviceRequest<WorkspaceSaveReceipt>(deviceId, `api/workspaces/${encodeURIComponent(workspaceId)}/files/save`, {method:'POST', body: JSON.stringify(input)}); }
   catch (error) {
     if (error instanceof ApiError && error.payload.details && ['conflict','failedBeforeWrite'].includes(String(error.payload.details.status))) return error.payload.details as unknown as WorkspaceSaveReceipt;
     if (error instanceof ApiError && [400,401,403,404,409,410,413,415,422,501,507].includes(error.statusCode)) return {status:'failedBeforeWrite',operationId:input.operationId,draftRevision:input.draftRevision,path:input.path,code:error.statusCode===401||error.statusCode===403?'forbidden':error.payload.code,message:error.payload.message};
@@ -1899,5 +1903,5 @@ export async function saveWorkspaceDocument(workspaceId: string, input: Workspac
 export function fetchWorkspaceSaveOperation(workspaceId: string, operationId: string,
   deviceId?: string | null,
 ) {
-  return deviceRequest<WorkspaceSaveReceipt>(deviceId, `/api/workspaces/${encodeURIComponent(workspaceId)}/files/operations/${encodeURIComponent(operationId)}`, { cache:'no-store' });
+  return deviceRequest<WorkspaceSaveReceipt>(deviceId, `api/workspaces/${encodeURIComponent(workspaceId)}/files/operations/${encodeURIComponent(operationId)}`, { cache:'no-store' });
 }

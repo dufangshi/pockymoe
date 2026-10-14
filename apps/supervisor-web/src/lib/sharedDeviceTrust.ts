@@ -1,3 +1,4 @@
+import { supervisorPath } from './webBase';
 import { translate } from '@pockymoe/thread-ui/i18n';
 import {
   boundDevices,
@@ -104,8 +105,8 @@ export async function sharingGrantDevices() {
 }
 async function deviceDescriptor(deviceId: string, threadId?: string) {
   const challenge = encode64(crypto.getRandomValues(new Uint8Array(32)));
-  const prefix = threadId ? `/api/threads/${encodeURIComponent(threadId)}` : '/api';
-  const response = await nativeFetch(relayUrl(`/relay/devices/${encodeURIComponent(deviceId)}${prefix}/transport/key?challenge=${challenge}`), { credentials: 'include', cache: 'no-store' });
+  const prefix = threadId ? supervisorPath(`api/threads/${encodeURIComponent(threadId)}`) : supervisorPath('api');
+  const response = await nativeFetch(relayUrl(`relay/devices/${encodeURIComponent(deviceId)}${prefix}/transport/key?challenge=${challenge}`), { credentials: 'include', cache: 'no-store' });
   if (response.status === 404) return null;
   if (response.status === 503 || response.status === 504) throw new Error(translate('sharing.protectedOnline'));
   if (!response.ok) throw new SharingTrustError('invalid_certificate');
@@ -155,7 +156,7 @@ export async function forgetInviteOwner(deviceId: string) {
   await sharingTrustStore(`tofu-owner:${deviceId}`, null);
 }
 export async function verifySharedDevice(deviceId: string, identityKey: string, certificate: DeviceCertificate | null): Promise<{ accountKeyId: string; identityTrust: 'invite' | 'tofu' }> {
-  const response = await nativeFetch(relayUrl(`/relay/devices/${encodeURIComponent(deviceId)}/owner-account`), { credentials: 'include', cache: 'no-store' });
+  const response = await nativeFetch(relayUrl(`relay/devices/${encodeURIComponent(deviceId)}/owner-account`), { credentials: 'include', cache: 'no-store' });
   if (!response.ok) throw new SharingTrustError('account_mismatch');
   const account = await validatePublicAccount(await response.json() as PublicAccount);
   const pin = await inviteOwnerPin(deviceId);

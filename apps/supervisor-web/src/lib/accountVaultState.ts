@@ -193,13 +193,13 @@ async function saveWindow(w: WindowState, body: Body, extra: Record<string, unkn
   const vault: Vault = { ...w.vault, ...fields, revision: w.vault.revision + 1 };
   vault.body = await c.seal(w.vdk, c.utf8(JSON.stringify(body)), bodyAad(vault));
   if (windowState() !== w) throw new AccountTrustError('accountUnlockExpired');
-  await accountRequest('/relay/account/vault', 'PUT', { vault, expectedRevision: w.vault.revision, ...(w.authKey ? { currentAuthKey: w.authKey } : w.recoveryAuthKey ? { currentRecoveryAuthKey: w.recoveryAuthKey } : {}), ...extra });
+  await accountRequest('relay/account/vault', 'PUT', { vault, expectedRevision: w.vault.revision, ...(w.authKey ? { currentAuthKey: w.authKey } : w.recoveryAuthKey ? { currentRecoveryAuthKey: w.recoveryAuthKey } : {}), ...extra });
   if (windowState() !== w) throw new AccountTrustError('accountUnlockExpired');
   w.vault = vault; w.body = body; await cacheVault(vault, body);
 }
 export async function unlockAccount(secret: string, recovery = false) {
   const id = await accountStore<string>('active'); if (!id) throw new AccountTrustError('accountUnlockRequired');
-  const vault = await accountRequest<Vault>('/relay/account/vault');
+  const vault = await accountRequest<Vault>('relay/account/vault');
   return openVault(vault, secret, recovery, id);
 }
 export async function registerBrowser(label = browserLabel()) {
@@ -219,7 +219,7 @@ export async function registerBrowser(label = browserLabel()) {
     browser = { userId: handle.userId, accountKeyId: handle.accountKeyId, accountPublicKey: handle.accountPublicKey,
       browserId: fields.browserId, privateKey: pair.privateKey, certificate: { version: 1, ...fields, signature: await handle.sign(c.inputs.browser(fields)) } };
   }
-  await accountRequest('/relay/account/browsers', 'POST', { certificate: browser.certificate, label: label.slice(0, 80) });
+  await accountRequest('relay/account/browsers', 'POST', { certificate: browser.certificate, label: label.slice(0, 80) });
   if (w) {
     if (windowState() !== w) throw new AccountTrustError('accountUnlockExpired');
     await accountStore(`browser:${browser.userId}`, browser);
@@ -240,7 +240,7 @@ export async function accountRevocations(refresh = false) {
   const a = await currentAccount(); if (!a) return [];
   const saved = await accountStore<Revocation[]>(`revocations:${a.userId}`) ?? [];
   if (!refresh) return saved;
-  const data = await accountRequest<{ revocations: Revocation[] }>('/relay/account/browsers');
+  const data = await accountRequest<{ revocations: Revocation[] }>('relay/account/browsers');
   if (!Array.isArray(data.revocations)) throw new AccountTrustError('accountCertificateInvalid');
   const valid: Revocation[] = [];
   for (const r of [...saved, ...data.revocations]) if (r?.accountKeyId === a.accountKeyId && await c.verifyRevocation(r, a)) valid.push(r);
@@ -251,7 +251,7 @@ export async function revokeAccountSubject(kind: 'browser' | 'device', subjectId
   const a = await requireUnlock('revoke');
   const fields = { accountKeyId: a.accountKeyId, kind, subjectId, revokedAt: Date.now() };
   const revocation: Revocation = { version: 1, ...fields, signature: await a.sign(c.inputs.revocation(fields)) };
-  await accountRequest('/relay/account/revocations', 'POST', { revocation });
+  await accountRequest('relay/account/revocations', 'POST', { revocation });
   const saved = await accountRevocations(); await accountStore(`revocations:${a.userId}`, [...saved, revocation]);
   if (typeof window !== 'undefined') window.dispatchEvent(new Event('pockymoe-account-revocations'));
   if ((await currentBrowser())?.browserId === subjectId && kind === 'browser') await clearBrowser(subjectId);
@@ -292,6 +292,6 @@ export async function startAccountOver(password?: string) {
     if (w.authKey) proof = { currentAuthKey: w.authKey };
   }
   if (await accountStore<string>('active') !== id) throw new AccountTrustError('accountUnlockRequired');
-  await accountRequest('/relay/account/vault', 'DELETE', proof);
+  await accountRequest('relay/account/vault', 'DELETE', proof);
   await logoutAccount(); await accountStore(`cache:${id}`, null); await accountStore(`revocations:${id}`, null);
 }

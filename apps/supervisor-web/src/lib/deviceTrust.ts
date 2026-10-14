@@ -40,7 +40,7 @@ export async function deviceTrustRequest<T>(
       new Request(
         new URL(
           relayUrl(
-            `/relay/devices/${encodeURIComponent(deviceId)}/api/transport/${path || 'trust'}`,
+            `relay/devices/${encodeURIComponent(deviceId)}/api/transport/${path || 'trust'}`,
           ),
           location.origin,
         ),

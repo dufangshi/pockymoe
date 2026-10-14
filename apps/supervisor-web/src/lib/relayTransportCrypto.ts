@@ -1,5 +1,6 @@
+import { appPathname, supervisorPath } from './webBase';
 import { listPendingEnrollments } from './pendingEnrollmentStore';
-import { relayUrl } from './relayOrigin';
+import { relayUrl, relayPathname } from './relayOrigin';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import {
   Aes256Gcm,
@@ -161,13 +162,13 @@ export async function trustPinnedDevice(deviceId: string, identityKey: string, f
   keys.delete(deviceId);
 }
 export function deviceRoute(url: URL) {
-  const match = url.pathname.match(/^\/relay\/devices\/([^/]+)(\/api\/.*)$/);
+  const match = relayPathname(url).match(/^\/relay\/devices\/([^/]+)(\/api\/.*)$/);
   return match
     ? { deviceId: decodeURIComponent(match[1]!), path: match[2]! + url.search }
     : null;
 }
 export function scopeFromPage(url: string, targetDeviceId?: string) {
-  const match = new URL(url).pathname.match(/\/devices\/([^/]+)\/threads\/([^/]+)/);
+  const match = appPathname(new URL(url).pathname).match(/^\/devices\/([^/]+)\/threads\/([^/]+)/);
   // A page's primary thread grants no scope on a different device.
   if (targetDeviceId && match && decodeURIComponent(match[1]!) !== targetDeviceId) return undefined;
   return match?.[2];
@@ -199,17 +200,17 @@ async function keyFor(
       .match(/^\/api\/(threads|workspaces)\/([^/]+)/);
     const prefix =
       resource && !['start', 'import', 'recent'].includes(resource[2]!)
-        ? `/api/${resource[1]}/${resource[2]}`
+        ? supervisorPath(`api/${resource[1]}/${resource[2]}`)
         : scope
-          ? `/api/threads/${scope}`
-          : '/api';
+          ? supervisorPath(`api/threads/${scope}`)
+          : supervisorPath('api');
     const challenge = crypto.randomUUID();
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 10000);
     let response: Response;
     try {
       response = await nativeFetch(
-        relayUrl(`/relay/devices/${encodeURIComponent(deviceId)}${prefix}/transport/key?challenge=${challenge}`),
+        relayUrl(`relay/devices/${encodeURIComponent(deviceId)}${prefix}/transport/key?challenge=${challenge}`),
         { credentials: 'include', cache: 'no-store', signal: controller.signal },
       );
     } catch (error) {
@@ -301,8 +302,8 @@ async function keyFor(
         buffer(unb64(descriptor.identityKey)),
       ),
     );
-    const enrollment = ['/api/transport/enrollment', '/api/transport/browser', '/api/transport/revocations', '/api/transport/device-certificate'].includes(path.split('?')[0]!);
-    const inspectionOnly = path.split('?')[0] === '/api/transport/enrollment';
+    const enrollment = [supervisorPath('api/transport/enrollment'), supervisorPath('api/transport/browser'), supervisorPath('api/transport/revocations'), supervisorPath('api/transport/device-certificate')].includes(path.split('?')[0]!);
+    const inspectionOnly = path.split('?')[0] === supervisorPath('api/transport/enrollment');
     let trust;
     try { trust = await verifyTransportDevice(deviceId, descriptor.identityKey, descriptor.certificate, descriptor.trust, enrollment); }
     catch (error) {
@@ -350,7 +351,7 @@ async function keyFor(
 // Inspection itself grants no trust for later application requests.
 export async function inspectEnrollmentDevice(deviceId: string) {
   keys.delete(deviceId);
-  const key = await keyFor(deviceId, '/api/transport/enrollment');
+  const key = await keyFor(deviceId, supervisorPath('api/transport/enrollment'));
   if (!key) throw new AccountTrustError('accountIdentityMismatch');
   return key.descriptor;
 }
@@ -493,7 +494,7 @@ export async function exchange(
     throw error;
   }
   if (!key) {
-    if (route.path.split('?')[0] === '/api/transport/bind')
+    if (route.path.split('?')[0] === supervisorPath('api/transport/bind'))
       throw new TransportError('transport_unavailable', translate('devices.remoteProtectionFailed'));
     const response = await nativeFetch(request);
     await reportOwnerRequired(response, route.deviceId);
@@ -502,14 +503,14 @@ export async function exchange(
   await beforeEncrypt?.();
   const owner = await currentBrowser();
   const wirePath = route.path.split('?')[0]!;
-  const bootstrap = ['/api/transport/browser', '/api/transport/enrollment', '/api/transport/revocations'].includes(wirePath);
+  const bootstrap = [supervisorPath('api/transport/browser'), supervisorPath('api/transport/enrollment'), supervisorPath('api/transport/revocations')].includes(wirePath);
   if (key.paired && !bootstrap) {
     if (!owner) {
       reportTransport({ deviceId: route.deviceId, state: 'unlock-required', paired: true, bound: true });
       throw new AccountTrustError('accountUnlockRequired');
     }
     try { await syncDeviceRevocations(route.deviceId, async revocations => {
-      const result = await exchange(new Request(new URL(`/relay/devices/${encodeURIComponent(route.deviceId)}/api/transport/revocations`, url.origin), {
+      const result = await exchange(new Request(new URL(relayUrl(`relay/devices/${encodeURIComponent(route.deviceId)}/api/transport/revocations`), url.origin), {
         method: 'PUT', credentials: request.credentials, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ revocations }),
       }));
       if (!result.response.ok) throw new AccountTrustError('accountRevocationsFailed');
@@ -519,7 +520,7 @@ export async function exchange(
       throw e;
     }
     if (!isBrowserRegistered(owner, route.deviceId)) {
-      const registered = await exchange(new Request(new URL(`/relay/devices/${encodeURIComponent(route.deviceId)}/api/transport/browser`, url.origin), {
+      const registered = await exchange(new Request(new URL(relayUrl(`relay/devices/${encodeURIComponent(route.deviceId)}/api/transport/browser`), url.origin), {
         method: 'POST', credentials: request.credentials, signal: request.signal,
         headers: { 'content-type': 'application/json' }, body: JSON.stringify(owner.certificate),
       }));
@@ -708,7 +709,7 @@ export async function exchange(
       route.path
         .split('?')[0]!
         .match(/^\/api\/(threads|workspaces)\/([0-9a-f-]{36})(?:\/|$)/)?.[0]
-        ?.replace(/\/$/, '') ?? '/api';
+        ?.replace(/\/$/, '') ?? supervisorPath('api');
     responseBody = new ReadableStream<Uint8Array>({
       start(controller) {
         controller.enqueue(new Uint8Array(data.body));
@@ -726,7 +727,7 @@ export async function exchange(
           )
             throw new Error(translate("workbench.invalidEncryptedContinuationScope"));
           const endpoint = new URL(
-            `/relay/devices/${encodeURIComponent(route.deviceId)}${next}`,
+            relayUrl(`relay/devices/${encodeURIComponent(route.deviceId)}${next}`),
             url.origin,
           );
           const part = await exchange(
@@ -762,7 +763,7 @@ export async function exchange(
   const recovered = await recoverOwner(result, true);
   if (recovered) return recovered;
   const trustedIdentity = key.certificateVerified && (key.identityTrust === 'certificate' || key.identityTrust === 'invite');
-  await reportOwnerRequired(result, route.deviceId, key.paired || wirePath === '/api/transport/browser' ? owner?.browserId : undefined, trustedIdentity);
+  await reportOwnerRequired(result, route.deviceId, key.paired || wirePath === supervisorPath('api/transport/browser') ? owner?.browserId : undefined, trustedIdentity);
   if (!socketKeys)
     return { response: result, continuation: data.streamNext ?? null, authenticated: true, trustedIdentity };
   return {
@@ -866,7 +867,7 @@ export class SocketCipher {
 }
 
 export async function sharingFingerprint(deviceId: string, threadId?: string) {
-  const key = await keyFor(deviceId, threadId ? `/api/threads/${encodeURIComponent(threadId)}` : '/api/transport/grants', threadId);
+  const key = await keyFor(deviceId, threadId ? supervisorPath(`api/threads/${encodeURIComponent(threadId)}`) : supervisorPath('api/transport/grants'), threadId);
   if (!key || !key.certificateVerified || key.identityTrust !== 'certificate' || key.grantee) throw new AccountTrustError('accountCertificateInvalid');
   return key.fingerprint;
 }

@@ -23,7 +23,7 @@ describe('account thread navigation', () => {
     let groupRequests = 0;
     const references = [parent, children[0]!].map(thread => ({ deviceId: 'wsl', threadId: thread.id, title: thread.title, workspaceLabel: 'Research', favorite: false }));
     vi.mocked(request).mockImplementation(async url => {
-      if (url === '/relay/account/workbench') return { threads: references, notifications: [] };
+      if (url === 'relay/account/workbench') return { threads: references, notifications: [] };
       if (offline) throw new ApiError(503, { code: 'service_unavailable', message: 'Device offline' });
       if (String(url).includes('includeAgentThreads')) throw new ApiError(403, { code: 'forbidden', message: 'Thread-scoped access' });
       if (String(url).endsWith('/root/group')) { groupRequests++; return family; }
@@ -64,7 +64,7 @@ describe('account thread navigation', () => {
     const selected = { id: 'selected', workspaceId: 'app', title: 'App', status: 'idle' } as ThreadDto;
     const root = { ...selected, id: 'research-root', workspaceId: 'research' };
     const children = Array.from({ length: 8 }, (_, index) => ({ ...root, id: `research-${index}`, parentThreadId: root.id, rootThreadId: root.id }));
-    vi.mocked(request).mockImplementation(async url => url === '/relay/account/workbench'
+    vi.mocked(request).mockImplementation(async url => url === 'relay/account/workbench'
       ? { threads: [{ deviceId: 'wsl', threadId: root.id, title: root.title, favorite: false }], notifications: [] }
       : { thread: root });
     const detail = { thread: selected, workspace: { label: 'App' } } as ThreadDetailDto;
@@ -82,7 +82,7 @@ describe('account thread navigation', () => {
     const calls: string[] = [];
     vi.mocked(request).mockImplementation(async url => {
       calls.push(String(url));
-      if (url === '/relay/account/workbench') return { threads: refs, notifications: [] };
+      if (url === 'relay/account/workbench') return { threads: refs, notifications: [] };
       if (String(url).includes('/mac/api/threads?')) return [root, child];
       if (String(url).includes('/wsl/api/threads?')) return [root, child, { ...child, id: 'another-child' }];
       throw new Error(`Unexpected URL: ${url}`);
@@ -92,9 +92,9 @@ describe('account thread navigation', () => {
     expect(result.current.threads.filter(thread => thread.rootKey === 'mac:root')).toHaveLength(1);
     expect(result.current.threads.filter(thread => thread.rootKey === 'wsl:root')).toHaveLength(2);
     expect(calls).toEqual([
-      '/relay/account/workbench',
-      '/relay/devices/mac/api/threads?includeAgentThreads=true',
-      '/relay/devices/wsl/api/threads?includeAgentThreads=true',
+      'relay/account/workbench',
+      'relay/devices/mac/api/threads?includeAgentThreads=true',
+      'relay/devices/wsl/api/threads?includeAgentThreads=true',
     ]);
     unmount();
   });
@@ -106,7 +106,7 @@ describe('account thread navigation', () => {
     const calls: string[] = [];
     vi.mocked(request).mockImplementation(async url => {
       calls.push(String(url));
-      if (url === '/relay/account/workbench') return { threads: refs, notifications: [] };
+      if (url === 'relay/account/workbench') return { threads: refs, notifications: [] };
       if (String(url).includes('/mac/api/threads?')) return [root, child];
       throw new Error(`Unexpected URL: ${url}`);
     });
@@ -117,7 +117,7 @@ describe('account thread navigation', () => {
     // fetching one summary each.
     await waitFor(() => expect(result.current.navigationReady).toBe(true));
     await waitFor(() => expect(calls).toHaveLength(2));
-    expect(calls).toEqual(['/relay/account/workbench', '/relay/devices/mac/api/threads?includeAgentThreads=true']);
+    expect(calls).toEqual(['relay/account/workbench', 'relay/devices/mac/api/threads?includeAgentThreads=true']);
     rerender({ threads: [root, { ...child, status: 'running' }] });
     await waitFor(() => expect(result.current.threads.find(thread => thread.key === 'wsl:child')?.status).toBe('running'));
     expect(calls.some(url => url.includes('/wsl/'))).toBe(false);
@@ -129,7 +129,7 @@ describe('account thread navigation', () => {
     const refs = ['mac', 'wsl'].map(deviceId => ({ deviceId, threadId: `${deviceId}-thread`, title: deviceId, workspaceLabel: 'App', favorite: false, visitedAt: '' }));
     const writes: { deviceId: string; threadId: string }[] = [];
     vi.mocked(request).mockImplementation(async (url, init) => {
-      if (url === '/relay/account/workbench') {
+      if (url === 'relay/account/workbench') {
         if (init?.method === 'POST') writes.push(JSON.parse(String(init.body)));
         return { threads: refs, notifications: [] };
       }
@@ -159,7 +159,7 @@ describe('account thread navigation', () => {
     const refs = ['missing', 'offline', 'denied'].map(deviceId => ({ deviceId, threadId: 'old-thread', title: deviceId }));
     const deletes: unknown[] = [];
     vi.mocked(request).mockImplementation(async (url, init) => {
-      if (url === '/relay/account/workbench') {
+      if (url === 'relay/account/workbench') {
         if (init?.method === 'DELETE') deletes.push(JSON.parse(String(init.body)));
         return { threads: refs, notifications: [] };
       }
@@ -188,8 +188,8 @@ describe('account thread navigation', () => {
     const completed = '2026-09-19T14:00:00Z';
     const snapshot = { threads: [], notifications: [{ id: 'event', title: '1 completed', href: '/devices/mac/threads/review', occurredAt: completed }] };
     vi.mocked(request).mockImplementation(async url => {
-      if (url === '/relay/account/workbench') return snapshot;
-      if (url === '/relay/devices/mac/api/threads/review?view=summary&limit=10&compact=1') return {
+      if (url === 'relay/account/workbench') return snapshot;
+      if (url === 'relay/devices/mac/api/threads/review?view=summary&limit=10&compact=1') return {
         thread: { title: 'Fix the image preview' }, turns: [{ status: 'completed', completedAt: completed, items: [{ kind: 'agentMessage', text: 'The image now loads correctly. ' + 'Details '.repeat(50) }] }],
       };
       throw new Error(`Unexpected URL: ${url}`);
@@ -277,7 +277,7 @@ describe('account thread navigation', () => {
       },
     ];
     vi.mocked(request).mockImplementation(async (url, init) => {
-      if (url === '/relay/account/workbench') {
+      if (url === 'relay/account/workbench') {
         if (init?.method === 'POST') {
           const visit = JSON.parse(String(init.body));
           if (visit.favorite !== undefined)
@@ -319,7 +319,7 @@ describe('account thread navigation', () => {
     act(() => result.current.onToggleFavorite());
     await waitFor(() => expect(result.current.favorite).toBe(true));
     expect(request).toHaveBeenCalledWith(
-      '/relay/devices/shared-device/api/threads/shared-thread?view=summary&limit=1&compact=1',
+      'relay/devices/shared-device/api/threads/shared-thread?view=summary&limit=1&compact=1',
       expect.anything(),
     );
     const writes = vi
@@ -335,7 +335,7 @@ describe('account thread navigation', () => {
     await act(async () => result.current.onToggleThreadFavorite('wsl:same-id'));
     expect(references.find((t) => t.deviceId === 'wsl')?.favorite).toBe(false);
     expect(references.find((t) => t.deviceId === 'mac')?.favorite).toBe(true);
-    expect(request).toHaveBeenLastCalledWith('/relay/account/workbench', expect.objectContaining({
+    expect(request).toHaveBeenLastCalledWith('relay/account/workbench', expect.objectContaining({
       method: 'POST', body: expect.stringContaining('"deviceId":"wsl"'),
     }));
   });

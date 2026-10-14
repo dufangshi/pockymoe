@@ -31,7 +31,7 @@ export function ThreadPublicLinks({
   const [scope, setScope] = useState('all');
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [liveUpdates, setLiveUpdates] = useState(false);
-  const path = `/relay/thread-links?${new URLSearchParams({ deviceId, threadId })}`;
+  const path = `relay/thread-links?${new URLSearchParams({ deviceId, threadId })}`;
   useEffect(() => {
     let live = true;
     request<SnapshotLink[]>(path)
@@ -75,7 +75,7 @@ export function ThreadPublicLinks({
       let snapshot;
       if (liveUpdates) {
         try {
-          const publication = await request<{ token: string; snapshot: unknown }>(`/api/threads/${threadId}/publications`, { method: 'POST', body: JSON.stringify({ turnIds, theme, encryptionKey }) });
+          const publication = await request<{ token: string; snapshot: unknown }>(`api/threads/${threadId}/publications`, { method: 'POST', body: JSON.stringify({ turnIds, theme, encryptionKey }) });
           publicationToken = publication.token;
           if (!publication.snapshot || (publication.snapshot as { version?: number }).version !== 2)
             throw new Error(translate("sharing.encryptedLiveLinkRequiresDeviceUpdate"));
@@ -88,7 +88,7 @@ export function ThreadPublicLinks({
         const projection = await loadExportSnapshot(threadId, { mode: 'selected', turnIds });
         snapshot = await encryptPublicSnapshot({ ...projection, theme }, encryptionKey);
       }
-      const link = await request<SnapshotLink>('/relay/thread-links', {
+      const link = await request<SnapshotLink>('relay/thread-links', {
         method: 'POST',
         body: JSON.stringify({
           deviceId,
@@ -104,7 +104,7 @@ export function ThreadPublicLinks({
       setLinks((current) => [link, ...current]);
       await copy(link);
     } catch (e) {
-      if (publicationToken) await request(`/api/publications/${publicationToken}`, { method: 'DELETE' }).catch(() => {});
+      if (publicationToken) await request(`api/publications/${publicationToken}`, { method: 'DELETE' }).catch(() => {});
       setError(e instanceof Error ? e.message : translate("sharing.unableToCreateLink"));
     } finally {
       setBusy(false);
@@ -115,11 +115,11 @@ export function ThreadPublicLinks({
     setBusy(true);
     setError('');
     try {
-      await request(`/relay/public-links/${id}`, { method: 'DELETE' });
+      await request(`relay/public-links/${id}`, { method: 'DELETE' });
       forgetPublicLinkKey(id);
       setLinks((current) => current.filter((link) => link.id !== id));
       // A strict device needs the encrypted owner request to revoke its capability.
-      if (link.publicationToken) await request(`/api/publications/${link.publicationToken}`, { method: 'DELETE' });
+      if (link.publicationToken) await request(`api/publications/${link.publicationToken}`, { method: 'DELETE' });
     } catch (e) {
       setError(e instanceof Error ? e.message : translate("sharing.unableToRevokeLink"));
     } finally {

@@ -17,7 +17,7 @@ export interface ModelPriceRates {
 }
 export const fetchModelPricing = () =>
   request<{ models: Record<string, ModelPriceRates> }>(
-    '/api/config/model-pricing',
+    'api/config/model-pricing',
     { cache: 'no-store' },
   );
 export const updateModelPricing = (input: {
@@ -26,6 +26,6 @@ export const updateModelPricing = (input: {
   rates?: ModelPriceRates;
 }) =>
   request<{ models: Record<string, ModelPriceRates> }>(
-    '/api/config/model-pricing',
+    'api/config/model-pricing',
     { method: 'PATCH', body: JSON.stringify(input) },
   );

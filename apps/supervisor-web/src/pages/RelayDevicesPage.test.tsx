@@ -131,7 +131,7 @@ describe('device setup reauthentication', () => {
     await waitFor(() => expect(writeText).toHaveBeenCalledExactlyOnceWith(relaySupervisorCommand(token, platform, binding)));
     expect(prepareDeviceEnrollment).toHaveBeenCalledExactlyOnceWith(device.id);
     expect(request).toHaveBeenCalledTimes(2);
-    for (const call of vi.mocked(request).mock.calls) expect(call).toEqual([`/relay/devices/${device.id}/setup-token`, { method: 'POST' }]);
+    for (const call of vi.mocked(request).mock.calls) expect(call).toEqual([`relay/devices/${device.id}/setup-token`, { method: 'POST' }]);
   });
   it('starts a promised clipboard write within the original click and waits for reauthentication', async () => {
     let contents: Record<string, Promise<Blob>> = {};

@@ -1,3 +1,4 @@
+import { appUrl } from '../lib/webBase';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@pockymoe/thread-ui';
 import { LockKeyhole } from 'lucide-react';
@@ -110,7 +111,7 @@ export function AccountUnlockPrompt() {
   async function signOut() {
     setBusy(true);
     try { await relayLogout(); } catch { /* the local session is cleared either way */ }
-    window.location.assign('/relay-portal');
+    window.location.assign(appUrl('relay-portal'));
   }
 
   if (!devices.length && !request && !needsConnect) return null;
