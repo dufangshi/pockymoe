@@ -207,7 +207,8 @@ when the applied pack lists the flag (`useThemeFeature(flag)`):
   loaded ones), then sets `data-theme-preset` and `data-theme-features` and the
   theme-color meta. Imported packs are validated and compiled again when applied.
 - The registry's `fixedMode` is the applied pack's only mode (or null);
-  `app.tsx` passes the setting through `effectiveColorMode`, and the registry sets
+  `app.tsx` passes the setting through `effectiveColorMode` and gives the shells
+  the pack's mode as `data-theme-mode` (their palettes key on it), and the registry sets
   `data-theme-effective` and `color-scheme` together with a single-mode pack's
   stylesheet so it never shows with the other mode's tokens.
 - `main.tsx` waits for the stored pack (at most 1.5 s) before the first render.

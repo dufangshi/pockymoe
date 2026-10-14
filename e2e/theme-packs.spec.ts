@@ -134,7 +134,8 @@ test('a light-only pack shows light while the app is dark, and Classic brings da
   await expect(root).toHaveAttribute('data-theme-effective', 'light');
   expect(await root.evaluate((node) => getComputedStyle(node).colorScheme)).toBe('light');
   await expect(meta).toHaveAttribute('content', '#fdf2f6');
-  await expect(page.locator('.thread-ui-shell[data-theme-effective="dark"]')).toHaveCount(0);
+  // Shells and dialogs pick their palettes from data-theme-mode as well.
+  await expect(page.locator('[data-theme-effective="dark"], [data-theme-mode="dark"]')).toHaveCount(0);
   // The color mode is fixed while the pack is applied; the stored choice stays dark.
   await expect(dialog.getByTestId('theme-mode-fixed')).toHaveText('Light only');
   for (const input of await modes.all()) await expect(input).toBeDisabled();
