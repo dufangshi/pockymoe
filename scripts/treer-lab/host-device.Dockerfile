@@ -2,7 +2,7 @@
 FROM node:22-bookworm-slim AS node
 FROM ubuntu:26.04
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl socat procps hostname git libssl3t64 libsqlite3-0 \
+    ca-certificates curl python3 socat procps hostname git libssl3t64 libsqlite3-0 \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --uid 1001 lab \
     && mkdir -p /workspace && chown lab:lab /workspace
