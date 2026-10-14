@@ -1,0 +1,36 @@
+{
+  "schema": "pockymoe.treer-profiles/v1",
+  "hub": {
+    "name": "pockymoe",
+    "command": "/usr/bin/env",
+    "args": [
+      "POCKYMOE_MODE=local",
+      "POCKYMOE_HOST_MODE=hosted",
+      "POCKYMOE_HOSTED_BY=treer",
+      "POCKYMOE_SUPERVISOR_RESTART_STRATEGY=host-managed",
+      "HOST=127.0.0.1",
+      "PORT={hubPort}",
+      "POCKYMOE_DATABASE_PATH={dataDir}/supervisor.sqlite",
+      "POCKYMOE_WEB_DIST_DIR={nativeRoot}/current/web",
+      "{pockymoe}",
+      "supervisor"
+    ]
+  },
+  "profiles": [
+    {
+      "name": "Pockymoe Codex",
+      "description": "One Codex thread on the local Pockymoe hub.",
+      "args": ["attach", "--provider", "codex"]
+    },
+    {
+      "name": "Pockymoe Claude",
+      "description": "One Claude thread on the local Pockymoe hub.",
+      "args": ["attach", "--provider", "claude"]
+    },
+    {
+      "name": "Pockymoe Grok",
+      "description": "One Grok ACP thread on the local Pockymoe hub.",
+      "args": ["attach", "--provider", "acp", "--agent", "grok"]
+    }
+  ]
+}

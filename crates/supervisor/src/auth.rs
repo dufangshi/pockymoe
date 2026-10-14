@@ -83,6 +83,16 @@ pub async fn require_auth(
     mut request: Request,
     next: Next,
 ) -> Response {
+    // This extension is constructed only after TCP loopback/provenance and route
+    // scope validation. Headers alone never bypass server-mode authentication.
+    if request
+        .extensions()
+        .get::<crate::treer::Scope>()
+        .is_some_and(|s| s.valid())
+        || request.uri().path() == pockymoe_protocol::treer::TREER_ATTACH_PATH
+    {
+        return next.run(request).await;
+    }
     let path = request.uri().path();
     if let Some((enabled, feature)) = crate::host_policy::route_feature(&state, path) {
         if let Err(error) = pockymoe_runtime::host_mode::require_feature(enabled, feature) {

@@ -10,6 +10,7 @@ use std::sync::Arc;
 fn setup() -> (tempfile::TempDir, Arc<Supervisor>) {
     let dir = tempfile::tempdir().unwrap();
     let config = RuntimeConfig {
+        treer_enabled: false,
         host_mode: Default::default(),
         mode: pockymoe_protocol::Mode::Local,
         host: "127.0.0.1".into(),

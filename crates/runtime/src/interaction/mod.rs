@@ -83,6 +83,8 @@ pub struct InteractionState {
     pub context: std::sync::RwLock<Option<CliContext>>,
     thread_tokens: std::sync::RwLock<std::collections::HashMap<String, String>>,
     started: AtomicBool,
+    paused_threads: std::sync::RwLock<HashSet<String>>,
+    thread_env: std::sync::RwLock<std::collections::HashMap<String, Vec<(String, String)>>>,
 }
 
 pub use pockymoe_protocol::ThreadSendInput as SendInput;
@@ -126,7 +128,7 @@ impl Supervisor {
 
     pub async fn with_cli_context<T>(&self, thread_id: &str, future: impl Future<Output = T>) -> T {
         let context = self.interaction.context.read().unwrap().clone();
-        let env = context
+        let mut env = context
             .map(|c| {
                 let token = self.cli_thread_token(thread_id);
                 let mut env = vec![
@@ -156,7 +158,53 @@ impl Supervisor {
                 env
             })
             .unwrap_or_default();
+        env.extend(
+            self.interaction
+                .thread_env
+                .read()
+                .unwrap()
+                .get(thread_id)
+                .cloned()
+                .unwrap_or_default(),
+        );
         CLI_ENV.scope(env, future).await
+    }
+
+    /// Only a live top-level integration binding can own external credentials.
+    pub fn set_thread_cli_identity(&self, id: &str, env: Vec<(String, String)>) -> Result<()> {
+        ensure!(
+            self.get_thread(id)?.parent_thread_id.is_none(),
+            "identity requires a top-level thread"
+        );
+        self.interaction
+            .thread_env
+            .write()
+            .unwrap()
+            .insert(id.into(), env);
+        Ok(())
+    }
+    pub fn pause_integration_thread(&self, id: &str) {
+        self.interaction
+            .paused_threads
+            .write()
+            .unwrap()
+            .insert(id.into());
+    }
+    pub fn resume_integration_thread(&self, id: &str) {
+        self.interaction.paused_threads.write().unwrap().remove(id);
+    }
+    pub fn integration_thread_paused(&self, id: &str) -> bool {
+        self.interaction.paused_threads.read().unwrap().contains(id)
+    }
+    pub fn clear_thread_cli_identity(&self, id: &str) {
+        self.interaction.thread_env.write().unwrap().remove(id);
+    }
+    pub(crate) fn stage_thread_cli_identity(&self, id: &str, env: Vec<(String, String)>) {
+        self.interaction
+            .thread_env
+            .write()
+            .unwrap()
+            .insert(id.into(), env);
     }
 
     pub fn send_to_thread(&self, id: &str, input: SendInput) -> Result<Value> {
@@ -514,6 +562,9 @@ impl Supervisor {
                     continue;
                 };
                 for id in ids {
+                    if state.integration_thread_paused(&id) {
+                        continue;
+                    }
                     if !running.lock().unwrap().insert(id.clone()) {
                         continue;
                     }
@@ -573,6 +624,10 @@ pub(crate) fn enqueue(
 }
 
 pub(crate) fn bind_notification(conn: &Connection, pending_id: &str, turn_id: &str) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO kv(key,value) VALUES(?1,?2)",
+        params![format!("cli:submission:turn:{pending_id}"), turn_id],
+    )?;
     conn.execute(
         "UPDATE kv SET key=?1 WHERE key=?2",
         params![

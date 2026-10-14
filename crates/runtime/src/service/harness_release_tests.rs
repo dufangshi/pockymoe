@@ -310,6 +310,7 @@ fn config(dir: &Path) -> RuntimeConfig {
     RuntimeConfig {
         supervisor_restart_strategy: Default::default(),
         mode: pockymoe_protocol::Mode::Local,
+        treer_enabled: false,
         host_mode: Default::default(),
         host: "127.0.0.1".into(),
         port: 0,

@@ -2379,6 +2379,7 @@ version = "0.13.1"
 dependencies = [
  "anyhow",
  "clap",
+ "futures-util",
  "pockymoe-protocol",
  "pockymoe-relay",
  "pockymoe-runtime",
@@ -2386,6 +2387,7 @@ dependencies = [
  "reqwest",
  "serde_json",
  "tokio",
+ "tokio-tungstenite 0.26.2",
  "tracing",
  "tracing-subscriber",
  "uuid",
@@ -2497,6 +2499,7 @@ dependencies = [
  "p256",
  "pockymoe-protocol",
  "pockymoe-runtime",
+ "pockymoe-treer",
  "portable-pty",
  "rand 0.8.8",
  "rand 0.9.5",
@@ -2505,10 +2508,12 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "subtle",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
  "tokio-tungstenite 0.26.2",
+ "tokio-util",
  "tower",
  "tower-http",
  "tracing",
@@ -2516,6 +2521,16 @@ dependencies = [
  "url",
  "uuid",
  "zip",
+]
+
+[[package]]
+name = "pockymoe-treer"
+version = "0.13.1"
+dependencies = [
+ "anyhow",
+ "pockymoe-protocol",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -7,8 +7,8 @@ use async_trait::async_trait;
 use pockymoe_protocol::{
     now_rfc3339, toolbox_from_capabilities, AgentBackendDto, AgentBackendInstallationDto,
     AgentBackendManagementSchemaDto, AgentCapabilitySnapshotDto, AgentProviderCapabilitiesDto,
-    AgentRuntimeStatusDto, ModelOptionDto, Provider, ReasoningEffortOptionDto, ThreadEventEnvelope,
-    ThreadHistoryItemDto,
+    AgentRuntimeStatusDto, ModelOptionDto, Provider, ReasoningEffortOptionDto,
+    ThreadActionRequestDto, ThreadEventEnvelope, ThreadHistoryItemDto,
 };
 use serde_json::json;
 use tokio::time::sleep;
@@ -36,6 +36,7 @@ pub struct FakeRuntime {
     started_at: Mutex<Option<String>>,
     goal: Mutex<Option<GoalState>>,
     import_sessions: Mutex<Vec<ImportSessionMeta>>,
+    pending: Mutex<HashMap<String, Vec<ThreadActionRequestDto>>>,
 }
 
 impl FakeRuntime {
@@ -50,6 +51,7 @@ impl FakeRuntime {
             started_at: Mutex::new(None),
             goal: Mutex::new(None),
             import_sessions: Mutex::new(Vec::new()),
+            pending: Default::default(),
         }
     }
 
@@ -83,6 +85,16 @@ impl FakeRuntime {
             .lock()
             .unwrap()
             .insert(session_id.into(), session);
+    }
+
+    pub fn seed_pending_requests(&self, thread: &str, requests: Vec<ThreadActionRequestDto>) {
+        self.pending.lock().unwrap().insert(thread.into(), requests);
+    }
+
+    /// Simulate a dead process while its in-flight request still awaits cancellation.
+    pub fn simulate_process_exit(&self) {
+        self.sessions.lock().unwrap().clear();
+        self.loads.lock().unwrap().clear();
     }
 
     pub fn started_sessions(&self) -> Vec<StartSessionInput> {
@@ -435,6 +447,15 @@ impl AgentRuntime for FakeRuntime {
 
     async fn send_input(&self, _session_id: &str, _turn_id: &str, _prompt: &str) -> Result<()> {
         Ok(())
+    }
+
+    async fn pending_requests(&self, thread: &str) -> Vec<ThreadActionRequestDto> {
+        self.pending
+            .lock()
+            .unwrap()
+            .get(thread)
+            .cloned()
+            .unwrap_or_default()
     }
 
     async fn respond_permission(

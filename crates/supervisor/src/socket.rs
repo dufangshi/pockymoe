@@ -14,6 +14,7 @@ pub(crate) struct SocketSession {
 }
 
 impl SocketSession {
+    #[cfg(test)]
     pub(crate) fn spawn(state: Arc<Supervisor>, output: mpsc::Sender<Value>) -> Self {
         Self::spawn_authorized(state, output, None, None)
     }
@@ -25,7 +26,7 @@ impl SocketSession {
     ) -> Self {
         let (input, incoming) = mpsc::channel();
         let task = tokio::spawn(run_socket_session(
-            state, incoming, output, principal, thread,
+            state, incoming, output, principal, thread, None,
         ));
         Self { input, task }
     }
@@ -41,9 +42,17 @@ impl Drop for SocketSession {
     }
 }
 
-pub(crate) async fn websocket_loop(socket: WebSocket, state: Arc<Supervisor>) {
+pub(crate) async fn websocket_loop_scoped(
+    socket: WebSocket,
+    state: Arc<Supervisor>,
+    scope: Option<crate::treer::Scope>,
+) {
     let (output, mut outgoing) = mpsc::channel();
-    let session = SocketSession::spawn(state, output);
+    let (input, incoming) = mpsc::channel();
+    let task = tokio::spawn(run_socket_session(
+        state, incoming, output, None, None, scope,
+    ));
+    let session = SocketSession { input, task };
     let (mut sink, mut stream) = socket.split();
 
     loop {
@@ -80,6 +89,7 @@ async fn run_socket_session(
     output: mpsc::Sender<Value>,
     principal: Option<crate::owner_trust::BrowserPrincipal>,
     thread: Option<String>,
+    scope: Option<crate::treer::Scope>,
 ) {
     let mut client_state = SocketClientState::default();
     // Dropped with this task, also when a relay client or the tunnel goes away.
@@ -104,6 +114,7 @@ async fn run_socket_session(
     loop {
         tokio::select! {
             _ = auth_tick.tick() => {
+                if scope.as_ref().is_some_and(|s|!s.valid()) { break; }
                 if principal.as_ref().is_some_and(|p| !p.valid(&state)) { break; }
             }
             message = incoming.recv() => {
@@ -112,10 +123,11 @@ async fn run_socket_session(
                 };
                 if message["type"] == "thread.view" {
                     if principal.as_ref().is_some_and(|p| !p.valid(&state)) { break; }
-                    viewer.set(viewed_threads(&state, principal.as_ref(), thread.as_deref(), &message));
+                    viewer.set(viewed_threads(&state, principal.as_ref(), thread.as_deref(), &message).into_iter().filter(|id| scope.as_ref().is_none_or(|s|s.allows(id))));
                     continue;
                 }
                 if principal.as_ref().is_some_and(|p| !p.valid(&state) || !crate::grants::websocket_message_allowed(&state,p,thread.as_deref(),&message)) { break; }
+                if scope.as_ref().is_some_and(|s| !s.valid() || message["type"] != "supervisor.ping") { continue; }
                 for response in handle_client_message(&message, &mut client_state) {
                     if principal.as_ref().is_some_and(|p| !crate::grants::websocket_event_allowed(&state,p,thread.as_deref(),&response)) { continue; }
                     if output.send(response).is_err() {
@@ -129,6 +141,7 @@ async fn run_socket_session(
                         let event = serde_json::to_value(event).unwrap_or_else(|_| json!({}));
                         if principal.as_ref().is_some_and(|p| !p.valid(&state)) { break; }
                         if principal.as_ref().is_some_and(|p| !crate::grants::websocket_event_allowed(&state,p,thread.as_deref(),&event)) { continue; }
+                        if scope.as_ref().is_some_and(|s|!s.event(&event)) { continue; }
                         if output.send(event).is_err() {
                             break;
                         }
@@ -147,6 +160,7 @@ async fn run_socket_session(
                         };
                         if principal.as_ref().is_some_and(|p| !p.valid(&state)) { break; }
                         if principal.as_ref().is_some_and(|p| !crate::grants::websocket_event_allowed(&state,p,thread.as_deref(),&message)) { continue; }
+                        if scope.as_ref().is_some_and(|s|!s.event(&message)) { continue; }
                         if output.send(message).is_err() {
                             break;
                         }

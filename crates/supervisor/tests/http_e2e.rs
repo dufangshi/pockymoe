@@ -102,6 +102,7 @@ async fn spawn_supervisor_state(
     let ws_root = dir.path().join("workspaces");
     std::fs::create_dir_all(&ws_root).unwrap();
     let config = RuntimeConfig {
+        treer_enabled: false,
         host_mode: Default::default(),
         mode: pockymoe_protocol::Mode::Local,
         host: "127.0.0.1".into(),
@@ -567,6 +568,7 @@ async fn spawn_authenticated_supervisor() -> (tempfile::TempDir, u16) {
     let workspace_root = dir.path().join("workspaces");
     std::fs::create_dir_all(&workspace_root).unwrap();
     let config = RuntimeConfig {
+        treer_enabled: false,
         host_mode: Default::default(),
         mode: pockymoe_protocol::Mode::Server,
         host: "127.0.0.1".into(),

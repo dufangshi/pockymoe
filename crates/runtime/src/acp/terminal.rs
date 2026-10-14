@@ -44,6 +44,17 @@ impl AgentTerminals {
         let id = Uuid::new_v4().to_string();
         let mut cmd = Command::new(&executable);
         crate::child_process::hide_tokio(&mut cmd);
+        // ACP terminals are spawned by the hub, not the harness. Discard any
+        // identity inherited by the hub before applying the owning process env.
+        for key in [
+            "TREER_AGENT_ID",
+            "TREER_WORKLOAD_CREDENTIAL",
+            "TREER_AGENT_SERVER_URL",
+            "TREER_WORKSPACE_ID",
+            "TREER_SERVER_ID",
+        ] {
+            cmd.env_remove(key);
+        }
         cmd.args(&parsed_args)
             .current_dir(&cwd)
             .envs(env.iter().cloned())
