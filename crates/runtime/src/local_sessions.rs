@@ -228,7 +228,7 @@ pub(crate) fn message_key(item: &ThreadHistoryItemDto) -> Option<(String, String
             .or(item.status.as_deref());
         let is_commentary = item.kind == "agentMessage" && phase == Some("commentary");
         (
-            item.kind.clone(),
+            item.kind.to_string(),
             item.text.trim().to_string(),
             is_commentary,
         )
@@ -1071,7 +1071,7 @@ fn empty_codex_turn(id: String, started_at: Option<String>) -> ThreadTurnDto {
         id,
         started_at,
         completed_at: None,
-        status: "inProgress".into(),
+        status: pockymoe_protocol::TurnStatus::InProgress,
         error: None,
         model: None,
         reasoning_effort: None,
@@ -1212,7 +1212,7 @@ pub(crate) fn read_grok_usage_history(path: &Path) -> Option<Vec<ThreadTurnDto>>
                         id: String::new(),
                         started_at: timestamp_to_rfc3339(&entry["timestamp"]),
                         completed_at: None,
-                        status: "completed".into(),
+                        status: pockymoe_protocol::TurnStatus::Completed,
                         error: None,
                         model: None,
                         reasoning_effort: None,
@@ -1279,7 +1279,7 @@ fn parse_grok_history(path: &Path) -> Vec<ThreadTurnDto> {
                     id: id.clone(),
                     started_at: None,
                     completed_at: None,
-                    status: "completed".into(),
+                    status: pockymoe_protocol::TurnStatus::Completed,
                     error: None,
                     model: None,
                     reasoning_effort: None,
@@ -1402,7 +1402,7 @@ fn parse_claude_jsonl(path: &Path, with_history: bool) -> Option<ImportSessionMe
                         .and_then(Value::as_str)
                         .map(str::to_string),
                     completed_at: None,
-                    status: "completed".into(),
+                    status: pockymoe_protocol::TurnStatus::Completed,
                     error: None,
                     model: None,
                     reasoning_effort: None,
@@ -1594,7 +1594,7 @@ fn nonempty(value: Option<String>) -> Option<String> {
     })
 }
 
-fn normalize_status(status: &str) -> String {
+fn normalize_status(status: &str) -> pockymoe_protocol::TurnStatus {
     match status {
         "in_progress" | "inProgress" => "inProgress".into(),
         "failed" => "failed".into(),

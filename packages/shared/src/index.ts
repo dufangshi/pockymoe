@@ -893,27 +893,31 @@ export interface ThreadPeerWorkDto {
   }>;
 }
 
+export type ThreadItemKindDto =
+  | 'userMessage'
+  | 'agentMessage'
+  | 'artifact'
+  | 'image'
+  | 'plan'
+  | 'contextCompaction'
+  | 'reasoning'
+  | 'commandExecution'
+  | 'webSearch'
+  | 'fileRead'
+  | 'fileChange'
+  | 'hook'
+  | 'agentToolCall'
+  | 'skillToolCall'
+  | 'toolCall'
+  | 'generic'
+  | 'imageView'
+  | 'other';
+
 export interface ThreadHistoryItemDto {
   peerWork?: ThreadPeerWorkDto | null;
   id: string;
   createdAt?: string | null;
-  kind:
-    | 'userMessage'
-    | 'agentMessage'
-    | 'artifact'
-    | 'image'
-    | 'plan'
-    | 'contextCompaction'
-    | 'reasoning'
-    | 'commandExecution'
-    | 'webSearch'
-    | 'fileRead'
-    | 'fileChange'
-    | 'hook'
-    | 'agentToolCall'
-    | 'skillToolCall'
-    | 'toolCall'
-    | 'other';
+  kind: ThreadItemKindDto;
   text: string;
   previewText?: string;
   detailText?: string | null;
@@ -1087,11 +1091,13 @@ export interface ThreadTurnPriceEstimateDto {
   totalUsd: number;
 }
 
+export type TurnStatusDto = 'completed' | 'interrupted' | 'failed' | 'inProgress' | 'recovering';
+
 export interface ThreadTurnDto {
   id: string;
   startedAt: string | null;
   completedAt?: string | null;
-  status: 'completed' | 'interrupted' | 'failed' | 'inProgress' | 'recovering';
+  status: TurnStatusDto;
   error: string | null;
   model?: string | null;
   reasoningEffort?: ReasoningEffortDto | null;
@@ -1668,6 +1674,11 @@ export interface RespondThreadActionRequestInput {
 }
 
 export interface ThreadEventPayloadMap {
+  'thread.harness.ready': { turnId: string; instanceId: string };
+  'thread.collaboration.updated': { turnId: string; collaborationMode: CollaborationModeDto };
+  'thread.context.delivered': { providerSessionId: string };
+  'runtime.usage.updated': { turnId: string; usage: unknown };
+  'device.ports.changed': { reason: string };
   'thread.updated': {
     pendingSteers?: ThreadDetailDto['pendingSteers'];
     status?: ThreadStatusDto | string | null;

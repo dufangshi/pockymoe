@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use pockymoe_protocol::{now_rfc3339, ThreadHistoryItemDto, ThreadSubagentDto};
+use pockymoe_protocol::{now_rfc3339, ThreadHistoryItemDto, ThreadItemKind, ThreadSubagentDto};
 use serde_json::Value;
 
 use crate::actor::GoalState;
@@ -104,7 +104,7 @@ impl TurnMapper {
             let index = match agent {
                 Some(index) => index,
                 None => {
-                    let index = self.push_segment("agentMessage");
+                    let index = self.push_segment(ThreadItemKind::AgentMessage);
                     self.active_thought_segment = None;
                     self.stream.as_mut().unwrap().agent = Some(index);
                     index
@@ -121,7 +121,7 @@ impl TurnMapper {
             let index = match thought {
                 Some(index) => index,
                 None => {
-                    let index = self.push_segment("reasoning");
+                    let index = self.push_segment(ThreadItemKind::Reasoning);
                     self.stream.as_mut().unwrap().thought = Some(index);
                     index
                 }
@@ -176,7 +176,7 @@ impl TurnMapper {
         mapped
     }
 
-    fn push_segment(&mut self, kind: &str) -> usize {
+    fn push_segment(&mut self, kind: ThreadItemKind) -> usize {
         let sequence = self.next_sequence();
         let (segments, name) = if kind == "reasoning" {
             (&mut self.thought_segments, "thought")
@@ -279,7 +279,7 @@ impl TurnMapper {
         self.close_text_segments();
         let mut notice = item(
             format!("{}:native-wait:{}", self.turn_id, self.native_notices.len()),
-            "generic",
+            ThreadItemKind::Generic,
             String::new(),
             "waiting",
             &self.turn_id,
@@ -339,7 +339,7 @@ impl TurnMapper {
             .unwrap_or_else(|| {
                 let mut notice = item(
                     format!("{}:native-task:{}", self.turn_id, self.native_notices.len()),
-                    "generic",
+                    ThreadItemKind::Generic,
                     String::new(),
                     "completed",
                     &self.turn_id,
@@ -442,7 +442,7 @@ impl TurnMapper {
                         let sequence = self.next_sequence();
                         let mut segment = item(
                             format!("{}:assistant:{}", self.turn_id, index + 1),
-                            "agentMessage",
+                            ThreadItemKind::AgentMessage,
                             String::new(),
                             "running",
                             &self.turn_id,
@@ -497,7 +497,7 @@ impl TurnMapper {
                         let sequence = self.next_sequence();
                         let mut segment = item(
                             format!("{}:thought:{}", self.turn_id, index + 1),
-                            "reasoning",
+                            ThreadItemKind::Reasoning,
                             String::new(),
                             "running",
                             &self.turn_id,
@@ -681,7 +681,7 @@ impl TurnMapper {
         {
             let mut agent = item(
                 format!("{}:assistant:1", self.turn_id),
-                "agentMessage",
+                ThreadItemKind::AgentMessage,
                 "(no output)".into(),
                 status,
                 &self.turn_id,
@@ -811,27 +811,29 @@ fn tool_item(turn_id: &str, body: &Value) -> ThreadHistoryItemDto {
     .to_ascii_lowercase();
     let command = record_value(body.get("rawInput"), &["command", "cmd", "argv"]);
     let kind = if is_subagent_tool(raw_kind, &normalized_name) {
-        "agentToolCall"
+        ThreadItemKind::AgentToolCall
     } else {
         match raw_kind {
-            "edit" | "delete" | "move" => "fileChange",
-            "read" => "fileRead",
-            "fetch" => "webSearch",
-            "think" => "reasoning",
-            "execute" => "commandExecution",
+            "edit" | "delete" | "move" => ThreadItemKind::FileChange,
+            "read" => ThreadItemKind::FileRead,
+            "fetch" => ThreadItemKind::WebSearch,
+            "think" => ThreadItemKind::Reasoning,
+            "execute" => ThreadItemKind::CommandExecution,
             // Harnesses that report every tool as "other" (DSH): a command
             // input is a shell run, and a todo list is not a file.
-            _ if command.is_some() => "commandExecution",
-            _ if normalized_name.contains("todo") => "toolCall",
-            _ if normalized_name.contains("web") || normalized_name.contains("http") => "webSearch",
-            _ if normalized_name.contains("read") => "fileRead",
+            _ if command.is_some() => ThreadItemKind::CommandExecution,
+            _ if normalized_name.contains("todo") => ThreadItemKind::ToolCall,
+            _ if normalized_name.contains("web") || normalized_name.contains("http") => {
+                ThreadItemKind::WebSearch
+            }
+            _ if normalized_name.contains("read") => ThreadItemKind::FileRead,
             _ if normalized_name.contains("edit")
                 || normalized_name.contains("write")
                 || normalized_name.contains("patch") =>
             {
-                "fileChange"
+                ThreadItemKind::FileChange
             }
-            _ => "toolCall",
+            _ => ThreadItemKind::ToolCall,
         }
     };
     let location_text = tool_locations(body)
@@ -868,7 +870,7 @@ fn tool_item(turn_id: &str, body: &Value) -> ThreadHistoryItemDto {
     );
     mapped.preview_text = Some(title);
     mapped.detail_text = (!detail.is_empty()).then_some(detail);
-    if kind == "fileChange" {
+    if mapped.kind == ThreadItemKind::FileChange {
         apply_file_changes(&mut mapped, body);
     }
     mapped
@@ -1138,7 +1140,7 @@ fn plan_item(turn_id: &str, body: &Value) -> Option<ThreadHistoryItemDto> {
         .join("\n");
     Some(item(
         format!("{turn_id}:plan"),
-        "plan",
+        ThreadItemKind::Plan,
         text,
         "inProgress",
         turn_id,
@@ -1155,18 +1157,24 @@ fn compaction_item(turn_id: &str, body: &Value) -> Option<ThreadHistoryItemDto> 
         .to_string();
     Some(item(
         format!("{turn_id}:compaction"),
-        "contextCompaction",
+        ThreadItemKind::ContextCompaction,
         text,
         "completed",
         turn_id,
     ))
 }
 
-fn item(id: String, kind: &str, text: String, status: &str, turn_id: &str) -> ThreadHistoryItemDto {
+fn item(
+    id: String,
+    kind: ThreadItemKind,
+    text: String,
+    status: &str,
+    turn_id: &str,
+) -> ThreadHistoryItemDto {
     ThreadHistoryItemDto {
         id,
         created_at: Some(now_rfc3339()),
-        kind: kind.into(),
+        kind,
         text,
         preview_text: None,
         detail_text: None,

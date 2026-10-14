@@ -7,6 +7,7 @@ There is no duplicate push workflow after merging to `main`.
 | Changed area | Automatic checks |
 | --- | --- |
 | Rust, Cargo configuration, migrations | Linux formatting and `cargo check --workspace --locked` |
+| Protocol crate, shared package, Cargo manifests/lockfile | Protocol wire tests and Rust/TS thread discriminant contract tests |
 | Supervisor Web, shared/plugin packages | Web typecheck and Vitest; build the external thread UI dependency required by Web |
 | Native bootstrap, legacy npm launcher or Node scripts | Native SH/legacy launcher, updater, and historical publishing-script unit tests; no product installation or release build |
 | GitHub Actions workflows | actionlint; ShellCheck warnings/errors (not style or informational suggestions) |

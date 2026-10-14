@@ -274,7 +274,7 @@ impl Supervisor {
         })?;
         if let Some(payload) = payload {
             self.bus.emit(pockymoe_protocol::ThreadEventEnvelope {
-                event_type: "thread.turn.token.updated".into(),
+                event_type: pockymoe_protocol::ThreadEventType::ThreadTurnTokenUpdated,
                 thread_id: key.0.clone(),
                 timestamp: now_rfc3339(),
                 payload,

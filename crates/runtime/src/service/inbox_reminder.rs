@@ -94,7 +94,7 @@ impl Supervisor {
             })?;
             if queued {
                 self.bus.emit(ThreadEventEnvelope {
-                    event_type: "thread.updated".into(),
+                    event_type: pockymoe_protocol::ThreadEventType::ThreadUpdated,
                     thread_id: thread,
                     timestamp: now.into(),
                     payload: json!({"reason":"pending_steer_updated"}),

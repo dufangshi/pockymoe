@@ -65,7 +65,7 @@ pub fn html_transcript(
             escape_html(&turn_meta)
         ));
         for item in visible_items(turn, options) {
-            let label = item_label(&item.kind);
+            let label = item_label(item.kind.as_str());
             let text = escape_html(&export_item_text(item, detail, options));
             if matches!(item.kind.as_str(), "userMessage" | "agentMessage") {
                 let role = if item.kind == "userMessage" {
@@ -104,7 +104,7 @@ pub fn html_transcript(
 
 fn turn_meta(turn: &ThreadTurnDto, options: &TranscriptExportOptions) -> String {
     if !options.include_token_and_price {
-        return turn.status.clone();
+        return turn.status.to_string();
     }
     let total = turn.token_usage.as_ref().and_then(|usage| {
         usage
@@ -114,7 +114,7 @@ fn turn_meta(turn: &ThreadTurnDto, options: &TranscriptExportOptions) -> String 
     });
     match total {
         Some(total) => format!("{} · {total} tokens", turn.status),
-        None => turn.status.clone(),
+        None => turn.status.to_string(),
     }
 }
 

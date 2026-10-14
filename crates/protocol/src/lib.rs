@@ -1,4 +1,6 @@
 pub mod access;
+mod thread_schema;
+pub use thread_schema::*;
 mod automation;
 pub use automation::*;
 mod harness_resources;
@@ -216,7 +218,7 @@ pub struct ThreadDto {
     pub approval_mode: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sandbox_mode: Option<String>,
-    pub status: String,
+    pub status: ThreadStatus,
     pub summary_text: Option<String>,
     pub last_error: Option<String>,
     pub active_turn_id: Option<String>,
@@ -263,7 +265,7 @@ pub struct ThreadHistoryItemDto {
     pub id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub created_at: Option<String>,
-    pub kind: String,
+    pub kind: ThreadItemKind,
     pub text: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub preview_text: Option<String>,
@@ -288,7 +290,7 @@ pub struct ThreadTurnDto {
     pub started_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completed_at: Option<String>,
-    pub status: String,
+    pub status: TurnStatus,
     pub error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
@@ -311,7 +313,7 @@ pub struct ThreadForkTurnOptionDto {
     pub turn_id: String,
     pub turn_index: u32,
     pub started_at: Option<String>,
-    pub status: String,
+    pub status: TurnStatus,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -826,7 +828,7 @@ pub struct PluginDto {
 #[serde(rename_all = "camelCase")]
 pub struct ThreadEventEnvelope {
     #[serde(rename = "type")]
-    pub event_type: String,
+    pub event_type: ThreadEventType,
     pub thread_id: String,
     pub timestamp: String,
     pub payload: Value,

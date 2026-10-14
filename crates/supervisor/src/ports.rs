@@ -202,7 +202,7 @@ pub(crate) async fn create(
 
 fn changed(state: &Supervisor) {
     state.bus.emit(pockymoe_protocol::ThreadEventEnvelope {
-        event_type: "device.ports.changed".into(),
+        event_type: pockymoe_protocol::ThreadEventType::DevicePortsChanged,
         thread_id: String::new(),
         timestamp: pockymoe_protocol::now_rfc3339(),
         payload: json!({"reason":"port_mappings_changed"}),

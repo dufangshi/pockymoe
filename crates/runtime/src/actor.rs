@@ -179,7 +179,7 @@ impl EventBus {
                 );
                 // Never expose output that a subsequent snapshot cannot recover.
                 let _ = self.tx.send(ThreadEventEnvelope {
-                    event_type: "thread.persistence.failed".into(),
+                    event_type: pockymoe_protocol::ThreadEventType::ThreadPersistenceFailed,
                     thread_id: event.thread_id,
                     timestamp: event.timestamp,
                     payload: serde_json::json!({"message":"Output could not be saved. Live updates are paused until storage recovers."}),

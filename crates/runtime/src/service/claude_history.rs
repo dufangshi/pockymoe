@@ -312,7 +312,7 @@ impl Supervisor {
         }
         if imported > 0 {
             self.bus.emit(pockymoe_protocol::ThreadEventEnvelope {
-                event_type: "thread.updated".into(),
+                event_type: pockymoe_protocol::ThreadEventType::ThreadUpdated,
                 thread_id: id.into(),
                 timestamp: now_rfc3339(),
                 payload: json!({"reason":"scheduled_history_recovered"}),

@@ -42,7 +42,7 @@ impl Supervisor {
             Ok(())
         })?;
         self.bus.emit(pockymoe_protocol::ThreadEventEnvelope {
-            event_type: "thread.updated".into(), thread_id: id.into(), timestamp: now,
+            event_type: pockymoe_protocol::ThreadEventType::ThreadUpdated, thread_id: id.into(), timestamp: now,
             payload: json!({"reason":"pending_steer_updated","pendingSteers":self.load_steers(id)?}),
         });
         Ok(())
@@ -63,7 +63,7 @@ impl Supervisor {
                     Ok(())
                 });
                 state.bus.emit(pockymoe_protocol::ThreadEventEnvelope {
-                    event_type: "thread.updated".into(),
+                    event_type: pockymoe_protocol::ThreadEventType::ThreadUpdated,
                     thread_id: id,
                     timestamp: now_rfc3339(),
                     payload: json!({"lastError":message}),
@@ -115,7 +115,7 @@ impl Supervisor {
             Ok(())
         })?;
         self.bus.emit(pockymoe_protocol::ThreadEventEnvelope {
-            event_type: "thread.updated".into(),
+            event_type: pockymoe_protocol::ThreadEventType::ThreadUpdated,
             thread_id: id.into(),
             timestamp: now_rfc3339(),
             payload: json!({"status":status,"turnId":owned.turn_id,"lastError":error}),
@@ -195,7 +195,7 @@ impl Supervisor {
             Ok(())
         })?;
         self.bus.emit(pockymoe_protocol::ThreadEventEnvelope {
-            event_type: "thread.updated".into(),
+            event_type: pockymoe_protocol::ThreadEventType::ThreadUpdated,
             thread_id: id.into(),
             timestamp: now_rfc3339(),
             payload: json!({"status":"interrupted","lastError":null}),

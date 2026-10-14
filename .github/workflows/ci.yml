@@ -25,6 +25,7 @@ jobs:
       npm: ${{ steps.filter.outputs.npm }}
       workflows: ${{ steps.filter.outputs.workflows }}
       windows_harness: ${{ steps.filter.outputs.windows_harness }}
+      thread_contract: ${{ steps.filter.outputs.thread_contract }}
     steps:
       - uses: dorny/paths-filter@v3
         id: filter
@@ -60,6 +61,26 @@ jobs:
               - 'crates/runtime/src/acp/rpc.rs'
               - 'crates/runtime/src/acp/dependencies.rs'
               - 'crates/runtime/src/management.rs'
+            thread_contract:
+              - 'crates/protocol/**'
+              - 'packages/shared/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.github/workflows/ci.yml'
+
+  thread_contract:
+    name: Rust/TS thread schema contract
+    needs: changes
+    if: needs.changes.outputs.thread_contract == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install "${RUST_VERSION}" --profile minimal
+      - uses: Swatinem/rust-cache@v2
+      - name: Test protocol wire and shared discriminants
+        run: cargo +"${RUST_VERSION}" test -p pockymoe-protocol --locked
 
   windows_harness:
     name: Windows harness command regression
@@ -161,7 +182,7 @@ jobs:
 
   result:
     name: PR checks complete
-    needs: [changes, workflows, rust, node, npm, windows_harness]
+    needs: [changes, workflows, rust, node, npm, windows_harness, thread_contract]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5
