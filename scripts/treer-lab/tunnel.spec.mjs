@@ -28,6 +28,10 @@ test('Treer authenticated UI renders its bound thread and rejects another thread
   const second = await threads(secondBase);
   expect(first.length).toBeGreaterThan(0);
   expect(second.length).toBeGreaterThan(0);
+  const redirect = await context.request.get(firstBase, { maxRedirects: 0, headers: { Origin: origin } });
+  expect(redirect.status()).toBe(307);
+  expect(redirect.headers().location).toBe(`threads/${first[0].id}`);
+  await expect(page).toHaveURL(`${firstBase}threads/${first[0].id}`);
   const other = second.find(thread => !first.some(own => own.id === thread.id));
   expect(Boolean(other), 'Each Agent must expose a different bound thread').toBe(true);
   const denied = await context.request.get(`${firstBase}api/threads/${other.id}`, { headers: { Origin: origin } });

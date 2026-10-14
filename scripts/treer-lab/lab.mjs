@@ -135,6 +135,18 @@ async function runRuntime(args, inherit = false) {
   return docker(['compose', '--project-name', project, '-f', `${stateDir}/compose.runtime.json`, ...args],
     { inherit, timeout: 600_000 });
 }
+async function refreshDevice() {
+  if (!process.argv.includes('--skip-prepare')) await prepare();
+  await requireDocker();
+  const state = await read();
+  // Proxy owns the shared image build; rebuilding it does not replace its container.
+  await runRuntime(['build', 'proxy'], true);
+  await runRuntime(['up', '-d', '--no-deps', 'device'], true);
+  await deviceExec(['treer-agent-server', 'service', '--workspace', state.workspaceId, 'start']);
+  await until('refreshed enrolled device', async () =>
+    (await api(`/api/workspaces/${state.workspaceId}/snapshot`)).servers.some(server => server.status === 'online'));
+  console.log('Refreshed only the lab device; Proxy, Postgres and sessions preserved.');
+}
 async function startWeb() {
   try {
     const { pid, startedAt } = await read('web-process.json');
@@ -178,7 +190,8 @@ async function down(reset = false) {
 try {
   const command = process.argv[2];
   if (command === 'up') await up();
+  else if (command === 'refresh-device') await refreshDevice();
   else if (command === 'down') await down();
   else if (command === 'reset' && process.argv.includes('--confirm')) await down(true);
-  else throw new Error('Usage: up.sh [--prepare-only|--skip-prepare], down.sh, reset.sh --confirm (deletes only lab volumes)');
+  else throw new Error('Usage: up.sh [--prepare-only|--skip-prepare], lab.mjs refresh-device [--skip-prepare], down.sh, reset.sh --confirm (deletes only lab volumes)');
 } catch (error) { console.error(error.message); process.exitCode = 1; }

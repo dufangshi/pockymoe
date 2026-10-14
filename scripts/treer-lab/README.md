@@ -71,7 +71,7 @@ that upstream limit or explicitly resetting this lab.
 
 ## Full hub/attach check
 
-The full driver requires the parent-provided integrated H/A commit. Initial main
+The full driver runs against the integrated H/A commit. Initial main
 has no `pockymoe attach`; `--full` fails explicitly instead of pretending that a
 terminal Agent verifies AIS. Build Pockymoe from the integrated commit in this
 worktree, or supply a binary from that exact integrated checkout with
@@ -110,11 +110,24 @@ without replacing the attach process. Its focused browser test uses a **real
 Treer user cookie**, checks anonymous tunnel rejection, loads the bound thread
 page, and rejects another bound thread's API through the first Agent entry.
 
+To rebuild and replace only the enrolled lab device while preserving the running
+Proxy, PostgreSQL and session broker:
+
+```bash
+corepack pnpm --filter @pockymoe/supervisor-web build
+node scripts/treer-lab/lab.mjs refresh-device
+node scripts/treer-lab/e2e.mjs --full
+```
+
+`refresh-device` compiles/stages the current checkout, rebuilds the shared lab
+image, replaces only the device container and starts its existing enrolled
+service. Its `--skip-prepare` option uses the already staged artifacts.
+
 Only one browser project and one spec are selected:
 
 ```bash
 node /home/ubuntu/dev/remoteCodex/reference/treer/web/node_modules/@playwright/test/cli.js \
-  test --config scripts/treer-lab/playwright.config.mjs \
+  test tunnel.spec.mjs --config scripts/treer-lab/playwright.config.mjs \
   --project=desktop-chromium --list
 # The --full driver runs the same command without --list after preparing fixtures.
 ```
@@ -192,6 +205,81 @@ Checks performed on 2026-10-14 UTC:
 
 The lab writes non-secret build provenance in `build.json`, baseline evidence in
 `evidence.json`, native evidence in `native-evidence.json`, and full results in
-`full-evidence.json`. JSON stays in ignored runtime state. The full driver and
-browser assertions must be validated against the final integrated contracts;
-capability/notification, UI-prefix and reconnect behavior remain open until then.
+`full-evidence.json`. JSON stays in ignored runtime state. The full integrated results below supersede the initial-main full preflight. Browser
+assertions use real authenticated Proxy requests and the bound thread UI.
+
+
+## Full integrated evidence (2026-10-14 UTC)
+
+Branch `agent/b-lab` fast-forwarded to `integrate/treer-b` at `87dc6ab4`, including
+hub notification backoff `bf78c24d`. Two small attach fixes were committed
+separately: `676b0e4a` makes startup cwd relative to the authenticated machine
+root, and `bf2a8461` waits for the new Agent to appear in discovery. The tested
+binary is built from `bf2a8461164e9d245949d044ce781dcf2ef67bce`; SHA-256
+`3ef780554d57c93f07c626cae265334aa4a23a6f343590356525644a436ae3e3`.
+Web assets were built from this worktree; the shared UI checkout matches
+`thread-ui.sha` (`dbed5ff1a5dc7fab68a8161af6f4a8953f8f731b`). Treer remains at
+`1a512715a935b49f262ad957ddf344bc5a8944eb`, with no local changes.
+
+Exact preparation/build commands on this machine:
+
+```bash
+git merge integrate/treer-b
+ln -s /home/ubuntu/dev/remoteCodex/pockymoe-thread-ui pockymoe-thread-ui
+corepack pnpm install --offline --frozen-lockfile
+corepack pnpm --filter @pockymoe/supervisor-web build
+scripts/treer-lab/down.sh
+scripts/treer-lab/up.sh
+
+# After the focused attach fixes, only the lab device needed replacement:
+scripts/treer-lab/up.sh --prepare-only
+node scripts/treer-lab/lab.mjs refresh-device --skip-prepare
+node scripts/treer-lab/e2e.mjs --full
+```
+
+The final full driver exited zero at `2026-10-14T01:39:21.825Z`:
+
+| Driver check | Result |
+| --- | --- |
+| Proxy and authenticated lab admin/user | PASS |
+| Docker host device enrolled and online | PASS |
+| Plain terminal Agent accepts input and returns output | PASS |
+| Managed Agent caller and Controller contract | PASS |
+| Fake Pockymoe hub is a Treer Managed App created by a managed Agent | PASS |
+| Two attach Agents register distinct interfaces on the hub port | PASS, all seven capabilities |
+| CLI prompt produces replies, idle status and two transcript pages | PASS, exact fake replies, page/cursor offsets |
+| Agent-to-Agent queued prompt sends a completion notification | PASS, explicit `--notify`, submission ID in Core Message |
+| Chromium thread UI and cross-thread API gate | PASS, authenticated UI, anonymous rejection and cross-thread denial |
+| Stop/start keeps the same Agent, bound thread and history | PASS, working/busy before stop, interrupted turn, harness released, same-thread/history rebind |
+| Hub App restart reconnects existing attach processes | PASS, changed App PID, unchanged attach PID, retained transcript |
+
+Playwright: `tunnel.spec.mjs`, `desktop-chromium`, **1 passed (1.9s)** in the full
+run. The focused spec also asserts the `307` relative `Location:
+threads/<bound id>` and final URL under the same Agent tunnel prefix; this strengthened spec passed
+separately in **1.4s**. The attach
+CLI crate tests passed: **20 unit + 4 attach lifecycle + 1 bind-status = 25**, via
+`cargo test --locked -p pockymoe`. `cargo fmt --all -- --check`, the Pockymoe
+build, Web build and script syntax checks passed.
+
+Failures encountered and resolved:
+
+| Failure | Owner and resolution |
+| --- | --- |
+| Attach connects but cannot save startup (`invalid_machine_path`, cwd must be relative to machine root) | Attach product bug; `676b0e4a`, focused path boundary test and lifecycle assertion |
+| Fresh attach exits because its Agent is not yet in discovery | Attach startup race; `bf2a8461`, bounded discovery wait and transient-failure lifecycle fixture |
+| Device offline immediately after warm container replacement | Lab preparation; restore the installed enrolled service and await online |
+| Stop interrupts but `thread.isLoaded` stays true | Lab assertion; ordinary thread DTO does not describe current harness membership. Assert actual loaded-harness presence before stop and absence after, plus interrupted turn and cleared active turn |
+
+The driver also corrected pre-run assumptions: notification needs `--notify`;
+transcript page/cursor is a turn offset, with `--limit 1` preserving a stable first
+page for history comparison. No product checks were weakened. No hub or Treer
+source changes were necessary, and attach protocol types are unchanged.
+
+The lab is left running with the final two attach Agents idle and registered on
+port 18880; three leftover attempt Agents were stopped. The container binary
+SHA-256 matches the tested build, and Proxy health passes. Scope is this Linux Docker device with authenticated
+Treer, fake Codex runtime and one Chromium project. Real inference, other
+providers/platforms/browsers, TLS deployment and explicit pending-queue pause
+across detach are not covered by this full driver. Notification retry/backoff
+failure paths remain covered by hub crate tests, rather than an injected CLI
+failure in this lab run.
