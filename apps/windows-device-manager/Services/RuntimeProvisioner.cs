@@ -19,10 +19,15 @@ internal sealed class RuntimeProvisioner(AppLogger logger, ProcessRunner runner)
         var raw = (await Client.GetStringAsync($"{ProductManifest.ReleaseRepository}/releases/latest/download/runtime-version.txt", cancellationToken)).Trim();
         if (!Regex.IsMatch(raw, @"^[0-9]+\.[0-9]+\.[0-9]+$") || !Version.TryParse(raw, out _))
             throw new InvalidOperationException("GitHub returned an invalid runtime version.");
+        if (!SupportsNativeMaintenance(raw))
+            throw new InvalidOperationException($"Windows requires Pockymoe {ProductManifest.MinimumNativeRuntimeVersion} or newer. Retry after GitHub latest has refreshed.");
         return raw;
     }
     public Task<RuntimeState?> TryRecoverBundledRuntimeAsync(CancellationToken cancellationToken) => Task.FromResult(RuntimeState.FromNative());
     public static bool IsNewerVersion(string candidate, string current) => Version.TryParse(candidate, out var a) && Version.TryParse(current, out var b) && a > b;
+
+    internal static bool SupportsNativeMaintenance(string version) => Version.TryParse(version, out var parsed)
+        && parsed >= Version.Parse(ProductManifest.MinimumNativeRuntimeVersion);
 
     internal static string Checksum(string text, string asset)
     {

@@ -37,6 +37,11 @@ credentials or transport identity. Config readers prefer `POCKYMOE_` keys and
 accept `REMOTE_CODEX_` keys.
 
 Native devices installed with PowerShell can be discovered by the Manager.
+Windows runtimes older than 0.13.3 require a one-time offline migration because
+their PowerShell 5.1 launchers stop on ordinary stderr and cannot reliably stop a
+headless Supervisor during maintenance. Disconnect, then Connect; the Manager
+reuses the saved registration and installs the current native release. It never
+automatically restarts an affected older binary or stops a running old device.
 For a retired npm device, explicitly disconnect the old Supervisor before
 migrating and paste its current Windows setup command. The old device token,
 Relay, local port and absolute database path must match the saved registration;

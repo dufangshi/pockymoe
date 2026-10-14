@@ -23,6 +23,7 @@ internal static class SelfTest
             Require(RelayConfigurationParser.TryParse("pockymoe setup --relay https://relay.example.test --code synthetic-code --port 45680", out parsed, out _) && parsed?.SetupCode == "synthetic-code", "Setup code parsing");
             Require(!RelayConfigurationParser.TryParse("setup -Relay 'https://relay.example.test' -Token a -Code b", out _, out _), "Ambiguous credentials rejected");
             Require(!RelayConfigurationParser.TryParse("setup -Relay 'https://relay.example.test' -Token a -AccountKey b", out _, out _), "Incomplete account binding rejected");
+            Require(!RuntimeProvisioner.SupportsNativeMaintenance("0.13.2") && RuntimeProvisioner.SupportsNativeMaintenance("0.13.3") && RuntimeProvisioner.SupportsNativeMaintenance("0.14.0"), "Broken older Windows maintenance requires migration");
             var sum = new string('a', 64); Require(RuntimeProvisioner.Checksum(sum + "  remote-codex-win32-x64-msvc-cli.exe\n", "remote-codex-win32-x64-msvc-cli.exe") == sum, "Checksum parsing");
             try { RuntimeProvisioner.Checksum(sum + "  binary\n" + sum + "  binary\n", "binary"); throw new Exception("Duplicate checksum accepted"); } catch (InvalidOperationException) { }
             Require(RuntimeProvisioner.IsNewerVersion("0.13.2", "0.12.77") && !RuntimeProvisioner.IsNewerVersion("0.12.77", "0.13.2"), "Version ordering");
@@ -38,8 +39,11 @@ internal static class SelfTest
             var service = new RelaySupervisorService(runner, new AppLogger());
             var tcp = new TcpListener(IPAddress.Loopback, 0); tcp.Start(); var port = ((IPEndPoint)tcp.LocalEndpoint).Port; tcp.Stop();
             var database = Path.Combine(AppPaths.RelayDataRoot, "preserved.sqlite"); File.WriteAllText(database, "preserve-device-and-history");
-            File.WriteAllText(AppPaths.RelayConfigPath, JsonSerializer.Serialize(new Dictionary<string, object> { ["REMOTE_CODEX_RELAY_SUPERVISOR_PORT"] = port.ToString(), ["REMOTE_CODEX_ADMIN_USERNAME"] = "admin", ["REMOTE_CODEX_ADMIN_PASSWORD"] = "synthetic-password", ["REMOTE_CODEX_RELAY_AGENT_TOKEN"] = "synthetic-token", ["REMOTE_CODEX_DATABASE_PATH"] = database, ["POCKYMOE_WORKSPACE_ROOT"] = AppPaths.UserHome }));
+            File.WriteAllText(AppPaths.RelayConfigPath, JsonSerializer.Serialize(new Dictionary<string, object> { ["REMOTE_CODEX_RELAY_SUPERVISOR_PORT"] = port.ToString(), ["REMOTE_CODEX_ADMIN_USERNAME"] = "admin", ["REMOTE_CODEX_ADMIN_PASSWORD"] = "synthetic-password", ["REMOTE_CODEX_RELAY_AGENT_TOKEN"] = "synthetic-token", ["REMOTE_CODEX_DATABASE_PATH"] = database, ["POCKYMOE_WORKSPACE_ROOT"] = AppPaths.UserHome, ["REMOTE_CODEX_RELAY_SERVER_URL"] = "wss://relay.example.test" }));
             Require(RelayConfigurationSnapshot.Load(new AppLogger()).WorkspaceRoot == AppPaths.UserHome, "Native workspace discovery");
+            (new AppSettings { RelayUrl = "https://stale.example.test", SupervisorPort = 12345, WorkspaceRoot = Path.GetTempPath(), KeepOnline = false }).Save();
+            var controller = new DeviceManagerController(new AppLogger(), new RuntimeProvisioner(new AppLogger(), runner), service, new StartupRegistrationService());
+            Require(controller.Settings.SupervisorPort == port && controller.Settings.WorkspaceRoot == AppPaths.UserHome && controller.Settings.RelayUrl == "wss://relay.example.test", "Saved device configuration overrides stale Manager preferences");
             using var server = new HttpListener(); server.Prefixes.Add($"http://127.0.0.1:{port}/"); server.Start();
             var served = Task.Run(async () =>
             {
@@ -137,6 +141,7 @@ internal static class SelfTest
             var device = await Post("/relay/devices", new { name = "Isolated Windows Manager acceptance" });
             var token = device.GetProperty("token").GetString()!;
             var database = Path.Combine(AppPaths.RelayDataRoot, "retained-device.sqlite");
+            var workspace = Path.Combine(AppPaths.UserHome, "selected-workspace"); Directory.CreateDirectory(workspace);
             var saved = new Dictionary<string, object>
             {
                 ["REMOTE_CODEX_RELAY_SERVER_URL"] = origin.Replace("http:", "ws:"),
@@ -146,10 +151,11 @@ internal static class SelfTest
                 ["REMOTE_CODEX_ADMIN_USERNAME"] = "admin",
                 ["REMOTE_CODEX_ADMIN_PASSWORD"] = Guid.NewGuid().ToString("N"),
                 ["REMOTE_CODEX_SESSION_SECRET"] = Guid.NewGuid().ToString("N"),
-                ["retainedCustomSetting"] = "keep"
+                ["retainedCustomSetting"] = "keep",
+                ["WORKSPACE_ROOT"] = workspace
             };
             File.WriteAllText(AppPaths.RelayConfigPath, JsonSerializer.Serialize(saved));
-            var configuration = new DeviceConfiguration(origin, token, AppPaths.UserHome, devicePort, AccountKey: publicKey, EnrollmentSecret: RandomKey(32), WebOrigin: origin);
+            var configuration = new DeviceConfiguration(origin, token, workspace, devicePort, AccountKey: publicKey, EnrollmentSecret: RandomKey(32), WebOrigin: origin);
             logger.Info("Native acceptance: verified account-bound setup.");
             // Retain the isolated launch template before WMI consumes it, for failure diagnostics.
             var diagnostics = Path.Combine(AppPaths.RelayDataRoot, "manager-startup-diagnostic");
@@ -169,8 +175,8 @@ internal static class SelfTest
             finally { capture.Cancel(); await monitor; }
             var state = await service.GetStateAsync(runtime, CancellationToken.None); Require(state == SupervisorState.Running, "Native setup connects Relay");
             logger.Info("Native acceptance: apply workspace through maintenance.");
-            await service.ConfigureWorkspaceAsync(AppPaths.UserHome, CancellationToken.None);
-            Require(RelaySupervisorService.Saved("POCKYMOE_WORKSPACE_ROOT") == AppPaths.UserHome, "Workspace preference applied");
+            await service.ConfigureWorkspaceAsync(workspace, CancellationToken.None);
+            Require(RelaySupervisorService.Saved("POCKYMOE_WORKSPACE_ROOT") == workspace, "Workspace preference applied");
             var status = await service.ManagementAsync("/check", true, CancellationToken.None);
             Require(status.GetProperty("canUpdate").GetBoolean(), "Native updates available");
             logger.Info("Native acceptance: authenticated Check and restart.");

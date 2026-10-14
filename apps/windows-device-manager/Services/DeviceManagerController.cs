@@ -39,6 +39,9 @@ internal sealed class DeviceManagerController
     public bool HasSavedToken => RelayConfiguration.HasToken;
     public string? AvailableRemoteCodexVersion { get; private set; }
     public string RuntimeUpdateMessage { get; private set; } = "Updates come from GitHub Releases.";
+    private bool RequiresNativeMigration => Runtime?.IsNative == true
+        && !RuntimeProvisioner.SupportsNativeMaintenance(RuntimeState.ResolveNative()?.Version ?? Runtime.RemoteCodexVersion ?? "0.0.0");
+    private const string NativeMigrationMessage = "Older runtime: Disconnect, then Connect to migrate safely.";
     public string CurrentRemoteCodexVersion => Runtime?.RemoteCodexVersion
         ?? ProductManifest.RemoteCodexVersion;
 
@@ -67,6 +70,7 @@ internal sealed class DeviceManagerController
                 "Waiting for a device setup command.",
                 ProvisioningStepState.Pending,
                 0);
+        if (RequiresNativeMigration) RuntimeUpdateMessage = NativeMigrationMessage;
         OnChanged();
 
         if (Settings.KeepOnline && HasSavedToken && Runtime?.IsNative == true && Runtime.IsUsable && State != SupervisorState.Running)
@@ -95,7 +99,10 @@ internal sealed class DeviceManagerController
             State = SupervisorState.Starting;
             Report(new("Setup", "Preparing this Windows device...", ProvisioningStepState.Running, 2));
 
-            if (Runtime?.IsNative == true && Runtime.IsUsable && string.IsNullOrEmpty(configuration.DeviceToken) && string.IsNullOrEmpty(configuration.SetupCode))
+            if (RequiresNativeMigration && Runtime?.IsUsable == true
+                && await _supervisor.GetStateAsync(Runtime, cancellationToken) != SupervisorState.Stopped)
+                throw new InvalidOperationException("Disconnect this older Windows runtime before migrating. Device registration and history will be retained.");
+            if (Runtime?.IsNative == true && !RequiresNativeMigration && Runtime.IsUsable && string.IsNullOrEmpty(configuration.DeviceToken) && string.IsNullOrEmpty(configuration.SetupCode))
             {
                 if (!string.Equals(configuration.HttpRelayUrl, ConfigurationFromSettings().HttpRelayUrl, StringComparison.OrdinalIgnoreCase)
                     || configuration.SupervisorPort != Settings.SupervisorPort)
@@ -125,6 +132,7 @@ internal sealed class DeviceManagerController
             _startup.SetEnabled(startWithWindows);
             RelayConfiguration = RelayConfigurationSnapshot.Load(_logger);
             State = SupervisorState.Running;
+            RuntimeUpdateMessage = "Updates come from GitHub Releases.";
             Report(new("Running", "Relay Supervisor is running and maintaining the outbound tunnel.", ProvisioningStepState.Complete, 100));
             _logger.Info("Device connected successfully.");
         }
@@ -191,6 +199,11 @@ internal sealed class DeviceManagerController
             OnChanged();
 
             if (Runtime?.IsNative != true) throw new InvalidOperationException("Migrate this legacy device using a setup command from the Devices page.");
+            Runtime = RuntimeState.FromNative() ?? Runtime;
+            if (RequiresNativeMigration)
+            {
+                RuntimeUpdateMessage = NativeMigrationMessage; OnChanged(); return;
+            }
             var status = await _supervisor.ManagementAsync("/check", true, cancellationToken);
             if (status.TryGetProperty("canUpdate", out var allowed) && allowed.ValueKind == System.Text.Json.JsonValueKind.False)
                 throw new InvalidOperationException(status.GetProperty("reason").GetString());
@@ -223,7 +236,7 @@ internal sealed class DeviceManagerController
 
     public async Task UpdateRemoteCodexAsync(CancellationToken cancellationToken = default)
     {
-        if (Runtime?.IsNative != true || string.IsNullOrEmpty(AvailableRemoteCodexVersion))
+        if (Runtime?.IsNative != true || RequiresNativeMigration || string.IsNullOrEmpty(AvailableRemoteCodexVersion))
             throw new InvalidOperationException("Start a native device and check for updates first.");
         await _operationLock.WaitAsync(cancellationToken);
         try
@@ -278,7 +291,15 @@ internal sealed class DeviceManagerController
         try
         {
             Runtime = RuntimeState.FromNative() ?? Runtime;
-            if (RelaySupervisorService.MaintenancePending()) return;
+            if (RelaySupervisorService.MaintenancePending())
+            {
+                if (State != SupervisorState.Starting)
+                {
+                    State = SupervisorState.Starting;
+                    Report(new("Maintenance", "Supervisor maintenance is in progress; waiting for recovery…", ProvisioningStepState.Running, 70));
+                }
+                return;
+            }
             var state = await _supervisor.GetStateAsync(Runtime, cancellationToken);
             if (state == SupervisorState.Starting || state == SupervisorState.Unknown)
             {
@@ -296,6 +317,12 @@ internal sealed class DeviceManagerController
                 return;
             }
 
+            if (RequiresNativeMigration)
+            {
+                State = SupervisorState.Stopped; RuntimeUpdateMessage = NativeMigrationMessage;
+                Report(new("Ready", "Connect to migrate the saved Windows device.", ProvisioningStepState.Pending, 0));
+                return;
+            }
             State = SupervisorState.Starting;
             Report(new("Reconnect", "The Supervisor stopped; reconnecting...", ProvisioningStepState.Running, 90));
             var configuration = new DeviceConfiguration(
@@ -357,12 +384,18 @@ internal sealed class DeviceManagerController
     {
         var hasSettings = File.Exists(AppPaths.SettingsPath);
         var settings = AppSettings.Load(_logger);
+        var relay = RelayConfigurationSnapshot.Load(_logger);
         if (hasSettings)
         {
-            return settings with { StartWithWindows = _startup.IsEnabled() };
+            return settings with
+            {
+                RelayUrl = relay.RelayUrl ?? settings.RelayUrl,
+                WorkspaceRoot = relay.WorkspaceRoot ?? settings.WorkspaceRoot,
+                SupervisorPort = relay.SupervisorPort ?? settings.SupervisorPort,
+                StartWithWindows = _startup.IsEnabled()
+            };
         }
 
-        var relay = RelayConfigurationSnapshot.Load(_logger);
         return settings with
         {
             RelayUrl = relay.RelayUrl ?? settings.RelayUrl,

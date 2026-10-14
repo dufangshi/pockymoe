@@ -85,7 +85,7 @@ internal sealed class RelaySupervisorService(ProcessRunner runner, AppLogger log
     {
         var config = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(File.ReadAllText(AppPaths.RelayConfigPath))!;
         var normalized = Path.GetFullPath(folder);
-        var previous = config.TryGetValue("POCKYMOE_WORKSPACE_ROOT", out var value) || config.TryGetValue("REMOTE_CODEX_WORKSPACE_ROOT", out value) || config.TryGetValue("WORKSPACE_ROOT", out value) ? value.GetString() : null;
+        var previous = config.TryGetValue("POCKYMOE_WORKSPACE_ROOT", out var value) || config.TryGetValue("REMOTE_CODEX_WORKSPACE_ROOT", out value) ? value.GetString() : null;
         if (previous == normalized) return;
         config.Remove("POCKYMOE_WORKSPACE_ROOT");
         config["REMOTE_CODEX_WORKSPACE_ROOT"] = JsonSerializer.SerializeToElement(normalized);
