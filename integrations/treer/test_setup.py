@@ -151,6 +151,17 @@ class SetupTests(unittest.TestCase):
         self.assertTrue(data.is_dir())
         self.assertIn("POCKYMOE_DATABASE_PATH=" + str(data / "supervisor.sqlite"), self.state()["apps"][0]["args"])
 
+    def test_summary_names_missing_base_agents_only(self):
+        self.installed()
+        claude = self.bin_dir / "claude"
+        claude.write_text("#!/bin/sh\n")
+        claude.chmod(0o700)
+        self.env["PATH"] = os.pathsep.join([str(self.bin_dir), "/usr/bin", "/bin"])
+        result = self.run_setup("--version", "0.13.2", "--hub-port", "18789")
+        self.assertIn("Note: 'codex' is not on PATH", result.stdout)
+        self.assertIn("Note: 'grok' is not on PATH", result.stdout)
+        self.assertNotIn("'claude' is not on PATH", result.stdout)
+
     def test_reuse_and_idempotent_rerun_repairs_profiles_keeps_hub_port(self):
         self.installed()
         self.run_setup("--version", "0.13.2", "--hub-port", "18788")
