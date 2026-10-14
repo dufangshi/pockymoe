@@ -18,11 +18,10 @@ rebinds the same thread.
 Open any installer or terminal Agent on the enrolled Treer machine and run:
 
 ```sh
-curl -fsSL 'https://raw.githubusercontent.com/dufangshi/pockymoe/<PINNED_COMMIT_AFTER_MERGE>/integrations/treer/treer-setup.sh' -o treer-setup.sh && sh treer-setup.sh --version 0.13.2
+curl -fsSL 'https://raw.githubusercontent.com/dufangshi/pockymoe/529c6e59f5d93bf604175e13e79cafed3bd8b705/integrations/treer/treer-setup.sh' -o treer-setup.sh && sh treer-setup.sh --version 0.13.2
 ```
 
-**Pinned URL placeholder:** replace `<PINNED_COMMIT_AFTER_MERGE>` with the final
-merged commit SHA before sharing this command. The public URL points to one
+The URL is pinned to commit `529c6e59`; a newer script gets a new pinned URL. The public URL points to one
 self-contained POSIX shell script; no other setup scripts are downloaded.
 Its bundled Python sources and profile template are extracted into a private
 temporary directory and removed when setup exits. Only the pinned native
