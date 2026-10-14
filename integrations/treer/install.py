@@ -13,11 +13,26 @@ import subprocess
 import sys
 import tempfile
 import urllib.request
+from urllib.parse import urlsplit
 import uuid
 import zipfile
 
 REPO = "https://github.com/dufangshi/pockymoe"
 LIMIT = 256 * 1024 * 1024
+
+
+def release_base(selected):
+    """Test-only mirror root; assets live under <root>/v<version>/."""
+    override = os.environ.get("POCKYMOE_RELEASE_BASE_URL")
+    if not override:
+        return f"{REPO}/releases/download/v{selected}"
+    parsed = urlsplit(override)
+    if (parsed.username or parsed.password or parsed.query or parsed.fragment
+            or not parsed.hostname
+            or not (parsed.scheme == "https" or (parsed.scheme == "http"
+                    and parsed.hostname in ("localhost", "127.0.0.1", "::1")))):
+        raise ValueError("Test release mirror must use HTTPS or loopback HTTP without credentials")
+    return f"{override.rstrip('/')}/v{selected}"
 
 
 def version(value):
@@ -137,7 +152,7 @@ def install(selected, home):
             raise ValueError("Local CLI paths already exist; refusing to replace them")
         with tempfile.TemporaryDirectory(prefix="stage-treer-", dir=releases) as temporary:
             stage = Path(temporary)
-            base = f"{REPO}/releases/download/v{selected}"
+            base = release_base(selected)
             sums_file = stage / "SHA256SUMS"
             download(f"{base}/SHA256SUMS", sums_file, 1024 * 1024)
             sums = checksums(sums_file.read_text())

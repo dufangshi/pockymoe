@@ -10,6 +10,7 @@ There is no duplicate push workflow after merging to `main`.
 | Protocol crate, shared package, Cargo manifests/lockfile | Protocol wire tests and Rust/TS thread discriminant contract tests |
 | Supervisor Web, shared/plugin packages | Web typecheck and Vitest; build the external thread UI dependency required by Web |
 | Native bootstrap, legacy npm launcher or Node scripts | Native SH/legacy launcher, updater, and historical publishing-script unit tests; no product installation or release build |
+| Treer integration packaging | Bundled setup freshness, shell syntax and offline Python installer/configuration tests |
 | GitHub Actions workflows | actionlint; ShellCheck warnings/errors (not style or informational suggestions) |
 | Documentation, agent instructions, browser-only E2E files, Windows Device Manager | No automatic product build; agents validate relevant changes locally |
 
