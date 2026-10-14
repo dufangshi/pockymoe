@@ -15,7 +15,7 @@ import {
   Routes,
   useLocation,
 } from 'react-router-dom';
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useState, type ReactNode } from 'react';
 import { PluginProvider } from '@pockymoe/thread-ui';
 
 import type {
@@ -62,7 +62,7 @@ import {
 } from './lib/api';
 import { builtinFrontendPlugins } from './plugins/builtin-plugin-modules';
 import { useComposerPreferences } from './lib/useComposerPreferences';
-import { themeChromeColor, useThemeRegistry } from './lib/themePacks';
+import { effectiveColorMode, themeChromeColor, useThemeRegistry } from './lib/themePacks';
 
 const THEME_STORAGE_KEY = 'remote-codex-theme-mode';
 const BACKEND_STORAGE_KEY = 'remote-codex-default-backend';
@@ -589,8 +589,11 @@ export function App() {
   const [systemTheme, setSystemTheme] = useState<'light' | 'dark'>(() =>
     systemThemePreference(),
   );
-  const effectiveTheme = themeMode === 'system' ? systemTheme : themeMode;
-  const { applied: appliedTheme } = useThemeRegistry();
+  const themeRegistry = useThemeRegistry();
+  const appliedTheme = themeRegistry.applied;
+  // A single-mode pack fixes the color mode while it is applied; the user's
+  // setting stays stored and returns with a pack that has both modes.
+  const effectiveTheme = effectiveColorMode(themeMode === 'system' ? systemTheme : themeMode, themeRegistry);
 
   useEffect(() => {
     if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
@@ -625,7 +628,7 @@ export function App() {
     window.localStorage.setItem(THEME_STORAGE_KEY, themeMode);
   }, [themeMode]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const root = document.documentElement;
     root.dataset.themeMode = themeMode;
     root.dataset.themeEffective = effectiveTheme;

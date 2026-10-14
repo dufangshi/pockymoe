@@ -32,6 +32,8 @@ export interface ThemeRegistryState {
   selected: string;
   /** The theme on the page: the choice, or Classic while it loads or when it failed. */
   applied: string;
+  /** The color mode the applied pack fixes (it supports only that one), or null. */
+  fixedMode: ThemeMode | null;
 }
 
 const CLASSIC: ThemeEntry = {
@@ -56,9 +58,11 @@ const CLASSIC: ThemeEntry = {
 let builtins: BuiltinThemePack[] = builtinPacks;
 let storage: ThemePackStorage = typeof indexedDB === 'undefined' ? memoryThemePackStorage() : indexedDbThemePackStorage;
 let imported: StoredPackInfo[] = [];
-let state: ThemeRegistryState = { entries: entriesFor([]), selected: readStoredThemeId(), applied: CLASSIC_THEME_ID };
+let state: ThemeRegistryState = { entries: entriesFor([]), selected: readStoredThemeId(), applied: CLASSIC_THEME_ID, fixedMode: null };
 const listeners = new Set<() => void>();
 let styleElement: HTMLStyleElement | null = null;
+/** The applied pack's manifest (the registry's entries may still be loading). */
+let appliedManifest: ThemeManifest | null = null;
 let applySequence = 0;
 let channel: BroadcastChannel | null = null;
 const builtinCss = new Map<string, Promise<string>>();
@@ -106,9 +110,20 @@ export function themeEntry(id: string) {
   return state.entries.find((entry) => entry.id === id);
 }
 
+/** The one color mode a pack supports, or null when it supports both. */
+export function themeFixedMode(manifest: ThemeManifest | null | undefined): ThemeMode | null {
+  return manifest?.modes.length === 1 ? manifest.modes[0]! : null;
+}
+
+/** The color mode on the page: a single-mode pack fixes it while it is applied,
+ *  otherwise it is the user's preference. */
+export function effectiveColorMode(preferred: ThemeMode, current: ThemeRegistryState = state): ThemeMode {
+  return current.fixedMode ?? preferred;
+}
+
 /** Browser chrome color (`<meta name="theme-color">`) for the applied theme. */
 export function themeChromeColor(mode: ThemeMode) {
-  const manifest = themeEntry(state.applied)?.manifest ?? CLASSIC.manifest;
+  const manifest = appliedManifest ?? CLASSIC.manifest;
   return manifest.chrome?.[mode] ?? CLASSIC.manifest.chrome![mode]!;
 }
 
@@ -126,9 +141,17 @@ function setDocumentTheme(id: string, css: string, manifest: ThemeManifest | nul
   if (style.textContent !== css) style.textContent = css;
   style.dataset.themePack = manifest ? id : '';
   const root = document.documentElement;
+  appliedManifest = manifest;
   root.dataset.themePreset = id;
   root.dataset.themeFeatures = manifest?.features.join(' ') ?? '';
-  if (state.applied !== id) update({ applied: id });
+  // A single-mode pack never shows with the other mode's base tokens, not even for
+  // the frame before the app re-renders with `effectiveColorMode`.
+  const fixed = themeFixedMode(manifest);
+  if (fixed) {
+    root.dataset.themeEffective = fixed;
+    root.style.colorScheme = fixed;
+  }
+  if (state.applied !== id || state.fixedMode !== fixed) update({ applied: id, fixedMode: fixed });
 }
 
 function releaseImportedCache() {
@@ -350,7 +373,8 @@ export function configureThemeRegistryForTests(options: { storage?: ThemePackSto
   builtinCss.clear();
   releaseImportedCache();
   imported = [];
+  appliedManifest = null;
   applySequence += 1;
-  state = { entries: entriesFor([]), selected: readStoredThemeId(), applied: CLASSIC_THEME_ID };
+  state = { entries: entriesFor([]), selected: readStoredThemeId(), applied: CLASSIC_THEME_ID, fixedMode: null };
   return refreshImported();
 }

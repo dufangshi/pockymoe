@@ -58,6 +58,19 @@
 .theme-preset-name { font-size: 13px; font-weight: 600; color: var(--theme-fg); }
 .theme-preset-meta { font-size: 11.5px; line-height: 1.45; color: var(--theme-fg-muted); }
 .theme-preset-card:has(.theme-preset-actions) .theme-preset-meta { padding-right: 52px; }
+.theme-preset-mode { display: inline-block; margin: -2px 4px 0 0; vertical-align: middle; }
+.theme-preset-mode > svg { display: block; width: 12px; height: 12px; }
+/* "Light only" next to Color mode while a single-mode pack is applied. */
+.theme-mode-fixed {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--theme-hover);
+  color: var(--theme-fg-muted);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 16px;
+  white-space: nowrap;
+}
 .theme-preset-actions { position: absolute; right: 6px; bottom: 6px; display: flex; gap: 2px; }
 .theme-preset-actions > button {
   display: grid;

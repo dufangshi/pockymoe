@@ -9,12 +9,14 @@ import {
   THEME_PRESET_KEY,
   applyTheme,
   configureThemeRegistryForTests,
+  effectiveColorMode,
   exportThemePack,
   getThemeRegistryState,
   importThemePack,
   removeThemePack,
   selectTheme,
   themeChromeColor,
+  themeFixedMode,
 } from './registry';
 import { memoryThemePackStorage } from './storage';
 import { testManifest, testPackFiles } from './testPack';
@@ -63,6 +65,8 @@ beforeEach(async () => {
   localStorage.clear();
   delete html.dataset.themePreset;
   delete html.dataset.themeFeatures;
+  delete html.dataset.themeEffective;
+  html.style.colorScheme = '';
   packStyle()?.remove();
   vi.spyOn(console, 'warn').mockImplementation(() => undefined);
   await configureThemeRegistryForTests({ storage: memoryThemePackStorage(), builtins: [builtin] });
@@ -141,6 +145,32 @@ describe('theme registry', () => {
     expect(getThemeRegistryState().entries.filter((entry) => entry.id === 'test-pack')).toHaveLength(1);
     expect(getThemeRegistryState().entries.at(-1)!.manifest.version).toBe('1.1.0');
     expect(html.dataset.themeFeatures).toBe('');
+  });
+
+  it('fixes the color mode while a single-mode pack is applied and keeps the preference otherwise', async () => {
+    expect(themeFixedMode(validateManifest(testManifest()))).toBeNull();
+    expect(themeFixedMode(validateManifest(testManifest({ modes: ['dark'] })))).toBe('dark');
+    // The app is dark; the pack only has a light mode.
+    html.dataset.themeEffective = 'dark';
+    await importThemePack(await packFile(testManifest({ modes: ['light'], chrome: { light: '#fdf2f6' } })));
+    await selectTheme('test-pack');
+    expect(getThemeRegistryState().fixedMode).toBe('light');
+    expect(effectiveColorMode('dark')).toBe('light');
+    // Set with the stylesheet, before the app re-renders.
+    expect(html.dataset.themeEffective).toBe('light');
+    expect(html.style.colorScheme).toBe('light');
+    expect(themeChromeColor(effectiveColorMode('dark'))).toBe('#fdf2f6');
+
+    await selectTheme(CLASSIC_THEME_ID);
+    expect(getThemeRegistryState().fixedMode).toBeNull();
+    expect(effectiveColorMode('dark')).toBe('dark');
+    expect(themeChromeColor(effectiveColorMode('dark'))).toBe('#171713');
+
+    // Re-importing the applied pack with both modes releases the fixed mode.
+    await selectTheme('test-pack');
+    await importThemePack(await packFile(testManifest({ modes: ['light', 'dark'] })));
+    expect(getThemeRegistryState().fixedMode).toBeNull();
+    expect(effectiveColorMode('dark')).toBe('dark');
   });
 
   it('refuses to import over a built-in pack or Classic and never removes them', async () => {

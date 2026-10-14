@@ -58,7 +58,7 @@ LICENSE, *.txt    optional licence texts (fonts keep their own)
 | `name`, `description` | a string or a map of locales (`en`, `zh-CN`, …); the UI picks the locale, its language, then English |
 | `version` | `1.2.3` (optionally `-pre` or `+build`) |
 | `author`, `license`, `engine` | optional text. `engine` is the Pockymoe range the pack was made for; it is shown on the card and not enforced. |
-| `modes` | `light` and/or `dark` (default both). Every pack follows the color mode setting. |
+| `modes` | `light` and/or `dark` (default both). A pack with one mode always shows in it; see [color modes](#color-modes). |
 | `swatches` | up to 6 hex colors for the card |
 | `chrome` | hex `<meta name="theme-color">` per mode |
 | `styles` | 1–32 stylesheets, applied in this order |
@@ -67,6 +67,17 @@ LICENSE, *.txt    optional licence texts (fonts keep their own)
 | `features` | [capability flags](#capability-flags); unknown flags are kept and ignored |
 
 Unknown top-level fields are ignored, so a newer pack still loads.
+
+### Color modes
+
+A pack that lists both modes follows the color mode setting. A pack that lists
+one mode fixes the page to that mode while it is applied, whatever the setting:
+`data-theme-effective`, `color-scheme`, the theme-color meta (from `chrome`) and
+the terminal, editor and code block palettes all use the pack's mode, so its
+stylesheets only need rules for that mode. The setting itself is kept and comes
+back with a pack that has both modes. Settings shows the color mode control
+disabled with "Light only" (or "Dark only"), and the pack's card shows a small sun
+or moon.
 
 ### Limits
 
@@ -195,6 +206,10 @@ when the applied pack lists the flag (`useThemeFeature(flag)`):
   creates before the app renders (after the host's stylesheets, before lazily
   loaded ones), then sets `data-theme-preset` and `data-theme-features` and the
   theme-color meta. Imported packs are validated and compiled again when applied.
+- The registry's `fixedMode` is the applied pack's only mode (or null);
+  `app.tsx` passes the setting through `effectiveColorMode`, and the registry sets
+  `data-theme-effective` and `color-scheme` together with a single-mode pack's
+  stylesheet so it never shows with the other mode's tokens.
 - `main.tsx` waits for the stored pack (at most 1.5 s) before the first render.
   An unknown, missing or broken pack falls back to Classic. Other tabs follow
   through `storage` events and a `BroadcastChannel`.
@@ -207,10 +222,10 @@ when the applied pack lists the flag (`useThemeFeature(flag)`):
    `id`, `name` and the styles.
 2. Zip the folder's contents (or the folder) and rename it to `.pockytheme`, then
    use Import…. Errors name the file and line.
-3. Check both color modes on desktop and phone: dialogs, menus, the composer,
+3. Check each color mode the pack lists on desktop and phone: dialogs, menus, the composer,
    code blocks, the terminal, the editor and the outer pages.
 
 A built-in pack is a folder under `themes/` whose name equals its `id`; the build
 fails when it does not validate. Tests: `apps/supervisor-web/src/lib/themePacks/*.test.ts`
 (validator, archives, CSS rules, registry) and `e2e/theme-packs.spec.ts`
-(export, import, apply, remove and malicious packs).
+(export, import, apply, remove, single-mode and malicious packs).
