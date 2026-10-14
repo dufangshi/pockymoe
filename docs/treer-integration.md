@@ -231,7 +231,11 @@ are reread on reconnect. A missing token file is retried while the hub starts.
 A rejected binding, authentication failure, invalid configuration or unknown
 contract exits nonzero. There is no successful exit path: Treer disables Agent
 recovery after exit code 0. Short status lines remain available in Treer's PTY
-fallback. Hub rejection diagnostics include the hub's error code and message, with known
+fallback. Known setup failures identify a disabled provider, missing base agent,
+missing thread, or a thread already attached elsewhere using fixed messages.
+Unknown internal errors retain a generic binding refusal; raw runtime errors
+and subprocess output are never forwarded.
+Hub rejection diagnostics include the hub's error code and message, with known
 credentials redacted, control characters stripped and code/message lengths capped
 at 96/512 characters (plus a truncation marker). Treer subprocess output stays
 suppressed, and attach disables tracing even if `RUST_LOG=trace` to protect the hello payload.

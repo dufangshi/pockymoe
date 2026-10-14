@@ -127,6 +127,47 @@ fn map_failure(error: anyhow::Error) -> Response {
         },
     )
 }
+
+fn attach_failure(error: &anyhow::Error) -> AttachReply {
+    // Only fixed, recognized diagnostics may cross the attach boundary. Runtime
+    // errors can otherwise contain credentials, local paths or subprocess output.
+    let (code, message) = match error.to_string().as_str() {
+        "unsupported_protocol" => ("unsupported_protocol", "Unsupported attach protocol"),
+        "codex is not enabled" => ("provider_unavailable", "codex is not enabled on this hub."),
+        "claude is not enabled" => ("provider_unavailable", "claude is not enabled on this hub."),
+        "opencode is not enabled" => (
+            "provider_unavailable",
+            "opencode is not enabled on this hub.",
+        ),
+        "acp is not enabled" => ("provider_unavailable", "acp is not enabled on this hub."),
+        "Install the base agent first: codex" => {
+            ("base_agent_missing", "Install the base agent first: codex")
+        }
+        "Install the base agent first: claude" => {
+            ("base_agent_missing", "Install the base agent first: claude")
+        }
+        "Install the base agent first: grok" => {
+            ("base_agent_missing", "Install the base agent first: grok")
+        }
+        "Install the base agent first: opencode" => (
+            "base_agent_missing",
+            "Install the base agent first: opencode",
+        ),
+        "thread not found" => (
+            "thread_not_found",
+            "The requested thread no longer exists on this hub.",
+        ),
+        "thread_already_live" => (
+            "thread_already_live",
+            "This thread is already attached to a running Treer Agent.",
+        ),
+        _ => ("binding_refused", "Attach binding refused"),
+    };
+    AttachReply::Error {
+        code: code.into(),
+        message: message.into(),
+    }
+}
 impl Hub {
     pub(crate) fn new(state: Arc<Supervisor>, port: u16) -> anyhow::Result<Option<Arc<Self>>> {
         if !state.config.treer_enabled {
@@ -613,15 +654,7 @@ async fn attach_loop(hub: Arc<Hub>, mut socket: WebSocket) {
     let (binding, created) = match hub.bind(hello).await {
         Ok(b) => b,
         Err(e) => {
-            let code = if e.to_string() == "unsupported_protocol" {
-                "unsupported_protocol"
-            } else {
-                "binding_refused"
-            };
-            let reply = AttachReply::Error {
-                code: code.into(),
-                message: "Attach binding refused".into(),
-            };
+            let reply = attach_failure(&e);
             let _ = socket
                 .send(Message::Text(serde_json::to_string(&reply).unwrap().into()))
                 .await;

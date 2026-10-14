@@ -155,6 +155,40 @@ async fn wait_until(mut predicate: impl FnMut() -> bool) {
     .unwrap();
 }
 #[tokio::test]
+async fn attach_reports_known_setup_failures_without_exposing_internal_errors() {
+    let f = fixture().await;
+    let mut h = hello(&f, "ag-disabled-provider");
+    h.create.as_mut().unwrap().provider = "claude".into();
+    let (_, reply) = attach_client(&f, &h).await;
+    assert_eq!(reply["code"], "provider_unavailable");
+    assert_eq!(reply["message"], "claude is not enabled on this hub.");
+    assert!(f.hub.state.list_threads(None, true).unwrap().is_empty());
+
+    h.agent_id = "ag-missing-thread".into();
+    h.create = None;
+    h.thread_id = Some("missing-thread".into());
+    let (_, reply) = attach_client(&f, &h).await;
+    assert_eq!(reply["code"], "thread_not_found");
+
+    let known = serde_json::to_value(attach_failure(&anyhow::anyhow!(
+        "Install the base agent first: grok"
+    )))
+    .unwrap();
+    assert_eq!(known["code"], "base_agent_missing");
+    assert_eq!(known["message"], "Install the base agent first: grok");
+    for detail in [
+        "subprocess failed: fixture-private-credential",
+        "Install the base agent first: fixture-private-credential",
+        "claude is not enabled: fixture-private-credential",
+    ] {
+        let reply = serde_json::to_value(attach_failure(&anyhow::anyhow!(detail))).unwrap();
+        assert_eq!(reply["code"], "binding_refused");
+        assert_eq!(reply["message"], "Attach binding refused");
+        assert!(!reply.to_string().contains("fixture-private-credential"));
+    }
+}
+
+#[tokio::test]
 async fn attach_create_rebind_refuse_version_token_and_identity() {
     let f = fixture().await;
     let h = hello(&f, "ag-one");
