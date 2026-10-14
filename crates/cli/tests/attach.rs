@@ -36,6 +36,11 @@ if [ "$1 $2" = 'interface contract' ]; then
   printf '%s\n' "$ATTACH_TEST_CONTRACT"
 fi
 if [ "$1" = 'whoami' ]; then
+  # Host starts the process before its first discovery snapshot contains it.
+  if [ ! -e "$HOME/discovery-ready" ]; then
+    touch "$HOME/discovery-ready"
+    exit 1
+  fi
   printf '{"machine":{"root":"%s"}}\n' "$HOME"
 fi
 if [ "$1 $2 $3" = 'agent startup set' ]; then
@@ -196,22 +201,23 @@ async fn create_saves_startup_before_registration_and_reconnect_rebinds() {
     let calls = f.wait_calls(1).await;
     assert_eq!(&calls[0], &["interface", "contract"]);
     assert_eq!(&calls[1], &["whoami"]);
-    assert_eq!(&calls[2][..5], &["agent", "startup", "set", "--cwd", "."]);
+    assert_eq!(&calls[2], &["whoami"]);
+    assert_eq!(&calls[3][..5], &["agent", "startup", "set", "--cwd", "."]);
     assert_eq!(
-        calls[2][6],
+        calls[3][6],
         f.root.join(".local/bin/pockymoe").to_str().unwrap()
     );
-    assert!(calls[2]
+    assert!(calls[3]
         .windows(3)
         .any(|w| w == ["attach", "--thread", "thread-test"]));
     assert_eq!(
-        &calls[3][..4],
+        &calls[4][..4],
         &["interface", "register", "--port", "12345"]
     );
-    assert!(calls[3]
+    assert!(calls[4]
         .windows(2)
         .any(|w| w == ["--instance-id", &hello.instance_id]));
-    assert!(calls[3]
+    assert!(calls[4]
         .windows(2)
         .any(|w| w == ["--ui-path", "/treer/agent"]));
     ws.close(None).await.unwrap();
@@ -224,7 +230,7 @@ async fn create_saves_startup_before_registration_and_reconnect_rebinds() {
     let calls = f.wait_calls(2).await;
     assert_eq!(
         calls.len(),
-        5,
+        6,
         "contract/startup run once; register repeats"
     );
 }

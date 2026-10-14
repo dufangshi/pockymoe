@@ -438,7 +438,17 @@ pub async fn run(options: Options, connection_options: crate::threads::Connectio
     let bytes = treer_command(&treer, &text_args(&["interface", "contract"])).await?;
     let contract = Contract::parse(&bytes)?;
     let restore_cwd = if options.thread.is_none() {
-        let identity = treer_command(&treer, &text_args(&["whoami"])).await?;
+        // Host can start the process before Proxy discovery publishes its Agent.
+        let identity = time::timeout(Duration::from_secs(10), async {
+            loop {
+                if let Ok(identity) = treer_command(&treer, &text_args(&["whoami"])).await {
+                    break identity;
+                }
+                time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await
+        .context("Treer Agent identity is not available in discovery")?;
         startup_cwd(&cwd, &identity)?
     } else {
         cwd.clone()
