@@ -97,3 +97,9 @@ The runtime release is marked GitHub latest. Independent Device Manager/tool rel
 must use `--latest=false` so they cannot replace the runtime's latest download alias.
 If GitHub cannot be reached, Check/Update reports the error and preserves the installed
 runtime; npm and unverified mirrors are never silent fallbacks.
+
+Windows detached launchers keep PowerShell preflight errors strict, then allow
+native stderr during execution and propagate the native exit code. Windows
+PowerShell 5.1 otherwise treats ordinary tracing output as a terminating error.
+Maintenance stops the already-drained headless Supervisor by its validated PID
+with `taskkill /F`; a console-close request cannot stop a windowless process.

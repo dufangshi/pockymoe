@@ -193,7 +193,7 @@ pub fn alive(pid: u32) -> bool {
 }
 pub fn stop(pid: u32) -> Result<()> {
     let ok = if cfg!(windows) {
-        command("taskkill.exe", &["/PID", &pid.to_string()])
+        command("taskkill.exe", &["/PID", &pid.to_string(), "/F"])
     } else {
         command("kill", &["-TERM", &pid.to_string()])
     };
@@ -208,6 +208,13 @@ fn worker_environment(
     inherited.remove("POCKYMOE_ENROLL_SECRET");
     inherited.remove("POCKYMOE_ENROLL");
     inherited
+}
+// Windows PowerShell 5.1 treats redirected native stderr as a PowerShell
+// error. Keep setup failures strict, but do not terminate the native worker on
+// ordinary tracing output; its exit code remains authoritative.
+fn windows_launcher_source(payload: &Path) -> String {
+    let payload = payload.to_string_lossy().replace('\'', "''");
+    format!("$ErrorActionPreference='Stop'\n$p=Get-Content -LiteralPath '{payload}' -Raw | ConvertFrom-Json\nRemove-Item -LiteralPath '{payload}', $PSCommandPath -Force\nRemove-Item Env:POCKYMOE_ENROLL_SECRET -ErrorAction SilentlyContinue\nforeach($v in $p.environment.PSObject.Properties){{[Environment]::SetEnvironmentVariable($v.Name,[string]$v.Value,'Process')}}\n$a=@($p.args)\n$ErrorActionPreference='Continue'\n& $p.binary @a *> $p.log\nexit $LASTEXITCODE\n")
 }
 /// Detach from the Supervisor's cgroup/job before it can be stopped.
 pub fn independent(
@@ -298,7 +305,7 @@ pub fn independent(
             &payload,
             &serde_json::json!({"binary":binary,"args":args,"environment":environment,"log":log}),
         )?;
-        let source = format!("$ErrorActionPreference='Stop'\n$p=Get-Content -LiteralPath '{}' -Raw | ConvertFrom-Json\nRemove-Item -LiteralPath '{}', $PSCommandPath -Force\nRemove-Item Env:POCKYMOE_ENROLL_SECRET -ErrorAction SilentlyContinue\nforeach($v in $p.environment.PSObject.Properties){{[Environment]::SetEnvironmentVariable($v.Name,[string]$v.Value,'Process')}}\n$a=@($p.args)\n& $p.binary @a *> $p.log\nexit $LASTEXITCODE\n", payload.to_string_lossy().replace('\'', "''"), payload.to_string_lossy().replace('\'', "''"));
+        let source = windows_launcher_source(&payload);
         write_bytes(&launcher, source.as_bytes())?;
         let line = format!("powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File \"{}\"", launcher.display());
         let script = format!("$r=Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{{CommandLine='{}'}}; exit $r.ReturnValue", line.replace('\'', "''"));
@@ -471,6 +478,69 @@ mod tests {
             .status()
             .unwrap()
             .success());
+    }
+    #[test]
+    fn windows_launch_uses_native_exit_code_after_stderr() {
+        let source = windows_launcher_source(Path::new("C:/User's home/payload.json"));
+        assert!(source.starts_with("$ErrorActionPreference='Stop'\n"));
+        assert!(source.contains("User''s home"));
+        assert!(source.contains(
+            "$ErrorActionPreference='Continue'\n& $p.binary @a *> $p.log\nexit $LASTEXITCODE"
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_native_stderr_survives() {
+        use std::time::{Duration, Instant};
+        const MARKER: &str = "POCKYMOE_WINDOWS_LAUNCH_TEST_MARKER";
+        if let Ok(marker) = std::env::var(MARKER) {
+            eprintln!("INFO ordinary native stderr must not terminate this worker");
+            std::thread::sleep(Duration::from_millis(500));
+            std::fs::write(marker, std::process::id().to_string()).unwrap();
+            std::thread::sleep(Duration::from_secs(60));
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("space folder");
+        std::fs::create_dir(&root).unwrap();
+        let marker = root.join("started");
+        independent(
+            &std::env::current_exe().unwrap(),
+            &[
+                "--exact".into(),
+                "distribution::service::tests::windows_native_stderr_survives".into(),
+                "--nocapture".into(),
+            ],
+            &BTreeMap::from([(MARKER.into(), marker.to_string_lossy().into_owned())]),
+            &root.join("worker.log"),
+        )
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while !marker.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        assert!(
+            marker.exists(),
+            "normal native stderr terminated the detached worker"
+        );
+        let pid = std::fs::read_to_string(&marker).unwrap().parse().unwrap();
+        stop(pid).unwrap();
+        assert!(!alive(pid), "headless native worker was not terminated");
+        std::thread::sleep(Duration::from_millis(500));
+        let bytes = std::fs::read(root.join("worker.log")).unwrap();
+        let output = if bytes.starts_with(&[0xff, 0xfe]) {
+            String::from_utf16(
+                &bytes[2..]
+                    .chunks_exact(2)
+                    .map(|b| u16::from_le_bytes([b[0], b[1]]))
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap()
+        } else {
+            String::from_utf8(bytes).unwrap()
+        };
+        assert!(output.contains("ordinary native stderr"));
     }
     #[test]
     fn unit_refresh_rewrites_only_a_changed_existing_unit() {

@@ -135,6 +135,41 @@ node /home/ubuntu/dev/remoteCodex/reference/treer/web/node_modules/@playwright/t
 Install that Playwright version's Chromium if it is unavailable. Traces, video,
 storage-state files and credential-bearing failure output are disabled.
 
+## One-command setup against a real release
+
+`setup-e2e.mjs` exercises the public setup flow through two plain command Agents
+created by the authenticated lab user. It uses the unmodified bundled script and
+genuine v0.13.2 assets, verifies the native installation and Managed App, compares
+profile IDs and App PID across the rerun, launches the created Codex profile, and
+checks existing lab workloads before the launch. It leaves both hubs running.
+The device image includes curl and Python 3.11+; existing containers built before
+Python was added need the prerequisite installed before this test.
+
+Prepare the host mirror once, retaining the authoritative checksum file:
+
+```bash
+mkdir -p .local/treer-lab/setup-mirror/v0.13.2
+gh release download v0.13.2 -R dufangshi/pockymoe \
+  -p SHA256SUMS -p remote-codex-linux-x64-gnu -p remote-codex-web.zip \
+  -p runtime-version.txt -D .local/treer-lab/setup-mirror/v0.13.2
+node scripts/treer-lab/setup-e2e.mjs
+```
+
+The driver verifies host checksums, starts a temporary HTTP mirror container on
+the internal lab network with no published ports, and forwards its release root
+to device loopback port 19000. `POCKYMOE_RELEASE_BASE_URL` is set only in the two
+setup command Agents. Both HTTP helpers are removed on completion. No runtime
+build is substituted for the release, and no Treer credentials are copied into
+the command. An existing installation must be v0.13.2; setup refuses replacement.
+
+When attach binds successfully, the driver selects only `setup-tunnel.spec.mjs`
+and `desktop-chromium` using the existing Playwright config. The spec checks real
+authentication, the relative redirect, final bound-thread URL and rendered prompt.
+A missing Codex harness is recorded separately; an Agent that exits before binding
+fails the interface check and blocks the browser and prompt checks. Evidence is
+written to `.local/treer-lab/setup-evidence.json`, separate from the fake-runtime
+full-driver evidence. Task reports and archived test evidence belong in `.scratch/`.
+
 ## Isolation and credentials
 
 Runtime/build state is under `.local/treer-lab/`, already gitignored, with a
