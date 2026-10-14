@@ -115,6 +115,9 @@ it saves `treer agent startup set --cwd ... -- <stable pockymoe> attach --thread
 **before** registering the interface. The saved command includes the explicit
 hub URL and token-file path, never token contents or Treer credentials. If only
 a versioned executable is available, attach warns and refuses to save it.
+The startup working directory is relative to the machine root reported by
+`treer whoami`; attach rejects a working directory outside that root before
+creating a thread. The hub still receives the absolute working directory.
 A pre-existing thread binding registers without rewriting startup.
 
 Attach keeps the socket open, answers pings, and reconnects with exponential

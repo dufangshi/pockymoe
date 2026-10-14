@@ -214,6 +214,26 @@ fn text_args(args: &[&str]) -> Vec<OsString> {
     args.iter().map(OsString::from).collect()
 }
 
+/// Treer startup directories are relative to the enrolled machine root.
+fn startup_cwd(cwd: &Path, identity: &[u8]) -> Result<PathBuf> {
+    let identity: Value = serde_json::from_slice(identity)
+        .map_err(|_| anyhow::anyhow!("Treer identity is not valid JSON"))?;
+    let root = identity["machine"]["root"]
+        .as_str()
+        .filter(|root| Path::new(root).is_absolute())
+        .context("Treer machine root is unavailable")?;
+    let root = std::fs::canonicalize(root).context("Cannot resolve Treer machine root")?;
+    let cwd = std::fs::canonicalize(cwd).context("Cannot resolve attach working directory")?;
+    let relative = cwd
+        .strip_prefix(root)
+        .context("Attach working directory is outside the Treer machine root")?;
+    Ok(if relative.as_os_str().is_empty() {
+        PathBuf::from(".")
+    } else {
+        relative.to_owned()
+    })
+}
+
 impl Session {
     fn startup_args(&self, executable: PathBuf) -> Vec<OsString> {
         let mut args = text_args(&["agent", "startup", "set", "--cwd"]);
@@ -417,6 +437,12 @@ pub async fn run(options: Options, connection_options: crate::threads::Connectio
     let treer = std::env::var_os("TREER_BIN").unwrap_or_else(|| "treer".into());
     let bytes = treer_command(&treer, &text_args(&["interface", "contract"])).await?;
     let contract = Contract::parse(&bytes)?;
+    let restore_cwd = if options.thread.is_none() {
+        let identity = treer_command(&treer, &text_args(&["whoami"])).await?;
+        startup_cwd(&cwd, &identity)?
+    } else {
+        cwd.clone()
+    };
     println!(
         "Pockymoe attach: AIS v1 contract verified ({} capabilities, {} features).",
         contract.capabilities.len(),
@@ -446,7 +472,7 @@ pub async fn run(options: Options, connection_options: crate::threads::Connectio
         },
         hub,
         token_file,
-        cwd,
+        cwd: restore_cwd,
         treer,
         startup_pending: false,
         startup_executable,
@@ -545,7 +571,7 @@ mod tests {
             },
             hub: "http://127.0.0.1:8787".into(),
             token_file: "/data/token".into(),
-            cwd: "/project".into(),
+            cwd: "project".into(),
             treer: "treer".into(),
             startup_pending: true,
             startup_executable: None,
@@ -559,7 +585,7 @@ mod tests {
                 "startup",
                 "set",
                 "--cwd",
-                "/project",
+                "project",
                 "--",
                 "/bin/pockymoe",
                 "attach",
@@ -571,5 +597,20 @@ mod tests {
                 "/data/token"
             ]
         );
+    }
+
+    #[test]
+    fn startup_directory_is_machine_relative_and_rejects_outside_root() {
+        let root = std::env::temp_dir().join(format!("attach-cwd-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("project")).unwrap();
+        let identity = serde_json::to_vec(&serde_json::json!({"machine":{"root":root}})).unwrap();
+        assert_eq!(
+            startup_cwd(&root.join("project"), &identity).unwrap(),
+            PathBuf::from("project")
+        );
+        assert_eq!(startup_cwd(&root, &identity).unwrap(), PathBuf::from("."));
+        assert!(startup_cwd(root.parent().unwrap(), &identity).is_err());
+        assert!(startup_cwd(&root, b"{}").is_err());
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
