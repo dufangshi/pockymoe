@@ -126,9 +126,11 @@ internal static class SelfTest
             var configuration = new DeviceConfiguration(origin, token, AppPaths.UserHome, devicePort, AccountKey: publicKey, EnrollmentSecret: Guid.NewGuid().ToString("N"), WebOrigin: origin);
             runtime = await new RuntimeProvisioner(logger, runner).SetupAsync(configuration, new Progress<ProvisioningProgress>(), CancellationToken.None);
             var state = await service.GetStateAsync(runtime, CancellationToken.None); Require(state == SupervisorState.Running, "Native setup connects Relay");
+            await service.ConfigureWorkspaceAsync(AppPaths.UserHome, CancellationToken.None);
+            Require(RelaySupervisorService.Saved("POCKYMOE_WORKSPACE_ROOT") == AppPaths.UserHome, "Workspace preference applied");
             var status = await service.ManagementAsync("/check", true, CancellationToken.None);
             Require(status.GetProperty("canUpdate").GetBoolean(), "Native updates available");
-            var beforePid = status.GetProperty("processId").GetInt32();
+            var beforePid = (await service.ManagementAsync("", false, CancellationToken.None)).GetProperty("processId").GetInt32();
             var identity = Directory.GetFiles(AppPaths.RelayDataRoot, "*.transport-identity").Single();
             var identityBytes = File.ReadAllBytes(identity);
             await service.ManagementAsync("/restart", true, CancellationToken.None);

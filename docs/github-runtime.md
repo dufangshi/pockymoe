@@ -25,8 +25,8 @@ is also published as the final `remote-codex` npm package (`npm-final-release.ym
 `scripts/prepare-npm-bridge.py`): its retired launcher runs the GitHub executable of
 the same version. After the device installs it through Settings → Update, Settings
 shows Update once more; that schedules the native worker, which installs the GitHub
-release and moves the service to it. Windows Device Manager devices keep their
-bootstrap and are told to run the Windows setup command instead. No later npm
+release and moves the service to it. Windows Device Manager devices from before 0.2.0 keep their legacy bootstrap until
+explicit migration; Manager 0.2.0 uses native setup and the same management APIs. No later npm
 releases are published.
 
 Alternatively, rerun the same setup command once for an existing npm device. The verified native
@@ -42,10 +42,11 @@ running native executable's directory on PATH.
 
 Native setup uses systemd user services or launchd where available. Other Linux
 hosts use a detached session; Windows uses an independent WMI-created process.
-Detached installations currently require setup again after reboot; the independently
-released Windows Device Manager's tray/startup behavior is unchanged. Do not treat
-its legacy npm Check/Update control as the new GitHub update source. Use Web Settings
-on a migrated device. This migration does not publish a Device Manager release.
+Detached installations require a process owner to restart them after reboot.
+Windows Device Manager 0.2.0 supplies tray/sign-in startup and resolves
+`native/current.json` on each launch. Its Check/Update controls use native management
+APIs. See [Windows Device Manager](windows-device-manager.md) for installation,
+legacy migration and its independent release boundary.
 
 ## Update contract
 

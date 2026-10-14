@@ -15,13 +15,12 @@ internal sealed record ManagerTheme(Color Background, Color Surface, Color Input
     public static void Apply(Control control, ManagerTheme theme)
     {
         control.ForeColor = theme.Text;
-        control.BackColor = theme.Background;
+        control.BackColor = control.Parent?.BackColor ?? theme.Background;
         if (control is ThemedPanel panel) { panel.Theme = theme; panel.BackColor = theme.Surface; }
         if (control is ThemedButton button) { button.Theme = theme; button.BackColor = theme.Surface; }
         if (control is TextBox or NumericUpDown or ComboBox) control.BackColor = theme.Input;
         if (control is Label label && label.Tag as string == "muted") label.ForeColor = theme.Muted;
         foreach (Control child in control.Controls) Apply(child, theme);
-        if (control.Parent is ThemedPanel && control is not TextBox && control is not Button && control is not ComboBox && control is not NumericUpDown) control.BackColor = theme.Surface;
         control.Invalidate();
     }
     internal static GraphicsPath Round(Rectangle bounds, int radius)
