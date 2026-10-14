@@ -14,5 +14,7 @@ CREATE TABLE IF NOT EXISTS treer_submissions (
     created_at TEXT NOT NULL,
     cancelled INTEGER NOT NULL DEFAULT 0,
     notified INTEGER NOT NULL DEFAULT 0,
+    notification_attempts INTEGER NOT NULL DEFAULT 0,
+    notification_next_attempt INTEGER NOT NULL DEFAULT 0,
     UNIQUE(thread_id, operation_id)
 );
