@@ -16,7 +16,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, bail, ensure, Result};
 use pockymoe_protocol::{
     now_rfc3339, truncate_title, AgentBackendDto, AgentCapabilitySnapshotDto, CreateThreadInput,
     CreateWorkspaceInput, ImportThreadCandidateDto, ImportThreadInput, ModelOptionDto, Provider,
@@ -1166,6 +1166,32 @@ impl Supervisor {
         input: CreateThreadInput,
         options: crate::interaction::AgentOptions,
     ) -> Result<ThreadDto> {
+        self.create_thread_inner(input, options, None).await
+    }
+
+    pub async fn create_thread_with_cli_identity(
+        &self,
+        input: CreateThreadInput,
+        env: Vec<(String, String)>,
+    ) -> Result<ThreadDto> {
+        ensure!(
+            input.parent_thread_id.is_none(),
+            "identity requires a top-level thread"
+        );
+        self.create_thread_inner(
+            input,
+            crate::interaction::AgentOptions::default(),
+            Some(env),
+        )
+        .await
+    }
+
+    async fn create_thread_inner(
+        &self,
+        input: CreateThreadInput,
+        options: crate::interaction::AgentOptions,
+        identity: Option<Vec<(String, String)>>,
+    ) -> Result<ThreadDto> {
         let (approval_mode, sandbox_mode) = match input.approval_mode.as_str() {
             "yolo" => ("yolo", "danger-full-access"),
             "guarded" => ("guarded", "workspace-write"),
@@ -1210,6 +1236,9 @@ impl Supervisor {
             .as_ref()
             .map(|w| w.path.to_string_lossy().into_owned())
             .unwrap_or_else(|| workspace.abs_path.clone());
+        if let Some(env) = identity {
+            self.stage_thread_cli_identity(&id, env);
+        }
         let started = match self
             .with_load(
                 &id,
@@ -1227,6 +1256,7 @@ impl Supervisor {
         {
             Ok(started) => started,
             Err(error) => {
+                self.clear_thread_cli_identity(&id);
                 if let Some(w) = &worktree {
                     let _ = crate::interaction::remove_worktree(
                         Path::new(&workspace.abs_path),
@@ -1241,7 +1271,7 @@ impl Supervisor {
             .title
             .filter(|s| !s.trim().is_empty())
             .unwrap_or_else(|| "New thread".into());
-        self.db.with(|conn| {
+        let saved = self.db.with(|conn| {
             let tx = conn.unchecked_transaction()?;
             tx.execute(
                 "INSERT INTO threads(id, workspace_id, provider, agent_id, provider_session_id, source, title, model,
@@ -1273,7 +1303,18 @@ impl Supervisor {
             }
             tx.commit()?;
             Ok(())
-        })?;
+        });
+        if let Err(error) = saved {
+            self.clear_thread_cli_identity(&id);
+            let _ = runtime
+                .release_loaded(
+                    &started.provider_session_id,
+                    crate::actor::ReleaseScope::Session,
+                    None,
+                )
+                .await;
+            return Err(error);
+        }
         let thread = self.get_thread(&id)?;
         self.bus.emit(pockymoe_protocol::ThreadEventEnvelope {
             event_type: pockymoe_protocol::ThreadEventType::ThreadUpdated,
@@ -1575,6 +1616,10 @@ impl Supervisor {
     }
 
     pub fn ensure_prompt_allowed(&self, thread: &ThreadDto) -> Result<()> {
+        ensure!(
+            !self.integration_thread_paused(&thread.id),
+            "conflict: integration binding is detached"
+        );
         self.ensure_not_updating()?;
         if thread.source != "local_codex_import" && thread.source != "local_provider_import" {
             return Ok(());
@@ -2272,6 +2317,10 @@ impl Supervisor {
         pending_steer_id: Option<&str>,
         goal_submission: Option<GoalSubmission>,
     ) -> Result<()> {
+        ensure!(
+            !self.integration_thread_paused(&thread.id),
+            "conflict: integration binding is detached"
+        );
         // Released only after the turn; the queue drain below takes its own.
         let harness = self.hold_harness(&thread.id).await;
         self.ensure_not_updating()?;
@@ -2663,6 +2712,7 @@ impl Supervisor {
             if self
                 .update_draining
                 .load(std::sync::atomic::Ordering::SeqCst)
+                || self.integration_thread_paused(thread_id)
                 || self.live.lock().await.contains_key(thread_id)
             {
                 return Ok(());
@@ -3627,6 +3677,14 @@ impl Supervisor {
         answer: Option<&str>,
     ) -> Result<ThreadDetailDto> {
         let thread = self.get_thread(id)?;
+        ensure!(
+            self.runtime(thread.provider)?
+                .pending_requests(id)
+                .await
+                .iter()
+                .any(|request| request.id == request_id),
+            "request not found in this thread"
+        );
         self.runtime(thread.provider)?
             .respond_permission(request_id, allow, answer)
             .await?;

@@ -4,6 +4,7 @@ use pockymoe_protocol::ThreadEventEnvelope;
 
 fn supervisor(dir: &Path) -> Arc<Supervisor> {
     let config = RuntimeConfig {
+        treer_enabled: false,
         host_mode: Default::default(),
         mode: pockymoe_protocol::Mode::Local,
         host: "127.0.0.1".into(),

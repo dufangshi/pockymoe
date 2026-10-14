@@ -355,6 +355,7 @@ fn seed_node_0030(path: &std::path::Path, workspace_path: &std::path::Path) {
 
 fn test_config(root: &std::path::Path, database_url: &std::path::Path) -> RuntimeConfig {
     RuntimeConfig {
+        treer_enabled: false,
         host_mode: Default::default(),
         mode: Mode::Local,
         host: "127.0.0.1".into(),

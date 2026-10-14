@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "crates/protocol",
+  "crates/treer",
   "crates/runtime",
   "crates/supervisor",
   "crates/relay",
@@ -29,6 +30,7 @@ http-body-util = "0.1"
 portable-pty = "0.9"
 rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+pockymoe-treer = { path = "crates/treer" }
 pockymoe-protocol = { path = "crates/protocol" }
 pockymoe-relay = { path = "crates/relay" }
 pockymoe-runtime = { path = "crates/runtime" }

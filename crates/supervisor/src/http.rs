@@ -58,9 +58,15 @@ struct ExportTranscriptQuery {
 }
 
 pub fn router(state: AppState) -> Router {
+    let hub =
+        crate::treer::Hub::new(state.clone(), state.config.port).expect("initialize Treer hub");
+    router_with_treer(state, hub)
+}
+pub(crate) fn router_with_treer(state: AppState, hub: Option<Arc<crate::treer::Hub>>) -> Router {
     state.start_interaction_worker();
     crate::peer_send::start_outbox_worker(&state);
     let router = Router::new()
+        .merge(crate::treer::routes())
         .route(
             "/api/transport/bind",
             post(crate::owner_trust::bind_endpoint),
@@ -379,6 +385,7 @@ pub fn router(state: AppState) -> Router {
             crate::auth::require_auth,
         ))
         .with_state(state)
+        .layer(middleware::from_fn_with_state(hub, crate::treer::gate))
         .layer(compression_layer());
     match webview_cors_layer() {
         Some(layer) => router.layer(layer),
@@ -1969,6 +1976,7 @@ async fn thread_release(
     Path(id): Path<String>,
     State(state): State<AppState>,
     principal: Option<axum::Extension<crate::owner_trust::BrowserPrincipal>>,
+    treer_scope: Option<axum::Extension<crate::treer::Scope>>,
     body: Bytes,
 ) -> Result<Json<ReleaseThreadResultDto>, ApiErr> {
     let input = if body.iter().all(u8::is_ascii_whitespace) {
@@ -1980,22 +1988,22 @@ async fn thread_release(
     // A shared caller may end only threads it could release one by one.
     let shared = principal.map(|p| p.0).filter(|p| !p.is_owner());
     let may_release = |thread: &str| {
-        shared.as_ref().is_none_or(|p| {
-            crate::grants::authorize_path(
-                &state,
-                p,
-                "POST",
-                &format!("/api/threads/{thread}/release"),
-            )
-            .is_ok()
-        })
+        treer_scope.as_ref().is_none_or(|s| s.allows(thread))
+            && shared.as_ref().is_none_or(|p| {
+                crate::grants::authorize_path(
+                    &state,
+                    p,
+                    "POST",
+                    &format!("/api/threads/{thread}/release"),
+                )
+                .is_ok()
+            })
     };
     state
         .release_thread_harness(
             &id,
             input.interrupt,
-            shared
-                .is_some()
+            (shared.is_some() || treer_scope.is_some())
                 .then_some(&may_release as &(dyn Fn(&str) -> bool + Send + Sync)),
         )
         .await
@@ -2834,8 +2842,14 @@ async fn update_plugin(
     Ok(Json(builtin_plugin(&state, &id).unwrap_or(Value::Null)))
 }
 
-async fn ws_upgrade(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| crate::socket::websocket_loop(socket, state))
+async fn ws_upgrade(
+    ws: WebSocketUpgrade,
+    State(state): State<AppState>,
+    scope: Option<axum::Extension<crate::treer::Scope>>,
+) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| {
+        crate::socket::websocket_loop_scoped(socket, state, scope.map(|s| s.0))
+    })
 }
 
 async fn model_pricing(State(state): State<AppState>) -> Json<Value> {

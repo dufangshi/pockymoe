@@ -186,6 +186,17 @@ impl AcpProcess {
         for (key, value) in extra_env {
             cmd.env(key, value);
         }
+        // A hub may itself inherit an App/Agent identity. Never pass that identity
+        // to an unbound thread or a delegate; only task-local bound identity wins.
+        for key in [
+            "TREER_AGENT_ID",
+            "TREER_WORKLOAD_CREDENTIAL",
+            "TREER_AGENT_SERVER_URL",
+            "TREER_WORKSPACE_ID",
+            "TREER_SERVER_ID",
+        ] {
+            cmd.env_remove(key);
+        }
         let cli_env = crate::interaction::launch_env();
         cmd.envs(cli_env.iter().cloned());
         let mut child = cmd

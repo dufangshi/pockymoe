@@ -21,6 +21,7 @@ mod ports;
 mod secure_transport;
 mod shells;
 mod socket;
+mod treer;
 mod tunnel;
 mod upstreams;
 
@@ -69,13 +70,18 @@ pub async fn serve(state: Arc<Supervisor>) -> Result<()> {
             }
         });
     }
+    let hub = treer::Hub::new(state.clone(), listener.local_addr()?.port())?;
     // A restart with no active turns still needs its startup outcome recorded.
     if state.defer_update_recovery() || distribution::host_managed_pending(&state) {
         tokio::spawn(management::recover_after_update(state.clone()));
     } else {
         state.spawn_inbox_recovery();
     }
-    axum::serve(listener, router(state)).await?;
+    axum::serve(
+        listener,
+        http::router_with_treer(state, hub).into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await?;
     Ok(())
 }
 
