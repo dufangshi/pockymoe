@@ -184,9 +184,49 @@ local HTTP authentication alone does not provide Agent scoping.
 
 ## Hub internals
 
-**Maintainer placeholder — the hub implementation owner fills this section.**
-Document binding storage/reconciliation, AIS endpoints and transcript/status
-mapping, request provenance checks, credential injection, App-route access,
-and disconnect-driven harness release here. The attach-side wire types live in
-[`crates/protocol/src/treer.rs`](../crates/protocol/src/treer.rs); they are shared
-with the hub and versioned independently of runtime releases.
+The hub enables the integration only with `POCKYMOE_HOST_MODE=hosted` and
+`POCKYMOE_HOSTED_BY=treer`; startup rejects other combinations. Hosted mode
+defaults the update restart strategy to `host-managed`; an explicit
+`POCKYMOE_SUPERVISOR_RESTART_STRATEGY` overrides it. Pure logic lives in
+`crates/treer`; routes and wiring in `crates/supervisor/src/treer.rs`. The
+attach wire types are in [`crates/protocol/src/treer.rs`](../crates/protocol/src/treer.rs).
+
+**Attach endpoint.** `GET /api/treer/attach` accepts a loopback WebSocket with
+`Authorization: Bearer` set to the hex 256-bit token in `treer-attach.token`
+beside the hub database (Unix mode 0600; a symlink, non-file or wider mode is
+refused). Requests with `Origin` or `Sec-Fetch-*` are refused. One live Agent may
+bind each top-level thread; child threads cannot be bound. A repeated `create`
+from a known Agent rebinds its saved thread instead of creating another.
+Bindings are stored in their own table; core thread tables are unchanged.
+
+**Disconnect.** When the attach socket closes (Treer stop, crash or restart) the
+instance's access ends at once. The hub pauses that thread's queue, interrupts
+the running turn and releases its harness, keeping the thread, its history and
+queued inputs. Persisted bindings wait for the next attach after a hub restart.
+
+**Credentials.** The Treer identity from the hello is installed only into the
+bound top-level thread's harness and ACP terminal environment. It is held in
+memory, never persisted or logged, and never inherited by child threads.
+
+**Agent Interface (`treer.agent-interface/v1`).** The hub advertises
+`prompt.submit`, `prompt.queue`, `prompt.queue.read`, `prompt.notify`,
+`transcript.read`, `state.observe` and `abort`. Controller requests must come
+over loopback TCP with Host `agent-interface`, source `controller-api`, the live
+Agent and instance IDs, and no browser headers. `operation_id` maps to a durable
+pending-request ID: a retry with the same input returns the original receipt, a
+different input conflicts. Receipts and completion notifications survive hub
+restarts. A completion notification is sent once per submission with the bound
+Agent's live identity through the `treer` CLI on the hub's `PATH`, using the
+idempotency key `prompt-submission/<id>/terminal`; it retries until delivered and
+never reruns the task. Transcript `page`/`cursor` are turn offsets (default limit
+1, maximum 1000); items map through the typed thread schema. Status is `blocked`
+while the thread has a pending approval or question.
+
+**Browser UI tunnel.** A `proxy-ui` request needs a live binding and the hub's
+loopback Host. `/` redirects relatively to the bound thread. Access covers the
+bound thread, its descendants, and the minimum global reads the page needs
+(plugins, runtime config, models, capabilities, assets). Collections are
+filtered to permitted threads and WebSocket events to those threads. Management,
+device metrics, subscription usage and other threads are denied. These provenance
+headers are browser defenses supplied by Treer, not authentication against a
+hostile process of the same OS user.
