@@ -13,6 +13,7 @@ use tempfile::{tempdir, TempDir};
 async fn running_thread() -> (TempDir, Arc<Supervisor>, String) {
     let dir = tempdir().unwrap();
     let config = RuntimeConfig {
+        host_mode: Default::default(),
         mode: pockymoe_protocol::Mode::Local,
         host: "127.0.0.1".into(),
         port: 0,

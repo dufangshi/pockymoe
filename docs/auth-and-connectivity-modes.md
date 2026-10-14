@@ -4,6 +4,44 @@ Pockymoe supports three backend connectivity modes through `POCKYMOE_MODE`.
 
 The default remains compatible with the existing supervisor behavior.
 
+## Startup host policy
+
+Host mode is independent of `POCKYMOE_MODE` and its authentication rules. Select it
+with `POCKYMOE_HOST_MODE=standalone|hosted`, or `--host-mode standalone|hosted` on
+`pockymoe supervisor`, `start`, `relay-supervisor` or `device-run`. Invalid values
+fail startup. The default, `standalone`, preserves all existing subsystems.
+
+`hosted` is for a Supervisor embedded in an external control plane that owns
+networking, identity and device management. It disables the relay tunnel,
+account binding and browser/device enrollment, device peers (including the
+outbox worker), and port previews. Local threads, ACP harnesses, automations,
+inbox, tasks, workspace files and the local HTTP/WebSocket API remain available.
+
+The capability set is derived once at startup and is exposed as
+`hostCapabilities` in `GET /api/config/runtime` and `/healthz`:
+
+```json
+{"hostMode":"hosted","hostCapabilities":{"relay":false,"accountBinding":false,"devicePeer":false,"previews":false}}
+```
+
+The existing platform `capabilities` object keeps its meaning. Web entry points
+use the host capabilities; disabled HTTP routes and CLI operations return
+`feature_disabled_by_host_mode` (HTTP 403). This includes `device`, `fs`, `outbox`,
+`preview`, remote thread targets and `thread --device`. Local inbox delivery is
+still enabled. The local CLI discovery file also records the capabilities so
+`bind` cannot change the account trust of a hosted installation.
+
+A `device-run` private JSON config can save `POCKYMOE_HOST_MODE`; an explicit
+`--host-mode` overrides it. Other saved device settings keep their existing
+precedence. Hosted device configs do not require a relay agent token, while
+standalone configs still do. Changing host mode requires restarting the
+Supervisor. Host mode does not currently change the update restart strategy.
+
+Hosted mode preserves local CLI token checks, login requirements selected by
+`POCKYMOE_MODE`, and existing owner authorization. It neither accepts host-supplied
+identity nor grants anonymous access. Choose `server` or `relay` authentication
+and its required credentials when exposing a listener beyond a trusted network.
+
 ## Modes
 
 ### `local`

@@ -8,6 +8,9 @@ use std::io::Read;
 #[derive(Parser)]
 #[command(name = "pockymoe", version, about = "Pockymoe supervisor and relay")]
 struct Cli {
+    /// Startup subsystem policy (independent of local/server/relay authentication).
+    #[arg(long, global = true)]
+    host_mode: Option<pockymoe_runtime::host_mode::HostMode>,
     #[command(flatten)]
     connection: threads::Connection,
     #[command(subcommand)]
@@ -17,6 +20,48 @@ struct Cli {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn host_mode_flag_parses_for_all_startup_commands() {
+        for args in [
+            vec!["supervisor", "--host-mode", "hosted"],
+            vec!["start", "--host-mode", "standalone"],
+            vec!["relay-supervisor", "--host-mode", "hosted"],
+            vec![
+                "device-run",
+                "--config",
+                "device.json",
+                "--host-mode",
+                "hosted",
+            ],
+        ] {
+            let cli = Cli::try_parse_from(std::iter::once("pockymoe").chain(args)).unwrap();
+            assert!(cli.host_mode.is_some());
+        }
+        assert!(Cli::try_parse_from(["pockymoe", "start", "--host-mode", "relay"]).is_err());
+        assert!(Cli::try_parse_from(["pockymoe", "start"])
+            .unwrap()
+            .host_mode
+            .is_none());
+    }
+
+    #[test]
+    fn hosted_database_binding_command_returns_stable_error() {
+        let root = std::env::temp_dir().join(format!("host-mode-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let database = root.join("test.sqlite");
+        assert!(require_database_account_binding(&database).is_ok());
+        std::fs::write(
+            database.with_extension("cli.json"),
+            r#"{"hostCapabilities":{"accountBinding":false}}"#,
+        )
+        .unwrap();
+        assert!(require_database_account_binding(&database)
+            .unwrap_err()
+            .to_string()
+            .starts_with("feature_disabled_by_host_mode:"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn bind_and_setup_enrollment_never_accept_secret_arguments() {
@@ -478,6 +523,17 @@ fn main() -> Result<()> {
         .block_on(run())
 }
 
+fn require_database_account_binding(database: &std::path::Path) -> Result<()> {
+    let discovery = std::fs::read(database.with_extension("cli.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+    let enabled = discovery
+        .as_ref()
+        .and_then(|value| value["hostCapabilities"]["accountBinding"].as_bool())
+        .unwrap_or(true);
+    pockymoe_runtime::host_mode::require_feature(enabled, "accountBinding")
+}
+
 fn device_identity_fingerprint(database: &std::path::Path) -> Result<String> {
     Ok(format!(
         "SHA-256 {}",
@@ -539,6 +595,13 @@ async fn run() -> Result<()> {
         )
         .init();
     let cli = Cli::parse();
+    if let Some(mode) = cli.host_mode {
+        std::env::set_var("POCKYMOE_HOST_MODE", mode.to_string());
+    }
+    if matches!(&cli.command, Commands::Bind { .. } | Commands::Setup { .. }) {
+        let caps = pockymoe_runtime::host_mode::HostMode::from_env()?.capabilities();
+        pockymoe_runtime::host_mode::require_feature(caps.account_binding, "accountBinding")?;
+    }
     match cli.command {
         Commands::Preview { command } => {
             let value = threads::Client::new(cli.connection)?
@@ -679,8 +742,10 @@ async fn run() -> Result<()> {
         }
         Commands::RelayFingerprint { database } => {
             std::env::set_var("POCKYMOE_MODE", "relay");
-            let database = database
-                .unwrap_or_else(|| pockymoe_runtime::RuntimeConfig::from_env().database_url);
+            let database = match database {
+                Some(database) => database,
+                None => pockymoe_runtime::RuntimeConfig::from_env()?.database_url,
+            };
             println!("{}", device_identity_fingerprint(&database)?);
         }
         Commands::Bind {
@@ -692,15 +757,16 @@ async fn run() -> Result<()> {
             yes,
             status,
         } => {
+            std::env::set_var("POCKYMOE_MODE", "relay");
+            let config = pockymoe_runtime::RuntimeConfig::from_env()?;
+            let database = database.unwrap_or(config.database_url);
+            require_database_account_binding(&database)?;
             let enroll = enrollment_secret(
                 account_key.is_some(),
                 enroll_stdin,
                 enrollment_env,
                 &mut std::io::stdin().lock(),
             )?;
-            std::env::set_var("POCKYMOE_MODE", "relay");
-            let config = pockymoe_runtime::RuntimeConfig::from_env();
-            let database = database.unwrap_or(config.database_url);
             let web_origin = web_origin
                 .as_deref()
                 .or(config.web_origin.as_deref())
@@ -785,7 +851,8 @@ async fn run() -> Result<()> {
             .await?;
         }
         Commands::DeviceRun { config } => {
-            pockymoe_supervisor::distribution::run_device(config).await?
+            pockymoe_supervisor::distribution::run_device_with_host_mode(config, cli.host_mode)
+                .await?
         }
         Commands::RuntimeMaintenance { action } => println!(
             "{}",

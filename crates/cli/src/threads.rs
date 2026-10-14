@@ -408,11 +408,12 @@ pub struct Client {
 }
 impl Client {
     pub fn new(c: Connection) -> Result<Self> {
-        let path = c.cli_config.unwrap_or_else(|| {
-            pockymoe_runtime::RuntimeConfig::from_env()
+        let path = match c.cli_config {
+            Some(path) => path,
+            None => pockymoe_runtime::RuntimeConfig::from_env()?
                 .database_url
-                .with_extension("cli.json")
-        });
+                .with_extension("cli.json"),
+        };
         let saved: Value = std::fs::read(path)
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())

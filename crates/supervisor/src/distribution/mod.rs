@@ -4,7 +4,7 @@ mod service;
 mod setup;
 mod update;
 
-pub use setup::{run_device, setup, SetupOptions};
+pub use setup::{run_device, run_device_with_host_mode, setup, SetupOptions};
 pub(crate) use update::{complete_host_managed_startup, host_managed_pending};
 pub use update::{maintenance_cli, run_worker, updater};
 

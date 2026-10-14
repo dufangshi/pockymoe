@@ -1,3 +1,4 @@
+import { useHostCapabilities } from '../lib/hostCapabilities';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   RelayDeviceDto,
@@ -100,6 +101,7 @@ export function useWorkbenchSplitCatalog(
   deviceId: string | null,
   workspaceId: string,
 ) {
+  const { devicePeer } = useHostCapabilities();
   const scope = JSON.stringify([deviceId, workspaceId]);
   const owner = useRef({
     scope,
@@ -175,7 +177,7 @@ export function useWorkbenchSplitCatalog(
   const loadDevices = useCallback(
     async (retry = false) => {
       if (
-        !deviceId ||
+        !devicePeer || !deviceId ||
         current.devices.loading ||
         (current.devices.loaded && !retry) ||
         (current.devices.error && !retry)
@@ -204,7 +206,7 @@ export function useWorkbenchSplitCatalog(
       }
       publish();
     },
-    [current, deviceId, publish],
+    [current, deviceId, devicePeer, publish],
   );
   useEffect(() => {
     if (!open) return;

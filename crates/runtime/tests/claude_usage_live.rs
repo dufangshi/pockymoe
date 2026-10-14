@@ -28,7 +28,7 @@ async fn haiku_reports_native_tokens_and_speed_during_first_tool_wait() {
         .expect("an advertised Haiku model is required to bound test cost")
         .id
         .clone();
-    let mut config = RuntimeConfig::from_env();
+    let mut config = RuntimeConfig::from_env().unwrap();
     config.database_url = dir.path().join("isolated.sqlite");
     config.workspace_root = dir.path().join("workspaces");
     config.mode = Mode::Local;
@@ -184,7 +184,7 @@ async fn native_background_wake_acceptance(
         .expect("an advertised Haiku model is required to bound test cost")
         .id
         .clone();
-    let mut config = RuntimeConfig::from_env();
+    let mut config = RuntimeConfig::from_env().unwrap();
     config.database_url = dir.path().join("isolated.sqlite");
     config.workspace_root = dir.path().join("workspaces");
     config.mode = Mode::Local;

@@ -5,6 +5,7 @@ pub mod distribution;
 mod export;
 mod file_documents;
 mod grants;
+mod host_policy;
 mod http;
 mod interaction;
 mod linked_files;
@@ -57,10 +58,10 @@ pub async fn serve(state: Arc<Supervisor>) -> Result<()> {
     }
     use std::io::Write;
     options.open(&path)?.write_all(
-        serde_json::to_string(&serde_json::json!({"url":cli.url,"token":cli.token}))?.as_bytes(),
+        serde_json::to_string(&serde_json::json!({"url":cli.url,"token":cli.token,"hostMode":state.config.host_mode,"hostCapabilities":state.host_capabilities}))?.as_bytes(),
     )?;
     tracing::info!("supervisor listening on {addr}");
-    if state.config.mode == pockymoe_protocol::Mode::Relay {
+    if state.host_capabilities.relay && state.config.mode == pockymoe_protocol::Mode::Relay {
         let tunnel_state = state.clone();
         tokio::spawn(async move {
             if let Err(err) = run_relay_tunnel(tunnel_state).await {

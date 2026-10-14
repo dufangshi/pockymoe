@@ -72,6 +72,7 @@ pub(crate) fn create_lease(
     id: &str,
     authority: MappingAuthority<'_>,
 ) -> Result<Lease> {
+    pockymoe_runtime::host_mode::require_feature(state.host_capabilities.previews, "previews")?;
     state.db.with(|c| {
         let tx = rusqlite::Transaction::new_unchecked(c,rusqlite::TransactionBehavior::Immediate)?;
         let principal = match authority {
@@ -120,6 +121,9 @@ pub(crate) async fn lease_endpoint(
 }
 
 pub(crate) fn snapshot(state: &Supervisor) -> Vec<Mapping> {
+    if !state.host_capabilities.previews {
+        return Vec::new();
+    }
     let mappings: Vec<Mapping> = state
         .db
         .get_kv(KEY)
@@ -207,6 +211,7 @@ fn changed(state: &Supervisor) {
 
 /// Called by the authenticated local CLI, which the tunnel cannot access.
 pub(crate) fn create_local_mapping(state: &Supervisor, port: u16, label: &str) -> Result<Mapping> {
+    pockymoe_runtime::host_mode::require_feature(state.host_capabilities.previews, "previews")?;
     let mapping = create_authorized_mapping(state, port, label, MappingAuthority::Local)?;
     create_lease(state, &mapping.id, MappingAuthority::Local)?;
     Ok(mapping)
@@ -217,6 +222,7 @@ fn create_authorized_mapping(
     label: &str,
     authority: MappingAuthority<'_>,
 ) -> Result<Mapping> {
+    pockymoe_runtime::host_mode::require_feature(state.host_capabilities.previews, "previews")?;
     if port == 0 || port == state.config.port || label.len() > 120 {
         bail!("Choose an HTTP service port from 1–65535, excluding the Supervisor port. Labels may contain up to 120 bytes.");
     }
@@ -399,6 +405,9 @@ pub(crate) fn remove_mapping(state: &Supervisor, id: &str) -> Result<()> {
 }
 
 pub(crate) fn open(state: Arc<Supervisor>, message: &Value) {
+    if !state.host_capabilities.previews {
+        return;
+    }
     let Some(id) = message["mappingId"].as_str() else {
         return;
     };

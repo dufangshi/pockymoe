@@ -60,7 +60,16 @@ export function truncateAutoThreadTitle(value: string) {
   return `${characters.slice(0, AUTO_THREAD_TITLE_MAX_CHARS).join('')}...`;
 }
 
+export interface HostCapabilitiesDto {
+  relay: boolean;
+  accountBinding: boolean;
+  devicePeer: boolean;
+  previews: boolean;
+}
+
 export interface RuntimeConfigDto {
+  hostMode?: 'standalone' | 'hosted';
+  hostCapabilities?: HostCapabilitiesDto;
   appName: string;
   appVersion: string;
   mode: 'local' | 'server' | 'relay';

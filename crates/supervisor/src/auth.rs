@@ -84,6 +84,11 @@ pub async fn require_auth(
     next: Next,
 ) -> Response {
     let path = request.uri().path();
+    if let Some((enabled, feature)) = crate::host_policy::route_feature(&state, path) {
+        if let Err(error) = pockymoe_runtime::host_mode::require_feature(enabled, feature) {
+            return crate::http::map_err(error).into_response();
+        }
+    }
     let bootstrap = crate::owner_trust::bootstrap(request.method().as_str(), path);
     let owner_endpoint = path == "/api/transport/trust"
         || path == "/api/transport/device-certificate"
