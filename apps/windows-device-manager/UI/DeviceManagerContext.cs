@@ -51,7 +51,7 @@ internal sealed class DeviceManagerContext : ApplicationContext
             _connectItem,
             _disconnectItem,
             new ToolStripMenuItem("Change device token...", null, ChangeToken),
-            new ToolStripMenuItem("Open Relay portal", null, (_, _) => OpenRelayPortal()),
+            new ToolStripMenuItem("Open Web", null, (_, _) => OpenRelayPortal()),
             new ToolStripSeparator(),
             new ToolStripMenuItem("Open logs", null, (_, _) => UI.MainForm.OpenLogs()),
             _startWithWindowsItem,

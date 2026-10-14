@@ -190,6 +190,21 @@ internal static class SelfTest
         catch (Exception e)
         {
             logger.Error("Native acceptance failed", e);
+            if (!File.Exists(AppPaths.RelayLogPath) && Directory.Exists(Path.GetDirectoryName(AppPaths.RelayLogPath)))
+            {
+                var launchers = Directory.GetFiles(Path.GetDirectoryName(AppPaths.RelayLogPath)!, "*.launch.ps1");
+                logger.Warning($"Isolated native startup produced no log; pending launchers: {launchers.Length}");
+                foreach (var launcher in launchers.Take(1))
+                {
+                    try
+                    {
+                        var diagnostic = await runner.RunAsync("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", launcher], TimeSpan.FromSeconds(15));
+                        // Suppress all long opaque values in diagnostic errors, including environment JSON.
+                        logger.Warning("Isolated launcher diagnostic: " + System.Text.RegularExpressions.Regex.Replace(diagnostic.CombinedOutput, @"[A-Za-z0-9_+/=-]{24,}", "[opaque]"));
+                    }
+                    catch (Exception diagnostic) { logger.Warning("Isolated launcher diagnostic: " + diagnostic.GetType().Name); }
+                }
+            }
             if (File.Exists(AppPaths.RelayLogPath))
                 foreach (var line in File.ReadLines(AppPaths.RelayLogPath).TakeLast(20))
                     logger.Warning("Isolated Supervisor: " + line);

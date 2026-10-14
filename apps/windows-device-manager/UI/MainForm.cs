@@ -15,7 +15,7 @@ internal sealed class MainForm : Form
     private readonly Label _pasteStateLabel, _tokenStateLabel, _statusTitle, _statusDetail, _stepLabel, _runtimeValue, _runtimeUpdateLabel;
     private readonly NumericUpDown _portInput;
     private readonly CheckBox _startWithWindowsCheckBox;
-    private readonly Button _connectButton, _disconnectButton, _checkUpdateButton, _updateButton;
+    private readonly Button _connectButton, _disconnectButton, _checkUpdateButton, _updateButton, _pasteButton, _browseButton;
     private readonly Panel _statusDot;
     private readonly ThemedProgress _progressBar;
     private ParsedRelayConfiguration? _parsed;
@@ -63,12 +63,12 @@ internal sealed class MainForm : Form
         _pasteConfigurationTextBox.WordWrap = true; _pasteConfigurationTextBox.ScrollBars = ScrollBars.Vertical;
         _pasteConfigurationTextBox.PlaceholderText = "Paste a Windows setup command from the Devices page"; _pasteConfigurationTextBox.AccessibleName = "Device setup command";
         _pasteConfigurationTextBox.TextChanged += (_, _) => TryApplyPastedConfiguration(false);
-        var paste = CreateNeutralButton("Paste", 100); paste.Dock = DockStyle.Fill; paste.Click += PasteConfigurationClicked;
+        var paste = _pasteButton = CreateNeutralButton("Paste", 100); paste.Dock = DockStyle.Fill; paste.Click += PasteConfigurationClicked;
         pasteGrid.Controls.Add(_pasteConfigurationTextBox, 0, 0); pasteGrid.Controls.Add(paste, 1, 0); body.Controls.Add(pasteGrid, 0, 1);
         _pasteStateLabel = Label("Parsed locally. Commands are never executed.", muted: true); body.Controls.Add(_pasteStateLabel, 0, 2);
         var workspaceGrid = Grid(3, DockStyle.Fill); workspaceGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 110)); workspaceGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); workspaceGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 108));
         _workspaceTextBox = CreateTextBox(); _workspaceTextBox.AccessibleName = "Workspace folder";
-        var browse = CreateNeutralButton("Browse", 100); browse.Dock = DockStyle.Fill; browse.Click += BrowseWorkspace;
+        var browse = _browseButton = CreateNeutralButton("Browse", 100); browse.Dock = DockStyle.Fill; browse.Click += BrowseWorkspace;
         workspaceGrid.Controls.Add(Label("Workspace"), 0, 0); workspaceGrid.Controls.Add(_workspaceTextBox, 1, 0); workspaceGrid.Controls.Add(browse, 2, 0); body.Controls.Add(workspaceGrid, 0, 3);
         _startWithWindowsCheckBox = new CheckBox { Text = "Keep this device online when I sign in to Windows", AutoSize = true, Dock = DockStyle.Fill };
         body.Controls.Add(_startWithWindowsCheckBox, 0, 4);
@@ -353,6 +353,7 @@ internal sealed class MainForm : Form
         _portInput.Enabled = !_controller.IsBusy;
         _startWithWindowsCheckBox.Enabled = !_controller.IsBusy;
         _pasteConfigurationTextBox.Enabled = !_controller.IsBusy;
+        _pasteButton.Enabled = _browseButton.Enabled = !_controller.IsBusy;
         _checkUpdateButton.Enabled = !_controller.IsBusy && _controller.Runtime?.IsNative == true && _controller.State == SupervisorState.Running;
         _updateButton.Enabled = !_controller.IsBusy
             && _controller.Runtime?.IsNative == true
