@@ -36,6 +36,9 @@ contract as attach, including `agent.interface-provenance.v1` and
 `agent.prompt-delivery.v1`, before creating anything.
 Install and authenticate the desired harness and ACP adapter separately; see
 [device setup](device-setup.md) and [managed adapters](managed-acp-adapters.md).
+The hub creates a thread only when that profile's base agent CLI (`codex`,
+`claude` or `grok`) is on its PATH; otherwise Launch fails with "Install the base
+agent first". Setup ends by naming any base agent it cannot find.
 Treer and the hub must share the same OS account and loopback network namespace.
 
 `--version` is required and accepts only an exact stable release, optionally

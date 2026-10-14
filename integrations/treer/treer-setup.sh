@@ -456,7 +456,23 @@ def main():
           else f"Pockymoe profiles ready: hub loopback port {port}.")
     print("Profiles: " + ", ".join(profile["name"] for profile in definitions["profiles"]))
     print("In Treer, choose Launch, select a Pockymoe profile and set your project working directory.")
+    # The hub refuses to create a thread whose base agent CLI is not on its PATH.
+    for profile in definitions["profiles"]:
+        base = base_agent(profile["args"])
+        if base and shutil.which(base) is None:
+            print(f"Note: '{base}' is not on PATH here; install and sign in to it before "
+                  f"launching {profile['name']}.")
     return 0
+
+
+def base_agent(args):
+    """Base CLI the hub requires for an attach profile's provider."""
+    if "--agent" in args:
+        return args[args.index("--agent") + 1]
+    if "--provider" in args:
+        provider = args[args.index("--provider") + 1]
+        return provider if provider != "acp" else None
+    return None
 
 
 if __name__ == "__main__":
