@@ -41,7 +41,9 @@ internal sealed class MainForm : Form
         themes.Items.AddRange(["Plum · Dark", "Plum · Light", "Classic · Dark", "Classic · Light"]);
         var names = new[] { "plum-dark", "plum-light", "classic-dark", "classic-light" };
         themes.SelectedIndex = Math.Max(0, Array.IndexOf(names, _themeName));
-        themes.SelectedIndexChanged += (_, _) => { _themeName = names[themes.SelectedIndex]; _controller.SetTheme(_themeName); ManagerTheme.Apply(this, ManagerTheme.Get(_themeName)); UpdateState(); };
+        themes.DrawMode = DrawMode.OwnerDrawFixed;
+        themes.DrawItem += (_, e) => { if (e.Index < 0) return; var t = ManagerTheme.Get(_themeName); using var fill = new SolidBrush(t.Input); e.Graphics.FillRectangle(fill, e.Bounds); TextRenderer.DrawText(e.Graphics, themes.Items[e.Index].ToString(), themes.Font, e.Bounds, t.Text, TextFormatFlags.Left | TextFormatFlags.VerticalCenter); };
+        themes.SelectedIndexChanged += (_, _) => { _themeName = names[themes.SelectedIndex]; _controller.SetTheme(_themeName); ManagerTheme.Apply(this, ManagerTheme.Get(_themeName)); ApplyTitleBar(); UpdateState(); };
         header.Controls.Add(brand, 0, 0); header.Controls.Add(themes, 1, 0); root.Controls.Add(header, 0, 0);
         var status = new ThemedPanel { Dock = DockStyle.Fill, Margin = new Padding(0, 4, 0, 10) };
         var statusGrid = Grid(2, DockStyle.Fill); statusGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 28)); statusGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -97,10 +99,29 @@ internal sealed class MainForm : Form
         var web = CreateNeutralButton("Open Web", 110); web.Click += (_, _) => Process.Start(new ProcessStartInfo { FileName = ProductManifest.RelayPortalUri.AbsoluteUri, UseShellExecute = true });
         var logs = CreateNeutralButton("Logs", 80); logs.Click += (_, _) => OpenLogs();
         actions.Controls.AddRange([_connectButton, _disconnectButton, web, logs]); root.Controls.Add(actions, 0, 4); Controls.Add(root);
-        _controller.Changed += ControllerChanged; LoadSettings(); ManagerTheme.Apply(this, ManagerTheme.Get(_themeName)); UpdateState();
+        _controller.Changed += ControllerChanged; LoadSettings(); ManagerTheme.Apply(this, ManagerTheme.Get(_themeName)); ApplyTitleBar(); UpdateState();
         Resize += (_, _) => { if (WindowState == FormWindowState.Minimized) Hide(); };
     }
-    private static TableLayoutPanel Grid(int columns, DockStyle dock) => new() { ColumnCount = columns, Dock = dock, Margin = Padding.Empty, Padding = Padding.Empty };
+    private static TableLayoutPanel Grid(int columns, DockStyle dock)
+    {
+        var grid = new TableLayoutPanel { ColumnCount = columns, Dock = dock, Margin = Padding.Empty, Padding = Padding.Empty };
+        if (columns == 1) grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        return grid;
+    }
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmSetWindowAttribute(IntPtr window, int attribute, ref int value, int size);
+    private void ApplyTitleBar()
+    {
+        if (!IsHandleCreated) return;
+        var theme = ManagerTheme.Get(_themeName);
+        var dark = theme.Background.GetBrightness() < .5 ? 1 : 0;
+        DwmSetWindowAttribute(Handle, 20, ref dark, sizeof(int));
+        var background = theme.Background.R | theme.Background.G << 8 | theme.Background.B << 16;
+        var foreground = theme.Text.R | theme.Text.G << 8 | theme.Text.B << 16;
+        DwmSetWindowAttribute(Handle, 35, ref background, sizeof(int));
+        DwmSetWindowAttribute(Handle, 36, ref foreground, sizeof(int));
+    }
+    protected override void OnHandleCreated(EventArgs e) { base.OnHandleCreated(e); ApplyTitleBar(); }
     private static Label Label(string text, bool bold = false, bool muted = false) => new() { Text = text, Dock = DockStyle.Fill, AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft, Margin = Padding.Empty, Tag = muted ? "muted" : null, Font = new Font("Segoe UI", 10F, bold ? FontStyle.Bold : FontStyle.Regular) };
     public async Task ApplyTokenAsync(string token)
     {
