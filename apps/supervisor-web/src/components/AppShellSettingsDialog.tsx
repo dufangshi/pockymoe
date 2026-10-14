@@ -9,6 +9,7 @@ import { ModelPricingSettings } from './ModelPricingSettings';
 import { ComposerShortcutSettings } from './ComposerShortcutSettings';
 import { TourSettingsEntry } from './onboarding/TourProvider';
 import { ThemePresetSettings } from './ThemePresetSettings';
+import { useThemeRegistry } from '../lib/themePacks';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import type {
@@ -149,6 +150,8 @@ export function AppShellSettingsDialog({
     error: null,
   });
   const selectedThemeMode = shellNav?.themeMode ?? 'system';
+  // The applied pack may support one color mode only; the stored choice stays.
+  const fixedThemeMode = useThemeRegistry().fixedMode;
   const settingsVisible = embedded || Boolean(shellNav?.settingsOpen);
   const shellNavRef = useRef(shellNav);
   shellNavRef.current = shellNav;
@@ -820,7 +823,14 @@ export function AppShellSettingsDialog({
               <legend className="text-sm font-semibold text-[var(--theme-fg)]">
                 {translate("files.appearance")}</legend>
               <ThemePresetSettings />
-              <p className="mt-5 text-xs font-semibold text-[var(--theme-fg)]">{translate("files.colorMode")}</p>
+              <p className="mt-5 flex items-center gap-2 text-xs font-semibold text-[var(--theme-fg)]">
+                {translate("files.colorMode")}
+                {fixedThemeMode ? (
+                  <span className="theme-mode-fixed" data-testid="theme-mode-fixed">
+                    {translate(fixedThemeMode === 'light' ? "files.themeLightOnly" : "files.themeDarkOnly")}
+                  </span>
+                ) : null}
+              </p>
               <p className="settings-hint mt-1 text-xs leading-5 text-[var(--theme-fg-muted)]">
                 {translate("files.chooseAThemeForThisBrowserThe")}{' '}
                 {effectiveTheme}.
@@ -833,8 +843,9 @@ export function AppShellSettingsDialog({
                       key={option.value}
                     >
                       <input
-                        checked={selectedThemeMode === option.value}
+                        checked={(fixedThemeMode ?? selectedThemeMode) === option.value}
                         className="sr-only"
+                        disabled={Boolean(fixedThemeMode)}
                         name="settings-theme"
                         onChange={() => shellNav?.setThemeMode(option.value)}
                         type="radio"
@@ -845,13 +856,13 @@ export function AppShellSettingsDialog({
                   );
                 })}
               </div>
-              <p className="settings-hint mt-2 text-xs leading-5 text-[var(--theme-fg-muted)]">
+              {fixedThemeMode ? null : <p className="settings-hint mt-2 text-xs leading-5 text-[var(--theme-fg-muted)]">
                 {
                   themeOptions.find(
                     (option) => option.value === selectedThemeMode,
                   )?.description
                 }
-              </p>
+              </p>}
             </fieldset>
           ) : null}
 

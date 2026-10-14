@@ -1,8 +1,9 @@
 import { relayUrl } from '../lib/relayOrigin';
 import { LanguageSwitcher } from '@pockymoe/thread-ui/i18n';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { decryptPublicSnapshot, PublicLinkKeyError } from '../lib/publicLinkCrypto';
+import { effectiveColorMode, useThemeRegistry } from '../lib/themePacks';
 import { useParams } from 'react-router-dom';
 import {
   PublicTranscript,
@@ -22,6 +23,12 @@ export function PublicThreadPage() {
     return () => window.removeEventListener('hashchange', changed);
   }, []);
   const [error, setError] = useState('');
+  // A single-mode theme pack keeps its own color mode over the snapshot's.
+  const themeRegistry = useThemeRegistry();
+  const shown = useMemo(
+    () => snapshot && { ...snapshot, theme: effectiveColorMode(snapshot.theme ?? 'dark', themeRegistry) },
+    [snapshot, themeRegistry],
+  );
   useEffect(() => {
     const robots = document.createElement('meta');
     robots.name = 'robots';
@@ -68,25 +75,25 @@ export function PublicThreadPage() {
     };
   }, [id, fragment]);
   useEffect(() => {
-    if (!snapshot) return;
+    if (!shown) return;
     const previous = document.documentElement.getAttribute(
       'data-theme-effective',
     );
     document.documentElement.setAttribute(
       'data-theme-effective',
-      snapshot.theme ?? 'dark',
+      shown.theme,
     );
     return () => {
       if (previous)
         document.documentElement.setAttribute('data-theme-effective', previous);
       else document.documentElement.removeAttribute('data-theme-effective');
     };
-  }, [snapshot]);
+  }, [shown]);
   return (
     <div className="thread-ui-shell public-thread-page min-h-screen bg-[var(--theme-bg)] text-[var(--theme-fg)]">
       <div className="px-4 py-3"><LanguageSwitcher /></div>
-      {snapshot ? (
-        <PublicTranscript snapshot={snapshot} />
+      {shown ? (
+        <PublicTranscript snapshot={shown} />
       ) : (
         <p role="status" className="p-8 text-center">
           {error || translate("sharing.loadingSharedThread")}

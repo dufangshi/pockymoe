@@ -1,5 +1,5 @@
 import { translate, useI18n, type TranslationKey } from '@pockymoe/thread-ui/i18n';
-import { Download, Trash2, Upload } from 'lucide-react';
+import { Download, Moon, Sun, Trash2, Upload } from 'lucide-react';
 import { useEffect, useRef, useState, type ChangeEvent } from 'react';
 
 import {
@@ -10,6 +10,7 @@ import {
   localizedText,
   removeThemePack,
   selectTheme,
+  themeFixedMode,
   themePreviewUrl,
   useThemeRegistry,
   type ThemeEntry,
@@ -51,8 +52,21 @@ function ThemeSwatches({ entry }: { entry: ThemeEntry }) {
   );
 }
 
+/** A tiny marker on the card of a pack that supports one color mode. */
+function ThemeModeMarker({ entry }: { entry: ThemeEntry }) {
+  const mode = themeFixedMode(entry.manifest);
+  if (!mode) return null;
+  const label = translate(mode === 'light' ? 'files.themeLightOnly' : 'files.themeDarkOnly');
+  const Icon = mode === 'light' ? Sun : Moon;
+  return (
+    <span className="theme-preset-mode" data-mode={mode} role="img" aria-label={label} title={label}>
+      <Icon aria-hidden="true" />
+    </span>
+  );
+}
+
 /** Theme packs for this browser: Classic, the built-in packs and imported ones. The
- *  color mode applies to each. */
+ *  color mode applies to each, except that a pack with one mode always shows in it. */
 export function ThemePresetSettings() {
   const { locale } = useI18n();
   const { entries, selected } = useThemeRegistry();
@@ -130,7 +144,7 @@ export function ThemePresetSettings() {
                 />
                 <ThemeSwatches entry={entry} />
                 <span className="theme-preset-name">{name}</span>
-                <span className="theme-preset-meta">{meta}</span>
+                <span className="theme-preset-meta"><ThemeModeMarker entry={entry} />{meta}</span>
               </label>
               {entry.source !== 'classic' ? (
                 <div className="theme-preset-actions">

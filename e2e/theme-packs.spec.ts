@@ -111,3 +111,42 @@ test('refuses packs that load remote files, import stylesheets or escape their f
   await expect(themes(dialog).locator('.theme-preset-card')).toHaveCount(2);
   await expect(page.locator('html')).toHaveAttribute('data-theme-preset', 'classic');
 });
+
+test('a light-only pack shows light while the app is dark, and Classic brings dark back', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('remote-codex-theme-mode', 'dark'));
+  const root = page.locator('html');
+  const meta = page.locator('meta[name="theme-color"]');
+  const dialog = await openAppearance(page);
+  await expect(root).toHaveAttribute('data-theme-effective', 'dark');
+  const modes = dialog.locator('input[name="settings-theme"]');
+  await expect(modes).toHaveCount(3);
+  for (const input of await modes.all()) await expect(input).toBeEnabled();
+
+  const manifest = { schema: 1, id: 'light-only', name: 'Light Only', version: '1.0.0', modes: ['light'], chrome: { light: '#fdf2f6' }, styles: ['styles/main.css'] };
+  await importPack(page, dialog, 'light-only.pockytheme', [
+    { name: 'theme.json', bytes: encoder.encode(JSON.stringify(manifest)) },
+    { name: 'styles/main.css', bytes: encoder.encode(':root:root:theme { --theme-accent-solid: #d6417a; }') },
+  ]);
+  const card = themes(dialog).locator('.theme-preset-card').filter({ hasText: 'Light Only' });
+  await expect(card.getByRole('img', { name: 'Light only' })).toBeVisible();
+  await card.locator('label').click();
+  await expect(root).toHaveAttribute('data-theme-preset', 'light-only');
+  await expect(root).toHaveAttribute('data-theme-effective', 'light');
+  expect(await root.evaluate((node) => getComputedStyle(node).colorScheme)).toBe('light');
+  await expect(meta).toHaveAttribute('content', '#fdf2f6');
+  // Shells and dialogs pick their palettes from data-theme-mode as well.
+  await expect(page.locator('[data-theme-effective="dark"], [data-theme-mode="dark"]')).toHaveCount(0);
+  // The color mode is fixed while the pack is applied; the stored choice stays dark.
+  await expect(dialog.getByTestId('theme-mode-fixed')).toHaveText('Light only');
+  for (const input of await modes.all()) await expect(input).toBeDisabled();
+  await expect(dialog.locator('input[name="settings-theme"][value="light"]')).toBeChecked();
+  expect(await page.evaluate(() => localStorage.getItem('remote-codex-theme-mode'))).toBe('dark');
+
+  await themes(dialog).locator('.theme-preset-card').filter({ hasText: 'Classic' }).locator('label').click();
+  await expect(root).toHaveAttribute('data-theme-preset', 'classic');
+  await expect(root).toHaveAttribute('data-theme-effective', 'dark');
+  await expect(meta).toHaveAttribute('content', '#171713');
+  await expect(dialog.getByTestId('theme-mode-fixed')).toHaveCount(0);
+  await expect(dialog.locator('input[name="settings-theme"][value="dark"]')).toBeChecked();
+  for (const input of await modes.all()) await expect(input).toBeEnabled();
+});

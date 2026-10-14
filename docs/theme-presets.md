@@ -1,8 +1,9 @@
 # Theme presets
 
 Settings → Preferences → Appearance offers a **Theme** and a **Color mode**
-(Light, Dark, System). Both are stored per browser, and every theme supports both
-modes.
+(Light, Dark, System). Both are stored per browser. Classic and Plum Pocket
+support both modes; an imported pack may support only one, and then the color
+mode is fixed while it is applied (see [theme packs](theme-packs.md#color-modes)).
 
 | Theme | Look |
 | --- | --- |
@@ -64,5 +65,5 @@ every [capability flag](theme-packs.md#capability-flags).
 Check both color modes on desktop and phone, including dialogs, menus, the
 composer, code blocks and the outer pages. `e2e/settings-appearance.spec.ts`
 covers switching and persistence, the `plum-*` and `theme-plum-composer` specs
-cover Plum Pocket, and `e2e/theme-packs.spec.ts` covers import, export and
-removal.
+cover Plum Pocket, and `e2e/theme-packs.spec.ts` covers import, export,
+removal and single-mode packs.
