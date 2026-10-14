@@ -78,3 +78,43 @@ internal sealed class ThemedProgress : Control
         e.Graphics.FillRectangle(fill, 0, 0, Width * Value / 100, Height);
     }
 }
+
+internal sealed class ManagerMenuRenderer(ManagerTheme theme) : ToolStripRenderer
+{
+    protected override void OnRenderToolStripBackground(ToolStripRenderEventArgs e)
+    {
+        using var brush = new SolidBrush(theme.Surface);
+        e.Graphics.FillRectangle(brush, e.AffectedBounds);
+    }
+    protected override void OnRenderMenuItemBackground(ToolStripItemRenderEventArgs e)
+    {
+        using var brush = new SolidBrush(e.Item.Selected && e.Item.Enabled ? theme.Input : theme.Surface);
+        e.Graphics.FillRectangle(brush, new Rectangle(Point.Empty, e.Item.Size));
+    }
+    protected override void OnRenderImageMargin(ToolStripRenderEventArgs e)
+    {
+        using var brush = new SolidBrush(theme.Surface);
+        e.Graphics.FillRectangle(brush, e.AffectedBounds);
+    }
+    protected override void OnRenderItemCheck(ToolStripItemImageRenderEventArgs e)
+    {
+        using var pen = new Pen(theme.Accent, 2);
+        var r = e.ImageRectangle;
+        e.Graphics.DrawLines(pen, new Point[] { new Point(r.Left + 2, r.Top + r.Height / 2), new Point(r.Left + r.Width / 3, r.Bottom - 3), new Point(r.Right - 2, r.Top + 3) });
+    }
+    protected override void OnRenderToolStripBorder(ToolStripRenderEventArgs e)
+    {
+        using var pen = new Pen(theme.Border);
+        e.Graphics.DrawRectangle(pen, 0, 0, e.ToolStrip.Width - 1, e.ToolStrip.Height - 1);
+    }
+    protected override void OnRenderSeparator(ToolStripSeparatorRenderEventArgs e)
+    {
+        using var pen = new Pen(theme.Border);
+        e.Graphics.DrawLine(pen, 8, e.Item.Height / 2, e.Item.Width - 8, e.Item.Height / 2);
+    }
+    protected override void OnRenderItemText(ToolStripItemTextRenderEventArgs e)
+    {
+        e.TextColor = e.Item.Enabled ? theme.Text : theme.Muted;
+        base.OnRenderItemText(e);
+    }
+}

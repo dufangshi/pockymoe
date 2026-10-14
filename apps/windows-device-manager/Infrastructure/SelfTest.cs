@@ -151,7 +151,21 @@ internal static class SelfTest
             File.WriteAllText(AppPaths.RelayConfigPath, JsonSerializer.Serialize(saved));
             var configuration = new DeviceConfiguration(origin, token, AppPaths.UserHome, devicePort, AccountKey: publicKey, EnrollmentSecret: RandomKey(32), WebOrigin: origin);
             logger.Info("Native acceptance: verified account-bound setup.");
-            runtime = await new RuntimeProvisioner(logger, runner).SetupAsync(configuration, new Progress<ProvisioningProgress>(), CancellationToken.None);
+            // Retain the isolated launch template before WMI consumes it, for failure diagnostics.
+            var diagnostics = Path.Combine(AppPaths.RelayDataRoot, "manager-startup-diagnostic");
+            Directory.CreateDirectory(diagnostics); Directory.CreateDirectory(Path.GetDirectoryName(AppPaths.RelayLogPath)!);
+            using var capture = new CancellationTokenSource();
+            var monitor = Task.Run(async () =>
+            {
+                while (!capture.IsCancellationRequested)
+                {
+                    foreach (var file in Directory.GetFiles(Path.GetDirectoryName(AppPaths.RelayLogPath)!, "*.launch.*"))
+                        try { File.Copy(file, Path.Combine(diagnostics, Path.GetFileName(file)), true); } catch (IOException) { }
+                    try { await Task.Delay(50, capture.Token); } catch (OperationCanceledException) { break; }
+                }
+            });
+            try { runtime = await new RuntimeProvisioner(logger, runner).SetupAsync(configuration, new Progress<ProvisioningProgress>(), CancellationToken.None); }
+            finally { capture.Cancel(); await monitor; }
             var state = await service.GetStateAsync(runtime, CancellationToken.None); Require(state == SupervisorState.Running, "Native setup connects Relay");
             logger.Info("Native acceptance: apply workspace through maintenance.");
             await service.ConfigureWorkspaceAsync(AppPaths.UserHome, CancellationToken.None);
@@ -190,21 +204,22 @@ internal static class SelfTest
         catch (Exception e)
         {
             logger.Error("Native acceptance failed", e);
-            if (!File.Exists(AppPaths.RelayLogPath) && Directory.Exists(Path.GetDirectoryName(AppPaths.RelayLogPath)))
-            {
-                var launchers = Directory.GetFiles(Path.GetDirectoryName(AppPaths.RelayLogPath)!, "*.launch.ps1");
-                logger.Warning($"Isolated native startup produced no log; pending launchers: {launchers.Length}");
-                foreach (var launcher in launchers.Take(1))
+            var diagnostics = Path.Combine(AppPaths.RelayDataRoot, "manager-startup-diagnostic");
+            logger.Warning($"Isolated native startup log bytes: {(File.Exists(AppPaths.RelayLogPath) ? new FileInfo(AppPaths.RelayLogPath).Length : -1)}");
+            if (Directory.Exists(diagnostics))
+                foreach (var launcher in Directory.GetFiles(diagnostics, "*.launch.ps1").Take(1))
                 {
                     try
                     {
+                        var payload = Path.ChangeExtension(launcher, ".json");
+                        var originalPayload = Path.Combine(Path.GetDirectoryName(AppPaths.RelayLogPath)!, Path.GetFileName(payload));
+                        var source = File.ReadAllText(launcher).Replace(originalPayload.Replace("'", "''"), payload.Replace("'", "''"));
+                        File.WriteAllText(launcher, source);
                         var diagnostic = await runner.RunAsync("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", launcher], TimeSpan.FromSeconds(15));
-                        // Suppress all long opaque values in diagnostic errors, including environment JSON.
                         logger.Warning("Isolated launcher diagnostic: " + System.Text.RegularExpressions.Regex.Replace(diagnostic.CombinedOutput, @"[A-Za-z0-9_+/=-]{24,}", "[opaque]"));
                     }
                     catch (Exception diagnostic) { logger.Warning("Isolated launcher diagnostic: " + diagnostic.GetType().Name); }
                 }
-            }
             if (File.Exists(AppPaths.RelayLogPath))
                 foreach (var line in File.ReadLines(AppPaths.RelayLogPath).TakeLast(20))
                     logger.Warning("Isolated Supervisor: " + line);

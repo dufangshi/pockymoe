@@ -237,6 +237,13 @@ internal sealed class DeviceManagerContext : ApplicationContext
 
     private void UpdateTrayState()
     {
+        if (_trayIcon.ContextMenuStrip is { } menu)
+        {
+            var theme = ManagerTheme.Get(_controller.Settings.Theme);
+            menu.BackColor = theme.Surface; menu.ForeColor = theme.Text;
+            menu.Renderer = new ManagerMenuRenderer(theme);
+        }
+
         var status = _controller.State switch
         {
             SupervisorState.Running => "Supervisor running",

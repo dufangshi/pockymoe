@@ -37,13 +37,23 @@ internal sealed class MainForm : Form
         var brand = new Panel { Dock = DockStyle.Fill };
         brand.Controls.Add(new Label { Text = "Pockymoe", Font = new Font("Segoe UI", 22F, FontStyle.Bold), AutoSize = true, Location = Point.Empty });
         brand.Controls.Add(new Label { Text = "Windows Device Manager  ·  0.2.0", Tag = "muted", AutoSize = true, Location = new Point(2, 40) });
-        var themes = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Top, AccessibleName = "Color theme", Margin = new Padding(0, 10, 0, 0) };
-        themes.Items.AddRange(["Plum · Dark", "Plum · Light", "Classic · Dark", "Classic · Light"]);
         var names = new[] { "plum-dark", "plum-light", "classic-dark", "classic-light" };
-        themes.SelectedIndex = Math.Max(0, Array.IndexOf(names, _themeName));
-        themes.DrawMode = DrawMode.OwnerDrawFixed;
-        themes.DrawItem += (_, e) => { if (e.Index < 0) return; var t = ManagerTheme.Get(_themeName); using var fill = new SolidBrush(t.Input); e.Graphics?.FillRectangle(fill, e.Bounds); TextRenderer.DrawText(e.Graphics!, themes.Items[e.Index]?.ToString() ?? "", themes.Font, e.Bounds, t.Text, TextFormatFlags.Left | TextFormatFlags.VerticalCenter); };
-        themes.SelectedIndexChanged += (_, _) => { _themeName = names[themes.SelectedIndex]; _controller.SetTheme(_themeName); ManagerTheme.Apply(this, ManagerTheme.Get(_themeName)); ApplyTitleBar(); UpdateState(); };
+        var labels = new[] { "Plum · Dark", "Plum · Light", "Classic · Dark", "Classic · Light" };
+        var themes = new ThemedButton { Text = labels[Math.Max(0, Array.IndexOf(names, _themeName))] + "  ▾", Dock = DockStyle.Top, Height = 32, AccessibleName = "Color theme", Margin = new Padding(0, 10, 0, 0) };
+        themes.Click += (_, _) =>
+        {
+            var palette = ManagerTheme.Get(_themeName);
+            var menu = new ContextMenuStrip { ShowImageMargin = false, ShowCheckMargin = true, BackColor = palette.Surface, ForeColor = palette.Text, Renderer = new ManagerMenuRenderer(palette) };
+            for (var i = 0; i < names.Length; i++)
+            {
+                var name = names[i]; var label = labels[i];
+                var item = new ToolStripMenuItem(label) { Checked = name == _themeName, ForeColor = palette.Text };
+                item.Click += (_, _) => { _themeName = name; themes.Text = label + "  ▾"; _controller.SetTheme(name); ManagerTheme.Apply(this, ManagerTheme.Get(name)); ApplyTitleBar(); UpdateState(); };
+                menu.Items.Add(item);
+            }
+            menu.Closed += (_, _) => menu.Dispose();
+            menu.Show(themes, new Point(0, themes.Height));
+        };
         header.Controls.Add(brand, 0, 0); header.Controls.Add(themes, 1, 0); root.Controls.Add(header, 0, 0);
         var status = new ThemedPanel { Dock = DockStyle.Fill, Margin = new Padding(0, 4, 0, 10) };
         var statusGrid = Grid(2, DockStyle.Fill); statusGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 28)); statusGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
