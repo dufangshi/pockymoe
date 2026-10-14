@@ -26,6 +26,7 @@ jobs:
       workflows: ${{ steps.filter.outputs.workflows }}
       windows_harness: ${{ steps.filter.outputs.windows_harness }}
       thread_contract: ${{ steps.filter.outputs.thread_contract }}
+      treer_packaging: ${{ steps.filter.outputs.treer_packaging }}
     steps:
       - uses: dorny/paths-filter@v3
         id: filter
@@ -67,6 +68,24 @@ jobs:
               - 'Cargo.toml'
               - 'Cargo.lock'
               - '.github/workflows/ci.yml'
+            treer_packaging:
+              - 'integrations/treer/**'
+              - '.github/workflows/ci.yml'
+
+  treer_packaging:
+    name: Treer setup bundle and offline tests
+    needs: changes
+    if: needs.changes.outputs.treer_packaging == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - name: Check bundle and setup behavior
+        run: |
+          sh -n integrations/treer/setup.sh
+          sh -n integrations/treer/treer-setup.sh
+          python3 integrations/treer/bundle_setup.py --check
+          python3 -m unittest discover -s integrations/treer -p 'test_*.py' -v
 
   thread_contract:
     name: Rust/TS thread schema contract
@@ -182,7 +201,7 @@ jobs:
 
   result:
     name: PR checks complete
-    needs: [changes, workflows, rust, node, npm, windows_harness, thread_contract]
+    needs: [changes, workflows, rust, node, npm, windows_harness, thread_contract, treer_packaging]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5

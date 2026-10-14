@@ -15,50 +15,95 @@ rebinds the same thread.
 
 ## Setup
 
-Use the packaging in [`integrations/treer/`](../integrations/treer/). It is an
-external integration; no Pockymoe sources or Node supervisor are installed into
-Treer. The installer needs Python 3.11 or later and supports Linux x64/ARM64 and
-Apple Silicon. Install and authenticate the desired harness and ACP adapter
-separately; see [device setup](device-setup.md) and [managed adapters](managed-acp-adapters.md).
-Treer and the hub must share the same OS account and loopback network namespace.
-
-Select an exact, trusted GitHub runtime release containing the attach command:
+Open any installer or terminal Agent on the enrolled Treer machine and run:
 
 ```sh
-python3 integrations/treer/install.py --version "$POCKYMOE_PINNED_VERSION"
+curl -fsSL 'https://raw.githubusercontent.com/dufangshi/pockymoe/<PINNED_COMMIT_AFTER_MERGE>/integrations/treer/treer-setup.sh' -o treer-setup.sh && sh treer-setup.sh --version 0.13.2
 ```
 
-`--version` is required and accepts only a stable version, optionally prefixed
-with `v`; `latest` and moving references are rejected. The installer downloads
-the native executable and Web ZIP from that version's GitHub Release, verifies
-both against its `SHA256SUMS`, and checks the executable's version before
-activation. It uses the normal `~/.local/share/remote-codex/native/releases/`
-layout, `current`, `current.json`, and `~/.local/bin/pockymoe`. Downloads and
-checksum metadata are trusted through GitHub HTTPS; the checksum file is not
-an independent signature or offline trust root.
+**Pinned URL placeholder:** replace `<PINNED_COMMIT_AFTER_MERGE>` with the final
+merged commit SHA before sharing this command. The public URL points to one
+self-contained POSIX shell script; no other setup scripts are downloaded.
+Its bundled Python sources and profile template are extracted into a private
+temporary directory and removed when setup exits. Only the pinned native
+runtime and Web release assets are downloaded.
 
-The installer starts no service. It refuses an existing active native
-installation or occupied CLI paths, and never overwrites a version directory.
-An interrupted installation can leave a retained release or installation lock;
-inspect those before removing them and retrying. Existing devices use Settings
-→ Supervisor → Check updates / Update, as described in
-[update recovery](supervisor-update-recovery.md).
+Setup needs Python 3.11 or later and supports Linux x64/ARM64 and Apple Silicon.
+Treer must be on PATH and the Agent must have its normal `TREER_*` workload
+environment. Setup waits for `treer whoami` discovery with backoff up to thirty
+seconds between retries. It verifies the same explicit AIS v1 capability/feature
+contract as attach, including `agent.interface-provenance.v1` and
+`agent.prompt-delivery.v1`, before creating anything.
+Install and authenticate the desired harness and ACP adapter separately; see
+[device setup](device-setup.md) and [managed adapters](managed-acp-adapters.md).
+The hub creates a thread only when that profile's base agent CLI (`codex`,
+`claude` or `grok`) is on its PATH; otherwise Launch fails with "Install the base
+agent first". Setup ends by naming any base agent it cannot find.
+Treer and the hub must share the same OS account and loopback network namespace.
 
-Create the three attach profiles and the hub App on the enrolled Treer machine:
+`--version` is required and accepts only an exact stable release, optionally
+prefixed with `v`; `latest` and moving references are rejected. If
+`~/.local/bin/pockymoe version` matches, setup reuses it. A different installed
+version stops setup: update through **Pockymoe Settings → Supervisor → Update**,
+then rerun. Setup never replaces a running installation.
+
+Setup creates the hub Managed App named `pockymoe` and the **Pockymoe Codex**,
+**Pockymoe Claude**, and **Pockymoe Grok** launch profiles. In Treer, choose
+**Launch**, select a profile, and set the working directory to your project.
+The App and workspace profiles survive removal of the installer Agent.
+Rerunning reuses the existing App and its port and updates profiles by stable ID;
+it also completes partially successful runs without creating duplicates. Existing
+duplicate names, a hub on another machine, or different hub settings stop setup
+for inspection. The App's saved command is retained because Treer provides no
+App update command.
+
+Without `--hub-port`, a new hub uses the first free IPv4 loopback port from 8787
+upward; an existing hub keeps its port. Pass `--hub-port N` for an explicit port.
+`--data-dir` defaults to `~/.local/share/remote-codex/treer` and must match on
+reruns. The App and profiles use stable executable and Web paths through
+`~/.local/bin/pockymoe` and `native/current/web`, never `releases/<version>`.
+`TREER_BIN` optionally selects the Treer executable. Setup prints progress and a
+Launch summary, suppresses raw Treer responses, and exits nonzero on failure.
+
+### Advanced: separate install and configuration
+
+The editable sources live in [`integrations/treer/`](../integrations/treer/).
+For a fresh installation, run the installer, then configure from inside a
+Treer Agent (skip installation when the requested version is already installed):
 
 ```sh
+python3 integrations/treer/install.py --version 0.13.2
 python3 integrations/treer/configure.py --create-hub --hub-port 8787 --dry-run
 python3 integrations/treer/configure.py --create-hub --hub-port 8787
 ```
 
-Run this once; each invocation creates new profiles. Without `--create-hub`,
-only profiles are created. `--cwd` is the Treer machine-relative profile working
-directory; override it when launching an Agent for a particular project.
-`--data-dir` defaults to `~/.local/share/remote-codex/treer` and must match for
-hub and attach. `--pockymoe` selects an absolute stable executable path.
-`TREER_BIN` selects the Treer executable; otherwise both tools use `treer` on PATH.
-If configuration fails after some creations succeed, inspect the Apps/profiles
-and remove duplicates before retrying.
+`install.py` starts no service. It verifies the native executable and Web ZIP
+against the release's `SHA256SUMS`, checks the executable's version, then activates
+the normal `~/.local/share/remote-codex/native/releases/` layout with `current`,
+`current.json`, and `~/.local/bin/pockymoe`. It refuses an active installation,
+occupied CLI paths, or an existing version directory. An interrupted installation
+can leave a retained release or lock; inspect those before retrying. Existing
+devices use [Settings update recovery](supervisor-update-recovery.md).
+Downloads and checksums are trusted through GitHub HTTPS; the checksum file is
+not an independent signature or offline trust root.
+
+`configure.py` uses the same idempotent configuration and contract checks.
+`--dry-run` reads existing Apps/profiles and prints planned writes. Without
+`--create-hub`, only profiles are configured; its default hub port is 8787.
+`--cwd` sets a Treer machine-relative profile working directory, and
+`--pockymoe` selects an absolute stable executable path. Launch can override cwd.
+
+For development tests only, `POCKYMOE_RELEASE_BASE_URL` replaces the release
+asset root. For example, a loopback mirror at `http://127.0.0.1:9000` serves
+`/v0.13.2/SHA256SUMS`, `/v0.13.2/remote-codex-<platform>`, and
+`/v0.13.2/remote-codex-web.zip`. HTTPS mirrors and loopback HTTP are accepted;
+URL credentials, query strings and fragments are rejected. SHA256SUMS and runtime
+version verification still apply. Do not set this override for normal installs.
+
+After editing `setup.sh`, `install.py`, `configure.py`, or `profiles.json`, run
+`python3 integrations/treer/bundle_setup.py` to rebuild `treer-setup.sh`.
+`python3 integrations/treer/bundle_setup.py --check` and the packaging unit tests
+fail if the committed script is stale. CI runs these checks for packaging changes.
 
 [`profiles.json`](../integrations/treer/profiles.json) is the integration's own
 template format, rendered by `configure.py` through Treer's CLI. It defines a hub
