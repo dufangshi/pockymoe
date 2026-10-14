@@ -18,14 +18,15 @@ rebinds the same thread.
 Open any installer or terminal Agent on the enrolled Treer machine and run:
 
 ```sh
-curl -fsSL 'https://raw.githubusercontent.com/dufangshi/pockymoe/529c6e59f5d93bf604175e13e79cafed3bd8b705/integrations/treer/treer-setup.sh' -o treer-setup.sh && sh treer-setup.sh --version 0.13.2
+curl -fsSL 'https://raw.githubusercontent.com/dufangshi/pockymoe/<PINNED_COMMIT_AFTER_MERGE>/integrations/treer/treer-setup.sh' -o treer-setup.sh && sh treer-setup.sh --version 0.13.2
 ```
 
-The URL is pinned to commit `529c6e59`; a newer script gets a new pinned URL. The public URL points to one
+**Pinned URL placeholder:** replace `<PINNED_COMMIT_AFTER_MERGE>` with the final
+merged commit SHA before sharing this command. The public URL points to one
 self-contained POSIX shell script; no other setup scripts are downloaded.
 Its bundled Python sources and profile template are extracted into a private
-temporary directory and removed when setup exits. Only the pinned native
-runtime and Web release assets are downloaded.
+temporary directory and removed when setup exits. Runtime and Web downloads use
+the pinned release; the hub also downloads current managed ACP adapters when needed.
 
 Setup needs Python 3.11 or later and supports Linux x64/ARM64 and Apple Silicon.
 Treer must be on PATH and the Agent must have its normal `TREER_*` workload
@@ -33,7 +34,7 @@ environment. Setup waits for `treer whoami` discovery with backoff up to thirty
 seconds between retries. It verifies the same explicit AIS v1 capability/feature
 contract as attach, including `agent.interface-provenance.v1` and
 `agent.prompt-delivery.v1`, before creating anything.
-Install and authenticate the desired harness and ACP adapter separately; see
+Install and authenticate the desired base harness separately; see
 [device setup](device-setup.md) and [managed adapters](managed-acp-adapters.md).
 The hub creates a thread only when that profile's base agent CLI (`codex`,
 `claude` or `grok`) is on its PATH; otherwise Launch fails with "Install the base
@@ -42,9 +43,10 @@ Treer and the hub must share the same OS account and loopback network namespace.
 
 `--version` is required and accepts only an exact stable release, optionally
 prefixed with `v`; `latest` and moving references are rejected. If
-`~/.local/bin/pockymoe version` matches, setup reuses it. A different installed
-version stops setup: update through **Pockymoe Settings → Supervisor → Update**,
-then rerun. Setup never replaces a running installation.
+`~/.local/bin/pockymoe version` matches, setup reuses it. An older installed
+version is upgraded through the running setup-created hub's management API,
+as described below. A newer installed version is refused; setup never downgrades
+or replaces an existing installation directly.
 
 Setup creates the hub Managed App named `pockymoe` and the **Pockymoe Codex**,
 **Pockymoe Claude**, and **Pockymoe Grok** launch profiles. In Treer, choose
@@ -56,6 +58,24 @@ duplicate names, a hub on another machine, or different hub settings stop setup
 for inspection. The App's saved command is retained because Treer provides no
 App update command.
 
+After configuring the App and profiles, setup waits up to 60 seconds for hub
+health on `127.0.0.1:<hub-port>`. It reads the local-mode hub's harness inventory
+and checks the Codex and Claude ACP adapters whenever their base CLI is installed
+in the hub. Missing, external, or unverified adapters are updated through the
+hub's management API to the current Pockymoe-managed installation. Each update
+has an eight-minute setup wait limit and must report a successful ACP connection
+verification. Progress appears about every twenty seconds while waiting. A
+managed adapter whose last adapter update was verified is skipped on reruns;
+the hub's verification job record is in memory, so a hub restart requires a
+fresh adapter update and verification. Missing base CLIs are noted and skipped.
+Grok uses native ACP and needs no adapter installation.
+
+Setup prints each checked adapter's version, selected path, and verification
+result. Any adapter failure exits nonzero after preserving the App and profiles,
+so a rerun can finish setup. Repair through **Pockymoe Settings → Harnesses → ACP
+adapter → Install**, or rerun setup. If the setup wait limit expires, the hub job
+may still be running; check its status in Settings before retrying.
+
 Without `--hub-port`, a new hub uses the first free IPv4 loopback port from 8787
 upward; an existing hub keeps its port. Pass `--hub-port N` for an explicit port.
 `--data-dir` defaults to `~/.local/share/remote-codex/treer` and must match on
@@ -63,6 +83,40 @@ reruns. The App and profiles use stable executable and Web paths through
 `~/.local/bin/pockymoe` and `native/current/web`, never `releases/<version>`.
 `TREER_BIN` optionally selects the Treer executable. Setup prints progress and a
 Launch summary, suppresses raw Treer responses, and exits nonzero on failure.
+
+### Updating
+
+Inside a Treer installer or terminal Agent, rerun the same setup script with the
+desired exact release:
+
+```sh
+sh treer-setup.sh --version "$POCKYMOE_PINNED_VERSION"
+```
+
+For an older installation, setup requires the existing App named `pockymoe` on
+this machine, with the setup-created stable launch command, data directory, and
+host-managed restart configuration. The hub must be running and reachable on
+its loopback port. If the App is stopped, start it in Treer and rerun; setup does
+not install over it. A different App configuration, mismatched running/installed
+versions, or an update already in progress stops setup for inspection. Keep the
+same `--data-dir` and, if specified, `--hub-port` as the original setup.
+
+The current Supervisor API updates to GitHub latest and accepts no target-version
+argument. Setup calls **Check updates** first and refuses to request an update
+unless `latestVersion` exactly equals `--version`. It then calls **Update** through
+the loopback management API. The hub verifies and installs the release, switches
+`current`, and exits; Treer relaunches it using the saved stable path. Setup polls
+through restart disconnects for up to ten minutes, with progress about every
+twenty seconds, until management reports the requested `runningVersion` and
+startup verification has finished. It then converges profiles and checks ACP
+adapters. A changed update target or reported failure stops setup; inspect
+**Pockymoe Settings → Supervisor**. A timeout does not cancel the hub's update:
+check the App and update status before rerunning. See [update recovery](supervisor-update-recovery.md).
+
+Running attach Agents are not restarted by setup. They reconnect automatically
+when the hub returns and continue using their existing attach process. They pick
+up the updated attach binary on their next Treer restart. The hub handles pausing
+and recovering affected coding turns through its normal update contract.
 
 ### Advanced: separate install and configuration
 
