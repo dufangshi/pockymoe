@@ -118,8 +118,9 @@ a versioned executable is available, attach warns and refuses to save it.
 The startup working directory is relative to the machine root reported by
 `treer whoami`; attach rejects a working directory outside that root before
 creating a thread. The hub still receives the absolute working directory.
-Identity discovery waits up to ten seconds for a newly launched Agent to appear
-in the Controller's discovery snapshot.
+A newly launched Agent may appear in the Controller's discovery snapshot only
+after a delay; attach keeps retrying (backoff up to thirty seconds) instead of
+exiting, because Treer does not restart an ordinary Agent that exits.
 A pre-existing thread binding registers without rewriting startup.
 
 Attach keeps the socket open, answers pings, and reconnects with exponential

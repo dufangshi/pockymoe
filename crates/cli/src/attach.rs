@@ -439,16 +439,21 @@ pub async fn run(options: Options, connection_options: crate::threads::Connectio
     let contract = Contract::parse(&bytes)?;
     let restore_cwd = if options.thread.is_none() {
         // Host can start the process before Proxy discovery publishes its Agent.
-        let identity = time::timeout(Duration::from_secs(10), async {
-            loop {
-                if let Ok(identity) = treer_command(&treer, &text_args(&["whoami"])).await {
-                    break identity;
-                }
-                time::sleep(Duration::from_millis(100)).await;
+        // Keep waiting: Treer does not restart an ordinary Agent that exits.
+        let started = time::Instant::now();
+        let mut delay = Duration::from_millis(100);
+        let mut reported = false;
+        let identity = loop {
+            if let Ok(identity) = treer_command(&treer, &text_args(&["whoami"])).await {
+                break identity;
             }
-        })
-        .await
-        .context("Treer Agent identity is not available in discovery")?;
+            if !reported && started.elapsed() >= Duration::from_secs(10) {
+                println!("Pockymoe attach: waiting for Treer to publish this Agent's identity.");
+                reported = true;
+            }
+            time::sleep(delay).await;
+            delay = (delay * 2).min(Duration::from_secs(30));
+        };
         startup_cwd(&cwd, &identity)?
     } else {
         cwd.clone()
