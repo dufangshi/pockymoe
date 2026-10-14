@@ -12,7 +12,7 @@ internal static partial class RelayConfigurationParser
         configuration = null;
         error = "Paste the PowerShell setup command from the Devices page.";
         if (string.IsNullOrWhiteSpace(text)) return false;
-        var normalized = Regex.Replace(text, @"\([_:/])", "$1");
+        var normalized = Regex.Replace(text, @"\\([_:/])", "$1");
         string? Env(string suffix) => Assignment(normalized, "POCKYMOE_" + suffix) ?? Assignment(normalized, "REMOTE_CODEX_" + suffix);
         string? Flag(string name) => Extract(normalized, $@"(?<![A-Za-z0-9_])--?{Regex.Escape(name)}\s+");
         var relay = Flag("Relay") ?? Env("RELAY_SERVER_URL");
