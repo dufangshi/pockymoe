@@ -46,6 +46,12 @@ split's files and collaboration views, hidden panes and view-only shares do not
 count, and the split reads capabilities with `?load=false` so it never starts a
 harness. A tab hidden for 60 s sends an empty set.
 
+The Relay accepts `thread.view` as a connection control message, alongside
+`supervisor.ping`, including on read-only connections. The device still checks
+each reported thread's control permission before retaining its harness. A viewer
+report must not close the socket: HTTP chat requests can succeed even while a
+rejected report makes the separate realtime connection repeatedly reconnect.
+
 ## First-paint bundle
 
 `apps/supervisor-web/vite.config.ts` groups vendor packages into chunks but

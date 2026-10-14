@@ -101,7 +101,8 @@ test.beforeAll(async ({ browser }) => {
   });
   await waitFor(`${relay}/healthz`, relayProcess);
   pages = await servePages(dist);
-  context = await browser.newContext({ locale: 'en-US' });
+  const { viewport, deviceScaleFactor, isMobile, hasTouch, userAgent } = test.info().project.use;
+  context = await browser.newContext({ locale: 'en-US', viewport, deviceScaleFactor, isMobile, hasTouch, userAgent });
   await context.addInitScript(() => localStorage.setItem('remote-codex.locale', 'en'));
   page = await context.newPage();
 });
@@ -158,6 +159,76 @@ test('separate static origin registers with a relay cookie and loads devices', a
   expect(apiRequests.length).toBeGreaterThan(2);
   expect(apiRequests.every((origin) => origin === relay)).toBe(true);
   expect(new URL(page.url()).origin).toBe(web);
+});
+
+test('protected thread stays connected through encrypted heartbeats and receives live updates', async () => {
+  const created = await relayApi('/relay/devices', 'POST', { name: 'Heartbeat device' });
+  expect(created.status).toBe(200);
+  const deviceId: string = created.data.device.id;
+  const port = String(await freePort());
+  const supervisor = start(resolve('target/debug/pockymoe'), ['relay-supervisor'], {
+    HOST: '127.0.0.1', PORT: port, POCKYMOE_RELAY_SUPERVISOR_PORT: port,
+    POCKYMOE_RELAY_SERVER_URL: relay, POCKYMOE_RELAY_AGENT_TOKEN: created.data.token,
+    POCKYMOE_DATABASE_PATH: join(root, 'heartbeat.sqlite'), POCKYMOE_WORKSPACE_ROOT: join(root, 'heartbeat-workspaces'),
+    POCKYMOE_SESSION_SECRET: randomBytes(32).toString('hex'), POCKYMOE_E2E_FAKE_RUNTIME: '1',
+    POCKYMOE_ADMIN_USERNAME: 'device-admin', POCKYMOE_ADMIN_PASSWORD: randomBytes(24).toString('hex'),
+  });
+  const api = `/relay/devices/${deviceId}/api`;
+  await expect.poll(async () => {
+    if (supervisor.exitCode !== null) throw new Error(`Supervisor exited with ${supervisor.exitCode}`);
+    return (await relayApi(`${api}/version`)).status;
+  }).toBe(200);
+  const work = join(root, 'heartbeat-workspace');
+  await mkdir(work);
+  const workspace = (await relayApi(`${api}/workspaces`, 'POST', { label: 'Heartbeat workspace', absPath: work })).data;
+  const started = (await relayApi(`${api}/threads/start`, 'POST', { workspaceId: workspace.id, model: 'fake', title: 'Heartbeat thread' })).data;
+  const threadId: string = started.thread?.id ?? started.id;
+  await page.goto(`${web}/relay-devices`);
+  await page.getByRole('button', { name: 'Protect all devices', exact: true }).click();
+  await page.getByRole('dialog', { name: 'Protect all devices', exact: true }).getByRole('button', { name: 'Protect devices', exact: true }).click();
+  const unlock = page.getByRole('dialog', { name: /^(Unlock this browser|Confirm with your password)$/ });
+  if (await unlock.waitFor({ timeout: 5_000 }).then(() => true, () => false)) {
+    await unlock.getByLabel('Password', { exact: true }).fill(password);
+    await unlock.getByRole('button', { name: 'Unlock', exact: true }).click();
+  }
+  const row = page.locator('article').filter({ has: page.getByText('Heartbeat device', { exact: true }) });
+  await expect(row.getByText('Protected', { exact: true })).toBeVisible({ timeout: 40_000 });
+  let connections = 0;
+  let allEncrypted = true;
+  const received: string[] = [], sent: string[] = [], errors: string[] = [];
+  page.on('pageerror', error => errors.push(error.message));
+  page.on('websocket', socket => {
+    connections++;
+    const record = (frames: string[], payload: string | Buffer) => {
+      const message = JSON.parse(String(payload));
+      frames.push(message.type);
+      allEncrypted &&= message.encrypted?.version === 1;
+    };
+    socket.on('framereceived', frame => record(received, frame.payload));
+    socket.on('framesent', frame => record(sent, frame.payload));
+  });
+  await page.clock.install();
+  await page.goto(`${web}/devices/${deviceId}/threads/${threadId}`);
+  await expect(page.getByTestId('chat-composer')).toBeVisible();
+  await expect.poll(() => received.filter(type => type === 'supervisor.pong').length, { message: 'real encrypted pongs arrive' }).toBeGreaterThan(0);
+  await expect(page.locator('.device-connection-button')).toHaveCount(0);
+  const opened = connections;
+  for (let i = 0; i < 18; i++) {
+    const pongs = received.filter(type => type === 'supervisor.pong').length;
+    await page.clock.fastForward(4000);
+    await expect.poll(() => received.filter(type => type === 'supervisor.pong').length).toBeGreaterThan(pongs);
+    await expect(page.locator('.device-connection-button')).toHaveCount(0);
+  }
+  expect(connections).toBe(opened);
+  expect(sent.filter(type => type === 'supervisor.ping').length).toBeGreaterThan(10);
+  await page.getByRole('textbox', { name: 'Prompt', exact: true }).fill('ENCRYPTED_LIVE_HEARTBEAT_MARKER');
+  await page.getByRole('button', { name: 'Send Prompt', exact: true }).click();
+  await expect.poll(() => received.includes('thread.output.delta')).toBe(true);
+  await expect(page.locator('[data-role="assistant"]').last()).toContainText('ENCRYPTED_LIVE_HEARTBEAT_MARKER');
+  expect(connections).toBe(opened);
+  expect(sent).toContain('thread.view');
+  expect(allEncrypted).toBe(true);
+  expect(errors).toEqual([]);
 });
 
 test('Explorer media of a protected device loads through the encrypted transport on the static origin', async () => {
