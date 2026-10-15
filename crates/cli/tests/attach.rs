@@ -178,6 +178,8 @@ async fn create_saves_startup_before_registration_and_reconnect_rebinds() {
             "high",
             "--title",
             "Test",
+            "--hub-app",
+            "hub-app-test",
         ],
         None,
     )
@@ -210,6 +212,9 @@ async fn create_saves_startup_before_registration_and_reconnect_rebinds() {
     assert!(calls[3]
         .windows(3)
         .any(|w| w == ["attach", "--thread", "thread-test"]));
+    assert!(calls[3]
+        .windows(2)
+        .any(|w| w == ["--hub-app", "hub-app-test"]));
     assert_eq!(
         &calls[4][..4],
         &["interface", "register", "--port", "12345"]

@@ -2364,3 +2364,7 @@ async fn registry_startup_pauses_legacy_unbound_threads_before_inbox_recovery() 
     assert!(f.hub.state.integration_thread_paused(&legacy));
     assert!(f.hub.state.get_thread(&legacy).is_ok());
 }
+
+// W3: Managed App landing page and deny-all thread boundary.
+#[path = "app_page_tests.rs"]
+mod app_page;

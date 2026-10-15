@@ -106,6 +106,7 @@ impl Scope {
         self.valid() && pockymoe_treer::event_allowed(value, |id| self.allows(id))
     }
 }
+mod app_page;
 mod browser;
 mod registry;
 pub(crate) mod messages;
@@ -540,6 +541,9 @@ pub(crate) async fn gate(
             next.run(request).await
         };
     };
+    if let Some(response) = app_page::route(&hub, &request) {
+        return response;
+    }
     if request.uri().path() == TREER_ATTACH_PATH {
         request.extensions_mut().insert(hub);
         return next.run(request).await;
