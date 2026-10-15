@@ -170,12 +170,12 @@ export function ConversationSearch({ threadId, workspaceId, deviceLabel, allowGl
 
   return <div ref={root} className={`workbench-search ${open ? 'is-open' : ''}`}>
     {!open ? <button ref={trigger} className="matter-search-trigger" aria-label={labels.trigger} onClick={onOpen}>
-      <Search /><span>{labels.trigger}</span>
+      <Search data-icon="search" /><span>{labels.trigger}</span>
     </button> : <>
       <div className="workbench-search-field">
         <ConversationSearchScopePicker value={effectiveScope} allowGlobal={allowGlobal} labels={labels}
           onChange={value => { selection.current?.abort(); setSelecting(false); setScope(value); setOffset(0); input.current?.focus(); }} />
-        <Search size={16} aria-hidden="true" />
+        <Search data-icon="search" size={16} aria-hidden="true" />
         <input ref={input} role="combobox" aria-label={labels.input} placeholder={effectiveScope === 'thread' ? labels.placeholder : labels.globalPlaceholder}
           aria-autocomplete="list" aria-expanded={!!normalized} aria-controls={normalized ? listId : undefined}
           aria-activedescendant={normalized && matches[active] ? `${listId}-${active}` : undefined}

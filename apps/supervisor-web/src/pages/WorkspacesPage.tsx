@@ -195,8 +195,8 @@ export function WorkspacesPage() {
     <div className="product-page space-y-4" data-page="workspaces">
       <ProductHeader title={translate("files.workspaces")} {...(relayDeviceId ? {backHref: '/relay-devices', backLabel: translate("files.backToDevices")} : {})} actions={<>
         {!relayDeviceId && <TourLauncherButton showLabel />}
-        <Link to={currentRelayScopedPath('/threads/import')} aria-label={translate("files.importSession")} title={translate("files.importSession")} className="product-icon-button"><FileInput size={19} /></Link>
-        <Link to={currentRelayScopedPath('/workspaces/new')} aria-label={translate("files.addWorkspace")} title={translate("files.addWorkspace")} className="product-icon-button"><Plus size={20} /></Link>
+        <Link to={currentRelayScopedPath('/threads/import')} aria-label={translate("files.importSession")} title={translate("files.importSession")} className="product-icon-button"><FileInput data-icon="import" size={19} /></Link>
+        <Link to={currentRelayScopedPath('/workspaces/new')} aria-label={translate("files.addWorkspace")} title={translate("files.addWorkspace")} className="product-icon-button"><Plus data-icon="add" size={20} /></Link>
       </>} />
 
       <details className="group border-y border-[var(--theme-border)]">
@@ -250,7 +250,7 @@ export function WorkspacesPage() {
               onClick={() => setLoadAttempt((attempt) => attempt + 1)}
               type="button"
             >
-              <RefreshCw aria-hidden="true" className="h-3.5 w-3.5" />
+              <RefreshCw data-icon="refresh" aria-hidden="true" className="h-3.5 w-3.5" />
               {translate("files.retry")}</button>
           ) : null}
         </div>
@@ -281,7 +281,7 @@ export function WorkspacesPage() {
                 to={currentRelayScopedPath('/workspaces/new')}
                 className="ui-action-primary mt-5 inline-flex h-11 items-center gap-2 rounded-md px-4 text-sm font-medium transition"
               >
-                <Plus aria-hidden="true" className="h-4 w-4" />
+                <Plus data-icon="add" aria-hidden="true" className="h-4 w-4" />
                 {translate("files.addWorkspace")}</Link>
             </div>
           </div>
@@ -340,6 +340,7 @@ export function WorkspacesPage() {
                       }`}
                     >
                       <Pin
+                        data-icon="pin"
                         aria-hidden="true"
                         className={`h-4 w-4 ${workspace.isFavorite ? 'rotate-[18deg] fill-current' : 'rotate-[8deg]'}`}
                       />
@@ -502,7 +503,7 @@ function WorkspaceActionsMenu({
         onClick={() => onOpenChange(!open)}
         className="product-icon-button"
       >
-        <MoreHorizontal aria-hidden="true" className="h-5 w-5" />
+        <MoreHorizontal data-icon="more" aria-hidden="true" className="h-5 w-5" />
       </button>
       {open ? (
         <div
@@ -519,7 +520,7 @@ function WorkspaceActionsMenu({
             onClick={() => runAction(onViewPath)}
             className="flex min-h-11 w-full items-center gap-3 rounded-md px-3 text-left text-sm text-[var(--theme-fg)] transition hover:bg-[var(--theme-hover)] focus:outline-none focus-visible:bg-[var(--theme-hover)]"
           >
-            <Eye aria-hidden="true" className="h-4 w-4 text-[var(--theme-fg-muted)]" />
+            <Eye data-icon="view-path" aria-hidden="true" className="h-4 w-4 text-[var(--theme-fg-muted)]" />
             {translate("files.viewFullPath")}</button>
           <button
             type="button"
@@ -527,7 +528,7 @@ function WorkspaceActionsMenu({
             onClick={() => runAction(onRename)}
             className="flex min-h-11 w-full items-center gap-3 rounded-md px-3 text-left text-sm text-[var(--theme-fg)] transition hover:bg-[var(--theme-hover)] focus:outline-none focus-visible:bg-[var(--theme-hover)]"
           >
-            <Pencil aria-hidden="true" className="h-4 w-4 text-[var(--theme-fg-muted)]" />
+            <Pencil data-icon="rename" aria-hidden="true" className="h-4 w-4 text-[var(--theme-fg-muted)]" />
             {translate("files.rename_d3f4cb")}</button>
           <div className="my-1 border-t border-[var(--theme-border)]" />
           <button
@@ -536,7 +537,7 @@ function WorkspaceActionsMenu({
             onClick={() => runAction(onDelete)}
             className="flex min-h-11 w-full items-center gap-3 rounded-md px-3 text-left text-sm text-[var(--status-danger-fg)] transition hover:bg-[var(--status-danger-bg)] focus:outline-none focus-visible:bg-[var(--status-danger-bg)]"
           >
-            <Trash2 aria-hidden="true" className="h-4 w-4" />
+            <Trash2 data-icon="delete" aria-hidden="true" className="h-4 w-4" />
             {translate("files.deleteWorkspace_bc2cf9")}</button>
         </div>
       ) : null}
