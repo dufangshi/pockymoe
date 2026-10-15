@@ -175,7 +175,7 @@ fn return_http_client(state: &Arc<AppState>, client: HttpClient) {
             .iter()
             .filter(|c| c.client.mapping == client.mapping && c.client.grant == client.grant)
             .count()
-            >= 2
+            >= 6
     {
         pool.discard(client);
         return;
@@ -1211,7 +1211,9 @@ mod tests {
             create_session(&conn, &state.store.session_secret, "owner").unwrap()
         };
         let connection = Uuid::new_v4();
-        let (tx, rx) = tokio::sync::mpsc::channel(4);
+        // Allow a browser-sized burst without the fake control channel being
+        // smaller than the production data-connection budget.
+        let (tx, rx) = tokio::sync::mpsc::channel(32);
         state.sockets.write().await.insert(
             "device".into(),
             DeviceSocket {
@@ -1926,7 +1928,7 @@ mod tests {
 
     #[tokio::test]
     async fn http_pool_bounds_idle_sockets_and_reaps_them_without_new_traffic() {
-        let barrier = Arc::new(tokio::sync::Barrier::new(4));
+        let barrier = Arc::new(tokio::sync::Barrier::new(8));
         let fixture = http_fixture("preview-pool-bounds", Duration::ZERO, move |request| {
             let barrier = barrier.clone();
             async move {
@@ -1937,7 +1939,7 @@ mod tests {
             }
         })
         .await;
-        let responses = futures_util::future::join_all((0..4).map(|_| async {
+        let responses = futures_util::future::join_all((0..8).map(|_| async {
             fixture
                 .request(Method::GET, "/parallel")
                 .send()
@@ -1949,11 +1951,28 @@ mod tests {
         }))
         .await;
         assert!(responses.iter().all(|s| s == "ok"));
-        assert_eq!(fixture.opens(), 4);
+        assert_eq!(fixture.opens(), 8);
         assert_eq!(
             fixture.state.preview.idle.lock().unwrap().clients.len(),
-            2,
-            "only two idle streams per capability"
+            6,
+            "retain a browser's HTTP/1 concurrency within the per-device budget"
+        );
+        let warm = futures_util::future::join_all((0..6).map(|_| async {
+            fixture
+                .request(Method::GET, "/warm")
+                .send()
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap()
+        }))
+        .await;
+        assert!(warm.iter().all(|s| s == "ok"));
+        assert_eq!(
+            fixture.opens(),
+            8,
+            "a warm browser burst should reuse its connections"
         );
         for i in 0..9 {
             fixture

@@ -167,7 +167,7 @@ previous response has been completely consumed. A connection belongs to one
 mapping, device connection, account session and lease; it is never shared across
 those authorization boundaries. Each request still checks the account session
 and device ownership. Idle connections expire after 10 seconds, with at most
-two per capability, eight per device and 64 per Relay. Capacity pressure reclaims
+six per capability, eight per device and 64 per Relay. Capacity pressure reclaims
 idle connections before refusing new traffic; it never preempts active traffic.
 Stop/disconnect cancels both active and idle connections. This uses the existing
 raw TCP bridge and does not require a new device wire protocol.
