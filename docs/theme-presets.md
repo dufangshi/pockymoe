@@ -1,17 +1,19 @@
 # Theme presets
 
 Settings → Preferences → Appearance offers a **Theme** and a **Color mode**
-(Light, Dark, System). Both are stored per browser. Classic and Plum Pocket
-support both modes; an imported pack may support only one, and then the color
+(Light, Dark, System). Both are stored per browser. Classic, Plum Pocket and
+Terminal support both modes; an imported pack may support only one, and then the color
 mode is fixed while it is applied (see [theme packs](theme-packs.md#color-modes)).
 
 | Theme | Look |
 | --- | --- |
 | Classic (default) | Quiet green-neutral workbench |
 | Plum Pocket | Plum chrome, mustard felt accents and cream content, rounded fonts, agent mascot avatars and the pocket sticker |
+| Terminal | Monospace, square corners and hairlines; the transcript reads like a terminal log |
 
-Every theme other than Classic is a [theme pack](theme-packs.md): Plum Pocket is
-the built-in pack in `themes/plum-pocket/`, and more packs can be imported in
+Every theme other than Classic is a [theme pack](theme-packs.md): Plum Pocket and
+Terminal are the built-in packs in `themes/plum-pocket/` and `themes/terminal/`,
+and more packs can be imported in
 Settings. The choice is stored in `localStorage['pockymoe-theme-preset']`.
 
 ## Classic
@@ -59,6 +61,21 @@ every [capability flag](theme-packs.md#capability-flags).
   buttons, inputs, switches, segmented controls, dialogs and menus.
 - The terminal, the file editor and code blocks use the pack's `--terminal-*`,
   `--editor-*` and `--shiki-*` palettes.
+
+## Terminal
+
+`tokens.css`, `shell.css`, `transcript.css` and `composer.css`, no fonts and no
+capability flags: the system monospace stack, an ink-blue accent in light mode and
+phosphor green in dark mode.
+
+- The transcript keeps a 3-character gutter: `❯` marks a prompt (bold, no
+  bubble), `●` an agent message; work lines, runs, changed files, the plan and the
+  receipt line up with the text. Status tags read `[failed]`, a running operation
+  blinks `▌`, and plan steps read `[x]`, `[>]` and `[ ]`.
+- Each agent has a square key-cap emblem (`assets/agents/*.svg`) on thread rows and
+  tabs; an idle status mark beside it is hidden.
+- The current thread row is drawn inverse, the current tab has an accent top rule,
+  and the composer is a framed prompt line with a `❯`.
 
 ## Checking a theme
 
