@@ -220,7 +220,7 @@ test('overlapping live steps stay stable on expansion and idle output keeps fres
   emit('thread.item.completed', { turnId: turn.id, item: commands[0] });
   await expect(progress).toHaveAttribute('data-progress-freshness', 'recent');
   await expect(steps).toHaveText('·1 command');
-  await summary.getByRole('button', { name: /Expand turn 1$/ }).click();
+  await expect(summary.getByRole('button', { name: /Collapse turn 1$/ })).toBeVisible();
   await expect(page.getByText('read inbox', { exact: true })).toBeVisible();
   await expect(steps).toHaveText('·1 command');
   await summary.getByRole('button', { name: /Collapse turn 1$/ }).click();
@@ -356,7 +356,7 @@ test('completed work agrees with the composer and the price tooltip has a matchi
   await expect(page.getByRole('button', { name: 'Stop Current Turn', exact: true })).toBeVisible();
   const summary = page.locator('.thread-graph-worked-summary');
   await expect(summary.locator('.thread-graph-worked-label')).toHaveText('Working');
-  await summary.getByRole('button', { name: /Expand turn 1$/ }).click();
+  await expect(summary.getByRole('button', { name: /Collapse turn 1$/ })).toBeVisible();
   await expect(page.getByText('read report', { exact: true })).toBeVisible();
   await summary.getByRole('button', { name: /Collapse turn 1$/ }).click();
   completed = true;
@@ -557,11 +557,15 @@ test('background wake replaces its waiting anchor and continues within the same 
   await page.keyboard.press('Escape');
   await expect(usage).toHaveAttribute('aria-expanded','false');
   const waitRow=page.locator('.thread-graph-task-notice');
+  await expect(page.locator('.thread-worked-toggle')).toHaveAttribute('aria-expanded', 'true');
+  await page.locator('.thread-worked-toggle').click();
   await expect(waitRow).toHaveCount(0);
   await expect(page.locator('.thread-graph-turn-footer')).toContainText('等待唤醒');
   await expect(page.locator('.thread-graph-worked-summary')).toHaveCount(1);
   // The waiting marker is durable and remains explicit after a full page reload.
   await page.reload();
+  await expect(page.locator('.thread-worked-toggle')).toHaveAttribute('aria-expanded', 'true');
+  await page.locator('.thread-worked-toggle').click();
   await expect(waitRow).toHaveCount(0);
   await expect(page.locator('.thread-graph-turn-footer')).toContainText('等待唤醒');
   await page.locator('.thread-graph-worked-summary button[aria-expanded]').click();
@@ -768,7 +772,9 @@ test('live narration replaces its outside preview during tools and wake, with co
   await page.goto(`/threads/${id}`);
   const turn = page.getByTestId('chat-turn');
   const toggle = turn.locator('.thread-graph-worked-summary button[aria-expanded]');
-  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  await toggle.click(); // Explicitly fold the running turn to exercise its latest-update preview.
+  await expect(turn.locator('.thread-execution-timeline')).toHaveCount(0);
   await expect(page.getByText(first.text, { exact: true })).toBeVisible();
   const next = { id: 'next', kind: 'agentMessage', text: '', responsePhase: 'commentary', status: 'inProgress', sequence: 11 };
   emit('thread.item.started', { turnId, item: next });
@@ -862,8 +868,9 @@ test('a homogeneous command batch opens once with half-sized whitespace', async 
     expect(geometry[i]!.height - geometry[i]!.lineHeight).toBeLessThanOrEqual(8);
     if (i) expect(geometry[i]!.y - geometry[i - 1]!.y).toBeLessThanOrEqual(28);
   }
+  await expect(group.locator(':scope > .tlog-collapse')).toHaveAttribute('data-settled', 'true');
   const narrative = history.getByText('我先检查实现，再运行相关验证。', { exact: true });
-  expect((await header.boundingBox())!.y - (await narrative.boundingBox())!.y - (await narrative.boundingBox())!.height).toBeLessThanOrEqual(12);
+  await expect.poll(async () => (await header.boundingBox())!.y - (await narrative.boundingBox())!.y - (await narrative.boundingBox())!.height).toBeLessThanOrEqual(12);
   expect(await page.getByTestId('thread-scroll-container').evaluate(el => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
   // Keep the entire batch above the floating composer for the visual evidence.
   await history.evaluate(el => {
@@ -916,7 +923,7 @@ test('delivered wakes fold into steps while pending waits stay separate across s
   const batchToggle = activity.locator('.tlog-run-head');
   const notices = page.locator('.thread-graph-task-notice');
   await expect(page.getByText(narration.text, { exact: true })).toBeVisible();
-  await worked.click();
+  await expect(worked).toHaveAttribute('aria-expanded', 'true');
   await expect(activity).toHaveCount(1);
   await expect(batchToggle).toContainText('1 条命令');
   await expect(batchToggle).toContainText('读取 1 个文件');

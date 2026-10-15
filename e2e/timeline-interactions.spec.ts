@@ -143,8 +143,8 @@ test('turn navigation changes direction reliably and tool details load only on c
   await expect(operations).toContainText('3 commands');
   expect(detailRequests).toHaveLength(0);
   await operations.click();
-  // Small edits open automatically when the run is revealed; commands stay lazy.
-  await expect(last.locator('.tlog-row[data-kind="fileChange"] .thread-diff')).toHaveCount(2);
+  // Finished runs list their rows closed; output loads only after a row click.
+  await expect(last.locator('.tlog-row[data-open]')).toHaveCount(0);
   expect(detailRequests.filter(url => url.includes('cmd-') || url.includes('single'))).toHaveLength(0);
   const command = last.locator('.tlog-row[data-kind="commandExecution"]').filter({ hasText: 'pnpm test' });
   await expect(command.locator('.tlog-row-head')).toHaveAttribute('title', 'pnpm test');
@@ -163,10 +163,11 @@ test('turn navigation changes direction reliably and tool details load only on c
   const edit = last.locator('.tlog-row[data-kind="fileChange"]').filter({ hasText: 'src/main.rs' });
   await expect(edit.locator('.is-add').first()).toHaveText('+1');
   await expect(edit.locator('.is-remove').first()).toHaveText('−1');
+  await edit.locator('.tlog-row-head').click();
   await expect(edit.locator('.thread-diff')).toHaveAttribute('data-highlighted', 'true');
   await expect(edit.locator('.thread-diff-line.is-add')).toContainText('new();');
   await expect(edit.locator('.thread-diff-line.is-remove')).toContainText('old();');
-  expect(detailRequests).toHaveLength(4);
+  expect(detailRequests).toHaveLength(3);
   await page.screenshot({ path: testInfo.outputPath('timeline-diff.png') });
   await page.getByRole('button', { name: 'Open settings', exact: true }).click();
   await page.getByRole('tab', { name: 'Preferences', exact: true }).click();
@@ -215,7 +216,7 @@ test('operation summaries stay compact in Chinese with long timestamps and file 
   page.on('request', r => { if (r.url().includes(`/api/threads/${id}/items/`)) details.push(r.url()); });
   await page.addInitScript(() => localStorage.setItem('remote-codex.locale', 'zh-CN'));
   await page.goto(`/threads/${id}`);
-  await page.locator('.thread-graph-worked-summary > button').click();
+  await page.locator('.thread-worked-toggle').click();
   const run = page.locator('.tlog-run');
   const header = run.locator('.tlog-run-head');
   await expect(header).toContainText('3 个文件');
@@ -312,6 +313,7 @@ test('substantial answers survive refresh between folded work sections', async (
   const turn = page.locator(`[data-timeline-turn][data-turn-id="${turnId}"]`);
   await expect(turn.locator('.thread-answer-section')).toHaveCount(2);
   await expect(turn.getByText('先回答你的问题', { exact: true })).toBeVisible();
+  await expect(turn.getByText('Implementation verified.', { exact: true })).toHaveCount(1);
   await expect(turn.getByText('Implementation verified.', { exact: true })).toBeVisible();
   expect(turnRequests).toHaveLength(0);
   await page.reload();
@@ -330,6 +332,7 @@ test('substantial answers survive refresh between folded work sections', async (
   await expect(turn.getByText('check-before-one', { exact: true })).toHaveCount(0);
   await turn.getByRole('button', { name: /Collapse turn 1/ }).click();
   await expect(turn.getByText('先回答你的问题', { exact: true })).toBeVisible();
+  await expect(turn.getByText('Implementation verified.', { exact: true })).toHaveCount(1);
   await expect(turn.getByText('Implementation verified.', { exact: true })).toBeVisible();
 });
 

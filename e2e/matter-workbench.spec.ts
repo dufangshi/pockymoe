@@ -168,7 +168,7 @@ test('search reveals an older collapsed message, Explorer resizes and connection
   expect(popoverBox.x + popoverBox.width).toBeLessThanOrEqual(connectionBox.x + connectionBox.width + 1);
   await page.keyboard.press('Escape');
   await expect(popover).toHaveCount(0);
-  await page.screenshot({ path: `output/playwright/workbench-interactions-${testInfo.project.name}.png` });
+  await page.screenshot({ path: testInfo.outputPath(`workbench-interactions-${testInfo.project.name}.png`) });
   await page.context().setOffline(false);
   running = true;
   await page.reload();
@@ -184,7 +184,7 @@ test('search reveals an older collapsed message, Explorer resizes and connection
     await expect(stop).toHaveCSS('box-shadow', 'none');
     await expect(stop).toHaveCSS('width', '32px');
     await expect(send).toHaveCSS('width', '32px');
-    await page.screenshot({ path: `output/playwright/workbench-running-${width}.png` });
+    await page.screenshot({ path: testInfo.outputPath(`workbench-running-${width}.png`) });
   }
 });
 
@@ -586,18 +586,21 @@ test('execution timeline expands deferred work and keeps the last reply above th
   await expect(
     page.getByText('Ready for your review.', { exact: true }),
   ).toBeVisible();
-  const final = await page
-    .getByText('Ready for your review.', { exact: true })
-    .boundingBox();
-  const composer = await page.getByTestId('chat-composer').boundingBox();
-  expect(final!.y + final!.height).toBeLessThanOrEqual(composer!.y);
+  // Opening work now animates its height; measure only after the run settles.
+  await expect(page.locator('.tlog-run > .tlog-collapse')).toHaveAttribute('data-settled', 'true');
+  await expect.poll(async () => {
+    await page.locator('.thread-graph-scroll-container').evaluate(e => { e.scrollTop = e.scrollHeight; });
+    const final = (await page.getByText('Ready for your review.', { exact: true }).boundingBox())!;
+    const composer = (await page.getByTestId('chat-composer').boundingBox())!;
+    return final.y + final.height - composer.y;
+  }).toBeLessThanOrEqual(0);
   await page.getByTestId('recent-chats').getByRole('button', { name: 'Actions for A calmer coding workspace', exact: true }).click();
   await page.locator('.recent-thread-menu').getByRole('button', { name: 'Star thread', exact: true }).click();
   await page.locator('.thread-graph-scroll-container').evaluate((e) => {
     e.scrollTop = 0;
   });
   await page.screenshot({
-    path: 'output/playwright/matter-preview-light.png',
+    path: testInfo.outputPath('matter-preview-light.png'),
     fullPage: true,
   });
   await page.evaluate(() =>
@@ -614,7 +617,7 @@ test('execution timeline expands deferred work and keeps the last reply above th
     e.scrollTop = 0;
   });
   await page.screenshot({
-    path: 'output/playwright/matter-preview-dark.png',
+    path: testInfo.outputPath('matter-preview-dark.png'),
     fullPage: true,
   });
   await testInfo.attach('preview-url', {

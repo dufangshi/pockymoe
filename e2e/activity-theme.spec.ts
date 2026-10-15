@@ -36,7 +36,7 @@ test('command batches have one icon and thread dialogs follow light and dark the
     await page.evaluate(value => localStorage.setItem('remote-codex-theme-mode', value), theme);
     await page.reload();
     await expect(page.locator('html')).toHaveAttribute('data-theme-effective', theme);
-    await page.getByRole('button', { name: /Expand turn 1/ }).click();
+    await expect(page.locator('.thread-worked-toggle')).toHaveAttribute('aria-expanded', 'true');
     const group = page.locator('.tlog-run');
     await expect(group).toBeVisible();
     // One running glyph on the summary; opening reveals each operation's own glyph.

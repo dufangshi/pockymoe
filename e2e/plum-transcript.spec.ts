@@ -102,7 +102,6 @@ test('Plum Pocket step stream reads prose first: quiet toggle, small muted steps
   });
   await page.goto(`/threads/${id}`);
   const toggle = page.locator('.thread-graph-worked-summary > button').first();
-  await toggle.click();
   await expect(toggle).toHaveAttribute('aria-expanded', 'true');
   // The expanded work toggle is plain text: no pill or shadow, even right after a tap.
   expect(await toggle.evaluate((e) => [getComputedStyle(e).backgroundColor, getComputedStyle(e).boxShadow])).toEqual(['rgba(0, 0, 0, 0)', 'none']);

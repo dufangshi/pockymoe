@@ -30,90 +30,162 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
-test('scripted transcript streams current work and plan, then folds files with lazy inline diffs', async ({ page, request }) => {
+test('scripted transcript reads open, folds continuously, and reveals files and command output only on request', async ({ page, request }, testInfo) => {
   const id = await createThread(request);
   const details: string[] = [];
-  page.on('request', r => { if (/\/items\/[^/]+\/detail(?:\?|$)/.test(r.url())) details.push(r.url()); });
+  const turnDetails: string[] = [];
+  page.on('request', r => {
+    if (/\/items\/[^/]+\/detail(?:\?|$)/.test(r.url())) details.push(decodeURIComponent(r.url()));
+    if (/\/turns\/[^/?]+\/detail(?:\?|$)/.test(r.url())) turnDetails.push(r.url());
+  });
   await page.goto(`/threads/${id}`);
   await page.getByRole('textbox', { name: 'Prompt' }).fill(prompt);
   await page.getByRole('button', { name: 'Send Prompt', exact: true }).click();
   const turn = page.getByTestId('chat-turn');
   const toggle = turn.locator('.thread-worked-toggle');
-  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  await expect(turn.locator('.tlog-current')).toHaveCount(0);
   await expect(turn.getByText("I'll start by reading the queue and its tests, then separate the storage code.", { exact: true })).toBeVisible();
-  await expect(turn.locator('.tlog-current [data-status="running"]')).toContainText('rg -n "PromptQueue" src tests');
-  await expect(turn.locator('.tlog-current [data-status="running"]')).toContainText('node --test tests/durable-queue.test.ts');
-  await expect(turn.getByText('Persistence now lives in', { exact: false })).toBeVisible();
-  expect(details).toEqual([]);
+  await expect(turn.locator('.tlog-single [data-status="running"]')).toContainText('rg -n "PromptQueue" src tests');
+  // Observe every DOM commit through completion, including the 260ms closing animation.
+  await page.evaluate(() => {
+    const samples = { seenWork: false, missingWork: 0, openCommands: 0, closing: false, count: 0 };
+    const sample = () => {
+      const turn = document.querySelector('[data-testid="chat-turn"]');
+      if (!turn) return;
+      samples.count++;
+      const toggle = turn.querySelector('.thread-worked-toggle');
+      if (toggle) samples.seenWork = true;
+      else if (samples.seenWork) samples.missingWork++;
+      samples.openCommands += turn.querySelectorAll('.tlog-row[data-kind="commandExecution"][data-open]').length;
+      if (toggle?.getAttribute('aria-expanded') === 'false' && turn.querySelector('.thread-execution-timeline') &&
+          turn.querySelector('.tlog-collapse[data-state="closed"]')) samples.closing = true;
+    };
+    const observer = new MutationObserver(sample);
+    observer.observe(document.body, { childList: true, subtree: true, attributes: true });
+    Object.assign(window, { transcriptSamples: samples, stopTranscriptSamples: () => { sample(); observer.disconnect(); return samples; } });
+  });
+  await expect(turn.locator('.tlog-run[data-open] [data-status="running"]')).toContainText('node --test tests/queue.test.ts');
+  await expect(turn.locator('.tlog-run[data-open] [data-kind="fileChange"][data-open] .thread-diff')).toContainText('const text = readFileSync');
+  await expect(turn.getByText('The queue tests pass.', { exact: false })).toBeVisible();
+  await expect(turn.locator('.tlog-run').filter({ hasText: 'edited 1 file' })).not.toHaveAttribute('data-open');
+  await expect(turn.locator('.tlog-run .thread-diff')).toHaveCount(0);
+  expect(details.filter(url => !url.includes(':edit/detail'))).toEqual([]);
   await expect(turn.getByText('All queue tests pass.', { exact: false })).toBeVisible();
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await expect(turn.locator('.thread-execution-timeline')).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Stop Current Turn', exact: true })).toHaveCount(0);
+  const samples = await page.evaluate(() => (window as unknown as { stopTranscriptSamples: () => object }).stopTranscriptSamples());
+  await testInfo.attach('completion-observer', { body: JSON.stringify(samples), contentType: 'application/json' });
+  expect(samples).toMatchObject({ seenWork: true, missingWork: 0, openCommands: 0, closing: true });
+  expect(details.filter(url => !url.includes(':edit/detail'))).toEqual([]);
+  details.length = 0;
 
-  // Reload exercises the server's compact activity and file summaries, not just streamed items.
+  // Reload also checks compact server summaries, rather than only streamed items.
   await page.reload();
   await expect(toggle).toHaveAttribute('aria-expanded', 'false');
   const completed = (await (await request.get(`${base}/api/threads/${id}`)).json()).turns.at(-1);
   const seconds = Math.round((Date.parse(completed.completedAt) - Date.parse(completed.startedAt)) / 1000);
-  // Twelve 900ms beats take about 10.8s; the UI rounds the real elapsed time.
   await expect(turn.locator('.thread-graph-worked-label')).toHaveText(`Worked for ${seconds}s`);
-  expect(await toggle.locator('.tlog-part').evaluateAll(parts => parts.map(part => {
-    const clone = part.cloneNode(true) as HTMLElement;
-    clone.querySelectorAll('.tlog-sep').forEach(sep => sep.remove());
-    return clone.textContent!.trim();
-  }))).toEqual(['edited 1 file', '+2', '−1', '4 commands', 'Read 1 file', '1 failed']);
-  await expect(toggle.locator('.tlog-sep')).toHaveCount(4);
+  await expect(toggle).toContainText('4 commands');
+  await expect(toggle).toContainText('Read 1 file');
+  await expect(toggle).toContainText('1 failed');
+  const filesToggle = turn.locator('.tlog-files-toggle');
+  await expect(filesToggle).toContainText('edited 1 file');
+  await expect(filesToggle.locator('.is-add')).toHaveText('+2');
+  await expect(filesToggle.locator('.is-remove')).toHaveText('−1');
   const receipt = turn.locator('.thread-turn-receipt');
   await expect(receipt).toBeVisible();
   const answer = turn.locator('[data-role="assistant"]').filter({ hasText: 'All queue tests pass.' });
   expect(await receipt.evaluate(el => el.getBoundingClientRect().top)).toBeGreaterThanOrEqual(await answer.evaluate(el => el.getBoundingClientRect().bottom));
   await expect(turn.locator('.thread-graph-worked-summary .thread-turn-usage')).toHaveCount(0);
-  const chip = turn.locator('.tlog-file');
-  await expect(chip.locator('.tlog-file-name')).toHaveText('queue-store.ts');
-  await expect(chip.locator('.is-add')).toHaveText('+2');
-  await expect(chip.locator('.is-remove')).toHaveText('−1');
-  expect(details).toEqual([]);
-  await chip.click();
-  await expect(turn.locator('.tlog-files .thread-diff')).toContainText('const text = readFileSync');
-  await expect(page.getByRole('dialog')).toHaveCount(0);
-  expect(details).toHaveLength(1);
-  await toggle.click();
   await expect(turn.locator('.tlog-files')).toHaveCount(0);
-  const narration = turn.locator('.thread-execution-timeline [data-role="assistant"]');
-  await expect(narration).toHaveCount(4);
-  await expect(narration.nth(0)).toContainText("I'll start by reading");
-  await expect(narration.nth(1)).toContainText('The queue tests pass.');
-  await expect(narration.nth(2)).toContainText('One durable-queue test still fails');
-  await expect(narration.nth(3)).toContainText('All queue tests pass.');
-  await expect(turn.locator('.tlog-run')).toHaveCount(1);
-  const run = turn.locator('.tlog-run-head');
-  await expect(run).toHaveAttribute('aria-expanded', 'false');
-  // The failed command and final command stand alone between narration messages.
-  await expect(turn.locator('.tlog-single [data-kind="commandExecution"][data-status="failed"] .tlog-tag')).toHaveText('failed');
+  expect(details).toEqual([]);
+  const beforeFiles = turnDetails.length;
+  await filesToggle.click();
+  const file = turn.locator('.tlog-files .tlog-row[data-kind="fileChange"]');
+  await expect(file).toHaveCount(1);
+  await expect(file).toContainText('queue-store.ts');
+  await expect(file.locator('.thread-diff')).toContainText('const text = readFileSync');
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  expect(turnDetails).toHaveLength(beforeFiles);
   expect(details).toHaveLength(1);
+  expect(details[0]).toContain(':edit/detail');
+  await file.locator('.tlog-viewable').click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole('button', { name: 'Copy', exact: true })).toBeVisible();
+  const bounds = (await dialog.boundingBox())!;
+  expect(bounds.width).toBeLessThan(page.viewportSize()!.width);
+  expect(bounds.height).toBeLessThan(page.viewportSize()!.height);
+  await dialog.getByRole('button', { name: 'Close dialog', exact: true }).click();
+  await filesToggle.click();
+  await expect(turn.locator('.tlog-files')).toHaveCount(0);
+
+  await toggle.click();
+  const narration = turn.locator('.thread-execution-timeline [data-role="assistant"]');
+  await expect(narration).toHaveCount(3);
+  await expect(answer).toHaveCount(1);
+  for (const [index, text] of ["I'll start by reading", 'The queue tests pass.', 'One durable-queue test still fails'].entries())
+    await expect(narration.nth(index)).toContainText(text);
+  const run = turn.locator('.tlog-run-head');
+  await expect(run).toHaveCount(1);
+  await expect(run).toHaveAttribute('aria-expanded', 'false');
+  await expect(run).toContainText('2 commands');
+  await expect(run.locator('.is-time')).toContainText(/\d+(ms|s)/);
+  await expect(turn.locator('.tlog-row[data-open]')).toHaveCount(0);
   await run.click();
-  await expect(turn.locator('.tlog-run [data-kind="fileChange"] .tlog-row-head')).toHaveAttribute('aria-expanded', 'true');
-  await expect(turn.locator('.tlog-run .thread-diff')).toContainText('const text = readFileSync');
+  await expect(turn.locator('.tlog-run .tlog-row')).toHaveCount(4);
+  await expect(turn.locator('.tlog-row[data-open]')).toHaveCount(0);
+  expect(details).toHaveLength(1);
+  const command = turn.locator('.tlog-row[data-kind="commandExecution"]').filter({ hasText: 'rg -n' });
+  const copy = command.locator('.tlog-copy');
+  await page.mouse.move(0, 0);
+  await expect(copy).toHaveCSS('opacity', '0');
+  await command.hover();
+  await expect(copy).toHaveCSS('opacity', '0.55');
+  await command.locator('.tlog-row-head').click();
+  await expect(command).toHaveAttribute('data-open');
+  await expect(command.locator('.tlog-output')).toContainText('export class PromptQueue');
+  expect(details).toHaveLength(2);
+  expect(details[1]).toContain(':rg/detail');
+  await command.locator('.tlog-viewable').click();
+  await expect(dialog).toContainText('export class PromptQueue');
+  await expect(dialog.getByRole('button', { name: 'Copy', exact: true })).toBeVisible();
+  await dialog.getByRole('button', { name: 'Close dialog', exact: true }).click();
+  await expect(turn.locator('.tlog-detail button')).toHaveCount(0);
+  await expect(turn.locator('.tlog-row[data-status="failed"] .tlog-tag')).toHaveText('failed');
   await expect(turn.locator('.matter-command-step, .thread-history-direct-row, .thread-graph-history-group')).toHaveCount(0);
 });
 
-test('phone changed-file chip opens its diff inside the folded turn without horizontal overflow', async ({ page, request }) => {
+test('phone file counts open only inline diffs and command copy appears only for an opened row', async ({ page, request }) => {
   const id = await createThread(request);
-  const sent = await request.post(`${base}/api/threads/${id}/prompt`, { data: { prompt } });
-  expect(sent.ok()).toBeTruthy();
+  const details: string[] = [];
+  page.on('request', r => { if (/\/turns\/[^/?]+\/detail(?:\?|$)/.test(r.url())) details.push(r.url()); });
+  expect((await request.post(`${base}/api/threads/${id}/prompt`, { data: { prompt } })).ok()).toBeTruthy();
   await expect.poll(async () => (await (await request.get(`${base}/api/threads/${id}`)).json()).turns.at(-1)?.status).toBe('completed');
   await page.goto(`/threads/${id}`);
   const toggle = page.locator('.thread-worked-toggle');
   await expect(toggle).toHaveAttribute('aria-expanded', 'false');
-  const chip = page.locator('.tlog-file');
-  await expect(chip).toContainText('queue-store.ts');
-  await chip.click();
+  const filesToggle = page.locator('.tlog-files-toggle');
+  const before = details.length;
+  await filesToggle.tap();
+  await expect(page.locator('.tlog-files .tlog-row[data-kind="fileChange"]')).toHaveCount(1);
   await expect(page.locator('.tlog-files .thread-diff')).toContainText('const text = readFileSync');
   await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  expect(details).toHaveLength(before);
   await expect(page.getByRole('dialog')).toHaveCount(0);
-  for (const selector of ['.tlog-files-row', '[data-testid="thread-scroll-container"]'])
+  for (const selector of ['.tlog-files', '[data-testid="thread-scroll-container"]'])
     expect(await page.locator(selector).evaluate(el => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  await chip.click();
-  await expect(page.locator('.tlog-files .thread-diff')).toHaveCount(0);
+  await filesToggle.tap();
+  await expect(page.locator('.tlog-files')).toHaveCount(0);
+  await toggle.tap();
+  await page.locator('.tlog-run-head').tap();
+  const command = page.locator('.tlog-run .tlog-row[data-kind="commandExecution"]').first();
+  await expect(command.locator('.tlog-copy')).toHaveCSS('opacity', '0');
+  await command.locator('.tlog-row-head').tap();
+  await expect(command.locator('.tlog-copy')).toHaveCSS('opacity', '0.55');
 });
 
 
@@ -171,8 +243,11 @@ test('live transcript retains the latest narration and command without advancing
     await expect(plan.locator('.tlog-plan-step')).toHaveCount(3);
     expect(plans.at(-1)?.map(step => step.status)).toEqual(['completed', 'inProgress', 'pending']);
     await expect(page.getByText("One durable-queue test still fails because of the fixture path; I'll fix that next.", { exact: true })).toBeVisible();
-    await expect(page.locator('.tlog-current [data-status="running"]')).toContainText("sed -i 's#fixtures/queue.json#tests/fixtures/queue.json#'");
-    await expect(page.locator('.thread-worked-toggle')).toHaveAttribute('aria-expanded', 'false');
+    await expect(page.locator('.tlog-single [data-status="running"]')).toContainText("sed -i 's#fixtures/queue.json#tests/fixtures/queue.json#'");
+    await expect(page.locator('.thread-worked-toggle')).toHaveAttribute('aria-expanded', 'true');
+    await expect(page.locator('.tlog-current')).toHaveCount(0);
+    await page.locator('.thread-worked-toggle').click();
+    await expect(page.locator('.tlog-current [data-status="running"]')).toContainText("sed -i");
     // Check the held state, after subsequent operation events and summary refreshes.
     // The first render of a plan can briefly be correct before a heuristic advances it.
     await expect(plan.locator('.tlog-plan-step')).toHaveCount(3);
