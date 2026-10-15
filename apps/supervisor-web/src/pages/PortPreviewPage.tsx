@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link, useLocation, useParams } from 'react-router-dom';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { openDevicePortPreview } from '../lib/portPreview';
+import { previewLeaseFromQuery } from '../lib/previewLease';
 
 /** Exchange the browser's account session for a private preview-host cookie. */
 export function PortPreviewPage() {
@@ -14,10 +15,7 @@ export function PortPreviewPage() {
     setError(null);
     const query = new URLSearchParams(location.search);
     const path = query.get('path') ?? '/';
-    const leaseId = query.get('lease');
-    const expiry = query.get('leaseExpiresAt');
-    const expiresAt = expiry && /^\d+$/.test(expiry) && Number.isSafeInteger(Number(expiry)) ? Number(expiry) : undefined;
-    openDevicePortPreview(deviceId ?? '', mappingId ?? '', path, controller.signal, leaseId ? { leaseId, ...(expiresAt === undefined ? {} : { expiresAt }) } : undefined).then(({ url }) => {
+    openDevicePortPreview(deviceId ?? '', mappingId ?? '', path, controller.signal, previewLeaseFromQuery(query)).then(({ url }) => {
       if (!controller.signal.aborted) window.location.replace(url);
     }).catch((cause: unknown) => {
       if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : String(cause));
