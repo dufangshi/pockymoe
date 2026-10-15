@@ -22,6 +22,9 @@ import {
   connectShellSocket,
   fetchThreadDelivery,
   dshConsoleUrl,
+  loadPluginSettings,
+  savePluginSettings,
+  ApiError,
 } from './api';
 vi.mock('./portPreview', () => ({ openDevicePortPreview: vi.fn() }));
 vi.mock('./relayTransport', () => ({
@@ -40,6 +43,23 @@ beforeEach(() => {
 afterEach(() => {
   localStorage.clear();
   vi.unstubAllGlobals();
+});
+it('pins plugin settings to their device, round-trips the revision, and preserves 409 conflicts', async () => {
+  const snapshot = { revision: 4, values: { model: 'test-model', connectionFile: '/private/profile.json' } };
+  vi.mocked(encryptedBrowserFetch).mockResolvedValueOnce(new Response(JSON.stringify(snapshot), { headers: { 'content-type': 'application/json' } }));
+  expect(await loadPluginSettings('pockymoe.content-quality', 'settings-device')).toEqual(snapshot);
+  setSelectedRelayDeviceId('another-device');
+  await savePluginSettings('pockymoe.content-quality', snapshot, 'settings-device');
+  const calls = vi.mocked(encryptedBrowserFetch).mock.calls;
+  expect(calls[0]![0]).toBe('/relay/devices/settings-device/api/plugins/pockymoe.content-quality/settings');
+  expect(calls[1]![0]).toBe(calls[0]![0]);
+  expect(calls[0]![1]?.cache).toBe('no-store');
+  expect(calls[1]![1]?.method).toBe('PUT');
+  expect(JSON.parse(calls[1]![1]?.body as string)).toEqual(snapshot);
+  vi.mocked(encryptedBrowserFetch).mockResolvedValueOnce(new Response(JSON.stringify({ code: 'conflict', message: 'Settings changed' }), { status: 409, headers: { 'content-type': 'application/json' } }));
+  const error = await savePluginSettings('pockymoe.content-quality', snapshot, 'settings-device').catch(error => error);
+  expect(error).toBeInstanceOf(ApiError);
+  expect(error.statusCode).toBe(409);
 });
 it('routes every secondary chat operation and attached prompt to its captured device', async () => {
   const target = 'other-device';

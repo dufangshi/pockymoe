@@ -1371,30 +1371,42 @@ export function fetchThreadTurnDetail(id: string, turnId: string,
   );
 }
 
-export function fetchPlugins() {
-  return request<PluginDto[]>('api/plugins', {
-    cache: 'no-store',
-  });
+export function loadPluginSettings(pluginId: string, deviceId?: string | null) {
+  return request<import('@pockymoe/thread-ui').PluginSettingsSnapshot>(
+    `api/plugins/${encodeURIComponent(pluginId)}/settings`, { cache: 'no-store' }, { deviceId },
+  );
 }
 
-export function importPlugin(input: ImportPluginInput) {
+export function savePluginSettings(pluginId: string, settings: import('@pockymoe/thread-ui').PluginSettingsSnapshot, deviceId?: string | null) {
+  return request<import('@pockymoe/thread-ui').PluginSettingsSnapshot>(
+    `api/plugins/${encodeURIComponent(pluginId)}/settings`, { method: 'PUT', body: JSON.stringify(settings) }, { deviceId },
+  );
+}
+
+export function fetchPlugins(deviceId?: string | null) {
+  return request<PluginDto[]>('api/plugins', {
+    cache: 'no-store',
+  }, { deviceId });
+}
+
+export function importPlugin(input: ImportPluginInput, deviceId?: string | null) {
   return request<PluginDto>('api/plugins/import', {
     method: 'POST',
     body: JSON.stringify(input),
-  });
+  }, { deviceId });
 }
 
-export function updatePlugin(pluginId: string, input: UpdatePluginInput) {
+export function updatePlugin(pluginId: string, input: UpdatePluginInput, deviceId?: string | null) {
   return request<PluginDto>(`api/plugins/${encodeURIComponent(pluginId)}`, {
     method: 'PATCH',
     body: JSON.stringify(input),
-  });
+  }, { deviceId });
 }
 
-export function deletePlugin(pluginId: string) {
+export function deletePlugin(pluginId: string, deviceId?: string | null) {
   return request<PluginDto>(`api/plugins/${encodeURIComponent(pluginId)}`, {
     method: 'DELETE',
-  });
+  }, { deviceId });
 }
 
 export function fetchThreadExportTurns(id: string) {

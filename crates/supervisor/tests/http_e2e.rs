@@ -19,6 +19,87 @@ async fn spawn_supervisor(
 }
 
 #[tokio::test]
+async fn builtin_plugin_settings_http_are_versioned_and_validate_registry() {
+    let (_dir, port, _) = spawn_supervisor(vec![Provider::Codex]).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://127.0.0.1:{port}/api/plugins");
+    let plugins = client
+        .get(&base)
+        .send()
+        .await
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap();
+    assert!(plugins
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|p| p["id"] == "pockymoe.content-quality" && p["enabled"] == false));
+    let settings = format!("{base}/pockymoe.content-quality/settings");
+    let response = client.get(&settings).send().await.unwrap();
+    assert_eq!(response.headers()["cache-control"], "no-store");
+    let snapshot = response.json::<Value>().await.unwrap();
+    let mut changed = snapshot.clone();
+    changed["values"]["preset"] = json!("technical");
+    let saved = client.put(&settings).json(&changed).send().await.unwrap();
+    assert!(saved.status().is_success());
+    let saved = saved.json::<Value>().await.unwrap();
+    assert_eq!(saved["revision"], 1);
+    assert_eq!(saved["values"]["preset"], "technical");
+    assert_eq!(
+        client
+            .put(&settings)
+            .json(&changed)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        409
+    );
+    let mut invalid = saved;
+    invalid["values"]["preset"] = json!("invented");
+    assert_eq!(
+        client
+            .put(&settings)
+            .json(&invalid)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        400
+    );
+    assert_eq!(
+        client
+            .get(format!("{base}/missing/settings"))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        404
+    );
+    assert_eq!(
+        client
+            .post(format!("{base}/import"))
+            .json(&json!({"manifest":{}}))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        501
+    );
+    assert_eq!(
+        client
+            .delete(format!("{base}/pockymoe.content-quality"))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        409
+    );
+}
+
+#[tokio::test]
 async fn explorer_create_file_never_overwrites_and_can_be_opened_as_document() {
     let (_dir, port, root) = spawn_supervisor(vec![Provider::Codex]).await;
     let client = reqwest::Client::new();

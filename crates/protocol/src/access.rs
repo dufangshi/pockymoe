@@ -687,6 +687,27 @@ mod tests {
     }
 
     #[test]
+    fn plugin_settings_and_manual_actions_remain_owner_routes() {
+        for (method, path) in [
+            ("GET", "/api/plugins/pockymoe.content-quality/settings"),
+            ("PUT", "/api/plugins/pockymoe.content-quality/settings"),
+            (
+                "POST",
+                "/api/threads/root/plugins/pockymoe.content-quality/actions/reviewDocument",
+            ),
+        ] {
+            assert!(access_allows(&owner_access(), method, path));
+            for scope in ["thread", "workspace", "device"] {
+                assert!(!access_allows(
+                    &shared(scope, "control", "write"),
+                    method,
+                    path
+                ));
+            }
+        }
+    }
+
+    #[test]
     fn read_control_workspace_search_and_owner_routes_share_one_allowlist() {
         let read = shared("thread", "read", "read");
         for path in [

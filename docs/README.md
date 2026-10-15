@@ -36,6 +36,7 @@ Maintained documentation for Pockymoe. For the product overview, start with the
 
 - [Thread interaction CLI](thread-interaction.md) and [cross-device peers](cross-device-peer.zh.md)
 - [Thread event and item schema](thread-event-schema.md)
+- [Built-in feature plugins](builtin-plugins.md) and [content quality](content-quality.md)
 - [Automations and hooks](unified-hooks.md) and [watch summaries](watch-statistics.md)
 - [Conversation search](global-search.md)
 - [Thread notifications](thread-notifications.md)

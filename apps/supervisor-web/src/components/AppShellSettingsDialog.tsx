@@ -1327,7 +1327,7 @@ export function AppShellSettingsDialog({
         {section ? (
           settingsContentNode
         ) : (
-          <SettingsPanels sections={appSettingsSections()} />
+          <SettingsPanels sections={appSettingsSections(plugins.getSettingsSections())} />
         )}
         {selectedFileName && selectedFile && (
           <FormDialog
@@ -1377,15 +1377,15 @@ export function AppShellSettingsDialog({
   return <SettingsDialog open
     onOpenChange={(open) => { if (!open) closeSettings(); }}
     themeMode={selectedThemeMode} effectiveTheme={effectiveTheme}
-    sections={appSettingsSections()}
+    sections={appSettingsSections(plugins.getSettingsSections())}
     {...(shellNav?.settingsSection ? { initialId: shellNav.settingsSection } : {})}
     contentProps={{ 'data-testid': 'settingsDialog', onCloseAutoFocus: (event) => event.preventDefault() }}
   />;
 
 }
 
-export function appSettingsSections(): SettingsSection[] {
-  return [
+export function appSettingsSections(pluginSections: SettingsSection[] = []): SettingsSection[] {
+  return [...[
     {
       id: 'preferences',
       label: translate("files.preferences"),
@@ -1430,5 +1430,5 @@ export function appSettingsSections(): SettingsSection[] {
   ].map((section) => ({
     ...section,
     content: <AppShellSettingsDialog embedded section={section.id} />,
-  }));
+  })), ...pluginSections];
 }

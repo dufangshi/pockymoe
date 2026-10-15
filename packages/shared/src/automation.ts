@@ -24,6 +24,7 @@ export interface AutomationCommandSpec {
   timeoutSeconds?: number;
 }
 export type AutomationAction =
+  | { kind: 'pluginAction'; pluginId: string; action: string; input?: unknown; timeoutSeconds?: number }
   | { kind: 'prompt'; text: string }
   | {
       kind: 'notifyInbox';

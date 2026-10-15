@@ -14,6 +14,7 @@ pub mod interaction;
 pub mod local_sessions;
 pub mod management;
 mod node_runtime;
+pub mod plugins;
 pub mod publications;
 pub mod restart;
 pub mod service;

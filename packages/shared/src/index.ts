@@ -930,6 +930,7 @@ export type ThreadItemKindDto =
   | 'other';
 
 export interface ThreadHistoryItemDto {
+  polishedReply?: PolishedReplyDto | null;
   peerWork?: ThreadPeerWorkDto | null;
   id: string;
   createdAt?: string | null;
@@ -965,6 +966,15 @@ export interface ThreadHistoryItemDto {
     text: string;
   }> | null;
   artifact?: ThreadArtifactDto | null;
+}
+
+export interface PolishedReplyDto {
+  text: string;
+  preset: string;
+  language: string;
+  model: string;
+  sourceHash: string;
+  createdAt: string;
 }
 
 export interface ThreadHistoryItemDetailDto {
@@ -1019,6 +1029,7 @@ export interface PluginMcpServerDto {
 }
 
 export interface PluginCapabilitiesDto {
+  actions?: string[];
   artifactTypes: PluginArtifactTypeDto[];
   timelineRenderers: string[];
   threadPanels: PluginThreadPanelDto[];
@@ -1046,7 +1057,7 @@ export interface PluginDto extends PluginManifestDto {
   enabled: boolean;
   source?: 'builtin' | 'imported' | null;
   available?: boolean;
-  unavailableReasonCode?: 'unsupported_platform' | null;
+  unavailableReasonCode?: 'unsupported_platform' | 'harness_missing' | string | null;
   unavailableReason?: string | null;
 }
 
