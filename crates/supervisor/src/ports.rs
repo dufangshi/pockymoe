@@ -488,14 +488,12 @@ async fn watch_lease(state: &Supervisor, mapping: &str, lease: Option<&str>) {
     }
 }
 
-async fn connect(state: &Supervisor, port: u16, ticket: &str) -> Result<()> {
-    let upstream = tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        match tokio::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)).await {
-            Ok(socket) => Ok(socket),
-            Err(_) => tokio::net::TcpStream::connect((std::net::Ipv6Addr::LOCALHOST, port)).await,
-        }
-    })
-    .await??;
+async fn connect_preview_socket(
+    state: &Supervisor,
+    ticket: &str,
+) -> Result<
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+> {
     let mut url = url::Url::parse(state.config.relay_server_url.as_deref().unwrap_or(""))?;
     let scheme = if matches!(url.scheme(), "https" | "wss") {
         "wss"
@@ -517,9 +515,23 @@ async fn connect(state: &Supervisor, port: u16, ticket: &str) -> Result<()> {
     );
     let (socket, _) = tokio::time::timeout(
         std::time::Duration::from_secs(10),
-        tokio_tungstenite::connect_async(request),
+        tokio_tungstenite::connect_async_with_config(request, None, true),
     )
     .await??;
+    Ok(socket)
+}
+
+async fn connect(state: &Supervisor, port: u16, ticket: &str) -> Result<()> {
+    let upstream = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        match tokio::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)).await {
+            Ok(socket) => Ok(socket),
+            Err(_) => tokio::net::TcpStream::connect((std::net::Ipv6Addr::LOCALHOST, port)).await,
+        }
+    })
+    .await??;
+    // Small request/SSE/WS writes must not wait for TCP delayed ACKs.
+    upstream.set_nodelay(true)?;
+    let socket = connect_preview_socket(state, ticket).await?;
     let (mut sink, mut source) = socket.split();
     let (mut read, mut write) = upstream.into_split();
     {
@@ -573,6 +585,63 @@ mod owner_mapping_tests {
         http::Request,
     };
     use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn preview_data_socket_disables_nagle() {
+        let relay = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let (_dir, state) = crate::tunnel::tests::state_with_relay_url(&format!(
+            "http://{}",
+            relay.local_addr().unwrap()
+        ));
+        let client = tokio::spawn(async move {
+            connect_preview_socket(&state, &Uuid::new_v4().to_string())
+                .await
+                .unwrap()
+        });
+        let (tcp, _) = relay.accept().await.unwrap();
+        let _server = tokio_tungstenite::accept_async(tcp).await.unwrap();
+        let socket = client.await.unwrap();
+        let tokio_tungstenite::MaybeTlsStream::Plain(tcp) = socket.get_ref() else {
+            panic!("fixture uses plain WS")
+        };
+        assert!(
+            tcp.nodelay().unwrap(),
+            "interactive preview data socket must disable Nagle"
+        );
+    }
+
+    #[tokio::test]
+    async fn preview_bridge_forwards_small_interactive_chunks_promptly() {
+        let relay = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let (_dir, state) = crate::tunnel::tests::state_with_relay_url(&format!(
+            "http://{}",
+            relay.local_addr().unwrap()
+        ));
+        let app = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = app.local_addr().unwrap().port();
+        let bridge =
+            tokio::spawn(async move { connect(&state, port, &Uuid::new_v4().to_string()).await });
+        let (mut app, _) = app.accept().await.unwrap();
+        app.set_nodelay(true).unwrap();
+        let (tcp, _) = relay.accept().await.unwrap();
+        tcp.set_nodelay(true).unwrap();
+        let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
+        let start = std::time::Instant::now();
+        for value in 0..24_u8 {
+            app.write_all(&[value]).await.unwrap();
+            let message = tokio::time::timeout(std::time::Duration::from_secs(1), socket.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            assert_eq!(message.into_data().as_ref(), &[value]);
+        }
+        eprintln!(
+            "preview bridge: small_chunks=24 elapsed_ms={}",
+            start.elapsed().as_millis()
+        );
+        bridge.abort();
+    }
 
     #[tokio::test]
     async fn leases_are_mapping_scoped_expire_and_local_and_dsh_leases_survive_owner_revocation() {
@@ -631,6 +700,64 @@ mod owner_mapping_tests {
             .unwrap();
         assert!(!lease_live(&state, &local.id, Some(&local_lease.lease_id)));
     }
+    #[tokio::test]
+    async fn revocation_and_stop_close_active_preview_tcp_and_websocket() {
+        for revoke in [true, false] {
+            let relay = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let (_dir, state) = crate::tunnel::tests::state_with_relay_url(&format!(
+                "http://{}",
+                relay.local_addr().unwrap()
+            ));
+            let owner = live_owner(&state);
+            let app = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let mapping =
+                create_local_mapping(&state, app.local_addr().unwrap().port(), "local").unwrap();
+            let lease =
+                create_lease(&state, &mapping.id, MappingAuthority::Tunnel(Some(&owner))).unwrap();
+            open(
+                state.clone(),
+                &json!({"mappingId":mapping.id,"leaseId":lease.lease_id,"ticket":Uuid::new_v4().to_string()}),
+            );
+            let (mut upstream, _) = app.accept().await.unwrap();
+            let (tcp, _) = relay.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            upstream.write_all(b"live stream").await.unwrap();
+            assert_eq!(
+                socket.next().await.unwrap().unwrap().into_data().as_ref(),
+                b"live stream"
+            );
+            if revoke {
+                crate::owner_trust::apply_revocations(
+                    &state,
+                    &[crate::owner_trust::tests::browser_revocation(&owner)],
+                )
+                .unwrap();
+            } else {
+                remove_mapping(&state, &mapping.id).unwrap();
+            }
+            let count = tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                upstream.read(&mut [0; 1]),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert_eq!(
+                count, 0,
+                "revocation/stop must close an already established app connection"
+            );
+            let ended = tokio::time::timeout(std::time::Duration::from_secs(1), socket.next())
+                .await
+                .unwrap();
+            assert!(
+                ended.is_none()
+                    || ended
+                        .as_ref()
+                        .is_some_and(|r| r.is_err() || r.as_ref().unwrap().is_close())
+            );
+        }
+    }
+
     #[tokio::test]
     async fn active_preview_connection_ends_when_lease_expires_without_a_tunnel_heartbeat() {
         let relay = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

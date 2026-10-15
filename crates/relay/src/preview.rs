@@ -1,21 +1,24 @@
 //! Private HTTP previews on a distinct origin per explicitly approved device port.
 //! The ordinary relay API remains encrypted; only this separate data path is plaintext.
 use super::*;
+use axum::body::{Bytes, HttpBody};
 use hyper_util::rt::TokioIo;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
 use tokio_util::sync::CancellationToken;
 
 const COOKIE: &str = "__Host-rc_port_preview";
 const LOCAL_COOKIE: &str = "rc_port_preview";
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 struct Mapping {
     id: String,
     device: String,
     connection: Uuid,
     port: u16,
 }
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 struct Grant {
     mapping: String,
     device: String,
@@ -28,6 +31,7 @@ struct Stream {
     grant: Grant,
     tx: Option<tokio::sync::oneshot::Sender<DuplexStream>>,
     cancel: CancellationToken,
+    closed: CancellationToken,
 }
 #[derive(Default)]
 pub(super) struct Hub {
@@ -36,6 +40,209 @@ pub(super) struct Hub {
     launches: StdMutex<HashMap<String, Grant>>,
     sessions: StdMutex<HashMap<String, Grant>>,
     streams: StdMutex<HashMap<String, Stream>>,
+    idle: StdMutex<IdlePool>,
+}
+
+// Reuse only fully consumed HTTP/1 responses, within the very same capability.
+// The device still watches the lease throughout the lifetime of the raw TCP stream.
+// This needs no wire change: older Supervisors already bridge arbitrary TCP bytes.
+const HTTP_IDLE_TIMEOUT: Duration = Duration::from_secs(10);
+struct HttpClient {
+    sender: hyper::client::conn::http1::SendRequest<Body>,
+    cancel: CancellationToken,
+    closed: CancellationToken,
+    mapping: Mapping,
+    grant: Grant,
+}
+struct IdleClient {
+    client: HttpClient,
+    expires: std::time::Instant,
+}
+struct ClosingClient {
+    device: String,
+    cancel: CancellationToken,
+    closed: CancellationToken,
+}
+#[derive(Default)]
+struct IdlePool {
+    clients: Vec<IdleClient>,
+    closing: Vec<ClosingClient>,
+    reaping: bool,
+}
+impl IdlePool {
+    fn discard(&mut self, client: HttpClient) {
+        // Dropping the sender begins asynchronous bridge shutdown. Keep only
+        // its routing/completion tokens so full-capacity requests can await the
+        // real slot release after pruning, rejection by an idle limit or eviction.
+        self.closing
+            .retain(|c| !c.closed.is_cancelled() && !c.cancel.is_cancelled());
+        if !client.closed.is_cancelled() && !client.cancel.is_cancelled() {
+            self.closing.push(ClosingClient {
+                device: client.mapping.device.clone(),
+                cancel: client.cancel.clone(),
+                closed: client.closed.clone(),
+            });
+        }
+    }
+    fn prune(&mut self) {
+        self.closing
+            .retain(|c| !c.closed.is_cancelled() && !c.cancel.is_cancelled());
+        let now = std::time::Instant::now();
+        let mut index = 0;
+        while index < self.clients.len() {
+            let c = &self.clients[index];
+            if c.expires <= now
+                || c.client.grant.expires <= now
+                || c.client.cancel.is_cancelled()
+                || c.client.closed.is_cancelled()
+                || c.client.sender.is_closed()
+            {
+                let client = self.clients.swap_remove(index).client;
+                self.discard(client);
+            } else {
+                index += 1;
+            }
+        }
+    }
+}
+
+async fn http_client(
+    state: &Arc<AppState>,
+    mapping: &Mapping,
+    grant: &Grant,
+    reuse: bool,
+) -> Result<HttpClient> {
+    if reuse {
+        loop {
+            let idle = {
+                let mut pool = state.preview.idle.lock().unwrap();
+                pool.prune();
+                pool.clients
+                    .iter()
+                    .rposition(|c| c.client.mapping == *mapping && c.client.grant == *grant)
+                    .map(|i| pool.clients.swap_remove(i).client)
+            };
+            let Some(client) = idle else { break };
+            // A peer may close an idle keepalive socket. Fall back before sending
+            // anything; never retry a request after it may have reached the app.
+            if client.sender.is_ready() && !client.cancel.is_cancelled() {
+                return Ok(client);
+            }
+            state.preview.idle.lock().unwrap().discard(client);
+        }
+    }
+    let (stream, cancel, released) = open_stream(state, mapping, grant).await?;
+    let (sender, connection) =
+        hyper::client::conn::http1::handshake::<_, Body>(TokioIo::new(stream)).await?;
+    let closed = cancel.clone();
+    tokio::spawn(async move {
+        tokio::select! {
+            _ = connection.with_upgrades() => {},
+            _ = closed.cancelled() => {},
+        }
+    });
+    Ok(HttpClient {
+        sender,
+        cancel,
+        closed: released,
+        mapping: mapping.clone(),
+        grant: grant.clone(),
+    })
+}
+
+fn return_http_client(state: &Arc<AppState>, client: HttpClient) {
+    let mut pool = state.preview.idle.lock().unwrap();
+    pool.prune();
+    if client.cancel.is_cancelled()
+        || client.closed.is_cancelled()
+        || client.sender.is_closed()
+        || client.grant.expires <= std::time::Instant::now()
+    {
+        pool.discard(client);
+        return;
+    }
+    // Idle sockets still count against the existing active stream limits. Keep
+    // room for concurrent requests and other ports on the same device.
+    if pool.clients.len() >= 64
+        || pool
+            .clients
+            .iter()
+            .filter(|c| c.client.mapping.device == client.mapping.device)
+            .count()
+            >= 8
+        || pool
+            .clients
+            .iter()
+            .filter(|c| c.client.mapping == client.mapping && c.client.grant == client.grant)
+            .count()
+            >= 2
+    {
+        pool.discard(client);
+        return;
+    }
+    pool.clients.push(IdleClient {
+        client,
+        expires: std::time::Instant::now() + HTTP_IDLE_TIMEOUT,
+    });
+    if !pool.reaping {
+        pool.reaping = true;
+        let weak = Arc::downgrade(state);
+        tokio::spawn(async move {
+            loop {
+                let until = {
+                    let Some(state) = weak.upgrade() else { return };
+                    let mut pool = state.preview.idle.lock().unwrap();
+                    pool.prune();
+                    let Some(until) = pool.clients.iter().map(|c| c.expires).min() else {
+                        pool.reaping = false;
+                        return;
+                    };
+                    until
+                };
+                tokio::time::sleep_until(tokio::time::Instant::from_std(until)).await;
+            }
+        });
+    }
+}
+
+// Preserve frames (including trailers) and streaming/backpressure. Dropping an
+// unfinished/error response drops its sender instead of pooling a busy stream.
+struct HttpResponseBody {
+    body: hyper::body::Incoming,
+    client: Option<HttpClient>,
+    state: Arc<AppState>,
+}
+impl HttpResponseBody {
+    fn complete(&mut self) {
+        if let Some(client) = self.client.take() {
+            return_http_client(&self.state, client);
+        }
+    }
+}
+impl HttpBody for HttpResponseBody {
+    type Data = Bytes;
+    type Error = hyper::Error;
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<hyper::body::Frame<Bytes>, hyper::Error>>> {
+        let frame = Pin::new(&mut self.body).poll_frame(cx);
+        match &frame {
+            Poll::Ready(Some(Err(_))) => {
+                self.client.take();
+            }
+            Poll::Ready(None) => self.complete(),
+            Poll::Ready(Some(Ok(_))) if self.body.is_end_stream() => self.complete(),
+            _ => {}
+        }
+        frame
+    }
+    fn is_end_stream(&self) -> bool {
+        self.body.is_end_stream()
+    }
+    fn size_hint(&self) -> hyper::body::SizeHint {
+        self.body.size_hint()
+    }
 }
 
 impl Hub {
@@ -269,13 +476,16 @@ pub(super) fn update(state: &AppState, device: &str, connection: Uuid, value: &V
         );
     }
     state.preview.streams.lock().unwrap().retain(|_, s| {
-        let live = catalog
-            .get(&s.mapping.id)
-            .is_some_and(|m| m.connection == s.mapping.connection && m.device == s.mapping.device);
+        let live = catalog.get(&s.mapping.id).is_some_and(|m| m == &s.mapping);
         if !live {
             s.cancel.cancel();
         }
         live
+    });
+    state.preview.idle.lock().unwrap().clients.retain(|c| {
+        catalog
+            .get(&c.client.mapping.id)
+            .is_some_and(|m| m == &c.client.mapping)
     });
 }
 
@@ -288,6 +498,11 @@ pub(super) fn disconnected(state: &AppState, device: &str, connection: Uuid) {
             s.cancel.cancel();
         }
         live
+    });
+    state.preview.idle.lock().unwrap().clients.retain(|c| {
+        catalog
+            .get(&c.client.mapping.id)
+            .is_some_and(|m| m == &c.client.mapping)
     });
 }
 
@@ -485,19 +700,15 @@ pub(super) async fn middleware(
     if !cookies.is_empty() {
         headers.insert(header::COOKIE, cookies.parse().unwrap());
     }
-    headers.insert(
-        header::CONNECTION,
-        if websocket { "upgrade" } else { "close" }.parse().unwrap(),
-    );
+    if websocket {
+        headers.insert(header::CONNECTION, "upgrade".parse().unwrap());
+    }
     let result = async {
-        let stream = open_stream(&state, &mapping, &grant).await?;
-        let (mut sender, connection) =
-            hyper::client::conn::http1::handshake::<_, Body>(TokioIo::new(stream)).await?;
-        tokio::spawn(async move {
-            let _ = connection.with_upgrades().await;
-        });
+        // Upgrades own their connection permanently and never enter the HTTP pool.
+        let mut client = http_client(&state, &mapping, &grant, !websocket).await?;
         let mut response =
-            tokio::time::timeout(Duration::from_secs(30), sender.send_request(request)).await??;
+            tokio::time::timeout(Duration::from_secs(30), client.sender.send_request(request))
+                .await??;
         if websocket && response.status() == StatusCode::SWITCHING_PROTOCOLS {
             let upstream_upgrade = hyper::upgrade::on(&mut response);
             tokio::spawn(async move {
@@ -515,7 +726,16 @@ pub(super) async fn middleware(
         let upgraded = websocket && response.status() == StatusCode::SWITCHING_PROTOCOLS;
         strip_hop_headers(response.headers_mut(), upgraded);
         rewrite_response_headers(response.headers_mut(), &origin, mapping.port);
-        Ok::<_, anyhow::Error>(response.map(Body::new))
+        let (parts, body) = response.into_parts();
+        let mut body = HttpResponseBody {
+            body,
+            client: (!websocket).then_some(client),
+            state: state.clone(),
+        };
+        if body.is_end_stream() {
+            body.complete();
+        }
+        Ok::<_, anyhow::Error>(Response::from_parts(parts, Body::new(body)))
     }
     .await;
     result.unwrap_or_else(|error| {
@@ -631,6 +851,7 @@ impl Drop for Pending<'_> {
 struct StreamGuard {
     state: Arc<AppState>,
     ticket: String,
+    closed: CancellationToken,
 }
 impl Drop for StreamGuard {
     fn drop(&mut self) {
@@ -644,35 +865,71 @@ impl Drop for StreamGuard {
         {
             stream.cancel.cancel();
         }
+        self.closed.cancel();
     }
 }
-async fn open_stream(state: &AppState, mapping: &Mapping, grant: &Grant) -> Result<DuplexStream> {
+async fn open_stream(
+    state: &AppState,
+    mapping: &Mapping,
+    grant: &Grant,
+) -> Result<(DuplexStream, CancellationToken, CancellationToken)> {
+    let cancel = CancellationToken::new();
+    let closed = CancellationToken::new();
     let ticket = Uuid::new_v4().to_string();
     let (tx, rx) = tokio::sync::oneshot::channel();
     let pending = Pending {
         hub: &state.preview,
         ticket: ticket.clone(),
     };
-    {
-        let mut streams = state.preview.streams.lock().unwrap();
-        if streams.len() >= 256
-            || streams
+    loop {
+        let released = {
+            let mut streams = state.preview.streams.lock().unwrap();
+            let device_full = streams
                 .values()
                 .filter(|s| s.mapping.device == mapping.device)
                 .count()
-                >= 32
-        {
-            bail!("Too many preview connections");
-        }
-        streams.insert(
-            ticket.clone(),
-            Stream {
-                mapping: mapping.clone(),
-                grant: grant.clone(),
-                tx: Some(tx),
-                cancel: CancellationToken::new(),
-            },
-        );
+                >= 32;
+            if streams.len() < 256 && !device_full {
+                streams.insert(
+                    ticket.clone(),
+                    Stream {
+                        mapping: mapping.clone(),
+                        grant: grant.clone(),
+                        tx: Some(tx),
+                        cancel: cancel.clone(),
+                        closed: closed.clone(),
+                    },
+                );
+                break;
+            }
+            // Idle connections are opportunistic: reclaim the oldest eligible
+            // one before refusing live traffic, including another capability.
+            let mut pool = state.preview.idle.lock().unwrap();
+            pool.prune();
+            let oldest = pool
+                .clients
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| !device_full || c.client.mapping.device == mapping.device)
+                .min_by_key(|(_, c)| c.expires)
+                .map(|(i, _)| i);
+            if let Some(oldest) = oldest {
+                let client = pool.clients.swap_remove(oldest).client;
+                let released = client.closed.clone();
+                pool.discard(client);
+                released
+            } else {
+                pool.closing
+                    .iter()
+                    .find(|c| !device_full || c.device == mapping.device)
+                    .map(|c| c.closed.clone())
+                    .ok_or_else(|| anyhow::anyhow!("Too many preview connections"))?
+            }
+        };
+        // Dropping the idle HTTP sender closes its TCP bridge normally. Wait for
+        // its WS close handshake/guard, so the device can also free its slot.
+        // Never remove a still-running stream just to bypass either limit.
+        tokio::time::timeout(Duration::from_secs(2), released.cancelled()).await?;
     }
     {
         let sockets = state.sockets.read().await;
@@ -686,7 +943,7 @@ async fn open_stream(state: &AppState, mapping: &Mapping, grant: &Grant) -> Resu
     }
     let stream = tokio::time::timeout(Duration::from_secs(10), rx).await??;
     drop(pending);
-    Ok(stream)
+    Ok((stream, cancel, closed))
 }
 
 async fn device_stream(
@@ -714,14 +971,18 @@ async fn device_stream(
             .filter(|s| s.mapping.device == device && Some(s.mapping.connection) == connection)
             .and_then(|s| {
                 s.tx.take()
-                    .map(|tx| (tx, s.cancel.clone(), s.grant.clone()))
+                    .map(|tx| (tx, s.cancel.clone(), s.closed.clone(), s.grant.clone()))
             })
     };
     drop(sockets);
-    let Some((tx, cancel, grant)) = pairing else {
+    let Some((tx, cancel, closed, grant)) = pairing else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let guard = StreamGuard { state, ticket };
+    let guard = StreamGuard {
+        state,
+        ticket,
+        closed,
+    };
     ws.max_message_size(128 * 1024)
         .max_frame_size(128 * 1024)
         .on_upgrade(move |socket| async move {
@@ -894,6 +1155,7 @@ mod tests {
                 grant: grant.clone(),
                 tx: None,
                 cancel: token.clone(),
+                closed: CancellationToken::new(),
             },
         );
         // An older connection's cleanup cannot erase a newer device connection.
@@ -915,11 +1177,13 @@ mod tests {
                 grant,
                 tx: None,
                 cancel: token.clone(),
+                closed: CancellationToken::new(),
             },
         );
         drop(StreamGuard {
             state: state.clone(),
             ticket: "failed-upgrade".into(),
+            closed: CancellationToken::new(),
         });
         assert!(token.is_cancelled());
         assert!(state.preview.streams.lock().unwrap().is_empty());
@@ -1092,6 +1356,875 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    struct HttpFixture {
+        state: Arc<AppState>,
+        dir: PathBuf,
+        mapping: String,
+        base: String,
+        browser: reqwest::Client,
+        opened: Arc<std::sync::atomic::AtomicUsize>,
+        relay: tokio::task::JoinHandle<()>,
+        device: tokio::task::JoinHandle<()>,
+    }
+    impl HttpFixture {
+        fn request(&self, method: Method, path: &str) -> reqwest::RequestBuilder {
+            self.browser
+                .request(method, format!("{}{path}", self.base))
+                .header(
+                    header::HOST,
+                    format!("p-{}.preview.example.test", self.mapping),
+                )
+                .header(header::COOKIE, "__Host-rc_port_preview=test-cookie")
+        }
+        fn opens(&self) -> usize {
+            self.opened.load(std::sync::atomic::Ordering::Relaxed)
+        }
+        fn grant(&self) -> Grant {
+            self.state.preview.sessions.lock().unwrap()["test-cookie"].clone()
+        }
+    }
+    impl Drop for HttpFixture {
+        fn drop(&mut self) {
+            self.relay.abort();
+            self.device.abort();
+            for stream in self.state.preview.streams.lock().unwrap().values() {
+                stream.cancel.cancel();
+            }
+            self.state.preview.idle.lock().unwrap().clients.clear();
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+    async fn http_fixture<F, Fut>(name: &str, delay: Duration, service: F) -> HttpFixture
+    where
+        F: Fn(hyper::Request<hyper::body::Incoming>) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = Result<Response, std::io::Error>> + Send,
+    {
+        let (state, dir, headers, mut rx, mapping) = lease_fixture(name).await;
+        state.preview.sessions.lock().unwrap().insert(
+            "test-cookie".into(),
+            Grant {
+                mapping: mapping.clone(),
+                device: "device".into(),
+                session: extract_session_token(&headers, &TokenQuery::default()).unwrap(),
+                lease: Some("test-lease".into()),
+                expires: std::time::Instant::now() + Duration::from_secs(60),
+            },
+        );
+        let opened = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = opened.clone();
+        let responder = state.clone();
+        let service = Arc::new(service);
+        let device = tokio::spawn(async move {
+            while let Some(frame) = rx.recv().await {
+                let frame: Value = serde_json::from_str(&frame).unwrap();
+                assert_eq!(frame["type"], "preview.open");
+                counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                tokio::time::sleep(delay).await;
+                let (relay, device) = tokio::io::duplex(128 * 1024);
+                let ticket = frame["ticket"].as_str().unwrap().to_owned();
+                let (tx, closed) = {
+                    let mut streams = responder.preview.streams.lock().unwrap();
+                    let stream = streams.get_mut(&ticket).unwrap();
+                    (stream.tx.take().unwrap(), stream.closed.clone())
+                };
+                tx.send(relay).unwrap();
+                let responder = responder.clone();
+                let service = service.clone();
+                tokio::spawn(async move {
+                    let _ = hyper::server::conn::http1::Builder::new()
+                        .serve_connection(
+                            TokioIo::new(device),
+                            hyper::service::service_fn(move |request| {
+                                let service = service.clone();
+                                async move { service(request).await }
+                            }),
+                        )
+                        .with_upgrades()
+                        .await;
+                    // This fixture stands in for the remote app, not the data WS.
+                    // Do not cancel the reader before it drains a short close reply.
+                    responder.preview.streams.lock().unwrap().remove(&ticket);
+                    closed.cancel();
+                });
+            }
+        });
+        let app = Router::new()
+            .fallback(|| async { StatusCode::IM_A_TEAPOT })
+            .layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                middleware,
+            ));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let relay = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        HttpFixture {
+            state,
+            dir,
+            mapping,
+            base,
+            browser: reqwest::Client::new(),
+            opened,
+            relay,
+            device,
+        }
+    }
+
+    #[tokio::test]
+    async fn http_keepalive_reuses_authorized_stream_and_preserves_compressed_bytes() {
+        let fixture = http_fixture(
+            "preview-keepalive",
+            Duration::from_millis(40),
+            |request| async move {
+                assert_eq!(request.headers()[header::ACCEPT_ENCODING], "gzip");
+                Ok(Response::builder()
+                    .header(header::CONTENT_ENCODING, "gzip")
+                    .header(header::CACHE_CONTROL, "max-age=600")
+                    .body(Body::from(vec![0x1f, 0x8b, 0x08, 0x00]))
+                    .unwrap())
+            },
+        )
+        .await;
+        let start = std::time::Instant::now();
+        for index in 0..12 {
+            let response = fixture
+                .request(Method::GET, &format!("/asset-{index}.js"))
+                .header(header::ACCEPT_ENCODING, "gzip")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(response.headers()[header::CONTENT_ENCODING], "gzip");
+            assert_eq!(response.headers()[header::CACHE_CONTROL], "max-age=600");
+            assert_eq!(
+                response.bytes().await.unwrap().as_ref(),
+                &[0x1f, 0x8b, 0x08, 0x00]
+            );
+        }
+        eprintln!(
+            "preview keepalive: requests=12 opens={} modeled_open_delay_ms=40 elapsed_ms={}",
+            fixture.opens(),
+            start.elapsed().as_millis()
+        );
+        assert_eq!(fixture.opens(), 1);
+    }
+
+    #[tokio::test]
+    async fn http_pool_isolates_capabilities_and_rechecks_account_authority() {
+        let fixture = http_fixture("preview-pool-authority", Duration::ZERO, |_| async {
+            Ok(Response::new(Body::from("ok")))
+        })
+        .await;
+        async fn get(f: &HttpFixture) {
+            let response = f.request(Method::GET, "/").send().await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(response.text().await.unwrap(), "ok");
+        }
+        let original = fixture.grant();
+        get(&fixture).await;
+        assert_eq!(fixture.opens(), 1);
+        fixture
+            .state
+            .preview
+            .sessions
+            .lock()
+            .unwrap()
+            .get_mut("test-cookie")
+            .unwrap()
+            .lease = Some("different-lease".into());
+        get(&fixture).await;
+        assert_eq!(fixture.opens(), 2, "leases must not share a connection");
+        fixture
+            .state
+            .preview
+            .sessions
+            .lock()
+            .unwrap()
+            .insert("test-cookie".into(), original.clone());
+        get(&fixture).await;
+        assert_eq!(fixture.opens(), 2);
+        let session = {
+            let conn = fixture.state.store.conn.lock().await;
+            create_session(&conn, &fixture.state.store.session_secret, "owner").unwrap()
+        };
+        fixture
+            .state
+            .preview
+            .sessions
+            .lock()
+            .unwrap()
+            .get_mut("test-cookie")
+            .unwrap()
+            .session = session;
+        get(&fixture).await;
+        assert_eq!(
+            fixture.opens(),
+            3,
+            "account sessions must not share a connection"
+        );
+        let connection = Uuid::new_v4();
+        fixture
+            .state
+            .sockets
+            .write()
+            .await
+            .get_mut("device")
+            .unwrap()
+            .connection_id = connection;
+        update(
+            &fixture.state,
+            "device",
+            connection,
+            &json!([{"id":fixture.mapping,"port":4013}]),
+        );
+        assert!(fixture
+            .state
+            .preview
+            .idle
+            .lock()
+            .unwrap()
+            .clients
+            .is_empty());
+        get(&fixture).await;
+        assert_eq!(
+            fixture.opens(),
+            4,
+            "reconnected devices must not reuse previous sockets"
+        );
+        update(
+            &fixture.state,
+            "device",
+            connection,
+            &json!([{"id":fixture.mapping,"port":4014}]),
+        );
+        assert!(fixture
+            .state
+            .preview
+            .idle
+            .lock()
+            .unwrap()
+            .clients
+            .is_empty());
+        get(&fixture).await;
+        assert_eq!(
+            fixture.opens(),
+            5,
+            "changed target ports must invalidate previous sockets"
+        );
+        let forbidden = fixture
+            .request(Method::POST, "/")
+            .header(header::ORIGIN, "https://other.example.test")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
+        let session = fixture.grant().session;
+        fixture
+            .state
+            .store
+            .conn
+            .lock()
+            .await
+            .execute(
+                "DELETE FROM relay_auth_sessions WHERE token_hash=?1",
+                [security::token_hash(&session)],
+            )
+            .unwrap();
+        assert_eq!(
+            fixture
+                .request(Method::GET, "/")
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            fixture.opens(),
+            5,
+            "logout must not reuse an authenticated idle connection"
+        );
+        fixture
+            .state
+            .preview
+            .sessions
+            .lock()
+            .unwrap()
+            .insert("test-cookie".into(), original);
+        get(&fixture).await;
+        assert_eq!(fixture.opens(), 6);
+        let conn = fixture.state.store.conn.lock().await;
+        conn.execute("UPDATE relay_users SET enabled=0 WHERE id='owner'", [])
+            .unwrap();
+        drop(conn);
+        let revoked = fixture.request(Method::GET, "/").send().await.unwrap();
+        assert_eq!(revoked.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            fixture.opens(),
+            6,
+            "pooled connections cannot bypass account authorization"
+        );
+    }
+
+    #[tokio::test]
+    async fn http_pool_keeps_sse_busy_and_stop_cancels_streaming_and_idle_connections() {
+        let fixture = http_fixture("preview-pool-sse", Duration::ZERO, |request| async move {
+            if request.uri().path() == "/events" {
+                let stream = futures_util::stream::iter([Ok::<_, std::io::Error>(
+                    Bytes::from_static(b"data: ready\n\n"),
+                )])
+                .chain(futures_util::stream::pending());
+                Ok(Response::builder()
+                    .header(header::CONTENT_TYPE, "text/event-stream")
+                    .body(Body::from_stream(stream))
+                    .unwrap())
+            } else {
+                Ok(Response::new(Body::from("ok")))
+            }
+        })
+        .await;
+        let mut events = fixture
+            .request(Method::GET, "/events")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(events.status(), StatusCode::OK);
+        let first = tokio::time::timeout(Duration::from_secs(1), events.chunk())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(first, "data: ready\n\n");
+        assert!(fixture
+            .state
+            .preview
+            .idle
+            .lock()
+            .unwrap()
+            .clients
+            .is_empty());
+        for _ in 0..2 {
+            assert_eq!(
+                fixture
+                    .request(Method::GET, "/")
+                    .send()
+                    .await
+                    .unwrap()
+                    .text()
+                    .await
+                    .unwrap(),
+                "ok"
+            );
+        }
+        assert_eq!(
+            fixture.opens(),
+            2,
+            "the active SSE connection cannot serve another request"
+        );
+        assert_eq!(fixture.state.preview.idle.lock().unwrap().clients.len(), 1);
+        let connection = fixture.state.sockets.read().await["device"].connection_id;
+        update(&fixture.state, "device", connection, &json!([]));
+        assert!(fixture.state.preview.streams.lock().unwrap().is_empty());
+        assert!(fixture
+            .state
+            .preview
+            .idle
+            .lock()
+            .unwrap()
+            .clients
+            .is_empty());
+        let ended = tokio::time::timeout(Duration::from_secs(1), events.chunk())
+            .await
+            .unwrap();
+        assert!(ended.is_err() || ended.unwrap().is_none());
+        assert_eq!(
+            fixture
+                .request(Method::GET, "/")
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::NOT_FOUND
+        );
+    }
+
+    #[tokio::test]
+    async fn http_pool_never_replays_a_post_after_the_application_receives_it() {
+        let posts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = posts.clone();
+        let fixture = http_fixture("preview-pool-no-replay", Duration::ZERO, move |request| {
+            let observed = observed.clone();
+            async move {
+                if request.method() == Method::POST {
+                    let _ = to_bytes(Body::new(request.into_body()), 4096)
+                        .await
+                        .unwrap();
+                    observed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    return Err(std::io::Error::other(
+                        "fixture disconnects after accepting POST",
+                    ));
+                }
+                let mut response = Response::new(Body::from("ok"));
+                if request.uri().path() == "/close" {
+                    response
+                        .headers_mut()
+                        .insert(header::CONNECTION, "close".parse().unwrap());
+                }
+                Ok(response)
+            }
+        })
+        .await;
+        assert_eq!(
+            fixture
+                .request(Method::GET, "/")
+                .send()
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap(),
+            "ok"
+        );
+        let failed = fixture
+            .request(Method::POST, "/mutate")
+            .body("side effect")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(failed.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(posts.load(std::sync::atomic::Ordering::Relaxed), 1);
+        assert_eq!(
+            fixture.opens(),
+            1,
+            "an already sent request must never trigger another open/replay"
+        );
+        assert_eq!(
+            fixture
+                .request(Method::GET, "/close")
+                .send()
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap(),
+            "ok"
+        );
+        assert_eq!(
+            fixture
+                .request(Method::GET, "/")
+                .send()
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap(),
+            "ok"
+        );
+        assert_eq!(
+            fixture.opens(),
+            3,
+            "an upstream Connection: close must establish a fresh stream"
+        );
+    }
+
+    #[tokio::test]
+    async fn websocket_upgrade_uses_a_dedicated_stream_and_preserves_http_keepalive() {
+        use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as ClientMessage};
+        let fixture = http_fixture(
+            "preview-pool-websocket",
+            Duration::ZERO,
+            |mut request| async move {
+                if request.uri().path() != "/ws" {
+                    return Ok(Response::new(Body::from("ok")));
+                }
+                assert_eq!(request.headers()[header::ORIGIN], "http://127.0.0.1:4013");
+                let accept = tokio_tungstenite::tungstenite::handshake::derive_accept_key(
+                    request.headers()["sec-websocket-key"].as_bytes(),
+                );
+                let upgrade = hyper::upgrade::on(&mut request);
+                tokio::spawn(async move {
+                    let mut socket = tokio_tungstenite::WebSocketStream::from_raw_socket(
+                        TokioIo::new(upgrade.await.unwrap()),
+                        tokio_tungstenite::tungstenite::protocol::Role::Server,
+                        None,
+                    )
+                    .await;
+                    while let Some(Ok(message)) = socket.next().await {
+                        if message.is_close() {
+                            break;
+                        }
+                        if socket.send(message).await.is_err() {
+                            break;
+                        }
+                    }
+                });
+                Ok(Response::builder()
+                    .status(StatusCode::SWITCHING_PROTOCOLS)
+                    .header(header::UPGRADE, "websocket")
+                    .header(header::CONNECTION, "upgrade")
+                    .header("sec-websocket-accept", accept)
+                    .body(Body::empty())
+                    .unwrap())
+            },
+        )
+        .await;
+        assert_eq!(
+            fixture
+                .request(Method::GET, "/")
+                .send()
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap(),
+            "ok"
+        );
+        let mut request = format!("{}/ws", fixture.base.replacen("http:", "ws:", 1))
+            .into_client_request()
+            .unwrap();
+        request.headers_mut().insert(
+            header::HOST,
+            format!("p-{}.preview.example.test", fixture.mapping)
+                .parse()
+                .unwrap(),
+        );
+        request.headers_mut().insert(
+            header::COOKIE,
+            "__Host-rc_port_preview=test-cookie".parse().unwrap(),
+        );
+        request.headers_mut().insert(
+            header::ORIGIN,
+            format!("https://p-{}.preview.example.test", fixture.mapping)
+                .parse()
+                .unwrap(),
+        );
+        let (mut socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
+        socket
+            .send(ClientMessage::Text("interactive echo".into()))
+            .await
+            .unwrap();
+        let echo = tokio::time::timeout(Duration::from_secs(1), socket.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(echo.into_text().unwrap(), "interactive echo");
+        assert_eq!(
+            fixture
+                .request(Method::GET, "/")
+                .send()
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap(),
+            "ok"
+        );
+        assert_eq!(fixture.opens(), 2);
+        assert_eq!(fixture.state.preview.idle.lock().unwrap().clients.len(), 1);
+        let _ = socket.close(None).await;
+    }
+
+    #[tokio::test]
+    async fn http_pool_bounds_idle_sockets_and_reaps_them_without_new_traffic() {
+        let barrier = Arc::new(tokio::sync::Barrier::new(4));
+        let fixture = http_fixture("preview-pool-bounds", Duration::ZERO, move |request| {
+            let barrier = barrier.clone();
+            async move {
+                if request.uri().path() == "/parallel" {
+                    barrier.wait().await;
+                }
+                Ok(Response::new(Body::from("ok")))
+            }
+        })
+        .await;
+        let responses = futures_util::future::join_all((0..4).map(|_| async {
+            fixture
+                .request(Method::GET, "/parallel")
+                .send()
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap()
+        }))
+        .await;
+        assert!(responses.iter().all(|s| s == "ok"));
+        assert_eq!(fixture.opens(), 4);
+        assert_eq!(
+            fixture.state.preview.idle.lock().unwrap().clients.len(),
+            2,
+            "only two idle streams per capability"
+        );
+        for i in 0..9 {
+            fixture
+                .state
+                .preview
+                .sessions
+                .lock()
+                .unwrap()
+                .get_mut("test-cookie")
+                .unwrap()
+                .lease = Some(format!("lease-{i}"));
+            assert_eq!(
+                fixture
+                    .request(Method::GET, "/")
+                    .send()
+                    .await
+                    .unwrap()
+                    .text()
+                    .await
+                    .unwrap(),
+                "ok"
+            );
+        }
+        assert_eq!(
+            fixture.state.preview.idle.lock().unwrap().clients.len(),
+            8,
+            "idle streams leave 24 of 32 device slots available"
+        );
+        let start = std::time::Instant::now();
+        tokio::time::timeout(HTTP_IDLE_TIMEOUT + Duration::from_secs(2), async {
+            loop {
+                if fixture
+                    .state
+                    .preview
+                    .idle
+                    .lock()
+                    .unwrap()
+                    .clients
+                    .is_empty()
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        eprintln!(
+            "preview idle reaper: evicted=8 elapsed_ms={}",
+            start.elapsed().as_millis()
+        );
+    }
+
+    #[tokio::test]
+    async fn device_websocket_close_releases_stream_slots_without_two_second_stalls() {
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+        let (state, dir, headers, mut rx, mapping_id) =
+            lease_fixture("preview-real-ws-close").await;
+        let device_token = "fixture-preview-device-token";
+        state
+            .store
+            .conn
+            .lock()
+            .await
+            .execute(
+                "UPDATE relay_devices SET token_hash=?1 WHERE id='device'",
+                [hash_device_token(device_token)],
+            )
+            .unwrap();
+        let mapping = state.preview.mappings.lock().unwrap()[&mapping_id].clone();
+        let grant = Grant {
+            mapping: mapping_id,
+            device: "device".into(),
+            session: extract_session_token(&headers, &TokenQuery::default()).unwrap(),
+            lease: None,
+            expires: std::time::Instant::now() + Duration::from_secs(60),
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("ws://{}", listener.local_addr().unwrap());
+        let app = routes().with_state(state.clone());
+        let relay = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let start = std::time::Instant::now();
+        for _ in 0..40 {
+            let caller = state.clone();
+            let mapping = mapping.clone();
+            let grant = grant.clone();
+            let opened =
+                tokio::spawn(async move { open_stream(&caller, &mapping, &grant).await.unwrap() });
+            let frame: Value = serde_json::from_str(&rx.recv().await.unwrap()).unwrap();
+            let mut request = format!(
+                "{base}/supervisor/port-stream/{}",
+                frame["ticket"].as_str().unwrap()
+            )
+            .into_client_request()
+            .unwrap();
+            request.headers_mut().insert(
+                header::AUTHORIZATION,
+                format!("Bearer {device_token}").parse().unwrap(),
+            );
+            let (mut device, _) = tokio_tungstenite::connect_async(request).await.unwrap();
+            let (mut io, _, _) = opened.await.unwrap();
+            // Exercise real binary bridging and its close handshake, not a mocked slot.
+            io.write_all(b"request").await.unwrap();
+            assert_eq!(
+                device.next().await.unwrap().unwrap().into_data().as_ref(),
+                b"request"
+            );
+            device
+                .send(tokio_tungstenite::tungstenite::Message::Binary(
+                    b"reply".to_vec().into(),
+                ))
+                .await
+                .unwrap();
+            let mut reply = [0; 5];
+            io.read_exact(&mut reply).await.unwrap();
+            assert_eq!(&reply, b"reply");
+            drop(io);
+            assert!(device.next().await.unwrap().unwrap().is_close());
+            device.flush().await.unwrap();
+            tokio::time::timeout(Duration::from_secs(1), async {
+                while !state.preview.streams.lock().unwrap().is_empty() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+        }
+        eprintln!(
+            "preview real WS close: streams=40 remaining={} elapsed_ms={}",
+            state.preview.streams.lock().unwrap().len(),
+            start.elapsed().as_millis()
+        );
+        relay.abort();
+        drop(state);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn http_pool_evicts_idle_from_another_lease_before_refusing_a_full_device() {
+        for expired in [false, true] {
+            let fixture = http_fixture("preview-pool-eviction", Duration::ZERO, |_| async {
+                Ok(Response::new(Body::from("ok")))
+            })
+            .await;
+            assert_eq!(
+                fixture
+                    .request(Method::GET, "/")
+                    .send()
+                    .await
+                    .unwrap()
+                    .text()
+                    .await
+                    .unwrap(),
+                "ok"
+            );
+            let mapping = fixture.state.preview.mappings.lock().unwrap()[&fixture.mapping].clone();
+            let grant = fixture.grant();
+            let idle_closed = fixture.state.preview.idle.lock().unwrap().clients[0]
+                .client
+                .closed
+                .clone();
+            if expired {
+                fixture.state.preview.idle.lock().unwrap().clients[0].expires =
+                    std::time::Instant::now() - Duration::from_secs(1);
+            }
+            let busy = CancellationToken::new();
+            {
+                let mut streams = fixture.state.preview.streams.lock().unwrap();
+                for i in 0..31 {
+                    streams.insert(
+                        format!("busy-{i}"),
+                        Stream {
+                            mapping: mapping.clone(),
+                            grant: grant.clone(),
+                            tx: None,
+                            cancel: busy.clone(),
+                            closed: CancellationToken::new(),
+                        },
+                    );
+                }
+                assert_eq!(streams.len(), 32);
+            }
+            fixture
+                .state
+                .preview
+                .sessions
+                .lock()
+                .unwrap()
+                .get_mut("test-cookie")
+                .unwrap()
+                .lease = Some("new-lease".into());
+            let response = tokio::time::timeout(
+                Duration::from_secs(1),
+                fixture.request(Method::GET, "/").send(),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(response.text().await.unwrap(), "ok");
+            assert_eq!(fixture.opens(), 2);
+            assert!(
+                idle_closed.is_cancelled(),
+                "previous capability's idle connection must finish closing first"
+            );
+            assert!(
+                !busy.is_cancelled(),
+                "active traffic must never be preempted"
+            );
+            assert_eq!(fixture.state.preview.streams.lock().unwrap().len(), 32);
+        }
+    }
+
+    #[tokio::test]
+    async fn dropping_an_unfinished_response_discards_its_http_connection() {
+        let fixture = http_fixture("preview-pool-drop", Duration::ZERO, |request| async move {
+            if request.uri().path() == "/stream" {
+                let stream = futures_util::stream::iter([Ok::<_, std::io::Error>(
+                    Bytes::from_static(b"first chunk"),
+                )])
+                .chain(futures_util::stream::pending());
+                Ok(Response::new(Body::from_stream(stream)))
+            } else {
+                Ok(Response::new(Body::from("ok")))
+            }
+        })
+        .await;
+        let mut response = fixture
+            .request(Method::GET, "/stream")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.chunk().await.unwrap().unwrap(), "first chunk");
+        assert!(fixture
+            .state
+            .preview
+            .idle
+            .lock()
+            .unwrap()
+            .clients
+            .is_empty());
+        drop(response);
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !fixture.state.preview.streams.lock().unwrap().is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(fixture
+            .state
+            .preview
+            .idle
+            .lock()
+            .unwrap()
+            .clients
+            .is_empty());
+        assert_eq!(
+            fixture
+                .request(Method::GET, "/")
+                .send()
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap(),
+            "ok"
+        );
+        assert_eq!(fixture.opens(), 2);
+    }
+
     #[tokio::test]
     async fn documentation_preview_redirect_and_forwarding_strip_lease_parameters() {
         let (state, dir, headers, mut rx, mapping) = lease_fixture("doc-preview-lease-query").await;
@@ -1198,7 +2331,8 @@ mod tests {
             *observed.lock().unwrap(),
             vec!["/work?app=a%2Fb&app=two&flag".to_owned()]
         );
-        upstream.await.unwrap();
+        // The upstream now stays alive for subsequent authorized HTTP requests.
+        upstream.abort();
         relay.abort();
         drop(state);
         let _ = std::fs::remove_dir_all(dir);

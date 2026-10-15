@@ -71,7 +71,7 @@ wildcard origin certificate or change the zone's SSL mode.
 
 On the Relay host, Nginx Proxy Manager runs with host networking. Its mounted
 `/opt/nginx-proxy-manager/data/nginx/custom/http.conf` includes
-`/data/nginx/custom/pockymoe-preview.conf`. That separate file only matches
+`/data/nginx/custom/remote-codex-preview.conf`. That separate file only matches
 `p-<32 lowercase hex digits>.lnz-study.com`, preserving unrelated wildcard
 domains and existing NPM-managed services:
 
@@ -162,13 +162,54 @@ cancel active tunnels. A copied address does not grant another user access.
 Long-lived connections recheck session validity every 15 seconds and close after
 logout, account disablement, session expiry or ownership revocation.
 
-Each HTTP connection uses a separate bounded binary WebSocket; HTTP bodies are
-streamed with backpressure rather than buffered onto the chat control channel.
-WebSocket upgrades and SSE are supported. There are at most 32 enabled mappings
-per device, 32 simultaneous preview connections per device and 256 per Relay.
+Ordinary HTTP requests reuse a bounded pool of device data connections after the
+previous response has been completely consumed. A connection belongs to one
+mapping, device connection, account session and lease; it is never shared across
+those authorization boundaries. Each request still checks the account session
+and device ownership. Idle connections expire after 10 seconds, with at most
+two per capability, eight per device and 64 per Relay. Capacity pressure reclaims
+idle connections before refusing new traffic; it never preempts active traffic.
+Stop/disconnect cancels both active and idle connections. This uses the existing
+raw TCP bridge and does not require a new device wire protocol.
+
+HTTP bodies stream with backpressure over binary WebSockets rather than through
+the chat control channel. Unfinished responses are not returned to the idle
+pool. WebSocket upgrades use dedicated connections; SSE remains streamed.
+There are at most 32 enabled mappings per device, 32 simultaneous preview
+connections per device and 256 per Relay.
 Connecting a data channel has a 10-second deadline; response headers have a
 30-second deadline. A successful streaming body/WebSocket can continue beyond
 the ordinary JSON API response deadline.
+
+### Opening and latency
+
+CLI links with a reusable preview lease use a small Web entry point to exchange
+the signed-in account session for the preview cookie. They do not need to load
+the chat workbench, unlock the account vault or register a browser just to open
+that already authorized port. Missing/expired leases and unsuccessful exchanges
+fall back to the full sign-in/authorization flow. The Relay still verifies the
+account and device ownership; the device still enforces its lease.
+
+Measure first-time authorization separately from application requests. Cold
+access includes Web loading, an authenticated exchange and a preview-origin
+redirect. A new data connection also includes the device/Relay connection
+handshake. Warm HTTP keepalive avoids that handshake for subsequent requests;
+upstreams which explicitly close their connection still require a new one.
+The device data socket and local application socket disable Nagle to avoid
+delaying small interactive writes. Upstream response generation, device upload
+speed and the network route remain part of the latency. Application compression
+headers are preserved. Do not enable shared caching or bypass per-request
+authorization to improve speed.
+
+For a reproducible local check, build `pockymoe` and the static Web, then run
+`scripts/port-preview-benchmark.spec.ts` with
+`--config=scripts/port-preview-benchmark.config.ts --project=desktop-chromium`.
+Set `E2E_SECURITY_BINARY` and `E2E_PREVIEW_WEB_DIST` to those artifacts. The test
+starts disposable accounts, a Relay, a Supervisor and an application; it measures
+authorization, HTTP resources, SSE and WebSocket interactions at configurable
+device/Relay delays. It does not inspect production traffic. Its delay proxy
+models application bytes only, with loopback TCP and no TLS, so its timings are
+not a prediction of a particular user's network.
 
 ## Bound devices
 
