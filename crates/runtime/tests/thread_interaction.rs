@@ -1378,6 +1378,15 @@ async fn transcript_summary_activity_counts_only_deferred_operations() {
     for (key, expected) in expected_counts.as_object().unwrap() {
         assert_eq!(activity.get(key), Some(expected), "wrong count for {key}");
     }
+    // Every path of a multi-file patch is listed; its line counts stay with the first.
+    assert_eq!(
+        activity.get("files"),
+        Some(&json!([
+            {"path":"src/a.rs","itemId":"edit-1","addedLines":64,"removedLines":3},
+            {"path":"src/b.rs","itemId":"edit-1","addedLines":0,"removedLines":0},
+            {"path":"src/c.rs","itemId":"edit-2","addedLines":2,"removedLines":0},
+        ]))
+    );
     let conversation = summary
         .turns
         .iter()
