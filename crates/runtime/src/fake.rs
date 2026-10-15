@@ -347,6 +347,19 @@ impl AgentRuntime for FakeRuntime {
         if input.hidden {
             return Ok(vec![]);
         }
+        // An opt-in lab fixture exercises the same per-thread CLI environment
+        // that an ACP harness receives. No identity is written to test state.
+        if let Some(driver) = std::env::var_os("POCKYMOE_E2E_FAKE_CLI_DRIVER") {
+            let mut command = tokio::process::Command::new(driver);
+            command
+                .envs(crate::interaction::launch_env())
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            let child = command.spawn()?;
+            // The fixture is a persistent harness peer; it owns its job loop.
+            drop(child);
+        }
         self.active
             .lock()
             .unwrap()
