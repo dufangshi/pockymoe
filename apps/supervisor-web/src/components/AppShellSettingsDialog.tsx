@@ -3,6 +3,7 @@ import { LanguageSwitcher } from '@pockymoe/thread-ui/i18n';
 import { FormDialog } from './FormDialog';
 import { useFontSize } from '../lib/fontSize';
 import { RuntimeManagement } from './RuntimeManagement';
+import { LocalPasscodeSettings } from './LocalPasscodeSettings';
 import { UpstreamsSettings } from './UpstreamsSettings';
 import { HarnessResourceSettings } from './HarnessResourceSettings';
 import { ModelPricingSettings } from './ModelPricingSettings';
@@ -1031,6 +1032,7 @@ export function AppShellSettingsDialog({
           )}
           {section === 'upstreams' && <UpstreamsSettings />}
           {section === 'resources' && <HarnessResourceSettings />}
+          {section === 'device' && <LocalPasscodeSettings />}
           {(section === 'device' || section === 'harnesses') && (
             <RuntimeManagement view={section} />
           )}

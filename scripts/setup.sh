@@ -7,8 +7,10 @@ umask 077
 relay_url=''
 setup_token=''
 setup_code=''
-setup_port=8787
+setup_port=''
 setup_reset_database=''
+setup_local=''
+setup_lan=''
 setup_web_origin=${POCKYMOE_WEB_ORIGIN:-}
 setup_account_key=${POCKYMOE_ACCOUNT_KEY:-}
 setup_enroll=${POCKYMOE_ENROLL_SECRET:-}
@@ -23,14 +25,27 @@ while [ "$#" -gt 0 ]; do
     --code) setup_code=${2:?Missing setup code}; shift 2 ;;
     --port) setup_port=${2:?Missing port}; shift 2 ;;
     --reset-database) setup_reset_database=1; shift ;;
-    *) echo "Usage: setup.sh --relay URL (--token TOKEN | --code CODE) [--port PORT] [--web-origin URL] [--account-key KEY --enroll-stdin] [--reset-database] (or POCKYMOE_ENROLL_SECRET environment)" >&2; exit 1 ;;
+    --local) setup_local=1; shift ;;
+    --lan) setup_lan=1; shift ;;
+    --no-lan) setup_lan=0; shift ;;
+    *) echo "Usage: setup.sh [--local] [--lan | --no-lan] [--port PORT] [--reset-database]" >&2
+       echo "   or: setup.sh --relay URL (--token TOKEN | --code CODE) [--port PORT] [--web-origin URL] [--account-key KEY --enroll-stdin] [--reset-database] (or POCKYMOE_ENROLL_SECRET environment)" >&2; exit 1 ;;
   esac
 done
-[ -n "$relay_url" ] && { [ -n "$setup_token" ] || [ -n "$setup_code" ]; } || { echo 'Copy a setup command from the Devices page.' >&2; exit 1; }
-[ -z "$setup_token" ] || [ -z "$setup_code" ] || { echo 'Choose either a device token or a setup code.' >&2; exit 1; }
-{ [ -z "$setup_account_key" ] && [ -z "$setup_enroll" ]; } || { [ -n "$setup_account_key" ] && [ -n "$setup_enroll" ]; } || { echo 'Provide --account-key and enrollment through POCKYMOE_ENROLL_SECRET or --enroll-stdin.' >&2; exit 1; }
-case "$relay_url" in https://*|http://localhost:*|http://127.0.0.1:*) ;; *) echo 'Relay must use HTTPS.' >&2; exit 1 ;; esac
-case "$setup_port" in *[!0-9]*|'') echo 'Invalid port' >&2; exit 1 ;; esac
+# Without relay credentials this installs Pockymoe for this computer (local mode).
+if [ -z "$relay_url" ] && [ -z "$setup_token" ] && [ -z "$setup_code" ]; then setup_local=1; fi
+if [ -n "$setup_local" ]; then
+  [ -z "$relay_url$setup_token$setup_code$setup_account_key$setup_enroll" ] || { echo 'A local install takes no relay, token, code or account key.' >&2; exit 1; }
+  setup_web_origin=''
+  unset POCKYMOE_WEB_ORIGIN POCKYMOE_ACCOUNT_KEY
+else
+  [ -z "$setup_lan" ] || { echo '--lan and --no-lan are for a local install.' >&2; exit 1; }
+  [ -n "$relay_url" ] && { [ -n "$setup_token" ] || [ -n "$setup_code" ]; } || { echo 'Copy a setup command from the Devices page.' >&2; exit 1; }
+  [ -z "$setup_token" ] || [ -z "$setup_code" ] || { echo 'Choose either a device token or a setup code.' >&2; exit 1; }
+  { [ -z "$setup_account_key" ] && [ -z "$setup_enroll" ]; } || { [ -n "$setup_account_key" ] && [ -n "$setup_enroll" ]; } || { echo 'Provide --account-key and enrollment through POCKYMOE_ENROLL_SECRET or --enroll-stdin.' >&2; exit 1; }
+  case "$relay_url" in https://*|http://localhost:*|http://127.0.0.1:*) ;; *) echo 'Relay must use HTTPS.' >&2; exit 1 ;; esac
+fi
+case "$setup_port" in '') ;; *[!0-9]*) echo 'Invalid port' >&2; exit 1 ;; esac
 download() {
   if command -v curl >/dev/null 2>&1; then curl --fail --show-error --location --progress-bar --retry 2 --connect-timeout 20 --max-time 300 --speed-time 30 --speed-limit 1024 "$1" -o "$2"
   elif command -v wget >/dev/null 2>&1; then wget --progress=bar:force --timeout=30 --tries=3 "$1" -O "$2"
@@ -89,13 +104,14 @@ fi
 if [ -n "$setup_account_key" ]; then
   export POCKYMOE_ACCOUNT_KEY="$setup_account_key" POCKYMOE_ENROLL_SECRET="$setup_enroll"
 fi
-if [ -n "$setup_reset_database" ]; then
-  set -- --reset-database
+set --
+[ -z "$setup_reset_database" ] || set -- "$@" --reset-database
+if [ -n "$setup_local" ]; then
+  [ -z "$setup_port" ] || set -- "$@" --port "$setup_port"
+  case "$setup_lan" in 1) set -- "$@" --lan ;; 0) set -- "$@" --no-lan ;; esac
+  "$setup_tmp/pockymoe" setup --local "$@"
+elif [ -n "$setup_token" ]; then
+  "$setup_tmp/pockymoe" setup --relay "$relay_url" --token "$setup_token" --port "${setup_port:-8787}" "$@"
 else
-  set --
-fi
-if [ -n "$setup_token" ]; then
-  "$setup_tmp/pockymoe" setup --relay "$relay_url" --token "$setup_token" --port "$setup_port" "$@"
-else
-  "$setup_tmp/pockymoe" setup --relay "$relay_url" --code "$setup_code" --port "$setup_port" "$@"
+  "$setup_tmp/pockymoe" setup --relay "$relay_url" --code "$setup_code" --port "${setup_port:-8787}" "$@"
 fi

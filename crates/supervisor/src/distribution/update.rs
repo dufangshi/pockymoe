@@ -348,7 +348,7 @@ pub async fn run_worker(path: PathBuf) -> Result<()> {
             "Supervisor changed or a turn started during update preparation"
         );
         if let Some(manager) = &plan.context.manager {
-            service::manage(manager, "stop")?;
+            service::manage(manager, "stop", &plan.context.config)?;
         } else {
             service::stop(plan.context.pid)?;
         }
@@ -394,7 +394,7 @@ pub async fn run_worker(path: PathBuf) -> Result<()> {
                 &candidate.executable,
                 &["supervisor".into()],
                 &env,
-                &service::log_path(),
+                &service::log_path(&plan.context.config),
             )?;
         }
         set_status(&plan, "verifying", json!({"runningVersion":plan.version}))?;
@@ -426,7 +426,7 @@ pub async fn run_worker(path: PathBuf) -> Result<()> {
                 }
                 if stopped && !service::alive(plan.context.pid) {
                     if let Some(manager) = &plan.context.manager {
-                        service::manage(manager, "start")?;
+                        service::manage(manager, "start", &plan.context.config)?;
                     } else if let Some(previous) = &previous {
                         service::start(previous, &plan.context.config, None)?;
                     } else {
@@ -442,7 +442,7 @@ pub async fn run_worker(path: PathBuf) -> Result<()> {
                             }
                             .into()],
                             &env,
-                            &service::log_path(),
+                            &service::log_path(&plan.context.config),
                         )?;
                     }
                 }

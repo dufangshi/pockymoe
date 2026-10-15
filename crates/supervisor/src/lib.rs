@@ -9,6 +9,8 @@ mod host_policy;
 mod http;
 mod interaction;
 mod linked_files;
+#[cfg(test)]
+mod local_passcode_tests;
 mod management;
 mod owner_trust;
 mod preview_cli;

@@ -358,6 +358,14 @@ mod tests {
 }
 
 #[derive(Subcommand)]
+enum PasscodeAction {
+    /// Show whether browsers need the passcode.
+    Status,
+    /// Remove the passcode so browsers open without it.
+    Off,
+}
+
+#[derive(Subcommand)]
 enum Commands {
     /// Bind one Treer Agent to a hub thread and keep its interface registered.
     Attach(attach::Options),
@@ -485,8 +493,17 @@ More: pockymoe guide tasks"#
     },
     /// Install this device from the official GitHub runtime release.
     Setup {
-        #[arg(long)]
-        relay: String,
+        /// Install for this computer (and optionally its network) without a relay.
+        #[arg(long, conflicts_with_all = ["relay", "token", "code"])]
+        local: bool,
+        /// With --local: let other devices on the network open Pockymoe.
+        #[arg(long, requires = "local", conflicts_with = "no_lan")]
+        lan: bool,
+        /// With --local: only this computer can open Pockymoe (no question asked).
+        #[arg(long, requires = "local")]
+        no_lan: bool,
+        #[arg(long, required_unless_present = "local")]
+        relay: Option<String>,
         /// Trusted Web origin saved locally for account enrollment.
         #[arg(long, env = "POCKYMOE_WEB_ORIGIN")]
         web_origin: Option<String>,
@@ -495,16 +512,22 @@ More: pockymoe guide tasks"#
         /// Read the enrollment secret from stdin instead of POCKYMOE_ENROLL_SECRET.
         #[arg(long, requires = "account_key")]
         enroll_stdin: bool,
-        #[arg(long, conflicts_with = "code", required_unless_present = "code")]
+        #[arg(long, conflicts_with = "code", required_unless_present_any = ["code", "local"])]
         token: Option<String>,
         #[arg(long, conflicts_with = "token")]
         code: Option<String>,
-        #[arg(long, default_value_t = 8787, value_parser = clap::value_parser!(u16).range(1..))]
-        port: u16,
+        /// Defaults to 8787 (with --local: 8787 or the next free port).
+        #[arg(long, value_parser = clap::value_parser!(u16).range(1..))]
+        port: Option<u16>,
         /// If the existing device database cannot be upgraded, move it aside
         /// (the old file is kept) instead of asking.
         #[arg(long)]
         reset_database: bool,
+    },
+    /// Check or turn off the local-mode access passcode (for a forgotten one).
+    Passcode {
+        #[command(subcommand)]
+        action: PasscodeAction,
     },
     /// Run a native device using its saved private configuration.
     DeviceRun {
@@ -835,6 +858,52 @@ async fn run() -> Result<()> {
             }
         }
         Commands::Setup {
+            local: true,
+            lan,
+            no_lan,
+            port,
+            reset_database,
+            account_key,
+            web_origin,
+            ..
+        } => {
+            anyhow::ensure!(
+                account_key.is_none() && web_origin.is_none(),
+                "A local install is not bound to a relay account; omit --account-key and --web-origin"
+            );
+            pockymoe_supervisor::distribution::setup_local(
+                pockymoe_supervisor::distribution::LocalSetupOptions {
+                    port,
+                    lan: if lan {
+                        Some(true)
+                    } else if no_lan {
+                        Some(false)
+                    } else {
+                        None
+                    },
+                    reset_database,
+                },
+            )
+            .await?;
+        }
+        Commands::Passcode { action } => {
+            let operation = match action {
+                PasscodeAction::Status => "passcodeStatus",
+                PasscodeAction::Off => "passcodeOff",
+            };
+            let result = threads::Client::new(cli.connection)?
+                .request(serde_json::json!({ "operation": operation }))
+                .await?;
+            println!(
+                "{}",
+                if result["passcode"] == true {
+                    "Browsers need the passcode."
+                } else {
+                    "No passcode: browsers open Pockymoe directly."
+                }
+            );
+        }
+        Commands::Setup {
             relay,
             web_origin,
             account_key,
@@ -843,7 +912,11 @@ async fn run() -> Result<()> {
             code,
             port,
             reset_database,
+            ..
         } => {
+            let relay =
+                anyhow::Context::context(relay, "Provide --relay, or --local for a local install")?;
+            let port = port.unwrap_or(8787);
             let enroll = enrollment_secret(
                 account_key.is_some(),
                 enroll_stdin,

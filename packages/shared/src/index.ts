@@ -110,6 +110,8 @@ export interface AuthSessionDto {
   expiresAt: string | null;
   mode: 'local' | 'server' | 'relay';
   authRequired: boolean;
+  /** Local mode with a passcode: sign in with the passcode alone. */
+  passcode?: boolean;
 }
 
 export interface AuthLoginResultDto {

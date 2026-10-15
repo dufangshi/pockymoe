@@ -209,6 +209,10 @@ pub(crate) fn router_with_treer(state: AppState, hub: Option<Arc<crate::treer::H
         .route("/api/auth/session", get(auth_session))
         .route("/api/auth/login", post(auth_login))
         .route("/api/auth/logout", post(auth_logout))
+        .route(
+            "/api/auth/passcode",
+            put(auth_set_passcode).delete(auth_remove_passcode),
+        )
         .route("/api/agent-runtimes", get(agent_runtimes))
         .route("/api/agent-runtimes/{provider}/status", get(agent_status))
         .route("/api/agent-runtimes/{provider}/models", get(agent_models))
@@ -494,6 +498,8 @@ fn configured_web_dist() -> Option<PathBuf> {
             let candidate = PathBuf::from("apps/supervisor-web/dist");
             candidate.join("index.html").is_file().then_some(candidate)
         })
+        // `pockymoe start` from an installed release serves that release's UI.
+        .or_else(crate::distribution::installed_web_dist)
 }
 
 fn safe_static_path(dist: &FsPath, uri_path: &str) -> Option<PathBuf> {
@@ -865,7 +871,7 @@ async fn auth_session(
     headers: HeaderMap,
     uri: Uri,
 ) -> Json<AuthSessionDto> {
-    Json(crate::auth::verify_request(&state.config, &headers, &uri))
+    Json(crate::auth::verify_request(&state, &headers, &uri))
 }
 
 #[derive(Deserialize)]
@@ -874,21 +880,61 @@ struct LoginInput {
     password: Option<String>,
 }
 
+/// Recent failed sign-ins, across all clients: ten within a minute pause sign-in.
+fn sign_in_failures() -> &'static std::sync::Mutex<Vec<std::time::Instant>> {
+    static FAILURES: std::sync::OnceLock<std::sync::Mutex<Vec<std::time::Instant>>> =
+        std::sync::OnceLock::new();
+    FAILURES.get_or_init(Default::default)
+}
+
 async fn auth_login(
     State(state): State<AppState>,
     Json(body): Json<LoginInput>,
 ) -> Result<Response, ApiErr> {
-    let Some((token, session)) = crate::auth::login(
-        &state.config,
-        body.username.as_deref().unwrap_or_default(),
-        body.password.as_deref().unwrap_or_default(),
-    ) else {
+    let passcode = crate::auth::local_passcode(&state).is_some();
+    if passcode {
+        let mut failures = sign_in_failures().lock().unwrap();
+        failures.retain(|at| at.elapsed() < std::time::Duration::from_secs(60));
+        if failures.len() >= 10 {
+            return Err(err(
+                StatusCode::TOO_MANY_REQUESTS,
+                "rate_limited",
+                "Too many wrong passcodes. Wait a minute and try again.",
+            ));
+        }
+    }
+    let signed_in = if passcode {
+        crate::auth::login_passcode(&state, body.password.as_deref().unwrap_or_default())
+    } else {
+        crate::auth::login(
+            &state.config,
+            body.username.as_deref().unwrap_or_default(),
+            body.password.as_deref().unwrap_or_default(),
+        )
+    };
+    let Some((token, session)) = signed_in else {
+        if passcode {
+            sign_in_failures()
+                .lock()
+                .unwrap()
+                .push(std::time::Instant::now());
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            return Err(err(
+                StatusCode::UNAUTHORIZED,
+                "unauthorized",
+                "Wrong passcode.",
+            ));
+        }
         return Err(err(
             StatusCode::UNAUTHORIZED,
             "unauthorized",
             "Invalid username or password.",
         ));
     };
+    Ok(signed_in_response(token, session))
+}
+
+fn signed_in_response(token: String, session: AuthSessionDto) -> Response {
     let mut response = Json(json!({
         "token": if token.is_empty() { Value::Null } else { json!(token) },
         "session": session,
@@ -902,11 +948,57 @@ async fn auth_login(
                 .expect("valid session cookie"),
         );
     }
+    response
+}
+
+#[derive(Deserialize)]
+struct PasscodeInput {
+    passcode: String,
+}
+
+/// Set or change the local-mode passcode; this browser stays signed in.
+async fn auth_set_passcode(
+    State(state): State<AppState>,
+    Json(body): Json<PasscodeInput>,
+) -> Result<Response, ApiErr> {
+    let (token, session) = crate::auth::set_passcode(&state, Some(&body.passcode))
+        .map_err(|error| {
+            err(
+                StatusCode::BAD_REQUEST,
+                "invalid_passcode",
+                &error.to_string(),
+            )
+        })?
+        .ok_or_else(|| {
+            err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "Could not sign in",
+            )
+        })?;
+    Ok(signed_in_response(token, session))
+}
+
+async fn auth_remove_passcode(State(state): State<AppState>) -> Result<Response, ApiErr> {
+    crate::auth::set_passcode(&state, None).map_err(|error| {
+        err(
+            StatusCode::BAD_REQUEST,
+            "invalid_passcode",
+            &error.to_string(),
+        )
+    })?;
+    let mut response = Json(crate::auth::local_session(&state.config)).into_response();
+    response.headers_mut().insert(
+        header::SET_COOKIE,
+        crate::auth::clear_session_cookie()
+            .parse()
+            .expect("valid cleared session cookie"),
+    );
     Ok(response)
 }
 
 async fn auth_logout(State(state): State<AppState>) -> Response {
-    let mut response = Json(crate::auth::unauthenticated_session(&state.config)).into_response();
+    let mut response = Json(crate::auth::unauthenticated_session(&state)).into_response();
     response.headers_mut().insert(
         header::SET_COOKIE,
         crate::auth::clear_session_cookie()

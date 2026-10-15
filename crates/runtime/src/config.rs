@@ -40,7 +40,7 @@ impl RuntimeConfig {
         let port_names = if mode == Mode::Relay {
             &["POCKYMOE_RELAY_SUPERVISOR_PORT"][..]
         } else {
-            &["PORT"][..]
+            &["POCKYMOE_PORT", "PORT"][..]
         };
         let port = first_env(port_names)
             .ok()
@@ -49,7 +49,7 @@ impl RuntimeConfig {
         let host_names = if mode == Mode::Relay {
             &["POCKYMOE_RELAY_SUPERVISOR_HOST"][..]
         } else {
-            &["HOST"][..]
+            &["POCKYMOE_HOST", "HOST"][..]
         };
         let host = first_env(host_names).unwrap_or_else(|_| "127.0.0.1".into());
         let setting = |name, legacy| {
@@ -59,8 +59,15 @@ impl RuntimeConfig {
                     .flatten()
             })
         };
-        let environment =
-            setting("POCKYMOE_ENVIRONMENT", "NODE_ENV").unwrap_or_else(|| "development".into());
+        // An installed release keeps its data in ~/.remote-codex; only a
+        // development build defaults to a database in the working directory.
+        let environment = setting("POCKYMOE_ENVIRONMENT", "NODE_ENV").unwrap_or_else(|| {
+            if installed_release() {
+                "production".into()
+            } else {
+                "development".into()
+            }
+        });
         let workspace_root = PathBuf::from(
             setting("POCKYMOE_WORKSPACE_ROOT", "WORKSPACE_ROOT")
                 .unwrap_or_else(|| default_workspace_root()),
@@ -153,6 +160,17 @@ fn parse_providers(raw: Option<&str>) -> Vec<Provider> {
         Provider::Opencode,
         Provider::Acp,
     ]
+}
+
+/// Whether this executable is a native release installed by setup
+/// (`~/.local/share/remote-codex/native/releases/<version>/`).
+pub fn installed_release() -> bool {
+    std::env::current_exe()
+        .and_then(std::fs::canonicalize)
+        .is_ok_and(|path| {
+            let path = path.to_string_lossy().replace('\\', "/");
+            path.contains("/.local/share/remote-codex/native/releases/")
+        })
 }
 
 fn default_workspace_root() -> String {

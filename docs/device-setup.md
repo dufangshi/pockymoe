@@ -30,6 +30,9 @@ another program is still writing stops setup until that program is stopped.
 after `$name` as part of the variable name and stops with "unbound variable".
 `scripts/native-setup.test.mjs` enforces this.
 
+Run without relay arguments, the same scripts install [local mode](local-mode.md)
+instead: one computer and its network, no relay.
+
 Supported platforms are Apple Silicon macOS, glibc Linux on ARM64/x64 and
 Windows x64. macOS uses a user LaunchAgent; Linux uses a systemd user service
 when available. These start with the user session. Linux machines requiring

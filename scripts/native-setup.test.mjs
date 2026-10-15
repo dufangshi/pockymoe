@@ -27,10 +27,11 @@ else if(url.endsWith('/SHA256SUMS'))file='sums';else if(url.endsWith('/${asset}'
 fs.copyFileSync(path.join(process.env.TEST_ROOT,file),args[args.indexOf('-o')+1]);
 `, { mode: 0o755 });
   for (const name of ['node', 'npm']) fs.writeFileSync(path.join(bin, name), '#!/bin/sh\necho "Unexpected Node/npm invocation" >&2\nexit 99\n', { mode: 0o755 });
-  const run = (extra = [], environment = {}, input, shell = '/bin/sh') => spawnSync(shell, [script, '--relay', 'https://relay.example.test', '--token', 'synthetic-token', '--port', '45679', ...extra], {
+  const runWith = (args, environment = {}, input, shell = '/bin/sh') => spawnSync(shell, [script, ...args], {
     encoding: 'utf8', input, env: { ...environment, HOME: root, PATH: `${bin}:/usr/bin:/bin`, TEST_ROOT: root, TEST_VERSION: version, TEST_FAIL_VERSION: failVersion ? '1' : '0', TEST_CALLS: path.join(root, 'calls'), TEST_ARGUMENTS: path.join(root, 'arguments'), TEST_BINDING: path.join(root, 'binding') },
   });
-  return { root, run };
+  const run = (extra = [], environment = {}, input, shell = '/bin/sh') => runWith(['--relay', 'https://relay.example.test', '--token', 'synthetic-token', '--port', '45679', ...extra], environment, input, shell);
+  return { root, run, runWith };
 }
 test('native SH bootstrap installs verified GitHub executable without Node/npm on Linux and Apple Silicon', t => {
   for (const platform of [{}, { arch: 'aarch64' }, { platform: 'Darwin', arch: 'arm64' }]) {
@@ -105,4 +106,26 @@ test('Windows bootstrap forwards -ResetDatabase', () => {
   const source = fs.readFileSync(new URL('./setup.ps1', import.meta.url), 'utf8');
   assert(source.includes('[switch]$ResetDatabase'));
   assert(source.includes("if ($ResetDatabase) { $arguments += '--reset-database' }"));
+});
+
+test('without relay credentials the bootstrap installs local mode with only the options given', t => {
+  for (const [args, expected] of [
+    [[], ['setup', '--local']],
+    [['--local'], ['setup', '--local']],
+    [['--port', '9000', '--lan'], ['setup', '--local', '--port', '9000', '--lan']],
+    [['--no-lan', '--reset-database'], ['setup', '--local', '--reset-database', '--no-lan']],
+  ]) {
+    const f = fixture(t); const result = f.runWith(args, { POCKYMOE_WEB_ORIGIN: 'https://ignored.test' });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(fs.readFileSync(path.join(f.root, 'arguments'), 'utf8').trim().split('\n'), expected);
+    // A local install is never bound to a relay account.
+    assert.deepEqual(fs.readFileSync(path.join(f.root, 'binding'), 'utf8').split('\n').slice(0, 3), ['', '', '']);
+  }
+});
+test('local and relay options cannot be mixed', t => {
+  for (const args of [['--local', '--token', 'synthetic-token'], ['--account-key', 'synthetic-public'], ['--relay', 'https://relay.example.test', '--token', 't', '--lan']]) {
+    const f = fixture(t); const result = f.runWith(args);
+    assert.notEqual(result.status, 0, args.join(' '));
+    assert(!fs.existsSync(path.join(f.root, 'calls')), args.join(' '));
+  }
 });

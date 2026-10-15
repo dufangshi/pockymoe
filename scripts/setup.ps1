@@ -1,13 +1,16 @@
 # Native Windows bootstrap; GitHub Releases are authoritative, no Node/npm.
 param(
-    [Parameter(Mandatory = $true)][string]$Relay,
+    [string]$Relay,
     [string]$Token,
     [string]$Code,
     [string]$WebOrigin,
     [string]$AccountKey,
     [switch]$EnrollStdin,
     [switch]$ResetDatabase,
-    [ValidateRange(1, 65535)][int]$Port = 8787
+    [switch]$Local,
+    [switch]$Lan,
+    [switch]$NoLan,
+    [ValidateRange(0, 65535)][int]$Port = 0
 )
 $ErrorActionPreference = 'Stop'
 $Enroll = $env:POCKYMOE_ENROLL_SECRET
@@ -17,8 +20,16 @@ if ($EnrollStdin) {
     $Enroll = [Console]::ReadLine()
 }
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-if (([bool]$Token) -eq ([bool]$Code)) { throw 'Provide exactly one device token or setup code.' }
-if (([bool]$AccountKey) -ne ([bool]$Enroll)) { throw 'Provide -AccountKey and enrollment through POCKYMOE_ENROLL_SECRET or -EnrollStdin.' }
+# Without relay credentials this installs Pockymoe for this computer (local mode).
+if (-not $Relay -and -not $Token -and -not $Code) { $Local = $true }
+if ($Local) {
+    if ($Relay -or $Token -or $Code -or $AccountKey -or $Enroll) { throw 'A local install takes no relay, token, code or account key.' }
+    Remove-Item Env:POCKYMOE_WEB_ORIGIN, Env:POCKYMOE_ACCOUNT_KEY -ErrorAction SilentlyContinue
+} else {
+    if (-not $Relay) { throw 'Copy a setup command from the Devices page.' }
+    if (([bool]$Token) -eq ([bool]$Code)) { throw 'Provide exactly one device token or setup code.' }
+    if (([bool]$AccountKey) -ne ([bool]$Enroll)) { throw 'Provide -AccountKey and enrollment through POCKYMOE_ENROLL_SECRET or -EnrollStdin.' }
+}
 if ($env:PROCESSOR_ARCHITECTURE -ne 'AMD64' -and $env:PROCESSOR_ARCHITEW6432 -ne 'AMD64') { throw 'The Windows runtime currently requires x64.' }
 $repo = 'https://github.com/dufangshi/pockymoe'
 $stage = Join-Path ([IO.Path]::GetTempPath()) ('pockymoe-bootstrap-' + [guid]::NewGuid().ToString('N'))
@@ -39,10 +50,17 @@ try {
     if ((Get-FileHash -Algorithm SHA256 -Path $binary).Hash.ToLowerInvariant() -ne $expected) { throw 'Runtime checksum verification failed. Nothing has been installed.' }
     $actual = & $binary version
     if ($LASTEXITCODE -ne 0 -or $actual.Trim() -ne $version) { throw 'Downloaded runtime version verification failed.' }
-    $arguments = @('setup', '--relay', $Relay, '--port', "$Port")
-    if ($AccountKey) { $arguments += @('--account-key', $AccountKey) }
-    if ($WebOrigin) { $arguments += @('--web-origin', $WebOrigin) }
-    if ($Token) { $arguments += @('--token', $Token) } else { $arguments += @('--code', $Code) }
+    if ($Local) {
+        $arguments = @('setup', '--local')
+        if ($Port -gt 0) { $arguments += @('--port', "$Port") }
+        if ($Lan) { $arguments += '--lan' } elseif ($NoLan) { $arguments += '--no-lan' }
+    } else {
+        if ($Port -le 0) { $Port = 8787 }
+        $arguments = @('setup', '--relay', $Relay, '--port', "$Port")
+        if ($AccountKey) { $arguments += @('--account-key', $AccountKey) }
+        if ($WebOrigin) { $arguments += @('--web-origin', $WebOrigin) }
+        if ($Token) { $arguments += @('--token', $Token) } else { $arguments += @('--code', $Code) }
+    }
     if ($ResetDatabase) { $arguments += '--reset-database' }
     if ($AccountKey) { $env:POCKYMOE_ENROLL_SECRET = $Enroll }
     & $binary @arguments

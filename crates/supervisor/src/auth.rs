@@ -250,7 +250,7 @@ pub async fn require_auth(
                 .into_response()
         };
     }
-    if !state.config.auth_required || is_public_path(request.uri().path()) {
+    if !auth_required(&state) || is_public_path(request.uri().path()) {
         return next.run(request).await;
     }
     if state.config.mode == Mode::Relay
@@ -258,7 +258,7 @@ pub async fn require_auth(
     {
         return next.run(request).await;
     }
-    if verify_request(&state.config, request.headers(), request.uri()).authenticated {
+    if verify_request(&state, request.headers(), request.uri()).authenticated {
         return next.run(request).await;
     }
     (
@@ -283,6 +283,28 @@ fn mode_name(mode: Mode) -> &'static str {
     }
 }
 
+/// The local-mode passcode, if one is set.
+pub fn local_passcode(state: &Supervisor) -> Option<pockymoe_runtime::local_access::LocalAccess> {
+    if state.config.mode != Mode::Local {
+        return None;
+    }
+    state.local_access.read().unwrap().clone()
+}
+
+/// Whether browsers must sign in: always in server/relay mode, and in local mode
+/// once a passcode is set.
+pub fn auth_required(state: &Supervisor) -> bool {
+    state.config.auth_required || local_passcode(state).is_some()
+}
+
+/// The secret that signs this Supervisor's browser sessions, if it requires them.
+fn session_secret(state: &Supervisor) -> Option<String> {
+    if state.config.auth_required {
+        return state.config.session_secret.clone();
+    }
+    local_passcode(state).map(|access| access.session_secret)
+}
+
 pub fn local_session(config: &RuntimeConfig) -> AuthSessionDto {
     AuthSessionDto {
         authenticated: true,
@@ -290,31 +312,56 @@ pub fn local_session(config: &RuntimeConfig) -> AuthSessionDto {
         expires_at: None,
         mode: config.mode,
         auth_required: false,
+        passcode: false,
     }
 }
 
-pub fn unauthenticated_session(config: &RuntimeConfig) -> AuthSessionDto {
+pub fn unauthenticated_session(state: &Supervisor) -> AuthSessionDto {
     AuthSessionDto {
         authenticated: false,
         username: None,
         expires_at: None,
-        mode: config.mode,
-        auth_required: config.auth_required,
+        mode: state.config.mode,
+        auth_required: auth_required(state),
+        passcode: local_passcode(state).is_some(),
     }
 }
 
-pub fn verify_request(config: &RuntimeConfig, headers: &HeaderMap, uri: &Uri) -> AuthSessionDto {
-    if !config.auth_required {
-        return local_session(config);
+pub fn verify_request(state: &Supervisor, headers: &HeaderMap, uri: &Uri) -> AuthSessionDto {
+    if !auth_required(state) {
+        return local_session(&state.config);
     }
+    // Without a secret nothing can be verified: the request stays signed out.
+    let secret = session_secret(state);
     let token = bearer_token(headers)
         .or_else(|| query_token(uri))
         .or_else(|| cookie_token(headers));
     token
-        .and_then(|token| verify_token(config, &token))
-        .unwrap_or_else(|| unauthenticated_session(config))
+        .and_then(|token| verify_token(secret.as_deref()?, &token))
+        .map(|payload| AuthSessionDto {
+            authenticated: true,
+            username: Some(payload.username),
+            expires_at: timestamp_string(payload.expires_at),
+            mode: state.config.mode,
+            auth_required: true,
+            passcode: local_passcode(state).is_some(),
+        })
+        .unwrap_or_else(|| unauthenticated_session(state))
 }
 
+fn issue_token(secret: &str, username: &str) -> Option<(String, i64)> {
+    let expires_at = Utc::now().timestamp_millis() + session_ttl_seconds() * 1000;
+    let payload = SessionPayload {
+        username: username.to_string(),
+        expires_at,
+        nonce: Uuid::new_v4().simple().to_string(),
+    };
+    let payload_text = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).ok()?);
+    let signature = sign(secret, &payload_text)?;
+    Some((format!("{payload_text}.{signature}"), expires_at))
+}
+
+/// Server/relay-mode sign-in with the configured administrator.
 pub fn login(
     config: &RuntimeConfig,
     username: &str,
@@ -330,16 +377,7 @@ pub fn login(
     {
         return None;
     }
-    let ttl_seconds = session_ttl_seconds();
-    let expires_at = Utc::now().timestamp_millis() + ttl_seconds * 1000;
-    let payload = SessionPayload {
-        username: expected_username.to_string(),
-        expires_at,
-        nonce: Uuid::new_v4().simple().to_string(),
-    };
-    let payload_text = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).ok()?);
-    let signature = sign(config.session_secret.as_deref()?, &payload_text)?;
-    let token = format!("{payload_text}.{signature}");
+    let (token, expires_at) = issue_token(config.session_secret.as_deref()?, expected_username)?;
     Some((
         token,
         AuthSessionDto {
@@ -348,8 +386,57 @@ pub fn login(
             expires_at: timestamp_string(expires_at),
             mode: config.mode,
             auth_required: true,
+            passcode: false,
         },
     ))
+}
+
+const PASSCODE_USER: &str = "local";
+
+/// Local-mode sign-in with the passcode alone.
+pub fn login_passcode(state: &Supervisor, passcode: &str) -> Option<(String, AuthSessionDto)> {
+    let access = local_passcode(state)?;
+    if !access.verify(passcode) {
+        return None;
+    }
+    passcode_session(state, &access)
+}
+
+fn passcode_session(
+    state: &Supervisor,
+    access: &pockymoe_runtime::local_access::LocalAccess,
+) -> Option<(String, AuthSessionDto)> {
+    let (token, expires_at) = issue_token(&access.session_secret, PASSCODE_USER)?;
+    Some((
+        token,
+        AuthSessionDto {
+            authenticated: true,
+            username: Some(PASSCODE_USER.into()),
+            expires_at: timestamp_string(expires_at),
+            mode: state.config.mode,
+            auth_required: true,
+            passcode: true,
+        },
+    ))
+}
+
+/// Set, change or remove the local-mode passcode. A new passcode signs out every
+/// browser; the returned session keeps the browser that set it signed in.
+pub fn set_passcode(
+    state: &Supervisor,
+    passcode: Option<&str>,
+) -> Result<Option<(String, AuthSessionDto)>> {
+    anyhow::ensure!(
+        state.config.mode == Mode::Local
+            && state.config.host_mode == pockymoe_runtime::host_mode::HostMode::Standalone,
+        "A passcode is available only for a Supervisor in local mode"
+    );
+    let access = passcode
+        .map(pockymoe_runtime::local_access::LocalAccess::new)
+        .transpose()?;
+    pockymoe_runtime::local_access::store(&state.db, access.as_ref())?;
+    *state.local_access.write().unwrap() = access.clone();
+    Ok(access.and_then(|access| passcode_session(state, &access)))
 }
 
 pub fn session_cookie(token: &str) -> String {
@@ -363,14 +450,14 @@ pub fn clear_session_cookie() -> &'static str {
     "remote_codex_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0"
 }
 
-fn verify_token(config: &RuntimeConfig, token: &str) -> Option<AuthSessionDto> {
+fn verify_token(secret: &str, token: &str) -> Option<SessionPayload> {
     let mut parts = token.split('.');
     let payload_text = parts.next()?;
     let signature = parts.next()?;
     if parts.next().is_some() {
         return None;
     }
-    let expected = sign(config.session_secret.as_deref()?, payload_text)?;
+    let expected = sign(secret, payload_text)?;
     if !constant_time_equal(signature.as_bytes(), expected.as_bytes()) {
         return None;
     }
@@ -382,13 +469,7 @@ fn verify_token(config: &RuntimeConfig, token: &str) -> Option<AuthSessionDto> {
     {
         return None;
     }
-    Some(AuthSessionDto {
-        authenticated: true,
-        username: Some(payload.username),
-        expires_at: timestamp_string(payload.expires_at),
-        mode: config.mode,
-        auth_required: true,
-    })
+    Some(payload)
 }
 
 fn sign(secret: &str, payload_text: &str) -> Option<String> {

@@ -328,6 +328,8 @@ pub struct Supervisor {
     pub subscription_usage: crate::subscription::SubscriptionUsage,
     pub device_monitor: crate::device_metrics::DeviceMonitor,
     pub(crate) harness: harness_release::HarnessState,
+    /// The optional local-mode passcode, cached from `kv`.
+    pub local_access: std::sync::RwLock<Option<crate::local_access::LocalAccess>>,
 }
 
 fn harness_context_key(thread_id: &str) -> String {
@@ -361,7 +363,12 @@ impl Supervisor {
             .into_iter()
             .map(|runtime| (runtime.provider(), runtime))
             .collect();
+        let local_access = crate::local_access::load(&db).unwrap_or_else(|error| {
+            tracing::warn!(%error, "ignoring an unreadable local passcode");
+            None
+        });
         let supervisor = Self {
+            local_access: std::sync::RwLock::new(local_access),
             automation_gate: Default::default(),
             plugins: Default::default(),
             upstream_gate: Default::default(),

@@ -485,7 +485,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
             {state.error}
           </div>
         )}
-        <LoginPage onLogin={handleLogin} />
+        <LoginPage onLogin={handleLogin} passcode={state.session.passcode === true} />
       </>
     );
   }

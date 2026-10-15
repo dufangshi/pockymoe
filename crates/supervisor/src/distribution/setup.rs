@@ -102,7 +102,7 @@ pub async fn health(port: u16, host: &str) -> Option<Value> {
         .await
         .ok()
 }
-async fn online(port: u16, version: &str) -> Result<()> {
+async fn online(port: u16, version: &str, config: &Path) -> Result<()> {
     for _ in 0..120 {
         if let Some(h) = health(port, "127.0.0.1").await {
             if h["status"] == "ok" && h["runningVersion"] == version && h["relayConnected"] == true
@@ -115,7 +115,7 @@ async fn online(port: u16, version: &str) -> Result<()> {
     }
     bail!(
         "Device did not reconnect at the requested version. Logs: {}",
-        service::log_path().display()
+        service::log_path(config).display()
     )
 }
 fn bridge(path: &Path, binary: &Path) -> Result<()> {
@@ -325,6 +325,144 @@ fn save_setup_web_origin(file: &Path, saved: &mut Value, origin: Option<&str>) -
     }
     Ok(())
 }
+pub struct LocalSetupOptions {
+    /// None picks 8787, or the next free port.
+    pub port: Option<u16>,
+    /// Let other devices on the network connect; None asks on the terminal.
+    pub lan: Option<bool>,
+    pub reset_database: bool,
+}
+
+const LOCAL_DEFAULT_PORT: u16 = 8787;
+
+fn port_free(port: u16) -> bool {
+    TcpListener::bind(("0.0.0.0", port)).is_ok() && TcpListener::bind(("127.0.0.1", port)).is_ok()
+}
+
+/// The address other devices on this network would use, without sending traffic.
+fn network_address() -> Option<std::net::IpAddr> {
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    socket.connect("192.0.2.1:9").ok()?;
+    Some(socket.local_addr().ok()?.ip()).filter(|ip| !ip.is_loopback() && !ip.is_unspecified())
+}
+
+async fn running_version(port: u16) -> Option<String> {
+    health(port, "127.0.0.1")
+        .await
+        .and_then(|h| h["runningVersion"].as_str().map(str::to_owned))
+}
+
+/// Install Pockymoe for this computer (and optionally its network) without a
+/// relay: one command with sensible defaults, rerunnable to repair or update.
+pub async fn setup_local(options: LocalSetupOptions) -> Result<()> {
+    let file = home()
+        .join(".remote-codex")
+        .join(service::LOCAL_CONFIG_FILE);
+    setup_local_at(options, &file, ask_terminal).await
+}
+
+async fn setup_local_at(
+    options: LocalSetupOptions,
+    file: &Path,
+    ask: impl Fn(&str) -> Result<Option<bool>> + Copy,
+) -> Result<()> {
+    let version = env!("CARGO_PKG_VERSION");
+    let mut saved: Value = if file.exists() {
+        read_device_config(file)?
+    } else {
+        json!({})
+    };
+    ensure!(
+        saved.as_object().is_some_and(|object| object.is_empty())
+            || saved["POCKYMOE_MODE"] == "local",
+        "{} is not a local-mode configuration",
+        file.display()
+    );
+    let saved_port = saved["POCKYMOE_PORT"]
+        .as_str()
+        .and_then(|port| port.parse::<u16>().ok());
+    let running = match saved_port {
+        Some(port) => running_version(port).await,
+        None => None,
+    };
+    let port = match (options.port, saved_port) {
+        (Some(port), _) => {
+            ensure!(
+                Some(port) == saved_port && running.is_some() || port_free(port),
+                "Port {port} is already in use. Choose another one with --port"
+            );
+            port
+        }
+        (None, Some(port)) => port,
+        (None, None) => (LOCAL_DEFAULT_PORT..LOCAL_DEFAULT_PORT + 100)
+            .find(|port| port_free(*port))
+            .context("No free port between 8787 and 8886. Choose one with --port")?,
+    };
+    let lan = match options.lan {
+        Some(lan) => lan,
+        None if saved.get("POCKYMOE_HOST").is_some() => saved["POCKYMOE_HOST"] == "0.0.0.0",
+        None => {
+            ask("Allow other devices on your network (phones, other computers) to open Pockymoe?")?
+                .unwrap_or(false)
+        }
+    };
+    let database = setup_database_path(&json!({
+        "POCKYMOE_DATABASE_PATH": saved["POCKYMOE_DATABASE_PATH"].as_str()
+            .map(str::to_owned)
+            .unwrap_or_else(|| home().join(".remote-codex/supervisor.sqlite").to_string_lossy().into_owned())
+    }));
+    if running.is_none() {
+        // A running Supervisor owns its database; it has upgraded it already.
+        prepare_device_database(&database, options.reset_database, ask)?;
+    }
+    let installed = releases::install(version, Some(&std::env::current_exe()?)).await?;
+    saved["POCKYMOE_MODE"] = json!("local");
+    saved["POCKYMOE_PORT"] = json!(port.to_string());
+    saved["POCKYMOE_HOST"] = json!(if lan { "0.0.0.0" } else { "127.0.0.1" });
+    saved["POCKYMOE_DATABASE_PATH"] = json!(database);
+    saved["POCKYMOE_ENVIRONMENT"] = json!("production");
+    let changed = !file.exists() || read_device_config(file)? != saved;
+    write_device_config(file, &saved)?;
+    releases::activate(&installed)?;
+    let manager = service::detect();
+    match (&running, manager.as_deref()) {
+        (Some(current), _) if current == version && !changed => {}
+        (Some(_), Some(manager)) => {
+            service::install(manager, &installed, file)?;
+            service::manage(manager, "restart", file)?;
+        }
+        (Some(_), None) => bail!(
+            "Pockymoe {} is already running on port {}. Update it from Settings, then run this command again",
+            running.as_deref().unwrap_or("?"),
+            saved_port.unwrap_or(port)
+        ),
+        (None, manager) => service::start(&installed, file, manager)?,
+    }
+    for _ in 0..120 {
+        if running_version(port).await.as_deref() == Some(version) {
+            println!("\nPockymoe {version} is running: http://127.0.0.1:{port}");
+            if lan {
+                match network_address() {
+                    Some(ip) => println!("Other devices on your network: http://{ip}:{port}"),
+                    None => println!(
+                        "Other devices on your network: http://<this computer's address>:{port}"
+                    ),
+                }
+                println!("Anyone on your network can open it. To require a passcode, open Settings > Access passcode.");
+            }
+            if manager.is_none() {
+                println!("Running detached. Automatic startup after reboot is unavailable without a user service manager.");
+            }
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    bail!(
+        "Pockymoe did not start on port {port}. Logs: {}",
+        service::log_path(file).display()
+    )
+}
+
 pub async fn setup(options: SetupOptions) -> Result<()> {
     setup_at(options, &config_path()).await
 }
@@ -425,7 +563,7 @@ async fn setup_at(options: SetupOptions, file: &Path) -> Result<()> {
             result["job"]["phase"] != "failed" && result["canUpdate"] != false,
             "Existing device could not start the native update"
         );
-        return online(options.port, version).await;
+        return online(options.port, version, file).await;
     }
     // Before downloading or writing anything: a database left by an older
     // installation is upgraded here, or set aside with the user's consent.
@@ -489,7 +627,7 @@ async fn setup_at(options: SetupOptions, file: &Path) -> Result<()> {
     if manager.is_none() {
         println!("Running detached. Automatic startup after reboot is unavailable without a user service manager.");
     }
-    online(options.port, version).await
+    online(options.port, version, file).await
 }
 pub fn load_environment(config: &Path) -> Result<BTreeMap<String, String>> {
     load_environment_with_host_mode(config, None)
@@ -512,8 +650,16 @@ fn load_environment_with_host_mode(
         let origin = crate::owner_trust::validate_web_origin(origin)?;
         env.insert("POCKYMOE_WEB_ORIGIN".into(), origin);
     }
-    env.insert("POCKYMOE_MODE".into(), "relay".into());
-    env.insert("POCKYMOE_RELAY_SUPERVISOR_HOST".into(), "127.0.0.1".into());
+    // A local-mode install serves its own Web UI on POCKYMOE_HOST/POCKYMOE_PORT.
+    let local = saved["POCKYMOE_MODE"].as_str() == Some("local");
+    if local {
+        env.insert("POCKYMOE_MODE".into(), "local".into());
+        env.entry("POCKYMOE_ENVIRONMENT".into())
+            .or_insert_with(|| "production".into());
+    } else {
+        env.insert("POCKYMOE_MODE".into(), "relay".into());
+        env.insert("POCKYMOE_RELAY_SUPERVISOR_HOST".into(), "127.0.0.1".into());
+    }
     env.insert(
         "POCKYMOE_RELAY_SUPERVISOR_CONFIG".into(),
         config.to_string_lossy().into_owned(),
@@ -527,13 +673,18 @@ fn load_environment_with_host_mode(
         .transpose()?
         .unwrap_or_default();
     ensure!(
-        !host_mode.capabilities().relay
+        local
+            || !host_mode.capabilities().relay
             || env
                 .get("POCKYMOE_RELAY_AGENT_TOKEN")
                 .is_some_and(|t| !t.is_empty()),
         "Device token is missing from config"
     );
-    let fallback = home().join(".remote-codex/relay-supervisor.sqlite");
+    let fallback = home().join(if local {
+        ".remote-codex/supervisor.sqlite"
+    } else {
+        ".remote-codex/relay-supervisor.sqlite"
+    });
     let configured = saved["POCKYMOE_DATABASE_PATH"]
         .as_str()
         .or_else(|| saved["DATABASE_URL"].as_str())
@@ -860,6 +1011,47 @@ mod tests {
         prepare_device_database(&current, true, |_| panic!("must not ask")).unwrap();
         assert!(current.exists());
         assert!(moved_aside(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn local_device_config_runs_local_mode_without_a_relay_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join(service::LOCAL_CONFIG_FILE);
+        write_device_config(
+            &config,
+            &json!({"POCKYMOE_MODE":"local","POCKYMOE_PORT":"8790","POCKYMOE_HOST":"0.0.0.0","POCKYMOE_ENVIRONMENT":"production"}),
+        )
+        .unwrap();
+        let env = load_environment(&config).unwrap();
+        assert_eq!(env["POCKYMOE_MODE"], "local");
+        assert_eq!(env["POCKYMOE_PORT"], "8790");
+        assert_eq!(env["POCKYMOE_HOST"], "0.0.0.0");
+        assert!(!env.contains_key("POCKYMOE_RELAY_SUPERVISOR_HOST"));
+        assert!(env["POCKYMOE_DATABASE_PATH"].ends_with(".remote-codex/supervisor.sqlite"));
+        // The update worker finds the service through this path.
+        assert_eq!(
+            env["POCKYMOE_RELAY_SUPERVISOR_CONFIG"],
+            config.to_string_lossy()
+        );
+    }
+
+    #[test]
+    fn local_and_relay_installs_have_separate_services() {
+        let installed = releases::Installed {
+            version: "9.9.9".into(),
+            executable: PathBuf::from("/opt/pockymoe/remote-codex"),
+            web_dist: PathBuf::from("/opt/pockymoe/web"),
+        };
+        let local = Path::new("/home/u/.remote-codex").join(service::LOCAL_CONFIG_FILE);
+        let relay = Path::new("/home/u/.remote-codex/relay-supervisor.json");
+        let local_unit = service::definition("systemd-user", &installed, &local);
+        let relay_plist = service::definition("launchd", &installed, relay);
+        let local_plist = service::definition("launchd", &installed, &local);
+        assert!(local_unit.contains("local-supervisor.json"));
+        assert!(relay_plist.contains("<string>com.remote-codex.supervisor</string>"));
+        assert!(local_plist.contains("<string>com.pockymoe.local</string>"));
+        assert!(local_plist.contains("local-supervisor.log"));
+        assert_ne!(service::log_path(&local), service::log_path(relay));
     }
 
     #[test]

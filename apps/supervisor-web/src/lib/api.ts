@@ -573,6 +573,17 @@ export function fetchRuntimeConfig(deviceId?: string) {
 }
 
 let workspaceActorScope = "local:owner";
+export function setLocalPasscode(passcode: string) {
+  return request<AuthLoginResultDto>('api/auth/passcode', {
+    method: 'PUT',
+    body: JSON.stringify({ passcode }),
+  });
+}
+
+export function removeLocalPasscode() {
+  return request<AuthSessionDto>('api/auth/passcode', { method: 'DELETE' });
+}
+
 export async function fetchAuthSession() {
   const result = await request<AuthSessionDto>('api/auth/session', {
     cache: 'no-store',

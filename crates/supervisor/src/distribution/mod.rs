@@ -4,7 +4,17 @@ mod service;
 mod setup;
 mod update;
 
-pub use setup::{run_device, run_device_with_host_mode, setup, SetupOptions};
+pub use setup::{
+    run_device, run_device_with_host_mode, setup, setup_local, LocalSetupOptions, SetupOptions,
+};
+
+/// The Web UI installed with the current native release, if any.
+pub fn installed_web_dist() -> Option<PathBuf> {
+    releases::current()
+        .ok()
+        .map(|installed| installed.web_dist)
+        .filter(|dist| dist.join("index.html").is_file())
+}
 pub(crate) use update::{complete_host_managed_startup, host_managed_pending};
 pub use update::{maintenance_cli, run_worker, updater};
 
