@@ -1,4 +1,4 @@
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type Page, type Locator } from '@playwright/test';
 import { spawn, execFile, type ChildProcess } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createServer as httpServer } from 'node:http';
@@ -7,7 +7,15 @@ import { randomBytes, createHash } from 'node:crypto';
 import { readFile, mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { WebSocketServer } from 'ws';
-import { readRecoveryCode, confirmRecoveryCode } from '../e2e/helpers/account-key-fixture';
+
+// Failed navigation/input call logs can otherwise include a lease URL or the
+// temporary account password. Keep those failures generic as well as traces off.
+async function safeGoto(page: Page, url: string) {
+  try { await page.goto(url); } catch { throw new Error('Isolated fixture navigation failed'); }
+}
+async function fillSecret(locator: Locator, value: string) {
+  try { await locator.fill(value); } catch { throw new Error('Isolated credential input was unavailable'); }
+}
 
 // All accounts, mappings, cookies and launch URLs stay in memory or the private
 // disposable directory. Evidence contains timing/status/path categories only.
@@ -17,6 +25,9 @@ test('isolated private preview authorization and RTT benchmark', async ({ browse
   const root = await mkdtemp(join(evidence, 'private-'));
   const binary = resolve(process.env.E2E_SECURITY_BINARY ?? 'target/debug/pockymoe');
   const binarySha256 = createHash('sha256').update(await readFile(binary)).digest('hex');
+  const supervisorBinary = resolve(process.env.E2E_PREVIEW_SUPERVISOR_BINARY ?? binary);
+  const supervisorBinarySha256 = supervisorBinary === binary ? binarySha256
+    : createHash('sha256').update(await readFile(supervisorBinary)).digest('hex');
   const webDist = resolve(process.env.E2E_PREVIEW_WEB_DIST ?? 'apps/supervisor-web/dist');
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(POCKYMOE|REMOTE_CODEX)_/.test(key)));
   const password = randomBytes(24).toString('hex');
@@ -115,7 +126,7 @@ test('isolated private preview authorization and RTT benchmark', async ({ browse
     page.on('requestfailed', request => network.push({ phase, route: category(request.url()), failed: true }));
   };
   function start(command: string, extra: Record<string, string>) {
-    const proc = spawn(binary, [command], {
+    const proc = spawn(command === 'relay-supervisor' ? supervisorBinary : binary, [command], {
       env: { ...env, HOST: '127.0.0.1', POCKYMOE_E2E_FAKE_RUNTIME: '1', RUST_LOG: 'warn',
         POCKYMOE_ADMIN_USERNAME: 'admin', POCKYMOE_ADMIN_PASSWORD: password,
         POCKYMOE_SESSION_SECRET: randomBytes(32).toString('hex'),
@@ -134,25 +145,32 @@ test('isolated private preview authorization and RTT benchmark', async ({ browse
   async function account(username: string) {
     const c = await context(); const page = await c.newPage();
     instrument(page, 'registration');
-    await page.goto(base + '/relay-portal?returnTo=%2Frelay-account');
+    await safeGoto(page, base + '/relay-portal?returnTo=%2Frelay-account');
     await page.getByRole('button', { name: 'Create account', exact: true }).click();
     await page.getByLabel('Email', { exact: true }).fill(`${username}@example.test`);
     await page.getByLabel('Username', { exact: true }).fill(username);
-    await page.getByLabel('Password', { exact: true }).fill(password);
-    await page.getByLabel('Confirm password', { exact: true }).fill(password);
+    await fillSecret(page.getByLabel('Password', { exact: true }), password);
+    await fillSecret(page.getByLabel('Confirm password', { exact: true }), password);
     await page.locator('form button[type="submit"]').click();
-    const recovery = await readRecoveryCode(page);
-    await confirmRecoveryCode(page, recovery);
+    const group = page.getByRole('group', { name: 'Save your recovery code', exact: true });
+    await expect.poll(() => group.isVisible()).toBe(true);
+    const recovery = await group.evaluate(element => [...element.querySelectorAll('span')].map(span => span.textContent?.trim()).join('-'));
+    const saved = page.getByRole('button', { name: 'I\u2019ve saved it', exact: true }).or(page.getByRole('button', { name: "I've saved it", exact: true }));
+    await expect.poll(() => saved.isEnabled()).toBe(false);
+    await fillSecret(page.getByLabel('Type the last 4 characters to confirm', { exact: true }), recovery.slice(-4));
+    await saved.click();
     await expect.poll(() => page.getByRole('heading', { name: 'Security', exact: true }).isVisible()).toBe(true);
     const cookie = (await c.cookies(base)).find(c => c.name === 'remote_codex_relay_session');
     expect(!!cookie).toBe(true); accountContexts.set(cookie!.value, c); return cookie!.value;
   }
   async function cli(...args: string[]) {
-    const { stdout } = await promisify(execFile)(binary, ['--cli-config', join(root, 'device.cli.json'), 'preview', ...args], { env, timeout: 20_000 });
-    return JSON.parse(stdout);
+    try {
+      const { stdout } = await promisify(execFile)(supervisorBinary, ['--cli-config', join(root, 'device.cli.json'), 'preview', ...args], { env, timeout: 20_000 });
+      return JSON.parse(stdout);
+    } catch { throw new Error('Isolated fixture CLI failed'); }
   }
   async function navigate(page: Page, url: string) {
-    const started = performance.now(); await page.goto(url);
+    const started = performance.now(); await safeGoto(page, url);
     await expect.poll(() => page.getByRole('heading', { name: 'Isolated preview benchmark' }).isVisible()).toBe(true);
     return performance.now() - started;
   }
@@ -206,14 +224,14 @@ test('isolated private preview authorization and RTT benchmark', async ({ browse
     const ownerContext = await context(); const page = await ownerContext.newPage(); instrument(page, 'cold-login');
     // The CLI's locally issued lease is a supported owner authorization path,
     // needed because this disposable device has not been account-key bound.
-    const loginStart = performance.now(); await page.goto(mapping.openUrl);
+    const loginStart = performance.now(); await safeGoto(page, mapping.openUrl);
     await expect.poll(() => new URL(page.url()).pathname === '/relay-portal').toBe(true);
     const loginPageMs = performance.now() - loginStart;
     const beforeUnauthorized = upstreamRequests;
     const unauth = await ownerContext.request.get(stableUrl, { maxRedirects: 0 }); expect(unauth.status()).toBe(401);
     expect(upstreamRequests).toBe(beforeUnauthorized);
     await page.getByRole('textbox', { name: 'Email or username', exact: true }).fill('bench-owner');
-    await page.getByLabel('Password', { exact: true }).fill(password);
+    await fillSecret(page.getByLabel('Password', { exact: true }), password);
     const submitStart = performance.now(); await page.getByRole('button', { name: 'Sign in', exact: true }).click();
     await expect.poll(() => page.getByRole('heading', { name: 'Isolated preview benchmark' }).isVisible()).toBe(true);
     const submitToPreviewMs = performance.now() - submitStart;
@@ -221,7 +239,7 @@ test('isolated private preview authorization and RTT benchmark', async ({ browse
     const alienContext = accountContexts.get(other)!;
     const alien = await alienContext.newPage();
     const beforeAlien = upstreamRequests;
-    await alien.goto(mapping.openUrl); await expect.poll(() => alien.getByRole('alert').isVisible()).toBe(true);
+    await safeGoto(alien, mapping.openUrl); await expect.poll(() => alien.getByRole('alert').isVisible()).toBe(true);
     expect(new URL(alien.url()).host).toBe(new URL(base).host);
     expect(upstreamRequests).toBe(beforeAlien);
     const denied = await api(`/relay/devices/${deviceId}/port-mappings/${mapping.id}/open`, 'POST', { path: '/' }, other);
@@ -269,7 +287,7 @@ test('isolated private preview authorization and RTT benchmark', async ({ browse
     await writeFile(join(evidence, 'measurements.json'), JSON.stringify(rows, null, 2));
     // Deliberately omit headers, bodies, cookies, all query strings and concrete IDs.
     await writeFile(join(evidence, 'network-timings.redacted.json'), JSON.stringify(network, null, 2));
-    await writeFile(join(evidence, 'metadata.json'), JSON.stringify({ binarySha256,
+    await writeFile(join(evidence, 'metadata.json'), JSON.stringify({ binarySha256, relayBinarySha256: binarySha256, supervisorBinarySha256,
       upstreamCounts, model: 'application bytes delayed each direction; loopback TCP, no TLS; no public access', cleanup: 'disposable processes terminated and data removed' }, null, 2));
     await rm(root, { recursive: true, force: true });
   }
