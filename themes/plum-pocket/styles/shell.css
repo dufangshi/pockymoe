@@ -737,17 +737,18 @@
 @media (max-width: 639px) {
   :theme .thread-ui-shell .matter-workbench,
   :theme .thread-ui-shell .matter-workbench.is-sidebar-hidden { grid-template-columns: minmax(0, 1fr); grid-template-rows: calc(40px + env(safe-area-inset-top)) minmax(0, 1fr); }
-  /* Seven flexible icon slots and a paired device meter fit narrow phones;
-     Home and Chat live in the drawer. Hit targets stay 40px tall. */
+  /* Flexible icon slots and a shrinking device meter fit narrow phones whatever
+     extra tools a thread adds; Home and Chat live in the drawer. Hit targets
+     stay 40px tall, and the sidebar, settings and notifications never shrink. */
   :theme .thread-ui-shell .matter-workbench .matter-topbar { padding: env(safe-area-inset-top) 2px 0; gap: 0; }
   :theme .thread-ui-shell .matter-workbench .matter-topbar-end { gap: 0; min-width: 0; flex-shrink: 1; }
   :theme .thread-ui-shell .matter-workbench .matter-topbar-search { flex-shrink: 0; }
   :theme .thread-ui-shell .matter-workbench .matter-topbar :where(button, a):not(:is(.workbench-search-field, .workbench-search-dropdown) *),
   :theme .thread-ui-shell .matter-workbench .matter-topbar .matter-search-trigger,
   :theme .thread-ui-shell .matter-workbench .matter-topbar-end > :is(button, [data-slot='dialog-trigger']) {
-    flex: 0 1 38px;
-    width: 38px;
-    min-width: 32px;
+    flex: 0 1 34px;
+    width: 34px;
+    min-width: 24px;
     height: 40px;
     margin: 0;
     padding: 0;
@@ -757,7 +758,7 @@
     justify-content: center;
   }
   :theme .thread-ui-shell .matter-workbench .matter-topbar svg:not(:is(.workbench-search-field, .workbench-search-dropdown) *),
-  :theme .thread-ui-shell .matter-workbench .matter-topbar .matter-search-trigger svg { width: 20px; height: 20px; color: inherit; }
+  :theme .thread-ui-shell .matter-workbench .matter-topbar .matter-search-trigger svg { width: 18px; height: 18px; color: inherit; }
   :theme .thread-ui-shell .matter-workbench .matter-topbar :is(button, a)[aria-pressed='true']:not(:is(.workbench-search-field, .workbench-search-dropdown) *) { color: #f6cf7c; }
   :theme .thread-ui-shell .matter-workbench .matter-topbar :is(button, a)[aria-pressed='true']:not(:is(.workbench-search-field, .workbench-search-dropdown) *)::after {
     content: '';
@@ -769,13 +770,21 @@
     background: var(--theme-accent-solid);
   }
   :theme .thread-ui-shell .matter-workbench .matter-topbar :is(button, a):not(:is(.workbench-search-field, .workbench-search-dropdown) *) { position: relative; }
-  :theme .thread-ui-shell .matter-workbench .matter-unread { top: 9px; right: 9px; }
+  :theme .thread-ui-shell .matter-workbench .matter-unread { top: 9px; right: 7px; }
+  /* The healthy connection slot is an empty placeholder: give its width back. */
+  :theme .thread-ui-shell .matter-workbench .matter-topbar-end .matter-connection:has(.device-connection-slot:empty):not(:has(button, a, svg)) { display: none; }
+  :theme .thread-ui-shell .matter-workbench .matter-topbar > :is(button, a):has(> svg[data-icon='sidebar']),
+  :theme .thread-ui-shell .matter-workbench .matter-topbar-end > :is(button, a, [data-slot='dialog-trigger']):has(svg:is([data-icon='settings'], [data-icon='notifications'])) {
+    flex-shrink: 0;
+    min-width: 34px;
+  }
   /* Two paired readings per row; GPU and VRAM never add a third row. */
   :theme .thread-ui-shell .matter-workbench .matter-topbar-end > .device-monitor-button {
-    flex: 0 0 100px;
-    width: 100px;
-    min-width: 100px;
+    flex: 0 1 96px;
+    width: 96px;
+    min-width: 44px;
     height: 40px;
+    overflow: hidden;
     align-items: stretch;
     justify-content: center;
     gap: 1px;
@@ -884,23 +893,17 @@
   :theme .matter-agent-threads-menu .matter-agent-threads-item { min-height: 48px; }
 }
 
-/* Reserve the paired monitor and connection-status slot on narrow phones. */
+/* Phones under 400px: the device meter keeps its percentages and drops the
+   used/total figures, so it never pushes the end buttons off screen. */
+@media (max-width: 399px) {
+  :theme .thread-ui-shell .matter-workbench .matter-topbar-end > .device-monitor-button { flex-basis: 52px; width: 52px; }
+  :theme .thread-ui-shell .matter-workbench .matter-topbar-end > .device-monitor-button :is(.dm-summary-capacity, .dm-summary-separator) { display: none; }
+  :theme .thread-ui-shell .matter-workbench .matter-topbar-end > .device-monitor-button .dm-summary-row { grid-template-columns: 1fr; }
+}
+/* Narrow phones: slots narrow a little further; the pinned three stay 30px. */
 @media (max-width: 359px) {
   :theme .thread-ui-shell .matter-workbench .matter-topbar :where(button, a):not(.device-monitor-button):not(:is(.workbench-search-field, .workbench-search-dropdown) *),
-  :theme .thread-ui-shell .matter-workbench .matter-topbar-end.matter-topbar-end > :is(button, [data-slot='dialog-trigger']):not(.device-monitor-button),
-  :theme .thread-ui-shell .matter-workbench .matter-topbar .matter-search-trigger.matter-search-trigger {
-    flex-basis: 27px;
-    width: 27px;
-    min-width: 27px;
-  }
-
-  :theme .thread-ui-shell .matter-workbench .matter-topbar-end > button.device-monitor-button {
-    flex-basis: 94px;
-    width: 94px;
-    min-width: 94px;
-    font-size: 8px;
-    padding-inline: 3px;
-  }
-  :theme .thread-ui-shell .matter-workbench .matter-topbar-end > button.device-monitor-button .dm-summary-capacity b { font-size: 7px; }
-  :theme .thread-ui-shell .matter-workbench .matter-topbar-end > button.device-monitor-button:not([data-gpu]) { font-size: 9px; }
+  :theme .thread-ui-shell .matter-workbench .matter-topbar .matter-search-trigger { min-width: 22px; }
+  :theme .thread-ui-shell .matter-workbench .matter-topbar > :is(button, a):has(> svg[data-icon='sidebar']),
+  :theme .thread-ui-shell .matter-workbench .matter-topbar-end > :is(button, a, [data-slot='dialog-trigger']):has(svg:is([data-icon='settings'], [data-icon='notifications'])) { flex-basis: 30px; width: 30px; min-width: 30px; }
 }

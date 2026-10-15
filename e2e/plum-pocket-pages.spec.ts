@@ -143,4 +143,19 @@ for (const [preset, width] of [['plum-pocket', 360], ['plum-pocket', 320], ['cla
   const search = topbar.getByRole('button', { name: 'Search conversation' });
   const box = (await search.boundingBox())!;
   expect(await page.evaluate(([x, y]) => document.elementFromPoint(x, y)?.closest('.matter-search-trigger') !== null, [box.x + box.width / 2, box.y + box.height / 2])).toBe(true);
+  if (preset === 'plum-pocket') {
+    // Worst case: a thread tool panel and the connection badge add two slots.
+    // The other slots and the meter shrink; settings and notifications stay whole.
+    await topbar.evaluate((header) => {
+      const end = header.querySelector('.matter-topbar-end')!;
+      const explorer = end.querySelector('button[aria-label="Toggle Explorer"]')!;
+      explorer.before(explorer.cloneNode(true), explorer.cloneNode(true));
+    });
+    for (const name of ['Open settings', 'Notifications', 'Toggle shortcuts sidebar']) {
+      const pinned = (await topbar.getByRole('button', { name, exact: true }).first().boundingBox())!;
+      expect(pinned.x, name).toBeGreaterThanOrEqual(0);
+      expect(pinned.x + pinned.width, name).toBeLessThanOrEqual(width);
+      expect(pinned.width, name).toBeGreaterThanOrEqual(30);
+    }
+  }
 });

@@ -47,7 +47,11 @@ every [capability flag](theme-packs.md#capability-flags).
   keeps its 44px touch target. The token and price breakdown is a small receipt.
 - On phones the workbench top bar keeps 40px-tall controls, Home and Chat move
   into the thread drawer, and the device monitor stays as a compact CPU/memory
-  meter whose values shade from green through amber to red with `--load`.
+  meter whose values shade from green through amber to red with `--load`. Icon
+  slots and the meter shrink when a thread adds tools or the connection badge
+  appears (below 400px the meter shows only percentages), while the sidebar,
+  settings and notifications buttons keep their size; an empty healthy
+  connection slot takes no room.
 - The thread tools open as a second line of the tab row (`.matter-breadcrumb`), so
   the theme lets `.matter-tabs-row` grow and fixes the height of the tab strip.
   The tab bar's tools (thread tools, subagents, automations, split) are redrawn as
