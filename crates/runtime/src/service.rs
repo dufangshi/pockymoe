@@ -2139,6 +2139,55 @@ impl Supervisor {
                 }
             }
             drop(stmt);
+            // The files a folded turn changed, by first path, with the latest edit
+            // to open; the summary names a few of them.
+            if activity.contains_key("fileChanges") {
+                let mut files: Vec<(String, String, i64, i64)> = Vec::new();
+                let mut stmt = conn.prepare(
+                    "SELECT item_id, json_extract(item_json, '$.text'),
+                       COALESCE(json_extract(item_json, '$.addedLines'), 0),
+                       COALESCE(json_extract(item_json, '$.removedLines'), 0)
+                     FROM thread_history_items
+                     WHERE thread_id=?1 AND turn_id=?2
+                       AND json_extract(item_json, '$.kind') = 'fileChange'
+                       AND lower(COALESCE(json_extract(item_json, '$.status'), '')) NOT IN ('failed', 'error', 'declined')
+                     ORDER BY created_at ASC, rowid ASC",
+                )?;
+                let rows = stmt.query_map(params![thread_id, turn_id], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
+                    ))
+                })?;
+                for row in rows {
+                    let (item_id, text, added, removed) = row?;
+                    // One patch can list several files; its line counts stay with the first.
+                    let mut counts = Some((added, removed));
+                    for path in text.split(", ").map(str::trim).filter(|path| !path.is_empty()) {
+                        let (added, removed) = counts.take().unwrap_or((0, 0));
+                        match files.iter_mut().find(|file| file.0 == path) {
+                            Some(file) => {
+                                file.1 = item_id.clone();
+                                file.2 += added;
+                                file.3 += removed;
+                            }
+                            None => files.push((path.to_string(), item_id.clone(), added, removed)),
+                        }
+                    }
+                }
+                activity.insert(
+                    "files".into(),
+                    files
+                        .into_iter()
+                        .take(8)
+                        .map(|(path, item_id, added, removed)| {
+                            serde_json::json!({ "path": path, "itemId": item_id, "addedLines": added, "removedLines": removed })
+                        })
+                        .collect(),
+                );
+            }
             let mut stmt = conn.prepare(
                 "SELECT item_json FROM thread_history_items
                  WHERE thread_id=?1 AND turn_id=?2

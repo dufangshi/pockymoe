@@ -1,0 +1,131 @@
+/* Terminal: the transcript as a log. A 3ch gutter carries the marks: ❯ for the
+   prompt, ● for the agent; work, runs and the receipt line up with the text. */
+
+:theme .thread-ui-shell { --term-gutter: 3ch; }
+:theme .thread-ui-shell .thread-graph-message-list { font-size: 13px; }
+
+/* Prompt: no bubble, a bold line after an accent ❯. */
+:theme .thread-ui-shell .thread-graph-message[data-role='user'] { justify-content: flex-start; }
+:theme .thread-ui-shell .thread-graph-message[data-role='user']::before,
+:theme .thread-ui-shell .thread-graph-message[data-role='assistant']:not([data-variant='reasoning'])::before {
+  flex: none;
+  width: var(--term-gutter);
+  font-weight: 700;
+}
+:theme .thread-ui-shell .thread-graph-message[data-role='user']::before { content: '❯'; color: var(--theme-accent-solid); line-height: 1.6; }
+:theme .thread-ui-shell .thread-graph-message[data-role='assistant']:not([data-variant='reasoning'])::before {
+  content: '●';
+  color: var(--theme-fg-muted);
+  font-size: 9px;
+  line-height: 2.6;
+}
+:theme .thread-ui-shell .thread-graph-message-stack.is-user { max-width: calc(100% - var(--term-gutter)); width: 100%; align-items: flex-start; }
+:theme .thread-ui-shell .thread-graph-message-stack.is-assistant { flex: 1; min-width: 0; }
+:theme .thread-ui-shell.thread-ui-shell .thread-graph-message-bubble.is-user {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+  color: var(--theme-fg);
+  font-weight: 700;
+}
+:theme .thread-ui-shell .thread-graph-message-content.is-user :is(.thread-graph-message-prose, .thread-graph-plain-text, .thread-graph-markdown) {
+  font-size: 13px;
+  line-height: 1.6;
+}
+:theme .thread-ui-shell :is(.thread-graph-message-content, .thread-graph-message-bubble).is-assistant :is(.thread-graph-markdown, .thread-graph-message-prose, .thread-graph-plain-text) {
+  font-size: 13px;
+  line-height: 1.65;
+}
+:theme .thread-ui-shell .thread-graph-message-time-row { display: none; }
+
+/* Inline code and code blocks: square, one hairline. */
+:theme .thread-ui-shell .thread-graph-markdown :not(pre) > code {
+  padding: 0 4px;
+  border: 1px solid var(--theme-border);
+  border-radius: 0;
+  background: var(--theme-surface);
+  font-size: 12px;
+}
+:theme .thread-ui-shell.thread-ui-shell .thread-graph-code-block {
+  border: 1px solid var(--term-line);
+  border-radius: 0;
+  background: var(--theme-surface);
+  box-shadow: none;
+}
+:theme .thread-ui-shell .thread-graph-markdown :is(ul, ol) { padding-left: 2ch; }
+:theme .thread-ui-shell .thread-graph-markdown ul { list-style: '- '; }
+:theme .thread-ui-shell .thread-graph-markdown table { border-radius: 0; }
+
+/* Work summary: "› Worked for 51s · …" in the gutter column, then a dashed rule. */
+:theme .thread-ui-shell .thread-graph-worked-summary { padding-left: var(--term-gutter); font-size: 12px; }
+:theme .thread-ui-shell .thread-graph-worked-label { font-weight: 700; color: var(--theme-fg); }
+:theme .thread-ui-shell .thread-worked-toggle:hover .thread-graph-worked-label { color: var(--theme-accent-solid); }
+:theme .thread-ui-shell .thread-worked-chevron { width: 12px; height: 12px; }
+
+/* Runs, rows and the receipt share the text column. */
+:theme .thread-ui-shell :is(.tlog-run, .tlog-single, .tlog-current, .tlog-files, .thread-turn-receipt, .tlog-plan, .thread-graph-turn-footer) {
+  margin-left: var(--term-gutter);
+}
+:theme .thread-ui-shell .tlog-run-head { font-size: 12px; }
+:theme .thread-ui-shell .tlog-rule { border-top-color: var(--theme-border-strong); }
+:theme .thread-ui-shell .tlog-run-body {
+  margin-left: 5px;
+  padding-left: 2ch;
+  border-left: 1px solid var(--term-line);
+}
+:theme .thread-ui-shell .tlog-row-head { border-radius: 0; font-size: 12px; }
+:theme .thread-ui-shell .tlog-row-head:hover { background: var(--theme-surface); }
+:theme .thread-ui-shell .tlog-title.is-mono { font-size: 12px; }
+:theme .thread-ui-shell .tlog-glyph { color: var(--theme-accent-solid); }
+:theme .thread-ui-shell .tlog-tag::before { content: '['; }
+:theme .thread-ui-shell .tlog-tag::after { content: ']'; }
+:theme .thread-ui-shell .tlog-spinner {
+  width: auto;
+  height: auto;
+  border: 0;
+  border-radius: 0;
+  animation: terminal-blink 1s steps(1) infinite;
+}
+:theme .thread-ui-shell .tlog-spinner::before { content: '▌'; color: var(--theme-accent-solid); }
+@keyframes terminal-blink { 50% { opacity: 0; } }
+:theme .thread-ui-shell :is(.tlog-command, .tlog-output, .tlog-diff) {
+  border-radius: 0;
+  border-color: var(--term-line);
+}
+:theme .thread-ui-shell .tlog-output { background: var(--theme-surface); }
+:theme .thread-ui-shell .tlog-diff { background: var(--theme-panel); }
+:theme .thread-ui-shell .tlog-open::before { content: '↗ '; }
+:theme .thread-ui-shell .thread-diff-line.is-add { background: light-dark(#d3f1dc, #0f2e1e); }
+:theme .thread-ui-shell .thread-diff-line.is-remove { background: light-dark(#f8e0de, #35201f); }
+:theme .thread-ui-shell .thread-diff-line.is-file { background: var(--theme-surface); }
+
+/* Receipt and the working line. */
+:theme .thread-ui-shell .thread-turn-receipt { font-size: 11px; }
+:theme .thread-ui-shell .thread-turn-receipt .thread-turn-usage-price { border-radius: 0; }
+:theme .thread-ui-shell .thread-graph-turn-footer { font-size: 11px; }
+
+/* Plan: [x] done, [>] now, [ ] next. */
+:theme .thread-ui-shell.thread-ui-shell .tlog-plan {
+  padding: 6px 12px;
+  border: 1px solid var(--theme-border-strong);
+  border-radius: 0;
+  background: transparent;
+}
+:theme .thread-ui-shell .tlog-plan-head { letter-spacing: 0.08em; }
+:theme .thread-ui-shell .tlog-plan-step { font-size: 12.5px; }
+:theme .thread-ui-shell .tlog-plan-mark { width: auto; }
+:theme .thread-ui-shell .tlog-plan-mark::before { content: '[ ]'; white-space: pre; color: var(--theme-fg-muted); }
+:theme .thread-ui-shell .tlog-plan-step[data-status='completed'] .tlog-plan-mark::before { content: '[x]'; color: var(--tlog-add); }
+:theme .thread-ui-shell .tlog-plan-step[data-status='in_progress'] .tlog-plan-mark::before { content: '[>]'; color: var(--theme-accent-solid); }
+:theme .thread-ui-shell .tlog-plan-step[data-status='failed'] .tlog-plan-mark::before { content: '[!]'; color: var(--tlog-failed); }
+
+/* History controls and notices. */
+:theme .thread-ui-shell .thread-history-earlier { border-radius: 0; }
+:theme .thread-ui-shell .thread-graph-task-notice { margin-left: var(--term-gutter); }
+:theme .thread-ui-shell :is(.thread-graph-history-event-card, .thread-graph-thinking-body, .thread-peer-work) { border-radius: 0; }
+
+@media (max-width: 639px) {
+  :theme .thread-ui-shell { --term-gutter: 2.4ch; }
+}
