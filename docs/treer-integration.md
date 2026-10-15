@@ -432,3 +432,65 @@ and may close the page. Child thread changes do not create/delete Treer Agents.
 Deleting an Agent from Treer itself currently retains its thread because the hub
 cannot distinguish deletion from stop. Provenance headers remain browser defenses,
 not authentication against a hostile process of the same OS user.
+
+## Messages
+
+In Treer-hosted mode (`POCKYMOE_HOST_MODE=hosted` together with
+`POCKYMOE_HOSTED_BY=treer`), the hub installs one generic runtime messaging hook.
+Without it, the existing internal send, queue, steer and inbox paths retain
+their original behavior. Controller submissions already accepted through AIS
+use the local path directly, avoiding a transport loop.
+
+A thread sends with **its own** live Agent credentials. Both sender and recipient
+must have stable Agent bindings; an unbound thread is refused. Passive inbox
+mail runs `treer message send --to <agent-id>` with the body on stdin and an
+idempotency key derived from the durable Pockymoe message ID. The body starts
+with a small, explicitly untrusted kind/subject display header. Durable mappings
+preserve Pockymoe/Core message IDs and translate `--in-reply-to` to Core context
+IDs. Queue and steer run `treer agent prompt`, and direct requests choose steer
+for running recipients or queue otherwise. Receipts remain `queued`, `steered`
+or `held`. Prompting a closed recipient starts its Agent first.
+
+Request IDs deduplicate sends locally. A mail retry reuses its Core idempotency
+key, including after a restart. Treer's prompt CLI has no caller-supplied
+idempotency flag: the hub commits a dispatch marker before invoking it. If the
+process fails or the hub restarts before recording a confirmed receipt, retries
+return `held` and never dispatch that prompt again. Inspect the recipient queue
+and history to resolve this uncertain outcome.
+
+Every live binding has an Agent-scoped receive worker using
+`treer message receive --wait 30000 --limit 50`. One transaction stores each
+fresh message in the existing inbox, its Core ID mapping, any eligible queued
+wake, and its pending ack operation. Only after that commit does the worker call
+`treer message ack`. Pending acks survive restarts, retry with the same operation
+ID, and disappear only after a confirmed acknowledgement. Duplicate Core IDs
+never create another inbox record or turn. Detaching cancels the subprocess;
+reattaching resumes pending acknowledgements before receiving more mail.
+
+The inbox shows attested Treer sender kind/ID/path and Core context IDs, and maps
+known senders back to local thread IDs. Human senders or messages with an
+external-source envelope also queue a prompt with quoted third-party data,
+message IDs and a `treer message get <id>` hint. This decision uses only the Core
+envelope, never body text, labels or completion-looking JSON. Automatic prompts
+allow three wakes per sender kind/ID and recipient per minute; additional mail
+stays unread in the inbox. Other Agent, machine and service mail stays passive,
+and the existing unread reminder applies. Replies map their context IDs to
+`inReplyTo` and satisfy matching existing inbox waits without starting a turn.
+
+`--notify-on-complete` maps to Treer's opt-in `--notify`. A completion is correlated
+only when its attested Agent sender and submission ID match an outbound request
+that opted in. It is stored as passive `result` mail with `inReplyTo` pointing to
+that request. Completion-looking text from another Agent cannot claim the
+subscription and remains ordinary passive mail.
+
+Same-hub `--attach` snapshots files (and archives directories) using the existing
+file-copy helper. Retries reuse those copies, and the message names their local
+paths. Across machines, attachments are refused with a `treer machine put` hint:
+Core Messages are text-only. Transfer files first and mail the destination paths.
+
+The hosted `pockymoe skill` and managed-thread topic guides append the Treer
+addendum: create children with `pockymoe thread create` to record lineage and use
+Treer policy; `treer agent admin create` and profile launches are unrelated
+top-level creation. Standalone skill/guide text is unchanged. The bridge requires
+the thread/Agent registry to supply a live identity for every child; until that
+registry is installed, unbound children fail closed.

@@ -39,6 +39,9 @@ pub(crate) struct Hub {
     lifecycle: tokio::sync::Mutex<()>,
     creating: Mutex<HashSet<String>>,
     browser_commands: Mutex<browser::Commands>,
+    message_executable: Mutex<std::path::PathBuf>,
+    message_operations: tokio::sync::Mutex<()>,
+    message_workers: Mutex<HashSet<(String, String)>>,
 }
 #[derive(Clone)]
 struct Binding {
@@ -105,6 +108,7 @@ impl Scope {
 }
 mod browser;
 mod registry;
+pub(crate) mod messages;
 
 fn failure(status: StatusCode, code: &str) -> Response {
     (status, Json(json!({"error":code,"code":code}))).into_response()
@@ -233,6 +237,7 @@ impl Hub {
             "invalid attach token"
         );
         registry::ensure_schema(&state)?;
+        state.db.with(|c| Ok(c.execute_batch(messages::SCHEMA)?))?;
         let pending_bindings = state.db.with(|c| {
             let mut stmt = c.prepare("SELECT t.id FROM threads t LEFT JOIN treer_registry r ON r.thread_id=t.id WHERE r.state IS NULL OR r.state!='hidden'")?;
             let ids = stmt
@@ -266,6 +271,9 @@ impl Hub {
             lifecycle: Default::default(),
             creating: Default::default(),
             browser_commands: Default::default(),
+            message_executable: Mutex::new("treer".into()),
+            message_operations: Default::default(),
+            message_workers: Default::default(),
         });
         hub.state
             .set_thread_host(Arc::new(registry::Registry::new(&hub)))?;
@@ -278,11 +286,14 @@ impl Hub {
                 tokio::time::sleep(std::time::Duration::from_secs(60)).await;
             }
         });
+        hub.state
+            .set_host_messaging(Arc::new(messages::Bridge(Arc::downgrade(&hub))));
         let weak = Arc::downgrade(&hub);
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                 let Some(hub) = weak.upgrade() else { break };
+                hub.start_message_workers();
                 hub.deliver_notifications().await;
             }
         });
@@ -902,7 +913,7 @@ impl Hub {
         let input: ThreadSendInput = serde_json::from_value(
             json!({"text":prompt.text,"delivery":delivery,"clientRequestId":key,"subject":hash}),
         )?;
-        let result = self.state.send_to_thread(thread, input)?;
+        let result = self.state.send_to_thread_locally(thread, input)?;
         let id = result["pendingSteerId"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("missing submission id"))?;

@@ -1,4 +1,5 @@
 //! Treer AIS v1 wire contract and pure forwarding/transcript decisions.
+pub mod messages;
 use pockymoe_protocol::{ThreadItemKind, ThreadTurnDto};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -24,7 +25,10 @@ pub fn identity_env(
     agent: &str,
     identity: &pockymoe_protocol::treer::AttachTreerIdentity,
 ) -> Vec<(String, String)> {
-    let mut env = vec![("TREER_AGENT_ID".into(), agent.into())];
+    let mut env = vec![
+        ("TREER_AGENT_ID".into(), agent.into()),
+        ("POCKYMOE_HOST_GUIDE".into(), "1".into()),
+    ];
     for (key, value) in [
         ("TREER_WORKLOAD_CREDENTIAL", &identity.workload_credential),
         ("TREER_AGENT_SERVER_URL", &identity.agent_server_url),

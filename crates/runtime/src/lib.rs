@@ -9,6 +9,7 @@ pub mod file_documents;
 pub mod files;
 pub mod history;
 pub mod host_hooks;
+pub mod host_messaging;
 pub mod host_mode;
 pub mod import_id;
 pub mod interaction;
