@@ -182,7 +182,8 @@ def commands(definitions, pockymoe, data_dir, hub_port, cwd, treer, create_hub):
     for profile in definitions["profiles"]:
         result.append([treer, "agent", "admin", "profile", "create", profile["name"],
                        "--description", profile["description"], "--cwd", cwd, str(pockymoe), "--"]
-                      + profile["args"] + ["--hub", f"http://127.0.0.1:{hub_port}",
+                      + profile["args"] + ["--hub-app", definitions["hub"]["name"],
+                                           "--hub", f"http://127.0.0.1:{hub_port}",
                                            "--hub-token-file", str(data_dir / "treer-attach.token")])
     return result
 

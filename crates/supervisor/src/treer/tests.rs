@@ -1572,3 +1572,7 @@ async fn browser_self_delete_finishes_when_treer_closes_the_callers_attach() {
     assert_eq!(deletion.await.unwrap().unwrap().status(), 204);
     assert!(f.hub.state.get_thread(id).is_err());
 }
+
+// W3: Managed App landing page and deny-all thread boundary.
+#[path = "app_page_tests.rs"]
+mod app_page;

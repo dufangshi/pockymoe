@@ -174,6 +174,43 @@ updates its current installation and exits for Treer to relaunch it; a saved
 versioned path would launch the old version. The App's Web bundle must follow
 `current/web` for the same reason.
 
+## Hub App
+
+The Managed App remains named `pockymoe`. It is the shared conversation hub for
+all Pockymoe Agents on that machine. Opening its App UI shows a small read-only
+page with the machine hostname, running version and number of durably bound
+Agents (including disconnected Agents). Use a Pockymoe Agent to open
+conversations. Stopping this App takes every Pockymoe Agent on the machine
+offline; they reconnect when it starts again.
+
+App UI tunnel requests carry `X-Treer-Identity-Token` without Agent interface
+markers. Only loopback requests with that header can select this page. The
+header grants no conversation access: `/api/status`, `/v1/status` and `/healthz`
+return hub metadata; all other API paths, thread pages, WebSockets and writes
+receive a read-only JSON denial. Responses never include thread titles, IDs or
+credentials. The token is neither interpreted nor echoed because this surface
+provides only non-privileged hub metadata. Agent interface requests continue to
+require their normal provenance and live binding. Standalone hubs retain their
+existing routes and reject Treer-marked requests.
+
+While any Pockymoe attach Agent runs, it attempts to start an accidentally
+stopped hub after at least thirty seconds of unavailability. It uses its own
+Treer identity to inspect `treer agent show <self>` and `treer app list`, then
+requests `treer agent start <app-id>` only when the matching App reports
+`stopped` or `exited`. Lookups and start requests are limited to one attempt per
+two minutes, including failures. Running, pending, unavailable or ambiguous
+Apps are left alone; Policy denials and subprocess diagnostics are suppressed.
+Attach never stops or restarts an App. With no running attach Agent, Treer's
+normal stopped intent remains in effect.
+
+Setup converges both new and existing launch profiles with `--hub-app pockymoe`.
+Attach also accepts an explicit App ID and retains this option when saving its
+`attach --thread` startup command. Older profiles without the flag discover the
+setup-created `pockymoe` App by the loopback hub port. Recovery requires a unique
+matching App on the attach Agent's machine, with the same hub port and saved
+`POCKYMOE_HOST_MODE=hosted` / `POCKYMOE_HOSTED_BY=treer` settings. Existing running
+attach processes gain recovery after their next normal Treer restart.
+
 ## Attach command
 
 Treer launches attach as one Agent, with the project as its current directory:
