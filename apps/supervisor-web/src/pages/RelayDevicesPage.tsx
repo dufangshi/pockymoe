@@ -9,10 +9,9 @@ import {
   type SupervisorPlatform,
   type DeviceBindingFlags,
 } from '../lib/deviceSetupCommands';
-import { DeviceBindingPanel } from '../components/DeviceBindingPanel';
-import { ProtectDevicesButton, RemoteProtectionStatus } from '../components/RemoteProtectionControls';
-import { FormDialog } from '../components/FormDialog';
-import { useDeviceProtection, protectionLabel } from '../lib/useDeviceProtection';
+import { ProtectDevicesButton } from '../components/RemoteProtectionControls';
+import { DeviceProtectionBadge } from '../components/DeviceProtectionBadge';
+import { useDeviceProtection } from '../lib/useDeviceProtection';
 import { getTransportStatus } from '../lib/relayTransport';
 import { getLocale } from '@pockymoe/thread-ui/i18n';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
@@ -2057,7 +2056,6 @@ function DeviceRow({
   onShare: () => void;
 }) {
   const { locale: i18nLocale } = useI18n();
-  const [protectOpen, setProtectOpen] = useState(false);
   const [transportStatus, setTransportStatus] = useState(() =>
     getTransportStatus(device.id),
   );
@@ -2077,10 +2075,10 @@ function DeviceRow({
   const menuId = `device-actions-${useId()}`;
   const activityText = device.connected
     ? device.connectedAt
-      ? `Online since ${formatRelayTimestamp(device.connectedAt)}`
+      ? translate('devices.onlineSince', { value1: formatRelayTimestamp(device.connectedAt) })
       : translate("devices.onlineConnectedTimeUnavailable")
     : device.lastHeartbeatAt
-      ? `Last heartbeat ${formatRelayTimestamp(device.lastHeartbeatAt)}`
+      ? translate('devices.lastSeen', { value1: formatRelayTimestamp(device.lastHeartbeatAt) })
       : translate("devices.noHeartbeatRecorded");
 
   useEffect(() => {
@@ -2182,37 +2180,13 @@ function DeviceRow({
           {device.tokenPreview}
         </p>
       </div>
-      <div className="min-w-0 text-xs text-[var(--theme-fg-muted)]">
+      <div className="device-meta flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[var(--theme-fg-muted)]">
         <p>{activityText}</p>
         <DeviceEncryptionStatus deviceId={device.id} online={device.connected} />
-        <RemoteProtectionStatus device={device} />
-        <p role={protection === 'certificate-missing' ? 'alert' : undefined}>
-          {translate(protectionLabel(protection))}
-        </p>
-        {(protection === 'not-protected' || protection === 'certificate-missing' || protection === 'pending') && (
-          <button
-            className="relay-button-secondary mt-2 px-3 py-2"
-            onClick={() => setProtectOpen(true)}
-          >
-            {translate(protection === 'pending' ? 'devices.showLocalBindCommand' : protection === 'certificate-missing' ? 'devices.repairDevice' : 'devices.protectDevice')}
-          </button>
-        )}
-        {protectOpen && (
-          <FormDialog
-            title={translate(protection === 'certificate-missing' ? 'devices.repairDevice' : 'devices.protectDevice')}
-            onClose={() => setProtectOpen(false)}
-          >
-            <DeviceBindingPanel
-              deviceId={device.id}
-              device={device}
-              repair={protection === 'certificate-missing'}
-            />
-          </FormDialog>
-        )}
-
+        <DeviceProtectionBadge device={device} protection={protection} />
         {copiedSetup ? (
           <p
-            className="mt-1 text-[var(--status-success-fg)]"
+            className="basis-full text-[var(--status-success-fg)]"
             role="status"
           >
             {translate("devices.setupCommandCopied")}</p>

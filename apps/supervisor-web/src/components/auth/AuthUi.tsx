@@ -22,6 +22,9 @@ export function AuthShell({ children }: { children: ReactNode }) {
           <Link className="auth-topbar-link inline-flex min-h-11 items-center rounded-lg px-3 text-sm text-[var(--theme-fg-muted)] hover:text-[var(--theme-fg)]" to="/relay-guide">
             {translate('auth.guide')}
           </Link>
+          <Link className="auth-topbar-link inline-flex min-h-11 items-center rounded-lg px-3 text-sm text-[var(--theme-fg-muted)] hover:text-[var(--theme-fg)]" to="/help/account">
+            {translate('common.help')}
+          </Link>
         </div>
       </header>
       <div className="flex flex-1 justify-center px-4 pb-16 pt-4 sm:items-center sm:pb-24 sm:pt-0">{children}</div>

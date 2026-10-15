@@ -44,6 +44,7 @@ import { RelayAccountPage } from './pages/RelayAccountPage';
 import { RelayAdminPage } from './pages/RelayAdminPage';
 import { RelayDevicesPage } from './pages/RelayDevicesPage';
 import { RelayGuidePage } from './pages/RelayGuidePage';
+import { HelpPage } from './pages/HelpPage';
 import { RelayHomePage } from './pages/RelayHomePage';
 import { RelayPortalPage } from './pages/RelayPortalPage';
 import { RelaySettingsPage } from './pages/RelaySettingsPage';
@@ -133,6 +134,9 @@ function routeDocumentTitle(pathname: string) {
   }
   if (pathname === '/relay-guide') {
     return translate("workbench.relaySetup");
+  }
+  if (pathname === '/help' || pathname.startsWith('/help/')) {
+    return translate('common.help');
   }
   if (pathname === '/relay-admin') {
     return translate("workbench.relayAdmin");
@@ -663,6 +667,8 @@ export function App() {
             <Route path="/devices/:deviceId/ports/:mappingId" element={<RelayGate><PortPreviewPage /></RelayGate>} />
             <Route path="/s/:id" element={<PublicThreadPage />} />
             <Route path="/relay-guide" element={<RelayGuidePage />} />
+            <Route path="/help" element={<HelpPage />} />
+            <Route path="/help/:topic" element={<HelpPage />} />
             <Route path="/relay-portal" element={<RelayPortalPage />} />
             <Route path="/relay-admin" element={<RelayAdminPage />} />
             <Route

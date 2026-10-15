@@ -140,8 +140,8 @@ Google or GitHub sign in as usual and choose an unlock password. The relay
 administrator account signs in at `/relay-admin` with its configured password and
 has no account key.
 
-A device that is not bound keeps working without protection (**Not protected ·
-Relay trusted**) until its owner protects it: with **Protect all devices** on the
+A device that is not bound keeps working without protection (**Not protected**,
+trusting the relay) until its owner protects it: with **Protect all devices** on the
 Devices page, or with **Protect this device** and the shown `pockymoe bind`
 command run on the device, or by rerunning its setup command. The device must run
 a runtime version that supports binding. Step-by-step:

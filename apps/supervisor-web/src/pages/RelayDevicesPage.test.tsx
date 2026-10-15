@@ -203,6 +203,8 @@ describe('device setup reauthentication', () => {
 it('keeps the local command accessible for a pending enrollment on the Devices page', async () => {
   vi.mocked(useDeviceProtection).mockReturnValue('pending');
   await openPage();
+  // The row keeps a short label; the command is one tap behind it.
+  fireEvent.click(await screen.findByRole('button', {name:'Waiting for bind'}));
   fireEvent.click(screen.getByRole('button', {name:'Show local bind command'}));
   expect(screen.getByRole('dialog', {name:'Protect this device'})).toBeVisible();
 });

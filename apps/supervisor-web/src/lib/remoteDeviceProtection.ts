@@ -130,6 +130,26 @@ export async function deviceProtectionProgress(
   return terminal.get(key(account, deviceId));
 }
 
+/**
+ * A stored "bound to another account key" failure stays until the device says
+ * otherwise. Once the device was reset (`pockymoe bind --reset`) and reports no
+ * binding, drop the failed attempt so the device shows as unprotected again.
+ */
+export async function clearResolvedAccountMismatch(device: RelayDeviceDto) {
+  if (!device.connected) return false;
+  const account = await currentAccount();
+  if (!account) return false;
+  const pending = (await listPendingEnrollments(account)).find(
+    (p) => p.deviceId === device.id,
+  );
+  const intent = pending?.remoteProtection;
+  if (!pending || intent?.phase !== 'error' || intent.error !== 'account-mismatch')
+    return false;
+  const descriptor = await inspectEnrollmentDevice(device.id);
+  if (descriptor.certificate || descriptor.trust?.bound !== false) return false;
+  return deletePendingEnrollment(device.id, pending);
+}
+
 async function switchableLocalEnrollment(
   device: RelayDeviceDto,
   account: AccountKeyInfo,

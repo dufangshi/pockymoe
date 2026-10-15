@@ -115,7 +115,7 @@ docker run -d --name pockymoe-relay --restart unless-stopped \
 
 账户、二步验证、设备、共享和 thread 都会保留。还没有账户密钥的账户第一次普通登录会失败，这时选择「Continue with this password」（这是密码唯一一次发给 Relay），随后在「Secure your account」设置一个至少 12 个字符的密码并保存恢复码。完成之前，Relay 只允许会话、退出登录和设备相关的请求；升级前已有的会话也受同样限制，并会被要求重新登录。创建 vault 时 Relay 会删除旧的密码哈希。使用 Google 或 GitHub 登录的账户照常登录，然后设置一个解锁密码。Relay 管理员账户在 `/relay-admin` 用配置的密码登录，没有账户密钥。
 
-未绑定的设备照常可用，但不受保护（「Not protected · Relay trusted」），直到所有者保护它：在 Devices 页面点「Protect all devices」，或点「Protect this device」并在设备上运行显示的 `pockymoe bind` 命令，或重新运行它的安装命令。设备需要运行支持绑定的版本。逐步说明见 [Migration](account-key-trust.md#migration)。
+未绑定的设备照常可用，但不受保护（「未保护」，信任 Relay），直到所有者保护它：在 Devices 页面点「Protect all devices」，或点「Protect this device」并在设备上运行显示的 `pockymoe bind` 命令，或重新运行它的安装命令。设备需要运行支持绑定的版本。逐步说明见 [Migration](account-key-trust.md#migration)。
 
 发布的 `remote-codex-web.zip` 提供这个升级。所有账户都完成保护后，设置 `VITE_POCKYMOE_LEGACY_UPGRADE=0` 从源码构建网页（例如下面的[静态构建](#构建静态网页)）即可去掉它。此后仍没有 vault 的账户需要先[重置密码](#重置密码)才能登录并完成保护。
 

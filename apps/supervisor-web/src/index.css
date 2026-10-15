@@ -10,6 +10,13 @@
 .device-presence-label.is-offline { color: var(--theme-fg-muted); background: var(--theme-muted); }
 :root[data-theme-effective='dark'] .device-presence-dot.is-online { background: oklch(0.78 0.18 155); box-shadow: 0 0 0 3px oklch(0.78 0.18 155 / 16%); }
 :root[data-theme-effective='dark'] .device-presence-label.is-online { color: oklch(0.85 0.13 155); background: oklch(0.3 0.055 155); }
+.device-status-chip { display: inline-flex; min-height: 24px; flex-shrink: 0; align-items: center; gap: 4px; border: 1px solid transparent; border-radius: 999px; padding: 2px 8px; font-size: 12px; font-weight: 600; line-height: 1.2; white-space: nowrap; color: var(--theme-fg-muted); background: var(--theme-muted); }
+.device-status-chip:hover { border-color: var(--theme-border); }
+.device-status-chip:focus-visible { outline: 2px solid var(--theme-accent-strong); outline-offset: 1px; }
+.device-status-chip[data-tone='ok'] { min-width: 24px; justify-content: center; padding: 2px; color: var(--status-success-fg); background: transparent; }
+.device-status-chip[data-tone='info'] { color: var(--status-info-fg); background: var(--status-info-bg); }
+.device-status-chip[data-tone='warn'] { color: var(--status-warning-fg); background: var(--status-warning-bg); }
+.device-status-chip[data-tone='error'] { color: var(--status-danger-fg); background: var(--status-danger-bg); }
 @font-face { font-family: 'DM Sans'; font-style: normal; font-weight: 400 700; font-display: swap; src: url('/fonts/dm-sans-latin.woff2') format('woff2'); }
 
 .matter-topbar-search { position: relative; min-width: 0; }
@@ -2579,3 +2586,25 @@ main:has(.product-navigation) { padding-top: 0 !important; }
   border-radius: 10px !important;
   font-size: 13px;
 }
+
+/* Help center articles (/help). */
+.help-nav-link { color: var(--theme-fg-muted); }
+.help-nav-link:hover { color: var(--theme-fg); background: var(--theme-hover); }
+.help-nav-link.is-active { color: var(--theme-fg); font-weight: 600; background: var(--theme-muted); }
+.help-prose { font-size: 15px; line-height: 1.7; color: var(--theme-fg); }
+.help-prose h1 { margin: 0 0 12px; font-size: 26px; font-weight: 700; line-height: 1.3; }
+.help-prose h1 + p { color: var(--theme-fg-muted); }
+.help-prose h2 { margin: 36px 0 8px; padding-top: 16px; border-top: 1px solid var(--theme-border); font-size: 18px; font-weight: 650; line-height: 1.4; scroll-margin-top: 16px; }
+.help-prose h2:target { color: var(--theme-accent-strong); }
+.help-prose h3 { margin: 24px 0 6px; font-size: 16px; font-weight: 650; scroll-margin-top: 16px; }
+.help-prose p, .help-prose ul, .help-prose ol, .help-prose blockquote { margin: 10px 0; }
+.help-prose ul { padding-left: 1.25em; list-style: disc; }
+.help-prose ol { padding-left: 1.4em; list-style: decimal; }
+.help-prose li + li { margin-top: 4px; }
+.help-prose a { color: var(--theme-accent-strong); text-decoration: underline; text-underline-offset: 2px; }
+.help-prose code { border-radius: 6px; padding: 1px 6px; font-size: 0.88em; background: var(--theme-muted); overflow-wrap: anywhere; }
+.help-prose blockquote { border-left: 3px solid var(--status-warning-border); border-radius: 0 8px 8px 0; padding: 8px 12px; color: var(--theme-fg); background: var(--status-warning-bg); }
+.help-prose blockquote p { margin: 0; }
+.help-prose .help-anchor { margin-left: 8px; color: var(--theme-fg-muted); text-decoration: none; opacity: 0; }
+.help-prose h2:hover .help-anchor, .help-prose h3:hover .help-anchor { opacity: 1; }
+@media (hover: none) { .help-prose .help-anchor { display: none; } }

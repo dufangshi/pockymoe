@@ -192,7 +192,7 @@ test('protected thread stays connected through encrypted heartbeats and receives
     await unlock.getByRole('button', { name: 'Unlock', exact: true }).click();
   }
   const row = page.locator('article').filter({ has: page.getByText('Heartbeat device', { exact: true }) });
-  await expect(row.getByText('Protected', { exact: true })).toBeVisible({ timeout: 40_000 });
+  await expect(row.getByRole('button', { name: 'Protected', exact: true })).toBeVisible({ timeout: 40_000 });
   let connections = 0;
   let allEncrypted = true;
   const received: string[] = [], sent: string[] = [], errors: string[] = [];
@@ -278,7 +278,7 @@ test('Explorer media of a protected device loads through the encrypted transport
     await unlock.getByRole('button', { name: 'Unlock', exact: true }).click();
   }
   const row = page.locator('article').filter({ has: page.getByText('Static media device', { exact: true }) });
-  await expect(row.getByText('Protected', { exact: true })).toBeVisible({ timeout: 40_000 });
+  await expect(row.getByRole('button', { name: 'Protected', exact: true })).toBeVisible({ timeout: 40_000 });
   const plaintext = await relayApi(`${api}/workspaces/${workspace.id}/files/raw?path=docs%2Fimages%2Fplot.png`);
   expect(plaintext).toMatchObject({ status: 403, data: { code: 'device_strict_mode' } });
 

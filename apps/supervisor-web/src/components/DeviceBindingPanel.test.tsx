@@ -100,7 +100,7 @@ it('reopens an existing local enrollment with its command and no remote alternat
     await screen.findByRole('button', { name: 'Copy bind command' }),
   ).toBeVisible();
   expect(
-    await screen.findByText(/Waiting for the local bind command/),
+    await screen.findByText(/Run the bind command on the device/),
   ).toBeVisible();
   expect(
     screen.queryByRole('button', { name: 'Protect this device remotely' }),

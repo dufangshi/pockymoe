@@ -13,7 +13,7 @@ import { RecoveryConfirmation } from './AccountUnlockPrompt';
 interface BrowserRow { certificate: BrowserCertificate; label: string; createdAt: number; lastSeenAt: number }
 export function AccountSecurityPanel() {
   useI18n(); const [browsers, setBrowsers] = useState<BrowserRow[]>([]), [thisId, setThisId] = useState<string>();
-  const [code, setCode] = useState(''), [error, setError] = useState<string>(), [busy, setBusy] = useState(false);
+  const [code, setCode] = useState(''), [accountId, setAccountId] = useState(''), [error, setError] = useState<string>(), [busy, setBusy] = useState(false);
   const [action, setAction] = useState<'password' | 'reset' | 'recovery'>(), [password, setPassword] = useState('');
   const [recovery, setRecovery] = useState<string>(), [message, setMessage] = useState<string>();
   const [recoverySession, setRecoverySession] = useState(false);
@@ -25,7 +25,7 @@ export function AccountSecurityPanel() {
     for (const row of data.browsers) if (!await verifyBrowserCertificate(row.certificate, account)) throw new Error(translate('auth.accountCertificateInvalid'));
     const revocations = await accountRevocations(true);
     setBrowsers(data.browsers.filter(b => !revocations.some(r => r.kind === 'browser' && r.subjectId === b.certificate.browserId)));
-    setThisId((await currentBrowser())?.browserId); setCode(await safetyCode(account.accountKeyId));
+    setThisId((await currentBrowser())?.browserId); setCode(await safetyCode(account.accountKeyId)); setAccountId(account.accountKeyId.slice(0, 12));
   }
   useEffect(() => { void load().catch(e => setError(e instanceof Error ? e.message : translate('auth.accountRequestFailed'))); }, []);
   const [verification, setVerification] = useState<SecurityStatus>();
@@ -47,6 +47,8 @@ export function AccountSecurityPanel() {
     <h2 className="font-semibold">{translate('auth.accountDeviceSecurity')}</h2>
     <p className="text-sm text-[var(--theme-fg-muted)]">{translate('auth.accountPasswordHelp')}</p>
     <p>{translate('auth.accountSafetyCode')} <code className="font-mono">{code}</code></p>
+    {/* `pockymoe bind --status` prints the same 12 characters on a bound device. */}
+    <p>{translate('auth.accountKeyIdLabel')} <code className="font-mono">{accountId}</code></p>
     {error && <p role="alert">{error}</p>}{message && <p role="status">{message}</p>}
     <h3>{translate('auth.accountBrowsers')}</h3>
     <ul className="space-y-3">{browsers.map(b => <li className="owner-trust-row" key={b.certificate.browserId}>

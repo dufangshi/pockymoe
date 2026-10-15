@@ -292,9 +292,11 @@ export class Fixture {
     const page = owner.page;
     await page.goto(this.base + '/relay-devices');
     const row = page.locator('article').filter({ has: page.getByText(`Signed device ${device.db.match(/device-(\d+)/)![1]}`, { exact: true }) });
-    await expect(row.getByText('Not protected · Relay trusted', { exact: true })).toBeVisible();
+    const status = row.getByRole('button', { name: 'Not protected', exact: true });
+    await expect(status).toBeVisible();
     if (capture) await screenshot(page, this.info, 'v2-device-unprotected');
-    await row.getByRole('button', { name: 'Protect this device', exact: true }).click();
+    await status.click();
+    await page.getByRole('dialog', { name: 'Not protected', exact: true }).getByRole('button', { name: 'Protect this device', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: 'Protect this device', exact: true });
     // Runtimes that support remote binding offer it first; this fixture exercises
     // the local command, which the panel prepares only after an explicit choice.
@@ -322,14 +324,14 @@ export class Fixture {
     // The monitor keeps polling an already-online device until the command runs,
     // then completes enrollment without a reload or a second password entry.
     await page.bringToFront();
-    const retry = page.getByRole('button', { name: 'Retry enrollment', exact: true });
-    await expect.poll(async () => await row.getByText('Protected', { exact: true }).isVisible() || await retry.isVisible(), { timeout: 40_000 }).toBe(true);
-    if (await retry.isVisible()) {
-      const diagnosis = await page.getByRole('alert').allTextContents();
+    const failed = row.getByRole('button', { name: /^(Protection failed|Bound to another account|Update failed|Needs repair)$/ });
+    await expect.poll(async () => await row.getByRole('button', { name: 'Protected', exact: true }).isVisible() || await failed.isVisible(), { timeout: 40_000 }).toBe(true);
+    if (await failed.isVisible()) {
+      const diagnosis = await failed.allTextContents();
       this.events.push('enrollment premature pause: ' + diagnosis.join(' '));
       expect.soft(false, 'ENROLLMENT_AUTOMATIC: monitor paused before the Protect command was executed on an online device. ' + diagnosis.join(' ')).toBe(true);
     }
-    await expect(row.getByText('Protected', { exact: true })).toBeVisible({ timeout: 40_000 });
+    await expect(row.getByRole('button', { name: 'Protected', exact: true })).toBeVisible({ timeout: 40_000 });
     if (capture) await screenshot(page, this.info, 'v2-device-protected');
     await page.goto(device.url);
     await expect(page.getByRole('textbox', { name: 'Prompt', exact: true })).toBeVisible();

@@ -35,6 +35,8 @@ it.each(['en', 'zh-CN'] as const)('shows verified named browsers, own badge, tim
   setLocale(locale); render(<AccountSecurityPanel />);
   expect(await screen.findByText('My laptop')).toBeVisible(); expect(screen.getByText(translate('auth.ownerCurrent'))).toBeVisible();
   expect(screen.getByText(vectors.safetyCode.display)).toBeVisible();
+  // The same 12 characters `pockymoe bind --status` prints on a bound device.
+  expect(screen.getByText(vectors.account.accountKeyId.slice(0, 12))).toBeVisible();
   expect(state.verify).toHaveBeenCalledWith(vectors.browserCertificate.certificate, vectors.account);
 });
 it('rejects an invalid relay-supplied browser certificate before listing it', async () => {

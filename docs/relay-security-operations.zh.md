@@ -73,7 +73,7 @@ WebSocket 一次握手后复用分方向 AES-GCM 密钥，以单调序号构造 
 
 在网页 Devices 页面复制的安装命令会把新设备绑定到账户密钥；已有设备用「Protect this device」给出的 `pockymoe bind` 命令在本机绑定。协议、错误码和接口见 [Account key trust](account-key-trust.md)。
 
-| | 未绑定（Not protected · Relay trusted） | 已绑定（Protected） |
+| | 未绑定（未保护，信任 Relay） | 已绑定（已保护） |
 | --- | --- | --- |
 | 谁能指挥设备 | relay 授权的任何请求 | 只有账户密钥认证过的浏览器签名的请求 |
 | 浏览器操作 | 登录 relay 即可 | 每个浏览器用密码登录一次，长期有效，直到退出登录或被移除 |

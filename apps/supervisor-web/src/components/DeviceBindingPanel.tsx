@@ -8,10 +8,8 @@ import {
   REMOTE_PROTECTION_CHANGED_EVENT,
 } from '../lib/remoteDeviceProtection';
 import { ENROLLMENT_CHANGED_EVENT } from '../lib/pendingEnrollmentStore';
-import {
-  ProtectDevicesButton,
-  RemoteProtectionStatus,
-} from './RemoteProtectionControls';
+import { ProtectDevicesButton } from './RemoteProtectionControls';
+import { RemoteProtectionProgress } from './DeviceProtectionStatus';
 import {
   deviceBindCommand,
   type SupervisorPlatform,
@@ -127,7 +125,7 @@ function DeviceBindingContent({
           </button>
         </>
       )}
-      {device && <RemoteProtectionStatus device={device} />}
+      {device && <RemoteProtectionProgress device={device} />}
       {error && <p role="alert">{error}</p>}
       {(mode === 'loading' || mode === 'local') && !command && !error && (
         <p role="status">{translate('auth.ownerPreparing')}</p>

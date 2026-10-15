@@ -51,8 +51,8 @@ installed device, rerunning a setup command binds the existing installation and
 keeps its registration, provided the Web origin saved at installation matches
 the command's.
 
-Devices installed without the binding flags show **Not protected · Relay
-trusted**. **Protect all devices** on the Devices page binds them from the browser
+Devices installed without the binding flags show **Not protected**.
+**Protect all devices** on the Devices page binds them from the browser
 in one step and offers **Update and protect** for older runtimes; it trusts the
 relay at the moment of binding ([one-click protection](account-key-trust.md#protect-all-devices)).
 **Protect this device** offers the same for one device, or **Show local bind

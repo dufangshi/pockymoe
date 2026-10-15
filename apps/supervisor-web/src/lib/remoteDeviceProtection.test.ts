@@ -27,6 +27,7 @@ import {
   runRemoteProtection,
   updateAndProtectDevice,
   deviceProtectionProgress,
+  clearResolvedAccountMismatch,
 } from './remoteDeviceProtection';
 import { clearTransportKeyCache } from './relayTransportCrypto';
 
@@ -743,5 +744,28 @@ describe('explicit local-to-remote enrollment switch', () => {
     expect(pending(id).enrollSecret).toBe('another-local-secret');
     expect(createPendingEnrollment).not.toHaveBeenCalled();
     expect(deviceTrustRequest).not.toHaveBeenCalled();
+  });
+});
+
+describe('stale account mismatch', () => {
+  function failed(id: string) {
+    records.set(id, { deviceId: id, userId: account.userId, accountKeyId: account.accountKeyId, createdAt: 1,
+      enrollSecret: `secret-${id}`, remoteProtection: { phase: 'error', error: 'account-mismatch' } });
+  }
+  it('clears the failure once the reset device reports no binding', async () => {
+    failed('reset');
+    expect(await clearResolvedAccountMismatch(device('reset'))).toBe(true);
+    expect(records.has('reset')).toBe(false);
+    expect(await deviceProtectionProgress('reset')).toBeUndefined();
+  });
+  it('keeps the failure while the device is still bound elsewhere, offline, or failed otherwise', async () => {
+    failed('elsewhere'); bound.add('elsewhere');
+    vi.mocked(inspectEnrollmentDevice).mockResolvedValueOnce({ identityKey: 'identity', trust: { bound: true, strict: true, accountKeyId: 'other' } } as never);
+    expect(await clearResolvedAccountMismatch(device('elsewhere'))).toBe(false);
+    failed('offline');
+    expect(await clearResolvedAccountMismatch(device('offline', false))).toBe(false);
+    records.set('update', { ...pending('offline'), deviceId: 'update', remoteProtection: { phase: 'error', error: 'update-failed' } });
+    expect(await clearResolvedAccountMismatch(device('update'))).toBe(false);
+    expect([...records.keys()].sort()).toEqual(['elsewhere', 'offline', 'update']);
   });
 });

@@ -71,9 +71,9 @@ test('one-click protection certifies two unbound devices and detects a relay-sub
     // browser certificate still permits ordinary device reads.
     await owner.page.goto(f.base + '/relay-devices');
     const row = (device: Device) => owner.page.locator('article').filter({ has: owner.page.getByText(`Signed device ${device.db.match(/device-(\d+)/)![1]}`, { exact: true }) });
-    for (const device of devices) await expect(row(device).getByText('Not protected · Relay trusted', { exact: true })).toBeVisible();
+    for (const device of devices) await expect(row(device).getByRole('button', { name: 'Not protected', exact: true })).toBeVisible();
     const offered = await protectAll(owner.page, owner.password, 'ONE_CLICK');
-    await expect.configure({ soft: true }).poll(async () => (await Promise.all(devices.map(device => row(device).getByText('Protected', { exact: true }).isVisible()))).every(Boolean),
+    await expect.configure({ soft: true }).poll(async () => (await Promise.all(devices.map(device => row(device).getByRole('button', { name: 'Protected', exact: true }).isVisible()))).every(Boolean),
       { timeout: offered ? 30_000 : 100, message: 'ONE_CLICK_PROTECTED: both initially unbound owned devices must complete enrollment automatically' }).toBe(true);
     expect.soft(await owner.page.evaluate(() => (window as any).__bulkUnlockSubmissions),
       'ONE_CLICK_SINGLE_UNLOCK: one password submission must protect both devices').toBe(1);
@@ -113,13 +113,13 @@ BEGIN
     account_public_key=(SELECT account_public_key FROM e2e_bind_substitution) WHERE singleton=1;
 END;''')`, { db: attacked.db, accountKeyId: foreignAccountKeyId, publicKey: foreignPublicKey });
     await owner.page.goto(f.base + '/relay-devices');
-    await expect(row(attacked).getByText('Not protected · Relay trusted', { exact: true })).toBeVisible();
+    await expect(row(attacked).getByRole('button', { name: 'Not protected', exact: true })).toBeVisible();
     const attackOffered = await protectAll(owner.page, owner.password, 'ONE_CLICK_MISMATCH');
     await expect.configure({ soft: true }).poll(async () => await f.sql('print(json.dumps(c.execute("SELECT account_key_id FROM device_owner_trust WHERE singleton=1").fetchone()[0]))', { db: attacked.db }),
       { timeout: attackOffered ? 15_000 : 100, message: 'ONE_CLICK_MISMATCH_INJECTED: fixture must substitute the account key during the actual first UI bind' }).toBe(foreignAccountKeyId);
-    const mismatch = owner.page.getByRole('alert').filter({ hasText: /different account key|another account key|account.*(?:mismatch|does not match)|(?:mismatch|does not match).*account/i }).first();
+    const mismatch = row(attacked).getByRole('button', { name: 'Bound to another account', exact: true });
     await expect.soft(mismatch, 'ONE_CLICK_MISMATCH_UI: Web must explicitly report a device bound to the wrong account key').toBeVisible({ timeout: attackOffered ? 15_000 : 100 });
-    await expect(row(attacked).getByText('Protected', { exact: true }), 'Substituted account must never be labeled Protected').toHaveCount(0);
+    await expect(row(attacked).getByRole('button', { name: 'Protected', exact: true }), 'Substituted account must never be labeled Protected').toHaveCount(0);
     const attackedDescriptor = ok(await f.api(attacked.api + '/transport/key?challenge=one-click-mismatch', 'GET', undefined, owner.cookie), 'Substituted device descriptor');
     expect(certificateValid(attackedDescriptor, attacked, owner), 'A wrong-account device must not acquire an owner certificate').toBe(false);
     f.events.push(`one-click offered=${offered} bindStatuses=${bindStatuses.join(',') || 'none'} originalCertificateUnchanged=${JSON.stringify(after.certificate) === JSON.stringify(before.certificate)} mismatchOffered=${attackOffered} mismatchVisible=${await mismatch.isVisible()} substitutedAccount=${attackedDescriptor.trust?.accountKeyId === foreignAccountKeyId}`);

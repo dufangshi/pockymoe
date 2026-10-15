@@ -1,26 +1,9 @@
-import {
-  act,
-  fireEvent,
-  render,
-  screen,
-  waitFor,
-  within,
-} from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { setLocale, translate } from '@pockymoe/thread-ui/i18n';
 import type { RelayDeviceDto } from '@pockymoe/shared';
-import {
-  ProtectDevicesButton,
-  RemoteProtectionStatus,
-} from './RemoteProtectionControls';
-import {
-  deviceProtectionProgress,
-  protectDevices,
-  canSwitchLocalEnrollmentToRemote,
-  switchLocalEnrollmentToRemote,
-  updateAndProtectDevice,
-  REMOTE_PROTECTION_CHANGED_EVENT,
-} from '../lib/remoteDeviceProtection';
+import { ProtectDevicesButton } from './RemoteProtectionControls';
+import { protectDevices } from '../lib/remoteDeviceProtection';
 vi.mock('../lib/remoteDeviceProtection', () => ({
   canSwitchLocalEnrollmentToRemote: vi.fn(async () => false),
   switchLocalEnrollmentToRemote: vi.fn(),
@@ -44,9 +27,6 @@ beforeEach(() => {
   vi.resetAllMocks();
   setLocale('en');
   vi.mocked(protectDevices).mockResolvedValue(undefined);
-  vi.mocked(canSwitchLocalEnrollmentToRemote).mockResolvedValue(false);
-  vi.mocked(switchLocalEnrollmentToRemote).mockResolvedValue(undefined);
-  vi.mocked(updateAndProtectDevice).mockResolvedValue(undefined);
 });
 describe('remote protection controls', () => {
   it.each(['en', 'zh-CN'] as const)(
@@ -102,175 +82,4 @@ describe('remote protection controls', () => {
       expect(protectDevices).toHaveBeenCalledExactlyOnceWith([offline]),
     );
   });
-  it('offers an explicit update action before updating an older device', async () => {
-    vi.mocked(deviceProtectionProgress).mockResolvedValue({
-      phase: 'update-required',
-    });
-    render(<RemoteProtectionStatus device={device} />);
-    expect(await screen.findByRole('status')).toHaveTextContent(
-      'Update this device before protecting it remotely.',
-    );
-    expect(updateAndProtectDevice).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('button', { name: 'Update and protect' }));
-    await waitFor(() =>
-      expect(updateAndProtectDevice).toHaveBeenCalledExactlyOnceWith(device.id),
-    );
-  });
-  it('shows account mismatch with the required local reset command and keeps retry disabled offline', async () => {
-    vi.mocked(deviceProtectionProgress).mockResolvedValue({
-      phase: 'error',
-      error: 'account-mismatch',
-    });
-    render(<RemoteProtectionStatus device={{ ...device, connected: false }} />);
-    expect(await screen.findByRole('alert')).toHaveTextContent(
-      'another account key',
-    );
-    expect(screen.getByRole('alert')).toHaveTextContent(
-      'pockymoe bind --reset',
-    );
-    expect(
-      screen.getByRole('button', { name: 'Retry enrollment' }),
-    ).toBeDisabled();
-  });
-  it.each(['certificate-missing', 'identity-changed'] as const)(
-    'shows a pinned-device %s error without reset advice or remote retry',
-    async (phase) => {
-      vi.mocked(deviceProtectionProgress).mockResolvedValue({ phase });
-      render(<RemoteProtectionStatus device={device} />);
-      const alert = await screen.findByRole('alert');
-      expect(alert).toHaveTextContent(
-        translate(
-          phase === 'certificate-missing'
-            ? 'devices.certificateMissingHelp'
-            : 'auth.accountDeviceIdentityChanged',
-        ),
-      );
-      expect(alert).not.toHaveTextContent('pockymoe bind --reset');
-      expect(screen.queryByRole('button')).toBeNull();
-    },
-  );
-  it.each(['en', 'zh-CN'] as const)(
-    'explains a pending local command in %s without offering remote retry',
-    async (locale) => {
-      setLocale(locale);
-      vi.mocked(deviceProtectionProgress).mockResolvedValue({
-        phase: 'local-command-pending',
-      });
-      render(<RemoteProtectionStatus device={device} />);
-      expect(await screen.findByRole('status')).toHaveTextContent(
-        translate('devices.localCommandPending'),
-      );
-      expect(screen.queryByRole('button')).toBeNull();
-      expect(protectDevices).not.toHaveBeenCalled();
-    },
-  );
-  it('refreshes per-device progress as durable intent advances', async () => {
-    vi.mocked(deviceProtectionProgress).mockResolvedValue({ phase: 'queued' });
-    render(<RemoteProtectionStatus device={device} />);
-    expect(await screen.findByRole('status')).toHaveTextContent(
-      'waiting for the device to connect',
-    );
-    vi.mocked(deviceProtectionProgress).mockResolvedValue({
-      phase: 'certifying',
-    });
-    act(() => window.dispatchEvent(new Event(REMOTE_PROTECTION_CHANGED_EVENT)));
-    await waitFor(() =>
-      expect(screen.getByRole('status')).toHaveTextContent(
-        'Verifying enrollment',
-      ),
-    );
-  });
-});
-
-it.each(['en', 'zh-CN'] as const)(
-  'confirms the trade-off before discarding a local enrollment in %s',
-  async (locale) => {
-    setLocale(locale);
-    vi.mocked(deviceProtectionProgress).mockResolvedValue({
-      phase: 'local-command-pending',
-    });
-    vi.mocked(canSwitchLocalEnrollmentToRemote).mockResolvedValue(true);
-    render(<RemoteProtectionStatus device={device} />);
-    fireEvent.click(
-      await screen.findByRole('button', {
-        name: translate('devices.useOneClickProtectionInstead'),
-      }),
-    );
-    const dialog = screen.getByRole('dialog');
-    expect(
-      within(dialog).getByText(translate('devices.remoteProtectionTradeoff')),
-    ).toBeVisible();
-    expect(
-      within(dialog).getByText(
-        translate('devices.remoteProtectionLocalOption'),
-      ),
-    ).toBeVisible();
-    expect(
-      within(dialog).getByText(translate('devices.replaceLocalEnrollmentHelp')),
-    ).toBeVisible();
-    expect(switchLocalEnrollmentToRemote).not.toHaveBeenCalled();
-    fireEvent.click(
-      within(dialog).getByRole('button', {
-        name: translate('devices.confirmRemoteProtection'),
-      }),
-    );
-    await waitFor(() =>
-      expect(switchLocalEnrollmentToRemote).toHaveBeenCalledExactlyOnceWith(
-        device,
-      ),
-    );
-    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
-    expect(protectDevices).not.toHaveBeenCalled();
-  },
-);
-it('hides switching offline even if an old inspection was eligible, and refreshes eligibility on reconnect', async () => {
-  vi.mocked(deviceProtectionProgress).mockResolvedValue({
-    phase: 'local-command-pending',
-  });
-  vi.mocked(canSwitchLocalEnrollmentToRemote).mockResolvedValue(true);
-  const view = render(<RemoteProtectionStatus device={device} />);
-  expect(
-    await screen.findByRole('button', {
-      name: 'Use one-click protection instead',
-    }),
-  ).toBeVisible();
-  view.rerender(
-    <RemoteProtectionStatus device={{ ...device, connected: false }} />,
-  );
-  expect(
-    screen.queryByRole('button', { name: 'Use one-click protection instead' }),
-  ).toBeNull();
-  view.rerender(<RemoteProtectionStatus device={device} />);
-  expect(
-    await screen.findByRole('button', {
-      name: 'Use one-click protection instead',
-    }),
-  ).toBeVisible();
-});
-it('does not show switching for an eligible device without a pending local enrollment', async () => {
-  vi.mocked(deviceProtectionProgress).mockResolvedValue({ phase: 'queued' });
-  vi.mocked(canSwitchLocalEnrollmentToRemote).mockResolvedValue(true);
-  render(<RemoteProtectionStatus device={device} />);
-  await screen.findByRole('status');
-  expect(canSwitchLocalEnrollmentToRemote).not.toHaveBeenCalled();
-  expect(screen.queryByRole('button')).toBeNull();
-});
-it('keeps the local enrollment when the switch confirmation is cancelled', async () => {
-  vi.mocked(deviceProtectionProgress).mockResolvedValue({
-    phase: 'local-command-pending',
-  });
-  vi.mocked(canSwitchLocalEnrollmentToRemote).mockResolvedValue(true);
-  render(<RemoteProtectionStatus device={device} />);
-  fireEvent.click(
-    await screen.findByRole('button', {
-      name: 'Use one-click protection instead',
-    }),
-  );
-  fireEvent.click(
-    within(screen.getByRole('dialog')).getByRole('button', {
-      name: 'Close',
-    }),
-  );
-  expect(screen.queryByRole('dialog')).toBeNull();
-  expect(switchLocalEnrollmentToRemote).not.toHaveBeenCalled();
 });

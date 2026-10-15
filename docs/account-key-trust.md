@@ -10,7 +10,7 @@ the account, with no expiry. A device is bound once: when it is installed, with
 [Protect all devices](#protect-all-devices).
 
 Devices that are not bound keep trusting the relay; the Web labels them
-**Not protected · Relay trusted**.
+**Not protected**.
 
 Code: device `crates/supervisor/src/owner_trust.rs`, `grants.rs`, `tunnel.rs`,
 `auth.rs`, `ports.rs`, `secure_transport/client.rs`; relay
@@ -354,11 +354,14 @@ For each such device that is online, the browser reads its key descriptor:
    vault's bound devices. Signing the certificate asks for the password again if
    the unlock window has closed.
 
-Offline devices stay queued ("Protection queued; waiting for the device to
-connect.") and are bound when they connect while this browser has a page open,
-within the pending enrollment's 7 days. Each device row shows its progress or its
-error, with **Update and protect** or **Retry enrollment**. The local command
-stays available as the most secure option.
+Offline devices stay queued (**Waiting for device**) and are bound when they
+connect while this browser has a page open, within the pending enrollment's 7
+days. Each device row shows its progress or error as a short label; opening it
+explains the state in one sentence, offers **Update and protect** or **Retry**,
+and links to the matching answer on the in-app help page (`/help/devices`). A
+**Bound to another account** failure clears itself once the online device reports
+that it is unbound again (after `pockymoe bind --reset`), and the row returns to
+**Not protected**. The local command stays available as the most secure option.
 
 **Trade-off.** Until it is bound, a device obeys the relay, and its key
 descriptor carries no certificate the browser could check. The bind request is
@@ -410,13 +413,22 @@ started remote protection, on any page, while the device is online (checked ever
 
 ### Device states
 
+Each device row shows one label (a shield icon alone for **Protected**). Opening
+it gives a one-sentence explanation, the available action and a link to the
+matching answer on `/help/devices`.
+
 | Label | Meaning |
 | --- | --- |
 | **Protected** | The device presented a certificate that verifies with this account's own key and answered a signed request in the `owner` role. A device shared with you is never labelled Protected. |
-| **Not protected · Relay trusted** | Not listed in the vault, no pending enrollment in this browser, and the device's connection trusts the relay. |
-| **Waiting for first connection** | Not listed in the vault, and this browser holds a pending enrollment for the device (a copied command or queued remote protection). |
-| **Certificate missing** | The vault lists the device, but this page has no verified owner connection to it: the device is offline, presents no valid certificate, or presents a certificate for an identity other than the one the vault records. Also shown for a device removed from the account. The connection never falls back to relay trust. The row offers **Repair device binding**. |
-| **Protection not verified** | Not listed in the vault and no pending enrollment, while the device's connection state is unknown, for example while it is offline. |
+| **Not protected** | Not listed in the vault, no pending enrollment in this browser, and the device's connection trusts the relay. Offers **Protect this device**. |
+| **Waiting for bind** | Not listed in the vault, and this browser holds a pending local-command enrollment for the device. Offers **Show local bind command**. |
+| **Waiting for device**, **Update needed**, **Updating**, **Protecting** | Remote protection is queued for an offline device, needs a runtime update (**Update and protect**), is updating, or is binding and certifying. |
+| **Bound to another account**, **Update failed**, **Protection failed** | Remote protection stopped: the device reports another account key, the update did not enable binding, or the attempt failed. Offers **Retry** or **Update and protect**. |
+| **Needs repair** | The vault lists the device, but this page has no verified owner connection to it: the device is offline, presents no valid certificate, or presents a certificate for an identity other than the one the vault records. Also shown for a device removed from the account. The connection never falls back to relay trust. Offers **Repair device binding**. |
+| **Identity changed** | Enrollment found an identity key other than the one the vault records; see [repair](#identity-changes-and-repair). |
+
+No label is shown while the protection state is unknown, for example while a
+device that is not in the vault is offline.
 
 The device's key descriptor (`GET …/transport/key`) carries the device's own
 `certificate` (or `null`) and an unsigned hint `trust: {bound, strict,
@@ -594,7 +606,7 @@ browsers, devices and their tokens, threads, shares and grants, and public links
 Unsecured accounts keep their password hash until their vault exists. Sessions
 from before the upgrade are restricted like a setup session, so each user signs
 in once more. The administrator account is unchanged. Unbound devices keep
-working as **Not protected · Relay trusted**.
+working as **Not protected**.
 
 **Each user, once.**
 
@@ -905,6 +917,9 @@ static`) produces a site that needs no server logic:
   holds the custom domain (`POCKYMOE_WEB_DOMAIN`).
 - `_headers` and `_redirects` carry the full policy as response headers and the
   fallback rewrite for hosts that apply them.
+- Each deployment replaces the hashed chunks. A page opened before it reloads
+  once when it next fails to load a lazy chunk (for example the Explorer), and any
+  render error shows a reload message instead of an empty page.
 
 `scripts/check-static-web.mjs` checks the output: the meta policy equals the
 `_headers` policy without `frame-ancestors` and allows the configured relay, the
