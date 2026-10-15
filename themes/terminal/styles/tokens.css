@@ -127,7 +127,7 @@
 }
 
 /* Square corners and no soft shadows on the shared controls. */
-:theme .thread-ui-shell :is(button, input, textarea, select, .rounded, .rounded-md, .rounded-lg, .rounded-xl, .rounded-full, [class*='rounded-[']):not(.matter-status-dot, .tlog-spinner, .animate-spin, .thread-progress-indicator *) {
+:theme :is(.thread-ui-shell, .thread-graph-dialog, [role='dialog']) :is(button, input, textarea, select, label, .rounded, .rounded-md, .rounded-lg, .rounded-xl, .rounded-2xl, .rounded-full, [class*='rounded-[']):not(.matter-status-dot, .tlog-spinner, .animate-spin, .thread-progress-indicator *, [role='switch'] > *) {
   border-radius: 0;
 }
 :theme :is(.relay-button-primary, .relay-button-secondary, .host-secondary-button, .theme-preset-card) { border-radius: 0; }
