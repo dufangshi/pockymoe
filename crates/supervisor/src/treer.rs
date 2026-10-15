@@ -108,8 +108,8 @@ impl Scope {
 }
 mod app_page;
 mod browser;
-mod registry;
 pub(crate) mod messages;
+mod registry;
 
 fn failure(status: StatusCode, code: &str) -> Response {
     (status, Json(json!({"error":code,"code":code}))).into_response()
