@@ -183,18 +183,41 @@ the ordinary JSON API response deadline.
 
 ### Opening and latency
 
-CLI links with a reusable preview lease use a small Web entry point to exchange
-the signed-in account session for the preview cookie. They do not need to load
-the chat workbench, unlock the account vault or register a browser just to open
-that already authorized port. Missing/expired leases and unsuccessful exchanges
-fall back to the full sign-in/authorization flow. The Relay still verifies the
-account and device ownership; the device still enforces its lease.
+CLI `openUrl` links point at the Relay's
+`GET /devices/{deviceId}/ports/{mappingId}` document route. With a live owner
+account cookie and an existing device lease with a future `leaseExpiresAt`, the
+Relay redirects directly to a one-use preview launch URL; redemption sets the
+preview-origin cookie and
+redirects to the application. No Web page, JavaScript bundle or cross-origin
+API fetch is required for this handoff. Only top-level browser document
+navigations can use it: iframe, fetch, prefetch, bearer and URL-token credentials
+cannot create a launch this way. Missing/expired lease timestamps or account
+authorization fall back to the configured Web sign-in/authorization flow. The existing
+CSRF-protected `POST .../port-mappings/{mappingId}/open` remains available to the
+Web UI and older clients. Copied preview links carry their lease to the document
+route separately from the application path. Reserved authorization parameters
+never reach the application.
+
+Issuing an authorized launch starts up to **two** speculative HTTP connections
+for exactly its account session, device lease, mapping and device connection.
+The first HTTP request can join an in-flight handshake. Reopening the same
+authority reuses its existing preparation/idle connections and their original
+grant deadline, without extending an existing connection's authorization.
+Prewarming sends no HTTP requests to the application, never evicts an existing connection and is bounded
+by **four pending handshakes per device / sixteen globally**, in addition to the
+ordinary idle/active pool limits. Failed handshakes fall back before sending any
+application bytes; an abandoned launch leaves at most the normal ten-second idle
+connections. Launch tickets expire after one minute, independently of the
+preview grant's eight-hour maximum. Revocation and device disconnect checks also
+apply to speculative connections. SSE and application WebSockets retain their
+existing streaming/dedicated-connection behavior.
 
 Measure first-time authorization separately from application requests. Cold
-access includes Web loading, an authenticated exchange and a preview-origin
-redirect. A new data connection also includes the device/Relay connection
-handshake. Warm HTTP keepalive avoids that handshake for subsequent requests;
-upstreams which explicitly close their connection still require a new one.
+access can include sign-in and device approval; an already authorized CLI link
+needs only server redirects. Prewarming overlaps the device/Relay handshake with
+those redirects, so its benefit depends on their timing. Warm HTTP keepalive
+avoids that handshake for subsequent requests; upstreams which explicitly close
+their connection still require a new one.
 The Relay listener, device data socket and local application socket disable
 Nagle to avoid delaying small interactive writes. Upstream response generation, device upload
 speed and the network route remain part of the latency. Application compression
@@ -209,7 +232,12 @@ starts disposable accounts, a Relay, a Supervisor and an application; it measure
 authorization, HTTP resources, SSE and WebSocket interactions at configurable
 device/Relay delays. It does not inspect production traffic. Its delay proxy
 models application bytes only, with loopback TCP and no TLS, so its timings are
-not a prediction of a particular user's network.
+not a prediction of a particular user's network. `E2E_PREVIEW_HANDOFF_RTT` sets
+the device/Relay delay during the owner handoff, and
+`E2E_PREVIEW_REDIRECT_DELAY` adds a controlled browser launch-redirect delay to
+measure the overlap. `E2E_PREVIEW_EXPECT_SERVER_HANDOFF=0` is only for comparing a
+historical Relay binary without the server handoff; normal runs assert zero Web
+scripts and zero POSTs for an already authorized CLI link.
 
 ## Bound devices
 

@@ -38,7 +38,8 @@ test('isolated private preview authorization and RTT benchmark', async ({ browse
   const network: unknown[] = [];
   const contexts: Awaited<ReturnType<typeof browser.newContext>>[] = [];
   const accountContexts = new Map<string, Awaited<ReturnType<typeof browser.newContext>>>();
-  let oneWayMs = 0, dataConnections = 0, upstreamRequests = 0;
+  let oneWayMs = 0, dataConnections = 0, upstreamRequests = 0, controlParameterLeaks = 0;
+  const expectServerHandoff = process.env.E2E_PREVIEW_EXPECT_SERVER_HANDOFF !== '0';
   const upstreamCounts: Record<string, number> = {};
   const freePort = async () => {
     const server = tcpServer();
@@ -84,6 +85,8 @@ test('isolated private preview authorization and RTT benchmark', async ({ browse
   });
   const service = httpServer((req, res) => {
     upstreamRequests++;
+    const query = new URL(req.url!, 'http://fixture.invalid').searchParams;
+    if (['lease', 'leaseExpiresAt', '__rc_launch'].some(key => query.has(key))) controlParameterLeaks++;
     const path = req.url!.split('?')[0];
     upstreamCounts[path] = (upstreamCounts[path] ?? 0) + 1;
     res.setHeader('cache-control', 'no-store');
@@ -245,10 +248,45 @@ test('isolated private preview authorization and RTT benchmark', async ({ browse
     const denied = await api(`/relay/devices/${deviceId}/port-mappings/${mapping.id}/open`, 'POST', { path: '/' }, other);
     expect(denied.status).toBe(403);
     rows.push({ phase: 'security', otherAccountOpenStatus: denied.status, reachedFixture: false });
-    // Account session retained, preview cookie removed: measure PortPreviewPage handoff.
-    const coldContext = ownerContext; await coldContext.clearCookies({ name: 'rc_port_preview' });
+    // The current CLI URL already names the Relay's server-side document route.
+    // A navigation with a live account + lease needs no static entry or JS/API fetch.
+    // Use the owner's other, fully set-up account session so an earlier launch
+    // cannot turn this cold measurement into a hit in the capability pool.
+    const coldContext = accountContexts.get(owner)!;
+    await coldContext.clearCookies({ name: 'rc_port_preview' });
     const handoffPage = await coldContext.newPage(); instrument(handoffPage, 'owner-handoff');
-    rows.push({ phase: 'owner-handoff', cliOpenNavigationMs: await navigate(handoffPage, mapping.openUrl) });
+    const handoffRequests: { script: boolean; method: string }[] = [];
+    handoffPage.on('request', request => handoffRequests.push({ script: request.resourceType() === 'script', method: request.method() }));
+    const handoffRtt = Number(process.env.E2E_PREVIEW_HANDOFF_RTT ?? '0');
+    const redirectDelay = Number(process.env.E2E_PREVIEW_REDIRECT_DELAY ?? '0');
+    oneWayMs = handoffRtt / 2;
+    // Controlled browser-to-gateway redirect delay, independent of the existing
+    // device/Relay byte-delay model, allows authorization and prewarm to overlap.
+    await handoffPage.route('**/*', async route => {
+      const url = new URL(route.request().url());
+      if (redirectDelay && url.hostname.startsWith('p-') && url.searchParams.has('__rc_launch'))
+        await new Promise(done => setTimeout(done, redirectDelay));
+      await route.continue();
+    });
+    const cliOpenNavigationMs = await navigate(handoffPage, mapping.openUrl);
+    const scripts = handoffRequests.filter(r => r.script).length;
+    const posts = handoffRequests.filter(r => r.method === 'POST').length;
+    if (expectServerHandoff) { expect(scripts).toBe(0); expect(posts).toBe(0); }
+    rows.push({ phase: 'owner-handoff', cliOpenNavigationMs, scripts, posts, handoffRttMs: handoffRtt, browserRedirectDelayMs: redirectDelay });
+    console.log(JSON.stringify({ phase: 'owner-handoff', cliOpenNavigationMs: Math.round(cliOpenNavigationMs), scripts, posts }));
+    oneWayMs = 0;
+    // Copied preview links retain their device lease but have no preview cookie.
+    // The gateway must carry that lease to its owner-login route, not to the app.
+    if (expectServerHandoff) {
+      await coldContext.clearCookies({ name: 'rc_port_preview' });
+      const copied = new URL(stableUrl); copied.searchParams.set('lease', mapping.leaseId);
+      copied.searchParams.set('leaseExpiresAt', String(mapping.expiresAt));
+      const copiedPage = await coldContext.newPage(); instrument(copiedPage, 'copied-link');
+      let copiedScripts = 0; copiedPage.on('request', r => { if (r.resourceType() === 'script') copiedScripts++; });
+      await navigate(copiedPage, copied.href); expect(copiedScripts).toBe(0);
+      expect(controlParameterLeaks).toBe(0);
+      rows.push({ phase: 'copied-link', scripts: copiedScripts, controlParameterLeaks });
+    }
     const directContext = await context(); const direct = await directContext.newPage();
     rows.push({ phase: 'direct-upstream', rootMs: await navigate(direct, directBase), ...await interactions(direct) });
     const rtts = (process.env.E2E_PREVIEW_RTTS ?? '0,40,100,200').split(',').map(Number);
@@ -288,7 +326,7 @@ test('isolated private preview authorization and RTT benchmark', async ({ browse
     // Deliberately omit headers, bodies, cookies, all query strings and concrete IDs.
     await writeFile(join(evidence, 'network-timings.redacted.json'), JSON.stringify(network, null, 2));
     await writeFile(join(evidence, 'metadata.json'), JSON.stringify({ binarySha256, relayBinarySha256: binarySha256, supervisorBinarySha256,
-      upstreamCounts, model: 'application bytes delayed each direction; loopback TCP, no TLS; no public access', cleanup: 'disposable processes terminated and data removed' }, null, 2));
+      upstreamCounts, controlParameterLeaks, model: 'application bytes delayed each direction; loopback TCP, no TLS; no public access', cleanup: 'disposable processes terminated and data removed' }, null, 2));
     await rm(root, { recursive: true, force: true });
   }
 });

@@ -252,12 +252,17 @@ async fn browser_security_response(
         response::IntoResponse,
     };
     let path = request.uri().path();
+    // This document route either consumes an existing owner lease + cookie or
+    // falls back to the Web sign-in flow. It never serves application content.
+    let preview_entry = matches!(*request.method(), Method::GET | Method::HEAD)
+        && super::preview::browser_entry_path(path);
     if state.oauth.api_only(request.headers())
         && !(path == "/relay"
             || path.starts_with("/relay/")
             || path == "/healthz"
             || path == "/supervisor/tunnel"
-            || path.starts_with("/supervisor/port-stream/"))
+            || path.starts_with("/supervisor/port-stream/")
+            || preview_entry)
     {
         return super::spa_fallback(axum::extract::State(state), request).await;
     }
@@ -335,13 +340,15 @@ async fn browser_security_response(
         if let Some(user) = super::load_user_by_session(&conn, &state.store.session_secret, &token)
         {
             let mode = super::account::session_mode(&conn, &token);
-            if !super::account::request_allowed(
-                &conn,
-                &user,
-                &mode,
-                request.method(),
-                request.uri(),
-            ) {
+            if !preview_entry
+                && !super::account::request_allowed(
+                    &conn,
+                    &user,
+                    &mode,
+                    request.method(),
+                    request.uri(),
+                )
+            {
                 return (StatusCode::FORBIDDEN, axum::Json(serde_json::json!({
                     "code":"forbidden",
                     "message":if mode == super::account::RECOVERY { "Complete account recovery first" } else { "Secure your account first" }

@@ -26,6 +26,19 @@ struct Grant {
     lease: Option<String>,
     expires: std::time::Instant,
 }
+impl Grant {
+    fn same_authority(&self, other: &Self) -> bool {
+        self.mapping == other.mapping
+            && self.device == other.device
+            && self.session == other.session
+            && self.lease == other.lease
+    }
+}
+#[derive(Clone)]
+struct Launch {
+    grant: Grant,
+    expires: std::time::Instant,
+}
 struct Stream {
     mapping: Mapping,
     grant: Grant,
@@ -37,7 +50,7 @@ struct Stream {
 pub(super) struct Hub {
     pub(super) base: Option<url::Url>,
     mappings: StdMutex<HashMap<String, Mapping>>,
-    launches: StdMutex<HashMap<String, Grant>>,
+    launches: StdMutex<HashMap<String, Launch>>,
     sessions: StdMutex<HashMap<String, Grant>>,
     streams: StdMutex<HashMap<String, Stream>>,
     idle: StdMutex<IdlePool>,
@@ -47,6 +60,9 @@ pub(super) struct Hub {
 // The device still watches the lease throughout the lifetime of the raw TCP stream.
 // This needs no wire change: older Supervisors already bridge arbitrary TCP bytes.
 const HTTP_IDLE_TIMEOUT: Duration = Duration::from_secs(10);
+const HTTP_PREWARM_TARGET: usize = 2;
+const HTTP_PREWARM_GLOBAL: usize = 16;
+const HTTP_PREWARM_DEVICE: usize = 4;
 struct HttpClient {
     sender: hyper::client::conn::http1::SendRequest<Body>,
     cancel: CancellationToken,
@@ -63,9 +79,16 @@ struct ClosingClient {
     cancel: CancellationToken,
     closed: CancellationToken,
 }
+struct WarmingClient {
+    id: Uuid,
+    mapping: Mapping,
+    grant: Grant,
+    done: CancellationToken,
+}
 #[derive(Default)]
 struct IdlePool {
     clients: Vec<IdleClient>,
+    warming: Vec<WarmingClient>,
     closing: Vec<ClosingClient>,
     reaping: bool,
 }
@@ -114,15 +137,33 @@ async fn http_client(
 ) -> Result<HttpClient> {
     if reuse {
         loop {
-            let idle = {
+            let (idle, warming) = {
                 let mut pool = state.preview.idle.lock().unwrap();
                 pool.prune();
-                pool.clients
+                let idle = pool
+                    .clients
                     .iter()
                     .rposition(|c| c.client.mapping == *mapping && c.client.grant == *grant)
-                    .map(|i| pool.clients.swap_remove(i).client)
+                    .map(|i| pool.clients.swap_remove(i).client);
+                let warming = pool
+                    .warming
+                    .iter()
+                    .find(|c| c.mapping == *mapping && c.grant == *grant)
+                    .map(|c| c.done.clone());
+                (idle, warming)
             };
-            let Some(client) = idle else { break };
+            let Some(client) = idle else {
+                if let Some(done) = warming {
+                    // Join the bounded in-flight handshake instead of opening a
+                    // duplicate connection on the first browser request.
+                    done.cancelled().await;
+                    if !valid_grant(state, grant).await {
+                        bail!("Preview authorization ended");
+                    }
+                    continue;
+                }
+                break;
+            };
             // A peer may close an idle keepalive socket. Fall back before sending
             // anything; never retry a request after it may have reached the app.
             if client.sender.is_ready() && !client.cancel.is_cancelled() {
@@ -131,7 +172,16 @@ async fn http_client(
             state.preview.idle.lock().unwrap().discard(client);
         }
     }
-    let (stream, cancel, released) = open_stream(state, mapping, grant).await?;
+    new_http_client(state, mapping, grant, false).await
+}
+
+async fn new_http_client(
+    state: &Arc<AppState>,
+    mapping: &Mapping,
+    grant: &Grant,
+    opportunistic: bool,
+) -> Result<HttpClient> {
+    let (stream, cancel, released) = open_stream(state, mapping, grant, opportunistic).await?;
     let (sender, connection) =
         hyper::client::conn::http1::handshake::<_, Body>(TokioIo::new(stream)).await?;
     let closed = cancel.clone();
@@ -202,6 +252,96 @@ fn return_http_client(state: &Arc<AppState>, client: HttpClient) {
                 tokio::time::sleep_until(tokio::time::Instant::from_std(until)).await;
             }
         });
+    }
+}
+
+// Speculation uses the same capability and idle budgets as ordinary reuse,
+// plus smaller pending-handshake budgets. It never evicts a useful connection
+// and sends no HTTP request to the application.
+fn prewarm_http(state: &Arc<AppState>, mapping: &Mapping, grant: &Grant) {
+    let streams = state.preview.streams.lock().unwrap();
+    let mut pool = state.preview.idle.lock().unwrap();
+    pool.prune();
+    let same = pool
+        .clients
+        .iter()
+        .filter(|c| c.client.mapping == *mapping && c.client.grant == *grant)
+        .count()
+        + pool
+            .warming
+            .iter()
+            .filter(|c| c.mapping == *mapping && c.grant == *grant)
+            .count();
+    let device_idle = pool
+        .clients
+        .iter()
+        .filter(|c| c.client.mapping.device == mapping.device)
+        .count();
+    let device_warming = pool
+        .warming
+        .iter()
+        .filter(|c| c.mapping.device == mapping.device)
+        .count();
+    let device_streams = streams
+        .values()
+        .filter(|c| c.mapping.device == mapping.device)
+        .count();
+    let count = HTTP_PREWARM_TARGET
+        .saturating_sub(same)
+        .min(HTTP_PREWARM_GLOBAL.saturating_sub(pool.warming.len()))
+        .min(HTTP_PREWARM_DEVICE.saturating_sub(device_warming))
+        .min(64usize.saturating_sub(pool.clients.len() + pool.warming.len()))
+        .min(8usize.saturating_sub(device_idle + device_warming))
+        .min(256usize.saturating_sub(streams.len() + pool.warming.len()))
+        .min(32usize.saturating_sub(device_streams + device_warming));
+    for _ in 0..count {
+        let id = Uuid::new_v4();
+        let done = CancellationToken::new();
+        pool.warming.push(WarmingClient {
+            id,
+            mapping: mapping.clone(),
+            grant: grant.clone(),
+            done: done.clone(),
+        });
+        let state = state.clone();
+        let mapping = mapping.clone();
+        let grant = grant.clone();
+        tokio::spawn(async move {
+            let _guard = WarmingGuard {
+                state: state.clone(),
+                id,
+                done,
+            };
+            let result = tokio::time::timeout(HTTP_IDLE_TIMEOUT, async {
+                if !valid_grant(&state, &grant).await {
+                    bail!("Preview authorization ended");
+                }
+                new_http_client(&state, &mapping, &grant, true).await
+            })
+            .await;
+            if let Ok(Ok(client)) = result {
+                if valid_grant(&state, &grant).await {
+                    return_http_client(&state, client);
+                }
+            }
+        });
+    }
+}
+struct WarmingGuard {
+    state: Arc<AppState>,
+    id: Uuid,
+    done: CancellationToken,
+}
+impl Drop for WarmingGuard {
+    fn drop(&mut self) {
+        self.state
+            .preview
+            .idle
+            .lock()
+            .unwrap()
+            .warming
+            .retain(|c| c.id != self.id);
+        self.done.cancel();
     }
 }
 
@@ -305,6 +445,9 @@ fn parse_base(value: &str) -> Result<url::Url> {
 pub(super) fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/relay/port-mappings/config", get(config))
+        // Existing CLI links already point at the Relay, including split-origin
+        // deployments. A fully authorized navigation needs no Web bundle.
+        .route("/devices/{device}/ports/{mapping}", get(browser_open))
         .route(
             "/relay/devices/{device}/port-mappings/{mapping}/open",
             post(open),
@@ -343,54 +486,172 @@ async fn open(
     Query(query): Query<OpenQuery>,
     Json(input): Json<OpenInput>,
 ) -> Response {
+    match issue_launch(&state, device, id, &headers, query, input).await {
+        Ok(url) => {
+            let mut response = Json(json!({"url":url.as_str()})).into_response();
+            response
+                .headers_mut()
+                .insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
+            response
+        }
+        Err(response) => response,
+    }
+}
+
+// Navigation is a separate capability handoff, not a CSRF exemption for POST.
+// Only a top-level document can use it; it consumes an existing device lease
+// and the browser's own HttpOnly account cookie, never a URL/bearer credential.
+pub(super) fn browser_entry_path(path: &str) -> bool {
+    let parts: Vec<_> = path.split('/').collect();
+    matches!(parts.as_slice(), ["", "devices", device, "ports", mapping] if !device.is_empty() && !mapping.is_empty())
+}
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct BrowserOpenQuery {
+    #[serde(default)]
+    path: String,
+    lease: Option<String>,
+    lease_expires_at: Option<String>,
+}
+fn document_navigation(request: &Request) -> bool {
+    request.method() == Method::GET
+        && request
+            .headers()
+            .get("sec-fetch-mode")
+            .is_some_and(|v| v == "navigate")
+        && request
+            .headers()
+            .get("sec-fetch-dest")
+            .is_some_and(|v| v == "document")
+        && request
+            .headers()
+            .get(header::ACCEPT)
+            .is_some_and(|v| v.to_str().is_ok_and(|v| v.contains("text/html")))
+        && !request.headers().contains_key("purpose")
+        && !request.headers().contains_key("sec-purpose")
+}
+async fn browser_open(
+    State(state): State<Arc<AppState>>,
+    Path((device, id)): Path<(String, String)>,
+    Query(query): Query<BrowserOpenQuery>,
+    request: Request,
+) -> Response {
+    let lease_live = query.lease.as_ref().is_some_and(|lease| valid_lease(lease))
+        && query.lease_expires_at.as_ref().is_some_and(|expires| {
+            expires
+                .parse::<i64>()
+                .is_ok_and(|expires| expires > chrono::Utc::now().timestamp_millis())
+        });
+    if document_navigation(&request) && lease_live {
+        let mut cookie_headers = HeaderMap::new();
+        if let Some(cookie) = request.headers().get(header::COOKIE) {
+            cookie_headers.insert(header::COOKIE, cookie.clone());
+        }
+        let full_session = {
+            let conn = state.store.conn.lock().await;
+            relay_cookie(&cookie_headers)
+                .is_some_and(|token| account::session_mode(&conn, &token) == account::FULL)
+        };
+        if full_session {
+            if let Ok(url) = issue_launch(
+                &state,
+                device,
+                id,
+                &cookie_headers,
+                OpenQuery {
+                    lease: query.lease,
+                    ..Default::default()
+                },
+                OpenInput { path: query.path },
+            )
+            .await
+            {
+                return preview_redirect(&url);
+            }
+        }
+    }
+    // Same-origin installations serve their entry bundle; split-origin Relays
+    // redirect to the configured Web site. Neither branch loops back here.
+    let mut response = spa_fallback(State(state), request).await;
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
+    response
+        .headers_mut()
+        .insert(header::REFERRER_POLICY, "no-referrer".parse().unwrap());
+    response
+}
+fn preview_redirect(destination: &url::Url) -> Response {
+    Response::builder()
+        .status(StatusCode::SEE_OTHER)
+        .header(header::LOCATION, destination.as_str())
+        .header(header::CACHE_CONTROL, "no-store")
+        .header(header::REFERRER_POLICY, "no-referrer")
+        .body(Body::empty())
+        .unwrap()
+}
+fn valid_lease(lease: &str) -> bool {
+    lease.len() == 43
+        && lease
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+}
+async fn issue_launch(
+    state: &Arc<AppState>,
+    device: String,
+    id: String,
+    headers: &HeaderMap,
+    query: OpenQuery,
+    input: OpenInput,
+) -> std::result::Result<url::Url, Response> {
     let conn = state.store.conn.lock().await;
     let Some(user) = authenticated_user(&conn, &state.store.session_secret, &headers, &query.token)
     else {
-        return unauthorized();
+        return Err(unauthorized());
     };
     if !owns(&conn, &user.id, &device) {
-        return StatusCode::FORBIDDEN.into_response();
+        return Err(StatusCode::FORBIDDEN.into_response());
     }
     let Some(session) = extract_session_token(&headers, &query.token) else {
-        return unauthorized();
+        return Err(unauthorized());
     };
     drop(conn);
     let Some(mut url) = state.preview.origin(&id) else {
-        return (
+        return Err((
             StatusCode::SERVICE_UNAVAILABLE,
             Json(
                 json!({"message":"Port preview DNS and gateway are not configured on this Relay."}),
             ),
         )
-            .into_response();
+            .into_response());
     };
-    if !state
+    let mapping = state
         .preview
         .mappings
         .lock()
         .unwrap()
         .get(&id)
-        .is_some_and(|m| m.device == device)
+        .filter(|m| m.device == device)
+        .cloned();
+    let Some(mapping) = mapping else {
+        return Err((StatusCode::CONFLICT, Json(json!({"message":"This port is not enabled on the online device. Update its Supervisor if port mappings are unavailable."}))).into_response());
+    };
+    if query
+        .lease
+        .as_ref()
+        .is_some_and(|lease| !valid_lease(lease))
     {
-        return (StatusCode::CONFLICT, Json(json!({"message":"This port is not enabled on the online device. Update its Supervisor if port mappings are unavailable."}))).into_response();
-    }
-    if query.lease.as_ref().is_some_and(|lease| {
-        lease.len() != 43
-            || !lease
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
-    }) {
-        return (
+        return Err((
             StatusCode::BAD_REQUEST,
             Json(json!({"code":"invalid_lease","message":"Invalid preview lease"})),
         )
-            .into_response();
+            .into_response());
     }
     if query.lease.is_none() {
         // The device descriptor is only a routing hint; the device enforces its own lease.
         let key = internal_forward_json(&state, &device, "GET", "/api/transport/key", None).await;
         if !key.is_ok_and(|key| key["trust"]["strict"] != true) {
-            return (StatusCode::FORBIDDEN,Json(json!({"code":"preview_lease_required","message":"Obtain a signed device preview lease first"}))).into_response();
+            return Err((StatusCode::FORBIDDEN,Json(json!({"code":"preview_lease_required","message":"Obtain a signed device preview lease first"}))).into_response());
         }
     }
     let path = if input.path.is_empty() {
@@ -403,36 +664,61 @@ async fn open(
         || path.contains(['\\', '\r', '\n'])
         || path.len() > 8192
     {
-        return StatusCode::BAD_REQUEST.into_response();
+        return Err(StatusCode::BAD_REQUEST.into_response());
     }
     let Ok(destination) = url.join(path) else {
-        return StatusCode::BAD_REQUEST.into_response();
+        return Err(StatusCode::BAD_REQUEST.into_response());
     };
     if destination.origin() != url.origin() {
-        return StatusCode::BAD_REQUEST.into_response();
+        return Err(StatusCode::BAD_REQUEST.into_response());
     }
     url = destination;
     if let Some(lease) = &query.lease {
         url.query_pairs_mut().append_pair("lease", lease);
     }
+    let requested_grant = Grant {
+        mapping: id.clone(),
+        device,
+        session,
+        lease: query.lease,
+        expires: std::time::Instant::now() + Duration::from_secs(8 * 3600),
+    };
+    // Reopening the same permission must not create a second speculative pool.
+    // Reuse its exact deadline, never extend a live channel's authorization.
+    let grant = {
+        let mut pool = state.preview.idle.lock().unwrap();
+        pool.prune();
+        pool.clients
+            .iter()
+            .map(|c| (&c.client.mapping, &c.client.grant))
+            .chain(pool.warming.iter().map(|c| (&c.mapping, &c.grant)))
+            .filter(|(m, g)| {
+                **m == mapping
+                    && g.same_authority(&requested_grant)
+                    && g.expires > std::time::Instant::now() + Duration::from_secs(60)
+            })
+            .max_by_key(|(_, g)| g.expires)
+            .map(|(_, g)| g.clone())
+            .unwrap_or(requested_grant)
+    };
     let ticket = Uuid::new_v4().to_string();
-    let mut launches = state.preview.launches.lock().unwrap();
-    launches.retain(|_, g| g.expires > std::time::Instant::now());
-    if launches.len() >= 1024 {
-        return StatusCode::TOO_MANY_REQUESTS.into_response();
+    {
+        let mut launches = state.preview.launches.lock().unwrap();
+        launches.retain(|_, launch| launch.expires > std::time::Instant::now());
+        if launches.len() >= 1024 {
+            return Err(StatusCode::TOO_MANY_REQUESTS.into_response());
+        }
+        launches.insert(
+            ticket.clone(),
+            Launch {
+                grant: grant.clone(),
+                expires: std::time::Instant::now() + Duration::from_secs(60),
+            },
+        );
     }
-    launches.insert(
-        ticket.clone(),
-        Grant {
-            mapping: id,
-            device,
-            session,
-            lease: query.lease,
-            expires: std::time::Instant::now() + Duration::from_secs(60),
-        },
-    );
     url.query_pairs_mut().append_pair("__rc_launch", &ticket);
-    Json(json!({"url":url.as_str()})).into_response()
+    prewarm_http(state, &mapping, &grant);
+    Ok(url)
 }
 
 fn owns(conn: &Connection, user: &str, device: &str) -> bool {
@@ -530,14 +816,19 @@ fn browser_entry(state: &AppState, request: &Request, mapping: &Mapping) -> Opti
     destination.set_path(&format!("/devices/{}/ports/{}", mapping.device, mapping.id));
     destination.set_query(None);
     destination.set_fragment(None);
-    destination.query_pairs_mut().append_pair(
-        "path",
-        request
-            .uri()
-            .path_and_query()
-            .map(|p| p.as_str())
-            .unwrap_or("/"),
-    );
+    let query = request.uri().query().unwrap_or("");
+    let app = app_query(query);
+    let path = if app.is_empty() {
+        request.uri().path().to_owned()
+    } else {
+        format!("{}?{app}", request.uri().path())
+    };
+    destination.query_pairs_mut().append_pair("path", &path);
+    for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
+        if matches!(key.as_ref(), "lease" | "leaseExpiresAt") {
+            destination.query_pairs_mut().append_pair(&key, &value);
+        }
+    }
     Some(destination)
 }
 
@@ -605,22 +896,29 @@ pub(super) async fn middleware(
         if request.method() != Method::GET {
             return StatusCode::METHOD_NOT_ALLOWED.into_response();
         }
-        let grant = state.preview.launches.lock().unwrap().remove(&ticket);
-        let Some(mut grant) = grant.filter(|g| {
-            g.mapping == id && g.device == mapping.device && g.expires > std::time::Instant::now()
+        let launch = state.preview.launches.lock().unwrap().remove(&ticket);
+        let Some(launch) = launch.filter(|launch| {
+            launch.grant.mapping == id
+                && launch.grant.device == mapping.device
+                && launch.expires > std::time::Instant::now()
         }) else {
             return unauthorized();
         };
-        if !valid_grant(&state, &grant).await {
+        let grant = launch.grant;
+        if grant.expires <= std::time::Instant::now() || !valid_grant(&state, &grant).await {
             return unauthorized();
         }
-        grant.expires = std::time::Instant::now() + Duration::from_secs(8 * 3600);
         let session = Uuid::new_v4().to_string();
         let mut sessions = state.preview.sessions.lock().unwrap();
         sessions.retain(|_, g| g.expires > std::time::Instant::now());
         if sessions.len() >= 4096 {
             return StatusCode::TOO_MANY_REQUESTS.into_response();
         }
+        let max_age = grant
+            .expires
+            .saturating_duration_since(std::time::Instant::now())
+            .as_secs()
+            .max(1);
         sessions.insert(session.clone(), grant);
         let mut destination = origin.clone();
         destination.set_path(request.uri().path());
@@ -636,7 +934,7 @@ pub(super) async fn middleware(
             .header(
                 header::SET_COOKIE,
                 format!(
-                    "{cookie_name}={session}; Path=/; HttpOnly; SameSite=Lax; Max-Age=28800{}",
+                    "{cookie_name}={session}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age}{}",
                     if secure { "; Secure" } else { "" }
                 ),
             )
@@ -872,6 +1170,7 @@ async fn open_stream(
     state: &AppState,
     mapping: &Mapping,
     grant: &Grant,
+    opportunistic: bool,
 ) -> Result<(DuplexStream, CancellationToken, CancellationToken)> {
     let cancel = CancellationToken::new();
     let closed = CancellationToken::new();
@@ -901,6 +1200,9 @@ async fn open_stream(
                     },
                 );
                 break;
+            }
+            if opportunistic {
+                bail!("No spare preview connection capacity");
             }
             // Idle connections are opportunistic: reclaim the oldest eligible
             // one before refusing live traffic, including another capability.
@@ -1293,10 +1595,11 @@ mod tests {
             .values()
             .next()
             .unwrap()
+            .grant
             .clone();
         let mapping = state.preview.mappings.lock().unwrap()[&mapping_id].clone();
         let caller = state.clone();
-        let task = tokio::spawn(async move { open_stream(&caller, &mapping, &grant).await });
+        let task = tokio::spawn(async move { http_client(&caller, &mapping, &grant, true).await });
         let frame: Value = serde_json::from_str(&rx.recv().await.unwrap()).unwrap();
         assert_eq!(frame["type"], "preview.open");
         assert_eq!(frame["leaseId"], lease);
@@ -1311,7 +1614,8 @@ mod tests {
             .tx
             .take()
             .unwrap();
-        tx.send(tokio::io::duplex(1024).0).unwrap();
+        let (stream, _device) = tokio::io::duplex(1024);
+        tx.send(stream).unwrap();
         assert!(task.await.unwrap().is_ok());
         drop(state);
         let _ = std::fs::remove_dir_all(dir);
@@ -1354,6 +1658,260 @@ mod tests {
         )
         .await;
         assert_eq!(response.status(), StatusCode::OK);
+        drop(state);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn browser_handoff_uses_owner_cookie_and_existing_lease_or_falls_back_to_web() {
+        for separate in [false, true] {
+            let (mut state, dir, headers, _rx, mapping) =
+                lease_fixture("preview-browser-handoff").await;
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let dist = dir.join("web");
+            std::fs::create_dir_all(&dist).unwrap();
+            std::fs::write(
+                dist.join("index.html"),
+                "<html><head></head><body>Web fallback</body></html>",
+            )
+            .unwrap();
+            let mutable = Arc::get_mut(&mut state).unwrap();
+            mutable.oauth.public_base_url = Some(base.clone());
+            mutable.oauth.web_origin = separate.then(|| "https://web.example.test".into());
+            mutable.web_dist = Some(dist);
+            let session = extract_session_token(&headers, &TokenQuery::default()).unwrap();
+            let cookie = format!("remote_codex_relay_session={session}");
+            let other = {
+                let conn = state.store.conn.lock().await;
+                conn.execute("INSERT INTO relay_users (id,email,username,role,enabled,created_at,password_salt,password_hash) VALUES ('other','other@example.test','other','user',1,'now','','')", []).unwrap();
+                let other = create_session(&conn, &state.store.session_secret, "other").unwrap();
+                for (user, token) in [("owner", session.as_str()), ("other", other.as_str())] {
+                    account::store_vault(&conn, user, &json!({"revision":1,"accountKeyId":"fixture-key","accountPublicKey":"fixture-public"})).unwrap();
+                    account::mark_session(&conn, token, account::FULL).unwrap();
+                }
+                other
+            };
+            let app = Router::new()
+                .merge(routes())
+                .fallback(spa_fallback)
+                .layer(axum::middleware::from_fn_with_state(
+                    state.clone(),
+                    security::browser_security,
+                ))
+                .layer(axum::middleware::from_fn_with_state(
+                    state.clone(),
+                    middleware,
+                ))
+                .with_state(state.clone());
+            let relay = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let client = reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .unwrap();
+            let lease = "L".repeat(43);
+            let entry = format!("{base}/devices/device/ports/{mapping}");
+            let query = |path: &str, lease: &str, expires: &str| {
+                [
+                    ("path", path.to_owned()),
+                    ("lease", lease.to_owned()),
+                    ("leaseExpiresAt", expires.to_owned()),
+                ]
+            };
+            let future = (chrono::Utc::now().timestamp_millis() + 3_600_000).to_string();
+            let document = |path: &str, lease: &str, expires: &str| {
+                client
+                    .get(&entry)
+                    .query(&query(path, lease, expires))
+                    .header(header::ACCEPT, "text/html")
+                    .header("sec-fetch-mode", "navigate")
+                    .header("sec-fetch-dest", "document")
+            };
+            let owner_document =
+                || document("/app?q=1#section", &lease, &future).header(header::COOKIE, &cookie);
+            let header_override = |name: &'static str, value: &'static str| {
+                let mut headers = HeaderMap::new();
+                headers.insert(name, value.parse().unwrap());
+                headers
+            };
+            // These must not mint a capability or start a device connection.
+            let cases = [
+                ("anonymous", document("/", &lease, &future)),
+                (
+                    "fetch",
+                    owner_document().headers(header_override("sec-fetch-mode", "cors")),
+                ),
+                (
+                    "iframe",
+                    owner_document().headers(header_override("sec-fetch-dest", "iframe")),
+                ),
+                ("prefetch", owner_document().header("purpose", "prefetch")),
+                (
+                    "speculative",
+                    owner_document().header("sec-purpose", "prefetch"),
+                ),
+                (
+                    "bearer",
+                    document("/", &lease, &future)
+                        .header(header::AUTHORIZATION, format!("Bearer {session}")),
+                ),
+                (
+                    "URL token",
+                    document("/", &lease, &future).query(&[("token", session.as_str())]),
+                ),
+                (
+                    "other account",
+                    document("/", &lease, &future).header(
+                        header::COOKIE,
+                        format!("remote_codex_relay_session={other}"),
+                    ),
+                ),
+                (
+                    "expired",
+                    document("/", &lease, "1").header(header::COOKIE, &cookie),
+                ),
+                (
+                    "unknown expiry",
+                    document("/", &lease, "").header(header::COOKIE, &cookie),
+                ),
+                (
+                    "invalid lease",
+                    document("/", "invalid", &future).header(header::COOKIE, &cookie),
+                ),
+                (
+                    "external path",
+                    document("//evil.example/path", &lease, &future)
+                        .header(header::COOKIE, &cookie),
+                ),
+            ];
+            let fallback_status = if separate {
+                StatusCode::TEMPORARY_REDIRECT
+            } else {
+                StatusCode::OK
+            };
+            for (case, request) in cases {
+                let response = request.send().await.unwrap();
+                assert_eq!(response.status(), fallback_status, "{case}");
+                if separate {
+                    assert!(response.headers()[header::LOCATION]
+                        .to_str()
+                        .unwrap()
+                        .starts_with("https://web.example.test/devices/"));
+                } else {
+                    assert!(response.text().await.unwrap().contains("Web fallback"));
+                }
+                assert!(state.preview.launches.lock().unwrap().is_empty(), "{case}");
+                assert!(
+                    state.preview.idle.lock().unwrap().warming.is_empty(),
+                    "{case}"
+                );
+            }
+            // Incomplete/recovery sessions need the Web flow, not a raw API error.
+            for mode in [account::SETUP, account::RECOVERY, account::RESET] {
+                account::mark_session(&*state.store.conn.lock().await, &session, mode).unwrap();
+                assert_eq!(
+                    owner_document().send().await.unwrap().status(),
+                    fallback_status
+                );
+                assert!(state.preview.launches.lock().unwrap().is_empty());
+            }
+            account::mark_session(&*state.store.conn.lock().await, &session, account::FULL)
+                .unwrap();
+            // The existing POST still requires the normal origin/CSRF proof.
+            let denied = client
+                .post(format!(
+                    "{base}/relay/devices/device/port-mappings/{mapping}/open"
+                ))
+                .header(header::COOKIE, &cookie)
+                .json(&json!({"path":"/"}))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+            let response = client
+                .get(&entry)
+                .query(&query("/app?q=1#section", &lease, &future))
+                .header(header::ACCEPT, "text/html")
+                .header("sec-fetch-mode", "navigate")
+                .header("sec-fetch-dest", "document")
+                .header(header::COOKIE, &cookie)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::SEE_OTHER);
+            assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+            assert_eq!(response.headers()[header::REFERRER_POLICY], "no-referrer");
+            let destination =
+                url::Url::parse(response.headers()[header::LOCATION].to_str().unwrap()).unwrap();
+            assert_eq!(destination.path(), "/app");
+            assert_eq!(destination.fragment(), Some("section"));
+            assert!(destination.host_str().unwrap().starts_with("p-"));
+            let launch = state
+                .preview
+                .launches
+                .lock()
+                .unwrap()
+                .values()
+                .next()
+                .unwrap()
+                .clone();
+            assert_eq!(launch.grant.session, session);
+            assert_eq!(launch.grant.lease.as_deref(), Some(lease.as_str()));
+            assert!(launch.expires < launch.grant.expires);
+            let path = format!("/app?{}", destination.query().unwrap());
+            let redeem = || {
+                client
+                    .get(format!("{base}{path}"))
+                    .header(header::HOST, destination.host_str().unwrap())
+            };
+            let response = redeem().send().await.unwrap();
+            assert_eq!(response.status(), StatusCode::SEE_OTHER);
+            assert!(response.headers().contains_key(header::SET_COOKIE));
+            assert_eq!(
+                state
+                    .preview
+                    .sessions
+                    .lock()
+                    .unwrap()
+                    .values()
+                    .next()
+                    .unwrap()
+                    .expires,
+                launch.grant.expires
+            );
+            assert_eq!(
+                redeem().send().await.unwrap().status(),
+                StatusCode::UNAUTHORIZED
+            );
+            update(&state, "device", Uuid::new_v4(), &json!([]));
+            relay.abort();
+            drop(state);
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+
+    #[test]
+    fn browser_login_keeps_lease_separate_from_the_application_query() {
+        let (mut state, dir) = crate::tests::test_app_state("preview-login-lease");
+        Arc::get_mut(&mut state).unwrap().oauth.public_base_url =
+            Some("https://relay.example.test".into());
+        let mapping = Mapping {
+            id: "a".repeat(32),
+            device: "device".into(),
+            connection: Uuid::new_v4(),
+            port: 4013,
+        };
+        let request = Request::builder()
+            .uri("/work?app=a%2Fb&app=two&flag&lease=existing&leaseExpiresAt=123")
+            .header("sec-fetch-mode", "navigate")
+            .header(header::ACCEPT, "text/html")
+            .body(Body::empty())
+            .unwrap();
+        let destination = browser_entry(&state, &request, &mapping).unwrap();
+        let query: HashMap<_, _> = destination.query_pairs().into_owned().collect();
+        assert_eq!(query["path"], "/work?app=a%2Fb&app=two&flag");
+        assert_eq!(query["lease"], "existing");
+        assert_eq!(query["leaseExpiresAt"], "123");
         drop(state);
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -1426,10 +1984,15 @@ mod tests {
                 let ticket = frame["ticket"].as_str().unwrap().to_owned();
                 let (tx, closed) = {
                     let mut streams = responder.preview.streams.lock().unwrap();
-                    let stream = streams.get_mut(&ticket).unwrap();
+                    let Some(stream) = streams.get_mut(&ticket) else {
+                        continue;
+                    };
                     (stream.tx.take().unwrap(), stream.closed.clone())
                 };
-                tx.send(relay).unwrap();
+                if tx.send(relay).is_err() {
+                    closed.cancel();
+                    continue;
+                }
                 let responder = responder.clone();
                 let service = service.clone();
                 tokio::spawn(async move {
@@ -1469,6 +2032,269 @@ mod tests {
             relay,
             device,
         }
+    }
+
+    async fn warm_done(fixture: &HttpFixture) {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let done = fixture
+                    .state
+                    .preview
+                    .idle
+                    .lock()
+                    .unwrap()
+                    .warming
+                    .first()
+                    .map(|c| c.done.clone());
+                match done {
+                    Some(done) => done.cancelled().await,
+                    None => break,
+                }
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn prewarm_joins_first_request_without_probing_the_app_or_duplicating_handshakes() {
+        let requests = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = requests.clone();
+        let fixture = http_fixture(
+            "preview-prewarm-first",
+            Duration::from_millis(30),
+            move |_| {
+                counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                async { Ok(Response::new(Body::from("ready"))) }
+            },
+        )
+        .await;
+        let mapping = fixture.state.preview.mappings.lock().unwrap()[&fixture.mapping].clone();
+        let grant = fixture.grant();
+        for _ in 0..20 {
+            prewarm_http(&fixture.state, &mapping, &grant);
+        }
+        assert_eq!(fixture.state.preview.idle.lock().unwrap().warming.len(), 2);
+        // The browser arrives during preparation, rather than after a fixed sleep.
+        let response = fixture.request(Method::GET, "/first").send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.text().await.unwrap(), "ready");
+        warm_done(&fixture).await;
+        assert_eq!(fixture.opens(), 2);
+        assert_eq!(requests.load(std::sync::atomic::Ordering::Relaxed), 1);
+        assert_eq!(fixture.state.preview.idle.lock().unwrap().clients.len(), 2);
+        for index in 0..3 {
+            assert_eq!(
+                fixture
+                    .request(Method::GET, &format!("/later-{index}"))
+                    .send()
+                    .await
+                    .unwrap()
+                    .text()
+                    .await
+                    .unwrap(),
+                "ready"
+            );
+        }
+        assert_eq!(fixture.opens(), 2);
+        // Expiry discards speculative connections through the normal idle path.
+        {
+            let mut pool = fixture.state.preview.idle.lock().unwrap();
+            for client in &mut pool.clients {
+                client.expires = std::time::Instant::now();
+            }
+            pool.prune();
+            assert!(pool.clients.is_empty());
+        }
+        assert_eq!(
+            fixture
+                .request(Method::GET, "/after-expiry")
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
+        );
+        assert_eq!(fixture.opens(), 3);
+    }
+
+    #[tokio::test]
+    async fn reopening_the_same_authorization_reuses_preparation_without_extending_it() {
+        let fixture = http_fixture("preview-prewarm-reopen", Duration::ZERO, |_| async {
+            Ok(Response::new(Body::from("ready")))
+        })
+        .await;
+        let mapping = fixture.state.preview.mappings.lock().unwrap()[&fixture.mapping].clone();
+        let mut grant = fixture.grant();
+        grant.lease = Some("L".repeat(43));
+        grant.expires = std::time::Instant::now() + Duration::from_secs(3600);
+        prewarm_http(&fixture.state, &mapping, &grant);
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::COOKIE,
+            format!("remote_codex_relay_session={}", grant.session)
+                .parse()
+                .unwrap(),
+        );
+        for _ in 0..3 {
+            assert!(issue_launch(
+                &fixture.state,
+                "device".into(),
+                mapping.id.clone(),
+                &headers,
+                OpenQuery {
+                    lease: grant.lease.clone(),
+                    ..Default::default()
+                },
+                OpenInput::default()
+            )
+            .await
+            .is_ok());
+        }
+        assert_eq!(fixture.state.preview.idle.lock().unwrap().warming.len(), 2);
+        assert!(fixture
+            .state
+            .preview
+            .launches
+            .lock()
+            .unwrap()
+            .values()
+            .all(|l| l.grant == grant));
+        warm_done(&fixture).await;
+        assert_eq!(fixture.opens(), 2);
+        // A different device lease retains a separate pool and deadline.
+        assert!(issue_launch(
+            &fixture.state,
+            "device".into(),
+            mapping.id.clone(),
+            &headers,
+            OpenQuery {
+                lease: Some("R".repeat(43)),
+                ..Default::default()
+            },
+            OpenInput::default()
+        )
+        .await
+        .is_ok());
+        warm_done(&fixture).await;
+        assert_eq!(fixture.opens(), 4);
+        assert_eq!(
+            fixture
+                .state
+                .preview
+                .launches
+                .lock()
+                .unwrap()
+                .values()
+                .filter(|l| l.grant == grant)
+                .count(),
+            3
+        );
+    }
+
+    #[tokio::test]
+    async fn prewarm_failed_handshakes_fall_back_before_sending_one_application_request() {
+        let requests = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = requests.clone();
+        let fixture = http_fixture(
+            "preview-prewarm-failure",
+            Duration::from_millis(30),
+            move |_| {
+                counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                async { Ok(Response::new(Body::from("fallback"))) }
+            },
+        )
+        .await;
+        let mapping = fixture.state.preview.mappings.lock().unwrap()[&fixture.mapping].clone();
+        prewarm_http(&fixture.state, &mapping, &fixture.grant());
+        let request = fixture.request(Method::POST, "/once");
+        let browser = tokio::spawn(async move { request.send().await.unwrap() });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while fixture.state.preview.streams.lock().unwrap().len() != 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        // Simulate the two device handoffs failing before HTTP bytes are sent.
+        for (_, stream) in fixture.state.preview.streams.lock().unwrap().drain() {
+            stream.cancel.cancel();
+            stream.closed.cancel();
+        }
+        let response = tokio::time::timeout(Duration::from_secs(2), browser)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(response.text().await.unwrap(), "fallback");
+        assert_eq!(requests.load(std::sync::atomic::Ordering::Relaxed), 1);
+        assert_eq!(fixture.opens(), 3);
+        assert!(fixture
+            .state
+            .preview
+            .idle
+            .lock()
+            .unwrap()
+            .warming
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn prewarm_is_bounded_and_does_not_evict_live_traffic() {
+        let fixture = http_fixture("preview-prewarm-limits", Duration::ZERO, |_| async {
+            Ok(Response::new(Body::empty()))
+        })
+        .await;
+        let mapping = fixture.state.preview.mappings.lock().unwrap()[&fixture.mapping].clone();
+        let mut grant = fixture.grant();
+        for index in 0..20 {
+            grant.lease = Some(format!("capability-{index}"));
+            prewarm_http(&fixture.state, &mapping, &grant);
+        }
+        assert_eq!(
+            fixture.state.preview.idle.lock().unwrap().warming.len(),
+            HTTP_PREWARM_DEVICE
+        );
+        for index in 0..20 {
+            let mut other = mapping.clone();
+            other.device = format!("other-{index}");
+            grant.device = other.device.clone();
+            prewarm_http(&fixture.state, &other, &grant);
+        }
+        assert_eq!(
+            fixture.state.preview.idle.lock().unwrap().warming.len(),
+            HTTP_PREWARM_GLOBAL
+        );
+        warm_done(&fixture).await;
+        // Once normal active streams fill a device budget, speculation adds none.
+        {
+            let mut streams = fixture.state.preview.streams.lock().unwrap();
+            for index in streams.len()..32 {
+                streams.insert(
+                    format!("busy-{index}"),
+                    Stream {
+                        mapping: mapping.clone(),
+                        grant: fixture.grant(),
+                        tx: None,
+                        cancel: CancellationToken::new(),
+                        closed: CancellationToken::new(),
+                    },
+                );
+            }
+        }
+        let clients = fixture.state.preview.idle.lock().unwrap().clients.len();
+        prewarm_http(&fixture.state, &mapping, &fixture.grant());
+        assert!(fixture
+            .state
+            .preview
+            .idle
+            .lock()
+            .unwrap()
+            .warming
+            .is_empty());
+        assert_eq!(
+            fixture.state.preview.idle.lock().unwrap().clients.len(),
+            clients
+        );
     }
 
     #[tokio::test]
@@ -2059,8 +2885,9 @@ mod tests {
             let caller = state.clone();
             let mapping = mapping.clone();
             let grant = grant.clone();
-            let opened =
-                tokio::spawn(async move { open_stream(&caller, &mapping, &grant).await.unwrap() });
+            let opened = tokio::spawn(async move {
+                open_stream(&caller, &mapping, &grant, false).await.unwrap()
+            });
             let frame: Value = serde_json::from_str(&rx.recv().await.unwrap()).unwrap();
             let mut request = format!(
                 "{base}/supervisor/port-stream/{}",
@@ -2252,11 +3079,14 @@ mod tests {
         let ticket = Uuid::new_v4().to_string();
         state.preview.launches.lock().unwrap().insert(
             ticket.clone(),
-            Grant {
-                mapping: mapping.clone(),
-                device: "device".into(),
-                session: token,
-                lease: Some(lease.clone()),
+            Launch {
+                grant: Grant {
+                    mapping: mapping.clone(),
+                    device: "device".into(),
+                    session: token,
+                    lease: Some(lease.clone()),
+                    expires: std::time::Instant::now() + Duration::from_secs(60),
+                },
                 expires: std::time::Instant::now() + Duration::from_secs(60),
             },
         );
