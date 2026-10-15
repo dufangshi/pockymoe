@@ -96,7 +96,7 @@
 }
 :theme .thread-ui-shell .tlog-output { background: var(--theme-surface); }
 :theme .thread-ui-shell .tlog-diff { background: var(--theme-panel); }
-:theme .thread-ui-shell .tlog-open::before { content: '↗ '; }
+:theme .thread-ui-shell .tlog-full::before { content: '↗ '; }
 :theme .thread-ui-shell .thread-diff-line.is-add { background: light-dark(#d3f1dc, #0f2e1e); }
 :theme .thread-ui-shell .thread-diff-line.is-remove { background: light-dark(#f8e0de, #35201f); }
 :theme .thread-ui-shell .thread-diff-line.is-file { background: var(--theme-surface); }
