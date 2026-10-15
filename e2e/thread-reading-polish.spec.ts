@@ -5,6 +5,13 @@ import path from 'node:path';
 
 const base = `http://127.0.0.1:${process.env.E2E_API_PORT ?? 8787}`;
 
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem(
+    `pockymoe.onboarding.v1:${JSON.stringify([location.origin, 'local:owner'])}`,
+    JSON.stringify({ welcomeDismissed: true, completed: [] }),
+  ));
+});
+
 test('cached Claude billing separates total input from the uncached tail on touch screens', async ({ page, request }, testInfo) => {
   await page.addInitScript(() => {
     localStorage.setItem('remote-codex.locale','zh-CN');
@@ -26,9 +33,10 @@ test('cached Claude billing separates total input from the uncached tail on touc
       items:[{id:'prompt',kind:'userMessage',text:'核对含图片的调用计费'},{id:'reply',kind:'agentMessage',text:'输入合计包含未缓存输入、缓存读取和缓存写入。'}]}],
   }}));
   await page.goto(`/threads/${id}`);
-  const price = page.locator('.thread-graph-worked-summary .thread-turn-usage-price');
+  const price = page.locator('.thread-turn-receipt .thread-turn-usage-price');
   await expect(price).toHaveText('$12.5');
-  await price.tap();
+  if (testInfo.project.name === 'mobile-chromium') await price.tap();
+  else await price.click();
   const popup = page.locator('[data-slot="tooltip-content"]');
   await expect(popup).toBeVisible();
   for (const name of ['输入合计','未缓存输入','缓存读取','缓存写入','输出','推理']) await expect(popup.getByText(name,{exact:name!=='缓存写入'}).first()).toBeVisible();
@@ -41,9 +49,11 @@ test('cached Claude billing separates total input from the uncached tail on touc
   expect(box.x+box.width).toBeLessThanOrEqual(page.viewportSize()!.width+1);
   expect(await popup.evaluate(el => el.scrollWidth-el.clientWidth)).toBeLessThanOrEqual(1);
   await page.screenshot({path:testInfo.outputPath('claude-input-breakdown.png'),scale:'css'});
-  await price.tap();
+  if (testInfo.project.name === 'mobile-chromium') await price.tap();
+  else await price.click();
   await expect(popup).not.toBeVisible();
-  await price.tap();
+  if (testInfo.project.name === 'mobile-chromium') await price.tap();
+  else await price.click();
   await expect(popup).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(popup).not.toBeVisible();
@@ -122,7 +132,6 @@ test('native task notifications use compact prose and expand without mobile over
   }}));
   await page.goto(`/threads/${id}`);
   await page.locator('.thread-graph-worked-summary button[aria-expanded]').click();
-  await page.locator('.thread-graph-history-group-activity > .thread-graph-history-group-card > button').click();
   const notice = page.locator('.thread-graph-task-notice').first();
   await expect(notice.locator('.thread-graph-task-notice-toggle')).toContainText('已唤醒');
   await expect(page.locator('.thread-graph-task-notice.is-failed')).toContainText('后台任务失败');
@@ -186,7 +195,7 @@ test('overlapping live steps stay stable on expansion and idle output keeps fres
   await page.route(`**/api/threads/${id}?**`, route => route.fulfill({ json: {
     ...detail, totalTurnCount: 1, activeSubagents: [],
     thread: { ...detail.thread, status: completed ? 'idle' : 'running', activeTurnId: completed ? null : turn.id },
-    turns: [{ ...turn, status: completed ? 'completed' : 'inProgress', hasDeferredItems: true, deferredItemCount: count }],
+    turns: [{ ...turn, status: completed ? 'completed' : 'inProgress', hasDeferredItems: true, deferredItemCount: count, activity: { commands: count } }],
   } }));
   await page.route(`**/api/threads/${id}/turns/${turn.id}/detail*`, route => route.fulfill({ json: {
     ...turn, items: [prompt, ...commands.slice(0, count), reply], hasDeferredItems: false, deferredItemCount: 0,
@@ -194,8 +203,8 @@ test('overlapping live steps stay stable on expansion and idle output keeps fres
   const emit = (type: string, payload = {}) => socket!.send(JSON.stringify({ type, threadId: id, timestamp: startedAt, payload }));
   await page.goto(`/threads/${id}`);
   const summary = page.locator('.thread-graph-worked-summary');
-  const steps = summary.locator('.thread-execution-step-count');
-  await expect(steps).toHaveText('1 steps');
+  const steps = summary.locator('.tlog-summary');
+  await expect(steps).toHaveText('·1 command');
   const progress = page.locator('.thread-progress-indicator');
   await expect(progress).toHaveAttribute('data-progress-freshness', 'stale');
   await expect(page.locator('.thread-progress-age')).toHaveCount(0);
@@ -210,20 +219,21 @@ test('overlapping live steps stay stable on expansion and idle output keeps fres
   await expect(page.getByRole('button', { name: 'Stop Current Turn', exact: true })).toBeVisible();
   emit('thread.item.completed', { turnId: turn.id, item: commands[0] });
   await expect(progress).toHaveAttribute('data-progress-freshness', 'recent');
-  await expect(steps).toHaveText('1 steps');
+  await expect(steps).toHaveText('·1 command');
   await summary.getByRole('button', { name: /Expand turn 1$/ }).click();
   await expect(page.getByText('read inbox', { exact: true })).toBeVisible();
-  await expect(steps).toHaveText('1 steps');
+  await expect(steps).toHaveText('·1 command');
   await summary.getByRole('button', { name: /Collapse turn 1$/ }).click();
   count = 2;
   emit('thread.item.completed', { turnId: turn.id, item: commands[1] });
   emit('thread.updated');
-  await expect(steps).toHaveText('2 steps');
+  await expect(steps).toHaveText('·2 commands');
   await summary.getByRole('button', { name: /Expand turn 1$/ }).click();
+  for (const head of await page.locator('.tlog-run-head[aria-expanded="false"]').all()) await head.click();
   await expect(page.getByText('read report', { exact: true })).toBeVisible();
-  await expect(steps).toHaveText('2 steps');
+  await expect(steps).toHaveText('·2 commands');
   await page.reload();
-  await expect(steps).toHaveText('2 steps');
+  await expect(steps).toHaveText('·2 commands');
   await expect(progress).toBeVisible();
   emit('thread.turn.token.updated', { turnId: turn.id, tokenUsage: { total: { inputTokens: 100, outputTokens: 10, totalTokens: 110, cachedInputTokens: 0 } } });
   await expect(progress).toHaveAttribute('data-progress-freshness', 'recent');
@@ -359,7 +369,7 @@ test('completed work agrees with the composer and the price tooltip has a matchi
   await expect(summary.locator('.thread-graph-worked-label')).toHaveText('Worked for 1m 12s');
   await expect(page.locator('.thread-graph-turn-footer')).toHaveCount(0);
   await expect(page.getByText('The work is complete.', { exact: true })).toBeVisible();
-  await summary.locator('.thread-turn-usage-price').hover();
+  await page.locator('.thread-turn-receipt .thread-turn-usage-price').hover();
   const tooltip = page.locator('[data-slot="tooltip-content"]');
   await expect(tooltip).toBeVisible();
   await expect(tooltip.locator(':scope > div [aria-label="Uncached input: 3,158 tokens"]')).toBeVisible();
@@ -374,7 +384,8 @@ test('completed work agrees with the composer and the price tooltip has a matchi
   await page.screenshot({ path: testInfo.outputPath('price-tooltip.png'), clip: { x: box.x - 4, y: box.y - 4, width: box.width + 8, height: box.height + 14 } });
 });
 
-test('mobile work summary keeps its step count and cannot scroll the conversation sideways', async ({ page, request }) => {
+test('mobile work summary keeps its activity counts and cannot scroll the conversation sideways', async ({ page, request }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
   const id = await createThread(request);
   const detail = await (await request.get(`${base}/api/threads/${id}`)).json();
   const items = [
@@ -393,7 +404,7 @@ test('mobile work summary keeps its step count and cannot scroll the conversatio
   ];
   const turn = {
     id: 'mobile-work-turn', status: 'completed', startedAt: '2026-10-05T16:58:02Z', completedAt: '2026-10-05T16:58:50Z',
-    model: 'claude-opus-5-5', reasoningEffort: 'max', hasDeferredItems: true, deferredItemCount: 5,
+    model: 'claude-opus-5-5', reasoningEffort: 'max', hasDeferredItems: true, deferredItemCount: 5, activity: { commands: 2, reads: 1 },
     tokenUsage: { total: { totalTokens: 2500000, inputTokens: 2495000, cachedInputTokens: 2400000, outputTokens: 5000, reasoningOutputTokens: 1000 }, generationSpeed: { averageOutputTokensPerSecond: 131.8 } },
     priceEstimate: { currency: 'USD', totalUsd: 0.61 },
     items: [items[0], items.at(-1)],
@@ -406,36 +417,36 @@ test('mobile work summary keeps its step count and cannot scroll the conversatio
   await page.getByRole('button', { name: 'Jump to previous turn' }).click();
   const scroll = page.getByTestId('thread-scroll-container');
   const summary = page.locator('.thread-graph-worked-summary');
-  const count = summary.locator('.thread-execution-step-count');
+  const count = summary.locator('.tlog-summary');
   const checkWidth = async () => {
     expect(await scroll.evaluate(e => ({ width: e.clientWidth, content: e.scrollWidth }))).toEqual({ width: page.viewportSize()!.width, content: page.viewportSize()!.width });
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(page.viewportSize()!.width);
-    for (const selector of ['.thread-execution-step-count', '.thread-turn-usage-effort', '.thread-turn-usage-tokens', '.thread-turn-usage-price, .thread-turn-usage-unavailable', '.thread-turn-token-speed']) {
-      const box = await summary.locator(selector).boundingBox();
+    for (const selector of ['.tlog-summary', '.thread-turn-usage-effort', '.thread-turn-usage-tokens', '.thread-turn-usage-price, .thread-turn-usage-unavailable', '.thread-turn-token-speed']) {
+      const box = await page.locator(selector === '.tlog-summary' ? '.thread-graph-worked-summary .tlog-summary' : `.thread-turn-receipt ${selector}`).boundingBox();
       expect(box).not.toBeNull();
       expect(box!.x).toBeGreaterThanOrEqual(0);
       expect(box!.x + box!.width).toBeLessThanOrEqual(page.viewportSize()!.width);
     }
   };
-  await expect(count).toHaveText('5 steps');
+  await expect(count).toHaveText('·2 commands·Read 1 file');
   await checkWidth();
   await summary.getByRole('button', { name: /Expand turn 1$/ }).click();
   await expect(summary.getByRole('button', { name: /Collapse turn 1$/ })).toBeVisible();
-  await expect(count).toHaveText('5 steps');
+  await expect(count).toHaveText('·2 commands·Read 1 file');
   await checkWidth();
   await summary.getByRole('button', { name: /Collapse turn 1$/ }).click();
-  await expect(count).toHaveText('5 steps');
+  await expect(count).toHaveText('·2 commands·Read 1 file');
   await page.setViewportSize({ width: 320, height: 740 });
   await checkWidth();
   await scroll.evaluate(e => e.scrollTo({ top: 100, left: 100, behavior: 'instant' }));
   expect(await scroll.evaluate(e => e.scrollLeft)).toBe(0);
   expect(await scroll.evaluate(e => e.scrollTop)).toBeGreaterThan(0);
   await page.reload();
-  await expect(count).toHaveText('5 steps');
+  await expect(count).toHaveText('·2 commands·Read 1 file');
   await checkWidth();
   priceAvailable = false;
   await page.reload();
-  await expect(summary.locator('.thread-turn-usage-unavailable')).toBeVisible();
+  await expect(page.locator('.thread-turn-receipt .thread-turn-usage-unavailable')).toBeVisible();
   await checkWidth();
 });
 
@@ -475,9 +486,9 @@ test('reading layout stays still with bounded images, visible effort and ten rec
   const before = await position();
   await page.getByRole('button', { name: 'Thread tools', exact: true }).click();
   await expect(page.locator('.matter-breadcrumb')).toBeVisible();
-  expect(await position()).toEqual(before);
+  expect.soft(await position()).toEqual(before);
   await page.getByRole('button', { name: 'Thread tools', exact: true }).click();
-  expect(await position()).toEqual(before);
+  expect.soft(await position()).toEqual(before);
   if (testInfo.project.name === 'mobile-chromium') {
     expect(await effort.evaluate(e => {
       const box = e.getBoundingClientRect();
@@ -540,7 +551,8 @@ test('background wake replaces its waiting anchor and continues within the same 
   const navigationBox = (await page.locator('.thread-jump-latest-badge').boundingBox())!;
   expect(inputBox.y - navigationBox.y - navigationBox.height).toBeLessThan(18);
   expect(usageBox.height).toBeLessThanOrEqual(16);
-  await usage.tap();
+  if (testInfo.project.name === 'mobile-chromium') await usage.tap();
+  else await usage.click();
   await expect(usage).toHaveAttribute('aria-expanded','true');
   await page.keyboard.press('Escape');
   await expect(usage).toHaveAttribute('aria-expanded','false');
@@ -562,7 +574,6 @@ test('background wake replaces its waiting anchor and continues within the same 
   const emit=(type:string,payload:object)=>socket!.send(JSON.stringify({type,threadId:id,timestamp:new Date().toISOString(),payload}));
   items=[prompt,foreground,wake,checking,command,final];
   for (const item of [wake,checking,command,final]) emit('thread.item.completed',{turnId,item});
-  await page.locator('.thread-graph-history-group-activity > .thread-graph-history-group-card > button').click();
   await expect(waitRow).toHaveCount(1);
   await expect(waitRow).toContainText('已唤醒');
   await expect(page.getByText(final.text,{exact:true})).toBeVisible();
@@ -584,7 +595,6 @@ test('background wake replaces its waiting anchor and continues within the same 
   expect(detailLoads).toBe(0);
   await page.locator('.thread-graph-worked-summary button[aria-expanded]').click();
   await expect.poll(()=>detailLoads).toBe(1);
-  await page.locator('.thread-graph-history-group-activity > .thread-graph-history-group-card > button').click();
   await expect(waitRow).toContainText('已唤醒');
   await expect(page.getByText(final.text,{exact:true})).toBeVisible();
   await expect(page.locator('.thread-graph-turn-footer')).toHaveCount(0);
@@ -617,10 +627,10 @@ test('background wake replaces its waiting anchor and continues within the same 
     await expect(waitRow).toHaveCount(0);
     await expect(page.getByText(progress.text, { exact: true })).toHaveCount(0);
     await workedToggle.click();
-    await page.locator('.thread-graph-history-group-activity > .thread-graph-history-group-card > button').click();
-    await expect(waitRow).toContainText('已唤醒');
+      await expect(waitRow).toContainText('已唤醒');
     await expect(page.getByText(progress.text, { exact: true })).toBeVisible();
   }
+  await page.setViewportSize({ width: 390, height: 844 });
   // In a phone split, usage must not lift the conversation switches/navigation
   // away from the prompt (the original overlap was specific to this strip).
   const other = await (await request.post(`${base}/api/threads/start`, {data:{workspaceId:detail.workspace.id,title:'参考会话',provider:'acp',agentId:'codex',model:'ios-e2e-stream',approvalMode:'yolo'}})).json();
@@ -772,27 +782,22 @@ test('live narration replaces its outside preview during tools and wake, with co
   items = [...items, progress];
   await expect(page.getByText(progress.text, { exact: true })).toHaveCount(1);
   await toggle.click();
-  const batch = turn.locator('.thread-graph-history-group-activity').first();
-  await batch.locator(':scope > .thread-graph-history-group-card > button').click();
-  const children = batch.locator(':scope > .thread-graph-history-group-card > .thread-graph-history-group-list');
+  const batch = turn.locator('.tlog-run').first();
+  await batch.locator('.tlog-run-head').click();
+  const children = batch.locator('.tlog-run-body');
   await expect(children).toBeVisible();
-  const parentBox = (await batch.boundingBox())!;
-  const childrenBox = (await children.boundingBox())!;
-  expect(childrenBox.x - parentBox.x).toBeGreaterThanOrEqual(6);
-  expect(await children.evaluate(el => parseFloat(getComputedStyle(el).borderLeftWidth))).toBe(1);
-  const rows = children.locator(':scope > *');
-  await expect(rows).toHaveCount(3);
+  const rows = children.locator(':scope > .tlog-row');
+  await expect(rows).toHaveCount(5); // skill, three commands, one batch of four reads
   const boxes = await rows.evaluateAll(els => els.map(el => { const r = el.getBoundingClientRect(); return { y: r.y, bottom: r.bottom }; }));
   for (let i = 1; i < boxes.length; i++) expect(boxes[i]!.y - boxes[i - 1]!.bottom).toBeLessThanOrEqual(4);
-  const subgroupToggle = children.locator('.thread-graph-history-group-toggle').first();
-  if (isMobile) expect((await subgroupToggle.boundingBox())!.height).toBeLessThanOrEqual(28);
+  await expect(children.locator('[data-kind="commandExecution"]')).toHaveCount(3);
+  const reads = children.locator('[data-batch="true"]');
+  await reads.locator('.tlog-row-head').first().click();
+  await expect(reads.locator('.tlog-batch .tlog-row')).toHaveCount(4);
   await expect(page.getByText(progress.text, { exact: true })).toHaveCount(1);
   expect(await page.getByTestId('thread-scroll-container').evaluate(el => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
   await batch.scrollIntoViewIfNeeded();
-  await page.screenshot({ path: testInfo.outputPath('compact-nested-steps.png'), scale: 'css' });
-  await subgroupToggle.click();
-  await expect(children.locator('.matter-command-step').first()).toBeVisible();
-  await page.screenshot({ path: testInfo.outputPath('nested-command-details.png'), scale: 'css' });
+  await page.screenshot({ path: testInfo.outputPath('compact-transcript-run.png'), scale: 'css' });
   await toggle.click();
   await expect(page.getByText(first.text, { exact: true })).toHaveCount(0);
   await expect(page.getByText(progress.text, { exact: true })).toBeVisible();
@@ -844,21 +849,21 @@ test('a homogeneous command batch opens once with half-sized whitespace', async 
   await page.locator('.thread-graph-worked-summary button[aria-expanded]').click();
   const history = page.locator('.thread-execution-timeline');
   await expect(history.locator('.thread-graph-history-group-activity')).toHaveCount(0);
-  const group = history.locator('.thread-graph-history-group-command');
-  const header = group.locator('.thread-graph-history-group-toggle');
+  const group = history.locator('.tlog-run');
+  const header = group.locator('.tlog-run-head');
   await expect(header).toContainText('14 条命令');
   expect((await header.boundingBox())!.height).toBeLessThanOrEqual(28);
   await header.click();
-  const rows = group.locator('.matter-command-step');
+  const rows = group.locator('.tlog-row-head');
   await expect(rows).toHaveCount(14);
   const geometry = await rows.evaluateAll(els => els.map(el => ({ height: el.getBoundingClientRect().height, lineHeight: parseFloat(getComputedStyle(el).lineHeight), y: el.getBoundingClientRect().y })));
   for (let i = 0; i < geometry.length; i++) {
-    expect(geometry[i]!.height).toBeLessThanOrEqual(24);
-    expect(geometry[i]!.height - geometry[i]!.lineHeight).toBeLessThanOrEqual(6);
-    if (i) expect(geometry[i]!.y - geometry[i - 1]!.y).toBeLessThanOrEqual(24);
+    expect(geometry[i]!.height).toBeLessThanOrEqual(28);
+    expect(geometry[i]!.height - geometry[i]!.lineHeight).toBeLessThanOrEqual(8);
+    if (i) expect(geometry[i]!.y - geometry[i - 1]!.y).toBeLessThanOrEqual(28);
   }
   const narrative = history.getByText('我先检查实现，再运行相关验证。', { exact: true });
-  expect((await header.boundingBox())!.y - (await narrative.boundingBox())!.y - (await narrative.boundingBox())!.height).toBeLessThanOrEqual(8);
+  expect((await header.boundingBox())!.y - (await narrative.boundingBox())!.y - (await narrative.boundingBox())!.height).toBeLessThanOrEqual(12);
   expect(await page.getByTestId('thread-scroll-container').evaluate(el => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
   // Keep the entire batch above the floating composer for the visual evidence.
   await history.evaluate(el => {
@@ -907,34 +912,33 @@ test('delivered wakes fold into steps while pending waits stay separate across s
   } }));
   await page.goto(`/threads/${id}`);
   const worked = page.locator('.thread-graph-worked-summary button[aria-expanded]');
-  const activity = page.locator('.thread-graph-history-group-activity');
-  const batchToggle = activity.locator(':scope > .thread-graph-history-group-card > button');
+  const activity = page.locator('.tlog-run');
+  const batchToggle = activity.locator('.tlog-run-head');
   const notices = page.locator('.thread-graph-task-notice');
   await expect(page.getByText(narration.text, { exact: true })).toBeVisible();
   await worked.click();
   await expect(activity).toHaveCount(1);
-  await expect(batchToggle).toContainText('3 个步骤');
-  await expect(batchToggle).toContainText('4s');
+  await expect(batchToggle).toContainText('1 条命令');
+  await expect(batchToggle).toContainText('读取 1 个文件');
+  await expect(notices).toHaveCount(2);
+  await expect(notices.first()).toContainText('已唤醒');
+  await expect(notices.last()).toContainText('等待唤醒');
   await expect(activity.locator('.thread-graph-task-notice')).toHaveCount(0);
-  await expect(notices).toHaveCount(1);
-  await expect(notices).toContainText('等待唤醒');
-  await page.screenshot({ path: testInfo.outputPath('folded-wakes-pending-wait.png'), scale: 'css' });
   await batchToggle.click();
-  await expect(activity.locator('.thread-graph-task-notice')).toContainText('已唤醒');
-  await expect(activity).not.toContainText('等待唤醒');
   await expect(page.getByText(command.text, { exact: true })).toBeVisible();
   await batchToggle.click();
-  await expect(notices).toHaveCount(1);
   const wakeTwo = { ...wait, origin: 'nativeTaskNotification', status: 'completed', taskStatus: 'completed', text: '第二项检查已完成', awakenedAt: new Date().toISOString() };
   const commandTwo = { ...command, id: 'command-two', text: '核对第二项检查', sequence: 7 };
   items = [prompt, narration, wake, command, read, wakeTwo, commandTwo];
   for (const item of [wakeTwo, commandTwo]) socket!.send(JSON.stringify({ type: 'thread.item.completed', threadId: id, timestamp: new Date().toISOString(), payload: { turnId, item } }));
-  await expect(batchToggle).toContainText('5 个步骤');
+  await expect(batchToggle).toContainText('1 条命令');
   await expect(batchToggle).toHaveAttribute('aria-expanded', 'false');
-  await expect(notices).toHaveCount(0);
+  await expect(notices).toHaveCount(2);
+  await expect(notices.last()).toContainText('已唤醒');
   await expect(page.locator('.thread-graph-turn-footer')).not.toContainText('等待唤醒');
   await batchToggle.click();
-  await expect(activity.locator('.thread-graph-task-notice')).toHaveCount(2);
+  await expect(notices).toHaveCount(2);
+  await expect(activity.locator('.thread-graph-task-notice')).toHaveCount(0);
   await page.screenshot({ path: testInfo.outputPath('expanded-wake-steps.png'), scale: 'css' });
   const final = { id: 'final', kind: 'agentMessage', responsePhase: 'final', status: 'completed', text: '两项检查均已通过，这是最终报告。', sequence: 8 };
   items.push(final);
@@ -946,8 +950,8 @@ test('delivered wakes fold into steps while pending waits stay separate across s
   await expect(page.getByText(narration.text, { exact: true })).toHaveCount(0);
   await expect(notices).toHaveCount(0);
   await worked.click();
-  await expect(batchToggle).toContainText('5 个步骤');
-  await expect(notices).toHaveCount(0);
+  await expect(batchToggle).toContainText('1 条命令');
+  await expect(notices).toHaveCount(2);
   await batchToggle.click();
   await expect(notices).toHaveCount(2);
   await worked.click();
@@ -987,7 +991,7 @@ test('peer questions fold under task steps and hydrate only the opened work roun
   await expect(summary).toHaveCount(1);
   await expect(page.locator('[data-role="user"]')).toHaveCount(1);
   await expect(page.getByText(second.items[1].text,{exact:true})).toBeVisible();
-  await expect(summary.locator('.thread-turn-usage-price')).toHaveText('$0.75');
+  await expect(page.locator('.thread-turn-receipt > .thread-turn-usage .thread-turn-usage-price')).toHaveText('$0.75');
   expect(loads).toEqual([]);
   await summary.locator('button[aria-expanded]').first().click();
   const questions=page.locator('.thread-peer-work-toggle');

@@ -50,15 +50,15 @@ test('Plum Pocket replies carry the agent byline and phone-sized step targets; C
   // The steps open as a pocket card; the work disclosure keeps its touch target; typed batches open directly.
   await turns.nth(1).getByRole('button', { name: /Expand turn 2$/ }).click();
   await expect(turns.nth(1).locator('.thread-graph-history-group-activity')).toHaveCount(0);
-  await turns.nth(1).getByRole('button', { name: /Expand 2 command entries/ }).click();
-  await expect(turns.nth(1).getByRole('button', { name: 'Open grouped command 1' })).toBeVisible();
+  await turns.nth(1).locator('.tlog-run-head').click();
+  await expect(turns.nth(1).locator('.tlog-row-head').first()).toBeVisible();
   if (testInfo.project.name === 'mobile-chromium') {
     for (const target of [
       turns.nth(1).getByRole('button', { name: /Collapse turn 2$/ }),
     ]) expect((await target.boundingBox())!.height, await target.getAttribute('aria-label') ?? '').toBeGreaterThanOrEqual(44);
     for (const target of [
-      turns.nth(1).getByRole('button', { name: /Collapse 2 command entries/ }),
-      turns.nth(1).getByRole('button', { name: 'Open grouped command 1' }),
+      turns.nth(1).locator('.tlog-run-head'),
+      turns.nth(1).locator('.tlog-row-head').first(),
     ]) expect((await target.boundingBox())!.height).toBeGreaterThanOrEqual(24);
     expect(await page.getByTestId('thread-scroll-container').evaluate(e => e.scrollWidth <= e.clientWidth)).toBe(true);
   }
@@ -110,7 +110,7 @@ test('Plum Pocket step stream reads prose first: quiet toggle, small muted steps
   const timeline = page.locator('.thread-execution-timeline').first();
   const narration = timeline.getByText('The banner gets the raw API message', { exact: false });
   await expect(narration).toBeVisible();
-  const stepsLabel = timeline.locator('.is-plain-group .thread-graph-history-group-summary > span').first();
+  const stepsLabel = timeline.locator('.tlog-run-head .tlog-summary').first();
   const style = (locator: typeof narration) => locator.evaluate((e) => {
     const css = getComputedStyle(e);
     return { size: parseFloat(css.fontSize), weight: Number(css.fontWeight) };
@@ -123,11 +123,12 @@ test('Plum Pocket step stream reads prose first: quiet toggle, small muted steps
 
   // Step icons are cap-height line doodles with no tile behind them.
   await stepsLabel.click();
-  const icon = timeline.locator('.thread-history-direct-action .thread-graph-history-tool-icon, .thread-graph-history-group-inline-icon').first();
+  const icon = timeline.locator('.tlog-row .tlog-glyph').first();
   await expect(icon).toBeVisible();
   const box = (await icon.boundingBox())!;
   expect(box.width).toBeLessThanOrEqual(13);
-  expect(await icon.evaluate((e) => getComputedStyle(e).maskImage || getComputedStyle(e).webkitMaskImage)).toContain('svg');
+  await expect(icon).toHaveText('$');
+  await expect(icon).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
   // Wake notices follow the same muted size.
   const wake = timeline.locator('.thread-graph-task-notice').first();
   expect((await style(wake)).size).toBeLessThan(prose.size);
