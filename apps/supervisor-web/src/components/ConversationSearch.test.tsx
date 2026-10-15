@@ -176,3 +176,7 @@ it('keeps a global permission denial separate from an unavailable endpoint', asy
   expect(fetchThreadConversationPage).not.toHaveBeenCalled();
   expect(searchThreadMessages).not.toHaveBeenCalled();
 });
+it('names the search glyph with data-icon for theme packs', () => {
+  render(<Harness />);
+  expect(screen.getByRole('button', { name: 'Search conversation' }).querySelector('svg')?.getAttribute('data-icon')).toBe('search');
+});

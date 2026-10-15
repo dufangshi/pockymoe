@@ -29,9 +29,9 @@ export function AppShellMenuButton({ className = '' }: { className?: string }) {
       className={`product-icon-button text-[var(--theme-fg)] ${className}`.trim()}
     >
       {shellNav.navOpen ? (
-        <X aria-hidden="true" className="h-4 w-4" />
+        <X data-icon="close" aria-hidden="true" className="h-4 w-4" />
       ) : (
-        <Menu aria-hidden="true" className="h-4 w-4" />
+        <Menu data-icon="menu" aria-hidden="true" className="h-4 w-4" />
       )}
     </button>
   );
@@ -136,7 +136,7 @@ export function AppShellNavigationMenu({
               location.pathname === '/relay-devices',
             )}
           >
-            <MonitorSmartphone aria-hidden="true" className="h-4 w-4" />
+            <MonitorSmartphone data-icon="devices" aria-hidden="true" className="h-4 w-4" />
             {translate("files.deviceManagement")}</button></HostFeatureGate>
         )}
         <button
@@ -146,7 +146,7 @@ export function AppShellNavigationMenu({
           }}
           className={menuItemClassName()}
         >
-          <Settings aria-hidden="true" className="h-4 w-4" />
+          <Settings data-icon="settings" aria-hidden="true" className="h-4 w-4" />
           {translate("files.settings")}</button>
         {tour && (
           <button
@@ -157,7 +157,7 @@ export function AppShellNavigationMenu({
             }}
             className={menuItemClassName()}
           >
-            <CircleHelp aria-hidden="true" className="h-4 w-4" />
+            <CircleHelp data-icon="help" aria-hidden="true" className="h-4 w-4" />
             {translate('tour.entry')}</button>
         )}
       </nav>

@@ -302,7 +302,7 @@ export function WorkbenchThreadPicker(props: WorkbenchThreadPickerProps) {
         }}
         data-testid="workbench-split-trigger"
       >
-        <Columns2 size={16} />
+        <Columns2 data-icon="split" size={16} />
       </button>
       {open &&
         createPortal(
@@ -399,7 +399,7 @@ export function WorkbenchThreadPicker(props: WorkbenchThreadPickerProps) {
                 className="workbench-thread-picker-row"
                 onClick={() => { props.onRestore?.(); close(); }}
               >
-                <RotateCcw size={16} /><span>{t('workbench.restoreSplit')}</span>
+                <RotateCcw data-icon="restore" size={16} /><span>{t('workbench.restoreSplit')}</span>
               </button>
             )}
             <div className="workbench-thread-picker-scroll">

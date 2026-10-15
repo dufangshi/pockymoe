@@ -662,7 +662,7 @@ export function TourLauncherButton({ showLabel = false }: { showLabel?: boolean 
   if (!tour) return null;
   return (
     <button type="button" className={`pm-tour-launcher ${showLabel ? 'pm-tour-launcher-labeled' : ''}`} aria-label={translate('tour.entry')} title={translate('tour.entry')} onClick={tour.openHub}>
-      {showLabel ? <Compass aria-hidden="true"/> : <CircleHelp aria-hidden="true" />}
+      {showLabel ? <Compass data-icon="help" aria-hidden="true"/> : <CircleHelp data-icon="help" aria-hidden="true" />}
       {showLabel && <span>{translate('tour.entry')}</span>}
     </button>
   );

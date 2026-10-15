@@ -544,7 +544,7 @@ export function ThreadAutomationsControl({ thread }: { thread: ThreadDto }) {
         aria-expanded={open}
         onClick={() => setOpen(true)}
       >
-        <Workflow size={14} />
+        <Workflow data-icon="automations" size={14} />
       </button>
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent

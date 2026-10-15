@@ -300,7 +300,7 @@ export function DeviceMonitor() {
     const text = stale || used == null || total == null || total <= 0
       ? '—' : `${(used / 2 ** 30).toFixed(1)}/${(total / 2 ** 30).toFixed(1)}`;
     return <span className="dm-summary-reading dm-summary-capacity" title={`${title}: ${text} GiB`} aria-label={`${title}: ${text} GiB`}>
-      <MemoryStick aria-hidden style={{ width: 8, height: 8 }} /><b style={load(stale ? null : value)}>{text}{text !== '—' && <small>G</small>}</b>
+      <MemoryStick data-icon="memory" aria-hidden style={{ width: 8, height: 8 }} /><b style={load(stale ? null : value)}>{text}{text !== '—' && <small>G</small>}</b>
     </span>;
   };
   return (
@@ -316,13 +316,13 @@ export function DeviceMonitor() {
         onClick={() => setOpen(true)}
       >
         <span className="dm-summary-row">
-          {reading(<Cpu aria-hidden style={{ width: 8, height: 8 }} />, data?.cpu.usagePercent, 'CPU')}
+          {reading(<Cpu data-icon="cpu" aria-hidden style={{ width: 8, height: 8 }} />, data?.cpu.usagePercent, 'CPU')}
           <span className="dm-summary-separator" aria-hidden>·</span>
           {capacity(data?.memory.usedBytes, data?.memory.totalBytes, data?.memory.usagePercent, 'DRAM')}
         </span>
         {gpu && (
           <span className="dm-summary-row">
-            {reading(<Gpu aria-hidden style={{ width: 8, height: 8 }} />, gpu.usagePercent, `GPU · ${gpu.name}`)}
+            {reading(<Gpu data-icon="gpu" aria-hidden style={{ width: 8, height: 8 }} />, gpu.usagePercent, `GPU · ${gpu.name}`)}
             <span className="dm-summary-separator" aria-hidden>·</span>
             {capacity(gpu.usedMemoryBytes, gpu.totalMemoryBytes, vram, 'VRAM')}
           </span>
