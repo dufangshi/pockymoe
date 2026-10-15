@@ -269,16 +269,23 @@ It sends to the thread the files belong to, like Send in the composer, without
 clearing the composer's draft.
 
 On a phone (under 640 px wide) the controls sit at the bottom for one-handed use.
-The top bar shows only status: the device monitor, how many other threads are
+The top bar shows only status: the device monitor, the subscription usage windows
+(such as 5h and 7d; tapping them shows the details), how many other threads are
 running, the connection and notifications. A row under the composer holds the
 current thread, Chat / Files / Terminal and More. Tapping the thread, or swiping up
 on it, opens a sheet with the workspace's threads (running and unread first),
 recent threads, unread notifications, the workspace drawer and New thread.
 Swiping it sideways opens the neighbouring open thread. More holds search, the
 shortcut star, the thread's sharing, automation and split controls, Back, Home
-and Settings. The row hides while a text field has focus. Setting
-`localStorage['pockymoe.phoneDock']` to `off` restores the previous top bar and
-thread tabs.
+and Settings. The row hides while a text field has focus. A split pins its two
+conversations in the thread's place in that row: one tap brings the other forward,
+and tapping the shown one opens the thread sheet. Settings > Preferences >
+One-handed phone layout (on by default, stored in this browser) turns it off and
+restores the previous top bar, thread tabs, composer usage and split switches.
+
+Above the composer, at its right edge, one strip holds previous turn, next turn
+and the latest reply; the latest-reply button is highlighted only while the
+reader is away from the end.
 
 The compact model menu shows reported context use and capacity in thousands of
 tokens below the reasoning controls. Missing readings show a dash.

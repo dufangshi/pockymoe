@@ -964,18 +964,6 @@ fieldset {
     background-color 0.3s ease;
 }
 
-.thread-jump-latest-badge {
-  border-color: color-mix(in srgb, var(--theme-border-contrast) 85%, transparent);
-  background: color-mix(in srgb, var(--theme-surface-strong) 82%, transparent);
-  color: var(--theme-fg-soft);
-}
-
-.thread-jump-latest-badge.is-active {
-  border-color: color-mix(in srgb, var(--theme-accent-border) 92%, transparent);
-  background: color-mix(in srgb, var(--theme-accent-soft) 92%, transparent);
-  color: var(--theme-accent-strong);
-}
-
 .thread-composer-input {
   border-color: var(--theme-border-strong);
   background: var(--theme-surface-strong);

@@ -12,7 +12,7 @@ it('sends trimmed text, clears only on success, and confirms delivery', async ()
   const onSend = vi.fn(() => new Promise<boolean>(done => { resolve = done; }));
   render(<FileAskBar onSend={onSend} />);
   fill('  Explain this file. \n ');
-  fireEvent.click(screen.getByRole('button', { name: 'Send', exact: true }));
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }));
   expect(onSend).toHaveBeenCalledExactlyOnceWith('Explain this file.');
   expect(field()).toHaveValue('  Explain this file. \n ');
   expect(screen.getByRole('button', { name: 'Sending...' })).toBeDisabled();
@@ -27,13 +27,13 @@ it('keeps the text and explains a false result, then permits correction and retr
   const onSend = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true);
   render(<FileAskBar onSend={onSend} />);
   fill(' Keep this question ');
-  fireEvent.click(screen.getByRole('button', { name: 'Send', exact: true }));
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }));
   await screen.findByRole('status');
   expect(field()).toHaveValue(' Keep this question ');
   expect(screen.getByRole('status')).toHaveTextContent(/not sent|couldn.t send|failed/i);
   fill('Try again');
   expect(screen.queryByRole('status')).not.toBeInTheDocument();
-  fireEvent.click(screen.getByRole('button', { name: 'Send', exact: true }));
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }));
   await waitFor(() => expect(field()).toHaveValue(''));
   expect(onSend).toHaveBeenLastCalledWith('Try again');
 });
@@ -51,7 +51,7 @@ it('ignores empty and whitespace-only text even for a direct form submission', (
   render(<FileAskBar onSend={onSend} />);
   for (const value of ['', ' \n\t ']) {
     fill(value);
-    expect(screen.getByRole('button', { name: 'Send', exact: true })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
     fireEvent.submit(field().closest('form')!);
     fireEvent.keyDown(field(), { key: 'Enter' });
   }
@@ -79,7 +79,7 @@ it('disables the field and sending with a reason and preserves the draft until e
   rerender(<FileAskBar onSend={onSend} disabledReason="Device is offline" />);
   expect(field()).toBeDisabled();
   expect(field()).toHaveAttribute('title', 'Device is offline');
-  expect(screen.getByRole('button', { name: 'Send', exact: true })).toBeDisabled();
+  expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
   fireEvent.submit(field().closest('form')!);
   expect(onSend).not.toHaveBeenCalled();
   rerender(<FileAskBar onSend={onSend} />);

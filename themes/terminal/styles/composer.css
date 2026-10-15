@@ -41,4 +41,4 @@
 :theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-stop-button { border: 1px solid var(--theme-border-strong); background: transparent; }
 :theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-stop-button:hover { border-color: var(--tlog-failed); color: var(--tlog-failed); }
 :theme .thread-ui-shell [data-composer-layout] .composer-model-label { border: 1px solid var(--term-line); font-size: 12px; }
-:theme .thread-ui-shell .thread-jump-latest-badge { border-radius: 0; box-shadow: none; }
+:theme .thread-ui-shell :is(.thread-jump-nav, .thread-jump-nav > button) { border-radius: 0; box-shadow: none; }

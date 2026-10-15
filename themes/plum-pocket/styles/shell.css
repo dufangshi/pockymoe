@@ -798,6 +798,26 @@
   :theme .thread-ui-shell .matter-workbench .matter-topbar-end > .device-monitor-button .dm-summary-capacity b { font-size: 7.5px; }
   :theme .thread-ui-shell .matter-workbench .matter-topbar-end > .device-monitor-button:not([data-gpu]) { font-size: 9px; }
   :theme .thread-ui-shell .matter-workbench .matter-topbar-end > .device-monitor-button[data-stale] b { color: var(--plum-chrome-muted); }
+  /* The one-handed status bar shows the monitor and usage at their reading size,
+     not in an icon slot. */
+  :theme .thread-ui-shell .matter-workbench .matter-topbar.is-status-only :is(.device-monitor-button, .thread-subscription-usage) {
+    flex: none;
+    width: auto;
+    min-width: 0;
+    height: 34px;
+  }
+  :theme .thread-ui-shell .matter-workbench .matter-topbar.is-status-only > .matter-running-chip {
+    flex: none;
+    gap: 4px;
+    width: auto;
+    min-width: 0;
+    height: 26px;
+    padding: 0 9px;
+    border-radius: 999px;
+    background: rgb(242 193 92 / 16%);
+    color: #f2c15c;
+  }
+  :theme .thread-ui-shell .matter-workbench .matter-topbar.is-status-only > .matter-running-chip svg { width: 13px; height: 13px; }
   :theme .thread-ui-shell .matter-workbench .matter-topbar-end > .device-monitor-button:is(:hover, [aria-expanded='true']) { background-color: transparent; background-image: linear-gradient(var(--plum-chrome-hover), var(--plum-chrome-hover)); background-clip: content-box; color: var(--plum-chrome-soft); }
 
   /* The drawer is a pocket sliding over everything, full height. */

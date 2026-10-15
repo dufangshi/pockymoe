@@ -78,6 +78,10 @@
 .matter-topbar.is-status-only .device-monitor-button :is(.dm-summary-reading, .dm-summary-capacity) > svg { width: 13px; height: 13px; }
 .matter-topbar.is-status-only .device-monitor-button .dm-summary-capacity b { font-size: 12px; letter-spacing: 0; }
 .matter-topbar.is-status-only .device-monitor-button .dm-summary-capacity small { font-size: 9px; }
+@media (max-width: 379px) {
+  .thread-ui-shell .matter-workbench .matter-topbar.is-status-only .device-monitor-button { padding-inline: 4px; font-size: 11px; }
+  .matter-topbar.is-status-only .device-monitor-button .dm-summary-capacity b { font-size: 11px; }
+}
 /* Monitor dialog: one row per resource (icon, name, value, load meter); the CPU
    row expands into a history chart and per-core charts. Readings with --load
    (0–100) take a hue from green through amber to red. */

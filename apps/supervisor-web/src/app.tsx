@@ -74,6 +74,8 @@ import { builtinFrontendPlugins } from './plugins/builtin-plugin-modules';
 import { useComposerPreferences } from './lib/useComposerPreferences';
 import { effectiveColorMode, themeChromeColor, useThemeRegistry } from './lib/themePacks';
 
+const PHONE_DOCK_STORAGE_KEY = 'pockymoe.phoneDock';
+
 const THEME_STORAGE_KEY = 'remote-codex-theme-mode';
 const BACKEND_STORAGE_KEY = 'remote-codex-default-backend';
 
@@ -249,6 +251,10 @@ function AppShell({
   const [autoCollapseCompletedTurns, setAutoCollapseCompletedTurnsState] = useState(
     readInitialAutoCollapseCompletedTurns,
   );
+  // One-handed phone layout, on unless turned off in Preferences.
+  const [phoneDock, setPhoneDockState] = useState(() => {
+    try { return localStorage.getItem(PHONE_DOCK_STORAGE_KEY) !== 'off'; } catch { return true; }
+  });
   const location = useLocation();
   const isThreadUtilityRoute =
     /^\/threads\/(?:import|new)$/.test(location.pathname) ||
@@ -277,6 +283,11 @@ function AppShell({
   function setDefaultBackend(backend: AgentBackendIdDto) {
     setDefaultBackendState(backend);
     window.localStorage.setItem(BACKEND_STORAGE_KEY, backend);
+  }
+
+  function setPhoneDock(enabled: boolean) {
+    setPhoneDockState(enabled);
+    try { localStorage.setItem(PHONE_DOCK_STORAGE_KEY, enabled ? 'on' : 'off'); } catch { /* Private browsing may disable storage. */ }
   }
 
   function setAutoCollapseCompletedTurns(enabled: boolean) {
@@ -319,6 +330,8 @@ function AppShell({
     setDefaultBackend,
     autoCollapseCompletedTurns,
     setAutoCollapseCompletedTurns,
+    phoneDock,
+    setPhoneDock,
     showReasoningSummaries,
     setShowReasoningSummaries: (enabled: boolean) => {
       setShowReasoningSummaries(enabled);
