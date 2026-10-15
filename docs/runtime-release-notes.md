@@ -1,24 +1,20 @@
-Pockymoe inside Treer now syncs threads both ways. In a Pockymoe page opened
-from a Treer Agent you can create, rename and delete top-level threads: creating
-one also creates its Treer Agent in the same folder, renaming renames the Agent,
-and deleting removes the Agent and the thread. Every Treer-bound thread on the
-same hub (and its child threads) can be opened, switched in tabs and shown in
-split view from any of those pages; hub threads without a Treer Agent stay
-invisible, and management, settings and device pages remain unavailable there.
-Browser navigation state is kept per hub, and references that can no longer be
-opened are dropped quietly instead of showing an error.
+Claude native subagents stopped when a session ends now appear as interrupted
+instead of remaining running indefinitely. SDK notifications are matched by
+native task ID even when no tool-call ID is present, and the runtime counter
+stops at the notification time. Older child transcript records cannot undo a
+newer stop/completion notification; actual resumed work still updates normally.
+Live background-agent tracking also recognizes the native `stopped` status.
 
-`pockymoe attach` now reports what it is waiting for (hub token, thread setup)
-and shows the hub's reason when it refuses a binding, such as a missing base
-agent. `treer-setup.sh` checks the Codex and Claude ACP adapters after setup and
-replaces missing, external or unverified ones with a verified Pockymoe-managed
-adapter, and rerunning it with a newer `--version` upgrades an existing hub
-through its own update path.
+Private port previews reuse fully consumed HTTP connections within the exact
+account/session/mapping authorization, and disable Nagle on Relay and device
+data sockets. The published Web entry can open an already authorized CLI preview
+without first loading the entire workbench. These Relay/Web improvements are
+already deployed and work with older Supervisors; device-side TCP_NODELAY takes
+effect after a normal runtime update.
 
-Validated with the runtime, Supervisor, CLI, setup and Web unit suites, the
-static Web build, and live runs against a local Treer control plane with
-authentication enabled (thread create, rename, delete, cross-thread navigation,
-gate denials and attach diagnostics, using the fake runtime). The adapter check
-and the hub upgrade path were tested against a simulated hub, not yet against
-real Codex or Claude adapters. A thread whose Agent is deleted from the Treer
-side is kept on the hub. Windows Device Manager is unchanged.
+Targeted native-agent runtime and Supervisor HTTP regressions cover stopped
+notifications, old-record replay, transcript replacement, resumption, scoped
+access and unchanged accounting. Port preview regressions and isolated HTTP,
+SSE and WebSocket benchmarks were also verified. Windows Device Manager is
+unchanged. Installing this release is a separate device update; publication
+does not restart an existing Supervisor.

@@ -19,6 +19,13 @@ identify children belonging to the exact parent session. The indexed rollout
 path avoids repeatedly scanning the sessions directory; older installations can
 use the existing rollout discovery fallback.
 
+Claude SDK notifications can identify a child by its native task ID without a
+tool-call ID. Terminal notices are matched to known children; `stopped` is shown
+as interrupted and freezes the runtime at the notification timestamp. Human text
+quoting a notification does not change state. Lifecycle timestamps keep older
+child records from reviving a stopped agent during initial discovery, delayed
+flushes or transcript replacement. Actual newer child work can resume normally.
+
 - `GET /api/threads/{threadId}/subagents`: `{ agents, refreshing }`.
 - `GET /api/threads/{threadId}/subagents/{agentId}`: `{ agent, items, hasEarlierItems, historyMode: "lazy-v1" }`.
 - Add `?before=SEQUENCE` to fetch the previous page (30 compact entries).

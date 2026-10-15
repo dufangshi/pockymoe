@@ -41,6 +41,7 @@ struct Parent {
 }
 struct Agent {
     summary: NativeSubagentDto,
+    lifecycle_at: Option<String>,
     path: Option<PathBuf>,
     offset: u64,
     items: VecDeque<ThreadHistoryItemDto>,
@@ -75,7 +76,7 @@ fn status(value: &str) -> &str {
     match value {
         "completed" | "done" => "completed",
         "errored" | "failed" => "failed",
-        "shutdown" | "killed" | "cancelled" | "interrupted" => "interrupted",
+        "shutdown" | "stopped" | "killed" | "cancelled" | "interrupted" => "interrupted",
         "running" | "pending_init" => "running",
         _ => "unknown",
     }
@@ -134,6 +135,7 @@ impl Agent {
                 activity_count: 0,
                 details_available: false,
             },
+            lifecycle_at: None,
             path: None,
             offset: 0,
             items: VecDeque::new(),
@@ -150,6 +152,26 @@ impl Agent {
             unpriced: false,
             codex_own_history: false,
         }
+    }
+    fn lifecycle(&mut self, state: &str, at: Option<String>) {
+        // Parent receipts/notifications are read before the child transcript.
+        // Replaying an older child record must not undo a newer terminal event.
+        if let Some(current) = self.lifecycle_at.as_deref() {
+            let Some(next) = at.as_deref() else { return };
+            let order = chrono::DateTime::parse_from_rfc3339(next)
+                .ok()
+                .zip(chrono::DateTime::parse_from_rfc3339(current).ok())
+                .map(|(next, current)| next.cmp(&current))
+                .unwrap_or_else(|| next.cmp(current));
+            if order.is_lt()
+                || (order.is_eq() && state == "running" && self.summary.agent.status != "running")
+            {
+                return;
+            }
+        }
+        self.summary.agent.status = state.into();
+        self.summary.agent.completed_at = if state == "running" { None } else { at.clone() };
+        self.lifecycle_at = at;
     }
     fn activity(&mut self, id: String, kind: &str, body: String, at: Option<String>, state: &str) {
         if body.trim().is_empty() {
@@ -470,11 +492,9 @@ impl Agent {
                     }
                 }
                 if message["stop_reason"] == "end_turn" {
-                    self.summary.agent.status = "completed".into();
-                    self.summary.agent.completed_at = at;
+                    self.lifecycle("completed", at);
                 } else {
-                    self.summary.agent.status = "running".into();
-                    self.summary.agent.completed_at = None;
+                    self.lifecycle("running", at);
                 }
             } else if entry["type"] == "user" {
                 for block in message["content"].as_array().into_iter().flatten() {
@@ -509,12 +529,16 @@ impl Agent {
         };
         if path.metadata().is_ok_and(|meta| meta.len() < self.offset) {
             let summary = self.summary.clone();
+            let lifecycle_at = self.lifecycle_at.clone();
             *self = Self::new(
                 &summary.agent.id,
                 &summary.provider,
-                summary.agent.name,
-                summary.agent.started_at,
+                summary.agent.name.clone(),
+                summary.agent.started_at.clone(),
             );
+            self.summary.agent = summary.agent;
+            self.summary.updated_at = summary.updated_at;
+            self.lifecycle_at = lifecycle_at;
             self.summary.native_session_id = summary.native_session_id;
             self.summary.prompt = summary.prompt;
             self.path = Some(path.clone());
@@ -643,17 +667,14 @@ impl Parent {
                         let asynchronous =
                             result["isAsync"] == true && result["status"] == "async_launched";
                         agent.summary.agent.is_background = Some(asynchronous);
-                        agent.summary.agent.status = if asynchronous {
+                        let state = if asynchronous {
                             "running"
                         } else if block["is_error"] == true {
                             "failed"
                         } else {
                             "completed"
-                        }
-                        .into();
-                        if !asynchronous {
-                            agent.summary.agent.completed_at = at.clone();
-                        }
+                        };
+                        agent.lifecycle(state, at.clone());
                         // Receipts remain useful even before the native transcript appears.
                         if !asynchronous && agent.items.is_empty() {
                             agent.activity(
@@ -666,21 +687,43 @@ impl Parent {
                         }
                     }
                 }
-                if (entry.pointer("/origin/kind").and_then(Value::as_str)
+                if entry.pointer("/origin/kind").and_then(Value::as_str)
                     == Some("task-notification")
-                    || entry["turnOrigin"] == "task_notification")
-                    && content.is_string()
+                    || entry["turnOrigin"] == "task_notification"
                 {
-                    let body = content.as_str().unwrap_or("");
-                    if let Some(tool) = xml_field(body, "tool-use-id") {
-                        if let Some(agent) = self.agents.get_mut(tool) {
-                            if let Some(state) = xml_field(body, "status") {
-                                agent.summary.agent.status = status(state).into();
-                                agent.summary.agent.completed_at = at.clone();
-                                if at > agent.summary.updated_at {
-                                    agent.summary.updated_at = at.clone();
-                                }
+                    let body = content_text(content);
+                    let Some(header) = body.trim().strip_prefix("<task-notification>") else {
+                        return;
+                    };
+                    let header = header.split("<result>").next().unwrap_or(header);
+                    let state = status(xml_field(header, "status").unwrap_or(""));
+                    if !matches!(state, "completed" | "failed" | "interrupted") {
+                        return;
+                    }
+                    let task = xml_field(header, "task-id");
+                    let tool =
+                        xml_field(header, "tool-use-id").filter(|id| self.agents.contains_key(*id));
+                    for agent in self.agents.values_mut() {
+                        if let Some(tool) = tool {
+                            if agent.summary.agent.id != tool
+                                || task.is_some_and(|id| {
+                                    agent
+                                        .summary
+                                        .native_session_id
+                                        .as_deref()
+                                        .is_some_and(|native| native != id)
+                                })
+                            {
+                                continue;
                             }
+                        } else if task.is_none()
+                            || task != agent.summary.native_session_id.as_deref()
+                        {
+                            continue;
+                        }
+                        agent.lifecycle(state, at.clone());
+                        if at > agent.summary.updated_at {
+                            agent.summary.updated_at = at.clone();
                         }
                     }
                 }
@@ -1208,6 +1251,147 @@ mod tests {
             145
         );
         assert_eq!(list[0].latest_activity.as_deref(), Some("Review complete"));
+    }
+    #[test]
+    fn native_subagents_claude_stopped_task_id_survives_child_replay() {
+        let dir = tempfile::tempdir().unwrap();
+        let homes = homes(dir.path());
+        let parent = homes
+            .claude_home
+            .join("projects/demo")
+            .join(format!("{PARENT}.jsonl"));
+        let child = parent.with_extension("").join("subagents/agent-a123.jsonl");
+        write(
+            &parent,
+            &[
+                json!({"type":"assistant","sessionId":PARENT,"timestamp":AT,"message":{"content":[{"type":"tool_use","id":"tool-1","name":"Agent","input":{"description":"Implement theme packs","run_in_background":true}}]}}),
+                json!({"type":"user","sessionId":PARENT,"timestamp":AT,"toolUseResult":{"isAsync":true,"status":"async_launched","agentId":"a123"},"message":{"content":[{"type":"tool_result","tool_use_id":"tool-1"}]}}),
+                json!({"type":"user","sessionId":PARENT,"timestamp":"2026-10-09T00:00:20Z","origin":{"kind":"task-notification"},"message":{"content":"<task-notification><task-id>a123</task-id><status>stopped</status><summary>Background agent didn't finish before the previous session ended</summary></task-notification>"}}),
+            ],
+        );
+        write(
+            &child,
+            &[
+                json!({"type":"assistant","agentId":"a123","timestamp":"2026-10-09T00:00:15Z","message":{"stop_reason":"tool_use","content":[{"type":"tool_use","id":"bash-1","name":"Bash","input":{}}]}}),
+            ],
+        );
+        let mut cache = NativeSubagentsCache::default();
+        let list = cache.list(&homes, "claude", PARENT);
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].agent.status, "interrupted");
+        assert_eq!(
+            list[0].agent.completed_at.as_deref(),
+            Some("2026-10-09T00:00:20Z")
+        );
+        assert_eq!(
+            cache
+                .detail("claude", PARENT, "tool-1", None)
+                .unwrap()
+                .agent
+                .agent
+                .status,
+            "interrupted"
+        );
+        assert_eq!(
+            cache.list(&homes, "claude", PARENT)[0].agent.status,
+            "interrupted"
+        );
+
+        // A late flush of older child records cannot revive the stopped task.
+        append(
+            &child,
+            json!({"type":"assistant","agentId":"a123","timestamp":"2026-10-09T00:00:16Z","message":{"stop_reason":"tool_use","content":[]}}),
+        );
+        assert_eq!(
+            cache.list(&homes, "claude", PARENT)[0].agent.status,
+            "interrupted"
+        );
+        // Replacing the child transcript must retain the parent's stop evidence.
+        write(
+            &child,
+            &[
+                json!({"type":"assistant","agentId":"a123","timestamp":"2026-10-09T00:00:17Z","message":{"stop_reason":"tool_use","content":[]}}),
+            ],
+        );
+        assert_eq!(
+            cache.list(&homes, "claude", PARENT)[0].agent.status,
+            "interrupted"
+        );
+
+        // Actual newer work can resume and complete normally.
+        append(
+            &child,
+            json!({"type":"assistant","agentId":"a123","timestamp":"2026-10-09T00:00:21Z","message":{"stop_reason":"tool_use","content":[]}}),
+        );
+        let list = cache.list(&homes, "claude", PARENT);
+        assert_eq!(list[0].agent.status, "running");
+        assert!(list[0].agent.completed_at.is_none());
+        append(
+            &child,
+            json!({"type":"assistant","agentId":"a123","timestamp":"2026-10-09T00:00:22Z","message":{"stop_reason":"end_turn","content":[]}}),
+        );
+        assert_eq!(
+            cache.list(&homes, "claude", PARENT)[0].agent.status,
+            "completed"
+        );
+    }
+
+    #[test]
+    fn native_subagents_claude_task_notifications_match_known_ids_and_terminal_states() {
+        for (state, expected) in [
+            ("completed", "completed"),
+            ("failed", "failed"),
+            ("stopped", "interrupted"),
+            ("killed", "interrupted"),
+            ("cancelled", "interrupted"),
+        ] {
+            let mut parent = Parent::default();
+            parent.register(
+                "tool-1",
+                "claude",
+                Some("a123"),
+                Some("tool-1"),
+                &json!({}),
+                Some(AT.into()),
+            );
+            let mut notice = json!({"type":"user","sessionId":PARENT,"timestamp":"2026-10-09T00:00:20Z","message":{"content":format!("<task-notification><task-id>a123</task-id><status>{state}</status></task-notification>")}});
+            parent.record(notice.clone(), "claude", PARENT); // A human quote is not evidence.
+            assert_eq!(parent.agents["tool-1"].summary.agent.status, "running");
+            notice["origin"] = json!({"kind":"task-notification"});
+            parent.record(notice, "claude", PARENT);
+            assert_eq!(parent.agents["tool-1"].summary.agent.status, expected);
+        }
+        for (task, tool, state) in [
+            ("other", None, "completed"),
+            ("a123", None, "updated"),
+            ("a123", Some("tool-2"), "completed"),
+        ] {
+            let mut parent = Parent::default();
+            parent.register(
+                "tool-1",
+                "claude",
+                Some("a123"),
+                Some("tool-1"),
+                &json!({}),
+                Some(AT.into()),
+            );
+            parent.register(
+                "tool-2",
+                "claude",
+                Some("a456"),
+                Some("tool-2"),
+                &json!({}),
+                Some(AT.into()),
+            );
+            let tool = tool
+                .map(|id| format!("<tool-use-id>{id}</tool-use-id>"))
+                .unwrap_or_default();
+            parent.record(json!({"type":"user","sessionId":PARENT,"timestamp":"2026-10-09T00:00:20Z","origin":{"kind":"task-notification"},"message":{"content":format!("<task-notification><task-id>{task}</task-id>{tool}<status>{state}</status></task-notification>")}}), "claude", PARENT);
+            assert!(parent
+                .agents
+                .values()
+                .all(|agent| agent.summary.agent.status == "running"));
+        }
     }
     #[test]
     fn native_subagents_discover_codex_indexed_children_without_parent_acp_tools() {

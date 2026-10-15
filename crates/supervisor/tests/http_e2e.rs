@@ -284,7 +284,7 @@ async fn native_subagent_http_supports_direct_claude_without_acp_agent_id() {
     )
     .unwrap();
     let result = json!({"type":"assistant","agentId":"a123","timestamp":"2026-10-09T00:00:01Z","message":{"id":"msg-1","model":"claude-sonnet-4-5","stop_reason":"end_turn","usage":{"input_tokens":100,"output_tokens":10},"content":[{"type":"text","text":"Native review complete"}]}});
-    std::fs::write(child, format!("{result}\n")).unwrap();
+    std::fs::write(&child, format!("{result}\n")).unwrap();
     let list = json(
         &client,
         client.get(format!("{base}/api/threads/{id}/subagents")),
@@ -299,6 +299,50 @@ async fn native_subagent_http_supports_direct_claude_without_acp_agent_id() {
     )
     .await;
     assert_eq!(detail["items"][0]["text"], "Native review complete");
+
+    // A resumed task can be stopped by session teardown without a tool-use-id
+    // or a final assistant message. Both list and detail must stop its timer.
+    use std::io::Write;
+    let resumed = json!({"type":"assistant","agentId":"a123","timestamp":"2026-10-09T00:00:02Z","message":{"stop_reason":"tool_use","content":[]}});
+    writeln!(
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&child)
+            .unwrap(),
+        "{resumed}"
+    )
+    .unwrap();
+    let notice = json!({"type":"user","sessionId":raw_session,"timestamp":"2026-10-09T00:00:03Z","origin":{"kind":"task-notification"},"message":{"content":"<task-notification><task-id>a123</task-id><status>stopped</status></task-notification>"}});
+    writeln!(
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&parent)
+            .unwrap(),
+        "{notice}"
+    )
+    .unwrap();
+    let list = json(
+        &client,
+        client.get(format!("{base}/api/threads/{id}/subagents")),
+    )
+    .await;
+    assert!(list["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|agent| agent["status"] != "running"));
+    assert_eq!(list["agents"][0]["status"], "interrupted");
+    assert_eq!(list["agents"][0]["completedAt"], "2026-10-09T00:00:03Z");
+    let detail = json(
+        &client,
+        client.get(format!("{base}/api/threads/{id}/subagents/toolu-1")),
+    )
+    .await;
+    assert_eq!(detail["agent"]["status"], "interrupted");
+    assert_eq!(
+        detail["agent"]["completedAt"],
+        list["agents"][0]["completedAt"]
+    );
 }
 
 #[tokio::test]

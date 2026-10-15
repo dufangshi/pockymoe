@@ -77,7 +77,7 @@ impl ClaudeBackgroundAgents {
         let header = header.split("<result>").next().unwrap_or(header);
         if !matches!(
             field(header, "status"),
-            Some("completed" | "failed" | "killed" | "cancelled")
+            Some("completed" | "failed" | "stopped" | "killed" | "cancelled")
         ) {
             return;
         }
@@ -143,6 +143,21 @@ mod tests {
         agents.record(&json!({"type":"assistant","message":{"content":[{"type":"tool_use","id":"shell","name":"Bash"}]}}));
         agents.record(&json!({"type":"user","toolUseResult":{"isAsync":true,"status":"async_launched","agentId":"shell-task"},
             "message":{"content":[{"type":"tool_result","tool_use_id":"shell"}]}}));
+        assert!(agents.active().is_empty());
+    }
+
+    #[test]
+    fn stopped_task_id_only_notification_clears_a_background_agent() {
+        let mut agents = ClaudeBackgroundAgents::default();
+        agents.record(&json!({"type":"assistant","message":{"content":[{"type":"tool_use","id":"tool-1","name":"Agent","input":{"description":"Implement theme packs"}}]}}));
+        agents.record(&json!({"type":"user","toolUseResult":{"isAsync":true,"status":"async_launched","agentId":"agent-1"},"message":{"content":[{"type":"tool_result","tool_use_id":"tool-1"}]}}));
+        let mut notice = json!({"type":"user","message":{"content":"<task-notification><task-id>agent-1</task-id><status>stopped</status><summary>Background agent didn't finish before the previous session ended</summary></task-notification>"}});
+        agents.record(&notice);
+        assert_eq!(agents.active().len(), 1);
+        notice["origin"] = json!({"kind":"task-notification"});
+        agents.record(&notice);
+        assert!(agents.active().is_empty());
+        agents.record(&notice);
         assert!(agents.active().is_empty());
     }
 }
