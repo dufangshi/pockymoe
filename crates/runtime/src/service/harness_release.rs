@@ -1237,11 +1237,12 @@ impl Supervisor {
 
     /// Delete a top-level thread and end its harness.
     pub async fn delete_thread_releasing(&self, id: &str) -> Result<()> {
+        self.host_before_delete(id)?;
         if let Ok(thread) = self.get_thread(id) {
             self.release_for_removal(&thread, ReleaseReason::Deleted)
                 .await;
         }
-        self.delete_thread(id)
+        self.delete_thread_record(id)
     }
 
     /// Close a delegate and end its harness.

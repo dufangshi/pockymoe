@@ -313,7 +313,16 @@ impl Supervisor {
     pub(crate) fn ensure_agent_name_free(&self, root: Option<&str>, name: &str) -> Result<()> {
         validate_name(name)?;
         let Some(root) = root else { return Ok(()) };
-        let taken = self.db.with(|c| {
+        let taken = if self
+            .thread_host
+            .get()
+            .is_some_and(|h| h.reserve_closed_names())
+        {
+            self.list_threads(None, true)?.iter().any(|t| {
+                t.root_thread_id.as_deref() == Some(root) && t.agent_name.as_deref() == Some(name)
+            })
+        } else {
+            self.db.with(|c| {
             Ok(c.query_row(
                 "SELECT 1 FROM threads WHERE root_thread_id=?1 AND agent_name=?2 AND closed_at IS NULL",
                 params![root, name],
@@ -321,7 +330,16 @@ impl Supervisor {
             )
             .optional()?
             .is_some())
-        })?;
+        })?
+        };
+        if taken
+            && self
+                .thread_host
+                .get()
+                .is_some_and(|h| h.reserve_closed_names())
+        {
+            bail!("conflict: thread name `{name}` is reserved in this lineage; reopen its thread or choose another name");
+        }
         ensure!(
             !taken,
             "conflict: an open thread in this lineage is already named `{name}`; address it by name, or close it first"
@@ -350,6 +368,20 @@ impl Supervisor {
             _ => {}
         }
         let root = me.root_thread_id.unwrap_or(me.id);
+        if self
+            .thread_host
+            .get()
+            .is_some_and(|h| h.reserve_closed_names())
+        {
+            let threads = self.list_threads(None, true)?;
+            if let Some(thread) = threads.iter().find(|t| {
+                t.root_thread_id.as_deref() == Some(&root)
+                    && t.agent_name.as_deref() == Some(target)
+            }) {
+                return Ok(thread.id.clone());
+            }
+            bail!("no thread named `{target}` in this lineage");
+        }
         self.db.with(|c| {
             if let Some(id) = c
                 .query_row(
@@ -378,6 +410,10 @@ impl Supervisor {
     /// `blocked` means a running turn waits on an approval, or on an answer to a
     /// `question` it mailed that nobody has acknowledged or replied to.
     async fn member_state(&self, id: &str) -> Result<Value> {
+        ensure!(
+            self.thread_host.get().is_none_or(|h| h.visible(id)),
+            "thread not found"
+        );
         let (row, last, questions) = self.db.with(|c| {
             let row: (String, Option<String>, Option<String>, String, i64, i64, String) = c.query_row(
                 "SELECT COALESCE(t.status,'idle'), t.agent_name, t.closed_at, t.title,
@@ -543,6 +579,9 @@ impl Supervisor {
         let mut threads = Vec::new();
         for id in ordered {
             let row = rows.iter().find(|r| r.0 == id).unwrap();
+            if self.thread_host.get().is_some_and(|h| !h.visible(&id)) {
+                continue;
+            }
             if row.5.is_some() && !all {
                 continue;
             }
@@ -597,6 +636,17 @@ impl Supervisor {
             thread.status != "running" && thread.active_turn_id.is_none() && queued == 0,
             "conflict: thread is still running or has queued work; wait for it (`pockymoe thread wait {id}`) before closing"
         );
+        if let Some(host) = self.thread_host.get() {
+            if drop_worktree {
+                if let Some(path) = &thread.worktree_path {
+                    ensure!(
+                        git(Path::new(path), &["status", "--porcelain"])?.is_empty(),
+                        "Commit or discard the worktree's changes first; the thread was not closed"
+                    );
+                }
+            }
+            host.before_close(&thread)?;
+        }
         let mut removed = false;
         if drop_worktree {
             if let Some(path) = &thread.worktree_path {
