@@ -14,6 +14,22 @@ update through their management API. No shell profile is changed. The existing
 database, credentials and transport identity are preserved, and a different
 device configuration is never overwritten.
 
+Before downloading anything, setup checks a database left at
+`~/.remote-codex/relay-supervisor.sqlite` by an earlier installation. A Remote
+Codex (Node) database from any earlier migration is upgraded automatically: it is
+first copied to `relay-supervisor.pre-rust-0.12.sqlite`, then the missing Node
+migrations and the runtime migrations run in transactions. A database that cannot
+be upgraded (another schema, or a gap in its migration history) is never deleted:
+setup asks on the terminal whether to move it aside as
+`relay-supervisor.unusable-<time>.sqlite` and continue with an empty database.
+Without a terminal it stops and asks to rerun the command with `--reset-database`
+(PowerShell: `-ResetDatabase`), which moves it aside without asking. A database
+another program is still writing stops setup until that program is stopped.
+
+`setup.sh` must stay ASCII: macOS `/bin/sh` (bash 3.2) reads a UTF-8 byte right
+after `$name` as part of the variable name and stops with "unbound variable".
+`scripts/native-setup.test.mjs` enforces this.
+
 Supported platforms are Apple Silicon macOS, glibc Linux on ARM64/x64 and
 Windows x64. macOS uses a user LaunchAgent; Linux uses a systemd user service
 when available. These start with the user session. Linux machines requiring

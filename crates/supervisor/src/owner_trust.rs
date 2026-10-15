@@ -662,9 +662,9 @@ pub(crate) async fn trust_endpoint(
 }
 fn local_connection(path: &Path) -> Result<Connection> {
     validate_database_path(path)?;
-    if !path.exists() {
-        drop(Database::open(path)?);
-    }
+    // Create the database, or upgrade one left by an older installation, unless
+    // a running Supervisor owns it (it has migrated the database already).
+    Database::prepare_unowned(path)?;
     pockymoe_runtime::db::secure_database_file(path)?;
     let c = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
     c.busy_timeout(std::time::Duration::from_secs(5))?;

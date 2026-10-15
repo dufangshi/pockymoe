@@ -1,20 +1,22 @@
-Claude native subagents stopped when a session ends now appear as interrupted
-instead of remaining running indefinitely. SDK notifications are matched by
-native task ID even when no tool-call ID is present, and the runtime counter
-stops at the notification time. Older child transcript records cannot undo a
-newer stop/completion notification; actual resumed work still updates normally.
-Live background-agent tracking also recognizes the native `stopped` status.
+Setup now upgrades a database left by an older Remote Codex (Node) installation
+instead of stopping with "unsupported `threads` schema: required column
+`agent_id` is missing". The database is first copied to
+`relay-supervisor.pre-rust-0.12.sqlite`; the missing Node migrations and the
+runtime migrations then run in transactions. A database that cannot be upgraded
+is never deleted: setup asks on the terminal whether to move it aside as
+`relay-supervisor.unusable-<time>.sqlite` and continue with an empty database.
+Without a terminal it asks to rerun the command with `--reset-database`
+(`-ResetDatabase` in PowerShell). Offline `pockymoe bind` upgrades such a
+database the same way.
 
-Private port previews reuse fully consumed HTTP connections within the exact
-account/session/mapping authorization, and disable Nagle on Relay and device
-data sockets. The published Web entry can open an already authorized CLI preview
-without first loading the entire workbench. These Relay/Web improvements are
-already deployed and work with older Supervisors; device-side TCP_NODELAY takes
-effect after a normal runtime update.
+The SH bootstrap no longer stops on macOS with "setup_version?: unbound
+variable": macOS `/bin/sh` (bash 3.2) read the ellipsis after a variable as part
+of its name. The script is ASCII now, and a test keeps it that way. The Web
+origin and the relay serve the fixed script independently of this release.
 
-Targeted native-agent runtime and Supervisor HTTP regressions cover stopped
-notifications, old-record replay, transcript replacement, resumption, scoped
-access and unchanged accounting. Port preview regressions and isolated HTTP,
-SSE and WebSocket benchmarks were also verified. Windows Device Manager is
-unchanged. Installing this release is a separate device update; publication
-does not restart an existing Supervisor.
+This release also includes the relay port-preview and Plum phone top-bar changes
+already on main. Database migration, setup and bootstrap script regressions were
+verified, including a pre-0028 Node database through the real `pockymoe bind`
+path and the terminal prompt. Windows Device Manager is unchanged. Installing
+this release is a separate device update; publication does not restart an
+existing Supervisor.

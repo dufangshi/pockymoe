@@ -27,7 +27,7 @@ else if(url.endsWith('/SHA256SUMS'))file='sums';else if(url.endsWith('/${asset}'
 fs.copyFileSync(path.join(process.env.TEST_ROOT,file),args[args.indexOf('-o')+1]);
 `, { mode: 0o755 });
   for (const name of ['node', 'npm']) fs.writeFileSync(path.join(bin, name), '#!/bin/sh\necho "Unexpected Node/npm invocation" >&2\nexit 99\n', { mode: 0o755 });
-  const run = (extra = [], environment = {}, input) => spawnSync('/bin/sh', [script, '--relay', 'https://relay.example.test', '--token', 'synthetic-token', '--port', '45679', ...extra], {
+  const run = (extra = [], environment = {}, input, shell = '/bin/sh') => spawnSync(shell, [script, '--relay', 'https://relay.example.test', '--token', 'synthetic-token', '--port', '45679', ...extra], {
     encoding: 'utf8', input, env: { ...environment, HOME: root, PATH: `${bin}:/usr/bin:/bin`, TEST_ROOT: root, TEST_VERSION: version, TEST_FAIL_VERSION: failVersion ? '1' : '0', TEST_CALLS: path.join(root, 'calls'), TEST_ARGUMENTS: path.join(root, 'arguments'), TEST_BINDING: path.join(root, 'binding') },
   });
   return { root, run };
@@ -82,4 +82,27 @@ test('Windows bootstrap does not put enrollment secret into native command argum
   assert(!source.includes("'--enroll'"));
   assert(!source.includes('[string]$Enroll,'));
   assert(source.includes('POCKYMOE_ENROLL_SECRET'));
+});
+
+test('bootstrap scripts are ASCII so macOS /bin/sh (bash 3.2) cannot misread variable names', () => {
+  // bash 3.2 on macOS treats a UTF-8 byte right after "$name" as part of the
+  // name ("setup_version?: unbound variable" under set -u).
+  for (const name of ['./setup.sh', './setup.ps1']) {
+    const source = fs.readFileSync(new URL(name, import.meta.url));
+    const offset = source.findIndex(byte => byte > 0x7e || (byte < 0x20 && byte !== 0x0a && byte !== 0x0d && byte !== 0x09));
+    assert.equal(offset, -1, `${name} has a non-ASCII byte at offset ${offset}`);
+  }
+});
+test('native SH bootstrap runs under bash and forwards --reset-database to native setup', t => {
+  for (const shell of ['/bin/sh', 'bash']) {
+    const f = fixture(t); const result = f.run(['--reset-database'], {}, undefined, shell);
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(fs.readFileSync(path.join(f.root, 'arguments'), 'utf8').trim().split('\n'), ['setup', '--relay', 'https://relay.example.test', '--token', 'synthetic-token', '--port', '45679', '--reset-database']);
+    assert.match(result.stdout, /Configuring Pockymoe 9\.1\.0\.\.\./);
+  }
+});
+test('Windows bootstrap forwards -ResetDatabase', () => {
+  const source = fs.readFileSync(new URL('./setup.ps1', import.meta.url), 'utf8');
+  assert(source.includes('[switch]$ResetDatabase'));
+  assert(source.includes("if ($ResetDatabase) { $arguments += '--reset-database' }"));
 });

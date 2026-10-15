@@ -208,29 +208,99 @@ const RUNTIME_MIGRATIONS: &[Migration] = &[
     },
 ];
 
-const NODE_0030_MIGRATIONS: &[&str] = &[
-    "0000_initial.sql",
-    "0001_thread_runtime_fields.sql",
-    "0002_thread_source.sql",
-    "0003_thread_runtime_settings.sql",
-    "0004_thread_connection_state.sql",
-    "0005_thread_turn_metadata.sql",
-    "0006_thread_sandbox_mode.sql",
-    "0007_thread_pending_steers.sql",
-    "0008_thread_fast_mode_and_activity_notes.sql",
-    "0009_thread_turn_token_usage.sql",
-    "0010_thread_turn_pricing_snapshot.sql",
-    "0011_thread_forks.sql",
-    "0012_thread_goals.sql",
-    "0013_thread_activity_note_anchor.sql",
-    "0014_thread_history_items.sql",
-    "0015_agent_provider_fields.sql",
-    "0016_remove_codex_thread_goal_id.sql",
-    "0017_remove_codex_thread_columns.sql",
-    "0018_shell_session_label.sql",
-    "0028_thread_turn_display_prompt.sql",
-    "0029_thread_turn_delivery.sql",
-    "0030_thread_agent_id.sql",
+/// The Node Supervisor's migrations, in the order its migrator applied them
+/// (`packages/db/migrations` before the Rust rewrite). The runtime migrations start
+/// from the schema after the last one; older Node databases are brought up to it
+/// by [`complete_node_migrations`].
+const NODE_0030_MIGRATIONS: &[(&str, &str)] = &[
+    (
+        "0000_initial.sql",
+        include_str!("node_migrations/0000_initial.sql"),
+    ),
+    (
+        "0001_thread_runtime_fields.sql",
+        include_str!("node_migrations/0001_thread_runtime_fields.sql"),
+    ),
+    (
+        "0002_thread_source.sql",
+        include_str!("node_migrations/0002_thread_source.sql"),
+    ),
+    (
+        "0003_thread_runtime_settings.sql",
+        include_str!("node_migrations/0003_thread_runtime_settings.sql"),
+    ),
+    (
+        "0004_thread_connection_state.sql",
+        include_str!("node_migrations/0004_thread_connection_state.sql"),
+    ),
+    (
+        "0005_thread_turn_metadata.sql",
+        include_str!("node_migrations/0005_thread_turn_metadata.sql"),
+    ),
+    (
+        "0006_thread_sandbox_mode.sql",
+        include_str!("node_migrations/0006_thread_sandbox_mode.sql"),
+    ),
+    (
+        "0007_thread_pending_steers.sql",
+        include_str!("node_migrations/0007_thread_pending_steers.sql"),
+    ),
+    (
+        "0008_thread_fast_mode_and_activity_notes.sql",
+        include_str!("node_migrations/0008_thread_fast_mode_and_activity_notes.sql"),
+    ),
+    (
+        "0009_thread_turn_token_usage.sql",
+        include_str!("node_migrations/0009_thread_turn_token_usage.sql"),
+    ),
+    (
+        "0010_thread_turn_pricing_snapshot.sql",
+        include_str!("node_migrations/0010_thread_turn_pricing_snapshot.sql"),
+    ),
+    (
+        "0011_thread_forks.sql",
+        include_str!("node_migrations/0011_thread_forks.sql"),
+    ),
+    (
+        "0012_thread_goals.sql",
+        include_str!("node_migrations/0012_thread_goals.sql"),
+    ),
+    (
+        "0013_thread_activity_note_anchor.sql",
+        include_str!("node_migrations/0013_thread_activity_note_anchor.sql"),
+    ),
+    (
+        "0014_thread_history_items.sql",
+        include_str!("node_migrations/0014_thread_history_items.sql"),
+    ),
+    (
+        "0015_agent_provider_fields.sql",
+        include_str!("node_migrations/0015_agent_provider_fields.sql"),
+    ),
+    (
+        "0016_remove_codex_thread_goal_id.sql",
+        include_str!("node_migrations/0016_remove_codex_thread_goal_id.sql"),
+    ),
+    (
+        "0017_remove_codex_thread_columns.sql",
+        include_str!("node_migrations/0017_remove_codex_thread_columns.sql"),
+    ),
+    (
+        "0018_shell_session_label.sql",
+        include_str!("node_migrations/0018_shell_session_label.sql"),
+    ),
+    (
+        "0028_thread_turn_display_prompt.sql",
+        include_str!("node_migrations/0028_thread_turn_display_prompt.sql"),
+    ),
+    (
+        "0029_thread_turn_delivery.sql",
+        include_str!("node_migrations/0029_thread_turn_delivery.sql"),
+    ),
+    (
+        "0030_thread_agent_id.sql",
+        include_str!("node_migrations/0030_thread_agent_id.sql"),
+    ),
 ];
 
 pub struct Database {
@@ -309,6 +379,16 @@ pub fn secure_database_file(path: &Path) -> Result<()> {
 
 impl Database {
     pub fn open(path: &Path) -> Result<Self> {
+        Self::open_as_owner(path, true)?.context("database owner lock was not acquired")
+    }
+
+    /// Create or migrate the database unless a running Supervisor owns it (that
+    /// owner has migrated it already). Returns whether this call opened it.
+    pub fn prepare_unowned(path: &Path) -> Result<bool> {
+        Ok(Self::open_as_owner(path, false)?.is_some())
+    }
+
+    fn open_as_owner(path: &Path, required: bool) -> Result<Option<Self>> {
         // DATABASE_URL is a file path. Never create a new SQLite database from
         // another application's connection URI (which may also contain secrets).
         validate_database_path(path)?;
@@ -333,18 +413,36 @@ impl Database {
             .create(true)
             .truncate(false)
             .open(std::path::PathBuf::from(lock_path))?;
-        owner.try_lock().map_err(|_| anyhow::anyhow!(
-            "This database is already owned by another Supervisor. Use an isolated database or stop its owner before starting another instance."
-        ))?;
+        let mut attempts = 0;
+        loop {
+            match owner.try_lock() {
+                Ok(()) => break,
+                // A running Supervisor holds the lock for its lifetime. A process
+                // forked meanwhile can briefly hold an inherited copy until it execs,
+                // so only a lock that stays held means the database is owned.
+                Err(std::fs::TryLockError::WouldBlock) if !required => {
+                    attempts += 1;
+                    if attempts == 20 {
+                        return Ok(None);
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Err(_) => bail!(
+                    "This database is already owned by another Supervisor. Use an isolated database or stop its owner before starting another instance."
+                ),
+            }
+        }
         secure_database_file(path)?;
         let mut conn =
             Connection::open(path).with_context(|| format!("open sqlite {}", path.display()))?;
 
         register_search_functions(&conn)?;
-        validate_database_before_migration(&conn)
-            .with_context(|| format!("validate sqlite {}", path.display()))?;
         create_pre_rust_backup(path, &conn)
             .with_context(|| format!("back up Node sqlite {}", path.display()))?;
+        complete_node_migrations(&mut conn)
+            .with_context(|| format!("upgrade Node sqlite {}", path.display()))?;
+        validate_database_before_migration(&conn)
+            .with_context(|| format!("validate sqlite {}", path.display()))?;
         conn.execute_batch(
             "
             PRAGMA journal_mode=WAL;
@@ -375,11 +473,11 @@ impl Database {
                 id
             }
         };
-        Ok(Self {
+        Ok(Some(Self {
             conn: Mutex::new(conn),
             _owner: owner,
             host_id,
-        })
+        }))
     }
 
     pub fn with<T>(&self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
@@ -449,6 +547,45 @@ fn create_pre_rust_backup(path: &Path, conn: &Connection) -> Result<()> {
     })();
     let _ = std::fs::remove_file(&temporary_path);
     result
+}
+
+/// Bring a database last written by an older Node Supervisor up to Node migration
+/// 0030, the schema the runtime migrations start from. The Node migrator applied
+/// these files in order and recorded each name, so its ledger tells which ones are
+/// missing. Runs after the pre-Rust backup; a partial upgrade rolls back.
+fn complete_node_migrations(conn: &mut Connection) -> Result<()> {
+    if !table_exists(conn, "__migrations")? || table_exists(conn, RUNTIME_MIGRATION_TABLE)? {
+        return Ok(());
+    }
+    ensure_columns(conn, "__migrations", &["id", "name", "applied_at"])?;
+    let applied: Vec<String> = conn
+        .prepare("SELECT name FROM __migrations ORDER BY id")?
+        .query_map([], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    let known: HashSet<&str> = NODE_0030_MIGRATIONS.iter().map(|(name, _)| *name).collect();
+    if applied.len() == known.len() && applied.iter().all(|name| known.contains(name.as_str())) {
+        return Ok(());
+    }
+    // Only an unbroken prefix can be continued; anything else is another schema.
+    for (index, name) in applied.iter().enumerate() {
+        ensure!(
+            NODE_0030_MIGRATIONS
+                .get(index)
+                .is_some_and(|(expected, _)| expected == name),
+            "database was created by an unsupported Node migration `{name}`"
+        );
+    }
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    for (name, sql) in &NODE_0030_MIGRATIONS[applied.len()..] {
+        tx.execute_batch(sql)
+            .with_context(|| format!("apply Node migration {name}"))?;
+        tx.execute(
+            "INSERT INTO __migrations(name, applied_at) VALUES(?1, ?2)",
+            params![name, pockymoe_protocol::now_rfc3339()],
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
 }
 
 fn validate_database_before_migration(conn: &Connection) -> Result<()> {
@@ -623,7 +760,7 @@ fn validate_migration_ledgers(conn: &Connection, tables: &HashSet<String>) -> Re
         for row in rows {
             let name = row?;
             ensure!(
-                NODE_0030_MIGRATIONS.contains(&name.as_str()),
+                NODE_0030_MIGRATIONS.iter().any(|(known, _)| *known == name),
                 "database was created by an unsupported Node migration `{name}`"
             );
         }

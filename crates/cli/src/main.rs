@@ -501,6 +501,10 @@ More: pockymoe guide tasks"#
         code: Option<String>,
         #[arg(long, default_value_t = 8787, value_parser = clap::value_parser!(u16).range(1..))]
         port: u16,
+        /// If the existing device database cannot be upgraded, move it aside
+        /// (the old file is kept) instead of asking.
+        #[arg(long)]
+        reset_database: bool,
     },
     /// Run a native device using its saved private configuration.
     DeviceRun {
@@ -838,6 +842,7 @@ async fn run() -> Result<()> {
             token,
             code,
             port,
+            reset_database,
         } => {
             let enroll = enrollment_secret(
                 account_key.is_some(),
@@ -854,6 +859,7 @@ async fn run() -> Result<()> {
                     token,
                     code,
                     port,
+                    reset_database,
                 },
             )
             .await?;

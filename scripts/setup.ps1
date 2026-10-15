@@ -6,6 +6,7 @@ param(
     [string]$WebOrigin,
     [string]$AccountKey,
     [switch]$EnrollStdin,
+    [switch]$ResetDatabase,
     [ValidateRange(1, 65535)][int]$Port = 8787
 )
 $ErrorActionPreference = 'Stop'
@@ -42,6 +43,7 @@ try {
     if ($AccountKey) { $arguments += @('--account-key', $AccountKey) }
     if ($WebOrigin) { $arguments += @('--web-origin', $WebOrigin) }
     if ($Token) { $arguments += @('--token', $Token) } else { $arguments += @('--code', $Code) }
+    if ($ResetDatabase) { $arguments += '--reset-database' }
     if ($AccountKey) { $env:POCKYMOE_ENROLL_SECRET = $Enroll }
     & $binary @arguments
     if ($LASTEXITCODE -ne 0) { throw "Native setup failed (exit $LASTEXITCODE)." }

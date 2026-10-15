@@ -1,11 +1,14 @@
 #!/bin/sh
 # Public bootstrap served by the relay from the same immutable runtime version.
+# Keep this file ASCII: macOS /bin/sh (bash 3.2) reads a UTF-8 byte right after
+# "$name" as part of the variable name and stops with "unbound variable".
 set -eu
 umask 077
 relay_url=''
 setup_token=''
 setup_code=''
 setup_port=8787
+setup_reset_database=''
 setup_web_origin=${POCKYMOE_WEB_ORIGIN:-}
 setup_account_key=${POCKYMOE_ACCOUNT_KEY:-}
 setup_enroll=${POCKYMOE_ENROLL_SECRET:-}
@@ -19,7 +22,8 @@ while [ "$#" -gt 0 ]; do
     --token) setup_token=${2:?Missing device token}; shift 2 ;;
     --code) setup_code=${2:?Missing setup code}; shift 2 ;;
     --port) setup_port=${2:?Missing port}; shift 2 ;;
-    *) echo "Usage: setup.sh --relay URL (--token TOKEN | --code CODE) [--port PORT] [--web-origin URL] [--account-key KEY --enroll-stdin] (or POCKYMOE_ENROLL_SECRET environment)" >&2; exit 1 ;;
+    --reset-database) setup_reset_database=1; shift ;;
+    *) echo "Usage: setup.sh --relay URL (--token TOKEN | --code CODE) [--port PORT] [--web-origin URL] [--account-key KEY --enroll-stdin] [--reset-database] (or POCKYMOE_ENROLL_SECRET environment)" >&2; exit 1 ;;
   esac
 done
 [ -n "$relay_url" ] && { [ -n "$setup_token" ] || [ -n "$setup_code" ]; } || { echo 'Copy a setup command from the Devices page.' >&2; exit 1; }
@@ -48,7 +52,7 @@ trap 'exit 1' HUP INT TERM
 setup_repo=https://github.com/dufangshi/pockymoe
 setup_asset="remote-codex-${setup_os}-${setup_arch}"
 [ "$setup_os" != linux ] || setup_asset="$setup_asset-gnu"
-echo 'Checking the latest Pockymoe GitHub release…'
+echo 'Checking the latest Pockymoe GitHub release...'
 if ! download "$setup_repo/releases/latest/download/runtime-version.txt" "$setup_tmp/version"; then
   echo 'Could not resolve the latest GitHub runtime release. Check your connection to github.com and retry.' >&2
   exit 1
@@ -59,7 +63,7 @@ if ! printf '%s\n' "$setup_version" | LC_ALL=C awk -F. 'NF != 3 {exit 1} {for (i
   echo 'GitHub returned an invalid runtime version.' >&2
   exit 1
 fi
-echo "Downloading Pockymoe $setup_version ($setup_os/$setup_arch)…"
+echo "Downloading Pockymoe ${setup_version} (${setup_os}/${setup_arch})..."
 setup_base="$setup_repo/releases/download/v$setup_version"
 download "$setup_base/SHA256SUMS" "$setup_tmp/SHA256SUMS"
 download "$setup_base/$setup_asset" "$setup_tmp/pockymoe"
@@ -77,7 +81,7 @@ if ! setup_actual_version=$("$setup_tmp/pockymoe" version); then
   echo 'Cannot execute the downloaded runtime. Linux requires glibc 2.28 or newer.' >&2; exit 1
 fi
 [ "$setup_actual_version" = "$setup_version" ] || { echo 'Runtime version verification failed.' >&2; exit 1; }
-echo "Configuring Pockymoe $setup_version…"
+echo "Configuring Pockymoe ${setup_version}..."
 # Do not exec: keep the cleanup trap alive until native setup finishes.
 if [ -n "$setup_web_origin" ]; then
   export POCKYMOE_WEB_ORIGIN="$setup_web_origin"
@@ -85,8 +89,13 @@ fi
 if [ -n "$setup_account_key" ]; then
   export POCKYMOE_ACCOUNT_KEY="$setup_account_key" POCKYMOE_ENROLL_SECRET="$setup_enroll"
 fi
-if [ -n "$setup_token" ]; then
-  "$setup_tmp/pockymoe" setup --relay "$relay_url" --token "$setup_token" --port "$setup_port"
+if [ -n "$setup_reset_database" ]; then
+  set -- --reset-database
 else
-  "$setup_tmp/pockymoe" setup --relay "$relay_url" --code "$setup_code" --port "$setup_port"
+  set --
+fi
+if [ -n "$setup_token" ]; then
+  "$setup_tmp/pockymoe" setup --relay "$relay_url" --token "$setup_token" --port "$setup_port" "$@"
+else
+  "$setup_tmp/pockymoe" setup --relay "$relay_url" --code "$setup_code" --port "$setup_port" "$@"
 fi
