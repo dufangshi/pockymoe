@@ -1,4 +1,9 @@
 import { HostScopeRouteGate } from './components/HostScopeRouteGate';
+import {
+  AUTO_COLLAPSE_COMPLETED_TURNS_STORAGE_KEY,
+  readAutoCollapseCompletedTurns,
+  TRANSCRIPT_PREFERENCE_EVENT,
+} from './lib/transcriptPreferences';
 import { appUrl, webBase } from './lib/webBase';
 import { HostCapabilitiesProvider, UnscopedOnly, useHostScope } from './lib/hostCapabilities';
 import { relayDeviceIdFromPath } from './lib/relayRoutes';
@@ -71,8 +76,6 @@ import { effectiveColorMode, themeChromeColor, useThemeRegistry } from './lib/th
 
 const THEME_STORAGE_KEY = 'remote-codex-theme-mode';
 const BACKEND_STORAGE_KEY = 'remote-codex-default-backend';
-const AUTO_COLLAPSE_COMPLETED_TURNS_STORAGE_KEY =
-  'remote-codex-auto-collapse-completed-turns';
 
 function RoutePluginProvider({ children }: { children: ReactNode }) {
   const { locale: i18nLocale } = useI18n();
@@ -120,7 +123,7 @@ function readInitialAutoCollapseCompletedTurns() {
     return true;
   }
 
-  return window.localStorage.getItem(AUTO_COLLAPSE_COMPLETED_TURNS_STORAGE_KEY) !== 'false';
+  return readAutoCollapseCompletedTurns();
 }
 
 function formatDocumentTitle(pageTitle?: string | null) {
@@ -282,6 +285,7 @@ function AppShell({
       AUTO_COLLAPSE_COMPLETED_TURNS_STORAGE_KEY,
       enabled ? 'true' : 'false',
     );
+    window.dispatchEvent(new Event(TRANSCRIPT_PREFERENCE_EVENT));
   }
 
   const shellNavValue = {

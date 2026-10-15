@@ -67,7 +67,14 @@ A summary turn whose operations are deferred also carries `activity`: counts of
 counts (a multi-file patch credits its counts to its first path). The transcript
 uses it for the folded turn's work line ("Worked for 51s · edited 2 files +64 −3 ·
 6 commands") and its changed-file names, whose diffs load on demand through the
-item detail endpoint.
+item detail endpoint. `segments` repeats the counts for each stretch of operations
+with `before`, the id of the conversation item that follows it (null at the end),
+and the stretch's `startedAt` and `endedAt`.
+
+`narration=1` on the summary view keeps every reply with text in summary turns.
+The Web sends it when Settings → Preferences → Thread timeline auto-collapse is
+off: completed turns then show the agent's narration with each stretch of work as
+a folded run, and opening a run loads the turn detail.
 
 Clients that send `compact=1` on those three endpoints get compact items
 (`history::compact_turn`):

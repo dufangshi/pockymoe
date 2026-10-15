@@ -1,4 +1,5 @@
 import { useBrowserStateKey } from '../lib/browserStateScope';
+import { TRANSCRIPT_PREFERENCE_EVENT } from '../lib/transcriptPreferences';
 import { SupervisorHeartbeat, SUPERVISOR_HEARTBEAT_TIMEOUT_MS } from '../lib/supervisorHeartbeat';
 import { appUrl } from '../lib/webBase';
 import { workbenchUrls } from '../lib/workbenchUrls';
@@ -1666,7 +1667,12 @@ export function ThreadDetailPage() {
   useEffect(() => {
     const refresh = () => {void loadThreadDetail({showLoading:false,clearError:false});};
     window.addEventListener('model-pricing-updated', refresh);
-    return () => window.removeEventListener('model-pricing-updated', refresh);
+    // Keeping completed turns open asks the summary for their narration.
+    window.addEventListener(TRANSCRIPT_PREFERENCE_EVENT, refresh);
+    return () => {
+      window.removeEventListener('model-pricing-updated', refresh);
+      window.removeEventListener(TRANSCRIPT_PREFERENCE_EVENT, refresh);
+    };
   }, [loadThreadDetail]);
 
   const runDetailMutation = useCallback(

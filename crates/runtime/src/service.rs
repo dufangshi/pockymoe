@@ -37,7 +37,7 @@ use crate::actor::{
 use crate::config::RuntimeConfig;
 use crate::db::Database;
 use crate::files;
-use crate::history::summarize_completed_turn;
+use crate::history::{summarize_completed_turn, turn_activity, ActivityRow};
 use crate::import_id::{
     bind_import_target, parse_session_ref, scoped_session_id, session_ids_match,
 };
@@ -1856,6 +1856,20 @@ impl Supervisor {
         before_turn_id: Option<&str>,
         summary_only: bool,
     ) -> Result<ThreadDetailDto> {
+        self.get_thread_detail_page_with(id, limit, before_turn_id, summary_only, false)
+            .await
+    }
+
+    /// `narration` keeps every reply with text in summary turns, so a transcript
+    /// can show the agent's progress between folded runs of work.
+    pub async fn get_thread_detail_page_with(
+        &self,
+        id: &str,
+        limit: Option<u32>,
+        before_turn_id: Option<&str>,
+        summary_only: bool,
+        narration: bool,
+    ) -> Result<ThreadDetailDto> {
         self.sync_claude_scheduled_history(id).await?;
         self.observe_execution(id).await?;
         let thread = self.get_thread(id)?;
@@ -1866,6 +1880,7 @@ impl Supervisor {
                 Some(limit.unwrap_or(3)),
                 before_turn_id,
                 thread.source == "local_codex_import",
+                narration,
             )?
         } else {
             self.load_turns(id, limit, before_turn_id)?
@@ -2056,6 +2071,7 @@ impl Supervisor {
         limit: Option<u32>,
         before_turn_id: Option<&str>,
         normalize_imported: bool,
+        narration: bool,
     ) -> Result<(Vec<ThreadTurnDto>, u32)> {
         let (mut turns, total_turn_count) =
             self.load_turns_meta_page(thread_id, limit, before_turn_id)?;
@@ -2068,7 +2084,7 @@ impl Supervisor {
                 normalize_imported_turns(std::slice::from_mut(turn));
             }
             let removed_item_count = conversation_item_count.saturating_sub(turn.items.len());
-            let summarized = summarize_completed_turn(turn.clone());
+            let summarized = summarize_completed_turn(turn.clone(), narration);
             let deferred = total_item_count
                 .saturating_sub(removed_item_count)
                 .saturating_sub(summarized.items.len());
@@ -2088,106 +2104,42 @@ impl Supervisor {
         turn_id: &str,
     ) -> Result<(Vec<ThreadHistoryItemDto>, usize, Value)> {
         self.db.with(|conn| {
-            // One pass over the turn: the item total and what a folded summary
-            // reports (operations by kind, failures and changed lines).
-            let mut total_item_count = 0i64;
-            let mut activity = serde_json::Map::new();
-            let mut add = |key: &str, value: i64| {
-                if value > 0 {
-                    let current = activity.get(key).and_then(Value::as_i64).unwrap_or(0);
-                    activity.insert(key.into(), (current + value).into());
-                }
-            };
+            // One ordered pass over the turn: the item total and what a folded
+            // summary reports (docs/architecture.md, History payloads).
             let mut stmt = conn.prepare(
-                "SELECT json_extract(item_json, '$.kind'), COUNT(*),
-                   SUM(lower(COALESCE(json_extract(item_json, '$.status'), '')) IN ('failed', 'error', 'declined')),
-                   SUM(COALESCE(json_extract(item_json, '$.changedFiles'), 0)),
-                   SUM(COALESCE(json_extract(item_json, '$.addedLines'), 0)),
-                   SUM(COALESCE(json_extract(item_json, '$.removedLines'), 0))
+                "SELECT item_id, json_extract(item_json, '$.kind'),
+                   lower(COALESCE(json_extract(item_json, '$.status'), '')),
+                   json_extract(item_json, '$.origin') IN ('nativeBackgroundWait', 'nativeTaskNotification')
+                     OR json_extract(item_json, '$.kind') = 'userMessage'
+                     OR (json_extract(item_json, '$.kind') = 'agentMessage' AND length(trim(COALESCE(json_extract(item_json, '$.text'), ''))) > 0),
+                   CASE WHEN json_extract(item_json, '$.kind') = 'fileChange' THEN json_extract(item_json, '$.text') END,
+                   COALESCE(json_extract(item_json, '$.changedFiles'), 0),
+                   COALESCE(json_extract(item_json, '$.addedLines'), 0),
+                   COALESCE(json_extract(item_json, '$.removedLines'), 0),
+                   COALESCE(json_extract(item_json, '$.createdAt'), created_at),
+                   COALESCE(json_extract(item_json, '$.updatedAt'), json_extract(item_json, '$.createdAt'), created_at)
                  FROM thread_history_items WHERE thread_id=?1 AND turn_id=?2
-                 GROUP BY 1",
+                 ORDER BY created_at ASC, rowid ASC",
             )?;
-            let rows = stmt.query_map(params![thread_id, turn_id], |row| {
-                Ok((
-                    row.get::<_, Option<String>>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, Option<i64>>(2)?.unwrap_or(0),
-                    row.get::<_, Option<i64>>(3)?.unwrap_or(0),
-                    row.get::<_, Option<i64>>(4)?.unwrap_or(0),
-                    row.get::<_, Option<i64>>(5)?.unwrap_or(0),
-                ))
-            })?;
-            for row in rows {
-                let (kind, count, failed, files, added, removed) = row?;
-                total_item_count += count;
-                let key = match kind.as_deref() {
-                    Some("commandExecution") => "commands",
-                    Some("fileChange") => "fileChanges",
-                    Some("fileRead") => "reads",
-                    Some("webSearch") => "searches",
-                    Some("toolCall" | "skillToolCall") => "tools",
-                    Some("agentToolCall") => "agents",
-                    Some("reasoning") => "reasoning",
-                    _ => continue,
-                };
-                add(key, count);
-                add("failed", failed);
-                if key == "fileChanges" {
-                    add("changedFiles", files);
-                    add("addedLines", added);
-                    add("removedLines", removed);
-                }
-            }
+            let rows = stmt
+                .query_map(params![thread_id, turn_id], |row| {
+                    Ok(ActivityRow {
+                        item_id: row.get(0)?,
+                        kind: row.get(1)?,
+                        status: row.get(2)?,
+                        anchor: row.get::<_, Option<bool>>(3)?.unwrap_or(false),
+                        paths: row.get(4)?,
+                        changed_files: row.get(5)?,
+                        added: row.get(6)?,
+                        removed: row.get(7)?,
+                        started_at: row.get(8)?,
+                        ended_at: row.get(9)?,
+                    })
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
             drop(stmt);
-            // The files a folded turn changed, by first path, with the latest edit
-            // to open; the summary names a few of them.
-            if activity.contains_key("fileChanges") {
-                let mut files: Vec<(String, String, i64, i64)> = Vec::new();
-                let mut stmt = conn.prepare(
-                    "SELECT item_id, json_extract(item_json, '$.text'),
-                       COALESCE(json_extract(item_json, '$.addedLines'), 0),
-                       COALESCE(json_extract(item_json, '$.removedLines'), 0)
-                     FROM thread_history_items
-                     WHERE thread_id=?1 AND turn_id=?2
-                       AND json_extract(item_json, '$.kind') = 'fileChange'
-                       AND lower(COALESCE(json_extract(item_json, '$.status'), '')) NOT IN ('failed', 'error', 'declined')
-                     ORDER BY created_at ASC, rowid ASC",
-                )?;
-                let rows = stmt.query_map(params![thread_id, turn_id], |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, Option<String>>(1)?.unwrap_or_default(),
-                        row.get::<_, i64>(2)?,
-                        row.get::<_, i64>(3)?,
-                    ))
-                })?;
-                for row in rows {
-                    let (item_id, text, added, removed) = row?;
-                    // One patch can list several files; its line counts stay with the first.
-                    let mut counts = Some((added, removed));
-                    for path in text.split(", ").map(str::trim).filter(|path| !path.is_empty()) {
-                        let (added, removed) = counts.take().unwrap_or((0, 0));
-                        match files.iter_mut().find(|file| file.0 == path) {
-                            Some(file) => {
-                                file.1 = item_id.clone();
-                                file.2 += added;
-                                file.3 += removed;
-                            }
-                            None => files.push((path.to_string(), item_id.clone(), added, removed)),
-                        }
-                    }
-                }
-                activity.insert(
-                    "files".into(),
-                    files
-                        .into_iter()
-                        .take(8)
-                        .map(|(path, item_id, added, removed)| {
-                            serde_json::json!({ "path": path, "itemId": item_id, "addedLines": added, "removedLines": removed })
-                        })
-                        .collect(),
-                );
-            }
+            let total_item_count = rows.len();
+            let activity = turn_activity(&rows);
             let mut stmt = conn.prepare(
                 "SELECT item_json FROM thread_history_items
                  WHERE thread_id=?1 AND turn_id=?2
@@ -2203,7 +2155,7 @@ impl Supervisor {
             peer_work::annotate(conn, thread_id, turn_id, &mut items, false)?;
             Ok((
                 items,
-                usize::try_from(total_item_count).unwrap_or(usize::MAX),
+                total_item_count,
                 Value::Object(activity),
             ))
         })

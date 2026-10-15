@@ -1,4 +1,5 @@
 import { appPathname, appUrl } from './webBase';
+import { readAutoCollapseCompletedTurns } from './transcriptPreferences';
 import { deviceRoute } from './relayTransportCrypto';
 import { markOwnedDevices } from './accountTransport';
 import { sharingMutation, type SharingInput } from './signedSharing';
@@ -1295,6 +1296,7 @@ export function fetchThreadDetail(
   params.set('limit', String(options.limit ?? 3));
   // Compact items: tool detail loads on expand; older Supervisors ignore it.
   params.set('compact', '1');
+  if (!readAutoCollapseCompletedTurns()) params.set('narration', '1');
   if (options.beforeTurnId) {
     params.set('beforeTurnId', options.beforeTurnId);
   }

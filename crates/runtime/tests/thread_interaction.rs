@@ -1403,7 +1403,13 @@ async fn transcript_summary_activity_counts_only_deferred_operations() {
         .iter()
         .find(|turn| turn.id == "zero-keys")
         .unwrap();
-    assert_eq!(zero_keys.activity, Some(json!({"commands":1})));
+    assert_eq!(
+        zero_keys.activity,
+        Some(json!({"commands":1,"segments":[{
+            "before":"answer","commands":1,
+            "startedAt":"2026-10-10T10:00:01Z","endedAt":"2026-10-10T10:00:01Z"
+        }]}))
+    );
 
     let full = supervisor
         .get_thread_turn_detail(&thread_id, "with-operations")
