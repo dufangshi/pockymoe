@@ -22,16 +22,16 @@ async function fixture(request: APIRequestContext) {
 }
 
 type Item = { kind: string; text: string; responsePhase?: string; status?: string };
-function seed(id: string, items: Item[]) {
+function seed(id: string, items: Item[], { turn = 'anchor-turn', ordinal = 0, start = 0 } = {}) {
   const db = new DatabaseSync(path.resolve(process.env.E2E_DATABASE_URL!));
   db.exec('PRAGMA busy_timeout=5000');
   db.function('search_fold', { deterministic: true }, value => typeof value === 'string' ? value.toLowerCase() : value);
   db.function('search_body', { deterministic: true }, (text, kind, _source) => ['userMessage', 'agentMessage'].includes(String(kind)) ? text : null);
-  const turnId = `${id}-anchor-turn`;
-  const at = (index: number) => new Date(Date.UTC(2026, 9, 15, 0, 0, index)).toISOString();
+  const turnId = `${id}-${turn}`;
+  const at = (index: number) => new Date(Date.UTC(2026, 9, 15, 0, 0, start + index)).toISOString();
   try {
     db.prepare('INSERT INTO thread_turns(id,thread_id,status,started_at,completed_at,ordinal,display_prompt) VALUES (?,?,?,?,?,?,?)')
-      .run(turnId, id, 'completed', at(0), at(items.length), 0, items[0]?.text ?? 'Inspect');
+      .run(turnId, id, 'completed', at(0), at(items.length), ordinal, items[0]?.text ?? 'Inspect');
     for (const [index, item] of items.entries()) {
       const key = `${turnId}-${index}`;
       db.prepare('INSERT INTO thread_history_items(id,thread_id,turn_id,item_id,item_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?)')
@@ -134,12 +134,19 @@ test('run head remains anchored across open and close', async ({ page, request, 
   }
 });
 
-test('first long message keeps sticky Show less above the composer and supports three clicks in place', async ({ page, request, isMobile }) => {
+const longPrompt = Array.from({ length: 100 }, (_, i) => `Requirement ${i}: keep every line available while preserving the reading position.\n`).join('');
+
+test('a long message keeps sticky Show less above the composer and three clicks stay in place', async ({ page, request, isMobile }) => {
   const { id } = await fixture(request);
+  // An earlier turn gives the history room above the message.
   seed(id, [
-    { kind: 'userMessage', text: Array.from({ length: 100 }, (_, i) => `Requirement ${i}: keep every line available while preserving the reading position.\n`).join('') },
+    { kind: 'userMessage', text: 'Earlier question' },
+    { kind: 'agentMessage', text: Array.from({ length: 40 }, (_, i) => `Earlier paragraph ${i}.`).join('\n\n'), responsePhase: 'final' },
+  ], { turn: 'earlier', ordinal: 0 });
+  seed(id, [
+    { kind: 'userMessage', text: longPrompt },
     { kind: 'agentMessage', text: 'Requirements received.', responsePhase: 'final' },
-  ]);
+  ], { turn: 'anchor-turn', ordinal: 1, start: 100 });
   await page.goto(`/threads/${id}`);
   const toggle = page.locator('[data-role=user] .thread-graph-show-more');
   await expect(toggle).toHaveAttribute('aria-expanded', 'false');
@@ -163,7 +170,32 @@ test('first long message keeps sticky Show less above the composer and supports 
     await assertHeld(page, `expanded=${expanded}`);
     expect(Math.abs((await toggle.boundingBox())!.y - box.y)).toBeLessThanOrEqual(2);
   }
-  expect(await page.locator('.thread-scroll-slack').evaluate(element => parseFloat((element as HTMLElement).style.height))).toBeGreaterThan(0);
+});
+
+test('the first long message folds without leaving a blank above the history', async ({ page, request, isMobile }) => {
+  const { id } = await fixture(request);
+  seed(id, [
+    { kind: 'userMessage', text: longPrompt },
+    { kind: 'agentMessage', text: 'Requirements received.', responsePhase: 'final' },
+  ]);
+  await page.goto(`/threads/${id}`);
+  const toggle = page.locator('[data-role=user] .thread-graph-show-more');
+  await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  const scroll = page.getByTestId('thread-scroll-container');
+  await scroll.hover();
+  await page.mouse.wheel(0, 450);
+  await expect(toggle).toHaveCSS('position', 'sticky');
+  const box = (await toggle.boundingBox())!;
+  if (isMobile) await page.touchscreen.tap(box.x + box.width / 2, box.y + box.height / 2);
+  else await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  // Nothing is held above the history: the turn starts at the top, the toggle is in view.
+  await expect.poll(() => scroll.evaluate(element => element.scrollTop)).toBe(0);
+  await expect(page.locator('.thread-scroll-slack')).toHaveCount(0);
+  const top = (await scroll.boundingBox())!.y;
+  expect((await page.locator('[data-testid=chat-turn]').first().boundingBox())!.y - top).toBeLessThanOrEqual(80);
+  await expect(toggle).toBeInViewport();
 });
 
 test('count hint appears after one second of mouse hover', async ({ page, request, isMobile }) => {

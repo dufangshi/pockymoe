@@ -261,7 +261,8 @@ so it can be clicked again in place; the timeline does not jump to its end. An
 opened turn keeps its work line at the top, and an opened long message keeps
 "Show less" just above the composer. A task from another thread on this device
 links to that thread. A workspace link brings its file or folder near the top of
-the file tree.
+the file tree; a link to a file that is not on the device shows its path instead
+of an error.
 
 On a phone, the file list and file viewer have a one-field prompt at the bottom.
 It sends to the thread the files belong to, like Send in the composer, without
