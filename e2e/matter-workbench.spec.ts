@@ -570,7 +570,7 @@ test('execution timeline expands deferred work and keeps the last reply above th
   await expand.scrollIntoViewIfNeeded();
   await expand.click();
   await expect(page.locator('.thread-execution-timeline')).toBeVisible();
-  await expect(page.locator('.thread-graph-worked-summary')).toContainText('3 commands');
+  await expect(page.locator('.thread-graph-worked-summary .tlog-count[data-kind=commands]')).toHaveAttribute('aria-label', '3 commands');
   await page.locator('.tlog-run-head').click();
   await expect(page.getByText('Verify responsive layout', { exact: true })).toBeVisible();
   const rows = page.locator('.tlog-row[data-kind="commandExecution"]');

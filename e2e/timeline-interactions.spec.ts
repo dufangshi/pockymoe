@@ -140,7 +140,7 @@ test('turn navigation changes direction reliably and tool details load only on c
   const run = last.locator('.tlog-run');
   const operations = run.locator('.tlog-run-head');
   await expect(operations).toBeVisible();
-  await expect(operations).toContainText('3 commands');
+  await expect(operations.locator('.tlog-count[data-kind=commands]')).toHaveAttribute('aria-label', '3 commands');
   expect(detailRequests).toHaveLength(0);
   await operations.click();
   // Finished runs list their rows closed; output loads only after a row click.

@@ -247,12 +247,21 @@ commands and their outputs continue to load on demand.
 A working turn reads open and stays short: the run of operations it is in shows
 its rows and its first small edits, and each earlier run folds into one line of
 counts and duration once narration or another run follows. When the turn ends,
-its work folds into the work line ("Worked for 10s · 4 commands · 1 failed ·
-edited 1 file +2 −1"). Opening that line shows the narration with each run
-folded; opening a run lists its operations. The file counts on the work line
-open only the changed files. Command and tool output never opens by itself, and
-a row loads its output only when clicked. Clicking an output, diff or code block
-opens it in a floating viewer, and command rows carry a copy button.
+its work folds into the work line ("Worked for 10s · ✓4 ✕1 · edited 1 file +2 −1";
+counts are icons with numbers, explained after the pointer rests on one for a
+second). Opening that line shows the narration with each run folded; opening a
+run lists its operations. A folded turn with several answers shows the work
+between them as one counted line. The file counts on the work line open only the
+changed files. Command and tool output never opens by itself, and a row loads its
+output only when clicked. Clicking an output, diff or code block opens it in a
+floating viewer, and command rows carry a copy button.
+
+A toggle stays where it was clicked while what it opens or closes changes size,
+so it can be clicked again in place; the timeline does not jump to its end. An
+opened turn keeps its work line at the top, and an opened long message keeps
+"Show less" just above the composer. A task from another thread on this device
+links to that thread. A workspace link brings its file or folder near the top of
+the file tree.
 
 On a phone, the file list and file viewer have a one-field prompt at the bottom.
 It sends to the thread the files belong to, like Send in the composer, without

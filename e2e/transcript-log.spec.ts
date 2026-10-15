@@ -87,9 +87,9 @@ test('scripted transcript reads open, folds continuously, and reveals files and 
   const completed = (await (await request.get(`${base}/api/threads/${id}`)).json()).turns.at(-1);
   const seconds = Math.round((Date.parse(completed.completedAt) - Date.parse(completed.startedAt)) / 1000);
   await expect(turn.locator('.thread-graph-worked-label')).toHaveText(`Worked for ${seconds}s`);
-  await expect(toggle).toContainText('4 commands');
-  await expect(toggle).toContainText('Read 1 file');
-  await expect(toggle).toContainText('1 failed');
+  await expect(toggle.locator('.tlog-count[data-kind=commands]')).toHaveAttribute('aria-label', '4 commands');
+  await expect(toggle.locator('.tlog-count[data-kind=reads]')).toHaveAttribute('aria-label', 'Read 1 file');
+  await expect(toggle.locator('.tlog-count[data-kind=failed]')).toHaveAttribute('aria-label', '1 failed');
   const filesToggle = turn.locator('.tlog-files-toggle');
   await expect(filesToggle).toContainText('edited 1 file');
   await expect(filesToggle.locator('.is-add')).toHaveText('+2');
@@ -131,7 +131,7 @@ test('scripted transcript reads open, folds continuously, and reveals files and 
   const run = turn.locator('.tlog-run-head');
   await expect(run).toHaveCount(1);
   await expect(run).toHaveAttribute('aria-expanded', 'false');
-  await expect(run).toContainText('2 commands');
+  await expect(run.locator('.tlog-count[data-kind=commands]')).toHaveAttribute('aria-label', '2 commands');
   await expect(run.locator('.is-time')).toContainText(/\d+(ms|s)/);
   await expect(turn.locator('.tlog-row[data-open]')).toHaveCount(0);
   await run.click();
@@ -142,7 +142,8 @@ test('scripted transcript reads open, folds continuously, and reveals files and 
   const copy = command.locator('.tlog-copy');
   await page.mouse.move(0, 0);
   await expect(copy).toHaveCSS('opacity', '0');
-  await command.hover();
+  await expect(turn.locator('.tlog-run > .tlog-collapse')).toHaveAttribute('data-settled', 'true');
+  await command.locator('.tlog-row-line').hover();
   await expect(copy).toHaveCSS('opacity', '0.55');
   await command.locator('.tlog-row-head').click();
   await expect(command).toHaveAttribute('data-open');
@@ -158,7 +159,8 @@ test('scripted transcript reads open, folds continuously, and reveals files and 
   await expect(turn.locator('.matter-command-step, .thread-history-direct-row, .thread-graph-history-group')).toHaveCount(0);
 });
 
-test('phone file counts open only inline diffs and command copy appears only for an opened row', async ({ page, request }) => {
+test('phone file counts open only inline diffs and command copy appears only for an opened row', async ({ page, request, isMobile }) => {
+  test.skip(!isMobile, 'Taps and the phone layout need the mobile project');
   const id = await createThread(request);
   const details: string[] = [];
   page.on('request', r => { if (/\/turns\/[^/?]+\/detail(?:\?|$)/.test(r.url())) details.push(r.url()); });

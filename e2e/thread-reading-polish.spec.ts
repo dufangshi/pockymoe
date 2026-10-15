@@ -204,7 +204,7 @@ test('overlapping live steps stay stable on expansion and idle output keeps fres
   await page.goto(`/threads/${id}`);
   const summary = page.locator('.thread-graph-worked-summary');
   const steps = summary.locator('.tlog-summary');
-  await expect(steps).toHaveText('·1 command');
+  await expect(steps.locator('[data-kind=commands]')).toHaveAttribute('aria-label', '1 command');
   const progress = page.locator('.thread-progress-indicator');
   await expect(progress).toHaveAttribute('data-progress-freshness', 'stale');
   await expect(page.locator('.thread-progress-age')).toHaveCount(0);
@@ -219,21 +219,21 @@ test('overlapping live steps stay stable on expansion and idle output keeps fres
   await expect(page.getByRole('button', { name: 'Stop Current Turn', exact: true })).toBeVisible();
   emit('thread.item.completed', { turnId: turn.id, item: commands[0] });
   await expect(progress).toHaveAttribute('data-progress-freshness', 'recent');
-  await expect(steps).toHaveText('·1 command');
+  await expect(steps.locator('[data-kind=commands]')).toHaveAttribute('aria-label', '1 command');
   await expect(summary.getByRole('button', { name: /Collapse turn 1$/ })).toBeVisible();
   await expect(page.getByText('read inbox', { exact: true })).toBeVisible();
-  await expect(steps).toHaveText('·1 command');
+  await expect(steps.locator('[data-kind=commands]')).toHaveAttribute('aria-label', '1 command');
   await summary.getByRole('button', { name: /Collapse turn 1$/ }).click();
   count = 2;
   emit('thread.item.completed', { turnId: turn.id, item: commands[1] });
   emit('thread.updated');
-  await expect(steps).toHaveText('·2 commands');
+  await expect(steps.locator('[data-kind=commands]')).toHaveAttribute('aria-label', '2 commands');
   await summary.getByRole('button', { name: /Expand turn 1$/ }).click();
   for (const head of await page.locator('.tlog-run-head[aria-expanded="false"]').all()) await head.click();
   await expect(page.getByText('read report', { exact: true })).toBeVisible();
-  await expect(steps).toHaveText('·2 commands');
+  await expect(steps.locator('[data-kind=commands]')).toHaveAttribute('aria-label', '2 commands');
   await page.reload();
-  await expect(steps).toHaveText('·2 commands');
+  await expect(steps.locator('[data-kind=commands]')).toHaveAttribute('aria-label', '2 commands');
   await expect(progress).toBeVisible();
   emit('thread.turn.token.updated', { turnId: turn.id, tokenUsage: { total: { inputTokens: 100, outputTokens: 10, totalTokens: 110, cachedInputTokens: 0 } } });
   await expect(progress).toHaveAttribute('data-progress-freshness', 'recent');
@@ -428,21 +428,27 @@ test('mobile work summary keeps its activity counts and cannot scroll the conver
       expect(box!.x + box!.width).toBeLessThanOrEqual(page.viewportSize()!.width);
     }
   };
-  await expect(count).toHaveText('·2 commands·Read 1 file');
+  await expect(count.locator('[data-kind=commands]')).toHaveAttribute('aria-label', '2 commands');
+  await expect(count.locator('[data-kind=reads]')).toHaveAttribute('aria-label', 'Read 1 file');
   await checkWidth();
   await summary.getByRole('button', { name: /Expand turn 1$/ }).click();
   await expect(summary.getByRole('button', { name: /Collapse turn 1$/ })).toBeVisible();
-  await expect(count).toHaveText('·2 commands·Read 1 file');
+  await expect(count.locator('[data-kind=commands]')).toHaveAttribute('aria-label', '2 commands');
+  await expect(count.locator('[data-kind=reads]')).toHaveAttribute('aria-label', 'Read 1 file');
   await checkWidth();
   await summary.getByRole('button', { name: /Collapse turn 1$/ }).click();
-  await expect(count).toHaveText('·2 commands·Read 1 file');
+  await expect(count.locator('[data-kind=commands]')).toHaveAttribute('aria-label', '2 commands');
+  await expect(count.locator('[data-kind=reads]')).toHaveAttribute('aria-label', 'Read 1 file');
   await page.setViewportSize({ width: 320, height: 740 });
   await checkWidth();
+  // A reader gesture releases the active toggle anchor before scrolling.
+  await scroll.dispatchEvent('wheel', { deltaY: 100 });
   await scroll.evaluate(e => e.scrollTo({ top: 100, left: 100, behavior: 'instant' }));
   expect(await scroll.evaluate(e => e.scrollLeft)).toBe(0);
   expect(await scroll.evaluate(e => e.scrollTop)).toBeGreaterThan(0);
   await page.reload();
-  await expect(count).toHaveText('·2 commands·Read 1 file');
+  await expect(count.locator('[data-kind=commands]')).toHaveAttribute('aria-label', '2 commands');
+  await expect(count.locator('[data-kind=reads]')).toHaveAttribute('aria-label', 'Read 1 file');
   await checkWidth();
   priceAvailable = false;
   await page.reload();
@@ -857,16 +863,17 @@ test('a homogeneous command batch opens once with half-sized whitespace', async 
   await expect(history.locator('.thread-graph-history-group-activity')).toHaveCount(0);
   const group = history.locator('.tlog-run');
   const header = group.locator('.tlog-run-head');
-  await expect(header).toContainText('14 条命令');
-  expect((await header.boundingBox())!.height).toBeLessThanOrEqual(28);
+  await expect(header.locator('.tlog-count[data-kind=commands]')).toHaveAttribute('aria-label', '14 条命令');
+  // Phones use 32px rows for touch.
+  expect((await header.boundingBox())!.height).toBeLessThanOrEqual(testInfo.project.name === 'mobile-chromium' ? 32 : 28);
   await header.click();
   const rows = group.locator('.tlog-row-head');
   await expect(rows).toHaveCount(14);
   const geometry = await rows.evaluateAll(els => els.map(el => ({ height: el.getBoundingClientRect().height, lineHeight: parseFloat(getComputedStyle(el).lineHeight), y: el.getBoundingClientRect().y })));
   for (let i = 0; i < geometry.length; i++) {
-    expect(geometry[i]!.height).toBeLessThanOrEqual(28);
-    expect(geometry[i]!.height - geometry[i]!.lineHeight).toBeLessThanOrEqual(8);
-    if (i) expect(geometry[i]!.y - geometry[i - 1]!.y).toBeLessThanOrEqual(28);
+    expect(geometry[i]!.height).toBeLessThanOrEqual(testInfo.project.name === 'mobile-chromium' ? 32 : 28);
+    expect(geometry[i]!.height - geometry[i]!.lineHeight).toBeLessThanOrEqual(testInfo.project.name === 'mobile-chromium' ? 14 : 8);
+    if (i) expect(geometry[i]!.y - geometry[i - 1]!.y).toBeLessThanOrEqual(testInfo.project.name === 'mobile-chromium' ? 32 : 28);
   }
   await expect(group.locator(':scope > .tlog-collapse')).toHaveAttribute('data-settled', 'true');
   const narrative = history.getByText('我先检查实现，再运行相关验证。', { exact: true });
@@ -925,8 +932,8 @@ test('delivered wakes fold into steps while pending waits stay separate across s
   await expect(page.getByText(narration.text, { exact: true })).toBeVisible();
   await expect(worked).toHaveAttribute('aria-expanded', 'true');
   await expect(activity).toHaveCount(1);
-  await expect(batchToggle).toContainText('1 条命令');
-  await expect(batchToggle).toContainText('读取 1 个文件');
+  await expect(batchToggle.locator('.tlog-count[data-kind=commands]')).toHaveAttribute('aria-label', '1 条命令');
+  await expect(batchToggle.locator('.tlog-count[data-kind=reads]')).toHaveAttribute('aria-label', '读取 1 个文件');
   await expect(notices).toHaveCount(2);
   await expect(notices.first()).toContainText('已唤醒');
   await expect(notices.last()).toContainText('等待唤醒');
@@ -938,7 +945,7 @@ test('delivered wakes fold into steps while pending waits stay separate across s
   const commandTwo = { ...command, id: 'command-two', text: '核对第二项检查', sequence: 7 };
   items = [prompt, narration, wake, command, read, wakeTwo, commandTwo];
   for (const item of [wakeTwo, commandTwo]) socket!.send(JSON.stringify({ type: 'thread.item.completed', threadId: id, timestamp: new Date().toISOString(), payload: { turnId, item } }));
-  await expect(batchToggle).toContainText('1 条命令');
+  await expect(batchToggle.locator('.tlog-count[data-kind=commands]')).toHaveAttribute('aria-label', '1 条命令');
   await expect(batchToggle).toHaveAttribute('aria-expanded', 'false');
   await expect(notices).toHaveCount(2);
   await expect(notices.last()).toContainText('已唤醒');
@@ -957,7 +964,7 @@ test('delivered wakes fold into steps while pending waits stay separate across s
   await expect(page.getByText(narration.text, { exact: true })).toHaveCount(0);
   await expect(notices).toHaveCount(0);
   await worked.click();
-  await expect(batchToggle).toContainText('1 条命令');
+  await expect(batchToggle.locator('.tlog-count[data-kind=commands]')).toHaveAttribute('aria-label', '1 条命令');
   await expect(notices).toHaveCount(2);
   await batchToggle.click();
   await expect(notices).toHaveCount(2);
