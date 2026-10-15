@@ -1313,3 +1313,62 @@ async fn treer_identity_rebind_removal_and_children_use_separate_harness_environ
     assert_eq!(read()["agentId"], Value::Null);
     runtime.restart("custom").await.unwrap();
 }
+
+#[tokio::test]
+async fn absent_host_hook_preserves_internal_delivery_and_retry_receipts() {
+    let (_dir, state) = setup();
+    let sender = thread(&state, Provider::Codex).await;
+    let recipient = thread(&state, Provider::Codex).await;
+    for mode in ["inbox", "queue"] {
+        let mut input = send(&sender, "native delivery", false, mode);
+        input.delivery = mode.into();
+        // Compare the unchanged implementation directly with the public choke point.
+        let native = state
+            .send_to_thread_locally(&recipient, input.clone())
+            .unwrap();
+        let public = state.send_to_thread(&recipient, input).unwrap();
+        assert_eq!(public, native);
+    }
+    assert_eq!(state.inbox_unread_count(&recipient).unwrap(), 1);
+    let queued = state
+        .db
+        .with(|c| {
+            Ok(c.query_row(
+                "SELECT count(*) FROM thread_pending_steers WHERE thread_id=?1",
+                [&recipient],
+                |r| r.get::<_, usize>(0),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(queued, 1);
+}
+
+#[tokio::test]
+async fn host_hook_handles_public_send_and_local_delivery_bypasses_it() {
+    use pockymoe_runtime::host_messaging::HostMessaging;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct Hook(AtomicUsize);
+    impl HostMessaging for Hook {
+        fn send(&self, _: &Supervisor, recipient: &str, input: SendInput) -> anyhow::Result<Value> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(json!({"threadId":recipient,"delivery":"inbox","text":input.text}))
+        }
+    }
+    let (_dir, state) = setup();
+    let recipient = thread(&state, Provider::Codex).await;
+    let hook = Arc::new(Hook(AtomicUsize::new(0)));
+    state.set_host_messaging(hook.clone());
+    let mut input: SendInput = serde_json::from_value(json!({"text":"host mail"})).unwrap();
+    assert_eq!(
+        state.send_to_thread(&recipient, input.clone()).unwrap()["text"],
+        "host mail"
+    );
+    assert_eq!(state.inbox_unread_count(&recipient).unwrap(), 0);
+    input.text = "".into();
+    assert!(state.send_to_thread(&recipient, input.clone()).is_err());
+    assert_eq!(hook.0.load(Ordering::SeqCst), 1);
+    input.text = "native accepted delivery".into();
+    state.send_to_thread_locally(&recipient, input).unwrap();
+    assert_eq!(hook.0.load(Ordering::SeqCst), 1);
+    assert_eq!(state.inbox_unread_count(&recipient).unwrap(), 1);
+}

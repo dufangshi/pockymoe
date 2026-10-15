@@ -8,10 +8,10 @@ use tokio_tungstenite::{
     MaybeTlsStream, WebSocketStream,
 };
 type ClientSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
-struct Fixture {
-    _dir: tempfile::TempDir,
-    hub: Arc<Hub>,
-    port: u16,
+pub(super) struct Fixture {
+    pub(super) _dir: tempfile::TempDir,
+    pub(super) hub: Arc<Hub>,
+    pub(super) port: u16,
     server: tokio::task::JoinHandle<()>,
     fake: Arc<FakeRuntime>,
 }
@@ -20,10 +20,10 @@ impl Drop for Fixture {
         self.server.abort();
     }
 }
-async fn fixture() -> Fixture {
+pub(super) async fn fixture() -> Fixture {
     fixture_in(tempfile::tempdir().unwrap()).await
 }
-async fn fixture_in(dir: tempfile::TempDir) -> Fixture {
+pub(super) async fn fixture_in(dir: tempfile::TempDir) -> Fixture {
     fixture_with_auth(dir, false).await
 }
 async fn fixture_with_auth(dir: tempfile::TempDir, authenticated_mode: bool) -> Fixture {
@@ -80,7 +80,7 @@ async fn fixture_with_auth(dir: tempfile::TempDir, authenticated_mode: bool) -> 
         fake,
     }
 }
-fn hello(f: &Fixture, agent: &str) -> AttachHello {
+pub(super) fn hello(f: &Fixture, agent: &str) -> AttachHello {
     AttachHello {
         protocol_version: 1,
         agent_id: agent.into(),

@@ -37,6 +37,9 @@ pub(crate) struct Hub {
     lifecycle: tokio::sync::Mutex<()>,
     creating: Mutex<HashSet<String>>,
     browser_commands: Mutex<browser::Commands>,
+    message_executable: Mutex<std::path::PathBuf>,
+    message_operations: tokio::sync::Mutex<()>,
+    message_workers: Mutex<HashSet<(String, String)>>,
 }
 #[derive(Clone)]
 struct Binding {
@@ -102,6 +105,7 @@ impl Scope {
     }
 }
 mod browser;
+pub(crate) mod messages;
 
 fn failure(status: StatusCode, code: &str) -> Response {
     (status, Json(json!({"error":code,"code":code}))).into_response()
@@ -224,6 +228,7 @@ impl Hub {
         );
         state.db.with(|c| {
             c.execute_batch(include_str!("treer/schema.sql"))?;
+            c.execute_batch(messages::SCHEMA)?;
             // Upgrade hubs created before notification retry scheduling existed.
             let columns = c.prepare("PRAGMA table_info(treer_submissions)")?
                 .query_map([], |row| row.get::<_, String>(1))?
@@ -268,12 +273,18 @@ impl Hub {
             lifecycle: Default::default(),
             creating: Default::default(),
             browser_commands: Default::default(),
+            message_executable: Mutex::new("treer".into()),
+            message_operations: Default::default(),
+            message_workers: Default::default(),
         });
+        hub.state
+            .set_host_messaging(Arc::new(messages::Bridge(Arc::downgrade(&hub))));
         let weak = Arc::downgrade(&hub);
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                 let Some(hub) = weak.upgrade() else { break };
+                hub.start_message_workers();
                 hub.deliver_notifications().await;
             }
         });
@@ -874,7 +885,7 @@ impl Hub {
         let input: ThreadSendInput = serde_json::from_value(
             json!({"text":prompt.text,"delivery":delivery,"clientRequestId":key,"subject":hash}),
         )?;
-        let result = self.state.send_to_thread(thread, input)?;
+        let result = self.state.send_to_thread_locally(thread, input)?;
         let id = result["pendingSteerId"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("missing submission id"))?;

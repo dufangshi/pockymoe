@@ -80,6 +80,8 @@ pub fn launch_env() -> Vec<(String, String)> {
 
 #[derive(Default)]
 pub struct InteractionState {
+    pub(crate) host_messaging:
+        std::sync::RwLock<Option<Arc<dyn crate::host_messaging::HostMessaging>>>,
     pub context: std::sync::RwLock<Option<CliContext>>,
     thread_tokens: std::sync::RwLock<std::collections::HashMap<String, String>>,
     started: AtomicBool,
@@ -211,12 +213,31 @@ impl Supervisor {
         self.send_to_thread_inner(id, input, None)
     }
 
+    /// Delivery already accepted by the host, or generated locally by its inbox worker.
+    /// Never routes back through the outbound host transport.
+    pub fn send_to_thread_locally(&self, id: &str, input: SendInput) -> Result<Value> {
+        self.send_to_thread_impl(id, input, None, false)
+    }
+
     fn send_to_thread_inner(
         &self,
         id: &str,
         input: SendInput,
         remote: Option<RemoteSender>,
     ) -> Result<Value> {
+        self.send_to_thread_impl(id, input, remote, true)
+    }
+
+    fn send_to_thread_impl(
+        &self,
+        id: &str,
+        input: SendInput,
+        remote: Option<RemoteSender>,
+        consult_host: bool,
+    ) -> Result<Value> {
+        let host_hook = consult_host
+            .then(|| self.interaction.host_messaging.read().unwrap().clone())
+            .flatten();
         let thread = self.get_thread(id)?;
         ensure!(
             ["inbox", "direct", "queue", "steer"].contains(&input.delivery.as_str()),
@@ -227,7 +248,9 @@ impl Supervisor {
             "notifyDelivery must be inbox; completion notifications are passive and cannot wake the caller. Read them with pockymoe inbox."
         );
         if input.delivery != "inbox" {
-            self.ensure_prompt_allowed(&thread)?;
+            if host_hook.is_none() {
+                self.ensure_prompt_allowed(&thread)?;
+            }
             // Prompting a closed delegate reopens it, so it must fit under the cap again.
             if let (Some(_), Some(root)) = (&thread.closed_at, &thread.root_thread_id) {
                 ensure!(
@@ -290,6 +313,13 @@ impl Supervisor {
                 input.delivery == "inbox" && kind == "status" && input.in_reply_to.is_none(),
                 "topicKey only replaces full inbox status snapshots; results, questions, tasks and replies must stay distinct"
             );
+        }
+        if let Some(hook) = host_hook {
+            ensure!(
+                remote.is_none(),
+                "host messaging does not accept native peer relay delivery"
+            );
+            return hook.send(self, id, input);
         }
         let pending_id = Uuid::new_v4().to_string();
         let now = now_rfc3339();
