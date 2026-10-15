@@ -20,3 +20,15 @@ CREATE TABLE IF NOT EXISTS treer_submissions (
 );
 
 CREATE TABLE IF NOT EXISTS treer_hub_identity (id INTEGER PRIMARY KEY CHECK(id=1), hub_id TEXT NOT NULL);
+
+-- Retain tombstones after external deletion; never recreate an archived Agent.
+CREATE TABLE IF NOT EXISTS treer_registry (
+    thread_id TEXT PRIMARY KEY REFERENCES threads(id) ON DELETE CASCADE,
+    state TEXT NOT NULL CHECK(state IN ('registering','bound','hidden','archived')),
+    name TEXT NOT NULL DEFAULT ''
+);
+
+-- Failed rollback cleanup survives deletion of the newly created thread.
+CREATE TABLE IF NOT EXISTS treer_registry_cleanup (
+    agent_id TEXT PRIMARY KEY
+);

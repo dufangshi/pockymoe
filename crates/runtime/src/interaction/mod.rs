@@ -170,12 +170,13 @@ impl Supervisor {
         CLI_ENV.scope(env, future).await
     }
 
-    /// Only a live top-level integration binding can own external credentials.
+    /// Every live integration binding owns its own external credentials.
     pub fn set_thread_cli_identity(&self, id: &str, env: Vec<(String, String)>) -> Result<()> {
         ensure!(
-            self.get_thread(id)?.parent_thread_id.is_none(),
+            self.thread_host.get().is_some() || self.get_thread(id)?.parent_thread_id.is_none(),
             "identity requires a top-level thread"
         );
+        self.get_thread(id)?;
         self.interaction
             .thread_env
             .write()
@@ -562,7 +563,10 @@ impl Supervisor {
                     continue;
                 };
                 for id in ids {
-                    if state.integration_thread_paused(&id) {
+                    if state.integration_thread_paused(&id)
+                        && !(state.thread_host.get().is_some()
+                            && state.get_thread(&id).is_ok_and(|t| t.closed_at.is_some()))
+                    {
                         continue;
                     }
                     if !running.lock().unwrap().insert(id.clone()) {

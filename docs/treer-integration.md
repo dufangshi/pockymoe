@@ -239,6 +239,63 @@ credentials redacted, control characters stripped and code/message lengths cappe
 at 96/512 characters (plus a truncation marker). Treer subprocess output stays
 suppressed, and attach disables tracing even if `RUST_LOG=trace` to protect the hello payload.
 
+## Thread and Agent registry
+
+In Treer hosted mode (`POCKYMOE_HOST_MODE=hosted` and
+`POCKYMOE_HOSTED_BY=treer`), every visible durable thread, including a delegate,
+owns one Treer Agent. Stable thread and Agent IDs bind for life; changing a name
+never changes that binding. This registry supersedes the older top-level-only
+binding and identity model described elsewhere in this guide. Standalone
+Pockymoe installs no host hook and retains its existing behavior.
+
+The runtime exposes one optional, generic thread lifecycle hook. The Supervisor
+installs its Treer implementation once at startup. CLI delegates create Agents
+with the parent thread's live identity; scoped browser creation uses the page's
+Agent; forks use the source thread's Agent. Local pages, automations, imports,
+and migration without a live caller use the hub App's own `TREER_*` identity.
+A first-launch attach already owns an Agent and binds that identity directly.
+Every bound thread receives only its own Agent credentials, including children.
+
+Registration runs `treer agent admin create --machine SERVER --kind command
+--name LABEL --cwd RELATIVE -- pockymoe attach --thread ID --hub URL
+--hub-token-file PATH`, using a stable executable. Treer's default placement
+inherits the creator's folder. Top-level labels sanitize the thread title;
+children use `<parent Agent name>.<delegate name or sanitized title>`. Names
+contain no thread UUID. Only `agent_name_conflict` retries with `-2`, `-3`, and
+so on, up to 100 candidates. Cwd must remain within the reported machine root.
+Creation waits up to 30 seconds for attach to bind. A CLI operation has a
+15-second deadline. Registration failure deletes the new Agent and rolls back
+the new thread; failed Agent cleanup persists for later reconciliation.
+
+Closing a delegate stops its Agent and retains history and its reserved name.
+A prompt to a closed thread starts the Agent and waits for rebind before any
+harness delivery. Deletion removes the Agent before deleting thread history;
+direct-child deletion keeps its ownership, descendant, active-work and queue
+checks. Rename updates Treer first and cascades a matching parent name prefix
+through the recorded descendants. Unrelated Agents with similar names are
+unaffected. Rename failures attempt to restore already-renamed Agents.
+
+Reconciliation runs at startup, on attach connection and disconnection, and
+about every 60 seconds with the hub App identity. An Agent renamed in Treer
+updates its thread title; children display the title without their parent's
+prefix. A confirmed `agent_not_found` archives the thread. Archived threads are
+hidden from lists, search, lineage views and Treer scope, while their rows and
+history remain in SQLite. A stopped or failed Agent retains its binding and
+history; it is not treated as deleted. CLI outages and policy failures never
+archive a thread.
+
+Unbound visible threads from older installations, including unbound delegates,
+and interrupted registrations migrate through the same registration path.
+A lost create response is recovered by checking the Agent's saved startup for
+this hub's `attach --thread ID`, preserving the original stable Agent ID rather
+than adopting an Agent by its name. Closed legacy delegates migrate and then
+stop their new Agents. Archived and explicitly hidden internal threads never
+migrate. Treer browser
+scope includes only each thread's own binding or active registration; a root
+binding no longer exposes an unbound child. Controller access is limited to its
+own bound thread. Credentials and subprocess diagnostics are never persisted or
+returned to callers.
+
 ## Lifecycle mapping
 
 | Treer action | Pockymoe meaning |
@@ -246,7 +303,7 @@ suppressed, and attach disables tracing even if `RUST_LOG=trace` to protect the 
 | Agent stop | Attach is terminated; the socket closes. The hub interrupts the bound turn and releases its harness, retaining history. |
 | Agent start / restore | The saved `attach --thread` command rebinds the same thread. Harness recovery is demand driven. |
 | Agent restart | Stop followed by start with a fresh process instance ID. |
-| Agent delete in Treer | Identity/credentials are revoked. Thread history is retained because attach cannot distinguish deletion from stop. Deleting a thread in the scoped Web instead deletes its Agent first, then its history. |
+| Agent delete in Treer | Registry reconciliation confirms deletion, archives the thread and retains its database history. Explicit Pockymoe deletion removes the Agent first, then its thread history. |
 | Hub update / restart | Attach waits, reconnects and re-registers. It does not create another thread. |
 
 Attach cannot reliably send a final notification within Treer's short stop

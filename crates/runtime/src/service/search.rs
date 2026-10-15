@@ -34,6 +34,17 @@ impl Supervisor {
         // Always verify literal containment: punctuation is data, not syntax.
         let use_fts = needle.chars().count() >= 3;
         let fts_query = format!("\"{}\"", needle.replace('"', "\"\""));
+        let visible = if self.thread_host.get().is_some() {
+            Some(serde_json::to_string(
+                &self
+                    .list_threads(None, true)?
+                    .iter()
+                    .map(|t| &t.id)
+                    .collect::<Vec<_>>(),
+            )?)
+        } else {
+            None
+        };
         self.db.with(|conn| {
             let candidates = if use_fts {
                 "JOIN search_documents_fts f ON f.rowid=d.id"
@@ -46,6 +57,7 @@ impl Supervisor {
                  JOIN threads t ON t.id=d.thread_id
                  JOIN workspaces w ON w.id=t.workspace_id
                  WHERE (?1 IS NULL OR t.workspace_id=?1)
+                   AND (?6 IS NULL OR t.id IN (SELECT value FROM json_each(?6)))
                    AND instr(d.folded, ?2)>0 {predicate}
                    AND (d.kind='title' OR EXISTS (
                      SELECT 1 FROM thread_turns r WHERE r.id=d.turn_id AND r.thread_id=d.thread_id))
@@ -59,7 +71,7 @@ impl Supervisor {
                  ORDER BY d.created_at DESC, d.id DESC LIMIT ?3 OFFSET ?4"
             );
             let mut stmt = conn.prepare(&sql)?;
-            let mut rows = stmt.query(params![workspace_id, needle, limit + 1, offset, fts_query])?;
+            let mut rows = stmt.query(params![workspace_id, needle, limit + 1, offset, fts_query, visible])?;
             let mut matches = Vec::new();
             while let Some(row) = rows.next()? {
                 let kind: String = row.get(7)?;

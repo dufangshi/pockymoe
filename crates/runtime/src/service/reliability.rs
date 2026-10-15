@@ -6,6 +6,7 @@ impl Supervisor {
     /// Acknowledge receipt only after the complete submission has committed. The
     /// inbox also covers preflight failures and a crash before a turn is started.
     pub async fn accept_prompt(&self, id: &str, input: &SendThreadPromptInput) -> Result<()> {
+        self.prepare_thread_prompt(id).await?;
         let thread = self.get_thread(id)?;
         self.ensure_prompt_allowed(&thread)?;
         self.observe_execution(id).await?;
