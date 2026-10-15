@@ -244,6 +244,20 @@ presentation heuristic, not a completion signal. Short progress still uses the
 latest-update preview. Lazy history summaries preserve qualifying answers;
 commands and their outputs continue to load on demand.
 
+A working turn reads open and stays short: the run of operations it is in shows
+its rows and its first small edits, and each earlier run folds into one line of
+counts and duration once narration or another run follows. When the turn ends,
+its work folds into the work line ("Worked for 10s · 4 commands · 1 failed ·
+edited 1 file +2 −1"). Opening that line shows the narration with each run
+folded; opening a run lists its operations. The file counts on the work line
+open only the changed files. Command and tool output never opens by itself, and
+a row loads its output only when clicked. Clicking an output, diff or code block
+opens it in a floating viewer, and command rows carry a copy button.
+
+On a phone, the file list and file viewer have a one-field prompt at the bottom.
+It sends to the thread the files belong to, like Send in the composer, without
+clearing the composer's draft.
+
 The compact model menu shows reported context use and capacity in thousands of
 tokens below the reasoning controls. Missing readings show a dash.
 

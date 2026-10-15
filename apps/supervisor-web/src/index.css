@@ -2608,3 +2608,72 @@ main:has(.product-navigation) { padding-top: 0 !important; }
 .help-prose .help-anchor { margin-left: 8px; color: var(--theme-fg-muted); text-decoration: none; opacity: 0; }
 .help-prose h2:hover .help-anchor, .help-prose h3:hover .help-anchor { opacity: 1; }
 @media (hover: none) { .help-prose .help-anchor { display: none; } }
+
+/* Phone files: a floating one-field prompt under the file list and the viewer,
+   so a question about what is on screen needs no trip back to the conversation. */
+.workbench-tool-target > :not(.file-ask-bar) { flex: 1 1 0; min-height: 0; }
+.file-ask-bar { display: none; }
+@media (max-width: 639px) {
+  .file-ask-bar {
+    position: relative;
+    z-index: 2;
+    display: block;
+    flex: none;
+    /* Floats over the end of the content, clear of the home bar and the keyboard. */
+    margin-top: -22px;
+    padding: 14px 10px max(10px, calc(env(safe-area-inset-bottom) + 6px), calc(var(--thread-detail-keyboard-inset, 0px) + 10px));
+    background: linear-gradient(to bottom, transparent, color-mix(in srgb, var(--theme-bg) 92%, transparent) 55%);
+    pointer-events: none;
+  }
+  .file-ask-bar > * { pointer-events: auto; }
+}
+.file-ask-bar-shell {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 5px 5px 5px 14px;
+  border: 1px solid var(--theme-border-strong);
+  border-radius: 21px;
+  background: color-mix(in srgb, var(--theme-panel) 86%, transparent);
+  backdrop-filter: blur(24px) saturate(135%);
+  -webkit-backdrop-filter: blur(24px) saturate(135%);
+  box-shadow: inset 0 1px 0 var(--matter-glass-highlight, transparent), var(--matter-composer-shadow, 0 6px 22px rgb(18 32 25 / 14%));
+  transition: border-color 150ms ease;
+}
+.file-ask-bar-shell:focus-within { border-color: var(--theme-accent-solid); }
+.file-ask-bar[data-state='failed'] .file-ask-bar-shell { border-color: #c2413a; }
+.file-ask-bar textarea {
+  flex: 1;
+  min-width: 0;
+  max-height: 112px;
+  padding: 6px 0;
+  border: 0;
+  outline: 0;
+  resize: none;
+  background: transparent;
+  color: var(--theme-fg);
+  font: inherit;
+  /* 16px keeps iOS from zooming into the field. */
+  font-size: 16px;
+  line-height: 1.35;
+}
+.file-ask-bar textarea::placeholder { color: var(--theme-fg-muted); }
+.file-ask-bar-send {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--theme-accent-solid);
+  color: var(--theme-accent-solid-fg);
+  transition: background-color 150ms ease, color 150ms ease;
+}
+.file-ask-bar-send:disabled { background: var(--theme-surface-strong); color: var(--theme-fg-muted); }
+.file-ask-bar-send > svg { width: 16px; height: 16px; }
+.file-ask-bar-note { margin: 0 8px 6px; color: var(--theme-fg-muted); font-size: 11.5px; }
+.file-ask-bar[data-state='failed'] .file-ask-bar-note { color: #c2413a; }
+@media (prefers-reduced-transparency: reduce) {
+  .file-ask-bar-shell { background: var(--theme-panel); backdrop-filter: none; -webkit-backdrop-filter: none; }
+}

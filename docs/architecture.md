@@ -63,8 +63,8 @@ the item is opened. WebSocket item events use the same deferral.
 A summary turn whose operations are deferred also carries `activity`: counts of
 `commands`, `fileChanges`, `changedFiles`, `addedLines`, `removedLines`, `reads`,
 `searches`, `tools`, `agents`, `reasoning` and `failed` (zero counts omitted), and
-`files`, up to eight changed paths with the latest edit's `itemId` and its line
-counts (a multi-file patch credits its counts to its first path). The transcript
+`fileCount`, the number of distinct changed paths, and `files`, up to forty of
+them with the latest edit's `itemId` and its line counts (a multi-file patch credits its counts to its first path). The transcript
 uses it for the folded turn's work line ("Worked for 51s · edited 2 files +64 −3 ·
 6 commands") and its changed-file names, whose diffs load on demand through the
 item detail endpoint. `segments` repeats the counts for each stretch of operations

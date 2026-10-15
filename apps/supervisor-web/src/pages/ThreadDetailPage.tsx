@@ -12,6 +12,7 @@ import { WorkbenchThreadPicker } from '../components/WorkbenchThreadPicker';
 import { WorkbenchTerminal, terminalTargetKey, type TerminalOpenRequest } from '../components/WorkbenchTerminal';
 import { WorkbenchReferencePane } from '../components/WorkbenchReferencePane';
 import { WorkbenchCollaboration } from '../components/WorkbenchCollaboration';
+import { FileAskBar } from '../components/FileAskBar';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { DeviceMonitor } from '../components/DeviceMonitor';
 import { TourLauncherButton } from '../components/onboarding/TourProvider';
@@ -2602,7 +2603,7 @@ export function ThreadDetailPage() {
     }
   }, [detail, id, loadingEarlier]);
 
-  async function performPromptSubmission(input: SendThreadPromptRequestInput) {
+  async function performPromptSubmission(input: SendThreadPromptRequestInput, options: { keepDraft?: boolean } = {}) {
     if (activeView === 'shell') {
       if (detail?.thread.isLoaded === false) {
         await handleThreadConnectionToggle({ attachShell: true });
@@ -2876,10 +2877,13 @@ export function ThreadDetailPage() {
           setError(translate("workbench.messageSavedButSteerCouldNotBe", { value1: caught instanceof Error ? caught.message : translate("workbench.tryTheQueuedMessageAfterReconnecting") }));
         }
       }
-      setChatDraft({
-        prompt: '',
-        attachments: [],
-      });
+      // A prompt sent from elsewhere (the files' ask bar) leaves the composer's draft alone.
+      if (!options.keepDraft) {
+        setChatDraft({
+          prompt: '',
+          attachments: [],
+        });
+      }
       return true;
     } catch (caught) {
       const message =
@@ -2911,11 +2915,11 @@ export function ThreadDetailPage() {
     }
   }
 
-  async function handlePrompt(input: SendThreadPromptRequestInput) {
+  async function handlePrompt(input: SendThreadPromptRequestInput, options: { keepDraft?: boolean } = {}) {
     if (activeRouteRef.current !== routeKey || promptSubmissionOwner.inFlight) return false;
     promptSubmissionOwner.inFlight = true;
     try {
-      return await performPromptSubmission(input);
+      return await performPromptSubmission(input, options);
     } finally {
       promptSubmissionOwner.inFlight = false;
     }
@@ -4120,7 +4124,10 @@ export function ThreadDetailPage() {
       threadActionsButton={threadActionsButton}
       surfaceActions={surfaceActions}
       workspaceFeatures={SUPERVISOR_WORKSPACE_FEATURES}
-      workspaceContent={<div className="flex min-h-0 flex-1 flex-col" data-testid="workbench-tool-target" data-device={toolsDevice} data-workspace={toolsDetail?.workspace.id ?? ''} data-thread={toolsDetail?.thread.id ?? ''}>{toolsDetail ? <ThreadGraphWorkspacePanel detail={toolsDetail} status={toolsUseReference ? null : status} plugins={plugins} workspaceAdapter={workspaceAdapter} activeView="chat" features={SUPERVISOR_WORKSPACE_FEATURES} focusPathRequest={workspaceFocusPathRequest} /> : <p className="workbench-reference-status">{translate('workbench.loadingThreadDetail')}</p>}</div>}
+      workspaceContent={<div className="workbench-tool-target flex min-h-0 flex-1 flex-col" data-testid="workbench-tool-target" data-device={toolsDevice} data-workspace={toolsDetail?.workspace.id ?? ''} data-thread={toolsDetail?.thread.id ?? ''}>{toolsDetail ? <ThreadGraphWorkspacePanel detail={toolsDetail} status={toolsUseReference ? null : status} plugins={plugins} workspaceAdapter={workspaceAdapter} activeView="chat" features={SUPERVISOR_WORKSPACE_FEATURES} focusPathRequest={workspaceFocusPathRequest} /> : <p className="workbench-reference-status">{translate('workbench.loadingThreadDetail')}</p>}
+        {toolsDetail && toolsCanControl ? <FileAskBar
+          disabledReason={toolsUseReference ? null : promptDisabledReason}
+          onSend={prompt => toolsUseReference ? referenceController.send({ prompt }) : handlePrompt({ prompt }, { keepDraft: true })} /> : null}</div>}
       workspaceFocusPathRequest={workspaceFocusPathRequest}
       activeView={activeView}
       liveOutput={liveOutput}

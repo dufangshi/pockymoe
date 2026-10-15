@@ -1379,6 +1379,7 @@ async fn transcript_summary_activity_counts_only_deferred_operations() {
         assert_eq!(activity.get(key), Some(expected), "wrong count for {key}");
     }
     // Every path of a multi-file patch is listed; its line counts stay with the first.
+    assert_eq!(activity.get("fileCount"), Some(&json!(3)));
     assert_eq!(
         activity.get("files"),
         Some(&json!([

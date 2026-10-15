@@ -139,7 +139,7 @@ pub struct ActivityRow {
     pub ended_at: Option<String>,
 }
 
-const ACTIVITY_FILES: usize = 8;
+const ACTIVITY_FILES: usize = 40;
 
 fn activity_key(kind: Option<&str>) -> Option<&'static str> {
     Some(match kind? {
@@ -185,8 +185,9 @@ fn tally_row(
     }
 }
 
-/// What a folded turn did, from its stored items in order: counts by kind, up to
-/// eight changed files with the latest edit to open, and `segments`, the same
+/// What a folded turn did, from its stored items in order: counts by kind, the
+/// number of distinct changed files and up to forty of them with the latest edit
+/// to open, and `segments`, the same
 /// counts for each stretch of operations, keyed by the conversation item that
 /// follows it (`before`, null at the end), so narration can sit between them.
 pub fn turn_activity(rows: &[ActivityRow]) -> serde_json::Map<String, serde_json::Value> {
@@ -250,6 +251,7 @@ pub fn turn_activity(rows: &[ActivityRow]) -> serde_json::Map<String, serde_json
         segments.push(serde_json::Value::Object(segment));
     }
     if !files.is_empty() {
+        activity.insert("fileCount".into(), files.len().into());
         activity.insert(
             "files".into(),
             files
@@ -453,6 +455,7 @@ mod tests {
             serde_json::Value::Object(turn_activity(&rows)),
             json!({
                 "commands": 3, "failed": 1, "fileChanges": 1, "changedFiles": 2, "addedLines": 5, "removedLines": 1,
+                "fileCount": 2,
                 "files": [
                     {"path": "src/a.rs", "itemId": "edit", "addedLines": 5, "removedLines": 1},
                     {"path": "src/b.rs", "itemId": "edit", "addedLines": 0, "removedLines": 0}
