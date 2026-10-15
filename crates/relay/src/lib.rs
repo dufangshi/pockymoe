@@ -45,6 +45,7 @@ use axum::http::StatusCode;
 use axum::http::{header, HeaderMap, Method, Uri};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{any, delete, get, patch, post};
+use axum::serve::ListenerExt;
 use axum::{Json, Router};
 use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
@@ -319,7 +320,13 @@ pub async fn serve() -> Result<()> {
         .unwrap_or(8788);
     let addr: SocketAddr = format!("{host}:{port}").parse()?;
     tracing::info!("relay listening on {addr}");
-    let listener = tokio::net::TcpListener::bind(addr).await?;
+    // Preview HTTP keepalive and WebSocket traffic send small interactive
+    // writes in both directions. Disable Nagle on the accepted side too.
+    let listener = tokio::net::TcpListener::bind(addr).await?.tap_io(|socket| {
+        if let Err(error) = socket.set_nodelay(true) {
+            tracing::warn!(%error, "could not disable Nagle on relay connection");
+        }
+    });
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),

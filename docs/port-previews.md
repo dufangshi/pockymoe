@@ -195,8 +195,8 @@ access includes Web loading, an authenticated exchange and a preview-origin
 redirect. A new data connection also includes the device/Relay connection
 handshake. Warm HTTP keepalive avoids that handshake for subsequent requests;
 upstreams which explicitly close their connection still require a new one.
-The device data socket and local application socket disable Nagle to avoid
-delaying small interactive writes. Upstream response generation, device upload
+The Relay listener, device data socket and local application socket disable
+Nagle to avoid delaying small interactive writes. Upstream response generation, device upload
 speed and the network route remain part of the latency. Application compression
 headers are preserved. Do not enable shared caching or bypass per-request
 authorization to improve speed.
