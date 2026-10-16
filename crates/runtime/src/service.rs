@@ -37,7 +37,7 @@ use crate::actor::{
 use crate::config::RuntimeConfig;
 use crate::db::Database;
 use crate::files;
-use crate::history::summarize_completed_turn;
+use crate::history::{summarize_completed_turn, turn_activity, ActivityRow};
 use crate::import_id::{
     bind_import_target, parse_session_ref, scoped_session_id, session_ids_match,
 };
@@ -1877,6 +1877,20 @@ impl Supervisor {
         before_turn_id: Option<&str>,
         summary_only: bool,
     ) -> Result<ThreadDetailDto> {
+        self.get_thread_detail_page_with(id, limit, before_turn_id, summary_only, false)
+            .await
+    }
+
+    /// `narration` keeps every reply with text in summary turns, so a transcript
+    /// can show the agent's progress between folded runs of work.
+    pub async fn get_thread_detail_page_with(
+        &self,
+        id: &str,
+        limit: Option<u32>,
+        before_turn_id: Option<&str>,
+        summary_only: bool,
+        narration: bool,
+    ) -> Result<ThreadDetailDto> {
         self.sync_claude_scheduled_history(id).await?;
         self.observe_execution(id).await?;
         let thread = self.get_thread(id)?;
@@ -1887,6 +1901,7 @@ impl Supervisor {
                 Some(limit.unwrap_or(3)),
                 before_turn_id,
                 thread.source == "local_codex_import",
+                narration,
             )?
         } else {
             self.load_turns(id, limit, before_turn_id)?
@@ -2077,18 +2092,20 @@ impl Supervisor {
         limit: Option<u32>,
         before_turn_id: Option<&str>,
         normalize_imported: bool,
+        narration: bool,
     ) -> Result<(Vec<ThreadTurnDto>, u32)> {
         let (mut turns, total_turn_count) =
             self.load_turns_meta_page(thread_id, limit, before_turn_id)?;
         for turn in &mut turns {
-            let (items, total_item_count) = self.load_turn_conversation(thread_id, &turn.id)?;
+            let (items, total_item_count, activity) =
+                self.load_turn_conversation(thread_id, &turn.id)?;
             let conversation_item_count = items.len();
             turn.items = items;
             if normalize_imported {
                 normalize_imported_turns(std::slice::from_mut(turn));
             }
             let removed_item_count = conversation_item_count.saturating_sub(turn.items.len());
-            let summarized = summarize_completed_turn(turn.clone());
+            let summarized = summarize_completed_turn(turn.clone(), narration);
             let deferred = total_item_count
                 .saturating_sub(removed_item_count)
                 .saturating_sub(summarized.items.len());
@@ -2096,6 +2113,7 @@ impl Supervisor {
             if deferred > 0 {
                 turn.has_deferred_items = Some(true);
                 turn.deferred_item_count = Some(deferred as u32);
+                turn.activity = Some(activity);
             }
         }
         Ok((turns, total_turn_count))
@@ -2105,13 +2123,44 @@ impl Supervisor {
         &self,
         thread_id: &str,
         turn_id: &str,
-    ) -> Result<(Vec<ThreadHistoryItemDto>, usize)> {
+    ) -> Result<(Vec<ThreadHistoryItemDto>, usize, Value)> {
         self.db.with(|conn| {
-            let total_item_count: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM thread_history_items WHERE thread_id=?1 AND turn_id=?2",
-                params![thread_id, turn_id],
-                |row| row.get(0),
+            // One ordered pass over the turn: the item total and what a folded
+            // summary reports (docs/architecture.md, History payloads).
+            let mut stmt = conn.prepare(
+                "SELECT item_id, json_extract(item_json, '$.kind'),
+                   lower(COALESCE(json_extract(item_json, '$.status'), '')),
+                   json_extract(item_json, '$.origin') IN ('nativeBackgroundWait', 'nativeTaskNotification')
+                     OR json_extract(item_json, '$.kind') = 'userMessage'
+                     OR (json_extract(item_json, '$.kind') = 'agentMessage' AND length(trim(COALESCE(json_extract(item_json, '$.text'), ''))) > 0),
+                   CASE WHEN json_extract(item_json, '$.kind') = 'fileChange' THEN json_extract(item_json, '$.text') END,
+                   COALESCE(json_extract(item_json, '$.changedFiles'), 0),
+                   COALESCE(json_extract(item_json, '$.addedLines'), 0),
+                   COALESCE(json_extract(item_json, '$.removedLines'), 0),
+                   COALESCE(json_extract(item_json, '$.createdAt'), created_at),
+                   COALESCE(json_extract(item_json, '$.updatedAt'), json_extract(item_json, '$.createdAt'), created_at)
+                 FROM thread_history_items WHERE thread_id=?1 AND turn_id=?2
+                 ORDER BY created_at ASC, rowid ASC",
             )?;
+            let rows = stmt
+                .query_map(params![thread_id, turn_id], |row| {
+                    Ok(ActivityRow {
+                        item_id: row.get(0)?,
+                        kind: row.get(1)?,
+                        status: row.get(2)?,
+                        anchor: row.get::<_, Option<bool>>(3)?.unwrap_or(false),
+                        paths: row.get(4)?,
+                        changed_files: row.get(5)?,
+                        added: row.get(6)?,
+                        removed: row.get(7)?,
+                        started_at: row.get(8)?,
+                        ended_at: row.get(9)?,
+                    })
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            drop(stmt);
+            let total_item_count = rows.len();
+            let activity = turn_activity(&rows);
             let mut stmt = conn.prepare(
                 "SELECT item_json FROM thread_history_items
                  WHERE thread_id=?1 AND turn_id=?2
@@ -2127,7 +2176,8 @@ impl Supervisor {
             peer_work::annotate(conn, thread_id, turn_id, &mut items, false)?;
             Ok((
                 items,
-                usize::try_from(total_item_count).unwrap_or(usize::MAX),
+                total_item_count,
+                Value::Object(activity),
             ))
         })
     }
@@ -2190,6 +2240,7 @@ impl Supervisor {
                         price_estimate,
                         has_deferred_items: None,
                         deferred_item_count: None,
+                        activity: None,
                         items: Vec::new(),
                     })
                 })?

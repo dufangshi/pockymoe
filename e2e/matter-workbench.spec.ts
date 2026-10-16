@@ -6,6 +6,13 @@ import { DatabaseSync } from 'node:sqlite';
 
 const base = `http://127.0.0.1:${process.env.E2E_API_PORT ?? 8787}`;
 
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem(
+    `pockymoe.onboarding.v1:${JSON.stringify([location.origin, 'local:owner'])}`,
+    JSON.stringify({ welcomeDismissed: true, completed: [] }),
+  ));
+});
+
 test('recent thread menus manage shortcuts and history while glass controls and outer pages share the theme', async ({ page, request }, testInfo) => {
   const absPath = path.resolve(process.env.E2E_WORKSPACE_ROOT ?? '.local/e2e-playwright', `recent-menus-${randomUUID()}`);
   await mkdir(absPath, { recursive: true });
@@ -88,7 +95,7 @@ test('reading area uses most of a wide viewport and fills the space beside Explo
   await expect.poll(async () => (await measure()).reply).toBeGreaterThan(.94);
   expect((await measure()).composer).toBeGreaterThan(.94);
   await page.screenshot({ path: `output/playwright/wide-reading-explorer-${testInfo.project.name}.png` });
-  await page.getByRole('button', { name: 'Close Explorer', exact: true }).click();
+  await page.getByRole('button', { name: 'Hide Explorer', exact: true }).click();
   await page.setViewportSize({ width: 390, height: 844 });
   await expect.poll(async () => (await measure()).reply).toBeGreaterThan(.90);
   expect((await measure()).overflow).toBe(false);
@@ -133,7 +140,7 @@ test('search reveals an older collapsed message, Explorer resizes and connection
     return box.top >= viewport.top && box.bottom <= viewport.bottom;
   })).toBe(true);
   await page.getByRole('button', { name: 'Toggle Explorer', exact: true }).click();
-  const explorer = page.getByRole('complementary', { name: 'Explorer', exact: true });
+  const explorer = page.getByRole('region', { name: 'Workspace files', exact: true });
   const separator = page.getByRole('separator', { name: 'Resize Explorer' });
   const width = (await explorer.boundingBox())!.width;
   const handle = (await separator.boundingBox())!;
@@ -144,12 +151,15 @@ test('search reveals an older collapsed message, Explorer resizes and connection
   await expect.poll(async () => (await explorer.boundingBox())!.width).toBeGreaterThan(width + 80);
   await separator.focus();
   await page.keyboard.press('ArrowRight');
-  await page.getByRole('button', { name: 'Close Explorer', exact: true }).click();
+  await page.getByRole('button', { name: 'Hide Explorer', exact: true }).click();
+  // Healthy connections hide their indicator; offline exposes its details.
+  await page.context().setOffline(true);
   const connection = page.locator('.matter-connection .device-connection-button');
+  await expect(connection).toBeVisible();
   const bell = page.getByRole('button', { name: 'Notifications', exact: true });
   const connectionBox = (await connection.boundingBox())!;
   const bellBox = (await bell.boundingBox())!;
-  expect(Math.abs(connectionBox.y + connectionBox.height / 2 - bellBox.y - bellBox.height / 2)).toBeLessThan(1);
+  expect(Math.abs(connectionBox.y + connectionBox.height / 2 - bellBox.y - bellBox.height / 2)).toBeLessThanOrEqual(1);
   await connection.click();
   const popover = page.locator('.device-connection-popover');
   await expect(popover).toBeVisible();
@@ -158,7 +168,8 @@ test('search reveals an older collapsed message, Explorer resizes and connection
   expect(popoverBox.x + popoverBox.width).toBeLessThanOrEqual(connectionBox.x + connectionBox.width + 1);
   await page.keyboard.press('Escape');
   await expect(popover).toHaveCount(0);
-  await page.screenshot({ path: `output/playwright/workbench-interactions-${testInfo.project.name}.png` });
+  await page.screenshot({ path: testInfo.outputPath(`workbench-interactions-${testInfo.project.name}.png`) });
+  await page.context().setOffline(false);
   running = true;
   await page.reload();
   const stop = page.locator('.thread-graph-composer-stop-button');
@@ -173,7 +184,7 @@ test('search reveals an older collapsed message, Explorer resizes and connection
     await expect(stop).toHaveCSS('box-shadow', 'none');
     await expect(stop).toHaveCSS('width', '32px');
     await expect(send).toHaveCSS('width', '32px');
-    await page.screenshot({ path: `output/playwright/workbench-running-${width}.png` });
+    await page.screenshot({ path: testInfo.outputPath(`workbench-running-${width}.png`) });
   }
 });
 
@@ -296,7 +307,8 @@ test('Matter workbench floats the composer, persists shortcuts, searches history
   expect(metrics.composer.right).toBeLessThanOrEqual(metrics.width);
   expect(metrics.documentWidth).toBe(metrics.width);
   expect(metrics.mainRight).toBe(metrics.width);
-  await page.getByRole('button', { name: 'Add shortcut', exact: true }).click();
+  await page.getByTestId('recent-chats').getByRole('button', { name: 'Actions for A calmer coding workspace', exact: true }).click();
+  await page.locator('.recent-thread-menu').getByRole('button', { name: 'Star thread', exact: true }).click();
   await expect(
     page.getByRole('button', { name: 'Remove shortcut' }),
   ).toBeVisible();
@@ -467,6 +479,9 @@ test('execution timeline expands deferred work and keeps the last reply above th
       `.local/e2e-${process.env.E2E_API_PORT ?? 8787}.sqlite`,
   );
   const db = new DatabaseSync(database);
+  db.exec('PRAGMA busy_timeout=5000');
+  db.function('search_fold', { deterministic: true }, value => typeof value === 'string' ? value.toLowerCase() : value);
+  db.function('search_body', { deterministic: true }, (text, kind, _source) => ['userMessage', 'agentMessage'].includes(String(kind)) ? text : null);
   const now = Date.now() - 30000;
   const timestamp = (offset: number) => new Date(now + offset).toISOString();
   const prompt =
@@ -555,37 +570,37 @@ test('execution timeline expands deferred work and keeps the last reply above th
   await expand.scrollIntoViewIfNeeded();
   await expand.click();
   await expect(page.locator('.thread-execution-timeline')).toBeVisible();
-  await expect(page.getByText('4 steps', { exact: true })).toBeVisible();
-  await page
-    .getByRole('button', { name: 'Expand 3 command entries', exact: true })
-    .click();
-  await expect(
-    page.getByText('Verify responsive layout', { exact: true }),
-  ).toBeVisible();
-  await expect(page.locator('.matter-command-step')).toHaveCount(3);
-  await expect(page.locator('.matter-step-status[aria-label="Completed"]')).toHaveCount(3);
-  await expect(page.locator('.matter-step-time')).toHaveCount(3);
-  await expect(page.locator('.matter-command-step').first()).not.toContainText('completed');
-  expect((await page.locator('.matter-command-step').first().boundingBox())!.height).toBeLessThanOrEqual(36);
+  await expect(page.locator('.thread-graph-worked-summary .tlog-count[data-kind=commands]')).toHaveAttribute('aria-label', '3 commands');
+  await page.locator('.tlog-run-head').click();
+  await expect(page.getByText('Verify responsive layout', { exact: true })).toBeVisible();
+  const rows = page.locator('.tlog-row[data-kind="commandExecution"]');
+  await expect(rows).toHaveCount(3);
+  await expect(page.locator('.tlog-row[data-kind="commandExecution"][data-status="done"]')).toHaveCount(3);
+  await expect(rows.first()).not.toContainText('completed');
+  expect((await rows.first().boundingBox())!.height).toBeLessThanOrEqual(36);
   expect((await page.locator('.matter-thread-tabs').boundingBox())!.height).toBeLessThanOrEqual(36);
-  await expect(page.locator('.matter-workspace-path')).toHaveText(/^~\/.*….*$/);
+  await expect(page.getByRole('navigation', { name: 'Workspace threads', exact: true }).locator('[aria-current="page"]')).toContainText('A calmer coding workspace');
   await page.locator('.thread-graph-scroll-container').evaluate((e) => {
     e.scrollTop = e.scrollHeight;
   });
   await expect(
     page.getByText('Ready for your review.', { exact: true }),
   ).toBeVisible();
-  const final = await page
-    .getByText('Ready for your review.', { exact: true })
-    .boundingBox();
-  const composer = await page.getByTestId('chat-composer').boundingBox();
-  expect(final!.y + final!.height).toBeLessThanOrEqual(composer!.y);
-  await page.getByRole('button', { name: 'Add shortcut', exact: true }).click();
+  // Opening work now animates its height; measure only after the run settles.
+  await expect(page.locator('.tlog-run > .tlog-collapse')).toHaveAttribute('data-settled', 'true');
+  await expect.poll(async () => {
+    await page.locator('.thread-graph-scroll-container').evaluate(e => { e.scrollTop = e.scrollHeight; });
+    const final = (await page.getByText('Ready for your review.', { exact: true }).boundingBox())!;
+    const composer = (await page.getByTestId('chat-composer').boundingBox())!;
+    return final.y + final.height - composer.y;
+  }).toBeLessThanOrEqual(0);
+  await page.getByTestId('recent-chats').getByRole('button', { name: 'Actions for A calmer coding workspace', exact: true }).click();
+  await page.locator('.recent-thread-menu').getByRole('button', { name: 'Star thread', exact: true }).click();
   await page.locator('.thread-graph-scroll-container').evaluate((e) => {
     e.scrollTop = 0;
   });
   await page.screenshot({
-    path: 'output/playwright/matter-preview-light.png',
+    path: testInfo.outputPath('matter-preview-light.png'),
     fullPage: true,
   });
   await page.evaluate(() =>
@@ -597,14 +612,12 @@ test('execution timeline expands deferred work and keeps the last reply above th
     'dark',
   );
   await page.getByRole('button', { name: /Worked.*Expand turn 1/ }).click();
-  await page
-    .getByRole('button', { name: 'Expand 3 command entries', exact: true })
-    .click();
+  await page.locator('.tlog-run-head').click();
   await page.locator('.thread-graph-scroll-container').evaluate((e) => {
     e.scrollTop = 0;
   });
   await page.screenshot({
-    path: 'output/playwright/matter-preview-dark.png',
+    path: testInfo.outputPath('matter-preview-dark.png'),
     fullPage: true,
   });
   await testInfo.attach('preview-url', {

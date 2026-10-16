@@ -97,6 +97,11 @@ available while a plugin is disabled so it can be configured before enabling;
 unavailable or unregistered device modules do not contribute settings. Settings
 storage remains on the device, not in the component or browser local storage.
 
+`browserSettingsSections` are the exception for per-browser preferences: they
+render their own content, appear only while the plugin is enabled and available,
+and keep nothing on the device. The terminal's Settings > Terminal uses one for
+its clipboard behaviour (see [thread interaction](thread-interaction.md#terminal-clipboard)).
+
 Frontend modules and Rust modules release with their respective applications.
 The public Web build consumes the shared UI commit pinned by `thread-ui.sha`;
 updating a device alone does not deliver new Web components.

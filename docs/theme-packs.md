@@ -162,6 +162,15 @@ Monaco editor and diff view; `--shiki-*` for code blocks with the
 - transcript: `data-turn-status` on turns, `.thread-usage-details` and
   `.thread-usage-details-total` for the token and price breakdown;
 - Explorer: `workspace-node-icon is-<kind>`, `workspace-file-alert`;
+- phone one-handed layout: the workbench's `has-phone-dock`, `is-left-handed`
+  and `is-typing`; `.matter-topbar.is-status-only` (its readings keep their own
+  size under a pack's top bar button rules); `matter-phone-dock`,
+  `matter-phone-thread`, `matter-phone-panes`, `matter-phone-more`,
+  `matter-phone-pins`, `matter-phone-sheet`; the turn strip `thread-jump-nav`
+  (also `thread-jump-latest-badge`, its old name) with `data-following`; the
+  drawer's `data-dragging` while it follows a finger; the composer-and-dock panel paints
+  `--matter-dock-surface` and `--matter-dock-edge` (default `--matter-chrome`
+  and `--theme-border`);
 - icons: `data-icon="<name>"` on the icon `<svg>` names what it stands for, so a
   pack can draw its own glyph as a mask over `currentColor` (see below).
 
@@ -204,7 +213,7 @@ when the applied pack lists the flag (`useThemeFeature(flag)`):
 
 | Flag | Effect |
 | --- | --- |
-| `workbench.phoneDrawerTools` | On phones, Home and Chat move from the top bar into the thread drawer |
+| `workbench.phoneDrawerTools` | With the phone dock switched off, Home and Chat move from the top bar into the thread drawer |
 | `composer.modelAvatar` | The model chip shows the agent avatar and a menu chevron |
 | `composer.richMenus` | Icon rows with descriptions in the slash toolbox and attach menu, a `/` glyph and a paperclip trigger |
 | `composer.intentIcons` | Per-intent send icons, and "Send after this turn" while a turn runs |

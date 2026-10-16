@@ -759,10 +759,13 @@ Creating or editing shared access for a protected device:
    (`GET /relay/{shares|grants}/{id}/recipient-account`); without a vault this
    fails with "The recipient must secure their account before a protected device
    can honor this share."
-4. **Review device grant** shows the exact device, scope, access, expiry, recipient
-   and safety code, and for an edit the current device grant next to the new one
-   with the changed fields. An unverified recipient needs an explicit
-   acknowledgement.
+4. **Review device grant** describes the grant that will be signed in words:
+   recipient (verified or not), device, scope, conversation and file access, new
+   conversations, expiry and safety code, and for an edit each changed field as
+   before → after. The exact signed content, with the current device grant next to
+   the new one, is folded under technical details. Every value wraps; the dialog
+   never scrolls sideways. An unverified recipient needs an explicit
+   acknowledgement, and **Sign and share** is the only button that signs.
 5. The grant is sent in a signed `PUT /api/transport/grants/{grantId}`.
 
 If any step after the first fails, the relay change is rolled back.

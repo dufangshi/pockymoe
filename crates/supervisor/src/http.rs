@@ -1554,6 +1554,8 @@ struct DetailQuery {
     before_turn_id: Option<String>,
     view: Option<String>,
     compact: Option<String>,
+    /// `narration=1` keeps every reply in summary turns (docs/architecture.md).
+    narration: Option<String>,
 }
 
 /// `compact=1` opts into `history::compact_turn` (docs/architecture.md, History payloads).
@@ -1605,11 +1607,12 @@ async fn get_thread(
     }
     let summary_only = query.view.as_deref() == Some("summary");
     let mut detail = state
-        .get_thread_detail_page(
+        .get_thread_detail_page_with(
             &id,
             query.limit.or(Some(if summary_only { 3 } else { 10 })),
             query.before_turn_id.as_deref(),
             summary_only,
+            compact_requested(query.narration.as_deref()),
         )
         .await
         .map_err(map_err)?;

@@ -135,7 +135,7 @@ it('never offers global scopes for a thread-only share and closes an in-flight q
 it.each([
   { scope: 'device', locale: 'en', trigger: 'Search conversation', input: 'Search messages', scopeLabel: 'Search scope',
     hint: 'This search scope is currently unavailable on this device. Update the device runtime, verify the workspace still exists, or choose Current conversation search.' },
-  { scope: 'workspace', locale: 'zh-CN', trigger: '搜索会话', input: '搜索消息', scopeLabel: '搜索范围',
+  { scope: 'workspace', locale: 'zh-CN', trigger: '搜索对话', input: '搜索消息', scopeLabel: '搜索范围',
     hint: '此设备上的搜索范围暂不可用。请更新设备运行时、检查工作区是否仍存在，或选择当前会话搜索。' },
 ])('explains $scope 404 in $locale and waits for an explicit switch before using thread fallback', async ({ scope, locale, trigger, input, scopeLabel, hint }) => {
   const { ApiError } = await import('../lib/api');

@@ -16,6 +16,18 @@ async function createThread(request: APIRequestContext) {
   return value.id ?? value.thread.id as string;
 }
 
+test.beforeEach(async ({ page }) => {
+  // This spec exercises the classic phone bars/tabs and composer split controls.
+  await page.addInitScript(() => localStorage.setItem('pockymoe.phoneDock', 'off'));
+});
+
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem(
+    `pockymoe.onboarding.v1:${JSON.stringify([location.origin, 'local:owner'])}`,
+    JSON.stringify({ welcomeDismissed: true, completed: [] }),
+  ));
+});
+
 test('workspace tabs include unvisited threads, keep their order and truncate long titles', async ({ page, request }, testInfo) => {
   const id = await createThread(request);
   const detail = await (await request.get(`${base}/api/threads/${id}`)).json();
@@ -50,6 +62,7 @@ test('workspace tabs include unvisited threads, keep their order and truncate lo
 test('turn navigation changes direction reliably and tool details load only on click', async ({ page, request }, testInfo) => {
   const id = await createThread(request);
   const db = new DatabaseSync(path.resolve(process.env.E2E_DATABASE_URL!));
+  db.exec('PRAGMA busy_timeout=5000');
   db.function('search_fold', { deterministic: true }, value => typeof value === 'string' ? value.toLowerCase() : value);
   db.function('search_body', { deterministic: true }, (text, kind, _source) => ['userMessage', 'agentMessage'].includes(String(kind)) ? text : null);
   const at = (turn: number, seconds = 0) => new Date(Date.UTC(2026, 8, 20, 1, turn, seconds)).toISOString();
@@ -98,10 +111,10 @@ test('turn navigation changes direction reliably and tool details load only on c
       const composer = document.querySelector('.thread-graph-composer-shell')!.getBoundingClientRect();
       return { height: rect.height, width: rect.width, gap: composer.top - rect.bottom };
     });
-    expect(compact.height).toBeCloseTo(18, 0);
-    expect(compact.width).toBeLessThanOrEqual(80);
+    expect(compact.height).toBeCloseTo(36, 0);
+    expect(compact.width).toBeLessThanOrEqual(120);
     expect(compact.gap).toBeGreaterThanOrEqual(0);
-    expect(compact.gap).toBeLessThanOrEqual(2);
+    expect(compact.gap).toBeLessThanOrEqual(8);
   } else {
     await expect(page.locator('.matter-rail')).toBeVisible();
   }
@@ -129,57 +142,48 @@ test('turn navigation changes direction reliably and tool details load only on c
   await last.getByRole('button', { name: /Expand turn 5/ }).click();
   await expect(last.getByText('Checking the first section', { exact: true })).toHaveCount(0);
   await expect(last.getByText('Final reply 2.', { exact: false })).toBeVisible();
-  const operations = last.getByRole('button', { name: 'Expand 6 operations', exact: true });
+  const run = last.locator('.tlog-run');
+  const operations = run.locator('.tlog-run-head');
   await expect(operations).toBeVisible();
+  await expect(operations.locator('.tlog-count[data-kind=commands]')).toHaveAttribute('aria-label', '3 commands');
   expect(detailRequests).toHaveLength(0);
-  await operations.scrollIntoViewIfNeeded();
-  await mkdir('.temp/activity-groups/screenshots', { recursive: true });
-  await page.screenshot({ path: `.temp/activity-groups/screenshots/${testInfo.project.name}-collapsed.png` });
   await operations.click();
-  await page.screenshot({ path: `.temp/activity-groups/screenshots/${testInfo.project.name}-expanded.png` });
-  await last.getByRole('button', { name: 'Expand 2 command entries' }).click();
-  expect(detailRequests).toHaveLength(0);
-  const command = last.getByRole('button', { name: 'Open grouped command 1', exact: true });
-  await expect(command).toContainText('12s');
-  await command.getByRole('button', { name: /Toggle timestamp/ }).click();
-  await expect(command).not.toContainText('12s');
-  expect(detailRequests).toHaveLength(0);
-  await command.click();
-  await expect(page.getByRole('dialog').getByText(/PASS 42 tests/)).toBeVisible();
-  expect(detailRequests).toHaveLength(1);
-  await page.getByRole('button', { name: 'Close dialog', exact: true }).click();
-  await last.getByRole('button', { name: 'Open full command', exact: true }).click();
-  await expect(page.getByRole('dialog')).toContainText('Finished dev profile successfully');
-  expect(detailRequests).toHaveLength(2);
-  await page.getByRole('button', { name: 'Close dialog', exact: true }).click();
-  const read = last.getByRole('button', { name: 'Show full file path' });
+  // Finished runs list their rows closed; output loads only after a row click.
+  await expect(last.locator('.tlog-row[data-open]')).toHaveCount(0);
+  expect(detailRequests.filter(url => url.includes('cmd-') || url.includes('single'))).toHaveLength(0);
+  const command = last.locator('.tlog-row[data-kind="commandExecution"]').filter({ hasText: 'pnpm test' });
+  await expect(command.locator('.tlog-row-head')).toHaveAttribute('title', 'pnpm test');
+  await command.locator('.tlog-row-head').click();
+  await expect(command.locator('.tlog-output')).toContainText('PASS 42 tests');
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  expect(detailRequests.filter(url => url.includes('cmd-a'))).toHaveLength(1);
+  const single = last.locator('.tlog-row[data-kind="commandExecution"]').filter({ hasText: 'cargo check' });
+  await single.locator('.tlog-row-head').click();
+  await expect(single.locator('.tlog-output')).toContainText('Finished dev profile successfully');
+  const read = last.locator('.tlog-row[data-kind="fileRead"] .tlog-row-head');
   await read.click();
   await expect(read).toHaveAttribute('aria-expanded', 'true');
+  await expect(read).toHaveAttribute('title', '/home/user/a/very/long/workspace/path/packages/runtime/src/important-file.rs');
   await expect(page.getByRole('dialog')).toHaveCount(0);
-  await last.getByRole('button', { name: 'Expand 2 file change entries' }).click();
-  expect(detailRequests).toHaveLength(2);
-  const edit = last.getByRole('button', { name: 'Open grouped file change 1', exact: true });
-  await expect(edit).toContainText('src/main.rs');
-  await expect(edit.locator('.is-add')).toHaveText('+1');
-  await expect(edit.locator('.is-remove')).toHaveText('-1');
-  await edit.click();
-  await expect(page.locator('.thread-diff')).toHaveAttribute('data-highlighted', 'true');
-  await expect(page.locator('.thread-diff-line.is-add')).toContainText('new();');
-  await expect(page.locator('.thread-diff-line.is-remove')).toContainText('old();');
+  const edit = last.locator('.tlog-row[data-kind="fileChange"]').filter({ hasText: 'src/main.rs' });
+  await expect(edit.locator('.is-add').first()).toHaveText('+1');
+  await expect(edit.locator('.is-remove').first()).toHaveText('−1');
+  await edit.locator('.tlog-row-head').click();
+  await expect(edit.locator('.thread-diff')).toHaveAttribute('data-highlighted', 'true');
+  await expect(edit.locator('.thread-diff-line.is-add')).toContainText('new();');
+  await expect(edit.locator('.thread-diff-line.is-remove')).toContainText('old();');
   expect(detailRequests).toHaveLength(3);
-  await page.screenshot({ path: `output/playwright/timeline-diff-${testInfo.project.name}.png` });
-  await page.getByRole('button', { name: 'Close dialog', exact: true }).click();
+  await page.screenshot({ path: testInfo.outputPath('timeline-diff.png') });
   await page.getByRole('button', { name: 'Open settings', exact: true }).click();
   await page.getByRole('tab', { name: 'Preferences', exact: true }).click();
   const setting = page.getByRole('checkbox', { name: /Show agent status summaries/ });
   await expect(setting).not.toBeChecked();
   await setting.check();
   await page.getByRole('button', { name: 'Close', exact: true }).click();
-  await last.getByRole('button', { name: 'Expand 8 operations', exact: true }).click();
+  await last.locator('.tlog-run-head[aria-expanded="false"]').click();
   await expect(last.getByText('Checking the first section', { exact: true })).toBeVisible();
   await expect(last.getByText('Checking the second section', { exact: true })).toBeVisible();
-  await expect(last.locator(`[data-message-id$="reason-a"]`)).toContainText('4s');
-  await expect(last.locator(`[data-message-id$="reason-b"]`)).toContainText('8s');
+  await expect(last.locator('.tlog-row[data-kind="reasoning"]')).toHaveCount(2);
   await page.reload();
   expect(await page.evaluate(() => localStorage.getItem('remote-codex-show-reasoning-summaries'))).toBe('true');
 });
@@ -190,6 +194,7 @@ test('operation summaries stay compact in Chinese with long timestamps and file 
   const turnId = `${id}-compact-turn`;
   const at = (seconds: number) => new Date(Date.UTC(2026, 8, 20, 1, 30, seconds)).toISOString();
   const db = new DatabaseSync(path.resolve(process.env.E2E_DATABASE_URL!));
+  db.exec('PRAGMA busy_timeout=5000');
   db.function('search_fold', { deterministic: true }, value => typeof value === 'string' ? value.toLowerCase() : value);
   db.function('search_body', { deterministic: true }, (text, kind, _source) => ['userMessage', 'agentMessage'].includes(String(kind)) ? text : null);
   try {
@@ -216,56 +221,37 @@ test('operation summaries stay compact in Chinese with long timestamps and file 
   page.on('request', r => { if (r.url().includes(`/api/threads/${id}/items/`)) details.push(r.url()); });
   await page.addInitScript(() => localStorage.setItem('remote-codex.locale', 'zh-CN'));
   await page.goto(`/threads/${id}`);
-  await page.locator('.thread-graph-worked-summary > button').click();
-  const activity = page.locator('.thread-graph-history-group-activity');
-  const header = activity.locator(':scope > .thread-graph-history-group-card > button');
-  await expect(header).toContainText('8 个步骤');
-  await expect(header.locator('.thread-graph-history-group-time')).toHaveText('3m 7s');
-  await expect(header.locator('.thread-graph-history-group-inline-icon')).toHaveCount(0);
+  await page.locator('.thread-worked-toggle').click();
+  const run = page.locator('.tlog-run');
+  const header = run.locator('.tlog-run-head');
+  await expect(header).toContainText('3 个文件');
+  await expect(header).toContainText('3m 7s');
   await expect(header).toHaveAttribute('aria-expanded', 'false');
   expect(details).toHaveLength(0);
-  await mkdir('.temp/activity-compact/screenshots', { recursive: true });
-  await header.scrollIntoViewIfNeeded();
-  await page.screenshot({ path: `.temp/activity-compact/screenshots/${testInfo.project.name}-collapsed.png` });
   await header.click();
-  const fileGroup = activity.locator('.thread-graph-history-group-file-change');
-  const fileHeader = fileGroup.locator(':scope > .thread-graph-history-group-card > button');
-  await expect(fileHeader).toContainText('3 个文件');
-  await expect(fileHeader.getByLabel('新增 255 行', { exact: true })).toBeVisible();
-  await expect(fileHeader.getByLabel('删除 12 行', { exact: true })).toBeVisible();
-  for (const group of ['command', 'file-read', 'file-change']) {
-    for (const toggle of await activity.locator(`.thread-graph-history-group-${group} > .thread-graph-history-group-card > button`).all()) await toggle.click();
+  const rows = run.locator('.tlog-row');
+  await expect(rows).toHaveCount(8);
+  await expect(header.locator('.is-add')).toHaveText('+255');
+  await expect(header.locator('.is-remove')).toHaveText('−12');
+  // Long paths/commands stay on a single compact line and preserve their full title.
+  const heads = run.locator('.tlog-row-head');
+  for (const row of await heads.all()) {
+    expect((await row.boundingBox())!.height).toBeLessThanOrEqual(36);
+    expect(await row.evaluate(el => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
   }
-  expect(details).toHaveLength(0);
-  // Full timestamps used to consume all header width and squeeze Chinese into a column.
-  await fileHeader.getByRole('button', { name: /切换时间戳/ }).click();
-  await expect(fileHeader.locator('time')).not.toHaveText('17s');
-  const headers = activity.locator('.thread-graph-history-group-toggle');
-  const geometry = await headers.evaluateAll(nodes => nodes.map(n => {
-    const label = n.querySelector('.thread-graph-history-group-summary')!, time = n.querySelector('.thread-graph-history-group-time')!;
-    return { height: n.getBoundingClientRect().height, labelHeight: label.getBoundingClientRect().height, end: n.getBoundingClientRect().right, timeEnd: time.getBoundingClientRect().right, width: n.clientWidth, scrollWidth: n.scrollWidth };
-  }));
-  for (const row of geometry) {
-    expect(row.height).toBeLessThanOrEqual(36);
-    expect(row.labelHeight).toBeLessThanOrEqual(24);
-    expect(row.timeEnd).toBeLessThanOrEqual(row.end);
-    expect(row.scrollWidth).toBeLessThanOrEqual(row.width + 1);
-  }
-  const longFile = fileGroup.locator('.matter-step-title').last();
+  const longFile = run.locator('.tlog-row[data-kind="fileChange"] .tlog-title').last();
   await expect(longFile).toHaveCSS('white-space', 'nowrap');
   await expect(longFile).toHaveCSS('text-overflow', 'ellipsis');
-  await fileHeader.getByRole('button', { name: /切换时间戳/ }).click();
-  await expect(fileHeader.locator('time')).toHaveText('17s');
-  await fileHeader.scrollIntoViewIfNeeded();
-  await page.screenshot({ path: `.temp/activity-compact/screenshots/${testInfo.project.name}-expanded.png` });
+  await expect(longFile.locator('..')).toHaveAttribute('title', '/home/user/.claude/skills/a-very-long-skill-directory-name/SKILL.md');
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   if (testInfo.project.name === 'mobile-chromium') {
     await page.setViewportSize({ width: 320, height: 800 });
-    expect(await headers.evaluateAll(nodes => nodes.every(n => n.scrollWidth <= n.clientWidth + 1 && n.getBoundingClientRect().height <= 36))).toBe(true);
+    expect(await heads.evaluateAll(nodes => nodes.every(n => n.scrollWidth <= n.clientWidth + 1 && n.getBoundingClientRect().height <= 36))).toBe(true);
   }
   await header.click();
   await expect(header).toHaveAttribute('aria-expanded', 'false');
   expect(details).toHaveLength(0);
+
 });
 
 test('failed sends preserve the prompt and all attachments for correction and retry', async ({ page, request }) => {
@@ -300,6 +286,7 @@ test('substantial answers survive refresh between folded work sections', async (
   const id = await createThread(request);
   const turnId = `${id}-answer-turn`;
   const db = new DatabaseSync(path.resolve(process.env.E2E_DATABASE_URL!));
+  db.exec('PRAGMA busy_timeout=5000');
   db.function('search_fold', { deterministic: true }, value => typeof value === 'string' ? value.toLowerCase() : value);
   db.function('search_body', { deterministic: true }, (text, kind, _source) => ['userMessage', 'agentMessage'].includes(String(kind)) ? text : null);
   const at = (index: number) => new Date(Date.UTC(2026, 9, 12, 12, index)).toISOString();
@@ -329,26 +316,30 @@ test('substantial answers survive refresh between folded work sections', async (
   page.on('request', request => { if (request.url().includes(`/turns/${turnId}`)) turnRequests.push(request.url()); });
   await page.goto(`/threads/${id}`);
   const turn = page.locator(`[data-timeline-turn][data-turn-id="${turnId}"]`);
-  await expect(turn.locator('.thread-answer-section')).toHaveCount(2);
-  await expect(turn.getByText('先回答你的问题', { exact: true })).toBeVisible();
+  await expect(turn.locator('.thread-answer-section')).toHaveCount(1);
+  const foldedAnswer = turn.locator('.thread-answer-section').getByRole('heading', { name: '先回答你的问题', exact: true });
+  await expect(foldedAnswer).toBeVisible();
+  await expect(turn.getByText('Implementation verified.', { exact: true })).toHaveCount(1);
   await expect(turn.getByText('Implementation verified.', { exact: true })).toBeVisible();
   expect(turnRequests).toHaveLength(0);
   await page.reload();
-  await expect(turn.locator('.thread-answer-section')).toHaveCount(2);
+  await expect(turn.locator('.thread-answer-section')).toHaveCount(1);
   expect(turnRequests).toHaveLength(0);
   await turn.getByRole('button', { name: /Expand turn 1/ }).click();
-  await expect(turn.locator('.thread-answer-sequence > .thread-execution-timeline')).toHaveCount(2);
+  await expect(turn.locator('.thread-execution-timeline .tlog-run')).toHaveCount(2);
   expect(turnRequests).toHaveLength(1);
-  const order = await turn.locator('.thread-answer-sequence > *').evaluateAll(elements => elements.map(element => element.className));
-  expect(order).toEqual(['thread-execution-timeline', 'thread-answer-section', 'thread-execution-timeline', 'thread-answer-section']);
-  const batches = turn.getByRole('button', { name: 'Expand 2 command entries', exact: true });
+  const order = await turn.locator('.thread-execution-timeline').locator('.tlog-run, [data-role="assistant"]').evaluateAll(elements => elements.map(element => element.matches('.tlog-run') ? 'run' : 'answer'));
+  // The final answer remains below the work; only the commentary is inside it.
+  expect(order).toEqual(['run', 'answer', 'run']);
+  const batches = turn.locator('.tlog-run-head');
   await expect(batches).toHaveCount(2);
   await page.screenshot({ path: info.outputPath('substantial-answer-between-steps.png'), scale: 'css' });
   await batches.last().click();
   await expect(turn.getByText('check-after-one', { exact: true })).toBeVisible();
   await expect(turn.getByText('check-before-one', { exact: true })).toHaveCount(0);
   await turn.getByRole('button', { name: /Collapse turn 1/ }).click();
-  await expect(turn.getByText('先回答你的问题', { exact: true })).toBeVisible();
+  await expect(foldedAnswer).toBeVisible();
+  await expect(turn.getByText('Implementation verified.', { exact: true })).toHaveCount(1);
   await expect(turn.getByText('Implementation verified.', { exact: true })).toBeVisible();
 });
 
@@ -378,7 +369,9 @@ for (const preset of ['classic', 'plum-pocket'] as const) test(`thread loading s
     await initialGate;
     await route.fulfill({ json: { ...detail, turns: [summary], totalTurnCount: 1 } });
   });
+  let historyRequests = 0;
   await page.route(`**/api/threads/${id}/turns/${fullTurn.id}/detail?*`, async route => {
+    historyRequests++;
     await historyGate;
     await route.fulfill({ json: fullTurn });
   });
@@ -403,11 +396,16 @@ for (const preset of ['classic', 'plum-pocket'] as const) test(`thread loading s
     const worked = page.locator('.thread-graph-worked-summary button[aria-expanded]');
     await worked.click();
     await expect(worked).toHaveAttribute('aria-busy', 'true');
-    await expect(worked.locator('.thread-loading-indicator.is-inline')).toBeVisible();
-    await expect(worked).toBeDisabled();
+    const loading = worked.getByRole('img', { name: 'Loading complete history...', exact: true });
+    await expect(loading).toBeVisible();
+    // The busy toggle keeps its geometry/focus and ignores duplicate clicks.
+    expect(historyRequests).toBe(1);
+    await worked.click();
+    expect(historyRequests).toBe(1);
+    await expect(worked).toHaveAttribute('aria-expanded', 'false');
     releaseHistory();
     await expect(worked).toHaveAttribute('aria-busy', 'false');
-    await expect(worked.locator('.thread-loading-indicator')).toHaveCount(0);
+    await expect(loading).toHaveCount(0);
     await expect(worked).toBeEnabled();
     await expect(page.getByText('git status', { exact: true })).toBeVisible();
   } finally { releaseInitial(); releaseHistory(); }

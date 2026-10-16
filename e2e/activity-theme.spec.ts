@@ -3,6 +3,13 @@ import { randomUUID } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem(
+    `pockymoe.onboarding.v1:${JSON.stringify([location.origin, 'local:owner'])}`,
+    JSON.stringify({ welcomeDismissed: true, completed: [] }),
+  ));
+});
+
 test('command batches have one icon and thread dialogs follow light and dark themes', async ({ page, request }, testInfo) => {
   const base = `http://127.0.0.1:${process.env.E2E_API_PORT ?? 8787}`;
   const absPath = path.resolve(process.env.E2E_WORKSPACE_ROOT!, randomUUID());
@@ -29,22 +36,21 @@ test('command batches have one icon and thread dialogs follow light and dark the
     await page.evaluate(value => localStorage.setItem('remote-codex-theme-mode', value), theme);
     await page.reload();
     await expect(page.locator('html')).toHaveAttribute('data-theme-effective', theme);
-    await page.getByRole('button', { name: /Expand turn 1/ }).click();
-    const group = page.locator('.thread-graph-history-group-command');
+    await expect(page.locator('.thread-worked-toggle')).toHaveAttribute('aria-expanded', 'true');
+    const group = page.locator('.tlog-run');
     await expect(group).toBeVisible();
-    // Running dots must not inherit the icon's box or count-badge hiding rule.
-    await expect(group.locator('.thread-graph-history-group-icon > span')).toHaveCount(1);
-    const dots = group.locator('.thread-graph-history-group-summary .animate-pulse');
-    await expect(dots).toHaveCount(3);
-    for (const dot of await dots.all()) await expect(dot).toBeVisible();
-    await group.getByRole('button', { name: 'Expand 2 command entries' }).click();
-    await expect(group.getByRole('button', { name: 'Open grouped command 1' })).toBeVisible();
+    // One running glyph on the summary; opening reveals each operation's own glyph.
+    await expect(group.locator('.tlog-run-head > .tlog-spinner')).toBeVisible();
+    const head = group.locator('.tlog-run-head');
+    if (await head.getAttribute('aria-expanded') === 'false') await head.click();
+    await expect(group.locator('.tlog-row')).toHaveCount(2);
+    await expect(group.locator('.tlog-row[data-status="running"] .tlog-spinner')).toBeVisible();
+    await expect(group.locator('.tlog-row .tlog-glyph')).toHaveText(['$', '$']);
     await page.screenshot({ path: testInfo.outputPath(`batch-${theme}.png`) });
-    await page.getByRole('button', { name: 'Thread tools', exact: true }).click();
     for (const action of ['Rename', 'Delete']) {
-      await page.locator('.matter-thread-menu > summary').click();
-      await page.locator('.matter-thread-menu').getByRole('button', { name: `${action} thread`, exact: true }).click();
-      const dialog = page.getByRole('dialog', { name: `${action} Thread`, exact: true });
+      await page.getByTestId('recent-chats').getByRole('button', { name: 'Actions for Theme regression', exact: true }).click();
+      await page.locator('.recent-thread-menu').getByRole('button', { name: `${action} thread`, exact: true }).click();
+      const dialog = page.getByRole('dialog', { name: action === 'Rename' ? 'Rename thread' : 'Delete thread?', exact: true });
       await expect(dialog).toBeVisible();
       const colors = await dialog.evaluate(element => {
         const probe = document.createElement('div');

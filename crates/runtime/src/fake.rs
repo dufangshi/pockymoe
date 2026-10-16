@@ -375,6 +375,10 @@ impl AgentRuntime for FakeRuntime {
             pockymoe_protocol::ThreadEventType::ThreadTurnStarted,
             json!({ "turnId": input.turn_id }),
         );
+        if input.prompt.starts_with("Split prompt-queue.ts") {
+            let hold = input.prompt.ends_with("(live)");
+            return demo_live_turn(&input, &bus, &cancel, hold).await;
+        }
         let slow = input.prompt.len() > 180
             || input
                 .prompt
@@ -660,6 +664,174 @@ impl AgentRuntime for FakeRuntime {
     async fn touch_session(&self, session_id: &str) {
         self.touch(session_id, false);
     }
+}
+
+/// A prompt starting "Split prompt-queue.ts" runs a scripted coding turn with
+/// narration, commands, an edit with a diff, a failure and a plan, for looking
+/// at live transcripts. Ending it with "(live)" keeps the turn running after
+/// its last step until it is interrupted.
+async fn demo_live_turn(
+    input: &StartTurnInput,
+    bus: &EventBus,
+    cancel: &CancellationToken,
+    hold: bool,
+) -> Result<Vec<ThreadHistoryItemDto>> {
+    let turn = input.turn_id.as_str();
+    let thread = input.thread_id.as_str();
+    let mut items: Vec<ThreadHistoryItemDto> = Vec::new();
+    let mut sequence = 0i64;
+    let mut put = |value: serde_json::Value| -> ThreadHistoryItemDto {
+        let mut item: ThreadHistoryItemDto = serde_json::from_value(value).expect("demo item");
+        if let Some(existing) = items.iter_mut().find(|existing| existing.id == item.id) {
+            item.sequence = existing.sequence;
+            item.created_at = existing.created_at.clone();
+            *existing = item.clone();
+        } else {
+            sequence += 1;
+            item.sequence = Some(sequence);
+            item.created_at = Some(now_rfc3339());
+            items.push(item.clone());
+        }
+        let done = matches!(item.status.as_deref(), Some("completed" | "failed"));
+        emit(
+            bus,
+            thread,
+            if done {
+                pockymoe_protocol::ThreadEventType::ThreadItemCompleted
+            } else {
+                pockymoe_protocol::ThreadEventType::ThreadItemStarted
+            },
+            json!({ "turnId": turn, "item": item }),
+        );
+        item
+    };
+    let tool = |name: &str, status: &str, input: &str, output: &str| {
+        format!(
+            "Tool: {name}\n\nKind: execute\n\nStatus: {status}\n\nInput:\n{input}\n\nOutput:\n{}",
+            json!(output)
+        )
+    };
+    let pause = |ms: u64| async move {
+        tokio::select! { _ = cancel.cancelled() => false, _ = sleep(Duration::from_millis(ms)) => true }
+    };
+    let interrupted = |items: Vec<ThreadHistoryItemDto>| {
+        emit(
+            bus,
+            thread,
+            pockymoe_protocol::ThreadEventType::ThreadTurnCompleted,
+            json!({ "turnId": turn, "status": "interrupted", "error": null }),
+        );
+        Ok(items)
+    };
+    let id = |name: &str| format!("{turn}:{name}");
+    let step = 900;
+
+    put(
+        json!({"id": id("think-1"), "kind": "reasoning", "text": "**Reading the queue before moving storage**\n\nThe queue mixes ordering and persistence; tests cover both through `PromptQueue`.", "status": "completed"}),
+    );
+    if !pause(step).await {
+        return interrupted(items);
+    }
+    put(
+        json!({"id": id("say-1"), "kind": "agentMessage", "text": "I'll start by reading the queue and its tests, then separate the storage code.", "status": "completed", "responsePhase": "commentary"}),
+    );
+    if !pause(step).await {
+        return interrupted(items);
+    }
+    put(
+        json!({"id": id("rg"), "kind": "commandExecution", "text": "/bin/bash -lc \"rg -n \\\"PromptQueue\\\" src tests\"", "status": "inProgress"}),
+    );
+    if !pause(step).await {
+        return interrupted(items);
+    }
+    put(
+        json!({"id": id("rg"), "kind": "commandExecution", "text": "/bin/bash -lc \"rg -n \\\"PromptQueue\\\" src tests\"", "status": "completed",
+        "detailText": tool("exec_command", "completed", "{\"command\": \"rg -n PromptQueue src tests\"}", "src/prompt-queue.ts:12:export class PromptQueue {\nsrc/server.ts:41:  const queue = new PromptQueue(runtime, file);\ntests/queue.test.ts:3:import { PromptQueue } from '../src/prompt-queue';\ntests/durable-queue.test.ts:5:import { PromptQueue } from '../src/prompt-queue';")}),
+    );
+    put(
+        json!({"id": id("read"), "kind": "fileRead", "text": "src/prompt-queue.ts", "status": "completed"}),
+    );
+    put(
+        json!({"id": id("test-1"), "kind": "commandExecution", "text": "node --test tests/queue.test.ts", "status": "inProgress"}),
+    );
+    if !pause(step * 2).await {
+        return interrupted(items);
+    }
+    put(
+        json!({"id": id("test-1"), "kind": "commandExecution", "text": "node --test tests/queue.test.ts", "status": "completed",
+        "detailText": tool("exec_command", "completed", "{\"command\": \"node --test tests/queue.test.ts\"}", "✔ keeps prompt order (2.1ms)\n✔ steers the running turn (0.8ms)\nℹ tests 2\nℹ pass 2\nℹ fail 0")}),
+    );
+    put(
+        json!({"id": id("edit"), "kind": "fileChange", "text": "src/queue-store.ts", "previewText": "src/queue-store.ts", "status": "completed", "changedFiles": 1, "addedLines": 2, "removedLines": 1,
+        "detailText": "--- a/src/queue-store.ts\n+++ b/src/queue-store.ts\n@@ -12,6 +12,7 @@\n export function load(file: string) {\n-  return JSON.parse(readFileSync(file));\n+  const text = readFileSync(file, \"utf8\");\n+  return JSON.parse(text);\n }\n \n export function save(file: string, queue: QueueState) {"}),
+    );
+    if !pause(step).await {
+        return interrupted(items);
+    }
+    put(
+        json!({"id": id("say-2"), "kind": "agentMessage", "text": "Persistence now lives in `queue-store.ts`; `PromptQueue` only keeps ordering. The queue tests pass.", "status": "completed", "responsePhase": "commentary"}),
+    );
+    emit(
+        bus,
+        thread,
+        pockymoe_protocol::ThreadEventType::ThreadPlanUpdated,
+        json!({"turnId": turn, "explanation": null, "plan": [
+            {"step": "Extract storage", "status": "completed"},
+            {"step": "Update durable-queue tests", "status": "inProgress"},
+            {"step": "Document the file format", "status": "pending"}
+        ]}),
+    );
+    if !pause(step).await {
+        return interrupted(items);
+    }
+    put(
+        json!({"id": id("test-2"), "kind": "commandExecution", "text": "node --test tests/durable-queue.test.ts", "status": "inProgress"}),
+    );
+    if !pause(step * 2).await {
+        return interrupted(items);
+    }
+    put(
+        json!({"id": id("test-2"), "kind": "commandExecution", "text": "node --test tests/durable-queue.test.ts", "status": "failed",
+        "detailText": tool("exec_command", "failed", "{\"command\": \"node --test tests/durable-queue.test.ts\"}", "Exit code 1\n✖ restores the queue after restart (4.2ms)\n  Error: ENOENT: no such file or directory, open 'fixtures/queue.json'\nℹ tests 3\nℹ pass 2\nℹ fail 1")}),
+    );
+    put(
+        json!({"id": id("say-3"), "kind": "agentMessage", "text": "One durable-queue test still fails because of the fixture path; I'll fix that next.", "status": "completed", "responsePhase": "commentary"}),
+    );
+    put(
+        json!({"id": id("fix"), "kind": "commandExecution", "text": "sed -i 's#fixtures/queue.json#tests/fixtures/queue.json#' tests/durable-queue.test.ts && node --test tests/durable-queue.test.ts", "status": "inProgress"}),
+    );
+    if hold {
+        cancel.cancelled().await;
+        return interrupted(items);
+    }
+    if !pause(step * 2).await {
+        return interrupted(items);
+    }
+    put(
+        json!({"id": id("fix"), "kind": "commandExecution", "text": "sed -i 's#fixtures/queue.json#tests/fixtures/queue.json#' tests/durable-queue.test.ts && node --test tests/durable-queue.test.ts", "status": "completed",
+        "detailText": tool("exec_command", "completed", "{}", "✔ restores the queue after restart (3.9ms)\nℹ tests 3\nℹ pass 3\nℹ fail 0")}),
+    );
+    emit(
+        bus,
+        thread,
+        pockymoe_protocol::ThreadEventType::ThreadPlanUpdated,
+        json!({"turnId": turn, "explanation": null, "plan": [
+            {"step": "Extract storage", "status": "completed"},
+            {"step": "Update durable-queue tests", "status": "completed"},
+            {"step": "Document the file format", "status": "completed"}
+        ]}),
+    );
+    put(
+        json!({"id": id("answer"), "kind": "agentMessage", "status": "completed", "responsePhase": "final",
+        "text": "Persistence now lives in `queue-store.ts`; `PromptQueue` only keeps ordering. All queue tests pass.\n\n- Route handlers are untouched.\n- The `queue.json` format is unchanged.\n\n```ts\nconst store = openQueueStore(file);\nconst queue = new PromptQueue(runtime, store);\n```"}),
+    );
+    emit(
+        bus,
+        thread,
+        pockymoe_protocol::ThreadEventType::ThreadTurnCompleted,
+        json!({ "turnId": turn, "status": "completed", "error": null }),
+    );
+    Ok(items)
 }
 
 fn reply_for(prompt: &str) -> String {

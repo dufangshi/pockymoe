@@ -1,4 +1,5 @@
 import { useBrowserStateKey } from '../lib/browserStateScope';
+import { narrationQuery } from '../lib/transcriptPreferences';
 import { useHostScope } from '../lib/hostCapabilities';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -124,7 +125,7 @@ export function useWorkbenchNavigation(
           await Promise.all(next.threads.map(async r => {
             if (r.deviceId !== null) { missing.add(referenceKey(r)); return; }
             if (threadsRef.current.some(t => t.id === r.threadId)) return;
-            try { await request(`api/threads/${encodeURIComponent(r.threadId)}?view=summary&limit=1&compact=1`, { signal: controller.signal }); }
+            try { await request(`api/threads/${encodeURIComponent(r.threadId)}?view=summary&limit=1&compact=1${narrationQuery()}`, { signal: controller.signal }); }
             catch (error) { if (isInvisibleThreadError(error)) missing.add(referenceKey(r)); }
           }));
           if (alive && startedAtRevision === revision.current && missing.size) {
@@ -167,7 +168,7 @@ export function useWorkbenchNavigation(
                 try {
                   const listed = deviceSnapshots.get(r.deviceId!)?.find(thread => thread.id === r.threadId);
                   const value = listed ? { thread: listed } : await request<ThreadDetailDto>(
-                    `relay/devices/${encodeURIComponent(r.deviceId!)}/api/threads/${encodeURIComponent(r.threadId)}?view=summary&limit=1&compact=1`,
+                    `relay/devices/${encodeURIComponent(r.deviceId!)}/api/threads/${encodeURIComponent(r.threadId)}?view=summary&limit=1&compact=1${narrationQuery()}`,
                     {
                       signal: AbortSignal.any([
                         controller.signal,
@@ -387,7 +388,7 @@ export function useWorkbenchNavigation(
         const base = match ? `relay/devices/${match[1]}/api/threads/${match[2]}` : local && !relay ? `api/threads/${local[1]}` : null;
         if (!base) continue;
         try {
-          const value = await request<ThreadDetailDto>(`${base}?view=summary&limit=10&compact=1`, { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(5000)]) });
+          const value = await request<ThreadDetailDto>(`${base}?view=summary&limit=10&compact=1${narrationQuery()}`, { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(5000)]) });
           const eventTime = Date.parse(notification.occurredAt);
           const turn = value.turns.filter(t => t.completedAt && Math.abs(Date.parse(t.completedAt) - eventTime) < 60_000)
             .sort((a, b) => Math.abs(Date.parse(a.completedAt!) - eventTime) - Math.abs(Date.parse(b.completedAt!) - eventTime))[0];

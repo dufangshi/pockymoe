@@ -18,15 +18,86 @@ async function fixture(request: import('@playwright/test').APIRequestContext, fi
   const value = await response.json(); return value.id ?? value.thread.id as string;
 }
 
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('remote-codex.locale', 'en');
+    localStorage.setItem(`pockymoe.onboarding.v1:${JSON.stringify([location.origin, 'local:owner'])}`, JSON.stringify({ welcomeDismissed: true, completed: [] }));
+  });
+});
+
+for (const submit of ['tap', 'Enter'] as const) test(`phone file ask bar sends from the list and viewer, keeps the composer draft, and hides at 640px (${submit})`, async ({ page, request }, testInfo) => {
+  test.skip(testInfo.project.name !== 'mobile-chromium', 'Phone file ask bar');
+  await page.setViewportSize({ width: 390, height: 844 });
+  const id = await fixture(request, true);
+  await page.goto(`/threads/${id}`);
+  const draft = 'Keep my main composer draft';
+  const composer = page.getByRole('textbox', { name: 'Prompt', exact: true });
+  await composer.fill(draft);
+  // The dock hides while editing; finish the draft before switching views.
+  await composer.evaluate(e => (e as HTMLElement).blur());
+  const dock = page.locator('nav.matter-phone-dock');
+  const explorer = dock.getByRole('button', { name: 'Toggle Explorer', exact: true });
+  await explorer.tap();
+  const files = page.getByTestId('workspace-panel');
+  const tree = files.getByRole('tree', { name: 'Workspace files' });
+  const bar = page.locator('form.file-ask-bar');
+  const input = bar.getByRole('textbox', { name: 'Ask the agent', exact: true });
+  await expect(tree).toBeVisible();
+  await expect(input).toBeVisible();
+  const prompts: string[] = [];
+  page.on('request', r => {
+    if (r.method() === 'POST' && r.url().endsWith(`/api/threads/${id}/prompt`)) prompts.push(r.postDataJSON().prompt);
+  });
+  for (const [index, text] of ['Explain the files list', 'Explain this file\nwith context'].entries()) {
+    if (index === 1) {
+      await files.getByRole('treeitem', { name: 'docs', exact: true }).getByRole('button', { name: 'docs', exact: true }).tap();
+      await files.getByRole('treeitem', { name: 'notes.md', exact: true }).getByRole('button', { name: 'notes.md', exact: true }).tap();
+      await expect(files.getByRole('heading', { name: 'Notes', exact: true })).toBeVisible();
+      await expect(input).toBeVisible();
+    }
+    await input.fill(index === 0 ? `  ${text}  ` : 'Explain this file');
+    if (index === 1) {
+      await input.press('Shift+Enter');
+      await input.pressSequentially('with context');
+      await expect(input).toHaveValue(text);
+      expect(prompts).toHaveLength(1);
+    }
+    const sent = page.waitForResponse(r => r.request().method() === 'POST' && r.url().endsWith(`/api/threads/${id}/prompt`));
+    if (index === 0 && submit === 'tap') await bar.getByRole('button', { name: 'Send', exact: true }).tap();
+    else await input.press('Enter');
+    expect((await sent).ok()).toBeTruthy();
+    await expect(bar.locator('.file-ask-bar-note')).toContainText('Sent');
+    await expect(input).toHaveValue('');
+    await expect(files).toBeVisible();
+    await expect.poll(async () => {
+      const detail = await (await request.get(base + `/api/threads/${id}`)).json();
+      return detail.turns.filter((turn: { items: Array<{ kind: string; text: string }> }) => turn.items.some(item => item.kind === 'userMessage' && item.text === text)).length;
+    }).toBe(1);
+    await expect.poll(async () => (await (await request.get(base + `/api/threads/${id}`)).json()).turns.at(-1)?.status).toBe('completed');
+  }
+  expect(prompts).toEqual(['Explain the files list', 'Explain this file\nwith context']);
+  await expect(files.getByRole('heading', { name: 'Notes', exact: true })).toBeVisible();
+  await page.setViewportSize({ width: 640, height: 844 });
+  await expect(bar).toBeHidden();
+  await page.setViewportSize({ width: 639, height: 844 });
+  await expect(bar).toBeVisible();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await input.evaluate(e => (e as HTMLElement).blur());
+  await dock.getByRole('button', { name: 'Chat', exact: true }).tap();
+  await expect(composer).toBeVisible();
+  await expect(composer).toHaveText(draft);
+});
+
 test('mobile toolbar opens full-width files; tap, preview, return, upload and action menus preserve navigation', async ({ page, request }, testInfo) => {
   test.skip(testInfo.project.name !== 'mobile-chromium', 'Mobile navigation regression');
   await page.setViewportSize({ width: 390, height: 844 });
   const id = await fixture(request, true);
   await page.goto(`/threads/${id}`);
   const header = page.locator('.matter-topbar');
-  await expect(header.getByRole('button', { name: 'Toggle Explorer', exact: true })).toBeVisible();
-  await expect(header.locator('.matter-topbar-end')).toHaveCSS('gap', '0px');
-  await header.getByRole('button', { name: 'Toggle Explorer', exact: true }).tap();
+  const dock = page.locator('nav.matter-phone-dock');
+  await expect(header).toHaveClass(/is-status-only/);
+  await expect(dock.getByRole('button', { name: 'Toggle Explorer', exact: true })).toBeVisible();
+  await dock.getByRole('button', { name: 'Toggle Explorer', exact: true }).tap();
   const files = page.getByTestId('workspace-panel');
   const tree = files.getByRole('tree', { name: 'Workspace files' });
   await expect(tree).toBeVisible();
@@ -65,11 +136,11 @@ test('mobile toolbar opens full-width files; tap, preview, return, upload and ac
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width);
   }
   await page.screenshot({ path: testInfo.outputPath('mobile-explorer.png') });
-  await header.getByRole('button', { name: 'Toggle Explorer', exact: true }).tap();
+  await dock.getByRole('button', { name: 'Chat', exact: true }).tap();
   await expect(page.getByRole('textbox', { name: 'Prompt', exact: true })).toBeVisible();
 });
 
-test('turn footer shows compact token icons and elapsed time on one line in both themes', async ({ page, request }, testInfo) => {
+test('turn metrics keep the live footer compact and the finished average in its receipt in both themes', async ({ page, request }, testInfo) => {
   await page.setViewportSize(testInfo.project.name === 'mobile-chromium' ? { width: 390, height: 844 } : { width: 1440, height: 1000 });
   const id = await fixture(request);
   const detail = await (await request.get(base + `/api/threads/${id}`)).json();
@@ -78,15 +149,17 @@ test('turn footer shows compact token icons and elapsed time on one line in both
     tokenUsage: { total: { totalTokens: 1800000, inputTokens: 1795000, cachedInputTokens: 1700000, outputTokens: 5000 }, generationSpeed: { averageOutputTokensPerSecond: 28.1, latestOutputTokensPerSecond: 48.3 } },
     priceEstimate: { currency: 'USD', totalUsd: 0.61 }, items: [{ id: 'prompt', kind: 'userMessage', text: 'Review this work.' }, { id: 'command', kind: 'commandExecution', text: 'Check layout', status: 'completed' }, { id: 'reply', kind: 'agentMessage', text: 'Checking the implementation.' }] };
   await page.routeWebSocket(/\/ws(?:\?.*)?$/, socket => { socket.send(JSON.stringify({ type: 'supervisor.connected' })); socket.onMessage(() => socket.send(JSON.stringify({ type: 'supervisor.pong' }))); });
-  await page.route(`**/api/threads/${id}?**`, route => route.fulfill({ json: { ...detail, totalTurnCount: 1, thread: { ...detail.thread, status: 'running', activeTurnId: turn.id }, turns: [turn] } }));
+  let completed = false;
+  await page.route(`**/api/threads/${id}?**`, route => route.fulfill({ json: { ...detail, totalTurnCount: 1, thread: { ...detail.thread, status: completed ? 'idle' : 'running', activeTurnId: completed ? null : turn.id }, turns: [{ ...turn, status: completed ? 'completed' : 'inProgress', completedAt: completed ? new Date().toISOString() : null }] } }));
   for (const theme of ['light', 'dark']) {
+    completed = false;
     await page.addInitScript(theme => localStorage.setItem('remote-codex-theme-mode', theme), theme);
     await page.goto(`/threads/${id}`);
     const footer = page.locator('.thread-graph-turn-footer');
     await expect(footer).toBeVisible(); await expect(footer.locator('time')).toHaveCount(0);
     await expect(footer.locator('.thread-graph-turn-footer-meta')).toHaveText(/2m \d+s/);
     await expect(footer.getByTestId('turn-token-speed')).toHaveText('48.3');
-    await expect(page.locator('.thread-graph-worked-summary').getByTestId('turn-token-speed')).toHaveText('28.1');
+    await expect(page.locator('.thread-graph-worked-summary').getByTestId('turn-token-speed')).toHaveCount(0);
     await expect(footer.locator('.thread-token-metric-icon')).toHaveCount(2);
     await expect(footer.locator('.thread-turn-usage-tokens')).toHaveAttribute('aria-label', 'Total tokens: 1,800,000');
     const geometry = await footer.evaluate(e => { const boxes = [...e.querySelectorAll('.thread-turn-usage-tokens,.thread-turn-usage-price,.thread-turn-token-speed,.thread-graph-turn-footer-meta')].map(n => n.getBoundingClientRect()); return { tops: boxes.map(r => r.top), right: Math.max(...boxes.map(r => r.right)), height: e.getBoundingClientRect().height }; });
@@ -94,6 +167,14 @@ test('turn footer shows compact token icons and elapsed time on one line in both
     expect(geometry.right).toBeLessThanOrEqual(page.viewportSize()!.width);
     expect(geometry.height).toBeLessThan(35);
     await page.screenshot({ path: testInfo.outputPath(`token-metrics-${theme}.png`) });
+    completed = true;
+    await page.reload();
+    await expect(footer).toHaveCount(0);
+    const receipt = page.locator('.thread-turn-receipt');
+    await expect(receipt.getByTestId('turn-token-speed')).toHaveText('28.1');
+    await expect(receipt.locator('.thread-turn-usage-tokens')).toHaveAttribute('aria-label', 'Total tokens: 1,800,000');
+    const bounds = (await receipt.boundingBox())!;
+    expect(bounds.x + bounds.width).toBeLessThanOrEqual(page.viewportSize()!.width);
   }
 });
 

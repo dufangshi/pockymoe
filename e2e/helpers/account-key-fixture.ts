@@ -82,8 +82,7 @@ export async function browserRequest(page: Page, path: string, method = 'GET', b
   }, { path, method, body });
 }
 export async function screenshot(page: Page, info: TestInfo, name: string) {
-  await mkdir(resolve('.scratch/screenshots'), { recursive: true });
-  await page.screenshot({ mask: [page.locator('pre'), page.locator('code').filter({ hasText: /^[0-9A-HJKMNP-TV-Z]{4}(-[0-9A-HJKMNP-TV-Z]{4}){7}$/ })], path: resolve(`.scratch/screenshots/${info.project.name}-${name}.png`) });
+  await page.screenshot({ mask: [page.locator('pre'), page.locator('code').filter({ hasText: /^[0-9A-HJKMNP-TV-Z]{4}(-[0-9A-HJKMNP-TV-Z]{4}){7}$/ })], path: info.outputPath(`${name}.png`) });
 }
 export function ok(result: Result, label: string) {
   // Auth/device bodies contain tokens, so assertion diagnostics use status only.
@@ -144,7 +143,7 @@ export async function approveGrant(page: Page, password: string, unverified = fa
   const review = page.getByRole('dialog', { name: 'Review device grant', exact: true });
   await expect(review).toBeVisible();
   if (unverified) await review.getByRole('checkbox').check();
-  await review.getByRole('button', { name: 'Confirm to sign these permissions.', exact: true }).click();
+  await review.getByRole('button', { name: 'Sign and share', exact: true }).click();
   if (await page.getByRole('dialog', { name: UNLOCK_DIALOG }).isVisible()) await unlock(page, password);
   await expect(review).toHaveCount(0);
 }
@@ -380,15 +379,16 @@ export class Fixture {
     })));
     const evidence = this.secrets.reduce((text, secret) => text.split(secret).join('[REDACTED]'), [...this.events, ...this.logs].join('\n'))
       .replace(/http[^\s]*\/pair#[^\s]*/g, '[REDACTED PAIR URL]').replace(/(secret=)[^&\s]+/g, '$1[REDACTED]');
-    await writeFile(resolve(`.scratch/${this.info.title.includes("sharing") ? "signed-sharing" : "account-trust"}-${this.info.project.name}.log`), evidence);
+    await writeFile(this.info.outputPath('sanitized-protocol.log'), evidence);
     if (this.info.errors.length) await this.info.attach('sanitized-protocol-log', { body: evidence, contentType: 'text/plain' });
     await rm(this.root, { recursive: true, force: true });
   }
 }
 
 export async function fixture(browser: Browser, info: TestInfo, options: { previews?: boolean } = {}) {
-  await mkdir(resolve('.scratch'), { recursive: true });
-  const root = await mkdtemp(resolve('.scratch/account-key-e2e-'));
+  const dataRoot = resolve(process.env.E2E_WORKSPACE_ROOT ?? '.scratch');
+  await mkdir(dataRoot, { recursive: true });
+  const root = await mkdtemp(join(dataRoot, 'account-key-e2e-'));
   await mkdir(join(root, 'home'));
   const f = new Fixture(root, browser, info);
   f.start('relay', { PORT: new URL(f.base).port, POCKYMOE_RELAY_DATA_DIR: join(root, 'relay'),

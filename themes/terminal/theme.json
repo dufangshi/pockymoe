@@ -1,0 +1,67 @@
+{
+  "schema": 1,
+  "id": "terminal",
+  "name": {
+    "en": "Terminal",
+    "zh-CN": "终端"
+  },
+  "description": {
+    "en": "Monospace, square corners and hairlines: a transcript that reads like a terminal log.",
+    "zh-CN": "等宽字体、直角和细线：对话读起来像一份终端日志。"
+  },
+  "version": "0.1.0",
+  "author": "Pockymoe",
+  "license": "MIT",
+  "engine": ">=0.13.4",
+  "modes": [
+    "light",
+    "dark"
+  ],
+  "swatches": [
+    "#ffffff",
+    "#0a0a0a",
+    "#0a47c4",
+    "#0b0d0c",
+    "#4de3a2"
+  ],
+  "chrome": {
+    "light": "#f0f0ee",
+    "dark": "#0b0d0c"
+  },
+  "styles": [
+    "styles/tokens.css",
+    "styles/shell.css",
+    "styles/transcript.css",
+    "styles/composer.css"
+  ],
+  "agents": {
+    "default": {
+      "avatar": "assets/agents/agent.svg"
+    },
+    "claude": {
+      "avatar": "assets/agents/claude.svg"
+    },
+    "codex": {
+      "avatar": "assets/agents/codex.svg"
+    },
+    "deepseek": {
+      "avatar": "assets/agents/deepseek.svg"
+    },
+    "gemini": {
+      "avatar": "assets/agents/gemini.svg"
+    },
+    "grok": {
+      "avatar": "assets/agents/grok.svg"
+    },
+    "cursor": {
+      "avatar": "assets/agents/cursor.svg"
+    },
+    "copilot": {
+      "avatar": "assets/agents/copilot.svg"
+    },
+    "opencode": {
+      "avatar": "assets/agents/opencode.svg"
+    }
+  },
+  "features": []
+}

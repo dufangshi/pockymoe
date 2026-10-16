@@ -4,6 +4,9 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
 test.use({ actionTimeout: 15_000 });
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem(`pockymoe.onboarding.v1:${JSON.stringify([location.origin, 'local:owner'])}`, JSON.stringify({ welcomeDismissed: true, completed: [] })));
+});
 const base = `http://127.0.0.1:${process.env.E2E_API_PORT ?? 8787}`;
 const screenshots = process.env.TERMINAL_SCREENSHOT_DIR;
 
@@ -29,6 +32,66 @@ async function snapshot(page: Page, name: string) {
 
 const visibleRows = (page: Page) =>
   page.locator('[data-testid="workbench-terminal-target"] [data-testid="terminal-pane"]:visible .xterm-rows');
+
+test('desktop terminal Ctrl+C copies its selection and Ctrl+V pastes at the prompt', async ({ page, request, context }, testInfo) => {
+  test.skip(testInfo.project.name !== 'desktop-chromium', 'Desktop clipboard keys');
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  await page.addInitScript(() => {
+    localStorage.setItem('remote-codex.locale', 'en');
+    // Keep copy-on-select from satisfying the Ctrl+C assertion by itself.
+    localStorage.setItem('pockymoe.terminal', JSON.stringify({ copyOnSelect: false }));
+  });
+  const [id] = await workspaceThreads(request, ['Terminal clipboard']);
+  await page.goto(`/threads/${id}`);
+  await expect(page.getByTestId('primary-pane').getByRole('textbox', { name: 'Prompt', exact: true })).toBeVisible();
+  await page.getByRole('navigation', { name: 'Workspace tools', exact: true }).getByRole('button', { name: 'Terminal', exact: true }).click();
+  const rows = visibleRows(page);
+  await expect(rows).toContainText('$');
+  await page.keyboard.type('printf "CopyMarkerAlpha\\n"');
+  await page.keyboard.press('Enter');
+  const output = rows.locator(':scope > div').filter({ hasText: /^CopyMarkerAlpha\s*$/ });
+  await expect(output).toHaveCount(1);
+  await output.dblclick({ position: { x: 35, y: 7 } });
+  await page.evaluate(() => navigator.clipboard.writeText('clipboard sentinel'));
+  await page.keyboard.press('Control+c');
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe('CopyMarkerAlpha');
+
+  await rows.click({ position: { x: 35, y: 7 } });
+  await page.evaluate(() => navigator.clipboard.writeText('printf "PasteMarkerBeta\\n"'));
+  await page.keyboard.press('Control+v');
+  await page.keyboard.press('Enter');
+  await expect(rows.locator(':scope > div').filter({ hasText: /^PasteMarkerBeta\s*$/ })).toHaveCount(1);
+});
+
+test('phone terminal long press opens the native text selection overlay', async ({ page, request, context }, testInfo) => {
+  test.skip(testInfo.project.name !== 'mobile-chromium', 'Phone terminal selection');
+  await page.addInitScript(() => {
+    localStorage.setItem('remote-codex.locale', 'en');
+  });
+  const [id] = await workspaceThreads(request, ['Terminal touch selection']);
+  await page.goto(`/threads/${id}`);
+  await expect(page.getByTestId('primary-pane').getByRole('textbox', { name: 'Prompt', exact: true })).toBeVisible();
+  await page.locator('nav.matter-phone-dock').getByRole('button', { name: 'Terminal', exact: true }).tap();
+  const rows = visibleRows(page);
+  await expect(rows).toContainText('$');
+  await page.locator('.shell-pane-host:visible').tap({ position: { x: 50, y: 35 } });
+  await page.keyboard.type('printf "TouchMarkerGamma\\n"');
+  await page.keyboard.press('Enter');
+  const output = rows.locator(':scope > div').filter({ hasText: /^TouchMarkerGamma\s*$/ });
+  await expect(output).toHaveCount(1);
+  const box = (await output.boundingBox())!;
+  const cdp = await context.newCDPSession(page);
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: box.x + 35, y: box.y + box.height / 2 }] });
+  const selection = page.locator('.terminal-selection[role="dialog"]');
+  // Hold the real touch until the long-press UI appears, without synthesizing a context menu.
+  await expect(selection).toBeVisible();
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  await expect(selection.locator('.terminal-selection-text')).toContainText('TouchMarkerGamma');
+  await selection.getByRole('button', { name: 'Select all', exact: true }).tap();
+  await expect(selection.getByRole('button', { name: 'Copy', exact: true })).toBeEnabled();
+  await selection.getByRole('button', { name: 'Done', exact: true }).tap();
+  await expect(selection).toBeHidden();
+});
 
 test('desktop terminal docks below the conversations, splits, resizes and survives reload and focus changes', async ({ page, request }, testInfo) => {
   test.skip(testInfo.project.name !== 'desktop-chromium', 'Desktop panel layout');
@@ -68,14 +131,15 @@ test('desktop terminal docks below the conversations, splits, resizes and surviv
   await assertDocked();
   // Files keep their full-height column and width handle beside the panel.
   await rail.getByRole('button', { name: 'Toggle Explorer', exact: true }).click();
-  const drawer = page.locator('.workbench-tool-drawer').filter({ has: page.getByTestId('workbench-close-files') });
+  const drawer = page.locator('aside.workbench-tool-drawer');
   await expect(drawer).toBeVisible();
   await expect(drawer.getByRole('separator', { name: 'Resize Explorer', exact: true })).toBeVisible();
   const drawerBox = (await drawer.boundingBox())!, panelBox = (await panel.boundingBox())!;
   expect(panelBox.x + panelBox.width).toBeLessThanOrEqual(drawerBox.x + 1);
   expect(drawerBox.height).toBeGreaterThan(panelBox.height + 200);
   await assertDocked();
-  await page.getByTestId('workbench-close-files').click();
+  await rail.getByRole('button', { name: 'Toggle Explorer', exact: true }).click();
+  await expect(drawer).toBeHidden();
 
   await panel.getByTestId('terminal-new').click();
   await expect(page.getByRole('tab')).toHaveCount(2);
@@ -164,7 +228,7 @@ test('phone terminal keeps the prompt and newest reply visible, resizes by touch
   await page.goto(`/threads/${id}`);
   const reply = page.locator('.thread-graph-message').filter({ hasText: 'Summarize the terminal layout' }).last();
   await expect(reply).toBeVisible();
-  await page.locator('.matter-topbar').getByRole('button', { name: 'Terminal', exact: true }).tap();
+  await page.locator('nav.matter-phone-dock').getByRole('button', { name: 'Terminal', exact: true }).tap();
   const panel = page.getByTestId('workbench-bottom-panel');
   await expect(panel).toBeVisible();
   await expect(visibleRows(page)).toContainText('$', { timeout: 20_000 });
@@ -227,7 +291,8 @@ test('phone terminal reserves space for a visual-only keyboard without relying o
   await page.addInitScript(() => localStorage.setItem('remote-codex.locale', 'en'));
   const [id] = await workspaceThreads(request, ['Keyboard avoidance']);
   await page.goto(`/threads/${id}`);
-  await page.locator('.matter-topbar').getByRole('button', { name: 'Terminal', exact: true }).tap();
+  await expect(page.getByTestId('primary-pane').getByRole('textbox', { name: 'Prompt', exact: true })).toBeVisible();
+  await page.locator('nav.matter-phone-dock').getByRole('button', { name: 'Terminal', exact: true }).tap();
   const panel = page.getByTestId('workbench-bottom-panel');
   await expect(visibleRows(page)).toContainText('$');
   await panel.locator('.shell-pane-host:visible').tap({ position: { x: 50, y: 35 } });

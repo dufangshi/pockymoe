@@ -1,4 +1,5 @@
 import { useHostScope } from '../lib/hostCapabilities';
+import { narrationQuery } from '../lib/transcriptPreferences';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -39,7 +40,7 @@ export function RecentThreadMenu({ thread, onFavorite, onRenamed, onRemoved, onN
     let active = true;
     setNotice(''); setDetail(null); setOwner(false);
     void Promise.all([
-      request<ThreadDetailDto>(`${base}?view=summary&limit=1&compact=1`),
+      request<ThreadDetailDto>(`${base}?view=summary&limit=1&compact=1${narrationQuery()}`),
       device === 'local' ? Promise.resolve({ kind: 'owner' }) : fetchRelayAccess({ deviceId: device, threadId: id }),
     ]).then(([value, access]) => { if (active) { setDetail(value); setOwner(access.kind === 'owner'); } })
       .catch(error => { if (active && hostScope && isInvisibleThreadError(error)) { void onRemoved(thread.key); setPosition(null); return; } if (active) setNotice(translate("workbench.deviceUnavailableYouCanStillManageThis")); });

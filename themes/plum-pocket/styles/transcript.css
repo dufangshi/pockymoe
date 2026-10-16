@@ -694,15 +694,16 @@
 }
 
 /* ── Timeline jump buttons ───────────────────────────────────────────────── */
-:theme .thread-ui-shell .thread-jump-latest-badge {
+:theme .thread-ui-shell .thread-jump-nav {
   border: 1.5px solid var(--tx-card-border);
-  border-radius: 999px;
   background: var(--tx-card);
   color: var(--theme-fg-soft);
   box-shadow: var(--tx-shadow);
 }
-:theme .thread-ui-shell .thread-jump-latest-badge button:hover:not(:disabled) { background: var(--theme-accent-soft); color: var(--theme-fg); }
-:theme .thread-ui-shell .thread-jump-latest-badge button:focus-visible { box-shadow: inset 0 0 0 2px var(--theme-accent-solid); }
+@media (hover: hover) {
+  :theme .thread-ui-shell .thread-jump-nav > button:hover:not(:disabled) { background: var(--theme-accent-soft); color: var(--theme-fg); }
+}
+:theme .thread-ui-shell .thread-jump-nav > button:focus-visible { outline: none; box-shadow: inset 0 0 0 2px var(--theme-accent-solid); }
 
 /* ── Detail dialogs: command output and diffs (portaled to <body>) ──────── */
 :theme .thread-detail-dialog {

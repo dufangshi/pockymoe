@@ -121,6 +121,154 @@ pub fn defer_tool_details(value: &mut serde_json::Value) {
     }
 }
 
+/// One stored item, as much of it as a folded turn's activity needs.
+pub struct ActivityRow {
+    pub item_id: String,
+    pub kind: Option<String>,
+    pub status: String,
+    /// A conversation item the transcript keeps in a summary: a prompt, a reply
+    /// with text, or a background wait or wake.
+    pub anchor: bool,
+    /// The `text` of a file change: its paths, comma separated.
+    pub paths: Option<String>,
+    pub changed_files: i64,
+    pub added: i64,
+    pub removed: i64,
+    /// Stored RFC 3339 times; a stretch reports its first start and last update.
+    pub started_at: Option<String>,
+    pub ended_at: Option<String>,
+}
+
+const ACTIVITY_FILES: usize = 40;
+
+fn activity_key(kind: Option<&str>) -> Option<&'static str> {
+    Some(match kind? {
+        "commandExecution" => "commands",
+        "fileChange" => "fileChanges",
+        "fileRead" => "reads",
+        "webSearch" => "searches",
+        "toolCall" | "skillToolCall" => "tools",
+        "agentToolCall" => "agents",
+        "reasoning" => "reasoning",
+        _ => return None,
+    })
+}
+
+fn tally(counts: &mut serde_json::Map<String, serde_json::Value>, key: &str, value: i64) {
+    if value > 0 {
+        let current = counts
+            .get(key)
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or(0);
+        counts.insert(key.into(), (current + value).into());
+    }
+}
+
+fn tally_row(
+    counts: &mut serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    row: &ActivityRow,
+) {
+    tally(counts, key, 1);
+    tally(
+        counts,
+        "failed",
+        i64::from(matches!(
+            row.status.as_str(),
+            "failed" | "error" | "declined"
+        )),
+    );
+    if key == "fileChanges" {
+        tally(counts, "changedFiles", row.changed_files);
+        tally(counts, "addedLines", row.added);
+        tally(counts, "removedLines", row.removed);
+    }
+}
+
+/// What a folded turn did, from its stored items in order: counts by kind, the
+/// number of distinct changed files and up to forty of them with the latest edit
+/// to open, and `segments`, the same
+/// counts for each stretch of operations, keyed by the conversation item that
+/// follows it (`before`, null at the end), so narration can sit between them.
+pub fn turn_activity(rows: &[ActivityRow]) -> serde_json::Map<String, serde_json::Value> {
+    let mut activity = serde_json::Map::new();
+    let mut files: Vec<(String, String, i64, i64)> = Vec::new();
+    let mut segments = Vec::new();
+    let mut segment = serde_json::Map::new();
+    for row in rows {
+        if row.anchor || matches!(row.kind.as_deref(), Some("userMessage" | "agentMessage")) {
+            if row.anchor && !segment.is_empty() {
+                segment.insert("before".into(), row.item_id.clone().into());
+                segments.push(serde_json::Value::Object(std::mem::take(&mut segment)));
+            }
+            continue;
+        }
+        let Some(key) = activity_key(row.kind.as_deref()) else {
+            continue;
+        };
+        tally_row(&mut activity, key, row);
+        tally_row(&mut segment, key, row);
+        if let Some(started) = &row.started_at {
+            if !segment.contains_key("startedAt") {
+                segment.insert("startedAt".into(), started.clone().into());
+            }
+        }
+        if let Some(ended) = row.ended_at.as_ref().or(row.started_at.as_ref()) {
+            let later = segment
+                .get("endedAt")
+                .and_then(serde_json::Value::as_str)
+                .is_none_or(|current| ended.as_str() > current);
+            if later {
+                segment.insert("endedAt".into(), ended.clone().into());
+            }
+        }
+        if key != "fileChanges" || matches!(row.status.as_str(), "failed" | "error" | "declined") {
+            continue;
+        }
+        // One patch can list several files; its line counts stay with the first.
+        let mut counts = Some((row.added, row.removed));
+        for path in row
+            .paths
+            .as_deref()
+            .unwrap_or_default()
+            .split(", ")
+            .map(str::trim)
+            .filter(|path| !path.is_empty())
+        {
+            let (added, removed) = counts.take().unwrap_or((0, 0));
+            match files.iter_mut().find(|file| file.0 == path) {
+                Some(file) => {
+                    file.1 = row.item_id.clone();
+                    file.2 += added;
+                    file.3 += removed;
+                }
+                None => files.push((path.to_string(), row.item_id.clone(), added, removed)),
+            }
+        }
+    }
+    if !segment.is_empty() {
+        segment.insert("before".into(), serde_json::Value::Null);
+        segments.push(serde_json::Value::Object(segment));
+    }
+    if !files.is_empty() {
+        activity.insert("fileCount".into(), files.len().into());
+        activity.insert(
+            "files".into(),
+            files
+                .into_iter()
+                .take(ACTIVITY_FILES)
+                .map(|(path, item_id, added, removed)| {
+                    serde_json::json!({ "path": path, "itemId": item_id, "addedLines": added, "removedLines": removed })
+                })
+                .collect(),
+        );
+    }
+    if !segments.is_empty() {
+        activity.insert("segments".into(), segments.into());
+    }
+    activity
+}
+
 /// Keep aligned with thread-ui's answerSections.ts. Length is in Unicode code
 /// points, so Chinese and emoji do not accidentally use UTF-8 byte thresholds.
 fn is_substantive_answer(item: &ThreadHistoryItemDto) -> bool {
@@ -167,7 +315,7 @@ fn is_substantive_answer(item: &ThreadHistoryItemDto) -> bool {
     (heading && paragraphs >= 3) || table_lines >= 3
 }
 
-pub fn summarize_completed_turn(mut turn: ThreadTurnDto) -> ThreadTurnDto {
+pub fn summarize_completed_turn(mut turn: ThreadTurnDto, keep_narration: bool) -> ThreadTurnDto {
     if turn.status == "inProgress" {
         return turn;
     }
@@ -195,7 +343,9 @@ pub fn summarize_completed_turn(mut turn: ThreadTurnDto) -> ThreadTurnDto {
             item.kind == "userMessage"
                 || Some(*index) == final_agent_index
                 || background_anchor(item)
-                || (has_background && item.kind == "agentMessage")
+                || ((has_background || keep_narration)
+                    && item.kind == "agentMessage"
+                    && !item.text.trim().is_empty())
                 || is_substantive_answer(item)
         })
         .map(|(_, item)| item.clone())
@@ -235,16 +385,19 @@ mod tests {
             "a".repeat(150),
             "b".repeat(150)
         );
-        let summary = summarize_completed_turn(turn(json!([
-            {"id":"prompt","kind":"userMessage","text":"Explain and implement"},
-            {"id":"before","kind":"commandExecution","text":"before"},
-            {"id":"answer","kind":"agentMessage","text":long},
-            {"id":"structured","kind":"agentMessage","text":structured},
-            {"id":"short","kind":"agentMessage","text":"中".repeat(299)},
-            {"id":"after","kind":"commandExecution","text":"after"},
-            {"id":"final","kind":"agentMessage","text":"Done","responsePhase":"final"},
-            {"id":"checkpoint","kind":"agentMessage","text":"Checking the next result"}
-        ])));
+        let summary = summarize_completed_turn(
+            turn(json!([
+                {"id":"prompt","kind":"userMessage","text":"Explain and implement"},
+                {"id":"before","kind":"commandExecution","text":"before"},
+                {"id":"answer","kind":"agentMessage","text":long},
+                {"id":"structured","kind":"agentMessage","text":structured},
+                {"id":"short","kind":"agentMessage","text":"中".repeat(299)},
+                {"id":"after","kind":"commandExecution","text":"after"},
+                {"id":"final","kind":"agentMessage","text":"Done","responsePhase":"final"},
+                {"id":"checkpoint","kind":"agentMessage","text":"Checking the next result"}
+            ])),
+            false,
+        );
         assert_eq!(
             summary
                 .items
@@ -260,6 +413,86 @@ mod tests {
         )
         .unwrap();
         assert!(!is_substantive_answer(&emoji));
+    }
+
+    #[test]
+    fn turn_activity_counts_stretches_between_conversation_items() {
+        let row = |id: &str, kind: &str, status: &str, anchor: bool| ActivityRow {
+            item_id: id.into(),
+            kind: Some(kind.into()),
+            status: status.into(),
+            anchor,
+            paths: None,
+            changed_files: 0,
+            added: 0,
+            removed: 0,
+            started_at: None,
+            ended_at: None,
+        };
+        let edit = ActivityRow {
+            paths: Some("src/a.rs, src/b.rs".into()),
+            changed_files: 2,
+            added: 5,
+            removed: 1,
+            ..row("edit", "fileChange", "completed", false)
+        };
+        let rows = vec![
+            row("prompt", "userMessage", "", true),
+            ActivityRow {
+                started_at: Some("2026-10-10T10:00:00Z".into()),
+                ended_at: Some("2026-10-10T10:00:09Z".into()),
+                ..row("c1", "commandExecution", "completed", false)
+            },
+            row("say", "agentMessage", "completed", true),
+            edit,
+            row("c2", "commandExecution", "failed", false),
+            // A reply without text is not shown, so it does not split a stretch.
+            row("empty", "agentMessage", "completed", false),
+            row("final", "agentMessage", "completed", true),
+            row("c3", "commandExecution", "completed", false),
+        ];
+        assert_eq!(
+            serde_json::Value::Object(turn_activity(&rows)),
+            json!({
+                "commands": 3, "failed": 1, "fileChanges": 1, "changedFiles": 2, "addedLines": 5, "removedLines": 1,
+                "fileCount": 2,
+                "files": [
+                    {"path": "src/a.rs", "itemId": "edit", "addedLines": 5, "removedLines": 1},
+                    {"path": "src/b.rs", "itemId": "edit", "addedLines": 0, "removedLines": 0}
+                ],
+                "segments": [
+                    {"before": "say", "commands": 1, "startedAt": "2026-10-10T10:00:00Z", "endedAt": "2026-10-10T10:00:09Z"},
+                    {"before": "final", "commands": 1, "failed": 1, "fileChanges": 1, "changedFiles": 2, "addedLines": 5, "removedLines": 1},
+                    {"before": null, "commands": 1}
+                ]
+            })
+        );
+        assert!(turn_activity(&[row("prompt", "userMessage", "", true)]).is_empty());
+    }
+
+    #[test]
+    fn narration_keeps_every_reply_with_text_in_a_summary() {
+        let items = json!([
+            {"id":"prompt","kind":"userMessage","text":"Go"},
+            {"id":"say","kind":"agentMessage","text":"Reading the queue"},
+            {"id":"empty","kind":"agentMessage","text":" "},
+            {"id":"cmd","kind":"commandExecution","text":"ls"},
+            {"id":"final","kind":"agentMessage","text":"Done"}
+        ]);
+        let ids = |turn: ThreadTurnDto| {
+            turn.items
+                .into_iter()
+                .map(|item| item.id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            ids(summarize_completed_turn(turn(items.clone()), false)),
+            ["prompt", "final"]
+        );
+        assert_eq!(
+            ids(summarize_completed_turn(turn(items), true)),
+            ["prompt", "say", "final"]
+        );
     }
 
     #[test]

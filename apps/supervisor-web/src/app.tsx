@@ -1,4 +1,9 @@
 import { HostScopeRouteGate } from './components/HostScopeRouteGate';
+import {
+  AUTO_COLLAPSE_COMPLETED_TURNS_STORAGE_KEY,
+  readAutoCollapseCompletedTurns,
+  TRANSCRIPT_PREFERENCE_EVENT,
+} from './lib/transcriptPreferences';
 import { appUrl, webBase } from './lib/webBase';
 import { HostCapabilitiesProvider, UnscopedOnly, useHostScope } from './lib/hostCapabilities';
 import { relayDeviceIdFromPath } from './lib/relayRoutes';
@@ -35,6 +40,7 @@ import {
 } from '@pockymoe/shared';
 import {
   AppShellNavContext,
+  type PhoneHand,
   type ThemeMode,
 } from './components/AppShellNavContext';
 import {
@@ -74,10 +80,11 @@ import { builtinFrontendPlugins } from './plugins/builtin-plugin-modules';
 import { useComposerPreferences } from './lib/useComposerPreferences';
 import { effectiveColorMode, themeChromeColor, useThemeRegistry } from './lib/themePacks';
 
+const PHONE_DOCK_STORAGE_KEY = 'pockymoe.phoneDock';
+const PHONE_HAND_STORAGE_KEY = 'pockymoe.phoneHand';
+
 const THEME_STORAGE_KEY = 'remote-codex-theme-mode';
 const BACKEND_STORAGE_KEY = 'remote-codex-default-backend';
-const AUTO_COLLAPSE_COMPLETED_TURNS_STORAGE_KEY =
-  'remote-codex-auto-collapse-completed-turns';
 
 function RoutePluginProvider({ children }: { children: ReactNode }) {
   const { locale: i18nLocale } = useI18n();
@@ -129,7 +136,7 @@ function readInitialAutoCollapseCompletedTurns() {
     return true;
   }
 
-  return window.localStorage.getItem(AUTO_COLLAPSE_COMPLETED_TURNS_STORAGE_KEY) !== 'false';
+  return readAutoCollapseCompletedTurns();
 }
 
 function formatDocumentTitle(pageTitle?: string | null) {
@@ -255,6 +262,13 @@ function AppShell({
   const [autoCollapseCompletedTurns, setAutoCollapseCompletedTurnsState] = useState(
     readInitialAutoCollapseCompletedTurns,
   );
+  // One-handed phone layout, on unless turned off in Preferences.
+  const [phoneDock, setPhoneDockState] = useState(() => {
+    try { return localStorage.getItem(PHONE_DOCK_STORAGE_KEY) !== 'off'; } catch { return true; }
+  });
+  const [phoneHand, setPhoneHandState] = useState<PhoneHand>(() => {
+    try { return localStorage.getItem(PHONE_HAND_STORAGE_KEY) === 'left' ? 'left' : 'right'; } catch { return 'right'; }
+  });
   const location = useLocation();
   const isThreadUtilityRoute =
     /^\/threads\/(?:import|new)$/.test(location.pathname) ||
@@ -285,12 +299,23 @@ function AppShell({
     window.localStorage.setItem(BACKEND_STORAGE_KEY, backend);
   }
 
+  function setPhoneDock(enabled: boolean) {
+    setPhoneDockState(enabled);
+    try { localStorage.setItem(PHONE_DOCK_STORAGE_KEY, enabled ? 'on' : 'off'); } catch { /* Private browsing may disable storage. */ }
+  }
+
+  function setPhoneHand(hand: PhoneHand) {
+    setPhoneHandState(hand);
+    try { localStorage.setItem(PHONE_HAND_STORAGE_KEY, hand); } catch { /* Private browsing may disable storage. */ }
+  }
+
   function setAutoCollapseCompletedTurns(enabled: boolean) {
     setAutoCollapseCompletedTurnsState(enabled);
     window.localStorage.setItem(
       AUTO_COLLAPSE_COMPLETED_TURNS_STORAGE_KEY,
       enabled ? 'true' : 'false',
     );
+    window.dispatchEvent(new Event(TRANSCRIPT_PREFERENCE_EVENT));
   }
 
   const shellNavValue = {
@@ -324,6 +349,10 @@ function AppShell({
     setDefaultBackend,
     autoCollapseCompletedTurns,
     setAutoCollapseCompletedTurns,
+    phoneDock,
+    setPhoneDock,
+    phoneHand,
+    setPhoneHand,
     showReasoningSummaries,
     setShowReasoningSummaries: (enabled: boolean) => {
       setShowReasoningSummaries(enabled);
@@ -451,7 +480,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
   if (state.status === 'checking') {
     return (
       <main className="flex min-h-screen items-center justify-center bg-[var(--app-bg)] px-4 text-sm text-[var(--theme-fg-muted)]">
-        {translate("workbench.checkingSupervisorAccess")}</main>
+        <DelayedText>{translate("workbench.checkingSupervisorAccess")}</DelayedText></main>
     );
   }
 
@@ -662,7 +691,14 @@ export function App() {
     document
       .querySelector<HTMLMetaElement>('meta[name="theme-color"]')
       ?.setAttribute('content', themeChromeColor(effectiveTheme));
-  }, [effectiveTheme, shownThemeMode, appliedTheme]);
+    // index.html paints this before the next load; keep the page behind the app
+    // in the same colour after a theme change too.
+    const background = getComputedStyle(root).getPropertyValue('--theme-bg').trim();
+    if (background) root.style.backgroundColor = background;
+    try {
+      localStorage.setItem('pockymoe.paint', JSON.stringify({ effective: effectiveTheme, fixed: Boolean(themeRegistry.fixedMode), background }));
+    } catch { /* Private browsing: the next load paints the default first. */ }
+  }, [effectiveTheme, shownThemeMode, appliedTheme, themeRegistry.fixedMode]);
 
   return (
     <div className="theme-shell theme-scrollbar">
@@ -697,4 +733,15 @@ export function App() {
       </BrowserRouter>
     </div>
   );
+}
+
+/** Status text for a wait that is usually too short to read: the page stays a
+    plain background unless the wait passes half a second. */
+function DelayedText({ children }: { children: ReactNode }) {
+  const [shown, setShown] = useState(false);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setShown(true), 500);
+    return () => window.clearTimeout(timer);
+  }, []);
+  return shown ? <>{children}</> : null;
 }

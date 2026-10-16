@@ -1,0 +1,169 @@
+/* Terminal theme pack: monospace throughout, square corners, hairlines and one
+   accent (ink blue in light mode, phosphor green in dark mode). The loader
+   rewrites `:theme` to `:root[data-theme-preset="terminal"]`
+   (docs/theme-packs.md). Rules are one step more specific than Classic's. */
+
+:root:root:theme {
+  --term-font: ui-monospace, 'SF Mono', 'Cascadia Mono', 'JetBrains Mono', Menlo, Consolas, 'Liberation Mono', 'Noto Sans Mono CJK SC', 'Sarasa Mono SC', 'PingFang SC', 'Microsoft YaHei UI', monospace;
+  --term-ok: #4de3a2;
+  --term-danger: #f08880;
+  --term-warn: #ffc247;
+  --term-line: #2d3330;
+  --term-edge: #7a867f;
+  --term-sunken: #131615;
+  font-family: var(--term-font);
+  --app-bg: #0b0d0c;
+  --app-fg: #e9efe9;
+  --theme-panel: #0b0d0c;
+  --theme-surface: #131615;
+  --theme-surface-strong: #1a1e1c;
+  --theme-muted: #171b19;
+  --theme-hover: #1b201e;
+  --theme-fg-soft: #b9c3bc;
+  --theme-fg-muted: #93a09a;
+  --theme-border: #2d3330;
+  --theme-border-strong: #5b6560;
+  --theme-border-contrast: #7a867f;
+  --theme-accent-solid: #4de3a2;
+  --theme-accent-solid-hover: #7debbb;
+  --theme-accent-solid-fg: #00170d;
+  --theme-accent-soft: #0f2b20;
+  --theme-accent-strong: #4de3a2;
+  --theme-accent-border: #2c8a62;
+  --matter-chrome: #0b0d0c;
+  --theme-shadow: none;
+  --overlay-scrim: rgb(0 0 0 / 70%);
+  --scrollbar-thumb: #2d3330;
+  --scrollbar-thumb-hover: #5b6560;
+}
+:root:root:theme[data-theme-effective='light'] {
+  --term-ok: #00692c;
+  --term-danger: #a5302a;
+  --term-warn: #7f4300;
+  --term-line: #b9b9b4;
+  --term-edge: #55554f;
+  --term-sunken: #f0f0ee;
+  --app-bg: #ffffff;
+  --app-fg: #0a0a0a;
+  --theme-panel: #ffffff;
+  --theme-surface: #f0f0ee;
+  --theme-surface-strong: #e6e6e2;
+  --theme-muted: #ebebe7;
+  --theme-hover: #ececE8;
+  --theme-fg-soft: #2a2a28;
+  --theme-fg-muted: #5a5a55;
+  --theme-border: #d6d6d1;
+  --theme-border-strong: #a9a9a3;
+  --theme-border-contrast: #6a6a65;
+  --theme-accent-solid: #0a47c4;
+  --theme-accent-solid-hover: #0839a0;
+  --theme-accent-solid-fg: #ffffff;
+  --theme-accent-soft: #dbe6ff;
+  --theme-accent-strong: #0a47c4;
+  --theme-accent-border: #7f9be0;
+  --matter-chrome: #f0f0ee;
+  --theme-shadow: none;
+  --overlay-scrim: rgb(10 10 10 / 35%);
+  --scrollbar-thumb: #c9c9c4;
+  --scrollbar-thumb-hover: #a9a9a3;
+}
+
+/* Shared UI tokens; the workbench and dialogs set their own palette. */
+:theme :is(.thread-ui-shell, .thread-graph-dialog) {
+  font-family: var(--term-font);
+  --thread-gc-bg: #ffffff;
+  --thread-gc-panel: #ffffff;
+  --thread-gc-workspace: #f0f0ee;
+  --thread-gc-surface: #f0f0ee;
+  --thread-gc-muted: #ebebe7;
+  --thread-gc-hover: #ececE8;
+  --thread-gc-border: #d6d6d1;
+  --thread-gc-border-strong: #a9a9a3;
+  --thread-gc-border-contrast: #6a6a65;
+  --thread-gc-fg: #0a0a0a;
+  --thread-gc-fg-soft: #2a2a28;
+  --thread-gc-fg-muted: #5a5a55;
+  --thread-gc-primary: #0a47c4;
+  --thread-gc-primary-hover: #0839a0;
+  --thread-gc-primary-fg: #ffffff;
+  --thread-gc-accent-soft: #dbe6ff;
+  --thread-gc-accent-strong: #0a47c4;
+  --thread-gc-accent-border: #7f9be0;
+  --thread-gc-shadow: none;
+  --matter-chrome: #f0f0ee;
+  --matter-composer-shadow: none;
+  --matter-glass-highlight: transparent;
+  --tlog-font-mono: var(--term-font);
+  --tlog-add: #00692c;
+  --tlog-remove: #a5302a;
+  --tlog-failed: #a5302a;
+  --tlog-rule: #6a6a65;
+}
+:theme :is(.thread-ui-shell, .thread-graph-dialog):is([data-theme-effective='dark'], .thread-ui-theme-dark, .dark),
+:theme[data-theme-effective='dark'] :is(.thread-ui-shell, .thread-graph-dialog):not([data-theme-effective='light']) {
+  --thread-gc-bg: #0b0d0c;
+  --thread-gc-panel: #0b0d0c;
+  --thread-gc-workspace: #131615;
+  --thread-gc-surface: #131615;
+  --thread-gc-muted: #171b19;
+  --thread-gc-hover: #1b201e;
+  --thread-gc-border: #2d3330;
+  --thread-gc-border-strong: #5b6560;
+  --thread-gc-border-contrast: #7a867f;
+  --thread-gc-fg: #e9efe9;
+  --thread-gc-fg-soft: #b9c3bc;
+  --thread-gc-fg-muted: #93a09a;
+  --thread-gc-primary: #4de3a2;
+  --thread-gc-primary-hover: #7debbb;
+  --thread-gc-primary-fg: #00170d;
+  --thread-gc-accent-soft: #0f2b20;
+  --thread-gc-accent-strong: #4de3a2;
+  --thread-gc-accent-border: #2c8a62;
+  --matter-chrome: #0b0d0c;
+  --tlog-add: #4de3a2;
+  --tlog-remove: #f08880;
+  --tlog-failed: #f08880;
+  --tlog-rule: #5b6560;
+}
+
+/* Square corners and no soft shadows on the shared controls. */
+:theme :is(.thread-ui-shell, .thread-graph-dialog, [role='dialog']) :is(button, input, textarea, select, label, .rounded, .rounded-md, .rounded-lg, .rounded-xl, .rounded-2xl, .rounded-full, [class*='rounded-[']):not(.matter-status-dot, .tlog-spinner, .animate-spin, .thread-progress-indicator *, [role='switch'] > *) {
+  border-radius: 0;
+}
+:theme :is(.relay-button-primary, .relay-button-secondary, .host-secondary-button, .theme-preset-card) { border-radius: 0; }
+
+/* Terminal (xterm) and editor (Monaco) palettes are painted with JavaScript. */
+:theme .terminal-panel {
+  --terminal-bg: #0b0d0c;
+  --terminal-fg: #e9efe9;
+  --terminal-cursor: #4de3a2;
+  --terminal-selection: #4de3a247;
+}
+:theme .terminal-panel[data-terminal-theme='light'] {
+  --terminal-bg: #ffffff;
+  --terminal-fg: #0a0a0a;
+  --terminal-cursor: #0a47c4;
+  --terminal-selection: #0a47c433;
+}
+:theme {
+  --editor-bg: #0b0d0c;
+  --editor-fg: #e9efe9;
+  --editor-line-number: #5b6560;
+  --editor-line-highlight: #131615;
+  --editor-selection: #1f4535;
+  --editor-selection-inactive: #172b23;
+  --editor-cursor: #4de3a2;
+  --editor-indent: #1b201e;
+  --editor-indent-active: #5b6560;
+}
+:theme[data-theme-effective='light'] {
+  --editor-bg: #ffffff;
+  --editor-fg: #0a0a0a;
+  --editor-line-number: #8a8a84;
+  --editor-line-highlight: #f5f5f3;
+  --editor-selection: #c9d8ff;
+  --editor-selection-inactive: #e6ecfb;
+  --editor-cursor: #0a47c4;
+  --editor-indent: #ebebe7;
+  --editor-indent-active: #a9a9a3;
+}

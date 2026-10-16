@@ -1,6 +1,28 @@
+/** What a device grant allows, from the exact grant that will be signed. */
+export interface GrantSummary {
+  device: { name: string; id: string };
+  recipient: { name: string; userId: string };
+  safetyCode: string;
+  scope: 'thread' | 'workspace' | 'device';
+  workspaceScope: 'all' | 'selected';
+  workspaceCount: number;
+  threadAccess: 'read' | 'control';
+  workspaceAccess: 'none' | 'read' | 'write';
+  canCreateThreads: boolean;
+  expiresAt: number | null;
+  /** Fields that differ from the grant now on the device; absent for a new one. */
+  changes?: GrantChange[];
+}
+export interface GrantChange {
+  field: 'scope' | 'threadAccess' | 'workspaceAccess' | 'canCreateThreads' | 'expiresAt' | 'recipient';
+  before: GrantSummary;
+  after: GrantSummary;
+}
 export interface GrantReview {
+  /** The complete signed content, shown under technical details. */
   description: string;
   recipientVerified: boolean;
+  summary?: GrantSummary;
 }
 interface PendingReview extends GrantReview {
   id: number;

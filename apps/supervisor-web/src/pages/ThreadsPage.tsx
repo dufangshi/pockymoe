@@ -63,7 +63,7 @@ export function ThreadsPage() {
       actions={null} threadMenu={null} connection={null} explorer={null} revealExplorer={0}
     >
       <div className="flex h-full flex-col items-center justify-center gap-4 px-6 text-center">
-        {loading ? <p role="status">{translate("workbench.openingWorkspace")}</p> : error ? <><p role="alert">{error}</p><button className="relay-button-secondary rounded-lg px-4 py-2" onClick={() => setRetry(value => value + 1)}>{translate("workbench.retry")}</button></> : <>
+        {loading ? <p role="status" className="workspace-opening">{translate("workbench.openingWorkspace")}</p> : error ? <><p role="alert">{error}</p><button className="relay-button-secondary rounded-lg px-4 py-2" onClick={() => setRetry(value => value + 1)}>{translate("workbench.retry")}</button></> : <>
           <MessageSquarePlus size={32} className="text-[var(--theme-fg-muted)]" />
           <h1 className="text-xl font-semibold">{translate("workbench.startAThreadIn")} {workspace?.label}</h1>
           <p className="text-sm text-[var(--theme-fg-muted)]">{translate("workbench.yourConversationsInThisWorkspaceWillAppear")}</p>
