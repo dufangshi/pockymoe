@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import {
   Workflow,
   RefreshCw,
@@ -10,7 +10,6 @@ import {
   Terminal,
   Puzzle,
   CircleSlash,
-  ArrowUpRight,
 } from 'lucide-react';
 import './automation-panel.css';
 import {
@@ -37,8 +36,6 @@ import {
   type NativeWatch,
 } from './ThreadWatchesControl';
 
-const button =
-  'rounded border border-[var(--theme-border)] px-2.5 py-1.5 text-xs hover:bg-[var(--theme-bg)]';
 const knownStates = new Set([
   'enabled',
   'paused',
@@ -136,13 +133,15 @@ function Usage({
 }) {
   const { t, locale } = useI18n();
   return (
-    <div className="automation-rule-usage">
+    <span className="automation-rule-usage">
       <span>
-        {t('automation.tokens')}:{' '}
-        {usage?.totalTokens.toLocaleString(locale) ?? t('automation.unknown')}
+        {usage
+          ? t('automation.tokensValue', {
+              value1: usage.totalTokens.toLocaleString(locale),
+            })
+          : t('automation.tokensUnknown')}
       </span>
       <span>
-        {t('automation.cost')}:{' '}
         {usage || price ? (
           <TokenUsageCost
             usage={usage ?? null}
@@ -152,10 +151,177 @@ function Usage({
             tooltipZIndex={120}
           />
         ) : (
-          t('automation.unknown')
+          t('automation.costUnknown')
         )}
       </span>
-    </div>
+    </span>
+  );
+}
+
+/** Short local time for scanning; the full timestamp stays in the tooltip and run details. */
+function useDates() {
+  const { t, locale } = useI18n();
+  const full = (v: string | null) =>
+    v ? new Date(v).toLocaleString(locale) : t('automation.none');
+  const short = (v: string) => {
+    const d = new Date(v);
+    if (Number.isNaN(d.getTime())) return v;
+    const now = new Date();
+    const options: Intl.DateTimeFormatOptions =
+      d.toDateString() === now.toDateString()
+        ? { hour: '2-digit', minute: '2-digit' }
+        : d.getFullYear() === now.getFullYear()
+          ? { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }
+          : { year: 'numeric', month: 'short', day: 'numeric' };
+    return new Intl.DateTimeFormat(locale, options).format(d);
+  };
+  const duration = (from: string | null, to: string | null) => {
+    if (!from || !to) return null;
+    const seconds = Math.round((Date.parse(to) - Date.parse(from)) / 1000);
+    if (!Number.isFinite(seconds) || seconds < 0) return null;
+    const [value, unit] =
+      seconds < 60
+        ? [seconds, 'second']
+        : seconds < 3600
+          ? [Math.round(seconds / 60), 'minute']
+          : [Math.round(seconds / 360) / 10, 'hour'];
+    return new Intl.NumberFormat(locale, {
+      style: 'unit',
+      unit,
+      unitDisplay: 'narrow',
+    }).format(value);
+  };
+  return { full, short, duration };
+}
+
+function Time({ value }: { value: string }) {
+  const { full, short } = useDates();
+  return (
+    <time dateTime={value} title={full(value)}>
+      {short(value)}
+    </time>
+  );
+}
+
+function RunHistory({
+  automation: a,
+  runs,
+  threadId,
+  onError,
+}: {
+  automation: AutomationDto;
+  runs: AutomationRunDto[];
+  threadId: string;
+  onError: (message: string) => void;
+}) {
+  const { t, locale } = useI18n();
+  const { full, duration } = useDates();
+  const [output, setOutput] = useState('');
+  const state = (v: string) =>
+    knownStates.has(v) ? t(`automation.${v}` as TranslationKey) : v;
+  const action = a.definition.action;
+  return (
+    <>
+      {!runs.length && (
+        <p className="automation-runs-empty">{t('automation.noRuns')}</p>
+      )}
+      {runs.length > 0 && (
+        <ol className="automation-runs">
+          {runs.map((r, index) => {
+            const at = r.completedAt ?? r.startedAt ?? r.scheduledAt;
+            const took = duration(r.startedAt, r.completedAt);
+            return (
+              <li key={r.id}>
+                <details className="automation-run" open={index === 0}>
+                  <summary>
+                    <ChevronRight size={12} className="automation-run-chevron" />
+                    <span className={`automation-state is-${r.state}`}>
+                      <i />
+                      {state(r.state)}
+                    </span>
+                    <span className="automation-run-when">
+                      <Time value={at} />
+                      {took && <span>· {took}</span>}
+                      {r.missedCount > 0 && (
+                        <span>
+                          · {t('automation.mergedShort', { value1: r.missedCount })}
+                        </span>
+                      )}
+                    </span>
+                    {r.error && (
+                      <span className="automation-run-error-preview">
+                        {r.error}
+                      </span>
+                    )}
+                  </summary>
+                  <div className="automation-run-body">
+                    {r.error && (
+                      <p className="plugin-report-error" role="status">
+                        {r.error}
+                      </p>
+                    )}
+                    {r.deliveryReceipt &&
+                      Object.prototype.hasOwnProperty.call(
+                        r.deliveryReceipt,
+                        'output',
+                      ) && (
+                        <PluginActionOutput
+                          pluginId={typeof r.deliveryReceipt.pluginId === 'string' ? r.deliveryReceipt.pluginId : action.kind === 'pluginAction' ? action.pluginId : ''}
+                          action={typeof r.deliveryReceipt.action === 'string' ? r.deliveryReceipt.action : action.kind === 'pluginAction' ? action.action : ''}
+                          output={r.deliveryReceipt.output}
+                        />
+                      )}
+                    <div className="automation-run-tools">
+                      {r.commandId && (
+                        <button
+                          type="button"
+                          className="automation-link-button"
+                          onClick={() => {
+                            void request<Record<string, unknown>>(
+                              `api/threads/${encodeURIComponent(threadId)}/commands/${encodeURIComponent(r.commandId!)}`,
+                            )
+                              .then((v) =>
+                                setOutput(
+                                  [String(v.stdout ?? ''), String(v.stderr ?? '')]
+                                    .filter(Boolean)
+                                    .join('\n') || t('automation.none'),
+                                ),
+                              )
+                              .catch((e) => onError(String(e.message ?? e)));
+                          }}
+                        >
+                          {t('automation.output')}
+                        </button>
+                      )}
+                      <details className="plugin-report-disclosure">
+                        <summary>{t('automation.runDetails')}</summary>
+                        <dl className="automation-run-facts">
+                          <dt>{t('automation.scheduled')}</dt>
+                          <dd>{full(r.scheduledAt)}</dd>
+                          <dt>{t('automation.started')}</dt>
+                          <dd>{full(r.startedAt)}</dd>
+                          <dt>{t('automation.finished')}</dt>
+                          <dd>{full(r.completedAt)}</dd>
+                          <dt>{t('automation.merged')}</dt>
+                          <dd>{r.missedCount.toLocaleString(locale)}</dd>
+                          {r.turnId && (
+                            <>
+                              <dt>{t('automation.turn')}</dt>
+                              <dd><code>{r.turnId}</code></dd>
+                            </>
+                          )}
+                        </dl>
+                      </details>
+                    </div>
+                  </div>
+                </details>
+              </li>
+            );
+          })}
+        </ol>
+      )}
+      {output && <pre className="plugin-report-pre">{output}</pre>}
+    </>
   );
 }
 
@@ -168,16 +334,19 @@ function AutomationCard({
 }) {
   const { t, locale } = useI18n();
   const [expanded, setExpanded] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const [runs, setRuns] = useState<AutomationRunDto[]>([]);
-  const [output, setOutput] = useState('');
   const [error, setError] = useState('');
+  const detailsId = useId();
+  const historyId = useId();
   const base = `api/threads/${encodeURIComponent(threadId)}/automations/${encodeURIComponent(a.id)}`;
-  const date = (v: string | null) =>
-    v ? new Date(v).toLocaleString(locale) : t('automation.none');
+  const { short } = useDates();
   const state = (v: string) =>
     knownStates.has(v) ? t(`automation.${v}` as TranslationKey) : v;
   const triggerLabel = (v: AutomationTrigger) =>
-    v.kind === 'interval'
+    v.kind === 'interval' && (v.everySeconds === 60 || v.everySeconds === 3600)
+      ? t(v.everySeconds === 60 ? 'automation.everyMinute' : 'automation.everyHour')
+      : v.kind === 'interval'
       ? t(
           v.everySeconds % 3600 === 0
             ? 'automation.hourly'
@@ -194,7 +363,7 @@ function AutomationCard({
           },
         )
       : v.kind === 'at'
-        ? date(v.at)
+        ? short(v.at)
         : v.kind === 'threadEnded'
           ? t('automation.threadEnded')
           : t(`automation.${v.kind}`);
@@ -247,52 +416,93 @@ function AutomationCard({
         </span>
       </div>
       <div className="automation-rule-schedule">
-        <Clock3 size={13} />
+        <Clock3 size={12} />
         {triggerLabel(a.definition.trigger)}
-        <span>·</span>
+        <span aria-hidden="true">·</span>
         {a.definition.action.kind === 'prompt' ? (
-          <MessageSquare size={13} />
+          <MessageSquare size={12} />
         ) : a.definition.action.kind === 'notifyInbox' ? (
-          <Inbox size={13} />
+          <Inbox size={12} />
         ) : pluginAction ? (
-          <Puzzle size={13} />
+          <Puzzle size={12} />
         ) : (
-          <Terminal size={13} />
+          <Terminal size={12} />
         )}
         {t(`automation.${a.definition.action.kind}`)}
+        {a.nextRunAt && (
+          <>
+            <span aria-hidden="true">·</span>
+            <span>
+              {t('automation.nextShort')} <Time value={a.nextRunAt} />
+            </span>
+          </>
+        )}
       </div>
       <div className="automation-rule-meta">
         <span>
-          {t('automation.triggers')}:{' '}
-          {s?.triggerCount.toLocaleString(locale) ?? '—'}
+          {s
+            ? t(s.triggerCount === 1 ? 'automation.triggerCountOne' : 'automation.triggerCount', {
+                value1: s.triggerCount.toLocaleString(locale),
+              })
+            : `${t('automation.triggers')} —`}
         </span>
         {a.pendingCount > 0 && (
           <span>
             {t('automation.pendingShort', { value1: a.pendingCount })}
           </span>
         )}
-        {a.nextRunAt && (
-          <span title={date(a.nextRunAt)}>
-            {t('automation.next')}: {date(a.nextRunAt)}
-          </span>
+        <Usage usage={pluginAction ? null : s?.tokenUsage} price={pluginAction ? null : s?.priceEstimate} note={coverage} />
+      </div>
+      {a.error && (
+        <p className="automation-rule-error" role="status">
+          {a.error}
+        </p>
+      )}
+      <div className="automation-rule-actions">
+        <button
+          type="button"
+          aria-expanded={detailsOpen}
+          aria-controls={detailsId}
+          onClick={() => setDetailsOpen(!detailsOpen)}
+        >
+          <ChevronRight size={12} />
+          {t('automation.ruleDetails')}
+        </button>
+        <button
+          type="button"
+          aria-expanded={expanded}
+          aria-controls={historyId}
+          onClick={() => setExpanded(!expanded)}
+        >
+          <ChevronRight size={12} />
+          {t('automation.history')}
+        </button>
+        {expanded && (
+          <details className="automation-help">
+            <summary
+              aria-label={t('automation.historyHelp')}
+              title={t('automation.historyHelp')}
+            >
+              <Info size={13} />
+            </summary>
+            <div>
+              <p>{t('automation.historyLimit')}</p>
+              <p>{t('automation.queuedNote')}</p>
+            </div>
+          </details>
         )}
       </div>
-      <Usage usage={pluginAction ? null : s?.tokenUsage} price={pluginAction ? null : s?.priceEstimate} note={coverage} />
-      <details className="automation-rule-details">
-        <summary>
-          <ChevronRight size={13} />
-          {t('automation.ruleDetails')}
-        </summary>
-        <div>
+      {detailsOpen && (
+        <div id={detailsId} className="automation-rule-panel">
           {a.definition.action.kind === 'prompt' ? (
             <>
-              <p className="text-xs text-[var(--theme-fg-muted)]">{coverage}</p>
+              <p>{coverage}</p>
               {s &&
                 s.ambiguousTurnCount +
                   s.missingTurnCount +
                   s.unattributedRunCount >
                   0 && (
-                  <p className="text-xs text-[var(--theme-fg-muted)]">
+                  <p>
                     {t('automation.incomplete', {
                       value1: s.ambiguousTurnCount,
                       value2: s.missingTurnCount,
@@ -302,9 +512,9 @@ function AutomationCard({
                 )}
             </>
           ) : pluginAction ? (
-            <p className="text-xs text-[var(--theme-fg-muted)]">{t('automation.pluginCharge')}</p>
+            <p>{t('automation.pluginCharge')}</p>
           ) : (
-            <p className="text-xs text-[var(--theme-fg-muted)]">
+            <p>
               {t(
                 a.definition.action.kind === 'runScript'
                   ? 'automation.scriptCharge'
@@ -312,105 +522,30 @@ function AutomationCard({
               )}
             </p>
           )}
-          {a.error && (
-            <p className="break-words text-xs" role="status">
-              {t('automation.error')}: {a.error}
-            </p>
-          )}
           {a.missedCount > 0 && (
-            <p className="text-xs">
-              {t('automation.mergedShort', { value1: a.missedCount })}
-            </p>
+            <p>{t('automation.mergedShort', { value1: a.missedCount })}</p>
           )}
-          <details>
-            <summary className="cursor-pointer text-xs">
-              {t('automation.definition')}
-            </summary>
-            <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap break-all text-xs">
+          <details className="plugin-report-disclosure">
+            <summary>{t('automation.definition')}</summary>
+            <pre className="plugin-report-pre">
               {JSON.stringify(a.definition, null, 2)}
             </pre>
           </details>
         </div>
-      </details>
-      <button
-        type="button"
-        className="automation-history-button"
-        aria-expanded={expanded}
-        onClick={() => setExpanded(!expanded)}
-      >
-        {t('automation.history')}
-        <ArrowUpRight size={12} />
-      </button>
+      )}
       {expanded && (
-        <div className="space-y-2 border-t border-[var(--theme-border)] pt-2">
-          <p className="text-xs text-[var(--theme-fg-muted)]">
-            {t('automation.historyLimit')} {t('automation.queuedNote')}
-          </p>
+        <div id={historyId} className="automation-history">
           {error && (
-            <p role="alert" className="break-words text-xs">
+            <p role="alert" className="plugin-report-error">
               {error}
             </p>
           )}
-          {!runs.length && <p className="text-xs">{t('automation.noRuns')}</p>}
-          {runs.map((r) => (
-            <section
-              key={r.id}
-              className="space-y-1 rounded bg-[var(--theme-bg)] p-2 text-xs"
-            >
-              <strong>{state(r.state)}</strong> · {t('automation.merged')}:{' '}
-              {r.missedCount}
-              <p>
-                {t('automation.scheduled')}: {date(r.scheduledAt)}
-              </p>
-              <p>
-                {t('automation.started')}: {date(r.startedAt)} ·{' '}
-                {t('automation.finished')}: {date(r.completedAt)}
-              </p>
-              {r.turnId && (
-                <p className="break-all">
-                  {t('automation.turn')}: {r.turnId}
-                </p>
-              )}
-              {r.error && (
-                <p className="break-words" role="status">
-                  {r.error}
-                </p>
-              )}
-              {r.deliveryReceipt && Object.prototype.hasOwnProperty.call(r.deliveryReceipt, 'output') && (
-                <PluginActionOutput
-                  pluginId={typeof r.deliveryReceipt.pluginId === 'string' ? r.deliveryReceipt.pluginId : a.definition.action.kind === 'pluginAction' ? a.definition.action.pluginId : ''}
-                  action={typeof r.deliveryReceipt.action === 'string' ? r.deliveryReceipt.action : a.definition.action.kind === 'pluginAction' ? a.definition.action.action : ''}
-                  output={r.deliveryReceipt.output}
-                />
-              )}
-              {r.commandId && (
-                <button
-                  type="button"
-                  className={button}
-                  onClick={() => {
-                    void request<Record<string, unknown>>(
-                      `api/threads/${encodeURIComponent(threadId)}/commands/${encodeURIComponent(r.commandId!)}`,
-                    )
-                      .then((v) =>
-                        setOutput(
-                          [String(v.stdout ?? ''), String(v.stderr ?? '')]
-                            .filter(Boolean)
-                            .join('\n') || t('automation.none'),
-                        ),
-                      )
-                      .catch((e) => setError(String(e.message ?? e)));
-                  }}
-                >
-                  {t('automation.output')}
-                </button>
-              )}
-            </section>
-          ))}
-          {output && (
-            <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-all text-xs">
-              {output}
-            </pre>
-          )}
+          <RunHistory
+            automation={a}
+            runs={runs}
+            threadId={threadId}
+            onError={setError}
+          />
         </div>
       )}
     </article>
@@ -576,7 +711,7 @@ export function ThreadAutomationsControl({ thread }: { thread: ThreadDto }) {
         >
           <DialogHeader className="automation-heading">
             <div className="automation-heading-icon">
-              <Workflow size={20} strokeWidth={1.6} />
+              <Workflow size={16} strokeWidth={1.7} />
             </div>
             <div className="automation-heading-copy">
               <DialogTitle ref={title} tabIndex={-1} className="outline-none">
@@ -593,7 +728,7 @@ export function ThreadAutomationsControl({ thread }: { thread: ThreadDto }) {
               onClick={() => refreshRef.current()}
             >
               <RefreshCw
-                size={16}
+                size={15}
                 className={refreshing ? 'animate-spin' : ''}
               />
             </button>
@@ -787,17 +922,20 @@ function Metric({
   const { t } = useI18n();
   return (
     <div className="automation-metric" role="group" aria-label={label}>
-      <span className="automation-metric-label">{label}</span>
-      <strong className={accent ? 'is-accent' : ''} title={title}>
-        {value}
-      </strong>
-      <span className="automation-metric-quality">
+      <span className="automation-metric-label">
+        <span>{label}</span>
         {partial && (
-          <span title={t('automation.totalCoverage')}>
+          <span
+            className="automation-metric-quality"
+            title={t('automation.totalCoverage')}
+          >
             {t('automation.partial')}
           </span>
         )}
       </span>
+      <strong className={accent ? 'is-accent' : ''} title={title}>
+        {value}
+      </strong>
     </div>
   );
 }
