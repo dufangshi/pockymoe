@@ -426,8 +426,9 @@ over loopback TCP with Host `agent-interface`, source `controller-api`, the live
 Agent and instance IDs, and no browser headers. `operation_id` maps to a durable
 pending-request ID: a retry with the same input returns the original receipt, a
 different input conflicts. Receipts and completion notifications survive hub
-restarts. A completion notification is sent once per submission with the bound
-Agent's live identity through the `treer` CLI on the hub's `PATH`, using the
+restarts. Submission lookup and queue cancellation decode percent-encoded path
+IDs sent by the Controller. A completion notification is sent once per submission
+with the bound Agent's live identity through the `treer` CLI on the hub's `PATH`, using the
 idempotency key `prompt-submission/<id>/terminal`; it retries until delivered and
 never reruns the task. Transcript `page`/`cursor` are turn offsets (default limit
 1, maximum 1000); items map through the typed thread schema. Status is `blocked`

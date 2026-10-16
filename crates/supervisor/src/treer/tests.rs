@@ -459,11 +459,26 @@ async fn ais_prompt_idempotency_queue_cancel_steer_transcript_and_detach_release
         .unwrap();
     assert_eq!(queue["submissions"].as_array().unwrap().len(), 1);
     assert_eq!(queue["submissions"][0]["id"], second);
+    // Treer's Controller percent-encodes path segments, including UUID hyphens.
+    let encoded_second = second.replace('-', "%2D");
+    let submission = request(
+        &f,
+        &h,
+        reqwest::Method::GET,
+        &format!("/v1/submissions/{encoded_second}"),
+        false,
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(submission.status(), 200);
+    let submission: Value = submission.json().await.unwrap();
+    assert_eq!(submission["submission"]["id"], second);
     let cancelled: Value = request(
         &f,
         &h,
         reqwest::Method::DELETE,
-        &format!("/v1/queue/{second}"),
+        &format!("/v1/queue/{encoded_second}"),
         false,
     )
     .send()

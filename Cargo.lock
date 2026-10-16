@@ -2498,6 +2498,7 @@ dependencies = [
  "hpke",
  "image",
  "p256",
+ "percent-encoding",
  "pockymoe-protocol",
  "pockymoe-runtime",
  "pockymoe-treer",

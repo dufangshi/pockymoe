@@ -801,7 +801,10 @@ async fn ais(Extension(scope): Extension<Scope>, request: Request) -> Response {
             }
             _ => {
                 if let Some(id) = path.strip_prefix("/v1/submissions/") {
-                    return match hub.submission(thread, id) {
+                    let Ok(id) = percent_encoding::percent_decode_str(id).decode_utf8() else {
+                        return failure(StatusCode::BAD_REQUEST, "invalid_submission_id");
+                    };
+                    return match hub.submission(thread, &id) {
                         Ok(Some(s)) => Json(json!({"submission":s})).into_response(),
                         Ok(None) => failure(StatusCode::NOT_FOUND, "not_found"),
                         Err(e) => map_failure(e),
@@ -812,7 +815,10 @@ async fn ais(Extension(scope): Extension<Scope>, request: Request) -> Response {
     }
     if method == axum::http::Method::DELETE {
         if let Some(id) = path.strip_prefix("/v1/queue/") {
-            return match hub.cancel(thread, id).await {
+            let Ok(id) = percent_encoding::percent_decode_str(id).decode_utf8() else {
+                return failure(StatusCode::BAD_REQUEST, "invalid_submission_id");
+            };
+            return match hub.cancel(thread, &id).await {
                 Ok(s) => Json(json!({"submission":s})).into_response(),
                 Err(e) => map_failure(e),
             };
