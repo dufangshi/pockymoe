@@ -270,8 +270,12 @@ clearing the composer's draft.
 
 On a phone (under 640 px wide) the controls sit at the bottom for one-handed use.
 The top bar shows only status: the device monitor, the subscription usage windows
-(such as 5h and 7d; tapping them shows the details), how many other threads are
-running, the connection and notifications. The composer (or the files prompt)
+(such as 5h and 7d; tapping them shows the details), how many threads are running on the account (a threads mark with a live dot and
+the count, "running" where there is room), the connection and notifications.
+Tapping the count opens a sheet with those threads, each with how long it has
+run, then the finished threads that were opened before and not read since, and
+a way to all threads. It counts every running thread of the devices the
+navigation reads, also ones never opened. The composer (or the files prompt)
 and a row under it form one bottom panel; the row holds the current thread,
 Chat / Files / Terminal and More. Tapping the thread, or swiping up anywhere on
 the panel, opens a sheet with the workspace's threads (the current thread's group
