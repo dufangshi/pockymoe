@@ -69,6 +69,7 @@ impl PeerError {
 enum ReplyKind {
     Request,
     Directory,
+    Upstreams,
 }
 struct Pending {
     kind: ReplyKind,
@@ -136,6 +137,7 @@ impl TunnelConnection {
         let (kind, value) = match message["type"].as_str() {
             Some("peer.response") => (ReplyKind::Request, &message["payload"]),
             Some("peer.directory.result") => (ReplyKind::Directory, &message["devices"]),
+            Some("upstream.directory.result") => (ReplyKind::Upstreams, &message["connections"]),
             _ => return,
         };
         let Some(id) = message["requestId"].as_str() else {
@@ -145,7 +147,7 @@ impl TunnelConnection {
         if state.connection.as_ref().is_none_or(|c| c.id != self.id)
             || state.pending.get(id).is_none_or(|p| {
                 p.kind != kind
-                    && !(p.kind == ReplyKind::Directory
+                    && !(p.kind != ReplyKind::Request
                         && kind == ReplyKind::Request
                         && value["statusCode"]
                             .as_u64()
@@ -515,5 +517,29 @@ pub(crate) mod tests {
             message: "failed".into()
         }
         .retryable());
+    }
+}
+
+/// Public metadata only; does not authorize credential transfers.
+pub(crate) async fn upstream_directory(state: &Supervisor) -> Result<Vec<Value>> {
+    let result = exchange(
+        state,
+        json!({"type":"upstream.directory"}),
+        ReplyKind::Upstreams,
+        "upstream directory",
+    )
+    .await?;
+    result
+        .as_array()
+        .cloned()
+        .ok_or_else(|| anyhow!("Upstream catalog unavailable"))
+}
+pub(crate) fn announce_upstreams(state: &Supervisor, rows: Value) {
+    let l = link(state);
+    let guard = l.state.lock().unwrap();
+    if let Some(c) = &guard.connection {
+        let _ = c
+            .outgoing
+            .send(json!({"type":"relay.heartbeat","upstreamConnections":rows}));
     }
 }

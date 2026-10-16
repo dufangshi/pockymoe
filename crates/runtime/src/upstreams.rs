@@ -11,6 +11,7 @@ use std::{
 };
 use toml_edit::{value, DocumentMut};
 mod cc_switch;
+pub mod connections;
 mod discovery;
 mod dsh;
 mod model_meta;

@@ -139,6 +139,14 @@ by directory refresh. Explicit effort changes use ACP `session/set_config_option
 with a string value and verify the returned setting; Auto selects the model's
 advertised default. Original local model settings are retained for restoration.
 
+[Shared upstream connections](upstream-connections.md) separate saving a connection
+from applying it to a harness. The same Add connection form serves settings,
+harnesses, and plugins. Sync copies a remote API connection to this device;
+Apply is a separate action on a locally available connection. Editing or syncing
+never implicitly switches a running harness. Account discovery metadata lives on
+the relay, while credentials travel only between certified devices over the
+existing encrypted peer transport.
+
 Connection tests make a small authenticated model request and may incur charges.
 Claude profiles support both API-key and bearer-token authentication; imported
 profiles preserve that choice and connection tests use the same header as the CLI.

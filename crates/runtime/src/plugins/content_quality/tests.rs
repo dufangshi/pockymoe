@@ -345,6 +345,26 @@ async fn live_connection_and_editorial_protocol() {
         .await
         .unwrap()
         .is_empty());
+    // Exercise the shared registry path against the same authorized upstream too.
+    // Only this isolated Supervisor receives the private connection.
+    let dir = tempfile::tempdir().unwrap();
+    let s = supervisor(dir.path());
+    let c: crate::upstreams::connections::Connection = serde_json::from_value(json!({
+        "name":"Private live fixture", "protocol":"openai_chat",
+        "baseUrl":u.endpoint.as_str(), "apiKey":u.api_key, "model":u.model
+    }))
+    .unwrap();
+    let saved = crate::upstreams::connections::upsert(
+        &crate::upstreams::directory(&s.config.database_url),
+        c,
+    )
+    .unwrap();
+    let u = Upstream::load(&s, &settings(json!({"connectionId":saved["id"]}))).unwrap();
+    assert_eq!(
+        crate::upstreams::inventory(&crate::upstreams::directory(&s.config.database_url)).unwrap()
+            ["active"],
+        json!({})
+    );
     let original = "Original prose: the task failed. There are 42 unfinished checks. `cargo check` was not run. https://example.com/docs";
     let p = Protected::new(original).unwrap();
     let result = edited(
@@ -930,4 +950,40 @@ async fn recorded_turn_paths_take_priority_over_alphabetically_earlier_dirty_fil
     assert_eq!(paths[0], "z-turn.md");
     assert_eq!(paths.len(), 5);
     assert!(truncated);
+}
+
+#[tokio::test]
+async fn saved_connection_overrides_legacy_path_without_applying_a_harness() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = supervisor(dir.path());
+    let (base, _, server) = mock(200, |body| {
+        assert_eq!(body["model"], "mock-model");
+        completion("OK")
+    });
+    let c:crate::upstreams::connections::Connection=serde_json::from_value(json!({"name":"Writing model","protocol":"openai_chat","baseUrl":base,"apiKey":"mock-credential","model":"default-model"})).unwrap();
+    let saved = crate::upstreams::connections::upsert(
+        &crate::upstreams::directory(&s.config.database_url),
+        c,
+    )
+    .unwrap();
+    let settings = settings(
+        json!({"connectionId":saved["id"],"connectionFile":"/nonexistent/legacy.json","model":"mock-model"}),
+    );
+    let upstream = Upstream::load(&s, &settings).unwrap();
+    assert_eq!(
+        upstream.complete("system", "user", 100).await.unwrap(),
+        "OK"
+    );
+    server.join().unwrap();
+    assert!(
+        crate::upstreams::inventory(&crate::upstreams::directory(&s.config.database_url)).unwrap()
+            ["profiles"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let mut missing = settings;
+    missing.connection_id = uuid::Uuid::new_v4().to_string();
+    assert!(Upstream::load(&s, &missing).is_err());
+    assert!(Settings::parse(&json!({"connectionId":"not-an-id"})).is_err());
 }

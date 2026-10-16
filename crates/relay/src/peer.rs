@@ -945,4 +945,81 @@ mod tests {
         );
         assert!(fixture.state.pending.lock().unwrap().is_empty());
     }
+    #[tokio::test]
+    async fn upstream_catalog_tunnel_scopes_owners_and_keeps_offline_metadata() {
+        let mut fixture = Fixture::new("upstream-catalog-tunnel").await;
+        let address = fixture.serve().await;
+        let mut a = connect(address, "a").await;
+        let mut b = connect(address, "b").await;
+        let (foreign_id, mut foreign_rx) = fixture.socket("foreign").await;
+        let id = Uuid::new_v4().to_string();
+        let revision = Uuid::new_v4().to_string();
+        let metadata =
+            json!({"id":id,"name":"API connection","protocol":"gemini","revision":revision});
+        write(
+            &mut a,
+            json!({"type":"relay.heartbeat","upstreamConnections":[metadata.clone()]}),
+        )
+        .await;
+        // Directory on the same socket is ordered after its metadata update.
+        write(
+            &mut a,
+            json!({"type":"upstream.directory","requestId":"own"}),
+        )
+        .await;
+        let own = read(&mut a).await;
+        assert_eq!(own["type"], "upstream.directory.result");
+        assert_eq!(own["connections"][0]["id"], id);
+        write(
+            &mut b,
+            json!({"type":"upstream.directory","requestId":"B","ownerUserId":"other"}),
+        )
+        .await;
+        let shared = read(&mut b).await;
+        assert_eq!(shared["connections"][0]["deviceId"], "a");
+        assert_eq!(shared["connections"][0]["online"], true);
+        assert!(shared["connections"][0].get("baseUrl").is_none());
+        crate::upstream_catalog::directory(
+            &fixture.state,
+            "foreign",
+            foreign_id,
+            json!({"type":"upstream.directory","requestId":"foreign","ownerUserId":"owner"}),
+        )
+        .await;
+        let foreign: Value = serde_json::from_str(&foreign_rx.recv().await.unwrap()).unwrap();
+        assert_eq!(foreign["connections"], json!([]));
+        let mut invalid = metadata.clone();
+        invalid["apiKey"] = json!("must-not-be-persisted");
+        write(
+            &mut a,
+            json!({"type":"relay.heartbeat","upstreamConnections":[invalid]}),
+        )
+        .await;
+        write(
+            &mut a,
+            json!({"type":"upstream.directory","requestId":"after-rejected"}),
+        )
+        .await;
+        assert_eq!(read(&mut a).await["connections"][0]["revision"], revision);
+        a.close(None).await.unwrap();
+        // Model an established offline state without timing-sensitive polling.
+        fixture.state.sockets.write().await.remove("a");
+        write(
+            &mut b,
+            json!({"type":"upstream.directory","requestId":"offline"}),
+        )
+        .await;
+        let offline = read(&mut b).await;
+        assert_eq!(offline["connections"][0]["online"], false);
+        assert_eq!(offline["connections"][0]["id"], id);
+        let c = fixture.state.store.conn.lock().await;
+        let stored: String = c
+            .query_row(
+                "SELECT name FROM relay_upstream_catalog WHERE device_id='a'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored, "API connection");
+    }
 }

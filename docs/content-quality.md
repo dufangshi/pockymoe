@@ -1,12 +1,13 @@
 # Content Quality
 
 `pockymoe.content-quality` is a built-in, optional second-pass writing plugin.
-It is disabled by default. It uses an explicitly configured OpenAI-compatible
-`chat/completions` endpoint and does not change the coding harness or its model.
+It is disabled by default. It selects a saved local [upstream connection](upstream-connections.md) and
+does not change the coding harness or its model. OpenAI Chat Completions,
+OpenAI Responses, Anthropic Messages, and Gemini native text APIs are supported.
 A successful plugin run means editing completed; it does not mean the underlying
 task achieved its goal.
 
-## Settings and private connection
+## Settings and model connection
 
 Open Settings > Plugins and use the settings button on the Content Quality row.
 Its settings open in a separate dialog and remain available while the plugin is
@@ -16,6 +17,7 @@ Settings use camelCase, reject unknown fields, and have these defaults:
 
 ```json
 {
+  "connectionId": "",
   "connectionFile": "",
   "model": "",
   "language": "zh-CN",
@@ -35,7 +37,15 @@ Presets are `concise`, `clear`, `technical`, `beginner`, and `copyedit`.
 background is limited to 2,000 bytes. `minReplyChars` is an integer from 0 to
 65,536. The model can be selected in settings or in the connection file.
 
-The private local connection file contains `baseUrl`, `apiKey`, and an optional
+Select a saved connection and a model in the plugin settings. The shared Add
+connection form is available from the selector. Remote entries must first be
+synchronized to this device; synchronization never applies them to a harness.
+Only the connection ID and writing preferences are stored in plugin settings;
+the Supervisor resolves credentials locally. A nonempty `connectionId` takes
+precedence over the legacy file setting. A selected missing connection fails
+explicitly rather than falling back to a different credential.
+
+For compatibility, the private local connection file contains `baseUrl`, `apiKey`, and an optional
 `model`. Keep it outside tracked source and restrict its filesystem permissions
 to the Supervisor account. Never put its contents in plugin settings, action
 input, thread messages, or documents. An empty `connectionFile` resolves to
@@ -46,7 +56,7 @@ base path such as `/v1`, or a complete `/chat/completions` URL. Embedded URL
 credentials, queries, fragments and redirects are rejected. Prefer HTTPS;
 HTTP is supported for local or private upstreams.
 
-Only the path and nonsecret writing preferences are saved in plugin settings.
+For the legacy file path, only the path and nonsecret writing preferences are saved in plugin settings.
 The API key is read locally and used only in the upstream Authorization header.
 Errors report bounded generic messages or HTTP status codes, without returning
 raw upstream bodies or transport errors. Requests have a 10-second connection

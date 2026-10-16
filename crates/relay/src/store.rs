@@ -453,6 +453,7 @@ impl RelayStore {
         workbench::ensure_schema(&conn)?;
         preferences::ensure_schema(&conn)?;
         thread_groups::ensure_schema(&conn)?;
+        upstream_catalog::ensure_schema(&conn)?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
             session_secret,
