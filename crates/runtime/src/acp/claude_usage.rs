@@ -304,8 +304,11 @@ impl ClaudeUsageReader {
         }
         if parent {
             self.last_parent_usage = Some(tokens.clone());
+            // Claude writes its API errors as replies from a "<synthetic>" model;
+            // the turn keeps the model that actually ran.
             self.parent_model = message["model"]
                 .as_str()
+                .filter(|model| *model != "<synthetic>")
                 .map(str::to_owned)
                 .or(self.parent_model.take());
         }
@@ -482,6 +485,31 @@ mod tests {
         writeln!(out).unwrap();
         assert_eq!(reader.poll_final()[0]["total"]["outputTokens"], 140);
         assert!(reader.poll_final().is_empty());
+    }
+
+    #[test]
+    fn synthetic_error_reply_keeps_the_model_that_ran() {
+        let home = tempfile::tempdir().unwrap();
+        let session = uuid::Uuid::new_v4().to_string();
+        let project = home.path().join("projects/project");
+        std::fs::create_dir_all(&project).unwrap();
+        let file = project.join(format!("{session}.jsonl"));
+        std::fs::write(&file, "").unwrap();
+        let mut reader = ClaudeUsageReader::with_home(home.path().into(), &session);
+        assert!(reader.poll().is_empty());
+        let record = |id: &str, model: &str, output: u64| {
+            json!({"type":"assistant","timestamp":"2099-01-01T00:00:00Z","sessionId":session,
+            "message":{"id":id,"model":model,"content":[{"type":"text","text":"reply"}],
+                "usage":{"input_tokens":0,"output_tokens":output}}})
+        };
+        let mut out = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&file)
+            .unwrap();
+        writeln!(out, "{}", record("ran", "claude-opus-5-5", 30)).unwrap();
+        writeln!(out, "{}", record("error", "<synthetic>", 0)).unwrap();
+        let report = reader.poll().pop().unwrap();
+        assert_eq!(report["model"], "claude-opus-5-5");
     }
 
     #[test]

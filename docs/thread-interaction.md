@@ -232,6 +232,16 @@ Long human prompts use a six-line text preview, bounded by 600 Unicode
 characters, 160 words or eight explicit lines. Expand/Show less controls reuse
 message disclosure state and keep the scroll position anchored. Attachments
 remain visible in the preview, and Copy always copies the complete prompt.
+A prompt's time and Copy appear on hover, or when the prompt is tapped on a
+phone: beside the text when its last line has room, otherwise under its right
+end. They never cover the text.
+
+When a turn fails, its prompt carries a red mark, and tapping the mark shows the
+error under the prompt (the readable message first, then the raw text). The
+thread page does not repeat that error above the thread. A reply that only
+repeats the error, such as the one Claude writes for an API error, is left out of
+the transcript. Claude's "<synthetic>" model name for that reply does not replace
+the model that ran.
 
 ## Substantial answers during work
 
@@ -265,8 +275,9 @@ the file tree; a link to a file that is not on the device shows its path instead
 of an error.
 
 On a phone, the file list and file viewer have a one-field prompt at the bottom.
-It sends to the thread the files belong to, like Send in the composer, without
-clearing the composer's draft.
+It edits the same draft as the composer, so text typed in either shows in the
+other, and sends it to the thread the files belong to, like Send in the composer,
+together with any files already attached in the composer.
 
 On a phone (under 640 px wide) the controls sit at the bottom for one-handed use.
 The top bar shows only status: the device monitor, the subscription usage windows
@@ -281,8 +292,9 @@ Chat / Files / Terminal and More. Tapping the thread, or swiping up anywhere on
 the panel, opens a sheet with the workspace's threads (the current thread's group
 first, then running and unread), recent threads and New thread; notifications
 stay on the bell. More holds search, the shortcut star,
-Left-handed, the thread's sharing, automation and split controls, the thread map,
-the workspace drawer, Back, Home and Settings. Dragging a sheet down from the top of its list
+Left-handed and the thread's sharing, automation and split controls; a row fixed
+at its bottom holds the thread map, the workspace drawer, Home, Back and Settings,
+so they show without scrolling. Dragging a sheet down from the top of its list
 closes it. The row stays while typing, right above the keyboard. On a phone the
 composer shows one line of a longer prompt until the prompt is focused; it then
 opens to its full height, also while a dictation or an IME's underlined candidates

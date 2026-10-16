@@ -1,17 +1,27 @@
 import { useLayoutEffect, useRef, useState } from 'react';
-import { ArrowUp, Check } from 'lucide-react';
+import { ArrowUp, Check, Paperclip } from 'lucide-react';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 
 const MAX_HEIGHT = 112;
 
 /** A phone's one-field prompt under the files: ask about what you are reading
-    without going back to the conversation. Sends like the main composer's Send. */
-export function FileAskBar({ onSend, disabledReason }: {
+    without going back to the conversation. Sends like the main composer's Send.
+    Given `value` and `onChange` it edits the conversation's own draft, so what is
+    typed here is in the composer too and the other way round; the host then
+    clears the draft when a send is accepted. */
+export function FileAskBar({ onSend, disabledReason, value, onChange, attachmentCount = 0 }: {
   onSend: (prompt: string) => Promise<boolean>;
   disabledReason?: string | null;
+  value?: string;
+  onChange?: (text: string) => void;
+  /** Files already attached in the shared draft; they go with the text. */
+  attachmentCount?: number;
 }) {
   useI18n();
-  const [text, setText] = useState('');
+  const [ownText, setOwnText] = useState('');
+  const controlled = value !== undefined && onChange !== undefined;
+  const text = controlled ? value : ownText;
+  const setText = (next: string) => (controlled ? onChange(next) : setOwnText(next));
   const [state, setState] = useState<'idle' | 'sending' | 'sent' | 'failed'>('idle');
   const field = useRef<HTMLTextAreaElement>(null);
 
@@ -34,7 +44,7 @@ export function FileAskBar({ onSend, disabledReason }: {
     if (!prompt || blocked) return;
     setState('sending');
     const sent = await onSend(prompt).catch(() => false);
-    if (sent) setText('');
+    if (sent && !controlled) setText('');
     setState(sent ? 'sent' : 'failed');
   };
 
@@ -45,6 +55,12 @@ export function FileAskBar({ onSend, disabledReason }: {
         ? <p className="file-ask-bar-note" role="status">{translate(state === 'sent' ? 'files.askSent' : 'files.askFailed')}</p>
         : null}
       <div className="file-ask-bar-shell">
+        {attachmentCount > 0 && (
+          <span className="file-ask-bar-attachments" title={translate('files.askAttachments', { count: attachmentCount })}
+            aria-label={translate('files.askAttachments', { count: attachmentCount })}>
+            <Paperclip aria-hidden="true" />{attachmentCount}
+          </span>
+        )}
         <textarea
           ref={field}
           rows={1}
