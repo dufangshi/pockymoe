@@ -164,7 +164,7 @@ test('phone terminal keeps the prompt and newest reply visible, resizes by touch
   await page.goto(`/threads/${id}`);
   const reply = page.locator('.thread-graph-message').filter({ hasText: 'Summarize the terminal layout' }).last();
   await expect(reply).toBeVisible();
-  await page.locator('.matter-topbar').getByRole('button', { name: 'Terminal', exact: true }).tap();
+  await page.locator('nav.matter-phone-dock').getByRole('button', { name: 'Terminal', exact: true }).tap();
   const panel = page.getByTestId('workbench-bottom-panel');
   await expect(panel).toBeVisible();
   await expect(visibleRows(page)).toContainText('$', { timeout: 20_000 });
@@ -227,7 +227,7 @@ test('phone terminal reserves space for a visual-only keyboard without relying o
   await page.addInitScript(() => localStorage.setItem('remote-codex.locale', 'en'));
   const [id] = await workspaceThreads(request, ['Keyboard avoidance']);
   await page.goto(`/threads/${id}`);
-  await page.locator('.matter-topbar').getByRole('button', { name: 'Terminal', exact: true }).tap();
+  await page.locator('nav.matter-phone-dock').getByRole('button', { name: 'Terminal', exact: true }).tap();
   const panel = page.getByTestId('workbench-bottom-panel');
   await expect(visibleRows(page)).toContainText('$');
   await panel.locator('.shell-pane-host:visible').tap({ position: { x: 50, y: 35 } });

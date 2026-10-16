@@ -15,6 +15,11 @@ async function open(page: Page, url: string, preset: string) {
   if (await later.isVisible()) await later.click();
 }
 
+test.beforeEach(async ({ page }) => {
+  // This spec exercises the classic phone bars/tabs and composer split controls.
+  await page.addInitScript(() => localStorage.setItem('pockymoe.phoneDock', 'off'));
+});
+
 test('Plum Pocket redraws the tab-bar tools and keeps Classic icons', async ({ page, request }) => {
   const absPath = path.resolve(process.env.E2E_WORKSPACE_ROOT!, `plum-${randomUUID()}`);
   await mkdir(absPath, { recursive: true });

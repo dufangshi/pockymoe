@@ -4,6 +4,14 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { expect, test, type Page, type APIRequestContext } from '@playwright/test';
 
+test.beforeEach(async ({ page }) => {
+  // This spec exercises the classic phone bars/tabs and composer split controls.
+  await page.addInitScript(() => {
+    localStorage.setItem('pockymoe.phoneDock', 'off');
+    localStorage.setItem(`pockymoe.onboarding.v1:${JSON.stringify([location.origin, 'local:owner'])}`, JSON.stringify({ welcomeDismissed: true, completed: [] }));
+  });
+});
+
 test.use({ actionTimeout: 15_000 });
 
 const base = `http://127.0.0.1:${process.env.E2E_API_PORT ?? 8787}`;
@@ -76,8 +84,10 @@ async function fixture(request: APIRequestContext) {
       .toBe('idle');
   }
   const filename = path.resolve(process.env.E2E_DATABASE_URL!);
-  expect(filename).toContain('.temp/workbench/');
+  // Both the standalone workbench runner and focused task runners use isolated data.
+  expect(filename).toMatch(/(?:\.temp\/workbench\/|\.scratch\/[^/]+\/e2e\/)/);
   const db = new DatabaseSync(filename);
+  db.exec('PRAGMA busy_timeout=5000');
   db.function('search_fold', { deterministic: true }, (value) =>
     typeof value === 'string' ? value.toLowerCase() : value,
   );

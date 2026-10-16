@@ -3,6 +3,11 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, writeFile, readFile } from 'node:fs/promises';
 import path from 'node:path';
 
+test.beforeEach(async ({ page }) => {
+  // This spec exercises the classic phone bars/tabs and composer split controls.
+  await page.addInitScript(() => localStorage.setItem('pockymoe.phoneDock', 'off'));
+});
+
 test.use({ actionTimeout: 15_000 });
 const base = `http://127.0.0.1:${process.env.E2E_API_PORT ?? 8787}`;
 test('file toolbar stays compact, tabs swipe independently and icon actions inherit dark and light themes', async ({ page, request, context, isMobile }, testInfo) => {

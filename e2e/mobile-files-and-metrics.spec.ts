@@ -25,7 +25,7 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
-test('phone file ask bar sends from the list and viewer, keeps the composer draft, and hides at 640px', async ({ page, request }, testInfo) => {
+for (const submit of ['tap', 'Enter'] as const) test(`phone file ask bar sends from the list and viewer, keeps the composer draft, and hides at 640px (${submit})`, async ({ page, request }, testInfo) => {
   test.skip(testInfo.project.name !== 'mobile-chromium', 'Phone file ask bar');
   await page.setViewportSize({ width: 390, height: 844 });
   const id = await fixture(request, true);
@@ -33,7 +33,10 @@ test('phone file ask bar sends from the list and viewer, keeps the composer draf
   const draft = 'Keep my main composer draft';
   const composer = page.getByRole('textbox', { name: 'Prompt', exact: true });
   await composer.fill(draft);
-  const explorer = page.locator('.matter-topbar').getByRole('button', { name: 'Toggle Explorer', exact: true });
+  // The dock hides while editing; finish the draft before switching views.
+  await composer.evaluate(e => (e as HTMLElement).blur());
+  const dock = page.locator('nav.matter-phone-dock');
+  const explorer = dock.getByRole('button', { name: 'Toggle Explorer', exact: true });
   await explorer.tap();
   const files = page.getByTestId('workspace-panel');
   const tree = files.getByRole('tree', { name: 'Workspace files' });
@@ -60,7 +63,7 @@ test('phone file ask bar sends from the list and viewer, keeps the composer draf
       expect(prompts).toHaveLength(1);
     }
     const sent = page.waitForResponse(r => r.request().method() === 'POST' && r.url().endsWith(`/api/threads/${id}/prompt`));
-    if (index === 0) await bar.getByRole('button', { name: 'Send', exact: true }).tap();
+    if (index === 0 && submit === 'tap') await bar.getByRole('button', { name: 'Send', exact: true }).tap();
     else await input.press('Enter');
     expect((await sent).ok()).toBeTruthy();
     await expect(bar.locator('.file-ask-bar-note')).toContainText('Sent');
@@ -79,7 +82,8 @@ test('phone file ask bar sends from the list and viewer, keeps the composer draf
   await page.setViewportSize({ width: 639, height: 844 });
   await expect(bar).toBeVisible();
   await page.setViewportSize({ width: 390, height: 844 });
-  await explorer.tap();
+  await input.evaluate(e => (e as HTMLElement).blur());
+  await dock.getByRole('button', { name: 'Chat', exact: true }).tap();
   await expect(composer).toBeVisible();
   await expect(composer).toHaveText(draft);
 });
@@ -90,9 +94,10 @@ test('mobile toolbar opens full-width files; tap, preview, return, upload and ac
   const id = await fixture(request, true);
   await page.goto(`/threads/${id}`);
   const header = page.locator('.matter-topbar');
-  await expect(header.getByRole('button', { name: 'Toggle Explorer', exact: true })).toBeVisible();
-  await expect(header.locator('.matter-topbar-end')).toHaveCSS('gap', '0px');
-  await header.getByRole('button', { name: 'Toggle Explorer', exact: true }).tap();
+  const dock = page.locator('nav.matter-phone-dock');
+  await expect(header).toHaveClass(/is-status-only/);
+  await expect(dock.getByRole('button', { name: 'Toggle Explorer', exact: true })).toBeVisible();
+  await dock.getByRole('button', { name: 'Toggle Explorer', exact: true }).tap();
   const files = page.getByTestId('workspace-panel');
   const tree = files.getByRole('tree', { name: 'Workspace files' });
   await expect(tree).toBeVisible();
@@ -131,7 +136,7 @@ test('mobile toolbar opens full-width files; tap, preview, return, upload and ac
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width);
   }
   await page.screenshot({ path: testInfo.outputPath('mobile-explorer.png') });
-  await header.getByRole('button', { name: 'Toggle Explorer', exact: true }).tap();
+  await dock.getByRole('button', { name: 'Chat', exact: true }).tap();
   await expect(page.getByRole('textbox', { name: 'Prompt', exact: true })).toBeVisible();
 });
 

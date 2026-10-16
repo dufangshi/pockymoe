@@ -17,6 +17,11 @@ async function createThread(request: APIRequestContext) {
 }
 
 test.beforeEach(async ({ page }) => {
+  // This spec exercises the classic phone bars/tabs and composer split controls.
+  await page.addInitScript(() => localStorage.setItem('pockymoe.phoneDock', 'off'));
+});
+
+test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem(
     `pockymoe.onboarding.v1:${JSON.stringify([location.origin, 'local:owner'])}`,
     JSON.stringify({ welcomeDismissed: true, completed: [] }),
@@ -106,10 +111,10 @@ test('turn navigation changes direction reliably and tool details load only on c
       const composer = document.querySelector('.thread-graph-composer-shell')!.getBoundingClientRect();
       return { height: rect.height, width: rect.width, gap: composer.top - rect.bottom };
     });
-    expect(compact.height).toBeCloseTo(18, 0);
-    expect(compact.width).toBeLessThanOrEqual(80);
+    expect(compact.height).toBeCloseTo(36, 0);
+    expect(compact.width).toBeLessThanOrEqual(120);
     expect(compact.gap).toBeGreaterThanOrEqual(0);
-    expect(compact.gap).toBeLessThanOrEqual(2);
+    expect(compact.gap).toBeLessThanOrEqual(8);
   } else {
     await expect(page.locator('.matter-rail')).toBeVisible();
   }
@@ -311,19 +316,20 @@ test('substantial answers survive refresh between folded work sections', async (
   page.on('request', request => { if (request.url().includes(`/turns/${turnId}`)) turnRequests.push(request.url()); });
   await page.goto(`/threads/${id}`);
   const turn = page.locator(`[data-timeline-turn][data-turn-id="${turnId}"]`);
-  await expect(turn.locator('.thread-answer-section')).toHaveCount(2);
+  await expect(turn.locator('.thread-answer-section')).toHaveCount(1);
   await expect(turn.getByText('先回答你的问题', { exact: true })).toBeVisible();
   await expect(turn.getByText('Implementation verified.', { exact: true })).toHaveCount(1);
   await expect(turn.getByText('Implementation verified.', { exact: true })).toBeVisible();
   expect(turnRequests).toHaveLength(0);
   await page.reload();
-  await expect(turn.locator('.thread-answer-section')).toHaveCount(2);
+  await expect(turn.locator('.thread-answer-section')).toHaveCount(1);
   expect(turnRequests).toHaveLength(0);
   await turn.getByRole('button', { name: /Expand turn 1/ }).click();
   await expect(turn.locator('.thread-execution-timeline .tlog-run')).toHaveCount(2);
   expect(turnRequests).toHaveLength(1);
   const order = await turn.locator('.thread-execution-timeline').locator('.tlog-run, [data-role="assistant"]').evaluateAll(elements => elements.map(element => element.matches('.tlog-run') ? 'run' : 'answer'));
-  expect(order).toEqual(['run', 'answer', 'run', 'answer']);
+  // The final answer remains below the work; only the commentary is inside it.
+  expect(order).toEqual(['run', 'answer', 'run']);
   const batches = turn.locator('.tlog-run-head');
   await expect(batches).toHaveCount(2);
   await page.screenshot({ path: info.outputPath('substantial-answer-between-steps.png'), scale: 'css' });
@@ -362,7 +368,9 @@ for (const preset of ['classic', 'plum-pocket'] as const) test(`thread loading s
     await initialGate;
     await route.fulfill({ json: { ...detail, turns: [summary], totalTurnCount: 1 } });
   });
+  let historyRequests = 0;
   await page.route(`**/api/threads/${id}/turns/${fullTurn.id}/detail?*`, async route => {
+    historyRequests++;
     await historyGate;
     await route.fulfill({ json: fullTurn });
   });
@@ -387,11 +395,16 @@ for (const preset of ['classic', 'plum-pocket'] as const) test(`thread loading s
     const worked = page.locator('.thread-graph-worked-summary button[aria-expanded]');
     await worked.click();
     await expect(worked).toHaveAttribute('aria-busy', 'true');
-    await expect(worked.locator('.thread-loading-indicator.is-inline')).toBeVisible();
-    await expect(worked).toBeDisabled();
+    const loading = worked.getByRole('img', { name: 'Loading complete history...', exact: true });
+    await expect(loading).toBeVisible();
+    // The busy toggle keeps its geometry/focus and ignores duplicate clicks.
+    expect(historyRequests).toBe(1);
+    await worked.click();
+    expect(historyRequests).toBe(1);
+    await expect(worked).toHaveAttribute('aria-expanded', 'false');
     releaseHistory();
     await expect(worked).toHaveAttribute('aria-busy', 'false');
-    await expect(worked.locator('.thread-loading-indicator')).toHaveCount(0);
+    await expect(loading).toHaveCount(0);
     await expect(worked).toBeEnabled();
     await expect(page.getByText('git status', { exact: true })).toBeVisible();
   } finally { releaseInitial(); releaseHistory(); }

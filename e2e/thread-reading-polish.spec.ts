@@ -6,6 +6,11 @@ import path from 'node:path';
 const base = `http://127.0.0.1:${process.env.E2E_API_PORT ?? 8787}`;
 
 test.beforeEach(async ({ page }) => {
+  // This spec exercises the classic phone bars/tabs and composer split controls.
+  await page.addInitScript(() => localStorage.setItem('pockymoe.phoneDock', 'off'));
+});
+
+test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem(
     `pockymoe.onboarding.v1:${JSON.stringify([location.origin, 'local:owner'])}`,
     JSON.stringify({ welcomeDismissed: true, completed: [] }),
@@ -554,7 +559,7 @@ test('background wake replaces its waiting anchor and continues within the same 
   const usageBox = (await usage.boundingBox())!;
   const inputBox = (await input.boundingBox())!;
   expect(usageBox.y).toBeGreaterThanOrEqual(inputBox.y + inputBox.height);
-  const navigationBox = (await page.locator('.thread-jump-latest-badge').boundingBox())!;
+  const navigationBox = (await page.locator('.thread-jump-nav').boundingBox())!;
   expect(inputBox.y - navigationBox.y - navigationBox.height).toBeLessThan(18);
   expect(usageBox.height).toBeLessThanOrEqual(16);
   if (testInfo.project.name === 'mobile-chromium') await usage.tap();

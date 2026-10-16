@@ -78,6 +78,8 @@ test('cross-device split keeps both chats writable and tools follow the last foc
       : { width: 1440, height: 1000 },
     ...(mobile ? { isMobile: true, hasTouch: true } : {}),
   });
+  // The classic phone bars and composer split switches are under test here.
+  await context.addInitScript(() => localStorage.setItem('pockymoe.phoneDock', 'off'));
   try {
     start('relay', {
       PORT: String(relayPort),
