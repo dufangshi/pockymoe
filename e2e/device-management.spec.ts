@@ -22,6 +22,29 @@ async function expectActionsInside(page: Page, row: Locator) {
   }
 }
 
+/** Cancel and Save share one row inside the dialog, on any width and language. */
+async function expectFormActionsInline(page: Page, dialog: Locator) {
+  const actions = dialog.getByTestId('connection-form-actions');
+  const [cancel, save] = await Promise.all(
+    [
+      actions.getByRole('button').first(),
+      actions.getByRole('button').last(),
+    ].map((button) => button.boundingBox()),
+  );
+  const box = (await dialog.boundingBox())!;
+  expect(Math.abs(cancel!.y - save!.y)).toBeLessThanOrEqual(1);
+  for (const button of [cancel!, save!]) {
+    expect(button.x).toBeGreaterThanOrEqual(box.x - 1);
+    expect(button.x + button.width).toBeLessThanOrEqual(box.x + box.width + 1);
+    expect(button.y + button.height).toBeLessThanOrEqual(
+      box.y + box.height + 1,
+    );
+    expect(button.x + button.width).toBeLessThanOrEqual(
+      page.viewportSize()!.width + 1,
+    );
+  }
+}
+
 test('connections save without applying, apply apart from sync, and template preview stays usable', async ({
   page,
 }, testInfo) => {
@@ -133,6 +156,7 @@ test('connections save without applying, apply apart from sync, and template pre
     .getByLabel('Choose a discovered model')
     .selectOption('test-model');
   await expect(editor.getByLabel('Default model')).toHaveValue('test-model');
+  await expectFormActionsInline(page, editor);
   await page.screenshot({ path: testInfo.outputPath('connection-form.png') });
   await editor.getByRole('button', { name: 'Save connection' }).click();
   await expect(editor).toBeHidden();
@@ -142,34 +166,58 @@ test('connections save without applying, apply apart from sync, and template pre
   expect(writes.filter((w) => w.includes('/apply'))).toEqual([]);
 
   const personal = page.getByRole('listitem', { name: 'Personal API' });
-  await personal.getByRole('button', { name: 'Apply to OpenAI Codex' }).click();
+  const applyButton = personal.getByRole('button', {
+    name: 'Apply Personal API to OpenAI Codex',
+  });
+  // The harness is the page context: the row button says only "Apply".
+  await expect(applyButton).toHaveText('Apply');
+  await applyButton.click();
   const apply = page.getByRole('dialog', {
     name: 'Apply Personal API to OpenAI Codex',
   });
   await expect(apply.getByLabel('Default model')).toHaveValue('test-model');
-  await apply.getByRole('button', { name: 'Apply to OpenAI Codex' }).click();
+  await apply.getByRole('button', { name: 'Apply', exact: true }).click();
   await expect(apply).toBeHidden();
   await expect(binding).toContainText('Personal API');
   await expect(personal.getByText('In use')).toBeVisible();
   await expect(
-    personal.getByRole('button', { name: 'Reapply to OpenAI Codex' }),
+    personal.getByRole('button', {
+      name: 'Reapply Personal API to OpenAI Codex',
+    }),
   ).toBeEnabled();
 
   const team = page.getByRole('listitem', { name: 'Team Gemini' });
-  await expect(team.getByText('Other device')).toBeVisible();
-  await expect(team.getByRole('button', { name: /Apply to/ })).toHaveCount(0);
+  await expect(team.getByText('Gemini · On Laptop')).toBeVisible();
+  await expect(team.getByRole('button', { name: /^(Re)?apply/i })).toHaveCount(
+    0,
+  );
   await page.screenshot({
     path: testInfo.outputPath('settings-upstreams.png'),
   });
   // Sync itself is an encrypted relay request; it is covered by component tests
   // and the integrated relay run. Here it must stay separate from Apply.
   await expect(
-    team.getByRole('button', { name: 'Sync', exact: true }),
+    team.getByRole('button', { name: 'Sync Team Gemini to this device' }),
   ).toBeEnabled();
   expect(writes.filter((w) => w.includes('/apply'))).toHaveLength(1);
   await expectActionsInside(page, personal);
   await expectActionsInside(page, team);
-  await personal.getByRole('button', { name: 'Edit Personal API' }).click();
+  // Edit lives in the More actions menu: by touch on phones, by keyboard on desktop.
+  const more = page.getByRole('button', {
+    name: 'More actions for Personal API',
+  });
+  if (testInfo.project.name === 'mobile-chromium') {
+    await more.tap();
+    await page.getByRole('button', { name: 'Edit Personal API' }).tap();
+  } else {
+    await more.focus();
+    await page.keyboard.press('Enter');
+    await page.keyboard.press('Tab');
+    await expect(
+      page.getByRole('button', { name: 'Edit Personal API' }),
+    ).toBeFocused();
+    await page.keyboard.press('Enter');
+  }
   const edit = page.getByRole('dialog', { name: 'Edit connection' });
   await expect(edit.getByLabel('Name', { exact: true })).toHaveValue(
     'Personal API',
@@ -206,7 +254,9 @@ test('connections save without applying, apply apart from sync, and template pre
   await expect(removal).toBeHidden();
   await page.getByRole('button', { name: 'Grok Build', exact: true }).click();
   await expect(
-    personal.getByRole('button', { name: 'Apply to Grok Build' }),
+    personal.getByRole('button', {
+      name: 'Apply Personal API to Grok Build',
+    }),
   ).toBeEnabled();
   await page.getByRole('tab', { name: 'Device', exact: true }).click();
   await page
@@ -232,7 +282,8 @@ test('connections save without applying, apply apart from sync, and template pre
     page.getByRole('button', { name: 'Open Navigation' }),
   ).toBeEnabled();
 
-  // zh-CN with the widest row state: unapplied changes plus Reapply.
+  // Reopening Settings in zh-CN keeps the short labels and one-row footer, with
+  // the widest row state (unapplied changes plus Reapply); phones also at 320.
   bindings = {
     codex: { connectionId: 'personal', model: 'test-model', revision: 'r0' },
   };
@@ -240,31 +291,56 @@ test('connections save without applying, apply apart from sync, and template pre
     localStorage.setItem('remote-codex.locale', 'zh-CN'),
   );
   await page.reload();
-  const laterZh = page.getByRole('button', { name: '稍后', exact: true });
-  await laterZh.waitFor({ timeout: 3_000 }).catch(() => {});
-  if (await laterZh.isVisible()) await laterZh.click();
+  // Count main-frame loads after this reload: a dev-server HMR reload (a watched
+  // file changed on disk) would silently close the dialog and look like a UI bug.
+  const loads: string[] = [];
+  page.on('load', () => loads.push(page.url()));
+  // The tour was dismissed in this browser, so the shell is ready once its
+  // navigation button is; reopen Settings and wait for it before using tabs.
   await page.getByRole('button', { name: '打开导航' }).click();
   await page.getByRole('button', { name: '设置', exact: true }).click();
-  await page.getByRole('tab', { name: '上游', exact: true }).click();
-  const zhRow = page.getByRole('listitem', { name: 'Personal API' });
-  await expect(zhRow.getByText('修改未应用')).toBeVisible();
+  const zhSettings = page.getByTestId('settingsDialog');
+  await expect(zhSettings).toBeVisible();
+  await zhSettings.getByRole('tab', { name: '上游', exact: true }).click();
   await expect(
-    zhRow.getByRole('button', { name: '重新应用到 OpenAI Codex' }),
-  ).toBeEnabled();
-  await expectActionsInside(page, zhRow);
-  await expectActionsInside(
-    page,
-    page.getByRole('listitem', { name: 'Team Gemini' }),
-  );
-  await page.screenshot({
-    path: testInfo.outputPath('settings-upstreams-zh.png'),
-  });
-  await zhRow.getByRole('button', { name: '编辑 Personal API' }).click();
-  const zhEdit = page.getByRole('dialog', { name: '编辑连接' });
-  await expect(zhEdit).toBeVisible();
-  await page.screenshot({
-    path: testInfo.outputPath('connection-form-zh.png'),
-  });
+    zhSettings.getByRole('tab', { name: '上游', exact: true }),
+  ).toHaveAttribute('aria-selected', 'true');
+  const zhRow = page.getByRole('listitem', { name: 'Personal API' });
+  // One compact status, shown once.
+  await expect(zhRow.getByText('待应用')).toBeVisible();
+  await expect(page.getByText('待应用')).toHaveCount(1);
+  await expect(
+    zhRow.getByRole('button', {
+      name: '将 Personal API 重新应用到 OpenAI Codex',
+    }),
+  ).toHaveText('重新应用');
+  const widths =
+    testInfo.project.name === 'mobile-chromium'
+      ? [393, 320]
+      : [page.viewportSize()!.width];
+  for (const width of widths) {
+    await page.setViewportSize({ width, height: page.viewportSize()!.height });
+    await expectActionsInside(page, zhRow);
+    await expectActionsInside(
+      page,
+      page.getByRole('listitem', { name: 'Team Gemini' }),
+    );
+    await page.screenshot({
+      path: testInfo.outputPath(`settings-upstreams-zh-${width}.png`),
+    });
+    await page.getByRole('button', { name: '添加连接', exact: true }).click();
+    const zhAdd = page.getByRole('dialog', { name: '添加连接' });
+    await expectFormActionsInline(page, zhAdd);
+    await page.screenshot({
+      path: testInfo.outputPath(`connection-form-zh-${width}.png`),
+    });
+    await zhAdd.getByRole('button', { name: '取消', exact: true }).click();
+    await expect(zhAdd).toBeHidden();
+  }
+  await page.getByRole('button', { name: 'Personal API 的更多操作' }).click();
+  await page.getByRole('button', { name: '编辑 Personal API' }).click();
+  await expect(page.getByRole('dialog', { name: '编辑连接' })).toBeVisible();
+  expect(loads, 'the page reloaded while reopening Settings').toEqual([]);
 });
 
 test('thread settings categories and nested dialogs stay usable on narrow screens', async ({

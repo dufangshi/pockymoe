@@ -50,6 +50,7 @@ export function ConnectionDialog({
       title={translate(
         connection?.id ? 'settings.connEditTitle' : 'settings.connAddTitle',
       )}
+      description={translate('settings.connSaveOnlyHint')}
       onClose={requestClose}
     >
       {confirmDiscard && (

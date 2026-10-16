@@ -16,9 +16,9 @@ import { ConnectionDialog } from './ConnectionDialog';
 import { ConnectionModelField } from './ConnectionModelField';
 
 const field =
-  'host-input min-w-0 flex-1 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-panel)] p-2 text-sm';
+  'host-input min-h-9 min-w-0 flex-1 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-panel)] px-2.5 py-1.5 text-sm';
 const iconButton =
-  'host-secondary-button inline-flex min-h-10 min-w-10 shrink-0 items-center justify-center gap-1.5 rounded-lg border px-2.5 text-xs disabled:opacity-40';
+  'host-secondary-button inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center gap-1 rounded-lg border px-2 text-xs whitespace-nowrap disabled:opacity-40';
 
 /**
  * Chooses a saved connection for a plugin. Choosing only changes the caller's unsaved
