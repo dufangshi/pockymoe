@@ -1697,7 +1697,7 @@ with open(base/'registry.lock','w') as lock:
         counter.write_text(str(n))
         aid = 'ag_created_'+str(n)
         agents[aid] = {'agent_id':aid,'name':name,'status':'running','thread':args[args.index('--thread')+1], 'startup':args[args.index('--')+1:]}
-        path.write_text(json.dumps(agents))
+        tmp = path.with_suffix('.tmp'); tmp.write_text(json.dumps(agents)); os.replace(tmp, path)
         print(json.dumps({'agent_id':aid})); sys.exit(0)
     if args[:3] == ['agent','admin','rename']:
         aid, name = args[3:5]
@@ -1710,7 +1710,7 @@ with open(base/'registry.lock','w') as lock:
         if args[2] not in agents: fail('agent_not_found')
         agents[args[2]]['status']='running' if args[1]=='start' else 'stopped'
     else: fail('unsupported')
-    path.write_text(json.dumps(agents))
+    tmp = path.with_suffix('.tmp'); tmp.write_text(json.dumps(agents)); os.replace(tmp, path)
     print('{}')
 "#;
     std::fs::write(&script, script_source).unwrap();
@@ -1738,11 +1738,11 @@ fn agents(f: &Fixture) -> Value {
 }
 #[cfg(unix)]
 fn set_agents(f: &Fixture, value: Value) {
-    std::fs::write(
-        f._dir.path().join("registry-agents.json"),
-        value.to_string(),
-    )
-    .unwrap();
+    // Replace atomically: the fixture CLI and readers never see a partial file.
+    let path = f._dir.path().join("registry-agents.json");
+    let tmp = path.with_extension("rust-tmp");
+    std::fs::write(&tmp, value.to_string()).unwrap();
+    std::fs::rename(tmp, path).unwrap();
 }
 #[cfg(unix)]
 fn calls(f: &Fixture) -> Vec<Value> {
