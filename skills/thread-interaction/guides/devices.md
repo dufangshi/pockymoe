@@ -9,6 +9,11 @@ CLI still connects to your local Supervisor; it routes encrypted requests throug
 the relay. Use a relay device ID or a unique device name (case insensitive).
 `device list` works before opting in and reports this device's `peerAccess`.
 
+An isolated device answers only `device list`/`info` (with `isolated: true`); an
+isolated workspace is missing from `device workspaces` and listings, and requests
+for its threads or files are refused. The owner sets this on the Devices and
+Workspaces pages; do not work around it.
+
 ```bash
 pockymoe device list
 pockymoe device access                    # inspect; managed threads can view

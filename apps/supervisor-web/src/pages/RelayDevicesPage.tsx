@@ -25,6 +25,7 @@ import { ProductHeader } from '../components/ProductHeader';
 import {
   Copy,
   Ellipsis,
+  Lock,
   MonitorSmartphone,
   Plug,
   Plus,
@@ -57,9 +58,11 @@ import {
   createRelayGrant,
   createRelayDevice,
   enableRelayMode,
+  fetchAgentIsolation,
   fetchRelayPortal,
   revokeRelayGrant,
   revokeRelayShare,
+  setDeviceIsolation,
   setSelectedRelayDeviceId,
   setSelectedRelayThreadId,
   updateRelayGrant,
@@ -2069,6 +2072,18 @@ function DeviceRow({
     return () => window.removeEventListener('remote-codex-transport', update);
   }, [device.id]);
   const [actionsMenuOpen, setActionsMenuOpen] = useState(false);
+  const [isolationOpen, setIsolationOpen] = useState(false);
+  // Known only once the device answered; the page does not connect to every device.
+  const [isolated, setIsolated] = useState<boolean | undefined>(undefined);
+  const encrypted = transportStatus?.state === 'encrypted';
+  useEffect(() => {
+    if (!device.connected || !encrypted) return;
+    let active = true;
+    void fetchAgentIsolation(device.id)
+      .then((value) => { if (active) setIsolated(value.device); })
+      .catch(() => undefined);
+    return () => { active = false; };
+  }, [device.id, device.connected, encrypted]);
   const actionsMenuRef = useRef<HTMLDivElement>(null);
   const actionsTriggerRef = useRef<HTMLButtonElement>(null);
   const menuFocusDirectionRef = useRef<'first' | 'last'>('first');
@@ -2184,6 +2199,12 @@ function DeviceRow({
         <p>{activityText}</p>
         <DeviceEncryptionStatus deviceId={device.id} online={device.connected} />
         <DeviceProtectionBadge device={device} protection={protection} />
+        {isolated ? (
+          <span className="device-isolated-badge inline-flex items-center gap-1" title={translate('devices.deviceIsolationDescription')}>
+            <Lock aria-hidden="true" className="h-3 w-3" />
+            {translate('devices.deviceIsolated')}
+          </span>
+        ) : null}
         {copiedSetup ? (
           <p
             className="basis-full text-[var(--status-success-fg)]"
@@ -2265,6 +2286,18 @@ function DeviceRow({
               >
                 <Share2 className="h-4 w-4" />
                 {translate("devices.shareDevice")}</button>
+              <button
+                className="flex min-h-11 w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm text-[var(--theme-fg)] transition hover:bg-[var(--theme-hover)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-accent-ring)]"
+                onClick={() => {
+                  actionsTriggerRef.current?.focus();
+                  setActionsMenuOpen(false);
+                  setIsolationOpen(true);
+                }}
+                role="menuitem"
+                type="button"
+              >
+                <Lock className="h-4 w-4" />
+                {translate('devices.agentIsolationMenu')}</button>
               <button className="flex min-h-11 w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm hover:bg-[var(--theme-hover)]" role="menuitem" onClick={()=>{setActionsMenuOpen(false);onRotate();}}>{translate("devices.replaceDeviceToken_268410")}</button>
               <div className="mt-1 border-t border-[var(--theme-border)] pt-1">
                 <button
@@ -2294,7 +2327,92 @@ function DeviceRow({
           {copyError}
         </p>
       ) : null}
+      {isolationOpen ? (
+        <DeviceIsolationDialog
+          device={device}
+          onChange={setIsolated}
+          onClose={() => setIsolationOpen(false)}
+        />
+      ) : null}
     </article>
+  );
+}
+
+/** Whether agents on other devices may reach this one; the device decides and enforces it. */
+function DeviceIsolationDialog({
+  device,
+  onChange,
+  onClose,
+}: {
+  device: RelayDeviceDto;
+  onChange: (isolated: boolean) => void;
+  onClose: () => void;
+}) {
+  useI18n();
+  const [isolated, setIsolated] = useState<boolean | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [unsupported, setUnsupported] = useState(false);
+  useEffect(() => {
+    if (!device.connected) return;
+    let active = true;
+    void fetchAgentIsolation(device.id)
+      .then((value) => {
+        if (!active) return;
+        setIsolated(value.device);
+        onChange(value.device);
+      })
+      .catch((caught) => {
+        if (!active) return;
+        if (caught instanceof ApiError && caught.statusCode === 404) setUnsupported(true);
+        else setError(errorMessage(caught, translate('devices.deviceIsolationOffline')));
+      });
+    return () => { active = false; };
+  }, [device.id, device.connected, onChange]);
+
+  async function toggle(next: boolean) {
+    setBusy(true);
+    setError(null);
+    try {
+      const value = await setDeviceIsolation(next, device.id);
+      setIsolated(value.device);
+      onChange(value.device);
+    } catch (caught) {
+      setError(errorMessage(caught, translate('devices.deviceIsolationOffline')));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <RelayDialog
+      busy={busy}
+      description={translate('devices.deviceIsolationDescription')}
+      error={error}
+      onClose={onClose}
+      title={`${translate('devices.agentIsolation')} · ${device.name}`}
+    >
+      <div className="mt-4 text-sm">
+        {!device.connected ? (
+          <p className="text-[var(--theme-fg-muted)]">{translate('devices.deviceIsolationOffline')}</p>
+        ) : unsupported ? (
+          <p className="text-[var(--theme-fg-muted)]">{translate('devices.deviceIsolationUpdate')}</p>
+        ) : isolated === null ? (
+          <p className="text-[var(--theme-fg-muted)]">{translate('devices.deviceIsolationLoading')}</p>
+        ) : (
+          <label className="flex min-h-11 cursor-pointer items-center gap-3 rounded-md border border-[var(--theme-border)] px-3 py-2">
+            <input
+              checked={isolated}
+              className="h-4 w-4"
+              disabled={busy}
+              onChange={(event) => void toggle(event.target.checked)}
+              type="checkbox"
+            />
+            <span className="font-medium text-[var(--theme-fg)]">{translate('devices.isolateDevice')}</span>
+          </label>
+        )}
+      </div>
+    </RelayDialog>
   );
 }
 

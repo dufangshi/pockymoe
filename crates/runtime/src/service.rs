@@ -946,6 +946,7 @@ impl Supervisor {
     }
 
     pub fn list_workspaces(&self) -> Result<Vec<WorkspaceDto>> {
+        let isolated = self.agent_isolation().workspaces;
         self.db.with(|conn| {
             let mut stmt = conn.prepare(
                 "SELECT id, host_id, label, abs_path, is_favorite, created_at, last_opened_at FROM workspaces ORDER BY created_at DESC",
@@ -959,9 +960,16 @@ impl Supervisor {
                     is_favorite: row.get::<_, i64>(4)? != 0,
                     created_at: row.get(5)?,
                     last_opened_at: row.get(6)?,
+                    agent_isolated: false,
                 })
             })?;
-            Ok(rows.filter_map(|r| r.ok()).collect())
+            Ok(rows
+                .filter_map(|r| r.ok())
+                .map(|mut workspace| {
+                    workspace.agent_isolated = isolated.contains(&workspace.id);
+                    workspace
+                })
+                .collect())
         })
     }
 

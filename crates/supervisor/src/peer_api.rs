@@ -6,7 +6,7 @@ use crate::{
 };
 use axum::{extract::State, http::StatusCode, Extension, Json};
 use pockymoe_runtime::{
-    interaction::{RemoteSender, SendInput},
+    interaction::{AgentRequester, RemoteSender, SendInput},
     Supervisor,
 };
 use serde_json::{json, Value};
@@ -52,6 +52,10 @@ pub(crate) async fn cli(
             "This operation is not available across devices.",
         ));
     }
+    // An isolated device still answers `info`, so callers can tell why.
+    if operation != "info" {
+        state.ensure_peer_reaches_device().map_err(map_err)?;
+    }
     let sender = RemoteSender {
         device_id: caller.device_id,
         device_name: caller.device_name,
@@ -65,18 +69,23 @@ pub(crate) async fn cli(
                 "relayDeviceId": identity.as_ref().map(|i| &i.device_id),
                 "deviceName": identity.as_ref().map(|i| &i.device_name),
                 "peerAccess": true,
+                "isolated": state.agent_isolation().device,
             })))
         }
         "workspaces" => Ok(Json(json!(state
             .list_workspaces()
             .map_err(map_err)?
             .iter()
+            .filter(|ws| !ws.agent_isolated)
             .map(|ws| { json!({"id": ws.id, "name": ws.label, "absPath": ws.abs_path}) })
             .collect::<Vec<_>>()))),
         "send" => {
             let id = input["threadId"]
                 .as_str()
                 .ok_or_else(|| map_err(anyhow::anyhow!("threadId required")))?;
+            state
+                .ensure_agent_reaches_thread(AgentRequester::Peer, id)
+                .map_err(map_err)?;
             let body = serde_json::from_value::<SendInput>(input.clone())
                 .map_err(|e| map_err(e.into()))?;
             let mut receipt = state
@@ -111,7 +120,7 @@ pub(crate) async fn cli(
                 fields.remove("parentThreadId");
                 fields.remove("name");
             }
-            let result = crate::interaction::run(&state, input, None)
+            let result = crate::interaction::run_from_peer(&state, input)
                 .await
                 .map_err(map_err)?;
             if operation == "create" {

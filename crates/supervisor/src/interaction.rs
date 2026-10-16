@@ -3,7 +3,9 @@ use anyhow::Context;
 use axum::{extract::State, Extension, Json};
 use pockymoe_protocol::{CreateThreadInput, Provider};
 use pockymoe_runtime::{
-    interaction::{clamp_wait, list_roles, load_role, AgentOptions, SendInput, TranscriptQuery},
+    interaction::{
+        clamp_wait, list_roles, load_role, AgentOptions, AgentRequester, SendInput, TranscriptQuery,
+    },
     Supervisor,
 };
 use serde_json::{json, Value};
@@ -49,14 +51,40 @@ pub(crate) async fn command(
     Ok(Json(run(&state, input, caller.0).await.map_err(map_err)?))
 }
 
-/// One local CLI operation. `peer_api` reuses the read/create subset for requests
-/// from other devices, after removing the caller's `fromThreadId`.
+/// One local CLI operation.
 pub(crate) async fn run(
     state: &Arc<Supervisor>,
     input: Value,
     caller: Option<String>,
 ) -> anyhow::Result<Value> {
+    run_as(state, input, caller, false).await
+}
+
+/// The read/create subset for requests from other devices, after `peer_api`
+/// removed the caller's `fromThreadId`.
+pub(crate) async fn run_from_peer(state: &Arc<Supervisor>, input: Value) -> anyhow::Result<Value> {
+    run_as(state, input, None, true).await
+}
+
+/// Who an operation acts for, for agent isolation. The machine's own credential
+/// is the owner; a thread credential is that thread.
+pub(crate) fn requester(caller: Option<&str>, peer: bool) -> AgentRequester<'_> {
+    match caller {
+        _ if peer => AgentRequester::Peer,
+        Some(thread) => AgentRequester::Thread(thread),
+        None => AgentRequester::Owner,
+    }
+}
+
+async fn run_as(
+    state: &Arc<Supervisor>,
+    input: Value,
+    caller: Option<String>,
+    peer: bool,
+) -> anyhow::Result<Value> {
     crate::host_policy::require_command(state, &input)?;
+    let requester = requester(caller.as_deref(), peer);
+    let reach = |thread: &str| state.ensure_agent_reaches_thread(requester, thread);
     let id = input.get("threadId").and_then(Value::as_str).unwrap_or("");
     let from = input["fromThreadId"].as_str();
     let me = || from.context("this command needs the caller's thread identity; pass --from ID");
@@ -69,7 +97,7 @@ pub(crate) async fn run(
         }
         "automationCreate" | "automationPreview" | "automationList" | "automationShow"
         | "automationRuns" | "automationPause" | "automationResume" | "automationCancel"
-        | "commandRun" | "commandShow" => crate::automations::cli(state, &input).await,
+        | "commandRun" | "commandShow" => crate::automations::cli(state, &input, requester).await,
         "info" => {
             let identity = crate::peer_link::relay_identity(state);
             Ok(
@@ -113,14 +141,18 @@ pub(crate) async fn run(
             if let Some(group) = &group {
                 threads.retain(|t| t.root_thread_id.as_deref() == Some(group.as_str()));
             }
+            threads.retain(|t| state.agent_reaches_workspace(requester, &t.workspace_id));
             let limit = input["limit"].as_u64().unwrap_or(20).clamp(1, 100) as usize;
             Ok(
                 json!({"threads":threads.iter().take(limit).map(|t|json!({"id":t.id,"name":t.agent_name,"title":t.title,"workspaceId":t.workspace_id,"provider":t.provider,"agentId":t.agent_id,"model":t.model,"status":t.status,"updatedAt":t.updated_at,"parentThreadId":t.parent_thread_id,"rootThreadId":t.root_thread_id,"agentThreadCount":t.descendant_count,"closedAt":t.closed_at})).collect::<Vec<_>>(),"totalCount":threads.len()}),
             )
         }
-        "show" | "status" => state.interaction_status(id).await,
+        "show" | "status" => {
+            reach(id)?;
+            state.interaction_status(id).await
+        }
         "delete" => {
-            let caller = caller.ok_or_else(|| anyhow::anyhow!(
+            let caller = caller.clone().ok_or_else(|| anyhow::anyhow!(
                     "forbidden: deletion requires a managed thread credential; reconnect the parent session to obtain one"
                 ))?;
             anyhow::ensure!(
@@ -129,9 +161,11 @@ pub(crate) async fn run(
                     .is_none_or(|from| from == caller),
                 "forbidden: --from cannot override the authenticated parent for deletion"
             );
+            reach(id)?;
             state.delete_child_thread(&caller, id).await
         }
         "send" => {
+            reach(id)?;
             let mut body = serde_json::from_value::<SendInput>(input.clone())?;
             if let Some(caller) = &caller {
                 anyhow::ensure!(
@@ -170,7 +204,10 @@ pub(crate) async fn run(
             Ok(json!({"threadId":state.resolve_agent(from, input["name"].as_str().unwrap_or(""))?}))
         }
         "tree" => match input["rootThreadId"].as_str() {
-            Some(root) => state.agent_tree(root, all).await,
+            Some(root) => {
+                reach(root)?;
+                state.agent_tree(root, all).await
+            }
             None => {
                 state
                     .lineage_tree(from.context("tree needs a thread; pass --from ID")?, all)
@@ -178,14 +215,17 @@ pub(crate) async fn run(
             }
         },
         "wait" => {
+            let threads = strings(&input["threadIds"]);
+            threads.iter().try_for_each(|thread| reach(thread))?;
             state
-                .wait_threads(&strings(&input["threadIds"]), input["any"] == true, wait)
+                .wait_threads(&threads, input["any"] == true, wait)
                 .await
         }
-        "wake" => state.register_wake(
-            from.context("wake needs the caller's identity")?,
-            &strings(&input["threadIds"]),
-        ),
+        "wake" => {
+            let threads = strings(&input["threadIds"]);
+            threads.iter().try_for_each(|thread| reach(thread))?;
+            state.register_wake(from.context("wake needs the caller's identity")?, &threads)
+        }
         "close" => {
             // Like delete: a managed thread's own credential decides who is closing.
             anyhow::ensure!(
@@ -194,6 +234,7 @@ pub(crate) async fn run(
                     .is_none_or(|c| from.is_none_or(|f| f == c)),
                 "forbidden: --from cannot override the authenticated caller for close"
             );
+            reach(id)?;
             state
                 .close_agent_thread_releasing(
                     caller.as_deref().or(from),
@@ -204,6 +245,7 @@ pub(crate) async fn run(
         }
         "roles" => Ok(list_roles(Path::new(&caller_cwd(state, from)?))),
         "inboxWait" => {
+            reach(id)?;
             state
                 .inbox_wait(
                     id,
@@ -214,16 +256,21 @@ pub(crate) async fn run(
                 )
                 .await
         }
-        "taskAdd" => state.task_add(
-            me()?,
-            input["title"].as_str().unwrap_or(""),
-            input["detail"].as_str(),
-            &input["after"]
-                .as_array()
-                .map(|a| a.iter().filter_map(Value::as_i64).collect::<Vec<_>>())
-                .unwrap_or_default(),
-            input["assignThreadId"].as_str(),
-        ),
+        "taskAdd" => {
+            if let Some(assignee) = input["assignThreadId"].as_str() {
+                reach(assignee)?;
+            }
+            state.task_add(
+                me()?,
+                input["title"].as_str().unwrap_or(""),
+                input["detail"].as_str(),
+                &input["after"]
+                    .as_array()
+                    .map(|a| a.iter().filter_map(Value::as_i64).collect::<Vec<_>>())
+                    .unwrap_or_default(),
+                input["assignThreadId"].as_str(),
+            )
+        }
         "taskList" => state.task_list(me()?, all),
         "taskShow" => state.task_show(me()?, number()?),
         "taskClaim" if input["wait"] == true => {
@@ -239,10 +286,16 @@ pub(crate) async fn run(
             input["failed"] == true,
         ),
         "taskRelease" => state.task_release(me()?, number()?),
-        "inbox" => state.inbox_list(id, &input),
-        "inboxRead" => state.inbox_read(id, &input),
-        "inboxAck" => state.inbox_ack(id, &input),
+        operation @ ("inbox" | "inboxRead" | "inboxAck") => {
+            reach(id)?;
+            match operation {
+                "inbox" => state.inbox_list(id, &input),
+                "inboxRead" => state.inbox_read(id, &input),
+                _ => state.inbox_ack(id, &input),
+            }
+        }
         "transcript" => {
+            reach(id)?;
             state.sync_claude_scheduled_history(id).await?;
             state.transcript(
                 id,
@@ -259,6 +312,7 @@ pub(crate) async fn run(
                     .get_workspace(&state.get_thread(from)?.workspace_id)?
                     .abs_path
             } else if let Some(workspace) = input["workspaceId"].as_str() {
+                state.ensure_agent_reaches_workspace(requester, workspace)?;
                 state.get_workspace(workspace)?.abs_path
             } else {
                 state.config.workspace_root.to_string_lossy().into_owned()
@@ -283,6 +337,9 @@ pub(crate) async fn run(
                 if input.get("approvalMode").is_none() {
                     input["approvalMode"] = json!(caller.approval_mode);
                 }
+            }
+            if let Some(workspace) = input["workspaceId"].as_str() {
+                state.ensure_agent_reaches_workspace(requester, workspace)?;
             }
             let name = input["name"].as_str().map(str::to_owned);
             let role_name = input["role"].as_str().map(str::to_owned);

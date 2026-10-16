@@ -700,6 +700,8 @@ export interface WorkspaceDto {
   isFavorite: boolean;
   createdAt: string;
   lastOpenedAt: string | null;
+  /** Agents outside this workspace cannot reach its threads or files. */
+  agentIsolated?: boolean;
 }
 
 export interface CreateWorkspaceFromPathInput {

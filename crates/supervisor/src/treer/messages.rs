@@ -446,6 +446,16 @@ impl Hub {
             "Treer message too large"
         );
         let message = &delivery.message;
+        let agent = (message.sender.kind == "agent").then_some(message.sender.id.as_str());
+        if let Err(error) = crate::treer::sender_reaches(&self.state, agent, &binding.thread) {
+            // Acknowledged without storing, so Core does not redeliver it.
+            tracing::warn!(%error, sender = %message.sender.id, "dropped a Treer message to an isolated thread");
+            self.state.db.with(|c| {
+                c.execute("INSERT OR IGNORE INTO treer_message_acks(thread_id,delivery_id,operation_id) VALUES(?1,?2,?3)",params![binding.thread,delivery.delivery_id,format!("pockymoe-message-ack/{}",delivery.delivery_id)])?;
+                Ok(())
+            })?;
+            return Ok(false);
+        }
         let fresh = self.state.db.with(|c| {
             let tx = c.unchecked_transaction()?;
             let seen = tx.query_row("SELECT EXISTS(SELECT 1 FROM treer_message_inbound WHERE thread_id=?1 AND core_id=?2)",params![binding.thread,message.message_id],|r|r.get::<_,bool>(0))?;

@@ -17,6 +17,8 @@ import {
   Eye,
   FileInput,
   LayoutDashboard,
+  Lock,
+  LockOpen,
   MoreHorizontal,
   Pencil,
   Pin,
@@ -34,6 +36,7 @@ import {
   fetchRuntimeConfig,
   fetchThreads,
   fetchWorkspaces,
+  setWorkspaceIsolation,
   updateWorkspace,
   updateWorkspaceFavorite,
 } from '../lib/api';
@@ -154,6 +157,21 @@ export function WorkspacesPage() {
       setError(errorText(caught, translate("files.unableToUpdateWorkspace")));
     } finally {
       setFavoriteWorkspaceId(null);
+    }
+  }
+
+  async function handleIsolation(workspace: WorkspaceDto) {
+    const isolated = !workspace.agentIsolated;
+    setError(null);
+    setWorkspaces((current) =>
+      current.map((item) => (item.id === workspace.id ? { ...item, agentIsolated: isolated } : item)),
+    );
+    try {
+      const updated = await setWorkspaceIsolation(workspace.id, isolated);
+      setWorkspaces((current) => current.map((item) => (item.id === updated.id ? updated : item)));
+    } catch (caught) {
+      setWorkspaces((current) => current.map((item) => (item.id === workspace.id ? workspace : item)));
+      setError(translate('files.isolationFailed', { value1: errorText(caught, translate('files.unableToUpdateWorkspace')) }));
     }
   }
 
@@ -333,6 +351,15 @@ export function WorkspacesPage() {
                       <span className="truncate text-sm font-semibold text-[var(--theme-fg)] sm:text-base">
                         {workspace.label}
                       </span>
+                      {workspace.agentIsolated ? (
+                        <span
+                          className="workspace-isolated-badge inline-flex shrink-0 items-center gap-1 rounded-full border border-[var(--theme-border)] px-1.5 py-0.5 text-[11px] font-medium leading-none text-[var(--theme-fg-muted)]"
+                          title={translate('files.workspaceIsolatedHint')}
+                        >
+                          <Lock data-icon="isolated" aria-hidden="true" className="h-3 w-3" />
+                          {translate('files.workspaceIsolated')}
+                        </span>
+                      ) : null}
 
                     </span>
                     <span
@@ -374,6 +401,7 @@ export function WorkspacesPage() {
                       onOpenChange={(nextOpen) => setOpenMenuId(nextOpen ? workspace.id : null)}
                       onViewPath={() => setExpandedPath(workspace.absPath)}
                       onRename={() => beginRename(workspace)}
+                      onToggleIsolation={workspace.agentIsolated === undefined ? undefined : () => void handleIsolation(workspace)}
                       onDelete={() => beginDelete(workspace)}
                     />
                   </div>
@@ -434,6 +462,7 @@ function WorkspaceActionsMenu({
   onOpenChange,
   onViewPath,
   onRename,
+  onToggleIsolation,
   onDelete,
 }: {
   workspace: WorkspaceDto;
@@ -441,6 +470,8 @@ function WorkspaceActionsMenu({
   onOpenChange: (open: boolean) => void;
   onViewPath: () => void;
   onRename: () => void;
+  /** Absent when the device's runtime predates agent isolation. */
+  onToggleIsolation?: (() => void) | undefined;
   onDelete: () => void;
 }) {
   const { locale: i18nLocale } = useI18n();
@@ -553,6 +584,22 @@ function WorkspaceActionsMenu({
           >
             <Pencil data-icon="rename" aria-hidden="true" className="h-4 w-4 text-[var(--theme-fg-muted)]" />
             {translate("files.rename_d3f4cb")}</button>
+          {onToggleIsolation ? (
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => runAction(onToggleIsolation)}
+              title={translate('files.workspaceIsolatedHint')}
+              className="flex min-h-11 w-full items-center gap-3 rounded-md px-3 text-left text-sm text-[var(--theme-fg)] transition hover:bg-[var(--theme-hover)] focus:outline-none focus-visible:bg-[var(--theme-hover)]"
+            >
+              {workspace.agentIsolated ? (
+                <LockOpen data-icon="unisolate" aria-hidden="true" className="h-4 w-4 text-[var(--theme-fg-muted)]" />
+              ) : (
+                <Lock data-icon="isolate" aria-hidden="true" className="h-4 w-4 text-[var(--theme-fg-muted)]" />
+              )}
+              {translate(workspace.agentIsolated ? 'files.stopIsolatingWorkspace' : 'files.isolateWorkspace')}
+            </button>
+          ) : null}
           <div className="my-1 border-t border-[var(--theme-border)]" />
           <button
             type="button"

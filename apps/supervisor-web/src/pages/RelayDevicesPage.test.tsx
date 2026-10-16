@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter } from 'react-router-dom';
 import type { RelayDeviceDto } from '@pockymoe/shared';
-import { ApiError, createRelayDevice, fetchRelayPortal, request } from '../lib/api';
+import { ApiError, createRelayDevice, fetchAgentIsolation, fetchRelayPortal, request, setDeviceIsolation } from '../lib/api';
 import { requireUnlock } from '../lib/accountVault';
 import { accountPasswordProof } from '../lib/accountAuth';
 import { prepareDeviceEnrollment } from '../lib/deviceEnrollment';
@@ -20,6 +20,7 @@ vi.mock('../lib/api', () => ({
   createRelayGrant: vi.fn(), enableRelayMode: vi.fn(), revokeRelayGrant: vi.fn(),
   revokeRelayShare: vi.fn(), setSelectedRelayDeviceId: vi.fn(),
   setSelectedRelayThreadId: vi.fn(), updateRelayGrant: vi.fn(), updateRelayShare: vi.fn(),
+  fetchAgentIsolation: vi.fn(), setDeviceIsolation: vi.fn(),
 }));
 vi.mock('../lib/accountVault', () => ({ requireUnlock: vi.fn() }));
 vi.mock('../lib/accountAuth', () => ({ accountPasswordProof: vi.fn() }));
@@ -207,4 +208,36 @@ it('keeps the local command accessible for a pending enrollment on the Devices p
   fireEvent.click(await screen.findByRole('button', {name:'Waiting for bind'}));
   fireEvent.click(screen.getByRole('button', {name:'Show local bind command'}));
   expect(screen.getByRole('dialog', {name:'Protect this device'})).toBeVisible();
+});
+
+describe('agent isolation', () => {
+  it('reads and changes isolation on the device, then marks the row', async () => {
+    const online = { ...device, connected: true };
+    vi.mocked(fetchRelayPortal).mockResolvedValue({ user: { id: 'test-user' } as never, devices: [online], sharedWithMe: [], sharedByMe: [] });
+    vi.mocked(fetchAgentIsolation).mockResolvedValue({ device: false, workspaces: [] });
+    vi.mocked(setDeviceIsolation).mockResolvedValue({ device: true, workspaces: [] });
+    await openPage();
+    expect(fetchAgentIsolation).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: `More actions for ${device.name}` }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Agent isolation…' }));
+    const dialog = await screen.findByRole('dialog', { name: `Agent isolation · ${device.name}` });
+    const toggle = await within(dialog).findByRole('checkbox', { name: 'Isolate this device' });
+    expect(fetchAgentIsolation).toHaveBeenCalledWith(device.id);
+    expect(toggle).not.toBeChecked();
+    fireEvent.click(toggle);
+    await waitFor(() => expect(setDeviceIsolation).toHaveBeenCalledExactlyOnceWith(true, device.id));
+    await waitFor(() => expect(toggle).toBeChecked());
+    expect(screen.getByText('Isolated')).toBeTruthy();
+  });
+
+  it('asks to update a device whose runtime predates isolation', async () => {
+    const online = { ...device, connected: true };
+    vi.mocked(fetchRelayPortal).mockResolvedValue({ user: { id: 'test-user' } as never, devices: [online], sharedWithMe: [], sharedByMe: [] });
+    vi.mocked(fetchAgentIsolation).mockRejectedValue(new ApiError(404, { code: 'not_found', message: 'Not found' }));
+    await openPage();
+    fireEvent.click(screen.getByRole('button', { name: `More actions for ${device.name}` }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Agent isolation…' }));
+    expect(await screen.findByText('Update this device to change this.')).toBeTruthy();
+    expect(screen.queryByRole('checkbox')).toBeNull();
+  });
 });

@@ -1796,6 +1796,30 @@ export function deleteWorkspace(
   });
 }
 
+export interface AgentIsolationDto {
+  /** Agents on other devices cannot reach this device. */
+  device: boolean;
+  workspaces: string[];
+}
+
+export function fetchAgentIsolation(deviceId?: string | null) {
+  return request<AgentIsolationDto>('api/config/agent-isolation', { cache: 'no-store' }, { deviceId });
+}
+
+export function setDeviceIsolation(isolated: boolean, deviceId?: string | null) {
+  return request<AgentIsolationDto>('api/config/agent-isolation', {
+    method: 'PATCH',
+    body: JSON.stringify({ device: isolated }),
+  }, { deviceId });
+}
+
+export function setWorkspaceIsolation(id: string, isolated: boolean) {
+  return request<WorkspaceDto>(`api/config/agent-isolation/workspaces/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    body: JSON.stringify({ isolated }),
+  });
+}
+
 export function updateWorkspaceFavorite(
   id: string,
   input: UpdateWorkspaceFavoriteInput,

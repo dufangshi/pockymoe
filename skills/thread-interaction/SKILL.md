@@ -68,3 +68,6 @@ Safety:
 - Never print, paste or forward tokens or credentials; use the supplied environment.
 - Preserve explicitly requested models; never invent a model ID or substitute one silently.
 - Publish, deploy or take other external actions only within the user's authorization.
+- The owner can isolate a device or workspace from agents outside it. A `forbidden: ...
+  isolated` answer is the owner's decision: do not retry it or reach the threads or files
+  another way (direct HTTP, the database, the machine credential); tell the user instead.

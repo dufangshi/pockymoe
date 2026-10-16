@@ -8,6 +8,9 @@ mod grants;
 mod host_policy;
 mod http;
 mod interaction;
+mod isolation;
+#[cfg(test)]
+mod isolation_tests;
 mod linked_files;
 #[cfg(test)]
 mod local_passcode_tests;

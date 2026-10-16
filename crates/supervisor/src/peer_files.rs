@@ -14,7 +14,7 @@ use axum::{
     Extension, Json,
 };
 use chrono::{DateTime, SecondsFormat, Utc};
-use pockymoe_runtime::{files, Supervisor};
+use pockymoe_runtime::{files, interaction::AgentRequester, Supervisor};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -82,6 +82,7 @@ fn require_peer(
             "Peer access is disabled on this device",
         ));
     }
+    state.ensure_peer_reaches_device().map_err(map_err)?;
     Ok(caller.0)
 }
 
@@ -309,6 +310,9 @@ pub(crate) async fn upload_begin(
     blocking(move || {
         let _guard = lock.lock().map_err(|_| map_err(anyhow!("upload lock failed")))?;
         let thread_id = input["threadId"].as_str().context("threadId required").map_err(map_err)?;
+        state
+            .ensure_agent_reaches_thread(AgentRequester::Peer, thread_id)
+            .map_err(map_err)?;
         thread_cwd(&state, thread_id).map_err(map_err)?;
         let name = basename(input["name"].as_str().context("name required").map_err(map_err)?).map_err(map_err)?;
         let size = input["size"].as_u64().context("size must be a nonnegative integer").map_err(map_err)?;
@@ -405,6 +409,7 @@ pub(crate) async fn upload_commit(
         let _guard = lock.lock().map_err(|_| map_err(anyhow!("upload lock failed")))?;
         let mut upload = load_upload(&state, &id, &caller)?;
         if let Some(receipt) = upload.committed { return Ok(Json(receipt)); }
+        state.ensure_agent_reaches_thread(AgentRequester::Peer, &upload.thread_id).map_err(map_err)?;
         let dir = data_dir(&state).join("peer-uploads");
         let part = dir.join(format!("{id}.part"));
         let (path, relative) = incoming_path(&state, &id, &upload).map_err(map_err)?;
@@ -436,7 +441,9 @@ pub(crate) async fn upload_commit(
     }).await
 }
 
+/// A path in a workspace that another device asked for.
 fn workspace_path(state: &Supervisor, id: &str, path: &str) -> Result<(PathBuf, PathBuf)> {
+    state.ensure_agent_reaches_workspace(AgentRequester::Peer, id)?;
     let root = PathBuf::from(state.get_workspace(id)?.abs_path).canonicalize()?;
     let path = files::assert_within(&root, Path::new(path))?;
     Ok((root, path))

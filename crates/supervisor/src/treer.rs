@@ -111,6 +111,40 @@ mod browser;
 pub(crate) mod messages;
 mod registry;
 
+/// The hub thread bound to a Treer agent, if that agent is one of this hub's
+/// threads. Agents elsewhere are outside every workspace of this device.
+pub(crate) fn agent_thread(state: &Supervisor, agent: &str) -> Option<String> {
+    state
+        .db
+        .with(|c| {
+            Ok(c.query_row(
+                "SELECT thread_id FROM treer_bindings WHERE agent_id=?1",
+                [agent],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?)
+        })
+        .ok()
+        .flatten()
+}
+
+/// Agent isolation for a Treer sender: one of this hub's threads, another agent,
+/// or (without an agent sender) the person using Treer.
+pub(crate) fn sender_reaches(
+    state: &Supervisor,
+    agent: Option<&str>,
+    thread: &str,
+) -> anyhow::Result<()> {
+    use pockymoe_runtime::interaction::AgentRequester;
+    let local = agent.and_then(|agent| agent_thread(state, agent));
+    let requester = match (agent, &local) {
+        (None, _) => AgentRequester::Owner,
+        (Some(_), Some(local)) => AgentRequester::Thread(local),
+        (Some(_), None) => AgentRequester::Peer,
+    };
+    state.ensure_agent_reaches_thread(requester, thread)
+}
+
 fn failure(status: StatusCode, code: &str) -> Response {
     (status, Json(json!({"error":code,"code":code}))).into_response()
 }
@@ -851,6 +885,13 @@ async fn ais(Extension(scope): Extension<Scope>, request: Request) -> Response {
             };
             if !scope.controller && (prompt.sender.is_some() || prompt.notify.is_some()) {
                 return failure(StatusCode::FORBIDDEN, "controller_required");
+            }
+            let sender = prompt
+                .sender
+                .as_ref()
+                .map(|sender| sender.agent_id.as_str());
+            if sender_reaches(state, sender, thread).is_err() {
+                return failure(StatusCode::FORBIDDEN, "agent_isolated");
             }
             return match hub.submit(thread, prompt).await {
                 Ok(v) => (StatusCode::ACCEPTED, Json(v)).into_response(),

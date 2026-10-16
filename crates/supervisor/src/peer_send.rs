@@ -178,7 +178,8 @@ pub(crate) async fn intercept(
             "use local file paths for this device"
         );
         if operation == "workspaces" {
-            let workspaces = state.list_workspaces()?.iter().map(|workspace| json!({"id":workspace.id,"name":workspace.label,"absPath":workspace.abs_path})).collect::<Vec<_>>();
+            let requester = crate::interaction::requester(caller, false);
+            let workspaces = state.list_workspaces()?.iter().filter(|workspace| state.agent_reaches_workspace(requester, &workspace.id)).map(|workspace| json!({"id":workspace.id,"name":workspace.label,"absPath":workspace.abs_path})).collect::<Vec<_>>();
             return Ok(Some(json!(workspaces)));
         }
         return Ok(Some(

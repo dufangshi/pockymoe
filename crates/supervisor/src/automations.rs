@@ -79,9 +79,21 @@ pub async fn command_show(
     Ok(Json(s.command_show(&thread, &id).map_err(map_err)?))
 }
 
-pub async fn cli(s: &Supervisor, v: &Value) -> anyhow::Result<Value> {
+pub async fn cli(
+    s: &Supervisor,
+    v: &Value,
+    requester: pockymoe_runtime::interaction::AgentRequester<'_>,
+) -> anyhow::Result<Value> {
     let thread = v["threadId"].as_str().unwrap_or("");
     let id = v["automationId"].as_str().unwrap_or("");
+    // Both the thread an automation acts in and the thread it watches.
+    s.ensure_agent_reaches_thread(requester, thread)?;
+    let trigger = &v["definition"]["trigger"];
+    for source in ["sourceThreadId", "rootThreadId"] {
+        if let Some(source) = trigger[source].as_str() {
+            s.ensure_agent_reaches_thread(requester, source)?;
+        }
+    }
     Ok(match v["operation"].as_str().unwrap_or("") {
         "automationCreate" => s.automation_create(
             thread,

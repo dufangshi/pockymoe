@@ -147,6 +147,9 @@ pub struct WorkspaceDto {
     pub is_favorite: bool,
     pub created_at: String,
     pub last_opened_at: Option<String>,
+    /// Agents outside this workspace cannot reach its threads or files.
+    #[serde(default)]
+    pub agent_isolated: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]

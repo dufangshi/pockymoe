@@ -126,6 +126,14 @@ pub(crate) fn router_with_treer(state: AppState, hub: Option<Arc<crate::treer::H
             "/api/config/peer-access",
             get(crate::peer_api::access).patch(crate::peer_api::set_access),
         )
+        .route(
+            "/api/config/agent-isolation",
+            get(crate::isolation::get).patch(crate::isolation::set),
+        )
+        .route(
+            "/api/config/agent-isolation/workspaces/{id}",
+            axum::routing::put(crate::isolation::set_workspace),
+        )
         .route("/healthz", get(healthz))
         .route("/readyz", get(healthz))
         .route("/api/version", get(version))

@@ -793,3 +793,50 @@ async fn completion_requires_opt_in_and_sender_and_batches_keep_one_mail_record(
     f.hub.store_delivery(&a, &channel).unwrap();
     assert_eq!(pending(&f.hub, &a.thread), 2); // External-channel envelope wins over completion-looking text.
 }
+
+#[tokio::test]
+async fn an_isolated_workspace_drops_mail_from_agents_outside_it() {
+    let f = fixture().await;
+    let (a, _) = f.hub.bind(hello(&f, "isolated-a")).await.unwrap();
+    let (b, _) = f.hub.bind(hello(&f, "neighbour-b")).await.unwrap();
+    let workspace = f.hub.state.get_thread(&a.thread).unwrap().workspace_id;
+    assert_eq!(
+        f.hub.state.get_thread(&b.thread).unwrap().workspace_id,
+        workspace
+    );
+    f.hub
+        .state
+        .set_workspace_isolation(&workspace, true)
+        .unwrap();
+    let outside = mail(&a, "outside", "agent", "agent-elsewhere", "read me");
+    assert!(!f.hub.store_delivery(&a, &outside).unwrap());
+    assert!(f
+        .hub
+        .store_delivery(&a, &mail(&a, "inside", "agent", &b.agent, "hi"))
+        .unwrap());
+    assert!(f
+        .hub
+        .store_delivery(&a, &mail(&a, "person", "human", "person", "hi"))
+        .unwrap());
+    let inbox = f.hub.state.inbox_list(&a.thread, &json!({})).unwrap();
+    assert_eq!(inbox["messages"].as_array().unwrap().len(), 2);
+    // The dropped delivery is still acknowledged, so Core does not redeliver it.
+    let acked: bool = f
+        .hub
+        .state
+        .db
+        .with(|c| {
+            Ok(c.query_row(
+                "SELECT EXISTS(SELECT 1 FROM treer_message_acks WHERE delivery_id='d-outside')",
+                [],
+                |r| r.get(0),
+            )?)
+        })
+        .unwrap();
+    assert!(acked);
+    assert!(
+        crate::treer::sender_reaches(&f.hub.state, Some("agent-elsewhere"), &a.thread).is_err()
+    );
+    assert!(crate::treer::sender_reaches(&f.hub.state, Some(&b.agent), &a.thread).is_ok());
+    assert!(crate::treer::sender_reaches(&f.hub.state, None, &a.thread).is_ok());
+}

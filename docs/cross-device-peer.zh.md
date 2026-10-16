@@ -26,6 +26,7 @@ A 上的 agent ── pockymoe CLI ── loopback /api/cli (A supervisor)
 - **relay device ID**：relay 在 `relay.connected` 中发送 `deviceId` 和（新增）`deviceName`。supervisor 记录在 `peer_link`，`relay_identity()` 返回。本地 `hosts.id` 保持不变；`/api/cli` 的 `info` 增加 `relayDeviceId`、`deviceName`。
 - **PeerCaller**（`crates/supervisor/src/auth.rs`）：`{device_id, device_name, user_id}`，只能由隧道根据 relay 写入的 `peer` 对象构造，作为请求 extension，与 `TrustedRelayForward` 同时存在。
 - **开关**：每台 device 独立，默认关闭。`Supervisor::peer_access_enabled()` / `set_peer_access(bool)`（已实现，KV `peer:settings`）。发出和接收都要求本机开启。Web/本机 owner 通过 `GET|PATCH /api/config/peer-access`（`{"enabled":bool}`）设置；CLI `pockymoe device access on|off` 只接受本机 machine credential（`CliCaller(None)`），thread 凭据只能查看。远端 device 无法修改开关（PeerCaller 只能访问 `/api/peer/*`）。
+- **隔离**：owner 可在 Devices 页隔离整台 device（只剩 `info` 可用，返回 `isolated:true`），或在 Workspaces 页隔离单个 workspace（`workspaces`/`list` 不再列出，读取、发送、创建和 `fs` 均被拒绝）。只限制入站，见 [agent 隔离](agent-isolation.md)。
 - **身份钉扎**：未绑定账户密钥的 A 首次与 B 握手时 TOFU 钉住 B 的 identity key（runtime KV `peer:pin:{relayDeviceId}` = `{"identityKey","fingerprint","pinnedAt"}`），之后变化即 `PeerError::IdentityChanged`。`pockymoe device trust DEVICE --reset`（machine credential）清除。已绑定的 A 改用设备证书核对 B，见 §17。
 
 ## 4. 隧道帧（relay ↔ supervisor）
