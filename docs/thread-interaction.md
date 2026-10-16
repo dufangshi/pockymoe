@@ -262,7 +262,11 @@ its work folds into the work line ("Worked for 10s · ✓4 ✕1 · edited 1 file
 counts are icons with numbers, explained after the pointer rests on one for a
 second). Opening that line shows the narration with each run folded; opening a
 run lists its operations. A folded turn with several answers shows the work
-between them as one counted line. The file counts on the work line open only the
+between them as one counted line; tapping it opens that stretch alone, under the
+line (its narration, its last run open), while the rest of the turn stays folded.
+A folded turn shows the prompts that started it above its work line and the
+prompts added while it worked below it, so opening or folding the turn never
+moves what is above the line, and every toggle stays where it was clicked. The file counts on the work line open only the
 changed files. Command and tool output never opens by itself, and a row loads its
 output only when clicked. Clicking an output, diff or code block opens it in a
 floating viewer, and command rows carry a copy button.
@@ -295,9 +299,9 @@ Entering a thread always shows its conversation: the files view opens only when
 asked for (the Files button or a file link), and is not restored from the last
 visit. Where the files view sits beside the conversation, the start of its tree's
 toolbar has window controls as on a Mac: the red one closes the view and the amber
-one minimizes it. Minimized, the tree stays as a strip left of the conversation and
-the editor folds into a small tab on the right edge; that tab, the amber control or
-opening another file from the tree brings the editor back.
+one minimizes it. Minimized, the tree stays as a strip at the right edge and the
+editor folds into a small tab on the strip's left edge; that tab, the amber control
+or opening another file from the tree brings the editor back.
 
 On a phone, the file list and file viewer have a one-field prompt at the bottom.
 It edits the same draft as the composer, so text typed in either shows in the
