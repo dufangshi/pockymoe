@@ -16,7 +16,8 @@ Save an API connection once, then choose it from a harness or a plugin.
 - **Conversation display**: a compact turn head opens its details on one line;
   wide screens show the full heading, prompt photos use smaller previews, files
   open on request with window controls, map levels respond to clicks, and hover
-  actions float above the text.
+  actions float above the text. Folded work opens in place and minimized files
+  dock on the right.
 
 Validated with focused Rust connection and plugin tests, encrypted two-device
 integration, a real editorial-model request, and component and browser checks for
