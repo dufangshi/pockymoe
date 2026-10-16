@@ -64,8 +64,8 @@
 :theme .thread-ui-shell .thread-worked-toggle:hover .thread-graph-worked-label { color: var(--theme-accent-solid); }
 :theme .thread-ui-shell .thread-worked-chevron { width: 12px; height: 12px; }
 
-/* Runs, rows and the receipt share the text column. */
-:theme .thread-ui-shell :is(.tlog-run, .tlog-single, .tlog-current, .tlog-files, .thread-turn-receipt, .tlog-plan, .thread-graph-turn-footer) {
+/* Runs, rows and the working line share the text column. */
+:theme .thread-ui-shell :is(.tlog-run, .tlog-single, .tlog-current, .tlog-files, .tlog-plan, .thread-graph-turn-footer) {
   margin-left: var(--term-gutter);
 }
 :theme .thread-ui-shell .tlog-run-head { font-size: 12px; }
@@ -101,9 +101,16 @@
 :theme .thread-ui-shell .thread-diff-line.is-remove { background: light-dark(#f8e0de, #35201f); }
 :theme .thread-ui-shell .thread-diff-line.is-file { background: var(--theme-surface); }
 
-/* Receipt and the working line. */
-:theme .thread-ui-shell .thread-turn-receipt { font-size: 11px; }
-:theme .thread-ui-shell .thread-turn-receipt .thread-turn-usage-price { border-radius: 0; }
+/* The turn's head reads as a comment rule: "── 17:09 · model · $0.41 · 19.4 tok/s ─────". */
+:theme .thread-ui-shell .thread-turn-head { justify-content: flex-start; margin-top: 10px; }
+:theme .thread-ui-shell .thread-turn-head::before { flex: 0 0 2ch; min-width: 2ch; }
+:theme .thread-ui-shell .thread-turn-head::before,
+:theme .thread-ui-shell .thread-turn-head::after { background: var(--theme-border-strong); }
+:theme .thread-ui-shell .thread-turn-head .thread-turn-usage-price { border-radius: 0; }
+:theme .thread-ui-shell .thread-turn-head-detail { margin-left: var(--term-gutter); border-color: var(--term-line); border-radius: 0; }
+:theme .thread-ui-shell .thread-graph-message[data-role='user'] .thread-graph-message-kicker { margin-left: 0; }
+/* The ❯ stays with the prompt's text, under its "added" line. */
+:theme .thread-ui-shell .thread-graph-message[data-role='user']:has(> .thread-graph-message-stack > .thread-graph-message-kicker)::before { margin-top: 17px; }
 :theme .thread-ui-shell .thread-graph-turn-footer { font-size: 11px; }
 
 /* Plan: [x] done, [>] now, [ ] next. */

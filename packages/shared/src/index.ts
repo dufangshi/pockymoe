@@ -1130,6 +1130,18 @@ export interface ThreadTurnTokenUsageDto {
     latestOutputTokensPerSecond?: number | null;
     latestOutputTimeMs?: number;
     latestOutputMeasuredAt?: string | null;
+    /** Per model request: the average wait for its first output, including
+        queueing, prefill and thinking that does not stream. */
+    firstTokenMs?: number | null;
+    firstTokenRequests?: number;
+    /** Uncached input prefilled before the first output, and the cached rest. */
+    prefillTokens?: number;
+    prefillCachedTokens?: number;
+    prefillTokensPerSecond?: number | null;
+    /** Output streamed after each request's first output, and over how long. */
+    decodeTokens?: number;
+    decodeMs?: number;
+    decodeTokensPerSecond?: number | null;
     updatedAt: string;
   } | null;
 }

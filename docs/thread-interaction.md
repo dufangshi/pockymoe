@@ -266,6 +266,19 @@ changed files. Command and tool output never opens by itself, and a row loads it
 output only when clicked. Clicking an output, diff or code block opens it in a
 floating viewer, and command rows carry a copy button.
 
+Each turn opens with a head line above its prompt: when the turn started (the
+time its first prompt was taken up), the model and reasoning effort, the API cost
+and the combined output speed ("10:25 · gpt-6.1-sol · medium · $0.42 · 51.2 tok/s").
+While the turn runs, the head shows a pulsing dot and the time so far instead of
+cost and speed, and the live status stays at the bottom of the turn. Tapping the
+head shows when the turn started and ended, the time taken, the tokens (input and
+output) and how many prompts were added while it worked. Tapping the cost shows
+the token and price breakdown; tapping the speed shows the time to first token,
+prefill and decode speeds (see [account composer](account-composer-shortcuts.md)).
+A prompt added while the turn worked carries "Added · 17:12" above it. Waiting
+for a wake and running background agents show as small moving marks (an hourglass,
+a bot with its count) whose wording is in their label.
+
 A toggle stays where it was clicked while what it opens or closes changes size,
 so it can be clicked again in place; the timeline does not jump to its end. An
 opened turn keeps its work line at the top, and an opened long message keeps
