@@ -169,6 +169,32 @@ mod tests {
     }
 
     #[test]
+    fn thread_summary_is_scoped_read_access() {
+        let mut access = owner_access();
+        access.kind = "shared";
+        access.scope = "thread".into();
+        access.thread_id = Some("thread-1".into());
+        access.thread_access = "read".into();
+        for (method, path, allowed) in [
+            ("GET", "/api/threads/thread-1/summary", true),
+            ("GET", "/api/threads/thread-1/summary?maxChars=2000", true),
+            ("GET", "/api/threads/thread-2/summary", false),
+            ("GET", "/api/threads/thread-1/summary/extra", false),
+            ("POST", "/api/threads/thread-1/summary", false),
+        ] {
+            assert_eq!(
+                access_allows(
+                    &access,
+                    &Method::from_bytes(method.as_bytes()).unwrap(),
+                    path
+                ),
+                allowed,
+                "{method} {path}"
+            );
+        }
+    }
+
+    #[test]
     fn history_detail_paths_preserve_wire_encoding_and_shared_read_access() {
         for prefix in ["/relay", "/relay/devices/device-1"] {
             for resource in ["turns", "items"] {

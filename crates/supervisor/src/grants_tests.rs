@@ -501,6 +501,7 @@ async fn thread_lineage_and_route_access_are_local_read_and_control() {
     put(&state.db, &g.grant_id, &g, &owner, owner_trust::now()).unwrap();
     for id in &ids[..4] {
         assert!(authorize_path(&state, &p, "GET", &format!("/api/threads/{id}/search")).is_ok());
+        assert!(authorize_path(&state, &p, "GET", &format!("/api/threads/{id}/summary")).is_ok());
         assert!(authorize_path(&state, &p, "POST", &format!("/api/threads/{id}/prompt")).is_err());
     }
     assert!(authorize_path(
@@ -521,6 +522,8 @@ async fn thread_lineage_and_route_access_are_local_read_and_control() {
         ("GET", "/api/device/metrics".into(), false),
         ("GET", "/api/workspaces/other/files/raw".into(), false),
         ("GET", "/api/threads/other".into(), false),
+        ("GET", "/api/threads/other/summary".into(), false),
+        ("POST", format!("/api/threads/{}/summary", ids[0]), false),
     ] {
         assert_eq!(
             authorize_path(&state, &p, method, &path).is_ok(),
@@ -528,6 +531,30 @@ async fn thread_lineage_and_route_access_are_local_read_and_control() {
             "{path}"
         );
     }
+    let (status, body) = request(
+        &state,
+        Some(&p),
+        &key,
+        "GET",
+        &format!("/api/threads/{}/summary", ids[1]),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(body, json!({"messages":[],"truncated":false}));
+    assert_eq!(
+        request(
+            &state,
+            Some(&p),
+            &key,
+            "GET",
+            "/api/threads/other/summary",
+            Value::Null
+        )
+        .await
+        .0,
+        403
+    );
     g.thread_access = "control".into();
     g.workspace_access = "write".into();
     put(&state.db, &g.grant_id, &g, &owner, owner_trust::now()).unwrap();

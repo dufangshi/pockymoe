@@ -1,4 +1,6 @@
 pub mod access;
+mod thread_summary;
+pub use thread_summary::*;
 mod thread_schema;
 pub use thread_schema::*;
 mod automation;

@@ -9,6 +9,7 @@ mod inbox_reminder;
 pub(crate) mod peer_work;
 mod reliability;
 mod search;
+mod thread_summary;
 mod update;
 mod watches;
 
@@ -603,7 +604,10 @@ impl Supervisor {
                 "INSERT INTO thread_history_items(id, thread_id, turn_id, item_id, item_json, created_at, updated_at)
                  VALUES (?1,?2,?3,?4,?5,?6,?6)
                  ON CONFLICT(thread_id, turn_id, item_id) DO UPDATE SET
-                    item_json=excluded.item_json,
+                    item_json=CASE WHEN json_extract(thread_history_items.item_json,'$.kind') IN ('userMessage','agentMessage')
+                      AND json_type(thread_history_items.item_json,'$.createdAt')='text'
+                      THEN json_set(excluded.item_json,'$.createdAt',json_extract(thread_history_items.item_json,'$.createdAt'))
+                      ELSE excluded.item_json END,
                     updated_at=excluded.updated_at
                  WHERE COALESCE(json_extract(thread_history_items.item_json, '$.status'), '')
                            NOT IN ('completed', 'failed', 'interrupted')
@@ -2452,7 +2456,7 @@ impl Supervisor {
                     if thread.fast_mode { "fast" } else { "standard" }
                 ],
             )?;
-            let user_item = ThreadHistoryItemDto {
+            let mut user_item = ThreadHistoryItemDto {
                 id: format!("{turn_id}:user"),
                 created_at: Some(now.clone()),
                 kind: pockymoe_protocol::ThreadItemKind::UserMessage,
@@ -2465,6 +2469,8 @@ impl Supervisor {
                 artifact: None,
                 extra: Default::default(),
             };
+            let origin = pending_steer_id.map(|pending| thread_summary::prompt_origin(conn, pending)).transpose()?.flatten().unwrap_or("user");
+            user_item.extra.insert("origin".into(), json!(origin));
             conn.execute(
                 "INSERT INTO thread_history_items(id, thread_id, turn_id, item_id, item_json, created_at, updated_at)
                  VALUES (?1,?2,?3,?4,?5,?6,?6)",
@@ -2655,7 +2661,10 @@ impl Supervisor {
                     "INSERT INTO thread_history_items(id, thread_id, turn_id, item_id, item_json, created_at, updated_at)
                      VALUES (?1,?2,?3,?4,?5,?6,?6)
                      ON CONFLICT(thread_id, turn_id, item_id) DO UPDATE SET
-                        item_json=excluded.item_json,
+                        item_json=CASE WHEN json_extract(thread_history_items.item_json,'$.kind') IN ('userMessage','agentMessage')
+                          AND json_type(thread_history_items.item_json,'$.createdAt')='text'
+                          THEN json_set(excluded.item_json,'$.createdAt',json_extract(thread_history_items.item_json,'$.createdAt'))
+                          ELSE excluded.item_json END,
                         updated_at=excluded.updated_at",
                     params![
                         Uuid::new_v4().to_string(),
@@ -2957,7 +2966,7 @@ impl Supervisor {
         // Move the delivered prompt into durable history before removing its
         // temporary queue bubble, including when the turn already completed.
         let now = now_rfc3339();
-        let item = ThreadHistoryItemDto {
+        let mut item = ThreadHistoryItemDto {
             id: format!("steer:{}", pending.id),
             kind: pockymoe_protocol::ThreadItemKind::UserMessage,
             text: pending.display_prompt.clone(),
@@ -2970,6 +2979,11 @@ impl Supervisor {
             artifact: None,
             extra: Default::default(),
         };
+        let origin = self
+            .db
+            .with(|conn| thread_summary::prompt_origin(conn, &pending.id))?
+            .unwrap_or("user");
+        item.extra.insert("origin".into(), json!(origin));
         self.db.with(|conn| {
             let tx=conn.unchecked_transaction()?;
             let conn=&tx;

@@ -305,6 +305,7 @@ pub(crate) fn router_with_treer(state: AppState, hub: Option<Arc<crate::treer::H
             get(crate::automations::command_show),
         )
         .route("/api/threads/{id}/search", get(thread_search))
+        .route("/api/threads/{id}/summary", get(thread_summary))
         .route("/api/search", get(device_search))
         .route("/api/workspaces/{id}/search", get(workspace_search))
         .route(
@@ -1622,6 +1623,15 @@ async fn get_thread(
     let mut value = serde_json::to_value(detail).unwrap();
     pockymoe_runtime::history::defer_tool_details(&mut value);
     Ok(Json(value))
+}
+
+async fn thread_summary(
+    Path(id): Path<String>,
+    Query(query): Query<pockymoe_protocol::ThreadSummaryQuery>,
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, ApiErr> {
+    let summary = state.thread_summary(&id, &query).map_err(map_err)?;
+    Ok(([(header::CACHE_CONTROL, "no-store")], Json(summary)))
 }
 
 #[derive(Deserialize)]

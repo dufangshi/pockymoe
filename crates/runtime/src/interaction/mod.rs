@@ -321,6 +321,7 @@ impl Supervisor {
                     .as_ref()
                     .map(|from| format!("thread {from}"))
             });
+        let peer_prompt = sender.is_some();
         let prompt = match sender {
             Some(from) => {
                 let subject = derived_subject
@@ -463,6 +464,10 @@ impl Supervisor {
                     input.client_request_id.as_deref(),
                     &now,
                 )?;
+                if peer_prompt {
+                    tx.execute("INSERT INTO kv(key,value) VALUES(?1,'peer')",
+                        [format!("cli:prompt-origin:{pending_id}")])?;
+                }
                 if delivery == "steer" {
                     tx.execute(
                         "UPDATE thread_pending_steers SET delivery='cli-steer',turn_id=?2 WHERE id=?1",
