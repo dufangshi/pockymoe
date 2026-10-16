@@ -159,6 +159,7 @@ import {
   currentThreadsHref,
   currentWorkspacesHref,
   relayDeviceIdFromPath,
+  threadIdFromPath,
 } from '../lib/relayRoutes';
 import { useMobileComposerLayout } from './useMobileComposerLayout';
 import { useThreadAuxiliaryActions } from './useThreadAuxiliaryActions';
@@ -212,6 +213,17 @@ const EMPTY_ANSWERED_REQUEST_NOTES: NonNullable<
 > = [];
 const EMPTY_ACTIVITY_NOTES: NonNullable<ThreadDetailDto['activityNotes']> = [];
 const EMPTY_PENDING_STEERS: NonNullable<ThreadDetailDto['pendingSteers']> = [];
+/** The last detail of recently opened threads, by route: switching back paints
+    it at once and refreshes quietly, instead of a spinner in place of the
+    conversation and the composer. */
+const recentThreadDetails = new Map<string, ThreadDetailDto>();
+/** Prefetches still in flight, reused by the page that opens the thread. */
+const pendingThreadDetails = new Map<string, Promise<ThreadDetailDto>>();
+function rememberThreadDetail(routeKey: string, detail: ThreadDetailDto) {
+  recentThreadDetails.delete(routeKey);
+  recentThreadDetails.set(routeKey, detail);
+  while (recentThreadDetails.size > 12) recentThreadDetails.delete(recentThreadDetails.keys().next().value!);
+}
 const UNAVAILABLE_AGENT_CAPABILITIES: AgentProviderCapabilitiesDto = {
   sessions: {
     list: false,
@@ -465,6 +477,23 @@ export function ThreadDetailPage() {
   const routeKey = `${relayRouteDeviceId ?? 'local'}:${id}`;
   const activeRouteRef = useRef(routeKey);
   activeRouteRef.current = routeKey;
+  const applyDetailResponseRef = useRef<(detail: ThreadDetailDto) => void>(() => {});
+  // Warm a thread on this device before it opens (a pressed row, a dock swipe
+  // away), so the switch paints its conversation instead of a spinner.
+  const prefetchingRef = useRef(new Set<string>());
+  const prefetchThread = useCallback((href: string) => {
+    const threadId = threadIdFromPath(href);
+    if (!threadId || threadId === id || relayDeviceIdFromPath(href) !== (relayRouteDeviceId ?? null)) return;
+    const key = `${relayRouteDeviceId ?? 'local'}:${threadId}`;
+    if (recentThreadDetails.has(key) || prefetchingRef.current.has(key)) return;
+    prefetchingRef.current.add(key);
+    const request = fetchThreadDetail(threadId, { limit: INITIAL_DETAIL_TURN_PAGE_SIZE });
+    pendingThreadDetails.set(key, request);
+    void request
+      .then(detail => { if (!recentThreadDetails.has(key)) rememberThreadDetail(key, detail); })
+      .catch(() => { /* Opened normally instead. */ })
+      .finally(() => { prefetchingRef.current.delete(key); pendingThreadDetails.delete(key); });
+  }, [id, relayRouteDeviceId]);
   const navigate = useNavigate();
   const shellNav = useAppShellNav();
   const plugins = usePlugins();
@@ -1209,6 +1238,7 @@ export function ThreadDetailPage() {
   const applyDetailResponse = useCallback(
     (detailResponse: ThreadDetailDto) => {
       if (activeRouteRef.current !== routeKey || detailResponse.thread.id !== id) return;
+      rememberThreadDetail(routeKey, detailResponse);
       const pendingThreadSettings = pendingThreadSettingsRef.current;
       const nextDetail =
         pendingThreadSettings && Object.keys(pendingThreadSettings).length > 0
@@ -1429,6 +1459,7 @@ export function ThreadDetailPage() {
     },
     [clearBufferedLiveOutput, routeKey, id, setDetail, setThreads],
   );
+  applyDetailResponseRef.current = applyDetailResponse;
 
   useEffect(() => {
     detailRef.current = detail;
@@ -1599,9 +1630,10 @@ export function ThreadDetailPage() {
       detailLoadsInFlightRef.current += 1;
       detailLoadStartedAtRef.current = Date.now();
       try {
-        const detailResponse = await fetchThreadDetail(id, {
+        const prefetched = limit === INITIAL_DETAIL_TURN_PAGE_SIZE ? pendingThreadDetails.get(routeKey) : undefined;
+        const detailResponse = await (prefetched?.catch(() => fetchThreadDetail(id, { limit })) ?? fetchThreadDetail(id, {
           limit,
-        });
+        }));
         if (loadRequestIdRef.current !== requestId || activeRouteRef.current !== routeKey) {
           return;
         }
@@ -1799,9 +1831,10 @@ export function ThreadDetailPage() {
     pageContextProviderRef.current = null;
     recheckAfterFirstOpenRef.current = false;
     initialLoadRetriesRef.current = 0;
+    const recent = recentThreadDetails.get(`${relayRouteDeviceId ?? 'local'}:${id}`) ?? null;
     setDetail(null);
     setError(null);
-    setLoading(true);
+    setLoading(!recent);
     setLoadingEarlier(false);
     setMetaSessionCopyState('idle');
     setOptimisticTurn(null);
@@ -1822,6 +1855,7 @@ export function ThreadDetailPage() {
       socketOpen: false,
       lastHealthyAt: null,
     });
+    if (recent) applyDetailResponseRef.current(recent);
   }, [id, relayRouteDeviceId]);
 
   useEffect(() => {
@@ -1855,7 +1889,7 @@ export function ThreadDetailPage() {
 
   useEffect(() => {
     void loadThreadDetail({
-      showLoading: true,
+      showLoading: !recentThreadDetails.has(routeKey),
       limit: INITIAL_DETAIL_TURN_PAGE_SIZE,
     });
   }, [loadThreadDetail]);
@@ -4092,7 +4126,7 @@ export function ThreadDetailPage() {
         onCloseTools: closeTerminal,
         storageFailed: workbenchPresentation.storageFailed,
       }, subscriptionUsage, statusActions: detail ? <><ThreadSubagentsControl key={`subagents-${detail.thread.id}`} detail={detail} /><UnscopedOnly><ThreadWatchesControl key={`watches-${detail.thread.id}`} thread={detail.thread} /></UnscopedOnly><WorkbenchThreadPicker deviceId={relayRouteDeviceId} workspaceId={detail.workspace.id} threadId={detail.thread.id} threads={threads} navigationThreads={workbenchNavigation.threads} reference={referenceId ? {deviceId: referenceDevice === 'local' ? null : referenceDevice, threadId:referenceId} : null} splitActive={Boolean(referenceId && ['thread','files'].includes(workbenchPresentation.value.mode))} onSelect={selectSplitThread} onRestore={() => changePresentation({mode:'thread'})} onClose={() => changePresentation({mode:'focus'})} onCollaboration={() => changePresentation({mode:'collaboration'})} /></> : null, renderThreadMenu: thread => <RecentThreadMenu thread={thread} currentKey={workbenchNavigation.currentKey} onFavorite={workbenchNavigation.onToggleThreadFavorite} onRenamed={workbenchNavigation.onThreadRenamed} onRemoved={workbenchNavigation.onThreadRemoved} onNavigate={navigate} />, harnessSessionId: detail?.thread.providerSessionId ?? null, harnessSessionUrl: detail?.thread.providerSessionId && (detail.thread.provider === 'codex' || detail.thread.agentId === 'codex') ? `codex://threads/${encodeURIComponent(detail.thread.providerSessionId)}` : null, activeView: terminalOpen ? 'shell' : 'chat', terminalEnabled: terminalPluginEnabled, onViewChange: view => { if (view === 'shell') toggleTerminal(); },
-        toolPanels: dshPanelAvailable ? [{ id: 'deepseek-harness', label: translate('workbench.deepseekHarness'), icon: <Puzzle data-icon="harness-panel" />, active: dshPanelOpen, onToggle: toggleDshPanel }] : [], onNavigate: navigate, onSearch: () => setSearchOpen(true), searchOpen, search: id && detail ? <ConversationSearch key={id} threadId={id} workspaceId={detail.thread.workspaceId}
+        toolPanels: dshPanelAvailable ? [{ id: 'deepseek-harness', label: translate('workbench.deepseekHarness'), icon: <Puzzle data-icon="harness-panel" />, active: dshPanelOpen, onToggle: toggleDshPanel }] : [], onNavigate: navigate, onPrefetchThread: prefetchThread, onSearch: () => setSearchOpen(true), searchOpen, search: id && detail ? <ConversationSearch key={id} threadId={id} workspaceId={detail.thread.workspaceId}
         deviceLabel={relayRouteDeviceId ?? searchLabels.localDevice}
         allowGlobal={!hostScope && (relayThreadIsOwner || (relayAccess?.scope === 'device' && (relayAccess.threadAccess === 'read' || relayAccess.threadAccess === 'control')))}
         onNavigate={match => {

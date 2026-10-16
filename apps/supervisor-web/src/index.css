@@ -2704,3 +2704,9 @@ main:has(.product-navigation) { padding-top: 0 !important; }
 @media (max-width: 639px) {
   .grant-review-actions > button { flex: 1 1 140px; min-height: 44px; }
 }
+
+/* "Opening workspace…" usually lasts a moment: it fades in only if the wait is
+   long enough to read, instead of flashing. */
+.workspace-opening { animation: workspace-opening-in 200ms 450ms both; }
+@keyframes workspace-opening-in { from { opacity: 0; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .workspace-opening { animation-duration: 1ms; } }

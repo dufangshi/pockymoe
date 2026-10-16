@@ -48,7 +48,7 @@ test('language switch synchronizes host and shared workbench, preserves draft, f
   await expect(page.locator('html')).toHaveAttribute('lang', 'zh-CN');
   await expect(page.getByText('English user title', { exact: true }).first()).toBeVisible();
   // Exercise the combined search + i18n build, including cached result labels.
-  await page.getByRole('button', { name: '搜索会话', exact: true }).click();
+  await page.getByRole('button', { name: '搜索对话', exact: true }).click();
   await page.getByRole('combobox', { name: '搜索范围', exact: true }).selectOption('workspace');
   await page.getByRole('combobox', { name: '搜索消息', exact: true }).fill('English user title');
   const localizedResults = page.getByRole('listbox', { name: '匹配消息', exact: true });

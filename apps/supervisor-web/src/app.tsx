@@ -480,7 +480,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
   if (state.status === 'checking') {
     return (
       <main className="flex min-h-screen items-center justify-center bg-[var(--app-bg)] px-4 text-sm text-[var(--theme-fg-muted)]">
-        {translate("workbench.checkingSupervisorAccess")}</main>
+        <DelayedText>{translate("workbench.checkingSupervisorAccess")}</DelayedText></main>
     );
   }
 
@@ -691,7 +691,14 @@ export function App() {
     document
       .querySelector<HTMLMetaElement>('meta[name="theme-color"]')
       ?.setAttribute('content', themeChromeColor(effectiveTheme));
-  }, [effectiveTheme, shownThemeMode, appliedTheme]);
+    // index.html paints this before the next load; keep the page behind the app
+    // in the same colour after a theme change too.
+    const background = getComputedStyle(root).getPropertyValue('--theme-bg').trim();
+    if (background) root.style.backgroundColor = background;
+    try {
+      localStorage.setItem('pockymoe.paint', JSON.stringify({ effective: effectiveTheme, fixed: Boolean(themeRegistry.fixedMode), background }));
+    } catch { /* Private browsing: the next load paints the default first. */ }
+  }, [effectiveTheme, shownThemeMode, appliedTheme, themeRegistry.fixedMode]);
 
   return (
     <div className="theme-shell theme-scrollbar">
@@ -726,4 +733,15 @@ export function App() {
       </BrowserRouter>
     </div>
   );
+}
+
+/** Status text for a wait that is usually too short to read: the page stays a
+    plain background unless the wait passes half a second. */
+function DelayedText({ children }: { children: ReactNode }) {
+  const [shown, setShown] = useState(false);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setShown(true), 500);
+    return () => window.clearTimeout(timer);
+  }, []);
+  return shown ? <>{children}</> : null;
 }

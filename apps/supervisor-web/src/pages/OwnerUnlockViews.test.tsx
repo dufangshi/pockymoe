@@ -29,6 +29,7 @@ beforeEach(() => {
   } });
   vi.mocked(exchange).mockImplementation(async request => {
     if (!unlocked) return { response: Response.json({ code: 'device_strict_mode' }, { status: 401 }) };
+    if (new URL(request.url).pathname.endsWith('/threads')) return { response: Response.json([]) };
     if (request.url.endsWith('/workspaces')) return { response: Response.json([{
       id: 'w', label: 'Recovered workspace', absPath: '/tmp/work', createdAt: '2026-01-01', lastOpenedAt: null,
     }]) };
@@ -41,10 +42,11 @@ function unlock(deviceIds = ['a']) {
 describe('device views resume their original blocked loads', () => {
   it('loads the workspace list after matching unlock without Retry or a page reload, leaving completed data alone', async () => {
     render(<MemoryRouter><WorkspacesPage /></MemoryRouter>);
-    await waitFor(() => expect(exchange).toHaveBeenCalledTimes(2));
+    // Workspaces, runtime configuration and the threads that rows link to.
+    await waitFor(() => expect(exchange).toHaveBeenCalledTimes(3));
     expect(screen.queryByText('Recovered workspace')).toBeNull();
     unlock(['b']);
-    expect(exchange).toHaveBeenCalledTimes(2);
+    expect(exchange).toHaveBeenCalledTimes(3);
     unlock();
     expect(await screen.findByText('Recovered workspace')).toBeVisible();
     expect(screen.queryByRole('alert')).toBeNull();

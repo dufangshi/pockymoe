@@ -314,6 +314,22 @@ execution history shows an inline spinner until that request settles. Reduced
 motion disables these animations. The thread tools bar keeps its direct actions
 without a duplicate overflow menu.
 
+## Switching threads and pages
+
+Moving around keeps the screen steady:
+
+- Home, the workspace list and the workspace drawer navigate inside the app; only
+  a modified or middle click opens a new page.
+- A workspace row opens that workspace's most recent thread directly.
+- A recently opened thread (the last twelve, per device) shows its conversation
+  at once and refreshes quietly. Pressing a thread row, or being a dock swipe away,
+  starts loading it early; a load that finishes within a moment never shows the
+  loader.
+- A thread opens at its end without first painting its top; messages on screen
+  render their Markdown before the first paint.
+- Each page load paints the last theme and background before the app starts, so
+  a reload does not flash white or the other color mode.
+
 ## Terminal clipboard
 
 The terminal follows the usual desktop terminal conventions, adjustable in

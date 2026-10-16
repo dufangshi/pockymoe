@@ -88,6 +88,38 @@ async function verticalSwipe(page: Page, selector: string, distance: number) {
   ]);
 }
 
+// CDP timestamps distinguish a slow release from a flick without depending on
+// machine speed; the events still take Chromium's real touch dispatch path.
+async function dragTouch(page: Page, x: number, y: number, dx: number, dy: number, releaseMs = 800) {
+  const cdp = await page.context().newCDPSession(page);
+  const timestamp = Date.now() / 1000 - 1;
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', timestamp, touchPoints: [{ x, y }] });
+  for (let step = 1; step <= 10; step++) {
+    await cdp.send('Input.dispatchTouchEvent', {
+      type: 'touchMove', timestamp: timestamp + step * 0.008,
+      touchPoints: [{ x: x + dx * step / 10, y: y + dy * step / 10 }],
+    });
+  }
+  return async () => {
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', timestamp: timestamp + releaseMs / 1000, touchPoints: [] });
+    await cdp.detach();
+  };
+}
+
+async function mockPhoneTurn(page: Page, request: import('@playwright/test').APIRequestContext, id: string, items: Array<{ id: string; kind: string; text: string }>) {
+  const detail = await (await request.get(`${base}/api/threads/${id}`)).json();
+  const at = new Date().toISOString();
+  await page.routeWebSocket(/\/ws(?:\?.*)?$/, socket => {
+    socket.send(JSON.stringify({ type: 'supervisor.connected' }));
+    socket.onMessage(() => socket.send(JSON.stringify({ type: 'supervisor.pong' })));
+  });
+  await page.route(`**/api/threads/${id}?**`, route => route.fulfill({ json: {
+    ...detail, totalTurnCount: 1, activeSubagents: [],
+    thread: { ...detail.thread, status: 'idle', activeTurnId: null },
+    turns: [{ id: 'phone-gesture-turn', status: 'completed', startedAt: at, completedAt: at, items }],
+  } }));
+}
+
 test.beforeEach(async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== 'mobile-chromium', 'Phone layout');
   await page.addInitScript(() => {
@@ -591,4 +623,196 @@ test('the dock returns after the tap that leaves a focused field, or after a pla
   await expect(dock).toBeHidden();
   await page.waitForTimeout(450);
   await expect(dock).toBeVisible();
+});
+
+for (const preset of ['classic', 'plum-pocket']) test(`workspace drawer follows touch drags and leaves scrolling and composer gestures alone (${preset})`, async ({ page, request }, testInfo) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.addInitScript(value => localStorage.setItem('pockymoe-theme-preset', value), preset);
+  const [id] = await fixture(request);
+  await mockPhoneTurn(page, request, id, [
+    { id: 'drawer-prompt', kind: 'userMessage', text: 'Review this wide code block.' },
+    { id: 'drawer-code', kind: 'agentMessage', text: 'A horizontally scrollable code sample.\n\n```text\n' + 'wide-column '.repeat(100) + '\nsecond line\nthird line\n```' },
+    { id: 'drawer-scroll-content', kind: 'agentMessage', text: Array.from({ length: 18 }, (_, index) => `Paragraph ${index}: keep the conversation readable during a vertical touch scroll.`).join('\n\n') },
+  ]);
+  await page.goto(`/threads/${id}`);
+  await expect(page.locator('html')).toHaveAttribute('data-theme-preset', preset);
+  await expect(page.locator('nav.matter-phone-dock')).toBeVisible();
+  const scroll = page.getByTestId('thread-scroll-container');
+  await scroll.dispatchEvent('touchstart');
+  await scroll.evaluate(element => { element.scrollTop = 0; });
+  const drawer = page.locator('aside.matter-sidebar');
+  const scrim = page.locator('.matter-sidebar-scrim');
+  const width = (await drawer.boundingBox())!.width;
+  const closed = async () => {
+    await expect(drawer).not.toHaveClass(/is-open/);
+    await expect(drawer).not.toHaveAttribute('data-dragging');
+    await expect(scrim).not.toHaveAttribute('data-open');
+  };
+  const opened = async () => {
+    await expect(drawer).toHaveClass(/is-open/);
+    await expect(scrim).toHaveAttribute('data-open');
+    await expect.poll(() => drawer.evaluate(element => Math.abs(element.getBoundingClientRect().left))).toBeLessThan(1);
+  };
+  await closed();
+  // Below 30%, a slow pull follows the finger and then closes back.
+  const shortEnd = await dragTouch(page, 60, 220, width * 0.2, 2);
+  await expect(drawer).toHaveAttribute('data-dragging', '');
+  expect(await drawer.evaluate(element => element.style.transform)).toBe(`translateX(${Math.round(-width * 0.8)}px)`);
+  expect(Number(await scrim.evaluate(element => element.style.opacity))).toBeCloseTo(0.2, 2);
+  await page.screenshot({ path: testInfo.outputPath(`drawer-drag-${preset}.png`), scale: 'css' });
+  await shortEnd();
+  await closed();
+  await expect.poll(() => drawer.evaluate(element => element.getBoundingClientRect().right)).toBeLessThanOrEqual(1);
+
+  // A slow pull over 30% opens; a left drag on the drawer closes.
+  const openEnd = await dragTouch(page, 60, 220, width * 0.55, 0);
+  await expect(drawer).toHaveAttribute('data-dragging', '');
+  await openEnd();
+  await opened();
+  await (await dragTouch(page, width - 30, 180, -width * 0.6, 0))();
+  await closed();
+  await expect.poll(() => drawer.evaluate(element => element.getBoundingClientRect().right)).toBeLessThanOrEqual(1);
+
+  // A flick opens below the distance threshold; the dimmed page also closes by drag.
+  await (await dragTouch(page, 60, 220, width * 0.25, 0, 90))();
+  await opened();
+  await (await dragTouch(page, 375, 220, -width * 0.6, 0))();
+  await closed();
+  await expect.poll(() => drawer.evaluate(element => element.getBoundingClientRect().right)).toBeLessThanOrEqual(1);
+  await (await dragTouch(page, 60, 220, width * 0.55, 0))();
+  await opened();
+  await scrim.tap({ position: { x: 375, y: 260 } });
+  await closed();
+  await expect.poll(() => drawer.evaluate(element => element.getBoundingClientRect().right)).toBeLessThanOrEqual(1);
+
+  await (await dragTouch(page, 340, 220, -150, 0))();
+  await closed();
+  const scrollBefore = await scroll.evaluate(element => element.scrollTop);
+  await (await dragTouch(page, 60, 350, 2, -120))();
+  await closed();
+  await expect.poll(() => scroll.evaluate(element => element.scrollTop)).toBeGreaterThan(scrollBefore);
+  const panel = (await page.locator('.thread-graph-composer-host').boundingBox())!;
+  await (await dragTouch(page, 60, panel.y + panel.height / 2, 130, 1))();
+  await closed();
+  await page.evaluate(() => {
+    window.getSelection()?.removeAllRanges();
+    (document.activeElement as HTMLElement | null)?.blur();
+  });
+
+  const code = page.locator('.thread-graph-code-block').first();
+  await code.scrollIntoViewIfNeeded();
+  await code.evaluate(element => { element.scrollLeft = 150; });
+  await expect.poll(() => code.evaluate(element => element.scrollLeft)).toBeGreaterThan(0);
+  const codeBox = (await code.boundingBox())!;
+  await (await dragTouch(page, Math.max(60, codeBox.x + 20), codeBox.y + codeBox.height / 2, 90, 0))();
+  await closed();
+  await page.screenshot({ path: testInfo.outputPath(`drawer-${preset}.png`), scale: 'css' });
+});
+
+test('Settings retains Preferences and its scroll position across dock and hand changes', async ({ page, request }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const [id] = await fixture(request);
+  await page.goto(`/threads/${id}`);
+  await page.locator('.matter-phone-more').tap();
+  await page.getByRole('dialog', { name: 'More actions' }).getByRole('button', { name: 'Open settings', exact: true }).tap();
+  const dialog = page.getByRole('dialog', { name: /Settings/ });
+  const preferences = dialog.getByRole('tab', { name: 'Preferences', exact: true });
+  await preferences.tap();
+  const panel = dialog.getByRole('tabpanel');
+  const toggle = dialog.getByRole('checkbox', { name: 'One-handed', exact: true });
+  await toggle.scrollIntoViewIfNeeded();
+  const before = await panel.evaluate(element => element.scrollTop);
+  expect(before).toBeGreaterThan(100);
+  const steady = async () => {
+    await expect(dialog).toBeVisible();
+    await expect(preferences).toHaveAttribute('aria-selected', 'true');
+    expect(Math.abs(await panel.evaluate(element => element.scrollTop) - before)).toBeLessThanOrEqual(32);
+    for (const locator of [dialog, dialog.locator('.settings-workspace')]) {
+      expect(await locator.evaluate(element => getComputedStyle(element).overflow)).toBe('clip');
+      expect(await locator.evaluate(element => element.scrollTop)).toBe(0);
+    }
+    const box = (await dialog.boundingBox())!;
+    for (const locator of [dialog.locator('[data-slot="dialog-header"]'), dialog.locator('[data-slot="dialog-close"]')]) {
+      await expect(locator).toBeVisible();
+      const control = (await locator.boundingBox())!;
+      expect(control.y).toBeGreaterThanOrEqual(box.y);
+      expect(control.y + control.height).toBeLessThanOrEqual(box.y + box.height);
+      expect(control.y).toBeGreaterThanOrEqual(0);
+    }
+  };
+  await steady();
+  await toggle.tap();
+  await expect(toggle).not.toBeChecked();
+  await expect(page.locator('nav.matter-phone-dock')).toHaveCount(0);
+  await steady();
+  await toggle.tap();
+  await expect(toggle).toBeChecked();
+  await expect(page.locator('nav.matter-phone-dock')).toHaveCount(1);
+  await steady();
+  await dialog.getByRole('radio', { name: 'Left', exact: true }).tap();
+  await expect(dialog.getByRole('radio', { name: 'Left', exact: true })).toBeChecked();
+  await steady();
+  await dialog.getByRole('radio', { name: 'Right', exact: true }).tap();
+  await expect(dialog.getByRole('radio', { name: 'Right', exact: true })).toBeChecked();
+  await steady();
+  await dialog.locator('[data-slot="dialog-close"]').tap();
+  await expect(dialog).toBeHidden();
+});
+
+for (const hand of ['right', 'left']) test(`opened message Show less clears the tinted latest strip (${hand} hand)`, async ({ page, request }, testInfo) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.addInitScript(value => localStorage.setItem('pockymoe.phoneHand', value), hand);
+  const [id] = await fixture(request);
+  await mockPhoneTurn(page, request, id, [
+    { id: 'long-phone-prompt', kind: 'userMessage', text: 'Keep these requirements visible.\n' + 'A detailed requirement to preserve while reading the expanded message.\n'.repeat(120) },
+    { id: 'long-phone-reply', kind: 'agentMessage', text: 'Received all requirements.' },
+  ]);
+  await page.goto(`/threads/${id}`);
+  const scroll = page.getByTestId('thread-scroll-container');
+  const nav = page.getByRole('group', { name: 'Timeline navigation', exact: true });
+  const latest = nav.locator('.thread-jump-latest');
+  const toggle = page.locator('[data-role="user"] .thread-graph-show-more');
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await toggle.tap();
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  await scroll.dispatchEvent('touchstart');
+  await scroll.evaluate(element => { element.scrollTop = 250; });
+  await expect(nav).not.toHaveAttribute('data-following');
+  const colors = await latest.evaluate(element => {
+    const probe = document.createElement('span');
+    probe.style.background = 'var(--theme-accent-solid)';
+    element.append(probe);
+    const solid = getComputedStyle(probe).backgroundColor;
+    probe.remove();
+    // Resolve both CSS color spaces to pixels, so two representations of the
+    // same solid fill cannot accidentally pass a string comparison.
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = 1;
+    const context = canvas.getContext('2d')!;
+    const pixel = (color: string) => {
+      context.clearRect(0, 0, 1, 1);
+      context.fillStyle = color;
+      context.fillRect(0, 0, 1, 1);
+      return Array.from(context.getImageData(0, 0, 1, 1).data);
+    };
+    return { background: pixel(getComputedStyle(element).backgroundColor), solid: pixel(solid) };
+  });
+  expect(colors.background).not.toEqual(colors.solid);
+  expect(colors.background[3]).toBeGreaterThan(0);
+  await expect(toggle).toBeVisible();
+  expect(await toggle.evaluate(element => getComputedStyle(element).position)).toBe('sticky');
+  const showLess = (await toggle.boundingBox())!;
+  const strip = (await nav.boundingBox())!;
+  const composer = (await page.locator('.thread-graph-composer-host').first().boundingBox())!;
+  expect(showLess.y).toBeGreaterThan((await scroll.boundingBox())!.y);
+  // It rides just above whatever is under it: the strip where they overlap
+  // (left hand), otherwise the composer, without an empty band.
+  const overStrip = showLess.x < strip.x + strip.width && strip.x < showLess.x + showLess.width;
+  const below = overStrip ? strip.y : composer.y;
+  expect(showLess.y + showLess.height).toBeLessThanOrEqual(below);
+  expect(below - (showLess.y + showLess.height)).toBeLessThan(18);
+  expect(overStrip).toBe(hand === 'left');
+  await page.screenshot({ path: testInfo.outputPath(`show-less-${hand}.png`), scale: 'css' });
+  await toggle.tap();
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
 });
