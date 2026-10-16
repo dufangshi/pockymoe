@@ -8,6 +8,29 @@ pub use setup::{
     run_device, run_device_with_host_mode, setup, setup_local, LocalSetupOptions, SetupOptions,
 };
 
+/// Version 0.13.7 updated local-mode installs by starting `supervisor` outside
+/// their service, whose definition kept the old release. Point the service at
+/// this release, so the next login or reboot starts it rather than the old one.
+pub fn refresh_local_service() {
+    let (Some(config), Ok(manager)) = (
+        std::env::var_os("POCKYMOE_RELAY_SUPERVISOR_CONFIG").map(PathBuf::from),
+        std::env::var("POCKYMOE_MANAGED_SERVICE"),
+    ) else {
+        return;
+    };
+    let Ok(installed) = releases::current() else {
+        return;
+    };
+    if config.file_name().and_then(|name| name.to_str()) != Some(service::LOCAL_CONFIG_FILE)
+        || std::env::current_exe().ok().as_deref() != Some(installed.executable.as_path())
+    {
+        return;
+    }
+    if let Err(error) = service::rewrite(&manager, &installed, &config) {
+        tracing::warn!(%error, "could not refresh the local service definition");
+    }
+}
+
 /// The Web UI installed with the current native release, if any.
 pub fn installed_web_dist() -> Option<PathBuf> {
     releases::current()

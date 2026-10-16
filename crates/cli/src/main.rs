@@ -740,6 +740,7 @@ async fn run() -> Result<()> {
         }
 
         Commands::Supervisor | Commands::Start => {
+            pockymoe_supervisor::distribution::refresh_local_service();
             let state = pockymoe_runtime::boot().await?;
             pockymoe_supervisor::serve(state).await?;
         }
@@ -896,10 +897,12 @@ async fn run() -> Result<()> {
                 .await?;
             println!(
                 "{}",
-                if result["passcode"] == true {
-                    "Browsers need the passcode."
-                } else {
-                    "No passcode: browsers open Pockymoe directly."
+                match (result["passcode"] == true, action) {
+                    (true, _) => "Browsers need the passcode.",
+                    (false, PasscodeAction::Off) =>
+                        "Passcode removed: browsers open Pockymoe directly.",
+                    (false, PasscodeAction::Status) =>
+                        "No passcode: browsers open Pockymoe directly.",
                 }
             );
         }

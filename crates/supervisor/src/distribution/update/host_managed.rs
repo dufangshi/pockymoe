@@ -175,6 +175,7 @@ mod tests {
             port: 1,
             host: "127.0.0.1".into(),
             relay: false,
+            device: true,
             config: root.join("device.json"),
             manager: Some("must-not-be-called".into()),
             environment: BTreeMap::new(),

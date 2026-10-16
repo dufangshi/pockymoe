@@ -352,6 +352,62 @@ async fn running_version(port: u16) -> Option<String> {
         .and_then(|h| h["runningVersion"].as_str().map(str::to_owned))
 }
 
+/// The health of the local-mode Supervisor answering on this port, if any.
+async fn running_local(port: u16) -> Option<Value> {
+    let health = health(port, "127.0.0.1").await?;
+    let session: Value = local_client()
+        .ok()?
+        .get(format!("http://127.0.0.1:{port}/api/auth/session"))
+        .timeout(Duration::from_secs(2))
+        .send()
+        .await
+        .ok()?
+        .error_for_status()
+        .ok()?
+        .json()
+        .await
+        .ok()?;
+    (session["mode"] == "local").then_some(health)
+}
+
+async fn stopped(pid: u32) -> bool {
+    for _ in 0..30 {
+        if !service::alive(pid) {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    false
+}
+
+/// Restart the running local install on a new release or configuration. Its
+/// process can run outside the service when an older update started it.
+async fn restart_local(
+    installed: &releases::Installed,
+    file: &Path,
+    manager: Option<&str>,
+    pid: u32,
+) -> Result<()> {
+    match manager {
+        Some(manager) => {
+            service::install(manager, installed, file)?;
+            service::manage(manager, "restart", file)?;
+        }
+        None => service::stop(pid)?,
+    }
+    if !stopped(pid).await {
+        service::stop(pid)?;
+        ensure!(
+            stopped(pid).await,
+            "The running Pockymoe (process {pid}) did not stop"
+        );
+    }
+    if manager.is_none() {
+        service::start(installed, file, None)?;
+    }
+    Ok(())
+}
+
 /// Install Pockymoe for this computer (and optionally its network) without a
 /// relay: one command with sensible defaults, rerunnable to repair or update.
 pub async fn setup_local(options: LocalSetupOptions) -> Result<()> {
@@ -367,7 +423,7 @@ async fn setup_local_at(
     ask: impl Fn(&str) -> Result<Option<bool>> + Copy,
 ) -> Result<()> {
     let version = env!("CARGO_PKG_VERSION");
-    let mut saved: Value = if file.exists() {
+    let saved: Value = if file.exists() {
         read_device_config(file)?
     } else {
         json!({})
@@ -382,7 +438,7 @@ async fn setup_local_at(
         .as_str()
         .and_then(|port| port.parse::<u16>().ok());
     let running = match saved_port {
-        Some(port) => running_version(port).await,
+        Some(port) => running_local(port).await,
         None => None,
     };
     let port = match (options.port, saved_port) {
@@ -393,8 +449,9 @@ async fn setup_local_at(
             );
             port
         }
-        (None, Some(port)) => port,
-        (None, None) => (LOCAL_DEFAULT_PORT..LOCAL_DEFAULT_PORT + 100)
+        (None, Some(port)) if running.is_some() || port_free(port) => port,
+        // Something else took the saved port while Pockymoe was stopped.
+        (None, _) => (LOCAL_DEFAULT_PORT..LOCAL_DEFAULT_PORT + 100)
             .find(|port| port_free(*port))
             .context("No free port between 8787 and 8886. Choose one with --port")?,
     };
@@ -411,32 +468,47 @@ async fn setup_local_at(
             .map(str::to_owned)
             .unwrap_or_else(|| home().join(".remote-codex/supervisor.sqlite").to_string_lossy().into_owned())
     }));
+    let mut wanted = saved.clone();
+    wanted["POCKYMOE_MODE"] = json!("local");
+    wanted["POCKYMOE_PORT"] = json!(port.to_string());
+    wanted["POCKYMOE_HOST"] = json!(if lan { "0.0.0.0" } else { "127.0.0.1" });
+    wanted["POCKYMOE_DATABASE_PATH"] = json!(database);
+    wanted["POCKYMOE_ENVIRONMENT"] = json!("production");
+    let changed = !file.exists() || wanted != saved;
+    let restart = running
+        .as_ref()
+        .filter(|health| changed || health["runningVersion"].as_str() != Some(version));
+    if let Some(health) = restart {
+        let turns = health["activeTurnCount"].as_u64().unwrap_or(0);
+        ensure!(
+            turns == 0,
+            "Pockymoe is running {turns} turn(s). Run this command again when they finish, or update from Settings, which waits for them"
+        );
+    }
     if running.is_none() {
         // A running Supervisor owns its database; it has upgraded it already.
         prepare_device_database(&database, options.reset_database, ask)?;
     }
     let installed = releases::install(version, Some(&std::env::current_exe()?)).await?;
-    saved["POCKYMOE_MODE"] = json!("local");
-    saved["POCKYMOE_PORT"] = json!(port.to_string());
-    saved["POCKYMOE_HOST"] = json!(if lan { "0.0.0.0" } else { "127.0.0.1" });
-    saved["POCKYMOE_DATABASE_PATH"] = json!(database);
-    saved["POCKYMOE_ENVIRONMENT"] = json!("production");
-    let changed = !file.exists() || read_device_config(file)? != saved;
+    let saved = wanted;
     write_device_config(file, &saved)?;
     releases::activate(&installed)?;
     let manager = service::detect();
-    match (&running, manager.as_deref()) {
-        (Some(current), _) if current == version && !changed => {}
-        (Some(_), Some(manager)) => {
-            service::install(manager, &installed, file)?;
-            service::manage(manager, "restart", file)?;
+    match (&running, restart) {
+        (None, _) => service::start(&installed, file, manager.as_deref())?,
+        (Some(_), None) => {
+            // Already up to date; keep the service definition current for its next start.
+            if let Some(manager) = &manager {
+                service::install(manager, &installed, file)?;
+            }
         }
-        (Some(_), None) => bail!(
-            "Pockymoe {} is already running on port {}. Update it from Settings, then run this command again",
-            running.as_deref().unwrap_or("?"),
-            saved_port.unwrap_or(port)
-        ),
-        (None, manager) => service::start(&installed, file, manager)?,
+        (Some(_), Some(health)) => {
+            let pid = health["processId"]
+                .as_u64()
+                .and_then(|pid| u32::try_from(pid).ok())
+                .context("The running Pockymoe did not report its process")?;
+            restart_local(&installed, file, manager.as_deref(), pid).await?;
+        }
     }
     for _ in 0..120 {
         if running_version(port).await.as_deref() == Some(version) {

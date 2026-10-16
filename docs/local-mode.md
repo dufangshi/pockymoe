@@ -35,8 +35,10 @@ next reboot. It keeps:
 | Log | `~/.remote-codex/logs/local-supervisor.log` |
 
 Running the same command again repairs the install or updates it to the latest
-release. A database left by an older Remote Codex installation is upgraded the
-same way as for relay devices ([device setup](device-setup.md)).
+release; with other options, such as `--lan`, it changes them and restarts
+Pockymoe. It does not restart Pockymoe while an agent is working on a turn. A
+database left by an older Remote Codex installation is upgraded the same way as
+for relay devices ([device setup](device-setup.md)).
 
 ### Options
 

@@ -145,11 +145,15 @@ pub fn refresh(manager: &str, installed: &Installed, config: &Path) -> Result<bo
     if manager != "systemd-user" {
         return Ok(false);
     }
+    rewrite(manager, installed, config)
+}
+/// Rewrite an existing service definition that differs; it applies at the next start.
+pub fn rewrite(manager: &str, installed: &Installed, config: &Path) -> Result<bool> {
     let changed = rewrite_if_changed(
         &service_path(manager, config),
         &definition(manager, installed, config),
     )?;
-    if changed {
+    if changed && manager == "systemd-user" {
         ensure!(
             command("systemctl", &["--user", "daemon-reload"]),
             "Unable to reload systemd user service"
@@ -228,6 +232,13 @@ pub fn alive(pid: u32) -> bool {
             .output()
             .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains(&format!("\"{pid}\"")))
     } else {
+        // An init that does not reap children (a container's `sleep`) leaves a
+        // stopped Supervisor as a zombie, which `kill -0` still reports.
+        if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            return stat
+                .rsplit_once(')')
+                .is_none_or(|(_, rest)| !rest.trim_start().starts_with('Z'));
+        }
         command("kill", &["-0", &pid.to_string()])
     }
 }
@@ -592,6 +603,23 @@ mod tests {
         assert!(rewrite_if_changed(&unit, "new").unwrap());
         assert_eq!(std::fs::read_to_string(&unit).unwrap(), "new");
         assert!(!rewrite_if_changed(&unit, "new").unwrap());
+    }
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_exited_process_that_was_not_reaped_is_not_alive() {
+        let mut child = Command::new("sleep").arg("30").spawn().unwrap();
+        let pid = child.id();
+        assert!(alive(pid));
+        stop(pid).unwrap();
+        // Not waited for yet: the process stays a zombie, as under a container init.
+        for _ in 0..50 {
+            if !alive(pid) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        assert!(!alive(pid));
+        child.wait().unwrap();
     }
     #[test]
     fn native_service_quotes_paths_and_omits_device_credentials() {
