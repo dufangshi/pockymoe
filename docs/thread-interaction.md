@@ -355,9 +355,12 @@ the map's summary add up the API price.
 Agent threads are folded into the thread that started them. That thread's tile has
 a small button with their count; it opens the tile up: the thread keeps a bar on
 top (tapping it folds them back, its arrow opens the thread) and its agent threads
-fill the rest, each a tile of its own. A block too small for what it holds folds up;
-tapping a device or workspace bar, or a folded block, opens it, and the path above
-leads back. Go to (the list icon) reaches every block of the current level,
+fill the rest, each a tile of its own. The map zooms: what is inside a device or
+workspace shows as its preview, and tapping anywhere on the block fills the map with
+it (the block grows from where it was); only threads of the level shown open when
+tapped. The path above and the back arrow lead back, and on touch two fingers
+pinching in go up a level, spreading them opens the block under them, and dragging
+the map down closes it. A block too small for what it holds folds up. Go to (the list icon) reaches every block of the current level,
 however small. Hovering or focusing a block shows its details. The map reads its
 devices again every 30 seconds while it is open.
 
