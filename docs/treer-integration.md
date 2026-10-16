@@ -264,8 +264,12 @@ Attach keeps the socket open, answers pings, and reconnects with exponential
 backoff from one to thirty seconds. Reconnects send the bound thread ID and
 register the interface again with the same process instance ID. Token contents
 are reread on reconnect. A missing token file is retried while the hub starts.
-A rejected binding, authentication failure, invalid configuration or unknown
-contract exits nonzero. There is no successful exit path: Treer disables Agent
+A missing base agent CLI (`base_agent_missing`) or a provider not enabled on the
+hub (`provider_unavailable`) keeps attach running: it prints what to install and
+retries every 30 seconds, connecting on its own once the problem is fixed, because
+an exited Agent would only show Treer's `process_not_running`. Any other rejected
+binding, authentication failure, invalid configuration or unknown contract exits
+nonzero. There is no successful exit path: Treer disables Agent
 recovery after exit code 0. Short status lines remain available in Treer's PTY
 fallback. Known setup failures identify a disabled provider, missing base agent,
 missing thread, or a thread already attached elsewhere using fixed messages.

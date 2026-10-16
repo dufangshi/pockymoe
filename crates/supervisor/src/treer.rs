@@ -139,7 +139,20 @@ fn map_failure(error: anyhow::Error) -> Response {
 fn attach_failure(error: &anyhow::Error) -> AttachReply {
     // Only fixed, recognized diagnostics may cross the attach boundary. Runtime
     // errors can otherwise contain credentials, local paths or subprocess output.
-    let (code, message) = match error.to_string().as_str() {
+    // Runtime layers may add context; recognize the first known cause anywhere
+    // in the chain. Only the fixed strings below ever leave the hub.
+    let (code, message) = error
+        .chain()
+        .find_map(|cause| known_attach_failure(&cause.to_string()))
+        .unwrap_or(("binding_refused", "Attach binding refused"));
+    AttachReply::Error {
+        code: code.into(),
+        message: message.into(),
+    }
+}
+
+fn known_attach_failure(cause: &str) -> Option<(&'static str, &'static str)> {
+    Some(match cause {
         "unsupported_protocol" => ("unsupported_protocol", "Unsupported attach protocol"),
         "codex is not enabled" => ("provider_unavailable", "codex is not enabled on this hub."),
         "claude is not enabled" => ("provider_unavailable", "claude is not enabled on this hub."),
@@ -169,12 +182,8 @@ fn attach_failure(error: &anyhow::Error) -> AttachReply {
             "thread_already_live",
             "This thread is already attached to a running Treer Agent.",
         ),
-        _ => ("binding_refused", "Attach binding refused"),
-    };
-    AttachReply::Error {
-        code: code.into(),
-        message: message.into(),
-    }
+        _ => return None,
+    })
 }
 impl Hub {
     pub(crate) fn new(state: Arc<Supervisor>, port: u16) -> anyhow::Result<Option<Arc<Self>>> {

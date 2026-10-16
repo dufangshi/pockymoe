@@ -199,6 +199,14 @@ async fn attach_reports_known_setup_failures_without_exposing_internal_errors() 
     .unwrap();
     assert_eq!(known["code"], "base_agent_missing");
     assert_eq!(known["message"], "Install the base agent first: grok");
+    // Context added by runtime layers must not hide the known cause.
+    let wrapped = serde_json::to_value(attach_failure(
+        &anyhow::anyhow!("Install the base agent first: codex")
+            .context("Start ACP session for /private/path"),
+    ))
+    .unwrap();
+    assert_eq!(wrapped["code"], "base_agent_missing");
+    assert_eq!(wrapped["message"], "Install the base agent first: codex");
     for detail in [
         "subprocess failed: fixture-private-credential",
         "Install the base agent first: fixture-private-credential",
