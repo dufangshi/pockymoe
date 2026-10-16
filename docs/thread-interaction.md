@@ -301,9 +301,9 @@ prompt's send button and the thread sheet's New thread move to the left.
 
 Above the composer, at its right edge, one strip holds previous turn, next turn
 and the latest reply; the latest-reply button takes an accent tint (not Send's
-fill) only while the reader is away from the end. Under the phone dock an opened
-message's "Show less" rides above that strip, so neither covers the other in
-either hand.
+fill) only while the reader is away from the end. An opened message's "Show
+less" rides just above the composer, or just above the strip where the strip is
+under it (in either hand), so neither covers the other and no gap opens.
 
 The compact model menu shows reported context use and capacity in thousands of
 tokens below the reasoning controls. Missing readings show a dash.
@@ -313,3 +313,28 @@ conversation is ready, including the secondary split pane. Expanding deferred
 execution history shows an inline spinner until that request settles. Reduced
 motion disables these animations. The thread tools bar keeps its direct actions
 without a duplicate overflow menu.
+
+## Terminal clipboard
+
+The terminal follows the usual desktop terminal conventions, adjustable in
+Settings > Terminal (shown while the terminal plugin is enabled, stored in this
+browser):
+
+- Ctrl+C copies a selection and interrupts only without one; Ctrl+Shift+C copies
+  too where the browser does not keep that shortcut for itself.
+- Ctrl+V pastes at a shell prompt and stays a key in full-screen programs that use
+  the alternate screen (vim, less, htop); it can be set to always paste.
+  Ctrl+Shift+V always pastes.
+- Copy on select is on by default: releasing a mouse selection copies it.
+- Right-click opens Copy, Paste, Select all, Copy last output and Clear, or can be
+  set to copy a selection and otherwise paste.
+- A paste of several lines into a shell without bracketed paste asks first, since
+  the shell would run the lines one by one.
+- On a Mac ⌘C and ⌘V copy and paste, and Ctrl stays with the terminal.
+
+On a phone, xterm cannot be drag-selected, so a long press on the terminal (or
+Select in the key bar) shows its lines as plain text in the same place, with the
+word under the finger selected; the phone's own handles and copy menu work there,
+next to Select all, Copy and Done. Paste in the key bar reads the clipboard; where
+the browser does not allow that (plain http, permission denied) it opens a field
+to paste into and edit before sending.

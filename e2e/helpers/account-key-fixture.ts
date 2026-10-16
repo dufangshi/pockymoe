@@ -144,7 +144,7 @@ export async function approveGrant(page: Page, password: string, unverified = fa
   const review = page.getByRole('dialog', { name: 'Review device grant', exact: true });
   await expect(review).toBeVisible();
   if (unverified) await review.getByRole('checkbox').check();
-  await review.getByRole('button', { name: 'Confirm to sign these permissions.', exact: true }).click();
+  await review.getByRole('button', { name: 'Sign and share', exact: true }).click();
   if (await page.getByRole('dialog', { name: UNLOCK_DIALOG }).isVisible()) await unlock(page, password);
   await expect(review).toHaveCount(0);
 }
