@@ -43,34 +43,10 @@ pub async fn save(
 ) -> Result<Json<Value>, Failure> {
     let _g = s.upstream_gate.lock().await;
     let dir = profiles::directory(&s.config.database_url);
-    let active = profiles::active_profile(&dir, &p.harness)
-        .map_err(failure)?
-        .is_some_and(|active| active.id == p.id);
-    let _maintenance = if active {
-        Some(
-            s.maintenance_gate
-                .clone()
-                .try_read_owned()
-                .map_err(|_| conflict())?,
-        )
-    } else {
-        None
-    };
-    let _guard = if active {
-        Some(
-            s.harness_gate(&p.harness)
-                .try_write_owned()
-                .map_err(|_| conflict())?,
-        )
-    } else {
-        None
-    };
-    if active {
-        s.restart_harness(&p.harness).await.map_err(failure)?;
-    }
-    let harness = p.harness.clone();
-    let result = profiles::save_and_apply(&dir, p).map_err(failure)?;
-    s.invalidate_models(&harness).await;
+    // Saving a profile is independent of applying its native harness configuration.
+    let result = profiles::upsert(&dir, p).map_err(failure)?;
+    profiles::connections::refresh_legacy(&dir, result["id"].as_str().unwrap()).map_err(failure)?;
+    crate::connections::announce(&s);
     Ok(Json(result))
 }
 pub async fn models(

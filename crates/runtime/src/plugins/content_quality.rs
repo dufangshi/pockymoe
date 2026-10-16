@@ -28,6 +28,7 @@ static ACTION_GATE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 #[serde(rename_all = "camelCase", default, deny_unknown_fields)]
 struct Settings {
     connection_file: String,
+    connection_id: String,
     model: String,
     language: String,
     preset: String,
@@ -42,6 +43,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             connection_file: String::new(),
+            connection_id: String::new(),
             model: String::new(),
             language: "zh-CN".into(),
             preset: "clear".into(),
@@ -82,6 +84,7 @@ impl Settings {
         ensure!(
             s.reader_background.len() <= 2000
                 && s.connection_file.len() <= 4096
+                && (s.connection_id.is_empty() || uuid::Uuid::parse_str(&s.connection_id).is_ok())
                 && s.min_reply_chars <= SOURCE_LIMIT
                 && valid_model(&s.model),
             "content quality setting exceeds its bounds"
@@ -225,12 +228,36 @@ struct Connection {
     model: Option<String>,
 }
 struct Upstream {
+    saved: Option<crate::upstreams::connections::Connection>,
     endpoint: url::Url,
     api_key: String,
     model: String,
 }
 impl Upstream {
     fn load(s: &Supervisor, settings: &Settings) -> Result<Self> {
+        if !settings.connection_id.is_empty() {
+            let c = crate::upstreams::connections::get(
+                &crate::upstreams::directory(&s.config.database_url),
+                &settings.connection_id,
+            )?;
+            c.validate()?;
+            let model = if settings.model.is_empty() {
+                c.model.clone()
+            } else {
+                settings.model.clone()
+            };
+            ensure!(
+                !model.is_empty() && valid_model(&model) && !model.contains(&c.api_key),
+                "configure a valid upstream model"
+            );
+            return Ok(Self {
+                endpoint: url::Url::parse(&c.base_url)
+                    .map_err(|_| anyhow::anyhow!("invalid upstream baseUrl"))?,
+                api_key: c.api_key.clone(),
+                model,
+                saved: Some(c),
+            });
+        }
         let path = if settings.connection_file.is_empty() {
             s.config.database_url.with_extension("polish-upstream.json")
         } else {
@@ -279,6 +306,7 @@ impl Upstream {
             "configure a valid upstream model"
         );
         Ok(Self {
+            saved: None,
             endpoint,
             api_key: c.api_key,
             model,
@@ -300,6 +328,16 @@ impl Upstream {
                 && !contains_credential(user, &self.api_key),
             "source contains the upstream credential"
         );
+        if let Some(c) = &self.saved {
+            return crate::upstreams::connections::complete(
+                c,
+                &self.model,
+                system,
+                user,
+                max_tokens,
+            )
+            .await;
+        }
         let client = reqwest::Client::builder()
             .user_agent("Pockymoe/ContentQuality")
             .connect_timeout(Duration::from_secs(10))

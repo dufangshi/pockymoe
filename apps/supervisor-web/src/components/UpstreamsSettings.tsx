@@ -4,7 +4,10 @@ import { RefreshCw } from 'lucide-react';
 import { useLocation } from 'react-router-dom';
 import { relayModeActive, request } from '../lib/api';
 import { relayDeviceIdFromPath } from '../lib/relayRoutes';
+import { ConnectionCatalog } from './ConnectionCatalog';
 import { UpstreamManagement } from './UpstreamManagement';
+
+const managedHarnesses = ['codex', 'claude', 'gemini', 'grok', 'deepseek'];
 
 type InstalledHarness = {
   id: string;
@@ -41,6 +44,11 @@ function DeviceUpstreams({ apiRoot }: { apiRoot: string }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [revision, setRevision] = useState(0);
+  const [nativeChanges, setNativeChanges] = useState(0);
+  const [nativeOpen, setNativeOpen] = useState(false);
+  const selectedHarness = loading
+    ? undefined
+    : harnesses.find((h) => h.id === selected);
   useEffect(() => {
     let alive = true;
     setLoading(true);
@@ -104,7 +112,10 @@ function DeviceUpstreams({ apiRoot }: { apiRoot: string }) {
           className="host-secondary-button inline-flex min-h-10 min-w-10 items-center justify-center gap-2 rounded-lg border px-3 text-xs"
           aria-label={translate('settings.upstreamsRefresh')}
           disabled={loading}
-          onClick={() => setRevision((v) => v + 1)}
+          onClick={() => {
+            setRevision((v) => v + 1);
+            setNativeChanges((v) => v + 1);
+          }}
         >
           <RefreshCw size={14} />
           <span className="hidden sm:inline">
@@ -144,24 +155,54 @@ function DeviceUpstreams({ apiRoot }: { apiRoot: string }) {
           {error}
         </p>
       ) : !selected ? (
-        <p className="my-5 rounded-xl border border-dashed border-[var(--theme-border)] p-6 text-sm text-[var(--theme-fg-muted)]">
+        <p className="mt-3 text-xs text-[var(--theme-fg-muted)]">
           {translate('settings.upstreamsNoInstalled')}
         </p>
-      ) : ['codex', 'claude', 'gemini', 'grok', 'deepseek'].includes(
-          selected,
-        ) ? (
-        <UpstreamManagement
-          key={apiRoot + selected}
-          apiRoot={apiRoot}
-          harness={selected}
-          appearance="switch"
-          harnessName={harnesses.find((h) => h.id === selected)?.name}
-          installed={harnesses.some((h) => h.id === selected && isInstalled(h))}
-        />
       ) : (
-        <p className="my-5 rounded-xl border border-dashed border-[var(--theme-border)] p-6 text-sm text-[var(--theme-fg-muted)]">
-          {translate('devices.useThisHarnessSNativeConfigurationTo')}
-        </p>
+        !managedHarnesses.includes(selected) && (
+          <p className="mt-3 text-xs text-[var(--theme-fg-muted)]">
+            {translate('devices.useThisHarnessSNativeConfigurationTo')}
+          </p>
+        )
+      )}
+      <div className="mt-4">
+        <ConnectionCatalog
+          key={apiRoot}
+          apiRoot={apiRoot}
+          reloadKey={nativeChanges}
+          harness={
+            selectedHarness && managedHarnesses.includes(selectedHarness.id)
+              ? {
+                  id: selectedHarness.id,
+                  name: selectedHarness.name,
+                  installed: isInstalled(selectedHarness),
+                }
+              : null
+          }
+        />
+      </div>
+      {selectedHarness && managedHarnesses.includes(selectedHarness.id) && (
+        <details
+          className="mt-5 border-t border-[var(--theme-border)] pt-3"
+          onToggle={(e) => setNativeOpen(e.currentTarget.open)}
+        >
+          <summary className="cursor-pointer py-1 text-xs font-medium text-[var(--theme-fg-muted)]">
+            {translate('settings.connAdvancedNative', {
+              harness: selectedHarness.name,
+            })}
+          </summary>
+          {nativeOpen && (
+            <UpstreamManagement
+              key={apiRoot + selectedHarness.id}
+              apiRoot={apiRoot}
+              harness={selectedHarness.id}
+              appearance="advanced"
+              harnessName={selectedHarness.name}
+              installed={isInstalled(selectedHarness)}
+              onChanged={() => setNativeChanges((v) => v + 1)}
+            />
+          )}
+        </details>
       )}
     </section>
   );

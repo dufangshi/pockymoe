@@ -389,6 +389,9 @@ pub(crate) fn browser_revocation(principal: &BrowserPrincipal) -> Revocation {
     r
 }
 pub(crate) fn live_owner(state: &Supervisor) -> BrowserPrincipal {
+    live_owner_for_device(state, "test-device")
+}
+pub(crate) fn live_owner_for_device(state: &Supervisor, device: &str) -> BrowserPrincipal {
     let v = vectors();
     bind_account(
         &state.config.database_url,
@@ -397,7 +400,7 @@ pub(crate) fn live_owner(state: &Supervisor) -> BrowserPrincipal {
         None,
     )
     .unwrap();
-    remember_device(state, "test-device").unwrap();
+    remember_device(state, device).unwrap();
     let c: BrowserCertificate =
         serde_json::from_value(v["browserCertificate"]["certificate"].clone()).unwrap();
     register(&state.db, &c).unwrap();

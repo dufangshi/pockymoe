@@ -7,6 +7,7 @@
 - 只在**同一 relay 用户名下**的 device 之间（`relay_devices.owner_user_id` 相同）。不含分享设备、Web UI。
 - 消息：设备目录；对远端 thread 的 info / workspaces / list / status / show / transcript / send（inbox、direct、queue、steer）/ backends / models / create；跨 device 的 `--notify-on-complete`（结果落到发起方本机 inbox）；目标离线时 inbox/queue 消息进**发送端** outbox，稍后重投。
 - 文件：随消息推送附件（分片上传到目标 thread 的 incoming 目录）；只读拉取远端 workspace 文件（`fs ls` / `fs get`）。
+- 上游连接：复用设备证书和加密传输，但不向 agent 开放凭据导出。必须由账户所有者浏览器额外签发短期、单次、指定目标设备及版本的授权；同步只保存连接，应用到 Harness 是另一项操作。协议与限制见[上游连接](upstream-connections.md)。
 - 传输：除密钥握手外全部端到端 HPKE 加密，relay 只见路由元数据。放开隧道 WebSocket 的 16 MiB 帧上限。
 - 不做：远端 wait / wake / tree / task / close / delete / inbox 操作；relay 存储任何消息或文件；分享设备权限映射。
 

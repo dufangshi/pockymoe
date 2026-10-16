@@ -157,6 +157,50 @@ pub(crate) fn router_with_treer(state: AppState, hub: Option<Arc<crate::treer::H
             get(crate::management::harnesses),
         )
         .route("/api/management/jobs", get(crate::management::jobs))
+        .merge(
+            axum::Router::new()
+                .route(
+                    "/api/management/connections",
+                    get(crate::connections::list).post(crate::connections::save),
+                )
+                .route(
+                    "/api/management/connections/test",
+                    post(crate::connections::test_draft),
+                )
+                .route(
+                    "/api/management/connections/models",
+                    post(crate::connections::discover),
+                )
+                .route(
+                    "/api/management/connections/{id}",
+                    axum::routing::delete(crate::connections::remove),
+                )
+                .route(
+                    "/api/management/connections/{id}/models",
+                    post(crate::connections::models),
+                )
+                .route(
+                    "/api/management/connections/{id}/test",
+                    post(crate::connections::test),
+                )
+                .route(
+                    "/api/management/connections/{id}/apply",
+                    post(crate::connections::apply),
+                )
+                .route(
+                    "/api/management/connections/{id}/transfer-authorizations",
+                    post(crate::connections::authorize),
+                )
+                .route(
+                    "/api/management/connections/{id}/sync",
+                    post(crate::connections::sync),
+                )
+                .route(
+                    "/api/peer/connections/{id}/export",
+                    post(crate::connections::export),
+                )
+                .route_layer(axum::middleware::from_fn(crate::connections::no_store)),
+        )
         .route(
             "/api/management/upstreams",
             get(crate::upstreams::list).post(crate::upstreams::save),

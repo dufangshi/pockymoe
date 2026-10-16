@@ -10,6 +10,7 @@ Maintained documentation for Pockymoe. For the product overview, start with the
 - [Self-hosting a relay](self-host-relay.md) ([简体中文](self-host-relay.zh-CN.md))
 - [Local mode](local-mode.md): one computer and its network, without a relay
 - [Device setup, harnesses and upstreams](device-setup.md)
+- [Shared upstream connections](upstream-connections.md): save, apply, and encrypted device synchronization
 - [Native installation and GitHub runtime releases](github-runtime.md)
 - [Treer integration](treer-integration.md): hub, attach, pinned installation and launch profiles
 

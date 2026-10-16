@@ -1,6 +1,7 @@
 mod auth;
 mod automations;
 mod bounded_channel;
+mod connections;
 pub mod distribution;
 mod export;
 mod file_documents;

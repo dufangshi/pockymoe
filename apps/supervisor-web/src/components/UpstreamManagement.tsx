@@ -92,13 +92,16 @@ export function UpstreamManagement({
   appearance = 'standard',
   harnessName,
   installed = true,
+  onChanged,
 }: {
   apiRoot: string;
   harness?: string;
   templatesOnly?: boolean;
-  appearance?: 'standard' | 'switch';
+  /** `advanced` keeps only native-config tools; connections are edited elsewhere. */
+  appearance?: 'standard' | 'switch' | 'advanced';
   harnessName?: string | undefined;
   installed?: boolean;
+  onChanged?: () => void;
 }) {
   useI18n();
   const [search, setSearch] = useState('');
@@ -139,6 +142,7 @@ export function UpstreamManagement({
     const value = snapshot(await api<Snapshot>('upstreams'));
     setData(value);
     setLoaded(true);
+    onChanged?.();
   }
   useEffect(() => {
     let alive = true;
@@ -277,11 +281,56 @@ export function UpstreamManagement({
     setError('');
     setImportKey('');
   }
+  const backupsView = !!data.backups.length && (
+    <details className="mt-3 text-xs">
+      <summary className="cursor-pointer py-2">
+        {translate('settings.configurationBackups')}
+      </summary>
+      {Object.keys(labels)
+        .filter((h) => !harness || h === harness)
+        .map((h) => {
+          const b = [...data.backups].reverse().find((v) => v.harness === h);
+          return (
+            b && (
+              <div
+                key={h}
+                className="flex flex-wrap items-center justify-between gap-2 py-2"
+              >
+                <span>
+                  {labels[h]} ·{' '}
+                  {new Date(b.createdAt).toLocaleString(getLocale())}
+                </span>
+                <button
+                  className={button}
+                  disabled={disabled}
+                  onClick={() =>
+                    void perform(async () => {
+                      await api(`upstreams/${b.id}`, {
+                        action: 'restore',
+                      });
+                      await load();
+                      setNotice(
+                        translate(
+                          'settings.previousConfigurationRestoredTheNextTurnReloads',
+                        ),
+                      );
+                    })
+                  }
+                >
+                  <RotateCcw size={13} />
+                  {translate('settings.restorePrevious')}
+                </button>
+              </div>
+            )
+          );
+        })}
+    </details>
+  );
   return (
     <section
       className={
-        appearance === 'switch'
-          ? 'mt-5 min-w-0'
+        appearance === 'switch' || appearance === 'advanced'
+          ? 'mt-3 min-w-0'
           : 'mt-6 border-t border-[var(--theme-border)] pt-5'
       }
       aria-label={
@@ -290,7 +339,41 @@ export function UpstreamManagement({
           : translate('settings.upstreamManagement')
       }
     >
-      {!templatesOnly && (
+      {appearance === 'advanced' && !templatesOnly && (
+        <>
+          <p className="settings-hint text-xs leading-5 text-[var(--theme-fg-muted)]">
+            {translate('settings.connAdvancedNativeHint')}
+          </p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button
+              className={button}
+              disabled={!loaded || disabled}
+              onClick={() => openImport('config')}
+            >
+              <Upload size={14} />
+              {translate('settings.importConfig')}
+            </button>
+            <button
+              className={button}
+              disabled={!loaded || disabled || !installed}
+              onClick={() =>
+                void perform(async () => {
+                  await api('upstreams/live', {
+                    harness,
+                    name: harnessName ?? labels[harness ?? 'codex'],
+                  });
+                  await load();
+                  setNotice(translate('settings.upstreamsImportedLive'));
+                })
+              }
+            >
+              {translate('settings.upstreamsImportLive')}
+            </button>
+          </div>
+          {backupsView}
+        </>
+      )}
+      {!templatesOnly && appearance !== 'advanced' && (
         <>
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0 flex-1">
@@ -569,53 +652,7 @@ export function UpstreamManagement({
           <p className="settings-hint mt-3 text-xs leading-5 text-[var(--theme-fg-muted)]">
             {translate('settings.switchAfterCurrentTasksFinishExistingMCP')}
           </p>
-          {!!data.backups.length && (
-            <details className="mt-3 text-xs">
-              <summary className="cursor-pointer py-2">
-                {translate('settings.configurationBackups')}
-              </summary>
-              {Object.keys(labels)
-                .filter((h) => !harness || h === harness)
-                .map((h) => {
-                  const b = [...data.backups]
-                    .reverse()
-                    .find((v) => v.harness === h);
-                  return (
-                    b && (
-                      <div
-                        key={h}
-                        className="flex flex-wrap items-center justify-between gap-2 py-2"
-                      >
-                        <span>
-                          {labels[h]} ·{' '}
-                          {new Date(b.createdAt).toLocaleString(getLocale())}
-                        </span>
-                        <button
-                          className={button}
-                          disabled={disabled}
-                          onClick={() =>
-                            void perform(async () => {
-                              await api(`upstreams/${b.id}`, {
-                                action: 'restore',
-                              });
-                              await load();
-                              setNotice(
-                                translate(
-                                  'settings.previousConfigurationRestoredTheNextTurnReloads',
-                                ),
-                              );
-                            })
-                          }
-                        >
-                          <RotateCcw size={13} />
-                          {translate('settings.restorePrevious')}
-                        </button>
-                      </div>
-                    )
-                  );
-                })}
-            </details>
-          )}
+          {backupsView}
         </>
       )}
       {templatesOnly && (

@@ -11,6 +11,7 @@ use std::{
 };
 use toml_edit::{value, DocumentMut};
 mod cc_switch;
+pub mod connections;
 mod discovery;
 mod dsh;
 mod model_meta;
@@ -801,7 +802,8 @@ pub fn restore(dir: &Path, id: &str) -> Result<()> {
         }
     }
     s.backups.retain(|v| v.id != id);
-    save(dir, &s)
+    save(dir, &s)?;
+    connections::restore_binding(dir, id, &b.harness)
 }
 
 pub async fn test_connection(p: &Profile) -> Result<Value> {
