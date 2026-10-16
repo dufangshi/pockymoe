@@ -274,9 +274,9 @@ The top bar shows only status: the device monitor, the subscription usage window
 running, the connection and notifications. The composer (or the files prompt)
 and a row under it form one bottom panel; the row holds the current thread,
 Chat / Files / Terminal and More. Tapping the thread, or swiping up anywhere on
-the panel, opens a sheet with the workspace's threads (running and unread first),
-recent threads, unread notifications and New thread. Swiping the thread sideways
-opens the neighbouring open thread. More holds search, the shortcut star,
+the panel, opens a sheet with the workspace's threads (the current thread's group
+first, then running and unread), recent threads, unread notifications and New
+thread. More holds search, the shortcut star,
 Left-handed, the thread's sharing, automation and split controls, the workspace
 drawer, Back, Home and Settings. Dragging a sheet down from the top of its list
 closes it. The row hides while a text field has focus and comes back after the
@@ -284,8 +284,14 @@ tap that moved focus away has landed. A split pins its two conversations in the
 thread's place in that row: one tap brings the other forward, and tapping the
 shown one opens the thread sheet.
 
-The workspace drawer (workspaces, shortcuts, recent conversations) follows a
-sideways drag: rightwards from anywhere in the left 40% of the conversation or
+The workspace drawer shows the app's mark and close, **All workspaces**,
+shortcuts and recent conversations. Shortcuts keep the account's own order:
+drag one with the mouse, long-press and drag on touch, or press Alt+↑/↓ on a
+focused shortcut. The order is saved with the account (relay
+`PUT /relay/account/workbench/shortcuts`, `favoriteOrder` in the workbench
+snapshot; this browser's storage in local mode), so every device lists shortcuts
+the same way. Until the first reorder they list by recency; a new shortcut goes
+last. The drawer follows a sideways drag: rightwards from anywhere in the left 40% of the conversation or
 the files opens it, leftwards on it or on the dimmed page closes it, and so does
 a tap outside. Browsers cannot keep the screen edge from the system back gesture
 (Android gesture navigation, Safari's swipe back), so a drag that starts on the

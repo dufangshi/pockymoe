@@ -26,6 +26,8 @@ interface ThreadReference {
   workspaceId?: string;
   deviceName?: string;
   favorite: boolean;
+  /** The account's own shortcut order; absent until shortcuts are reordered. */
+  favoriteOrder?: number | null;
   visitedAt: string;
   readCompletedAt?: string | null;
 }
@@ -276,9 +278,16 @@ export function useWorkbenchNavigation(
         const previous = next.threads.find(
           (t) => referenceKey(t) === referenceKey(reference),
         );
+        const starred = favorite ?? previous?.favorite ?? false;
+        // As on the relay: a new shortcut goes after the ordered ones.
+        const orders = next.threads.filter(t => t.favorite && typeof t.favoriteOrder === 'number').map(t => t.favoriteOrder!);
+        const favoriteOrder = !starred ? null
+          : previous?.favorite ? previous.favoriteOrder ?? null
+          : orders.length ? Math.max(...orders) + 1 : null;
         const record: ThreadReference = {
           ...reference,
-          favorite: favorite ?? previous?.favorite ?? false,
+          favorite: starred,
+          favoriteOrder,
           visitedAt: new Date().toISOString(),
           readCompletedAt: reference.readCompletedAt ?? previous?.readCompletedAt ?? null,
         };
@@ -330,6 +339,34 @@ export function useWorkbenchNavigation(
       setBusy(false);
     }
   };
+  /** Shortcuts in a new order (thread keys, first to last), for this account. */
+  const reorderShortcuts = async (keys: string[]) => {
+    setError(null);
+    const position = new Map(keys.map((key, index) => [key, index]));
+    const reorder = (value: NavigationSnapshot): NavigationSnapshot => ({
+      ...value,
+      threads: value.threads.map(t => position.has(referenceKey(t)) && t.favorite ? { ...t, favoriteOrder: position.get(referenceKey(t))! } : t),
+    });
+    const previous = snapshot;
+    setSnapshot(reorder(snapshot));
+    try {
+      if (relay) {
+        const order = keys.flatMap(key => {
+          const reference = snapshot.threads.find(t => referenceKey(t) === key);
+          return reference?.deviceId ? [{ deviceId: reference.deviceId, threadId: reference.threadId }] : [];
+        });
+        const next = await request<NavigationSnapshot>('relay/account/workbench/shortcuts', { method: 'PUT', body: JSON.stringify({ order }) });
+        setSnapshot(next);
+      } else {
+        const next = reorder(loadLocal(storageKey));
+        localStorage.setItem(storageKey, JSON.stringify(next));
+        setSnapshot(next);
+      }
+    } catch (e) {
+      setSnapshot(previous);
+      setError(e instanceof Error ? e.message : translate("workbench.couldNotSaveShortcut"));
+    }
+  };
   const refs = hostScope ? snapshot.threads.filter(r => r.deviceId === null &&
     (r.threadId === detail?.thread.id || threads.some(thread => thread.id === r.threadId))) : [...snapshot.threads];
   if (detail && !refs.some((r) => referenceKey(r) === currentKey))
@@ -353,6 +390,7 @@ export function useWorkbenchNavigation(
       subtitle: [r.deviceName, r.workspaceLabel].filter(Boolean).join(' · '),
       href: threadHref(r.threadId, r.deviceId),
       favorite: r.favorite,
+      ...(r.favorite && typeof r.favoriteOrder === 'number' ? { shortcutOrder: r.favoriteOrder } : {}),
       ...(activity?.parentThreadId ? {parentKey: `${r.deviceId ?? 'local'}:${activity.parentThreadId}`} : {}),
       ...(activity?.rootThreadId ? {rootKey: `${r.deviceId ?? 'local'}:${activity.rootThreadId}`} : {}),
       status: workbenchThreadStatus(activity, r.readCompletedAt),
@@ -463,6 +501,7 @@ export function useWorkbenchNavigation(
     favoriteBusy: busy,
     error,
     onToggleFavorite: () => void toggleFavorite(),
+    onReorderShortcuts: (keys: string[]) => void reorderShortcuts(keys),
     onToggleThreadFavorite: (key: string) => toggleFavorite(key),
     onThreadRenamed: async (key: string, title: string) => {
       const target = snapshot.threads.find(t => referenceKey(t) === key);

@@ -17,6 +17,30 @@ vi.mock('../lib/api', async original => ({
 }));
 
 describe('account thread navigation', () => {
+  it('saves a shortcut order for the account and shows it before the relay answers', async () => {
+    const reference = (threadId: string, favoriteOrder?: number) => ({
+      deviceId: 'wsl', threadId, title: threadId.toUpperCase(), workspaceLabel: 'Research', favorite: true,
+      visitedAt: '2026-10-16T00:00:00Z', ...(favoriteOrder === undefined ? {} : { favoriteOrder }),
+    });
+    let saved: unknown = null;
+    vi.mocked(request).mockImplementation(async (url, init) => {
+      if (url === 'relay/account/workbench') return { threads: [reference('a'), reference('b')], notifications: [] };
+      if (url === 'relay/account/workbench/shortcuts') {
+        saved = JSON.parse(String(init?.body));
+        return { threads: [reference('a', 1), reference('b', 0)], notifications: [] };
+      }
+      return { thread: { id: String(url).split('/threads/')[1]?.split('?')[0], status: 'idle' } };
+    });
+    const { result, unmount } = renderHook(() => useWorkbenchNavigation(null, [], 'wsl'));
+    await waitFor(() => expect(result.current.threads.map(thread => thread.key)).toEqual(['wsl:a', 'wsl:b']));
+    expect(result.current.threads.every(thread => thread.shortcutOrder === undefined)).toBe(true);
+    await act(async () => { result.current.onReorderShortcuts(['wsl:b', 'wsl:a']); });
+    expect(saved).toEqual({ order: [{ deviceId: 'wsl', threadId: 'b' }, { deviceId: 'wsl', threadId: 'a' }] });
+    await waitFor(() => expect(Object.fromEntries(result.current.threads.map(thread => [thread.key, thread.shortcutOrder]))).toEqual({ 'wsl:a': 1, 'wsl:b': 0 }));
+    unmount();
+  });
+
+
   it('loads complete sidebar families without selecting them, deduplicates visits and replaces polled children', async () => {
     const parent = { id: 'root', workspaceId: 'research', title: 'Reaxys', status: 'idle' } as ThreadDto;
     const children = Array.from({ length: 8 }, (_, index) => ({

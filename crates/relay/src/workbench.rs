@@ -18,14 +18,74 @@ pub(super) fn ensure_schema(conn: &Connection) -> Result<()> {
             "ALTER TABLE relay_thread_navigation ADD COLUMN read_completed_at TEXT",
         )?;
     }
+    // The account's own shortcut order; NULL until the user first reorders, so
+    // shortcuts keep listing by recency until then.
+    let has_favorite_order: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('relay_thread_navigation') WHERE name='favorite_order')", [], |row| row.get(0),
+    )?;
+    if !has_favorite_order {
+        conn.execute_batch(
+            "ALTER TABLE relay_thread_navigation ADD COLUMN favorite_order INTEGER",
+        )?;
+    }
     Ok(())
 }
 
 pub(super) fn routes() -> Router<Arc<AppState>> {
-    Router::new().route(
-        "/relay/account/workbench",
-        get(load).post(save).delete(remove),
-    )
+    Router::new()
+        .route(
+            "/relay/account/workbench",
+            get(load).post(save).delete(remove),
+        )
+        .route(
+            "/relay/account/workbench/shortcuts",
+            axum::routing::put(reorder),
+        )
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ShortcutOrder {
+    order: Vec<RemoveReference>,
+}
+
+/// Puts the account's shortcuts in the given order. Only the account's own
+/// favorite references change; anything else in the list is ignored.
+async fn reorder(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<TokenQuery>,
+    Json(body): Json<ShortcutOrder>,
+) -> Response {
+    let conn = state.store.conn.lock().await;
+    let Some(user) = authenticated_user(&conn, &state.store.session_secret, &headers, &query)
+    else {
+        return unauthorized();
+    };
+    if body.order.len() > 200
+        || body.order.iter().any(|reference| {
+            Uuid::parse_str(&reference.thread_id).is_err() || reference.device_id.len() > 1024
+        })
+    {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    match set_shortcut_order(&conn, &user.id, &body.order).and_then(|_| snapshot(&conn, &user.id)) {
+        Ok(value) => Json(value).into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+fn set_shortcut_order(conn: &Connection, user: &str, order: &[RemoveReference]) -> Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    for (index, reference) in order.iter().enumerate() {
+        tx.execute(
+            "UPDATE relay_thread_navigation SET favorite_order=?4
+            WHERE user_id=?1 AND device_id=?2 AND thread_id=?3 AND favorite=1",
+            params![user, reference.device_id, reference.thread_id, index as i64],
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -75,10 +135,15 @@ struct Visit {
 }
 
 fn upsert(conn: &Connection, user: &str, visit: &Visit) -> Result<()> {
-    conn.execute("INSERT INTO relay_thread_navigation(user_id,device_id,thread_id,title,workspace_label,favorite,visited_at,workspace_id,read_completed_at)
-        VALUES (?1,?2,?3,?4,?5,COALESCE(?6,0),?7,?8,?9)
+    // A new shortcut goes after the ordered ones; one that is unstarred leaves the order.
+    conn.execute("INSERT INTO relay_thread_navigation(user_id,device_id,thread_id,title,workspace_label,favorite,visited_at,workspace_id,read_completed_at,favorite_order)
+        VALUES (?1,?2,?3,?4,?5,COALESCE(?6,0),?7,?8,?9,
+          CASE WHEN ?6=1 THEN (SELECT MAX(favorite_order)+1 FROM relay_thread_navigation WHERE user_id=?1 AND favorite=1) END)
         ON CONFLICT(user_id,device_id,thread_id) DO UPDATE SET title=excluded.title,
         workspace_label=excluded.workspace_label,workspace_id=excluded.workspace_id,favorite=COALESCE(?6,relay_thread_navigation.favorite),visited_at=excluded.visited_at,
+        favorite_order=CASE WHEN ?6=0 THEN NULL
+          WHEN ?6=1 AND relay_thread_navigation.favorite=0 THEN (SELECT MAX(favorite_order)+1 FROM relay_thread_navigation WHERE user_id=?1 AND favorite=1)
+          ELSE relay_thread_navigation.favorite_order END,
         read_completed_at=CASE WHEN ?9 IS NOT NULL AND (relay_thread_navigation.read_completed_at IS NULL OR julianday(?9)>julianday(relay_thread_navigation.read_completed_at)) THEN ?9 ELSE relay_thread_navigation.read_completed_at END",
         params![user,visit.device_id,visit.thread_id,visit.title,visit.workspace_label,visit.favorite,now_rfc3339(),visit.workspace_id,visit.read_completed_at])?;
     conn.execute("DELETE FROM relay_thread_navigation WHERE user_id=?1 AND favorite=0 AND rowid NOT IN
@@ -101,11 +166,12 @@ fn accessible(
 }
 
 fn snapshot(conn: &Connection, user: &str) -> Result<Value> {
-    let mut stmt = conn.prepare("SELECT n.device_id,n.thread_id,n.title,n.workspace_label,n.favorite,n.visited_at,d.name,n.workspace_id,n.read_completed_at
+    let mut stmt = conn.prepare("SELECT n.device_id,n.thread_id,n.title,n.workspace_label,n.favorite,n.visited_at,d.name,n.workspace_id,n.read_completed_at,n.favorite_order
         FROM relay_thread_navigation n JOIN relay_devices d ON d.id=n.device_id WHERE n.user_id=?1 ORDER BY n.visited_at DESC LIMIT 300")?;
     let rows = stmt.query_map([user], |r| Ok(json!({
         "deviceId":r.get::<_,String>(0)?, "threadId":r.get::<_,String>(1)?, "title":r.get::<_,String>(2)?,
-        "workspaceLabel":r.get::<_,String>(3)?, "favorite":r.get::<_,bool>(4)?, "visitedAt":r.get::<_,String>(5)?, "deviceName":r.get::<_,String>(6)?, "workspaceId":r.get::<_,Option<String>>(7)?, "readCompletedAt":r.get::<_,Option<String>>(8)?
+        "workspaceLabel":r.get::<_,String>(3)?, "favorite":r.get::<_,bool>(4)?, "visitedAt":r.get::<_,String>(5)?, "deviceName":r.get::<_,String>(6)?, "workspaceId":r.get::<_,Option<String>>(7)?, "readCompletedAt":r.get::<_,Option<String>>(8)?,
+        "favoriteOrder":r.get::<_,Option<i64>>(9)?
     })))?.collect::<rusqlite::Result<Vec<_>>>()?;
     let threads: Vec<Value> = rows
         .into_iter()
@@ -352,5 +418,74 @@ mod tests {
         let other_marker: Option<String> = conn.query_row("SELECT read_completed_at FROM relay_thread_navigation WHERE user_id='bob' AND device_id='mac'", [], |r| r.get(0)).unwrap();
         assert!(other_marker.is_none());
         ensure_schema(&conn).unwrap(); // Reopening an upgraded database preserves the marker.
+    }
+    #[test]
+    fn shortcut_order_is_the_accounts_own_and_new_shortcuts_go_last() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE relay_users(id TEXT PRIMARY KEY); CREATE TABLE relay_devices(id TEXT PRIMARY KEY); INSERT INTO relay_users VALUES ('alice'),('bob'); INSERT INTO relay_devices VALUES ('mac');").unwrap();
+        ensure_schema(&conn).unwrap();
+        let visit = |thread: &str, favorite: Option<bool>| Visit {
+            device_id: "mac".into(),
+            thread_id: thread.into(),
+            title: thread.into(),
+            workspace_label: "project".into(),
+            workspace_id: None,
+            favorite,
+            read_completed_at: None,
+        };
+        for thread in ["a", "b", "c"] {
+            upsert(&conn, "alice", &visit(thread, Some(true))).unwrap();
+        }
+        upsert(&conn, "bob", &visit("a", Some(true))).unwrap();
+        let order = |user: &str| -> Vec<(String, Option<i64>)> {
+            conn.prepare("SELECT thread_id,favorite_order FROM relay_thread_navigation WHERE user_id=?1 AND favorite=1 ORDER BY thread_id")
+                .unwrap()
+                .query_map([user], |r| Ok((r.get(0)?, r.get(1)?)))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap()
+        };
+        // Before any reorder, shortcuts carry no order and list by recency.
+        assert!(order("alice")
+            .iter()
+            .all(|(_, position)| position.is_none()));
+        let reference = |thread: &str| RemoveReference {
+            device_id: "mac".into(),
+            thread_id: thread.into(),
+        };
+        set_shortcut_order(
+            &conn,
+            "alice",
+            &[
+                reference("c"),
+                reference("a"),
+                reference("b"),
+                reference("missing"),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            order("alice"),
+            vec![
+                ("a".into(), Some(1)),
+                ("b".into(), Some(2)),
+                ("c".into(), Some(0))
+            ]
+        );
+        assert_eq!(order("bob"), vec![("a".into(), None)]);
+        // A visit keeps the position; a new shortcut goes last; unstarring leaves the order.
+        upsert(&conn, "alice", &visit("a", None)).unwrap();
+        upsert(&conn, "alice", &visit("d", Some(true))).unwrap();
+        upsert(&conn, "alice", &visit("b", Some(false))).unwrap();
+        assert_eq!(
+            order("alice"),
+            vec![
+                ("a".into(), Some(1)),
+                ("c".into(), Some(0)),
+                ("d".into(), Some(3))
+            ]
+        );
+        let unstarred: Option<i64> = conn.query_row("SELECT favorite_order FROM relay_thread_navigation WHERE user_id='alice' AND thread_id='b'", [], |r| r.get(0)).unwrap();
+        assert!(unstarred.is_none());
     }
 }
