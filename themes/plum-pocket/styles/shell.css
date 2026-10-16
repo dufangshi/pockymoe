@@ -924,3 +924,8 @@
   :theme .thread-ui-shell .matter-workbench .matter-topbar-end > button.device-monitor-button .dm-summary-capacity b { font-size: 7px; }
   :theme .thread-ui-shell .matter-workbench .matter-topbar-end > button.device-monitor-button:not([data-gpu]) { font-size: 9px; }
 }
+
+/* One-handed phone dock: it sits on the plum chrome, like the top bar. */
+@media (max-width: 639px) {
+  :theme .thread-ui-shell .matter-workbench .matter-phone-dock > .matter-phone-more { color: var(--plum-chrome-fg); }
+}

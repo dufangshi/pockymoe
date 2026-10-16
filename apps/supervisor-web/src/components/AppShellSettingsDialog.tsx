@@ -31,6 +31,7 @@ import {
   updateWorkspaceSettings,
 } from '../lib/api';
 import {
+  PhoneHandChoice,
   usePlugins,
   SettingsPanels,
   SettingsDialog,
@@ -892,6 +893,9 @@ export function AppShellSettingsDialog({
                   className="h-5 w-5 accent-[var(--theme-accent-solid)]"
                 />
               </label>
+              {shellNav.setPhoneHand && (shellNav.phoneDock ?? true) && (
+                <PhoneHandChoice hand={shellNav.phoneHand ?? 'right'} onChange={shellNav.setPhoneHand} />
+              )}
             </section>
           )}
           {section === 'preferences' &&

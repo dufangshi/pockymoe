@@ -161,7 +161,14 @@ Monaco editor and diff view; `--shiki-*` for code blocks with the
   rows, `data-effort`, `data-variant`, `thread-composer-usage-tag`;
 - transcript: `data-turn-status` on turns, `.thread-usage-details` and
   `.thread-usage-details-total` for the token and price breakdown;
-- Explorer: `workspace-node-icon is-<kind>`, `workspace-file-alert`.
+- Explorer: `workspace-node-icon is-<kind>`, `workspace-file-alert`;
+- phone one-handed layout: the workbench's `has-phone-dock`, `is-left-handed`
+  and `is-typing`; `.matter-topbar.is-status-only` (its readings keep their own
+  size under a pack's top bar button rules); `matter-phone-dock`,
+  `matter-phone-thread`, `matter-phone-panes`, `matter-phone-more`,
+  `matter-phone-pins`, `matter-phone-sheet`; the composer-and-dock panel paints
+  `--matter-dock-surface` and `--matter-dock-edge` (default `--matter-chrome`
+  and `--theme-border`).
 
 ### Agent art
 

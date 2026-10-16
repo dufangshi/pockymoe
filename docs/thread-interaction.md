@@ -271,17 +271,24 @@ clearing the composer's draft.
 On a phone (under 640 px wide) the controls sit at the bottom for one-handed use.
 The top bar shows only status: the device monitor, the subscription usage windows
 (such as 5h and 7d; tapping them shows the details), how many other threads are
-running, the connection and notifications. A row under the composer holds the
-current thread, Chat / Files / Terminal and More. Tapping the thread, or swiping up
-on it, opens a sheet with the workspace's threads (running and unread first),
+running, the connection and notifications. The composer (or the files prompt)
+and a row under it form one bottom panel; the row holds the current thread,
+Chat / Files / Terminal and More. Tapping the thread, or swiping up anywhere on
+the panel, opens a sheet with the workspace's threads (running and unread first),
 recent threads, unread notifications, the workspace drawer and New thread.
-Swiping it sideways opens the neighbouring open thread. More holds search, the
-shortcut star, the thread's sharing, automation and split controls, Back, Home
-and Settings. The row hides while a text field has focus. A split pins its two
-conversations in the thread's place in that row: one tap brings the other forward,
-and tapping the shown one opens the thread sheet. Settings > Preferences >
-One-handed phone layout (on by default, stored in this browser) turns it off and
-restores the previous top bar, thread tabs, composer usage and split switches.
+Swiping the thread sideways opens the neighbouring open thread. More holds
+search, the shortcut star, Left-handed, the thread's sharing, automation and
+split controls, Back, Home and Settings. Dragging a sheet down from the top of
+its list closes it. The row hides while a text field has focus and comes back
+after the tap that moved focus away has landed. A split pins its two
+conversations in the thread's place in that row: one tap brings the other
+forward, and tapping the shown one opens the thread sheet.
+
+Settings > Preferences > One-handed phone layout (on by default, stored in this
+browser) turns it off and restores the previous top bar, thread tabs, composer
+usage and split switches. Its Hand choice (also More > Left-handed) mirrors the
+panel for the left thumb: More, the views, Send, the turn strip, the files
+prompt's send button and the thread sheet's New thread move to the left.
 
 Above the composer, at its right edge, one strip holds previous turn, next turn
 and the latest reply; the latest-reply button is highlighted only while the

@@ -38,6 +38,7 @@ import {
 } from '@pockymoe/shared';
 import {
   AppShellNavContext,
+  type PhoneHand,
   type ThemeMode,
 } from './components/AppShellNavContext';
 import {
@@ -75,6 +76,7 @@ import { useComposerPreferences } from './lib/useComposerPreferences';
 import { effectiveColorMode, themeChromeColor, useThemeRegistry } from './lib/themePacks';
 
 const PHONE_DOCK_STORAGE_KEY = 'pockymoe.phoneDock';
+const PHONE_HAND_STORAGE_KEY = 'pockymoe.phoneHand';
 
 const THEME_STORAGE_KEY = 'remote-codex-theme-mode';
 const BACKEND_STORAGE_KEY = 'remote-codex-default-backend';
@@ -255,6 +257,9 @@ function AppShell({
   const [phoneDock, setPhoneDockState] = useState(() => {
     try { return localStorage.getItem(PHONE_DOCK_STORAGE_KEY) !== 'off'; } catch { return true; }
   });
+  const [phoneHand, setPhoneHandState] = useState<PhoneHand>(() => {
+    try { return localStorage.getItem(PHONE_HAND_STORAGE_KEY) === 'left' ? 'left' : 'right'; } catch { return 'right'; }
+  });
   const location = useLocation();
   const isThreadUtilityRoute =
     /^\/threads\/(?:import|new)$/.test(location.pathname) ||
@@ -288,6 +293,11 @@ function AppShell({
   function setPhoneDock(enabled: boolean) {
     setPhoneDockState(enabled);
     try { localStorage.setItem(PHONE_DOCK_STORAGE_KEY, enabled ? 'on' : 'off'); } catch { /* Private browsing may disable storage. */ }
+  }
+
+  function setPhoneHand(hand: PhoneHand) {
+    setPhoneHandState(hand);
+    try { localStorage.setItem(PHONE_HAND_STORAGE_KEY, hand); } catch { /* Private browsing may disable storage. */ }
   }
 
   function setAutoCollapseCompletedTurns(enabled: boolean) {
@@ -332,6 +342,8 @@ function AppShell({
     setAutoCollapseCompletedTurns,
     phoneDock,
     setPhoneDock,
+    phoneHand,
+    setPhoneHand,
     showReasoningSummaries,
     setShowReasoningSummaries: (enabled: boolean) => {
       setShowReasoningSummaries(enabled);
