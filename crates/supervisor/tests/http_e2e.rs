@@ -2371,3 +2371,27 @@ async fn local_web_ui_is_served_runnable_with_real_content_types() {
     }
     std::env::remove_var("POCKYMOE_WEB_DIST_DIR");
 }
+
+#[tokio::test]
+async fn standalone_does_not_enable_the_treer_app_page() {
+    let (_dir, port, _) = spawn_supervisor(vec![Provider::Codex]).await;
+    let client = reqwest::Client::new();
+    let url = format!("http://127.0.0.1:{port}/healthz");
+    let mut ordinary: Value = client.get(&url).send().await.unwrap().json().await.unwrap();
+    assert_eq!(ordinary["status"], "ok");
+    let marked = client
+        .get(&url)
+        .header("x-treer-identity-token", "synthetic-token")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(marked.status(), 403);
+    assert_eq!(
+        marked.json::<Value>().await.unwrap()["code"],
+        "treer_disabled"
+    );
+    let mut after: Value = client.get(&url).send().await.unwrap().json().await.unwrap();
+    ordinary.as_object_mut().unwrap().remove("timestamp");
+    after.as_object_mut().unwrap().remove("timestamp");
+    assert_eq!(after, ordinary);
+}

@@ -38,6 +38,8 @@ pub(crate) async fn command(
     Extension(caller): Extension<crate::auth::CliCaller>,
     Json(input): Json<Value>,
 ) -> Result<Json<Value>, ApiErr> {
+    let input = crate::treer::messages::prepare_send(&state, caller.0.as_deref(), input)
+        .map_err(map_err)?;
     if let Some(reply) = crate::peer_send::intercept(&state, caller.0.as_deref(), &input)
         .await
         .map_err(map_err)?
@@ -50,7 +52,7 @@ pub(crate) async fn command(
 /// One local CLI operation. `peer_api` reuses the read/create subset for requests
 /// from other devices, after removing the caller's `fromThreadId`.
 pub(crate) async fn run(
-    state: &Supervisor,
+    state: &Arc<Supervisor>,
     input: Value,
     caller: Option<String>,
 ) -> anyhow::Result<Value> {
@@ -88,8 +90,16 @@ pub(crate) async fn run(
         }
         "skill" => Ok(json!({
             "version": pockymoe_protocol::APP_VERSION,
-            "text": pockymoe_protocol::THREAD_INTERACTION_SKILL,
+            "text": crate::treer::messages::interaction_text(state, pockymoe_protocol::THREAD_INTERACTION_SKILL),
         })),
+        "guide" => {
+            let topic = input["topic"].as_str().context("guide topic required")?;
+            let (_, _, text) = pockymoe_protocol::THREAD_INTERACTION_GUIDES
+                .iter()
+                .find(|(name, _, _)| *name == topic)
+                .context("unknown guide topic")?;
+            Ok(json!({"text":crate::treer::messages::interaction_text(state,text)}))
+        }
         "list" => {
             let group = input["groupId"].as_str().map(str::to_owned);
             // Drilling into a group, or asking for --all, needs every row; the
@@ -133,7 +143,15 @@ pub(crate) async fn run(
                 // Omitting attribution must not bypass the peer delivery policy.
                 body.from_thread_id = Some(caller.clone());
             }
-            let mut receipt = state.send_to_thread(id, body)?;
+            let mut receipt = if state.config.treer_enabled {
+                let state = state.clone();
+                let id = id.to_owned();
+                // A Treer prompt can return through this hub's AIS endpoint. Keep
+                // the HTTP executor free while the synchronous transport waits.
+                tokio::task::spawn_blocking(move || state.send_to_thread(&id, body)).await??
+            } else {
+                state.send_to_thread(id, body)?
+            };
             if receipt["delivery"] == "steer" {
                 let pending = receipt["pendingSteerId"].as_str().unwrap();
                 match state.steer_pending_prompt(id, pending).await {

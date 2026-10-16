@@ -106,7 +106,7 @@ References: [kernel powercap/RAPL](https://www.kernel.org/doc/html/latest/power/
 [sysinfo native Apple sensor implementation](https://github.com/GuillaumeGomez/sysinfo/tree/v0.36.1/src/unix/apple/macos/component),
 [Netdata macOS sensor sources and privilege requirements](https://learn.netdata.cloud/docs/collecting-metrics/collectors/operating-systems/macos).
 
-The Web button appears in the mobile topbar and desktop icon rail above Settings,
+The Web button appears in the phone's status-only top bar and the desktop icon rail above Settings,
 remaining visible when the chat sidebar is collapsed. Opening it shows the sample
 age and platform beside the title, then one row per resource (CPU, memory with
 swap, each GPU, container limits): an icon, the value and a meter colored from

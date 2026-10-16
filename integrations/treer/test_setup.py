@@ -161,6 +161,7 @@ class SetupTests(unittest.TestCase):
             self.assertNotIn("releases/", json.dumps(profile))
             self.assertEqual(profile["command"], str(self.home / ".local/bin/pockymoe"))
             self.assertIn(str(data / "treer-attach.token"), profile["args"])
+            self.assertEqual(profile["args"][profile["args"].index("--hub-app") + 1], "pockymoe")
         self.assertIn("POCKYMOE_WEB_DIST_DIR=" + str(self.home / ".local/share/remote-codex/native/current/web"),
                       self.state()["apps"][0]["args"])
         self.assertTrue(data.is_dir())
@@ -196,6 +197,8 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(state["apps"][0]["port"], self.hub.port)
         self.assertEqual(state["profiles"][0]["args"][:3], ["attach", "--provider", "codex"])
         self.assertTrue(all(f"http://127.0.0.1:{self.hub.port}" in p["args"] for p in state["profiles"]))
+        self.assertTrue(all(p["args"][p["args"].index("--hub-app") + 1] == "pockymoe"
+                            for p in state["profiles"]))
         self.assertEqual(sum(c[:4] == ["agent", "admin", "profile", "update"] for c in state["calls"]), 3)
         self.assertFalse(any("create" in c for c in state["calls"]))
         self.assertFalse((self.home / "installer-version").exists())

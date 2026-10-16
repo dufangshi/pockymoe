@@ -1,0 +1,44 @@
+/* Terminal: the composer is a framed prompt line with a ❯ and a square send key. */
+
+:theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-shell {
+  border: 1px solid var(--term-edge);
+  border-radius: 0;
+  background: var(--theme-panel);
+  box-shadow: none;
+  backdrop-filter: none;
+}
+:theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-shell:focus-within {
+  border-color: var(--theme-accent-solid);
+  box-shadow: 0 0 0 1px var(--theme-accent-solid);
+}
+:theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-input > [role='textbox'] {
+  font-family: var(--term-font);
+  font-size: 13px;
+  caret-color: var(--theme-accent-solid);
+}
+:theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-prompt-region::before {
+  content: '❯';
+  position: absolute;
+  left: 2px;
+  top: 50%;
+  translate: 0 -50%;
+  color: var(--theme-accent-solid);
+  font-weight: 700;
+  pointer-events: none;
+}
+:theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-prompt-region { padding-left: 2.2ch; }
+:theme .thread-ui-shell [data-composer-layout] :is(.thread-graph-composer-icon-button, .thread-graph-composer-stop-button, .thread-graph-composer-send-button, .composer-model-label) {
+  border-radius: 0;
+  box-shadow: none;
+}
+:theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-icon-button { border: 1px solid transparent; background: transparent; }
+:theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-icon-button:hover { border-color: var(--theme-border-strong); background: var(--theme-surface); }
+:theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-send-button {
+  background: var(--theme-accent-solid);
+  color: var(--theme-accent-solid-fg);
+}
+:theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-send-button:hover:not(:disabled) { background: var(--theme-fg); color: var(--theme-bg); }
+:theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-stop-button { border: 1px solid var(--theme-border-strong); background: transparent; }
+:theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-stop-button:hover { border-color: var(--tlog-failed); color: var(--tlog-failed); }
+:theme .thread-ui-shell [data-composer-layout] .composer-model-label { border: 1px solid var(--term-line); font-size: 12px; }
+:theme .thread-ui-shell :is(.thread-jump-nav, .thread-jump-nav > button) { border-radius: 0; box-shadow: none; }

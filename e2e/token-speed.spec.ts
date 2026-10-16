@@ -54,7 +54,7 @@ test('real GPT-6.1 Sol shows live throughput, excludes tool wait, and retains sp
     const expectedUsd = ((tokens.inputTokens - tokens.cachedInputTokens - (tokens.cacheWriteInputTokens ?? 0)) * 2 + tokens.cachedInputTokens * .1 + (tokens.cacheWriteInputTokens ?? 0) * 2.5 + tokens.outputTokens * 10) / 1e6;
     expect(completed.priceEstimate.totalUsd).toBeCloseTo(expectedUsd, 8);
     await page.reload();
-    const summary = page.locator('.thread-graph-worked-summary');
+    const summary = page.locator('.thread-turn-receipt');
     await expect(summary.getByTestId('turn-token-speed')).toHaveText(/\d[\d,.]*/);
     await expect(summary.locator('.thread-turn-usage-price')).toBeVisible();
     await page.setViewportSize({width:390,height:844});

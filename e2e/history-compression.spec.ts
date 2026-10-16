@@ -61,12 +61,9 @@ with sqlite3.connect(sys.argv[1]) as conn:
     expect(item.sourceTurnId).toBeUndefined();
   }
 
-  // Batches nest (activity > tool calls); open each level until the tool row shows.
-  const toolButton = page.getByRole('button', { name: 'Open full tool call', exact: true });
-  for (let pass = 0; pass < 3 && !(await toolButton.isVisible()); pass += 1) {
-    const toggles = page.locator('.thread-graph-history-group button[aria-expanded="false"]');
-    for (const toggle of await toggles.all()) if (await toggle.isVisible()) await toggle.click();
-  }
+  await page.locator('.tlog-run-head').click();
+  const toolButton = page.locator('.tlog-row[data-kind="toolCall"] .tlog-row-head');
+  await expect(toolButton).toHaveAttribute('aria-expanded', 'false');
   const itemResponse = page.waitForResponse((r) => r.url().includes(`/api/threads/${id}/items/tool-1/detail`));
   await toolButton.click();
   expect((await itemResponse).ok()).toBe(true);

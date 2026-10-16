@@ -30,12 +30,14 @@ import { RenameDialog } from '../components/RenameDialog';
 import {
   deleteWorkspace,
   fetchRuntimeConfig,
+  fetchThreads,
   fetchWorkspaces,
   updateWorkspace,
   updateWorkspaceFavorite,
 } from '../lib/api';
 import {
   currentRelayScopedPath,
+  currentThreadHref,
   currentThreadsHref,
   relayDeviceIdFromPath,
 } from '../lib/relayRoutes';
@@ -69,6 +71,23 @@ export function WorkspacesPage() {
   const [runtimeConfig, setRuntimeConfig] = useState<RuntimeConfigDto | null>(null);
   const [runtimeError, setRuntimeError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Each workspace's most recent thread, as ThreadsPage would pick it: a row
+  // opens that conversation directly instead of passing through "Opening
+  // workspace…" and a second workbench. Empty workspaces keep the old route.
+  const [latestThreads, setLatestThreads] = useState<Record<string, string>>({});
+  useEffect(() => {
+    let active = true;
+    void fetchThreads(false).then(items => {
+      if (!active) return;
+      const latest = new Map<string, (typeof items)[number]>();
+      for (const thread of items) {
+        const current = latest.get(thread.workspaceId);
+        if (!current || thread.updatedAt > current.updatedAt || (thread.updatedAt === current.updatedAt && thread.id < current.id)) latest.set(thread.workspaceId, thread);
+      }
+      setLatestThreads(Object.fromEntries([...latest].map(([workspaceId, thread]) => [workspaceId, thread.id])));
+    }).catch(() => { /* Rows fall back to the workspace route. */ });
+    return () => { active = false; };
+  }, [relayDeviceId]);
   const [editingWorkspaceId, setEditingWorkspaceId] = useState<string | null>(null);
   const [draftLabel, setDraftLabel] = useState('');
   const [savingWorkspaceId, setSavingWorkspaceId] = useState<string | null>(null);
@@ -303,7 +322,7 @@ export function WorkspacesPage() {
                   }`}
                 >
                   <Link
-                    to={currentThreadsHref(workspace.id)}
+                    to={latestThreads[workspace.id] ? currentThreadHref(latestThreads[workspace.id]!) : currentThreadsHref(workspace.id)}
                     className="group min-w-0 px-4 py-3.5 focus:outline-none focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--theme-accent-ring)] sm:px-5"
                   >
                     <span className="flex min-w-0 items-center gap-2">

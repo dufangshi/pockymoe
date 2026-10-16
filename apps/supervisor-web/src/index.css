@@ -394,6 +394,9 @@ fieldset {
 .host-panel,
 .host-card,
 .host-dialog {
+  /* One column no wider than the dialog: a long word or token wraps instead of
+     widening the column and scrolling the dialog sideways. */
+  grid-template-columns: minmax(0, 1fr);
   border-color: var(--theme-border);
   background: var(--theme-panel);
   color: var(--theme-fg);
@@ -962,18 +965,6 @@ fieldset {
   transition:
     width 0.45s ease,
     background-color 0.3s ease;
-}
-
-.thread-jump-latest-badge {
-  border-color: color-mix(in srgb, var(--theme-border-contrast) 85%, transparent);
-  background: color-mix(in srgb, var(--theme-surface-strong) 82%, transparent);
-  color: var(--theme-fg-soft);
-}
-
-.thread-jump-latest-badge.is-active {
-  border-color: color-mix(in srgb, var(--theme-accent-border) 92%, transparent);
-  background: color-mix(in srgb, var(--theme-accent-soft) 92%, transparent);
-  color: var(--theme-accent-strong);
 }
 
 .thread-composer-input {
@@ -2608,3 +2599,114 @@ main:has(.product-navigation) { padding-top: 0 !important; }
 .help-prose .help-anchor { margin-left: 8px; color: var(--theme-fg-muted); text-decoration: none; opacity: 0; }
 .help-prose h2:hover .help-anchor, .help-prose h3:hover .help-anchor { opacity: 1; }
 @media (hover: none) { .help-prose .help-anchor { display: none; } }
+
+/* Phone files: a floating one-field prompt under the file list and the viewer,
+   so a question about what is on screen needs no trip back to the conversation. */
+.workbench-tool-target > :not(.file-ask-bar) { flex: 1 1 0; min-height: 0; }
+.file-ask-bar { display: none; }
+@media (max-width: 639px) {
+  .file-ask-bar {
+    position: relative;
+    z-index: 2;
+    display: block;
+    flex: none;
+    /* Floats over the end of the content, clear of the home bar and the keyboard. */
+    margin-top: -22px;
+    padding: 14px 10px max(10px, calc(env(safe-area-inset-bottom) + 6px), calc(var(--thread-detail-keyboard-inset, 0px) + 10px));
+    background: linear-gradient(to bottom, transparent, color-mix(in srgb, var(--theme-bg) 92%, transparent) 55%);
+    pointer-events: none;
+  }
+  .file-ask-bar > * { pointer-events: auto; }
+}
+.file-ask-bar-shell {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 5px 5px 5px 14px;
+  border: 1px solid var(--theme-border-strong);
+  border-radius: 21px;
+  background: color-mix(in srgb, var(--theme-panel) 86%, transparent);
+  backdrop-filter: blur(24px) saturate(135%);
+  -webkit-backdrop-filter: blur(24px) saturate(135%);
+  box-shadow: inset 0 1px 0 var(--matter-glass-highlight, transparent), var(--matter-composer-shadow, 0 6px 22px rgb(18 32 25 / 14%));
+  transition: border-color 150ms ease;
+}
+.file-ask-bar-shell:focus-within { border-color: var(--theme-accent-solid); }
+.file-ask-bar[data-state='failed'] .file-ask-bar-shell { border-color: #c2413a; }
+.file-ask-bar textarea {
+  flex: 1;
+  min-width: 0;
+  max-height: 112px;
+  padding: 6px 0;
+  border: 0;
+  outline: 0;
+  resize: none;
+  background: transparent;
+  color: var(--theme-fg);
+  font: inherit;
+  /* 16px keeps iOS from zooming into the field. */
+  font-size: 16px;
+  line-height: 1.35;
+}
+.file-ask-bar textarea::placeholder { color: var(--theme-fg-muted); }
+.file-ask-bar-send {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--theme-accent-solid);
+  color: var(--theme-accent-solid-fg);
+  transition: background-color 150ms ease, color 150ms ease;
+}
+.file-ask-bar-send:disabled { background: var(--theme-surface-strong); color: var(--theme-fg-muted); }
+.file-ask-bar-send > svg { width: 16px; height: 16px; }
+.file-ask-bar-note { margin: 0 8px 6px; color: var(--theme-fg-muted); font-size: 11.5px; }
+.file-ask-bar[data-state='failed'] .file-ask-bar-note { color: #c2413a; }
+@media (prefers-reduced-transparency: reduce) {
+  .file-ask-bar-shell { background: var(--theme-panel); backdrop-filter: none; -webkit-backdrop-filter: none; }
+}
+
+/* Device grant review: what is allowed in words, the signed content folded. */
+.grant-review-lead { font-size: 15px; font-weight: 600; line-height: 1.5; overflow-wrap: anywhere; }
+.grant-review-rows { display: grid; margin: 0; border: 1px solid var(--theme-border); border-radius: 12px; }
+.grant-review-rows > div { display: grid; grid-template-columns: minmax(84px, 30%) minmax(0, 1fr); gap: 10px; padding: 9px 12px; }
+.grant-review-rows > div + div { border-top: 1px solid var(--theme-border); }
+.grant-review-rows dt { color: var(--theme-fg-muted); font-size: 13px; }
+.grant-review-rows dd { min-width: 0; margin: 0; font-size: 13.5px; overflow-wrap: anywhere; }
+.grant-review-rows code { font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace); font-size: 13px; letter-spacing: .04em; overflow-wrap: anywhere; }
+.grant-review-rows small { display: block; margin-top: 3px; color: var(--theme-fg-muted); font-size: 12px; line-height: 1.5; }
+.grant-review-badge { display: inline-block; margin-left: 8px; padding: 1px 7px; border-radius: 999px; font-size: 11.5px; vertical-align: 1px; }
+.grant-review-badge.is-verified { background: color-mix(in oklch, var(--theme-accent-solid) 16%, transparent); color: var(--theme-accent-strong, var(--theme-accent-solid)); }
+.grant-review-badge.is-unverified { background: rgb(214 140 40 / 18%); color: #c0791b; }
+.grant-review-changes h3 { margin-bottom: 6px; font-size: 13px; font-weight: 600; }
+.grant-review-changes ul { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; font-size: 13px; }
+.grant-review-changes li { display: flex; flex-wrap: wrap; gap: 4px 10px; overflow-wrap: anywhere; }
+.grant-review-changes b { font-weight: 600; }
+.grant-review-technical summary { cursor: pointer; color: var(--theme-fg-muted); font-size: 12.5px; }
+.grant-review-technical pre,
+.grant-review-technical-text {
+  margin-top: 8px;
+  padding: 10px;
+  border-radius: 8px;
+  background: var(--theme-surface);
+  font-size: 11.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.grant-review-acknowledge { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; line-height: 1.5; }
+.grant-review-acknowledge input { margin-top: 3px; }
+.grant-review-note { color: var(--theme-fg-muted); font-size: 12.5px; }
+.grant-review-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+@media (max-width: 639px) {
+  .grant-review-actions > button { flex: 1 1 140px; min-height: 44px; }
+}
+
+/* "Opening workspace…" usually lasts a moment: it fades in only if the wait is
+   long enough to read, instead of flashing. */
+.workspace-opening { animation: workspace-opening-in 200ms 450ms both; }
+@keyframes workspace-opening-in { from { opacity: 0; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .workspace-opening { animation-duration: 1ms; } }

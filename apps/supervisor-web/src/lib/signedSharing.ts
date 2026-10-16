@@ -7,7 +7,7 @@ import type {
   CreateRelaySessionShareInput,
 } from '@pockymoe/shared';
 import { request } from './api';
-import { requestGrantReview } from './sharingApproval';
+import { requestGrantReview, type GrantChange, type GrantSummary } from './sharingApproval';
 import {
   isProtectedSharingDevice,
   sharingGrantDevices,
@@ -197,9 +197,35 @@ async function approveDeviceGrant(
         .map((key) => [key, { before: previous[key], after: grant[key] }]),
     )),
   }) : '';
+  const summarize = (value: DeviceGrant): GrantSummary => ({
+    device: { name: deviceName, id: deviceId },
+    recipient: { name: value.grantee.label, userId: value.grantee.userId },
+    safetyCode: code,
+    scope: value.scope,
+    workspaceScope: value.workspaceScope,
+    workspaceCount: value.workspaceIds.length,
+    threadAccess: value.threadAccess,
+    workspaceAccess: value.workspaceAccess,
+    canCreateThreads: value.canCreateThreads,
+    expiresAt: value.expiresAt,
+  });
+  const after = summarize(grant);
+  if (previous) {
+    const before = summarize(previous);
+    const differs = (keys: (keyof DeviceGrant)[]) => keys.some(key => JSON.stringify(previous[key]) !== JSON.stringify(grant[key]));
+    after.changes = ([
+      ['scope', ['scope', 'threadId', 'workspaceId', 'workspaceScope', 'workspaceIds']],
+      ['threadAccess', ['threadAccess']],
+      ['workspaceAccess', ['workspaceAccess']],
+      ['canCreateThreads', ['canCreateThreads']],
+      ['expiresAt', ['expiresAt']],
+      ['recipient', ['grantee']],
+    ] as const).filter(([, keys]) => differs([...keys])).map(([field]) => ({ field, before, after: summarize(grant) }) as GrantChange);
+  }
   if (!(await requestGrantReview({
     description: fields + '\n\n' + difference + (changes ? '\n' + changes : ''),
     recipientVerified: verified,
+    summary: after,
   })))
     throw new Error(translate('sharing.signCancelled'));
 }

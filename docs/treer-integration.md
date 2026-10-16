@@ -18,10 +18,10 @@ rebinds the same thread.
 Open any installer or terminal Agent on the enrolled Treer machine and run:
 
 ```sh
-curl -fsSL 'https://raw.githubusercontent.com/dufangshi/pockymoe/d4d5e8e2022a7bb7af5ca866e471d6582b9db59c/integrations/treer/treer-setup.sh' -o treer-setup.sh && sh treer-setup.sh --version 0.13.4
+curl -fsSL 'https://raw.githubusercontent.com/dufangshi/pockymoe/aa12f84a7f761686f0aa69191dc0a3a4c2c0d17b/integrations/treer/treer-setup.sh' -o treer-setup.sh && sh treer-setup.sh --version 0.13.10
 ```
 
-The URL is pinned to the 0.13.4 release commit `d4d5e8e2`; a newer script gets a new pinned URL. The public URL points to one
+The URL is pinned to the 0.13.10 release commit `aa12f84a`; a newer script gets a new pinned URL. The public URL points to one
 self-contained POSIX shell script; no other setup scripts are downloaded.
 Its bundled Python sources and profile template are extracted into a private
 temporary directory and removed when setup exits. Runtime and Web downloads use
@@ -174,6 +174,43 @@ updates its current installation and exits for Treer to relaunch it; a saved
 versioned path would launch the old version. The App's Web bundle must follow
 `current/web` for the same reason.
 
+## Hub App
+
+The Managed App remains named `pockymoe`. It is the shared conversation hub for
+all Pockymoe Agents on that machine. Opening its App UI shows a small read-only
+page with the machine hostname, running version and number of durably bound
+Agents (including disconnected Agents). Use a Pockymoe Agent to open
+conversations. Stopping this App takes every Pockymoe Agent on the machine
+offline; they reconnect when it starts again.
+
+App UI tunnel requests carry `X-Treer-Identity-Token` without Agent interface
+markers. Only loopback requests with that header can select this page. The
+header grants no conversation access: `/api/status`, `/v1/status` and `/healthz`
+return hub metadata; all other API paths, thread pages, WebSockets and writes
+receive a read-only JSON denial. Responses never include thread titles, IDs or
+credentials. The token is neither interpreted nor echoed because this surface
+provides only non-privileged hub metadata. Agent interface requests continue to
+require their normal provenance and live binding. Standalone hubs retain their
+existing routes and reject Treer-marked requests.
+
+While any Pockymoe attach Agent runs, it attempts to start an accidentally
+stopped hub after at least thirty seconds of unavailability. It uses its own
+Treer identity to inspect `treer agent show <self>` and `treer app list`, then
+requests `treer agent start <app-id>` only when the matching App reports
+`stopped` or `exited`. Lookups and start requests are limited to one attempt per
+two minutes, including failures. Running, pending, unavailable or ambiguous
+Apps are left alone; Policy denials and subprocess diagnostics are suppressed.
+Attach never stops or restarts an App. With no running attach Agent, Treer's
+normal stopped intent remains in effect.
+
+Setup converges both new and existing launch profiles with `--hub-app pockymoe`.
+Attach also accepts an explicit App ID and retains this option when saving its
+`attach --thread` startup command. Older profiles without the flag discover the
+setup-created `pockymoe` App by the loopback hub port. Recovery requires a unique
+matching App on the attach Agent's machine, with the same hub port and saved
+`POCKYMOE_HOST_MODE=hosted` / `POCKYMOE_HOSTED_BY=treer` settings. Existing running
+attach processes gain recovery after their next normal Treer restart.
+
 ## Attach command
 
 Treer launches attach as one Agent, with the project as its current directory:
@@ -239,6 +276,63 @@ credentials redacted, control characters stripped and code/message lengths cappe
 at 96/512 characters (plus a truncation marker). Treer subprocess output stays
 suppressed, and attach disables tracing even if `RUST_LOG=trace` to protect the hello payload.
 
+## Thread and Agent registry
+
+In Treer hosted mode (`POCKYMOE_HOST_MODE=hosted` and
+`POCKYMOE_HOSTED_BY=treer`), every visible durable thread, including a delegate,
+owns one Treer Agent. Stable thread and Agent IDs bind for life; changing a name
+never changes that binding. This registry supersedes the older top-level-only
+binding and identity model described elsewhere in this guide. Standalone
+Pockymoe installs no host hook and retains its existing behavior.
+
+The runtime exposes one optional, generic thread lifecycle hook. The Supervisor
+installs its Treer implementation once at startup. CLI delegates create Agents
+with the parent thread's live identity; scoped browser creation uses the page's
+Agent; forks use the source thread's Agent. Local pages, automations, imports,
+and migration without a live caller use the hub App's own `TREER_*` identity.
+A first-launch attach already owns an Agent and binds that identity directly.
+Every bound thread receives only its own Agent credentials, including children.
+
+Registration runs `treer agent admin create --machine SERVER --kind command
+--name LABEL --cwd RELATIVE -- pockymoe attach --thread ID --hub URL
+--hub-token-file PATH`, using a stable executable. Treer's default placement
+inherits the creator's folder. Top-level labels sanitize the thread title;
+children use `<parent Agent name>.<delegate name or sanitized title>`. Names
+contain no thread UUID. Only `agent_name_conflict` retries with `-2`, `-3`, and
+so on, up to 100 candidates. Cwd must remain within the reported machine root.
+Creation waits up to 30 seconds for attach to bind. A CLI operation has a
+15-second deadline. Registration failure deletes the new Agent and rolls back
+the new thread; failed Agent cleanup persists for later reconciliation.
+
+Closing a delegate stops its Agent and retains history and its reserved name.
+A prompt to a closed thread starts the Agent and waits for rebind before any
+harness delivery. Deletion removes the Agent before deleting thread history;
+direct-child deletion keeps its ownership, descendant, active-work and queue
+checks. Rename updates Treer first and cascades a matching parent name prefix
+through the recorded descendants. Unrelated Agents with similar names are
+unaffected. Rename failures attempt to restore already-renamed Agents.
+
+Reconciliation runs at startup, on attach connection and disconnection, and
+about every 60 seconds with the hub App identity. An Agent renamed in Treer
+updates its thread title; children display the title without their parent's
+prefix. A confirmed `agent_not_found` archives the thread. Archived threads are
+hidden from lists, search, lineage views and Treer scope, while their rows and
+history remain in SQLite. A stopped or failed Agent retains its binding and
+history; it is not treated as deleted. CLI outages and policy failures never
+archive a thread.
+
+Unbound visible threads from older installations, including unbound delegates,
+and interrupted registrations migrate through the same registration path.
+A lost create response is recovered by checking the Agent's saved startup for
+this hub's `attach --thread ID`, preserving the original stable Agent ID rather
+than adopting an Agent by its name. Closed legacy delegates migrate and then
+stop their new Agents. Archived and explicitly hidden internal threads never
+migrate. Treer browser
+scope includes only each thread's own binding or active registration; a root
+binding no longer exposes an unbound child. Controller access is limited to its
+own bound thread. Credentials and subprocess diagnostics are never persisted or
+returned to callers.
+
 ## Lifecycle mapping
 
 | Treer action | Pockymoe meaning |
@@ -246,7 +340,7 @@ suppressed, and attach disables tracing even if `RUST_LOG=trace` to protect the 
 | Agent stop | Attach is terminated; the socket closes. The hub interrupts the bound turn and releases its harness, retaining history. |
 | Agent start / restore | The saved `attach --thread` command rebinds the same thread. Harness recovery is demand driven. |
 | Agent restart | Stop followed by start with a fresh process instance ID. |
-| Agent delete in Treer | Identity/credentials are revoked. Thread history is retained because attach cannot distinguish deletion from stop. Deleting a thread in the scoped Web instead deletes its Agent first, then its history. |
+| Agent delete in Treer | Registry reconciliation confirms deletion, archives the thread and retains its database history. Explicit Pockymoe deletion removes the Agent first, then its thread history. |
 | Hub update / restart | Attach waits, reconnects and re-registers. It does not create another thread. |
 
 Attach cannot reliably send a final notification within Treer's short stop
@@ -332,8 +426,9 @@ over loopback TCP with Host `agent-interface`, source `controller-api`, the live
 Agent and instance IDs, and no browser headers. `operation_id` maps to a durable
 pending-request ID: a retry with the same input returns the original receipt, a
 different input conflicts. Receipts and completion notifications survive hub
-restarts. A completion notification is sent once per submission with the bound
-Agent's live identity through the `treer` CLI on the hub's `PATH`, using the
+restarts. Submission lookup and queue cancellation decode percent-encoded path
+IDs sent by the Controller. A completion notification is sent once per submission
+with the bound Agent's live identity through the `treer` CLI on the hub's `PATH`, using the
 idempotency key `prompt-submission/<id>/terminal`; it retries until delivered and
 never reruns the task. Transcript `page`/`cursor` are turn offsets (default limit
 1, maximum 1000); items map through the typed thread schema. Status is `blocked`
@@ -375,3 +470,65 @@ and may close the page. Child thread changes do not create/delete Treer Agents.
 Deleting an Agent from Treer itself currently retains its thread because the hub
 cannot distinguish deletion from stop. Provenance headers remain browser defenses,
 not authentication against a hostile process of the same OS user.
+
+## Messages
+
+In Treer-hosted mode (`POCKYMOE_HOST_MODE=hosted` together with
+`POCKYMOE_HOSTED_BY=treer`), the hub installs one generic runtime messaging hook.
+Without it, the existing internal send, queue, steer and inbox paths retain
+their original behavior. Controller submissions already accepted through AIS
+use the local path directly, avoiding a transport loop.
+
+A thread sends with **its own** live Agent credentials. Both sender and recipient
+must have stable Agent bindings; an unbound thread is refused. Passive inbox
+mail runs `treer message send --to <agent-id>` with the body on stdin and an
+idempotency key derived from the durable Pockymoe message ID. The body starts
+with a small, explicitly untrusted kind/subject display header. Durable mappings
+preserve Pockymoe/Core message IDs and translate `--in-reply-to` to Core context
+IDs. Queue and steer run `treer agent prompt`, and direct requests choose steer
+for running recipients or queue otherwise. Receipts remain `queued`, `steered`
+or `held`. Prompting a closed recipient starts its Agent first.
+
+Request IDs deduplicate sends locally. A mail retry reuses its Core idempotency
+key, including after a restart. Treer's prompt CLI has no caller-supplied
+idempotency flag: the hub commits a dispatch marker before invoking it. If the
+process fails or the hub restarts before recording a confirmed receipt, retries
+return `held` and never dispatch that prompt again. Inspect the recipient queue
+and history to resolve this uncertain outcome.
+
+Every live binding has an Agent-scoped receive worker using
+`treer message receive --wait 30000 --limit 50`. One transaction stores each
+fresh message in the existing inbox, its Core ID mapping, any eligible queued
+wake, and its pending ack operation. Only after that commit does the worker call
+`treer message ack`. Pending acks survive restarts, retry with the same operation
+ID, and disappear only after a confirmed acknowledgement. Duplicate Core IDs
+never create another inbox record or turn. Detaching cancels the subprocess;
+reattaching resumes pending acknowledgements before receiving more mail.
+
+The inbox shows attested Treer sender kind/ID/path and Core context IDs, and maps
+known senders back to local thread IDs. Human senders or messages with an
+external-source envelope also queue a prompt with quoted third-party data,
+message IDs and a `treer message get <id>` hint. This decision uses only the Core
+envelope, never body text, labels or completion-looking JSON. Automatic prompts
+allow three wakes per sender kind/ID and recipient per minute; additional mail
+stays unread in the inbox. Other Agent, machine and service mail stays passive,
+and the existing unread reminder applies. Replies map their context IDs to
+`inReplyTo` and satisfy matching existing inbox waits without starting a turn.
+
+`--notify-on-complete` maps to Treer's opt-in `--notify`. A completion is correlated
+only when its attested Agent sender and submission ID match an outbound request
+that opted in. It is stored as passive `result` mail with `inReplyTo` pointing to
+that request. Completion-looking text from another Agent cannot claim the
+subscription and remains ordinary passive mail.
+
+Same-hub `--attach` snapshots files (and archives directories) using the existing
+file-copy helper. Retries reuse those copies, and the message names their local
+paths. Across machines, attachments are refused with a `treer machine put` hint:
+Core Messages are text-only. Transfer files first and mail the destination paths.
+
+The hosted `pockymoe skill` and managed-thread topic guides append the Treer
+addendum: create children with `pockymoe thread create` to record lineage and use
+Treer policy; `treer agent admin create` and profile launches are unrelated
+top-level creation. Standalone skill/guide text is unchanged. The bridge requires
+the thread/Agent registry to supply a live identity for every child; until that
+registry is installed, unbound children fail closed.

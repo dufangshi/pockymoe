@@ -470,6 +470,17 @@ impl Client {
             .context("Supervisor did not return a skill")?
             .to_owned())
     }
+    pub async fn guide(&self, topic: &str) -> Result<String> {
+        let value = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            self.request(json!({"operation":"guide","topic":topic})),
+        )
+        .await??;
+        Ok(value["text"]
+            .as_str()
+            .context("Supervisor did not return a guide")?
+            .to_owned())
+    }
     /// `wait_seconds` extends the HTTP timeout for operations that block server-side.
     pub(crate) async fn request_for(&self, input: Value, wait_seconds: u64) -> Result<Value> {
         let response = self

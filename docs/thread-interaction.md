@@ -244,6 +244,67 @@ presentation heuristic, not a completion signal. Short progress still uses the
 latest-update preview. Lazy history summaries preserve qualifying answers;
 commands and their outputs continue to load on demand.
 
+A working turn reads open and stays short: the run of operations it is in shows
+its rows and its first small edits, and each earlier run folds into one line of
+counts and duration once narration or another run follows. When the turn ends,
+its work folds into the work line ("Worked for 10s · ✓4 ✕1 · edited 1 file +2 −1";
+counts are icons with numbers, explained after the pointer rests on one for a
+second). Opening that line shows the narration with each run folded; opening a
+run lists its operations. A folded turn with several answers shows the work
+between them as one counted line. The file counts on the work line open only the
+changed files. Command and tool output never opens by itself, and a row loads its
+output only when clicked. Clicking an output, diff or code block opens it in a
+floating viewer, and command rows carry a copy button.
+
+A toggle stays where it was clicked while what it opens or closes changes size,
+so it can be clicked again in place; the timeline does not jump to its end. An
+opened turn keeps its work line at the top, and an opened long message keeps
+"Show less" just above the composer. A task from another thread on this device
+links to that thread. A workspace link brings its file or folder near the top of
+the file tree; a link to a file that is not on the device shows its path instead
+of an error.
+
+On a phone, the file list and file viewer have a one-field prompt at the bottom.
+It sends to the thread the files belong to, like Send in the composer, without
+clearing the composer's draft.
+
+On a phone (under 640 px wide) the controls sit at the bottom for one-handed use.
+The top bar shows only status: the device monitor, the subscription usage windows
+(such as 5h and 7d; tapping them shows the details), how many other threads are
+running, the connection and notifications. The composer (or the files prompt)
+and a row under it form one bottom panel; the row holds the current thread,
+Chat / Files / Terminal and More. Tapping the thread, or swiping up anywhere on
+the panel, opens a sheet with the workspace's threads (running and unread first),
+recent threads, unread notifications and New thread. Swiping the thread sideways
+opens the neighbouring open thread. More holds search, the shortcut star,
+Left-handed, the thread's sharing, automation and split controls, the workspace
+drawer, Back, Home and Settings. Dragging a sheet down from the top of its list
+closes it. The row hides while a text field has focus and comes back after the
+tap that moved focus away has landed. A split pins its two conversations in the
+thread's place in that row: one tap brings the other forward, and tapping the
+shown one opens the thread sheet.
+
+The workspace drawer (workspaces, shortcuts, recent conversations) follows a
+sideways drag: rightwards from anywhere in the left 40% of the conversation or
+the files opens it, leftwards on it or on the dimmed page closes it, and so does
+a tap outside. Browsers cannot keep the screen edge from the system back gesture
+(Android gesture navigation, Safari's swipe back), so a drag that starts on the
+very edge belongs to the system; starting a little further in opens the drawer.
+Rightward drags on code blocks that can still scroll back, on the composer panel
+and in the terminal are left to them, as are leftward drags on the right side.
+
+Settings > Preferences > One-handed phone layout (on by default, stored in this
+browser) turns it off and restores the previous top bar, thread tabs, composer
+usage and split switches. Its Hand choice (also More > Left-handed) mirrors the
+panel for the left thumb: More, the views, Send, the turn strip, the files
+prompt's send button and the thread sheet's New thread move to the left.
+
+Above the composer, at its right edge, one strip holds previous turn, next turn
+and the latest reply; the latest-reply button takes an accent tint (not Send's
+fill) only while the reader is away from the end. An opened message's "Show
+less" rides just above the composer, or just above the strip where the strip is
+under it (in either hand), so neither covers the other and no gap opens.
+
 The compact model menu shows reported context use and capacity in thousands of
 tokens below the reasoning controls. Missing readings show a dash.
 
@@ -252,3 +313,44 @@ conversation is ready, including the secondary split pane. Expanding deferred
 execution history shows an inline spinner until that request settles. Reduced
 motion disables these animations. The thread tools bar keeps its direct actions
 without a duplicate overflow menu.
+
+## Switching threads and pages
+
+Moving around keeps the screen steady:
+
+- Home, the workspace list and the workspace drawer navigate inside the app; only
+  a modified or middle click opens a new page.
+- A workspace row opens that workspace's most recent thread directly.
+- A recently opened thread (the last twelve, per device) shows its conversation
+  at once and refreshes quietly. Pressing a thread row, or being a dock swipe away,
+  starts loading it early; a load that finishes within a moment never shows the
+  loader.
+- A thread opens at its end without first painting its top; messages on screen
+  render their Markdown before the first paint.
+- Each page load paints the last theme and background before the app starts, so
+  a reload does not flash white or the other color mode.
+
+## Terminal clipboard
+
+The terminal follows the usual desktop terminal conventions, adjustable in
+Settings > Terminal (shown while the terminal plugin is enabled, stored in this
+browser):
+
+- Ctrl+C copies a selection and interrupts only without one; Ctrl+Shift+C copies
+  too where the browser does not keep that shortcut for itself.
+- Ctrl+V pastes at a shell prompt and stays a key in full-screen programs that use
+  the alternate screen (vim, less, htop); it can be set to always paste.
+  Ctrl+Shift+V always pastes.
+- Copy on select is on by default: releasing a mouse selection copies it.
+- Right-click opens Copy, Paste, Select all, Copy last output and Clear, or can be
+  set to copy a selection and otherwise paste.
+- A paste of several lines into a shell without bracketed paste asks first, since
+  the shell would run the lines one by one.
+- On a Mac ⌘C and ⌘V copy and paste, and Ctrl stays with the terminal.
+
+On a phone, xterm cannot be drag-selected, so a long press on the terminal (or
+Select in the key bar) shows its lines as plain text in the same place, with the
+word under the finger selected; the phone's own handles and copy menu work there,
+next to Select all, Copy and Done. Paste in the key bar reads the clipboard; where
+the browser does not allow that (plain http, permission denied) it opens a field
+to paste into and edit before sending.

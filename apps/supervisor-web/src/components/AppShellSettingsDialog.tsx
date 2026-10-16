@@ -32,6 +32,7 @@ import {
   updateWorkspaceSettings,
 } from '../lib/api';
 import {
+  PhoneHandChoice,
   usePlugins,
   SettingsPanels,
   SettingsDialog,
@@ -876,6 +877,26 @@ export function AppShellSettingsDialog({
                 <output htmlFor="settings-font-size" className="text-sm tabular-nums">{fontSize}px</output>
                 <button type="button" onClick={() => setFontSize(16)} className="relay-button-secondary">{translate("files.reset")}</button>
               </div>
+            </section>
+          )}
+          {section === 'preferences' && shellNav?.setPhoneDock && (
+            <section className="py-5">
+              <label className="flex min-h-11 items-center justify-between gap-4">
+                <span>
+                  <span className="block text-sm font-semibold">{translate("workbench.phoneDockSetting")}</span>
+                  <span className="settings-hint mt-1 block text-xs text-[var(--theme-fg-muted)]">{translate("workbench.phoneDockSettingHint")}</span>
+                </span>
+                <input
+                  type="checkbox"
+                  aria-label={translate("workbench.phoneDockSettingToggle")}
+                  checked={shellNav.phoneDock ?? true}
+                  onChange={(e) => shellNav.setPhoneDock?.(e.currentTarget.checked)}
+                  className="h-5 w-5 accent-[var(--theme-accent-solid)]"
+                />
+              </label>
+              {shellNav.setPhoneHand && (shellNav.phoneDock ?? true) && (
+                <PhoneHandChoice hand={shellNav.phoneHand ?? 'right'} onChange={shellNav.setPhoneHand} />
+              )}
             </section>
           )}
           {section === 'preferences' &&

@@ -310,6 +310,10 @@ pub struct ThreadTurnDto {
     pub has_deferred_items: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deferred_item_count: Option<u32>,
+    /// Per-kind operation counts of a summarized turn, so a folded turn can say
+    /// what it did without loading its deferred items.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activity: Option<Value>,
     pub items: Vec<ThreadHistoryItemDto>,
 }
 

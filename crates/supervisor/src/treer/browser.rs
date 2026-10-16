@@ -1,12 +1,7 @@
-//! Browser mutations use only the requesting Agent's current, in-memory identity.
+//! Browser admission feeds the shared registry; creation carries the live page identity.
 use super::*;
 use pockymoe_protocol::ThreadDto;
-use std::{
-    path::{Path, PathBuf},
-    process::Stdio,
-    time::Duration,
-};
-use tokio::{io::AsyncReadExt, process::Command};
+use std::path::PathBuf;
 
 #[derive(Clone)]
 pub(super) struct Commands {
@@ -65,88 +60,6 @@ impl Hub {
             .ok_or_else(forbidden)
     }
 
-    fn bound_agent(&self, id: &str) -> Result<Option<String>, Error> {
-        self.state
-            .db
-            .with(|c| {
-                Ok(c.query_row(
-                    "SELECT agent_id FROM treer_bindings WHERE thread_id=?1",
-                    [id],
-                    |r| r.get(0),
-                )
-                .optional()?)
-            })
-            .map_err(|_| runtime_error())
-    }
-    async fn treer_command(
-        &self,
-        binding: &Binding,
-        args: Vec<String>,
-        deleting_self: bool,
-    ) -> Result<Value, Error> {
-        if binding.cancelled.is_cancelled() {
-            return Err(error(
-                "treer_binding_closed",
-                "The requesting Treer Agent disconnected. Retry from a live Agent page.",
-            ));
-        }
-        let executable = self.browser_commands.lock().unwrap().treer.clone();
-        let mut cmd = Command::new(executable);
-        cmd.args(args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .kill_on_drop(true);
-        for key in pockymoe_treer::IDENTITY_KEYS {
-            cmd.env_remove(key);
-        }
-        cmd.env_remove("TREER_OPERATOR_CREDENTIAL");
-        cmd.envs(pockymoe_treer::identity_env(
-            &binding.agent,
-            &binding.identity,
-        ));
-        let mut child = cmd.spawn().map_err(|_| {
-            error(
-                "treer_command_unavailable",
-                "Cannot start the Treer CLI on this hub.",
-            )
-        })?;
-        let mut stdout = child.stdout.take().unwrap();
-        let operation = async {
-            let mut bytes = Vec::new();
-            // Never log CLI output: whoami can include identity details.
-            (&mut stdout)
-                .take(1024 * 1024 + 1)
-                .read_to_end(&mut bytes)
-                .await
-                .map_err(|_| runtime_error())?;
-            if bytes.len() > 1024 * 1024 {
-                return Err(error(
-                    "treer_invalid_reply",
-                    "Treer returned an oversized reply.",
-                ));
-            }
-            let status = child.wait().await.map_err(|_| runtime_error())?;
-            if !status.success() {
-                return Err(error(
-                    "treer_agent_operation_failed",
-                    "Treer could not update the Agent. The thread was not changed.",
-                ));
-            }
-            if bytes.is_empty() {
-                Ok(Value::Null)
-            } else {
-                serde_json::from_slice(&bytes)
-                    .map_err(|_| error("treer_invalid_reply", "Treer returned an invalid reply."))
-            }
-        };
-        tokio::select! {
-            result = tokio::time::timeout(Duration::from_secs(60), operation) => result.unwrap_or_else(|_| Err(error("treer_operation_timeout", "Treer did not reply within 60 seconds."))),
-            // Deleting the caller closes its attach socket before the CLI can
-            // return. Let that already-authorized deletion finish (bounded above).
-            _ = binding.cancelled.cancelled(), if !deleting_self => Err(error("treer_binding_closed", "The requesting Treer Agent disconnected. Retry from a live Agent page.")),
-        }
-    }
     pub(crate) async fn create_browser_thread(
         &self,
         scope: &Scope,
@@ -168,111 +81,11 @@ impl Hub {
         {
             return Err(forbidden());
         }
-        if input.parent_thread_id.is_some() {
-            return self
-                .state
-                .create_thread(input)
-                .await
-                .map_err(|_| runtime_error());
-        }
-        let workspace = self
-            .state
-            .get_workspace(&input.workspace_id)
-            .map_err(|_| runtime_error())?;
-        let identity = self
-            .treer_command(&binding, vec!["whoami".into()], false)
-            .await?;
-        let machine = identity["machine"]["server_id"]
-            .as_str()
-            .filter(|id| Some(*id) == binding.identity.server_id.as_deref())
-            .ok_or_else(|| {
-                error(
-                    "treer_machine_unavailable",
-                    "Treer did not identify the requesting Agent's machine.",
-                )
-            })?;
-        let root = identity["machine"]["root"]
-            .as_str()
-            .filter(|p| Path::new(p).is_absolute())
-            .ok_or_else(|| {
-                error(
-                    "treer_machine_unavailable",
-                    "Treer did not provide this machine's root directory.",
-                )
-            })?;
-        let root = Path::new(root)
-            .canonicalize()
-            .map_err(|_| runtime_error())?;
-        let cwd = Path::new(&workspace.abs_path)
-            .canonicalize()
-            .map_err(|_| runtime_error())?;
-        let relative = cwd.strip_prefix(&root).map_err(|_| {
-            error(
-                "treer_cwd_outside_machine",
-                "The selected workspace is outside this Treer machine's root.",
-            )
-        })?;
-        let cwd = if relative.as_os_str().is_empty() {
-            ".".into()
-        } else {
-            relative.to_string_lossy().into_owned()
-        };
-        let executable = self
-            .browser_commands
-            .lock()
-            .unwrap()
-            .pockymoe
-            .clone()
-            .map(Ok)
-            .unwrap_or_else(stable_executable)?;
-        self.browser_identity(scope)?;
-        // Do not pass X's identity into a new thread. Its own Agent attach will
-        // install its credentials and resume it after the binding is established.
-        let thread = self
-            .state
-            .create_thread(input)
-            .await
-            .map_err(|_| runtime_error())?;
-        self.creating.lock().unwrap().insert(thread.id.clone());
-        self.state.pause_integration_thread(&thread.id);
-        let mut created_agent = None;
-        let result = async {
-            self.state.release_thread_harness(&thread.id, true, None).await.map_err(|_| runtime_error())?;
-            let token_file = self.state.config.database_url.parent().unwrap_or(Path::new(".")).join(TREER_ATTACH_TOKEN_FILE).canonicalize().map_err(|_| runtime_error())?;
-            let reply = self.treer_command(&binding, vec![
-                "agent".into(), "admin".into(), "create".into(), "--machine".into(), machine.into(),
-                "--kind".into(), "command".into(), "--name".into(), pockymoe_treer::agent_label(&thread.title, &thread.id),
-                "--cwd".into(), cwd, "--".into(), executable.to_string_lossy().into_owned(), "attach".into(),
-                "--thread".into(), thread.id.clone(), "--hub".into(), format!("http://127.0.0.1:{}", self.port),
-                "--hub-token-file".into(), token_file.to_string_lossy().into_owned(),
-            ], false).await?;
-            let agent = reply["agent_id"].as_str().filter(|id| !id.is_empty() && id.len() <= 256 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_:".contains(&b)))
-                .ok_or_else(|| error("treer_invalid_reply", "Treer did not return the new Agent's ID."))?;
-            created_agent = Some(agent.to_owned());
-            // Attach may already have completed while admin create was returning.
-            let now = now_rfc3339();
-            self.state.db.with(|c| {
-                c.execute("INSERT INTO treer_bindings(thread_id,agent_id,created_at,last_instance_id,last_seen_at) VALUES(?1,?2,?3,'',?3) ON CONFLICT(thread_id) DO NOTHING", params![thread.id,agent,now])?;
-                anyhow::ensure!(c.query_row("SELECT agent_id FROM treer_bindings WHERE thread_id=?1", [&thread.id], |r| r.get::<_,String>(0))? == agent, "binding mismatch");
-                Ok(())
-            }).map_err(|_| runtime_error())?;
-            self.state.get_thread(&thread.id).map_err(|_| runtime_error())
-        }.await;
-        if result.is_err() {
-            if let Some(agent) = created_agent {
-                let _ = self
-                    .treer_command(
-                        &binding,
-                        vec!["agent".into(), "admin".into(), "delete".into(), agent],
-                        false,
-                    )
-                    .await;
-            }
-            self.retire_browser_binding(&thread.id);
-            let _ = self.state.delete_thread_releasing(&thread.id).await;
-        }
-        self.creating.lock().unwrap().remove(&thread.id);
-        result
+        self.state.create_thread_with_origin(input, Default::default(), pockymoe_runtime::host_hooks::ThreadOrigin::Browser { caller_thread_id: binding.thread }).await.map_err(|e| {
+            if e.to_string().contains("attach did not bind") {
+                error("treer_attach_timeout", "Treer attach did not bind before the deadline; the new thread was rolled back.")
+            } else { error("treer_agent_operation_failed", "Treer could not register the Agent; the new thread was rolled back.") }
+        })
     }
     pub(crate) async fn rename_browser_thread(
         &self,
@@ -281,37 +94,21 @@ impl Hub {
         title: &str,
     ) -> Result<ThreadDto, Error> {
         let _operation = self.browser_operations.lock().await;
-        let _lifecycle = self.lifecycle.lock().await;
-        let binding = self.browser_identity(scope)?;
+        self.browser_identity(scope)?;
         if !scope.allows(id) {
             return Err(forbidden());
         }
         if title.trim().is_empty() {
-            return Err(Error {
-                status: StatusCode::BAD_REQUEST,
-                code: "invalid_title",
-                message: "Enter a thread title.",
-            });
+            return Err(runtime_error());
         }
-        if let Some(agent) = self.bound_agent(id)? {
-            self.treer_command(
-                &binding,
-                vec![
-                    "agent".into(),
-                    "admin".into(),
-                    "rename".into(),
-                    agent,
-                    pockymoe_treer::agent_label(title, id),
-                ],
-                false,
-            )
-            .await?;
-        }
+        // Metadata reconciliation may still be finishing the previous attach.
+        // Wait before entering the synchronous runtime lifecycle boundary.
+        drop(self.registry_operations.lock().await);
         self.state
             .rename_thread(id, title)
             .map_err(|_| runtime_error())
     }
-    fn retire_browser_binding(&self, id: &str) {
+    pub(super) fn retire_browser_binding(&self, id: &str) {
         let mut live = self.live.lock().unwrap();
         for b in live.values_mut().filter(|b| b.thread == id) {
             b.cancelled.cancel();
@@ -328,18 +125,18 @@ impl Hub {
     }
     pub(crate) async fn delete_browser_thread(&self, scope: &Scope, id: &str) -> Result<(), Error> {
         let _operation = self.browser_operations.lock().await;
-        let _lifecycle = self.lifecycle.lock().await;
-        let binding = self.browser_identity(scope)?;
+        self.browser_identity(scope)?;
         if !scope.allows(id) {
             return Err(forbidden());
         }
-        if let Some(agent) = self.bound_agent(id)? {
-            self.treer_command(
-                &binding,
-                vec!["agent".into(), "admin".into(), "delete".into(), agent],
-                id == binding.thread,
-            )
-            .await?;
+        let target = self.state.get_thread(id).map_err(|_| runtime_error())?;
+        if let Some(parent) = target.parent_thread_id.as_deref() {
+            drop(self.registry_operations.lock().await);
+            self.state
+                .delete_child_thread(parent, id)
+                .await
+                .map_err(|_| runtime_error())?;
+            return Ok(());
         }
         // Release descendants before removing the root, so no invisible harness
         // remains running with an orphaned lineage after a top-level deletion.
@@ -350,11 +147,13 @@ impl Hub {
         descendants.retain(|t| t.root_thread_id.as_deref() == Some(id));
         descendants.sort_by_key(|t| std::cmp::Reverse(t.lineage_depth));
         for child in descendants {
+            drop(self.registry_operations.lock().await);
             self.state
                 .delete_thread_releasing(&child.id)
                 .await
                 .map_err(|_| runtime_error())?;
         }
+        drop(self.registry_operations.lock().await);
         self.state
             .delete_thread_releasing(id)
             .await
@@ -364,7 +163,7 @@ impl Hub {
     }
 }
 
-fn stable_executable() -> Result<PathBuf, Error> {
+pub(super) fn stable_executable() -> Result<PathBuf, Error> {
     let running = std::env::current_exe().map_err(|_| runtime_error())?;
     let target = running.canonicalize().map_err(|_| runtime_error())?;
     let mut candidates = Vec::new();

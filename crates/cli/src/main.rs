@@ -679,7 +679,17 @@ async fn run() -> Result<()> {
                     }
                 }
                 Some(name) => match guides.iter().find(|(topic, _, _)| *topic == name) {
-                    Some((_, _, text)) => print!("{text}"),
+                    Some((_, _, text)) => {
+                        let hosted = if std::env::var_os("POCKYMOE_HOST_GUIDE").is_some() {
+                            match threads::Client::new(cli.connection) {
+                                Ok(client) => client.guide(name).await.ok(),
+                                Err(_) => None,
+                            }
+                        } else {
+                            None
+                        };
+                        print!("{}", hosted.as_deref().unwrap_or(text));
+                    }
                     None => {
                         let names: Vec<_> = guides.iter().map(|(name, _, _)| *name).collect();
                         eprintln!("Unknown guide {name:?}. Topics: {}", names.join(", "));

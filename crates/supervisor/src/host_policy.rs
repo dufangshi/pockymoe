@@ -54,6 +54,8 @@ mod tests {
         let mut config = original.config.clone();
         drop(original);
         config.host_mode = mode;
+        // The dropped fixture's background tasks may still own its database.
+        config.database_url = dir.path().join("host-policy.sqlite");
         let db = pockymoe_runtime::Database::open(&config.database_url).unwrap();
         let state = Arc::new(Supervisor::new(config, db, vec![]));
         state.configure_cli("http://127.0.0.1:0".into());

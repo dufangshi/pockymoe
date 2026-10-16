@@ -349,6 +349,7 @@ fn load_codex_paginated_history(home: &Path, session_id: &str) -> Option<Vec<Thr
                 price_estimate: None,
                 has_deferred_items: None,
                 deferred_item_count: None,
+                activity: None,
                 items: items_by_turn.remove(&id).unwrap_or_default(),
             })
             .collect(),
@@ -1079,6 +1080,7 @@ fn empty_codex_turn(id: String, started_at: Option<String>) -> ThreadTurnDto {
         price_estimate: None,
         has_deferred_items: None,
         deferred_item_count: None,
+        activity: None,
         items: Vec::new(),
     }
 }
@@ -1220,6 +1222,7 @@ pub(crate) fn read_grok_usage_history(path: &Path) -> Option<Vec<ThreadTurnDto>>
                         price_estimate: None,
                         has_deferred_items: None,
                         deferred_item_count: None,
+                        activity: None,
                         items: vec![item(
                             "grok-usage-prompt".into(),
                             "userMessage",
@@ -1287,6 +1290,7 @@ fn parse_grok_history(path: &Path) -> Vec<ThreadTurnDto> {
                     price_estimate: None,
                     has_deferred_items: None,
                     deferred_item_count: None,
+                    activity: None,
                     items: vec![item(
                         format!("{id}:user"),
                         "userMessage",
@@ -1410,6 +1414,7 @@ fn parse_claude_jsonl(path: &Path, with_history: bool) -> Option<ImportSessionMe
                     price_estimate: None,
                     has_deferred_items: None,
                     deferred_item_count: None,
+                    activity: None,
                     items: vec![item(
                         format!("{id}:user"),
                         "userMessage",

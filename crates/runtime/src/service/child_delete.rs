@@ -16,6 +16,7 @@ impl Supervisor {
         );
         self.db.with(|conn| validate(conn, parent, id))?;
         let thread = self.get_thread(id)?;
+        self.host_before_delete(id)?;
         if let Some(session) = thread.provider_session_id.as_deref() {
             let runtime = self.runtime(thread.provider)?;
             let loaded = runtime
