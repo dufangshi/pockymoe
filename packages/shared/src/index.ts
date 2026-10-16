@@ -897,11 +897,16 @@ export interface ThreadDto {
   closedAt?: string | null;
 }
 
-/** A thread's turns (all time) and the time they ran since `since`. */
+/** A thread's turns (all time), the time they ran in all and since `since`, and its latest prompt. */
 export interface ThreadActivityDto {
   threadId: string;
   turns: number;
   activeMs: number;
+  totalMs: number;
+  /** The window's running time hour by hour, oldest first; absent when none. */
+  hourlyMs?: number[];
+  /** Whitespace collapsed, at most 240 characters. */
+  lastPrompt?: string;
 }
 
 /** `GET /api/thread-activity?hours=N`, owner only; threads without turns are absent. */

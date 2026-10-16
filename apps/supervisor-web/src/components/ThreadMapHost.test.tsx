@@ -14,18 +14,21 @@ const workspaces = [{ id: 'w1', label: 'app', absPath: '/src/app' }] as Workspac
 describe('mapDevice', () => {
   it('folds agent threads into their root and sums their activity', () => {
     const device = mapDevice('laptop', 'Laptop', workspaces, [
-      thread('root', { agentId: 'claude-code' }),
-      thread('child', { parentThreadId: 'root', rootThreadId: 'root', status: 'running' }),
+      thread('root', { agentId: 'claude-code', model: 'opus', createdAt: '2026-10-01T00:00:00Z', lastTurnCompletedAt: '2026-10-15T08:00:00Z' }),
+      thread('child', { parentThreadId: 'root', rootThreadId: 'root', status: 'running', lastTurnStartedAt: '2026-10-16T09:00:00Z' }),
       thread('grandchild', { parentThreadId: 'child', rootThreadId: 'root' }),
       thread('orphan', { parentThreadId: 'gone', rootThreadId: 'gone', workspaceId: 'w2' }),
     ], { since: '', hours: 24, threads: [
-      { threadId: 'root', turns: 10, activeMs: 60_000 },
-      { threadId: 'child', turns: 3, activeMs: 120_000 },
+      { threadId: 'root', turns: 10, activeMs: 60_000, totalMs: 600_000, hourlyMs: [0, 60_000], lastPrompt: 'ship it' },
+      { threadId: 'child', turns: 3, activeMs: 120_000, totalMs: 120_000, hourlyMs: [120_000, 0], lastPrompt: 'agent prompt' },
     ] });
     expect(device.workspaces.map(workspace => workspace.label)).toEqual(['app', 'w2']);
     expect(device.workspaces[0]!.threads).toEqual([expect.objectContaining({
       key: 'laptop:root', href: '/devices/laptop/threads/root', agent: 'claude', agentName: 'Claude',
       running: true, turns: 13, activeMs: 180_000, agentThreads: 2,
+      // Totals and the hourly strip add up the family; the prompt and dates are the person's thread.
+      totalMs: 720_000, hourlyMs: [120_000, 60_000], model: 'opus', lastPrompt: 'ship it',
+      createdAt: '2026-10-01T00:00:00Z', lastActiveAt: '2026-10-16T09:00:00Z',
     })]);
     // An agent thread whose root is gone still shows.
     expect(device.workspaces[1]!.threads[0]).toMatchObject({ key: 'laptop:orphan', turns: 0, activeMs: 0 });

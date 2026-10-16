@@ -203,14 +203,23 @@ pub struct ThreadWorkspaceFilePreviewDto {
     pub next_offset: u64,
 }
 
-/// One thread's activity for the thread map: how many turns it has had and how
-/// long its turns ran inside the requested window.
+/// One thread's activity for the thread map: how many turns it has had, how long
+/// they ran in all and inside the requested window, and its latest prompt.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadActivityDto {
     pub thread_id: String,
     pub turns: u32,
+    /// Running time inside the window.
     pub active_ms: u64,
+    /// Running time of every turn the thread ever ran.
+    pub total_ms: u64,
+    /// The window's running time hour by hour, oldest first; empty when none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hourly_ms: Vec<u64>,
+    /// The person's latest prompt, whitespace collapsed and cut to 240 characters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_prompt: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

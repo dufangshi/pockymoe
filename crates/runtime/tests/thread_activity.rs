@@ -87,6 +87,17 @@ fn turn(
     .unwrap();
 }
 
+fn prompt(s: &Supervisor, turn: &str, ordinal: i64, text: &str) {
+    s.db.with(|conn| {
+        conn.execute(
+            "UPDATE thread_turns SET ordinal=?2, display_prompt=?3 WHERE id=?1",
+            (turn, ordinal, text),
+        )?;
+        Ok(())
+    })
+    .unwrap();
+}
+
 fn set_status(s: &Supervisor, thread: &str, status: &str) {
     s.db.with(|conn| {
         conn.execute("UPDATE threads SET status=?2 WHERE id=?1", (thread, status))?;
@@ -156,7 +167,11 @@ async fn counts_turns_and_running_time_inside_the_window() {
         None,
     );
     set_status(&s, &crashed.id, "idle");
-    let mut activity = s.thread_activity(since, now).unwrap();
+    // The latest prompt is the newest one that has text.
+    prompt(&s, "b2", 2, "older");
+    prompt(&s, "b3", 3, "  Fix   the\n login  bug ");
+    prompt(&s, "b4", 4, " ");
+    let mut activity = s.thread_activity(since, now, 24).unwrap();
     activity.sort_by_key(|a| if a.thread_id == busy.id { 0 } else { 1 });
     assert_eq!(
         activity,
@@ -164,12 +179,25 @@ async fn counts_turns_and_running_time_inside_the_window() {
             ThreadActivityDto {
                 thread_id: busy.id.clone(),
                 turns: 5,
-                active_ms: (10 + 30 + 60) * 60_000
+                active_ms: (10 + 30 + 60) * 60_000,
+                total_ms: (60 + 20 + 30 + 60) * 60_000,
+                hourly_ms: (0..24)
+                    .map(|hour| match hour {
+                        0 => 10 * 60_000,
+                        12 => 30 * 60_000,
+                        23 => 60 * 60_000,
+                        _ => 0,
+                    })
+                    .collect(),
+                last_prompt: Some("Fix the login bug".into()),
             },
             ThreadActivityDto {
                 thread_id: crashed.id.clone(),
                 turns: 1,
-                active_ms: 0
+                active_ms: 0,
+                total_ms: 0,
+                hourly_ms: Vec::new(),
+                last_prompt: None,
             },
         ]
     );

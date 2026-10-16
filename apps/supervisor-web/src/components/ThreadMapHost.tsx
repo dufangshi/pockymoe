@@ -30,8 +30,8 @@ const LOCAL = 'local';
 
 /**
  * One device on the map: its workspaces and their root threads, each with its
- * agent threads folded in. Without activity (an older Supervisor) turns and run
- * time are unknown rather than zero.
+ * agent threads folded in. Without activity (an older Supervisor) turns, run
+ * time and the latest prompt are unknown rather than zero.
  */
 export function mapDevice(
   deviceId: string | null,
@@ -58,6 +58,11 @@ export function mapDevice(
     if (rootOf(thread)) continue;
     const members = [thread, ...(family.get(thread.id) ?? [])];
     const agent = threadThemeAgentKey(thread);
+    const own = stats.get(thread.id);
+    const sum = (field: 'turns' | 'activeMs' | 'totalMs') => members.reduce((total, member) => total + (stats.get(member.id)?.[field] ?? 0), 0);
+    const hourly = members.map(member => stats.get(member.id)?.hourlyMs).filter((list): list is number[] => Array.isArray(list));
+    const lastActive = members.flatMap(member => [member.lastTurnStartedAt, member.lastTurnCompletedAt])
+      .filter((at): at is string => Boolean(at)).sort().at(-1);
     const entry: ThreadMapThread = {
       key: `${key}:${thread.id}`,
       title: thread.title.trim() || translate('workbench.splitUntitled'),
@@ -65,8 +70,15 @@ export function mapDevice(
       agent,
       agentName: agent ? themeAgentName(thread.agentId || thread.provider, agent) : undefined,
       running: members.some(member => workbenchThreadStatus(member) === 'running'),
-      turns: activity ? members.reduce((sum, member) => sum + (stats.get(member.id)?.turns ?? 0), 0) : null,
-      activeMs: activity ? members.reduce((sum, member) => sum + (stats.get(member.id)?.activeMs ?? 0), 0) : null,
+      turns: activity ? sum('turns') : null,
+      activeMs: activity ? sum('activeMs') : null,
+      totalMs: activity ? sum('totalMs') : null,
+      hourlyMs: hourly.length ? hourly[0]!.map((_, hour) => hourly.reduce((total, list) => total + (list[hour] ?? 0), 0)) : undefined,
+      createdAt: thread.createdAt,
+      lastActiveAt: lastActive,
+      model: thread.model ?? undefined,
+      lastPrompt: own?.lastPrompt,
+      failed: workbenchThreadStatus(thread) === 'failed' || undefined,
       agentThreads: members.length - 1 || undefined,
     };
     byWorkspace.set(thread.workspaceId, [...(byWorkspace.get(thread.workspaceId) ?? []), entry]);

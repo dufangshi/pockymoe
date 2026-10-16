@@ -330,7 +330,17 @@ the accent by how long its turns ran in the last 24 hours (none, up to 10 minute
 an hour, three hours, more), light enough to read the title on; themes may set
 `--thread-map-heat`. A running thread breathes slowly (a still tint under reduced
 motion). A small mark names its agent: the theme's art for that agent where a pack
-has it, else a colored monogram. A block too small for what it holds folds up;
+has it, else a colored monogram.
+
+A tile shows what its width and height leave room for, and leaves out the rest:
+its title (one to three lines); the thread's age as a pie that fills and warms from
+cyan (today) through blue, violet and amber to bronze (older than three months),
+with the age in words on a wide tile; the agent and model with "running" or when it
+was last active; the person's latest prompt; the turns, the time all its turns ran
+and the time they ran in the last 24 hours (side by side, stacked on a tall narrow
+tile, or "69 turns · 25 h total" on one line); and the last 24 hours hour by hour
+as bars, each full when the thread ran the whole hour. Small tiles keep the agent
+mark and title, the smallest only their color. A block too small for what it holds folds up;
 tapping a device or workspace bar, or a folded block, opens it, and the path above
 leads back. Go to (the list icon) reaches every block of the current level,
 however small. Hovering or focusing a block shows its details. The map reads its
@@ -344,10 +354,12 @@ devices and host-scoped Supervisors have no map.
 
 Each Supervisor reports turns and run time at `GET /api/thread-activity?hours=24`
 (1–168, default 24; owner only):
-`{ "since", "hours", "threads": [{ "threadId", "turns", "activeMs" }] }`. `turns`
-counts every turn the thread ever started and `activeMs` the part of each turn
-inside the window; a turn without a completion time counts up to now only while it
-is in progress and its thread runs, so imported or crashed turns add none. A
+`{ "since", "hours", "threads": [{ "threadId", "turns", "activeMs", "totalMs", "hourlyMs", "lastPrompt" }] }`.
+`turns` counts every turn the thread ever started, `totalMs` the time they all ran,
+`activeMs` the part inside the window and `hourlyMs` that part hour by hour (absent
+when zero); `lastPrompt` is the newest prompt with text, whitespace collapsed and
+cut to 240 characters. A turn without a completion time counts up to now only while
+it is in progress and its thread runs, so imported or crashed turns add none. A
 Supervisor without the endpoint still appears, with equal areas and no color.
 
 ## Switching threads and pages

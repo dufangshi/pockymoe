@@ -1516,7 +1516,7 @@ async fn thread_activity(
         |at: chrono::DateTime<chrono::Utc>| at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     let since = stamp(now - chrono::Duration::hours(i64::from(hours)));
     let threads = state
-        .thread_activity(&since, &stamp(now))
+        .thread_activity(&since, &stamp(now), hours as usize)
         .map_err(map_err)?;
     Ok(Json(
         json!({ "since": since, "hours": hours, "threads": threads }),

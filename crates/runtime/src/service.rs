@@ -1097,32 +1097,103 @@ impl Supervisor {
         Ok((relative, u64::try_from(content.len()).unwrap_or(u64::MAX)))
     }
 
-    /// Turn counts and running time inside `[since, now]` (RFC 3339) for every
-    /// thread with turns. A turn still marked running counts up to `now` only
-    /// while its thread is running, so a turn left open by a crash adds nothing.
-    pub fn thread_activity(&self, since: &str, now: &str) -> Result<Vec<ThreadActivityDto>> {
+    /// Turn counts, running time (all time, inside `[since, now]` and per hour of
+    /// it) and the latest prompt for every thread with turns. A turn without a
+    /// completion time counts up to `now` only while it is in progress and its
+    /// thread runs, so a turn left open by a crash or an import adds nothing.
+    pub fn thread_activity(
+        &self,
+        since: &str,
+        now: &str,
+        hours: usize,
+    ) -> Result<Vec<ThreadActivityDto>> {
+        const HOUR: f64 = 3_600_000.0;
         self.db.with(|conn| {
+            // Turn bounds in milliseconds after `since`; an unknown bound is NULL.
             let mut stmt = conn.prepare(
-                "SELECT tt.thread_id, COUNT(*),
-                        COALESCE(SUM(CASE WHEN tt.started_at IS NULL THEN 0 ELSE MAX(0,
-                          (julianday(MIN(COALESCE(tt.completed_at,
-                                CASE WHEN tt.status IN ('inProgress','recovering')
-                                     AND t.status IN ('running','recovering') THEN ?2 END,
-                                tt.started_at), ?2))
-                           - julianday(MAX(tt.started_at, ?1))) * 86400000) END), 0)
+                "SELECT tt.thread_id,
+                        (julianday(tt.started_at) - julianday(?1)) * 86400000,
+                        (julianday(MIN(COALESCE(tt.completed_at,
+                              CASE WHEN tt.status IN ('inProgress','recovering')
+                                   AND t.status IN ('running','recovering') THEN ?2 END), ?2))
+                         - julianday(?1)) * 86400000
                  FROM thread_turns tt JOIN threads t ON t.id = tt.thread_id
-                 GROUP BY tt.thread_id",
+                 ORDER BY tt.thread_id",
             )?;
-            let rows = stmt
-                .query_map(params![since, now], |row| {
-                    Ok(ThreadActivityDto {
-                        thread_id: row.get(0)?,
-                        turns: row.get::<_, i64>(1)?.max(0) as u32,
-                        active_ms: row.get::<_, f64>(2)?.max(0.0).round() as u64,
-                    })
-                })?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            Ok(rows)
+            let mut rows = stmt.query(params![since, now])?;
+            let span = hours as f64 * HOUR;
+            let mut activity: Vec<(ThreadActivityDto, Vec<f64>, f64, f64)> = Vec::new();
+            while let Some(row) = rows.next()? {
+                let thread_id: String = row.get(0)?;
+                if activity
+                    .last()
+                    .is_none_or(|(entry, ..)| entry.thread_id != thread_id)
+                {
+                    let entry = ThreadActivityDto {
+                        thread_id,
+                        turns: 0,
+                        active_ms: 0,
+                        total_ms: 0,
+                        hourly_ms: Vec::new(),
+                        last_prompt: None,
+                    };
+                    activity.push((entry, vec![0.0; hours], 0.0, 0.0));
+                }
+                let (entry, hourly, total, active) = activity.last_mut().expect("pushed above");
+                entry.turns += 1;
+                let (Some(start), Some(end)) =
+                    (row.get::<_, Option<f64>>(1)?, row.get::<_, Option<f64>>(2)?)
+                else {
+                    continue;
+                };
+                if end <= start {
+                    continue;
+                }
+                *total += end - start;
+                let (from, to) = (start.max(0.0), end.min(span));
+                if to <= from {
+                    continue;
+                }
+                *active += to - from;
+                let mut at = from;
+                while at < to {
+                    let hour = ((at / HOUR) as usize).min(hours - 1);
+                    let next = ((hour + 1) as f64 * HOUR).min(to);
+                    hourly[hour] += next - at;
+                    at = next.max(at + 1.0);
+                }
+            }
+            let mut prompts = conn.prepare(
+                "SELECT thread_id, display_prompt FROM (
+                   SELECT thread_id, display_prompt,
+                          ROW_NUMBER() OVER (PARTITION BY thread_id ORDER BY ordinal DESC) AS latest
+                   FROM thread_turns
+                   WHERE display_prompt IS NOT NULL AND TRIM(display_prompt) != '')
+                 WHERE latest = 1",
+            )?;
+            let mut latest: std::collections::HashMap<String, String> = prompts
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect::<rusqlite::Result<_>>()?;
+            Ok(activity
+                .into_iter()
+                .map(|(mut entry, hourly, total, active)| {
+                    entry.total_ms = total.round() as u64;
+                    entry.active_ms = active.round() as u64;
+                    if active > 0.0 {
+                        entry.hourly_ms = hourly.into_iter().map(|ms| ms.round() as u64).collect();
+                    }
+                    entry.last_prompt = latest.remove(&entry.thread_id).map(|prompt| {
+                        prompt
+                            .split_whitespace()
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                            .chars()
+                            .take(240)
+                            .collect()
+                    });
+                    entry
+                })
+                .collect())
         })
     }
 
