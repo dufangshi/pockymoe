@@ -3,15 +3,30 @@ import { randomUUID } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 
-test('upstream editor and template preview stay usable inside device settings', async ({
+test('connections save without applying, apply apart from sync, and template preview stays usable', async ({
   page,
 }, testInfo) => {
   page.setDefaultTimeout(15000);
-  let profiles: any[] = [];
-  const active: Record<string, string> = {};
+  const remote = {
+    id: 'team',
+    name: 'Team Gemini',
+    protocol: 'gemini',
+    revision: 'r2',
+    local: false,
+    sources: [
+      { deviceId: 'laptop', name: 'Laptop', online: true, revision: 'r2' },
+    ],
+  };
+  let connections: any[] = [remote];
+  let bindings: Record<string, unknown> = {};
+  const writes: string[] = [];
   await page.route('**/api/management/**', async (route) => {
-    const p = new URL(route.request().url()).pathname;
+    const request = route.request();
+    const p = new URL(request.url()).pathname;
+    const method = request.method();
+    if (method !== 'GET') writes.push(`${method} ${p}`);
     let result: unknown = {};
+    let status = 200;
     if (p.endsWith('/supervisor'))
       result = { runningVersion: 'test', canUpdate: false };
     else if (p.endsWith('/harnesses'))
@@ -19,85 +34,154 @@ test('upstream editor and template preview stay usable inside device settings', 
         { id: 'codex', name: 'OpenAI Codex', base: { installed: true } },
         { id: 'grok', name: 'Grok Build', base: { installed: true } },
       ];
-    else if (p.endsWith('/upstreams/models'))
+    else if (p.endsWith('/management/connections/models'))
       result = {
         models: [{ id: 'test-model', name: 'Test model' }],
         truncated: false,
       };
-    else if (p.endsWith('/upstreams')) {
-      if (route.request().method() === 'POST') {
-        const { apiKey, ...saved } = route.request().postDataJSON();
-        profiles = [{ ...saved, id: 'profile', hasApiKey: true }];
-        result = profiles[0];
-      } else result = { profiles, active, backups: [] };
-    } else if (p.endsWith('/upstreams/profile')) {
-      if (route.request().method() === 'DELETE') {
-        profiles = [];
-        delete active.codex;
-      } else active.codex = 'profile';
-    } else if (p.endsWith('/templates'))
+    else if (p.endsWith('/management/connections') && method === 'POST') {
+      const { apiKey, ...saved } = request.postDataJSON();
+      result = {
+        ...saved,
+        id: 'personal',
+        revision: 'r1',
+        hasApiKey: !!apiKey,
+        local: true,
+        sources: [],
+      };
+      connections = [...connections, result];
+    } else if (p.endsWith('/management/connections'))
+      result = {
+        connections,
+        bindings,
+        deviceId: 'desk',
+        catalogAvailable: true,
+        harnessProtocols: {
+          codex: ['openai_responses'],
+          grok: ['openai_responses', 'openai_chat'],
+        },
+      };
+    else if (p.endsWith('/connections/personal/models'))
+      result = { models: [{ id: 'test-model' }], truncated: false };
+    else if (p.endsWith('/connections/personal/apply')) {
+      bindings = {
+        codex: { connectionId: 'personal', model: 'test-model' },
+      };
+      result = { ok: true, profileId: 'p', restartedSessions: 0 };
+    } else if (p.endsWith('/connections/personal') && method === 'DELETE') {
+      status = 409;
+      result = { message: 'in use', code: 'connection_in_use' };
+    } else if (p.endsWith('/upstreams'))
+      result = { profiles: [], active: {}, backups: [] };
+    else if (p.endsWith('/templates'))
       result = { harnesses: ['codex'], profiles: [] };
-    await route.fulfill({ json: result });
+    await route.fulfill({ status, json: result });
   });
   await page.goto('/workspaces');
+  const later = page.getByRole('button', { name: 'Later', exact: true });
+  await later.waitFor({ timeout: 3_000 }).catch(() => {});
+  if (await later.isVisible()) await later.click();
   await page.getByRole('button', { name: 'Open Navigation' }).click();
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   await page.getByRole('tab', { name: 'Harnesses', exact: true }).click();
   await expect(
-    page.getByRole('tab', { name: 'Harnesses', exact: true }),
-  ).toHaveAttribute('aria-selected', 'true');
-  await expect(
-    page.getByRole('button', { name: 'Add upstream', exact: true }),
+    page.getByRole('button', { name: 'Add connection', exact: true }),
   ).toHaveCount(0);
   await page.getByRole('tab', { name: 'Upstreams', exact: true }).click();
-  await page.getByRole('button', { name: 'Add upstream', exact: true }).click();
+  const binding = page.getByTestId('harness-binding');
+  await expect(binding).toContainText(
+    'its own sign-in or native configuration',
+  );
+
+  await page
+    .getByRole('button', { name: 'Add connection', exact: true })
+    .click();
   const editor = page.getByRole('dialog', {
-    name: 'Add upstream',
+    name: 'Add connection',
     exact: true,
   });
   await expect(editor).toBeVisible();
   await editor.getByLabel('Name', { exact: true }).fill('Personal API');
+  await editor.getByLabel('API format').selectOption('openai_responses');
   await editor.getByLabel('Base URL').fill('https://api.example.test/v1');
   await editor.getByLabel('API key').fill('synthetic-key');
-  await editor.getByLabel('Model ID', { exact: true }).fill('test-model');
-  await editor.getByRole('button', { name: 'Save upstream' }).click();
+  await editor.getByRole('button', { name: 'Find models' }).click();
+  await editor
+    .getByLabel('Choose a discovered model')
+    .selectOption('test-model');
+  await expect(editor.getByLabel('Default model')).toHaveValue('test-model');
+  await page.screenshot({ path: testInfo.outputPath('connection-form.png') });
+  await editor.getByRole('button', { name: 'Save connection' }).click();
   await expect(editor).toBeHidden();
-  await expect(page.getByText('Personal API', { exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'Enable', exact: true }).click();
   await expect(
-    page.getByRole('button', { name: 'Using', exact: true }),
-  ).toBeDisabled();
-  await page.screenshot({
-    path: testInfo.outputPath('settings-harnesses.png'),
+    page.getByText('Personal API saved. Nothing was applied.'),
+  ).toBeVisible();
+  expect(writes.filter((w) => w.includes('/apply'))).toEqual([]);
+
+  const personal = page.getByRole('listitem', { name: 'Personal API' });
+  await personal.getByRole('button', { name: 'Apply to OpenAI Codex' }).click();
+  const apply = page.getByRole('dialog', {
+    name: 'Apply Personal API to OpenAI Codex',
   });
+  await expect(apply.getByLabel('Default model')).toHaveValue('test-model');
+  await apply.getByRole('button', { name: 'Apply to OpenAI Codex' }).click();
+  await expect(apply).toBeHidden();
+  await expect(binding).toContainText('Personal API');
+  await expect(personal.getByText('In use')).toBeVisible();
+  await expect(
+    personal.getByRole('button', { name: 'Reapply to OpenAI Codex' }),
+  ).toBeEnabled();
+
+  const team = page.getByRole('listitem', { name: 'Team Gemini' });
+  await expect(team.getByText('Other device')).toBeVisible();
+  await expect(team.getByRole('button', { name: /Apply to/ })).toHaveCount(0);
+  await page.screenshot({
+    path: testInfo.outputPath('settings-upstreams.png'),
+  });
+  // Sync itself is an encrypted relay request; it is covered by component tests
+  // and the integrated relay run. Here it must stay separate from Apply.
+  await expect(
+    team.getByRole('button', { name: 'Sync', exact: true }),
+  ).toBeEnabled();
+  expect(writes.filter((w) => w.includes('/apply'))).toHaveLength(1);
+  const viewport = page.viewportSize()!;
+  for (const row of [personal, team]) {
+    const box = (await row.boundingBox())!;
+    expect(box.x).toBeGreaterThanOrEqual(0);
+    expect(box.x + box.width).toBeLessThanOrEqual(viewport.width + 1);
+  }
+
   await page
     .getByRole('button', { name: 'More actions for Personal API' })
     .click();
   await page
-    .getByRole('button', { name: 'Delete Personal API', exact: true })
+    .getByRole('button', { name: 'Remove from this device', exact: true })
     .click();
-  const deletion = page.getByRole('dialog', {
-    name: 'Deactivate and delete upstream',
+  const removal = page.getByRole('dialog', {
+    name: 'Remove connection from this device?',
   });
-  await expect(deletion).toBeVisible();
+  await expect(removal).toBeVisible();
   await page.keyboard.press('Escape');
-  await expect(deletion).toBeHidden();
+  await expect(removal).toBeHidden();
   await expect(page.getByTestId('settingsDialog')).toBeVisible();
   await page
     .getByRole('button', { name: 'More actions for Personal API' })
     .click();
   await page
-    .getByRole('button', { name: 'Delete Personal API', exact: true })
+    .getByRole('button', { name: 'Remove from this device', exact: true })
     .click();
-  await deletion
-    .getByRole('button', { name: 'Delete upstream', exact: true })
+  await removal
+    .getByRole('button', { name: 'Remove from this device', exact: true })
     .click();
-  await expect(deletion).toBeHidden();
-  await expect(
-    page.getByRole('article').filter({ hasText: 'Personal API' }),
-  ).toHaveCount(0);
+  await expect(removal.getByRole('alert')).toContainText(
+    'A harness or plugin still uses this connection',
+  );
+  await removal.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(removal).toBeHidden();
   await page.getByRole('button', { name: 'Grok Build', exact: true }).click();
-  await expect(page.getByText('Personal API', { exact: true })).toBeHidden();
+  await expect(
+    personal.getByRole('button', { name: 'Apply to Grok Build' }),
+  ).toBeEnabled();
   await page.getByRole('tab', { name: 'Device', exact: true }).click();
   await page
     .getByRole('button', { name: 'Import template', exact: true })

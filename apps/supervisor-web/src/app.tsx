@@ -25,7 +25,7 @@ import {
   useLocation,
 } from 'react-router-dom';
 import { useEffect, useLayoutEffect, useMemo, useState, type ReactNode } from 'react';
-import { PluginProvider, type PluginSettingsSnapshot } from '@pockymoe/thread-ui';
+import { PluginProvider, type PluginSettingsSnapshot, type UpstreamConnectionPickerProps } from '@pockymoe/thread-ui';
 
 import type {
   AgentBackendIdDto,
@@ -78,6 +78,7 @@ import {
   updatePlugin,
 } from './lib/api';
 import { builtinFrontendPlugins } from './plugins/builtin-plugin-modules';
+import { ConnectionPicker } from './components/ConnectionPicker';
 import { useComposerPreferences } from './lib/useComposerPreferences';
 import { effectiveColorMode, themeChromeColor, useThemeRegistry } from './lib/themePacks';
 
@@ -99,6 +100,14 @@ function RoutePluginProvider({ children }: { children: ReactNode }) {
       importPlugin: (input: ImportPluginInput) => importPlugin(input, deviceId),
       updatePlugin: (id: string, input: UpdatePluginInput) => updatePlugin(id, input, deviceId),
       deletePlugin: (id: string) => deletePlugin(id, deviceId),
+      connections: {
+        renderPicker: (props: UpstreamConnectionPickerProps) => (
+          <ConnectionPicker
+            apiRoot={deviceId && deviceId !== 'local' ? `relay/devices/${encodeURIComponent(deviceId)}/api` : 'api'}
+            {...props}
+          />
+        ),
+      },
     }),
     [deviceId],
   );
