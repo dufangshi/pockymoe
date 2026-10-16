@@ -152,6 +152,12 @@
   color: var(--theme-fg);
 }
 
+/* ── Turn head: dashed rules around when, which model and what it cost ──── */
+:theme .thread-ui-shell .thread-turn-head { font-size: 11.5px; }
+:theme .thread-ui-shell .thread-turn-head::before,
+:theme .thread-ui-shell .thread-turn-head::after { height: 0; background: none; border-top: 1.5px dashed var(--theme-border); }
+:theme .thread-ui-shell .thread-turn-head-detail { border: 1.5px dashed var(--theme-border); border-radius: 14px; background: var(--theme-panel); }
+
 /* ── Agent byline: avatar, name, work summary ────────────────────────────── */
 :theme .thread-ui-shell .thread-graph-worked-summary {
   gap: 4px 8px;

@@ -490,8 +490,8 @@
   outline-offset: 1px;
   background: var(--effort-color);
 }
-:theme .composer-reasoning-stops button { font-size: 10px; font-weight: 600; }
-:theme .composer-reasoning-stops button:is([aria-pressed='true'], :hover) { color: var(--pc-effort-ink); }
+:theme .composer-reasoning-stops > span { font-size: 10px; font-weight: 600; }
+:theme .composer-reasoning-stops > [data-preview] { color: var(--pc-effort-ink); }
 
 /* ── Queued prompts: numbered slips tucked above the pocket ───────────────── */
 
