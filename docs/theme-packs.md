@@ -166,7 +166,9 @@ Monaco editor and diff view; `--shiki-*` for code blocks with the
   and `is-typing`; `.matter-topbar.is-status-only` (its readings keep their own
   size under a pack's top bar button rules); `matter-phone-dock`,
   `matter-phone-thread`, `matter-phone-panes`, `matter-phone-more`,
-  `matter-phone-pins`, `matter-phone-sheet`; the composer-and-dock panel paints
+  `matter-phone-pins`, `matter-phone-sheet`; the turn strip `thread-jump-nav`
+  (also `thread-jump-latest-badge`, its old name) with `data-following`; the
+  drawer's `data-dragging` while it follows a finger; the composer-and-dock panel paints
   `--matter-dock-surface` and `--matter-dock-edge` (default `--matter-chrome`
   and `--theme-border`).
 

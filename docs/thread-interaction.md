@@ -275,14 +275,23 @@ running, the connection and notifications. The composer (or the files prompt)
 and a row under it form one bottom panel; the row holds the current thread,
 Chat / Files / Terminal and More. Tapping the thread, or swiping up anywhere on
 the panel, opens a sheet with the workspace's threads (running and unread first),
-recent threads, unread notifications, the workspace drawer and New thread.
-Swiping the thread sideways opens the neighbouring open thread. More holds
-search, the shortcut star, Left-handed, the thread's sharing, automation and
-split controls, Back, Home and Settings. Dragging a sheet down from the top of
-its list closes it. The row hides while a text field has focus and comes back
-after the tap that moved focus away has landed. A split pins its two
-conversations in the thread's place in that row: one tap brings the other
-forward, and tapping the shown one opens the thread sheet.
+recent threads, unread notifications and New thread. Swiping the thread sideways
+opens the neighbouring open thread. More holds search, the shortcut star,
+Left-handed, the thread's sharing, automation and split controls, the workspace
+drawer, Back, Home and Settings. Dragging a sheet down from the top of its list
+closes it. The row hides while a text field has focus and comes back after the
+tap that moved focus away has landed. A split pins its two conversations in the
+thread's place in that row: one tap brings the other forward, and tapping the
+shown one opens the thread sheet.
+
+The workspace drawer (workspaces, shortcuts, recent conversations) follows a
+sideways drag: rightwards from anywhere in the left 40% of the conversation or
+the files opens it, leftwards on it or on the dimmed page closes it, and so does
+a tap outside. Browsers cannot keep the screen edge from the system back gesture
+(Android gesture navigation, Safari's swipe back), so a drag that starts on the
+very edge belongs to the system; starting a little further in opens the drawer.
+Rightward drags on code blocks that can still scroll back, on the composer panel
+and in the terminal are left to them, as are leftward drags on the right side.
 
 Settings > Preferences > One-handed phone layout (on by default, stored in this
 browser) turns it off and restores the previous top bar, thread tabs, composer
@@ -291,8 +300,10 @@ panel for the left thumb: More, the views, Send, the turn strip, the files
 prompt's send button and the thread sheet's New thread move to the left.
 
 Above the composer, at its right edge, one strip holds previous turn, next turn
-and the latest reply; the latest-reply button is highlighted only while the
-reader is away from the end.
+and the latest reply; the latest-reply button takes an accent tint (not Send's
+fill) only while the reader is away from the end. Under the phone dock an opened
+message's "Show less" rides above that strip, so neither covers the other in
+either hand.
 
 The compact model menu shows reported context use and capacity in thousands of
 tokens below the reasoning controls. Missing readings show a dash.

@@ -925,7 +925,17 @@
   :theme .thread-ui-shell .matter-workbench .matter-topbar-end > button.device-monitor-button:not([data-gpu]) { font-size: 9px; }
 }
 
-/* One-handed phone dock: it sits on the plum chrome, like the top bar. */
+/* One-handed phone dock: it sits on the plum chrome, like the top bar. The
+   thread sheet is cream, so its rows trade the drawer's light text for ink;
+   the current thread keeps its plum pocket. */
 @media (max-width: 639px) {
   :theme .thread-ui-shell .matter-workbench .matter-phone-dock > .matter-phone-more { color: var(--plum-chrome-fg); }
+  :theme .thread-ui-shell .matter-workbench .matter-phone-sheet .matter-thread-row:not([aria-current='page']) { --plum-badge-ring: var(--theme-panel); color: var(--theme-fg-soft); }
+  :theme .thread-ui-shell .matter-workbench .matter-phone-sheet .matter-thread-row:not([aria-current='page']) small { color: var(--theme-fg-muted); }
+  :theme .thread-ui-shell .matter-workbench .matter-phone-sheet .matter-thread-row:not([aria-current='page']):has(> .matter-status-dot[data-status='unread']) .matter-thread-copy > span { color: var(--theme-fg); }
+  :theme .thread-ui-shell .matter-workbench .matter-phone-sheet .matter-agent-threads-summary { background: var(--theme-accent-soft); color: var(--theme-fg-soft) !important; }
+  :theme .thread-ui-shell .matter-workbench .matter-phone-sheet .matter-thread-entry > .recent-thread-actions { color: var(--theme-fg-muted); }
+}
+@media (max-width: 639px) and (hover: hover) {
+  :theme .thread-ui-shell .matter-workbench .matter-phone-sheet .matter-thread-row:not([aria-current='page']):hover { --plum-badge-ring: var(--theme-accent-soft); background: var(--theme-accent-soft); color: var(--theme-fg); }
 }

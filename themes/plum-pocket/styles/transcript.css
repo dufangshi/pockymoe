@@ -700,7 +700,9 @@
   color: var(--theme-fg-soft);
   box-shadow: var(--tx-shadow);
 }
-:theme .thread-ui-shell .thread-jump-nav > button:hover:not(:disabled) { background: var(--theme-accent-soft); color: var(--theme-fg); }
+@media (hover: hover) {
+  :theme .thread-ui-shell .thread-jump-nav > button:hover:not(:disabled) { background: var(--theme-accent-soft); color: var(--theme-fg); }
+}
 :theme .thread-ui-shell .thread-jump-nav > button:focus-visible { outline: none; box-shadow: inset 0 0 0 2px var(--theme-accent-solid); }
 
 /* ── Detail dialogs: command output and diffs (portaled to <body>) ──────── */
