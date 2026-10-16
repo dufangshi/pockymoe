@@ -18,10 +18,10 @@ rebinds the same thread.
 Open any installer or terminal Agent on the enrolled Treer machine and run:
 
 ```sh
-curl -fsSL 'https://raw.githubusercontent.com/dufangshi/pockymoe/d4d5e8e2022a7bb7af5ca866e471d6582b9db59c/integrations/treer/treer-setup.sh' -o treer-setup.sh && sh treer-setup.sh --version 0.13.4
+curl -fsSL 'https://raw.githubusercontent.com/dufangshi/pockymoe/aa12f84a7f761686f0aa69191dc0a3a4c2c0d17b/integrations/treer/treer-setup.sh' -o treer-setup.sh && sh treer-setup.sh --version 0.13.10
 ```
 
-The URL is pinned to the 0.13.4 release commit `d4d5e8e2`; a newer script gets a new pinned URL. The public URL points to one
+The URL is pinned to the 0.13.10 release commit `aa12f84a`; a newer script gets a new pinned URL. The public URL points to one
 self-contained POSIX shell script; no other setup scripts are downloaded.
 Its bundled Python sources and profile template are extracted into a private
 temporary directory and removed when setup exits. Runtime and Web downloads use
