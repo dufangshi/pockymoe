@@ -47,6 +47,9 @@ maintenance gates, and writes through the existing native configuration backup
 and rollback engine. Busy harnesses return a conflict; the saved connection stays
 available. Bindings track the applied connection revision separately from its
 latest saved revision. Native backup restoration is reflected in the binding list.
+Each backup also retains its previous binding, including when the same connection
+was reapplied with a different model or revision. Restoring it does not revert the
+saved connection; applying its newer revision remains an explicit choice.
 
 ## Account directory and explicit synchronization
 

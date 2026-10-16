@@ -49,6 +49,8 @@ struct Connections {
     migrated: Vec<String>,
     #[serde(default)]
     applied: BTreeMap<String, Binding>,
+    #[serde(default)]
+    backup_bindings: BTreeMap<String, Option<Binding>>,
 }
 fn read(dir: &Path) -> Result<Connections> {
     match std::fs::read(dir.join("connections.json")) {
@@ -410,7 +412,13 @@ pub fn remove(dir: &Path, id: &str) -> Result<()> {
 pub fn binding(dir: &Path, harness: &str) -> Result<Option<Binding>> {
     Ok(effective_bindings(dir, &read(dir)?)?.remove(harness))
 }
-pub fn set_binding(dir: &Path, harness: &str, binding: Binding) -> Result<()> {
+fn set_binding(
+    dir: &Path,
+    harness: &str,
+    binding: Binding,
+    backup: &str,
+    previous: Option<Binding>,
+) -> Result<()> {
     let mut s = read(dir)?;
     if !s.migrated.contains(&binding.profile_id) {
         s.migrated.push(binding.profile_id.clone());
@@ -418,6 +426,24 @@ pub fn set_binding(dir: &Path, harness: &str, binding: Binding) -> Result<()> {
     s.applied
         .insert(binding.profile_id.clone(), binding.clone());
     s.bindings.insert(harness.into(), binding);
+    s.backup_bindings.insert(backup.into(), previous);
+    write(dir, &s)
+}
+// Native backups retain an active profile ID, which can be reused across revisions.
+// Keep the exact prior application alongside each backup instead of inferring it
+// from that profile's latest saved contents.
+pub(super) fn restore_binding(dir: &Path, backup: &str, harness: &str) -> Result<()> {
+    let mut s = read(dir)?;
+    let Some(previous) = s.backup_bindings.remove(backup) else {
+        return Ok(());
+    };
+    if let Some(previous) = previous {
+        s.applied
+            .insert(previous.profile_id.clone(), previous.clone());
+        s.bindings.insert(harness.into(), previous);
+    } else {
+        s.bindings.remove(harness);
+    }
     write(dir, &s)
 }
 pub fn import(dir: &Path, c: Connection, expected: Option<&str>) -> Result<Value> {
@@ -644,10 +670,11 @@ fn effective_bindings(dir: &Path, s: &Connections) -> Result<BTreeMap<String, Bi
             continue;
         };
         let binding = s
-            .applied
-            .get(&id)
+            .bindings
+            .get(&h)
+            .filter(|b| b.profile_id == id)
             .cloned()
-            .or_else(|| s.bindings.get(&h).filter(|b| b.profile_id == id).cloned())
+            .or_else(|| s.applied.get(&id).cloned())
             .or_else(|| {
                 s.connections.iter().find(|c| c.id == id).map(|c| Binding {
                     connection_id: c.id.clone(),
@@ -656,8 +683,7 @@ fn effective_bindings(dir: &Path, s: &Connections) -> Result<BTreeMap<String, Bi
                     revision: c.revision.clone(),
                 })
             });
-        if let Some(mut b) = binding {
-            b.model = p.model.clone();
+        if let Some(b) = binding {
             out.insert(h, b);
         }
     }
@@ -670,6 +696,7 @@ fn apply_at(dir: &Path, c: &Connection, harness: &str, model: &str, root: &Path)
     c.validate_application(harness)?;
     let original = load(dir)?;
     let connections_before = read(dir)?;
+    let previous_binding = effective_bindings(dir, &connections_before)?.remove(harness);
     // Reuse a consumer profile so native backfill stays with its connection.
     let previous = original.profiles.iter().find(|p| {
         p.harness == harness
@@ -720,7 +747,7 @@ fn apply_at(dir: &Path, c: &Connection, harness: &str, model: &str, root: &Path)
         model: p.model.clone(),
         revision: c.revision.clone(),
     };
-    if let Err(e) = set_binding(dir, harness, binding) {
+    if let Err(e) = set_binding(dir, harness, binding, &backup, previous_binding) {
         super::restore(dir, &backup)?;
         save(dir, &original)?;
         write(dir, &connections_before)?;
@@ -940,6 +967,28 @@ mod tests {
         let native: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(native["env"]["ANTHROPIC_DEFAULT_OPUS_MODEL"], "manual-tier");
         assert_eq!(native["env"]["ANTHROPIC_CUSTOM_HEADERS"], "x-project: new");
+    }
+    #[test]
+    fn restoring_reapplied_connection_recovers_the_prior_revision_and_model() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("store");
+        let root = temp.path().join("claude");
+        let first = saved(&dir, "anthropic");
+        let original = apply_at(&dir, &first, "claude", "original-model", &root).unwrap();
+        let mut edited = first.clone();
+        edited.name = "Edited connection".into();
+        upsert(&dir, edited).unwrap();
+        let latest = get(&dir, &first.id).unwrap();
+        let applied = apply_at(&dir, &latest, "claude", "updated-model", &root).unwrap();
+        assert_eq!(original["profileId"], applied["profileId"]);
+        super::super::restore(&dir, applied["backupId"].as_str().unwrap()).unwrap();
+        let listed = list(&dir).unwrap();
+        assert_eq!(listed["bindings"]["claude"]["revision"], first.revision);
+        assert_eq!(listed["bindings"]["claude"]["model"], "original-model");
+        assert_eq!(listed["connections"][0]["revision"], latest.revision);
+        let native: Value =
+            serde_json::from_slice(&std::fs::read(root.join("settings.json")).unwrap()).unwrap();
+        assert_eq!(native["env"]["ANTHROPIC_MODEL"], "original-model");
     }
     #[tokio::test]
     async fn four_protocols_use_correct_wire_auth_and_extract_only_final_text() {
