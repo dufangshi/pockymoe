@@ -907,6 +907,12 @@ export interface ThreadActivityDto {
   hourlyMs?: number[];
   /** Whitespace collapsed, at most 240 characters. */
   lastPrompt?: string;
+  /** Tokens of every turn, summed. */
+  tokenUsage?: ThreadTurnTokenBreakdownDto;
+  /** The API price of those tokens in USD, by kind. */
+  priceEstimate?: Pick<ThreadTurnPriceEstimateDto, 'currency' | 'inputUsd' | 'cachedInputUsd' | 'cacheWriteInputUsd' | 'outputUsd' | 'totalUsd'>;
+  /** Some turns used a model without a known price; the price leaves them out. */
+  pricePartial?: boolean;
 }
 
 /** `GET /api/thread-activity?hours=N`, owner only; threads without turns are absent. */

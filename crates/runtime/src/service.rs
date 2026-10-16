@@ -1108,6 +1108,32 @@ impl Supervisor {
         hours: usize,
     ) -> Result<Vec<ThreadActivityDto>> {
         const HOUR: f64 = 3_600_000.0;
+        const TOKENS: [&str; 6] = [
+            "totalTokens",
+            "inputTokens",
+            "cachedInputTokens",
+            "cacheWriteInputTokens",
+            "outputTokens",
+            "reasoningOutputTokens",
+        ];
+        const USD: [&str; 5] = [
+            "totalUsd",
+            "inputUsd",
+            "cachedInputUsd",
+            "cacheWriteInputUsd",
+            "outputUsd",
+        ];
+        struct Sum {
+            entry: ThreadActivityDto,
+            hourly: Vec<f64>,
+            total: f64,
+            active: f64,
+            tokens: [u64; 6],
+            usd: [f64; 5],
+            priced: bool,
+        }
+        // Read before the database lock: custom rates live in the database too.
+        let catalog = self.model_pricing();
         self.db.with(|conn| {
             // Turn bounds in milliseconds after `since`; an unknown bound is NULL.
             let mut stmt = conn.prepare(
@@ -1116,31 +1142,76 @@ impl Supervisor {
                         (julianday(MIN(COALESCE(tt.completed_at,
                               CASE WHEN tt.status IN ('inProgress','recovering')
                                    AND t.status IN ('running','recovering') THEN ?2 END), ?2))
-                         - julianday(?1)) * 86400000
+                         - julianday(?1)) * 86400000,
+                        tt.token_usage_json, COALESCE(tt.pricing_model_key, tt.model),
+                        tt.pricing_tier_key, tt.started_at
                  FROM thread_turns tt JOIN threads t ON t.id = tt.thread_id
                  ORDER BY tt.thread_id",
             )?;
             let mut rows = stmt.query(params![since, now])?;
             let span = hours as f64 * HOUR;
-            let mut activity: Vec<(ThreadActivityDto, Vec<f64>, f64, f64)> = Vec::new();
+            let mut sums: Vec<Sum> = Vec::new();
             while let Some(row) = rows.next()? {
                 let thread_id: String = row.get(0)?;
-                if activity
+                if sums
                     .last()
-                    .is_none_or(|(entry, ..)| entry.thread_id != thread_id)
+                    .is_none_or(|sum| sum.entry.thread_id != thread_id)
                 {
-                    let entry = ThreadActivityDto {
-                        thread_id,
-                        turns: 0,
-                        active_ms: 0,
-                        total_ms: 0,
-                        hourly_ms: Vec::new(),
-                        last_prompt: None,
-                    };
-                    activity.push((entry, vec![0.0; hours], 0.0, 0.0));
+                    sums.push(Sum {
+                        entry: ThreadActivityDto {
+                            thread_id,
+                            turns: 0,
+                            active_ms: 0,
+                            total_ms: 0,
+                            hourly_ms: Vec::new(),
+                            last_prompt: None,
+                            token_usage: None,
+                            price_estimate: None,
+                            price_partial: false,
+                        },
+                        hourly: vec![0.0; hours],
+                        total: 0.0,
+                        active: 0.0,
+                        tokens: [0; 6],
+                        usd: [0.0; 5],
+                        priced: false,
+                    });
                 }
-                let (entry, hourly, total, active) = activity.last_mut().expect("pushed above");
-                entry.turns += 1;
+                let sum = sums.last_mut().expect("pushed above");
+                sum.entry.turns += 1;
+                if let Some(usage) = row
+                    .get::<_, Option<String>>(3)?
+                    .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+                {
+                    let public = crate::usage::public_usage(&usage);
+                    let total = public.as_ref().map(|public| &public["total"]);
+                    for (slot, key) in sum.tokens.iter_mut().zip(TOKENS) {
+                        *slot += total.and_then(|total| total[key].as_u64()).unwrap_or(0);
+                    }
+                    let model = row.get::<_, Option<String>>(4)?;
+                    let tier = row.get::<_, Option<String>>(5)?;
+                    let at = row.get::<_, Option<String>>(6)?;
+                    match crate::usage::estimate_price_with_catalog(
+                        &usage,
+                        model.as_deref(),
+                        tier.as_deref(),
+                        &catalog,
+                        at.as_deref(),
+                    ) {
+                        Some(price) => {
+                            sum.priced = true;
+                            for (slot, key) in sum.usd.iter_mut().zip(USD) {
+                                *slot += price[key].as_f64().unwrap_or(0.0);
+                            }
+                        }
+                        None if total
+                            .is_some_and(|total| total["totalTokens"].as_u64() > Some(0)) =>
+                        {
+                            sum.entry.price_partial = true;
+                        }
+                        None => {}
+                    }
+                }
                 let (Some(start), Some(end)) =
                     (row.get::<_, Option<f64>>(1)?, row.get::<_, Option<f64>>(2)?)
                 else {
@@ -1149,17 +1220,17 @@ impl Supervisor {
                 if end <= start {
                     continue;
                 }
-                *total += end - start;
+                sum.total += end - start;
                 let (from, to) = (start.max(0.0), end.min(span));
                 if to <= from {
                     continue;
                 }
-                *active += to - from;
+                sum.active += to - from;
                 let mut at = from;
                 while at < to {
                     let hour = ((at / HOUR) as usize).min(hours - 1);
                     let next = ((hour + 1) as f64 * HOUR).min(to);
-                    hourly[hour] += next - at;
+                    sum.hourly[hour] += next - at;
                     at = next.max(at + 1.0);
                 }
             }
@@ -1174,13 +1245,34 @@ impl Supervisor {
             let mut latest: std::collections::HashMap<String, String> = prompts
                 .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
                 .collect::<rusqlite::Result<_>>()?;
-            Ok(activity
+            Ok(sums
                 .into_iter()
-                .map(|(mut entry, hourly, total, active)| {
-                    entry.total_ms = total.round() as u64;
-                    entry.active_ms = active.round() as u64;
-                    if active > 0.0 {
-                        entry.hourly_ms = hourly.into_iter().map(|ms| ms.round() as u64).collect();
+                .map(|sum| {
+                    let mut entry = sum.entry;
+                    entry.total_ms = sum.total.round() as u64;
+                    entry.active_ms = sum.active.round() as u64;
+                    if sum.active > 0.0 {
+                        entry.hourly_ms =
+                            sum.hourly.into_iter().map(|ms| ms.round() as u64).collect();
+                    }
+                    if sum.tokens[0] > 0 {
+                        entry.token_usage = Some(Value::Object(
+                            TOKENS
+                                .iter()
+                                .zip(sum.tokens)
+                                .map(|(key, value)| (key.to_string(), json!(value)))
+                                .collect(),
+                        ));
+                    }
+                    if sum.priced {
+                        let mut price =
+                            serde_json::Map::from_iter([("currency".to_string(), json!("USD"))]);
+                        price.extend(
+                            USD.iter()
+                                .zip(sum.usd)
+                                .map(|(key, value)| (key.to_string(), json!(value))),
+                        );
+                        entry.price_estimate = Some(Value::Object(price));
                     }
                     entry.last_prompt = latest.remove(&entry.thread_id).map(|prompt| {
                         prompt

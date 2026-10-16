@@ -165,7 +165,9 @@ Monaco editor and diff view; `--shiki-*` for code blocks with the
 - thread map: `thread-map-dialog`, `thread-map-section` (`data-kind` `device` or
   `workspace`), `thread-map-tile`, both with `data-heat` (0–4) and `data-running`;
   `thread-map-agent[data-agent]` (shows `--theme-agent-avatar` when the pack has
-  art for that agent); `--thread-map-heat` (default the accent),
+  art for that agent); `thread-map-usage` (tokens and the price button),
+  `thread-map-children` (the agent-thread button) and `thread-map-group` (a thread
+  opened up into its agent threads); `--thread-map-heat` (default the accent),
   `--thread-map-tile` (the unheated fill), `--thread-map-spark` (the hourly bars)
   and `--thread-map-age-0` … `--thread-map-age-4` (the age pie, fresh to old);
 - phone one-handed layout: the workbench's `has-phone-dock`, `is-left-handed`

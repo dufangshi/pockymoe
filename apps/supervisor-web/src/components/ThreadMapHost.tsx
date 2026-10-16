@@ -2,8 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { useLocation, useNavigate } from 'react-router-dom';
 import type {
   RelayPortalSummaryDto,
+  ThreadActivityDto,
   ThreadActivityResponseDto,
   ThreadDto,
+  ThreadTurnTokenBreakdownDto,
   WorkspaceDto,
 } from '@pockymoe/shared';
 import {
@@ -13,6 +15,7 @@ import {
   threadThemeAgentKey,
   useAppShellNav,
   type ThreadMapDevice,
+  type ThreadMapPrice,
   type ThreadMapThread,
 } from '@pockymoe/thread-ui';
 import { translate } from '@pockymoe/thread-ui/i18n';
@@ -53,17 +56,20 @@ export function mapDevice(
     const root = rootOf(thread);
     if (root) family.set(root, [...(family.get(root) ?? []), thread]);
   }
-  const byWorkspace = new Map<string, ThreadMapThread[]>();
-  for (const thread of threads) {
-    if (rootOf(thread)) continue;
-    const members = [thread, ...(family.get(thread.id) ?? [])];
+  const TOKENS = ['totalTokens', 'inputTokens', 'cachedInputTokens', 'cacheWriteInputTokens', 'outputTokens', 'reasoningOutputTokens'] as const;
+  const USD = ['totalUsd', 'inputUsd', 'cachedInputUsd', 'cacheWriteInputUsd', 'outputUsd'] as const;
+  // One tile: a thread with the given members (itself and, for a root, its agent threads) summed.
+  const entry = (thread: ThreadDto, members: ThreadDto[]): ThreadMapThread => {
     const agent = threadThemeAgentKey(thread);
     const own = stats.get(thread.id);
-    const sum = (field: 'turns' | 'activeMs' | 'totalMs') => members.reduce((total, member) => total + (stats.get(member.id)?.[field] ?? 0), 0);
-    const hourly = members.map(member => stats.get(member.id)?.hourlyMs).filter((list): list is number[] => Array.isArray(list));
+    const memberStats = members.map(member => stats.get(member.id)).filter((item): item is ThreadActivityDto => Boolean(item));
+    const sum = (field: 'turns' | 'activeMs' | 'totalMs') => memberStats.reduce((total, item) => total + (item[field] ?? 0), 0);
+    const hourly = memberStats.map(item => item.hourlyMs).filter((list): list is number[] => Array.isArray(list));
+    const usages = memberStats.map(item => item.tokenUsage).filter((usage): usage is ThreadTurnTokenBreakdownDto => Boolean(usage));
+    const prices = memberStats.map(item => item.priceEstimate).filter((price): price is NonNullable<ThreadActivityDto['priceEstimate']> => Boolean(price));
     const lastActive = members.flatMap(member => [member.lastTurnStartedAt, member.lastTurnCompletedAt])
       .filter((at): at is string => Boolean(at)).sort().at(-1);
-    const entry: ThreadMapThread = {
+    return {
       key: `${key}:${thread.id}`,
       title: thread.title.trim() || translate('workbench.splitUntitled'),
       href: appUrl(threadHref(thread.id, deviceId)),
@@ -79,9 +85,20 @@ export function mapDevice(
       model: thread.model ?? undefined,
       lastPrompt: own?.lastPrompt,
       failed: workbenchThreadStatus(thread) === 'failed' || undefined,
+      tokenUsage: usages.length ? Object.fromEntries(TOKENS.map(field => [field, usages.reduce((total, usage) => total + (usage[field] ?? 0), 0)])) as unknown as ThreadTurnTokenBreakdownDto : undefined,
+      priceEstimate: prices.length ? Object.fromEntries(USD.map(field => [field, prices.reduce((total, price) => total + (price[field] ?? 0), 0)])) as unknown as ThreadMapPrice : undefined,
+      pricePartial: memberStats.some(item => item.pricePartial) || undefined,
       agentThreads: members.length - 1 || undefined,
     };
-    byWorkspace.set(thread.workspaceId, [...(byWorkspace.get(thread.workspaceId) ?? []), entry]);
+  };
+  const byWorkspace = new Map<string, ThreadMapThread[]>();
+  for (const thread of threads) {
+    if (rootOf(thread)) continue;
+    const children = family.get(thread.id) ?? [];
+    const tile = entry(thread, [thread, ...children]);
+    // Each agent thread on its own, for opening the root's tile up into them.
+    if (children.length) tile.children = children.map(child => entry(child, [child]));
+    byWorkspace.set(thread.workspaceId, [...(byWorkspace.get(thread.workspaceId) ?? []), tile]);
   }
   const labels = new Map(workspaces.map(workspace => [workspace.id, workspace]));
   return {

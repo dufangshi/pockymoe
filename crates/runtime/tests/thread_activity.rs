@@ -98,6 +98,19 @@ fn prompt(s: &Supervisor, turn: &str, ordinal: i64, text: &str) {
     .unwrap();
 }
 
+fn usage(s: &Supervisor, turn: &str, model: &str, input: u64, output: u64) {
+    let tokens = serde_json::json!({ "inputTokens": input, "outputTokens": output, "totalTokens": input + output });
+    let usage = serde_json::json!({ "total": tokens, "last": tokens }).to_string();
+    s.db.with(|conn| {
+        conn.execute(
+            "UPDATE thread_turns SET model=?2, token_usage_json=?3 WHERE id=?1",
+            (turn, model, usage),
+        )?;
+        Ok(())
+    })
+    .unwrap();
+}
+
 fn set_status(s: &Supervisor, thread: &str, status: &str) {
     s.db.with(|conn| {
         conn.execute("UPDATE threads SET status=?2 WHERE id=?1", (thread, status))?;
@@ -171,8 +184,30 @@ async fn counts_turns_and_running_time_inside_the_window() {
     prompt(&s, "b2", 2, "older");
     prompt(&s, "b3", 3, "  Fix   the\n login  bug ");
     prompt(&s, "b4", 4, " ");
+    // Tokens add up over turns; a model without a known price leaves the price partial.
+    usage(&s, "b1", "gpt-6.1-sol", 100_000, 10_000);
+    usage(&s, "b3", "gpt-6.1-sol", 50_000, 5_000);
+    usage(&s, "c1", "no-such-model", 1_000, 100);
     let mut activity = s.thread_activity(since, now, 24).unwrap();
     activity.sort_by_key(|a| if a.thread_id == busy.id { 0 } else { 1 });
+    let busy_usage = activity[0].token_usage.take().unwrap();
+    assert_eq!(busy_usage["inputTokens"], 150_000);
+    assert_eq!(busy_usage["outputTokens"], 15_000);
+    assert_eq!(busy_usage["totalTokens"], 165_000);
+    let price = activity[0].price_estimate.take().unwrap();
+    // gpt-6.1-sol: $2 per million input, $10 per million output.
+    assert!(
+        (price["totalUsd"].as_f64().unwrap() - 0.45).abs() < 1e-9,
+        "{price}"
+    );
+    assert!(
+        (price["outputUsd"].as_f64().unwrap() - 0.15).abs() < 1e-9,
+        "{price}"
+    );
+    assert_eq!(
+        activity[1].token_usage.take().unwrap()["totalTokens"],
+        1_100
+    );
     assert_eq!(
         activity,
         vec![
@@ -190,6 +225,9 @@ async fn counts_turns_and_running_time_inside_the_window() {
                     })
                     .collect(),
                 last_prompt: Some("Fix the login bug".into()),
+                token_usage: None,
+                price_estimate: None,
+                price_partial: false,
             },
             ThreadActivityDto {
                 thread_id: crashed.id.clone(),
@@ -198,6 +236,9 @@ async fn counts_turns_and_running_time_inside_the_window() {
                 total_ms: 0,
                 hourly_ms: Vec::new(),
                 last_prompt: None,
+                token_usage: None,
+                price_estimate: None,
+                price_partial: true,
             },
         ]
     );

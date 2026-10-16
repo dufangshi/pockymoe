@@ -220,6 +220,15 @@ pub struct ThreadActivityDto {
     /// The person's latest prompt, whitespace collapsed and cut to 240 characters.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_prompt: Option<String>,
+    /// Tokens of every turn, summed like a turn's `tokenUsage.total`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_usage: Option<Value>,
+    /// The API price of those tokens in USD, by kind, like a turn's `priceEstimate`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub price_estimate: Option<Value>,
+    /// Some turns used a model without a known price; the price leaves them out.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub price_partial: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

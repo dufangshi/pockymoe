@@ -338,9 +338,16 @@ cyan (today) through blue, violet and amber to bronze (older than three months),
 with the age in words on a wide tile; the agent and model with "running" or when it
 was last active; the person's latest prompt; the turns, the time all its turns ran
 and the time they ran in the last 24 hours (side by side, stacked on a tall narrow
-tile, or "69 turns · 25 h total" on one line); and the last 24 hours hour by hour
-as bars, each full when the thread ran the whole hour. Small tiles keep the agent
-mark and title, the smallest only their color. A block too small for what it holds folds up;
+tile, or "69 turns · 25 h total" on one line); the tokens and API price of all its
+turns, the price opening the same breakdown as a turn's; and the last 24 hours hour
+by hour as bars, each full when the thread ran the whole hour. Small tiles keep the
+agent mark and title, the smallest only their color. Device and workspace bars and
+the map's summary add up the API price.
+
+Agent threads are folded into the thread that started them. That thread's tile has
+a small button with their count; it opens the tile up: the thread keeps a bar on
+top (tapping it folds them back, its arrow opens the thread) and its agent threads
+fill the rest, each a tile of its own. A block too small for what it holds folds up;
 tapping a device or workspace bar, or a folded block, opens it, and the path above
 leads back. Go to (the list icon) reaches every block of the current level,
 however small. Hovering or focusing a block shows its details. The map reads its
@@ -354,12 +361,15 @@ devices and host-scoped Supervisors have no map.
 
 Each Supervisor reports turns and run time at `GET /api/thread-activity?hours=24`
 (1–168, default 24; owner only):
-`{ "since", "hours", "threads": [{ "threadId", "turns", "activeMs", "totalMs", "hourlyMs", "lastPrompt" }] }`.
+`{ "since", "hours", "threads": [{ "threadId", "turns", "activeMs", "totalMs", "hourlyMs", "lastPrompt", "tokenUsage", "priceEstimate", "pricePartial" }] }`.
 `turns` counts every turn the thread ever started, `totalMs` the time they all ran,
 `activeMs` the part inside the window and `hourlyMs` that part hour by hour (absent
 when zero); `lastPrompt` is the newest prompt with text, whitespace collapsed and
-cut to 240 characters. A turn without a completion time counts up to now only while
-it is in progress and its thread runs, so imported or crashed turns add none. A
+cut to 240 characters; `tokenUsage` and `priceEstimate` add up the turns' tokens and
+API price (USD, by kind, at the device's model prices), and `pricePartial` says some
+turns used a model without a price and are left out. A turn without a completion
+time counts up to now only while it is in progress and its thread runs, so imported
+or crashed turns add none. A
 Supervisor without the endpoint still appears, with equal areas and no color.
 
 ## Switching threads and pages
@@ -374,6 +384,9 @@ Moving around keeps the screen steady:
   load that finishes within a moment never shows the loader.
 - A thread opens at its end without first painting its top; messages on screen
   render their Markdown before the first paint.
+- A turn the reader folded or opened stays that way while the page is open, also
+  after leaving the thread and coming back; a search result opens its turn once, and
+  folding it again sticks while the thread keeps working.
 - Each page load paints the last theme and background before the app starts, so
   a reload does not flash white or the other color mode.
 

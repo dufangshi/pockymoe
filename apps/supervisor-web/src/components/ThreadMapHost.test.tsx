@@ -19,8 +19,12 @@ describe('mapDevice', () => {
       thread('grandchild', { parentThreadId: 'child', rootThreadId: 'root' }),
       thread('orphan', { parentThreadId: 'gone', rootThreadId: 'gone', workspaceId: 'w2' }),
     ], { since: '', hours: 24, threads: [
-      { threadId: 'root', turns: 10, activeMs: 60_000, totalMs: 600_000, hourlyMs: [0, 60_000], lastPrompt: 'ship it' },
-      { threadId: 'child', turns: 3, activeMs: 120_000, totalMs: 120_000, hourlyMs: [120_000, 0], lastPrompt: 'agent prompt' },
+      { threadId: 'root', turns: 10, activeMs: 60_000, totalMs: 600_000, hourlyMs: [0, 60_000], lastPrompt: 'ship it',
+        tokenUsage: { totalTokens: 1000, inputTokens: 900, cachedInputTokens: 500, outputTokens: 100, reasoningOutputTokens: 0 },
+        priceEstimate: { currency: 'USD', totalUsd: 1, inputUsd: 0.5, cachedInputUsd: 0.25, outputUsd: 0.25 } },
+      { threadId: 'child', turns: 3, activeMs: 120_000, totalMs: 120_000, hourlyMs: [120_000, 0], lastPrompt: 'agent prompt',
+        tokenUsage: { totalTokens: 200, inputTokens: 150, cachedInputTokens: 0, outputTokens: 50, reasoningOutputTokens: 10 },
+        priceEstimate: { currency: 'USD', totalUsd: 0.5, inputUsd: 0.2, cachedInputUsd: 0, outputUsd: 0.3 }, pricePartial: true },
     ] });
     expect(device.workspaces.map(workspace => workspace.label)).toEqual(['app', 'w2']);
     expect(device.workspaces[0]!.threads).toEqual([expect.objectContaining({
@@ -29,7 +33,14 @@ describe('mapDevice', () => {
       // Totals and the hourly strip add up the family; the prompt and dates are the person's thread.
       totalMs: 720_000, hourlyMs: [120_000, 60_000], model: 'opus', lastPrompt: 'ship it',
       createdAt: '2026-10-01T00:00:00Z', lastActiveAt: '2026-10-16T09:00:00Z',
+      tokenUsage: { totalTokens: 1200, inputTokens: 1050, cachedInputTokens: 500, cacheWriteInputTokens: 0, outputTokens: 150, reasoningOutputTokens: 10 },
+      priceEstimate: { totalUsd: 1.5, inputUsd: 0.7, cachedInputUsd: 0.25, cacheWriteInputUsd: 0, outputUsd: 0.55 },
+      pricePartial: true,
     })]);
+    // Opening the tile up shows each agent thread on its own.
+    expect(device.workspaces[0]!.threads[0]!.children!.map(child => [child.key, child.turns, child.priceEstimate?.totalUsd])).toEqual([
+      ['laptop:child', 3, 0.5], ['laptop:grandchild', 0, undefined],
+    ]);
     // An agent thread whose root is gone still shows.
     expect(device.workspaces[1]!.threads[0]).toMatchObject({ key: 'laptop:orphan', turns: 0, activeMs: 0 });
   });
