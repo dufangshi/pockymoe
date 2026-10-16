@@ -101,13 +101,14 @@
 :theme .thread-ui-shell .thread-diff-line.is-remove { background: light-dark(#f8e0de, #35201f); }
 :theme .thread-ui-shell .thread-diff-line.is-file { background: var(--theme-surface); }
 
-/* The turn's head reads as a comment rule: "── 17:09 · model · $0.41 · 19.4 tok/s ─────". */
+/* The turn's head reads as a comment rule: "── ● 53s $0.41 ─────", its extra line under it. */
 :theme .thread-ui-shell .thread-turn-head { justify-content: flex-start; margin-top: 10px; }
 :theme .thread-ui-shell .thread-turn-head::before { flex: 0 0 2ch; min-width: 2ch; }
 :theme .thread-ui-shell .thread-turn-head::before,
 :theme .thread-ui-shell .thread-turn-head::after { background: var(--theme-border-strong); }
 :theme .thread-ui-shell .thread-turn-head .thread-turn-usage-price { border-radius: 0; }
-:theme .thread-ui-shell .thread-turn-head-detail { margin-left: var(--term-gutter); border-color: var(--term-line); border-radius: 0; }
+:theme .thread-ui-shell .thread-turn-head { --turn-head-dot: var(--term-ok); }
+:theme .thread-ui-shell .thread-turn-head-more { justify-content: flex-start; margin-left: calc(2ch + 8px); }
 :theme .thread-ui-shell .thread-graph-message[data-role='user'] .thread-graph-message-kicker { margin-left: 0; }
 /* The ❯ stays with the prompt's text, under its "added" line. */
 :theme .thread-ui-shell .thread-graph-message[data-role='user']:has(> .thread-graph-message-stack > .thread-graph-message-kicker)::before { margin-top: 17px; }
