@@ -126,8 +126,11 @@ export function ConnectionForm({
   const [conflict, setConflict] = useState(false);
   const [test, setTest] = useState<{ ok: boolean; text: string } | null>(null);
   const saved = !!base?.id;
+  // The saved key is reused only for the same URL and wire format.
   const endpointChanged =
-    !saved || form.baseUrl.trim() !== (base?.baseUrl ?? '');
+    !saved ||
+    form.baseUrl.trim() !== (base?.baseUrl ?? '') ||
+    form.protocol !== base?.protocol;
   const needsKey = endpointChanged || !base?.hasApiKey;
   const headers =
     form.headers === null ? undefined : parseHeaders(form.headers);
@@ -342,23 +345,29 @@ export function ConnectionForm({
           form.protocol === 'anthropic' ? 'grid gap-3 sm:grid-cols-2' : ''
         }
       >
-        <label className="block text-sm">
-          {translate('settings.connApiKey')}
-          <input
-            className={field}
-            type="password"
-            autoComplete="new-password"
-            required={needsKey}
-            placeholder={needsKey ? '' : translate('settings.connApiKeyKeep')}
-            value={form.apiKey}
-            onChange={(e) => update({ apiKey: e.target.value })}
-          />
+        <div>
+          <label className="block text-sm">
+            {translate('settings.connApiKey')}
+            <input
+              className={field}
+              type="password"
+              autoComplete="new-password"
+              required={needsKey}
+              placeholder={needsKey ? '' : translate('settings.connApiKeyKeep')}
+              value={form.apiKey}
+              aria-describedby={`${id}-key`}
+              onChange={(e) => update({ apiKey: e.target.value })}
+            />
+          </label>
           {saved && base?.hasApiKey && endpointChanged && (
-            <span className="mt-1 block text-xs text-[var(--theme-fg-muted)]">
+            <p
+              id={`${id}-key`}
+              className="mt-1 text-xs text-[var(--theme-fg-muted)]"
+            >
               {translate('settings.connApiKeyEndpointChanged')}
-            </span>
+            </p>
           )}
-        </label>
+        </div>
         {form.protocol === 'anthropic' && (
           <label className="block text-sm">
             {translate('settings.connAuth')}

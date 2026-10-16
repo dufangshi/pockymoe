@@ -1,7 +1,26 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Locator, type Page } from '@playwright/test';
 import { randomUUID } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
+
+/** Every action of a connection row stays inside the row, the dialog and the screen. */
+async function expectActionsInside(page: Page, row: Locator) {
+  const viewport = page.viewportSize()!;
+  const bounds = [
+    (await row.boundingBox())!,
+    (await page.getByTestId('settingsDialog').boundingBox())!,
+    { x: 0, width: viewport.width },
+  ];
+  const buttons = row.getByRole('button');
+  expect(await buttons.count()).toBeGreaterThan(0);
+  for (const button of await buttons.all()) {
+    const box = (await button.boundingBox())!;
+    for (const outer of bounds) {
+      expect(box.x).toBeGreaterThanOrEqual(outer.x - 1);
+      expect(box.x + box.width).toBeLessThanOrEqual(outer.x + outer.width + 1);
+    }
+  }
+}
 
 test('connections save without applying, apply apart from sync, and template preview stays usable', async ({
   page,
@@ -65,7 +84,11 @@ test('connections save without applying, apply apart from sync, and template pre
       result = { models: [{ id: 'test-model' }], truncated: false };
     else if (p.endsWith('/connections/personal/apply')) {
       bindings = {
-        codex: { connectionId: 'personal', model: 'test-model' },
+        codex: {
+          connectionId: 'personal',
+          model: 'test-model',
+          revision: 'r1',
+        },
       };
       result = { ok: true, profileId: 'p', restartedSessions: 0 };
     } else if (p.endsWith('/connections/personal') && method === 'DELETE') {
@@ -144,12 +167,15 @@ test('connections save without applying, apply apart from sync, and template pre
     team.getByRole('button', { name: 'Sync', exact: true }),
   ).toBeEnabled();
   expect(writes.filter((w) => w.includes('/apply'))).toHaveLength(1);
-  const viewport = page.viewportSize()!;
-  for (const row of [personal, team]) {
-    const box = (await row.boundingBox())!;
-    expect(box.x).toBeGreaterThanOrEqual(0);
-    expect(box.x + box.width).toBeLessThanOrEqual(viewport.width + 1);
-  }
+  await expectActionsInside(page, personal);
+  await expectActionsInside(page, team);
+  await personal.getByRole('button', { name: 'Edit Personal API' }).click();
+  const edit = page.getByRole('dialog', { name: 'Edit connection' });
+  await expect(edit.getByLabel('Name', { exact: true })).toHaveValue(
+    'Personal API',
+  );
+  await edit.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(edit).toBeHidden();
 
   await page
     .getByRole('button', { name: 'More actions for Personal API' })
@@ -205,6 +231,40 @@ test('connections save without applying, apply apart from sync, and template pre
   await expect(
     page.getByRole('button', { name: 'Open Navigation' }),
   ).toBeEnabled();
+
+  // zh-CN with the widest row state: unapplied changes plus Reapply.
+  bindings = {
+    codex: { connectionId: 'personal', model: 'test-model', revision: 'r0' },
+  };
+  await page.evaluate(() =>
+    localStorage.setItem('remote-codex.locale', 'zh-CN'),
+  );
+  await page.reload();
+  const laterZh = page.getByRole('button', { name: '稍后', exact: true });
+  await laterZh.waitFor({ timeout: 3_000 }).catch(() => {});
+  if (await laterZh.isVisible()) await laterZh.click();
+  await page.getByRole('button', { name: '打开导航' }).click();
+  await page.getByRole('button', { name: '设置', exact: true }).click();
+  await page.getByRole('tab', { name: '上游', exact: true }).click();
+  const zhRow = page.getByRole('listitem', { name: 'Personal API' });
+  await expect(zhRow.getByText('修改未应用')).toBeVisible();
+  await expect(
+    zhRow.getByRole('button', { name: '重新应用到 OpenAI Codex' }),
+  ).toBeEnabled();
+  await expectActionsInside(page, zhRow);
+  await expectActionsInside(
+    page,
+    page.getByRole('listitem', { name: 'Team Gemini' }),
+  );
+  await page.screenshot({
+    path: testInfo.outputPath('settings-upstreams-zh.png'),
+  });
+  await zhRow.getByRole('button', { name: '编辑 Personal API' }).click();
+  const zhEdit = page.getByRole('dialog', { name: '编辑连接' });
+  await expect(zhEdit).toBeVisible();
+  await page.screenshot({
+    path: testInfo.outputPath('connection-form-zh.png'),
+  });
 });
 
 test('thread settings categories and nested dialogs stay usable on narrow screens', async ({

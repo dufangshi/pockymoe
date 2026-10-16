@@ -29,6 +29,8 @@ import { FormDialog } from './FormDialog';
 
 const button =
   'host-secondary-button inline-flex min-h-10 shrink-0 items-center justify-center gap-1.5 rounded-lg border px-3 text-xs disabled:opacity-40';
+// Long harness names may shrink and truncate instead of pushing actions off-screen.
+const flexButton = `${button.replace(' shrink-0', '')} min-w-0 max-w-full`;
 const iconButton =
   'host-secondary-button inline-flex min-h-10 min-w-10 shrink-0 items-center justify-center rounded-lg border disabled:opacity-40';
 const stateOrder: Record<ConnectionState, number> = {
@@ -474,7 +476,10 @@ function ConnectionRow({
                 })}
           </p>
         </div>
-        <div className="ml-auto flex shrink-0 flex-wrap items-center justify-end gap-2">
+        <div
+          className="ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2"
+          data-testid="connection-actions"
+        >
           {canSync && (
             <button
               type="button"
@@ -517,8 +522,8 @@ function ConnectionRow({
                 type="button"
                 className={
                   pending
-                    ? `${button} border-[var(--theme-accent-border)] text-[var(--theme-accent-strong)]`
-                    : button
+                    ? `${flexButton} border-[var(--theme-accent-border)] text-[var(--theme-accent-strong)]`
+                    : flexButton
                 }
                 disabled={!harness.installed}
                 title={
@@ -528,13 +533,13 @@ function ConnectionRow({
                 }
                 onClick={onApply}
               >
-                <Play size={14} />
-                {translate(
-                  bound ? 'settings.connReapply' : 'settings.connApply',
-                  {
-                    harness: harness.name,
-                  },
-                )}
+                <Play size={14} className="shrink-0" />
+                <span className="truncate">
+                  {translate(
+                    bound ? 'settings.connReapply' : 'settings.connApply',
+                    { harness: harness.name },
+                  )}
+                </span>
               </button>
             ) : (
               <span

@@ -1,5 +1,6 @@
 import {
   act,
+  cleanup,
   fireEvent,
   render,
   screen,
@@ -405,7 +406,9 @@ it('keeps unsaved edits through close, save failure and an edit conflict until t
     target: { value: 'https://other.test/v1' },
   });
   expect(
-    within(dialog).getByText('The URL changed, so enter the key again.'),
+    within(dialog).getByText(
+      'The URL or API format changed, so enter the key again.',
+    ),
   ).toBeVisible();
   expect(
     within(dialog).getByRole('button', { name: 'Save connection' }),
@@ -413,6 +416,23 @@ it('keeps unsaved edits through close, save failure and an edit conflict until t
   fireEvent.change(within(dialog).getByLabelText('Base URL'), {
     target: { value: 'https://work.test/v1' },
   });
+  // A different wire format cannot reuse the saved key either.
+  fireEvent.change(within(dialog).getByLabelText('API format'), {
+    target: { value: 'openai_chat' },
+  });
+  expect(within(dialog).getByLabelText('API key')).toBeRequired();
+  expect(
+    within(dialog).getByText(
+      'The URL or API format changed, so enter the key again.',
+    ),
+  ).toBeVisible();
+  expect(
+    within(dialog).getByRole('button', { name: 'Save connection' }),
+  ).toBeDisabled();
+  fireEvent.change(within(dialog).getByLabelText('API format'), {
+    target: { value: 'openai_responses' },
+  });
+  expect(within(dialog).getByLabelText('API key')).not.toBeRequired();
   fireEvent.click(
     within(dialog).getByRole('button', { name: 'Save connection' }),
   );
@@ -503,7 +523,7 @@ it('lets Content Quality reuse the form and picker without losing its unsaved wr
     </>,
   );
   const picker = await screen.findByLabelText('Saved connection');
-  expect(screen.queryByLabelText('Connection profile file')).toBeNull();
+  expect(screen.getByLabelText('Connection profile file')).not.toBeVisible();
   await waitFor(() =>
     expect(
       within(picker).getByRole('option', { name: 'Chat One' }),
@@ -816,4 +836,28 @@ it('makes the picker ask which device to sync from when versions differ, and kee
       name: 'Sync from which device?',
     }),
   ).toBeNull();
+});
+
+it('tells users of an older Supervisor to update instead of offering a dead Add button', async () => {
+  server(() => {
+    throw fail(404, undefined, 'Not Found');
+  });
+  render(<ConnectionCatalog apiRoot="api" harness={codex} />);
+  expect(await screen.findByRole('alert')).toHaveTextContent(
+    'Update this Supervisor to manage shared connections.',
+  );
+  expect(screen.getByRole('button', { name: 'Add connection' })).toBeDisabled();
+  cleanup();
+  render(
+    <ConnectionPicker
+      apiRoot="api"
+      connectionId=""
+      model=""
+      onChange={vi.fn()}
+    />,
+  );
+  expect(await screen.findByRole('alert')).toHaveTextContent(
+    'Update this Supervisor to manage shared connections.',
+  );
+  expect(screen.getByRole('button', { name: 'Add connection' })).toBeDisabled();
 });

@@ -78,6 +78,11 @@ export function connectionsApi(apiRoot: string) {
       const value = await request<ConnectionCatalog>(base, {
         cache: 'no-store',
         ...(signal ? { signal } : {}),
+      }).catch((error: unknown) => {
+        // Supervisors released before saved connections do not have this API.
+        if (error instanceof ApiError && [404, 405].includes(error.statusCode))
+          throw Error(translate('settings.connUpdateSupervisor'));
+        throw error;
       });
       if (!Array.isArray(value?.connections))
         throw Error(translate('settings.connUpdateSupervisor'));
