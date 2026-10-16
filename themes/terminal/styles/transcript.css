@@ -39,6 +39,9 @@
   line-height: 1.65;
 }
 :theme .thread-ui-shell .thread-graph-message-time-row { display: none; }
+/* The prompt spans its row, so its hover time and copy sit at the row's right end
+   (never over the ❯), fading into the page. */
+:theme .thread-ui-shell.thread-ui-shell .thread-graph-message-bubble.is-user { align-self: stretch; width: auto; --message-surface: var(--theme-bg); }
 
 /* Inline code and code blocks: square, one hairline. */
 :theme .thread-ui-shell .thread-graph-markdown :not(pre) > code {

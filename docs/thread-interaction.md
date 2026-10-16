@@ -232,9 +232,10 @@ Long human prompts use a six-line text preview, bounded by 600 Unicode
 characters, 160 words or eight explicit lines. Expand/Show less controls reuse
 message disclosure state and keep the scroll position anchored. Attachments
 remain visible in the preview, and Copy always copies the complete prompt.
-A prompt's time and Copy appear on hover, or when the prompt is tapped on a
-phone: beside the text when its last line has room, otherwise under its right
-end. They never cover the text.
+A message's time and Copy appear on hover, or when it is tapped on a phone, at
+its bottom right edge (a prompt's row end in the Terminal pack, never over its
+❯). They float over a fade of the message's surface, so they stay readable over
+the text they cover, and nothing moves.
 
 When a turn fails, its prompt carries a red mark, and tapping the mark shows the
 error under the prompt (the readable message first, then the raw text). The
@@ -266,10 +267,11 @@ changed files. Command and tool output never opens by itself, and a row loads it
 output only when clicked. Clicking an output, diff or code block opens it in a
 floating viewer, and command rows carry a copy button.
 
-Each turn opens with a short head line above its prompt: a dot with the time the
-turn has worked (green and pulsing while it works, red when it failed) and the cost
-control, which opens the token and price breakdown. Tapping the head opens one more
-line under it: the start time (tapping it adds the date), the model, shortened
+Each turn opens with a head line above its prompt: a dot with the time the turn
+has worked (green and pulsing while it works, red when it failed) and the cost
+control, which opens the token and price breakdown. On a wide screen (640 px and
+up) the same line goes on with the rest; on a phone tapping the head opens it on
+one more line under it: the start time (tapping it adds the date), the model, shortened
 ("claude-opus-5-5" reads "opus 5.5", "gpt-6-astra" "6 astra"), with its reasoning
 effort, the combined output speed, and how many prompts were added while it worked.
 Tapping the speed shows the time to first token, prefill and decode speeds (see
@@ -285,6 +287,17 @@ opened turn keeps its work line at the top, and an opened long message keeps
 links to that thread. A workspace link brings its file or folder near the top of
 the file tree; a link to a file that is not on the device shows its path instead
 of an error.
+
+A photo in a prompt shows as a thumbnail at most three lines of its text tall;
+tapping it opens the photo at full size, and its name is in its title.
+
+Entering a thread always shows its conversation: the files view opens only when
+asked for (the Files button or a file link), and is not restored from the last
+visit. Where the files view sits beside the conversation, the start of its tree's
+toolbar has window controls as on a Mac: the red one closes the view and the amber
+one minimizes it. Minimized, the tree stays as a strip left of the conversation and
+the editor folds into a small tab on the right edge; that tab, the amber control or
+opening another file from the tree brings the editor back.
 
 On a phone, the file list and file viewer have a one-field prompt at the bottom.
 It edits the same draft as the composer, so text typed in either shows in the
@@ -379,10 +392,12 @@ the map's summary add up the API price.
 Agent threads are folded into the thread that started them. That thread's tile has
 a small button with their count; it opens the tile up: the thread keeps a bar on
 top (tapping it folds them back, its arrow opens the thread) and its agent threads
-fill the rest, each a tile of its own. The map zooms: what is inside a device or
-workspace shows as its preview, and tapping anywhere on the block fills the map with
-it (the block grows from where it was); only threads of the level shown open when
-tapped. The path above and the back arrow lead back, and on touch two fingers
+fill the rest, each a tile of its own. The map zooms, and every level answers:
+tapping a device's or workspace's header row (its name, count and price) fills the
+map with that block, from any level and growing from where it was; a block too small
+to show what it holds opens when tapped anywhere; and a thread's tile opens the
+thread wherever it shows. Hovering a tile or its price shows their details at any
+level. The path above and the back arrow lead back, and on touch two fingers
 pinching in go up a level, spreading them opens the block under them, and dragging
 the map down closes it. A block too small for what it holds folds up. Go to (the list icon) reaches every block of the current level,
 however small. Hovering or focusing a block shows its details. The map reads its

@@ -127,6 +127,7 @@
 
 /* ── User messages: lilac bubble with a soft tail ────────────────────────── */
 :theme .thread-ui-shell .thread-graph-message-bubble.is-user {
+  --message-surface: var(--plum-user-bubble);
   border-radius: 20px 20px 6px 20px;
   padding: 0.75rem 1.1rem;
   background: var(--plum-user-bubble);
