@@ -4,7 +4,12 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
 const base = `http://127.0.0.1:${process.env.E2E_API_PORT ?? 8787}`;
-test('language switch synchronizes host and shared workbench, preserves draft, files and refresh preference', async ({ page, request }) => {
+test('language switch synchronizes host and shared workbench, preserves draft, files and refresh preference', async ({ page, request, isMobile }) => {
+  // Exercise the translated classic top-bar controls; the dock has its own layout coverage.
+  await page.addInitScript(() => {
+    localStorage.setItem('pockymoe.phoneDock', 'off');
+    localStorage.setItem(`pockymoe.onboarding.v1:${JSON.stringify([location.origin, 'local:owner'])}`, JSON.stringify({ welcomeDismissed: true, completed: [] }));
+  });
   const absPath = path.resolve(process.env.E2E_WORKSPACE_ROOT!, `locale-${randomUUID()}`);
   await mkdir(absPath, { recursive: true });
   await writeFile(path.join(absPath, 'notes.txt'), 'User file content in English');
@@ -27,17 +32,18 @@ test('language switch synchronizes host and shared workbench, preserves draft, f
   await expect(page.getByRole('group', { name: '外观', exact: true })).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(page.getByRole('textbox', { name: '提示词', exact: true })).toHaveText('Keep my English draft');
-  await expect(page.getByText('English user title', { exact: true }).first()).toBeVisible();
+  await expect(page.getByRole('navigation', { name: '工作区线程', exact: true }).getByRole('link', { name: /English user title/ })).toBeVisible();
   await expect(page.getByRole('button', { name: '切换文件浏览器', exact: true })).toBeVisible();
   await page.getByRole('button', { name: '切换文件浏览器', exact: true }).click();
-  await expect(page.getByRole('complementary', { name: '文件浏览器', exact: true })).toBeVisible();
+  await expect(page.getByRole('region', { name: '工作区文件', exact: true })).toBeVisible();
   await expect(page.getByRole('treeitem', { name: 'notes.txt', exact: true })).toBeVisible();
   await page.getByRole('treeitem', { name: 'notes.txt', exact: true }).focus();
   await page.getByRole('treeitem', { name: 'notes.txt', exact: true }).press('Enter');
+  await page.getByRole('button', { name: '文件操作', exact: true }).click();
   await expect(page.getByRole('button', { name: '编辑文件', exact: true })).toBeVisible();
   await page.getByRole('button', { name: '编辑文件', exact: true }).click();
   await expect(page.getByRole('button', { name: '保存文件', exact: true })).toBeVisible();
-  const editor = page.getByRole('textbox', { name: '工作区编辑器：notes.txt', exact: true });
+  const editor = page.getByRole('textbox', { name: isMobile ? '工作区文件编辑器' : '工作区编辑器：notes.txt', exact: true });
   await editor.focus();
   await editor.press('ControlOrMeta+A');
   await page.keyboard.insertText('Edited user content in English');
@@ -46,7 +52,7 @@ test('language switch synchronizes host and shared workbench, preserves draft, f
   page.on('dialog', dialog => dialog.accept());
   await page.reload();
   await expect(page.locator('html')).toHaveAttribute('lang', 'zh-CN');
-  await expect(page.getByText('English user title', { exact: true }).first()).toBeVisible();
+  await expect(page.getByRole('navigation', { name: '工作区线程', exact: true }).getByRole('link', { name: /English user title/ })).toBeVisible();
   // Exercise the combined search + i18n build, including cached result labels.
   await page.getByRole('button', { name: '搜索对话', exact: true }).click();
   await page.getByRole('combobox', { name: '搜索范围', exact: true }).selectOption('workspace');
@@ -73,6 +79,7 @@ test('language switch synchronizes host and shared workbench, preserves draft, f
 test('browser locale aliases initialize Chinese and unsupported saved locales fall back to English', async ({ browser }) => {
   const context = await browser.newContext({ locale: 'zh-SG', viewport: { width: 390, height: 844 } });
   try {
+    await context.addInitScript(() => localStorage.setItem(`pockymoe.onboarding.v1:${JSON.stringify([location.origin, 'local:owner'])}`, JSON.stringify({ welcomeDismissed: true, completed: [] })));
     const page = await context.newPage();
     await page.goto('/workspaces');
     await expect(page.locator('html')).toHaveAttribute('lang', 'zh-CN');

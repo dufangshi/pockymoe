@@ -317,7 +317,8 @@ test('substantial answers survive refresh between folded work sections', async (
   await page.goto(`/threads/${id}`);
   const turn = page.locator(`[data-timeline-turn][data-turn-id="${turnId}"]`);
   await expect(turn.locator('.thread-answer-section')).toHaveCount(1);
-  await expect(turn.getByText('先回答你的问题', { exact: true })).toBeVisible();
+  const foldedAnswer = turn.locator('.thread-answer-section').getByRole('heading', { name: '先回答你的问题', exact: true });
+  await expect(foldedAnswer).toBeVisible();
   await expect(turn.getByText('Implementation verified.', { exact: true })).toHaveCount(1);
   await expect(turn.getByText('Implementation verified.', { exact: true })).toBeVisible();
   expect(turnRequests).toHaveLength(0);
@@ -337,7 +338,7 @@ test('substantial answers survive refresh between folded work sections', async (
   await expect(turn.getByText('check-after-one', { exact: true })).toBeVisible();
   await expect(turn.getByText('check-before-one', { exact: true })).toHaveCount(0);
   await turn.getByRole('button', { name: /Collapse turn 1/ }).click();
-  await expect(turn.getByText('先回答你的问题', { exact: true })).toBeVisible();
+  await expect(foldedAnswer).toBeVisible();
   await expect(turn.getByText('Implementation verified.', { exact: true })).toHaveCount(1);
   await expect(turn.getByText('Implementation verified.', { exact: true })).toBeVisible();
 });

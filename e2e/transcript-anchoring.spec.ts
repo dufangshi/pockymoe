@@ -247,7 +247,9 @@ test('workspace link reveals a deep target near the top, including after mobile 
   const tree = files.getByRole('tree', { name: 'Workspace files', exact: true });
   await expect(tree).toBeVisible();
   await tree.evaluate(element => { element.scrollTop = 0; });
-  await explorer.click();
+  if (isMobile) await page.locator('nav.matter-phone-dock').getByRole('button', { name: 'Chat', exact: true }).click();
+  else await explorer.click();
+  await expect(page.locator('aside.workbench-tool-drawer')).toBeHidden();
   await page.getByRole('link', { name: 'Open deep target', exact: true }).click();
   await expect(files.getByRole('tab', { name: 'file-65.txt', exact: true })).toHaveAttribute('aria-selected', 'true');
   if (isMobile) await files.getByRole('button', { name: 'Back to files', exact: true }).click();

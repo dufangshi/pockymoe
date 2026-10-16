@@ -778,7 +778,7 @@ for (const hand of ['right', 'left']) test(`opened message Show less clears the 
   await scroll.dispatchEvent('touchstart');
   await scroll.evaluate(element => { element.scrollTop = 250; });
   await expect(nav).not.toHaveAttribute('data-following');
-  const colors = await latest.evaluate(element => {
+  const colors = () => latest.evaluate(element => {
     const probe = document.createElement('span');
     probe.style.background = 'var(--theme-accent-solid)';
     element.append(probe);
@@ -797,8 +797,11 @@ for (const hand of ['right', 'left']) test(`opened message Show less clears the 
     };
     return { background: pixel(getComputedStyle(element).backgroundColor), solid: pixel(solid) };
   });
-  expect(colors.background).not.toEqual(colors.solid);
-  expect(colors.background[3]).toBeGreaterThan(0);
+  // The away-from-tail tint transitions from transparent after following ends.
+  await expect.poll(async () => (await colors()).background[3]).toBeGreaterThan(0);
+  await latest.evaluate(element => Promise.all(element.getAnimations().map(animation => animation.finished.catch(() => {}))));
+  const tinted = await colors();
+  expect(tinted.background).not.toEqual(tinted.solid);
   await expect(toggle).toBeVisible();
   expect(await toggle.evaluate(element => getComputedStyle(element).position)).toBe('sticky');
   const showLess = (await toggle.boundingBox())!;

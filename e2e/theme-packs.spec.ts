@@ -85,6 +85,8 @@ test('exports Plum Pocket, imports a modified copy, applies it across reloads an
 
 test('refuses packs that load remote files, import stylesheets or escape their folder', async ({ page }) => {
   const dialog = await openAppearance(page);
+  await expect(themes(dialog).getByRole('radio', { name: /^Classic/ })).toBeChecked();
+  const initialCards = await themes(dialog).locator('.theme-preset-card').count();
   const manifest = {
     schema: 1,
     id: 'evil-pack',
@@ -108,7 +110,7 @@ test('refuses packs that load remote files, import stylesheets or escape their f
     await expect(alert).toHaveText(message);
     expect(await alert.evaluate((node) => node.scrollHeight <= node.clientHeight + 1)).toBe(true);
   }
-  await expect(themes(dialog).locator('.theme-preset-card')).toHaveCount(2);
+  await expect(themes(dialog).locator('.theme-preset-card')).toHaveCount(initialCards);
   await expect(page.locator('html')).toHaveAttribute('data-theme-preset', 'classic');
 });
 
