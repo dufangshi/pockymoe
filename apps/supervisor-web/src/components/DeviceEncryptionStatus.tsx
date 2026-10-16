@@ -116,6 +116,15 @@ export function DeviceEncryptionStatus({
     return () => window.removeEventListener(OWNER_UNLOCKED_EVENT, unlocked);
   }, [connection, deviceId]);
   if (!deviceId && !connection) return null;
+  // An online device being checked is not yet "not verified": show that it is checking.
+  if (deviceId && online && !status && !connection) {
+    return (
+      <span className="inline-flex h-8 w-8 items-center justify-center text-[var(--theme-fg-muted)]" role="status"
+        aria-label={translate('auth.checkingDeviceEncryption')} title={translate('auth.checkingDeviceEncryption')}>
+        <LoaderCircle size={14} className="animate-spin opacity-60" aria-hidden="true" />
+      </span>
+    );
+  }
   const locked = status?.state === 'unlock-required';
   const encrypted = status?.state === 'encrypted',
     changed = status?.state === 'identity-changed';

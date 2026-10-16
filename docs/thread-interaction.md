@@ -275,12 +275,16 @@ running, the connection and notifications. The composer (or the files prompt)
 and a row under it form one bottom panel; the row holds the current thread,
 Chat / Files / Terminal and More. Tapping the thread, or swiping up anywhere on
 the panel, opens a sheet with the workspace's threads (the current thread's group
-first, then running and unread), recent threads, unread notifications and New
-thread. More holds search, the shortcut star,
+first, then running and unread), recent threads and New thread; notifications
+stay on the bell. More holds search, the shortcut star,
 Left-handed, the thread's sharing, automation and split controls, the thread map,
 the workspace drawer, Back, Home and Settings. Dragging a sheet down from the top of its list
-closes it. The row hides while a text field has focus and comes back after the
-tap that moved focus away has landed. A split pins its two conversations in the
+closes it. The row stays while typing, right above the keyboard. On a phone the
+composer shows one line of a longer prompt until the prompt is focused; it then
+opens to its full height, also while a dictation or an IME's underlined candidates
+are still being composed, and stays open through its own buttons, the row, menus
+and the keyboard closing. Only tapping the conversation (not scrolling it) folds
+it back to one line, as does emptying the prompt. A split pins its two conversations in the
 thread's place in that row: one tap brings the other forward, and tapping the
 shown one opens the thread sheet.
 

@@ -7,6 +7,8 @@ const LIVE_FOR_MS = 5000;
 
 // Keep the relay's socket inventory separate from observed reachability. A stale
 // portal refresh must neither renew a lease nor stop probing an unreachable Mac.
+// Until a device's first probe settles, the relay's word stands: the page opens
+// with devices as the relay lists them instead of all offline for a moment.
 export function useDevicePresence(raw: RelayPortalSummaryDto | null) {
   const targets = new Map<string, string>();
   for (const device of raw?.devices ?? []) {
@@ -30,12 +32,12 @@ export function useDevicePresence(raw: RelayPortalSummaryDto | null) {
 
   useEffect(() => {
     const entries = (JSON.parse(targetKey) as [string, string][]).map(([id, query]) => ({
-      id, query, lastReply: 0, nextProbe: 0, controller: null as AbortController | null,
+      id, query, lastReply: 0, nextProbe: 0, settled: false, controller: null as AbortController | null,
     }));
     let stopped = false;
     function publish() {
       const now = Date.now();
-      const next = new Set(entries.filter(e => e.lastReply > 0 && now - e.lastReply < LIVE_FOR_MS).map(e => e.id));
+      const next = new Set(entries.filter(e => !e.settled || (e.lastReply > 0 && now - e.lastReply < LIVE_FOR_MS)).map(e => e.id));
       setOnline(previous => previous.size === next.size && [...next].every(id => previous.has(id)) ? previous : next);
     }
     function tick() {
@@ -57,6 +59,7 @@ export function useDevicePresence(raw: RelayPortalSummaryDto | null) {
         }).catch(() => {
           if (!stopped && entry.controller === controller) entry.lastReply = 0;
         }).finally(() => {
+          if (entry.controller === controller) entry.settled = true;
           window.clearTimeout(timeout);
           if (entry.controller === controller) entry.controller = null;
           if (!stopped) publish();
@@ -70,6 +73,8 @@ export function useDevicePresence(raw: RelayPortalSummaryDto | null) {
         entry.controller = null;
         entry.lastReply = 0;
         entry.nextProbe = 0;
+        // Back from the background, a device reads as before until it is probed again.
+        entry.settled = false;
       }
       publish();
       tick();

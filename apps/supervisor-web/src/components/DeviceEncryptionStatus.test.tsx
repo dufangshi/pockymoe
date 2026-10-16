@@ -78,7 +78,9 @@ describe('combined device connection indicator', () => {
       <DeviceEncryptionStatus deviceId="wsl" online />
       <DeviceEncryptionStatus deviceId="sleeping" online={false} />
     </>);
-    expect(screen.getAllByRole('button', { name: 'Device encryption not verified' })).toHaveLength(3);
+    // Online devices read as being checked, not as unverified, until their probe reports.
+    expect(screen.getAllByRole('status', { name: 'Checking device encryption…' })).toHaveLength(2);
+    expect(screen.getAllByRole('button', { name: 'Device encryption not verified' })).toHaveLength(1);
     expect(vi.mocked(probeDeviceEncryption).mock.calls).toEqual([['mac'], ['wsl']]);
     rerender(<DeviceEncryptionStatus deviceId="sleeping" online />);
     expect(probeDeviceEncryption).toHaveBeenLastCalledWith('sleeping');
