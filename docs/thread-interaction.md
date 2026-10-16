@@ -232,6 +232,16 @@ Long human prompts use a six-line text preview, bounded by 600 Unicode
 characters, 160 words or eight explicit lines. Expand/Show less controls reuse
 message disclosure state and keep the scroll position anchored. Attachments
 remain visible in the preview, and Copy always copies the complete prompt.
+A prompt's time and Copy appear on hover, or when the prompt is tapped on a
+phone: beside the text when its last line has room, otherwise under its right
+end. They never cover the text.
+
+When a turn fails, its prompt carries a red mark, and tapping the mark shows the
+error under the prompt (the readable message first, then the raw text). The
+thread page does not repeat that error above the thread. A reply that only
+repeats the error, such as the one Claude writes for an API error, is left out of
+the transcript. Claude's "<synthetic>" model name for that reply does not replace
+the model that ran.
 
 ## Substantial answers during work
 
@@ -265,20 +275,26 @@ the file tree; a link to a file that is not on the device shows its path instead
 of an error.
 
 On a phone, the file list and file viewer have a one-field prompt at the bottom.
-It sends to the thread the files belong to, like Send in the composer, without
-clearing the composer's draft.
+It edits the same draft as the composer, so text typed in either shows in the
+other, and sends it to the thread the files belong to, like Send in the composer,
+together with any files already attached in the composer.
 
 On a phone (under 640 px wide) the controls sit at the bottom for one-handed use.
 The top bar shows only status: the device monitor, the subscription usage windows
-(such as 5h and 7d; tapping them shows the details), how many other threads are
-running, the connection and notifications. The composer (or the files prompt)
+(such as 5h and 7d; tapping them shows the details), how many threads are running on the account (a threads mark with a live dot and
+the count, "running" where there is room), the connection and notifications.
+Tapping the count opens a sheet with those threads, each with how long it has
+run, then the finished threads that were opened before and not read since, and
+a way to all threads. It counts every running thread of the devices the
+navigation reads, also ones never opened. The composer (or the files prompt)
 and a row under it form one bottom panel; the row holds the current thread,
 Chat / Files / Terminal and More. Tapping the thread, or swiping up anywhere on
 the panel, opens a sheet with the workspace's threads (the current thread's group
 first, then running and unread), recent threads and New thread; notifications
 stay on the bell. More holds search, the shortcut star,
-Left-handed, the thread's sharing, automation and split controls, the thread map,
-the workspace drawer, Back, Home and Settings. Dragging a sheet down from the top of its list
+Left-handed and the thread's sharing, automation and split controls; a row fixed
+at its bottom holds the thread map, the workspace drawer, Home, Back and Settings,
+so they show without scrolling. Dragging a sheet down from the top of its list
 closes it. The row stays while typing, right above the keyboard. On a phone the
 composer shows one line of a longer prompt until the prompt is focused; it then
 opens to its full height, also while a dictation or an IME's underlined candidates
@@ -351,9 +367,12 @@ the map's summary add up the API price.
 Agent threads are folded into the thread that started them. That thread's tile has
 a small button with their count; it opens the tile up: the thread keeps a bar on
 top (tapping it folds them back, its arrow opens the thread) and its agent threads
-fill the rest, each a tile of its own. A block too small for what it holds folds up;
-tapping a device or workspace bar, or a folded block, opens it, and the path above
-leads back. Go to (the list icon) reaches every block of the current level,
+fill the rest, each a tile of its own. The map zooms: what is inside a device or
+workspace shows as its preview, and tapping anywhere on the block fills the map with
+it (the block grows from where it was); only threads of the level shown open when
+tapped. The path above and the back arrow lead back, and on touch two fingers
+pinching in go up a level, spreading them opens the block under them, and dragging
+the map down closes it. A block too small for what it holds folds up. Go to (the list icon) reaches every block of the current level,
 however small. Hovering or focusing a block shows its details. The map reads its
 devices again every 30 seconds while it is open.
 

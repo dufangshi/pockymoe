@@ -88,3 +88,18 @@ it('disables the field and sending with a reason and preserves the draft until e
   fireEvent.keyDown(field(), { key: 'Enter' });
   await waitFor(() => expect(onSend).toHaveBeenCalledExactlyOnceWith('Saved question'));
 });
+
+it('edits a draft it is given, so the composer shows the same text, and leaves clearing to the host', async () => {
+  const onChange = vi.fn();
+  const onSend = vi.fn().mockResolvedValue(true);
+  const { rerender } = render(<FileAskBar value="From the composer" onChange={onChange} onSend={onSend} attachmentCount={2} />);
+  expect(field()).toHaveValue('From the composer');
+  expect(screen.getByLabelText('2 attached files go with it')).toBeInTheDocument();
+  fireEvent.change(field(), { target: { value: 'From the composer, and more' } });
+  expect(onChange).toHaveBeenLastCalledWith('From the composer, and more');
+  rerender(<FileAskBar value="From the composer, and more" onChange={onChange} onSend={onSend} />);
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Send' })); });
+  expect(onSend).toHaveBeenCalledWith('From the composer, and more');
+  // The host clears its draft once the send is accepted; the bar does not do it twice.
+  expect(onChange).not.toHaveBeenCalledWith('');
+});

@@ -2632,6 +2632,21 @@ main:has(.product-navigation) { padding-top: 0 !important; }
   transition: border-color 150ms ease;
 }
 .file-ask-bar-shell:focus-within { border-color: var(--theme-accent-solid); }
+/* Files attached in the composer go with the text sent from here. */
+.file-ask-bar-attachments {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+  align-self: center;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--theme-surface-strong);
+  color: var(--theme-fg-soft);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.file-ask-bar-attachments svg { width: 13px; height: 13px; }
 .file-ask-bar[data-state='failed'] .file-ask-bar-shell { border-color: #c2413a; }
 .file-ask-bar textarea {
   flex: 1;

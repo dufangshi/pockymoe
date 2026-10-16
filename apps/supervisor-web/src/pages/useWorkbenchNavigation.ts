@@ -93,6 +93,9 @@ export function useWorkbenchNavigation(
   });
   const [statuses, setStatuses] = useState<Record<string, ThreadActivity>>({});
   const [families, setFamilies] = useState<Record<string, ThreadDto[]>>({});
+  // Every thread listed by the devices navigation read, for the running sheet:
+  // running threads count wherever they are, opened before or not.
+  const [deviceLists, setDeviceLists] = useState<Record<string, ThreadDto[]>>({});
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [navigationReady, setNavigationReady] = useState(false);
@@ -215,6 +218,7 @@ export function useWorkbenchNavigation(
               activity.status === 'unknown' ? { ...previous[key], ...activity } : activity,
             ])));
             setFamilies(previous => ({ ...previous, ...familyUpdates }));
+            setDeviceLists(previous => ({ ...previous, ...Object.fromEntries(deviceSnapshots) }));
             // Only a definitive response from the addressed device can remove
             // stale navigation. Offline, timeouts and access errors preserve it.
             for (const r of missing) {
@@ -483,6 +487,44 @@ export function useWorkbenchNavigation(
       ...threadAgentField(thread),
     } satisfies WorkbenchThread] as const;
   }));
+  // Running threads across the devices read above and this device's own list,
+  // including ones never opened (automations, threads other agents started).
+  const ownDevice = deviceId ?? 'local';
+  const referenceOn = (device: string) => snapshot.threads.filter(r => (r.deviceId ?? 'local') === device);
+  const activeThreads: WorkbenchThread[] = [
+    [ownDevice, threads] as const,
+    ...Object.entries(deviceLists).filter(([device]) => device !== ownDevice),
+  ].flatMap(([device, list]) => list.flatMap(thread => {
+    const activity = device === ownDevice && thread.id === detail?.thread.id ? detail.thread : thread;
+    if (workbenchThreadStatus(activity) !== 'running') return [];
+    const key = `${device}:${thread.id}`;
+    const references = referenceOn(device);
+    const reference = references.find(r => r.threadId === thread.id);
+    const workspaceLabel = reference?.workspaceLabel
+      ?? references.find(r => r.workspaceId === thread.workspaceId)?.workspaceLabel
+      ?? (tabContext.detail && device === (tabContext.deviceId ?? 'local') && tabContext.detail.workspace.id === thread.workspaceId ? tabContext.detail.workspace.label : undefined);
+    // How long its turn has run says the most about a running thread.
+    const startedAt = Date.parse(activity.lastTurnStartedAt ?? '');
+    const minutes = Number.isFinite(startedAt) ? Math.max(0, Math.round((Date.now() - startedAt) / 60_000)) : null;
+    const runningFor = minutes === null ? null : minutes < 1 ? translate('workbench.runningJustNow')
+      : minutes < 60 ? translate('workbench.runningForMinutes', { count: minutes })
+        : translate('workbench.runningForHours', { hours: Math.floor(minutes / 60), minutes: minutes % 60 });
+    return [{
+      key, title: activity.title,
+      subtitle: [references.find(r => r.deviceName)?.deviceName, workspaceLabel, runningFor].filter(Boolean).join(' · '),
+      href: threadHref(thread.id, device === 'local' ? null : device),
+      favorite: reference?.favorite ?? false,
+      ...(thread.parentThreadId ? { parentKey: `${device}:${thread.parentThreadId}` } : {}),
+      ...(thread.rootThreadId ? { rootKey: `${device}:${thread.rootThreadId}` } : {}),
+      status: 'running',
+      ...threadAgentField(thread),
+    } satisfies WorkbenchThread];
+  }));
+  // Finished threads the reader opened before and has not read since; threads
+  // never opened are not "unread", or every old workspace thread would be.
+  activeThreads.push(...items
+    .map(thread => ({ ...thread, ...familyByKey.get(thread.key) }))
+    .filter(thread => thread.status === 'unread' && thread.key !== currentKey));
   const roots = new Set(items.map(thread => thread.rootKey ?? thread.key));
   const sidebarThreads = items.map(thread => ({...thread, ...familyByKey.get(thread.key)}));
   const seen = new Set(sidebarThreads.map(thread => thread.key));
@@ -494,6 +536,7 @@ export function useWorkbenchNavigation(
   return {
     navigationReady,
     threads: sidebarThreads,
+    activeThreads,
     workspacePath: tabContext.detail?.workspace.absPath ?? '',
     workspaceThreads,
     currentKey,

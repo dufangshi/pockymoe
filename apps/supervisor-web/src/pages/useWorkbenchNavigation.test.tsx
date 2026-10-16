@@ -128,6 +128,32 @@ describe('account thread navigation', () => {
     unmount();
   });
 
+  it('lists running threads from every device it reads, opened before or not', async () => {
+    const refs = [
+      { deviceId: 'mac', threadId: 'root', title: 'Root', favorite: false, workspaceId: 'app', workspaceLabel: 'app', deviceName: 'Mac' },
+      // Opened at 10:00, answered at 11:00: unread.
+      { deviceId: 'mac', threadId: 'done', title: 'Done', favorite: false, workspaceId: 'app', workspaceLabel: 'app', deviceName: 'Mac', readCompletedAt: '2026-10-16T10:00:00Z' },
+    ];
+    const root = { id: 'root', workspaceId: 'app', title: 'Root', status: 'idle' } as ThreadDto;
+    const automation = { ...root, id: 'nightly', title: 'Nightly check', status: 'running' } as ThreadDto;
+    const worker = { ...root, id: 'worker', title: 'Worker', status: 'running', parentThreadId: 'root', rootThreadId: 'root' } as ThreadDto;
+    vi.mocked(request).mockImplementation(async url => {
+      if (url === 'relay/account/workbench') return { threads: refs, notifications: [] };
+      if (String(url).includes('/mac/api/threads?')) return [root, automation, worker,
+        { ...root, id: 'done', title: 'Done', lastTurnCompletedAt: '2026-10-16T11:00:00Z' },
+        // Finished but never opened: not unread.
+        { ...root, id: 'old', title: 'Old', lastTurnCompletedAt: '2026-10-01T11:00:00Z' }];
+      throw new Error(`Unexpected URL: ${url}`);
+    });
+    const own = { ...root, id: 'here', title: 'Here', status: 'running' } as ThreadDto;
+    const { result, unmount } = renderHook(() => useWorkbenchNavigation(null, [own, { ...root, id: 'quiet' }], 'wsl'));
+    await waitFor(() => expect(result.current.activeThreads.map(thread => `${thread.key}:${thread.status}`))
+      .toEqual(['wsl:here:running', 'mac:nightly:running', 'mac:worker:running', 'mac:done:unread']));
+    expect(result.current.activeThreads[1]).toMatchObject({ title: 'Nightly check', subtitle: 'Mac · app', status: 'running', href: '/devices/mac/threads/nightly' });
+    expect(result.current.activeThreads[2]).toMatchObject({ rootKey: 'mac:root' });
+    unmount();
+  });
+
   it('reuses the page thread list for its own device and fetches only other devices', async () => {
     const refs = ['mac', 'wsl'].flatMap(deviceId => ['root', 'child'].map(threadId => ({ deviceId, threadId, title: threadId, favorite: false })));
     const root = { id: 'root', workspaceId: 'app', title: 'Root', status: 'idle' } as ThreadDto;

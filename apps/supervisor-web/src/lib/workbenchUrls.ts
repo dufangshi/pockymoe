@@ -10,6 +10,9 @@ export function workbenchUrls(options: MatterWorkbenchOptions): MatterWorkbenchO
     ...(options.workspaceThreads ? {
       workspaceThreads: options.workspaceThreads.map(thread => ({ ...thread, href: appUrl(thread.href) })),
     } : {}),
+    ...(options.activeThreads ? {
+      activeThreads: options.activeThreads.map(thread => ({ ...thread, href: appUrl(thread.href) })),
+    } : {}),
     notifications: options.notifications.map(notification => ({ ...notification, href: appUrl(notification.href) })),
     onNavigate: href => options.onNavigate(appPathname(href)),
     ...(options.onPrefetchThread ? { onPrefetchThread: (href: string) => options.onPrefetchThread!(appPathname(href)) } : {}),

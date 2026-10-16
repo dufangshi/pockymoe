@@ -1,20 +1,26 @@
-Owners can now isolate a device or a workspace from agents outside it.
+Phone navigation, the thread map and failed turns read more clearly.
 
-- **Devices → ⋯ → Agent isolation…**: agents on other devices can no longer list,
-  read or message this device's threads, list its workspaces, read its files or
-  create threads on it.
-- **Workspaces → ⋯ → Isolate workspace**: agents outside the workspace, on this
-  device or another one, can no longer list, read, message, wait for or close its
-  threads, create threads in it, set automations on them, run commands there or
-  read its files. Isolated workspaces show an **Isolated** badge.
+- **Running threads**: the top bar's count is the account's running threads,
+  shown with a threads mark. Tapping it opens only those threads, each with how
+  long it has run, then finished threads that were opened before and not read
+  since. It counts running threads on every device the navigation reads.
+- **Thread map zooms**: tapping a device or workspace fills the map with it, and
+  Back returns. On touch, pinching in goes up a level, spreading opens the block
+  under the fingers and dragging down closes the map. On a phone the map fills
+  the screen and its legend keeps clear of the bottom edge.
+- **More (⋯)**: the thread map, workspace drawer, Home, Back and Settings sit in a
+  row fixed at the bottom of the sheet, so Settings shows without scrolling.
+- **Files prompt**: the prompt under the phone file browser edits the same draft
+  as the chat composer, so switching views keeps the text, and it sends the
+  composer's attachments too.
+- **Prompt time and Copy** sit beside the prompt's text, or under its right end,
+  instead of covering it (including the Terminal pack's ❯ mark).
+- **Failed turns**: the prompt carries a red mark that opens the error under it.
+  The red bar above the thread and the reply that only repeated the error are
+  gone, and Claude's `<synthetic>` model name no longer replaces the model that
+  ran.
 
-Isolation is inbound only, stored and enforced on the device, and changed only by
-the owner. Your own use of the Web UI and sharing with other people are not
-affected. It covers the `pockymoe` CLI, cross-device requests and Treer prompts
-and messages from agents outside; it is not an operating-system sandbox. See
-[agent isolation](https://github.com/dufangshi/pockymoe/blob/main/docs/agent-isolation.md).
-
-Validated with the Supervisor, runtime and CLI suites, new isolation tests for
-local, cross-device, automation and Treer paths, and the Web tests. Relay and
+Validated with the shared UI and Web test suites, the runtime Claude usage
+tests, and phone screenshots in the default, Plum and Terminal themes. Relay and
 Windows Device Manager are unchanged. Installing this release is a separate
 device update; publication does not restart an existing Supervisor.

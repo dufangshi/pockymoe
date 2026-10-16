@@ -853,6 +853,18 @@ export function ThreadDetailPage() {
     navigate(`${location.pathname}${location.search}${location.hash}`, {replace:true, state:null});
   }, [location.state, location.pathname, location.search, location.hash, relayRouteDeviceId, id, navigate, workbenchPresentation.update]);
   const toolsUseReference = focusedPane === 'reference' && Boolean(referenceId) && workbenchPresentation.value.mode !== 'focus';
+  // The files' prompt edits the draft of the conversation it sends to, so text
+  // typed there is in that composer too; an accepted send clears it.
+  const toolsDraft = toolsUseReference ? referenceDraft : chatDraft;
+  const setToolsDraft = toolsUseReference ? setReferenceDraft : setChatDraft;
+  const sendFromFiles = async (prompt: string) => {
+    const { attachments } = toolsDraft;
+    const input = { prompt, ...(attachments.length ? { attachments } : {}) };
+    if (!toolsUseReference) return handlePrompt(input);
+    const sent = await referenceController.send(input);
+    if (sent) setReferenceDraft({ prompt: '', attachments: [] });
+    return sent;
+  };
   const toolsDetail = toolsUseReference ? referenceController.detail : detail;
   const toolsDevice = toolsUseReference ? referenceDevice : (relayRouteDeviceId ?? 'local');
   const toolsAccess = toolsUseReference ? referenceController.access : relayAccess;
@@ -2637,7 +2649,7 @@ export function ThreadDetailPage() {
     }
   }, [detail, id, loadingEarlier]);
 
-  async function performPromptSubmission(input: SendThreadPromptRequestInput, options: { keepDraft?: boolean } = {}) {
+  async function performPromptSubmission(input: SendThreadPromptRequestInput) {
     if (activeView === 'shell') {
       if (detail?.thread.isLoaded === false) {
         await handleThreadConnectionToggle({ attachShell: true });
@@ -2911,13 +2923,10 @@ export function ThreadDetailPage() {
           setError(translate("workbench.messageSavedButSteerCouldNotBe", { value1: caught instanceof Error ? caught.message : translate("workbench.tryTheQueuedMessageAfterReconnecting") }));
         }
       }
-      // A prompt sent from elsewhere (the files' ask bar) leaves the composer's draft alone.
-      if (!options.keepDraft) {
-        setChatDraft({
-          prompt: '',
-          attachments: [],
-        });
-      }
+      setChatDraft({
+        prompt: '',
+        attachments: [],
+      });
       return true;
     } catch (caught) {
       const message =
@@ -2949,11 +2958,11 @@ export function ThreadDetailPage() {
     }
   }
 
-  async function handlePrompt(input: SendThreadPromptRequestInput, options: { keepDraft?: boolean } = {}) {
+  async function handlePrompt(input: SendThreadPromptRequestInput) {
     if (activeRouteRef.current !== routeKey || promptSubmissionOwner.inFlight) return false;
     promptSubmissionOwner.inFlight = true;
     try {
-      return await performPromptSubmission(input, options);
+      return await performPromptSubmission(input);
     } finally {
       promptSubmissionOwner.inFlight = false;
     }
@@ -4011,6 +4020,11 @@ export function ThreadDetailPage() {
     ],
   );
   const workspaceReturnHref = appUrl(currentWorkspacesHref());
+  // A failed turn's error sits behind a mark on its prompt, not again above the thread.
+  const pageError = loading ? null : error ?? detail?.thread.lastError ?? null;
+  const errorOnPrompt = pageError !== null && (
+    (optimisticTurn?.status === 'failed' && optimisticTurn.error === pageError)
+    || Boolean(detail?.turns.some(turn => turn.status === 'failed' && turn.error === pageError)));
   const dialogs = useMemo(
     () => (
       <>
@@ -4146,7 +4160,7 @@ export function ThreadDetailPage() {
       detail={detail}
       status={status}
       loading={loading}
-      error={loading ? null : error ?? detail?.thread.lastError ?? null}
+      error={errorOnPrompt ? null : pageError}
       plugins={plugins}
       adapter={surfaceAdapter}
       metaContent={metaContent}
@@ -4161,7 +4175,9 @@ export function ThreadDetailPage() {
       workspaceContent={<div className="workbench-tool-target flex min-h-0 flex-1 flex-col" data-testid="workbench-tool-target" data-device={toolsDevice} data-workspace={toolsDetail?.workspace.id ?? ''} data-thread={toolsDetail?.thread.id ?? ''}>{toolsDetail ? <ThreadGraphWorkspacePanel detail={toolsDetail} status={toolsUseReference ? null : status} plugins={plugins} workspaceAdapter={workspaceAdapter} activeView="chat" features={SUPERVISOR_WORKSPACE_FEATURES} focusPathRequest={workspaceFocusPathRequest} /> : <p className="workbench-reference-status">{translate('workbench.loadingThreadDetail')}</p>}
         {toolsDetail && toolsCanControl ? <FileAskBar
           disabledReason={toolsUseReference ? null : promptDisabledReason}
-          onSend={prompt => toolsUseReference ? referenceController.send({ prompt }) : handlePrompt({ prompt }, { keepDraft: true })} /> : null}</div>}
+          value={toolsDraft.prompt} attachmentCount={toolsDraft.attachments.length}
+          onChange={prompt => setToolsDraft(draft => ({ ...draft, prompt }))}
+          onSend={sendFromFiles} /> : null}</div>}
       workspaceFocusPathRequest={workspaceFocusPathRequest}
       activeView={activeView}
       liveOutput={liveOutput}
