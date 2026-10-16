@@ -47,6 +47,7 @@ import {
   AppShellSettingsDialog,
 } from './components/AppShellNavigation';
 import { TourProvider } from './components/onboarding/TourProvider';
+import { ThreadMapProvider } from './components/ThreadMapHost';
 import { LoginPage } from './pages/LoginPage';
 import { RelayAccountPage } from './pages/RelayAccountPage';
 import { RelayAdminPage } from './pages/RelayAdminPage';
@@ -363,6 +364,7 @@ function AppShell({
   return (
     <HostCapabilitiesProvider scope={relayDeviceIdFromPath(location.pathname) ?? 'local'}>
     <AppShellNavContext.Provider value={shellNavValue}>
+      <ThreadMapProvider>
       <ScopedTourProvider>
       <div
         className={`bg-[var(--app-bg)] text-[var(--app-fg)] ${
@@ -409,6 +411,7 @@ function AppShell({
       </div>
       <UnscopedOnly><AppShellSettingsDialog /></UnscopedOnly>
       </ScopedTourProvider>
+      </ThreadMapProvider>
     </AppShellNavContext.Provider>
     </HostCapabilitiesProvider>
   );

@@ -2,6 +2,7 @@ import { getLocale } from '@pockymoe/thread-ui/i18n';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { DeviceEncryptionStatus } from '../components/DeviceEncryptionStatus';
 import { TourLauncherButton } from '../components/onboarding/TourProvider';
+import { useAppShellNav } from '../components/AppShellNavContext';
 import { ProductHeader } from '../components/ProductHeader';
 import {
   useEffect,
@@ -15,6 +16,7 @@ import {
   ChevronDown,
   Eye,
   FileInput,
+  LayoutDashboard,
   MoreHorizontal,
   Pencil,
   Pin,
@@ -65,6 +67,7 @@ export function WorkspacesPage() {
   const { locale: i18nLocale } = useI18n();
   const location = useLocation();
   const relayDeviceId = relayDeviceIdFromPath(location.pathname);
+  const shellNav = useAppShellNav();
   const [workspaces, setWorkspaces] = useState<WorkspaceDto[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadAttempt, setLoadAttempt] = useState(0);
@@ -214,6 +217,7 @@ export function WorkspacesPage() {
     <div className="product-page space-y-4" data-page="workspaces">
       <ProductHeader title={translate("files.workspaces")} {...(relayDeviceId ? {backHref: '/relay-devices', backLabel: translate("files.backToDevices")} : {})} actions={<>
         {!relayDeviceId && <TourLauncherButton showLabel />}
+        {shellNav?.openThreadMap && <button type="button" onClick={shellNav.openThreadMap} aria-label={translate('workbench.threadMap')} title={translate('workbench.threadMap')} className="product-icon-button"><LayoutDashboard data-icon="thread-map" size={19} /></button>}
         <Link to={currentRelayScopedPath('/threads/import')} aria-label={translate("files.importSession")} title={translate("files.importSession")} className="product-icon-button"><FileInput data-icon="import" size={19} /></Link>
         <Link to={currentRelayScopedPath('/workspaces/new')} aria-label={translate("files.addWorkspace")} title={translate("files.addWorkspace")} className="product-icon-button"><Plus data-icon="add" size={20} /></Link>
       </>} />

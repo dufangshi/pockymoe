@@ -162,6 +162,11 @@ Monaco editor and diff view; `--shiki-*` for code blocks with the
 - transcript: `data-turn-status` on turns, `.thread-usage-details` and
   `.thread-usage-details-total` for the token and price breakdown;
 - Explorer: `workspace-node-icon is-<kind>`, `workspace-file-alert`;
+- thread map: `thread-map-dialog`, `thread-map-section` (`data-kind` `device` or
+  `workspace`), `thread-map-tile`, both with `data-heat` (0–4) and `data-running`;
+  `thread-map-agent[data-agent]` (shows `--theme-agent-avatar` when the pack has
+  art for that agent); `--thread-map-heat` (default the accent) and
+  `--thread-map-tile` (the unheated fill);
 - phone one-handed layout: the workbench's `has-phone-dock`, `is-left-handed`
   and `is-typing`; `.matter-topbar.is-status-only` (its readings keep their own
   size under a pack's top bar button rules); `matter-phone-dock`,
@@ -180,12 +185,12 @@ button around the icon keeps its label and state (`aria-pressed`,
 
 | Area | Names |
 | --- | --- |
-| Rail and top bar | `sidebar`, `back`, `forward`, `home`, `search`, `chat`, `terminal`, `explorer`, `harness-panel`, `settings`, `notifications`, `help`, `close`; device monitor `cpu`, `memory`, `gpu` |
+| Rail and top bar | `sidebar`, `back`, `forward`, `home`, `search`, `chat`, `terminal`, `explorer`, `thread-map`, `harness-panel`, `settings`, `notifications`, `help`, `close`; device monitor `cpu`, `memory`, `gpu` |
 | Thread list and tabs | `shortcuts` (section), `shortcut` (thread star), `new-thread`, `thread-tools`, `agents`, `automations`, `split`, `restore`; thread actions `ports`, `share-link`, `sharing`, `download`; thread menu `more`, `open`, `copy`, `rename`, `delete` |
 | Composer | `attach`, attach menu `photo`, `file`; toolbox rows `plan`, `goal`, `fast`, `compact`, `fork`, `skills`, `mcp`, `hooks`, `harness`, `prompt`, `unsupported` (the send button uses `data-send-intent`) |
 | Transcript | `think`, `wait`, `wake`, `copy`, `copied`; timeline `previous-turn`, `latest`, `next-turn` (step icons use the `is-<tone>` classes) |
 | Explorer and files | nodes `folder`, `folder-open`, `folder-link`, `archive`, `image`, `code`, `file`; header `new-file`, `filter`, `collapse-folders`, `refresh`, `more`, `upload`, `delete`, `expand-viewer`, `collapse-explorer`; rows `copy-path`, `copy-absolute-path`, `more`, `download`, `rename`, `delete`; tabs `code`, `close`, `unsaved`; preview `back`, `forward`, `source`, `preview`, `edit`, `save`, `close`, `more`, `expand-explorer`, `collapse-viewer` |
-| Outer pages | navigation `menu`, `close`, `devices`, `settings`, `help`; workspaces `import`, `add`, `refresh`, `pin`, `more`, `view-path`, `rename`, `delete` |
+| Outer pages | navigation `menu`, `close`, `devices`, `settings`, `help`; workspaces `thread-map`, `import`, `add`, `refresh`, `pin`, `more`, `view-path`, `rename`, `delete` |
 | Dialogs | `close` on every dialog's close button |
 
 A pack replaces a glyph like this; the lucide paths inside stay in the markup:

@@ -897,6 +897,20 @@ export interface ThreadDto {
   closedAt?: string | null;
 }
 
+/** A thread's turns (all time) and the time they ran since `since`. */
+export interface ThreadActivityDto {
+  threadId: string;
+  turns: number;
+  activeMs: number;
+}
+
+/** `GET /api/thread-activity?hours=N`, owner only; threads without turns are absent. */
+export interface ThreadActivityResponseDto {
+  since: string;
+  hours: number;
+  threads: ThreadActivityDto[];
+}
+
 export interface ThreadPeerWorkDto {
   taskTurnId: string;
   messages: Array<{

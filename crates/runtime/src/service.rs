@@ -20,9 +20,10 @@ use anyhow::{anyhow, bail, ensure, Result};
 use pockymoe_protocol::{
     now_rfc3339, truncate_title, AgentBackendDto, AgentCapabilitySnapshotDto, CreateThreadInput,
     CreateWorkspaceInput, ImportThreadCandidateDto, ImportThreadInput, ModelOptionDto, Provider,
-    SendThreadPromptInput, ThreadDetailDto, ThreadDto, ThreadForkTurnOptionDto, ThreadGoalDto,
-    ThreadHistoryItemDto, ThreadPendingSteerDto, ThreadTurnDto, ThreadWorkspaceFilePreviewDto,
-    ThreadWorkspaceTreeNodeDto, UpdateWorkspaceSettingsInput, WorkspaceDto, WorkspaceSettingsDto,
+    SendThreadPromptInput, ThreadActivityDto, ThreadDetailDto, ThreadDto, ThreadForkTurnOptionDto,
+    ThreadGoalDto, ThreadHistoryItemDto, ThreadPendingSteerDto, ThreadTurnDto,
+    ThreadWorkspaceFilePreviewDto, ThreadWorkspaceTreeNodeDto, UpdateWorkspaceSettingsInput,
+    WorkspaceDto, WorkspaceSettingsDto,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
@@ -1094,6 +1095,35 @@ impl Supervisor {
             .to_string_lossy()
             .replace('\\', "/");
         Ok((relative, u64::try_from(content.len()).unwrap_or(u64::MAX)))
+    }
+
+    /// Turn counts and running time inside `[since, now]` (RFC 3339) for every
+    /// thread with turns. A turn still marked running counts up to `now` only
+    /// while its thread is running, so a turn left open by a crash adds nothing.
+    pub fn thread_activity(&self, since: &str, now: &str) -> Result<Vec<ThreadActivityDto>> {
+        self.db.with(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT tt.thread_id, COUNT(*),
+                        COALESCE(SUM(CASE WHEN tt.started_at IS NULL THEN 0 ELSE MAX(0,
+                          (julianday(MIN(COALESCE(tt.completed_at,
+                                CASE WHEN tt.status IN ('inProgress','recovering')
+                                     AND t.status IN ('running','recovering') THEN ?2 END,
+                                tt.started_at), ?2))
+                           - julianday(MAX(tt.started_at, ?1))) * 86400000) END), 0)
+                 FROM thread_turns tt JOIN threads t ON t.id = tt.thread_id
+                 GROUP BY tt.thread_id",
+            )?;
+            let rows = stmt
+                .query_map(params![since, now], |row| {
+                    Ok(ThreadActivityDto {
+                        thread_id: row.get(0)?,
+                        turns: row.get::<_, i64>(1)?.max(0) as u32,
+                        active_ms: row.get::<_, f64>(2)?.max(0.0).round() as u64,
+                    })
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows)
+        })
     }
 
     /// `include_agent_threads` false returns only lineage roots - the threads a person

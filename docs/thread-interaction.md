@@ -277,15 +277,15 @@ Chat / Files / Terminal and More. Tapping the thread, or swiping up anywhere on
 the panel, opens a sheet with the workspace's threads (the current thread's group
 first, then running and unread), recent threads, unread notifications and New
 thread. More holds search, the shortcut star,
-Left-handed, the thread's sharing, automation and split controls, the workspace
-drawer, Back, Home and Settings. Dragging a sheet down from the top of its list
+Left-handed, the thread's sharing, automation and split controls, the thread map,
+the workspace drawer, Back, Home and Settings. Dragging a sheet down from the top of its list
 closes it. The row hides while a text field has focus and comes back after the
 tap that moved focus away has landed. A split pins its two conversations in the
 thread's place in that row: one tap brings the other forward, and tapping the
 shown one opens the thread sheet.
 
-The workspace drawer shows the app's mark and close, **All workspaces**,
-shortcuts and recent conversations. Shortcuts keep the account's own order:
+The workspace drawer shows the app's mark and close, **All workspaces**, the
+**Thread map**, shortcuts and recent conversations. Shortcuts keep the account's own order:
 drag one with the mouse, long-press and drag on touch, or press Alt+↑/↓ on a
 focused shortcut. The order is saved with the account (relay
 `PUT /relay/account/workbench/shortcuts`, `favoriteOrder` in the workbench
@@ -320,6 +320,36 @@ execution history shows an inline spinner until that request settles. Reduced
 motion disables these animations. The thread tools bar keeps its direct actions
 without a duplicate overflow menu.
 
+## Thread map
+
+The thread map shows every thread on the account's devices at once: devices hold
+workspaces, workspaces hold threads, and agent threads are folded into the thread
+that started them. A thread's area grows with its turns (as 1 + √turns, so a long
+thread does not crowd out the rest). Its fill takes one of five light steps toward
+the accent by how long its turns ran in the last 24 hours (none, up to 10 minutes,
+an hour, three hours, more), light enough to read the title on; themes may set
+`--thread-map-heat`. A running thread breathes slowly (a still tint under reduced
+motion). A small mark names its agent: the theme's art for that agent where a pack
+has it, else a colored monogram. A block too small for what it holds folds up;
+tapping a device or workspace bar, or a folded block, opens it, and the path above
+leads back. Go to (the list icon) reaches every block of the current level,
+however small. Hovering or focusing a block shows its details. The map reads its
+devices again every 30 seconds while it is open.
+
+It opens from More on a phone, the workspace drawer, the rail on wider screens and
+the workspace list's header. In relay mode it reads each of the account's own
+devices through the relay: an offline device is a hatched block and one that
+cannot be read offers Retry. In local mode it reads this Supervisor. Shared
+devices and host-scoped Supervisors have no map.
+
+Each Supervisor reports turns and run time at `GET /api/thread-activity?hours=24`
+(1–168, default 24; owner only):
+`{ "since", "hours", "threads": [{ "threadId", "turns", "activeMs" }] }`. `turns`
+counts every turn the thread ever started and `activeMs` the part of each turn
+inside the window; a turn without a completion time counts up to now only while it
+is in progress and its thread runs, so imported or crashed turns add none. A
+Supervisor without the endpoint still appears, with equal areas and no color.
+
 ## Switching threads and pages
 
 Moving around keeps the screen steady:
@@ -328,9 +358,8 @@ Moving around keeps the screen steady:
   a modified or middle click opens a new page.
 - A workspace row opens that workspace's most recent thread directly.
 - A recently opened thread (the last twelve, per device) shows its conversation
-  at once and refreshes quietly. Pressing a thread row, or being a dock swipe away,
-  starts loading it early; a load that finishes within a moment never shows the
-  loader.
+  at once and refreshes quietly. Pressing a thread row starts loading it early; a
+  load that finishes within a moment never shows the loader.
 - A thread opens at its end without first painting its top; messages on screen
   render their Markdown before the first paint.
 - Each page load paints the last theme and background before the app starts, so

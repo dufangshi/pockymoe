@@ -269,6 +269,7 @@ pub(crate) fn router_with_treer(state: AppState, hub: Option<Arc<crate::treer::H
                 .delete(workspace_delete_file),
         )
         .route("/api/threads", get(list_threads))
+        .route("/api/thread-activity", get(thread_activity))
         .route("/api/threads/start", post(start_thread))
         .route("/api/threads/import", post(import_thread))
         .route("/api/threads/import-candidates", get(import_candidates))
@@ -1495,6 +1496,30 @@ async fn list_threads(
                 .map_err(map_err)?,
         )
         .unwrap(),
+    ))
+}
+
+#[derive(Deserialize)]
+struct ThreadActivityQuery {
+    hours: Option<u32>,
+}
+
+/// Turn counts and running time over the last `hours` (default 24, at most a
+/// week) per thread, for the thread map. Owner only (grants::owner_only).
+async fn thread_activity(
+    Query(query): Query<ThreadActivityQuery>,
+    State(state): State<AppState>,
+) -> Result<Json<Value>, ApiErr> {
+    let hours = query.hours.unwrap_or(24).clamp(1, 168);
+    let now = chrono::Utc::now();
+    let stamp =
+        |at: chrono::DateTime<chrono::Utc>| at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let since = stamp(now - chrono::Duration::hours(i64::from(hours)));
+    let threads = state
+        .thread_activity(&since, &stamp(now))
+        .map_err(map_err)?;
+    Ok(Json(
+        json!({ "since": since, "hours": hours, "threads": threads }),
     ))
 }
 

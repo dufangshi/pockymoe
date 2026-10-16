@@ -489,7 +489,7 @@ never to the relay's `x-rcd-file-actor` header.
 
 Owner-only paths: `/api/transport/trust`, `/api/transport/device-certificate`,
 `/api/transport/grants`, `/api/ports`, `/api/port-mappings`, `/api/config`,
-`/api/management`, `/api/settings`. Direct local access (CLI, local mode, server
+`/api/management`, `/api/settings`, `/api/thread-activity`. Direct local access (CLI, local mode, server
 mode) is not subject to strict mode; the trust and bootstrap endpoints answer
 only encrypted tunnel requests.
 

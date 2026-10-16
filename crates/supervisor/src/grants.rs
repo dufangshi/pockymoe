@@ -267,6 +267,8 @@ pub(crate) fn owner_only(path: &str) -> bool {
         || path.starts_with("/api/config")
         || path.starts_with("/api/management")
         || path.starts_with("/api/settings")
+        // Activity across every thread on the device, not one a grant names.
+        || path.starts_with("/api/thread-activity")
 }
 pub(crate) fn authorize_path(
     state: &Supervisor,

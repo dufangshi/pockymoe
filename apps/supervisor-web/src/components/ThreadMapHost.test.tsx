@@ -1,0 +1,95 @@
+import { act, renderHook, waitFor } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ThreadDto, WorkspaceDto } from '@pockymoe/shared';
+import { relayModeActive, request } from '../lib/api';
+import { mapDevice, useThreadMapDevices } from './ThreadMapHost';
+
+vi.mock('../lib/api', () => ({ request: vi.fn(), relayModeActive: vi.fn(() => true) }));
+
+const thread = (id: string, extra: Partial<ThreadDto> = {}): ThreadDto => ({
+  id, workspaceId: 'w1', provider: 'codex', title: id, status: 'idle', ...extra,
+}) as ThreadDto;
+const workspaces = [{ id: 'w1', label: 'app', absPath: '/src/app' }] as WorkspaceDto[];
+
+describe('mapDevice', () => {
+  it('folds agent threads into their root and sums their activity', () => {
+    const device = mapDevice('laptop', 'Laptop', workspaces, [
+      thread('root', { agentId: 'claude-code' }),
+      thread('child', { parentThreadId: 'root', rootThreadId: 'root', status: 'running' }),
+      thread('grandchild', { parentThreadId: 'child', rootThreadId: 'root' }),
+      thread('orphan', { parentThreadId: 'gone', rootThreadId: 'gone', workspaceId: 'w2' }),
+    ], { since: '', hours: 24, threads: [
+      { threadId: 'root', turns: 10, activeMs: 60_000 },
+      { threadId: 'child', turns: 3, activeMs: 120_000 },
+    ] });
+    expect(device.workspaces.map(workspace => workspace.label)).toEqual(['app', 'w2']);
+    expect(device.workspaces[0]!.threads).toEqual([expect.objectContaining({
+      key: 'laptop:root', href: '/devices/laptop/threads/root', agent: 'claude', agentName: 'Claude',
+      running: true, turns: 13, activeMs: 180_000, agentThreads: 2,
+    })]);
+    // An agent thread whose root is gone still shows.
+    expect(device.workspaces[1]!.threads[0]).toMatchObject({ key: 'laptop:orphan', turns: 0, activeMs: 0 });
+  });
+
+  it('leaves turns and run time unknown without activity', () => {
+    const device = mapDevice(null, 'This device', workspaces, [thread('a')], null);
+    expect(device.workspaces[0]!.threads[0]).toMatchObject({ key: 'local:a', href: '/threads/a', turns: null, activeMs: null });
+  });
+});
+
+describe('useThreadMapDevices', () => {
+  beforeEach(() => {
+    vi.mocked(request).mockReset();
+    vi.mocked(relayModeActive).mockReturnValue(true);
+  });
+
+  it('reads every own device once opened, shows offline ones and tolerates old Supervisors', async () => {
+    vi.mocked(request).mockImplementation(async (path) => {
+      const url = String(path);
+      if (url === 'relay/portal') return { devices: [
+        { id: 'laptop', name: 'Laptop', connected: true },
+        { id: 'old', name: 'Old', connected: true },
+        { id: 'server', name: 'Server', connected: false },
+      ] };
+      if (url.endsWith('/api/workspaces')) return workspaces;
+      if (url.includes('/api/threads?')) return [thread(url.includes('/old/') ? 'b' : 'a')];
+      if (url.includes('/old/')) throw new Error('404');
+      return { since: '', hours: 24, threads: [{ threadId: 'a', turns: 5, activeMs: 1000 }] };
+    });
+    const { result, rerender } = renderHook(({ open }) => useThreadMapDevices(open), { initialProps: { open: false } });
+    expect(request).not.toHaveBeenCalled();
+    rerender({ open: true });
+    await waitFor(() => expect(result.current.devices.filter(device => device.state === 'ready')).toHaveLength(2));
+    expect(result.current.devices.map(device => [device.id, device.state])).toEqual([['laptop', 'ready'], ['old', 'ready'], ['server', 'offline']]);
+    expect(result.current.devices[0]!.workspaces[0]!.threads[0]).toMatchObject({ turns: 5, activeMs: 1000 });
+    expect(result.current.devices[1]!.workspaces[0]!.threads[0]).toMatchObject({ turns: null, activeMs: null });
+    expect(vi.mocked(request).mock.calls.map(([path]) => path)).toContain('relay/devices/laptop/api/thread-activity?hours=24');
+    expect(vi.mocked(request).mock.calls.some(([path]) => String(path).includes('/server/'))).toBe(false);
+  });
+
+  it('marks a device it cannot read and retries it on request', async () => {
+    let fail = true;
+    vi.mocked(request).mockImplementation(async (path) => {
+      const url = String(path);
+      if (url === 'relay/portal') return { devices: [{ id: 'laptop', name: 'Laptop', connected: true }] };
+      if (fail) throw new Error('locked');
+      if (url.endsWith('/api/workspaces')) return workspaces;
+      if (url.includes('/api/threads?')) return [thread('a')];
+      return { since: '', hours: 24, threads: [] };
+    });
+    const { result } = renderHook(() => useThreadMapDevices(true));
+    await waitFor(() => expect(result.current.devices[0]?.state).toBe('error'));
+    fail = false;
+    act(() => result.current.retry('laptop'));
+    await waitFor(() => expect(result.current.devices[0]?.state).toBe('ready'));
+  });
+
+  it('reads the local Supervisor outside relay mode', async () => {
+    vi.mocked(relayModeActive).mockReturnValue(false);
+    vi.mocked(request).mockImplementation(async (path) => String(path).includes('activity') ? { since: '', hours: 24, threads: [] } : String(path).includes('threads') ? [thread('a')] : workspaces);
+    const { result } = renderHook(() => useThreadMapDevices(true));
+    await waitFor(() => expect(result.current.devices[0]?.state).toBe('ready'));
+    expect(result.current.devices[0]).toMatchObject({ id: 'local', name: 'This device' });
+    expect(vi.mocked(request).mock.calls.map(([path]) => path)).toEqual(expect.arrayContaining(['api/workspaces', 'api/threads?includeAgentThreads=true', 'api/thread-activity?hours=24']));
+  });
+});

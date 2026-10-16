@@ -203,6 +203,16 @@ pub struct ThreadWorkspaceFilePreviewDto {
     pub next_offset: u64,
 }
 
+/// One thread's activity for the thread map: how many turns it has had and how
+/// long its turns ran inside the requested window.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadActivityDto {
+    pub thread_id: String,
+    pub turns: u32,
+    pub active_ms: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadDto {
