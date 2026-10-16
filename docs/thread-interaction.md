@@ -303,6 +303,14 @@ one minimizes it. Minimized, the tree stays as a strip at the right edge and the
 editor folds into a small tab on the strip's left edge; that tab, the amber control
 or opening another file from the tree brings the editor back.
 
+An item's menu in the tree (its ⋯ button) lists short one-line actions: Download,
+Copy relative path, Copy absolute path, Rename, Delete and Properties. Properties
+shows what a file manager does: the kind, the folder it is in, the size (and a
+loaded folder's item count), when it was created, modified and last opened, its
+permissions and whether it is read-only or a symbolic link. The device's tree
+listing reports the times and permissions; an older Supervisor leaves them out
+and says so.
+
 On a phone, the file list and file viewer have a one-field prompt at the bottom.
 It edits the same draft as the composer, so text typed in either shows in the
 other, and sends it to the thread the files belong to, like Send in the composer,

@@ -1359,10 +1359,10 @@ async fn workspace_tree(
             .unwrap_or_else(|| ".".into()),
         path: rel.replace('\\', "/"),
         kind: "directory".into(),
-        size: None,
         has_children: Some(!nodes.is_empty()),
         children_loaded: Some(true),
         children: Some(nodes),
+        ..Default::default()
     };
     Ok(Json(serde_json::to_value(root).unwrap()))
 }

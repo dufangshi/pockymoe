@@ -192,7 +192,7 @@ button around the icon keeps its label and state (`aria-pressed`,
 | Thread list and tabs | `shortcuts` (section), `shortcut` (thread star), `new-thread`, `thread-tools`, `agents`, `automations`, `split`, `restore`; thread actions `ports`, `share-link`, `sharing`, `download`; thread menu `more`, `open`, `copy`, `rename`, `delete` |
 | Composer | `attach`, attach menu `photo`, `file`; toolbox rows `plan`, `goal`, `fast`, `compact`, `fork`, `skills`, `mcp`, `hooks`, `harness`, `prompt`, `unsupported` (the send button uses `data-send-intent`) |
 | Transcript | `think`, `wait`, `wake`, `copy`, `copied`; timeline `previous-turn`, `latest`, `next-turn` (step icons use the `is-<tone>` classes) |
-| Explorer and files | nodes `folder`, `folder-open`, `folder-link`, `archive`, `image`, `code`, `file`; header `new-file`, `filter`, `collapse-folders`, `refresh`, `more`, `upload`, `delete`, `expand-viewer`, `collapse-explorer`; rows `copy-path`, `copy-absolute-path`, `more`, `download`, `rename`, `delete`; tabs `code`, `close`, `unsaved`; preview `back`, `forward`, `source`, `preview`, `edit`, `save`, `close`, `more`, `expand-explorer`, `collapse-viewer` |
+| Explorer and files | nodes `folder`, `folder-open`, `folder-link`, `archive`, `image`, `code`, `file`; header `new-file`, `filter`, `collapse-folders`, `refresh`, `more`, `upload`, `delete`, `expand-viewer`, `collapse-explorer`; rows `copy-path`, `copy-absolute-path`, `more`, `download`, `rename`, `delete`, `properties`; tabs `code`, `close`, `unsaved`; preview `back`, `forward`, `source`, `preview`, `edit`, `save`, `close`, `more`, `expand-explorer`, `collapse-viewer` |
 | Outer pages | navigation `menu`, `close`, `devices`, `settings`, `help`; workspaces `thread-map`, `import`, `add`, `refresh`, `pin`, `more`, `view-path`, `rename`, `delete` |
 | Dialogs | `close` on every dialog's close button |
 
@@ -226,7 +226,7 @@ when the applied pack lists the flag (`useThemeFeature(flag)`):
 | `composer.richMenus` | Icon rows with descriptions in the slash toolbox and attach menu, a `/` glyph and a paperclip trigger |
 | `composer.intentIcons` | Per-intent send icons, and "Send after this turn" while a turn runs |
 | `transcript.agentByline` | Each reply opens with the agent's avatar and name |
-| `explorer.shortMenuLabels` | Short Explorer row-menu labels; the node name stays in the accessible name |
+| `explorer.shortMenuLabels` | No longer needed: Explorer row-menu labels are always short, with the node name in the accessible name |
 | `code.cssSyntaxPalette` | Code blocks use the CSS-variable Shiki theme (`--shiki-*`) |
 
 ## How it works

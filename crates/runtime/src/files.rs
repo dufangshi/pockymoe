@@ -173,6 +173,33 @@ fn resolve_existing_ancestor(path: &Path) -> Result<PathBuf> {
     }
 }
 
+fn timestamp(time: io::Result<std::time::SystemTime>) -> Option<String> {
+    time.ok()
+        .map(|time| chrono::DateTime::<chrono::Utc>::from(time).to_rfc3339())
+}
+
+#[cfg(unix)]
+fn permission_bits(meta: &std::fs::Metadata) -> Option<String> {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = meta.permissions().mode();
+    Some(
+        (0..9)
+            .map(|bit| {
+                if mode & (0o400 >> bit) == 0 {
+                    '-'
+                } else {
+                    ['r', 'w', 'x'][bit % 3]
+                }
+            })
+            .collect(),
+    )
+}
+
+#[cfg(not(unix))]
+fn permission_bits(_meta: &std::fs::Metadata) -> Option<String> {
+    None
+}
+
 pub fn list_tree(root: &Path, rel: &str) -> Result<Vec<ThreadWorkspaceTreeNodeDto>> {
     let dir = assert_within(root, &PathBuf::from(rel))?;
     if !dir.is_dir() {
@@ -184,9 +211,10 @@ pub fn list_tree(root: &Path, rel: &str) -> Result<Vec<ThreadWorkspaceTreeNodeDt
         let name = entry.file_name().to_string_lossy().into_owned();
         let path = PathBuf::from(rel).join(&name);
         let mut meta = entry.metadata()?;
+        let symlink = meta.file_type().is_symlink();
         // List a symbolic link as what it points to when that stays inside the
         // workspace; others (outside, missing or looping) stay plain entries.
-        if meta.file_type().is_symlink() {
+        if symlink {
             if let Ok(target) = assert_within(root, &path) {
                 if let Ok(resolved) = std::fs::metadata(&target) {
                     meta = resolved;
@@ -203,6 +231,12 @@ pub fn list_tree(root: &Path, rel: &str) -> Result<Vec<ThreadWorkspaceTreeNodeDt
             } else {
                 None
             },
+            modified_at: timestamp(meta.modified()),
+            created_at: timestamp(meta.created()),
+            accessed_at: timestamp(meta.accessed()),
+            mode: permission_bits(&meta),
+            readonly: Some(meta.permissions().readonly()),
+            symlink: symlink.then_some(true),
             has_children: Some(meta.is_dir()),
             children_loaded: Some(false),
             children: None,
@@ -536,6 +570,32 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::tempdir;
+
+    #[test]
+    fn tree_entries_carry_their_times_and_permissions() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("notes.md"), "hello").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(
+                dir.path().join("notes.md"),
+                fs::Permissions::from_mode(0o640),
+            )
+            .unwrap();
+        }
+        let nodes = list_tree(dir.path(), ".").unwrap();
+        let note = nodes.iter().find(|node| node.name == "notes.md").unwrap();
+        assert_eq!(note.size, Some(5));
+        assert!(note
+            .modified_at
+            .as_deref()
+            .is_some_and(|at| chrono::DateTime::parse_from_rfc3339(at).is_ok()));
+        assert_eq!(note.readonly, Some(false));
+        assert_eq!(note.symlink, None);
+        #[cfg(unix)]
+        assert_eq!(note.mode.as_deref(), Some("rw-r-----"));
+    }
 
     #[test]
     fn create_file_is_exclusive_and_requires_a_valid_existing_parent() {

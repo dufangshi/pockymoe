@@ -180,7 +180,7 @@ pub struct UpdateWorkspaceSettingsInput {
     pub default_backend: Option<Provider>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadWorkspaceTreeNodeDto {
     pub name: String,
@@ -188,6 +188,21 @@ pub struct ThreadWorkspaceTreeNodeDto {
     pub kind: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub size: Option<u64>,
+    /// When the entry was last modified, created (where the file system records
+    /// it) and last read, as RFC 3339; for the explorer's Properties.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub modified_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub accessed_at: Option<String>,
+    /// Unix permission bits such as "rw-r--r--"; absent where there are none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub readonly: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub symlink: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub has_children: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]

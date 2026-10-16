@@ -785,6 +785,14 @@ export interface ThreadWorkspaceTreeNodeDto {
   path: string;
   kind: 'file' | 'directory';
   size?: number;
+  /** RFC 3339 times and permissions, for the explorer's Properties (newer devices). */
+  modifiedAt?: string;
+  createdAt?: string;
+  accessedAt?: string;
+  /** Unix permission bits such as "rw-r--r--". */
+  mode?: string;
+  readonly?: boolean;
+  symlink?: boolean;
   hasChildren?: boolean;
   childrenLoaded?: boolean;
   truncated?: boolean;
