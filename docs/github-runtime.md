@@ -12,6 +12,9 @@ matching versioned Rust executable, verifies SHA256 and its `version`, then runs
 `setup`. Native setup downloads and verifies the same release's Web bundle. Linux
 requires glibc 2.28 or newer; supported targets are Linux x64/ARM64, Apple Silicon,
 and Windows x64. Downloads report progress; failures identify the failed stage.
+Without relay arguments the same scripts run `setup --local`
+([local mode](local-mode.md)), which keeps `~/.remote-codex/local-supervisor.json`
+and its own service next to any relay device.
 
 The native installer preserves `~/.remote-codex/relay-supervisor.json`, its database,
 credentials and transport identity. An unrelated occupied port or mismatched device

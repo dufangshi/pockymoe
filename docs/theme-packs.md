@@ -170,7 +170,30 @@ Monaco editor and diff view; `--shiki-*` for code blocks with the
   (also `thread-jump-latest-badge`, its old name) with `data-following`; the
   drawer's `data-dragging` while it follows a finger; the composer-and-dock panel paints
   `--matter-dock-surface` and `--matter-dock-edge` (default `--matter-chrome`
-  and `--theme-border`).
+  and `--theme-border`);
+- icons: `data-icon="<name>"` on the icon `<svg>` names what it stands for, so a
+  pack can draw its own glyph as a mask over `currentColor` (see below).
+
+**Icon names.** The same name means the same thing wherever it appears; the
+button around the icon keeps its label and state (`aria-pressed`,
+`aria-expanded`), and a filled shortcut star keeps `fill="currentColor"`.
+
+| Area | Names |
+| --- | --- |
+| Rail and top bar | `sidebar`, `back`, `forward`, `home`, `search`, `chat`, `terminal`, `explorer`, `harness-panel`, `settings`, `notifications`, `help`, `close`; device monitor `cpu`, `memory`, `gpu` |
+| Thread list and tabs | `shortcuts` (section), `shortcut` (thread star), `new-thread`, `thread-tools`, `agents`, `automations`, `split`, `restore`; thread actions `ports`, `share-link`, `sharing`, `download`; thread menu `more`, `open`, `copy`, `rename`, `delete` |
+| Composer | `attach`, attach menu `photo`, `file`; toolbox rows `plan`, `goal`, `fast`, `compact`, `fork`, `skills`, `mcp`, `hooks`, `harness`, `prompt`, `unsupported` (the send button uses `data-send-intent`) |
+| Transcript | `think`, `wait`, `wake`, `copy`, `copied`; timeline `previous-turn`, `latest`, `next-turn` (step icons use the `is-<tone>` classes) |
+| Explorer and files | nodes `folder`, `folder-open`, `folder-link`, `archive`, `image`, `code`, `file`; header `new-file`, `filter`, `collapse-folders`, `refresh`, `more`, `upload`, `delete`, `expand-viewer`, `collapse-explorer`; rows `copy-path`, `copy-absolute-path`, `more`, `download`, `rename`, `delete`; tabs `code`, `close`, `unsaved`; preview `back`, `forward`, `source`, `preview`, `edit`, `save`, `close`, `more`, `expand-explorer`, `collapse-viewer` |
+| Outer pages | navigation `menu`, `close`, `devices`, `settings`, `help`; workspaces `import`, `add`, `refresh`, `pin`, `more`, `view-path`, `rename`, `delete` |
+| Dialogs | `close` on every dialog's close button |
+
+A pack replaces a glyph like this; the lucide paths inside stay in the markup:
+
+```css
+:theme svg[data-icon='back'] { background: currentColor; mask: var(--my-back) center / contain no-repeat; }
+:theme svg[data-icon='back'] > * { display: none; }
+```
 
 ### Agent art
 

@@ -25,12 +25,14 @@ import {
   useLocation,
 } from 'react-router-dom';
 import { useEffect, useLayoutEffect, useMemo, useState, type ReactNode } from 'react';
-import { PluginProvider } from '@pockymoe/thread-ui';
+import { PluginProvider, type PluginSettingsSnapshot } from '@pockymoe/thread-ui';
 
 import type {
   AgentBackendIdDto,
   AuthSessionDto,
   RelaySessionDto,
+  ImportPluginInput,
+  UpdatePluginInput,
 } from '../../../packages/shared/src/index';
 import {
   defaultAgentBackendId,
@@ -65,6 +67,9 @@ import {
   deletePlugin,
   fetchAuthSession,
   fetchPlugins,
+  readSelectedRelayDeviceId,
+  loadPluginSettings,
+  savePluginSettings,
   fetchRelaySession,
   importPlugin,
   login,
@@ -83,18 +88,22 @@ const BACKEND_STORAGE_KEY = 'remote-codex-default-backend';
 
 function RoutePluginProvider({ children }: { children: ReactNode }) {
   const { locale: i18nLocale } = useI18n();
+  const location = useLocation();
+  const deviceId = relayDeviceIdFromPath(location.pathname) ?? (relayModeActive() ? readSelectedRelayDeviceId() ?? undefined : null);
   const adapter = useMemo(
     () => ({
-      fetchPlugins,
-      importPlugin,
-      updatePlugin,
-      deletePlugin,
+      fetchPlugins: () => fetchPlugins(deviceId),
+      loadPluginSettings: (id: string) => loadPluginSettings(id, deviceId),
+      savePluginSettings: (id: string, settings: PluginSettingsSnapshot) => savePluginSettings(id, settings, deviceId),
+      importPlugin: (input: ImportPluginInput) => importPlugin(input, deviceId),
+      updatePlugin: (id: string, input: UpdatePluginInput) => updatePlugin(id, input, deviceId),
+      deletePlugin: (id: string) => deletePlugin(id, deviceId),
     }),
-    [],
+    [deviceId],
   );
 
   return (
-    <PluginProvider adapter={adapter} builtinPlugins={builtinFrontendPlugins}>
+    <PluginProvider key={deviceId ?? 'default'} adapter={adapter} builtinPlugins={builtinFrontendPlugins}>
       {children}
     </PluginProvider>
   );
@@ -505,7 +514,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
             {state.error}
           </div>
         )}
-        <LoginPage onLogin={handleLogin} />
+        <LoginPage onLogin={handleLogin} passcode={state.session.passcode === true} />
       </>
     );
   }
@@ -567,7 +576,8 @@ function RelayGate({ children }: { children: React.ReactNode }) {
 
 function SupervisorAccessGate({ children }: { children: React.ReactNode }) {
   const { locale: i18nLocale } = useI18n();
-  return relayModeActive() ? <RelayGate>{children}</RelayGate> : <AuthGate>{children}</AuthGate>;
+  const content = <RoutePluginProvider>{children}</RoutePluginProvider>;
+  return relayModeActive() ? <RelayGate>{content}</RelayGate> : <AuthGate>{content}</AuthGate>;
 }
 
 function RootRoute() {
@@ -690,7 +700,6 @@ export function App() {
         <DocumentTitleUpdater />
         <AccountUnlockPrompt />
         <DeviceEnrollmentMonitor />
-        <RoutePluginProvider>
           <Routes>
             <Route path="/shared" element={<SharedInvitePage />} />
             <Route path="/devices/:deviceId/ports/:mappingId" element={<RelayGate><PortPreviewPage /></RelayGate>} />
@@ -713,7 +722,6 @@ export function App() {
               }
             />
           </Routes>
-        </RoutePluginProvider>
         </WorkspaceDocumentNavigationGuard>
       </BrowserRouter>
     </div>

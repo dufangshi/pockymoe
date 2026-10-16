@@ -142,11 +142,25 @@ execution duration or DST. Dates require RFC3339 with an offset. There is no cro
 DST wall-clock scheduler, cross-device schedule or arbitrary PTY command observer.
 
 Typed conditions: `all/any {conditions}`, `not {condition}`, `statusIn {values}`,
-`exitCodeEquals {value}`, `workspaceId {value}`, `commandId {value}`. Conditions
+`exitCodeEquals {value}`, `workspaceId {value}`, `commandId {value}`,
+`replyLengthAtLeast {chars}`. The reply condition counts Unicode characters in
+the closing reply's prose, excluding fenced and inline code; it is false without
+a closing reply. Conditions
 never run shell/JavaScript. Exit-code equality requires a known exit code and a
 `completed` or `failed` status, so a normal nonzero exit can match its exact code;
 unknown exits/timeouts never match. Condition nesting is capped
 at eight levels. Script argv/output are available only with existing control access.
+
+Trusted built-in plugins can declare `pluginAction {pluginId, action, input,
+timeoutSeconds}` actions. The Supervisor validates the registered action, plugin
+availability and enabled state before acceptance. Execution waits for an idle
+target, uses an immutable settings snapshot, and records bounded output in the
+same run ledger. Settings snapshots remain private. Plugin actions have a device
+limit of four concurrent invocations and one per plugin, with a timeout of 1–300
+seconds. Disable cancels pending invocations; accepted running invocations may
+finish. Restart marks unfinished invocations `uncertain` without retrying them.
+See [built-in plugins](builtin-plugins.md) for extension and manual-action APIs,
+and [Content Quality](content-quality.md) for the reply and document editor.
 
 Default `missedRunPolicy` is `coalesceLatest`, `maxLatenessSeconds` is 86400.
 Optional `skip` skips accumulated missed ticks. Busy/downtime intervals advance

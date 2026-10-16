@@ -657,7 +657,7 @@ pub(crate) fn closing_message(
              WHERE thread_id=?1 AND turn_id=?2
                AND json_extract(item_json,'$.kind')='agentMessage'
                AND trim(coalesce(json_extract(item_json,'$.text'),'')) <> ''
-             ORDER BY created_at DESC LIMIT 1",
+             ORDER BY CASE json_extract(item_json,'$.responsePhase') WHEN 'final' THEN 0 ELSE 1 END, created_at DESC, rowid DESC LIMIT 1",
             params![thread, turn],
             |row| row.get(0),
         )

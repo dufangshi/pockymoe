@@ -74,6 +74,18 @@ pub(crate) async fn run(
                 json!({"hostMode":state.config.host_mode,"hostCapabilities":state.host_capabilities,"deviceId":state.db.host_id,"relayDeviceId":identity.as_ref().map(|i| &i.device_id),"deviceName":identity.as_ref().map(|i| &i.device_name)}),
             )
         }
+        // Recovery for a forgotten local passcode needs the machine owner's own
+        // CLI credentials; a thread's scoped token cannot change it.
+        "passcodeStatus" | "passcodeOff" => {
+            anyhow::ensure!(
+                caller.is_none(),
+                "Only the computer's owner can change the passcode"
+            );
+            if input["operation"] == "passcodeOff" {
+                crate::auth::set_passcode(state, None)?;
+            }
+            Ok(json!({"passcode": crate::auth::local_passcode(state).is_some()}))
+        }
         "skill" => Ok(json!({
             "version": pockymoe_protocol::APP_VERSION,
             "text": pockymoe_protocol::THREAD_INTERACTION_SKILL,

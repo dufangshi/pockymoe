@@ -8,11 +8,14 @@ import { ApiError } from '../lib/api';
 
 export function LoginPage({
   eyebrow = translate("auth.supervisorAccess"),
-  description = translate("auth.adminCredentialDescription"),
+  description,
+  passcode = false,
   onLogin,
 }: {
   eyebrow?: string;
   description?: string;
+  /** Local mode: the passcode alone, no username. */
+  passcode?: boolean;
   onLogin: (input: { username: string; password: string }) => Promise<void>;
 }) {
   useI18n();
@@ -32,7 +35,11 @@ export function LoginPage({
         password,
       });
     } catch (caught) {
-      if (caught instanceof ApiError) {
+      if (caught instanceof ApiError && passcode && caught.statusCode === 401) {
+        setError(translate("auth.passcodeWrong"));
+      } else if (caught instanceof ApiError && passcode && caught.statusCode === 429) {
+        setError(translate("auth.passcodeRateLimited"));
+      } else if (caught instanceof ApiError) {
         setError(caught.payload.message);
       } else {
         setError(translate("auth.unableToSignIn"));
@@ -54,14 +61,14 @@ export function LoginPage({
             </div>
           </div>
           <h1 className="mt-2 text-2xl font-semibold tracking-normal text-[var(--theme-fg)]">
-            {translate("auth.signIn")}</h1>
+            {translate(passcode ? "auth.passcodeTitle" : "auth.signIn")}</h1>
           <p className="mt-2 text-sm leading-6 text-[var(--theme-fg-muted)]">
-            {description}
+            {description ?? translate(passcode ? "auth.passcodeDescription" : "auth.adminCredentialDescription")}
           </p>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
-          <label className="block">
+          {!passcode && <label className="block">
             <span className="text-sm font-medium text-[var(--theme-fg-soft)]">
               {translate("auth.username")}</span>
             <input
@@ -76,14 +83,15 @@ export function LoginPage({
               }}
               value={username}
             />
-          </label>
+          </label>}
 
           <label className="block">
             <span className="text-sm font-medium text-[var(--theme-fg-soft)]">
-              {translate("auth.password")}</span>
+              {translate(passcode ? "auth.passcodeLabel" : "auth.password")}</span>
             <span className="relative mt-2 block">
               <input
                 autoComplete="current-password"
+                autoFocus={passcode}
                 className="host-form-control h-11 w-full rounded-md border px-3 pr-12 text-sm outline-none transition"
                 disabled={submitting}
                 name="password"
@@ -114,7 +122,7 @@ export function LoginPage({
 
           <button
             className="ui-action-primary h-11 w-full rounded-md px-4 text-sm font-semibold transition disabled:cursor-not-allowed"
-            disabled={submitting || !username.trim() || !password}
+            disabled={submitting || (!passcode && !username.trim()) || !password}
             type="submit"
           >
             {submitting ? translate("auth.signingIn") : translate("auth.signIn")}

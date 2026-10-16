@@ -19,6 +19,87 @@ async fn spawn_supervisor(
 }
 
 #[tokio::test]
+async fn builtin_plugin_settings_http_are_versioned_and_validate_registry() {
+    let (_dir, port, _) = spawn_supervisor(vec![Provider::Codex]).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://127.0.0.1:{port}/api/plugins");
+    let plugins = client
+        .get(&base)
+        .send()
+        .await
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap();
+    assert!(plugins
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|p| p["id"] == "pockymoe.content-quality" && p["enabled"] == false));
+    let settings = format!("{base}/pockymoe.content-quality/settings");
+    let response = client.get(&settings).send().await.unwrap();
+    assert_eq!(response.headers()["cache-control"], "no-store");
+    let snapshot = response.json::<Value>().await.unwrap();
+    let mut changed = snapshot.clone();
+    changed["values"]["preset"] = json!("technical");
+    let saved = client.put(&settings).json(&changed).send().await.unwrap();
+    assert!(saved.status().is_success());
+    let saved = saved.json::<Value>().await.unwrap();
+    assert_eq!(saved["revision"], 1);
+    assert_eq!(saved["values"]["preset"], "technical");
+    assert_eq!(
+        client
+            .put(&settings)
+            .json(&changed)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        409
+    );
+    let mut invalid = saved;
+    invalid["values"]["preset"] = json!("invented");
+    assert_eq!(
+        client
+            .put(&settings)
+            .json(&invalid)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        400
+    );
+    assert_eq!(
+        client
+            .get(format!("{base}/missing/settings"))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        404
+    );
+    assert_eq!(
+        client
+            .post(format!("{base}/import"))
+            .json(&json!({"manifest":{}}))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        501
+    );
+    assert_eq!(
+        client
+            .delete(format!("{base}/pockymoe.content-quality"))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        409
+    );
+}
+
+#[tokio::test]
 async fn explorer_create_file_never_overwrites_and_can_be_opened_as_document() {
     let (_dir, port, root) = spawn_supervisor(vec![Provider::Codex]).await;
     let client = reqwest::Client::new();
@@ -284,7 +365,7 @@ async fn native_subagent_http_supports_direct_claude_without_acp_agent_id() {
     )
     .unwrap();
     let result = json!({"type":"assistant","agentId":"a123","timestamp":"2026-10-09T00:00:01Z","message":{"id":"msg-1","model":"claude-sonnet-4-5","stop_reason":"end_turn","usage":{"input_tokens":100,"output_tokens":10},"content":[{"type":"text","text":"Native review complete"}]}});
-    std::fs::write(child, format!("{result}\n")).unwrap();
+    std::fs::write(&child, format!("{result}\n")).unwrap();
     let list = json(
         &client,
         client.get(format!("{base}/api/threads/{id}/subagents")),
@@ -299,6 +380,50 @@ async fn native_subagent_http_supports_direct_claude_without_acp_agent_id() {
     )
     .await;
     assert_eq!(detail["items"][0]["text"], "Native review complete");
+
+    // A resumed task can be stopped by session teardown without a tool-use-id
+    // or a final assistant message. Both list and detail must stop its timer.
+    use std::io::Write;
+    let resumed = json!({"type":"assistant","agentId":"a123","timestamp":"2026-10-09T00:00:02Z","message":{"stop_reason":"tool_use","content":[]}});
+    writeln!(
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&child)
+            .unwrap(),
+        "{resumed}"
+    )
+    .unwrap();
+    let notice = json!({"type":"user","sessionId":raw_session,"timestamp":"2026-10-09T00:00:03Z","origin":{"kind":"task-notification"},"message":{"content":"<task-notification><task-id>a123</task-id><status>stopped</status></task-notification>"}});
+    writeln!(
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&parent)
+            .unwrap(),
+        "{notice}"
+    )
+    .unwrap();
+    let list = json(
+        &client,
+        client.get(format!("{base}/api/threads/{id}/subagents")),
+    )
+    .await;
+    assert!(list["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|agent| agent["status"] != "running"));
+    assert_eq!(list["agents"][0]["status"], "interrupted");
+    assert_eq!(list["agents"][0]["completedAt"], "2026-10-09T00:00:03Z");
+    let detail = json(
+        &client,
+        client.get(format!("{base}/api/threads/{id}/subagents/toolu-1")),
+    )
+    .await;
+    assert_eq!(detail["agent"]["status"], "interrupted");
+    assert_eq!(
+        detail["agent"]["completedAt"],
+        list["agents"][0]["completedAt"]
+    );
 }
 
 #[tokio::test]

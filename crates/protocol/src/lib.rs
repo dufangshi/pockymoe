@@ -130,6 +130,9 @@ pub struct AuthSessionDto {
     pub expires_at: Option<String>,
     pub mode: Mode,
     pub auth_required: bool,
+    /// Local mode with a passcode: browsers sign in with the passcode alone.
+    #[serde(default)]
+    pub passcode: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -827,6 +830,10 @@ pub struct PluginDto {
     pub enabled: bool,
     pub source: Option<String>,
     pub available: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unavailable_reason_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unavailable_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

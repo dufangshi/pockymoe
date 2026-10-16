@@ -410,9 +410,26 @@ impl Client {
     pub fn new(c: Connection) -> Result<Self> {
         let path = match c.cli_config {
             Some(path) => path,
-            None => pockymoe_runtime::RuntimeConfig::from_env()?
-                .database_url
-                .with_extension("cli.json"),
+            None => {
+                // The configured Supervisor, else a local-mode install, else
+                // the relay device installed by setup.
+                let configured = pockymoe_runtime::RuntimeConfig::from_env()?
+                    .database_url
+                    .with_extension("cli.json");
+                let home = std::env::var_os("HOME")
+                    .or_else(|| std::env::var_os("USERPROFILE"))
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_default()
+                    .join(".remote-codex");
+                [
+                    configured.clone(),
+                    home.join("supervisor.cli.json"),
+                    home.join("relay-supervisor.cli.json"),
+                ]
+                .into_iter()
+                .find(|path| path.is_file())
+                .unwrap_or(configured)
+            }
         };
         let saved: Value = std::fs::read(path)
             .ok()

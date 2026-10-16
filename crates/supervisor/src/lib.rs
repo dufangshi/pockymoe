@@ -9,6 +9,8 @@ mod host_policy;
 mod http;
 mod interaction;
 mod linked_files;
+#[cfg(test)]
+mod local_passcode_tests;
 mod management;
 mod owner_trust;
 mod preview_cli;
@@ -17,6 +19,7 @@ mod peer_api;
 mod peer_files;
 mod peer_link;
 mod peer_send;
+mod plugins;
 mod ports;
 mod secure_transport;
 mod shells;

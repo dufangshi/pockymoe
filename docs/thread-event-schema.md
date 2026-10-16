@@ -55,6 +55,14 @@ and `text`; optional fields include `createdAt`, `previewText`, `detailText`,
 top-level fields in the flattened `extra` map, including provider metadata,
 background-wait information, file-change details and deferred-detail markers.
 
+The optional Content Quality plugin attaches `polishedReply` to a completed
+`agentMessage`: `{text, preset, language, model, sourceHash, createdAt,
+requestHash}`. The original `text` remains authoritative. `sourceHash` is the
+SHA-256 of its UTF-8 bytes; consumers show the derivative only while this hash
+matches. A saved derivative emits `thread.item.completed` for the same item.
+This presentation field does not create another agent turn or alter provider
+history. Consumers without the enabled plugin continue to display the original.
+
 | Kind | Meaning |
 | --- | --- |
 | `userMessage` | User prompt |

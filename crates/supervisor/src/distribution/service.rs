@@ -50,7 +50,35 @@ fn unit(value: &str) -> String {
             .replace('\r', "\\r")
     )
 }
+/// The device configuration of a local-mode install, next to the relay device's.
+pub const LOCAL_CONFIG_FILE: &str = "local-supervisor.json";
+
+/// Names of one installed Supervisor service. A relay device keeps the names it
+/// always had; a local-mode install has its own, so both can run side by side.
+struct ServiceId {
+    systemd: &'static str,
+    launchd: &'static str,
+    log: &'static str,
+}
+
+fn service_id(config: &Path) -> ServiceId {
+    if config.file_name().and_then(|name| name.to_str()) == Some(LOCAL_CONFIG_FILE) {
+        ServiceId {
+            systemd: "pockymoe-local.service",
+            launchd: "com.pockymoe.local",
+            log: "local-supervisor.log",
+        }
+    } else {
+        ServiceId {
+            systemd: "remote-codex-supervisor.service",
+            launchd: "com.remote-codex.supervisor",
+            log: "relay-supervisor.log",
+        }
+    }
+}
+
 pub fn definition(manager: &str, installed: &Installed, config: &Path) -> String {
+    let id = service_id(config);
     let args = [
         installed.executable.to_string_lossy().into_owned(),
         "device-run".into(),
@@ -61,7 +89,7 @@ pub fn definition(manager: &str, installed: &Installed, config: &Path) -> String
     // PATH, so agent CLIs stay discoverable under the service manager.
     let path = std::env::var("PATH").unwrap_or_default();
     if manager == "launchd" {
-        format!("<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>Label</key><string>com.remote-codex.supervisor</string><key>ProgramArguments</key><array>{}</array><key>EnvironmentVariables</key><dict><key>PATH</key><string>{}</string><key>POCKYMOE_MANAGED_SERVICE</key><string>launchd</string></dict><key>WorkingDirectory</key><string>{}</string><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>StandardOutPath</key><string>{}</string><key>StandardErrorPath</key><string>{}</string></dict></plist>", args.iter().map(|a| format!("<string>{}</string>", xml(a))).collect::<String>(), xml(&path), xml(&home().to_string_lossy()), xml(&log_path().to_string_lossy()), xml(&log_path().to_string_lossy()))
+        format!("<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>Label</key><string>{}</string><key>ProgramArguments</key><array>{}</array><key>EnvironmentVariables</key><dict><key>PATH</key><string>{}</string><key>POCKYMOE_MANAGED_SERVICE</key><string>launchd</string></dict><key>WorkingDirectory</key><string>{}</string><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>StandardOutPath</key><string>{}</string><key>StandardErrorPath</key><string>{}</string></dict></plist>", xml(id.launchd), args.iter().map(|a| format!("<string>{}</string>", xml(a))).collect::<String>(), xml(&path), xml(&home().to_string_lossy()), xml(&log_path(config).to_string_lossy()), xml(&log_path(config).to_string_lossy()))
     } else {
         // Interactive shells from Web terminals ignore SIGTERM; without a short
         // stop timeout systemd waits 90s before killing them, and the device
@@ -69,8 +97,10 @@ pub fn definition(manager: &str, installed: &Installed, config: &Path) -> String
         format!("[Unit]\nDescription=Pockymoe Supervisor\nAfter=network-online.target\n[Service]\nType=simple\nExecStart={}\nWorkingDirectory=%h\nEnvironment={}\nEnvironment=POCKYMOE_MANAGED_SERVICE=systemd-user\nRestart=always\nRestartSec=5\nTimeoutStopSec=15\nUnsetEnvironment=POCKYMOE_ENROLL_SECRET POCKYMOE_ENROLL\n[Install]\nWantedBy=default.target\n", args.iter().map(|a| unit(a)).collect::<Vec<_>>().join(" "), environment_value(&format!("PATH={path}")))
     }
 }
-pub fn log_path() -> PathBuf {
-    home().join(".remote-codex/logs/relay-supervisor.log")
+pub fn log_path(config: &Path) -> PathBuf {
+    home()
+        .join(".remote-codex/logs")
+        .join(service_id(config).log)
 }
 pub fn detect() -> Option<String> {
     if cfg!(target_os = "macos") {
@@ -81,15 +111,16 @@ pub fn detect() -> Option<String> {
         None
     }
 }
-fn service_path(manager: &str) -> PathBuf {
+fn service_path(manager: &str, config: &Path) -> PathBuf {
+    let id = service_id(config);
     if manager == "launchd" {
-        home().join("Library/LaunchAgents/com.remote-codex.supervisor.plist")
+        home().join(format!("Library/LaunchAgents/{}.plist", id.launchd))
     } else {
-        home().join(".config/systemd/user/remote-codex-supervisor.service")
+        home().join(".config/systemd/user").join(id.systemd)
     }
 }
 pub fn install(manager: &str, installed: &Installed, config: &Path) -> Result<()> {
-    let file = service_path(manager);
+    let file = service_path(manager, config);
     private_dir(file.parent().unwrap())?;
     std::fs::write(&file, definition(manager, installed, config))?;
     #[cfg(unix)]
@@ -97,7 +128,7 @@ pub fn install(manager: &str, installed: &Installed, config: &Path) -> Result<()
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600))?;
     }
-    private_dir(log_path().parent().unwrap())?;
+    private_dir(log_path(config).parent().unwrap())?;
     if manager == "systemd-user" {
         ensure!(
             command("systemctl", &["--user", "daemon-reload"]),
@@ -114,11 +145,15 @@ pub fn refresh(manager: &str, installed: &Installed, config: &Path) -> Result<bo
     if manager != "systemd-user" {
         return Ok(false);
     }
+    rewrite(manager, installed, config)
+}
+/// Rewrite an existing service definition that differs; it applies at the next start.
+pub fn rewrite(manager: &str, installed: &Installed, config: &Path) -> Result<bool> {
     let changed = rewrite_if_changed(
-        &service_path(manager),
+        &service_path(manager, config),
         &definition(manager, installed, config),
     )?;
-    if changed {
+    if changed && manager == "systemd-user" {
         ensure!(
             command("systemctl", &["--user", "daemon-reload"]),
             "Unable to reload systemd user service"
@@ -133,29 +168,38 @@ fn rewrite_if_changed(file: &Path, wanted: &str) -> Result<bool> {
     write_bytes(file, wanted.as_bytes())?;
     Ok(true)
 }
-pub fn manage(manager: &str, action: &str) -> Result<()> {
+pub fn manage(manager: &str, action: &str, config: &Path) -> Result<()> {
+    let id = service_id(config);
+    if action == "restart" {
+        // Pick up a new release or configuration of a running service.
+        let ok = match manager {
+            "systemd-user" => command("systemctl", &["--user", "restart", id.systemd]),
+            "launchd" => {
+                let domain = format!("gui/{}", uid()?);
+                command(
+                    "/bin/launchctl",
+                    &["bootout", &format!("{domain}/{}", id.launchd)],
+                );
+                command(
+                    "/bin/launchctl",
+                    &[
+                        "bootstrap",
+                        &domain,
+                        &service_path(manager, config).to_string_lossy(),
+                    ],
+                )
+            }
+            _ => bail!("Unknown service manager"),
+        };
+        ensure!(ok, "Unable to restart the Supervisor service");
+        return Ok(());
+    }
     let ok = match manager {
         "systemd-user" => {
             if action == "start" {
-                command(
-                    "systemctl",
-                    &[
-                        "--user",
-                        "enable",
-                        "--now",
-                        "remote-codex-supervisor.service",
-                    ],
-                )
+                command("systemctl", &["--user", "enable", "--now", id.systemd])
             } else {
-                command(
-                    "systemctl",
-                    &[
-                        "--user",
-                        "stop",
-                        "--no-block",
-                        "remote-codex-supervisor.service",
-                    ],
-                )
+                command("systemctl", &["--user", "stop", "--no-block", id.systemd])
             }
         }
         "launchd" => {
@@ -163,7 +207,7 @@ pub fn manage(manager: &str, action: &str) -> Result<()> {
             if action == "stop" {
                 command(
                     "/bin/launchctl",
-                    &["bootout", &format!("{domain}/com.remote-codex.supervisor")],
+                    &["bootout", &format!("{domain}/{}", id.launchd)],
                 )
             } else {
                 command(
@@ -171,7 +215,7 @@ pub fn manage(manager: &str, action: &str) -> Result<()> {
                     &[
                         "bootstrap",
                         &domain,
-                        &service_path(manager).to_string_lossy(),
+                        &service_path(manager, config).to_string_lossy(),
                     ],
                 )
             }
@@ -188,6 +232,13 @@ pub fn alive(pid: u32) -> bool {
             .output()
             .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains(&format!("\"{pid}\"")))
     } else {
+        // An init that does not reap children (a container's `sleep`) leaves a
+        // stopped Supervisor as a zombie, which `kill -0` still reports.
+        if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            return stat
+                .rsplit_once(')')
+                .is_none_or(|(_, rest)| !rest.trim_start().starts_with('Z'));
+        }
         command("kill", &["-0", &pid.to_string()])
     }
 }
@@ -340,7 +391,7 @@ pub fn independent(
 pub fn start(installed: &Installed, config: &Path, manager: Option<&str>) -> Result<()> {
     if let Some(manager) = manager {
         install(manager, installed, config)?;
-        manage(manager, "start")
+        manage(manager, "start", config)
     } else {
         independent(
             &installed.executable,
@@ -350,7 +401,7 @@ pub fn start(installed: &Installed, config: &Path, manager: Option<&str>) -> Res
                 config.to_string_lossy().into_owned(),
             ],
             &BTreeMap::new(),
-            &log_path(),
+            &log_path(config),
         )
     }
 }
@@ -552,6 +603,23 @@ mod tests {
         assert!(rewrite_if_changed(&unit, "new").unwrap());
         assert_eq!(std::fs::read_to_string(&unit).unwrap(), "new");
         assert!(!rewrite_if_changed(&unit, "new").unwrap());
+    }
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_exited_process_that_was_not_reaped_is_not_alive() {
+        let mut child = Command::new("sleep").arg("30").spawn().unwrap();
+        let pid = child.id();
+        assert!(alive(pid));
+        stop(pid).unwrap();
+        // Not waited for yet: the process stays a zombie, as under a container init.
+        for _ in 0..50 {
+            if !alive(pid) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        assert!(!alive(pid));
+        child.wait().unwrap();
     }
     #[test]
     fn native_service_quotes_paths_and_omits_device_credentials() {

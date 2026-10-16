@@ -1,6 +1,7 @@
 import { useHostScope } from '../lib/hostCapabilities';
 import {
   ThreadCards,
+  usePlugins,
   ThreadWorkspaceLayout as SharedThreadWorkspaceLayout,
 } from '@pockymoe/thread-ui';
 import type { ComponentProps } from 'react';
@@ -39,6 +40,7 @@ export function ThreadWorkspaceLayout({
   ...props
 }: ThreadWorkspaceLayoutProps) {
   const navigate = useNavigate();
+  const plugins = usePlugins();
   const hostScope = useHostScope();
   const location = useLocation();
   const deviceId = relayDeviceIdFromPath(location.pathname) ?? 'local';
@@ -55,7 +57,7 @@ export function ThreadWorkspaceLayout({
       restrictedNavigation={Boolean(hostScope)}
       deviceMonitor={hostScope ? null : <><DeviceMonitor key={deviceId} /><TourLauncherButton /></>}
       workspaceReturnHref={appUrl(props.workspaceReturnHref ?? currentWorkspacesHref())}
-      settingsSections={props.settingsSections ?? appSettingsSections()}
+      settingsSections={props.settingsSections ?? appSettingsSections(plugins.getSettingsSections())}
       {...(effectiveTheme ? { effectiveTheme } : {})}
       {...(themeMode ? { themeMode } : {})}
       {...(onThemeModeChange ? { onThemeModeChange } : {})}

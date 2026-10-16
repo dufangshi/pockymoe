@@ -30,6 +30,10 @@ struct ContextData {
     port: u16,
     host: String,
     relay: bool,
+    /// Started from a device configuration (`device-run --config`): a relay
+    /// device or a local-mode install with its own service.
+    #[serde(default)]
+    device: bool,
     config: PathBuf,
     manager: Option<String>,
     environment: BTreeMap<String, String>,
@@ -94,6 +98,7 @@ fn context(state: &Supervisor) -> Result<ContextData> {
         port: state.config.port,
         host: state.config.host.clone(),
         relay: state.config.mode == pockymoe_protocol::Mode::Relay,
+        device: std::env::var_os("POCKYMOE_RELAY_SUPERVISOR_CONFIG").is_some(),
         config: config_path(),
         manager: std::env::var("POCKYMOE_MANAGED_SERVICE").ok(),
         environment: std::env::vars().collect(),
@@ -116,6 +121,7 @@ fn compatible_context() -> Result<ContextData> {
         port: value("POCKYMOE_UPDATE_PORT")?.parse()?,
         host: value("POCKYMOE_UPDATE_HOST")?,
         relay: value("POCKYMOE_UPDATE_MODE")? == "relay",
+        device: std::env::var_os("POCKYMOE_RELAY_SUPERVISOR_CONFIG").is_some(),
         config: config_path(),
         manager: std::env::var("POCKYMOE_MANAGED_SERVICE").ok(),
         environment: std::env::vars().collect(),
@@ -348,7 +354,7 @@ pub async fn run_worker(path: PathBuf) -> Result<()> {
             "Supervisor changed or a turn started during update preparation"
         );
         if let Some(manager) = &plan.context.manager {
-            service::manage(manager, "stop")?;
+            service::manage(manager, "stop", &plan.context.config)?;
         } else {
             service::stop(plan.context.pid)?;
         }
@@ -359,6 +365,16 @@ pub async fn run_worker(path: PathBuf) -> Result<()> {
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
+        if plan.context.manager.is_some() && service::alive(plan.context.pid) {
+            // An older update may have started it outside its service.
+            service::stop(plan.context.pid)?;
+            for _ in 0..30 {
+                if !service::alive(plan.context.pid) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+        }
         ensure!(
             !service::alive(plan.context.pid),
             "Original Supervisor did not stop; refusing to replace a running process"
@@ -367,10 +383,11 @@ pub async fn run_worker(path: PathBuf) -> Result<()> {
         releases::activate(&candidate)?;
         activated = true;
         started = true;
-        if plan.context.relay {
+        if plan.context.relay || plan.context.device {
             // A legacy npm/tmux device has no native manager marker yet. Adopt
             // the available persistent manager instead of leaving migration
             // in a transient worker that cannot start the device after reboot.
+            // Local-mode installs run from their device configuration too.
             let manager = plan.context.manager.clone().or_else(service::detect);
             service::start(&candidate, &plan.context.config, manager.as_deref())?;
         } else {
@@ -394,7 +411,7 @@ pub async fn run_worker(path: PathBuf) -> Result<()> {
                 &candidate.executable,
                 &["supervisor".into()],
                 &env,
-                &service::log_path(),
+                &service::log_path(&plan.context.config),
             )?;
         }
         set_status(&plan, "verifying", json!({"runningVersion":plan.version}))?;
@@ -426,7 +443,7 @@ pub async fn run_worker(path: PathBuf) -> Result<()> {
                 }
                 if stopped && !service::alive(plan.context.pid) {
                     if let Some(manager) = &plan.context.manager {
-                        service::manage(manager, "start")?;
+                        service::manage(manager, "start", &plan.context.config)?;
                     } else if let Some(previous) = &previous {
                         service::start(previous, &plan.context.config, None)?;
                     } else {
@@ -442,7 +459,7 @@ pub async fn run_worker(path: PathBuf) -> Result<()> {
                             }
                             .into()],
                             &env,
-                            &service::log_path(),
+                            &service::log_path(&plan.context.config),
                         )?;
                     }
                 }
@@ -495,6 +512,7 @@ mod tests {
             port: 1,
             host: "127.0.0.1".into(),
             relay: true,
+            device: true,
             config: root.path().join("device.json"),
             manager: None,
             environment: BTreeMap::new(),
@@ -530,6 +548,7 @@ mod tests {
             port,
             host: "127.0.0.1".into(),
             relay: true,
+            device: true,
             config: root.path().join("device.json"),
             manager: None,
             environment: BTreeMap::new(),

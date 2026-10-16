@@ -74,6 +74,9 @@ pub enum AutomationTrigger {
     deny_unknown_fields
 )]
 pub enum AutomationCondition {
+    ReplyLengthAtLeast {
+        chars: u64,
+    },
     All {
         conditions: Vec<AutomationCondition>,
     },
@@ -110,6 +113,14 @@ impl Default for AutomationCondition {
     deny_unknown_fields
 )]
 pub enum AutomationAction {
+    PluginAction {
+        plugin_id: String,
+        action: String,
+        #[serde(default)]
+        input: serde_json::Value,
+        #[serde(default = "timeout")]
+        timeout_seconds: u64,
+    },
     Prompt {
         text: String,
     },

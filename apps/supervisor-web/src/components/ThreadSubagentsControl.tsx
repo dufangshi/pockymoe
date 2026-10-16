@@ -440,7 +440,7 @@ function NativeSubagentsControl({ detail }: { detail: ThreadDetailDto }) {
           setOpen(value => !value);
         }}
       >
-        <Bot size={14} />
+        <Bot data-icon="agents" size={14} />
         {running > 0 && <span className="native-agents-running-count"><LoaderCircle size={11} aria-hidden="true" />{running}</span>}
       </button>
       {open && (

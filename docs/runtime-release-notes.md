@@ -1,24 +1,18 @@
-Pockymoe inside Treer now syncs threads both ways. In a Pockymoe page opened
-from a Treer Agent you can create, rename and delete top-level threads: creating
-one also creates its Treer Agent in the same folder, renaming renames the Agent,
-and deleting removes the Agent and the thread. Every Treer-bound thread on the
-same hub (and its child threads) can be opened, switched in tabs and shown in
-split view from any of those pages; hub threads without a Treer Agent stay
-invisible, and management, settings and device pages remain unavailable there.
-Browser navigation state is kept per hub, and references that can no longer be
-opened are dropped quietly instead of showing an error.
+Rerunning the local-mode setup command with other options, such as `--lan`,
+now applies them. Before, a Pockymoe running without a user service manager
+(some containers, Windows) stopped setup with "already running ... Update it
+from Settings", and the new options only took effect after a restart. Setup now
+restarts it, also under systemd and launchd, and waits instead of restarting
+while an agent is working on a turn.
 
-`pockymoe attach` now reports what it is waiting for (hub token, thread setup)
-and shows the hub's reason when it refuses a binding, such as a missing base
-agent. `treer-setup.sh` checks the Codex and Claude ACP adapters after setup and
-replaces missing, external or unverified ones with a verified Pockymoe-managed
-adapter, and rerunning it with a newer `--version` upgrades an existing hub
-through its own update path.
+Settings → Update and Restart on a local-mode install now restart its own
+service. Version 0.13.7 started the new release outside the service, so the next
+login could start the previous release again. Updating a 0.13.7 local install
+still runs 0.13.7's updater once; the new release then points the service at
+itself, and the next update, restart or reboot moves Pockymoe back into its
+service.
 
-Validated with the runtime, Supervisor, CLI, setup and Web unit suites, the
-static Web build, and live runs against a local Treer control plane with
-authentication enabled (thread create, rename, delete, cross-thread navigation,
-gate denials and attach diagnostics, using the fake runtime). The adapter check
-and the hub upgrade path were tested against a simulated hub, not yet against
-real Codex or Claude adapters. A thread whose Agent is deleted from the Treer
-side is kept on the hub. Windows Device Manager is unchanged.
+`pockymoe passcode off` now confirms that the passcode was removed. Relay
+devices, their services and databases are unchanged. Windows Device Manager is
+unchanged. Installing this release is a separate device update; publication does
+not restart an existing Supervisor.

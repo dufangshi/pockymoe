@@ -297,6 +297,7 @@ pub struct UploadedPromptAttachment {
 
 pub struct Supervisor {
     automation_gate: tokio::sync::Mutex<()>,
+    pub(crate) plugins: crate::plugins::PluginHost,
     pub upstream_gate: Arc<tokio::sync::Mutex<()>>,
     pub harness_install_gate: Arc<tokio::sync::Mutex<()>>,
     pub interaction: crate::interaction::InteractionState,
@@ -327,6 +328,8 @@ pub struct Supervisor {
     pub subscription_usage: crate::subscription::SubscriptionUsage,
     pub device_monitor: crate::device_metrics::DeviceMonitor,
     pub(crate) harness: harness_release::HarnessState,
+    /// The optional local-mode passcode, cached from `kv`.
+    pub local_access: std::sync::RwLock<Option<crate::local_access::LocalAccess>>,
 }
 
 fn harness_context_key(thread_id: &str) -> String {
@@ -360,8 +363,14 @@ impl Supervisor {
             .into_iter()
             .map(|runtime| (runtime.provider(), runtime))
             .collect();
+        let local_access = crate::local_access::load(&db).unwrap_or_else(|error| {
+            tracing::warn!(%error, "ignoring an unreadable local passcode");
+            None
+        });
         let supervisor = Self {
+            local_access: std::sync::RwLock::new(local_access),
             automation_gate: Default::default(),
+            plugins: Default::default(),
             upstream_gate: Default::default(),
             harness_install_gate: Default::default(),
             started_at: now_rfc3339(),
@@ -869,8 +878,20 @@ impl Supervisor {
     }
 
     pub fn set_plugin_enabled(&self, plugin_id: &str, enabled: bool) -> Result<()> {
-        self.db
-            .set_kv(&format!("plugin:{plugin_id}:enabled"), &enabled.to_string())
+        let plugin = self.get_plugin(plugin_id)?;
+        ensure!(
+            !enabled || plugin.available != Some(false),
+            "plugin is unavailable"
+        );
+        self.db.with(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            tx.execute("INSERT INTO kv(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", params![format!("plugin:{plugin_id}:enabled"), enabled.to_string()])?;
+            if !enabled {
+                tx.execute("UPDATE automation_runs SET state='cancelled',completed_at=?2,error='pluginDisabled' WHERE state='due' AND json_extract(definition_json,'$.action.kind')='pluginAction' AND json_extract(definition_json,'$.action.pluginId')=?1", params![plugin_id, now_rfc3339()])?;
+            }
+            tx.commit()?;
+            Ok(())
+        })
     }
 
     pub fn list_workspaces(&self) -> Result<Vec<WorkspaceDto>> {
@@ -2729,6 +2750,12 @@ impl Supervisor {
                 params![thread_id, turn_id],
             )?;
             crate::interaction::finish_notification(conn, thread_id, turn_id, status, now)?;
+            if matches!(status, "completed" | "failed" | "interrupted") {
+                // Plugin configuration errors must not roll back the agent's completed turn.
+                if let Err(error) = self.plugins.sync_turn_automations(conn, thread_id, now) {
+                    tracing::warn!(%error, "could not configure plugin turn hooks");
+                }
+            }
             automation::turn_ended(conn, thread_id, turn_id, status, now)?;
             if self.config.relay_server_url.is_some() {
                 crate::relay_notifications::record(conn, thread_id, turn_id, status, now)?;

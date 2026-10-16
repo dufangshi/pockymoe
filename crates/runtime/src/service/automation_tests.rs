@@ -2,6 +2,18 @@ use super::*;
 use crate::fake::FakeRuntime;
 use pockymoe_protocol::ThreadEventEnvelope;
 
+#[test]
+fn reply_threshold_counts_unicode_prose_without_code() {
+    assert_eq!(reply_prose_chars("你好`command`世界"), 4);
+    assert_eq!(reply_prose_chars("前``some ` command``后"), 2);
+    assert_eq!(reply_prose_chars("前\n~~~~rust\nignored\n~~~~\n后"), 2);
+    assert_eq!(reply_prose_chars("literal `unclosed"), 17);
+    assert!(!condition_ok(
+        &Condition::ReplyLengthAtLeast { chars: 0 },
+        &json!({})
+    ));
+}
+
 fn supervisor(dir: &Path) -> Arc<Supervisor> {
     let config = RuntimeConfig {
         treer_enabled: false,

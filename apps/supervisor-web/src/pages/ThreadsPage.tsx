@@ -58,8 +58,8 @@ export function ThreadsPage() {
       options={workbenchUrls({ ...navigation, emptyWorkspace: true, workspacePath: workspace?.absPath ?? '', activeView: 'chat', terminalEnabled: false, onViewChange: () => {}, onSearch: () => {}, onNavigate: navigate,
         renderThreadMenu: thread => <RecentThreadMenu thread={thread} currentKey={navigation.currentKey} onFavorite={navigation.onToggleThreadFavorite} onRenamed={navigation.onThreadRenamed} onRemoved={navigation.onThreadRemoved} onNavigate={navigate} /> })}
       deviceMonitor={hostScope ? null : <TourLauncherButton />}
-      settings={!hostScope && <button aria-label={translate("workbench.openSettings")} onClick={shell?.openSettings}><Settings /></button>}
-      newThread={!loading && !error && (!hostScope || workspace) && <Link to={createHref} aria-label={translate("workbench.newThread_02057e")}><Plus /></Link>}
+      settings={!hostScope && <button aria-label={translate("workbench.openSettings")} onClick={shell?.openSettings}><Settings data-icon="settings" /></button>}
+      newThread={!loading && !error && (!hostScope || workspace) && <Link to={createHref} aria-label={translate("workbench.newThread_02057e")}><Plus data-icon="new-thread" /></Link>}
       actions={null} threadMenu={null} connection={null} explorer={null} revealExplorer={0}
     >
       <div className="flex h-full flex-col items-center justify-center gap-4 px-6 text-center">

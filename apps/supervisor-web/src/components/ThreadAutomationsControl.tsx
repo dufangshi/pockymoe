@@ -8,6 +8,7 @@ import {
   MessageSquare,
   Inbox,
   Terminal,
+  Puzzle,
   CircleSlash,
   ArrowUpRight,
 } from 'lucide-react';
@@ -19,6 +20,7 @@ import {
   DialogTitle,
   DialogDescription,
   TokenUsageCost,
+  PluginActionOutput,
   type TokenUsageCostProps,
 } from '@pockymoe/thread-ui';
 import { useI18n, type TranslationKey } from '@pockymoe/thread-ui/i18n';
@@ -68,8 +70,8 @@ export function automationTotals(
   const entries = [
     ...items.map((a) => ({
       count: a.statistics?.triggerCount,
-      usage: a.statistics?.tokenUsage,
-      price: a.statistics?.priceEstimate,
+      usage: a.definition.action.kind === 'pluginAction' ? null : a.statistics?.tokenUsage,
+      price: a.definition.action.kind === 'pluginAction' ? null : a.statistics?.priceEstimate,
     })),
     ...watches.map((w) => ({
       count: w.triggerCount,
@@ -227,7 +229,8 @@ function AutomationCard({
     };
   }, [expanded, base]);
   const s = a.statistics;
-  const coverage = s
+  const pluginAction = a.definition.action.kind === 'pluginAction';
+  const coverage = pluginAction ? t('automation.pluginCharge') : s
     ? t('automation.coverage', {
         value1: s.usageTurnCount,
         value2: s.pricedTurnCount,
@@ -251,6 +254,8 @@ function AutomationCard({
           <MessageSquare size={13} />
         ) : a.definition.action.kind === 'notifyInbox' ? (
           <Inbox size={13} />
+        ) : pluginAction ? (
+          <Puzzle size={13} />
         ) : (
           <Terminal size={13} />
         )}
@@ -272,7 +277,7 @@ function AutomationCard({
           </span>
         )}
       </div>
-      <Usage usage={s?.tokenUsage} price={s?.priceEstimate} note={coverage} />
+      <Usage usage={pluginAction ? null : s?.tokenUsage} price={pluginAction ? null : s?.priceEstimate} note={coverage} />
       <details className="automation-rule-details">
         <summary>
           <ChevronRight size={13} />
@@ -296,6 +301,8 @@ function AutomationCard({
                   </p>
                 )}
             </>
+          ) : pluginAction ? (
+            <p className="text-xs text-[var(--theme-fg-muted)]">{t('automation.pluginCharge')}</p>
           ) : (
             <p className="text-xs text-[var(--theme-fg-muted)]">
               {t(
@@ -368,6 +375,13 @@ function AutomationCard({
                 <p className="break-words" role="status">
                   {r.error}
                 </p>
+              )}
+              {r.deliveryReceipt && Object.prototype.hasOwnProperty.call(r.deliveryReceipt, 'output') && (
+                <PluginActionOutput
+                  pluginId={typeof r.deliveryReceipt.pluginId === 'string' ? r.deliveryReceipt.pluginId : a.definition.action.kind === 'pluginAction' ? a.definition.action.pluginId : ''}
+                  action={typeof r.deliveryReceipt.action === 'string' ? r.deliveryReceipt.action : a.definition.action.kind === 'pluginAction' ? a.definition.action.action : ''}
+                  output={r.deliveryReceipt.output}
+                />
               )}
               {r.commandId && (
                 <button
@@ -501,6 +515,7 @@ export function ThreadAutomationsControl({ thread }: { thread: ThreadDto }) {
     unavailable ||
     items.some(
       (a) =>
+        a.definition.action.kind === 'pluginAction' ||
         !a.statistics ||
         !a.statistics.tokenUsage ||
         a.statistics.usageTurnCount < a.statistics.promptTurnCount ||
@@ -544,7 +559,7 @@ export function ThreadAutomationsControl({ thread }: { thread: ThreadDto }) {
         aria-expanded={open}
         onClick={() => setOpen(true)}
       >
-        <Workflow size={14} />
+        <Workflow data-icon="automations" size={14} />
       </button>
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent

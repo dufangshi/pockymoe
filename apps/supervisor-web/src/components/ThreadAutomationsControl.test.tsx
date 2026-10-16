@@ -8,6 +8,8 @@ import {
 } from '@testing-library/react';
 import { beforeEach, expect, it, vi } from 'vitest';
 import { setLocale } from '@pockymoe/thread-ui/i18n';
+import { PluginProvider } from '@pockymoe/thread-ui';
+import { builtinFrontendPlugins } from '@pockymoe/thread-ui/builtin-plugins';
 import type { AutomationDto, ThreadDto } from '@pockymoe/shared';
 import { request } from '../lib/api';
 import { automationTotals } from './ThreadAutomationsControl';
@@ -226,6 +228,31 @@ it('reports legacy and unavailable native coverage as unknown rather than a comp
   await within(dialog).findByText('Automation data is temporarily unavailable');
 });
 
+it.each(['en', 'zh-CN'])('labels plugin actions and treats their unmetered costs as unknown in %s', async locale => {
+  setLocale(locale, false);
+  const plugin = rule({
+    id: 'quality',
+    definition: {
+      name: 'Polish reply',
+      trigger: { kind: 'interval', everySeconds: 60 },
+      action: { kind: 'pluginAction', pluginId: 'pockymoe.content-quality', action: 'rewriteReply', input: {} },
+    },
+    statistics: { ...rule().statistics!, tokenUsage: { ...tokens, totalTokens: 0 }, priceEstimate: { ...price, totalUsd: 0 } },
+  });
+  mockSnapshot([plugin], []);
+  render(<ThreadWatchesControl thread={thread} />);
+  fireEvent.click(screen.getByRole('button', { name: locale === 'en' ? 'Automation' : '自动化' }));
+  const dialog = await screen.findByRole('dialog');
+  const card = (await within(dialog).findByText('Polish reply')).closest('article')!;
+  expect(card).toHaveTextContent(locale === 'en' ? 'Plugin action' : '插件动作');
+  expect(card.querySelector('.automation-rule-usage')).toHaveTextContent(locale === 'en' ? 'Unknown' : '未知');
+  fireEvent.click(within(card).getByText(locale === 'en' ? 'Details' : '详情', { exact: true }));
+  expect(card).toHaveTextContent(locale === 'en' ? 'may incur model charges' : '可能产生模型费用');
+  expect(card).not.toHaveTextContent(locale === 'en' ? 'no model-token charge' : '不产生模型 token 费用');
+  expect(automationTotals([plugin], [])).toMatchObject({ usage: null, price: null });
+  expect(dialog).not.toHaveTextContent('automation.pluginAction');
+});
+
 it('discards late snapshots when switching threads', async () => {
   let resolve!: (v: unknown) => void;
   vi.mocked(request).mockImplementation(async (url) =>
@@ -251,6 +278,49 @@ it('discards late snapshots when switching threads', async () => {
   fireEvent.click(screen.getByRole('button', { name: 'Automation' }));
   await screen.findByText('No automations yet');
   expect(screen.queryByText('Hourly prompt')).not.toBeInTheDocument();
+});
+
+it('shows automatic document findings and diffs from plugin run receipts, even after disabling the plugin', async () => {
+  const quality = rule({ id: 'quality', definition: {
+    name: 'Content Quality after turn', trigger: { kind: 'interval', everySeconds: 60 },
+    action: { kind: 'pluginAction', pluginId: 'pockymoe.content-quality', action: 'afterTurn', input: {} },
+  } });
+  const report = { status: 'completed', reply: { status: 'skipped', reason: 'autoRepliesDisabled' }, documents: [
+    { path: 'guide.md', status: 'reviewed', written: false, findings: ['Explain the retry limit before the example.'], diff: '-retry forever\n+retry up to three times', diffTruncated: true },
+    { path: 'notes.md', status: 'failed', error: 'Document changed during review' },
+  ], documentsTruncated: true };
+  const run = { id: 'report-run', state: 'completed', missedCount: 0, scheduledAt: '2026-10-15T00:00:00Z', startedAt: null, completedAt: null, deliveryReceipt: { pluginId: 'pockymoe.content-quality', action: 'afterTurn', output: report } };
+  vi.mocked(request).mockImplementation(async url => String(url).endsWith('/watches') ? { watches: [] } : String(url).endsWith('/runs') ? { runs: [run] } : { automations: [quality] });
+  const plugin = builtinFrontendPlugins.find(plugin => plugin.manifest.id === 'pockymoe.content-quality')!;
+  const adapter = { fetchPlugins: () => [{ ...plugin.manifest, enabled: false, available: true }] };
+  render(<PluginProvider adapter={adapter} builtinPlugins={builtinFrontendPlugins}><ThreadWatchesControl thread={thread} /></PluginProvider>);
+  fireEvent.click(screen.getByRole('button', { name: 'Automation' }));
+  const dialog = await screen.findByRole('dialog');
+  const card = (await within(dialog).findByText('Content Quality after turn')).closest('article')!;
+  fireEvent.click(within(card).getByRole('button', { name: 'Execution history' }));
+  const receipt = await within(card).findByLabelText('Plugin report');
+  expect(within(receipt).getByRole('heading', { name: 'guide.md' })).toBeVisible();
+  expect(within(receipt).getByText('Explain the retry limit before the example.', { exact: true })).toBeVisible();
+  expect(within(receipt).getByText('File unchanged')).toBeVisible();
+  expect(within(receipt).getByText('Document changed during review', { exact: true })).toBeVisible();
+  expect(within(receipt).getByText('Additional eligible documents were not reviewed in this run.')).toBeVisible();
+  fireEvent.click(within(receipt).getByText('Proposed diff'));
+  const documentReport = within(receipt).getByRole('heading', { name: 'guide.md' }).closest('article')!;
+  expect(within(documentReport).getByText(/retry up to three times/, { selector: 'pre' })).toBeVisible();
+  expect(within(receipt).getByText('Output truncated for display.')).toBeVisible();
+});
+
+it('shows bounded JSON for an unknown plugin output receipt', async () => {
+  const unknown = rule({ id: 'unknown-plugin', definition: { name: 'Unknown plugin', trigger: { kind: 'interval', everySeconds: 60 }, action: { kind: 'pluginAction', pluginId: 'third-party.plugin', action: 'report' } } });
+  vi.mocked(request).mockImplementation(async url => String(url).endsWith('/watches') ? { watches: [] } : String(url).endsWith('/runs') ? { runs: [{ id: 'unknown-run', state: 'completed', missedCount: 0, scheduledAt: '2026-10-15T00:00:00Z', startedAt: null, completedAt: null, deliveryReceipt: { output: { result: 'x'.repeat(30000) } } }] } : { automations: [unknown] });
+  render(<ThreadWatchesControl thread={thread} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Automation' }));
+  const dialog = await screen.findByRole('dialog');
+  const card = (await within(dialog).findByText('Unknown plugin')).closest('article')!;
+  fireEvent.click(within(card).getByRole('button', { name: 'Execution history' }));
+  const receipt = await within(card).findByLabelText('Plugin report');
+  expect(receipt.querySelector('pre')!.textContent!.length).toBe(24000);
+  expect(within(receipt).getByText('Output truncated for display.')).toBeVisible();
 });
 
 it('keeps unknown usage distinct from zero and sums only supplied attributed amounts', () => {

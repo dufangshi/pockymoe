@@ -3,6 +3,7 @@ import { LanguageSwitcher } from '@pockymoe/thread-ui/i18n';
 import { FormDialog } from './FormDialog';
 import { useFontSize } from '../lib/fontSize';
 import { RuntimeManagement } from './RuntimeManagement';
+import { LocalPasscodeSettings } from './LocalPasscodeSettings';
 import { UpstreamsSettings } from './UpstreamsSettings';
 import { HarnessResourceSettings } from './HarnessResourceSettings';
 import { ModelPricingSettings } from './ModelPricingSettings';
@@ -1052,6 +1053,7 @@ export function AppShellSettingsDialog({
           )}
           {section === 'upstreams' && <UpstreamsSettings />}
           {section === 'resources' && <HarnessResourceSettings />}
+          {section === 'device' && <LocalPasscodeSettings />}
           {(section === 'device' || section === 'harnesses') && (
             <RuntimeManagement view={section} />
           )}
@@ -1348,7 +1350,7 @@ export function AppShellSettingsDialog({
         {section ? (
           settingsContentNode
         ) : (
-          <SettingsPanels sections={appSettingsSections()} />
+          <SettingsPanels sections={appSettingsSections(plugins.getSettingsSections())} />
         )}
         {selectedFileName && selectedFile && (
           <FormDialog
@@ -1398,15 +1400,15 @@ export function AppShellSettingsDialog({
   return <SettingsDialog open
     onOpenChange={(open) => { if (!open) closeSettings(); }}
     themeMode={selectedThemeMode} effectiveTheme={effectiveTheme}
-    sections={appSettingsSections()}
+    sections={appSettingsSections(plugins.getSettingsSections())}
     {...(shellNav?.settingsSection ? { initialId: shellNav.settingsSection } : {})}
     contentProps={{ 'data-testid': 'settingsDialog', onCloseAutoFocus: (event) => event.preventDefault() }}
   />;
 
 }
 
-export function appSettingsSections(): SettingsSection[] {
-  return [
+export function appSettingsSections(pluginSections: SettingsSection[] = []): SettingsSection[] {
+  return [...[
     {
       id: 'preferences',
       label: translate("files.preferences"),
@@ -1451,5 +1453,5 @@ export function appSettingsSections(): SettingsSection[] {
   ].map((section) => ({
     ...section,
     content: <AppShellSettingsDialog embedded section={section.id} />,
-  }));
+  })), ...pluginSections];
 }

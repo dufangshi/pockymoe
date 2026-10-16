@@ -97,6 +97,10 @@ pub(crate) fn router_with_treer(state: AppState, hub: Option<Arc<crate::treer::H
             put(crate::grants::put_endpoint).delete(crate::grants::delete_endpoint),
         )
         .route("/api/cli", post(crate::interaction::command))
+        .route(
+            "/api/threads/{thread}/plugins/{plugin}/actions/{action}",
+            post(crate::plugins::action),
+        )
         // Other devices of the same owner, through the relay (docs/cross-device-peer.zh.md).
         .route(
             "/api/peer/transport/certificate",
@@ -205,6 +209,10 @@ pub(crate) fn router_with_treer(state: AppState, hub: Option<Arc<crate::treer::H
         .route("/api/auth/session", get(auth_session))
         .route("/api/auth/login", post(auth_login))
         .route("/api/auth/logout", post(auth_logout))
+        .route(
+            "/api/auth/passcode",
+            put(auth_set_passcode).delete(auth_remove_passcode),
+        )
         .route("/api/agent-runtimes", get(agent_runtimes))
         .route("/api/agent-runtimes/{provider}/status", get(agent_status))
         .route("/api/agent-runtimes/{provider}/models", get(agent_models))
@@ -374,6 +382,10 @@ pub(crate) fn router_with_treer(state: AppState, hub: Option<Arc<crate::treer::H
         .route("/api/plugins", get(list_plugins))
         .route("/api/plugins/import", post(import_plugin_unsupported))
         .route(
+            "/api/plugins/{id}/settings",
+            get(crate::plugins::settings).put(crate::plugins::save_settings),
+        )
+        .route(
             "/api/plugins/{id}",
             get(get_plugin).patch(update_plugin).delete(delete_plugin),
         )
@@ -486,6 +498,8 @@ fn configured_web_dist() -> Option<PathBuf> {
             let candidate = PathBuf::from("apps/supervisor-web/dist");
             candidate.join("index.html").is_file().then_some(candidate)
         })
+        // `pockymoe start` from an installed release serves that release's UI.
+        .or_else(crate::distribution::installed_web_dist)
 }
 
 fn safe_static_path(dist: &FsPath, uri_path: &str) -> Option<PathBuf> {
@@ -857,7 +871,7 @@ async fn auth_session(
     headers: HeaderMap,
     uri: Uri,
 ) -> Json<AuthSessionDto> {
-    Json(crate::auth::verify_request(&state.config, &headers, &uri))
+    Json(crate::auth::verify_request(&state, &headers, &uri))
 }
 
 #[derive(Deserialize)]
@@ -866,21 +880,61 @@ struct LoginInput {
     password: Option<String>,
 }
 
+/// Recent failed sign-ins, across all clients: ten within a minute pause sign-in.
+fn sign_in_failures() -> &'static std::sync::Mutex<Vec<std::time::Instant>> {
+    static FAILURES: std::sync::OnceLock<std::sync::Mutex<Vec<std::time::Instant>>> =
+        std::sync::OnceLock::new();
+    FAILURES.get_or_init(Default::default)
+}
+
 async fn auth_login(
     State(state): State<AppState>,
     Json(body): Json<LoginInput>,
 ) -> Result<Response, ApiErr> {
-    let Some((token, session)) = crate::auth::login(
-        &state.config,
-        body.username.as_deref().unwrap_or_default(),
-        body.password.as_deref().unwrap_or_default(),
-    ) else {
+    let passcode = crate::auth::local_passcode(&state).is_some();
+    if passcode {
+        let mut failures = sign_in_failures().lock().unwrap();
+        failures.retain(|at| at.elapsed() < std::time::Duration::from_secs(60));
+        if failures.len() >= 10 {
+            return Err(err(
+                StatusCode::TOO_MANY_REQUESTS,
+                "rate_limited",
+                "Too many wrong passcodes. Wait a minute and try again.",
+            ));
+        }
+    }
+    let signed_in = if passcode {
+        crate::auth::login_passcode(&state, body.password.as_deref().unwrap_or_default())
+    } else {
+        crate::auth::login(
+            &state.config,
+            body.username.as_deref().unwrap_or_default(),
+            body.password.as_deref().unwrap_or_default(),
+        )
+    };
+    let Some((token, session)) = signed_in else {
+        if passcode {
+            sign_in_failures()
+                .lock()
+                .unwrap()
+                .push(std::time::Instant::now());
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            return Err(err(
+                StatusCode::UNAUTHORIZED,
+                "unauthorized",
+                "Wrong passcode.",
+            ));
+        }
         return Err(err(
             StatusCode::UNAUTHORIZED,
             "unauthorized",
             "Invalid username or password.",
         ));
     };
+    Ok(signed_in_response(token, session))
+}
+
+fn signed_in_response(token: String, session: AuthSessionDto) -> Response {
     let mut response = Json(json!({
         "token": if token.is_empty() { Value::Null } else { json!(token) },
         "session": session,
@@ -894,11 +948,57 @@ async fn auth_login(
                 .expect("valid session cookie"),
         );
     }
+    response
+}
+
+#[derive(Deserialize)]
+struct PasscodeInput {
+    passcode: String,
+}
+
+/// Set or change the local-mode passcode; this browser stays signed in.
+async fn auth_set_passcode(
+    State(state): State<AppState>,
+    Json(body): Json<PasscodeInput>,
+) -> Result<Response, ApiErr> {
+    let (token, session) = crate::auth::set_passcode(&state, Some(&body.passcode))
+        .map_err(|error| {
+            err(
+                StatusCode::BAD_REQUEST,
+                "invalid_passcode",
+                &error.to_string(),
+            )
+        })?
+        .ok_or_else(|| {
+            err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "Could not sign in",
+            )
+        })?;
+    Ok(signed_in_response(token, session))
+}
+
+async fn auth_remove_passcode(State(state): State<AppState>) -> Result<Response, ApiErr> {
+    crate::auth::set_passcode(&state, None).map_err(|error| {
+        err(
+            StatusCode::BAD_REQUEST,
+            "invalid_passcode",
+            &error.to_string(),
+        )
+    })?;
+    let mut response = Json(crate::auth::local_session(&state.config)).into_response();
+    response.headers_mut().insert(
+        header::SET_COOKIE,
+        crate::auth::clear_session_cookie()
+            .parse()
+            .expect("valid cleared session cookie"),
+    );
     Ok(response)
 }
 
 async fn auth_logout(State(state): State<AppState>) -> Response {
-    let mut response = Json(crate::auth::unauthenticated_session(&state.config)).into_response();
+    let mut response = Json(crate::auth::unauthenticated_session(&state)).into_response();
     response.headers_mut().insert(
         header::SET_COOKIE,
         crate::auth::clear_session_cookie()
@@ -2787,68 +2887,15 @@ async fn thread_shell(
     })))
 }
 
-const TERMINAL_PLUGIN_ID: &str = "remote-codex.terminal";
-
-fn terminal_plugin(state: &Supervisor) -> Value {
-    let available = cfg!(unix);
-    json!({
-        "id": TERMINAL_PLUGIN_ID,
-        "name": "Terminal",
-        "version": state.config.app_version.as_str(),
-        "description": "Per-thread PTY terminal.",
-        "remoteCodex": format!(">={}", state.config.app_version),
-        "capabilities": { "artifactTypes": [], "timelineRenderers": [], "threadPanels": [{ "id": "terminal", "label": "Terminal", "kind": "terminal", "artifactTypes": [] }] },
-        "enabled": available && state.plugin_enabled(TERMINAL_PLUGIN_ID, true),
-        "source": "builtin",
-        "available": available,
-        "unavailableReasonCode": if available { Value::Null } else { json!("unsupported_platform") },
-        "unavailableReason": if available { Value::Null } else { json!("Terminal is unavailable on this platform.") }
-    })
-}
-
-const DSH_PLUGIN_ID: &str = "remote-codex.deepseek-harness";
-
-/// Native DeepSeek Harness controls for DSH threads: run modes, DSH plugins
-/// and profile settings, commands and the native console.
-fn dsh_plugin(state: &Supervisor) -> Value {
-    let available = pockymoe_runtime::acp::builtin_agents(None)
-        .iter()
-        .find(|agent| agent.id == "deepseek")
-        .is_some_and(|agent| pockymoe_runtime::acp::command_available(&agent.base_command));
-    json!({
-        "id": DSH_PLUGIN_ID,
-        "name": "DeepSeek Harness",
-        "version": state.config.app_version.as_str(),
-        "description": "Run modes, DSH plugins, profile settings, commands and the native DSH console for DeepSeek Harness threads.",
-        "remoteCodex": format!(">={}", state.config.app_version),
-        "capabilities": { "artifactTypes": [], "timelineRenderers": [], "threadPanels": [{ "id": "deepseek-harness", "label": "DeepSeek Harness", "kind": "harness:deepseek", "artifactTypes": [] }] },
-        "enabled": available && state.plugin_enabled(DSH_PLUGIN_ID, true),
-        "source": "builtin",
-        "available": available,
-        "unavailableReasonCode": if available { Value::Null } else { json!("harness_missing") },
-        "unavailableReason": if available { Value::Null } else { json!("Install DeepSeek Harness (dsh) on this device to use this plugin.") }
-    })
-}
-
-fn builtin_plugin(state: &Supervisor, id: &str) -> Option<Value> {
-    match id {
-        TERMINAL_PLUGIN_ID => Some(terminal_plugin(state)),
-        DSH_PLUGIN_ID => Some(dsh_plugin(state)),
-        _ => None,
-    }
-}
-
 async fn list_plugins(State(state): State<AppState>) -> Json<Value> {
-    Json(json!([terminal_plugin(&state), dsh_plugin(&state)]))
+    Json(json!(state.list_plugins()))
 }
 
 async fn get_plugin(
     Path(id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<Value>, ApiErr> {
-    builtin_plugin(&state, &id)
-        .map(Json)
-        .ok_or_else(|| err(StatusCode::NOT_FOUND, "not_found", "Plugin was not found."))
+    Ok(Json(json!(state.get_plugin(&id).map_err(map_err)?)))
 }
 
 async fn import_plugin_unsupported() -> ApiErr {
@@ -2859,18 +2906,15 @@ async fn import_plugin_unsupported() -> ApiErr {
     )
 }
 
-async fn delete_plugin(Path(id): Path<String>) -> Result<Json<Value>, ApiErr> {
-    if matches!(id.as_str(), TERMINAL_PLUGIN_ID | DSH_PLUGIN_ID) {
-        return Err(err(
-            StatusCode::CONFLICT,
-            "unsupported",
-            "Built-in plugins cannot be uninstalled.",
-        ));
-    }
+async fn delete_plugin(
+    Path(id): Path<String>,
+    State(state): State<AppState>,
+) -> Result<Json<Value>, ApiErr> {
+    state.get_plugin(&id).map_err(map_err)?;
     Err(err(
-        StatusCode::NOT_FOUND,
-        "not_found",
-        "Plugin was not found.",
+        StatusCode::CONFLICT,
+        "unsupported",
+        "Built-in plugins cannot be uninstalled.",
     ))
 }
 
@@ -2879,13 +2923,10 @@ async fn update_plugin(
     State(state): State<AppState>,
     Json(input): Json<UpdatePluginInput>,
 ) -> Result<Json<Value>, ApiErr> {
-    if builtin_plugin(&state, &id).is_none() {
-        return Err(err(StatusCode::NOT_FOUND, "not_found", "plugin not found"));
-    }
     state
         .set_plugin_enabled(&id, input.enabled)
         .map_err(map_err)?;
-    Ok(Json(builtin_plugin(&state, &id).unwrap_or(Value::Null)))
+    Ok(Json(json!(state.get_plugin(&id).map_err(map_err)?)))
 }
 
 async fn ws_upgrade(

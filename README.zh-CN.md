@@ -72,6 +72,16 @@ Relay 就是你登录的那个网站，它把浏览器和你的电脑连接起�
 > [!TIP]
 > 还没装某个 agent？在 **设置 → Harness** 里可以直接在浏览器中安装或更新 Codex、Claude Code、Gemini CLI、Grok Build、Cursor、Copilot 和 OpenCode。
 
+### 只在这台电脑上用？
+
+不需要 Relay：运行一行命令，然后打开 <http://127.0.0.1:8787>。
+
+```sh
+curl -fsSL https://app.lnz-study.com/setup.sh | sh
+```
+
+Windows、局域网里的手机访问、访问口令和其他选项见[本机模式](docs/local-mode.md)。
+
 ## 能做什么
 
 ### 真正的工作台，而不只是聊天框

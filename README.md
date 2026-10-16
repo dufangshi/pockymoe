@@ -84,6 +84,17 @@ folder and start a conversation with any installed agent. That's it.
 > Missing an agent? Install or update Codex, Claude Code, Gemini CLI, Grok Build,
 > Cursor, Copilot and OpenCode from **Settings → Harnesses**, right in the browser.
 
+### Only this computer?
+
+Skip the relay: run one line, then open <http://127.0.0.1:8787>.
+
+```sh
+curl -fsSL https://app.lnz-study.com/setup.sh | sh
+```
+
+Windows, phones on your network, a passcode and other options:
+[Local mode](docs/local-mode.md).
+
 ## What you can do
 
 ### A real workbench, not just a chat

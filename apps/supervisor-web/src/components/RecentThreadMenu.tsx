@@ -65,16 +65,16 @@ export function RecentThreadMenu({ thread, onFavorite, onRenamed, onRemoved, onN
       if (position) { setPosition(null); return; }
       const box = trigger.current!.getBoundingClientRect();
       setPosition({ left: Math.min(Math.max(8, box.right - 260), innerWidth - 268), top: Math.max(8, Math.min(box.bottom + 6, innerHeight - 340)) });
-    }}><MoreHorizontal size={16} /></button>
+    }}><MoreHorizontal data-icon="more" size={16} /></button>
     {position && createPortal(<div ref={menu} role="dialog" aria-label={translate("workbench.threadActions", { value1: thread.title })} className="recent-thread-menu" style={position}>
       <p className="recent-thread-menu-title">{thread.title}</p>
-      <button disabled={busy} onClick={async () => { setBusy(true); try { await onFavorite(thread.key); setPosition(null); } finally { setBusy(false); } }}><Star size={15} fill={thread.favorite ? 'currentColor' : 'none'} />{thread.favorite ? translate("workbench.unstarThread") : translate("workbench.starThread")}</button>
-      <button onClick={() => { setPosition(null); onNavigate(thread.href); }}><ExternalLink size={15} />{translate("workbench.openThread")}</button>
-      <button onClick={() => void copy(id)}><Copy size={15} />{translate("workbench.copyPockymoeSessionID")}</button>
-      <button disabled={!detail?.thread.providerSessionId} onClick={() => void copy(detail!.thread.providerSessionId!)}><Copy size={15} />{translate("workbench.copyHarnessSessionID")}</button>
-      {detail?.thread.providerSessionId && (detail.thread.agentId === 'codex' || detail.thread.provider === 'codex') && <button onClick={() => void copy(`codex://threads/${encodeURIComponent(detail.thread.providerSessionId!)}`)}><Copy size={15} />{translate("workbench.copyCodexDeeplink")}</button>}
-      {owner && <button onClick={() => { setTitle(detail?.thread.title ?? thread.title); setNotice(''); setPosition(null); setRenaming(true); }}><Pencil size={15} />{translate("workbench.renameThread")}</button>}
-      {owner && <button className="recent-thread-delete" onClick={() => { setNotice(''); setPosition(null); setDeleting(true); }}><Trash2 size={15} />{translate("workbench.deleteThread")}</button>}
+      <button disabled={busy} onClick={async () => { setBusy(true); try { await onFavorite(thread.key); setPosition(null); } finally { setBusy(false); } }}><Star data-icon="shortcut" size={15} fill={thread.favorite ? 'currentColor' : 'none'} />{thread.favorite ? translate("workbench.unstarThread") : translate("workbench.starThread")}</button>
+      <button onClick={() => { setPosition(null); onNavigate(thread.href); }}><ExternalLink data-icon="open" size={15} />{translate("workbench.openThread")}</button>
+      <button onClick={() => void copy(id)}><Copy data-icon="copy" size={15} />{translate("workbench.copyPockymoeSessionID")}</button>
+      <button disabled={!detail?.thread.providerSessionId} onClick={() => void copy(detail!.thread.providerSessionId!)}><Copy data-icon="copy" size={15} />{translate("workbench.copyHarnessSessionID")}</button>
+      {detail?.thread.providerSessionId && (detail.thread.agentId === 'codex' || detail.thread.provider === 'codex') && <button onClick={() => void copy(`codex://threads/${encodeURIComponent(detail.thread.providerSessionId!)}`)}><Copy data-icon="copy" size={15} />{translate("workbench.copyCodexDeeplink")}</button>}
+      {owner && <button onClick={() => { setTitle(detail?.thread.title ?? thread.title); setNotice(''); setPosition(null); setRenaming(true); }}><Pencil data-icon="rename" size={15} />{translate("workbench.renameThread")}</button>}
+      {owner && <button className="recent-thread-delete" onClick={() => { setNotice(''); setPosition(null); setDeleting(true); }}><Trash2 data-icon="delete" size={15} />{translate("workbench.deleteThread")}</button>}
       {notice && <p role="status">{notice}</p>}
     </div>, document.body)}
     <RenameDialog open={renaming} title={translate("workbench.renameThread")} label={translate("workbench.threadTitle")} value={title} busy={busy} error={notice} onChange={setTitle} onCancel={() => setRenaming(false)} onSubmit={async () => {

@@ -893,3 +893,218 @@ fn second_review_open_restricts_existing_wal_and_shm_permissions() {
     );
     drop(keeper);
 }
+
+/// The Node migrations that ran before the Rust rewrite, as shipped then.
+fn node_migration(name: &str) -> &'static str {
+    match name {
+        "0000_initial.sql" => include_str!("../src/node_migrations/0000_initial.sql"),
+        "0001_thread_runtime_fields.sql" => {
+            include_str!("../src/node_migrations/0001_thread_runtime_fields.sql")
+        }
+        "0002_thread_source.sql" => include_str!("../src/node_migrations/0002_thread_source.sql"),
+        "0003_thread_runtime_settings.sql" => {
+            include_str!("../src/node_migrations/0003_thread_runtime_settings.sql")
+        }
+        "0004_thread_connection_state.sql" => {
+            include_str!("../src/node_migrations/0004_thread_connection_state.sql")
+        }
+        "0005_thread_turn_metadata.sql" => {
+            include_str!("../src/node_migrations/0005_thread_turn_metadata.sql")
+        }
+        "0006_thread_sandbox_mode.sql" => {
+            include_str!("../src/node_migrations/0006_thread_sandbox_mode.sql")
+        }
+        "0007_thread_pending_steers.sql" => {
+            include_str!("../src/node_migrations/0007_thread_pending_steers.sql")
+        }
+        "0008_thread_fast_mode_and_activity_notes.sql" => {
+            include_str!("../src/node_migrations/0008_thread_fast_mode_and_activity_notes.sql")
+        }
+        "0009_thread_turn_token_usage.sql" => {
+            include_str!("../src/node_migrations/0009_thread_turn_token_usage.sql")
+        }
+        "0010_thread_turn_pricing_snapshot.sql" => {
+            include_str!("../src/node_migrations/0010_thread_turn_pricing_snapshot.sql")
+        }
+        "0011_thread_forks.sql" => include_str!("../src/node_migrations/0011_thread_forks.sql"),
+        "0012_thread_goals.sql" => include_str!("../src/node_migrations/0012_thread_goals.sql"),
+        "0013_thread_activity_note_anchor.sql" => {
+            include_str!("../src/node_migrations/0013_thread_activity_note_anchor.sql")
+        }
+        "0014_thread_history_items.sql" => {
+            include_str!("../src/node_migrations/0014_thread_history_items.sql")
+        }
+        "0015_agent_provider_fields.sql" => {
+            include_str!("../src/node_migrations/0015_agent_provider_fields.sql")
+        }
+        "0016_remove_codex_thread_goal_id.sql" => {
+            include_str!("../src/node_migrations/0016_remove_codex_thread_goal_id.sql")
+        }
+        "0017_remove_codex_thread_columns.sql" => {
+            include_str!("../src/node_migrations/0017_remove_codex_thread_columns.sql")
+        }
+        "0018_shell_session_label.sql" => {
+            include_str!("../src/node_migrations/0018_shell_session_label.sql")
+        }
+        other => panic!("not an early Node migration: {other}"),
+    }
+}
+
+/// Apply the Node migrator to `count` migrations, as an older installation left it.
+fn seed_node_history(path: &std::path::Path, count: usize) {
+    let conn = Connection::open(path).unwrap();
+    conn.execute_batch(
+        "PRAGMA journal_mode=WAL;
+         CREATE TABLE __migrations (
+           id INTEGER PRIMARY KEY AUTOINCREMENT,
+           name TEXT NOT NULL UNIQUE,
+           applied_at TEXT NOT NULL);",
+    )
+    .unwrap();
+    for name in &NODE_MIGRATIONS[..count] {
+        conn.execute_batch(node_migration(name)).unwrap();
+        conn.execute(
+            "INSERT INTO __migrations(name, applied_at) VALUES (?1,'2026-01-01T00:00:00Z')",
+            params![name],
+        )
+        .unwrap();
+    }
+}
+
+#[test]
+fn upgrades_an_older_node_database_before_runtime_migrations() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("relay-supervisor.sqlite");
+    let workspace = dir.path().join("node-workspace");
+    std::fs::create_dir(&workspace).unwrap();
+    // A Remote Codex installation from before 0028: `threads` has no `agent_id`.
+    seed_node_history(&path, 19);
+    let conn = Connection::open(&path).unwrap();
+    conn.execute(
+        "INSERT INTO hosts(id,hostname,platform,created_at,last_seen_at)
+         VALUES ('node-host','node-hostname','linux','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO workspaces(id,host_id,label,abs_path,is_favorite,created_at)
+         VALUES ('node-workspace','node-host','Node workspace',?1,1,'2026-01-01T00:00:00Z')",
+        params![workspace.to_string_lossy()],
+    )
+    .unwrap();
+    for (id, provider, model, session) in [
+        ("codex-thread", "codex", "gpt-5.4", "codex-session"),
+        ("acp-thread", "acp", "claude", "claude::session"),
+    ] {
+        conn.execute(
+            "INSERT INTO threads(id,workspace_id,provider,provider_session_id,source,title,model,
+               collaboration_mode,approval_mode,status,created_at,updated_at,is_pinned,is_connected)
+             VALUES (?1,'node-workspace',?2,?4,'supervisor','Old thread',?3,
+               'default','yolo','idle','2026-01-01T00:00:00Z','2026-01-01T00:03:00Z',0,1)",
+            params![id, provider, model, session],
+        )
+        .unwrap();
+    }
+    drop(conn);
+
+    drop(Database::open(&path).unwrap());
+
+    let conn = Connection::open(&path).unwrap();
+    let ledger: Vec<String> = conn
+        .prepare("SELECT name FROM __migrations ORDER BY id")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(ledger, NODE_MIGRATIONS);
+    let runtime: i64 = conn
+        .query_row(
+            "SELECT max(version) FROM __remote_codex_runtime_migrations",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(runtime >= 17);
+    let rows: Vec<(String, String, Option<String>, Option<String>)> = conn
+        .prepare("SELECT id, title, agent_id, model FROM threads ORDER BY id")
+        .unwrap()
+        .query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(
+        rows,
+        vec![
+            (
+                "acp-thread".into(),
+                "Old thread".into(),
+                Some("claude".into()),
+                None
+            ),
+            (
+                "codex-thread".into(),
+                "Old thread".into(),
+                None,
+                Some("gpt-5.4".into())
+            ),
+        ]
+    );
+    // The backup is the database as the Node installation left it.
+    let backup =
+        Connection::open(dir.path().join("relay-supervisor.pre-rust-0.12.sqlite")).unwrap();
+    let backed_up: i64 = backup
+        .query_row("SELECT COUNT(*) FROM __migrations", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(backed_up, 19);
+}
+
+#[test]
+fn refuses_a_node_history_with_a_gap_and_leaves_it_unchanged() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("gap.sqlite");
+    seed_node_history(&path, 8);
+    let conn = Connection::open(&path).unwrap();
+    conn.execute(
+        "DELETE FROM __migrations WHERE name='0006_thread_sandbox_mode.sql'",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    let error = Database::open(&path).err().unwrap();
+    assert!(
+        format!("{error:#}")
+            .contains("unsupported Node migration `0007_thread_pending_steers.sql`"),
+        "unexpected error: {error:#}"
+    );
+    let conn = Connection::open(&path).unwrap();
+    let ledger: i64 = conn
+        .query_row("SELECT COUNT(*) FROM __migrations", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(ledger, 7);
+    let runtime: Option<String> = conn
+        .query_row(
+            "SELECT name FROM sqlite_schema WHERE name='__remote_codex_runtime_migrations'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .unwrap();
+    assert!(runtime.is_none());
+}
+
+#[test]
+fn preparing_leaves_a_database_owned_by_a_running_supervisor_alone() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("owned.sqlite");
+    let owner = Database::open(&path).unwrap();
+    assert!(!Database::prepare_unowned(&path).unwrap());
+    drop(owner);
+    assert!(Database::prepare_unowned(&path).unwrap());
+    let fresh = dir.path().join("fresh.sqlite");
+    assert!(Database::prepare_unowned(&fresh).unwrap());
+    assert!(fresh.exists());
+}

@@ -2,17 +2,14 @@ import { translate } from '@pockymoe/thread-ui/i18n';
 import { request, ApiError } from './api';
 import { getTransportStatus } from './relayTransport';
 
-export interface PreviewLease { leaseId: string; expiresAt?: number | undefined }
+import { reusablePreviewLease, type PreviewLease } from './previewLease';
+export type { PreviewLease } from './previewLease';
 
 /** Device authorization precedes the relay's preview-host login handoff. */
 export async function openDevicePortPreview(deviceId: string, mappingId: string, path: string, signal?: AbortSignal, providedLease?: PreviewLease) {
   const device = `relay/devices/${encodeURIComponent(deviceId)}`;
   let leaseId = providedLease?.leaseId;
-  // Older CLI links have no expiry metadata. Preserve their lease rather than
-  // demanding browser-owner authorization for a locally authorized preview.
-  const reusable = leaseId && (providedLease?.expiresAt === undefined ||
-    (Number.isSafeInteger(providedLease.expiresAt) && providedLease.expiresAt > Date.now()));
-  if (!reusable) {
+  if (!reusablePreviewLease(providedLease)) {
     leaseId = undefined;
     try {
       const lease = await request<{ leaseId: string; expiresAt: number }>(`${device}/api/port-mappings/${encodeURIComponent(mappingId)}/lease`, { method: 'POST', ...(signal ? { signal } : {}) });

@@ -119,6 +119,9 @@ pub(crate) fn turn_ended(
 
 fn condition_ok(c: &Condition, e: &Value) -> bool {
     match c {
+        Condition::ReplyLengthAtLeast { chars } => e["closingMessage"]
+            .as_str()
+            .is_some_and(|text| reply_prose_chars(text) >= *chars),
         Condition::All { conditions } => conditions.iter().all(|c| condition_ok(c, e)),
         Condition::Any { conditions } => conditions.iter().any(|c| condition_ok(c, e)),
         Condition::Not { condition } => !condition_ok(condition, e),
@@ -133,9 +136,63 @@ fn condition_ok(c: &Condition, e: &Value) -> bool {
         Condition::CommandId { value } => e["commandId"] == *value,
     }
 }
+/// Count visible prose in Unicode scalar values, excluding fenced code and inline code.
+pub(crate) fn reply_prose_chars(text: &str) -> u64 {
+    let mut fence: Option<(char, usize)> = None;
+    let mut count = 0;
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        let marker = trimmed.chars().next().unwrap_or(' ');
+        let width = trimmed.chars().take_while(|c| *c == marker).count();
+        if matches!(marker, '`' | '~') && width >= 3 {
+            match fence {
+                Some((open, len))
+                    if marker == open && width >= len && trimmed[width..].trim().is_empty() =>
+                {
+                    fence = None
+                }
+                None => fence = Some((marker, width)),
+                _ => {}
+            }
+            continue;
+        }
+        if fence.is_some() {
+            continue;
+        }
+        let mut rest = line;
+        while let Some(start) = rest.find('`') {
+            count += rest[..start].chars().count() as u64;
+            let span = &rest[start..];
+            let width = span.bytes().take_while(|b| *b == b'`').count();
+            let mut tail = &span[width..];
+            let mut closed = false;
+            while let Some(end) = tail.find('`') {
+                let run = tail[end..].bytes().take_while(|b| *b == b'`').count();
+                tail = &tail[end + run..];
+                if run == width {
+                    rest = tail;
+                    closed = true;
+                    break;
+                }
+            }
+            if !closed {
+                count += span.chars().count() as u64;
+                rest = "";
+                break;
+            }
+        }
+        count += rest.chars().count() as u64;
+    }
+    count
+}
+
 fn validate_condition(c: &Condition, depth: usize) -> Result<()> {
     ensure!(depth <= 8, "condition nesting exceeds 8");
     match c {
+        Condition::ReplyLengthAtLeast { chars } => ensure!(
+            *chars <= 1000000,
+            "reply length threshold exceeds one million characters"
+        ),
         Condition::All { conditions } | Condition::Any { conditions } => {
             ensure!(conditions.len() <= 32, "too many conditions");
             for c in conditions {
@@ -282,8 +339,16 @@ fn auto_value(c: &Connection, id: &str, thread: &str) -> Result<Value> {
 }
 fn run_value(r: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
     let receipt: Option<String> = r.get(11)?;
+    let receipt = receipt
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        .map(|mut value| {
+            if let Some(object) = value.as_object_mut() {
+                object.remove("settings");
+            }
+            value
+        });
     Ok(
-        json!({"id":r.get::<_,String>(0)?,"automationId":r.get::<_,String>(1)?,"occurrenceKey":r.get::<_,String>(2)?,"state":r.get::<_,String>(3)?,"scheduledAt":r.get::<_,String>(4)?,"observedAt":r.get::<_,String>(5)?,"missedCount":r.get::<_,i64>(6)?,"pendingSteerId":r.get::<_,Option<String>>(7)?,"turnId":r.get::<_,Option<String>>(8)?,"startedAt":r.get::<_,Option<String>>(9)?,"completedAt":r.get::<_,Option<String>>(10)?,"deliveryReceipt":receipt.and_then(|s|serde_json::from_str::<Value>(&s).ok()),"error":r.get::<_,Option<String>>(12)?,"attemptCount":r.get::<_,i64>(13)?,"commandId":r.get::<_,Option<String>>(14)?}),
+        json!({"id":r.get::<_,String>(0)?,"automationId":r.get::<_,String>(1)?,"occurrenceKey":r.get::<_,String>(2)?,"state":r.get::<_,String>(3)?,"scheduledAt":r.get::<_,String>(4)?,"observedAt":r.get::<_,String>(5)?,"missedCount":r.get::<_,i64>(6)?,"pendingSteerId":r.get::<_,Option<String>>(7)?,"turnId":r.get::<_,Option<String>>(8)?,"startedAt":r.get::<_,Option<String>>(9)?,"completedAt":r.get::<_,Option<String>>(10)?,"deliveryReceipt":receipt,"error":r.get::<_,Option<String>>(12)?,"attemptCount":r.get::<_,i64>(13)?,"commandId":r.get::<_,Option<String>>(14)?}),
     )
 }
 const RUN_SELECT:&str="SELECT id,automation_id,occurrence_key,state,scheduled_at,observed_at,missed_count,pending_id,turn_id,started_at,completed_at,receipt_json,error,attempt_count,command_id FROM automation_runs";
@@ -305,6 +370,14 @@ impl Supervisor {
         );
         validate_condition(&definition.condition, 0)?;
         match &definition.action {
+            Action::PluginAction {
+                plugin_id,
+                action,
+                input,
+                timeout_seconds,
+            } => {
+                self.validate_plugin_action(plugin_id, action, input, *timeout_seconds)?;
+            }
             Action::Prompt { text } => {
                 ensure!(
                     !text.trim().is_empty() && text.len() <= 262144,
@@ -513,20 +586,25 @@ impl Supervisor {
         {
             return Ok(());
         }
+        let plugins = self.plugins.action_settings(self);
         let live = self.live.lock().await;
         let jobs = self.db.with(|c| {
             let tx = c.unchecked_transaction()?;
             prepare_runs(&tx, now)?;
-            let jobs = dispatch_runs(&tx, now, &live.keys().cloned().collect())?;
+            let jobs = dispatch_runs(&tx, now, &live.keys().cloned().collect(), &plugins)?;
             tx.commit()?;
             Ok(jobs)
         })?;
         drop(live);
-        for id in jobs {
+        for job in jobs {
             let s = self.clone();
             tokio::spawn(async move {
-                if let Err(e) = s.execute_command(&id).await {
-                    tracing::warn!(command_id=%id,error=%e,"command completion could not be saved; recovery will mark uncertain");
+                let result = match job {
+                    BackgroundJob::Command(id) => s.execute_command(&id).await,
+                    BackgroundJob::Plugin(id) => s.execute_plugin_run(&id).await,
+                };
+                if let Err(error) = result {
+                    tracing::warn!(%error, "background completion could not be saved; recovery will mark uncertain");
                 }
             });
         }
@@ -766,7 +844,16 @@ fn prepare_runs(c: &Connection, now: &str) -> Result<()> {
     c.execute("UPDATE automation_runs SET state='cancelled',completed_at=?1,error='queueRemoved' WHERE state='queued' AND pending_id NOT IN (SELECT id FROM thread_pending_steers)",[now])?;
     Ok(())
 }
-fn dispatch_runs(c: &Connection, now: &str, live: &HashSet<String>) -> Result<Vec<String>> {
+enum BackgroundJob {
+    Command(String),
+    Plugin(String),
+}
+fn dispatch_runs(
+    c: &Connection,
+    now: &str,
+    live: &HashSet<String>,
+    plugins: &HashMap<String, crate::plugins::PluginSettings>,
+) -> Result<Vec<BackgroundJob>> {
     let runs = {
         let mut q=c.prepare("SELECT r.id,r.automation_id,a.thread_id,r.definition_json,r.event_json,r.scheduled_at FROM automation_runs r JOIN automations a ON a.id=r.automation_id WHERE r.state='due' AND a.state='enabled' ORDER BY r.rowid LIMIT 64")?;
         let v = q
@@ -801,6 +888,31 @@ fn dispatch_runs(c: &Connection, now: &str, live: &HashSet<String>) -> Result<Ve
         }
         let request = format!("automation-{run}");
         match &d.action {
+            Action::PluginAction {
+                plugin_id, action, ..
+            } => {
+                let enabled: Option<String> = c
+                    .query_row(
+                        "SELECT value FROM kv WHERE key=?1",
+                        [format!("plugin:{plugin_id}:enabled")],
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                let Some(settings) = plugins
+                    .get(plugin_id)
+                    .filter(|_| enabled.as_deref() != Some("false"))
+                else {
+                    c.execute("UPDATE automation_runs SET state='cancelled',completed_at=?2,error='pluginDisabledOrUnavailable' WHERE id=?1", params![run,now])?;
+                    continue;
+                };
+                let (running, same): (i64, bool) = c.query_row("SELECT count(*),coalesce(max(json_extract(definition_json,'$.action.pluginId')=?1),0) FROM automation_runs WHERE state='running' AND json_extract(definition_json,'$.action.kind')='pluginAction'", [plugin_id], |r| Ok((r.get(0)?,r.get(1)?)))?;
+                let busy: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM thread_turns WHERE thread_id=?1 AND status IN ('inProgress','recovering')) OR EXISTS(SELECT 1 FROM thread_pending_steers WHERE thread_id=?1 AND delivery='continuation')", [&thread], |r| r.get(0))?;
+                if running >= 4 || same || live.contains(&thread) || status == "running" || busy {
+                    continue;
+                }
+                c.execute("UPDATE automation_runs SET state='running',started_at=?2,attempt_count=attempt_count+1,receipt_json=?3 WHERE id=?1 AND state='due'", params![run,now,json!({"pluginId":plugin_id,"action":action,"settings":settings}).to_string()])?;
+                jobs.push(BackgroundJob::Plugin(run));
+            }
             Action::NotifyInbox {
                 subject,
                 text,
@@ -855,7 +967,7 @@ fn dispatch_runs(c: &Connection, now: &str, live: &HashSet<String>) -> Result<Ve
                 };
                 let command_id = insert_command(c, &thread, &input, Some(&run), &chain, now)?;
                 c.execute("UPDATE automation_runs SET state='running',started_at=?2,command_id=?3,attempt_count=attempt_count+1 WHERE id=?1 AND state='due'",params![run,now,command_id])?;
-                jobs.push(command_id);
+                jobs.push(BackgroundJob::Command(command_id));
             }
         }
     }
@@ -917,6 +1029,7 @@ impl Supervisor {
         self.db.with(|c|{let tx=c.unchecked_transaction()?;
             let ids={let mut q=tx.prepare("SELECT id FROM command_executions WHERE state IN ('starting','running')")?;let ids=q.query_map([],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;ids};
             for id in ids {finish_command(&tx,&id,"uncertain",None,"","",Some("Supervisor restarted after command intent; external effects are unknown. Inspect before retrying."),&now_rfc3339())?;}
+            tx.execute("UPDATE automation_runs SET state='uncertain',completed_at=?1,error='Supervisor restarted during plugin action; inspect before retrying.' WHERE state='running' AND json_extract(definition_json,'$.action.kind')='pluginAction'", [now_rfc3339()])?;
             // Prompt turns reconciled at boot remain interrupted, never resent.
             tx.execute("UPDATE automation_runs SET state=(SELECT status FROM thread_turns WHERE id=automation_runs.turn_id),completed_at=?1 WHERE state='running' AND turn_id IN (SELECT id FROM thread_turns WHERE status IN ('completed','failed','interrupted'))",[now_rfc3339()])?;
             tx.commit()?;Ok(())

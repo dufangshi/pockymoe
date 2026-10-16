@@ -55,19 +55,31 @@ and its required credentials when exposing a listener beyond a trusted network.
 
 This is the default when `POCKYMOE_MODE` is unset.
 
-The supervisor is treated as a trusted local or private-network service, such as a machine shared over Tailscale. Existing REST and `/ws` behavior stays unchanged: no login is required and clients can call the API directly.
+The Supervisor serves its own Web UI and API on one computer and, optionally,
+its network. [Local mode](local-mode.md) describes the one-line install
+(`setup.sh` without relay arguments), options and limits.
 
-Use this for development and trusted LAN/VPN setups.
+The Supervisor listens on `POCKYMOE_HOST`:`POCKYMOE_PORT` (also `HOST`/`PORT`;
+default `127.0.0.1:8787`). An installed release serves its own Web UI and keeps
+its data in `~/.remote-codex` without further settings.
 
-`pockymoe start` listens on `127.0.0.1` for both the Web UI and supervisor
-API unless `SERVICE_HOST` or `SERVICE_API_HOST` is set. Local mode has no login
-requirement. To connect from a trusted LAN or VPN, explicitly set the listener
-to the appropriate interface. Use `server` mode with credentials whenever the
-listener is reachable from an untrusted network.
+No login is required until the owner sets an **access passcode** (Settings →
+Device). The passcode is stored as an scrypt hash in `kv`; browsers then sign in
+with `POST /api/auth/login {password}` and receive the same session cookie or
+bearer token as server mode, signed by a secret that a new passcode replaces
+(signing out every other browser). `GET /api/auth/session` reports
+`passcode: true`. `PUT /api/auth/passcode {passcode}` sets or changes it and
+`DELETE /api/auth/passcode` removes it; ten wrong passcodes within a minute pause
+sign-in for that minute. The local CLI keeps working with its token, and
+`pockymoe passcode off` removes a forgotten passcode with the computer owner's
+CLI credentials (not a thread's scoped token). Hosted (Treer) Supervisors cannot
+set a passcode.
 
 ### `server`
 
-The supervisor is deployed as a reachable server and must protect API access.
+Legacy. A reachable Supervisor with one administrator from environment variables.
+For new deployments use a [relay](self-host-relay.md), or local mode with a
+passcode on a trusted network; existing `server` deployments keep working.
 
 Required environment variables:
 

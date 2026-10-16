@@ -42,3 +42,14 @@ it.each([403,404])('silently removes a stale menu reference (%s)', async status 
   await waitFor(() => expect(removed).toHaveBeenCalledWith(thread.key));
   expect(screen.queryByRole('dialog')).toBeNull(); expect(screen.queryByText('Denied')).toBeNull();
 });
+it('names its icons with data-icon for theme packs', async () => {
+  mount();
+  const trigger = await screen.findByRole('button',{name:'Actions for reply 1'});
+  expect(trigger.querySelector('svg')?.getAttribute('data-icon')).toBe('more');
+  fireEvent.click(trigger);
+  const icon = async (name: string) => (await screen.findByRole('button',{name})).querySelector('svg')?.getAttribute('data-icon');
+  expect(await icon('Star thread')).toBe('shortcut');
+  expect(await icon('Open thread')).toBe('open');
+  expect(await icon('Rename thread')).toBe('rename');
+  expect(await icon('Delete thread')).toBe('delete');
+});
