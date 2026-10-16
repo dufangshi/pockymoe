@@ -1924,9 +1924,27 @@ a {
   text-decoration: none;
 }
 
-button,
-input {
+/* Unlayered, this reset beats Tailwind's text-* utilities. Settings and form
+   dialogs keep Tailwind's layered preflight instead, so their controls get the
+   size they declare rather than growing to the surrounding 16px on phones. */
+button:not(:where(.settings-workspace, .host-dialog, .plugin-settings-dialog) *),
+input:not(:where(.settings-workspace, .host-dialog, .plugin-settings-dialog) *) {
   font: inherit;
+}
+
+@media (max-width: 639px) {
+  /* 16px keeps iOS from zooming into a focused field. */
+  :where(.settings-workspace, .host-dialog, .plugin-settings-dialog)
+    :is(input:not([type='checkbox']):not([type='radio']), select, textarea) {
+    font-size: 16px;
+  }
+  .host-dialog [data-slot='dialog-title'] {
+    font-size: 16px;
+  }
+  .host-dialog [data-slot='dialog-description'] {
+    font-size: 12.5px;
+    line-height: 1.45;
+  }
 }
 
 .agent-markdown {

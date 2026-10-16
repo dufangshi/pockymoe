@@ -18,7 +18,8 @@ import { ConnectionModelField } from './ConnectionModelField';
 import { upstreamPresets } from './upstreamPresets';
 
 const field =
-  'host-input mt-1 w-full min-w-0 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-panel)] p-2 text-sm';
+  'host-input mt-1 min-h-9 w-full min-w-0 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-panel)] px-2.5 py-1.5 text-sm';
+const label = 'block text-xs font-medium text-[var(--theme-fg-soft)]';
 const presetProtocol: Record<string, ConnectionProtocol> = {
   codex: 'openai_responses',
   claude: 'anthropic',
@@ -256,7 +257,7 @@ export function ConnectionForm({
       }}
     >
       {!saved && (
-        <label className="block text-sm">
+        <label className={label}>
           {translate('settings.connPreset')}
           <select
             className={field}
@@ -286,7 +287,7 @@ export function ConnectionForm({
         </label>
       )}
       <div className="grid gap-3 sm:grid-cols-2">
-        <label className="block text-sm">
+        <label className={label}>
           {translate('settings.connName')}
           <input
             className={field}
@@ -296,7 +297,7 @@ export function ConnectionForm({
             onChange={(e) => update({ name: e.target.value })}
           />
         </label>
-        <label className="block text-sm">
+        <label className={label}>
           {translate('settings.connProtocol')}
           <select
             className={field}
@@ -326,7 +327,7 @@ export function ConnectionForm({
             : 'settings.connProtocolHint',
         )}
       </p>
-      <label className="block text-sm">
+      <label className={label}>
         {translate('settings.connBaseUrl')}
         <input
           className={field}
@@ -346,7 +347,7 @@ export function ConnectionForm({
         }
       >
         <div>
-          <label className="block text-sm">
+          <label className={label}>
             {translate('settings.connApiKey')}
             <input
               className={field}
@@ -369,7 +370,7 @@ export function ConnectionForm({
           )}
         </div>
         {form.protocol === 'anthropic' && (
-          <label className="block text-sm">
+          <label className={label}>
             {translate('settings.connAuth')}
             <select
               className={field}
@@ -395,11 +396,11 @@ export function ConnectionForm({
         discoverKey={discoverKey}
         discover={(signal) => api.models(draft(), signal)}
       />
-      <details className="text-sm" open={form.headers !== null || undefined}>
+      <details className="text-xs" open={form.headers !== null || undefined}>
         <summary className="cursor-pointer py-1 text-xs text-[var(--theme-fg-muted)]">
           {translate('settings.connAdvanced')}
         </summary>
-        <label className="mt-2 block text-sm">
+        <label className={`mt-2 ${label}`}>
           {translate('settings.connHeaders')}
           <textarea
             className={`${field} font-mono text-xs`}
@@ -428,7 +429,7 @@ export function ConnectionForm({
       <div className="flex flex-wrap items-center gap-2">
         <button
           type="button"
-          className="host-secondary-button inline-flex min-h-10 items-center gap-1.5 rounded-lg border px-3 text-xs disabled:opacity-40"
+          className="host-secondary-button inline-flex min-h-9 items-center gap-1.5 rounded-lg border px-3 text-xs disabled:opacity-40"
           disabled={!!busy || !canDiscover || headers === null}
           onClick={() => void runTest()}
         >
@@ -464,13 +465,15 @@ export function ConnectionForm({
           )}
         </div>
       )}
-      <div className="sticky bottom-0 -mx-1 flex flex-wrap items-center justify-end gap-2 border-t border-[var(--theme-border)] bg-[var(--theme-panel)] px-1 pt-3">
-        <p className="mr-auto min-w-0 text-xs text-[var(--theme-fg-muted)]">
-          {translate('settings.connSaveOnlyHint')}
-        </p>
+      {/* One row on every width; the save-only hint sits under the dialog title.
+          Sticky offsets start inside the dialog's 24px padding, so reach through it. */}
+      <div
+        className="sticky -bottom-6 -mx-1 -mb-6 grid grid-cols-2 gap-2 border-t border-[var(--theme-border)] bg-[var(--theme-panel)] px-1 pb-6 pt-2.5 sm:flex sm:justify-end"
+        data-testid="connection-form-actions"
+      >
         <button
           type="button"
-          className="host-secondary-button min-h-10 rounded-lg border px-3 text-sm"
+          className="host-secondary-button min-h-9 whitespace-nowrap rounded-lg border px-4 text-[13px]"
           disabled={busy === 'save'}
           onClick={onCancel}
         >
@@ -478,12 +481,13 @@ export function ConnectionForm({
         </button>
         <button
           type="submit"
-          className="relay-button-primary min-h-10"
+          className="relay-button-primary !min-h-9 whitespace-nowrap !px-4"
+          aria-label={translate('settings.connSave')}
           disabled={!valid || !!busy || (saved && !dirty)}
         >
           {busy === 'save'
             ? translate('settings.connSaving')
-            : translate('settings.connSave')}
+            : translate('settings.connSaveShort')}
         </button>
       </div>
     </form>

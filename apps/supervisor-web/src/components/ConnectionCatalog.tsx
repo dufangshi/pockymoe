@@ -5,9 +5,9 @@ import {
   FlaskConical,
   MoreHorizontal,
   Pencil,
-  Play,
   Plus,
   Trash2,
+  TriangleAlert,
 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -16,6 +16,7 @@ import {
   connectionsApi,
   harnessProtocols,
   protocolLabel,
+  protocolShort,
   remoteSources,
   syncSources,
   type ConnectionSource,
@@ -28,11 +29,9 @@ import { ConnectionModelField } from './ConnectionModelField';
 import { FormDialog } from './FormDialog';
 
 const button =
-  'host-secondary-button inline-flex min-h-10 shrink-0 items-center justify-center gap-1.5 rounded-lg border px-3 text-xs disabled:opacity-40';
-// Long harness names may shrink and truncate instead of pushing actions off-screen.
-const flexButton = `${button.replace(' shrink-0', '')} min-w-0 max-w-full`;
+  'host-secondary-button inline-flex min-h-9 shrink-0 items-center justify-center gap-1 rounded-lg border px-2.5 text-xs font-medium whitespace-nowrap disabled:opacity-40';
 const iconButton =
-  'host-secondary-button inline-flex min-h-10 min-w-10 shrink-0 items-center justify-center rounded-lg border disabled:opacity-40';
+  'host-secondary-button inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-lg border disabled:opacity-40';
 const stateOrder: Record<ConnectionState, number> = {
   local: 0,
   conflict: 1,
@@ -164,55 +163,47 @@ export function ConnectionCatalog({
 
   return (
     <section className="min-w-0" aria-label={translate('settings.connTitle')}>
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h3 className="text-sm font-semibold">
+      <div className="flex items-center justify-between gap-2">
+        <h3 className="text-[13px] font-semibold">
           {translate('settings.connTitle')}
         </h3>
-        <div className="flex gap-2">
-          <button
-            type="button"
-            className={button}
-            disabled={!catalog}
-            onClick={() => setEditing('new')}
-          >
-            <Plus size={14} />
-            {translate('settings.connAdd')}
-          </button>
-        </div>
+        <button
+          type="button"
+          className={button}
+          disabled={!catalog}
+          aria-label={translate('settings.connAdd')}
+          title={translate('settings.connAdd')}
+          onClick={() => setEditing('new')}
+        >
+          <Plus size={14} aria-hidden />
+          {translate('settings.connAddShort')}
+        </button>
       </div>
       {harness && catalog && (
         <p
-          className="mt-3 flex min-w-0 flex-wrap items-center gap-x-1.5 rounded-lg bg-[var(--theme-hover)] px-3 py-2 text-xs"
+          className="mt-2.5 flex min-w-0 items-center gap-1.5 rounded-lg bg-[var(--theme-hover)] px-2.5 py-1.5 text-xs"
           data-testid="harness-binding"
         >
-          <span className="text-[var(--theme-fg-muted)]">
+          <span className="shrink-0 text-[var(--theme-fg-muted)]">
             {translate('settings.connHarnessUses', { harness: harness.name })}
           </span>
-          {bound ? (
-            <>
-              <strong className="min-w-0 truncate font-semibold">
-                {bound.name}
-              </strong>
-              {binding?.model && (
-                <span className="min-w-0 truncate text-[var(--theme-fg-muted)]">
-                  · {binding.model}
-                </span>
-              )}
-              {pending && (
-                <span className="text-[var(--status-warning-fg,var(--status-danger-fg))]">
-                  · {translate('settings.connPending')}
-                </span>
-              )}
-            </>
-          ) : (
-            <strong className="font-semibold">
-              {translate(
-                binding?.profileId
-                  ? 'settings.connHarnessLegacy'
-                  : 'settings.connHarnessNative',
-              )}
-            </strong>
-          )}
+          {/* Pending changes show on the bound row, next to its Reapply. */}
+          <strong
+            className="min-w-0 truncate font-semibold"
+            title={
+              bound
+                ? [bound.name, binding?.model].filter(Boolean).join(' · ')
+                : undefined
+            }
+          >
+            {bound
+              ? [bound.name, binding?.model].filter(Boolean).join(' · ')
+              : translate(
+                  binding?.profileId
+                    ? 'settings.connHarnessLegacy'
+                    : 'settings.connHarnessNative',
+                )}
+          </strong>
         </p>
       )}
       {catalog && deviceId && !catalog.catalogAvailable && (
@@ -237,7 +228,7 @@ export function ConnectionCatalog({
       {all.length > 6 && (
         <input
           type="search"
-          className="host-input mt-3 w-full rounded-lg border border-[var(--theme-border)] bg-[var(--theme-panel)] p-2 text-sm"
+          className="host-input mt-2.5 min-h-9 w-full rounded-lg border border-[var(--theme-border)] bg-[var(--theme-panel)] px-2.5 py-1.5 text-sm"
           aria-label={translate('settings.connSearch')}
           placeholder={translate('settings.connSearch')}
           value={search}
@@ -247,7 +238,7 @@ export function ConnectionCatalog({
       {error && !catalog ? (
         <div
           role="alert"
-          className="my-4 text-sm text-[var(--status-danger-fg)]"
+          className="my-3 text-xs text-[var(--status-danger-fg)]"
         >
           <p>{error}</p>
           <button
@@ -259,17 +250,17 @@ export function ConnectionCatalog({
           </button>
         </div>
       ) : !catalog ? (
-        <p role="status" className="py-5 text-sm text-[var(--theme-fg-muted)]">
+        <p role="status" className="py-4 text-xs text-[var(--theme-fg-muted)]">
           {translate('settings.connLoading')}
         </p>
       ) : !all.length ? (
-        <p className="my-4 rounded-xl border border-dashed border-[var(--theme-border)] p-4 text-sm text-[var(--theme-fg-muted)]">
+        <p className="my-3 rounded-xl border border-dashed border-[var(--theme-border)] p-3 text-xs leading-5 text-[var(--theme-fg-muted)]">
           {translate('settings.connEmpty')}
         </p>
       ) : (
-        <ul className="mt-3 space-y-2">
+        <ul className="mt-2.5 space-y-2">
           {!rows.length && (
-            <li className="py-3 text-sm text-[var(--theme-fg-muted)]">
+            <li className="py-2 text-xs text-[var(--theme-fg-muted)]">
               {translate('settings.connNoMatches')}
             </li>
           )}
@@ -437,47 +428,79 @@ function ConnectionRow({
   const sources = syncSources(c, deviceId);
   const canSync = !!deviceId && (state !== 'local' || sources.length > 0);
   const compatible = !harness || protocols.includes(c.protocol);
-  const chip = {
-    local: null,
-    remote: translate('settings.connStateRemote'),
-    offline: translate('settings.connStateOffline'),
-    conflict: translate('settings.connStateConflict'),
-  }[state];
+  // One status per row; the harness name is already in the page context.
+  const status =
+    harness && bound
+      ? pending
+        ? {
+            text: translate('settings.connPending'),
+            tone: 'warn',
+            title: translate('settings.connPendingHint', {
+              harness: harness.name,
+            }),
+          }
+        : { text: translate('settings.connInUse'), tone: 'accent' }
+      : state === 'offline'
+        ? { text: translate('settings.connStateOffline'), tone: 'warn' }
+        : state === 'conflict'
+          ? { text: translate('settings.connStateConflict'), tone: 'warn' }
+          : null;
+  const meta = [
+    protocolShort(c.protocol),
+    ...(c.local
+      ? [c.baseUrl?.replace(/^https?:\/\//, ''), c.model]
+      : [
+          translate('settings.connOnDevices', {
+            devices: remote.map((s) => s.name).join(', '),
+          }),
+        ]),
+  ]
+    .filter(Boolean)
+    .join(' · ');
   return (
     <li
-      className={`rounded-xl border p-3 ${bound ? 'border-[var(--theme-accent-border)] bg-[var(--theme-accent-soft)]' : 'border-[var(--theme-border)] bg-[var(--theme-panel)]'}`}
+      className={`rounded-xl border px-3 py-2.5 ${bound ? 'border-[var(--theme-accent-border)] bg-[var(--theme-accent-soft)]' : 'border-[var(--theme-border)] bg-[var(--theme-panel)]'}`}
       aria-label={c.name}
     >
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-        <div className="min-w-0 flex-1 basis-40">
-          <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
+        <div className="min-w-0 flex-1 basis-36">
+          <div className="flex min-w-0 items-center gap-1.5">
             <h4
-              className="min-w-0 truncate text-sm font-semibold"
+              className="min-w-0 truncate text-[13px] font-semibold leading-5"
               title={c.name}
             >
               {c.name}
             </h4>
-            <span className="rounded-md border border-[var(--theme-border)] px-1.5 py-0.5 text-[11px] text-[var(--theme-fg-muted)]">
-              {protocolLabel(c.protocol)}
-            </span>
-            {chip && (
+            {status && (
               <span
-                className={`rounded-md px-1.5 py-0.5 text-[11px] ${state === 'conflict' || state === 'offline' ? 'bg-[var(--status-warning-bg,var(--theme-hover))] text-[var(--status-warning-fg,var(--theme-fg))]' : 'bg-[var(--theme-hover)] text-[var(--theme-fg-muted)]'}`}
+                className={`inline-flex shrink-0 items-center gap-0.5 rounded-full px-1.5 text-[11px] leading-[18px] ${status.tone === 'accent' ? 'bg-[var(--theme-accent-soft)] text-[var(--theme-accent-strong)]' : 'bg-[var(--status-warning-bg,var(--theme-hover))] text-[var(--status-warning-fg,var(--theme-fg))]'}`}
+                title={status.title}
               >
-                {chip}
+                {status.tone === 'accent' && <Check size={11} aria-hidden />}
+                {status.text}
+              </span>
+            )}
+            {/* A bound row's pill shows the harness state; keep the device split visible. */}
+            {status && state === 'conflict' && harness && bound && (
+              <span
+                role="img"
+                className="inline-flex shrink-0 text-[var(--status-warning-fg,var(--theme-fg))]"
+                aria-label={translate('settings.connStateConflict')}
+                title={translate('settings.connStateConflict')}
+              >
+                <TriangleAlert size={13} aria-hidden />
               </span>
             )}
           </div>
-          <p className="mt-1 truncate text-xs text-[var(--theme-fg-muted)]">
-            {c.local
-              ? [c.baseUrl, c.model].filter(Boolean).join(' · ')
-              : translate('settings.connOnDevices', {
-                  devices: remote.map((s) => s.name).join(', '),
-                })}
+          <p
+            className="mt-0.5 truncate text-[11px] leading-4 text-[var(--theme-fg-muted)]"
+            title={meta}
+          >
+            {meta}
           </p>
         </div>
         <div
-          className="ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2"
+          className="ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-1.5"
           data-testid="connection-actions"
         >
           {canSync && (
@@ -485,6 +508,7 @@ function ConnectionRow({
               type="button"
               className={button}
               disabled={syncing || !sources.length}
+              aria-label={translate('settings.connSyncNamed', { name: c.name })}
               title={
                 sources.length
                   ? translate('settings.connSyncHint')
@@ -492,28 +516,11 @@ function ConnectionRow({
               }
               onClick={onSync}
             >
-              <CloudDownload size={14} />
+              <CloudDownload size={13} aria-hidden />
               {syncing
                 ? translate('settings.connSyncing')
                 : translate('settings.connSync')}
             </button>
-          )}
-          {harness && c.local && bound && (
-            <span
-              className={`inline-flex min-h-10 items-center gap-1 px-1 text-xs ${pending ? 'text-[var(--status-warning-fg,var(--status-danger-fg))]' : 'text-[var(--theme-accent-strong)]'}`}
-              title={
-                pending
-                  ? translate('settings.connPendingHint', {
-                      harness: harness.name,
-                    })
-                  : undefined
-              }
-            >
-              {!pending && <Check size={14} />}
-              {translate(
-                pending ? 'settings.connPending' : 'settings.connInUse',
-              )}
-            </span>
           )}
           {harness &&
             c.local &&
@@ -522,28 +529,37 @@ function ConnectionRow({
                 type="button"
                 className={
                   pending
-                    ? `${flexButton} border-[var(--theme-accent-border)] text-[var(--theme-accent-strong)]`
-                    : flexButton
+                    ? `${button} border-[var(--theme-accent-border)] text-[var(--theme-accent-strong)]`
+                    : button
                 }
                 disabled={!harness.installed}
+                aria-label={translate(
+                  bound
+                    ? 'settings.connReapplyNamed'
+                    : 'settings.connApplyNamed',
+                  { name: c.name, harness: harness.name },
+                )}
                 title={
                   harness.installed
-                    ? undefined
+                    ? translate(
+                        bound
+                          ? 'settings.connReapplyNamed'
+                          : 'settings.connApplyNamed',
+                        { name: c.name, harness: harness.name },
+                      )
                     : translate('settings.upstreamsUninstalled')
                 }
                 onClick={onApply}
               >
-                <Play size={14} className="shrink-0" />
-                <span className="truncate">
-                  {translate(
-                    bound ? 'settings.connReapply' : 'settings.connApply',
-                    { harness: harness.name },
-                  )}
-                </span>
+                {translate(
+                  bound
+                    ? 'settings.connReapplyShort'
+                    : 'settings.connApplyShort',
+                )}
               </button>
             ) : (
               <span
-                className="px-2 text-xs text-[var(--theme-fg-muted)]"
+                className="px-1 text-[11px] text-[var(--theme-fg-muted)]"
                 title={translate('settings.connIncompatibleHint', {
                   harness: harness.name,
                   protocol: protocolLabel(c.protocol),
@@ -553,32 +569,20 @@ function ConnectionRow({
               </span>
             ))}
           {c.local && (
-            <>
-              <button
-                type="button"
-                className={iconButton}
-                aria-label={translate('settings.connEditNamed', {
-                  name: c.name,
-                })}
-                title={translate('settings.connEdit')}
-                onClick={onEdit}
-              >
-                <Pencil size={14} />
-              </button>
-              <RowMenu
-                name={c.name}
-                testing={testing}
-                onTest={onTest}
-                onDelete={onDelete}
-              />
-            </>
+            <RowMenu
+              name={c.name}
+              testing={testing}
+              onEdit={onEdit}
+              onTest={onTest}
+              onDelete={onDelete}
+            />
           )}
         </div>
       </div>
       {error && (
         <p
           role="alert"
-          className="mt-2 break-words text-xs text-[var(--status-danger-fg)]"
+          className="mt-1.5 break-words text-xs text-[var(--status-danger-fg)]"
         >
           {error}
         </p>
@@ -590,11 +594,13 @@ function ConnectionRow({
 function RowMenu({
   name,
   testing,
+  onEdit,
   onTest,
   onDelete,
 }: {
   name: string;
   testing: boolean;
+  onEdit: () => void;
   onTest: () => void;
   onDelete: () => void;
 }) {
@@ -636,10 +642,23 @@ function RowMenu({
       </button>
       {open && (
         <div
-          className="absolute right-0 top-12 z-10 min-w-52 rounded-xl border border-[var(--theme-border)] bg-[var(--theme-panel)] p-1 shadow-lg"
+          className="absolute right-0 top-10 z-10 min-w-44 rounded-xl border border-[var(--theme-border)] bg-[var(--theme-panel)] p-1 shadow-lg"
           role="group"
           aria-label={translate('settings.upstreamsMoreActions', { name })}
         >
+          <button
+            type="button"
+            className={item}
+            aria-label={translate('settings.connEditNamed', { name })}
+            onClick={() => {
+              setOpen(false);
+              trigger.current?.focus();
+              onEdit();
+            }}
+          >
+            <Pencil size={14} aria-hidden />
+            {translate('settings.connEdit')}
+          </button>
           <button
             type="button"
             className={item}
@@ -744,7 +763,7 @@ function ApplyDialog({
         <div className="flex justify-end gap-2">
           <button
             type="button"
-            className="host-secondary-button min-h-10 rounded-lg border px-3 text-sm"
+            className="host-secondary-button min-h-9 rounded-lg border px-3 text-[13px]"
             disabled={busy}
             onClick={onClose}
           >
@@ -752,12 +771,12 @@ function ApplyDialog({
           </button>
           <button
             type="submit"
-            className="relay-button-primary min-h-10"
+            className="relay-button-primary !min-h-9"
             disabled={busy || !model.trim()}
           >
             {busy
               ? translate('settings.connApplying')
-              : translate('settings.connApply', { harness: harness.name })}
+              : translate('settings.connApplyShort')}
           </button>
         </div>
       </form>
@@ -797,7 +816,7 @@ function DeleteDialog({
       <div className="flex justify-end gap-2">
         <button
           type="button"
-          className="host-secondary-button min-h-10 rounded-lg border px-3 text-sm"
+          className="host-secondary-button min-h-9 rounded-lg border px-3 text-[13px]"
           disabled={busy}
           onClick={onClose}
         >
@@ -805,7 +824,7 @@ function DeleteDialog({
         </button>
         <button
           type="button"
-          className="relay-button-primary min-h-10"
+          className="relay-button-primary !min-h-9"
           disabled={busy}
           onClick={() => {
             setBusy(true);

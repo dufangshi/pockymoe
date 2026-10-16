@@ -224,6 +224,18 @@ export const harnessProtocols: Record<string, ConnectionProtocol[]> = {
   deepseek: ['anthropic', 'openai_chat'],
 };
 
+/** Compact protocol tag for dense rows; the full label stays in forms and hints. */
+export function protocolShort(protocol: string) {
+  return (
+    {
+      openai_chat: 'Chat',
+      openai_responses: 'Responses',
+      anthropic: 'Anthropic',
+      gemini: 'Gemini',
+    }[protocol] ?? protocol
+  );
+}
+
 export function protocolLabel(protocol: string) {
   switch (protocol) {
     case 'openai_chat':

@@ -84,26 +84,26 @@ it('shows only installed base harnesses and applies connections in the selected 
     await screen.findByRole('listitem', { name: 'Work API' }),
   ).toBeVisible();
   expect(screen.getByTestId('harness-binding')).toHaveTextContent(
-    'OpenAI Codex usesWork API· model-a',
+    'OpenAI Codex usesWork API · model-a',
   );
   const work = screen.getByRole('listitem', { name: 'Work API' });
   expect(within(work).getByText('In use')).toBeVisible();
   const anthropic = screen.getByRole('listitem', { name: 'Anthropic Direct' });
-  expect(within(anthropic).getByText('Not for this harness')).toBeVisible();
+  expect(within(anthropic).getByText('Incompatible')).toBeVisible();
   fireEvent.click(screen.getByRole('button', { name: 'Claude Agent' }));
   expect(
     await within(anthropic).findByRole('button', {
-      name: 'Apply to Claude Agent',
+      name: 'Apply Anthropic Direct to Claude Agent',
     }),
   ).toBeEnabled();
-  expect(within(work).queryByRole('button', { name: /Apply to/ })).toBeNull();
+  expect(within(work).queryByRole('button', { name: /^Apply/ })).toBeNull();
   fireEvent.click(screen.getByRole('checkbox', { name: 'Show uninstalled' }));
   fireEvent.click(screen.getByRole('button', { name: 'DSH' }));
   expect(screen.getByText(/Install this harness/)).toBeVisible();
   expect(
     within(
       screen.getByRole('listitem', { name: 'Anthropic Direct' }),
-    ).getByRole('button', { name: 'Apply to DSH' }),
+    ).getByRole('button', { name: 'Apply Anthropic Direct to DSH' }),
   ).toBeDisabled();
   // Native tools stay available, but only load when opened.
   expect(request).not.toHaveBeenCalledWith(
@@ -143,7 +143,7 @@ it('does not show default harnesses when inventory is empty or unavailable', asy
   expect(await screen.findByRole('alert')).toHaveTextContent(
     'Unable to check installed harnesses',
   );
-  expect(screen.queryByRole('button', { name: /Apply to/ })).toBeNull();
+  expect(screen.queryByRole('button', { name: /^Apply/ })).toBeNull();
 });
 it('ignores an old inventory response after switching devices', async () => {
   vi.mocked(relayModeActive).mockReturnValue(true);

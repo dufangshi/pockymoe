@@ -80,6 +80,14 @@ beforeEach(() => {
   vi.mocked(request).mockReset();
 });
 
+/** Edit, Test and Remove sit in the row's More actions menu. */
+async function openEdit(name: string) {
+  fireEvent.click(
+    await screen.findByRole('button', { name: `More actions for ${name}` }),
+  );
+  fireEvent.click(screen.getByRole('button', { name: `Edit ${name}` }));
+}
+
 it('saves a new connection without applying it and keeps a manual model when discovery fails', async () => {
   let saved = false;
   server(({ path, method, body }) => {
@@ -172,17 +180,19 @@ it('applies a local connection only through the explicit Apply dialog and surviv
   });
   render(<ConnectionCatalog apiRoot="api" harness={codex} />);
   const row = await screen.findByRole('listitem', { name: 'Work API' });
-  expect(within(row).queryByRole('button', { name: 'Sync' })).toBeNull();
-  expect(
-    within(screen.getByRole('listitem', { name: 'Gemini Direct' })).getByRole(
-      'button',
-      { name: 'Apply to Codex' },
-    ),
-  ).toBeEnabled();
+  expect(within(row).queryByRole('button', { name: /^Sync/ })).toBeNull();
+  // Short visible label; the accessible name carries connection and harness.
+  const gemini = within(
+    screen.getByRole('listitem', { name: 'Gemini Direct' }),
+  ).getByRole('button', { name: 'Apply Gemini Direct to Codex' });
+  expect(gemini).toBeEnabled();
+  expect(gemini).toHaveTextContent(/^Apply$/);
   expect(screen.getByTestId('harness-binding')).toHaveTextContent(
     'its own sign-in or native configuration',
   );
-  fireEvent.click(within(row).getByRole('button', { name: 'Apply to Codex' }));
+  fireEvent.click(
+    within(row).getByRole('button', { name: 'Apply Work API to Codex' }),
+  );
   const dialog = await screen.findByRole('dialog', {
     name: 'Apply Work API to Codex',
   });
@@ -191,16 +201,12 @@ it('applies a local connection only through the explicit Apply dialog and surviv
   );
   fireEvent.change(choose, { target: { value: 'model-b' } });
   expect(within(dialog).getByLabelText('Default model')).toHaveValue('model-b');
-  fireEvent.click(
-    within(dialog).getByRole('button', { name: 'Apply to Codex' }),
-  );
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Apply' }));
   expect(await within(dialog).findByRole('alert')).toHaveTextContent(
     'The harness is busy',
   );
   expect(within(dialog).getByLabelText('Default model')).toHaveValue('model-b');
-  fireEvent.click(
-    within(dialog).getByRole('button', { name: 'Apply to Codex' }),
-  );
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Apply' }));
   expect(
     await screen.findByText('Codex now uses Work API · model-b.'),
   ).toBeVisible();
@@ -260,16 +266,25 @@ it('syncs a remote connection in two calls without applying it, with actionable 
   });
   render(<ConnectionCatalog apiRoot="api" harness={claude} />);
   const row = await screen.findByRole('listitem', { name: 'Shared Anthropic' });
-  expect(within(row).getByText('Other device')).toBeVisible();
-  expect(within(row).getByText('Saved on Laptop')).toBeVisible();
-  expect(within(row).queryByRole('button', { name: /Apply to/ })).toBeNull();
+  expect(within(row).getByText('Anthropic · On Laptop')).toBeVisible();
+  expect(
+    within(row).queryByRole('button', { name: /^(Re)?apply/i }),
+  ).toBeNull();
   expect(within(row).queryByRole('button', { name: /Edit/ })).toBeNull();
-  fireEvent.click(within(row).getByRole('button', { name: 'Sync' }));
+  fireEvent.click(
+    within(row).getByRole('button', {
+      name: 'Sync Shared Anthropic to this device',
+    }),
+  );
   expect(await within(row).findByRole('alert')).toHaveTextContent(
     'Device-to-device access is off',
   );
   expect(calls.some((c) => c.path.endsWith('/sync'))).toBe(false);
-  fireEvent.click(within(row).getByRole('button', { name: 'Sync' }));
+  fireEvent.click(
+    within(row).getByRole('button', {
+      name: 'Sync Shared Anthropic to this device',
+    }),
+  );
   expect(
     await screen.findByText(
       'Shared Anthropic is now on this device. Apply it to Claude Agent separately when you are ready.',
@@ -292,7 +307,9 @@ it('syncs a remote connection in two calls without applying it, with actionable 
   ]);
   const after = screen.getByRole('listitem', { name: 'Shared Anthropic' });
   expect(
-    within(after).getByRole('button', { name: 'Apply to Claude Agent' }),
+    within(after).getByRole('button', {
+      name: 'Apply Shared Anthropic to Claude Agent',
+    }),
   ).toBeEnabled();
   expect(calls.some((c) => c.path.includes('/apply'))).toBe(false);
 });
@@ -338,11 +355,11 @@ it('blocks offline sources and makes the user choose between differing versions 
   });
   render(<ConnectionCatalog apiRoot="api" harness={codex} />);
   const offline = await screen.findByRole('listitem', { name: 'Offline One' });
-  expect(within(offline).getByText('Source offline')).toBeVisible();
-  expect(within(offline).getByRole('button', { name: 'Sync' })).toBeDisabled();
+  expect(within(offline).getByText('Offline')).toBeVisible();
+  expect(within(offline).getByRole('button', { name: /^Sync/ })).toBeDisabled();
   const split = screen.getByRole('listitem', { name: 'Split' });
   expect(within(split).getByText('Versions differ')).toBeVisible();
-  fireEvent.click(within(split).getByRole('button', { name: 'Sync' }));
+  fireEvent.click(within(split).getByRole('button', { name: /^Sync/ }));
   const chooser = await screen.findByRole('dialog', {
     name: 'Sync from which device?',
   });
@@ -387,8 +404,7 @@ it('keeps unsaved edits through close, save failure and an edit conflict until t
     throw Error(`unexpected ${method} ${path}`);
   });
   render(<ConnectionCatalog apiRoot="api" />);
-  const edit = await screen.findByRole('button', { name: 'Edit Work API' });
-  fireEvent.click(edit);
+  await openEdit('Work API');
   const dialog = await screen.findByRole('dialog', { name: 'Edit connection' });
   const name = within(dialog).getByLabelText('Name');
   expect(
@@ -671,10 +687,14 @@ it('keeps Reapply on a bound connection and flags saved or synced changes until 
   let row = await screen.findByRole('listitem', { name: 'Work API' });
   // r1 is applied, but Laptop holds r9: the row is in conflict, not pending.
   expect(within(row).getByText('In use')).toBeVisible();
+  // The harness pill does not hide that devices hold different versions.
   expect(
-    within(row).getByRole('button', { name: 'Reapply to Codex' }),
+    within(row).getByRole('img', { name: 'Versions differ' }),
+  ).toBeVisible();
+  expect(
+    within(row).getByRole('button', { name: 'Reapply Work API to Codex' }),
   ).toBeEnabled();
-  fireEvent.click(within(row).getByRole('button', { name: 'Edit Work API' }));
+  await openEdit('Work API');
   const dialog = await screen.findByRole('dialog', { name: 'Edit connection' });
   fireEvent.change(within(dialog).getByLabelText('Default model'), {
     target: { value: 'model-c' },
@@ -689,15 +709,16 @@ it('keeps Reapply on a bound connection and flags saved or synced changes until 
   ).toBeVisible();
   row = screen.getByRole('listitem', { name: 'Work API' });
   await waitFor(() =>
-    expect(within(row).getByText('Changes not applied')).toBeVisible(),
+    expect(within(row).getByText('Not applied')).toBeVisible(),
   );
-  expect(screen.getByTestId('harness-binding')).toHaveTextContent(
-    'Changes not applied',
+  // Shown once, on the row that offers Reapply.
+  expect(screen.getByTestId('harness-binding')).not.toHaveTextContent(
+    'Not applied',
   );
   expect(calls.some((c) => c.path.endsWith('/apply'))).toBe(false);
 
   fireEvent.click(
-    within(row).getByRole('button', { name: 'Reapply to Codex' }),
+    within(row).getByRole('button', { name: 'Reapply Work API to Codex' }),
   );
   const apply = await screen.findByRole('dialog', {
     name: 'Apply Work API to Codex',
@@ -707,9 +728,7 @@ it('keeps Reapply on a bound connection and flags saved or synced changes until 
   fireEvent.change(within(apply).getByLabelText('Default model'), {
     target: { value: 'model-c' },
   });
-  fireEvent.click(
-    within(apply).getByRole('button', { name: 'Apply to Codex' }),
-  );
+  fireEvent.click(within(apply).getByRole('button', { name: 'Apply' }));
   await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
   await waitFor(() =>
     expect(
@@ -726,13 +745,13 @@ it('keeps Reapply on a bound connection and flags saved or synced changes until 
   fireEvent.click(
     within(screen.getByRole('listitem', { name: 'Work API' })).getByRole(
       'button',
-      { name: 'Sync' },
+      { name: 'Sync Work API to this device' },
     ),
   );
   await waitFor(() =>
     expect(
       within(screen.getByRole('listitem', { name: 'Work API' })).getByText(
-        'Changes not applied',
+        'Not applied',
       ),
     ).toBeVisible(),
   );
@@ -744,7 +763,7 @@ it('keeps Reapply on a bound connection and flags saved or synced changes until 
   expect(
     within(screen.getByRole('listitem', { name: 'Work API' })).getByRole(
       'button',
-      { name: 'Reapply to Codex' },
+      { name: 'Reapply Work API to Codex' },
     ),
   ).toBeEnabled();
 });

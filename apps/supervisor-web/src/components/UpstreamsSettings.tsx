@@ -85,12 +85,12 @@ function DeviceUpstreams({ apiRoot }: { apiRoot: string }) {
   }, [apiRoot, revision]);
   return (
     <section
-      className="min-w-0 py-4"
+      className="min-w-0 py-1"
       aria-label={translate('settings.upstreamsTab')}
     >
-      <div className="flex flex-wrap items-center justify-between gap-3">
+      <div className="flex items-start justify-between gap-2">
         <div
-          className="settings-harness-switch flex min-w-0 flex-wrap gap-1 rounded-xl bg-[var(--theme-hover)] p-1"
+          className="settings-harness-switch flex min-w-0 gap-0.5 overflow-x-auto rounded-[10px] bg-[var(--theme-hover)] p-0.5 [scrollbar-width:none]"
           role="group"
           aria-label={translate('devices.chooseHarness')}
         >
@@ -100,7 +100,7 @@ function DeviceUpstreams({ apiRoot }: { apiRoot: string }) {
                 key={h.id}
                 type="button"
                 aria-pressed={selected === h.id}
-                className={`min-h-10 rounded-lg px-3 text-xs font-medium transition ${selected === h.id ? 'bg-[var(--theme-panel)] text-[var(--theme-accent-strong)] shadow-sm' : 'text-[var(--theme-fg-muted)] hover:text-[var(--theme-fg)]'}`}
+                className={`min-h-9 whitespace-nowrap rounded-lg px-2.5 text-xs font-medium transition ${selected === h.id ? 'bg-[var(--theme-panel)] text-[var(--theme-accent-strong)] shadow-sm' : 'text-[var(--theme-fg-muted)] hover:text-[var(--theme-fg)]'}`}
                 onClick={() => setSelected(h.id)}
               >
                 {h.name}
@@ -109,21 +109,19 @@ function DeviceUpstreams({ apiRoot }: { apiRoot: string }) {
         </div>
         <button
           type="button"
-          className="host-secondary-button inline-flex min-h-10 min-w-10 items-center justify-center gap-2 rounded-lg border px-3 text-xs"
+          className="host-secondary-button inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-lg border"
           aria-label={translate('settings.upstreamsRefresh')}
+          title={translate('settings.upstreamsRefresh')}
           disabled={loading}
           onClick={() => {
             setRevision((v) => v + 1);
             setNativeChanges((v) => v + 1);
           }}
         >
-          <RefreshCw size={14} />
-          <span className="hidden sm:inline">
-            {translate('settings.upstreamsRefresh')}
-          </span>
+          <RefreshCw size={14} aria-hidden />
         </button>
       </div>
-      <label className="mt-3 flex items-center gap-2 text-xs text-[var(--theme-fg-muted)]">
+      <label className="mt-2 flex w-fit items-center gap-2 text-xs text-[var(--theme-fg-muted)]">
         <input
           type="checkbox"
           checked={showUninstalled}
@@ -165,7 +163,7 @@ function DeviceUpstreams({ apiRoot }: { apiRoot: string }) {
           </p>
         )
       )}
-      <div className="mt-4">
+      <div className="mt-3">
         <ConnectionCatalog
           key={apiRoot}
           apiRoot={apiRoot}
@@ -183,7 +181,7 @@ function DeviceUpstreams({ apiRoot }: { apiRoot: string }) {
       </div>
       {selectedHarness && managedHarnesses.includes(selectedHarness.id) && (
         <details
-          className="mt-5 border-t border-[var(--theme-border)] pt-3"
+          className="mt-4 border-t border-[var(--theme-border)] pt-3"
           onToggle={(e) => setNativeOpen(e.currentTarget.open)}
         >
           <summary className="cursor-pointer py-1 text-xs font-medium text-[var(--theme-fg-muted)]">

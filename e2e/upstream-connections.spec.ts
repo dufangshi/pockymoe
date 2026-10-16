@@ -65,13 +65,15 @@ test('a real local connection saves without applying and Content Quality reuses 
 
   await openSettings(page, 'Upstreams');
   const row = page.getByRole('listitem', { name });
-  await expect(row).toContainText('http://127.0.0.1:9/v1 · manual-model');
-  await row.getByRole('button', { name: 'Apply to OpenAI Codex' }).click();
+  await expect(row).toContainText('Responses · 127.0.0.1:9/v1 · manual-model');
+  await row
+    .getByRole('button', { name: `Apply ${name} to OpenAI Codex` })
+    .click();
   const apply = page.getByRole('dialog', {
     name: `Apply ${name} to OpenAI Codex`,
   });
   await expect(apply.getByLabel('Default model')).toHaveValue('manual-model');
-  await apply.getByRole('button', { name: 'Apply to OpenAI Codex' }).click();
+  await apply.getByRole('button', { name: 'Apply', exact: true }).click();
   await expect(apply).toBeHidden();
   expect(applied).toEqual([{ harness: 'codex', model: 'manual-model' }]);
 
