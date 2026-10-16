@@ -1,6 +1,6 @@
 {
   "name": "pockymoe",
-  "version": "0.13.12",
+  "version": "0.13.13",
   "description": "Self-hosted control plane for coding agents. Rust supervisor, ACP runtimes, React thread UI.",
   "license": "MIT",
   "private": true,

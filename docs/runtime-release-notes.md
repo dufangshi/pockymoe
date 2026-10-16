@@ -1,30 +1,20 @@
-A thread map shows every thread on the account's devices at once (More on a
-phone, the drawer, the rail, the workspace list). Devices hold workspaces and
-workspaces hold threads; a tile grows with the thread's turns, its fill shows how
-long it ran in the last 24 hours, and running threads breathe. Big tiles add the
-agent and model, the latest prompt, turns, total and recent run time, tokens and
-API price (with the usual breakdown), hourly bars and an age mark; small tiles
-keep only what fits. A thread's agent threads open up inside its tile. Each
-Supervisor reports this at the owner-only `GET /api/thread-activity`; devices on
-older Supervisors still appear, unsized and uncolored.
+Owners can now isolate a device or a workspace from agents outside it.
 
-On phones the workspace drawer is redesigned: All workspaces, the thread map,
-shortcuts that can be reordered by dragging (the order is saved with the account
-and the same on every device) and recent conversations. The thread sheet lists the
-current thread's group first and no longer shows notifications, which stay on the
-bell. The dock's thread button no longer switches threads with a sideways swipe.
+- **Devices → ⋯ → Agent isolation…**: agents on other devices can no longer list,
+  read or message this device's threads, list its workspaces, read its files or
+  create threads on it.
+- **Workspaces → ⋯ → Isolate workspace**: agents outside the workspace, on this
+  device or another one, can no longer list, read, message, wait for or close its
+  threads, create threads in it, set automations on them, run commands there or
+  read its files. Isolated workspaces show an **Isolated** badge.
 
-The phone composer opens to its full height when a long prompt is focused, also
-while a dictation or an IME candidate is still underlined, and stays open through
-its own buttons, the dock and menus until the conversation is tapped. The
-one-handed dock now stays visible above the keyboard while typing.
+Isolation is inbound only, stored and enforced on the device, and changed only by
+the owner. Your own use of the Web UI and sharing with other people are not
+affected. It covers the `pockymoe` CLI, cross-device requests and Treer prompts
+and messages from agents outside; it is not an operating-system sandbox. See
+[agent isolation](https://github.com/dufangshi/pockymoe/blob/main/docs/agent-isolation.md).
 
-Folded and opened turns keep their state when a thread view mounts again, and a
-search result no longer reopens its turn on every refresh of a running thread.
-The devices page opens with devices as the relay lists them instead of briefly
-showing them offline and unverified.
-
-Relay deployment adds the shortcut order (`PUT /relay/account/workbench/shortcuts`).
-Validated with the runtime, supervisor, relay and protocol tests touched here, the
-Web and shared UI unit suites and phone and desktop browser checks. Windows Device
-Manager is unchanged. Installing this release is a separate device update.
+Validated with the Supervisor, runtime and CLI suites, new isolation tests for
+local, cross-device, automation and Treer paths, and the Web tests. Relay and
+Windows Device Manager are unchanged. Installing this release is a separate
+device update; publication does not restart an existing Supervisor.
