@@ -282,9 +282,8 @@ test('connections save without applying, apply apart from sync, and template pre
     page.getByRole('button', { name: 'Open Navigation' }),
   ).toBeEnabled();
 
-  // Phone density in zh-CN, at 393 and 320 wide, with the widest row state:
-  // unapplied changes plus Reapply.
-  if (testInfo.project.name !== 'mobile-chromium') return;
+  // Reopening Settings in zh-CN keeps the short labels and one-row footer, with
+  // the widest row state (unapplied changes plus Reapply); phones also at 320.
   bindings = {
     codex: { connectionId: 'personal', model: 'test-model', revision: 'r0' },
   };
@@ -292,12 +291,20 @@ test('connections save without applying, apply apart from sync, and template pre
     localStorage.setItem('remote-codex.locale', 'zh-CN'),
   );
   await page.reload();
-  const laterZh = page.getByRole('button', { name: '稍后', exact: true });
-  await laterZh.waitFor({ timeout: 3_000 }).catch(() => {});
-  if (await laterZh.isVisible()) await laterZh.click();
+  // Count main-frame loads after this reload: a dev-server HMR reload (a watched
+  // file changed on disk) would silently close the dialog and look like a UI bug.
+  const loads: string[] = [];
+  page.on('load', () => loads.push(page.url()));
+  // The tour was dismissed in this browser, so the shell is ready once its
+  // navigation button is; reopen Settings and wait for it before using tabs.
   await page.getByRole('button', { name: '打开导航' }).click();
   await page.getByRole('button', { name: '设置', exact: true }).click();
-  await page.getByRole('tab', { name: '上游', exact: true }).click();
+  const zhSettings = page.getByTestId('settingsDialog');
+  await expect(zhSettings).toBeVisible();
+  await zhSettings.getByRole('tab', { name: '上游', exact: true }).click();
+  await expect(
+    zhSettings.getByRole('tab', { name: '上游', exact: true }),
+  ).toHaveAttribute('aria-selected', 'true');
   const zhRow = page.getByRole('listitem', { name: 'Personal API' });
   // One compact status, shown once.
   await expect(zhRow.getByText('待应用')).toBeVisible();
@@ -307,8 +314,12 @@ test('connections save without applying, apply apart from sync, and template pre
       name: '将 Personal API 重新应用到 OpenAI Codex',
     }),
   ).toHaveText('重新应用');
-  for (const width of [393, 320]) {
-    await page.setViewportSize({ width, height: 700 });
+  const widths =
+    testInfo.project.name === 'mobile-chromium'
+      ? [393, 320]
+      : [page.viewportSize()!.width];
+  for (const width of widths) {
+    await page.setViewportSize({ width, height: page.viewportSize()!.height });
     await expectActionsInside(page, zhRow);
     await expectActionsInside(
       page,
@@ -329,6 +340,7 @@ test('connections save without applying, apply apart from sync, and template pre
   await page.getByRole('button', { name: 'Personal API 的更多操作' }).click();
   await page.getByRole('button', { name: '编辑 Personal API' }).click();
   await expect(page.getByRole('dialog', { name: '编辑连接' })).toBeVisible();
+  expect(loads, 'the page reloaded while reopening Settings').toEqual([]);
 });
 
 test('thread settings categories and nested dialogs stay usable on narrow screens', async ({
