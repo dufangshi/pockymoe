@@ -8,6 +8,10 @@ task achieved its goal.
 
 ## Settings and private connection
 
+Open Settings > Plugins and use the settings button on the Content Quality row.
+Its settings open in a separate dialog and remain available while the plugin is
+disabled, so the connection and writing preferences can be configured first.
+
 Settings use camelCase, reject unknown fields, and have these defaults:
 
 ```json

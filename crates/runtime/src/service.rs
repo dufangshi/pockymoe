@@ -9,6 +9,7 @@ mod inbox_reminder;
 pub(crate) mod peer_work;
 mod reliability;
 mod search;
+mod thread_summary;
 mod update;
 mod watches;
 
@@ -297,6 +298,7 @@ pub struct UploadedPromptAttachment {
 }
 
 pub struct Supervisor {
+    pub(crate) thread_host: std::sync::OnceLock<Arc<dyn crate::host_hooks::ThreadHost>>,
     automation_gate: tokio::sync::Mutex<()>,
     pub(crate) plugins: crate::plugins::PluginHost,
     pub upstream_gate: Arc<tokio::sync::Mutex<()>>,
@@ -338,6 +340,50 @@ fn harness_context_key(thread_id: &str) -> String {
 }
 
 impl Supervisor {
+    pub fn set_thread_host(&self, host: Arc<dyn crate::host_hooks::ThreadHost>) -> Result<()> {
+        self.thread_host
+            .set(host)
+            .map_err(|_| anyhow!("thread host already installed"))
+    }
+
+    async fn host_thread_created(
+        &self,
+        thread: &ThreadDto,
+        origin: crate::host_hooks::ThreadOrigin,
+    ) -> Result<()> {
+        if let Some(host) = self.thread_host.get() {
+            if let Err(error) = host.created(thread, &origin).await {
+                self.release_thread_harness(&thread.id, true, None)
+                    .await
+                    .ok();
+                self.clear_thread_cli_identity(&thread.id);
+                self.revoke_cli_thread_token(&thread.id);
+                self.resume_integration_thread(&thread.id);
+                if let Some(path) = &thread.worktree_path {
+                    if let Ok(ws) = self.get_workspace(&thread.workspace_id) {
+                        let _ = crate::interaction::remove_worktree(
+                            Path::new(&ws.abs_path),
+                            Path::new(path),
+                        );
+                    }
+                }
+                self.delete_thread_record(&thread.id)?;
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn prepare_thread_prompt(&self, id: &str) -> Result<()> {
+        if let Some(host) = self.thread_host.get() {
+            let thread = self.get_thread(id)?;
+            if thread.closed_at.is_some() {
+                host.before_prompt(&thread).await?;
+            }
+        }
+        Ok(())
+    }
+
     pub async fn invalidate_models(&self, id: &str) {
         for runtime in self.runtimes.values() {
             runtime.invalidate_models(id).await;
@@ -370,6 +416,7 @@ impl Supervisor {
         });
         let supervisor = Self {
             local_access: std::sync::RwLock::new(local_access),
+            thread_host: Default::default(),
             automation_gate: Default::default(),
             plugins: Default::default(),
             upstream_gate: Default::default(),
@@ -604,7 +651,10 @@ impl Supervisor {
                 "INSERT INTO thread_history_items(id, thread_id, turn_id, item_id, item_json, created_at, updated_at)
                  VALUES (?1,?2,?3,?4,?5,?6,?6)
                  ON CONFLICT(thread_id, turn_id, item_id) DO UPDATE SET
-                    item_json=excluded.item_json,
+                    item_json=CASE WHEN json_extract(thread_history_items.item_json,'$.kind') IN ('userMessage','agentMessage')
+                      AND json_type(thread_history_items.item_json,'$.createdAt')='text'
+                      THEN json_set(excluded.item_json,'$.createdAt',json_extract(thread_history_items.item_json,'$.createdAt'))
+                      ELSE excluded.item_json END,
                     updated_at=excluded.updated_at
                  WHERE COALESCE(json_extract(thread_history_items.item_json, '$.status'), '')
                            NOT IN ('completed', 'failed', 'interrupted')
@@ -1034,6 +1084,13 @@ impl Supervisor {
     }
 
     pub fn delete_workspace(&self, id: &str) -> Result<()> {
+        if let Some(host) = self.thread_host.get() {
+            let mut threads = self.list_threads(Some(id), true)?;
+            threads.sort_by_key(|t| std::cmp::Reverse(t.lineage_depth));
+            for thread in threads {
+                host.before_delete(&thread)?;
+            }
+        }
         self.db.with(|conn| {
             conn.execute("DELETE FROM threads WHERE workspace_id=?1", params![id])?;
             conn.execute("DELETE FROM workspaces WHERE id=?1", params![id])?;
@@ -1297,6 +1354,34 @@ impl Supervisor {
         workspace_id: Option<&str>,
         include_agent_threads: bool,
     ) -> Result<Vec<ThreadDto>> {
+        let mut rows = self.list_threads_unfiltered(
+            workspace_id,
+            include_agent_threads || self.thread_host.get().is_some(),
+        )?;
+        if let Some(host) = self.thread_host.get() {
+            rows.retain(|t| host.visible(&t.id));
+            let mut counts = HashMap::<String, i64>::new();
+            for thread in &rows {
+                if let Some(root) = &thread.root_thread_id {
+                    *counts.entry(root.clone()).or_default() += 1;
+                }
+            }
+            for thread in &mut rows {
+                thread.descendant_count = counts.get(&thread.id).copied();
+            }
+            if !include_agent_threads {
+                rows.retain(|t| t.parent_thread_id.is_none());
+            }
+        }
+        Ok(rows)
+    }
+
+    /// Host reconciliation and rollback need retained rows, including tombstones.
+    pub fn list_threads_unfiltered(
+        &self,
+        workspace_id: Option<&str>,
+        include_agent_threads: bool,
+    ) -> Result<Vec<ThreadDto>> {
         let mut rows = self.db.with(|conn| {
             let mut sql = String::from(
                 "SELECT t.id, t.workspace_id, t.provider, t.agent_id, t.provider_session_id, t.source, t.title, t.model,
@@ -1319,7 +1404,7 @@ impl Supervisor {
             let map_row = |row: &rusqlite::Row| -> rusqlite::Result<ThreadDto> {
                 Ok(thread_from_row(row))
             };
-            let rows = if let Some(ws) = workspace_id {
+            let rows: Vec<ThreadDto> = if let Some(ws) = workspace_id {
                 stmt.query_map(params![ws], map_row)?
                     .filter_map(|r| r.ok())
                     .collect()
@@ -1380,7 +1465,23 @@ impl Supervisor {
         input: CreateThreadInput,
         options: crate::interaction::AgentOptions,
     ) -> Result<ThreadDto> {
-        self.create_thread_inner(input, options, None).await
+        let origin = input
+            .parent_thread_id
+            .as_ref()
+            .map(|id| crate::host_hooks::ThreadOrigin::Delegate {
+                caller_thread_id: id.clone(),
+            })
+            .unwrap_or(crate::host_hooks::ThreadOrigin::Local);
+        self.create_thread_with_origin(input, options, origin).await
+    }
+
+    pub async fn create_thread_with_origin(
+        &self,
+        input: CreateThreadInput,
+        options: crate::interaction::AgentOptions,
+        origin: crate::host_hooks::ThreadOrigin,
+    ) -> Result<ThreadDto> {
+        self.create_thread_inner(input, options, None, origin).await
     }
 
     pub async fn create_thread_with_cli_identity(
@@ -1389,13 +1490,29 @@ impl Supervisor {
         env: Vec<(String, String)>,
     ) -> Result<ThreadDto> {
         ensure!(
-            input.parent_thread_id.is_none(),
+            self.thread_host.get().is_some() || input.parent_thread_id.is_none(),
             "identity requires a top-level thread"
         );
         self.create_thread_inner(
             input,
             crate::interaction::AgentOptions::default(),
             Some(env),
+            crate::host_hooks::ThreadOrigin::Local,
+        )
+        .await
+    }
+
+    pub async fn create_attached_thread(
+        &self,
+        input: CreateThreadInput,
+        env: Vec<(String, String)>,
+        external_id: String,
+    ) -> Result<ThreadDto> {
+        self.create_thread_inner(
+            input,
+            crate::interaction::AgentOptions::default(),
+            Some(env),
+            crate::host_hooks::ThreadOrigin::Attached { external_id },
         )
         .await
     }
@@ -1405,6 +1522,7 @@ impl Supervisor {
         input: CreateThreadInput,
         options: crate::interaction::AgentOptions,
         identity: Option<Vec<(String, String)>>,
+        origin: crate::host_hooks::ThreadOrigin,
     ) -> Result<ThreadDto> {
         let (approval_mode, sandbox_mode) = match input.approval_mode.as_str() {
             "yolo" => ("yolo", "danger-full-access"),
@@ -1530,6 +1648,7 @@ impl Supervisor {
             return Err(error);
         }
         let thread = self.get_thread(&id)?;
+        self.host_thread_created(&thread, origin).await?;
         self.bus.emit(pockymoe_protocol::ThreadEventEnvelope {
             event_type: pockymoe_protocol::ThreadEventType::ThreadUpdated,
             thread_id: id.clone(),
@@ -1701,6 +1820,11 @@ impl Supervisor {
             Ok(())
         })?;
         self.persist_imported_turns(&thread_id, &session)?;
+        self.host_thread_created(
+            &self.get_thread(&thread_id)?,
+            crate::host_hooks::ThreadOrigin::Local,
+        )
+        .await?;
         self.get_thread_detail_page(&thread_id, Some(3), None, true)
             .await
     }
@@ -1831,7 +1955,8 @@ impl Supervisor {
 
     pub fn ensure_prompt_allowed(&self, thread: &ThreadDto) -> Result<()> {
         ensure!(
-            !self.integration_thread_paused(&thread.id),
+            !self.integration_thread_paused(&thread.id)
+                || (self.thread_host.get().is_some() && thread.closed_at.is_some()),
             "conflict: integration binding is detached"
         );
         self.ensure_not_updating()?;
@@ -2582,6 +2707,7 @@ impl Supervisor {
         pending_steer_id: Option<&str>,
         goal_submission: Option<GoalSubmission>,
     ) -> Result<()> {
+        self.prepare_thread_prompt(&thread.id).await?;
         ensure!(
             !self.integration_thread_paused(&thread.id),
             "conflict: integration binding is detached"
@@ -2664,6 +2790,9 @@ impl Supervisor {
         if live_turns.contains_key(&thread.id) {
             bail!("conflict: This thread is already running");
         }
+        if let (Some(host), Some(title)) = (self.thread_host.get(), title.as_deref()) {
+            host.before_rename(&thread, title)?;
+        }
         self.db.with(|conn| {
             let tx = conn.unchecked_transaction()?;
             let conn = &tx;
@@ -2696,7 +2825,7 @@ impl Supervisor {
                     if thread.fast_mode { "fast" } else { "standard" }
                 ],
             )?;
-            let user_item = ThreadHistoryItemDto {
+            let mut user_item = ThreadHistoryItemDto {
                 id: format!("{turn_id}:user"),
                 created_at: Some(now.clone()),
                 kind: pockymoe_protocol::ThreadItemKind::UserMessage,
@@ -2709,6 +2838,8 @@ impl Supervisor {
                 artifact: None,
                 extra: Default::default(),
             };
+            let origin = pending_steer_id.map(|pending| thread_summary::prompt_origin(conn, pending)).transpose()?.flatten().unwrap_or("user");
+            user_item.extra.insert("origin".into(), json!(origin));
             conn.execute(
                 "INSERT INTO thread_history_items(id, thread_id, turn_id, item_id, item_json, created_at, updated_at)
                  VALUES (?1,?2,?3,?4,?5,?6,?6)",
@@ -2899,7 +3030,10 @@ impl Supervisor {
                     "INSERT INTO thread_history_items(id, thread_id, turn_id, item_id, item_json, created_at, updated_at)
                      VALUES (?1,?2,?3,?4,?5,?6,?6)
                      ON CONFLICT(thread_id, turn_id, item_id) DO UPDATE SET
-                        item_json=excluded.item_json,
+                        item_json=CASE WHEN json_extract(thread_history_items.item_json,'$.kind') IN ('userMessage','agentMessage')
+                          AND json_type(thread_history_items.item_json,'$.createdAt')='text'
+                          THEN json_set(excluded.item_json,'$.createdAt',json_extract(thread_history_items.item_json,'$.createdAt'))
+                          ELSE excluded.item_json END,
                         updated_at=excluded.updated_at",
                     params![
                         Uuid::new_v4().to_string(),
@@ -2983,7 +3117,11 @@ impl Supervisor {
             if self
                 .update_draining
                 .load(std::sync::atomic::Ordering::SeqCst)
-                || self.integration_thread_paused(thread_id)
+                || (self.integration_thread_paused(thread_id)
+                    && !(self.thread_host.get().is_some()
+                        && self
+                            .get_thread(thread_id)
+                            .is_ok_and(|t| t.closed_at.is_some())))
                 || self.live.lock().await.contains_key(thread_id)
             {
                 return Ok(());
@@ -3201,7 +3339,7 @@ impl Supervisor {
         // Move the delivered prompt into durable history before removing its
         // temporary queue bubble, including when the turn already completed.
         let now = now_rfc3339();
-        let item = ThreadHistoryItemDto {
+        let mut item = ThreadHistoryItemDto {
             id: format!("steer:{}", pending.id),
             kind: pockymoe_protocol::ThreadItemKind::UserMessage,
             text: pending.display_prompt.clone(),
@@ -3214,6 +3352,11 @@ impl Supervisor {
             artifact: None,
             extra: Default::default(),
         };
+        let origin = self
+            .db
+            .with(|conn| thread_summary::prompt_origin(conn, &pending.id))?
+            .unwrap_or("user");
+        item.extra.insert("origin".into(), json!(origin));
         self.db.with(|conn| {
             let tx=conn.unchecked_transaction()?;
             let conn=&tx;
@@ -3300,6 +3443,9 @@ impl Supervisor {
     }
 
     pub fn rename_thread(&self, id: &str, title: &str) -> Result<ThreadDto> {
+        if let Some(host) = self.thread_host.get() {
+            host.before_rename(&self.get_thread(id)?, title)?;
+        }
         self.db.with(|conn| {
             conn.execute(
                 "UPDATE threads SET title=?1, updated_at=?2 WHERE id=?3",
@@ -3311,6 +3457,16 @@ impl Supervisor {
     }
 
     pub fn delete_thread(&self, id: &str) -> Result<()> {
+        self.host_before_delete(id)?;
+        self.delete_thread_record(id)
+    }
+    pub(crate) fn host_before_delete(&self, id: &str) -> Result<()> {
+        if let Some(host) = self.thread_host.get() {
+            host.before_delete(&self.get_thread(id)?)?;
+        }
+        Ok(())
+    }
+    pub(crate) fn delete_thread_record(&self, id: &str) -> Result<()> {
         self.db.with(|conn| {
             conn.execute(
                 "DELETE FROM thread_history_items WHERE thread_id=?1",
@@ -3496,6 +3652,13 @@ impl Supervisor {
             Some(selected.turn_id.clone()),
             Some(selected.turn_index),
         )?;
+        self.host_thread_created(
+            &saved.0,
+            crate::host_hooks::ThreadOrigin::Fork {
+                source_thread_id: id.into(),
+            },
+        )
+        .await?;
         self.announce_fork_load(&saved.0).await;
         Ok(saved)
     }
@@ -3525,6 +3688,13 @@ impl Supervisor {
         }
         let forked = runtime.fork_session(&session).await?;
         let saved = self.persist_forked_thread(detail, forked, 0, None, None)?;
+        self.host_thread_created(
+            &saved.0,
+            crate::host_hooks::ThreadOrigin::Fork {
+                source_thread_id: detail.thread.id.clone(),
+            },
+        )
+        .await?;
         self.announce_fork_load(&saved.0).await;
         Ok(saved)
     }

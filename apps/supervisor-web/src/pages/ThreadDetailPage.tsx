@@ -4151,7 +4151,7 @@ export function ThreadDetailPage() {
       adapter={surfaceAdapter}
       metaContent={metaContent}
       settingsContent={settingsContent}
-      settingsSections={appSettingsSections(plugins.getSettingsSections())}
+      settingsSections={appSettingsSections()}
       mobileHeaderAction={mobileSessionConnectionButton}
       workspaceReturnHref={workspaceReturnHref}
       onCloseAppNavigation={shellNav?.closeNav ?? (() => {})}

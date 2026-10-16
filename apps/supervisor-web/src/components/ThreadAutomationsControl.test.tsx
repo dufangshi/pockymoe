@@ -103,6 +103,7 @@ it('consolidates native watches and lifetime supervisor statistics into one read
   fireEvent.click(screen.getByRole('button', { name: 'Automation' }));
   const dialog = await screen.findByRole('dialog', { name: 'Automation' });
   await within(dialog).findByText('Hourly prompt');
+  expect(dialog).toHaveTextContent('Every hour');
   expect(within(dialog).getByText('Every 20 minutes')).toBeVisible();
   const totals = within(dialog).getByRole('region', {
     name: 'Lifetime totals',
@@ -204,9 +205,13 @@ it('reports legacy and unavailable native coverage as unknown rather than a comp
   render(<ThreadWatchesControl thread={thread} />);
   fireEvent.click(screen.getByRole('button', { name: 'Automation' }));
   const dialog = await screen.findByRole('dialog', { name: 'Automation' });
-  await within(dialog).findByText(
-    'Lifetime statistics unavailable on this Supervisor.',
-  );
+  const card = (await within(dialog).findByText('Hourly prompt')).closest('article')!;
+  expect(card).toHaveTextContent('Triggers —');
+  expect(card.querySelector('.automation-rule-usage')).toHaveTextContent('Tokens unknown');
+  fireEvent.click(within(card).getByRole('button', { name: 'Details' }));
+  expect(
+    within(card).getByText('Lifetime statistics unavailable on this Supervisor.'),
+  ).toBeVisible();
   expect(
     within(dialog).getByRole('region', { name: 'Lifetime totals' }),
   ).toHaveTextContent('Partial');
@@ -245,7 +250,9 @@ it.each(['en', 'zh-CN'])('labels plugin actions and treats their unmetered costs
   const dialog = await screen.findByRole('dialog');
   const card = (await within(dialog).findByText('Polish reply')).closest('article')!;
   expect(card).toHaveTextContent(locale === 'en' ? 'Plugin action' : '插件动作');
-  expect(card.querySelector('.automation-rule-usage')).toHaveTextContent(locale === 'en' ? 'Unknown' : '未知');
+  expect(card).toHaveTextContent(locale === 'en' ? 'Every minute' : '每分钟');
+  expect(card).not.toHaveTextContent(locale === 'en' ? 'Every 1 minutes' : '每 1 分钟');
+  expect(card.querySelector('.automation-rule-usage')).toHaveTextContent(locale === 'en' ? 'Tokens unknownCost unknown' : 'Token 未知费用未知');
   fireEvent.click(within(card).getByText(locale === 'en' ? 'Details' : '详情', { exact: true }));
   expect(card).toHaveTextContent(locale === 'en' ? 'may incur model charges' : '可能产生模型费用');
   expect(card).not.toHaveTextContent(locale === 'en' ? 'no model-token charge' : '不产生模型 token 费用');
@@ -304,9 +311,20 @@ it('shows automatic document findings and diffs from plugin run receipts, even a
   expect(within(receipt).getByText('File unchanged')).toBeVisible();
   expect(within(receipt).getByText('Document changed during review', { exact: true })).toBeVisible();
   expect(within(receipt).getByText('Additional eligible documents were not reviewed in this run.')).toBeVisible();
-  fireEvent.click(within(receipt).getByText('Proposed diff'));
+  expect(within(receipt).getByText('1 finding')).toBeVisible();
+  expect(within(receipt).getByText('Failed')).toBeVisible();
+  // A completed afterTurn report does not repeat the run's own status.
+  expect(within(receipt).queryByText('Completed')).not.toBeInTheDocument();
+  expect(within(receipt).getByText('Automatic reply polishing is disabled')).toBeVisible();
   const documentReport = within(receipt).getByRole('heading', { name: 'guide.md' }).closest('article')!;
-  expect(within(documentReport).getByText(/retry up to three times/, { selector: 'pre' })).toBeVisible();
+  const diff = documentReport.querySelector('pre')!;
+  expect(diff).not.toBeVisible();
+  fireEvent.click(within(receipt).getByText('Proposed diff'));
+  expect(diff).toBeVisible();
+  expect(diff).toHaveTextContent('-retry forever +retry up to three times');
+  expect(diff.querySelector('.is-add')).toHaveTextContent('+retry up to three times');
+  // Raw JSON stays available behind a disclosure.
+  expect(within(receipt).getByText('Raw report (JSON)')).toBeVisible();
   expect(within(receipt).getByText('Output truncated for display.')).toBeVisible();
 });
 
@@ -404,4 +422,32 @@ it('presents an unsupported endpoint as a quiet device status and keeps raw diag
   ).toHaveTextContent('—');
   fireEvent.click(within(dialog).getByLabelText('Connection details'));
   expect(within(dialog).getByText('Route not found')).toBeVisible();
+});
+
+it('lists runs compactly: newest open, older failures flagged, timestamps and turn behind run details', async () => {
+  const runs = [
+    { id: 'newest', state: 'completed', missedCount: 0, scheduledAt: '2026-10-15T00:00:00Z', startedAt: '2026-10-15T00:00:00Z', completedAt: '2026-10-15T00:00:42Z', turnId: 'turn-newest', deliveryReceipt: { output: { ok: true } } },
+    { id: 'older', state: 'failed', missedCount: 2, scheduledAt: '2026-10-14T00:00:00Z', startedAt: null, completedAt: '2026-10-14T00:00:05Z', turnId: null, error: 'Upstream refused the request' },
+  ];
+  vi.mocked(request).mockImplementation(async url => String(url).endsWith('/watches') ? { watches: [] } : String(url).endsWith('/runs') ? { runs } : { automations: [rule()] });
+  render(<ThreadWatchesControl thread={thread} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Automation' }));
+  const dialog = await screen.findByRole('dialog');
+  const card = (await within(dialog).findByText('Hourly prompt')).closest('article')!;
+  fireEvent.click(within(card).getByRole('button', { name: 'Execution history' }));
+  const [newest, older] = await within(card).findAllByRole('listitem');
+  expect(newest!.querySelector('details')).toHaveAttribute('open');
+  expect(within(newest!).getByText('· 42s')).toBeVisible();
+  expect(within(newest!).getByLabelText('Plugin report')).toBeVisible();
+  expect(within(newest!).getByText('turn-newest')).not.toBeVisible();
+  fireEvent.click(within(newest!).getByText('Run details'));
+  expect(within(newest!).getByText('turn-newest')).toBeVisible();
+  expect(older!.querySelector('details')).not.toHaveAttribute('open');
+  expect(within(older!).getByText('Failed')).toBeVisible();
+  expect(within(older!).getByText('· 2 merged')).toBeVisible();
+  expect(within(older!).getByText('Upstream refused the request', { selector: 'summary span' })).toBeVisible();
+  const help = within(card).getByText('Latest 100 execution records. Totals above include all historical runs.');
+  expect(help).not.toBeVisible();
+  fireEvent.click(within(card).getByLabelText('About execution history'));
+  expect(help).toBeVisible();
 });

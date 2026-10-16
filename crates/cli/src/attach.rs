@@ -20,6 +20,8 @@ use tokio_tungstenite::{
     tungstenite::{client::IntoClientRequest, http::HeaderValue, Message},
 };
 
+mod recovery;
+
 #[derive(Args)]
 pub struct Options {
     /// Rebind a previously created thread instead of creating one.
@@ -38,6 +40,9 @@ pub struct Options {
     /// Loopback HTTP hub URL; defaults to the normal local CLI discovery URL.
     #[arg(long)]
     hub: Option<String>,
+    /// Treer hub Managed App ID or name; otherwise discover the setup App by port.
+    #[arg(long)]
+    hub_app: Option<String>,
     /// Private attach token file; defaults to the hub database directory.
     #[arg(long)]
     hub_token_file: Option<PathBuf>,
@@ -85,6 +90,7 @@ impl Contract {
 struct Session {
     hello: AttachHello,
     hub: String,
+    hub_app: Option<String>,
     token_file: PathBuf,
     cwd: PathBuf,
     treer: OsString,
@@ -249,11 +255,16 @@ impl Session {
             "--hub-token-file",
         ]));
         args.push(self.token_file.clone().into_os_string());
+        if let Some(app) = &self.hub_app {
+            args.extend(text_args(&["--hub-app", app]));
+        }
         args
     }
 
     async fn serve(&mut self, contract: &Contract) -> Result<()> {
         let mut delay = Duration::from_secs(1);
+        let mut recovery = recovery::Recovery::default();
+        let mut waiting_for: Option<String> = None;
         loop {
             // Re-read after restart in case the hub rotated the file. A not-yet-created
             // token is normal when Treer starts the App and Agent concurrently.
@@ -261,6 +272,7 @@ impl Session {
                 Ok(token) => token,
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                     println!("Pockymoe attach: waiting for hub token.");
+                    recovery.unavailable(self, time::Instant::now()).await;
                     retry(&mut delay).await;
                     continue;
                 }
@@ -292,10 +304,12 @@ impl Session {
                 }
                 _ => {
                     println!("Pockymoe attach: hub unavailable; reconnecting.");
+                    recovery.unavailable(self, time::Instant::now()).await;
                     retry(&mut delay).await;
                     continue;
                 }
             };
+            recovery.reachable();
             let hello = serde_json::to_string(&self.hello).context("Cannot encode attach hello")?;
             if socket.send(Message::Text(hello.into())).await.is_err() {
                 retry(&mut delay).await;
@@ -343,6 +357,21 @@ impl Session {
             let reply: AttachReply = serde_json::from_str(&text)
                 .map_err(|_| anyhow::anyhow!("Hub returned an invalid attach reply"))?;
             let (thread_id, created, port, ui_path, capabilities) = match reply {
+                // The owner can fix these on this machine; exiting would hide the reason
+                // (Treer then shows only "process_not_running") and disable recovery.
+                AttachReply::Error { code, message }
+                    if matches!(code.as_str(), "base_agent_missing" | "provider_unavailable") =>
+                {
+                    let explained = waiting_for.as_deref() == Some(code.as_str());
+                    if !explained {
+                        println!("{}", setup_problem(&code, &message));
+                        waiting_for = Some(code);
+                    } else {
+                        println!("Pockymoe attach: still waiting; retrying in 30 seconds.");
+                    }
+                    time::sleep(Duration::from_secs(30)).await;
+                    continue;
+                }
                 AttachReply::Error { code, message } => {
                     let secrets = [
                         Some(token),
@@ -439,12 +468,36 @@ impl Session {
                 }
             }
             println!("Pockymoe attach: hub disconnected; reconnecting.");
+            recovery.unavailable(self, time::Instant::now()).await;
             retry(&mut delay).await;
         }
     }
 }
 
 // Remove terminal controls before redacting, so controls cannot split a known secret.
+/// Explain a hub refusal the machine owner can fix. The hub only sends fixed,
+/// allowlisted messages for these codes; the agent name is still validated.
+fn setup_problem(code: &str, message: &str) -> String {
+    let agent = message
+        .rsplit([':', ' '])
+        .map(|s| s.trim_end_matches('.'))
+        .find(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
+        .filter(|_| code == "base_agent_missing")
+        .unwrap_or("the selected agent");
+    let install = match agent {
+        "codex" => "\n  For example: npm install -g @openai/codex && codex login",
+        "claude" => "\n  For example: npm install -g @anthropic-ai/claude-code, then run claude once to sign in",
+        _ => "",
+    };
+    if code == "base_agent_missing" {
+        format!(
+            "Pockymoe attach: cannot start this thread: base agent '{agent}' was not found on this machine.\n  Install it and sign in, in a terminal on this machine as the same user.{install}\n  This Agent keeps running and retries every 30 seconds; it connects on its own once '{agent}' is available."
+        )
+    } else {
+        "Pockymoe attach: cannot start this thread: this provider is not enabled on the Pockymoe hub.\n  Enable it on the hub (or launch a different Pockymoe profile).\n  This Agent keeps running and retries every 30 seconds.".to_string()
+    }
+}
+
 fn diagnostic(value: &str, secrets: &[Option<&str>], limit: usize) -> String {
     fn clean(value: &str) -> String {
         value
@@ -545,6 +598,7 @@ pub async fn run(options: Options, connection_options: crate::threads::Connectio
             },
         },
         hub,
+        hub_app: options.hub_app,
         token_file,
         cwd: restore_cwd,
         treer,
@@ -567,6 +621,7 @@ mod tests {
             reasoning_effort: None,
             title: None,
             hub,
+            hub_app: None,
             hub_token_file: None,
         }
     }
@@ -663,6 +718,7 @@ mod tests {
                 },
             },
             hub: "http://127.0.0.1:8787".into(),
+            hub_app: None,
             token_file: "/data/token".into(),
             cwd: "project".into(),
             treer: "treer".into(),

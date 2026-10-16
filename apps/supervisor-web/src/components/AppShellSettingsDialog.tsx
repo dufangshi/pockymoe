@@ -34,6 +34,7 @@ import {
 import {
   PhoneHandChoice,
   usePlugins,
+  PluginSettingsButton,
   SettingsPanels,
   SettingsDialog,
   type SettingsSection,
@@ -700,52 +701,58 @@ export function AppShellSettingsDialog({
   const pluginsManagementNode = (
     <>
       <div className="mt-3 divide-y divide-[var(--theme-border)] border-y border-[var(--theme-border)]">
-        {plugins.plugins.map((plugin) => (
-          <label
-            key={plugin.id}
-            className="flex min-h-11 cursor-pointer items-start justify-between gap-4 py-3"
-          >
-            <span className="min-w-0">
-              <span className="block text-sm font-medium text-[var(--theme-fg)]">
-                {plugin.name}
-              </span>
-              <span className="settings-hint mt-1 block text-xs leading-5 text-[var(--theme-fg-muted)]">
-                {plugin.description}
-              </span>
-              <span className="settings-hint mt-2 block text-[11px] leading-5 text-[var(--theme-fg-muted)]">
-                {[
-                  ...plugin.capabilities.artifactTypes.map((type) => type.type),
-                  ...plugin.capabilities.threadPanels.map(
-                    (panel) => panel.kind ?? panel.id,
-                  ),
-                ].join(', ') || translate("files.utility")}
-              </span>
-              <span className="settings-hint mt-0.5 block text-[11px] leading-5 text-[var(--theme-fg-muted)]">
-                {plugin.source === 'imported'
-                  ? translate("files.importedManifest")
-                  : translate("files.builtInModule")}
-              </span>
-              {unavailablePluginReason(plugin) ? (
-                <span className="mt-1 block text-xs leading-5 text-[var(--status-warning-fg)]">
-                  {unavailablePluginReason(plugin)}
+        {plugins.plugins.map((plugin) => {
+          const unavailable = unavailablePluginReason(plugin);
+          const toggleId = `plugin-enabled-${plugin.id}`;
+          return (
+            // The gear is a sibling of the label so opening settings never toggles the plugin.
+            <div key={plugin.id} className="flex min-h-11 items-start gap-2 py-3">
+              <label htmlFor={toggleId} className="min-w-0 flex-1 cursor-pointer">
+                <span className="block text-sm font-medium text-[var(--theme-fg)]">
+                  {plugin.name}
                 </span>
-              ) : null}
-            </span>
-            <input
-              className="mt-1 h-5 w-5 shrink-0 accent-[var(--theme-accent-solid)] disabled:cursor-not-allowed disabled:opacity-50"
-              checked={plugin.enabled}
-              disabled={unavailablePluginReason(plugin) !== null}
-              aria-label={translate("files.enabled", { value1: plugin.name })}
-              onChange={(event) =>
-                void plugins.setPluginEnabled(
-                  plugin.id,
-                  event.currentTarget.checked,
-                )
-              }
-              type="checkbox"
-            />
-          </label>
-        ))}
+                <span className="settings-hint mt-1 block text-xs leading-5 text-[var(--theme-fg-muted)]">
+                  {plugin.description}
+                </span>
+                <span className="settings-hint mt-1 block text-[11px] leading-5 text-[var(--theme-fg-muted)]">
+                  {[
+                    [
+                      ...plugin.capabilities.artifactTypes.map((type) => type.type),
+                      ...plugin.capabilities.threadPanels.map(
+                        (panel) => panel.kind ?? panel.id,
+                      ),
+                    ].join(', ') || translate("files.utility"),
+                    plugin.source === 'imported'
+                      ? translate("files.importedManifest")
+                      : translate("files.builtInModule"),
+                  ].join(' · ')}
+                </span>
+                {unavailable ? (
+                  <span className="mt-1 block text-xs leading-5 text-[var(--status-warning-fg)]">
+                    {unavailable}
+                  </span>
+                ) : null}
+              </label>
+              <PluginSettingsButton plugin={plugin} />
+              <span className="grid h-8 w-8 shrink-0 place-items-center">
+                <input
+                  id={toggleId}
+                  className="h-5 w-5 accent-[var(--theme-accent-solid)] disabled:cursor-not-allowed disabled:opacity-50"
+                  checked={plugin.enabled}
+                  disabled={unavailable !== null}
+                  aria-label={translate("files.enabled", { value1: plugin.name })}
+                  onChange={(event) =>
+                    void plugins.setPluginEnabled(
+                      plugin.id,
+                      event.currentTarget.checked,
+                    )
+                  }
+                  type="checkbox"
+                />
+              </span>
+            </div>
+          );
+        })}
         {plugins.plugins.length === 0 && (
           <p className="py-4 text-xs text-[var(--theme-fg-muted)]">
             {translate("files.noPluginsAreRegistered")}</p>
@@ -1350,7 +1357,7 @@ export function AppShellSettingsDialog({
         {section ? (
           settingsContentNode
         ) : (
-          <SettingsPanels sections={appSettingsSections(plugins.getSettingsSections())} />
+          <SettingsPanels sections={appSettingsSections()} />
         )}
         {selectedFileName && selectedFile && (
           <FormDialog
@@ -1400,15 +1407,16 @@ export function AppShellSettingsDialog({
   return <SettingsDialog open
     onOpenChange={(open) => { if (!open) closeSettings(); }}
     themeMode={selectedThemeMode} effectiveTheme={effectiveTheme}
-    sections={appSettingsSections(plugins.getSettingsSections())}
+    sections={appSettingsSections()}
     {...(shellNav?.settingsSection ? { initialId: shellNav.settingsSection } : {})}
     contentProps={{ 'data-testid': 'settingsDialog', onCloseAutoFocus: (event) => event.preventDefault() }}
   />;
 
 }
 
-export function appSettingsSections(pluginSections: SettingsSection[] = []): SettingsSection[] {
-  return [...[
+/** Plugin settings open from the gear on their row in Plugins, not as top-level tabs. */
+export function appSettingsSections(): SettingsSection[] {
+  return [
     {
       id: 'preferences',
       label: translate("files.preferences"),
@@ -1453,5 +1461,5 @@ export function appSettingsSections(pluginSections: SettingsSection[] = []): Set
   ].map((section) => ({
     ...section,
     content: <AppShellSettingsDialog embedded section={section.id} />,
-  })), ...pluginSections];
+  }));
 }

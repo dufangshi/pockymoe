@@ -92,15 +92,18 @@ Register a `FrontendPluginModule` with `PluginProvider`. A module's
 provides namespaced `load()` and revision-checked `save()` methods through the
 host adapter. IDs become `plugin:{pluginId}:{sectionId}`.
 
-The host adds these sections to its ordinary settings navigation. Sections stay
-available while a plugin is disabled so it can be configured before enabling;
-unavailable or unregistered device modules do not contribute settings. Settings
-storage remains on the device, not in the component or browser local storage.
+The host exposes a settings button on each contributing plugin's row under
+Settings > Plugins. It opens a separate plugin settings dialog; plugin sections
+do not add entries to the main settings navigation. Sections stay available
+while a plugin is disabled so it can be configured before enabling; unavailable
+or unregistered device modules do not contribute settings. Settings storage
+remains on the device, not in the component or browser local storage.
 
 `browserSettingsSections` are the exception for per-browser preferences: they
 render their own content, appear only while the plugin is enabled and available,
-and keep nothing on the device. The terminal's Settings > Terminal uses one for
-its clipboard behaviour (see [thread interaction](thread-interaction.md#terminal-clipboard)).
+and keep nothing on the device. The Terminal settings button under Settings >
+Plugins uses one for its clipboard behaviour (see
+[thread interaction](thread-interaction.md#terminal-clipboard)).
 
 Frontend modules and Rust modules release with their respective applications.
 The public Web build consumes the shared UI commit pinned by `thread-ui.sha`;

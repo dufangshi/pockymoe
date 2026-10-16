@@ -80,6 +80,8 @@ pub fn launch_env() -> Vec<(String, String)> {
 
 #[derive(Default)]
 pub struct InteractionState {
+    pub(crate) host_messaging:
+        std::sync::RwLock<Option<Arc<dyn crate::host_messaging::HostMessaging>>>,
     pub context: std::sync::RwLock<Option<CliContext>>,
     thread_tokens: std::sync::RwLock<std::collections::HashMap<String, String>>,
     started: AtomicBool,
@@ -170,12 +172,13 @@ impl Supervisor {
         CLI_ENV.scope(env, future).await
     }
 
-    /// Only a live top-level integration binding can own external credentials.
+    /// Every live integration binding owns its own external credentials.
     pub fn set_thread_cli_identity(&self, id: &str, env: Vec<(String, String)>) -> Result<()> {
         ensure!(
-            self.get_thread(id)?.parent_thread_id.is_none(),
+            self.thread_host.get().is_some() || self.get_thread(id)?.parent_thread_id.is_none(),
             "identity requires a top-level thread"
         );
+        self.get_thread(id)?;
         self.interaction
             .thread_env
             .write()
@@ -211,12 +214,31 @@ impl Supervisor {
         self.send_to_thread_inner(id, input, None)
     }
 
+    /// Delivery already accepted by the host, or generated locally by its inbox worker.
+    /// Never routes back through the outbound host transport.
+    pub fn send_to_thread_locally(&self, id: &str, input: SendInput) -> Result<Value> {
+        self.send_to_thread_impl(id, input, None, false)
+    }
+
     fn send_to_thread_inner(
         &self,
         id: &str,
         input: SendInput,
         remote: Option<RemoteSender>,
     ) -> Result<Value> {
+        self.send_to_thread_impl(id, input, remote, true)
+    }
+
+    fn send_to_thread_impl(
+        &self,
+        id: &str,
+        input: SendInput,
+        remote: Option<RemoteSender>,
+        consult_host: bool,
+    ) -> Result<Value> {
+        let host_hook = consult_host
+            .then(|| self.interaction.host_messaging.read().unwrap().clone())
+            .flatten();
         let thread = self.get_thread(id)?;
         ensure!(
             ["inbox", "direct", "queue", "steer"].contains(&input.delivery.as_str()),
@@ -227,7 +249,9 @@ impl Supervisor {
             "notifyDelivery must be inbox; completion notifications are passive and cannot wake the caller. Read them with pockymoe inbox."
         );
         if input.delivery != "inbox" {
-            self.ensure_prompt_allowed(&thread)?;
+            if host_hook.is_none() {
+                self.ensure_prompt_allowed(&thread)?;
+            }
             // Prompting a closed delegate reopens it, so it must fit under the cap again.
             if let (Some(_), Some(root)) = (&thread.closed_at, &thread.root_thread_id) {
                 ensure!(
@@ -291,6 +315,13 @@ impl Supervisor {
                 "topicKey only replaces full inbox status snapshots; results, questions, tasks and replies must stay distinct"
             );
         }
+        if let Some(hook) = host_hook {
+            ensure!(
+                remote.is_none(),
+                "host messaging does not accept native peer relay delivery"
+            );
+            return hook.send(self, id, input);
+        }
         let pending_id = Uuid::new_v4().to_string();
         let now = now_rfc3339();
         // Derive a subject when the sender omitted one. Observed agents label a
@@ -321,6 +352,7 @@ impl Supervisor {
                     .as_ref()
                     .map(|from| format!("thread {from}"))
             });
+        let peer_prompt = sender.is_some();
         let prompt = match sender {
             Some(from) => {
                 let subject = derived_subject
@@ -463,6 +495,10 @@ impl Supervisor {
                     input.client_request_id.as_deref(),
                     &now,
                 )?;
+                if peer_prompt {
+                    tx.execute("INSERT INTO kv(key,value) VALUES(?1,'peer')",
+                        [format!("cli:prompt-origin:{pending_id}")])?;
+                }
                 if delivery == "steer" {
                     tx.execute(
                         "UPDATE thread_pending_steers SET delivery='cli-steer',turn_id=?2 WHERE id=?1",
@@ -562,7 +598,10 @@ impl Supervisor {
                     continue;
                 };
                 for id in ids {
-                    if state.integration_thread_paused(&id) {
+                    if state.integration_thread_paused(&id)
+                        && !(state.thread_host.get().is_some()
+                            && state.get_thread(&id).is_ok_and(|t| t.closed_at.is_some()))
+                    {
                         continue;
                     }
                     if !running.lock().unwrap().insert(id.clone()) {

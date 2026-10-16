@@ -8,10 +8,10 @@ use tokio_tungstenite::{
     MaybeTlsStream, WebSocketStream,
 };
 type ClientSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
-struct Fixture {
-    _dir: tempfile::TempDir,
-    hub: Arc<Hub>,
-    port: u16,
+pub(super) struct Fixture {
+    pub(super) _dir: tempfile::TempDir,
+    pub(super) hub: Arc<Hub>,
+    pub(super) port: u16,
     server: tokio::task::JoinHandle<()>,
     fake: Arc<FakeRuntime>,
 }
@@ -20,13 +20,20 @@ impl Drop for Fixture {
         self.server.abort();
     }
 }
-async fn fixture() -> Fixture {
+pub(super) async fn fixture() -> Fixture {
     fixture_in(tempfile::tempdir().unwrap()).await
 }
-async fn fixture_in(dir: tempfile::TempDir) -> Fixture {
+pub(super) async fn fixture_in(dir: tempfile::TempDir) -> Fixture {
     fixture_with_auth(dir, false).await
 }
 async fn fixture_with_auth(dir: tempfile::TempDir, authenticated_mode: bool) -> Fixture {
+    fixture_with_provider(dir, authenticated_mode, Provider::Codex).await
+}
+async fn fixture_with_provider(
+    dir: tempfile::TempDir,
+    authenticated_mode: bool,
+    provider: Provider,
+) -> Fixture {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let config = RuntimeConfig {
@@ -51,18 +58,34 @@ async fn fixture_with_auth(dir: tempfile::TempDir, authenticated_mode: bool) -> 
         relay_server_url: None,
         web_origin: None,
         relay_agent_token: None,
-        enabled_providers: vec![Provider::Codex],
+        enabled_providers: vec![provider],
         acp_command: None,
         acp_startup_timeout_ms: 1000,
         fake_runtime: true,
         supervisor_restart_strategy: Default::default(),
     };
-    let db = Database::open(&config.database_url).unwrap();
-    let fake = Arc::new(FakeRuntime::new(Provider::Codex));
+    // Strong-count zero precedes the end of field destruction; wait for the
+    // old Supervisor's OS ownership lock as well when simulating a restart.
+    let db = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            match Database::open(&config.database_url) {
+                Ok(db) => break db,
+                Err(e) if e.to_string().contains("already owned") => {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await
+                }
+                Err(e) => panic!("{e}"),
+            }
+        }
+    })
+    .await
+    .unwrap();
+    let fake = Arc::new(FakeRuntime::new(provider));
     let state = Arc::new(Supervisor::new(config, db, vec![fake.clone()]));
     state.configure_cli(format!("http://127.0.0.1:{port}"));
     state.spawn_live_item_persister();
-    let hub = Hub::new(state.clone(), port).unwrap().unwrap();
+    let hub = Hub::new_with_identity(state.clone(), port, None)
+        .unwrap()
+        .unwrap();
     let app = crate::http::router_with_treer(state, Some(hub.clone()));
     let server = tokio::spawn(async move {
         axum::serve(
@@ -80,7 +103,7 @@ async fn fixture_with_auth(dir: tempfile::TempDir, authenticated_mode: bool) -> 
         fake,
     }
 }
-fn hello(f: &Fixture, agent: &str) -> AttachHello {
+pub(super) fn hello(f: &Fixture, agent: &str) -> AttachHello {
     AttachHello {
         protocol_version: 1,
         agent_id: agent.into(),
@@ -88,7 +111,7 @@ fn hello(f: &Fixture, agent: &str) -> AttachHello {
         thread_id: None,
         create: Some(AttachCreateThread {
             cwd: f.hub.state.config.workspace_root.to_string_lossy().into(),
-            provider: "codex".into(),
+            provider: f.hub.state.config.enabled_providers[0].as_str().into(),
             agent: None,
             model: Some("ios-e2e-stream".into()),
             reasoning_effort: Some("high".into()),
@@ -176,6 +199,14 @@ async fn attach_reports_known_setup_failures_without_exposing_internal_errors() 
     .unwrap();
     assert_eq!(known["code"], "base_agent_missing");
     assert_eq!(known["message"], "Install the base agent first: grok");
+    // Context added by runtime layers must not hide the known cause.
+    let wrapped = serde_json::to_value(attach_failure(
+        &anyhow::anyhow!("Install the base agent first: codex")
+            .context("Start ACP session for /private/path"),
+    ))
+    .unwrap();
+    assert_eq!(wrapped["code"], "base_agent_missing");
+    assert_eq!(wrapped["message"], "Install the base agent first: codex");
     for detail in [
         "subprocess failed: fixture-private-credential",
         "Install the base agent first: fixture-private-credential",
@@ -240,23 +271,22 @@ async fn attach_create_rebind_refuse_version_token_and_identity() {
     let child = f
         .hub
         .state
-        .create_thread(CreateThreadInput {
-            workspace_id: f.hub.state.get_thread(&thread).unwrap().workspace_id,
-            title: None,
-            provider: Some(Provider::Codex),
-            agent_id: None,
-            model: "ios-e2e-stream".into(),
-            reasoning_effort: None,
-            approval_mode: "yolo".into(),
-            parent_thread_id: Some(thread.clone()),
-        })
+        .create_attached_thread(
+            CreateThreadInput {
+                workspace_id: f.hub.state.get_thread(&thread).unwrap().workspace_id,
+                title: None,
+                provider: Some(Provider::Codex),
+                agent_id: None,
+                model: "ios-e2e-stream".into(),
+                reasoning_effort: None,
+                approval_mode: "yolo".into(),
+                parent_thread_id: Some(thread.clone()),
+            },
+            vec![],
+            "ag-child".into(),
+        )
         .await
         .unwrap();
-    assert!(f
-        .hub
-        .state
-        .set_thread_cli_identity(&child.id, env.clone())
-        .is_err());
     let child_env = f
         .hub
         .state
@@ -271,9 +301,27 @@ async fn attach_create_rebind_refuse_version_token_and_identity() {
     let (_, refused) = attach_client(&f, &collision).await;
     assert_eq!(refused["type"], "error");
     let mut child_hello = collision.clone();
-    child_hello.thread_id = Some(child.id);
-    let (_, refused) = attach_client(&f, &child_hello).await;
-    assert_eq!(refused["type"], "error");
+    child_hello.agent_id = "ag-child".into();
+    child_hello.instance_id = "child-instance".into();
+    child_hello.thread_id = Some(child.id.clone());
+    let (mut child_socket, bound) = attach_client(&f, &child_hello).await;
+    assert_eq!(bound["type"], "bound");
+    let child_env = f
+        .hub
+        .state
+        .with_cli_context(&child.id, async {
+            pockymoe_runtime::interaction::launch_env()
+        })
+        .await;
+    assert_eq!(
+        child_env
+            .iter()
+            .find(|(k, _)| k == "TREER_AGENT_ID")
+            .unwrap()
+            .1,
+        "ag-child"
+    );
+    child_socket.close(None).await.unwrap();
     let mut version = hello(&f, "ag-v");
     version.protocol_version = 999;
     let (_, refused) = attach_client(&f, &version).await;
@@ -419,11 +467,26 @@ async fn ais_prompt_idempotency_queue_cancel_steer_transcript_and_detach_release
         .unwrap();
     assert_eq!(queue["submissions"].as_array().unwrap().len(), 1);
     assert_eq!(queue["submissions"][0]["id"], second);
+    // Treer's Controller percent-encodes path segments, including UUID hyphens.
+    let encoded_second = second.replace('-', "%2D");
+    let submission = request(
+        &f,
+        &h,
+        reqwest::Method::GET,
+        &format!("/v1/submissions/{encoded_second}"),
+        false,
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(submission.status(), 200);
+    let submission: Value = submission.json().await.unwrap();
+    assert_eq!(submission["submission"]["id"], second);
     let cancelled: Value = request(
         &f,
         &h,
         reqwest::Method::DELETE,
-        &format!("/v1/queue/{second}"),
+        &format!("/v1/queue/{encoded_second}"),
         false,
     )
     .send()
@@ -546,16 +609,20 @@ async fn gate_provenance_matrix_http_and_websocket() {
     let child = f
         .hub
         .state
-        .create_thread(CreateThreadInput {
-            workspace_id: f.hub.state.get_thread(root).unwrap().workspace_id,
-            title: None,
-            provider: Some(Provider::Codex),
-            agent_id: None,
-            model: "ios-e2e-stream".into(),
-            reasoning_effort: None,
-            approval_mode: "yolo".into(),
-            parent_thread_id: Some(root.into()),
-        })
+        .create_attached_thread(
+            CreateThreadInput {
+                workspace_id: f.hub.state.get_thread(root).unwrap().workspace_id,
+                title: None,
+                provider: Some(Provider::Codex),
+                agent_id: None,
+                model: "ios-e2e-stream".into(),
+                reasoning_effort: None,
+                approval_mode: "yolo".into(),
+                parent_thread_id: Some(root.into()),
+            },
+            vec![],
+            "ag-child".into(),
+        )
         .await
         .unwrap();
     let hidden_dir = f._dir.path().join("hidden-workspace");
@@ -572,16 +639,20 @@ async fn gate_provenance_matrix_http_and_websocket() {
     let unbound = f
         .hub
         .state
-        .create_thread(CreateThreadInput {
-            workspace_id: hidden_workspace.id.clone(),
-            title: Some("Unbound".into()),
-            provider: Some(Provider::Codex),
-            agent_id: None,
-            model: "ios-e2e-stream".into(),
-            reasoning_effort: None,
-            approval_mode: "yolo".into(),
-            parent_thread_id: None,
-        })
+        .create_thread_with_origin(
+            CreateThreadInput {
+                workspace_id: hidden_workspace.id.clone(),
+                title: Some("Unbound".into()),
+                provider: Some(Provider::Codex),
+                agent_id: None,
+                model: "ios-e2e-stream".into(),
+                reasoning_effort: None,
+                approval_mode: "yolo".into(),
+                parent_thread_id: None,
+            },
+            Default::default(),
+            pockymoe_runtime::host_hooks::ThreadOrigin::Hidden,
+        )
         .await
         .unwrap();
     for path in [
@@ -1183,8 +1254,8 @@ async fn notification_retry_schema_upgrades_existing_hubs() {
         })
         .unwrap();
     for _ in 0..2 {
-        let upgraded = Hub::new(f.hub.state.clone(), f.port).unwrap().unwrap();
-        upgraded
+        registry::ensure_schema(&f.hub.state).unwrap();
+        f.hub
             .state
             .db
             .with(|c| {
@@ -1277,6 +1348,8 @@ assert 'TREER_OPERATOR_CREDENTIAL' not in os.environ
 args=sys.argv[1:]
 if args == ['whoami']:
     print(json.dumps({{'machine': {{'server_id':'server', 'root': {root}}}}}))
+elif args[:2] == ['agent', 'show']:
+    print(json.dumps({{'name':'Treer test'}}))
 else:
     db=sqlite3.connect({db})
     ids=[r[0] for r in db.execute('SELECT id FROM threads')]
@@ -1292,6 +1365,7 @@ else:
     )
     .unwrap();
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+    *f.hub.hub_identity.lock().unwrap() = f.hub.live.lock().unwrap().get("ag-browser").cloned();
     *f.hub.browser_commands.lock().unwrap() = browser::Commands {
         treer: script,
         pockymoe: Some("/stable/pockymoe".into()),
@@ -1308,12 +1382,38 @@ async fn browser_create_rename_delete_sync_agents_with_live_identity() {
     let root = reply["threadId"].as_str().unwrap();
     let workspace = f.hub.state.get_thread(root).unwrap().workspace_id;
     let log = fake_browser_treer(&f, false);
-    let response = request(&f, &h, reqwest::Method::POST, "/api/threads/start", true)
+    let response = tokio::spawn(request(&f, &h, reqwest::Method::POST, "/api/threads/start", true)
         .json(&json!({"workspaceId":workspace,"provider":"codex","model":"ios-e2e-stream","title":"reply / 1"}))
-        .send().await.unwrap();
+        .send());
+    wait_until(|| {
+        f.hub
+            .state
+            .list_threads(None, true)
+            .unwrap()
+            .iter()
+            .any(|t| t.title == "reply / 1")
+    })
+    .await;
+    let id = f
+        .hub
+        .state
+        .list_threads(None, true)
+        .unwrap()
+        .into_iter()
+        .find(|t| t.title == "reply / 1")
+        .unwrap()
+        .id;
+    let mut new_hello = hello(&f, "ag-created");
+    new_hello.create = None;
+    new_hello.thread_id = Some(id.clone());
+    let (_created_socket, bound) = attach_client(&f, &new_hello).await;
+    assert_eq!(bound["threadId"], id);
+    assert_eq!(bound["created"], false);
+    let response = response.await.unwrap().unwrap();
     assert_eq!(response.status(), 200);
     let created: Value = response.json().await.unwrap();
-    let id = created["id"].as_str().unwrap();
+    assert_eq!(created["id"], id);
+    let id = id.as_str();
     let records = || {
         std::fs::read_to_string(&log)
             .unwrap()
@@ -1365,22 +1465,13 @@ async fn browser_create_rename_delete_sync_agents_with_live_identity() {
         .state
         .with_cli_context(id, async { pockymoe_runtime::interaction::launch_env() })
         .await;
-    assert!(!env.iter().any(|(key, _)| key.starts_with("TREER_")));
-    // Its detached binding is already visible, and its later attach reuses it.
-    let list: Value = request(&f, &h, reqwest::Method::GET, "/api/threads", true)
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert!(list.as_array().unwrap().iter().any(|t| t["id"] == id));
-    let mut new_hello = hello(&f, "ag-created");
-    new_hello.create = None;
-    new_hello.thread_id = Some(id.into());
-    let (_created_socket, bound) = attach_client(&f, &new_hello).await;
-    assert_eq!(bound["threadId"], id);
-    assert_eq!(bound["created"], false);
+    assert_eq!(
+        env.iter()
+            .find(|(key, _)| key == "TREER_AGENT_ID")
+            .unwrap()
+            .1,
+        "ag-created"
+    );
     assert_eq!(
         request(
             &f,
@@ -1506,7 +1597,7 @@ async fn browser_create_rolls_back_when_treer_fails_and_rejects_unbound_workspac
     assert_eq!(response.status(), 502);
     let body = response.text().await.unwrap();
     assert!(body.contains("treer_agent_operation_failed"));
-    assert!(body.contains("Treer could not update"));
+    assert!(body.contains("Treer could not register"));
     assert!(!body.contains("fixture-credential"));
     assert_eq!(f.hub.state.list_threads(None, true).unwrap().len(), 1);
     assert!(f.hub.creating.lock().unwrap().is_empty());
@@ -1522,7 +1613,7 @@ async fn browser_create_rolls_back_when_treer_fails_and_rejects_unbound_workspac
 }
 
 #[cfg(unix)]
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn browser_self_delete_finishes_when_treer_closes_the_callers_attach() {
     let f = fixture().await;
     let h = hello(&f, "ag-browser");
@@ -1559,7 +1650,7 @@ async fn browser_self_delete_finishes_when_treer_closes_the_callers_attach() {
                 .lock()
                 .unwrap()
                 .get(&h.agent_id)
-                .is_some_and(|b| b.cancelled.is_cancelled())
+                .is_none_or(|b| b.cancelled.is_cancelled())
             {
                 break;
             }
@@ -1572,3 +1663,731 @@ async fn browser_self_delete_finishes_when_treer_closes_the_callers_attach() {
     assert_eq!(deletion.await.unwrap().unwrap().status(), 204);
     assert!(f.hub.state.get_thread(id).is_err());
 }
+
+#[cfg(unix)]
+fn registry_cli(f: &Fixture) {
+    use std::os::unix::fs::PermissionsExt;
+    let script = f._dir.path().join("registry-cli");
+    let script_source = r#"#!/usr/bin/env python3
+import sys, os, json, pathlib, sqlite3, fcntl
+base = pathlib.Path(__file__).parent
+args = sys.argv[1:]
+with open(base/'registry.lock','w') as lock:
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    path = base/'registry-agents.json'
+    agents = json.loads(path.read_text()) if path.exists() else {}
+    def fail(code):
+        print(json.dumps({'error':{'code':code,'message':'suppressed fixture diagnostic'}}),file=sys.stderr)
+        sys.exit(1)
+    if args == ['whoami']:
+        print(json.dumps({'machine':{'server_id':'server','root':str(base)}})); sys.exit(0)
+    if (base/'registry-fail').exists(): fail((base/'registry-fail').read_text())
+    if args[:2] == ['agent','ls']:
+        print(json.dumps({'agents':list(agents.values())})); sys.exit(0)
+    if args[:4] == ['agent','admin','startup','show']:
+        if args[4] not in agents: fail('agent_not_found')
+        startup = agents[args[4]].get('startup')
+        if not startup: fail('startup_not_found')
+        print(json.dumps({'command':startup[0],'args':startup[1:]})); sys.exit(0)
+    if args[:2] == ['agent','show']:
+        if args[2] not in agents: fail('agent_not_found')
+        print(json.dumps(agents[args[2]])); sys.exit(0)
+    db = sqlite3.connect(base/'db.sqlite')
+    existing = [r[0] for r in db.execute('SELECT id FROM threads')]
+    with open(base/'registry-calls.jsonl','a') as log:
+        log.write(json.dumps({'args':args,'caller':os.environ.get('TREER_AGENT_ID'),'existing':existing})+'\n')
+    assert 'TREER_OPERATOR_CREDENTIAL' not in os.environ
+    if args[:3] == ['agent','admin','create']:
+        name = args[args.index('--name')+1]
+        if any(a['name']==name for a in agents.values()): fail('agent_name_conflict')
+        counter = base/'registry-counter'
+        n = int(counter.read_text())+1 if counter.exists() else 1
+        counter.write_text(str(n))
+        aid = 'ag_created_'+str(n)
+        agents[aid] = {'agent_id':aid,'name':name,'status':'running','thread':args[args.index('--thread')+1], 'startup':args[args.index('--')+1:]}
+        tmp = path.with_suffix('.tmp'); tmp.write_text(json.dumps(agents)); os.replace(tmp, path)
+        print(json.dumps({'agent_id':aid})); sys.exit(0)
+    if args[:3] == ['agent','admin','rename']:
+        aid, name = args[3:5]
+        if aid not in agents: fail('agent_not_found')
+        if any(k!=aid and a['name']==name for k,a in agents.items()): fail('agent_name_conflict')
+        agents[aid]['name']=name
+    elif args[:3] == ['agent','admin','delete']:
+        agents.pop(args[3],None)
+    elif args[:2] in (['agent','start'],['agent','stop']):
+        if args[2] not in agents: fail('agent_not_found')
+        agents[args[2]]['status']='running' if args[1]=='start' else 'stopped'
+    else: fail('unsupported')
+    tmp = path.with_suffix('.tmp'); tmp.write_text(json.dumps(agents)); os.replace(tmp, path)
+    print('{}')
+"#;
+    std::fs::write(&script, script_source).unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+    *f.hub.browser_commands.lock().unwrap() = browser::Commands {
+        treer: script,
+        pockymoe: Some("/stable/pockymoe".into()),
+    };
+    let mut app = hello(f, "app-hub");
+    app.create = None;
+    *f.hub.hub_identity.lock().unwrap() = Some(Binding {
+        thread: String::new(),
+        agent: app.agent_id,
+        instance: "app-instance".into(),
+        identity: app.treer,
+        cancelled: Default::default(),
+    });
+}
+#[cfg(unix)]
+fn agents(f: &Fixture) -> Value {
+    std::fs::read(f._dir.path().join("registry-agents.json"))
+        .ok()
+        .map(|raw| serde_json::from_slice(&raw).unwrap())
+        .unwrap_or_else(|| json!({}))
+}
+#[cfg(unix)]
+fn set_agents(f: &Fixture, value: Value) {
+    // Replace atomically: the fixture CLI and readers never see a partial file.
+    let path = f._dir.path().join("registry-agents.json");
+    let tmp = path.with_extension("rust-tmp");
+    std::fs::write(&tmp, value.to_string()).unwrap();
+    std::fs::rename(tmp, path).unwrap();
+}
+#[cfg(unix)]
+fn calls(f: &Fixture) -> Vec<Value> {
+    std::fs::read_to_string(f._dir.path().join("registry-calls.jsonl"))
+        .unwrap_or_default()
+        .lines()
+        .map(|s| serde_json::from_str(s).unwrap())
+        .collect()
+}
+#[cfg(unix)]
+fn create_input(f: &Fixture, title: &str, parent: Option<&str>) -> CreateThreadInput {
+    let ws = f
+        .hub
+        .state
+        .list_workspaces()
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| {
+            f.hub
+                .state
+                .create_workspace(CreateWorkspaceInput {
+                    abs_path: Some(f._dir.path().to_string_lossy().into()),
+                    label: None,
+                    git_url: None,
+                })
+                .unwrap()
+        });
+    CreateThreadInput {
+        workspace_id: ws.id,
+        title: Some(title.into()),
+        provider: Some(f.hub.state.config.enabled_providers[0]),
+        agent_id: None,
+        model: "ios-e2e-stream".into(),
+        reasoning_effort: None,
+        approval_mode: "yolo".into(),
+        parent_thread_id: parent.map(str::to_owned),
+    }
+}
+#[cfg(unix)]
+async fn bind_created(f: &Fixture, title: &str) -> Binding {
+    let mut found = None;
+    wait_until(|| {
+        found = agents(f)
+            .as_object()
+            .unwrap()
+            .iter()
+            .find(|(agent, a)| {
+                !f.hub.live.lock().unwrap().contains_key(*agent)
+                    && f.hub
+                        .state
+                        .list_threads_unfiltered(None, true)
+                        .unwrap()
+                        .iter()
+                        .any(|t| t.id == a["thread"] && t.title == title)
+            })
+            .map(|(agent, a)| (agent.clone(), a["thread"].as_str().unwrap().to_owned()));
+        found.is_some()
+    })
+    .await;
+    let (agent, thread) = found.unwrap();
+    let mut h = hello(f, &agent);
+    h.create = None;
+    h.thread_id = Some(thread);
+    h.instance_id = format!("instance-{agent}");
+    f.hub.bind(h).await.unwrap().0
+}
+#[cfg(unix)]
+async fn registered(
+    f: &Fixture,
+    title: &str,
+    parent: Option<&str>,
+    name: Option<&str>,
+) -> (pockymoe_protocol::ThreadDto, Binding) {
+    let state = f.hub.state.clone();
+    let input = create_input(f, title, parent);
+    let options = pockymoe_runtime::interaction::AgentOptions {
+        name: name.map(str::to_owned),
+        ..Default::default()
+    };
+    let task = tokio::spawn(async move { state.create_thread_with(input, options).await });
+    let binding = bind_created(f, title).await;
+    let thread = task.await.unwrap().unwrap();
+    (thread, binding)
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn registry_creator_identities_names_dedupe_cascade_and_delete_order() {
+    let f = fixture().await;
+    registry_cli(&f);
+    let (root, _) = registered(&f, "Lead / title", None, Some("top-alias")).await;
+    let root_agent = agents(&f)
+        .as_object()
+        .unwrap()
+        .iter()
+        .find(|(_, a)| a["thread"] == root.id)
+        .unwrap()
+        .0
+        .clone();
+    assert_eq!(agents(&f)[&root_agent]["name"], "Lead  title");
+    let (child, _) = registered(&f, "Worker title", Some(&root.id), Some("worker")).await;
+    let child_agent = agents(&f)
+        .as_object()
+        .unwrap()
+        .iter()
+        .find(|(_, a)| a["thread"] == child.id)
+        .unwrap()
+        .0
+        .clone();
+    assert_eq!(agents(&f)[&child_agent]["name"], "Lead  title.worker");
+    let creates = calls(&f)
+        .into_iter()
+        .filter(|c| c["args"][2] == "create")
+        .collect::<Vec<_>>();
+    assert_eq!(creates[0]["caller"], "app-hub");
+    assert_eq!(creates[1]["caller"], root_agent);
+    assert!(!creates[1]["args"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|a| a == "--folder"));
+    let child_env = f
+        .hub
+        .state
+        .with_cli_context(&child.id, async {
+            pockymoe_runtime::interaction::launch_env()
+        })
+        .await;
+    assert_eq!(
+        child_env
+            .iter()
+            .find(|(key, _)| key == "TREER_AGENT_ID")
+            .unwrap()
+            .1,
+        child_agent
+    );
+    assert!(!child_env
+        .iter()
+        .any(|(key, value)| key == "TREER_AGENT_ID" && value == &root_agent));
+    let (other, _) = registered(&f, "Lead / title", None, None).await;
+    let all = agents(&f);
+    let name = all
+        .as_object()
+        .unwrap()
+        .values()
+        .find(|a| a["thread"] == other.id)
+        .unwrap()["name"]
+        .as_str()
+        .unwrap();
+    assert_eq!(name, "Lead  title-2");
+    let (dotted, _) = registered(&f, "Lead  title.unrelated", None, None).await;
+    let (grandchild, _) = registered(&f, "Grandchild", Some(&child.id), Some("nested")).await;
+    f.hub.state.rename_thread(&root.id, "Renamed").unwrap();
+    assert_eq!(agents(&f)[&root_agent]["name"], "Renamed");
+    assert_eq!(agents(&f)[&child_agent]["name"], "Renamed.worker");
+    assert_eq!(
+        f.hub.state.get_thread(&child.id).unwrap().title,
+        "Worker title"
+    );
+    let all = agents(&f);
+    assert_eq!(
+        all.as_object()
+            .unwrap()
+            .values()
+            .find(|a| a["thread"] == dotted.id)
+            .unwrap()["name"],
+        "Lead  title.unrelated"
+    );
+    assert_eq!(
+        all.as_object()
+            .unwrap()
+            .values()
+            .find(|a| a["thread"] == grandchild.id)
+            .unwrap()["name"],
+        "Renamed.worker.nested"
+    );
+    assert!(f
+        .hub
+        .state
+        .delete_child_thread(&root.id, &child.id)
+        .await
+        .is_err());
+    f.hub
+        .state
+        .delete_child_thread(&child.id, &grandchild.id)
+        .await
+        .unwrap();
+    f.hub
+        .state
+        .delete_child_thread(&root.id, &child.id)
+        .await
+        .unwrap();
+    let deletion = calls(&f)
+        .into_iter()
+        .find(|c| c["args"] == json!(["agent", "admin", "delete", child_agent]))
+        .unwrap();
+    assert!(deletion["existing"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|id| id == &child.id));
+    assert!(f.hub.state.get_thread(&child.id).is_err());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn registry_failure_timeout_hidden_and_stable_binding_rejection() {
+    let f = fixture().await;
+    registry_cli(&f);
+    std::fs::write(f._dir.path().join("registry-fail"), "policy_denied").unwrap();
+    let error = f
+        .hub
+        .state
+        .create_thread(create_input(&f, "Denied", None))
+        .await
+        .unwrap_err();
+    assert_eq!(error.to_string(), "treer_command_failed");
+    assert!(f.hub.state.list_threads(None, true).unwrap().is_empty());
+    std::fs::remove_file(f._dir.path().join("registry-fail")).unwrap();
+    let error = f
+        .hub
+        .state
+        .create_thread(create_input(&f, "No attach", None))
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("attach did not bind"));
+    assert!(agents(&f).as_object().unwrap().is_empty());
+    assert!(f.hub.state.list_threads(None, true).unwrap().is_empty());
+    assert!(f.hub.creating.lock().unwrap().is_empty());
+    let hidden = f
+        .hub
+        .state
+        .create_thread_with_origin(
+            create_input(&f, "Internal", None),
+            Default::default(),
+            pockymoe_runtime::host_hooks::ThreadOrigin::Hidden,
+        )
+        .await
+        .unwrap();
+    assert!(f.hub.state.list_threads(None, true).unwrap().is_empty());
+    assert!(f.hub.state.get_thread(&hidden.id).is_err());
+    f.hub.reconcile_registry().await;
+    assert!(agents(&f).as_object().unwrap().is_empty());
+    let (root, binding) = registered(&f, "Bound", None, None).await;
+    f.hub.detach(&binding).await;
+    let mut h = hello(&f, "ag-imposter");
+    h.create = None;
+    h.thread_id = Some(root.id);
+    assert_eq!(
+        f.hub.bind(h).await.err().unwrap().to_string(),
+        "agent_thread_mismatch"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn registry_close_reserves_name_reopens_before_delivery_and_delete_failure_preserves_history()
+{
+    let f = fixture().await;
+    registry_cli(&f);
+    let (root, _) = registered(&f, "Root", None, None).await;
+    let (child, binding) = registered(&f, "Child", Some(&root.id), Some("worker")).await;
+    std::fs::write(f._dir.path().join("registry-fail"), "policy_denied").unwrap();
+    assert!(f
+        .hub
+        .state
+        .close_agent_thread_releasing(Some(&root.id), &child.id, false)
+        .await
+        .is_err());
+    assert!(f
+        .hub
+        .state
+        .get_thread(&child.id)
+        .unwrap()
+        .closed_at
+        .is_none());
+    assert!(!f.hub.state.integration_thread_paused(&child.id));
+    std::fs::remove_file(f._dir.path().join("registry-fail")).unwrap();
+    f.hub
+        .state
+        .close_agent_thread_releasing(Some(&root.id), &child.id, false)
+        .await
+        .unwrap();
+    assert_eq!(agents(&f)[&binding.agent]["status"], "stopped");
+    assert_eq!(
+        f.hub.state.resolve_agent(Some(&root.id), "worker").unwrap(),
+        child.id
+    );
+    assert!(f
+        .hub
+        .state
+        .get_thread(&child.id)
+        .unwrap()
+        .closed_at
+        .is_some());
+    assert!(f
+        .hub
+        .state
+        .create_thread_with(
+            create_input(&f, "Collision", Some(&root.id)),
+            pockymoe_runtime::interaction::AgentOptions {
+                name: Some("worker".into()),
+                ..Default::default()
+            }
+        )
+        .await
+        .is_err());
+    f.hub.detach(&binding).await;
+    let state = f.hub.state.clone();
+    let child_id = child.id.clone();
+    let prompt = tokio::spawn(async move {
+        state
+            .prompt(
+                &child_id,
+                serde_json::from_value(json!({"prompt":"hello"})).unwrap(),
+            )
+            .await
+    });
+    wait_until(|| {
+        calls(&f)
+            .iter()
+            .any(|c| c["args"] == json!(["agent", "start", binding.agent]))
+    })
+    .await;
+    assert!(f
+        .hub
+        .state
+        .get_thread(&child.id)
+        .unwrap()
+        .active_turn_id
+        .is_none());
+    assert!(f
+        .hub
+        .state
+        .get_thread_detail(&child.id, None)
+        .await
+        .unwrap()
+        .turns
+        .is_empty());
+    let mut h = hello(&f, &binding.agent);
+    h.create = None;
+    h.thread_id = Some(child.id.clone());
+    h.instance_id = "restarted".into();
+    f.hub.bind(h).await.unwrap();
+    prompt.await.unwrap().unwrap();
+    assert!(f
+        .hub
+        .state
+        .get_thread(&child.id)
+        .unwrap()
+        .closed_at
+        .is_none());
+    let count = f
+        .hub
+        .state
+        .get_thread_detail(&child.id, None)
+        .await
+        .unwrap()
+        .turns
+        .len();
+    assert_eq!(count, 1);
+    std::fs::write(f._dir.path().join("registry-fail"), "policy_denied").unwrap();
+    assert!(f
+        .hub
+        .state
+        .delete_thread_releasing(&child.id)
+        .await
+        .is_err());
+    assert_eq!(
+        f.hub
+            .state
+            .get_thread_detail(&child.id, None)
+            .await
+            .unwrap()
+            .turns
+            .len(),
+        count
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn registry_reconcile_external_rename_delete_outage_and_legacy_unbound_children() {
+    let f = fixture().await;
+    registry_cli(&f);
+    let (root, root_binding) = registered(&f, "Root", None, None).await;
+    let (child, child_binding) = registered(&f, "Child", Some(&root.id), Some("worker")).await;
+    let mut data = agents(&f);
+    data[&child_binding.agent]["name"] = json!("Root.external");
+    set_agents(&f, data.clone());
+    f.hub.reconcile_registry().await;
+    assert_eq!(f.hub.state.get_thread(&child.id).unwrap().title, "external");
+    data = agents(&f);
+    data[&root_binding.agent]["name"] = json!("Moved");
+    set_agents(&f, data);
+    f.hub.reconcile_registry().await;
+    assert_eq!(f.hub.state.get_thread(&root.id).unwrap().title, "Moved");
+    assert_eq!(agents(&f)[&child_binding.agent]["name"], "Moved.external");
+    assert_eq!(f.hub.state.get_thread(&child.id).unwrap().title, "external");
+    let mut data = agents(&f);
+    std::fs::write(f._dir.path().join("registry-fail"), "policy_denied").unwrap();
+    f.hub.reconcile_registry().await;
+    assert!(f.hub.state.get_thread(&child.id).is_ok());
+    std::fs::remove_file(f._dir.path().join("registry-fail")).unwrap();
+    // Retained history and search projection survive external Agent deletion.
+    f.hub
+        .state
+        .prompt(
+            &child.id,
+            serde_json::from_value(json!({"prompt":"hello"})).unwrap(),
+        )
+        .await
+        .unwrap();
+    data.as_object_mut().unwrap().remove(&child_binding.agent);
+    set_agents(&f, data);
+    f.hub.detach(&child_binding).await;
+    f.hub.reconcile_registry().await;
+    assert!(f.hub.state.get_thread(&child.id).is_err());
+    assert!(!f
+        .hub
+        .state
+        .list_threads(None, true)
+        .unwrap()
+        .iter()
+        .any(|t| t.id == child.id));
+    assert!(f
+        .hub
+        .state
+        .search_conversations("external", None, 100, 0)
+        .unwrap()["matches"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert!(
+        !f.hub.state.agent_tree(&root.id, true).await.unwrap()["threads"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["threadId"] == child.id)
+    );
+    let retained=f.hub.state.db.with(|c|Ok(c.query_row("SELECT (SELECT count(*) FROM threads WHERE id=?1),(SELECT count(*) FROM thread_turns WHERE thread_id=?1)",[&child.id],|r|Ok((r.get::<_,usize>(0)?,r.get::<_,usize>(1)?)))?)).unwrap();
+    assert_eq!(retained, (1, 1));
+    let legacy = uuid::Uuid::new_v4().to_string();
+    f.hub.state.db.with(|c| {c.execute("INSERT INTO threads(id,workspace_id,provider,title,source,status,created_at,updated_at,parent_thread_id,root_thread_id,lineage_depth,agent_name) VALUES(?1,?2,'codex','Legacy child','supervisor','idle',?3,?3,?4,?4,1,'legacy')",params![legacy,root.workspace_id,now_rfc3339(),root.id])?;Ok(())}).unwrap();
+    let scope = Scope {
+        hub: f.hub.clone(),
+        thread: root.id.clone(),
+        agent: root_binding.agent.clone(),
+        instance: root_binding.instance.clone(),
+        controller: false,
+    };
+    assert!(!scope.allows(&legacy));
+    let hub = f.hub.clone();
+    let reconcile = tokio::spawn(async move { hub.reconcile_registry().await });
+    wait_until(|| {
+        agents(&f)
+            .as_object()
+            .unwrap()
+            .values()
+            .any(|a| a["thread"] == legacy)
+    })
+    .await;
+    assert!(scope.allows(&legacy));
+    let binding = bind_created(&f, "Legacy child").await;
+    reconcile.await.unwrap();
+    assert!(f.hub.state.get_thread(&legacy).is_ok());
+    assert_eq!(agents(&f)[&binding.agent]["name"], "Moved.legacy");
+    assert_eq!(calls(&f).last().unwrap()["caller"], "app-hub");
+    f.hub.reconcile_registry().await;
+    assert!(!agents(&f)
+        .as_object()
+        .unwrap()
+        .contains_key(&child_binding.agent));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn registry_fork_uses_source_agent_identity_and_reconciliation_preserves_external_stop() {
+    let f = fixture_with_provider(tempfile::tempdir().unwrap(), false, Provider::Claude).await;
+    registry_cli(&f);
+    let (root, root_binding) = registered(&f, "Source", None, None).await;
+    let state = f.hub.state.clone();
+    let id = root.id.clone();
+    let fork = tokio::spawn(async move { state.fork_thread(&id).await });
+    let binding = bind_created(&f, "Source / fork").await;
+    let fork = fork.await.unwrap().unwrap();
+    assert_eq!(calls(&f).last().unwrap()["caller"], root_binding.agent);
+    assert_eq!(agents(&f)[&binding.agent]["name"], "Source  fork");
+    assert!(fork.parent_thread_id.is_none());
+    f.hub.detach(&binding).await;
+    let mut data = agents(&f);
+    data[&binding.agent]["status"] = json!("exited");
+    set_agents(&f, data);
+    f.hub.reconcile_registry().await;
+    assert!(f
+        .hub
+        .state
+        .get_thread(&fork.id)
+        .unwrap()
+        .closed_at
+        .is_some());
+    assert!(f
+        .hub
+        .state
+        .list_threads(None, true)
+        .unwrap()
+        .iter()
+        .any(|t| t.id == fork.id));
+    assert!(agents(&f).get(&binding.agent).is_some());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn registry_failed_cleanup_is_durable_and_retried_after_thread_rollback() {
+    let f = fixture().await;
+    registry_cli(&f);
+    let state = f.hub.state.clone();
+    let input = create_input(&f, "Timeout cleanup", None);
+    let create = tokio::spawn(async move { state.create_thread(input).await });
+    wait_until(|| !agents(&f).as_object().unwrap().is_empty()).await;
+    std::fs::write(f._dir.path().join("registry-fail"), "policy_denied").unwrap();
+    assert!(create.await.unwrap().is_err());
+    assert!(f.hub.state.list_threads(None, true).unwrap().is_empty());
+    let pending = f
+        .hub
+        .state
+        .db
+        .with(|c| {
+            Ok(
+                c.query_row("SELECT count(*) FROM treer_registry_cleanup", [], |r| {
+                    r.get::<_, usize>(0)
+                })?,
+            )
+        })
+        .unwrap();
+    assert_eq!(pending, 1);
+    std::fs::remove_file(f._dir.path().join("registry-fail")).unwrap();
+    f.hub.reconcile_registry().await;
+    assert!(agents(&f).as_object().unwrap().is_empty());
+    let pending = f
+        .hub
+        .state
+        .db
+        .with(|c| {
+            Ok(
+                c.query_row("SELECT count(*) FROM treer_registry_cleanup", [], |r| {
+                    r.get::<_, usize>(0)
+                })?,
+            )
+        })
+        .unwrap();
+    assert_eq!(pending, 0);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn registry_recovers_lost_create_response_by_stable_startup_thread_id() {
+    let f = fixture().await;
+    registry_cli(&f);
+    let (root, binding) = registered(&f, "Lost reply", None, None).await;
+    f.hub.detach(&binding).await;
+    // The Agent exists, but the hub crashed before persisting the create reply.
+    f.hub
+        .state
+        .db
+        .with(|c| {
+            c.execute("DELETE FROM treer_bindings WHERE thread_id=?1", [&root.id])?;
+            c.execute(
+                "UPDATE treer_registry SET state='registering' WHERE thread_id=?1",
+                [&root.id],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let count = calls(&f)
+        .iter()
+        .filter(|c| c["args"][2] == "create")
+        .count();
+    let hub = f.hub.clone();
+    let reconcile = tokio::spawn(async move { hub.reconcile_registry().await });
+    wait_until(|| {
+        calls(&f)
+            .iter()
+            .any(|c| c["args"] == json!(["agent", "start", binding.agent]))
+    })
+    .await;
+    let rebound = bind_created(&f, "Lost reply").await;
+    reconcile.await.unwrap();
+    assert_eq!(rebound.agent, binding.agent);
+    assert_eq!(
+        calls(&f)
+            .iter()
+            .filter(|c| c["args"][2] == "create")
+            .count(),
+        count
+    );
+    assert_eq!(agents(&f).as_object().unwrap().len(), 1);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn registry_migrates_a_closed_legacy_child_then_stops_its_agent() {
+    let f = fixture().await;
+    registry_cli(&f);
+    let (root, _) = registered(&f, "Root", None, None).await;
+    let legacy = uuid::Uuid::new_v4().to_string();
+    f.hub.state.db.with(|c| {c.execute("INSERT INTO threads(id,workspace_id,provider,title,source,status,created_at,updated_at,parent_thread_id,root_thread_id,lineage_depth,agent_name,closed_at) VALUES(?1,?2,'codex','Closed legacy','supervisor','idle',?3,?3,?4,?4,1,'legacy',?3)",params![legacy,root.workspace_id,now_rfc3339(),root.id])?;Ok(())}).unwrap();
+    let hub = f.hub.clone();
+    let reconcile = tokio::spawn(async move { hub.reconcile_registry().await });
+    let binding = bind_created(&f, "Closed legacy").await;
+    reconcile.await.unwrap();
+    assert_eq!(agents(&f)[&binding.agent]["status"], "stopped");
+    assert!(f.hub.state.get_thread(&legacy).unwrap().closed_at.is_some());
+    assert!(f.hub.state.integration_thread_paused(&legacy));
+    assert_eq!(
+        f.hub.state.resolve_agent(Some(&root.id), "legacy").unwrap(),
+        legacy
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn registry_startup_pauses_legacy_unbound_threads_before_inbox_recovery() {
+    let mut f = fixture().await;
+    registry_cli(&f);
+    let (root, _) = registered(&f, "Root", None, None).await;
+    let legacy = uuid::Uuid::new_v4().to_string();
+    f.hub.state.db.with(|c| {c.execute("INSERT INTO threads(id,workspace_id,provider,title,source,status,created_at,updated_at,parent_thread_id,root_thread_id,lineage_depth) VALUES(?1,?2,'codex','Legacy child','supervisor','idle',?3,?3,?4,?4,1)",params![legacy,root.workspace_id,now_rfc3339(),root.id])?;Ok(())}).unwrap();
+    let dir = std::mem::replace(&mut f._dir, tempfile::tempdir().unwrap());
+    drop(f);
+    let f = fixture_in(dir).await;
+    assert!(f.hub.state.integration_thread_paused(&root.id));
+    assert!(f.hub.state.integration_thread_paused(&legacy));
+    assert!(f.hub.state.get_thread(&legacy).is_ok());
+}
+
+// W3: Managed App landing page and deny-all thread boundary.
+#[path = "app_page_tests.rs"]
+mod app_page;

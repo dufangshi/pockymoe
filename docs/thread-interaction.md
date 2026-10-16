@@ -397,8 +397,8 @@ Moving around keeps the screen steady:
 ## Terminal clipboard
 
 The terminal follows the usual desktop terminal conventions, adjustable in
-Settings > Terminal (shown while the terminal plugin is enabled, stored in this
-browser):
+Settings > Plugins > Terminal settings (shown while the terminal plugin is
+enabled, stored in this browser):
 
 - Ctrl+C copies a selection and interrupts only without one; Ctrl+Shift+C copies
   too where the browser does not keep that shortcut for itself.

@@ -19,6 +19,104 @@ async fn spawn_supervisor(
 }
 
 #[tokio::test]
+async fn thread_summary_http_returns_public_chronology_and_rejects_bad_queries() {
+    let (_dir, port, root, state) = spawn_supervisor_state(vec![Provider::Codex], |_| {}).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://127.0.0.1:{port}");
+    let ws = json(
+        &client,
+        client
+            .post(format!("{base}/api/workspaces"))
+            .json(&json!({"absPath":root,"label":"Summary"})),
+    )
+    .await;
+    let thread=json(&client,client.post(format!("{base}/api/threads/start")).json(&json!({"workspaceId":ws["id"],"provider":"codex","model":"ios-e2e-stream","approvalMode":"yolo"}))).await;
+    let id = thread["id"].as_str().unwrap();
+    let endpoint = format!("{base}/api/threads/{id}/summary");
+    assert_eq!(
+        json(&client, client.get(&endpoint)).await,
+        json!({"messages":[],"truncated":false})
+    );
+    state.db.with(|c| {
+        c.execute("INSERT INTO thread_turns(id,thread_id,status,ordinal,started_at,display_prompt) VALUES('summary-turn',?1,'completed',1,'2030-01-01T00:00:00Z','question')",[id])?;
+        for (n,(kind,text,time)) in [
+            ("userMessage","question","2030-01-01T00:00:00Z"),
+            ("agentMessage","commentary","2030-01-01T00:00:01Z"),
+            ("userMessage","steer","2030-01-01T01:00:02+01:00"),
+            ("agentMessage","中🙂final","2030-01-01T00:00:03Z"),
+            ("reasoning","private reasoning","2030-01-01T00:00:01Z"),
+            ("toolCall","tool secret","2030-01-01T00:00:02Z"),
+        ].into_iter().enumerate() {
+            let key=format!("summary-item-{n}");
+            c.execute("INSERT INTO thread_history_items(id,thread_id,turn_id,item_id,item_json,created_at,updated_at) VALUES(?1,?2,'summary-turn',?1,?3,?4,?4)",rusqlite::params![key,id,json!({"id":key,"kind":kind,"text":text,"createdAt":time,"detailText":"private detail"}).to_string(),time])?;
+        }
+        Ok(())
+    }).unwrap();
+    let response = client.get(&endpoint).send().await.unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.headers()["cache-control"], "no-store");
+    let summary: Value = response.json().await.unwrap();
+    let messages = summary["messages"].as_array().unwrap();
+    assert_eq!(
+        messages
+            .iter()
+            .map(|m| m["text"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["question", "commentary", "steer", "中🙂final"]
+    );
+    assert_eq!(messages[2]["time"], "2030-01-01T00:00:02Z");
+    assert!(messages.iter().all(|m| m.as_object().unwrap().len() == 3));
+    let capped = json(
+        &client,
+        client.get(&endpoint).query(&[
+            ("maxChars", "6"),
+            ("turns", "1"),
+            ("since", "2030-01-01T00:00:02Z"),
+        ]),
+    )
+    .await;
+    assert_eq!(
+        capped["messages"],
+        json!([{"role":"assistant","time":"2030-01-01T00:00:03Z","text":"🙂final","truncated":true}])
+    );
+    assert_eq!(capped["truncated"], true);
+    for query in [
+        "since=yesterday",
+        "since=2030-01-01",
+        "recentSeconds=0",
+        "recentSeconds=-1",
+        "recentSeconds=1.5",
+        "turns=0",
+        "turns=1000001",
+        "maxChars=0",
+        "maxChars=10000001",
+        "maxChars=1k",
+        "unknown=1",
+        "maxChars=1&maxChars=2",
+    ] {
+        assert_eq!(
+            client
+                .get(format!("{endpoint}?{query}"))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            400,
+            "{query}"
+        );
+    }
+    assert_eq!(
+        client
+            .get(format!("{base}/api/threads/not-found/summary"))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        404
+    );
+}
+
+#[tokio::test]
 async fn builtin_plugin_settings_http_are_versioned_and_validate_registry() {
     let (_dir, port, _) = spawn_supervisor(vec![Provider::Codex]).await;
     let client = reqwest::Client::new();
@@ -2272,4 +2370,28 @@ async fn local_web_ui_is_served_runnable_with_real_content_types() {
         );
     }
     std::env::remove_var("POCKYMOE_WEB_DIST_DIR");
+}
+
+#[tokio::test]
+async fn standalone_does_not_enable_the_treer_app_page() {
+    let (_dir, port, _) = spawn_supervisor(vec![Provider::Codex]).await;
+    let client = reqwest::Client::new();
+    let url = format!("http://127.0.0.1:{port}/healthz");
+    let mut ordinary: Value = client.get(&url).send().await.unwrap().json().await.unwrap();
+    assert_eq!(ordinary["status"], "ok");
+    let marked = client
+        .get(&url)
+        .header("x-treer-identity-token", "synthetic-token")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(marked.status(), 403);
+    assert_eq!(
+        marked.json::<Value>().await.unwrap()["code"],
+        "treer_disabled"
+    );
+    let mut after: Value = client.get(&url).send().await.unwrap().json().await.unwrap();
+    ordinary.as_object_mut().unwrap().remove("timestamp");
+    after.as_object_mut().unwrap().remove("timestamp");
+    assert_eq!(after, ordinary);
 }

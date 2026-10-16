@@ -178,6 +178,8 @@ async fn create_saves_startup_before_registration_and_reconnect_rebinds() {
             "high",
             "--title",
             "Test",
+            "--hub-app",
+            "hub-app-test",
         ],
         None,
     )
@@ -210,6 +212,9 @@ async fn create_saves_startup_before_registration_and_reconnect_rebinds() {
     assert!(calls[3]
         .windows(3)
         .any(|w| w == ["attach", "--thread", "thread-test"]));
+    assert!(calls[3]
+        .windows(2)
+        .any(|w| w == ["--hub-app", "hub-app-test"]));
     assert_eq!(
         &calls[4][..4],
         &["interface", "register", "--port", "12345"]
@@ -275,6 +280,36 @@ async fn hub_error_reply_exits_nonzero_without_echoing_secrets() {
     assert!(!output.contains("synthetic-attach-secret"));
     assert!(!output.contains('\x1b'));
     assert!(!output.contains("synthetic-workload-secret"));
+}
+
+#[tokio::test]
+async fn missing_base_agent_keeps_running_and_explains_the_fix() {
+    let mut f = Fixture::new(&["--thread", "thread-test"], None).await;
+    let (mut ws, _) = f.accept().await;
+    let reply = AttachReply::Error {
+        code: "base_agent_missing".into(),
+        message: "Install the base agent first: codex".into(),
+    };
+    ws.send(Message::Text(serde_json::to_string(&reply).unwrap().into()))
+        .await
+        .unwrap();
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    let mut lines = BufReader::new(f.child.stdout.take().unwrap()).lines();
+    let explained = time::timeout(Duration::from_secs(5), async {
+        while let Some(line) = lines.next_line().await.unwrap() {
+            if line.contains("base agent 'codex' was not found on this machine") {
+                return true;
+            }
+        }
+        false
+    })
+    .await
+    .unwrap();
+    assert!(explained);
+    // Exiting would hide the reason in Treer and disable its recovery.
+    assert!(time::timeout(Duration::from_secs(2), f.child.wait())
+        .await
+        .is_err());
 }
 
 #[tokio::test]

@@ -246,11 +246,23 @@ async fn install_from(
     result
 }
 async fn verify_binary(binary: &Path, version: &str) -> Result<()> {
-    let mut command = tokio::process::Command::new(binary);
-    command.arg("version").kill_on_drop(true);
-    let checked = tokio::time::timeout(Duration::from_secs(10), command.output())
-        .await
-        .context("Runtime version check timed out")??;
+    // A process forked elsewhere while the binary was being written can briefly
+    // hold its write descriptor; Linux then refuses to execute it (ETXTBSY).
+    let mut attempt = 0;
+    let checked = loop {
+        let mut command = tokio::process::Command::new(binary);
+        command.arg("version").kill_on_drop(true);
+        match tokio::time::timeout(Duration::from_secs(10), command.output())
+            .await
+            .context("Runtime version check timed out")?
+        {
+            Err(error) if error.raw_os_error() == Some(26) && attempt < 20 => {
+                attempt += 1;
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            result => break result?,
+        }
+    };
     ensure!(
         checked.status.success() && String::from_utf8_lossy(&checked.stdout).trim() == version,
         "Downloaded runtime version mismatch"

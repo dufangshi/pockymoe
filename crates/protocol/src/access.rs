@@ -222,6 +222,7 @@ pub fn shared_thread_path_allowed(
                 | "/group"
                 | "/watches"
                 | "/search"
+                | "/summary"
         ) {
             return true;
         }
