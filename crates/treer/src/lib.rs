@@ -1,4 +1,5 @@
 //! Treer AIS v1 wire contract and pure forwarding/transcript decisions.
+pub mod messages;
 use pockymoe_protocol::{ThreadItemKind, ThreadTurnDto};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -24,7 +25,10 @@ pub fn identity_env(
     agent: &str,
     identity: &pockymoe_protocol::treer::AttachTreerIdentity,
 ) -> Vec<(String, String)> {
-    let mut env = vec![("TREER_AGENT_ID".into(), agent.into())];
+    let mut env = vec![
+        ("TREER_AGENT_ID".into(), agent.into()),
+        ("POCKYMOE_HOST_GUIDE".into(), "1".into()),
+    ];
     for (key, value) in [
         ("TREER_WORKLOAD_CREDENTIAL", &identity.workload_credential),
         ("TREER_AGENT_SERVER_URL", &identity.agent_server_url),
@@ -100,22 +104,21 @@ pub fn thread_in_scope(
     source: Source,
     bound_thread: &str,
     thread: &str,
-    root: Option<&str>,
-    root_has_binding: bool,
-    root_is_creating: bool,
+    _root: Option<&str>,
+    thread_has_binding: bool,
+    thread_is_creating: bool,
 ) -> bool {
-    let root = root.unwrap_or(thread);
     match source {
-        Source::Controller => root == bound_thread,
+        Source::Controller => thread == bound_thread && thread_has_binding,
         // FUTURE TREER POLICY HOOK: intersect this result with policy/check and
         // per-node permission bits when Treer supplies a verified browser human.
         // Ask Treer at request time; do not add a second ACL or cache policy here.
-        Source::ProxyUi => root_has_binding || root_is_creating,
+        Source::ProxyUi => thread_has_binding || thread_is_creating,
     }
 }
 
-/// Keep labels valid path components; the thread ID distinguishes siblings.
-pub fn agent_label(title: &str, thread: &str) -> String {
+/// Keep labels valid path components. The registry handles name conflicts.
+pub fn agent_label(title: &str, _thread: &str) -> String {
     let mut title: String = title
         .chars()
         .filter(|c| !c.is_control() && *c != '/')
@@ -130,7 +133,7 @@ pub fn agent_label(title: &str, thread: &str) -> String {
     {
         title = format!("Pockymoe {title}").trim().to_owned();
     }
-    format!("{title}-{thread}")
+    title
 }
 
 /// Default deny. Collection responses are supplied separately by the scoped hub middleware.
@@ -149,7 +152,7 @@ pub fn gate(method: &str, path: &str, allowed_thread: impl Fn(&str) -> bool) -> 
         if read {
             return true;
         }
-        // Do not allow fork/import, arbitrary harness commands, shell or global settings.
+        // Fork uses the same host registration hook; import and arbitrary commands stay denied.
         return match method {
             "POST" => {
                 matches!(
@@ -161,6 +164,7 @@ pub fn gate(method: &str, path: &str, allowed_thread: impl Fn(&str) -> bool) -> 
                         | "disconnect"
                         | "compact"
                         | "goal"
+                        | "fork"
                 ) || action.starts_with("requests/")
                     || action.starts_with("pending-steers/")
             }
@@ -407,7 +411,7 @@ mod tests {
                 expected
             );
         }
-        assert!(thread_in_scope(
+        assert!(!thread_in_scope(
             Source::Controller,
             "x",
             "child",
@@ -427,7 +431,7 @@ mod tests {
             let label = agent_label(title, "thread-id");
             assert!(!label.contains('/') && !label.chars().any(char::is_control));
             assert!(!label.starts_with("ag_") && !label.starts_with("app_"));
-            assert!(label.ends_with("-thread-id"));
+            assert!(!label.contains("thread-id"));
         }
     }
     #[test]
@@ -439,7 +443,7 @@ mod tests {
             ("GET", "/api/management/supervisor", false),
             ("PATCH", "/api/config/workspace-settings", false),
             ("GET", "/api/workspaces", false),
-            ("POST", "/api/threads/root/fork", false),
+            ("POST", "/api/threads/root/fork", true),
             ("POST", "/api/threads/start", true),
             ("PATCH", "/api/threads/root", true),
             ("DELETE", "/api/threads/root", true),

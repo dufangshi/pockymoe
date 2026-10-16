@@ -159,6 +159,32 @@ running. It does not replace the device container or change the setup-created Ap
 Evidence goes to `.scratch/treer-bidirectional/`; set
 `TREER_LAB_SYNC_EVIDENCE_DIR` to select another ignored evidence directory.
 
+## Strict registry CLI fixture
+
+The fake runtime has no OS harness process. To exercise the real CLI with the
+thread credential and Treer identity ACP would receive, explicitly set
+`POCKYMOE_E2E_FAKE_CLI_DRIVER=/opt/lab/thread-driver.sh` on the **fake hub only**
+and stage `thread-driver.sh` and `thread-driver.mjs` in `/opt/lab/`. A prompted
+thread starts a fixture worker with its own `launch_env()`; credentials stay in
+memory. Jobs and replies use `/workspace/l2-thread-jobs/THREAD_ID/`. Publish a
+`UUID.request.json` atomically with `{ "cli": "pockymoe", "args": [...] }`
+(`treer` is also supported); inspect `UUID.reply.json` and its exit code.
+Never put credentials in jobs. The worker exits when its hub process exits.
+`POCKYMOE_E2E_FAKE_CLI_JOB_DIR` and `POCKYMOE_E2E_FAKE_CLI_BIN` select isolated
+host fixtures for standalone tests.
+
+`strict.spec.mjs` checks a bound parent's child grouping and own child tunnel,
+anonymous rejection, and the metadata-only hub App. Prepare a private
+`fixture.json` under `.scratch/treer-strict-l2/` with `parentThread`,
+`parentAgent`, `parentName`, `childThread` and `childAgent` (stable IDs only),
+or set `TREER_LAB_STRICT_EVIDENCE_DIR` to its directory. Run only this spec:
+
+```bash
+node /home/ubuntu/dev/remoteCodex/reference/treer/web/node_modules/@playwright/test/cli.js \
+  test strict.spec.mjs --config scripts/treer-lab/playwright.config.mjs \
+  --project=desktop-chromium
+```
+
 ## One-command setup against a real release
 
 `setup-e2e.mjs` exercises the public setup flow through two plain command Agents

@@ -2490,6 +2490,7 @@ version = "0.13.9"
 dependencies = [
  "aes-gcm 0.10.3",
  "anyhow",
+ "async-trait",
  "axum",
  "base64 0.22.1",
  "chrono",
@@ -2500,6 +2501,7 @@ dependencies = [
  "hpke",
  "image",
  "p256",
+ "percent-encoding",
  "pockymoe-protocol",
  "pockymoe-runtime",
  "pockymoe-treer",

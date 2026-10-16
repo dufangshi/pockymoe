@@ -20,6 +20,8 @@ use tokio_tungstenite::{
     tungstenite::{client::IntoClientRequest, http::HeaderValue, Message},
 };
 
+mod recovery;
+
 #[derive(Args)]
 pub struct Options {
     /// Rebind a previously created thread instead of creating one.
@@ -38,6 +40,9 @@ pub struct Options {
     /// Loopback HTTP hub URL; defaults to the normal local CLI discovery URL.
     #[arg(long)]
     hub: Option<String>,
+    /// Treer hub Managed App ID or name; otherwise discover the setup App by port.
+    #[arg(long)]
+    hub_app: Option<String>,
     /// Private attach token file; defaults to the hub database directory.
     #[arg(long)]
     hub_token_file: Option<PathBuf>,
@@ -85,6 +90,7 @@ impl Contract {
 struct Session {
     hello: AttachHello,
     hub: String,
+    hub_app: Option<String>,
     token_file: PathBuf,
     cwd: PathBuf,
     treer: OsString,
@@ -249,11 +255,15 @@ impl Session {
             "--hub-token-file",
         ]));
         args.push(self.token_file.clone().into_os_string());
+        if let Some(app) = &self.hub_app {
+            args.extend(text_args(&["--hub-app", app]));
+        }
         args
     }
 
     async fn serve(&mut self, contract: &Contract) -> Result<()> {
         let mut delay = Duration::from_secs(1);
+        let mut recovery = recovery::Recovery::default();
         loop {
             // Re-read after restart in case the hub rotated the file. A not-yet-created
             // token is normal when Treer starts the App and Agent concurrently.
@@ -261,6 +271,7 @@ impl Session {
                 Ok(token) => token,
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                     println!("Pockymoe attach: waiting for hub token.");
+                    recovery.unavailable(self, time::Instant::now()).await;
                     retry(&mut delay).await;
                     continue;
                 }
@@ -292,10 +303,12 @@ impl Session {
                 }
                 _ => {
                     println!("Pockymoe attach: hub unavailable; reconnecting.");
+                    recovery.unavailable(self, time::Instant::now()).await;
                     retry(&mut delay).await;
                     continue;
                 }
             };
+            recovery.reachable();
             let hello = serde_json::to_string(&self.hello).context("Cannot encode attach hello")?;
             if socket.send(Message::Text(hello.into())).await.is_err() {
                 retry(&mut delay).await;
@@ -439,6 +452,7 @@ impl Session {
                 }
             }
             println!("Pockymoe attach: hub disconnected; reconnecting.");
+            recovery.unavailable(self, time::Instant::now()).await;
             retry(&mut delay).await;
         }
     }
@@ -545,6 +559,7 @@ pub async fn run(options: Options, connection_options: crate::threads::Connectio
             },
         },
         hub,
+        hub_app: options.hub_app,
         token_file,
         cwd: restore_cwd,
         treer,
@@ -567,6 +582,7 @@ mod tests {
             reasoning_effort: None,
             title: None,
             hub,
+            hub_app: None,
             hub_token_file: None,
         }
     }
@@ -663,6 +679,7 @@ mod tests {
                 },
             },
             hub: "http://127.0.0.1:8787".into(),
+            hub_app: None,
             token_file: "/data/token".into(),
             cwd: "project".into(),
             treer: "treer".into(),

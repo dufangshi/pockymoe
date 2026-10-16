@@ -33,10 +33,15 @@ pub(crate) struct Hub {
     token: String,
     pub hub_id: String,
     browser_operations: tokio::sync::Mutex<()>,
+    registry_operations: tokio::sync::Mutex<()>,
+    hub_identity: Mutex<Option<Binding>>,
     live: Mutex<HashMap<String, Binding>>,
     lifecycle: tokio::sync::Mutex<()>,
     creating: Mutex<HashSet<String>>,
     browser_commands: Mutex<browser::Commands>,
+    message_executable: Mutex<std::path::PathBuf>,
+    message_operations: tokio::sync::Mutex<()>,
+    message_workers: Mutex<HashSet<(String, String)>>,
 }
 #[derive(Clone)]
 struct Binding {
@@ -70,7 +75,7 @@ impl Scope {
     pub fn allows(&self, id: &str) -> bool {
         self.valid()
             && self.hub.state.get_thread(id).is_ok_and(|t| {
-                let root = t.root_thread_id.as_deref().unwrap_or(&t.id);
+                let thread = &t.id;
                 let bound = self
                     .hub
                     .state
@@ -78,7 +83,7 @@ impl Scope {
                     .with(|c| {
                         Ok(c.query_row(
                             "SELECT EXISTS(SELECT 1 FROM treer_bindings WHERE thread_id=?1)",
-                            [root],
+                            [thread],
                             |r| r.get::<_, bool>(0),
                         )?)
                     })
@@ -93,7 +98,7 @@ impl Scope {
                     &t.id,
                     t.root_thread_id.as_deref(),
                     bound,
-                    self.hub.creating.lock().unwrap().contains(root),
+                    self.hub.creating.lock().unwrap().contains(thread),
                 )
             })
     }
@@ -101,7 +106,10 @@ impl Scope {
         self.valid() && pockymoe_treer::event_allowed(value, |id| self.allows(id))
     }
 }
+mod app_page;
 mod browser;
+pub(crate) mod messages;
+mod registry;
 
 fn failure(status: StatusCode, code: &str) -> Response {
     (status, Json(json!({"error":code,"code":code}))).into_response()
@@ -170,6 +178,13 @@ fn attach_failure(error: &anyhow::Error) -> AttachReply {
 }
 impl Hub {
     pub(crate) fn new(state: Arc<Supervisor>, port: u16) -> anyhow::Result<Option<Arc<Self>>> {
+        Self::new_with_identity(state, port, registry::app_identity())
+    }
+    fn new_with_identity(
+        state: Arc<Supervisor>,
+        port: u16,
+        hub_identity: Option<Binding>,
+    ) -> anyhow::Result<Option<Arc<Self>>> {
         if !state.config.treer_enabled {
             return Ok(None);
         }
@@ -222,29 +237,16 @@ impl Hub {
             token.len() == 64 && hex::decode(&token).is_ok(),
             "invalid attach token"
         );
-        state.db.with(|c| {
-            c.execute_batch(include_str!("treer/schema.sql"))?;
-            // Upgrade hubs created before notification retry scheduling existed.
-            let columns = c.prepare("PRAGMA table_info(treer_submissions)")?
-                .query_map([], |row| row.get::<_, String>(1))?
-                .collect::<Result<Vec<_>, _>>()?;
-            for column in ["notification_attempts", "notification_next_attempt"] {
-                if !columns.iter().any(|existing| existing == column) {
-                    c.execute_batch(&format!(
-                        "ALTER TABLE treer_submissions ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0"
-                    ))?;
-                }
-            }
-            Ok(())
-        })?;
-        let bound = state.db.with(|c| {
-            let mut stmt = c.prepare("SELECT thread_id FROM treer_bindings")?;
+        registry::ensure_schema(&state)?;
+        state.db.with(|c| Ok(c.execute_batch(messages::SCHEMA)?))?;
+        let pending_bindings = state.db.with(|c| {
+            let mut stmt = c.prepare("SELECT t.id FROM threads t LEFT JOIN treer_registry r ON r.thread_id=t.id WHERE r.state IS NULL OR r.state!='hidden'")?;
             let ids = stmt
                 .query_map([], |r| r.get::<_, String>(0))?
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(ids)
         })?;
-        for id in bound {
+        for id in pending_bindings {
             state.pause_integration_thread(&id);
         }
         let hub_id = state.db.with(|c| {
@@ -260,6 +262,8 @@ impl Hub {
         })?;
         let hub = Arc::new(Self {
             hub_id,
+            registry_operations: Default::default(),
+            hub_identity: Mutex::new(hub_identity),
             browser_operations: Default::default(),
             state,
             port,
@@ -268,12 +272,29 @@ impl Hub {
             lifecycle: Default::default(),
             creating: Default::default(),
             browser_commands: Default::default(),
+            message_executable: Mutex::new("treer".into()),
+            message_operations: Default::default(),
+            message_workers: Default::default(),
         });
+        hub.state
+            .set_thread_host(Arc::new(registry::Registry::new(&hub)))?;
+        let weak = Arc::downgrade(&hub);
+        tokio::spawn(async move {
+            loop {
+                let Some(hub) = weak.upgrade() else { break };
+                hub.reconcile_registry().await;
+                drop(hub);
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            }
+        });
+        hub.state
+            .set_host_messaging(Arc::new(messages::Bridge(Arc::downgrade(&hub))));
         let weak = Arc::downgrade(&hub);
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                 let Some(hub) = weak.upgrade() else { break };
+                hub.start_message_workers();
                 hub.deliver_notifications().await;
             }
         });
@@ -348,8 +369,21 @@ impl Hub {
         let target = hello.thread_id.clone().or(saved);
         let created = target.is_none();
         let thread = if let Some(id) = target {
-            let thread = self.state.get_thread(&id)?;
-            anyhow::ensure!(thread.parent_thread_id.is_none(), "top_level_required");
+            self.state.get_thread(&id)?;
+            let existing: Option<String> = self.state.db.with(|c| {
+                Ok(c.query_row(
+                    "SELECT agent_id FROM treer_bindings WHERE thread_id=?1",
+                    [&id],
+                    |r| r.get(0),
+                )
+                .optional()?)
+            })?;
+            anyhow::ensure!(
+                existing
+                    .as_ref()
+                    .is_none_or(|agent| agent == &hello.agent_id),
+                "agent_thread_mismatch"
+            );
             anyhow::ensure!(
                 !self.live.lock().unwrap().values().any(|b| b.thread == id),
                 "thread_already_live"
@@ -383,7 +417,7 @@ impl Hub {
                     })
                 })?;
             self.state
-                .create_thread_with_cli_identity(
+                .create_attached_thread(
                     CreateThreadInput {
                         workspace_id: workspace.id,
                         title: create.title.clone(),
@@ -395,14 +429,14 @@ impl Hub {
                         parent_thread_id: None,
                     },
                     pockymoe_treer::identity_env(&hello.agent_id, &hello.treer),
+                    hello.agent_id.clone(),
                 )
                 .await?
                 .id
         };
         let now = now_rfc3339();
         let persisted=self.state.db.with(|c| { let tx=c.unchecked_transaction()?;
-            // Rebinding a detached thread to a different Agent retires its old mapping.
-            tx.execute("DELETE FROM treer_bindings WHERE thread_id=?1 AND agent_id!=?2",params![thread,hello.agent_id])?;
+            anyhow::ensure!(tx.query_row("SELECT agent_id FROM treer_bindings WHERE thread_id=?1", [&thread], |r| r.get::<_,String>(0)).optional()?.is_none_or(|agent| agent == hello.agent_id), "agent_thread_mismatch");
             tx.execute("INSERT INTO treer_bindings(thread_id,agent_id,created_at,last_instance_id,last_seen_at) VALUES(?1,?2,?3,?4,?3) ON CONFLICT(thread_id) DO UPDATE SET agent_id=excluded.agent_id,last_instance_id=excluded.last_instance_id,last_seen_at=excluded.last_seen_at",params![thread,hello.agent_id,now,hello.instance_id])?; tx.commit()?; Ok(()) });
         if let Err(error) = persisted {
             self.state.pause_integration_thread(&thread);
@@ -422,6 +456,7 @@ impl Hub {
             .unwrap()
             .insert(binding.agent.clone(), binding.clone());
         self.state.resume_integration_thread(&thread);
+        self.state.db.with(|c| { c.execute("INSERT INTO treer_registry(thread_id,state) VALUES(?1,'bound') ON CONFLICT(thread_id) DO UPDATE SET state='bound'", [&thread])?; Ok(()) })?;
         Ok((binding, created))
     }
     async fn detach(&self, binding: &Binding) {
@@ -506,6 +541,9 @@ pub(crate) async fn gate(
             next.run(request).await
         };
     };
+    if let Some(response) = app_page::route(&hub, &request) {
+        return response;
+    }
     if request.uri().path() == TREER_ATTACH_PATH {
         request.extensions_mut().insert(hub);
         return next.run(request).await;
@@ -661,6 +699,10 @@ async fn attach_loop(hub: Arc<Hub>, mut socket: WebSocket) {
             return;
         }
     };
+    let reconcile = hub.clone();
+    tokio::spawn(async move {
+        reconcile.reconcile_registry().await;
+    });
     let reply = AttachReply::Bound {
         thread_id: binding.thread.clone(),
         created,
@@ -687,6 +729,7 @@ async fn attach_loop(hub: Arc<Hub>, mut socket: WebSocket) {
         }
     }
     hub.detach(&binding).await;
+    hub.reconcile_registry().await;
 }
 async fn ais(Extension(scope): Extension<Scope>, request: Request) -> Response {
     if !scope.valid() {
@@ -758,7 +801,10 @@ async fn ais(Extension(scope): Extension<Scope>, request: Request) -> Response {
             }
             _ => {
                 if let Some(id) = path.strip_prefix("/v1/submissions/") {
-                    return match hub.submission(thread, id) {
+                    let Ok(id) = percent_encoding::percent_decode_str(id).decode_utf8() else {
+                        return failure(StatusCode::BAD_REQUEST, "invalid_submission_id");
+                    };
+                    return match hub.submission(thread, &id) {
                         Ok(Some(s)) => Json(json!({"submission":s})).into_response(),
                         Ok(None) => failure(StatusCode::NOT_FOUND, "not_found"),
                         Err(e) => map_failure(e),
@@ -769,7 +815,10 @@ async fn ais(Extension(scope): Extension<Scope>, request: Request) -> Response {
     }
     if method == axum::http::Method::DELETE {
         if let Some(id) = path.strip_prefix("/v1/queue/") {
-            return match hub.cancel(thread, id).await {
+            let Ok(id) = percent_encoding::percent_decode_str(id).decode_utf8() else {
+                return failure(StatusCode::BAD_REQUEST, "invalid_submission_id");
+            };
+            return match hub.cancel(thread, &id).await {
                 Ok(s) => Json(json!({"submission":s})).into_response(),
                 Err(e) => map_failure(e),
             };
@@ -874,7 +923,7 @@ impl Hub {
         let input: ThreadSendInput = serde_json::from_value(
             json!({"text":prompt.text,"delivery":delivery,"clientRequestId":key,"subject":hash}),
         )?;
-        let result = self.state.send_to_thread(thread, input)?;
+        let result = self.state.send_to_thread_locally(thread, input)?;
         let id = result["pendingSteerId"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("missing submission id"))?;
