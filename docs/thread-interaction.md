@@ -390,8 +390,14 @@ that started them. A thread's area grows with its turns (as 1 + √turns, so a l
 thread does not crowd out the rest). Its fill takes one of five light steps toward
 the accent by how long its turns ran in the last 24 hours (none, up to 10 minutes,
 an hour, three hours, more), light enough to read the title on; themes may set
-`--thread-map-heat`. A running thread breathes slowly (a still tint under reduced
-motion). A small mark names its agent: the theme's art for that agent where a pack
+`--thread-map-heat`. Running threads have their own color (orange; themes may set
+`--thread-map-live`): a ring and a pulse that rises quickly and fades slowly, a
+halo outside the tile and a glow in from its edge, so it shows on any fill (a still
+ring under reduced motion). Devices and workspaces with agents running inside take
+that color on their edge and in the dot by their count. A running thread, or one
+whose agent threads run, weighs at least as much as a long thread, so it and its
+workspace and device get room; a block too small for everything in it still shows
+the agents running there (up to four), with the rest counted under them. A small mark names its agent: the theme's art for that agent where a pack
 has it, else a colored monogram.
 
 A tile shows what its width and height leave room for, and leaves out the rest:
