@@ -281,8 +281,11 @@ up) the same line goes on with the rest; on a phone tapping the head opens it on
 one more line under it: the start time (tapping it adds the date), the model, shortened
 ("claude-opus-5-5" reads "opus 5.5", "gpt-6-astra" "6 astra"), with its reasoning
 effort, the combined output speed, and how many prompts were added while it worked.
-Tapping the speed shows the time to first token, prefill and decode speeds (see
-[account composer](account-composer-shortcuts.md)). A prompt added while the turn
+Tapping the speed shows how many model calls the turn made and the time to first
+token, prefill and decode speeds (see [account composer](account-composer-shortcuts.md)).
+While the turn works the head already shows the speed so far, from the model calls
+whose output has been reported; its details say so, and their call count includes
+the call in progress. A prompt added while the turn
 worked carries a merge mark and its time above it. Waiting for a wake and running
 background agents show as small moving marks (an hourglass, a bot with its count)
 whose wording is in their label.
