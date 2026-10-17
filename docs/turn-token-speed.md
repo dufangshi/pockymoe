@@ -19,7 +19,9 @@ still waiting to report tokens, the last confirmed rate stays visible rather tha
 dividing old tokens by that new wait. Before the first actual usage report, the
 UI displays `— tok/s`, never a character-count estimate.
 
-Finished turns use total output divided by confirmed response time. Unreported
+Finished turns use total output divided by confirmed response time. The turn head
+shows the same `averageOutputTokensPerSecond` while the turn works, so it covers only
+responses that have reported their tokens. Unreported
 idle tails after the last counter cannot dilute this value. Historical timing and
 the legacy trailing 60-second fields remain supported by the UI. Total tokens,
 price and speed stay inline; input/output/cache breakdowns live in price details.
