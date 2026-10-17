@@ -1,6 +1,7 @@
 import { useBrowserStateKey } from '../lib/browserStateScope';
 import { getLocale, translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   ArrowLeft,
   Bot,
@@ -443,7 +444,8 @@ function NativeSubagentsControl({ detail }: { detail: ThreadDetailDto }) {
         <Bot data-icon="agents" size={14} />
         {running > 0 && <span className="native-agents-running-count"><LoaderCircle size={11} aria-hidden="true" />{running}</span>}
       </button>
-      {open && (
+      {/* The panel floats over the page, never inside the bar or sheet that holds the button. */}
+      {open && createPortal(
         <div className="native-agents-overlay">
           <button
             className="native-agents-scrim"
@@ -611,7 +613,8 @@ function NativeSubagentsControl({ detail }: { detail: ThreadDetailDto }) {
               )}
             </div>
           </section>
-        </div>
+        </div>,
+        document.body,
       )}
     </>
   );

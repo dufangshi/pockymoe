@@ -253,12 +253,18 @@
   outline: 2px solid var(--theme-fg-muted);
   outline-offset: 2px;
 }
-@media (max-width: 640px) {
+/* Phones: a sheet rising from the bottom, like the other secondary windows. */
+@media (max-width: 639px) {
   .native-agents-overlay {
-    padding: 12px;
+    align-items: flex-end;
+    padding: 0;
   }
   .native-agents-dialog {
+    width: 100%;
     max-height: 88dvh;
+    border-bottom: 0;
+    border-radius: 18px 18px 0 0;
+    padding-bottom: env(safe-area-inset-bottom);
   }
   .native-agents-header {
     padding: 16px;

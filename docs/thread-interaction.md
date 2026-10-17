@@ -349,7 +349,9 @@ first, then running and unread), recent threads and New thread; notifications
 stay on the bell. More holds search, the shortcut star,
 Left-handed and the thread's sharing, automation and split controls; a row fixed
 at its bottom holds the thread map, the workspace drawer, Home, Back and Settings,
-so they show without scrolling. Dragging a sheet down from the top of its list
+so they show without scrolling. A window a tool in More opens (native subagents,
+automations, split view, sharing, export) rises as its own sheet over a scrim,
+never inside the tool grid. Dragging a sheet down from the top of its list
 closes it. The row stays while typing, right above the keyboard. On a phone the
 composer shows one line of a longer prompt until the prompt is focused; it then
 opens to its full height, also while a dictation or an IME's underlined candidates

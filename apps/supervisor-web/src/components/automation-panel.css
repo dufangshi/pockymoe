@@ -569,3 +569,19 @@ div.automation-rule-usage {
     padding-left: 4px;
   }
 }
+
+/* Phones: the panel rises from the bottom like the other secondary windows. */
+@media (max-width: 639px) {
+  .automation-panel.automation-panel {
+    top: auto;
+    bottom: 0;
+    left: 0;
+    width: 100vw;
+    max-width: none;
+    max-height: 88dvh;
+    translate: none;
+    border-bottom: 0;
+    border-radius: 18px 18px 0 0;
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+}

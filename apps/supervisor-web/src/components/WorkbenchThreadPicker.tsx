@@ -6,6 +6,7 @@ import {
   useRef,
   useState,
   type ReactNode,
+  type CSSProperties,
 } from 'react';
 import { createPortal } from 'react-dom';
 import {
@@ -73,11 +74,14 @@ export function WorkbenchThreadPicker(props: WorkbenchThreadPickerProps) {
   const [location, setLocation] = useState<Location>(null);
   const trigger = useRef<HTMLButtonElement>(null);
   const panel = useRef<HTMLDivElement>(null);
-  const [position, setPosition] = useState({
+  const [position, setPosition] = useState<CSSProperties>({
     top: 60,
     left: 12,
     maxHeight: 560,
   });
+  // On a phone the picker is a sheet rising from the bottom over a scrim, like
+  // the other secondary windows; elsewhere it hangs under its button.
+  const [sheet, setSheet] = useState(false);
   const titleId = useId();
   const catalog = useWorkbenchSplitCatalog(open, deviceId, workspaceId);
   const close = () => {
@@ -93,6 +97,12 @@ export function WorkbenchThreadPicker(props: WorkbenchThreadPickerProps) {
     const positionPanel = () => {
       const rect = trigger.current?.getBoundingClientRect();
       if (!rect) return;
+      if (window.innerWidth < 640) {
+        setSheet(true);
+        setPosition({ left: 0, right: 0, bottom: 0, width: '100%', maxHeight: 'min(80dvh, 640px)' });
+        return;
+      }
+      setSheet(false);
       const width = Math.min(372, window.innerWidth - 24);
       const top = Math.min(
         rect.bottom + 8,
@@ -306,13 +316,15 @@ export function WorkbenchThreadPicker(props: WorkbenchThreadPickerProps) {
       </button>
       {open &&
         createPortal(
+          <>
+          {sheet && <div className="workbench-thread-picker-scrim" aria-hidden="true" />}
           <div
             ref={panel}
             id={titleId + '-panel'}
             role="dialog"
             data-testid="workbench-thread-picker"
             aria-labelledby={titleId}
-            className="workbench-thread-picker-popover"
+            className={`workbench-thread-picker-popover${sheet ? ' is-sheet' : ''}`}
             style={position}
             onKeyDown={(event) => {
               if (event.key === 'Escape') {
@@ -537,7 +549,8 @@ export function WorkbenchThreadPicker(props: WorkbenchThreadPickerProps) {
                 </button>
               </footer>
             )}
-          </div>,
+          </div>
+          </>,
           document.body,
         )}
     </span>
