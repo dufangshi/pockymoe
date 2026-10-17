@@ -257,7 +257,7 @@ export function ModelPricingSettings() {
               <button
                 disabled={busy}
                 type="submit"
-                className="host-secondary-button rounded border px-3 py-2 text-xs"
+                className="relay-button-primary min-h-10 rounded-md px-4 text-xs font-semibold"
               >
                 {busy ? translate("settings.saving_56a228") : translate("settings.savePrices")}
               </button>
@@ -265,7 +265,7 @@ export function ModelPricingSettings() {
                 type="button"
                 disabled={busy}
                 onClick={() => setDraft(null)}
-                className="host-secondary-button rounded border px-3 py-2 text-xs"
+                className="host-secondary-button min-h-10 rounded-md border px-3 text-xs"
               >
                 {translate("settings.cancel")}</button>
               {!draft.isNew && draft.rates.custom && (

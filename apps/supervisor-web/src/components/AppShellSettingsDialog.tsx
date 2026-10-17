@@ -1032,6 +1032,17 @@ export function AppShellSettingsDialog({
                           error: null,
                         }))
                       }
+                      // A preference: leaving the field or pressing Enter saves it.
+                      onBlur={() => {
+                        const draft = workspaceSettingsState.devHomeDraft.trim();
+                        if (draft && workspaceSettings && draft !== workspaceSettings.devHome) void handleSaveWorkspaceSettings();
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
+                          event.preventDefault();
+                          void handleSaveWorkspaceSettings();
+                        }
+                      }}
                       placeholder="/Users/name/dev"
                       className="relay-input min-h-11 min-w-0 flex-1 rounded-md disabled:cursor-wait disabled:opacity-60"
                     />

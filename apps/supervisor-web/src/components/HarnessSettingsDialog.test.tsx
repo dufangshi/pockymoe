@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type {
   AgentCapabilitySnapshotDto,
@@ -307,20 +307,19 @@ describe('DeepSeek Harness plugin controls', () => {
   it('asks before /feedback uploads the session to DeepSeek', async () => {
     const commands = [{ name: 'feedback', description: 'Record feedback about this session', hint: '<text>' }];
     const runHarnessAction = vi.fn(async () => ({ result: { result: { kind: 'success', text: 'Feedback recorded' } }, harness: live({ commands }) }));
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
-    try {
-      panel(live({ commands }), runHarnessAction);
-      expect(await screen.findByText(/history to DeepSeek, unless DSH telemetry is turned off/)).toBeInTheDocument();
-      fireEvent.change(screen.getByRole('textbox', { name: 'Arguments for /feedback' }), { target: { value: 'great' } });
-      fireEvent.click(screen.getByRole('button', { name: 'Run /feedback' }));
-      expect(confirm).toHaveBeenCalledTimes(1);
-      expect(runHarnessAction).not.toHaveBeenCalled();
-      confirm.mockReturnValue(true);
-      fireEvent.click(screen.getByRole('button', { name: 'Run /feedback' }));
-      await waitFor(() => expect(runHarnessAction).toHaveBeenCalledWith({ kind: 'command', line: '/feedback great' }));
-    } finally {
-      confirm.mockRestore();
-    }
+    panel(live({ commands }), runHarnessAction);
+    expect(await screen.findByText(/history to DeepSeek, unless DSH telemetry is turned off/)).toBeInTheDocument();
+    fireEvent.change(screen.getByRole('textbox', { name: 'Arguments for /feedback' }), { target: { value: 'great' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Run /feedback' }));
+    // The app's own confirmation, not window.confirm.
+    const dialog = await screen.findByRole('dialog', { name: '/feedback' });
+    expect(dialog).toHaveTextContent(/history to DeepSeek/);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '/feedback' })).toBeNull());
+    expect(runHarnessAction).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Run /feedback' }));
+    fireEvent.click(within(await screen.findByRole('dialog', { name: '/feedback' })).getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(runHarnessAction).toHaveBeenCalledWith({ kind: 'command', line: '/feedback great' }));
   });
 
   it('opens the native console in a reserved tab and closes it when the address fails', async () => {

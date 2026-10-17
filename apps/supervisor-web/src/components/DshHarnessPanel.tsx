@@ -1,4 +1,5 @@
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
+import { confirmAsync } from '@pockymoe/thread-ui';
 import { useEffect, useState } from 'react';
 
 // Adapter data is metadata only: names and descriptions render as text.
@@ -164,11 +165,15 @@ function DshCommandRow({
     <li className="space-y-1 text-xs">
       <form
         className="flex items-center gap-2"
-        onSubmit={(event) => {
+        onSubmit={async (event) => {
           event.preventDefault();
-          if (UPLOAD_COMMANDS.has(command.name)
-            && !window.confirm(translate('settings.dshFeedbackConfirm'))) return;
-          onRun(`/${command.name}${args.trim() ? ` ${args.trim()}` : ''}`);
+          const line = `/${command.name}${args.trim() ? ` ${args.trim()}` : ''}`;
+          if (UPLOAD_COMMANDS.has(command.name) && !(await confirmAsync({
+            title: `/${command.name}`,
+            description: translate('settings.dshFeedbackConfirm'),
+            confirmLabel: translate('settings.dshFeedbackSend'),
+          }))) return;
+          onRun(line);
         }}
       >
         <span className="font-mono">/{command.name}</span>
