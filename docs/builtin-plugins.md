@@ -17,9 +17,9 @@ settings validation, declared actions, input validation and asynchronous action
 handler. Typed validation belongs to the plugin. Descriptors report availability;
 unavailable plugins cannot be enabled or invoked.
 
-Settings are device-local objects, stored under the plugin's own key. They must
-not contain credentials: use a reference to a private connection file instead.
-Personal/account and workspace configuration are not generic scopes in this API.
+Settings have device defaults and optional per-thread overrides. They must not
+contain credentials: reference a saved local connection instead. Account and
+workspace settings are not generic scopes in this API.
 
 ```text
 GET   /api/plugins
@@ -33,6 +33,52 @@ Settings reads and writes return `{revision, values}` with `Cache-Control:
 no-store`. A write replaces the object, validates it and increments the revision.
 An outdated revision returns HTTP 409; reload before saving again. Both settings
 routes use existing device owner authorization, not shared-thread access.
+
+## Thread scope convention
+
+Built-in descriptors advertise `capabilities.scopes: ["device", "thread"]`.
+The device enabled flag is the master switch. A thread's enabled override is
+`null` (inherit), `true` or `false`; it cannot enable an unavailable or globally
+disabled module. Missing overrides inherit device behavior. Settings are either
+`null` (inherit current device values) or a full validated object snapshot.
+Changing an unrelated device default does not patch a thread's custom snapshot.
+
+```text
+GET /api/threads/{thread}/plugins
+GET /api/threads/{thread}/plugins/{plugin}/settings
+PUT /api/threads/{thread}/plugins/{plugin}/settings
+    {"revision":0,"enabled":null,"values":null}
+```
+
+The list flattens `PluginDto`, with its `enabled` field resolved for the thread,
+and adds `globalEnabled`, `enabledOverride` and `settingsOverridden`. Settings
+return `{revision, globalRevision, enabled, values, effective:{enabled,values}}`.
+`effective.values` is always an object. Writes compare the thread revision and
+increment it, including reset-to-inherit writes, so stale requests cannot cross
+a reset. HTTP 409 requires a reload. `globalRevision` identifies the current
+device settings; it is separate from the thread's concurrency token.
+Deleting a thread also removes its plugin overrides, including direct-child
+deletion; other threads and device defaults remain intact.
+
+Thread-read access can fetch the plugin list for rendering. Settings reads and
+writes require thread control or device-owner access, because effective values
+can include private reading preferences or legacy local paths. Existing manual
+action authorization is unchanged. Shared access remains limited to its thread.
+
+The same resolved state controls panels, actions and managed hooks, not just the
+checkbox display. Updating a thread refreshes only its managed hooks. Device
+updates refresh affected threads without discarding overrides. Disabling a
+scope cancels unclaimed actions; claimed/running work may finish with the
+settings snapshot recorded when dispatch committed. Restoring inheritance does
+not replay completed turns.
+
+The shared UI offers one thread plugin button and a list of effective states.
+A plugin's existing settings contribution is reused with a scoped load/save
+adapter, rather than a second plugin-specific form. Scope keys include the
+device and thread; global management stays attached to the device provider.
+Settings controls never silently turn inherited effective values into custom
+snapshots. Historical derivative replies and action reports remain readable
+when future plugin processing is disabled. Read-only views cannot change scope.
 
 ## Actions and hooks
 
@@ -113,6 +159,6 @@ Modules can also provide `presentMessage` for an alternate reply body and
 `renderActionOutput` for readable execution reports. The message host retains
 its Markdown rendering, copy controls and original-body toggle; asynchronous
 validation can reject a derivative whose source no longer matches. Message
-presentation requires an enabled plugin. Historical action reports remain
-readable after disabling one. `PluginActionOutput` falls back to bounded JSON
+presentation can remain available for historical stored derivatives after
+disabling a plugin. Historical action reports also remain readable. `PluginActionOutput` falls back to bounded JSON
 for unknown output formats and retains raw output details for inspection.

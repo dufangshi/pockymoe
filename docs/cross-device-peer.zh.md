@@ -25,9 +25,10 @@ A 上的 agent ── pockymoe CLI ── loopback /api/cli (A supervisor)
 ## 3. 身份与开关
 
 - **relay device ID**：relay 在 `relay.connected` 中发送 `deviceId` 和（新增）`deviceName`。supervisor 记录在 `peer_link`，`relay_identity()` 返回。本地 `hosts.id` 保持不变；`/api/cli` 的 `info` 增加 `relayDeviceId`、`deviceName`。
-- **PeerCaller**（`crates/supervisor/src/auth.rs`）：`{device_id, device_name, user_id}`，只能由隧道根据 relay 写入的 `peer` 对象构造，作为请求 extension，与 `TrustedRelayForward` 同时存在。
+- **PeerCaller**（`crates/supervisor/src/auth.rs`）：`{device_id, device_name, user_id, shared_control}`，只能由隧道根据 relay 写入的 `peer` 对象构造，作为请求 extension，与 `TrustedRelayForward` 同时存在。`shared_control` 来自 `peer.sharedControl`；旧 relay 不发送时为 `None`（视为未知，行为不变），值不是布尔时整帧按无效身份拒绝。
 - **开关**：每台 device 独立，默认关闭。`Supervisor::peer_access_enabled()` / `set_peer_access(bool)`（已实现，KV `peer:settings`）。发出和接收都要求本机开启。Web/本机 owner 通过 `GET|PATCH /api/config/peer-access`（`{"enabled":bool}`）设置；CLI `pockymoe device access on|off` 只接受本机 machine credential（`CliCaller(None)`），thread 凭据只能查看。远端 device 无法修改开关（PeerCaller 只能访问 `/api/peer/*`）。
 - **隔离**：owner 可在 Devices 页隔离整台 device（只剩 `info` 可用，返回 `isolated:true`），或在 Workspaces 页隔离单个 workspace（`workspaces`/`list` 不再列出，读取、发送、创建和 `fs` 均被拒绝）。只限制入站，见 [agent 隔离](agent-isolation.md)。
+- **共享给他人操控的 device**：只要 device 上有一条有效（未撤销、未过期）的 share 或 access grant，让 owner 以外的用户能操控它的 agent（thread 权限 `control`，或可以新建 thread `can_create_threads`），它就不能访问同一 owner 的其他 device。只读的 share/grant 不算。原因：被共享者控制的 agent 与 supervisor 同属一个系统用户，能读取本机 machine credential 并自己打开 peer 开关，所以发起端的开关保护不了其他 device，规则必须在接收方向执行。只限制这台 device 作为**发起方**；其他 device 访问它仍只由它自己的开关和隔离决定。relay 是「是否共享操控」的唯一依据（§5 第 8 条），被攻破的 relay 可以隐瞒共享，但仍无法自己操控任何 device。Web 的 Devices 页在这样的 device 行上显示一个小图标说明原因。
 - **身份钉扎**：未绑定账户密钥的 A 首次与 B 握手时 TOFU 钉住 B 的 identity key（runtime KV `peer:pin:{relayDeviceId}` = `{"identityKey","fingerprint","pinnedAt"}`），之后变化即 `PeerError::IdentityChanged`。`pockymoe device trust DEVICE --reset`（machine credential）清除。已绑定的 A 改用设备证书核对 B，见 §17。
 
 ## 4. 隧道帧（relay ↔ supervisor）
@@ -45,14 +46,14 @@ relay → 发起方：
 ```json
 {"type":"peer.response","requestId":"<A 的 id>","payload":{"statusCode":200,"headers":{...},"body":"...","bodyEncoding":"base64"}}
 {"type":"peer.directory.result","requestId":"<A 的 id>",
- "devices":[{"deviceId":"...","name":"...","online":true,"self":false}]}
+ "devices":[{"deviceId":"...","name":"...","online":true,"self":false,"sharedControl":false}]}
 ```
 
 relay → 目标（沿用 `relay.request`，多一个只由 relay 写入的 `peer`）：
 
 ```json
 {"type":"relay.request","requestId":"<relay 新 uuid>","deviceId":"<B>","payload":{...},
- "peer":{"deviceId":"<A>","deviceName":"<A 的名字>","userId":"<owner>"}}
+ "peer":{"deviceId":"<A>","deviceName":"<A 的名字>","userId":"<owner>","sharedControl":false}}
 ```
 
 目标回复仍是 `relay.response`，relay 按自己的 requestId 映射回 A 的 `peer.response`。relay 自己产生的错误也用 `peer.response`，`statusCode` 为 4xx/5xx，`headers` 不含 `x-rcd-encrypted`，`body` 为 JSON 字符串 `{"code","message"}`：
@@ -63,6 +64,7 @@ relay → 目标（沿用 `relay.request`，多一个只由 relay 写入的 `pee
 | 目标离线 | 503 | `device_offline` |
 | 目标 30 s 内无响应 | 504 | `timeout` |
 | 路径/方法/明文规则不满足 | 403 | `peer_forbidden` |
+| 发起方共享给他人操控（§5 第 8 条） | 403 | `peer_source_shared` |
 | 请求体超过上限 | 413 | `payload_too_large` |
 | 发起方并发超过 32 | 429 | `busy` |
 
@@ -73,14 +75,16 @@ relay → 目标（沿用 `relay.request`，多一个只由 relay 写入的 `pee
 3. 除 `GET .../transport/key` 握手外必须带 `x-rcd-key`（即密文）；否则 403。
 4. 只转发这些 header：`content-type`、`accept`、`x-rcd-key`、`x-rcd-request`、`x-rcd-enc`、`x-rcd-sealed`、`x-rcd-peer-device`、`x-rcd-peer-signature`。丢弃 `x-rcd-resource`、浏览器签名头 `x-rcd-session`／`x-rcd-signature` 等其他头；两个 peer 头也只在 peer 帧上转发。`peer` 对象只由 relay 构造；浏览器路径永远不带 `peer`。
 5. `payload.body` 字符串 ≤ 8 MiB；每个发起方同时在途 ≤ 32；沿用全局 pending 上限。
-6. 目录：同 owner 的全部 device（含自己 `self:true`），`online` 取当前隧道连接。
+6. 目录：同 owner 的全部 device（含自己 `self:true`），`online` 取当前隧道连接，`sharedControl` 按第 8 条计算。
 7. `/supervisor/tunnel` 升级时把 WebSocket message/frame 上限提到 128 MiB。
+8. 发起方共享给他人操控（`peer::device_shared_for_control`：`relay_shares` 中 `thread_access='control'`，或 `relay_access_grants` 中 `thread_access='control'` 或 `can_create_threads=1`；`revoked_at IS NULL`、`expires_at` 为空或晚于现在、目标用户不是 device owner）时，relay 拒绝它的请求：403 `peer_source_shared`，message「This device is shared with other people who can control its agents, so your other devices do not accept its requests.」。只放行不能让它行动的三种请求：`GET /api/peer/transport/key`、`POST /api/peer/transport/certificate` 和 `POST /api/peer/connections/{id}/export`（导出还需要 owner 浏览器为这台 device 签发的单次授权，见[上游连接](upstream-connections.md)）。转发给目标的 `peer` 对象总带 `sharedControl`（布尔），由目标再检查一次（§6）。同一结果也作为 `sharedControl` 出现在 owner 的设备列表（`GET /relay/devices`、`/relay/portal` 的 `devices`）里。
 
 ## 6. Supervisor 入站规则（目标 B）
 
 - `relay.request` 带 `peer` 时，`forward_local` / `dispatch_*` 在 `TrustedRelayForward` 之外注入 `PeerCaller`。
 - `require_auth`：带 `PeerCaller` 的请求只能访问 `/api/peer/` 前缀；`/api/peer/` 前缀的请求必须带 `PeerCaller`（否则 403，包括 owner 浏览器）。`/api/cli` 规则不变。
 - 带 `PeerCaller` 的请求，除 `.../transport/key` 和 `.../transport/stream/...` 外必须是密文，否则 400。
+- `PeerCaller.shared_control == Some(true)` 时，`/api/peer/cli`（`info` 除外）和 `/api/peer/files/*` 返回 403 `peer_source_shared`，与隔离的检查位置相同；`None` 和 `false` 不受影响。
 - 绑定了账户密钥（严格模式）的 B 还要求有效的设备证书登记和 peer 签名，否则 401 `peer_certificate_required`；没有 relay peer 身份的 `/api/peer/*` 请求返回 403 `device_strict_mode`。见 §17。
 - 加密下载流对 `/api/peer/...` 路径的作用域是 `/api/peer`，续读路径为 `/api/peer/transport/stream/{id}?chunk=N`，从而仍满足 relay 的前缀规则。
 - 隧道客户端连接时同样把 message/frame 上限提到 128 MiB（`connect_async_with_config`）。
@@ -100,7 +104,7 @@ relay → 目标（沿用 `relay.request`，多一个只由 relay 写入的 `pee
 
 ## 9. 目标端 `/api/peer/cli`
 
-请求体与本地 `/api/cli` 相同（`{"operation", ...}`）。先检查 `PeerCaller` 存在、本机开关已开（否则 403 `peer_access_disabled`），再按白名单处理：
+请求体与本地 `/api/cli` 相同（`{"operation", ...}`）。先检查 `PeerCaller` 存在、本机开关已开（否则 403 `peer_access_disabled`），再按白名单处理；除 `info` 外还要求本机未隔离、发起方未共享给他人操控（§6）：
 
 | operation | 行为 |
 | --- | --- |
@@ -161,12 +165,12 @@ KV `peer:outbox:{id}`：
 
 - 只有 inbox/queue 的 `send` 且错误 `retryable()` 时进入 outbox，回执为 `{"delivery":"outboxed","outboxId",...}`；direct、steer、create 和其他错误直接失败。
 - 投递：每 5 s 扫描到期记录；先上传附件再发送；重试间隔 5 s、15 s、60 s、5 min，之后每 15 min。成功后删除记录及暂存目录。
-- 过期或遇到不可重试错误时删除，并在本机发件 thread（若存在）的 inbox 里放一条 kind `status` 的失败说明。
+- 过期或遇到不可重试错误时删除，并在本机发件 thread（若存在）的 inbox 里放一条 kind `status` 的失败说明。`peer_source_shared` 不可重试：直接发送时 CLI 立即报错，已在 outbox 里的记录下次投递时失败并通知发件 thread。共享给他人操控的 device 上的完成通知（§10）因此也送不回其他 device；发起方改用 `status`/`transcript` 查看。
 - runtime（§10 完成通知）只写记录，投递由 supervisor 的 worker 负责。
 
 ## 13. 文件（`/api/peer/files/*`，目标 B）
 
-都要求 `PeerCaller` 和开关已开。
+都要求 `PeerCaller` 和开关已开，本机未隔离，发起方未共享给他人操控。
 
 - `POST /uploads` `{threadId, name, size, sha256, uploadId?}` → `{uploadId, received, chunkSize: 4194304}`。`name` 取 basename，不得为空或含分隔符，长度 ≤ 255；`size` ≤ 1 GiB；`sha256` 为 64 位十六进制。带已有 `uploadId` 时返回当前 `received`，用于续传。暂存于 `{数据目录}/peer-uploads/{uploadId}.part|.json`；超过 24 h 未提交的清理。
 - `PUT /uploads/{id}?offset=N`（原始字节，≤ chunkSize）：`offset == received` 才追加，否则 409 并返回当前 `received`。
@@ -176,14 +180,14 @@ KV `peer:outbox:{id}`：
 
 ## 14. 安全清单
 
-- relay：同 owner、前缀、密文、header 白名单、不信任设备提供的 `peer`、体积与并发上限。
-- supervisor：`PeerCaller` 只来自 relay 帧；`PeerCaller` ⇔ `/api/peer/*`；两端开关；操作白名单；路径限定 workspace；上传只落在 thread incoming 目录；大小与哈希校验；远程发件人由服务端填写；prompt 头标明远程来源。
+- relay：同 owner、前缀、密文、header 白名单、不信任设备提供的 `peer`、体积与并发上限、拒绝共享给他人操控的发起方。
+- supervisor：`PeerCaller` 只来自 relay 帧；`PeerCaller` ⇔ `/api/peer/*`；两端开关；拒绝 `sharedControl:true` 的发起方；操作白名单；路径限定 workspace；上传只落在 thread incoming 目录；大小与哈希校验；远程发件人由服务端填写；prompt 头标明远程来源。
 - 未绑定：钉扎 TOFU；身份变化即失败，只有 machine credential 能重置。
 - 已绑定：双方用同一账户密钥签名的设备证书互相认证（§17），relay 无法冒充任何一方。
 
 ## 15. 测试与验收
 
-- relay：鉴权（同 owner 通过；他人设备 404；离线 503；超时 504）、前缀与明文规则、header 过滤、响应路由回发起方、目录。
+- relay：鉴权（同 owner 通过；他人设备 404；离线 503；超时 504；共享给他人操控的发起方 403 `peer_source_shared`，只读共享、过期或撤销的不算）、前缀与明文规则、header 过滤、响应路由回发起方、目录。
 - 传输：Rust client ↔ `secure_transport` 服务端往返；签名错误；钉扎变化；streamNext 续读；时钟偏移；隧道 pending 关联与断线失败。
 - 目标端：`router().oneshot()` 注入 `TrustedRelayForward` + `PeerCaller` 测白名单、开关、远程发件人、去重、完成通知写 outbox；无 `PeerCaller` 访问 `/api/peer/*` 被拒；带 `PeerCaller` 访问其他路由被拒。
 - 文件：分片、续传、偏移冲突、哈希不符、名字清洗、路径越界、incoming 落点。

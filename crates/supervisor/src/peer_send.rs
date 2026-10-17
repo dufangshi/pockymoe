@@ -1077,6 +1077,89 @@ mod tests {
         assert!(weak.upgrade().is_none());
     }
     #[tokio::test]
+    async fn shared_source_refusals_are_permanent_and_mail_outbox_senders() {
+        use crate::{auth::PeerCaller, peer_link::tests::connected, tunnel::forward_local};
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let (_a_dir, a) = test_state();
+        let (_b_dir, b) = test_state();
+        a.set_peer_access(true).unwrap();
+        b.set_peer_access(true).unwrap();
+        let from = caller_thread(&a).await;
+        // Off: the relay refuses the request. On: a relay forwards it with the flag
+        // and the target refuses it.
+        let relay_forwards = Arc::new(AtomicBool::new(false));
+        let (link, mut outbound) = connected(&a, "caller");
+        let relay = {
+            let relay_forwards = relay_forwards.clone();
+            tokio::spawn(async move {
+                while let Some(frame) = outbound.recv().await {
+                    let payload = frame["payload"].clone();
+                    let handshake = payload["path"]
+                        .as_str()
+                        .unwrap()
+                        .starts_with("/api/peer/transport/key");
+                    let response = if handshake || relay_forwards.load(Ordering::SeqCst) {
+                        let caller = PeerCaller {
+                            device_id: "caller".into(),
+                            device_name: "Caller".into(),
+                            user_id: "owner".into(),
+                            shared_control: Some(true),
+                        };
+                        forward_local(&b, payload, Some(caller)).await
+                    } else {
+                        json!({"statusCode":403,"headers":{"content-type":"application/json"},"body":json!({"code":"peer_source_shared","message":"This device is shared with other people who can control its agents, so your other devices do not accept its requests."}).to_string()})
+                    };
+                    link.receive(&json!({"type":"peer.response","requestId":frame["requestId"],"payload":response}));
+                }
+            })
+        };
+        let target = Uuid::new_v4().to_string();
+        let shared = |error: &anyhow::Error| {
+            assert!(!retryable(error), "{error}");
+            assert!(
+                matches!(error.downcast_ref(), Some(peer_link::PeerError::Remote { status: 403, code, .. }) if code == "peer_source_shared"),
+                "{error}"
+            );
+            assert!(error.to_string().contains("can control its agents"));
+        };
+        for forwards in [false, true] {
+            relay_forwards.store(forwards, Ordering::SeqCst);
+            for input in [
+                json!({"operation":"send","deviceId":target,"threadId":Uuid::new_v4(),"text":"hello","delivery":"inbox"}),
+                json!({"operation":"send","deviceId":target,"threadId":Uuid::new_v4(),"text":"hello","delivery":"queue","kind":"task"}),
+                json!({"operation":"list","deviceId":target}),
+            ] {
+                shared(&intercept(&a, Some(&from), &input).await.unwrap_err());
+            }
+            // Not saved for retry: the agent sees the reason at once.
+            assert!(outbox_records(&a).unwrap().is_empty());
+            // Mail saved earlier (say, while offline) fails once and tells its sender.
+            let mut record = OutboxRecord::new(
+                target.clone(),
+                json!({"operation":"send","threadId":Uuid::new_v4(),"text":"queued","delivery":"inbox","fromThreadId":from,"clientRequestId":format!("saved-{forwards}")}),
+            );
+            record.next_attempt_at = Utc::now();
+            record.save(&a).unwrap();
+            process_outbox(&a, Utc::now(), |state, record| {
+                Box::pin(deliver(state, record))
+            })
+            .await
+            .unwrap();
+            assert!(outbox_records(&a).unwrap().is_empty());
+        }
+        let inbox = a.inbox_list(&from, &json!({})).unwrap();
+        let failures = inbox["messages"].as_array().unwrap();
+        assert_eq!(failures.len(), 2);
+        assert!(failures.iter().all(|m| m["kind"] == "status"
+            && m["preview"]
+                .as_str()
+                .unwrap()
+                .contains("peer_source_shared")));
+        relay.abort();
+        let _ = relay.await;
+    }
+
+    #[tokio::test]
     async fn strict_peers_send_read_files_and_deliver_offline_outbox_with_fresh_signatures() {
         use crate::{
             auth::PeerCaller, owner_trust::tests::bound_peer, peer_link::tests::connected,
@@ -1115,6 +1198,7 @@ mod tests {
                                 device_id: "caller".into(),
                                 device_name: "Caller".into(),
                                 user_id: "owner".into(),
+                                shared_control: None,
                             }),
                         )
                         .await
@@ -1137,6 +1221,7 @@ mod tests {
                             device_id: "target".into(),
                             device_name: "Target".into(),
                             user_id: "owner".into(),
+                            shared_control: None,
                         }),
                     )
                     .await;

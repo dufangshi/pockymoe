@@ -215,6 +215,7 @@ async fn certified_peer_sync_is_encrypted_and_does_not_apply_harness() {
                     device_id: peer_id.clone(),
                     device_name: "Target".into(),
                     user_id: "same-owner".into(),
+                    shared_control: None,
                 }),
             )
             .await;

@@ -23,9 +23,10 @@ import {
   Route,
   Routes,
   useLocation,
+  useParams,
 } from 'react-router-dom';
 import { useEffect, useLayoutEffect, useMemo, useState, type ReactNode } from 'react';
-import { PluginProvider, type PluginSettingsSnapshot, type UpstreamConnectionPickerProps } from '@pockymoe/thread-ui';
+import { PluginProvider, ThreadPluginScope, type PluginSettingsSnapshot, type UpstreamConnectionPickerProps } from '@pockymoe/thread-ui';
 
 import type {
   AgentBackendIdDto,
@@ -71,6 +72,7 @@ import {
   readSelectedRelayDeviceId,
   loadPluginSettings,
   savePluginSettings,
+  threadPluginAdapter,
   fetchRelaySession,
   importPlugin,
   login,
@@ -100,6 +102,7 @@ function RoutePluginProvider({ children }: { children: ReactNode }) {
       importPlugin: (input: ImportPluginInput) => importPlugin(input, deviceId),
       updatePlugin: (id: string, input: UpdatePluginInput) => updatePlugin(id, input, deviceId),
       deletePlugin: (id: string) => deletePlugin(id, deviceId),
+      threads: threadPluginAdapter(deviceId),
       connections: {
         renderPicker: (props: UpstreamConnectionPickerProps) => (
           <ConnectionPicker
@@ -116,6 +119,19 @@ function RoutePluginProvider({ children }: { children: ReactNode }) {
     <PluginProvider key={deviceId ?? 'default'} adapter={adapter} builtinPlugins={builtinFrontendPlugins}>
       {children}
     </PluginProvider>
+  );
+}
+
+/**
+ * The opened conversation's plugin scope: its renderers, panels and actions follow
+ * its own switches. Keyed by device and thread, so switching never mixes settings.
+ */
+function ThreadRoutePluginScope({ children }: { children: ReactNode }) {
+  const { id = '', relayDeviceId } = useParams();
+  return (
+    <ThreadPluginScope key={`${relayDeviceId ?? 'local'}:${id}`} threadId={id}>
+      {children}
+    </ThreadPluginScope>
   );
 }
 
@@ -627,13 +643,13 @@ function SupervisorRoutes({
         <Route path="/threads" element={<ThreadsPage />} />
         <Route path="/threads/import" element={<ThreadImportPage />} />
         <Route path="/threads/new" element={<ThreadNewPage />} />
-        <Route path="/threads/:id" element={<ThreadDetailPage />} />
+        <Route path="/threads/:id" element={<ThreadRoutePluginScope><ThreadDetailPage /></ThreadRoutePluginScope>} />
         <Route path="/devices/:relayDeviceId/workspaces" element={<WorkspacesPage />} />
         <Route path="/devices/:relayDeviceId/workspaces/new" element={<WorkspaceNewPage />} />
         <Route path="/devices/:relayDeviceId/threads" element={<ThreadsPage />} />
         <Route path="/devices/:relayDeviceId/threads/import" element={<ThreadImportPage />} />
         <Route path="/devices/:relayDeviceId/threads/new" element={<ThreadNewPage />} />
-        <Route path="/devices/:relayDeviceId/threads/:id" element={<ThreadDetailPage />} />
+        <Route path="/devices/:relayDeviceId/threads/:id" element={<ThreadRoutePluginScope><ThreadDetailPage /></ThreadRoutePluginScope>} />
         <Route
           path="*"
           element={

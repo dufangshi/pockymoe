@@ -1,8 +1,9 @@
-# Thread text summary API
+# Text Context API (thread text summary)
 
 `GET /api/threads/{id}/summary` returns a compact, chronological extraction of a
-thread's **persisted public prose**. It is suitable as context for a future text
-polishing model. No model runs: text is not paraphrased or summarized, and the
+thread's **persisted public prose**. The human-facing name is **Text Context**
+(文字上下文); the existing `/summary` route remains unchanged. Content Quality
+uses the same extraction internally for reader-oriented rewrites. No model runs: text is not paraphrased or summarized, and the
 default request includes the entire stored public conversation without a hidden
 turn, message, or character cap.
 

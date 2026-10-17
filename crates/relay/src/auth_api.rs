@@ -794,6 +794,6 @@ async fn rotate_device_token(
         .await
         .retain(|_, client| client.device_id != id);
     Ok(Json(
-        json!({"token":token,"device":super::device_json(super::DeviceJsonInput {id:&id,owner_user_id:&user.id,name:&name,created_at:&created,connected:false,connected_at:None,last_heartbeat_at:None,token:None,token_preview:Some(&preview)})}),
+        json!({"token":token,"device":super::device_json(super::DeviceJsonInput {id:&id,owner_user_id:&user.id,name:&name,created_at:&created,connected:false,connected_at:None,last_heartbeat_at:None,token:None,token_preview:Some(&preview),shared_control:false})}),
     ))
 }

@@ -28,6 +28,24 @@ pub(crate) struct PeerCaller {
     pub device_id: String,
     pub device_name: String,
     pub user_id: String,
+    /// The relay's report that people the owner shares the calling device with can
+    /// control its agents; `None` from relays that predate the rule.
+    pub shared_control: Option<bool>,
+}
+
+impl PeerCaller {
+    /// A device someone else can control does not reach the owner's other devices.
+    /// The relay refuses these requests first; this repeats the check on the target.
+    pub(crate) fn ensure_source_private(&self) -> Result<(), crate::http::ApiErr> {
+        if self.shared_control == Some(true) {
+            return Err(crate::http::err(
+                axum::http::StatusCode::FORBIDDEN,
+                "peer_source_shared",
+                "This device is shared with other people who can control its agents, so your other devices do not accept its requests.",
+            ));
+        }
+        Ok(())
+    }
 }
 const DEFAULT_SESSION_TTL_SECONDS: i64 = 60 * 60 * 24 * 7;
 
@@ -542,6 +560,7 @@ mod tests {
             device_id: "remote-device".into(),
             device_name: "Remote device".into(),
             user_id: "owner".into(),
+            shared_control: None,
         }
     }
     #[tokio::test]

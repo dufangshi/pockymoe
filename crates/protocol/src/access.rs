@@ -196,6 +196,13 @@ pub fn shared_thread_path_allowed(
             _ => false,
         };
     }
+    if automation.first() == Some(&"plugins") {
+        return match (method, automation.as_slice()) {
+            ("GET", ["plugins"]) => true,
+            ("GET" | "PUT", ["plugins", _, "settings"]) => control,
+            _ => false,
+        };
+    }
     if automation.first() == Some(&"commands") {
         // Command argv/output belong to device control access, not read-only shares.
         return control
@@ -704,6 +711,35 @@ mod tests {
                     method,
                     path
                 ));
+            }
+        }
+    }
+
+    #[test]
+    fn thread_plugin_scope_descriptors_are_readable_but_settings_require_control() {
+        for scope in ["thread", "device"] {
+            let read = shared(scope, "read", "none");
+            let control = shared(scope, "control", "none");
+            assert!(access_allows(&read, "GET", "/api/threads/root/plugins"));
+            for method in ["GET", "PUT"] {
+                let path = "/api/threads/root/plugins/pockymoe.content-quality/settings";
+                assert!(!access_allows(&read, method, path));
+                assert!(access_allows(&control, method, path));
+                if scope == "thread" {
+                    assert!(!access_allows(
+                        &control,
+                        method,
+                        "/api/threads/other/plugins/pockymoe.content-quality/settings"
+                    ));
+                }
+            }
+            for path in [
+                "/api/threads/root/plugins/p/settings/extra",
+                "/api/threads/root/plugins/p/arbitrary",
+                "/api/plugins/p/settings",
+            ] {
+                assert!(!access_allows(&control, "GET", path));
+                assert!(!access_allows(&control, "PUT", path));
             }
         }
     }

@@ -34,7 +34,7 @@ import {
 import {
   PathChip,
   PhoneHandChoice,
-  usePlugins,
+  useDevicePlugins,
   PluginSettingsButton,
   SettingsPanels,
   SettingsDialog,
@@ -89,7 +89,8 @@ export function AppShellSettingsDialog({
 } = {}) {
   useI18n();
   const shellNav = useAppShellNav();
-  const plugins = usePlugins();
+  // Global plugin management, even when this dialog opens inside a conversation.
+  const plugins = useDevicePlugins();
   const [pluginImportDraft, setPluginImportDraft] = useState('');
   const [pluginImportState, setPluginImportState] = useState<{
     busy: boolean;

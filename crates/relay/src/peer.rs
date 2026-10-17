@@ -2,12 +2,14 @@ use super::*;
 
 pub(super) const MAX_IN_FLIGHT: usize = 32;
 const MAX_BODY: usize = 8 * 1024 * 1024;
+const SOURCE_SHARED_MESSAGE: &str = "This device is shared with other people who can control its agents, so your other devices do not accept its requests.";
 
 pub(super) struct Caller {
     pub device_id: String,
     pub connection_id: Uuid,
     device_name: String,
     user_id: String,
+    shared_control: bool,
 }
 
 impl Caller {
@@ -15,8 +17,49 @@ impl Caller {
         json!({
             "deviceId": self.device_id,
             "deviceName": self.device_name,
-            "userId": self.user_id
+            "userId": self.user_id,
+            "sharedControl": self.shared_control
         })
+    }
+}
+
+/// Whether someone other than the owner can drive agents on the device: an active
+/// share or access grant with thread control or permission to create threads.
+/// Read-only shares and grants do not count. Such a device cannot reach the
+/// owner's other devices (docs/cross-device-peer.zh.md §5).
+pub(super) fn device_shared_for_control(conn: &Connection, device_id: &str) -> bool {
+    conn.query_row(
+        "SELECT EXISTS(
+           SELECT 1 FROM relay_shares s JOIN relay_devices d ON d.id=s.device_id
+           WHERE s.device_id=?1 AND s.target_user_id<>d.owner_user_id
+             AND s.revoked_at IS NULL AND (s.expires_at IS NULL OR s.expires_at>?2)
+             AND s.thread_access='control'
+           UNION ALL
+           SELECT 1 FROM relay_access_grants g JOIN relay_devices d ON d.id=g.device_id
+           WHERE g.device_id=?1 AND g.target_user_id<>d.owner_user_id
+             AND g.revoked_at IS NULL AND (g.expires_at IS NULL OR g.expires_at>?2)
+             AND (g.thread_access='control' OR g.can_create_threads=1))",
+        params![device_id, now_rfc3339()],
+        |row| row.get(0),
+    )
+    // Fail closed: an unreadable answer must not open the owner's other devices.
+    .unwrap_or(true)
+}
+
+/// Requests a device shared for control may still send, because none of them lets
+/// it act: the key handshake and certificate registration carry no command, and a
+/// credential export needs a single-use authorization the owner's browser issued.
+fn shared_source_allowed(method: &str, pathname: &str) -> bool {
+    match method {
+        "GET" => pathname == "/api/peer/transport/key",
+        "POST" => {
+            pathname == "/api/peer/transport/certificate"
+                || pathname
+                    .strip_prefix("/api/peer/connections/")
+                    .and_then(|rest| rest.strip_suffix("/export"))
+                    .is_some_and(|id| !id.is_empty() && !id.contains('/'))
+        }
+        _ => false,
     }
 }
 
@@ -33,6 +76,14 @@ impl Failure {
             status: StatusCode::FORBIDDEN,
             code: "peer_forbidden",
             message: "peer request is not allowed",
+        }
+    }
+
+    fn source_shared() -> Self {
+        Self {
+            status: StatusCode::FORBIDDEN,
+            code: "peer_source_shared",
+            message: SOURCE_SHARED_MESSAGE,
         }
     }
 
@@ -84,12 +135,17 @@ fn caller(conn: &Connection, device_id: &str, connection_id: Uuid) -> Result<Cal
                 connection_id,
                 device_name: row.get(0)?,
                 user_id: row.get(1)?,
+                shared_control: false,
             })
         },
     )
     .optional()
     .ok()
     .flatten()
+    .map(|caller| Caller {
+        shared_control: device_shared_for_control(conn, device_id),
+        ..caller
+    })
     .ok_or_else(Failure::forbidden)
 }
 
@@ -229,6 +285,15 @@ async fn request_with_timeout(
             caller
         };
         let payload = request_payload(&frame["payload"])?;
+        let path = payload["path"].as_str().unwrap_or_default();
+        if caller.shared_control
+            && !shared_source_allowed(
+                payload["method"].as_str().unwrap_or_default(),
+                path.split('?').next().unwrap_or(path),
+            )
+        {
+            return Err(Failure::source_shared());
+        }
         forward_device_payload_with_timeout(
             state.clone(),
             target.to_string(),
@@ -268,7 +333,9 @@ pub(super) async fn directory(
                 .map_err(|_| Failure::forbidden())?;
             let rows = stmt
                 .query_map(params![caller.user_id], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    let id = row.get::<_, String>(0)?;
+                    let shared = device_shared_for_control(&conn, &id);
+                    Ok((id, row.get::<_, String>(1)?, shared))
                 })
                 .map_err(|_| Failure::forbidden())?;
             rows.collect::<std::result::Result<Vec<_>, _>>()
@@ -280,12 +347,13 @@ pub(super) async fn directory(
             let sockets = state.sockets.read().await;
             let devices: Vec<Value> = devices
                 .into_iter()
-                .map(|(id, name)| {
+                .map(|(id, name, shared_control)| {
                     json!({
                         "deviceId": id,
                         "name": name,
                         "online": sockets.contains_key(&id),
-                        "self": id == device_id
+                        "self": id == device_id,
+                        "sharedControl": shared_control
                     })
                 })
                 .collect();
@@ -572,10 +640,10 @@ mod tests {
         assert_eq!(
             directory["devices"],
             json!([
-                {"deviceId":"a", "name":"Device A", "online":true, "self":true},
-                {"deviceId":"b", "name":"Device B", "online":true, "self":false},
-                {"deviceId":"c", "name":"Device C", "online":true, "self":false},
-                {"deviceId":"offline", "name":"Offline", "online":false, "self":false}
+                {"deviceId":"a", "name":"Device A", "online":true, "self":true, "sharedControl":false},
+                {"deviceId":"b", "name":"Device B", "online":true, "self":false, "sharedControl":false},
+                {"deviceId":"c", "name":"Device C", "online":true, "self":false, "sharedControl":false},
+                {"deviceId":"offline", "name":"Offline", "online":false, "self":false, "sharedControl":false}
             ])
         );
         let mut first = frame("same-id", "b");
@@ -611,7 +679,7 @@ mod tests {
         assert_ne!(forwarded["requestId"], requests["c"]["requestId"]);
         assert_eq!(
             forwarded["peer"],
-            json!({"deviceId":"a", "deviceName":"Device A", "userId":"owner"})
+            json!({"deviceId":"a", "deviceName":"Device A", "userId":"owner", "sharedControl":false})
         );
         assert_eq!(
             forwarded["payload"]["headers"],
@@ -709,6 +777,205 @@ mod tests {
         )
         .await;
         assert_error(&receive(&mut rx).await, 403, "peer_forbidden");
+    }
+
+    fn share(conn: &Connection, id: &str, device: &str, target: &str, access: &str) {
+        conn.execute(
+            "INSERT INTO relay_shares
+             (id,owner_user_id,target_user_id,device_id,thread_id,thread_access,created_at)
+             VALUES (?1,'owner',?2,?3,'thread',?4,'now')",
+            params![id, target, device, access],
+        )
+        .unwrap();
+    }
+
+    fn grant(conn: &Connection, id: &str, scope: &str, access: &str, create: bool) {
+        conn.execute(
+            "INSERT INTO relay_access_grants
+             (id,owner_user_id,target_user_id,device_id,scope,thread_id,workspace_id,
+              thread_access,workspace_access,can_create_threads,created_at)
+             VALUES (?1,'owner','other','a',?2,'thread','workspace',?3,'write',?4,'now')",
+            params![id, scope, access, create],
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn device_shared_for_control_counts_only_live_controlling_access() {
+        let fixture = Fixture::new("peer-shared-control").await;
+        let conn = fixture.state.store.conn.lock().await;
+        let shared = |conn: &Connection| device_shared_for_control(conn, "a");
+        assert!(!shared(&conn));
+        // Read-only access, including workspace write, does not drive agents.
+        share(&conn, "read-share", "a", "other", "read");
+        for scope in ["thread", "workspace", "device"] {
+            grant(&conn, &format!("read-{scope}"), scope, "read", false);
+        }
+        assert!(!shared(&conn));
+        // A share to the owner and other devices' shares are irrelevant.
+        share(&conn, "own-share", "a", "owner", "control");
+        share(&conn, "other-device", "b", "other", "control");
+        assert!(!shared(&conn));
+        assert!(!device_shared_for_control(&conn, "c"));
+        assert!(device_shared_for_control(&conn, "b"));
+        share(&conn, "control-share", "a", "other", "control");
+        assert!(shared(&conn));
+        for (column, value) in [
+            ("revoked_at", "'now'"),
+            ("expires_at", "'2000-01-01T00:00:00Z'"),
+        ] {
+            conn.execute(
+                "UPDATE relay_shares SET revoked_at=NULL,expires_at=NULL WHERE id='control-share'",
+                [],
+            )
+            .unwrap();
+            assert!(shared(&conn));
+            conn.execute(
+                &format!("UPDATE relay_shares SET {column}={value} WHERE id='control-share'"),
+                [],
+            )
+            .unwrap();
+            assert!(!shared(&conn), "{column}");
+        }
+        conn.execute(
+            "UPDATE relay_shares SET expires_at='2999-01-01T00:00:00Z',revoked_at=NULL WHERE id='control-share'",
+            [],
+        )
+        .unwrap();
+        assert!(shared(&conn));
+        conn.execute("DELETE FROM relay_shares WHERE id='control-share'", [])
+            .unwrap();
+        for scope in ["thread", "workspace", "device"] {
+            grant(&conn, "control", scope, "control", false);
+            assert!(shared(&conn), "{scope} control");
+            conn.execute("DELETE FROM relay_access_grants WHERE id='control'", [])
+                .unwrap();
+        }
+        grant(&conn, "creator", "device", "read", true);
+        assert!(shared(&conn));
+        conn.execute(
+            "UPDATE relay_access_grants SET expires_at='2000-01-01T00:00:00Z' WHERE id='creator'",
+            [],
+        )
+        .unwrap();
+        assert!(!shared(&conn));
+        conn.execute(
+            "UPDATE relay_access_grants SET expires_at=NULL,revoked_at='now' WHERE id='creator'",
+            [],
+        )
+        .unwrap();
+        assert!(!shared(&conn));
+    }
+
+    #[tokio::test]
+    async fn peer_requests_from_a_device_shared_for_control_are_refused() {
+        let fixture = Fixture::new("peer-shared-source").await;
+        share(
+            &*fixture.state.store.conn.lock().await,
+            "share",
+            "a",
+            "other",
+            "control",
+        );
+        let (a, mut a_rx) = fixture.socket("a").await;
+        let (b, mut b_rx) = fixture.socket("b").await;
+        let (_, mut c_rx) = fixture.socket("c").await;
+        for path in [
+            "/api/peer/cli",
+            "/api/peer/files/read?workspaceId=w&path=x",
+            "/api/peer/files/uploads",
+            "/api/peer/transport/stream/x?chunk=1",
+            "/api/peer/connections/id/export/extra",
+            "/api/peer/connections/id/other",
+        ] {
+            let mut request = frame(path, "b");
+            request["payload"]["path"] = json!(path);
+            request_with_timeout(
+                fixture.state.clone(),
+                "a".into(),
+                a,
+                request,
+                Duration::from_secs(1),
+            )
+            .await;
+            let response = receive(&mut a_rx).await;
+            assert_error(&response, 403, "peer_source_shared");
+            let body: Value =
+                serde_json::from_str(response["payload"]["body"].as_str().unwrap()).unwrap();
+            assert!(body["message"]
+                .as_str()
+                .unwrap()
+                .contains("can control its agents"));
+            assert!(b_rx.try_recv().is_err(), "{path}");
+        }
+        // Requests that cannot act still pass, and carry the flag to the target.
+        for (method, path) in [
+            ("GET", "/api/peer/transport/key?challenge=test"),
+            ("POST", "/api/peer/transport/certificate"),
+            ("POST", "/api/peer/connections/id/export"),
+        ] {
+            let mut request = frame(path, "b");
+            request["payload"]["method"] = json!(method);
+            request["payload"]["path"] = json!(path);
+            let task = fixture.request("a", a, request, Duration::from_secs(10));
+            let forwarded = receive(&mut b_rx).await;
+            assert_eq!(forwarded["peer"]["sharedControl"], true, "{path}");
+            fixture
+                .complete(&forwarded, json!({"statusCode":200}))
+                .await;
+            task.await.unwrap();
+            assert_eq!(receive(&mut a_rx).await["payload"]["statusCode"], 200);
+        }
+        // The rule only covers the shared device as a source.
+        let task = fixture.request("b", b, frame("to-shared", "a"), Duration::from_secs(10));
+        let forwarded = receive(&mut a_rx).await;
+        assert_eq!(forwarded["type"], "relay.request");
+        assert_eq!(forwarded["peer"]["sharedControl"], false);
+        fixture
+            .complete(&forwarded, json!({"statusCode":200}))
+            .await;
+        task.await.unwrap();
+        assert_eq!(receive(&mut b_rx).await["requestId"], "to-shared");
+        directory(&fixture.state, "b", b, json!({"requestId":"list"})).await;
+        let listed = receive(&mut b_rx).await;
+        let flags: HashMap<String, bool> = listed["devices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| {
+                (
+                    d["deviceId"].as_str().unwrap().to_string(),
+                    d["sharedControl"].as_bool().unwrap(),
+                )
+            })
+            .collect();
+        assert!(flags["a"]);
+        assert!(!flags["b"] && !flags["c"]);
+        let devices = crate::list_user_devices(&fixture.state, "owner").await;
+        let listed_a = devices.iter().find(|d| d["id"] == "a").unwrap();
+        assert_eq!(listed_a["sharedControl"], true);
+        assert!(devices
+            .iter()
+            .filter(|d| d["id"] != "a")
+            .all(|d| d["sharedControl"] == false));
+        // Revoking control restores access.
+        fixture
+            .state
+            .store
+            .conn
+            .lock()
+            .await
+            .execute("UPDATE relay_shares SET thread_access='read'", [])
+            .unwrap();
+        let task = fixture.request("a", a, frame("restored", "b"), Duration::from_secs(10));
+        let forwarded = receive(&mut b_rx).await;
+        assert_eq!(forwarded["peer"]["sharedControl"], false);
+        fixture
+            .complete(&forwarded, json!({"statusCode":200}))
+            .await;
+        task.await.unwrap();
+        assert_eq!(receive(&mut a_rx).await["requestId"], "restored");
+        assert!(c_rx.try_recv().is_err());
     }
 
     #[tokio::test]

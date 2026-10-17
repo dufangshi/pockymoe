@@ -22,6 +22,83 @@ pub struct PluginSettings {
     pub values: Value,
 }
 
+/// A full per-thread override. Persist even an empty override as a CAS tombstone.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ThreadPluginOverride {
+    pub revision: u64,
+    pub enabled: Option<bool>,
+    pub values: Option<Value>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EffectivePluginSettings {
+    pub enabled: bool,
+    pub values: Value,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadPluginSettings {
+    pub revision: u64,
+    pub global_revision: u64,
+    pub enabled: Option<bool>,
+    pub values: Option<Value>,
+    pub effective: EffectivePluginSettings,
+    #[serde(skip)]
+    global_enabled: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadPluginDto {
+    #[serde(flatten)]
+    pub plugin: PluginDto,
+    pub global_enabled: bool,
+    pub enabled_override: Option<bool>,
+    pub settings_overridden: bool,
+}
+
+fn validate_settings(plugin: &dyn BuiltinPlugin, values: &Value) -> Result<()> {
+    ensure!(
+        values.is_object() && serde_json::to_vec(values)?.len() <= 65536,
+        "plugin settings must be an object up to 64 KiB"
+    );
+    fn has_credentials(value: &Value) -> bool {
+        match value {
+            Value::Object(object) => object.iter().any(|(key, value)| {
+                let key: String = key
+                    .chars()
+                    .filter(|c| c.is_ascii_alphanumeric())
+                    .flat_map(char::to_lowercase)
+                    .collect();
+                matches!(
+                    key.as_str(),
+                    "apikey"
+                        | "accesstoken"
+                        | "refreshtoken"
+                        | "token"
+                        | "password"
+                        | "secret"
+                        | "clientsecret"
+                        | "authorization"
+                        | "credential"
+                        | "credentials"
+                        | "privatekey"
+                ) || has_credentials(value)
+            }),
+            Value::Array(values) => values.iter().any(has_credentials),
+            _ => false,
+        }
+    }
+    ensure!(
+        !has_credentials(values),
+        "plugin settings must not contain credentials; use a private connection reference"
+    );
+    plugin.validate_settings(values)
+}
+
 /// One accepted hook invocation. Settings are snapshotted before execution.
 pub struct PluginActionContext {
     pub supervisor: Arc<Supervisor>,
@@ -89,8 +166,14 @@ impl PluginHost {
         conn: &rusqlite::Connection,
         thread: &str,
         now: &str,
+        available: &std::collections::HashMap<String, bool>,
+        only_plugin: Option<&str>,
     ) -> Result<()> {
-        for plugin in &self.entries {
+        for plugin in self
+            .entries
+            .iter()
+            .filter(|p| only_plugin.is_none_or(|id| id == p.id()))
+        {
             let key = format!("builtin-plugin:{}", plugin.id());
             let existing: Option<(String, String, Option<String>)> = conn
                 .query_row(
@@ -99,31 +182,15 @@ impl PluginHost {
                     |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
                 )
                 .optional()?;
-            let enabled: Option<String> = conn
-                .query_row(
-                    "SELECT value FROM kv WHERE key=?1",
-                    [format!("plugin:{}:enabled", plugin.id())],
-                    |r| r.get(0),
-                )
-                .optional()?;
-            let saved: Option<String> = conn
-                .query_row(
-                    "SELECT value FROM kv WHERE key=?1",
-                    [format!("plugin:{}:settings", plugin.id())],
-                    |r| r.get(0),
-                )
-                .optional()?;
-            let settings = saved
-                .map(|s| serde_json::from_str::<PluginSettings>(&s))
-                .transpose()?
-                .map_or_else(|| plugin.default_settings(), |s| s.values);
-            let definition = if enabled
-                .as_deref()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(plugin.enabled_by_default())
-            {
+            let settings = self.thread_settings(
+                conn,
+                thread,
+                plugin.id(),
+                available.get(plugin.id()).copied().unwrap_or(false),
+            )?;
+            let definition = if settings.effective.enabled {
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    plugin.turn_automation(thread, &settings)
+                    plugin.turn_automation(thread, &settings.effective.values)
                 }))
                 .map_err(|_| anyhow::anyhow!("plugin turn hook panicked"))??
             } else {
@@ -153,22 +220,80 @@ impl PluginHost {
         Ok(())
     }
 
-    pub fn action_settings(
+    // Resolve descriptors before acquiring db: third-party descriptors may query Supervisor.
+    pub(crate) fn availability(
         &self,
         supervisor: &Supervisor,
-    ) -> std::collections::HashMap<String, PluginSettings> {
+    ) -> std::collections::HashMap<String, bool> {
         self.entries
             .iter()
-            .filter(|p| !p.actions().is_empty())
-            .filter(|p| supervisor.plugin_descriptor(p.as_ref()).enabled)
-            .filter_map(|p| match supervisor.plugin_settings(p.id()) {
-                Ok(settings) => Some((p.id().to_string(), settings)),
-                Err(error) => {
-                    tracing::warn!(plugin_id=p.id(), %error, "plugin settings unavailable");
-                    None
-                }
+            .map(|p| {
+                (
+                    p.id().to_string(),
+                    p.descriptor(supervisor).available != Some(false),
+                )
             })
             .collect()
+    }
+
+    pub(crate) fn thread_settings(
+        &self,
+        conn: &rusqlite::Connection,
+        thread: &str,
+        id: &str,
+        available: bool,
+    ) -> Result<ThreadPluginSettings> {
+        let plugin = self.get(id)?;
+        let read = |key: String| -> Result<Option<String>> {
+            Ok(conn
+                .query_row("SELECT value FROM kv WHERE key=?1", [key], |r| r.get(0))
+                .optional()?)
+        };
+        let global = read(format!("plugin:{id}:settings"))?
+            .map(|raw| serde_json::from_str::<PluginSettings>(&raw))
+            .transpose()?
+            .unwrap_or_else(|| PluginSettings {
+                revision: 0,
+                values: plugin.default_settings(),
+            });
+        let overlay = read(format!("thread:{thread}:plugin:{id}:settings"))?
+            .map(|raw| serde_json::from_str::<ThreadPluginOverride>(&raw))
+            .transpose()?
+            .unwrap_or_default();
+        let global_enabled = read(format!("plugin:{id}:enabled"))?
+            .and_then(|s| s.parse::<bool>().ok())
+            .unwrap_or(plugin.enabled_by_default());
+        Ok(ThreadPluginSettings {
+            revision: overlay.revision,
+            global_revision: global.revision,
+            enabled: overlay.enabled,
+            values: overlay.values.clone(),
+            global_enabled: available && global_enabled,
+            effective: EffectivePluginSettings {
+                enabled: available && global_enabled && overlay.enabled.unwrap_or(true),
+                values: overlay.values.unwrap_or(global.values),
+            },
+        })
+    }
+
+    pub(crate) fn sync_plugin_automations(
+        &self,
+        conn: &rusqlite::Connection,
+        id: &str,
+        now: &str,
+        available: &std::collections::HashMap<String, bool>,
+    ) -> Result<()> {
+        let threads = {
+            let mut q = conn.prepare("SELECT DISTINCT a.thread_id FROM automations a JOIN threads t ON t.id=a.thread_id WHERE a.request_id=?1 AND t.closed_at IS NULL")?;
+            let rows = q
+                .query_map([format!("builtin-plugin:{id}")], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            rows
+        };
+        for thread in threads {
+            self.sync_turn_automations(conn, &thread, now, available, Some(id))?;
+        }
+        Ok(())
     }
 
     pub fn register(&mut self, plugin: Arc<dyn BuiltinPlugin>) -> Result<()> {
@@ -208,7 +333,7 @@ impl Supervisor {
         timeout_seconds: u64,
         request: &str,
     ) -> Result<Value> {
-        self.validate_plugin_action(plugin, action, &input, timeout_seconds)?;
+        self.validate_thread_plugin_action(thread, plugin, action, &input, timeout_seconds)?;
         ensure!(
             !request.is_empty() && request.len() <= 96,
             "clientRequestId must be 1..96 bytes"
@@ -260,7 +385,9 @@ impl Supervisor {
         };
         let mut receipt: Value = serde_json::from_str(&receipt)?;
         let result: Result<Value> = async {
-            self.validate_plugin_action(&plugin_id, &action, &input, timeout_seconds)?;
+            // The running claim is the scope authorization boundary. Disabling a
+            // thread cancels due work; already claimed invocations may finish.
+            self.validate_plugin_action_input(&plugin_id, &action, &input, timeout_seconds)?;
             let settings: PluginSettings = serde_json::from_value(receipt["settings"].clone())?;
             let plugin = self.plugins.get(&plugin_id)?;
             plugin.validate_settings(&settings.values)?;
@@ -319,8 +446,12 @@ impl Supervisor {
         dto.source = Some("builtin".into());
         dto.enabled = dto.available != Some(false)
             && self.plugin_enabled(plugin.id(), plugin.enabled_by_default());
+        if !dto.capabilities.is_object() {
+            dto.capabilities = json!({});
+        }
         if let Some(caps) = dto.capabilities.as_object_mut() {
             caps.insert("actions".into(), json!(plugin.actions()));
+            caps.insert("scopes".into(), json!(["device", "thread"]));
         }
         dto
     }
@@ -349,11 +480,8 @@ impl Supervisor {
         settings: PluginSettings,
     ) -> Result<PluginSettings> {
         let plugin = self.plugins.get(id)?;
-        ensure!(
-            settings.values.is_object() && serde_json::to_vec(&settings.values)?.len() <= 65536,
-            "plugin settings must be an object up to 64 KiB"
-        );
-        plugin.validate_settings(&settings.values)?;
+        validate_settings(plugin.as_ref(), &settings.values)?;
+        let available = self.plugins.availability(self);
         self.db.with(|conn| {
             let tx = conn.unchecked_transaction()?;
             let key = format!("plugin:{id}:settings");
@@ -362,20 +490,91 @@ impl Supervisor {
             ensure!(revision == settings.revision, "conflict: plugin settings changed; reload before saving");
             let next = PluginSettings { revision: revision.checked_add(1).context("plugin settings revision exhausted")?, values: settings.values };
             tx.execute("INSERT INTO kv(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", params![key, serde_json::to_string(&next)?])?;
-            let threads = {
-                let mut query = tx.prepare("SELECT thread_id FROM automations WHERE request_id=?1")?;
-                let threads = query.query_map([format!("builtin-plugin:{id}")], |r| r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
-                threads
-            };
-            for thread in threads {
-                self.plugins.sync_turn_automations(&tx, &thread, &pockymoe_protocol::now_rfc3339())?;
-            }
+            self.plugins.sync_plugin_automations(&tx, id, &pockymoe_protocol::now_rfc3339(), &available)?;
             tx.commit()?;
             Ok(next)
         })
     }
 
-    pub(crate) fn validate_plugin_action(
+    pub fn list_thread_plugins(&self, thread: &str) -> Result<Vec<ThreadPluginDto>> {
+        self.get_thread(thread)?;
+        let descriptors = self.list_plugins();
+        self.db.with(|conn| {
+            descriptors
+                .into_iter()
+                .map(|mut plugin| {
+                    let settings = self.plugins.thread_settings(
+                        conn,
+                        thread,
+                        &plugin.id,
+                        plugin.available != Some(false),
+                    )?;
+                    plugin.enabled = settings.effective.enabled;
+                    Ok(ThreadPluginDto {
+                        plugin,
+                        global_enabled: settings.global_enabled,
+                        enabled_override: settings.enabled,
+                        settings_overridden: settings.values.is_some(),
+                    })
+                })
+                .collect()
+        })
+    }
+
+    pub fn thread_plugin_settings(&self, thread: &str, id: &str) -> Result<ThreadPluginSettings> {
+        self.get_thread(thread)?;
+        let available = self.get_plugin(id)?.available != Some(false);
+        self.db
+            .with(|conn| self.plugins.thread_settings(conn, thread, id, available))
+    }
+
+    pub fn save_thread_plugin_settings(
+        &self,
+        thread: &str,
+        id: &str,
+        input: ThreadPluginOverride,
+    ) -> Result<ThreadPluginSettings> {
+        self.get_thread(thread)?;
+        let plugin = self.plugins.get(id)?;
+        if let Some(values) = &input.values {
+            validate_settings(plugin.as_ref(), values)?;
+        }
+        let available = self.plugins.availability(self);
+        self.db.with(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            let exists: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM threads WHERE id=?1)", [thread], |r| r.get(0))?;
+            ensure!(exists, "thread not found");
+            let previous = self.plugins.thread_settings(&tx, thread, id, available[id])?;
+            ensure!(previous.revision == input.revision, "conflict: thread plugin settings changed; reload before saving");
+            let next = ThreadPluginOverride { revision: input.revision.checked_add(1).context("plugin settings revision exhausted")?, ..input };
+            tx.execute("INSERT INTO kv(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", params![format!("thread:{thread}:plugin:{id}:settings"), serde_json::to_string(&next)?])?;
+            let snapshot = self.plugins.thread_settings(&tx, thread, id, available[id])?;
+            let now = pockymoe_protocol::now_rfc3339();
+            if !snapshot.effective.enabled {
+                Self::cancel_pending_plugin_actions(&tx, Some(thread), id, &now)?;
+            }
+            self.plugins.sync_turn_automations(&tx, thread, &now, &available, Some(id))?;
+            tx.commit()?;
+            Ok(snapshot)
+        })
+    }
+
+    pub(crate) fn validate_thread_plugin_action(
+        &self,
+        thread: &str,
+        id: &str,
+        action: &str,
+        input: &Value,
+        timeout: u64,
+    ) -> Result<()> {
+        ensure!(
+            self.thread_plugin_settings(thread, id)?.effective.enabled,
+            "plugin is not enabled or unavailable for this thread"
+        );
+        self.validate_plugin_action_input(id, action, input, timeout)
+    }
+
+    fn validate_plugin_action_input(
         &self,
         id: &str,
         action: &str,
@@ -383,10 +582,6 @@ impl Supervisor {
         timeout: u64,
     ) -> Result<()> {
         let plugin = self.plugins.get(id)?;
-        ensure!(
-            self.get_plugin(id)?.enabled,
-            "plugin is not enabled or unavailable"
-        );
         ensure!(
             (1..=300).contains(&timeout),
             "timeoutSeconds must be 1..300"

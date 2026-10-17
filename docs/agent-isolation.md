@@ -30,6 +30,21 @@ already closed to other devices, so it reads as isolated. Turning device
 isolation off also turns peer access on; turning it on keeps peer access, so the
 device's own agents can still reach other devices.
 
+## Devices shared with other people
+
+Isolation closes a device to agents elsewhere. The opposite direction has a
+fixed rule: a device that someone else can control cannot reach your other
+devices. It applies while the device has a live share or access grant that lets
+another person control threads or create them; read-only sharing does not count.
+People you share with control agents that run as the Supervisor's OS user, so
+they could turn the device's own peer access on; the relay and your other
+devices therefore refuse its requests (`403 peer_source_shared`) whatever that
+switch says. Your other devices can still reach the shared device, subject to
+its peer access and isolation. The Devices page marks such a device with a small
+icon; revoke the control (or make it read-only) to lift the rule. The relay
+decides whether a device is shared; see the
+[cross-device contract](cross-device-peer.zh.md) §3 and §5.
+
 ## Who counts as inside
 
 The device decides from what it can verify:

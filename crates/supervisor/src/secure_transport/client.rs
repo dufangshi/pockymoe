@@ -553,6 +553,7 @@ mod tests {
             device_id: "caller".into(),
             device_name: "Caller".into(),
             user_id: "owner".into(),
+            shared_control: None,
         }
     }
     fn serve(

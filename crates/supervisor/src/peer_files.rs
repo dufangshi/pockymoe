@@ -83,6 +83,7 @@ fn require_peer(
         ));
     }
     state.ensure_peer_reaches_device().map_err(map_err)?;
+    caller.0.ensure_source_private()?;
     Ok(caller.0)
 }
 
@@ -1110,6 +1111,7 @@ mod tests {
             device_id: "source-device".into(),
             device_name: "Source Desk".into(),
             user_id: "owner".into(),
+            shared_control: None,
         }
     }
 

@@ -14,6 +14,9 @@
 .device-status-chip:hover { border-color: var(--theme-border); }
 .device-status-chip:focus-visible { outline: 2px solid var(--theme-accent-strong); outline-offset: 1px; }
 .device-status-chip[data-tone='ok'] { min-width: 24px; justify-content: center; padding: 2px; color: var(--status-success-fg); background: transparent; }
+/* Icon-only mark; the pseudo-element gives touch a 40px target. */
+.device-status-chip[data-tone='mark'] { position: relative; min-width: 24px; justify-content: center; padding: 2px; background: transparent; }
+.device-status-chip[data-tone='mark']::after { content: ''; position: absolute; inset: -8px; }
 .device-status-chip[data-tone='info'] { color: var(--status-info-fg); background: var(--status-info-bg); }
 .device-status-chip[data-tone='warn'] { color: var(--status-warning-fg); background: var(--status-warning-bg); }
 .device-status-chip[data-tone='error'] { color: var(--status-danger-fg); background: var(--status-danger-bg); }

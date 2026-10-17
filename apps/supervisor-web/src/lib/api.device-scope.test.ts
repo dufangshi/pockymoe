@@ -24,6 +24,7 @@ import {
   dshConsoleUrl,
   loadPluginSettings,
   savePluginSettings,
+  threadPluginAdapter,
   ApiError,
 } from './api';
 vi.mock('./portPreview', () => ({ openDevicePortPreview: vi.fn() }));
@@ -199,4 +200,26 @@ it('reuses the signed DSH console lease when opening its existing mapping', asyn
   expect(await dshConsoleUrl('thread', target, 'peer-device')).toBe('https://preview.invalid/console');
   expect(openDevicePortPreview).toHaveBeenCalledWith('peer-device', 'console-mapping', target.path, undefined, { leaseId: target.leaseId, expiresAt: target.expiresAt });
   expect(encryptedBrowserFetch).not.toHaveBeenCalled();
+});
+
+it('routes one conversation\'s plugin scope to its own device and keeps 409 conflicts', async () => {
+  const adapter = threadPluginAdapter('thread-device');
+  setSelectedRelayDeviceId('another-device');
+  await adapter.fetchPlugins('t 1');
+  await adapter.loadSettings('t 1', 'pockymoe.content-quality');
+  const input = { revision: 3, enabled: false, values: null };
+  await adapter.saveSettings('t 1', 'pockymoe.content-quality', input);
+  const calls = vi.mocked(encryptedBrowserFetch).mock.calls;
+  expect(calls.map(call => call[0])).toEqual([
+    '/relay/devices/thread-device/api/threads/t%201/plugins',
+    '/relay/devices/thread-device/api/threads/t%201/plugins/pockymoe.content-quality/settings',
+    '/relay/devices/thread-device/api/threads/t%201/plugins/pockymoe.content-quality/settings',
+  ]);
+  expect(calls[0]![1]?.cache).toBe('no-store');
+  expect(calls[2]![1]?.method).toBe('PUT');
+  expect(JSON.parse(calls[2]![1]?.body as string)).toEqual(input);
+  vi.mocked(encryptedBrowserFetch).mockResolvedValueOnce(new Response(JSON.stringify({ code: 'conflict', message: 'changed' }), { status: 409, headers: { 'content-type': 'application/json' } }));
+  const error = await adapter.saveSettings('t 1', 'pockymoe.content-quality', input).catch(caught => caught);
+  expect(error).toBeInstanceOf(ApiError);
+  expect((error as ApiError).statusCode).toBe(409);
 });

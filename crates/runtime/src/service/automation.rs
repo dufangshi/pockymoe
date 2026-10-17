@@ -376,7 +376,13 @@ impl Supervisor {
                 input,
                 timeout_seconds,
             } => {
-                self.validate_plugin_action(plugin_id, action, input, *timeout_seconds)?;
+                self.validate_thread_plugin_action(
+                    thread,
+                    plugin_id,
+                    action,
+                    input,
+                    *timeout_seconds,
+                )?;
             }
             Action::Prompt { text } => {
                 ensure!(
@@ -577,6 +583,19 @@ impl Supervisor {
     pub(crate) fn pause_thread_prompt_automations(&self, thread: &str, reason: &str) -> Result<()> {
         self.db.with(|c|{let tx=c.unchecked_transaction()?;let ids={let mut q=tx.prepare("SELECT id FROM automations WHERE thread_id=?1 AND state='enabled' AND json_extract(definition_json,'$.action.kind')='prompt'")?;let v=q.query_map([thread],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;v};let now=now_rfc3339();for id in ids {cancelled_pending(&tx,&id,&now)?;tx.execute("UPDATE automations SET state='paused',next_run_at=NULL,error=?2,updated_at=?3 WHERE id=?1",params![id,reason,now])?;}tx.commit()?;Ok(())})
     }
+    /// Materialize accepted occurrences before cancelling, so an off/on toggle
+    /// cannot resurrect an unclaimed manual action or an already observed event.
+    pub(crate) fn cancel_pending_plugin_actions(
+        c: &Connection,
+        thread: Option<&str>,
+        plugin: &str,
+        now: &str,
+    ) -> Result<()> {
+        prepare_runs(c, now, Some((thread, plugin)))?;
+        c.execute("UPDATE automation_runs SET state='cancelled',completed_at=?3,error='pluginDisabled' WHERE state='due' AND automation_id IN (SELECT id FROM automations WHERE ?1 IS NULL OR thread_id=?1) AND json_extract(definition_json,'$.action.kind')='pluginAction' AND json_extract(definition_json,'$.action.pluginId')=?2", params![thread,plugin,now])?;
+        Ok(())
+    }
+
     /// Deterministic clock seam for regressions; production calls with UTC now.
     pub async fn automation_tick(self: &Arc<Self>, now: &str) -> Result<()> {
         let _guard = self.automation_gate.lock().await;
@@ -586,12 +605,18 @@ impl Supervisor {
         {
             return Ok(());
         }
-        let plugins = self.plugins.action_settings(self);
+        let available = self.plugins.availability(self);
         let live = self.live.lock().await;
         let jobs = self.db.with(|c| {
             let tx = c.unchecked_transaction()?;
-            prepare_runs(&tx, now)?;
-            let jobs = dispatch_runs(&tx, now, &live.keys().cloned().collect(), &plugins)?;
+            prepare_runs(&tx, now, None)?;
+            let jobs = dispatch_runs(
+                &tx,
+                now,
+                &live.keys().cloned().collect(),
+                &self.plugins,
+                &available,
+            )?;
             tx.commit()?;
             Ok(jobs)
         })?;
@@ -686,19 +711,26 @@ fn create_run(
     c.execute("INSERT OR IGNORE INTO automation_runs(id,automation_id,occurrence_key,state,scheduled_at,observed_at,missed_count,definition_json,event_json,completed_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",params![Uuid::new_v4().to_string(),id,key,state,scheduled,now,missed,serde_json::to_string(d)?,e.to_string(),if state=="due"{None}else{Some(now)}])?;
     Ok(())
 }
-fn prepare_runs(c: &Connection, now: &str) -> Result<()> {
+fn prepare_runs(
+    c: &Connection,
+    now: &str,
+    plugin_scope: Option<(Option<&str>, &str)>,
+) -> Result<()> {
     let autos = {
-        let mut q=c.prepare("SELECT id,thread_id,definition_json,next_run_at,event_cursor FROM automations WHERE state='enabled'")?;
+        let mut q=c.prepare("SELECT id,thread_id,definition_json,next_run_at,event_cursor FROM automations WHERE state='enabled' AND (?1 IS NULL OR thread_id=?1) AND (?2 IS NULL OR (json_extract(definition_json,'$.action.kind')='pluginAction' AND json_extract(definition_json,'$.action.pluginId')=?2))")?;
         let v = q
-            .query_map([], |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, String>(2)?,
-                    r.get::<_, Option<String>>(3)?,
-                    r.get::<_, i64>(4)?,
-                ))
-            })?
+            .query_map(
+                params![plugin_scope.and_then(|s| s.0), plugin_scope.map(|s| s.1)],
+                |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                        r.get::<_, Option<String>>(3)?,
+                        r.get::<_, i64>(4)?,
+                    ))
+                },
+            )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         v
     };
@@ -840,8 +872,11 @@ fn prepare_runs(c: &Connection, now: &str) -> Result<()> {
             }
         }
     }
-    // A queued message removed explicitly in Settings must not be recreated.
-    c.execute("UPDATE automation_runs SET state='cancelled',completed_at=?1,error='queueRemoved' WHERE state='queued' AND pending_id NOT IN (SELECT id FROM thread_pending_steers)",[now])?;
+    // Only the regular worker performs device-wide queue reconciliation. A
+    // thread plugin settings write must not mutate another thread's runs.
+    if plugin_scope.is_none() {
+        c.execute("UPDATE automation_runs SET state='cancelled',completed_at=?1,error='queueRemoved' WHERE state='queued' AND pending_id NOT IN (SELECT id FROM thread_pending_steers)",[now])?;
+    }
     Ok(())
 }
 enum BackgroundJob {
@@ -852,7 +887,8 @@ fn dispatch_runs(
     c: &Connection,
     now: &str,
     live: &HashSet<String>,
-    plugins: &HashMap<String, crate::plugins::PluginSettings>,
+    plugins: &crate::plugins::PluginHost,
+    available: &HashMap<String, bool>,
 ) -> Result<Vec<BackgroundJob>> {
     let runs = {
         let mut q=c.prepare("SELECT r.id,r.automation_id,a.thread_id,r.definition_json,r.event_json,r.scheduled_at FROM automation_runs r JOIN automations a ON a.id=r.automation_id WHERE r.state='due' AND a.state='enabled' ORDER BY r.rowid LIMIT 64")?;
@@ -891,26 +927,29 @@ fn dispatch_runs(
             Action::PluginAction {
                 plugin_id, action, ..
             } => {
-                let enabled: Option<String> = c
-                    .query_row(
-                        "SELECT value FROM kv WHERE key=?1",
-                        [format!("plugin:{plugin_id}:enabled")],
-                        |r| r.get(0),
-                    )
-                    .optional()?;
-                let Some(settings) = plugins
-                    .get(plugin_id)
-                    .filter(|_| enabled.as_deref() != Some("false"))
-                else {
+                let snapshot = if let Some(available) = available.get(plugin_id) {
+                    Some(plugins.thread_settings(c, &thread, plugin_id, *available)?)
+                } else {
+                    None
+                };
+                let Some(snapshot) = snapshot.filter(|s| s.effective.enabled) else {
                     c.execute("UPDATE automation_runs SET state='cancelled',completed_at=?2,error='pluginDisabledOrUnavailable' WHERE id=?1", params![run,now])?;
                     continue;
+                };
+                let settings = crate::plugins::PluginSettings {
+                    revision: if snapshot.values.is_some() {
+                        snapshot.revision
+                    } else {
+                        snapshot.global_revision
+                    },
+                    values: snapshot.effective.values,
                 };
                 let (running, same): (i64, bool) = c.query_row("SELECT count(*),coalesce(max(json_extract(definition_json,'$.action.pluginId')=?1),0) FROM automation_runs WHERE state='running' AND json_extract(definition_json,'$.action.kind')='pluginAction'", [plugin_id], |r| Ok((r.get(0)?,r.get(1)?)))?;
                 let busy: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM thread_turns WHERE thread_id=?1 AND status IN ('inProgress','recovering')) OR EXISTS(SELECT 1 FROM thread_pending_steers WHERE thread_id=?1 AND delivery='continuation')", [&thread], |r| r.get(0))?;
                 if running >= 4 || same || live.contains(&thread) || status == "running" || busy {
                     continue;
                 }
-                c.execute("UPDATE automation_runs SET state='running',started_at=?2,attempt_count=attempt_count+1,receipt_json=?3 WHERE id=?1 AND state='due'", params![run,now,json!({"pluginId":plugin_id,"action":action,"settings":settings}).to_string()])?;
+                c.execute("UPDATE automation_runs SET state='running',started_at=?2,attempt_count=attempt_count+1,receipt_json=?3 WHERE id=?1 AND state='due'", params![run,now,json!({"pluginId":plugin_id,"action":action,"settings":settings,"settingsRevisions":{"thread":snapshot.revision,"global":snapshot.global_revision}}).to_string()])?;
                 jobs.push(BackgroundJob::Plugin(run));
             }
             Action::NotifyInbox {

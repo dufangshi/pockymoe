@@ -64,6 +64,10 @@ impl Supervisor {
             )?;
             tx.execute("DELETE FROM thread_history_items WHERE thread_id=?1", [id])?;
             tx.execute("DELETE FROM thread_turns WHERE thread_id=?1", [id])?;
+            tx.execute(
+                "DELETE FROM kv WHERE substr(key,1,length(?1))=?1",
+                [format!("thread:{id}:plugin:")],
+            )?;
             tx.execute("DELETE FROM threads WHERE id=?1", [id])?;
             tx.commit()?;
             Ok(root)

@@ -386,13 +386,21 @@ test('thread settings categories and nested dialogs stay usable on narrow screen
   });
   expect(response.ok()).toBeTruthy();
   const thread = await response.json();
-  await page.route('**/api/management/**', (route) =>
-    route.fulfill({
-      json: route.request().url().endsWith('harnesses')
+  await page.route('**/api/management/**', (route) => {
+    const url = route.request().url();
+    return route.fulfill({
+      json: url.endsWith('harnesses')
         ? [{ id: 'codex', name: 'OpenAI Codex', base: { installed: true } }]
-        : { profiles: [], active: {}, backups: [] },
-    }),
-  );
+        : url.endsWith('/management/connections')
+          ? {
+              connections: [],
+              bindings: {},
+              deviceId: null,
+              catalogAvailable: true,
+            }
+          : { profiles: [], active: {}, backups: [] },
+    });
+  });
   await page.goto(`/threads/${thread.id}`);
   await page
     .getByRole('button', { name: 'Open settings', exact: true })
@@ -403,10 +411,10 @@ test('thread settings categories and nested dialogs stay usable on narrow screen
   ).toBeVisible();
   await settings.getByRole('tab', { name: 'Upstreams', exact: true }).click();
   await settings
-    .getByRole('button', { name: 'Add upstream', exact: true })
+    .getByRole('button', { name: 'Add connection', exact: true })
     .click();
   const editor = page.getByRole('dialog', {
-    name: 'Add upstream',
+    name: 'Add connection',
     exact: true,
   });
   await expect(editor.getByLabel('Base URL')).toBeVisible();
