@@ -282,7 +282,7 @@ test('shared Claude families keep provider models, effort controls and consisten
     await expect(
       tabs.getByRole('button', { name: 'Claude coordinator: 3 agent threads' }),
     ).toBeVisible();
-    const recent = page.getByTestId('recent-chats');
+    const recent = page.getByTestId('workspace-threads');
     await expect(recent.locator('summary')).toContainText('3 agent threads');
     await tabs
       .getByRole('button', { name: 'Claude coordinator: 3 agent threads' })

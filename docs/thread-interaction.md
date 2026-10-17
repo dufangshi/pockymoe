@@ -354,7 +354,12 @@ thread's place in that row: one tap brings the other forward, and tapping the
 shown one opens the thread sheet.
 
 The workspace drawer shows the app's mark and close, **All workspaces**, the
-**Thread map**, shortcuts and recent conversations. Shortcuts keep the account's own order:
+**Thread map**, then shortcuts (folded until opened), **This workspace** and, from
+halfway down after a gap, recent conversations elsewhere; each half scrolls on its
+own. The desktop sidebar is laid out the same way. The tab bar and **This workspace**
+list the current workspace's threads with the agent threads its conversations
+started in other workspaces; an agent thread working here whose conversation lives
+elsewhere appears alone, without that conversation. Shortcuts keep the account's own order:
 drag one with the mouse, long-press and drag on touch, or press Alt+↑/↓ on a
 focused shortcut. The order is saved with the account (relay
 `PUT /relay/account/workbench/shortcuts`, `favoriteOrder` in the workbench

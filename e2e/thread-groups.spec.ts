@@ -51,7 +51,7 @@ test('agent tabs stay grouped after list refreshes and navigate through an uncli
   if (testInfo.project.name === 'mobile-chromium') {
     await page.getByRole('button', { name: 'Toggle shortcuts sidebar' }).click();
   }
-  const rootLink = page.getByTestId('recent-chats').locator(`a[href="/threads/${root.id}"]`);
+  const rootLink = page.getByTestId('workspace-threads').locator(`a[href="/threads/${root.id}"]`);
   const dot = rootLink.getByRole('img');
   await expect(dot).toBeVisible();
   await expect(dot).toHaveAttribute('data-status', 'agents-running');

@@ -102,6 +102,9 @@ export function useWorkbenchNavigation(
   const [readAt, setReadAt] = useState(Date.now());
   const [notificationDetails, setNotificationDetails] = useState<Record<string, { title: string; summary: string }>>({});
   const [notificationsOpened, setNotificationsOpened] = useState(0);
+  // Renames and deletions made from the sidebar, shown before the device's
+  // thread list catches up: a rename holds while the list keeps the old title.
+  const [localEdits, setLocalEdits] = useState<{ renamed: Record<string, { from: string; to: string }>; removed: string[] }>({ renamed: {}, removed: [] });
   const revision = useRef(0);
   const currentKey = `${deviceId ?? 'local'}:${routeThreadId ?? detail?.thread.id ?? ''}`;
   const current = useRef({ detail, deviceId });
@@ -443,19 +446,25 @@ export function useWorkbenchNavigation(
     return () => { alive = false; controller.abort(); };
   }, [notificationKey, notificationsOpened, relay]);
   const notifications = rawNotifications.map(n => ({ ...n, ...notificationDetails[n.id] }));
+  // The tab bar lists the current workspace's threads, with the agent threads its
+  // conversations started elsewhere. An agent thread here whose root lives in
+  // another workspace stands alone; its root and siblings stay in their own workspace.
+  const workspaceId = tabContext.detail?.thread.workspaceId;
   const workspaceRoots = new Set(tabContext.threads
-    .filter(thread => thread.workspaceId === tabContext.detail?.thread.workspaceId)
-    .map(thread => thread.rootThreadId ?? thread.id));
-  if (tabContext.detail) workspaceRoots.add(tabContext.detail.thread.rootThreadId ?? tabContext.detail.thread.id);
+    .filter(thread => thread.workspaceId === workspaceId && !thread.rootThreadId)
+    .map(thread => thread.id));
   const workspaceThreads = tabContext.threads
-      .filter(thread => workspaceRoots.has(thread.rootThreadId ?? thread.id))
+      .filter(thread => thread.workspaceId === workspaceId || thread.id === tabContext.detail?.thread.id
+        || workspaceRoots.has(thread.rootThreadId ?? ''))
+      .filter(thread => !localEdits.removed.includes(`${tabContext.deviceId ?? 'local'}:${thread.id}`))
       .slice()
       .sort((a, b) => (a.createdAt ?? '').localeCompare(b.createdAt ?? '') || a.id.localeCompare(b.id))
       .map(thread => {
         const key = `${tabContext.deviceId ?? 'local'}:${thread.id}`;
         const reference = snapshot.threads.find(r => referenceKey(r) === key);
+        const renamed = localEdits.renamed[key];
         return {
-          key, title: thread.title, subtitle: tabContext.detail?.workspace.label ?? '',
+          key, title: renamed?.from === thread.title ? renamed.to : thread.title, subtitle: tabContext.detail?.workspace.label ?? '',
           href: threadHref(thread.id, tabContext.deviceId), favorite: reference?.favorite ?? false,
           ...(thread.parentThreadId ? {parentKey: `${tabContext.deviceId ?? 'local'}:${thread.parentThreadId}`} : {}),
           ...(thread.rootThreadId ? {rootKey: `${tabContext.deviceId ?? 'local'}:${thread.rootThreadId}`} : {}),
@@ -547,10 +556,13 @@ export function useWorkbenchNavigation(
     onReorderShortcuts: (keys: string[]) => void reorderShortcuts(keys),
     onToggleThreadFavorite: (key: string) => toggleFavorite(key),
     onThreadRenamed: async (key: string, title: string) => {
+      const listed = tabContext.threads.find(thread => `${tabContext.deviceId ?? 'local'}:${thread.id}` === key);
+      if (listed) setLocalEdits(edits => ({ ...edits, renamed: { ...edits.renamed, [key]: { from: listed.title, to: title } } }));
       const target = snapshot.threads.find(t => referenceKey(t) === key);
       if (target) await save(undefined, false, { ...target, title });
     },
     onThreadRemoved: async (key: string) => {
+      setLocalEdits(edits => ({ ...edits, removed: [...edits.removed, key] }));
       const target = snapshot.threads.find(t => referenceKey(t) === key);
       if (relay && !target) return;
       ++revision.current;

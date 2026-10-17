@@ -79,10 +79,12 @@ test('cross-device recent chats preserve complete agent families and navigation 
     await page.goto(relay + href(records[0]!));
     await expect(page.getByRole('textbox', { name: 'Prompt' })).toBeVisible();
     await expect.poll(async () => (await api(relay, '/relay/account/workbench', 'GET', undefined, token)).threads.length).toBe(3);
-    const recent = page.getByTestId('recent-chats');
-    const family = recent.locator(':scope > div').filter({ has: page.locator(`a[href="${href(records[1]!)}"]`) });
+    // The current workspace's threads sit above the recent ones; a family moves
+    // between the two lists as the page switches devices.
+    const sidebar = page.locator('aside.matter-sidebar');
+    const family = sidebar.locator('.matter-thread-section > div').filter({ has: page.locator(`a[href="${href(records[1]!)}"]`) });
     await expect(family.locator('summary')).toHaveText('8 agent threads');
-    await expect(recent.locator('a')).toHaveCount(10);
+    await expect(sidebar.locator('.matter-thread-section a')).toHaveCount(10);
     await page.reload();
     await expect(family.locator('summary')).toHaveText('8 agent threads');
     await page.evaluate(() => {
@@ -90,11 +92,11 @@ test('cross-device recent chats preserve complete agent families and navigation 
       state.navNodes = ['.matter-topbar', '.matter-sidebar', '.matter-thread-tabs'].map(selector => document.querySelector(selector)!);
       state.blankNavigation = false;
       new MutationObserver(() => {
-        if (!document.querySelector('[data-testid="recent-chats"] a') || !document.querySelector('.matter-thread-tabs a')) state.blankNavigation = true;
+        if (!document.querySelector('.matter-sidebar .matter-thread-section a') || !document.querySelector('.matter-thread-tabs a')) state.blankNavigation = true;
       }).observe(document.querySelector('.matter-workbench')!, { childList: true, subtree: true });
     });
     for (const record of [records[1]!, records[0]!, records[1]!, records[0]!]) {
-      await page.getByTestId('recent-chats').locator(`a[href="${href(record)}"]`).click();
+      await sidebar.locator(`a[href="${href(record)}"]`).click();
       await expect(page).toHaveURL(relay + href(record));
       await expect(page.getByRole('textbox', { name: 'Prompt' })).toBeVisible();
       await expect(family.locator('summary')).toHaveText('8 agent threads');

@@ -239,6 +239,34 @@ describe('account thread navigation', () => {
     expect(result.current.workspaceThreads.map(t => t.key)).toEqual(['wsl:first', 'wsl:second']);
     unmount();
   });
+  it('keeps another workspace\'s thread family out of the tabs, even when one of its agent threads works here', async () => {
+    vi.mocked(request).mockResolvedValue({ threads: [], notifications: [] });
+    const detail = { thread: { id: 'here', workspaceId: 'elagente', title: 'Here', status: 'idle', createdAt: '2026-10-01' }, workspace: { label: 'ElAgente' } } as ThreadDetailDto;
+    const slack = { id: 'slack', workspaceId: 'slack', title: 'slack', status: 'idle', createdAt: '2026-10-02' } as ThreadDto;
+    const threads = [detail.thread, slack,
+      { ...slack, id: 'slack-worker', parentThreadId: 'slack', rootThreadId: 'slack', workspaceId: 'elagente', createdAt: '2026-10-03' } as ThreadDto,
+      { ...slack, id: 'slack-helper', parentThreadId: 'slack', rootThreadId: 'slack', createdAt: '2026-10-04' } as ThreadDto,
+      // An agent thread a conversation here started in another workspace stays in its family.
+      { ...slack, id: 'here-elsewhere', parentThreadId: 'here', rootThreadId: 'here', createdAt: '2026-10-05' } as ThreadDto];
+    const { result, unmount } = renderHook(() => useWorkbenchNavigation(detail, threads, 'wsl'));
+    await waitFor(() => expect(result.current.navigationReady).toBe(true));
+    expect(result.current.workspaceThreads.map(t => t.key)).toEqual(['wsl:here', 'wsl:slack-worker', 'wsl:here-elsewhere']);
+    unmount();
+  });
+  it('shows a rename or deletion made from the sidebar before the thread list catches up', async () => {
+    vi.mocked(request).mockResolvedValue({ threads: [], notifications: [] });
+    const detail = { thread: { id: 'here', workspaceId: 'w', title: 'Here', status: 'idle', createdAt: '2026-10-01' }, workspace: { label: 'W' } } as ThreadDetailDto;
+    const threads = [detail.thread, { ...detail.thread, id: 'old', title: 'Old name', createdAt: '2026-10-02' } as ThreadDto,
+      { ...detail.thread, id: 'gone', title: 'Gone', createdAt: '2026-10-03' } as ThreadDto];
+    const { result, rerender, unmount } = renderHook(({ list }) => useWorkbenchNavigation(detail, list, 'wsl'), { initialProps: { list: threads } });
+    await waitFor(() => expect(result.current.navigationReady).toBe(true));
+    await act(async () => { await result.current.onThreadRenamed('wsl:old', 'New name'); await result.current.onThreadRemoved('wsl:gone'); });
+    expect(result.current.workspaceThreads.map(t => t.title)).toEqual(['Here', 'New name']);
+    // A later rename elsewhere shows once the list has it.
+    rerender({ list: [detail.thread, { ...threads[1]!, title: 'Renamed elsewhere' }] });
+    expect(result.current.workspaceThreads.map(t => t.title)).toEqual(['Here', 'Renamed elsewhere']);
+    unmount();
+  });
   it('loads notification titles and reply previews using the notification device, even without a saved shortcut', async () => {
     const completed = '2026-09-19T14:00:00Z';
     const snapshot = { threads: [], notifications: [{ id: 'event', title: '1 completed', href: '/devices/mac/threads/review', occurredAt: completed }] };

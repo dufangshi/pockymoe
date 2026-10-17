@@ -22,20 +22,21 @@ test('workspace opens chat directly and deleting its last thread preserves an em
   await page.goto(`/threads/${first}`);
   await expect(page.getByRole('textbox', { name: 'Prompt' })).toBeVisible();
   await page.goto('/workspaces');
-  await page.locator(`a[href="/threads?workspaceId=${workspace.id}"]`).first().click();
+  // A workspace card opens its latest conversation directly.
+  await page.getByRole('link', { name: /^Direct workspace entry / }).first().click();
   await expect(page).toHaveURL(new RegExp(`/threads/${second}$`));
   await expect(page.getByRole('textbox', { name: 'Prompt' })).toBeVisible();
   await expect(page.getByText('Recent Threads', { exact: true })).toHaveCount(0);
   async function removeCurrent(title: string) {
     const sidebar = page.getByRole('button', { name: 'Toggle shortcuts sidebar' });
     if (testInfo.project.name === 'mobile-chromium' && await sidebar.getAttribute('aria-expanded') !== 'true') await sidebar.click();
-    const recent = page.getByTestId('recent-chats');
+    const recent = page.getByTestId('workspace-threads');
     await recent.getByRole('button', { name: `Actions for ${title}`, exact: true }).click();
     await page.getByRole('button', { name: 'Delete thread', exact: true }).click();
     await page.getByRole('dialog', { name: 'Delete thread?' }).getByRole('button', { name: 'Delete', exact: true }).click();
   }
   await removeCurrent('Background workspace conversation');
-  await expect(page.getByTestId('recent-chats').getByRole('button', { name: 'Actions for Background workspace conversation', exact: true })).toHaveCount(0);
+  await expect(page.getByTestId('workspace-threads').getByRole('button', { name: 'Actions for Background workspace conversation', exact: true })).toHaveCount(0);
   await expect(page).toHaveURL(new RegExp(`/threads/${second}$`));
   await removeCurrent('Second workspace conversation');
   await expect(page).toHaveURL(new RegExp(`/threads/${first}$`));

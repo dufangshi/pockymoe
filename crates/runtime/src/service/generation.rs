@@ -4,9 +4,16 @@
 //!
 //! Each model request is also split the way benchmarks do: the time to its first
 //! output (queueing, prefill and any thinking that does not stream), the uncached
-//! input it had to prefill in that time, and the output it streamed after that.
-//! A request is sent when the turn starts and whenever the last running tool
+//! input it had to prefill in that time, and how fast its answer streamed after
+//! that. A request is sent when the turn starts and whenever the last running tool
 //! returns; its first output is its first streamed text, thought or tool call.
+//!
+//! Only requests that visibly streamed are split. Many replies arrive in one burst
+//! (thinking that is not shown, then the tool call): their wait is the whole
+//! reply, not a first token, and their output has no stream to time. The decode
+//! counts the request's own answer tokens (its usage report, reasoning left out)
+//! over the time its answer streamed, never the turn's total, which may carry
+//! tokens of earlier requests reported late.
 use super::*;
 use std::collections::VecDeque;
 
@@ -32,33 +39,101 @@ struct Tracker {
     latest_ms: i64,
     latest_at: Option<i64>,
     request: Request,
+    /// The request before, until this one has output: a report arriving in
+    /// between is still its response's.
+    previous: Option<Request>,
+    /// Earlier requests' share of the split.
+    split: Split,
+    /// The latest per-request usage report, to tell a new one from a repeat.
+    report: Option<Report>,
+}
+
+/// A request's output must stream at least this long to be timed: chunks of a
+/// reply delivered at once land milliseconds apart.
+const MIN_STREAM_MS: i64 = 1000;
+
+/// One response's own usage: what the model read and wrote for this request.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(super) struct Report {
+    pub input: u64,
+    pub cached: u64,
+    pub output: u64,
+    pub reasoning: u64,
+}
+
+#[derive(Default, Clone, Copy)]
+struct Split {
     first_token_ms: i64,
     first_token_requests: u32,
+    prefill_ms: i64,
     prefill_tokens: u64,
     prefill_cached_tokens: u64,
     decode_tokens: u64,
     decode_ms: i64,
+    /// Requests whose reply arrived in one burst, left out of the split.
+    burst_requests: u32,
+}
+
+impl Split {
+    fn add(mut self, other: Split) -> Split {
+        self.first_token_ms += other.first_token_ms;
+        self.first_token_requests += other.first_token_requests;
+        self.prefill_ms += other.prefill_ms;
+        self.prefill_tokens += other.prefill_tokens;
+        self.prefill_cached_tokens += other.prefill_cached_tokens;
+        self.decode_tokens += other.decode_tokens;
+        self.decode_ms += other.decode_ms;
+        self.burst_requests += other.burst_requests;
+        self
+    }
 }
 
 /// The model request in flight.
 #[derive(Default)]
 struct Request {
     sent: Option<i64>,
+    /// Its first and latest output of any kind, thoughts included.
     first: Option<i64>,
     last: Option<i64>,
-    output: u64,
-    counted: bool,
+    /// When its answer (text or a tool call) started, and its latest chunk.
+    answer: Option<(i64, i64)>,
+    /// Its own usage report, when one arrived while it ran.
+    report: Option<Report>,
 }
 
 impl Request {
-    /// Output streamed after the first token, and over how long.
-    fn decode(&self) -> (u64, i64) {
-        match (self.first, self.last) {
-            (Some(first), Some(last)) if self.output > 0 && last > first => {
-                (self.output, last - first)
-            }
-            _ => (0, 0),
+    /// The request's share of the split; nothing until it has output. A burst is
+    /// only known once the request is over.
+    fn split(&self, done: bool) -> Split {
+        let (Some(sent), Some(first), Some(last)) = (self.sent, self.first, self.last) else {
+            return Split::default();
+        };
+        if last - first < MIN_STREAM_MS {
+            return Split {
+                burst_requests: done.into(),
+                ..Split::default()
+            };
         }
+        let mut split = Split {
+            first_token_ms: first - sent,
+            first_token_requests: 1,
+            ..Split::default()
+        };
+        if let Some(report) = self.report {
+            split.prefill_ms = first - sent;
+            split.prefill_tokens = report.input.saturating_sub(report.cached);
+            split.prefill_cached_tokens = report.cached.min(report.input);
+            // Reasoning is written before the answer starts (or streams as
+            // thoughts, which the answer's time leaves out).
+            if let Some((start, end)) = self
+                .answer
+                .filter(|(start, end)| end - start >= MIN_STREAM_MS)
+            {
+                split.decode_tokens = report.output.saturating_sub(report.reasoning);
+                split.decode_ms = end - start;
+            }
+        }
+        split
     }
 }
 
@@ -79,33 +154,40 @@ impl Tracker {
                 sent: Some(at),
                 ..Request::default()
             },
-            first_token_ms: 0,
-            first_token_requests: 0,
-            prefill_tokens: 0,
-            prefill_cached_tokens: 0,
-            decode_tokens: 0,
-            decode_ms: 0,
+            previous: None,
+            split: Split::default(),
+            report: None,
         }
     }
 
-    /// The model streamed something: text, a thought or a tool call.
-    fn output(&mut self, at: i64) {
+    /// The model streamed something: answer text or a tool call, or a thought.
+    fn output(&mut self, at: i64, answer: bool) {
         self.advance(at);
         if !self.tools.is_empty() || self.request.sent.is_none() {
             return;
         }
+        if let Some(previous) = self.previous.take() {
+            self.split = self.split.add(previous.split(true));
+        }
         self.request.first.get_or_insert(at);
         self.request.last = Some(at);
+        if answer {
+            let start = self.request.answer.map_or(at, |(start, _)| start);
+            self.request.answer = Some((start, at));
+        }
     }
 
     fn begin_request(&mut self, at: i64) {
-        let (tokens, ms) = self.request.decode();
-        self.decode_tokens += tokens;
-        self.decode_ms += ms;
-        self.request = Request {
-            sent: Some(at),
-            ..Request::default()
-        };
+        let request = std::mem::replace(
+            &mut self.request,
+            Request {
+                sent: Some(at),
+                ..Request::default()
+            },
+        );
+        if let Some(previous) = self.previous.replace(request) {
+            self.split = self.split.add(previous.split(true));
+        }
     }
 
     fn advance(&mut self, at: i64) {
@@ -142,24 +224,22 @@ impl Tracker {
         }
     }
 
-    /// `input` is the request's input and cached input tokens, when reported.
-    fn usage(&mut self, at: i64, output: u64, input: Option<(u64, u64)>) {
+    /// `output` is the turn's output so far; `report` the latest response's own
+    /// usage, when the harness reports one.
+    fn usage(&mut self, at: i64, output: u64, report: Option<Report>) {
         self.advance(at);
+        // A new report belongs to the request with output: this one, or the one
+        // before while this one has none yet.
+        if report.is_some() && report != self.report {
+            self.report = report;
+            if self.request.first.is_some() {
+                self.request.report = report;
+            } else if let Some(previous) = self.previous.as_mut() {
+                previous.report = report;
+            }
+        }
         if output <= self.output {
             return;
-        }
-        self.request.output += output - self.output;
-        if let (Some(sent), Some(first), false, Some((input, cached))) = (
-            self.request.sent,
-            self.request.first,
-            self.request.counted,
-            input,
-        ) {
-            self.request.counted = true;
-            self.first_token_ms += first - sent;
-            self.first_token_requests += 1;
-            self.prefill_tokens += input.saturating_sub(cached);
-            self.prefill_cached_tokens += cached.min(input);
         }
         let elapsed: i64 = self.pending.iter().map(|s| s.end - s.start).sum();
         let delta = output - self.output;
@@ -195,11 +275,15 @@ impl Tracker {
             recent_ms += ms;
             recent_tokens += span.tokens * ms as f64 / (span.end - span.start) as f64;
         }
-        let (request_tokens, request_ms) = self.request.decode();
-        let (decode_tokens, decode_ms) = (
-            self.decode_tokens + request_tokens,
-            self.decode_ms + request_ms,
-        );
+        let split = self
+            .split
+            .add(
+                self.previous
+                    .as_ref()
+                    .map(|previous| previous.split(true))
+                    .unwrap_or_default(),
+            )
+            .add(self.request.split(!active));
         json!({"outputTokens":self.output,"llmTimeMs":self.llm_ms,
             "averageTokensPerSecond":(self.llm_ms > 0 && self.output > 0).then(||self.output as f64 * 1000.0 / self.llm_ms as f64),
             "recentTokensPerSecond":(recent_ms > 0 && recent_tokens > 0.0).then(||recent_tokens * 1000.0 / recent_ms as f64),
@@ -210,14 +294,16 @@ impl Tracker {
             "latestOutputTokensPerSecond":self.latest_rate,
             "latestOutputTimeMs":self.latest_ms,
             "latestOutputMeasuredAt":self.latest_at.and_then(chrono::DateTime::from_timestamp_millis).map(|at|at.to_rfc3339()),
-            "firstTokenMs":(self.first_token_requests > 0).then(||self.first_token_ms as f64 / self.first_token_requests as f64),
-            "firstTokenRequests":self.first_token_requests,
-            "prefillTokens":self.prefill_tokens,
-            "prefillCachedTokens":self.prefill_cached_tokens,
-            "prefillTokensPerSecond":(self.first_token_ms > 0 && self.prefill_tokens > 0).then(||self.prefill_tokens as f64 * 1000.0 / self.first_token_ms as f64),
-            "decodeTokens":decode_tokens,
-            "decodeMs":decode_ms,
-            "decodeTokensPerSecond":(decode_ms > 0 && decode_tokens > 0).then(||decode_tokens as f64 * 1000.0 / decode_ms as f64)})
+            "splitMethod":"streamedRequests",
+            "firstTokenMs":(split.first_token_requests > 0).then(||split.first_token_ms as f64 / split.first_token_requests as f64),
+            "firstTokenRequests":split.first_token_requests,
+            "burstRequests":split.burst_requests,
+            "prefillTokens":split.prefill_tokens,
+            "prefillCachedTokens":split.prefill_cached_tokens,
+            "prefillTokensPerSecond":(split.prefill_ms > 0 && split.prefill_tokens > 0).then(||split.prefill_tokens as f64 * 1000.0 / split.prefill_ms as f64),
+            "decodeTokens":split.decode_tokens,
+            "decodeMs":split.decode_ms,
+            "decodeTokensPerSecond":(split.decode_ms > 0 && split.decode_tokens > 0).then(||split.decode_tokens as f64 * 1000.0 / split.decode_ms as f64)})
     }
 }
 
@@ -272,10 +358,16 @@ impl Supervisor {
                 .or_insert_with(|| Tracker::new(at));
             return Ok(());
         }
-        let (output, input) = if event.event_type == "runtime.usage.updated" {
-            let row = self.db.with(|conn| Ok(conn.query_row("SELECT json_extract(token_usage_json,'$.total.outputTokens'),json_extract(token_usage_json,'$.last.inputTokens'),json_extract(token_usage_json,'$.last.cachedInputTokens') FROM thread_turns WHERE thread_id=?1 AND id=?2", params![event.thread_id,turn], |row| Ok((row.get::<_,Option<u64>>(0)?,row.get::<_,Option<u64>>(1)?,row.get::<_,Option<u64>>(2)?))).optional()?))?;
-            let (output, input, cached) = row.unwrap_or((None, None, None));
-            (output, input.map(|input| (input, cached.unwrap_or(0))))
+        let (output, report) = if event.event_type == "runtime.usage.updated" {
+            let row = self.db.with(|conn| Ok(conn.query_row("SELECT json_extract(token_usage_json,'$.total.outputTokens'),json_extract(token_usage_json,'$.last.inputTokens'),json_extract(token_usage_json,'$.last.cachedInputTokens'),json_extract(token_usage_json,'$.last.outputTokens'),json_extract(token_usage_json,'$.last.reasoningOutputTokens') FROM thread_turns WHERE thread_id=?1 AND id=?2", params![event.thread_id,turn], |row| Ok((row.get::<_,Option<u64>>(0)?,row.get::<_,Option<u64>>(1)?,row.get::<_,Option<u64>>(2)?,row.get::<_,Option<u64>>(3)?,row.get::<_,Option<u64>>(4)?))).optional()?))?;
+            let (output, input, cached, last_output, reasoning) = row.unwrap_or_default();
+            let report = input.zip(last_output).map(|(input, output)| Report {
+                input,
+                cached: cached.unwrap_or(0),
+                output,
+                reasoning: reasoning.unwrap_or(0),
+            });
+            (output, report)
         } else {
             (None, None)
         };
@@ -301,7 +393,7 @@ impl Supervisor {
                 // Streamed text and thoughts only mark the request's output; they
                 // are too frequent to store a snapshot each.
                 "thread.output.delta" => {
-                    tracker.output(at);
+                    tracker.output(at, true);
                     return Ok(());
                 }
                 "thread.item.started"
@@ -310,7 +402,7 @@ impl Supervisor {
                         Some("agentMessage" | "reasoning")
                     ) =>
                 {
-                    tracker.output(at);
+                    tracker.output(at, event.payload["item"]["kind"] == "agentMessage");
                     return Ok(());
                 }
                 "thread.item.started" | "thread.item.completed" => {
@@ -338,13 +430,13 @@ impl Supervisor {
                     );
                     // The model writing a tool call is output of its request.
                     if running && !tracker.tools.contains(id) {
-                        tracker.output(at);
+                        tracker.output(at, true);
                     }
                     tracker.tool(at, id, running);
                 }
                 "runtime.usage.updated" => {
                     if let Some(output) = output {
-                        tracker.usage(at, output, input);
+                        tracker.usage(at, output, report);
                     }
                 }
                 "thread.turn.completed" => {
@@ -456,21 +548,30 @@ mod tests {
             "duplicate usage must not count twice"
         );
     }
+    fn report(input: u64, cached: u64, output: u64, reasoning: u64) -> Option<Report> {
+        Some(Report {
+            input,
+            cached,
+            output,
+            reasoning,
+        })
+    }
+
     #[test]
     fn requests_split_into_first_token_prefill_and_decode() {
-        // Sent at 0, first thought at 2s, tool call at 6s with 400 output tokens
+        // Sent at 0, answer streams from 2s, tool call at 6s with 400 output tokens
         // from 10k input (8k cached); the tool runs 10s, then the second request
         // streams from 17s to 21s for 200 more tokens on 3k uncached input.
         let mut t = Tracker::new(0);
-        t.output(2000);
-        t.output(4000);
-        t.output(6000);
+        t.output(2000, true);
+        t.output(4000, true);
+        t.output(6000, true);
         t.tool(6000, "edit", true);
-        t.usage(6500, 400, Some((10000, 8000)));
+        t.usage(6500, 400, report(10000, 8000, 400, 0));
         t.tool(16000, "edit", false);
-        t.output(17000);
-        t.output(21000);
-        t.usage(21500, 600, Some((13000, 10000)));
+        t.output(17000, true);
+        t.output(21000, true);
+        t.usage(21500, 600, report(13000, 10000, 200, 0));
         let s = t.snapshot(21500, false);
         assert_eq!(s["firstTokenRequests"], 2);
         assert_eq!(s["firstTokenMs"], 1500.0);
@@ -481,8 +582,64 @@ mod tests {
         assert_eq!(s["decodeMs"], 8000);
         assert_eq!(s["decodeTokensPerSecond"], 75.0);
         // A usage report repeated for the same request is not a new first token.
-        t.usage(21600, 600, Some((13000, 10000)));
+        t.usage(21600, 600, report(13000, 10000, 200, 0));
         assert_eq!(t.snapshot(21600, false)["firstTokenRequests"], 2);
+    }
+
+    #[test]
+    fn a_reply_that_arrives_in_one_burst_is_left_out_of_the_split() {
+        // Hidden thinking, then the thought summary and the tool call land 40 ms
+        // apart: the 5 s wait is the whole reply, and nothing streamed to time.
+        let mut t = Tracker::new(0);
+        t.output(5000, false);
+        t.output(5040, true);
+        t.tool(5040, "edit", true);
+        t.usage(5100, 800, report(20000, 15000, 800, 300));
+        t.tool(9000, "edit", false);
+        let s = t.snapshot(9000, true);
+        assert_eq!(s["burstRequests"], 1);
+        assert_eq!(s["firstTokenRequests"], 0);
+        assert_eq!(s["firstTokenMs"], Value::Null);
+        assert_eq!(s["prefillTokensPerSecond"], Value::Null);
+        assert_eq!(s["decodeTokensPerSecond"], Value::Null);
+    }
+
+    #[test]
+    fn decode_counts_the_requests_own_answer_not_the_turn_total() {
+        // The first request streams but is never reported on its own; the second
+        // one's report (450 out, 150 of them reasoning) comes with the turn total
+        // jumping by 1300. Its answer streamed from 10 s to 13 s.
+        let mut t = Tracker::new(0);
+        t.output(1000, true);
+        t.output(4000, true);
+        t.tool(4000, "read", true);
+        t.tool(8000, "read", false);
+        t.output(9000, false);
+        t.output(10000, true);
+        t.output(13000, true);
+        t.usage(13100, 1300, report(30000, 28000, 450, 150));
+        let s = t.snapshot(13100, false);
+        assert_eq!(s["firstTokenRequests"], 2);
+        assert_eq!(s["prefillTokens"], 2000);
+        assert_eq!(s["decodeTokens"], 300);
+        assert_eq!(s["decodeMs"], 3000);
+        assert_eq!(s["decodeTokensPerSecond"], 100.0);
+    }
+
+    #[test]
+    fn a_report_after_a_quick_tool_still_belongs_to_the_request_that_wrote_it() {
+        let mut t = Tracker::new(0);
+        t.output(1000, true);
+        t.output(3000, true);
+        t.tool(3000, "read", true);
+        t.tool(3100, "read", false);
+        // The reply's usage is read after the next request was sent.
+        t.usage(3200, 500, report(9000, 8000, 500, 0));
+        t.output(6000, true);
+        let s = t.snapshot(6000, true);
+        assert_eq!(s["decodeTokens"], 500);
+        assert_eq!(s["decodeMs"], 2000);
+        assert_eq!(s["prefillTokens"], 1000);
     }
 
     #[test]

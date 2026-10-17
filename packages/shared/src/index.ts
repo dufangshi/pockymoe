@@ -1138,15 +1138,21 @@ export interface ThreadTurnTokenUsageDto {
     latestOutputTokensPerSecond?: number | null;
     latestOutputTimeMs?: number;
     latestOutputMeasuredAt?: string | null;
-    /** Per model request: the average wait for its first output, including
-        queueing, prefill and thinking that does not stream. */
+    /** How the split below was measured. Snapshots without it timed every
+        request, bursts included, and are not shown. */
+    splitMethod?: 'streamedRequests';
+    /** Per model request that visibly streamed: the average wait for its first
+        output, including queueing, prefill and thinking that does not stream. */
     firstTokenMs?: number | null;
     firstTokenRequests?: number;
+    /** Requests whose reply arrived in one piece, left out of the split. */
+    burstRequests?: number;
     /** Uncached input prefilled before the first output, and the cached rest. */
     prefillTokens?: number;
     prefillCachedTokens?: number;
     prefillTokensPerSecond?: number | null;
-    /** Output streamed after each request's first output, and over how long. */
+    /** Each request's own answer tokens (reasoning left out), over the time its
+        answer streamed. */
     decodeTokens?: number;
     decodeMs?: number;
     decodeTokensPerSecond?: number | null;

@@ -23,16 +23,19 @@ test('recent thread menus manage shortcuts and history while glass controls and 
     expect(response.ok()).toBeTruthy();
     const value = await response.json(); ids.push(value.id ?? value.thread.id);
     await page.goto(`/threads/${ids.at(-1)}`);
-    await expect(page.locator('.matter-current-title')).toHaveText(title);
+    await expect(page.locator('.matter-thread-tabs a[aria-current="page"]')).toContainText(title);
   }
   await page.goto(`/threads/${ids[0]}`);
   if (testInfo.project.name === 'mobile-chromium') await page.getByRole('button', { name: 'Toggle shortcuts sidebar' }).click();
-  const recent = page.getByTestId('recent-chats');
+  // Both threads live in this workspace, so they sit in its section above recent chats.
+  const recent = page.getByTestId('workspace-threads');
   await recent.getByRole('button', { name: 'Actions for Manage from Recent chats' }).click();
   const menu = page.getByRole('dialog', { name: 'Thread actions: Manage from Recent chats', exact: true });
   await menu.getByRole('button', { name: 'Star thread', exact: true }).click();
+  // Shortcuts start folded.
+  await page.getByRole('button', { name: /^Shortcuts/, expanded: false }).click();
   await expect(page.getByTestId('shortcuts').getByRole('link', { name: /Manage from Recent chats/ })).toBeVisible();
-  await expect(page.locator('.matter-current-title')).toHaveText('Keep this conversation');
+  await expect(page.locator('.matter-thread-tabs a[aria-current="page"]')).toContainText('Keep this conversation');
   await recent.getByRole('button', { name: 'Actions for Manage from Recent chats' }).click();
   await menu.getByRole('button', { name: 'Rename thread', exact: true }).click();
   const rename = page.getByRole('dialog', { name: 'Rename thread', exact: true });
@@ -47,8 +50,9 @@ test('recent thread menus manage shortcuts and history while glass controls and 
   await expect(recent.getByRole('link', { name: /Renamed in sidebar/ })).toHaveCount(0);
   await expect.poll(async () => (await request.get(`${base}/api/threads/${ids[1]}`)).status()).toBe(404);
   if (testInfo.project.name === 'mobile-chromium') await page.getByRole('button', { name: 'Close sidebar', exact: true }).click();
-  await page.locator('.matter-thread-menu > summary').click();
-  await page.getByRole('button', { name: 'Star thread', exact: true }).click();
+  // The current thread's star sits in the thread tools.
+  await page.getByRole('button', { name: 'Thread tools', exact: true }).click();
+  await page.getByRole('button', { name: 'Add shortcut', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Remove shortcut', exact: true })).toBeVisible();
   for (const theme of ['light', 'dark']) {
     await page.evaluate(theme => localStorage.setItem('remote-codex-theme-mode', theme), theme);
@@ -307,19 +311,19 @@ test('Matter workbench floats the composer, persists shortcuts, searches history
   expect(metrics.composer.right).toBeLessThanOrEqual(metrics.width);
   expect(metrics.documentWidth).toBe(metrics.width);
   expect(metrics.mainRight).toBe(metrics.width);
-  await page.getByTestId('recent-chats').getByRole('button', { name: 'Actions for A calmer coding workspace', exact: true }).click();
+  await page.getByTestId('workspace-threads').getByRole('button', { name: 'Actions for Refine the conversation experience', exact: true }).click();
   await page.locator('.recent-thread-menu').getByRole('button', { name: 'Star thread', exact: true }).click();
+  await page.getByRole('button', { name: 'Thread tools', exact: true }).click();
   await expect(
     page.getByRole('button', { name: 'Remove shortcut' }),
   ).toBeVisible();
+  // The shortcut is kept with the account across a reload.
   await page.reload();
-  await expect(
-    page.getByRole('button', { name: 'Remove shortcut' }),
-  ).toBeVisible();
   if (testInfo.project.name === 'mobile-chromium')
     await page
       .getByRole('button', { name: 'Toggle shortcuts sidebar' })
       .click();
+  await page.getByRole('button', { name: /^Shortcuts/, expanded: false }).click();
   await expect(
     page
       .getByTestId('shortcuts')
@@ -594,7 +598,7 @@ test('execution timeline expands deferred work and keeps the last reply above th
     const composer = (await page.getByTestId('chat-composer').boundingBox())!;
     return final.y + final.height - composer.y;
   }).toBeLessThanOrEqual(0);
-  await page.getByTestId('recent-chats').getByRole('button', { name: 'Actions for A calmer coding workspace', exact: true }).click();
+  await page.getByTestId('workspace-threads').getByRole('button', { name: 'Actions for A calmer coding workspace', exact: true }).click();
   await page.locator('.recent-thread-menu').getByRole('button', { name: 'Star thread', exact: true }).click();
   await page.locator('.thread-graph-scroll-container').evaluate((e) => {
     e.scrollTop = 0;

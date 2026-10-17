@@ -48,7 +48,7 @@ test('command batches have one icon and thread dialogs follow light and dark the
     await expect(group.locator('.tlog-row .tlog-glyph')).toHaveText(['$', '$']);
     await page.screenshot({ path: testInfo.outputPath(`batch-${theme}.png`) });
     for (const action of ['Rename', 'Delete']) {
-      await page.getByTestId('recent-chats').getByRole('button', { name: 'Actions for Theme regression', exact: true }).click();
+      await page.getByTestId('workspace-threads').getByRole('button', { name: 'Actions for Theme regression', exact: true }).click();
       await page.locator('.recent-thread-menu').getByRole('button', { name: `${action} thread`, exact: true }).click();
       const dialog = page.getByRole('dialog', { name: action === 'Rename' ? 'Rename thread' : 'Delete thread?', exact: true });
       await expect(dialog).toBeVisible();
