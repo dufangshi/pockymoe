@@ -811,6 +811,16 @@ pinned for that device is refused; **Forget pinned owner account** in the device
 encryption status clears the pin. **Copy invite link** is offered only after the
 owner's browser verified the device certificate.
 
+**Who sent a prompt.** A prompt from anyone but the device owner carries its
+sender (`sender: {userId, name}` on the user message item and on the queued prompt),
+shown as a small initial on the bubble that opens a card with the account name and
+ID. A bound device takes it from the signed grantee browser and the name from that
+recipient's newest grant (`grantee.label`); relay headers cannot change it. An
+unbound device takes the relay's `x-rcd-file-actor`, `x-rcd-actor-owner` and
+`x-rcd-actor-name`; a relay that does not send `x-rcd-actor-owner` leaves prompts
+unmarked. The owner's own prompts, and prompts from agents, automations and other
+devices, carry no sender.
+
 ## Peers
 
 Devices bound to the same account key authenticate each other
@@ -1008,10 +1018,16 @@ encoded as raw 64-byte `r||s`. Public keys are B64 SPKI DER unless noted.
 | `x-rcd-signature` | Browser → device API | Request signature |
 | `x-rcd-peer-device` | Device → device peer | Caller's relay device ID |
 | `x-rcd-peer-signature` | Device → device peer | Peer signature |
+| `x-rcd-file-actor` | Relay → device API | Relay account ID that the relay authorized |
+| `x-rcd-actor-owner` | Relay → device API | `1` for the device owner, else `0` |
+| `x-rcd-actor-name` | Relay → device API | That account's username |
 
 The relay forwards the browser headers only on `/relay/devices/{id}/api/*` and
 `/relay/api/*`, and the peer headers only on peer frames. Unbound devices ignore
-both pairs.
+both pairs. The relay sets the three actor headers itself on device API requests,
+replacing any a browser sent; a device uses them only for requests without a
+signed browser (`x-rcd-file-actor` for file save attribution, all three for prompt
+senders).
 
 ### Device endpoints
 

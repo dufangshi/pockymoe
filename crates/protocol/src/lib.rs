@@ -402,6 +402,9 @@ pub struct ThreadPendingSteerDto {
     pub prompt: String,
     pub delivery: String,
     pub created_at: String,
+    /// Set when someone other than the device owner sent it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sender: Option<MessageSenderDto>,
 }
 
 /// A native subagent currently managed by the provider harness.
@@ -527,6 +530,18 @@ pub struct ImportThreadCandidateDto {
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
     pub history_status: String,
+}
+
+/// Who sent a prompt when it was not the device owner. The device records it
+/// from the request's verified identity, never from the request body.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageSenderDto {
+    /// The sender's relay account ID.
+    pub user_id: String,
+    /// The account name the device knows for it, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

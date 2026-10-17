@@ -63,6 +63,7 @@ struct GoalSubmission {
     goal: GoalState,
     token_budget: Option<Option<u64>>,
     accepted: tokio::sync::oneshot::Sender<()>,
+    sender: Option<pockymoe_protocol::MessageSenderDto>,
 }
 
 const RESTART_INTERRUPTED_ERROR: &str =
@@ -2642,8 +2643,9 @@ impl Supervisor {
     fn load_steers(&self, thread_id: &str) -> Result<Vec<ThreadPendingSteerDto>> {
         self.db.with(|conn| {
             let mut stmt = conn.prepare(
-                "SELECT id, client_request_id, turn_id, display_prompt, delivery, created_at
-                 FROM thread_pending_steers WHERE thread_id=?1 AND delivery!='update-resume' ORDER BY created_at ASC",
+                "SELECT s.id, s.client_request_id, s.turn_id, s.display_prompt, s.delivery, s.created_at, k.value
+                 FROM thread_pending_steers s LEFT JOIN kv k ON k.key='prompt-sender:'||s.id
+                 WHERE s.thread_id=?1 AND s.delivery!='update-resume' ORDER BY s.created_at ASC",
             )?;
             let rows = stmt.query_map(params![thread_id], |row| {
                 Ok(ThreadPendingSteerDto {
@@ -2653,6 +2655,9 @@ impl Supervisor {
                     prompt: row.get(3)?,
                     delivery: row.get(4)?,
                     created_at: row.get(5)?,
+                    sender: row
+                        .get::<_, Option<String>>(6)?
+                        .and_then(|raw| serde_json::from_str(&raw).ok()),
                 })
             })?;
             Ok(rows.filter_map(|r| r.ok()).collect())
@@ -2848,6 +2853,15 @@ impl Supervisor {
             };
             let origin = pending_steer_id.map(|pending| thread_summary::prompt_origin(conn, pending)).transpose()?.flatten().unwrap_or("user");
             user_item.extra.insert("origin".into(), json!(origin));
+            if let Some(sender) = goal_submission.as_ref().and_then(|g| g.sender.as_ref()) {
+                user_item.extra.insert("sender".into(), serde_json::to_value(sender)?);
+            }
+            if let Some(pending) = pending_steer_id {
+                if let Some(sender) = thread_summary::prompt_sender(conn, pending)? {
+                    user_item.extra.insert("sender".into(), sender);
+                    conn.execute("DELETE FROM kv WHERE key=?1", [thread_summary::prompt_sender_key(pending)])?;
+                }
+            }
             conn.execute(
                 "INSERT INTO thread_history_items(id, thread_id, turn_id, item_id, item_json, created_at, updated_at)
                  VALUES (?1,?2,?3,?4,?5,?6,?6)",
@@ -3250,10 +3264,11 @@ impl Supervisor {
             )?;
             if removed > 0 {
                 tx.execute(
-                    "DELETE FROM kv WHERE key IN (?1,?2)",
+                    "DELETE FROM kv WHERE key IN (?1,?2,?3)",
                     params![
                         format!("cli:notify:pending:{pending_steer_id}"),
-                        format!("cli:peer-work:pending:{pending_steer_id}")
+                        format!("cli:peer-work:pending:{pending_steer_id}"),
+                        thread_summary::prompt_sender_key(pending_steer_id)
                     ],
                 )?;
             }
@@ -3360,11 +3375,17 @@ impl Supervisor {
             artifact: None,
             extra: Default::default(),
         };
-        let origin = self
-            .db
-            .with(|conn| thread_summary::prompt_origin(conn, &pending.id))?
-            .unwrap_or("user");
-        item.extra.insert("origin".into(), json!(origin));
+        let (origin, sender) = self.db.with(|conn| {
+            Ok((
+                thread_summary::prompt_origin(conn, &pending.id)?,
+                thread_summary::prompt_sender(conn, &pending.id)?,
+            ))
+        })?;
+        item.extra
+            .insert("origin".into(), json!(origin.unwrap_or("user")));
+        if let Some(sender) = sender {
+            item.extra.insert("sender".into(), sender);
+        }
         self.db.with(|conn| {
             let tx=conn.unchecked_transaction()?;
             let conn=&tx;
@@ -3375,6 +3396,7 @@ impl Supervisor {
                 params![Uuid::new_v4().to_string(), thread_id, active_turn_id, item.id,
                     serde_json::to_string(&item)?, submitted_at, now],
             )?;
+            conn.execute("DELETE FROM kv WHERE key=?1", [thread_summary::prompt_sender_key(&pending.id)])?;
             conn.execute(
                 "UPDATE thread_pending_steers SET delivery='steer',turn_id=?1,updated_at=?2 WHERE thread_id=?3 AND id=?4",
                 params![active_turn_id, now, thread_id, pending.id],
@@ -3944,6 +3966,7 @@ impl Supervisor {
         objective: Option<String>,
         status: Option<String>,
         token_budget: Option<Option<u64>>,
+        sender: Option<pockymoe_protocol::MessageSenderDto>,
     ) -> Result<Value> {
         if objective.as_deref().is_some_and(|s| s.trim().is_empty()) {
             bail!("objective must not be empty");
@@ -4010,6 +4033,7 @@ impl Supervisor {
             },
             token_budget,
             accepted,
+            sender,
         };
         let background = self.clone();
         drop(harness);

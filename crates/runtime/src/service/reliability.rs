@@ -6,6 +6,17 @@ impl Supervisor {
     /// Acknowledge receipt only after the complete submission has committed. The
     /// inbox also covers preflight failures and a crash before a turn is started.
     pub async fn accept_prompt(&self, id: &str, input: &SendThreadPromptInput) -> Result<()> {
+        self.accept_prompt_from(id, input, None).await
+    }
+
+    /// `sender` names someone other than the device owner, from the request's
+    /// verified identity; the prompt's history item carries it.
+    pub async fn accept_prompt_from(
+        &self,
+        id: &str,
+        input: &SendThreadPromptInput,
+        sender: Option<&pockymoe_protocol::MessageSenderDto>,
+    ) -> Result<()> {
         self.prepare_thread_prompt(id).await?;
         let thread = self.get_thread(id)?;
         self.ensure_prompt_allowed(&thread)?;
@@ -39,6 +50,12 @@ impl Supervisor {
                  VALUES(?1,?2,?3,?4,?5,?5,'continuation',?6,?6,?7)",
                 params![pending_id,id,thread.active_turn_id.as_deref().unwrap_or(""),input.client_request_id,input.prompt,now,raw],
             )?;
+            if let Some(sender) = sender {
+                tx.execute(
+                    "INSERT OR REPLACE INTO kv(key,value) VALUES(?1,?2)",
+                    params![thread_summary::prompt_sender_key(&pending_id), serde_json::to_string(sender)?],
+                )?;
+            }
             tx.commit()?;
             Ok(())
         })?;

@@ -3024,6 +3024,22 @@ async fn device_healthz(
     .await
 }
 
+/// Who the relay authorized. A device that is not bound to an account key relies
+/// on these, for example to show who sent a prompt; a bound device ignores them.
+fn insert_actor(
+    headers: &mut serde_json::Map<String, Value>,
+    user_id: &str,
+    username: &str,
+    access: &EffectiveAccess,
+) {
+    headers.insert("x-rcd-file-actor".into(), json!(user_id));
+    headers.insert(
+        "x-rcd-actor-owner".into(),
+        json!(if access.kind == "owner" { "1" } else { "0" }),
+    );
+    headers.insert("x-rcd-actor-name".into(), json!(username));
+}
+
 async fn device_api(
     Path((device_id, rest)): Path<(String, String)>,
     method: Method,
@@ -3038,10 +3054,10 @@ async fn device_api(
         let conn = state.store.conn.lock().await;
         authenticated_user(&conn, &state.store.session_secret, &headers, &query).and_then(|user| {
             device_request_access(&conn, &user.id, &device_id, &method, &path, &headers)
-                .map(|access| (user.id, access))
+                .map(|access| (user.id, user.username, access))
         })
     };
-    let Some((user_id, access)) = resolved else {
+    let Some((user_id, username, access)) = resolved else {
         return unauthorized();
     };
     if !relay_target_allowed(&path)
@@ -3077,7 +3093,7 @@ async fn device_api(
             .map(|value| (name.as_str().to_string(), Value::String(value.to_string())))
     })
     .collect::<serde_json::Map<String, Value>>();
-    forwarded_headers.insert("x-rcd-file-actor".into(), json!(user_id));
+    insert_actor(&mut forwarded_headers, &user_id, &username, &access);
     let (body, body_encoding) = encode_relay_request_body(&body);
     let response = forward_device(
         state.clone(),
@@ -3125,11 +3141,19 @@ async fn relay_api_compat(
             return unauthorized();
         };
         connected_device_ids.iter().find_map(|device_id| {
-            device_request_access(&conn, &user.id, device_id, &method, &path, &headers)
-                .map(|access| (device_id.clone(), user.id.clone(), access))
+            device_request_access(&conn, &user.id, device_id, &method, &path, &headers).map(
+                |access| {
+                    (
+                        device_id.clone(),
+                        user.id.clone(),
+                        user.username.clone(),
+                        access,
+                    )
+                },
+            )
         })
     };
-    let Some((device_id, user_id, access)) = resolved else {
+    let Some((device_id, user_id, username, access)) = resolved else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(ApiError::new(
@@ -3172,7 +3196,7 @@ async fn relay_api_compat(
             .map(|value| (name.as_str().to_string(), Value::String(value.to_string())))
     })
     .collect::<serde_json::Map<String, Value>>();
-    forwarded_headers.insert("x-rcd-file-actor".into(), json!(user_id));
+    insert_actor(&mut forwarded_headers, &user_id, &username, &access);
     let (body, body_encoding) = encode_relay_request_body(&body);
     let response = forward_device(
         state.clone(),

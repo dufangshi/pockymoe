@@ -874,3 +874,46 @@ async fn sharing_patch_can_restore_null_values_after_failed_device_edits() {
         .unwrap();
     assert_eq!(values, (None, None, None));
 }
+
+#[tokio::test]
+async fn forwarded_requests_carry_the_authorized_account_and_whether_it_owns_the_device() {
+    let fixture = Fixture::new("actor-headers").await;
+    let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+    fixture.state.sockets.write().await.insert(
+        "device".into(),
+        DeviceSocket {
+            tx,
+            connection_id: Uuid::new_v4(),
+            connected_at: now_rfc3339(),
+            last_heartbeat_at: now_rfc3339(),
+        },
+    );
+    for (user, owner) in [("owner", "1"), ("device-guest", "0")] {
+        let request = fixture
+            .request(Method::GET, "/relay/devices/device/api/threads", Some(user))
+            // A browser cannot speak for the relay.
+            .header("x-rcd-actor-owner", "1")
+            .header("x-rcd-actor-name", "forged");
+        let result = tokio::spawn(async move { request.send().await.unwrap() });
+        let raw = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let frame: Value = serde_json::from_str(&raw).unwrap();
+        let headers = &frame["payload"]["headers"];
+        assert_eq!(headers["x-rcd-file-actor"], user);
+        assert_eq!(headers["x-rcd-actor-owner"], owner);
+        assert_eq!(headers["x-rcd-actor-name"], user);
+        fixture
+            .state
+            .pending
+            .lock()
+            .unwrap()
+            .remove(frame["requestId"].as_str().unwrap())
+            .unwrap()
+            .tx
+            .send(json!({"statusCode":200,"body":"[]"}))
+            .unwrap();
+        assert_eq!(result.await.unwrap().status(), StatusCode::OK);
+    }
+}
