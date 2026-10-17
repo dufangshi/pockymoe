@@ -48,6 +48,18 @@ export type ConnectionCatalog = {
   catalogError?: string;
   /** Wire formats each managed harness adapter accepts. */
   harnessProtocols?: Record<string, ConnectionProtocol[]>;
+  /**
+   * Each harness's own sign-in or native configuration on this device. It belongs to
+   * that harness only: never a saved connection, never synced or offered to plugins.
+   */
+  native?: Record<string, NativeUpstream>;
+};
+
+export type NativeUpstream = {
+  available: boolean;
+  active: boolean;
+  kind: 'oauth' | 'config';
+  revision?: string;
 };
 
 export type ConnectionDraft = {
@@ -93,6 +105,10 @@ export function connectionsApi(apiRoot: string) {
         catalogAvailable: !!value.catalogAvailable,
         ...(value.catalogError ? { catalogError: value.catalogError } : {}),
         harnessProtocols: { ...harnessProtocols, ...value.harnessProtocols },
+        // Older Supervisors report no native state: nothing is assumed.
+        ...(value.native && typeof value.native === 'object'
+          ? { native: value.native }
+          : {}),
       } satisfies ConnectionCatalog;
     },
     save: (draft: ConnectionDraft) => post<ConnectionSummary>('', draft),
@@ -120,6 +136,15 @@ export function connectionsApi(apiRoot: string) {
             `/${encodeURIComponent(target.id)}/test`,
             target.model ? { model: target.model } : {},
           ),
+    /** Switches a harness back to its own sign-in or native configuration. */
+    activateNative: (harness: string, revision?: string) =>
+      request<{ ok?: boolean }>(
+        `${apiRoot}/management/upstreams/native/${encodeURIComponent(harness)}/activate`,
+        {
+          method: 'POST',
+          body: JSON.stringify(revision ? { revision } : {}),
+        },
+      ),
     apply: (id: string, harness: string, model?: string) =>
       post<{ ok: boolean; profileId?: string }>(
         `/${encodeURIComponent(id)}/apply`,

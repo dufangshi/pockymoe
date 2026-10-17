@@ -284,7 +284,7 @@ pub fn project_codex(doc: &mut DocumentMut, fragment: &Value) -> Result<()> {
     }
     Ok(())
 }
-fn dotenv(text: &str) -> Vec<(String, String)> {
+pub(super) fn dotenv(text: &str) -> Vec<(String, String)> {
     text.lines()
         .filter_map(|line| {
             let line = line.trim().strip_prefix("export ").unwrap_or(line.trim());

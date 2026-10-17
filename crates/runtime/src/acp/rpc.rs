@@ -183,8 +183,16 @@ impl AcpProcess {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+        if let Some((_, harness)) = extra_env
+            .iter()
+            .find(|(key, _)| *key == crate::upstreams::native::CLEAN_OAUTH_ENV)
+        {
+            clear_native_oauth_environment(&mut cmd, harness);
+        }
         for (key, value) in extra_env {
-            cmd.env(key, value);
+            if *key != crate::upstreams::native::CLEAN_OAUTH_ENV {
+                cmd.env(key, value);
+            }
         }
         // A hub may itself inherit an App/Agent identity and workload proxy. Never
         // pass them to an unbound thread or a delegate; only bound identity wins.
@@ -715,5 +723,54 @@ mod tests {
         })
         .await
         .expect("dropping request future should clean its pending entry");
+    }
+}
+
+// Include explicit command overrides as well as inherited variable names. This
+// also makes tests deterministic without mutating the process environment.
+fn clear_native_oauth_environment(cmd: &mut tokio::process::Command, harness: &str) {
+    let names = std::env::vars_os()
+        .map(|(key, _)| key)
+        .chain(cmd.as_std().get_envs().map(|(key, _)| key.to_owned()))
+        .collect::<Vec<_>>();
+    for name in names {
+        if name
+            .to_str()
+            .is_some_and(|key| crate::upstreams::native::provider_env(harness, key))
+        {
+            cmd.env_remove(name);
+        }
+    }
+}
+#[cfg(test)]
+mod native_oauth_environment_tests {
+    use super::*;
+    #[test]
+    fn native_oauth_clears_inherited_api_selectors_and_preserves_unrelated_flags() {
+        let mut cmd = tokio::process::Command::new("unused");
+        for key in [
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_AUTH_TOKEN",
+            "ANTHROPIC_BASE_URL",
+            "CLAUDE_CODE_USE_BEDROCK",
+            "ANTHROPIC_CUSTOM_HEADERS",
+            "UNRELATED_FLAG",
+            "CLAUDE_CODE_USE_COMMIT_ATTRIBUTION",
+        ] {
+            cmd.env(key, "fixture");
+        }
+        clear_native_oauth_environment(&mut cmd, "claude");
+        let env: std::collections::BTreeMap<_, _> = cmd.as_std().get_envs().collect();
+        for key in [
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_AUTH_TOKEN",
+            "ANTHROPIC_BASE_URL",
+            "CLAUDE_CODE_USE_BEDROCK",
+            "ANTHROPIC_CUSTOM_HEADERS",
+        ] {
+            assert_eq!(env[std::ffi::OsStr::new(key)], None);
+        }
+        assert!(env[std::ffi::OsStr::new("UNRELATED_FLAG")].is_some());
+        assert!(env[std::ffi::OsStr::new("CLAUDE_CODE_USE_COMMIT_ATTRIBUTION")].is_some());
     }
 }

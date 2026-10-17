@@ -26,7 +26,7 @@ fn failure(e: impl std::fmt::Display) -> Failure {
         (StatusCode::CONFLICT, "connection_in_use")
     } else if lower.contains("busy") && lower.contains("harness") {
         (StatusCode::CONFLICT, "harness_busy")
-    } else if lower.contains("edit conflict") {
+    } else if lower.contains("edit conflict") || lower.contains("native configuration changed") {
         (StatusCode::CONFLICT, "edit_conflict")
     } else if lower.contains("sync conflict") {
         (StatusCode::CONFLICT, "sync_conflict")
@@ -90,7 +90,13 @@ pub async fn list(State(s): State<Arc<Supervisor>>) -> Result<Json<Value>, Failu
         let _g = s.upstream_gate.lock().await;
         saved::migrate(&dir(&s)).map_err(failure)?;
         announce(&s);
-        saved::list(&dir(&s)).map_err(failure)?
+        let mut result = saved::list(&dir(&s)).map_err(failure)?;
+        let roots = upstreams::native::HARNESSES
+            .into_iter()
+            .map(|h| (h.into(), s.upstream_home(h)))
+            .collect();
+        result["native"] = upstreams::native::inventory_at(&dir(&s), &roots).map_err(failure)?;
+        result
     };
     let identity = crate::peer_link::relay_identity(&s);
     result["deviceId"] = json!(identity.as_ref().map(|i| &i.device_id));
@@ -286,11 +292,50 @@ pub async fn apply(
         .map_err(failure)?;
     upstreams::validate(&p, true).map_err(failure)?;
     let restarted = s.restart_harness(&input.harness).await.map_err(failure)?;
-    let mut result = saved::apply(&root, &c, &input.harness, &input.model).map_err(failure)?;
+    let mut result = saved::apply_at(
+        &root,
+        &c,
+        &input.harness,
+        &input.model,
+        &s.upstream_home(&input.harness),
+    )
+    .map_err(failure)?;
     result["restartedSessions"] = json!(restarted);
     s.invalidate_models(&input.harness).await;
     Ok(Json(result))
 }
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NativeActivate {
+    revision: Option<String>,
+}
+pub async fn activate_native(
+    State(s): State<Arc<Supervisor>>,
+    Path(harness): Path<String>,
+    Json(input): Json<NativeActivate>,
+) -> Result<Json<Value>, Failure> {
+    let _g = s.upstream_gate.lock().await;
+    let _maintenance = s
+        .maintenance_gate
+        .clone()
+        .try_read_owned()
+        .map_err(|_| failure("Harness is busy: apply conflict"))?;
+    let _guard = s
+        .harness_gate(&harness)
+        .try_write_owned()
+        .map_err(|_| failure("Harness is busy: apply conflict"))?;
+    let root = s.upstream_home(&harness);
+    upstreams::native::check_at(&dir(&s), &harness, &root, input.revision.as_deref())
+        .map_err(failure)?;
+    let restarted = s.restart_harness(&harness).await.map_err(failure)?;
+    let mut result =
+        upstreams::native::activate_at(&dir(&s), &harness, &root, input.revision.as_deref())
+            .map_err(failure)?;
+    s.invalidate_models(&harness).await;
+    result["restartedSessions"] = json!(restarted);
+    Ok(Json(result))
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Authorize {

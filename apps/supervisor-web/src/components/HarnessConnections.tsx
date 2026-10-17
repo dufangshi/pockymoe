@@ -20,6 +20,8 @@ export const managedHarnesses = [
   'grok',
   'deepseek',
 ];
+/** Select value for a harness's own sign-in or native configuration. */
+const NATIVE_CHOICE = ':native';
 
 export type InventoryHarness = {
   id: string;
@@ -154,11 +156,28 @@ function HarnessRow({
     harnessProtocols[harness.id] ??
     [];
   const compatible = local.filter((c) => protocols.includes(c.protocol));
-  // Follows the applied connection until the user picks another one.
+  // The harness's own sign-in or native configuration: offered here only, and only
+  // when the device reports it (older Supervisors report nothing).
+  const native = catalog?.native?.[harness.id];
+  const nativeOption = native?.available ? native : undefined;
+  const nativeLabel = native
+    ? translate(
+        native.kind === 'oauth'
+          ? 'settings.connNativeOAuth'
+          : 'settings.connNativeConfig',
+      )
+    : '';
+  const nativeActive = !!native?.active && !binding?.connectionId;
+  // Follows what is applied until the user picks something else.
   const [picked, setPicked] = useState<string | null>(null);
-  const choice = picked ?? bound?.id ?? '';
-  const chosen = compatible.find((c) => c.id === choice);
+  const choice =
+    picked ?? bound?.id ?? (nativeActive && nativeOption ? NATIVE_CHOICE : '');
+  const nativeChosen = choice === NATIVE_CHOICE && !!nativeOption;
+  const chosen = nativeChosen
+    ? undefined
+    : compatible.find((c) => c.id === choice);
   const reapply = !!chosen && chosen.id === bound?.id;
+  const [applyingNative, setApplyingNative] = useState(false);
   // Saving or syncing never changes a harness: it keeps the applied revision.
   const pending =
     !!bound && !!binding?.revision && binding.revision !== bound.revision;
@@ -166,11 +185,13 @@ function HarnessRow({
   const [nativeOpen, setNativeOpen] = useState(false);
   const current = bound
     ? [bound.name, binding?.model].filter(Boolean).join(' · ')
-    : translate(
-        binding?.profileId
-          ? 'settings.connHarnessLegacy'
-          : 'settings.connHarnessNative',
-      );
+    : nativeActive
+      ? nativeLabel
+      : translate(
+          binding?.profileId
+            ? 'settings.connHarnessLegacy'
+            : 'settings.connHarnessNative',
+        );
   return (
     <li
       className="rounded-xl border border-[var(--theme-border)] bg-[var(--theme-panel)] px-3 py-2.5"
@@ -212,17 +233,20 @@ function HarnessRow({
             aria-label={translate('settings.connHarnessChoose', {
               harness: harness.name,
             })}
-            value={chosen ? choice : ''}
-            disabled={!catalog || !compatible.length}
+            value={nativeChosen ? NATIVE_CHOICE : chosen ? choice : ''}
+            disabled={!catalog || (!compatible.length && !nativeOption)}
             onChange={(e) => setPicked(e.target.value)}
           >
             <option value="">
               {translate(
-                compatible.length
+                compatible.length || nativeOption
                   ? 'settings.connHarnessPick'
                   : 'settings.connHarnessNoneCompatible',
               )}
             </option>
+            {nativeOption && (
+              <option value={NATIVE_CHOICE}>{nativeLabel}</option>
+            )}
             {compatible.map((c) => (
               <option key={c.id} value={c.id}>
                 {c.name}
@@ -236,21 +260,35 @@ function HarnessRow({
                 ? `${button} border-[var(--theme-accent-border)] text-[var(--theme-accent-strong)]`
                 : button
             }
-            disabled={!chosen || !installed}
+            // Choosing the native option already in use changes nothing.
+            disabled={
+              !installed ||
+              (!chosen && !nativeChosen) ||
+              (nativeChosen && nativeActive)
+            }
             aria-label={
-              chosen
-                ? translate(
-                    reapply
-                      ? 'settings.connReapplyNamed'
-                      : 'settings.connApplyNamed',
-                    { name: chosen.name, harness: harness.name },
-                  )
-                : undefined
+              nativeChosen
+                ? translate('settings.connApplyNamed', {
+                    name: nativeLabel,
+                    harness: harness.name,
+                  })
+                : chosen
+                  ? translate(
+                      reapply
+                        ? 'settings.connReapplyNamed'
+                        : 'settings.connApplyNamed',
+                      { name: chosen.name, harness: harness.name },
+                    )
+                  : undefined
             }
             title={
               installed ? undefined : translate('settings.upstreamsUninstalled')
             }
-            onClick={() => chosen && setApplying(chosen)}
+            onClick={() =>
+              nativeChosen
+                ? setApplyingNative(true)
+                : chosen && setApplying(chosen)
+            }
           >
             {translate(
               reapply ? 'settings.connReapplyShort' : 'settings.connApplyShort',
@@ -281,6 +319,28 @@ function HarnessRow({
           harnessName={harness.name}
           installed={installed}
           onChanged={() => void reload()}
+        />
+      )}
+      {applyingNative && nativeOption && (
+        <NativeApplyDialog
+          apiRoot={apiRoot}
+          harness={harness}
+          label={nativeLabel}
+          {...(nativeOption.revision
+            ? { revision: nativeOption.revision }
+            : {})}
+          onClose={() => setApplyingNative(false)}
+          onApplied={() => {
+            setApplyingNative(false);
+            setPicked(null);
+            onApplied(
+              translate('settings.connNativeApplied', {
+                name: nativeLabel,
+                harness: harness.name,
+              }),
+            );
+            void reload();
+          }}
         />
       )}
       {applying && (
@@ -393,6 +453,94 @@ function ApplyDialog({
             type="submit"
             className="relay-button-primary !min-h-10 sm:!min-h-9"
             disabled={busy || !model.trim()}
+          >
+            {busy
+              ? translate('settings.connApplying')
+              : translate('settings.connApplyShort')}
+          </button>
+        </div>
+      </form>
+    </FormDialog>
+  );
+}
+
+/**
+ * Confirms switching a harness back to its own sign-in or native configuration.
+ * No model or connection fields: the harness keeps its own.
+ */
+function NativeApplyDialog({
+  apiRoot,
+  harness,
+  label,
+  revision,
+  onClose,
+  onApplied,
+}: {
+  apiRoot: string;
+  harness: { id: string; name: string };
+  label: string;
+  revision?: string;
+  onClose: () => void;
+  onApplied: () => void;
+}) {
+  const api = useMemo(() => connectionsApi(apiRoot), [apiRoot]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  return (
+    <FormDialog
+      title={translate('settings.connApplyTitle', {
+        name: label,
+        harness: harness.name,
+      })}
+      busy={busy}
+      onClose={onClose}
+    >
+      <form
+        className="space-y-3"
+        onSubmit={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          if (busy) return;
+          setBusy(true);
+          setError('');
+          api
+            .activateNative(harness.id, revision)
+            .then(onApplied)
+            .catch((err: unknown) =>
+              setError(
+                connectionErrorMessage(
+                  err,
+                  translate('settings.connApplyFailed'),
+                ),
+              ),
+            )
+            .finally(() => setBusy(false));
+        }}
+      >
+        <p className="text-xs leading-5 text-[var(--theme-fg-muted)]">
+          {translate('settings.connApplyHint')}
+        </p>
+        {error && (
+          <p
+            role="alert"
+            className="break-words text-xs text-[var(--status-danger-fg)]"
+          >
+            {error}
+          </p>
+        )}
+        <div className="flex justify-end gap-2">
+          <button
+            type="button"
+            className="host-secondary-button min-h-10 rounded-lg border px-3 text-[13px] sm:min-h-9"
+            disabled={busy}
+            onClick={onClose}
+          >
+            {translate('settings.connCancel')}
+          </button>
+          <button
+            type="submit"
+            className="relay-button-primary !min-h-10 sm:!min-h-9"
+            disabled={busy}
           >
             {busy
               ? translate('settings.connApplying')

@@ -948,3 +948,137 @@ it('opens the row menu as a keyboard menu and confirms removal with Cancel focus
   });
   expect(within(confirm).getByRole('button', { name: 'Cancel' })).toHaveFocus();
 });
+
+it('offers a harness its own sign-in to restore, apart from saved connections', async () => {
+  let native = {
+    available: true,
+    active: false,
+    kind: 'oauth',
+    revision: 'n1',
+  };
+  let bound = true;
+  let busyOnce = true;
+  server(({ path, method }) => {
+    if (path === 'api/management/connections' && method === 'GET')
+      return catalog(
+        [local({ id: 'ant', name: 'Anthropic API', protocol: 'anthropic' })],
+        {
+          bindings: bound
+            ? { claude: { connectionId: 'ant', model: 'model-a' } }
+            : {},
+          native: {
+            claude: native,
+            codex: { available: false, active: false, kind: 'config' },
+          },
+        },
+      );
+    if (path === 'api/management/upstreams/native/claude/activate') {
+      if (busyOnce) {
+        busyOnce = false;
+        throw fail(409, 'harness_busy');
+      }
+      bound = false;
+      native = { ...native, active: true };
+      return { ok: true };
+    }
+    throw Error(`unexpected ${method} ${path}`);
+  });
+  renderPage();
+  const claudeRow = await harnessRow('Claude Agent');
+  const pick = within(claudeRow).getByLabelText('Connection for Claude Agent');
+  await waitFor(() =>
+    expect(
+      within(pick)
+        .getAllByRole('option')
+        .map((o) => o.textContent),
+    ).toEqual(['Choose a connection', 'Account sign-in', 'Anthropic API']),
+  );
+  // It belongs to this harness only: not a saved connection, not for Codex.
+  expect(
+    screen.queryByRole('listitem', { name: 'Account sign-in' }),
+  ).toBeNull();
+  expect(
+    within(await harnessRow('Codex')).queryByRole('option', {
+      name: 'Native config',
+    }),
+  ).toBeNull();
+  const option = within(pick).getByRole('option', {
+    name: 'Account sign-in',
+  }) as HTMLOptionElement;
+  fireEvent.change(pick, { target: { value: option.value } });
+  fireEvent.click(
+    within(claudeRow).getByRole('button', {
+      name: 'Apply Account sign-in to Claude Agent',
+    }),
+  );
+  const dialog = await screen.findByRole('dialog', {
+    name: 'Apply Account sign-in to Claude Agent',
+  });
+  // No model or connection fields: the harness keeps its own.
+  expect(within(dialog).queryByLabelText('Default model')).toBeNull();
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Apply' }));
+  expect(await within(dialog).findByRole('alert')).toHaveTextContent(
+    'The harness is busy',
+  );
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Apply' }));
+  expect(
+    await screen.findByText('Claude Agent now uses Account sign-in.'),
+  ).toBeVisible();
+  expect(
+    calls.filter((c) => c.method === 'POST').map((c) => [c.path, c.body]),
+  ).toEqual([
+    ['api/management/upstreams/native/claude/activate', { revision: 'n1' }],
+    ['api/management/upstreams/native/claude/activate', { revision: 'n1' }],
+  ]);
+  await waitFor(() =>
+    expect(within(claudeRow).getByTestId('harness-current')).toHaveTextContent(
+      'Account sign-in',
+    ),
+  );
+  expect((pick as HTMLSelectElement).value).toBe(option.value);
+  expect(
+    within(claudeRow).getByRole('button', {
+      name: 'Apply Account sign-in to Claude Agent',
+    }),
+  ).toBeDisabled();
+  // Switching back to the API connection is the usual explicit Apply.
+  fireEvent.change(pick, { target: { value: 'ant' } });
+  expect(
+    within(claudeRow).getByRole('button', {
+      name: 'Apply Anthropic API to Claude Agent',
+    }),
+  ).toBeEnabled();
+});
+
+it('keeps a native option usable without compatible connections and shows none on older runtimes', async () => {
+  server(({ path, method }) => {
+    if (path === 'api/management/connections' && method === 'GET')
+      return catalog(
+        [local({ id: 'chat', name: 'Chat API', protocol: 'openai_chat' })],
+        {
+          native: { codex: { available: true, active: false, kind: 'config' } },
+        },
+      );
+    throw Error(`unexpected ${method} ${path}`);
+  });
+  renderPage();
+  const codexPick = within(await harnessRow('Codex')).getByLabelText(
+    'Connection for Codex',
+  );
+  await waitFor(() => expect(codexPick).toBeEnabled());
+  expect(
+    within(codexPick)
+      .getAllByRole('option')
+      .map((o) => o.textContent),
+  ).toEqual(['Choose a connection', 'Native config']);
+  // No native state reported for Claude (as on older runtimes): nothing assumed.
+  const claudeRow = await harnessRow('Claude Agent');
+  expect(
+    within(within(claudeRow).getByLabelText('Connection for Claude Agent'))
+      .getAllByRole('option')
+      .map((o) => o.textContent),
+  ).toEqual(['No compatible saved connection']);
+  expect(within(claudeRow).getByTestId('harness-current')).toHaveTextContent(
+    'its own sign-in or native configuration',
+  );
+});

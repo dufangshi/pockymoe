@@ -280,7 +280,7 @@ impl AcpRuntime {
             bail!("{} is not available ({availability})", def.display_name);
         }
         let adapter = adapter_for(&def.id);
-        let mut extra_env = extra_env_for(def);
+        let mut extra_env = self.launch_environment(def);
         let mut upstream_revision = None;
         if def.id == "grok" {
             if let Some(upstreams) = &self.upstreams {
@@ -582,9 +582,21 @@ impl AcpRuntime {
         bail!("DSH did not start")
     }
 
+    fn launch_environment(&self, def: &AcpAgentDef) -> Vec<(&'static str, String)> {
+        let mut env = extra_env_for(def);
+        if self
+            .upstreams
+            .as_ref()
+            .is_some_and(|u| u.native_oauth_selected(&def.id))
+        {
+            env.push((crate::upstreams::native::CLEAN_OAUTH_ENV, def.id.clone()));
+        }
+        env
+    }
+
     async fn list_agent_sessions(&self, def: &AcpAgentDef) -> Result<Vec<ImportSessionMeta>> {
         let cwd = std::env::temp_dir();
-        let extra_env = extra_env_for(def);
+        let extra_env = self.launch_environment(def);
         let adapter = adapter_for(&def.id);
         let server_command = agent_server_command(def, false);
         let (process, _updates_rx, _requests_rx) = tokio::time::timeout(

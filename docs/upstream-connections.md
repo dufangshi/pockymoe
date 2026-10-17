@@ -59,6 +59,38 @@ Each backup also retains its previous binding, including when the same connectio
 was reapplied with a different model or revision. Restoring it does not revert the
 saved connection; applying its newer revision remains an explicit choice.
 
+## Harness-local sign-in and native configuration
+
+Each harness's selector also offers **Account sign-in** or **Native config** when
+the device detects a usable native option. Choose it and click **Apply** to switch
+back from a saved API connection. Selecting an option alone changes nothing.
+An already active native option is selected automatically; applying it again is
+unnecessary. The native option remains selectable even without a compatible saved
+API connection. Older Supervisors that do not report native availability do not
+show this option.
+
+The native baseline belongs to one harness on one device. It is not a saved API
+connection: it is excluded from the account directory, synchronization, and plugin
+connection pickers. The Supervisor preserves the baseline before applying a
+managed connection, so switching between several API connections does not replace
+the original baseline with the previous API connection. Restoration updates only
+provider-owned configuration and necessary authentication fields, keeping unrelated
+settings such as hooks and MCP servers. OAuth credentials that stay in the
+harness's own credential store are not copied into a generic connection.
+
+Availability is a local credential/configuration check, not a remote provider
+authentication test. Expired, unrefreshable credentials do not count as usable.
+The apply operation rechecks availability and the selected native revision under
+the usual maintenance and harness gates. Conflicting edits or a busy harness
+leave the current selection unchanged and return an error.
+
+Detection reads the harness's supported local configuration and credential files.
+Claude's default macOS configuration also supports its Keychain entry, with a
+bounded lookup. Codex credentials stored only in an OS keyring are not detected;
+its `auth.json` credentials are supported. A configured credential helper is not
+executed just to populate this list. Local checks cannot establish whether an
+opaque refresh token has been revoked by the provider.
+
 ## Account directory and explicit synchronization
 
 Devices publish only `{id, name, protocol, revision}` over their authenticated
@@ -117,7 +149,7 @@ cannot list connections, apply them, or authorize transfers. Responses use
 
 | Method and path | Purpose |
 | --- | --- |
-| `GET /api/management/connections` | Local connections, bindings, and account discovery metadata |
+| `GET /api/management/connections` | Local connections, bindings, harness-local native availability, and account discovery metadata |
 | `POST /api/management/connections` | Save connection; never apply |
 | `DELETE /api/management/connections/{id}` | Remove this device's unreferenced copy |
 | `POST /api/management/connections/models` | Discover models using an unsaved draft |
@@ -125,9 +157,16 @@ cannot list connections, apply them, or authorize transfers. Responses use
 | `POST /api/management/connections/{id}/models` | Discover using saved credentials |
 | `POST /api/management/connections/{id}/test` | Test saved connection, optionally overriding `model` |
 | `POST /api/management/connections/{id}/apply` | Apply `{harness, model?}` explicitly |
+| `POST /api/management/upstreams/native/{harness}/activate` | Restore this harness's native option; body `{revision?}` |
 | `POST /api/management/connections/{id}/transfer-authorizations` | Source owner authorizes `{targetDeviceId, revision}` |
 | `POST /api/management/connections/{id}/sync` | Destination imports `{sourceDeviceId, revision, token, expectedRevision?}` |
 | `POST /api/peer/connections/{id}/export` | Certified encrypted peer consumes `{token, revision}` |
+
+The connection list's optional `native` object is keyed by harness ID. Each entry
+contains `available`, `active`, `kind` (`oauth` or `config`), and an opaque
+`revision` when a native baseline exists. No credentials or native configuration
+are returned. Clients omit the native choice when availability is false or the
+field is absent, and send its revision when applying the choice.
 
 The save body contains `name`, `protocol`, `baseUrl`, `apiKey`, optional `model`,
 `authType`, and `headers`; edits also supply `id` and `revision`. Native fragments

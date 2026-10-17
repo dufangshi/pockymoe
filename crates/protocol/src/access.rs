@@ -745,6 +745,26 @@ mod tests {
     }
 
     #[test]
+    fn native_upstream_management_stays_owner_only() {
+        let routes = [
+            ("GET", "/api/management/connections"),
+            ("POST", "/api/management/upstreams/native/claude/activate"),
+            ("POST", "/api/management/upstreams/native/codex/activate"),
+        ];
+        for (method, path) in routes {
+            assert!(access_allows(&owner_access(), method, path));
+            for scope in ["device", "thread"] {
+                for permission in ["read", "control"] {
+                    assert!(
+                        !access_allows(&shared(scope, permission, "write"), method, path),
+                        "{scope} {permission} {method} {path}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn read_control_workspace_search_and_owner_routes_share_one_allowlist() {
         let read = shared("thread", "read", "read");
         for path in [

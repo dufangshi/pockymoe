@@ -302,6 +302,7 @@ pub struct Supervisor {
     pub(crate) thread_host: std::sync::OnceLock<Arc<dyn crate::host_hooks::ThreadHost>>,
     automation_gate: tokio::sync::Mutex<()>,
     pub(crate) plugins: crate::plugins::PluginHost,
+    upstream_homes: std::collections::BTreeMap<String, PathBuf>,
     pub upstream_gate: Arc<tokio::sync::Mutex<()>>,
     pub harness_install_gate: Arc<tokio::sync::Mutex<()>>,
     pub interaction: crate::interaction::InteractionState,
@@ -420,6 +421,7 @@ impl Supervisor {
             thread_host: Default::default(),
             automation_gate: Default::default(),
             plugins: Default::default(),
+            upstream_homes: Default::default(),
             upstream_gate: Default::default(),
             harness_install_gate: Default::default(),
             started_at: now_rfc3339(),
@@ -457,6 +459,22 @@ impl Supervisor {
             tracing::warn!(%error, "automation command recovery failed");
         }
         supervisor
+    }
+
+    /// Explicit configuration roots for isolated embedders/tests; defaults to
+    /// the native harness home resolver without changing process environment.
+    pub fn with_upstream_homes(
+        mut self,
+        homes: std::collections::BTreeMap<String, PathBuf>,
+    ) -> Self {
+        self.upstream_homes = homes;
+        self
+    }
+    pub fn upstream_home(&self, harness: &str) -> PathBuf {
+        self.upstream_homes
+            .get(harness)
+            .cloned()
+            .unwrap_or_else(|| crate::upstreams::home(harness))
     }
 
     pub fn with_local_session_homes(mut self, homes: LocalSessionHomes) -> Self {
