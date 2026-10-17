@@ -32,6 +32,7 @@ import {
   updateWorkspaceSettings,
 } from '../lib/api';
 import {
+  PathChip,
   PhoneHandChoice,
   usePlugins,
   PluginSettingsButton,
@@ -984,23 +985,18 @@ export function AppShellSettingsDialog({
                     {translate("files.gitProjectsCloneIntoDevHomeNew")}</p>
                 </div>
               </div>
-              <div className="mt-3 grid gap-4">
-                <div className="border-y border-[var(--theme-border)] py-3">
+              {/* One column that never grows past the panel: long paths shorten. */}
+              <div className="mt-3 grid grid-cols-[minmax(0,1fr)] gap-4">
+                <div className="min-w-0 border-y border-[var(--theme-border)] py-3">
                   <p className="text-xs font-medium text-[var(--theme-fg-muted)]">
                     {translate("files.workspaceRoot")}</p>
-                  <p
-                    title={
-                      workspaceSettings?.workspaceRoot ??
-                      translate("files.loadingWorkspaceRoot")
-                    }
-                    className="mt-1 truncate font-mono text-xs leading-5 text-[var(--theme-fg-soft)]"
-                  >
-                    {workspaceSettingsState.loading && !workspaceSettings
-                      ? translate("files.loading")
-                      : (workspaceSettings?.workspaceRoot ?? translate("files.unavailable"))}
-                  </p>
+                  <div className="mt-1 flex min-w-0 text-xs leading-5 text-[var(--theme-fg-soft)]">
+                    {workspaceSettings?.workspaceRoot
+                      ? <PathChip path={workspaceSettings.workspaceRoot} />
+                      : workspaceSettingsState.loading ? translate("files.loading") : translate("files.unavailable")}
+                  </div>
                 </div>
-                <div>
+                <div className="min-w-0">
                   <label
                     htmlFor="settings-dev-home"
                     className="text-xs font-medium text-[var(--theme-fg-soft)]"

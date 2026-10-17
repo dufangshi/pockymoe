@@ -60,11 +60,23 @@ export function resolveSelector(selector: TourSelector) {
 const RAIL = 'nav.matter-rail';
 const TOPBAR = 'header.matter-topbar';
 const FILES = 'aside.workbench-tool-drawer';
+// The one-handed phone layout moves controls into the bottom dock and its More sheet.
+const DOCK = 'nav.matter-phone-dock';
+const DOCK_MORE = `${DOCK} button.matter-phone-more`;
+const DOCK_THREAD = `${DOCK} button.matter-phone-thread`;
+const OPEN_SHEET = 'section.matter-phone-sheet[data-open]';
 
-const terminalToggle = (layout: TourLayout) =>
-  labelled('button', 'workbench.terminal', layout === 'mobile' ? TOPBAR : RAIL);
-const explorerToggle = (layout: TourLayout) =>
-  labelled('button', 'workbench.toggleExplorer', layout === 'mobile' ? TOPBAR : RAIL);
+/** Any of the selectors; the first visible match is used. */
+const either = (...selectors: TourSelector[]): TourSelector => () => selectors.map(resolveSelector).join(', ');
+/** On a phone with the dock, a control inside More: open More first. */
+const inMore = { prerequisite: 'tour.openMore.prereq' as const, prerequisiteTarget: DOCK_MORE };
+
+const terminalToggle = (layout: TourLayout) => layout === 'mobile'
+  ? either(labelled('button', 'workbench.terminal', TOPBAR), labelled('button', 'workbench.terminal', DOCK))
+  : labelled('button', 'workbench.terminal', RAIL);
+const explorerToggle = (layout: TourLayout) => layout === 'mobile'
+  ? either(labelled('button', 'workbench.toggleExplorer', TOPBAR), labelled('button', 'workbench.toggleExplorer', DOCK))
+  : labelled('button', 'workbench.toggleExplorer', RAIL);
 const terminalPanel = '[data-testid="workbench-bottom-panel"] [data-testid="terminal-panel"]';
 
 const workspaceSteps: TourStep[] = [
@@ -160,6 +172,7 @@ const threadSteps: TourStep[] = [
     targets: [
       { selector: 'aside.matter-sidebar.is-open' },
       { selector: labelled('button', 'workbench.toggleShortcutsSidebar', TOPBAR), body: 'tour.threads.historyMobile.body' },
+      { selector: DOCK_THREAD, body: 'tour.threads.historyDock.body' },
     ],
     only: { layout: 'mobile' },
   },
@@ -179,6 +192,9 @@ const threadSteps: TourStep[] = [
     title: 'tour.threads.new.title',
     body: 'tour.threads.new.body',
     targets: [{ selector: 'button.matter-new-thread' }],
+    // On the dock it is at the foot of the thread list.
+    prerequisite: 'tour.threads.newThread.prereqDock',
+    prerequisiteTarget: DOCK_THREAD,
   },
   {
     id: 'model',
@@ -216,7 +232,11 @@ const threadSteps: TourStep[] = [
     page: 'thread',
     title: 'tour.threads.search.title',
     body: 'tour.threads.search.body',
-    targets: [{ selector: `${TOPBAR} button.matter-search-trigger` }],
+    targets: [
+      { selector: `${TOPBAR} button.matter-search-trigger` },
+      { selector: `${OPEN_SHEET} .matter-phone-sheet-tools button:has([data-icon="search"])` },
+    ],
+    ...inMore,
   },
 ];
 
@@ -314,6 +334,7 @@ const splitSteps: TourStep[] = [
     body: 'tour.split.trigger.body',
     targets: [{ selector: splitTrigger }],
     advanceOnClick: true,
+    ...inMore,
   },
   {
     id: 'picker',
@@ -322,7 +343,7 @@ const splitSteps: TourStep[] = [
     body: 'tour.split.picker.body',
     targets: [{ selector: '[data-testid="workbench-thread-picker"]' }],
     prerequisite: 'tour.split.picker.prereq',
-    prerequisiteTarget: splitTrigger,
+    prerequisiteTarget: either(splitTrigger, DOCK_MORE),
   },
   {
     id: 'panes',
@@ -335,7 +356,7 @@ const splitSteps: TourStep[] = [
       { selector: '.thread-jump-latest-cluster.has-pane-switch', body: 'tour.split.mobile.body' },
     ],
     prerequisite: 'tour.split.panes.prereq',
-    prerequisiteTarget: splitTrigger,
+    prerequisiteTarget: either(splitTrigger, DOCK_MORE),
   },
   {
     id: 'focus',
@@ -346,7 +367,7 @@ const splitSteps: TourStep[] = [
     // Phones have no pane header; the split trigger closes the split.
     only: { layout: 'desktop' },
     prerequisite: 'tour.split.panes.prereq',
-    prerequisiteTarget: splitTrigger,
+    prerequisiteTarget: either(splitTrigger, DOCK_MORE),
   },
 ];
 
@@ -432,6 +453,7 @@ const moreSteps: TourStep[] = [
     title: 'tour.more.automation.title',
     body: 'tour.more.automation.body',
     targets: [{ selector: automationToggle }],
+    ...inMore,
   },
   {
     id: 'subagents',
@@ -440,7 +462,7 @@ const moreSteps: TourStep[] = [
     body: 'tour.more.subagents.body',
     targets: [{ selector: () => `button.matter-watches-toggle[aria-expanded]:not([aria-label=${quoted(translate('automation.title'))}])` }],
     prerequisite: 'tour.more.subagents.prereq',
-    prerequisiteTarget: automationToggle,
+    prerequisiteTarget: either(automationToggle, DOCK_MORE),
   },
 ];
 
