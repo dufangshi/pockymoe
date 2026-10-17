@@ -340,13 +340,9 @@ async fn live_connection_and_editorial_protocol() {
         .expect("set a connection file path");
     let model = std::env::var("POCKYMOE_CONTENT_QUALITY_LIVE_MODEL").unwrap_or_default();
     let u = Upstream::from_file(Path::new(&path), &model).unwrap();
-    assert!(!u
-        .complete("Reply only OK.", "Connectivity check.", 32)
-        .await
-        .unwrap()
-        .is_empty());
-    // Exercise the shared registry path against the same authorized upstream too.
-    // Only this isolated Supervisor receives the private connection.
+    // The private file supplies fixture credentials only. Exercise the saved
+    // connection transport used by the current UI, without applying a harness.
+    // Legacy file transport remains covered by deterministic HTTP fixtures.
     let dir = tempfile::tempdir().unwrap();
     let s = supervisor(dir.path());
     let c: crate::upstreams::connections::Connection = serde_json::from_value(json!({
@@ -360,6 +356,15 @@ async fn live_connection_and_editorial_protocol() {
     )
     .unwrap();
     let u = Upstream::load(&s, &settings(json!({"connectionId":saved["id"]}))).unwrap();
+    assert!(!u
+        .complete(
+            "Reply only OK.",
+            "Connectivity check.",
+            crate::upstreams::connections::CONNECTION_PROBE_MAX_TOKENS,
+        )
+        .await
+        .unwrap()
+        .is_empty());
     assert_eq!(
         crate::upstreams::inventory(&crate::upstreams::directory(&s.config.database_url)).unwrap()
             ["active"],
@@ -958,7 +963,13 @@ async fn saved_connection_overrides_legacy_path_without_applying_a_harness() {
     let s = supervisor(dir.path());
     let (base, _, server) = mock(200, |body| {
         assert_eq!(body["model"], "mock-model");
-        completion("OK")
+        // A reasoning model can exhaust a tiny probe budget before completing
+        // its visible answer. Retain incomplete-response rejection.
+        if body["max_tokens"].as_u64().unwrap() < 128 {
+            json!({"choices":[{"finish_reason":"length","message":{"content":""}}]})
+        } else {
+            completion("OK")
+        }
     });
     let c:crate::upstreams::connections::Connection=serde_json::from_value(json!({"name":"Writing model","protocol":"openai_chat","baseUrl":base,"apiKey":"mock-credential","model":"default-model"})).unwrap();
     let saved = crate::upstreams::connections::upsert(
@@ -969,10 +980,19 @@ async fn saved_connection_overrides_legacy_path_without_applying_a_harness() {
     let settings = settings(
         json!({"connectionId":saved["id"],"connectionFile":"/nonexistent/legacy.json","model":"mock-model"}),
     );
-    let upstream = Upstream::load(&s, &settings).unwrap();
     assert_eq!(
-        upstream.complete("system", "user", 100).await.unwrap(),
-        "OK"
+        ContentQualityPlugin
+            .invoke(
+                "testConnection",
+                context(
+                    s.clone(),
+                    serde_json::to_value(&settings).unwrap(),
+                    json!({})
+                ),
+            )
+            .await
+            .unwrap()["status"],
+        "connected"
     );
     server.join().unwrap();
     assert!(

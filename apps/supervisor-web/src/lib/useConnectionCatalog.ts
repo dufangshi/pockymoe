@@ -105,3 +105,6 @@ export function useConnectionCatalog(apiRoot: string) {
       ),
   };
 }
+
+/** One device's catalog, shared by the Connections list and harness usage. */
+export type ConnectionCatalogStore = ReturnType<typeof useConnectionCatalog>;

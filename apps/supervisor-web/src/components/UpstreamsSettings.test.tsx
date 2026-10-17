@@ -47,25 +47,26 @@ const catalog = {
   deviceId: 'a',
   catalogAvailable: true,
 };
-it('shows only installed base harnesses and applies connections in the selected harness context', async () => {
+const inventory = [
+  { id: 'codex', name: 'OpenAI Codex', base: { installed: true } },
+  { id: 'claude', name: 'Claude Agent', base: { path: '/isolated/claude' } },
+  {
+    id: 'deepseek',
+    name: 'DSH',
+    base: { installed: false },
+    adapter: { installed: true },
+  },
+  { id: 'gemini', name: 'Gemini CLI', base: null },
+];
+const options = (select: HTMLElement) =>
+  within(select)
+    .getAllByRole('option')
+    .map((o) => o.textContent);
+
+it('lists connections on their own and applies them per installed harness below', async () => {
   vi.mocked(relayModeActive).mockReturnValue(true);
   vi.mocked(request).mockImplementation(async (path) => {
-    if (String(path).endsWith('/harnesses'))
-      return [
-        { id: 'codex', name: 'OpenAI Codex', base: { installed: true } },
-        {
-          id: 'claude',
-          name: 'Claude Agent',
-          base: { path: '/isolated/claude' },
-        },
-        {
-          id: 'deepseek',
-          name: 'DSH',
-          base: { installed: false },
-          adapter: { installed: true },
-        },
-        { id: 'gemini', name: 'Gemini CLI', base: null },
-      ];
+    if (String(path).endsWith('/harnesses')) return inventory;
     if (String(path).endsWith('/management/connections')) return catalog;
     return { profiles: [], active: {}, backups: [] };
   });
@@ -74,82 +75,130 @@ it('shows only installed base harnesses and applies connections in the selected 
       <UpstreamsSettings />
     </MemoryRouter>,
   );
-  expect(
-    await screen.findByRole('button', { name: 'OpenAI Codex' }),
-  ).toBeVisible();
-  expect(screen.getByRole('button', { name: 'Claude Agent' })).toBeVisible();
-  expect(screen.queryByRole('button', { name: 'DSH' })).toBeNull();
-  expect(screen.queryByRole('button', { name: 'Gemini CLI' })).toBeNull();
-  expect(
-    await screen.findByRole('listitem', { name: 'Work API' }),
-  ).toBeVisible();
-  expect(screen.getByTestId('harness-binding')).toHaveTextContent(
-    'OpenAI Codex usesWork API · model-a',
+  // Connections come first and carry no harness actions.
+  const work = await screen.findByRole('listitem', { name: 'Work API' });
+  expect(await within(work).findByText('OpenAI Codex')).toBeVisible();
+  expect(within(work).queryByRole('button', { name: /apply/i })).toBeNull();
+  expect(screen.queryByRole('group', { name: 'Choose harness' })).toBeNull();
+
+  const harnesses = screen.getByRole('region', { name: 'Use in harnesses' });
+  const codex = await within(harnesses).findByRole('listitem', {
+    name: 'OpenAI Codex',
+  });
+  expect(within(codex).getByTestId('harness-current')).toHaveTextContent(
+    'Work API · model-a',
   );
-  const work = screen.getByRole('listitem', { name: 'Work API' });
-  expect(within(work).getByText('In use')).toBeVisible();
-  const anthropic = screen.getByRole('listitem', { name: 'Anthropic Direct' });
-  expect(within(anthropic).getByText('Incompatible')).toBeVisible();
-  fireEvent.click(screen.getByRole('button', { name: 'Claude Agent' }));
   expect(
-    await within(anthropic).findByRole('button', {
-      name: 'Apply Anthropic Direct to Claude Agent',
+    options(within(codex).getByLabelText('Connection for OpenAI Codex')),
+  ).toEqual(['Choose a connection', 'Work API']);
+  expect(
+    within(codex).getByRole('button', {
+      name: 'Reapply Work API to OpenAI Codex',
     }),
   ).toBeEnabled();
-  expect(within(work).queryByRole('button', { name: /^Apply/ })).toBeNull();
-  fireEvent.click(screen.getByRole('checkbox', { name: 'Show uninstalled' }));
-  fireEvent.click(screen.getByRole('button', { name: 'DSH' }));
-  expect(screen.getByText(/Install this harness/)).toBeVisible();
+  const claude = within(harnesses).getByRole('listitem', {
+    name: 'Claude Agent',
+  });
   expect(
-    within(
-      screen.getByRole('listitem', { name: 'Anthropic Direct' }),
-    ).getByRole('button', { name: 'Apply Anthropic Direct to DSH' }),
+    options(within(claude).getByLabelText('Connection for Claude Agent')),
+  ).toEqual(['Choose a connection', 'Anthropic Direct']);
+  // Uninstalled harnesses stay out of the way until asked for.
+  expect(within(harnesses).queryByRole('listitem', { name: 'DSH' })).toBeNull();
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Show uninstalled' }));
+  const dsh = within(harnesses).getByRole('listitem', { name: 'DSH' });
+  expect(within(dsh).getByText('Not installed')).toBeVisible();
+  fireEvent.change(within(dsh).getByLabelText('Connection for DSH'), {
+    target: { value: 'claude-only' },
+  });
+  expect(
+    within(dsh).getByRole('button', { name: 'Apply Anthropic Direct to DSH' }),
   ).toBeDisabled();
-  // Native tools stay available, but only load when opened.
+  // Native tools stay available per harness, but only load when opened.
   expect(request).not.toHaveBeenCalledWith(
     'relay/devices/a/api/management/upstreams',
     expect.anything(),
   );
-  fireEvent.click(screen.getByText('DSH native configuration'));
+  fireEvent.click(
+    within(codex).getByRole('button', {
+      name: 'OpenAI Codex native configuration',
+    }),
+  );
   expect(
-    await screen.findByRole('button', { name: 'Import config' }),
+    await within(codex).findByRole('button', { name: 'Import config' }),
   ).toBeVisible();
-  expect(screen.queryByRole('button', { name: 'Add upstream' })).toBeNull();
   expect(request).toHaveBeenCalledWith(
     'relay/devices/a/api/management/connections',
     expect.anything(),
   );
 });
-it('does not show default harnesses when inventory is empty or unavailable', async () => {
-  let inventory: () => Promise<unknown> = async () => [];
-  vi.mocked(request).mockImplementation(async (path) =>
-    String(path).endsWith('/harnesses')
-      ? inventory()
-      : { ...catalog, connections: [], bindings: {} },
-  );
+
+it('adds connections without any harness and when the harness inventory fails', async () => {
+  let inventoryResult: () => Promise<unknown> = async () => [];
+  let saved = false;
+  const lab = { ...catalog.connections[1], id: 'new', name: 'Lab' };
+  vi.mocked(request).mockImplementation(async (path, init) => {
+    if (String(path).endsWith('/harnesses')) return inventoryResult();
+    if (
+      String(path).endsWith('/management/connections') &&
+      init?.method === 'POST'
+    ) {
+      saved = true;
+      return lab;
+    }
+    return {
+      ...catalog,
+      connections: saved ? [lab] : [],
+      bindings: {},
+    };
+  });
   render(
     <MemoryRouter>
       <UpstreamsSettings />
     </MemoryRouter>,
   );
   expect(await screen.findByText(/No harnesses are installed/)).toBeVisible();
-  expect(screen.queryByRole('button', { name: 'OpenAI Codex' })).toBeNull();
-  // Connections stay usable for plugins without any harness.
   expect(await screen.findByText(/No connections yet/)).toBeVisible();
-  inventory = async () => {
+  inventoryResult = async () => {
     throw new Error('offline');
   };
   fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
-  expect(await screen.findByRole('alert')).toHaveTextContent(
+  const harnesses = screen.getByRole('region', { name: 'Use in harnesses' });
+  expect(await within(harnesses).findByRole('alert')).toHaveTextContent(
     'Unable to check installed harnesses',
   );
-  expect(screen.queryByRole('button', { name: /^Apply/ })).toBeNull();
+  // The inventory failure is confined to the harness section.
+  const add = screen.getByRole('button', { name: 'Add connection' });
+  await waitFor(() => expect(add).toBeEnabled());
+  fireEvent.click(add);
+  const dialog = await screen.findByRole('dialog', { name: 'Add connection' });
+  fireEvent.change(within(dialog).getByLabelText('Name'), {
+    target: { value: 'Lab' },
+  });
+  fireEvent.change(within(dialog).getByLabelText('Base URL'), {
+    target: { value: 'https://lab.test/v1' },
+  });
+  fireEvent.change(within(dialog).getByLabelText('API key'), {
+    target: { value: 'k' },
+  });
+  fireEvent.click(
+    within(dialog).getByRole('button', { name: 'Save connection' }),
+  );
+  expect(await screen.findByRole('listitem', { name: 'Lab' })).toBeVisible();
+  expect(
+    vi
+      .mocked(request)
+      .mock.calls.some(([path]) => String(path).includes('/apply')),
+  ).toBe(false);
 });
+
 it('ignores an old inventory response after switching devices', async () => {
   vi.mocked(relayModeActive).mockReturnValue(true);
   let resolveA!: (value: unknown) => void;
   vi.mocked(request).mockImplementation(async (path) => {
-    if (String(path).includes('/devices/a/'))
+    if (
+      String(path).includes('/devices/a/') &&
+      String(path).endsWith('/harnesses')
+    )
       return new Promise((resolve) => {
         resolveA = resolve;
       });
@@ -177,7 +226,7 @@ it('ignores an old inventory response after switching devices', async () => {
   );
   await waitFor(() => expect(resolveA).toBeTypeOf('function'));
   fireEvent.click(screen.getByRole('button', { name: 'Device B' }));
-  await screen.findByRole('button', { name: 'Claude Agent' });
+  await screen.findByRole('listitem', { name: 'Claude Agent' });
   resolveA([{ id: 'codex', name: 'OpenAI Codex', base: { installed: true } }]);
   await waitFor(() =>
     expect(request).toHaveBeenCalledWith(
@@ -185,8 +234,9 @@ it('ignores an old inventory response after switching devices', async () => {
       expect.anything(),
     ),
   );
-  expect(screen.queryByRole('button', { name: 'OpenAI Codex' })).toBeNull();
+  expect(screen.queryByRole('listitem', { name: 'OpenAI Codex' })).toBeNull();
 });
+
 it('requires a device selection on relay home', () => {
   vi.mocked(relayModeActive).mockReturnValue(true);
   render(

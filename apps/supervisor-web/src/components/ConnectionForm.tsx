@@ -18,7 +18,7 @@ import { ConnectionModelField } from './ConnectionModelField';
 import { upstreamPresets } from './upstreamPresets';
 
 const field =
-  'host-input mt-1 min-h-9 w-full min-w-0 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-panel)] px-2.5 py-1.5 text-sm';
+  'host-input mt-1 min-h-10 w-full min-w-0 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-panel)] px-2.5 py-1.5 text-sm sm:min-h-9';
 const label = 'block text-xs font-medium text-[var(--theme-fg-soft)]';
 const presetProtocol: Record<string, ConnectionProtocol> = {
   codex: 'openai_responses',
@@ -429,7 +429,7 @@ export function ConnectionForm({
       <div className="flex flex-wrap items-center gap-2">
         <button
           type="button"
-          className="host-secondary-button inline-flex min-h-9 items-center gap-1.5 rounded-lg border px-3 text-xs disabled:opacity-40"
+          className="host-secondary-button inline-flex min-h-10 items-center gap-1.5 sm:min-h-9 rounded-lg border px-3 text-xs disabled:opacity-40"
           disabled={!!busy || !canDiscover || headers === null}
           onClick={() => void runTest()}
         >
@@ -473,7 +473,7 @@ export function ConnectionForm({
       >
         <button
           type="button"
-          className="host-secondary-button min-h-9 whitespace-nowrap rounded-lg border px-4 text-[13px]"
+          className="host-secondary-button min-h-10 whitespace-nowrap rounded-lg border px-4 text-[13px] sm:min-h-9"
           disabled={busy === 'save'}
           onClick={onCancel}
         >
@@ -481,7 +481,7 @@ export function ConnectionForm({
         </button>
         <button
           type="submit"
-          className="relay-button-primary !min-h-9 whitespace-nowrap !px-4"
+          className="relay-button-primary !min-h-10 whitespace-nowrap !px-4 sm:!min-h-9"
           aria-label={translate('settings.connSave')}
           disabled={!valid || !!busy || (saved && !dirty)}
         >

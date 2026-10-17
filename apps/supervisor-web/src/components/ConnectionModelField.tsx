@@ -96,7 +96,7 @@ export function ConnectionModelField({
       <div className="mt-1 flex min-w-0 gap-2">
         <input
           id={`${id}-model`}
-          className="host-input min-h-9 min-w-0 flex-1 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-panel)] px-2.5 py-1.5 text-sm"
+          className="host-input min-h-10 min-w-0 flex-1 sm:min-h-9 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-panel)] px-2.5 py-1.5 text-sm"
           value={value}
           disabled={disabled}
           autoComplete="off"
@@ -107,7 +107,7 @@ export function ConnectionModelField({
         />
         <button
           type="button"
-          className="host-secondary-button inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center gap-1.5 rounded-lg border px-3 text-xs disabled:opacity-40"
+          className="host-secondary-button inline-flex min-h-10 min-w-10 shrink-0 sm:min-h-9 sm:min-w-9 items-center justify-center gap-1.5 rounded-lg border px-3 text-xs disabled:opacity-40"
           disabled={disabled || !canDiscover || state === 'loading'}
           aria-label={translate(
             models ? 'settings.connRefreshModels' : 'settings.connFindModels',
@@ -130,7 +130,7 @@ export function ConnectionModelField({
       </div>
       {!!models?.length && (
         <select
-          className="host-input mt-1.5 min-h-9 w-full min-w-0 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-panel)] px-2.5 py-1.5 text-sm"
+          className="host-input mt-1.5 min-h-10 w-full sm:min-h-9 min-w-0 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-panel)] px-2.5 py-1.5 text-sm"
           aria-label={translate('settings.connChooseModel')}
           disabled={disabled}
           value={listed ? value : ''}

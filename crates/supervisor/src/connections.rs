@@ -221,9 +221,15 @@ pub async fn test(
         saved::get(&dir(&s), &id).map_err(failure)?
     };
     let start = std::time::Instant::now();
-    saved::complete(&c, &input.model, "Reply briefly.", "Reply OK", 128)
-        .await
-        .map_err(failure)?;
+    saved::complete(
+        &c,
+        &input.model,
+        "Reply briefly.",
+        "Reply OK",
+        saved::CONNECTION_PROBE_MAX_TOKENS,
+    )
+    .await
+    .map_err(failure)?;
     Ok(Json(
         json!({"ok":true,"latencyMs":start.elapsed().as_millis(),"model":if input.model.is_empty(){&c.model}else{&input.model}}),
     ))
@@ -237,9 +243,15 @@ pub async fn test_draft(
         saved::prepare(&dir(&s), draft(&s, input)?).map_err(failure)?
     };
     let start = std::time::Instant::now();
-    saved::complete(&c, "", "Reply briefly.", "Reply OK", 128)
-        .await
-        .map_err(failure)?;
+    saved::complete(
+        &c,
+        "",
+        "Reply briefly.",
+        "Reply OK",
+        saved::CONNECTION_PROBE_MAX_TOKENS,
+    )
+    .await
+    .map_err(failure)?;
     Ok(Json(
         json!({"ok":true,"latencyMs":start.elapsed().as_millis(),"model":c.model}),
     ))

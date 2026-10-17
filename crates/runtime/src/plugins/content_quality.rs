@@ -207,7 +207,11 @@ impl BuiltinPlugin for ContentQualityPlugin {
             "testConnection" => {
                 let upstream = Upstream::load(&context.supervisor, &settings)?;
                 upstream
-                    .complete("Reply only OK.", "Connectivity check.", 32)
+                    .complete(
+                        "Reply only OK.",
+                        "Connectivity check.",
+                        crate::upstreams::connections::CONNECTION_PROBE_MAX_TOKENS,
+                    )
                     .await?;
                 Ok(json!({"status":"connected","model":upstream.model}))
             }

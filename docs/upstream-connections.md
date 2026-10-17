@@ -6,6 +6,14 @@ it to a harness. Settings, harness pages, and plugin settings share one connecti
 form. Saving, model discovery, connection testing, and synchronization never write
 harness configuration or restart a harness.
 
+In Settings > Upstreams, manage saved connections first. Adding a connection
+does not require selecting or installing a harness. Harness use is a separate
+step: choose a harness and a compatible saved connection, then explicitly apply
+it. Plugins select from the same saved connections in their own settings.
+Connection tests request only a brief answer but allow 1,024 output tokens for
+models that use part of that budget for reasoning. Incomplete responses still
+fail the test.
+
 ## Local storage and migration
 
 Connections are stored privately beside the Supervisor database in

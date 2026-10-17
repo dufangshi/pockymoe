@@ -1,21 +1,22 @@
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import {
-  Check,
   CloudDownload,
   FlaskConical,
   MoreHorizontal,
   Pencil,
   Plus,
+  RefreshCw,
   Trash2,
-  TriangleAlert,
 } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  useEffect,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from 'react';
 import {
   connectionErrorMessage,
   connectionState,
-  connectionsApi,
-  harnessProtocols,
-  protocolLabel,
   protocolShort,
   remoteSources,
   syncSources,
@@ -23,15 +24,16 @@ import {
   type ConnectionState,
   type ConnectionSummary,
 } from '../lib/connections';
-import { useConnectionCatalog } from '../lib/useConnectionCatalog';
+import type { ConnectionCatalogStore } from '../lib/useConnectionCatalog';
 import { ConnectionDialog } from './ConnectionDialog';
-import { ConnectionModelField } from './ConnectionModelField';
 import { FormDialog } from './FormDialog';
 
-const button =
-  'host-secondary-button inline-flex min-h-9 shrink-0 items-center justify-center gap-1 rounded-lg border px-2.5 text-xs font-medium whitespace-nowrap disabled:opacity-40';
-const iconButton =
-  'host-secondary-button inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-lg border disabled:opacity-40';
+export const button =
+  'host-secondary-button inline-flex min-h-10 shrink-0 items-center justify-center gap-1 rounded-lg border px-2.5 text-xs font-medium whitespace-nowrap disabled:opacity-40 sm:min-h-9';
+export const iconButton =
+  'host-secondary-button inline-flex min-h-10 min-w-10 shrink-0 items-center justify-center rounded-lg border disabled:opacity-40 sm:min-h-9 sm:min-w-9';
+const warnPill =
+  'bg-[var(--status-warning-bg,var(--theme-hover))] text-[var(--status-warning-fg,var(--theme-fg))]';
 const stateOrder: Record<ConnectionState, number> = {
   local: 0,
   conflict: 1,
@@ -39,21 +41,23 @@ const stateOrder: Record<ConnectionState, number> = {
   offline: 3,
 };
 
-export type HarnessContext = { id: string; name: string; installed: boolean };
+type Usage = { harness: string; pending: boolean };
 
 /**
- * The account's connections as seen from one device. Sync copies a remote connection
- * here; Apply (harness context only) is a separate, explicit action on local entries.
+ * The account's connections as seen from this device, independent of any harness.
+ * Sync copies a remote connection here; applying to a harness happens elsewhere.
  */
 export function ConnectionCatalog({
   apiRoot,
-  harness,
-  reloadKey = 0,
+  store,
+  harnessNames = {},
+  onRefresh,
 }: {
   apiRoot: string;
-  harness?: HarnessContext | null;
-  /** Bumped by the page's Refresh and by native-config tools that migrate profiles. */
-  reloadKey?: number;
+  store: ConnectionCatalogStore;
+  /** Display names for harness ids in the catalog's bindings. */
+  harnessNames?: Record<string, string>;
+  onRefresh?: () => void;
 }) {
   useI18n();
   const {
@@ -66,30 +70,29 @@ export function ConnectionCatalog({
     syncing,
     syncErrors,
     upsert,
-  } = useConnectionCatalog(apiRoot);
+  } = store;
   const [editing, setEditing] = useState<ConnectionSummary | 'new' | null>(
     null,
   );
-  const [applying, setApplying] = useState<ConnectionSummary | null>(null);
   const [choosing, setChoosing] = useState<ConnectionSummary | null>(null);
   const [deleting, setDeleting] = useState<ConnectionSummary | null>(null);
   const [notice, setNotice] = useState('');
   const [rowError, setRowError] = useState<Record<string, string>>({});
   const [testing, setTesting] = useState<string | null>(null);
   const [search, setSearch] = useState('');
-  const firstReload = useRef(reloadKey);
-  useEffect(() => {
-    if (reloadKey !== firstReload.current) void reload();
-  }, [reloadKey]);
   const deviceId = catalog?.deviceId ?? null;
-  const binding = harness ? catalog?.bindings[harness.id] : undefined;
   const all = catalog?.connections ?? [];
-  const bound = binding?.connectionId
-    ? all.find((c) => c.id === binding.connectionId && c.local)
-    : undefined;
-  // Saving or syncing never changes the harness: the applied revision stays until Reapply.
-  const pending =
-    !!bound && !!binding?.revision && binding.revision !== bound.revision;
+  // Which harnesses use each local connection, and whether they still run an
+  // older applied revision (saving or syncing never changes a harness).
+  const usage = (c: ConnectionSummary): Usage[] =>
+    c.local
+      ? Object.entries(catalog?.bindings ?? {})
+          .filter(([, b]) => b.connectionId === c.id)
+          .map(([id, b]) => ({
+            harness: harnessNames[id] ?? id,
+            pending: !!b.revision && b.revision !== c.revision,
+          }))
+      : [];
   const keyword = search.trim().toLowerCase();
   const rows = all
     .filter(
@@ -105,10 +108,10 @@ export function ConnectionCatalog({
           .toLowerCase()
           .includes(keyword),
     )
-    .map((c) => ({ c, state: connectionState(c, deviceId) }))
+    .map((c) => ({ c, state: connectionState(c, deviceId), used: usage(c) }))
     .sort(
       (a, b) =>
-        Number(b.c.id === bound?.id) - Number(a.c.id === bound?.id) ||
+        Number(b.used.length > 0) - Number(a.used.length > 0) ||
         stateOrder[a.state] - stateOrder[b.state] ||
         a.c.name.localeCompare(b.c.name),
     );
@@ -125,10 +128,7 @@ export function ConnectionCatalog({
     const result = await sync(c, chosen);
     if (result)
       setNotice(
-        translate(
-          harness ? 'settings.connSyncedApplyHint' : 'settings.connSyncedHint',
-          { name: result.name ?? c.name, harness: harness?.name ?? '' },
-        ),
+        translate('settings.connSyncedHint', { name: result.name ?? c.name }),
       );
   }
 
@@ -167,45 +167,32 @@ export function ConnectionCatalog({
         <h3 className="text-[13px] font-semibold">
           {translate('settings.connTitle')}
         </h3>
-        <button
-          type="button"
-          className={button}
-          disabled={!catalog}
-          aria-label={translate('settings.connAdd')}
-          title={translate('settings.connAdd')}
-          onClick={() => setEditing('new')}
-        >
-          <Plus size={14} aria-hidden />
-          {translate('settings.connAddShort')}
-        </button>
-      </div>
-      {harness && catalog && (
-        <p
-          className="mt-2.5 flex min-w-0 items-center gap-1.5 rounded-lg bg-[var(--theme-hover)] px-2.5 py-1.5 text-xs"
-          data-testid="harness-binding"
-        >
-          <span className="shrink-0 text-[var(--theme-fg-muted)]">
-            {translate('settings.connHarnessUses', { harness: harness.name })}
-          </span>
-          {/* Pending changes show on the bound row, next to its Reapply. */}
-          <strong
-            className="min-w-0 truncate font-semibold"
-            title={
-              bound
-                ? [bound.name, binding?.model].filter(Boolean).join(' · ')
-                : undefined
-            }
+        <div className="flex gap-1.5">
+          {onRefresh && (
+            <button
+              type="button"
+              className={iconButton}
+              aria-label={translate('settings.upstreamsRefresh')}
+              title={translate('settings.upstreamsRefresh')}
+              disabled={loading}
+              onClick={onRefresh}
+            >
+              <RefreshCw size={14} aria-hidden />
+            </button>
+          )}
+          <button
+            type="button"
+            className={button}
+            disabled={!catalog}
+            aria-label={translate('settings.connAdd')}
+            title={translate('settings.connAdd')}
+            onClick={() => setEditing('new')}
           >
-            {bound
-              ? [bound.name, binding?.model].filter(Boolean).join(' · ')
-              : translate(
-                  binding?.profileId
-                    ? 'settings.connHarnessLegacy'
-                    : 'settings.connHarnessNative',
-                )}
-          </strong>
-        </p>
-      )}
+            <Plus size={14} aria-hidden />
+            {translate('settings.connAddShort')}
+          </button>
+        </div>
+      </div>
       {catalog && deviceId && !catalog.catalogAvailable && (
         <p
           role="status"
@@ -264,27 +251,17 @@ export function ConnectionCatalog({
               {translate('settings.connNoMatches')}
             </li>
           )}
-          {rows.map(({ c, state }) => (
+          {rows.map(({ c, state, used }) => (
             <ConnectionRow
               key={c.id}
               connection={c}
               state={state}
               deviceId={deviceId}
-              harness={harness ?? null}
-              protocols={
-                harness
-                  ? (catalog.harnessProtocols?.[harness.id] ??
-                    harnessProtocols[harness.id] ??
-                    [])
-                  : []
-              }
-              bound={bound?.id === c.id}
-              pending={pending && bound?.id === c.id}
+              usage={used}
               syncing={syncing === c.id}
               testing={testing === c.id}
               error={syncErrors[c.id] ?? rowError[c.id] ?? ''}
               onSync={() => void startSync(c)}
-              onApply={() => setApplying(c)}
               onEdit={() => setEditing(c)}
               onTest={() => void runTest(c)}
               onDelete={() => setDeleting(c)}
@@ -311,39 +288,14 @@ export function ConnectionCatalog({
           connection={editing === 'new' ? null : editing}
           onClose={() => setEditing(null)}
           onSaved={(saved) => {
+            const inUse = editing !== 'new' && usage(editing).length > 0;
             upsert(saved);
             setEditing(null);
             setNotice(
-              harness && saved.id === bound?.id
-                ? translate('settings.connSavedBound', {
-                    name: saved.name,
-                    harness: harness.name,
-                  })
-                : translate('settings.connSaved', { name: saved.name }),
-            );
-            void reload();
-          }}
-        />
-      )}
-      {applying && harness && (
-        <ApplyDialog
-          apiRoot={apiRoot}
-          connection={applying}
-          initialModel={
-            (applying.id === bound?.id ? binding?.model : null) ||
-            applying.model ||
-            ''
-          }
-          harness={harness}
-          onClose={() => setApplying(null)}
-          onApplied={(model) => {
-            setApplying(null);
-            setNotice(
-              translate('settings.connApplied', {
-                name: applying.name,
-                harness: harness.name,
-                model,
-              }),
+              translate(
+                inUse ? 'settings.connSavedInUse' : 'settings.connSaved',
+                { name: saved.name },
+              ),
             );
             void reload();
           }}
@@ -395,15 +347,11 @@ function ConnectionRow({
   connection: c,
   state,
   deviceId,
-  harness,
-  protocols,
-  bound,
-  pending,
+  usage,
   syncing,
   testing,
   error,
   onSync,
-  onApply,
   onEdit,
   onTest,
   onDelete,
@@ -411,15 +359,11 @@ function ConnectionRow({
   connection: ConnectionSummary;
   state: ConnectionState;
   deviceId: string | null;
-  harness: HarnessContext | null;
-  protocols: string[];
-  bound: boolean;
-  pending: boolean;
+  usage: Usage[];
   syncing: boolean;
   testing: boolean;
   error: string;
   onSync: () => void;
-  onApply: () => void;
   onEdit: () => void;
   onTest: () => void;
   onDelete: () => void;
@@ -427,24 +371,6 @@ function ConnectionRow({
   const remote = remoteSources(c, deviceId);
   const sources = syncSources(c, deviceId);
   const canSync = !!deviceId && (state !== 'local' || sources.length > 0);
-  const compatible = !harness || protocols.includes(c.protocol);
-  // One status per row; the harness name is already in the page context.
-  const status =
-    harness && bound
-      ? pending
-        ? {
-            text: translate('settings.connPending'),
-            tone: 'warn',
-            title: translate('settings.connPendingHint', {
-              harness: harness.name,
-            }),
-          }
-        : { text: translate('settings.connInUse'), tone: 'accent' }
-      : state === 'offline'
-        ? { text: translate('settings.connStateOffline'), tone: 'warn' }
-        : state === 'conflict'
-          ? { text: translate('settings.connStateConflict'), tone: 'warn' }
-          : null;
   const meta = [
     protocolShort(c.protocol),
     ...(c.local
@@ -459,38 +385,47 @@ function ConnectionRow({
     .join(' · ');
   return (
     <li
-      className={`rounded-xl border px-3 py-2.5 ${bound ? 'border-[var(--theme-accent-border)] bg-[var(--theme-accent-soft)]' : 'border-[var(--theme-border)] bg-[var(--theme-panel)]'}`}
+      className={`rounded-xl border px-3 py-2.5 ${usage.length ? 'border-[var(--theme-accent-border)] bg-[var(--theme-accent-soft)]' : 'border-[var(--theme-border)] bg-[var(--theme-panel)]'}`}
       aria-label={c.name}
     >
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
         <div className="min-w-0 flex-1 basis-36">
-          <div className="flex min-w-0 items-center gap-1.5">
+          <div className="flex min-w-0 flex-wrap items-center gap-1.5">
             <h4
-              className="min-w-0 truncate text-[13px] font-semibold leading-5"
+              className="min-w-0 max-w-full truncate text-[13px] font-semibold leading-5"
               title={c.name}
             >
               {c.name}
             </h4>
-            {status && (
+            {(state === 'offline' || state === 'conflict') && (
               <span
-                className={`inline-flex shrink-0 items-center gap-0.5 rounded-full px-1.5 text-[11px] leading-[18px] ${status.tone === 'accent' ? 'bg-[var(--theme-accent-soft)] text-[var(--theme-accent-strong)]' : 'bg-[var(--status-warning-bg,var(--theme-hover))] text-[var(--status-warning-fg,var(--theme-fg))]'}`}
-                title={status.title}
+                className={`inline-flex shrink-0 rounded-full px-1.5 text-[11px] leading-[18px] ${warnPill}`}
               >
-                {status.tone === 'accent' && <Check size={11} aria-hidden />}
-                {status.text}
+                {translate(
+                  state === 'offline'
+                    ? 'settings.connStateOffline'
+                    : 'settings.connStateConflict',
+                )}
               </span>
             )}
-            {/* A bound row's pill shows the harness state; keep the device split visible. */}
-            {status && state === 'conflict' && harness && bound && (
+            {usage.map((u) => (
               <span
-                role="img"
-                className="inline-flex shrink-0 text-[var(--status-warning-fg,var(--theme-fg))]"
-                aria-label={translate('settings.connStateConflict')}
-                title={translate('settings.connStateConflict')}
+                key={u.harness}
+                className={`inline-flex shrink-0 rounded-full px-1.5 text-[11px] leading-[18px] ${u.pending ? warnPill : 'bg-[var(--theme-panel)] text-[var(--theme-accent-strong)]'}`}
+                title={translate(
+                  u.pending
+                    ? 'settings.connPendingHint'
+                    : 'settings.connUsedBy',
+                  { harness: u.harness },
+                )}
               >
-                <TriangleAlert size={13} aria-hidden />
+                {u.pending
+                  ? translate('settings.connUsagePending', {
+                      harness: u.harness,
+                    })
+                  : u.harness}
               </span>
-            )}
+            ))}
           </div>
           <p
             className="mt-0.5 truncate text-[11px] leading-4 text-[var(--theme-fg-muted)]"
@@ -522,52 +457,6 @@ function ConnectionRow({
                 : translate('settings.connSync')}
             </button>
           )}
-          {harness &&
-            c.local &&
-            (compatible ? (
-              <button
-                type="button"
-                className={
-                  pending
-                    ? `${button} border-[var(--theme-accent-border)] text-[var(--theme-accent-strong)]`
-                    : button
-                }
-                disabled={!harness.installed}
-                aria-label={translate(
-                  bound
-                    ? 'settings.connReapplyNamed'
-                    : 'settings.connApplyNamed',
-                  { name: c.name, harness: harness.name },
-                )}
-                title={
-                  harness.installed
-                    ? translate(
-                        bound
-                          ? 'settings.connReapplyNamed'
-                          : 'settings.connApplyNamed',
-                        { name: c.name, harness: harness.name },
-                      )
-                    : translate('settings.upstreamsUninstalled')
-                }
-                onClick={onApply}
-              >
-                {translate(
-                  bound
-                    ? 'settings.connReapplyShort'
-                    : 'settings.connApplyShort',
-                )}
-              </button>
-            ) : (
-              <span
-                className="px-1 text-[11px] text-[var(--theme-fg-muted)]"
-                title={translate('settings.connIncompatibleHint', {
-                  harness: harness.name,
-                  protocol: protocolLabel(c.protocol),
-                })}
-              >
-                {translate('settings.connIncompatible')}
-              </span>
-            ))}
           {c.local && (
             <RowMenu
               name={c.name}
@@ -606,9 +495,18 @@ function RowMenu({
 }) {
   const [open, setOpen] = useState(false);
   const menu = useRef<HTMLDivElement>(null);
+  const list = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
+  const items = () =>
+    Array.from(
+      list.current?.querySelectorAll<HTMLButtonElement>(
+        '[role="menuitem"]:not(:disabled)',
+      ) ?? [],
+    );
   useEffect(() => {
     if (!open) return;
+    // Opening focuses the first item; Esc closes and returns focus.
+    items()[0]?.focus();
     const outside = (e: PointerEvent) => {
       if (!menu.current?.contains(e.target as Node)) setOpen(false);
     };
@@ -626,8 +524,30 @@ function RowMenu({
       document.removeEventListener('keydown', escape, true);
     };
   }, [open]);
+  function move(e: ReactKeyboardEvent) {
+    const all = items();
+    const index = all.indexOf(document.activeElement as HTMLButtonElement);
+    const next =
+      e.key === 'ArrowDown'
+        ? all[(index + 1) % all.length]
+        : e.key === 'ArrowUp'
+          ? all[(index - 1 + all.length) % all.length]
+          : e.key === 'Home'
+            ? all[0]
+            : e.key === 'End'
+              ? all.at(-1)
+              : undefined;
+    if (!next) return;
+    e.preventDefault();
+    next.focus();
+  }
+  function choose(action: () => void) {
+    setOpen(false);
+    trigger.current?.focus();
+    action();
+  }
   const item =
-    'flex min-h-10 w-full items-center gap-2 rounded-lg px-3 text-left text-xs hover:bg-[var(--theme-hover)] disabled:opacity-40';
+    'flex min-h-11 w-full items-center gap-2 rounded-lg px-3 text-left text-xs hover:bg-[var(--theme-hover)] focus-visible:bg-[var(--theme-hover)] disabled:opacity-40 sm:min-h-10';
   return (
     <div className="relative" ref={menu}>
       <button
@@ -635,6 +555,7 @@ function RowMenu({
         type="button"
         className={iconButton}
         aria-label={translate('settings.upstreamsMoreActions', { name })}
+        aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => setOpen(!open)}
       >
@@ -642,145 +563,46 @@ function RowMenu({
       </button>
       {open && (
         <div
-          className="absolute right-0 top-10 z-10 min-w-44 rounded-xl border border-[var(--theme-border)] bg-[var(--theme-panel)] p-1 shadow-lg"
-          role="group"
+          ref={list}
+          className="absolute right-0 top-11 z-10 min-w-44 rounded-xl border border-[var(--theme-border)] bg-[var(--theme-panel)] p-1 shadow-lg sm:top-10"
+          role="menu"
           aria-label={translate('settings.upstreamsMoreActions', { name })}
+          onKeyDown={move}
         >
           <button
             type="button"
+            role="menuitem"
             className={item}
             aria-label={translate('settings.connEditNamed', { name })}
-            onClick={() => {
-              setOpen(false);
-              trigger.current?.focus();
-              onEdit();
-            }}
+            onClick={() => choose(onEdit)}
           >
             <Pencil size={14} aria-hidden />
             {translate('settings.connEdit')}
           </button>
           <button
             type="button"
+            role="menuitem"
             className={item}
             disabled={testing}
-            onClick={() => {
-              setOpen(false);
-              trigger.current?.focus();
-              onTest();
-            }}
+            onClick={() => choose(onTest)}
           >
-            <FlaskConical size={14} />
+            <FlaskConical size={14} aria-hidden />
             {translate(testing ? 'settings.connTesting' : 'settings.connTest')}
           </button>
+          {/* At least 8px between the destructive item and the others. */}
+          <div className="my-1 border-t border-[var(--theme-border)]" />
           <button
             type="button"
+            role="menuitem"
             className={`${item} text-[var(--status-danger-fg)]`}
-            onClick={() => {
-              setOpen(false);
-              trigger.current?.focus();
-              onDelete();
-            }}
+            onClick={() => choose(onDelete)}
           >
-            <Trash2 size={14} />
+            <Trash2 size={14} aria-hidden />
             {translate('settings.connRemoveHere')}
           </button>
         </div>
       )}
     </div>
-  );
-}
-
-function ApplyDialog({
-  apiRoot,
-  connection,
-  initialModel,
-  harness,
-  onClose,
-  onApplied,
-}: {
-  apiRoot: string;
-  connection: ConnectionSummary;
-  initialModel: string;
-  harness: HarnessContext;
-  onClose: () => void;
-  onApplied: (model: string) => void;
-}) {
-  const api = useMemo(() => connectionsApi(apiRoot), [apiRoot]);
-  const [model, setModel] = useState(initialModel);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
-  return (
-    <FormDialog
-      title={translate('settings.connApplyTitle', {
-        name: connection.name,
-        harness: harness.name,
-      })}
-      busy={busy}
-      onClose={onClose}
-    >
-      <form
-        className="space-y-3"
-        onSubmit={(e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          if (busy || !model.trim()) return;
-          setBusy(true);
-          setError('');
-          api
-            .apply(connection.id, harness.id, model.trim())
-            .then(() => onApplied(model.trim()))
-            .catch((err: unknown) =>
-              setError(
-                connectionErrorMessage(
-                  err,
-                  translate('settings.connApplyFailed'),
-                ),
-              ),
-            )
-            .finally(() => setBusy(false));
-        }}
-      >
-        <ConnectionModelField
-          value={model}
-          onChange={setModel}
-          canDiscover
-          autoDiscover
-          discoverKey={connection.id + connection.revision}
-          discover={(signal) => api.models({ id: connection.id }, signal)}
-          disabled={busy}
-        />
-        <p className="text-xs leading-5 text-[var(--theme-fg-muted)]">
-          {translate('settings.connApplyHint')}
-        </p>
-        {error && (
-          <p
-            role="alert"
-            className="break-words text-xs text-[var(--status-danger-fg)]"
-          >
-            {error}
-          </p>
-        )}
-        <div className="flex justify-end gap-2">
-          <button
-            type="button"
-            className="host-secondary-button min-h-9 rounded-lg border px-3 text-[13px]"
-            disabled={busy}
-            onClick={onClose}
-          >
-            {translate('settings.connCancel')}
-          </button>
-          <button
-            type="submit"
-            className="relay-button-primary !min-h-9"
-            disabled={busy || !model.trim()}
-          >
-            {busy
-              ? translate('settings.connApplying')
-              : translate('settings.connApplyShort')}
-          </button>
-        </div>
-      </form>
-    </FormDialog>
   );
 }
 
@@ -816,7 +638,8 @@ function DeleteDialog({
       <div className="flex justify-end gap-2">
         <button
           type="button"
-          className="host-secondary-button min-h-9 rounded-lg border px-3 text-[13px]"
+          autoFocus
+          className="host-secondary-button min-h-10 rounded-lg border px-3 text-[13px] sm:min-h-9"
           disabled={busy}
           onClick={onClose}
         >
@@ -824,7 +647,7 @@ function DeleteDialog({
         </button>
         <button
           type="button"
-          className="relay-button-primary !min-h-9"
+          className="min-h-10 rounded-lg border border-[var(--status-danger-border,var(--status-danger-fg))] bg-[var(--status-danger-bg,transparent)] px-3 text-[13px] font-semibold text-[var(--status-danger-fg)] disabled:opacity-40 sm:min-h-9"
           disabled={busy}
           onClick={() => {
             setBusy(true);

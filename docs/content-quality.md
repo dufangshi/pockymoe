@@ -12,6 +12,8 @@ task achieved its goal.
 Open Settings > Plugins and use the settings button on the Content Quality row.
 Its settings open in a separate dialog and remain available while the plugin is
 disabled, so the connection and writing preferences can be configured first.
+Saving these preferences does not enable the plugin. Enable Content Quality in
+the Plugins list as well as its automatic reply polishing option.
 
 Settings use camelCase, reject unknown fields, and have these defaults:
 
@@ -35,7 +37,7 @@ Presets are `concise`, `clear`, `technical`, `beginner`, and `copyedit`.
 `detail` accepts `short`, `balanced`, or `detailed`; `documentMode` accepts
 `review` or `rewrite`. Language is a nonempty string up to 64 bytes; reader
 background is limited to 2,000 bytes. `minReplyChars` is an integer from 0 to
-65,536. The model can be selected in settings or in the connection file.
+65,536. The model can be selected in settings or inherited from the saved connection.
 
 Select a saved connection and a model in the plugin settings. The shared Add
 connection form is available from the selector. Remote entries must first be
@@ -45,7 +47,10 @@ the Supervisor resolves credentials locally. A nonempty `connectionId` takes
 precedence over the legacy file setting. A selected missing connection fails
 explicitly rather than falling back to a different credential.
 
-For compatibility, the private local connection file contains `baseUrl`, `apiKey`, and an optional
+The settings dialog exposes saved connections only; there is no connection-file
+path field. Existing `connectionFile` values remain a backend compatibility
+option and are preserved when editing other preferences. For compatibility, the
+private local connection file contains `baseUrl`, `apiKey`, and an optional
 `model`. Keep it outside tracked source and restrict its filesystem permissions
 to the Supervisor account. Never put its contents in plugin settings, action
 input, thread messages, or documents. An empty `connectionFile` resolves to
@@ -69,6 +74,14 @@ for completed thread turns meeting the configured reply-length threshold.
 The hook uses the normal automation ledger, settings snapshots and receipts.
 It runs after turn completion. Editing takes a separate upstream request and
 can fail independently of the original turn.
+The trigger length applies to the final reply's prose, not progress messages or
+the total conversation. A reply with **at least** `minReplyChars` Unicode
+characters qualifies, including one exactly at the threshold. Fenced and inline
+code do not count. For example, a threshold of 800 triggers at 800 prose
+characters or more; it does not ask the editor to produce an 800-character answer.
+The original reply appears first and remains available when the polished version
+arrives. A disabled plugin, disabled automatic replies, or a failed/interrupted
+turn does not trigger automatic reply polishing.
 
 `rewriteReply` accepts `{"turnId":"..."}`. Automatic hooks pass `{}` and
 resolve the turn from their event, requiring its `sourceThreadId` to match
@@ -181,7 +194,9 @@ a pre-commit check. It runs after a successful turn and creates no commits.
 
 `testConnection` accepts `{}` and sends a small connectivity request. Its
 receipt exposes only connectivity status and the selected model. It does not
-return the upstream reply, endpoint or credential.
+return the upstream reply, endpoint or credential. Connection probes allow up to
+1,024 output tokens so reasoning models have room to complete a brief answer;
+truncated responses are still rejected.
 
 Focused backend tests, including mock HTTP and database/event integration:
 

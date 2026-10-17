@@ -3,6 +3,9 @@ use super::*;
 use anyhow::ensure;
 
 const MASK: &str = "[stored privately]";
+// Reasoning models may spend output tokens before emitting even a short OK.
+// A probe still asks for a tiny response, but must leave room for that work.
+pub const CONNECTION_PROBE_MAX_TOKENS: usize = 1024;
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

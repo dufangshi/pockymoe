@@ -11,9 +11,9 @@ async function expectActionsInside(page: Page, row: Locator) {
     (await page.getByTestId('settingsDialog').boundingBox())!,
     { x: 0, width: viewport.width },
   ];
-  const buttons = row.getByRole('button');
-  expect(await buttons.count()).toBeGreaterThan(0);
-  for (const button of await buttons.all()) {
+  const controls = row.locator('button, select');
+  expect(await controls.count()).toBeGreaterThan(0);
+  for (const button of await controls.all()) {
     const box = (await button.boundingBox())!;
     for (const outer of bounds) {
       expect(box.x).toBeGreaterThanOrEqual(outer.x - 1);
@@ -134,10 +134,16 @@ test('connections save without applying, apply apart from sync, and template pre
     page.getByRole('button', { name: 'Add connection', exact: true }),
   ).toHaveCount(0);
   await page.getByRole('tab', { name: 'Upstreams', exact: true }).click();
-  const binding = page.getByTestId('harness-binding');
-  await expect(binding).toContainText(
+  // Connections come first; using them in a harness is the section below.
+  const harnesses = page.getByRole('region', { name: 'Use in harnesses' });
+  const codexRow = harnesses.getByRole('listitem', { name: 'OpenAI Codex' });
+  await expect(codexRow.getByTestId('harness-current')).toContainText(
     'its own sign-in or native configuration',
   );
+  const connectionsTop = (await page
+    .getByRole('region', { name: 'Connections' })
+    .boundingBox())!.y;
+  expect(connectionsTop).toBeLessThan((await harnesses.boundingBox())!.y);
 
   await page
     .getByRole('button', { name: 'Add connection', exact: true })
@@ -166,10 +172,14 @@ test('connections save without applying, apply apart from sync, and template pre
   expect(writes.filter((w) => w.includes('/apply'))).toEqual([]);
 
   const personal = page.getByRole('listitem', { name: 'Personal API' });
-  const applyButton = personal.getByRole('button', {
+  // Connection rows have no Apply: a harness picks a saved connection, then applies.
+  await expect(personal.getByRole('button', { name: /apply/i })).toHaveCount(0);
+  await codexRow
+    .getByLabel('Connection for OpenAI Codex')
+    .selectOption({ label: 'Personal API' });
+  const applyButton = codexRow.getByRole('button', {
     name: 'Apply Personal API to OpenAI Codex',
   });
-  // The harness is the page context: the row button says only "Apply".
   await expect(applyButton).toHaveText('Apply');
   await applyButton.click();
   const apply = page.getByRole('dialog', {
@@ -178,10 +188,14 @@ test('connections save without applying, apply apart from sync, and template pre
   await expect(apply.getByLabel('Default model')).toHaveValue('test-model');
   await apply.getByRole('button', { name: 'Apply', exact: true }).click();
   await expect(apply).toBeHidden();
-  await expect(binding).toContainText('Personal API');
-  await expect(personal.getByText('In use')).toBeVisible();
+  await expect(codexRow.getByTestId('harness-current')).toContainText(
+    'Personal API · test-model',
+  );
   await expect(
-    personal.getByRole('button', {
+    personal.getByText('OpenAI Codex', { exact: true }),
+  ).toBeVisible();
+  await expect(
+    codexRow.getByRole('button', {
       name: 'Reapply Personal API to OpenAI Codex',
     }),
   ).toBeEnabled();
@@ -202,19 +216,20 @@ test('connections save without applying, apply apart from sync, and template pre
   expect(writes.filter((w) => w.includes('/apply'))).toHaveLength(1);
   await expectActionsInside(page, personal);
   await expectActionsInside(page, team);
+  await expectActionsInside(page, codexRow);
   // Edit lives in the More actions menu: by touch on phones, by keyboard on desktop.
   const more = page.getByRole('button', {
     name: 'More actions for Personal API',
   });
   if (testInfo.project.name === 'mobile-chromium') {
     await more.tap();
-    await page.getByRole('button', { name: 'Edit Personal API' }).tap();
+    await page.getByRole('menuitem', { name: 'Edit Personal API' }).tap();
   } else {
+    // Opening the menu focuses its first item.
     await more.focus();
     await page.keyboard.press('Enter');
-    await page.keyboard.press('Tab');
     await expect(
-      page.getByRole('button', { name: 'Edit Personal API' }),
+      page.getByRole('menuitem', { name: 'Edit Personal API' }),
     ).toBeFocused();
     await page.keyboard.press('Enter');
   }
@@ -229,7 +244,7 @@ test('connections save without applying, apply apart from sync, and template pre
     .getByRole('button', { name: 'More actions for Personal API' })
     .click();
   await page
-    .getByRole('button', { name: 'Remove from this device', exact: true })
+    .getByRole('menuitem', { name: 'Remove from this device', exact: true })
     .click();
   const removal = page.getByRole('dialog', {
     name: 'Remove connection from this device?',
@@ -242,7 +257,7 @@ test('connections save without applying, apply apart from sync, and template pre
     .getByRole('button', { name: 'More actions for Personal API' })
     .click();
   await page
-    .getByRole('button', { name: 'Remove from this device', exact: true })
+    .getByRole('menuitem', { name: 'Remove from this device', exact: true })
     .click();
   await removal
     .getByRole('button', { name: 'Remove from this device', exact: true })
@@ -252,11 +267,12 @@ test('connections save without applying, apply apart from sync, and template pre
   );
   await removal.getByRole('button', { name: 'Cancel', exact: true }).click();
   await expect(removal).toBeHidden();
-  await page.getByRole('button', { name: 'Grok Build', exact: true }).click();
+  const grokRow = harnesses.getByRole('listitem', { name: 'Grok Build' });
+  await grokRow
+    .getByLabel('Connection for Grok Build')
+    .selectOption({ label: 'Personal API' });
   await expect(
-    personal.getByRole('button', {
-      name: 'Apply Personal API to Grok Build',
-    }),
+    grokRow.getByRole('button', { name: 'Apply Personal API to Grok Build' }),
   ).toBeEnabled();
   await page.getByRole('tab', { name: 'Device', exact: true }).click();
   await page
@@ -306,11 +322,14 @@ test('connections save without applying, apply apart from sync, and template pre
     zhSettings.getByRole('tab', { name: '上游', exact: true }),
   ).toHaveAttribute('aria-selected', 'true');
   const zhRow = page.getByRole('listitem', { name: 'Personal API' });
-  // One compact status, shown once.
-  await expect(zhRow.getByText('待应用')).toBeVisible();
-  await expect(page.getByText('待应用')).toHaveCount(1);
+  const zhCodex = page
+    .getByRole('region', { name: '在 Harness 中使用' })
+    .getByRole('listitem', { name: 'OpenAI Codex' });
+  // The connection says which harness lags; the harness row offers Reapply.
+  await expect(zhRow.getByText('OpenAI Codex 待应用')).toBeVisible();
+  await expect(zhCodex.getByText('待应用', { exact: true })).toBeVisible();
   await expect(
-    zhRow.getByRole('button', {
+    zhCodex.getByRole('button', {
       name: '将 Personal API 重新应用到 OpenAI Codex',
     }),
   ).toHaveText('重新应用');
@@ -321,6 +340,7 @@ test('connections save without applying, apply apart from sync, and template pre
   for (const width of widths) {
     await page.setViewportSize({ width, height: page.viewportSize()!.height });
     await expectActionsInside(page, zhRow);
+    await expectActionsInside(page, zhCodex);
     await expectActionsInside(
       page,
       page.getByRole('listitem', { name: 'Team Gemini' }),
@@ -338,7 +358,7 @@ test('connections save without applying, apply apart from sync, and template pre
     await expect(zhAdd).toBeHidden();
   }
   await page.getByRole('button', { name: 'Personal API 的更多操作' }).click();
-  await page.getByRole('button', { name: '编辑 Personal API' }).click();
+  await page.getByRole('menuitem', { name: '编辑 Personal API' }).click();
   await expect(page.getByRole('dialog', { name: '编辑连接' })).toBeVisible();
   expect(loads, 'the page reloaded while reopening Settings').toEqual([]);
 });

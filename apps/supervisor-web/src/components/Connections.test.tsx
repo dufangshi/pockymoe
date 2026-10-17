@@ -13,12 +13,14 @@ import {
 } from '@pockymoe/thread-ui/builtin-plugins';
 import type { UpstreamConnectionPickerProps } from '@pockymoe/thread-ui';
 import { beforeEach, expect, it, vi } from 'vitest';
+import { MemoryRouter } from 'react-router-dom';
 import { ApiError, request } from '../lib/api';
-import { ConnectionCatalog } from './ConnectionCatalog';
 import { ConnectionPicker } from './ConnectionPicker';
+import { UpstreamsSettings } from './UpstreamsSettings';
 
 vi.mock('../lib/api', () => ({
   request: vi.fn(),
+  relayModeActive: () => false,
   ApiError: class ApiError extends Error {
     constructor(
       readonly statusCode: number,
@@ -39,9 +41,30 @@ function server(route: (call: Call) => unknown) {
       method: init?.method ?? 'GET',
       body: init?.body ? JSON.parse(String(init.body)) : undefined,
     };
+    // The harness inventory is page plumbing, not part of what tests assert.
+    if (call.path.endsWith('/management/harnesses')) return inventory;
     calls.push(call);
     return route(call);
   });
+}
+const inventory = [
+  { id: 'codex', name: 'Codex', base: { installed: true } },
+  { id: 'claude', name: 'Claude Agent', base: { installed: true } },
+];
+/** Settings > Upstreams: connections first, harness usage below. */
+function renderPage() {
+  render(
+    <MemoryRouter>
+      <UpstreamsSettings />
+    </MemoryRouter>,
+  );
+}
+/** A harness row in the "Use in harnesses" section. */
+async function harnessRow(name: string) {
+  const section = await screen.findByRole('region', {
+    name: 'Use in harnesses',
+  });
+  return within(section).findByRole('listitem', { name });
 }
 function fail(status: number, code?: string, message = 'failed') {
   return new (
@@ -73,8 +96,6 @@ const catalog = (
   catalogAvailable: true,
   ...over,
 });
-const codex = { id: 'codex', name: 'Codex', installed: true };
-const claude = { id: 'claude', name: 'Claude Agent', installed: true };
 
 beforeEach(() => {
   vi.mocked(request).mockReset();
@@ -85,7 +106,7 @@ async function openEdit(name: string) {
   fireEvent.click(
     await screen.findByRole('button', { name: `More actions for ${name}` }),
   );
-  fireEvent.click(screen.getByRole('button', { name: `Edit ${name}` }));
+  fireEvent.click(screen.getByRole('menuitem', { name: `Edit ${name}` }));
 }
 
 it('saves a new connection without applying it and keeps a manual model when discovery fails', async () => {
@@ -101,7 +122,7 @@ it('saves a new connection without applying it and keeps a manual model when dis
     }
     throw Error(`unexpected ${method} ${path}`);
   });
-  render(<ConnectionCatalog apiRoot="api" harness={codex} />);
+  renderPage();
   expect(await screen.findByText(/No connections yet/)).toBeVisible();
   fireEvent.click(screen.getByRole('button', { name: 'Add connection' }));
   const dialog = await screen.findByRole('dialog', { name: 'Add connection' });
@@ -178,21 +199,32 @@ it('applies a local connection only through the explicit Apply dialog and surviv
     }
     throw Error(`unexpected ${method} ${path}`);
   });
-  render(<ConnectionCatalog apiRoot="api" harness={codex} />);
+  renderPage();
   const row = await screen.findByRole('listitem', { name: 'Work API' });
   expect(within(row).queryByRole('button', { name: /^Sync/ })).toBeNull();
-  // Short visible label; the accessible name carries connection and harness.
-  const gemini = within(
-    screen.getByRole('listitem', { name: 'Gemini Direct' }),
-  ).getByRole('button', { name: 'Apply Gemini Direct to Codex' });
-  expect(gemini).toBeEnabled();
-  expect(gemini).toHaveTextContent(/^Apply$/);
-  expect(screen.getByTestId('harness-binding')).toHaveTextContent(
+  // Connection rows never apply; harness rows do, one explicit action each.
+  expect(within(row).queryByRole('button', { name: /apply/i })).toBeNull();
+  const codexRow = await harnessRow('Codex');
+  expect(within(codexRow).getByTestId('harness-current')).toHaveTextContent(
     'its own sign-in or native configuration',
   );
-  fireEvent.click(
-    within(row).getByRole('button', { name: 'Apply Work API to Codex' }),
-  );
+  const pick = within(codexRow).getByLabelText('Connection for Codex');
+  // The Supervisor's adapter map wins over the built-in fallback.
+  expect(
+    within(pick)
+      .getAllByRole('option')
+      .map((o) => o.textContent),
+  ).toEqual(['Choose a connection', 'Work API', 'Gemini Direct']);
+  expect(
+    within(codexRow).getByRole('button', { name: 'Apply' }),
+  ).toBeDisabled();
+  fireEvent.change(pick, { target: { value: 'work' } });
+  const apply = within(codexRow).getByRole('button', {
+    name: 'Apply Work API to Codex',
+  });
+  // Short visible label; the accessible name carries connection and harness.
+  expect(apply).toHaveTextContent(/^Apply$/);
+  fireEvent.click(apply);
   const dialog = await screen.findByRole('dialog', {
     name: 'Apply Work API to Codex',
   });
@@ -217,12 +249,16 @@ it('applies a local connection only through the explicit Apply dialog and surviv
     { harness: 'codex', model: 'model-b' },
   ]);
   await waitFor(() =>
-    expect(
-      within(screen.getByRole('listitem', { name: 'Work API' })).getByText(
-        'In use',
-      ),
-    ).toBeVisible(),
+    expect(within(codexRow).getByTestId('harness-current')).toHaveTextContent(
+      'Work API · model-b',
+    ),
   );
+  // The connection row now shows where it is used.
+  expect(
+    within(screen.getByRole('listitem', { name: 'Work API' })).getByText(
+      'Codex',
+    ),
+  ).toBeVisible();
   expect(calls.some((c) => c.path.includes('/sync'))).toBe(false);
 });
 
@@ -264,9 +300,15 @@ it('syncs a remote connection in two calls without applying it, with actionable 
     }
     throw Error(`unexpected ${method} ${path}`);
   });
-  render(<ConnectionCatalog apiRoot="api" harness={claude} />);
+  renderPage();
   const row = await screen.findByRole('listitem', { name: 'Shared Anthropic' });
   expect(within(row).getByText('Anthropic · On Laptop')).toBeVisible();
+  // A remote-only connection cannot be chosen for a harness until it is synced.
+  expect(
+    within(await harnessRow('Claude Agent')).queryByRole('option', {
+      name: 'Shared Anthropic',
+    }),
+  ).toBeNull();
   expect(
     within(row).queryByRole('button', { name: /^(Re)?apply/i }),
   ).toBeNull();
@@ -286,9 +328,7 @@ it('syncs a remote connection in two calls without applying it, with actionable 
     }),
   );
   expect(
-    await screen.findByText(
-      'Shared Anthropic is now on this device. Apply it to Claude Agent separately when you are ready.',
-    ),
+    await screen.findByText('Shared Anthropic is now on this device.'),
   ).toBeVisible();
   const posts = calls.filter((c) => c.method === 'POST');
   expect(posts.map((c) => [c.path, c.body])).toEqual([
@@ -305,12 +345,13 @@ it('syncs a remote connection in two calls without applying it, with actionable 
       { sourceDeviceId: 'laptop', revision: 'r7', token: 'one-time' },
     ],
   ]);
-  const after = screen.getByRole('listitem', { name: 'Shared Anthropic' });
-  expect(
-    within(after).getByRole('button', {
-      name: 'Apply Shared Anthropic to Claude Agent',
-    }),
-  ).toBeEnabled();
+  // Only now can Claude Agent choose it, and applying is still a separate step.
+  const claudeRow = await harnessRow('Claude Agent');
+  await waitFor(() =>
+    expect(
+      within(claudeRow).getByRole('option', { name: 'Shared Anthropic' }),
+    ).toBeInTheDocument(),
+  );
   expect(calls.some((c) => c.path.includes('/apply'))).toBe(false);
 });
 
@@ -353,7 +394,7 @@ it('blocks offline sources and makes the user choose between differing versions 
     if (path.endsWith('/dup/sync')) throw fail(409, 'sync_conflict');
     throw Error(`unexpected ${method} ${path}`);
   });
-  render(<ConnectionCatalog apiRoot="api" harness={codex} />);
+  renderPage();
   const offline = await screen.findByRole('listitem', { name: 'Offline One' });
   expect(within(offline).getByText('Offline')).toBeVisible();
   expect(within(offline).getByRole('button', { name: /^Sync/ })).toBeDisabled();
@@ -403,7 +444,7 @@ it('keeps unsaved edits through close, save failure and an edit conflict until t
     }
     throw Error(`unexpected ${method} ${path}`);
   });
-  render(<ConnectionCatalog apiRoot="api" />);
+  renderPage();
   await openEdit('Work API');
   const dialog = await screen.findByRole('dialog', { name: 'Edit connection' });
   const name = within(dialog).getByLabelText('Name');
@@ -539,7 +580,11 @@ it('lets Content Quality reuse the form and picker without losing its unsaved wr
     </>,
   );
   const picker = await screen.findByLabelText('Saved connection');
-  expect(screen.getByLabelText('Connection profile file')).not.toBeVisible();
+  // Only the saved-connection picker: no profile file path, old value kept.
+  expect(screen.queryByText(/Connection profile file/)).toBeNull();
+  expect(
+    screen.getByLabelText('Auto-polish trigger length (characters)'),
+  ).toBeVisible();
   await waitFor(() =>
     expect(
       within(picker).getByRole('option', { name: 'Chat One' }),
@@ -683,17 +728,20 @@ it('keeps Reapply on a bound connection and flags saved or synced changes until 
     }
     throw Error(`unexpected ${method} ${path}`);
   });
-  render(<ConnectionCatalog apiRoot="api" harness={codex} />);
+  renderPage();
   let row = await screen.findByRole('listitem', { name: 'Work API' });
-  // r1 is applied, but Laptop holds r9: the row is in conflict, not pending.
-  expect(within(row).getByText('In use')).toBeVisible();
-  // The harness pill does not hide that devices hold different versions.
-  expect(
-    within(row).getByRole('img', { name: 'Versions differ' }),
-  ).toBeVisible();
-  expect(
-    within(row).getByRole('button', { name: 'Reapply Work API to Codex' }),
-  ).toBeEnabled();
+  const codexRow = await harnessRow('Codex');
+  // r1 is applied, but Laptop holds r9: the devices differ, the harness is current.
+  expect(within(row).getByText('Versions differ')).toBeVisible();
+  await waitFor(() => expect(within(row).getByText('Codex')).toBeVisible());
+  expect(within(codexRow).queryByText('Not applied')).toBeNull();
+  expect(within(codexRow).getByTestId('harness-current')).toHaveTextContent(
+    'Work API · model-b',
+  );
+  const reapply = () =>
+    within(codexRow).getByRole('button', { name: 'Reapply Work API to Codex' });
+  expect(reapply()).toHaveTextContent(/^Reapply$/);
+  expect(reapply()).toBeEnabled();
   await openEdit('Work API');
   const dialog = await screen.findByRole('dialog', { name: 'Edit connection' });
   fireEvent.change(within(dialog).getByLabelText('Default model'), {
@@ -704,22 +752,17 @@ it('keeps Reapply on a bound connection and flags saved or synced changes until 
   );
   expect(
     await screen.findByText(
-      'Work API saved. Codex keeps the applied version until you reapply.',
+      'Work API saved. Harnesses using it keep the applied version until you reapply.',
     ),
   ).toBeVisible();
   row = screen.getByRole('listitem', { name: 'Work API' });
   await waitFor(() =>
-    expect(within(row).getByText('Not applied')).toBeVisible(),
+    expect(within(row).getByText('Codex · not applied')).toBeVisible(),
   );
-  // Shown once, on the row that offers Reapply.
-  expect(screen.getByTestId('harness-binding')).not.toHaveTextContent(
-    'Not applied',
-  );
+  expect(within(codexRow).getByText('Not applied')).toBeVisible();
   expect(calls.some((c) => c.path.endsWith('/apply'))).toBe(false);
 
-  fireEvent.click(
-    within(row).getByRole('button', { name: 'Reapply Work API to Codex' }),
-  );
+  fireEvent.click(reapply());
   const apply = await screen.findByRole('dialog', {
     name: 'Apply Work API to Codex',
   });
@@ -731,11 +774,7 @@ it('keeps Reapply on a bound connection and flags saved or synced changes until 
   fireEvent.click(within(apply).getByRole('button', { name: 'Apply' }));
   await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
   await waitFor(() =>
-    expect(
-      within(screen.getByRole('listitem', { name: 'Work API' })).getByText(
-        'In use',
-      ),
-    ).toBeVisible(),
+    expect(within(codexRow).queryByText('Not applied')).toBeNull(),
   );
   expect(
     calls.filter((c) => c.path.endsWith('/apply')).map((c) => c.body),
@@ -749,23 +788,14 @@ it('keeps Reapply on a bound connection and flags saved or synced changes until 
     ),
   );
   await waitFor(() =>
-    expect(
-      within(screen.getByRole('listitem', { name: 'Work API' })).getByText(
-        'Not applied',
-      ),
-    ).toBeVisible(),
+    expect(within(codexRow).getByText('Not applied')).toBeVisible(),
   );
   expect(calls.find((c) => c.path.endsWith('/work/sync'))?.body).toMatchObject({
     expectedRevision: 'r2',
     revision: 'r9',
   });
   expect(calls.filter((c) => c.path.endsWith('/apply'))).toHaveLength(1);
-  expect(
-    within(screen.getByRole('listitem', { name: 'Work API' })).getByRole(
-      'button',
-      { name: 'Reapply Work API to Codex' },
-    ),
-  ).toBeEnabled();
+  expect(reapply()).toBeEnabled();
 });
 
 it('makes the picker ask which device to sync from when versions differ, and keeps one click otherwise', async () => {
@@ -861,7 +891,7 @@ it('tells users of an older Supervisor to update instead of offering a dead Add 
   server(() => {
     throw fail(404, undefined, 'Not Found');
   });
-  render(<ConnectionCatalog apiRoot="api" harness={codex} />);
+  renderPage();
   expect(await screen.findByRole('alert')).toHaveTextContent(
     'Update this Supervisor to manage shared connections.',
   );
@@ -879,4 +909,42 @@ it('tells users of an older Supervisor to update instead of offering a dead Add 
     'Update this Supervisor to manage shared connections.',
   );
   expect(screen.getByRole('button', { name: 'Add connection' })).toBeDisabled();
+});
+
+it('opens the row menu as a keyboard menu and confirms removal with Cancel focused', async () => {
+  server(({ path, method }) => {
+    if (path === 'api/management/connections' && method === 'GET')
+      return catalog([local()]);
+    throw Error(`unexpected ${method} ${path}`);
+  });
+  renderPage();
+  const trigger = await screen.findByRole('button', {
+    name: 'More actions for Work API',
+  });
+  fireEvent.click(trigger);
+  const menu = screen.getByRole('menu', { name: 'More actions for Work API' });
+  const items = within(menu).getAllByRole('menuitem');
+  expect(items.map((item) => item.textContent)).toEqual([
+    'Edit',
+    'Test connection',
+    'Remove from this device',
+  ]);
+  expect(items[0]).toHaveFocus();
+  fireEvent.keyDown(menu, { key: 'ArrowUp' });
+  expect(items[2]).toHaveFocus();
+  fireEvent.keyDown(menu, { key: 'Home' });
+  expect(items[0]).toHaveFocus();
+  fireEvent.keyDown(menu, { key: 'ArrowDown' });
+  expect(items[1]).toHaveFocus();
+  fireEvent.keyDown(document, { key: 'Escape' });
+  expect(screen.queryByRole('menu')).toBeNull();
+  expect(trigger).toHaveFocus();
+  fireEvent.click(trigger);
+  fireEvent.click(
+    screen.getByRole('menuitem', { name: 'Remove from this device' }),
+  );
+  const confirm = await screen.findByRole('dialog', {
+    name: 'Remove connection from this device?',
+  });
+  expect(within(confirm).getByRole('button', { name: 'Cancel' })).toHaveFocus();
 });
