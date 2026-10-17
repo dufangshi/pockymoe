@@ -15,6 +15,7 @@ on:
       - 'scripts/setup.sh'
       - 'scripts/setup.ps1'
       - 'scripts/check-static-web.mjs'
+      - 'scripts/carry-web-assets.mjs'
       - '.github/workflows/pages-deploy.yml'
   workflow_dispatch:
 
@@ -81,6 +82,11 @@ jobs:
           pnpm --filter @pockymoe/supervisor-web... install --frozen-lockfile
           pnpm --filter @pockymoe/supervisor-web build:static
           node scripts/check-static-web.mjs
+      # Pages opened before this deployment still load their lazy chunks from the
+      # previous builds instead of reloading. Without the live site the build
+      # deploys alone, as before.
+      - name: Keep earlier builds' assets
+        run: node scripts/carry-web-assets.mjs apps/supervisor-web/dist "https://${POCKYMOE_WEB_DOMAIN}" || echo "::warning::Earlier assets were not carried"
       - uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
         with:
           path: apps/supervisor-web/dist

@@ -294,7 +294,9 @@ build calls its own origin.
 This repository publishes the public Web UI with `.github/workflows/pages-deploy.yml`.
 A fork can reuse it: set the repository variable `POCKYMOE_RELAY_ORIGIN`, change
 `POCKYMOE_WEB_DOMAIN` in the workflow, pin the shared UI commit in `thread-ui.sha`,
-and choose GitHub Actions as the Pages source.
+and choose GitHub Actions as the Pages source. Each deployment keeps the earlier
+builds' assets for 72 hours (`scripts/carry-web-assets.mjs`), so pages left open
+across a deployment keep working.
 
 ### Existing devices
 

@@ -968,7 +968,13 @@ checks out `dufangshi/pockymoe-thread-ui-rust` at exactly that commit and refuse
 one that is not on that repository's `main`, builds with
 `VITE_POCKYMOE_RELAY_ORIGIN` from the repository variable `POCKYMOE_RELAY_ORIGIN`
 and `POCKYMOE_WEB_DOMAIN=app.lnz-study.com`, runs the check script and deploys
-with `actions/deploy-pages`. Whoever can push to `main`, change that variable or
+with `actions/deploy-pages`. Before deploying, `scripts/carry-web-assets.mjs` copies the
+hashed assets the live site serves (and those it carried itself) into the new build
+for 72 hours after they stopped being current, up to 300 MB, and records them in
+`asset-history.json`. A page opened before a deployment then still loads its lazy
+chunks (Files, the editor) instead of reloading; past that window it reloads once
+(`installStaleBuildReload`). The carried assets come only from this site's own
+earlier deployments. Whoever can push to `main`, change that variable or
 publish to the shared UI's `main` decides the code that receives users' passwords.
 
 The relay at `https://remote.lnz-study.com` runs API-only: its environment file
