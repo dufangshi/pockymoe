@@ -109,13 +109,6 @@
   background: color-mix(in srgb, var(--theme-accent-solid) 12%, transparent);
   box-shadow: 0 0 0 1.5px var(--theme-accent-solid);
 }
-:theme .thread-ui-shell .thread-graph-composer-input .thread-composer-attachment-chip {
-  border-color: var(--theme-accent-border) !important;
-  border-radius: 10px !important;
-  background: var(--theme-accent-soft) !important;
-  color: var(--theme-accent-strong) !important;
-}
-:theme .thread-ui-shell .thread-graph-composer-input .thread-composer-attachment-caption { color: var(--theme-accent-strong); }
 
 /* ── The mascot peeking over the edge ─────────────────────────────────────── */
 

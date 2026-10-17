@@ -292,8 +292,13 @@ links to that thread. A workspace link brings its file or folder near the top of
 the file tree; a link to a file that is not on the device shows its path instead
 of an error.
 
-A photo in a prompt shows as a thumbnail at most three lines of its text tall;
-tapping it opens the photo at full size, and its name is in its title.
+A photo or file in a prompt, while it is written and once it is sent, is a small
+tile: the file's page glyph in its kind's color with its extension (PDF, ZIP, …),
+or the photo's thumbnail, over its name shortened to its start, end and extension.
+Tapping a tile opens a card with the full name, the kind and size (or, once sent,
+where it is), and what can be done: view a photo full size, open a sent file in
+the files view, or remove it from a prompt being written. A prompt folded to one
+line shows each tile as a one-line chip.
 
 Entering a thread always shows its conversation: the files view opens only when
 asked for (the Files button or a file link), and is not restored from the last
