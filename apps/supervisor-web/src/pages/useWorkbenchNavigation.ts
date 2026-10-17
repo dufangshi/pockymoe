@@ -445,17 +445,31 @@ export function useWorkbenchNavigation(
     }));
     return () => { alive = false; controller.abort(); };
   }, [notificationKey, notificationsOpened, relay]);
-  const notifications = rawNotifications.map(n => ({ ...n, ...notificationDetails[n.id] }));
-  // The tab bar lists the current workspace's threads, with the agent threads its
-  // conversations started elsewhere. An agent thread here whose root lives in
-  // another workspace stands alone; its root and siblings stay in their own workspace.
+  // A notification from an agent thread is shown inside its conversation.
+  const notifications = rawNotifications.map(n => {
+    const match = n.href.match(/^\/devices\/([^/]+)\/threads\/([^/?#]+)$/) ?? n.href.match(/^\/threads\/([^/?#]+)$/);
+    const [device, id] = match?.length === 3 ? [match[1]!, match[2]!] : [deviceId ?? 'local', match?.[1]];
+    const pool = device === (deviceId ?? 'local') ? threads : deviceLists[device] ?? families[`${device}:${id}`] ?? [];
+    const thread = pool.find(item => item.id === id) ?? Object.values(families).flat().find(item => item.id === id);
+    const root = thread?.rootThreadId ? (pool.find(item => item.id === thread.rootThreadId) ?? Object.values(families).flat().find(item => item.id === thread.rootThreadId)) : undefined;
+    return {
+      ...n, ...notificationDetails[n.id],
+      ...(thread ? { threadKey: `${device}:${thread.id}` } : {}),
+      ...(root ? { rootKey: `${device}:${root.id}`, rootTitle: root.title, rootHref: threadHref(root.id, device === 'local' ? null : device) } : {}),
+    };
+  });
+  // The tab bar lists the conversations started in the current workspace, each
+  // with all its agent threads wherever they work. An agent thread belongs to its
+  // conversation's workspace: one working here for a conversation elsewhere is
+  // listed there, unless it is open, when it shows inside its conversation.
   const workspaceId = tabContext.detail?.thread.workspaceId;
+  const open = tabContext.detail?.thread;
   const workspaceRoots = new Set(tabContext.threads
     .filter(thread => thread.workspaceId === workspaceId && !thread.rootThreadId)
     .map(thread => thread.id));
   const workspaceThreads = tabContext.threads
-      .filter(thread => thread.workspaceId === workspaceId || thread.id === tabContext.detail?.thread.id
-        || workspaceRoots.has(thread.rootThreadId ?? ''))
+      .filter(thread => workspaceRoots.has(thread.rootThreadId ?? thread.id) || thread.id === open?.id
+        || (!!open?.rootThreadId && thread.id === open.rootThreadId))
       .filter(thread => !localEdits.removed.includes(`${tabContext.deviceId ?? 'local'}:${thread.id}`))
       .slice()
       .sort((a, b) => (a.createdAt ?? '').localeCompare(b.createdAt ?? '') || a.id.localeCompare(b.id))
@@ -500,6 +514,14 @@ export function useWorkbenchNavigation(
   // including ones never opened (automations, threads other agents started).
   const ownDevice = deviceId ?? 'local';
   const referenceOn = (device: string) => snapshot.threads.filter(r => (r.deviceId ?? 'local') === device);
+  // Where a listed thread lives: its device's name and its workspace's label.
+  const placeOf = (device: string, thread: ThreadDto) => {
+    const references = referenceOn(device);
+    const workspaceLabel = references.find(r => r.threadId === thread.id)?.workspaceLabel
+      ?? references.find(r => r.workspaceId === thread.workspaceId)?.workspaceLabel
+      ?? (tabContext.detail && device === (tabContext.deviceId ?? 'local') && tabContext.detail.workspace.id === thread.workspaceId ? tabContext.detail.workspace.label : undefined);
+    return [references.find(r => r.deviceName)?.deviceName, workspaceLabel];
+  };
   const activeThreads: WorkbenchThread[] = [
     [ownDevice, threads] as const,
     ...Object.entries(deviceLists).filter(([device]) => device !== ownDevice),
@@ -507,11 +529,7 @@ export function useWorkbenchNavigation(
     const activity = device === ownDevice && thread.id === detail?.thread.id ? detail.thread : thread;
     if (workbenchThreadStatus(activity) !== 'running') return [];
     const key = `${device}:${thread.id}`;
-    const references = referenceOn(device);
-    const reference = references.find(r => r.threadId === thread.id);
-    const workspaceLabel = reference?.workspaceLabel
-      ?? references.find(r => r.workspaceId === thread.workspaceId)?.workspaceLabel
-      ?? (tabContext.detail && device === (tabContext.deviceId ?? 'local') && tabContext.detail.workspace.id === thread.workspaceId ? tabContext.detail.workspace.label : undefined);
+    const reference = referenceOn(device).find(r => r.threadId === thread.id);
     // How long its turn has run says the most about a running thread.
     const startedAt = Date.parse(activity.lastTurnStartedAt ?? '');
     const minutes = Number.isFinite(startedAt) ? Math.max(0, Math.round((Date.now() - startedAt) / 60_000)) : null;
@@ -520,7 +538,7 @@ export function useWorkbenchNavigation(
         : translate('workbench.runningForHours', { hours: Math.floor(minutes / 60), minutes: minutes % 60 });
     return [{
       key, title: activity.title,
-      subtitle: [references.find(r => r.deviceName)?.deviceName, workspaceLabel, runningFor].filter(Boolean).join(' · '),
+      subtitle: [...placeOf(device, thread), runningFor].filter(Boolean).join(' · '),
       href: threadHref(thread.id, device === 'local' ? null : device),
       favorite: reference?.favorite ?? false,
       ...(thread.parentThreadId ? { parentKey: `${device}:${thread.parentThreadId}` } : {}),
@@ -534,6 +552,22 @@ export function useWorkbenchNavigation(
   activeThreads.push(...items
     .map(thread => ({ ...thread, ...familyByKey.get(thread.key) }))
     .filter(thread => thread.status === 'unread' && thread.key !== currentKey));
+  // An agent thread is only shown inside its conversation, so its root comes along.
+  const listedThreads = new Map<string, { device: string; thread: ThreadDto }>([[ownDevice, threads] as const, ...Object.entries(deviceLists)]
+    .flatMap(([device, list]) => list.map(thread => [`${device}:${thread.id}`, { device, thread }] as const)));
+  for (const thread of [...activeThreads]) {
+    if (!thread.rootKey || activeThreads.some(active => active.key === thread.rootKey)) continue;
+    const listed = listedThreads.get(thread.rootKey);
+    const root = familyByKey.get(thread.rootKey) ?? (listed && {
+      key: thread.rootKey, title: listed.thread.title,
+      subtitle: placeOf(listed.device, listed.thread).filter(Boolean).join(' · '),
+      href: threadHref(listed.thread.id, listed.device === 'local' ? null : listed.device),
+      favorite: false,
+      status: workbenchThreadStatus(listed.thread),
+      ...threadAgentField(listed.thread),
+    } satisfies WorkbenchThread);
+    if (root) activeThreads.push(root);
+  }
   const roots = new Set(items.map(thread => thread.rootKey ?? thread.key));
   const sidebarThreads = items.map(thread => ({...thread, ...familyByKey.get(thread.key)}));
   const seen = new Set(sidebarThreads.map(thread => thread.key));

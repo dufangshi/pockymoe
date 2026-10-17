@@ -36,15 +36,32 @@ If native usage is unavailable, ACP usage remains the fallback. Codex retains
 its native rollout reader. Final timing is stored with turn usage and survives reload
 and restart. Tools never alter billable token counts or price categories.
 
-The per-request split (`splitMethod: "streamedRequests"`) times only requests whose
-output streamed for at least a second. A reply delivered in one piece (hidden
-thinking, then the tool call) lands milliseconds apart; it is counted in
-`burstRequests` and left out of first token, prefill and decode. Decode divides a
-request's own `last` usage report, reasoning tokens left out, by the time its answer
-(text and tool calls) streamed; the turn total is not used, since late reports carry
+The per-request split (`splitMethod: "streamedRequests"`) counts every request that
+produced output (`llmRequests`) and times only those whose output streamed for at
+least 300 ms. A reply delivered in one piece (hidden thinking, then the tool call)
+lands tens of milliseconds apart; it is counted in `burstRequests` and left out of
+first token, prefill and decode. An agent message or thought opened before its first
+token is not output. Decode divides a request's own `last` usage report by the time
+its output streamed: from the first thought to the last chunk, all tokens, when the
+thinking streamed (local models); otherwise the answer's (text and tool calls) time,
+reasoning tokens left out. The turn total is not used, since late reports carry
 earlier requests' tokens. A report that arrives after a quick tool, before the next
 request outputs anything, still belongs to the request that wrote it. Snapshots
 without `splitMethod` timed bursts as streams and are shown as the combined speed only.
+
+Harness notices (ACP `notice` updates, advertised with `clientCapabilities.session.notices`)
+become their own `generic` items with `origin: "sessionNotice"` and a `severity`:
+Codex's warning about an unknown (local) model no longer arrives as reply text, so
+it neither joins the answer nor counts as the first token.
+
+Local-model accuracy check (opt-in): run `e2e/fixtures/fake-local-responses.mjs`, a
+Responses API server with known prefill and decode rates that streams reasoning and
+answer token by token and logs each request's truth. Point an isolated `CODEX_HOME`
+at it (`wire_api = "responses"`, `env_key`), start an isolated Supervisor without the
+fake runtime, prompt a Codex thread and compare `generationSpeed` with the log. At
+3000/40, 800/150 and 20000/15 tok/s (prefill/decode) decode stayed within 1%; prefill
+within 2%, except about 10% at 20000 tok/s, where the harness's ~40 ms request
+overhead is a tenth of the wait.
 
 Targeted checks:
 

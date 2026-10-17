@@ -148,7 +148,7 @@ describe('account thread navigation', () => {
     const own = { ...root, id: 'here', title: 'Here', status: 'running' } as ThreadDto;
     const { result, unmount } = renderHook(() => useWorkbenchNavigation(null, [own, { ...root, id: 'quiet' }], 'wsl'));
     await waitFor(() => expect(result.current.activeThreads.map(thread => `${thread.key}:${thread.status}`))
-      .toEqual(['wsl:here:running', 'mac:nightly:running', 'mac:worker:running', 'mac:done:unread']));
+      .toEqual(['wsl:here:running', 'mac:nightly:running', 'mac:worker:running', 'mac:done:unread', 'mac:root:idle']));
     expect(result.current.activeThreads[1]).toMatchObject({ title: 'Nightly check', subtitle: 'Mac · app', status: 'running', href: '/devices/mac/threads/nightly' });
     expect(result.current.activeThreads[2]).toMatchObject({ rootKey: 'mac:root' });
     unmount();
@@ -250,7 +250,27 @@ describe('account thread navigation', () => {
       { ...slack, id: 'here-elsewhere', parentThreadId: 'here', rootThreadId: 'here', createdAt: '2026-10-05' } as ThreadDto];
     const { result, unmount } = renderHook(() => useWorkbenchNavigation(detail, threads, 'wsl'));
     await waitFor(() => expect(result.current.navigationReady).toBe(true));
-    expect(result.current.workspaceThreads.map(t => t.key)).toEqual(['wsl:here', 'wsl:slack-worker', 'wsl:here-elsewhere']);
+    // slack-worker works here but belongs to slack's conversation.
+    expect(result.current.workspaceThreads.map(t => t.key)).toEqual(['wsl:here', 'wsl:here-elsewhere']);
+    unmount();
+    // Open, it shows inside its conversation.
+    const open = { ...detail, thread: threads[2]! } as ThreadDetailDto;
+    const opened = renderHook(() => useWorkbenchNavigation(open, threads, 'wsl'));
+    await waitFor(() => expect(opened.result.current.navigationReady).toBe(true));
+    expect(opened.result.current.workspaceThreads.map(t => t.key)).toEqual(['wsl:here', 'wsl:slack', 'wsl:slack-worker', 'wsl:here-elsewhere']);
+    expect(opened.result.current.workspaceThreads[2]!.rootKey).toBe('wsl:slack');
+    opened.unmount();
+  });
+  it('brings the conversation of a running agent thread along, for grouping', async () => {
+    vi.mocked(request).mockResolvedValue({ threads: [], notifications: [] });
+    const detail = { thread: { id: 'here', workspaceId: 'w', title: 'Here', status: 'idle', createdAt: '2026-10-01' }, workspace: { label: 'W' } } as ThreadDetailDto;
+    const root = { id: 'root', workspaceId: 'w2', title: 'Root', status: 'idle', createdAt: '2026-10-02' } as ThreadDto;
+    const worker = { ...root, id: 'worker', title: 'Worker', status: 'running', parentThreadId: 'root', rootThreadId: 'root', activeTurnId: 't' } as ThreadDto;
+    const { result, unmount } = renderHook(() => useWorkbenchNavigation(detail, [detail.thread, root, worker], 'wsl'));
+    await waitFor(() => expect(result.current.navigationReady).toBe(true));
+    const active = result.current.activeThreads;
+    expect(active.find(t => t.key === 'wsl:worker')?.status).toBe('running');
+    expect(active.find(t => t.key === 'wsl:root')).toMatchObject({ title: 'Root', status: 'idle' });
     unmount();
   });
   it('shows a rename or deletion made from the sidebar before the thread list catches up', async () => {

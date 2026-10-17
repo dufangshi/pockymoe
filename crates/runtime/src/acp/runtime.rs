@@ -343,7 +343,7 @@ impl AcpRuntime {
                         },
                         "terminal": true,
                         "elicitation": {"form": {}},
-                        "session": { "compaction": {}, "configOptions": { "boolean": {} } },
+                        "session": { "compaction": {}, "configOptions": { "boolean": {} }, "notices": {} },
                         "plan": {},
                         "_meta": adapter.initialize_client_meta()
                     }
@@ -610,7 +610,7 @@ impl AcpRuntime {
                         },
                         "terminal": true,
                         "elicitation": {"form": {}},
-                        "session": { "compaction": {}, "configOptions": { "boolean": {} } },
+                        "session": { "compaction": {}, "configOptions": { "boolean": {} }, "notices": {} },
                         "plan": {},
                         "_meta": adapter.initialize_client_meta()
                     }

@@ -49,8 +49,9 @@ struct Tracker {
 }
 
 /// A request's output must stream at least this long to be timed: chunks of a
-/// reply delivered at once land milliseconds apart.
-const MIN_STREAM_MS: i64 = 1000;
+/// reply delivered at once land tens of milliseconds apart, while a fast local
+/// model's short answer still streams for a few hundred.
+const MIN_STREAM_MS: i64 = 300;
 
 /// One response's own usage: what the model read and wrote for this request.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -63,6 +64,8 @@ pub(super) struct Report {
 
 #[derive(Default, Clone, Copy)]
 struct Split {
+    /// Model requests that produced output, streamed or not.
+    requests: u32,
     first_token_ms: i64,
     first_token_requests: u32,
     prefill_ms: i64,
@@ -76,6 +79,7 @@ struct Split {
 
 impl Split {
     fn add(mut self, other: Split) -> Split {
+        self.requests += other.requests;
         self.first_token_ms += other.first_token_ms;
         self.first_token_requests += other.first_token_requests;
         self.prefill_ms += other.prefill_ms;
@@ -97,6 +101,8 @@ struct Request {
     last: Option<i64>,
     /// When its answer (text or a tool call) started, and its latest chunk.
     answer: Option<(i64, i64)>,
+    /// When its streamed thinking started, and its latest chunk.
+    thought: Option<(i64, i64)>,
     /// Its own usage report, when one arrived while it ran.
     report: Option<Report>,
 }
@@ -110,11 +116,13 @@ impl Request {
         };
         if last - first < MIN_STREAM_MS {
             return Split {
+                requests: 1,
                 burst_requests: done.into(),
                 ..Split::default()
             };
         }
         let mut split = Split {
+            requests: 1,
             first_token_ms: first - sent,
             first_token_requests: 1,
             ..Split::default()
@@ -123,13 +131,23 @@ impl Request {
             split.prefill_ms = first - sent;
             split.prefill_tokens = report.input.saturating_sub(report.cached);
             split.prefill_cached_tokens = report.cached.min(report.input);
-            // Reasoning is written before the answer starts (or streams as
-            // thoughts, which the answer's time leaves out).
-            if let Some((start, end)) = self
-                .answer
-                .filter(|(start, end)| end - start >= MIN_STREAM_MS)
-            {
-                split.decode_tokens = report.output.saturating_sub(report.reasoning);
+            // Thinking that streams (as local models' does) is decoded in view:
+            // it is timed and counted with the answer. Hidden thinking is written
+            // before the first output, so only the answer is.
+            let thought = self
+                .thought
+                .is_some_and(|(start, end)| end - start >= MIN_STREAM_MS);
+            let window = if thought {
+                Some((first, last))
+            } else {
+                self.answer
+            };
+            if let Some((start, end)) = window.filter(|(start, end)| end - start >= MIN_STREAM_MS) {
+                split.decode_tokens = if thought {
+                    report.output
+                } else {
+                    report.output.saturating_sub(report.reasoning)
+                };
                 split.decode_ms = end - start;
             }
         }
@@ -171,10 +189,12 @@ impl Tracker {
         }
         self.request.first.get_or_insert(at);
         self.request.last = Some(at);
-        if answer {
-            let start = self.request.answer.map_or(at, |(start, _)| start);
-            self.request.answer = Some((start, at));
-        }
+        let window = if answer {
+            &mut self.request.answer
+        } else {
+            &mut self.request.thought
+        };
+        *window = Some((window.map_or(at, |(start, _)| start), at));
     }
 
     fn begin_request(&mut self, at: i64) {
@@ -295,6 +315,7 @@ impl Tracker {
             "latestOutputTimeMs":self.latest_ms,
             "latestOutputMeasuredAt":self.latest_at.and_then(chrono::DateTime::from_timestamp_millis).map(|at|at.to_rfc3339()),
             "splitMethod":"streamedRequests",
+            "llmRequests":split.requests,
             "firstTokenMs":(split.first_token_requests > 0).then(||split.first_token_ms as f64 / split.first_token_requests as f64),
             "firstTokenRequests":split.first_token_requests,
             "burstRequests":split.burst_requests,
@@ -402,7 +423,15 @@ impl Supervisor {
                         Some("agentMessage" | "reasoning")
                     ) =>
                 {
-                    tracker.output(at, event.payload["item"]["kind"] == "agentMessage");
+                    // A message or thought opened before its first token carries no
+                    // output yet; counting it put the first token at the turn start.
+                    let item = &event.payload["item"];
+                    if item["text"]
+                        .as_str()
+                        .is_some_and(|text| !text.trim().is_empty())
+                    {
+                        tracker.output(at, item["kind"] == "agentMessage");
+                    }
                     return Ok(());
                 }
                 "thread.item.started" | "thread.item.completed" => {
@@ -587,6 +616,30 @@ mod tests {
     }
 
     #[test]
+    fn streamed_thinking_is_timed_with_the_answer_as_a_local_model_reports_it() {
+        // A local model: sent at 0, first thought token at 0.5 s (prefill of 2000
+        // uncached tokens), thinking streams to 3.5 s, the answer to 5.6 s, then a
+        // tool call. All 600 output tokens (300 of them reasoning) streamed in view.
+        let mut t = Tracker::new(0);
+        for at in (500..=3500).step_by(100) {
+            t.output(at, false);
+        }
+        for at in (3600..=5600).step_by(100) {
+            t.output(at, true);
+        }
+        t.tool(5600, "edit", true);
+        t.usage(5650, 600, report(2000, 0, 600, 300));
+        t.tool(6000, "edit", false);
+        let s = t.snapshot(6000, true);
+        assert_eq!(s["llmRequests"], 1);
+        assert_eq!(s["firstTokenMs"], 500.0);
+        assert_eq!(s["prefillTokensPerSecond"], 4000.0);
+        assert_eq!(s["decodeTokens"], 600);
+        assert_eq!(s["decodeMs"], 5100);
+        assert!((s["decodeTokensPerSecond"].as_f64().unwrap() - 600.0 / 5.1).abs() < 1e-9);
+    }
+
+    #[test]
     fn a_reply_that_arrives_in_one_burst_is_left_out_of_the_split() {
         // Hidden thinking, then the thought summary and the tool call land 40 ms
         // apart: the 5 s wait is the whole reply, and nothing streamed to time.
@@ -597,6 +650,7 @@ mod tests {
         t.usage(5100, 800, report(20000, 15000, 800, 300));
         t.tool(9000, "edit", false);
         let s = t.snapshot(9000, true);
+        assert_eq!(s["llmRequests"], 1);
         assert_eq!(s["burstRequests"], 1);
         assert_eq!(s["firstTokenRequests"], 0);
         assert_eq!(s["firstTokenMs"], Value::Null);

@@ -406,6 +406,51 @@ impl TurnMapper {
         }
         let created_at = acp_update_created_at(update);
         match kind {
+            // A harness notice (a warning, a model fallback, a compaction) is
+            // not the agent's reply: it gets its own row, and a reply after it
+            // starts a new segment.
+            "notice" => {
+                let title = body
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .trim();
+                let description = body
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .trim();
+                if title.is_empty() && description.is_empty() {
+                    return mapped;
+                }
+                self.close_text_segments();
+                let mut notice = item(
+                    format!("{}:notice:{}", self.turn_id, self.native_notices.len()),
+                    ThreadItemKind::Generic,
+                    if title.is_empty() { description } else { title }.to_string(),
+                    "completed",
+                    &self.turn_id,
+                );
+                notice.sequence = Some(self.next_sequence());
+                if let Some(created_at) = created_at {
+                    notice.created_at = Some(created_at);
+                }
+                notice
+                    .extra
+                    .insert("origin".into(), serde_json::json!("sessionNotice"));
+                notice.extra.insert(
+                    "severity".into(),
+                    serde_json::json!(body
+                        .get("severity")
+                        .and_then(Value::as_str)
+                        .unwrap_or("info")),
+                );
+                if !title.is_empty() && !description.is_empty() {
+                    notice.detail_text = Some(description.into());
+                }
+                self.native_notices.push(notice.clone());
+                mapped.items.push(notice);
+            }
             "agent_message_chunk" => {
                 if let Some(text) = content_text(body) {
                     let message_id = body
@@ -1190,6 +1235,25 @@ fn item(
 mod stream_tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn harness_notices_get_their_own_row_and_split_the_reply() {
+        let mut mapper = TurnMapper::new("turn");
+        mapper.apply(&json!({"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Before."}}));
+        let notice = mapper.apply(&json!({"sessionUpdate":"notice","severity":"warning","title":"Model metadata for local-7b not found","description":"Defaulting to fallback metadata."}));
+        assert!(notice.deltas.is_empty());
+        let row = &notice.items[0];
+        assert_eq!(row.kind, ThreadItemKind::Generic);
+        assert_eq!(row.text, "Model metadata for local-7b not found");
+        assert_eq!(
+            row.detail_text.as_deref(),
+            Some("Defaulting to fallback metadata.")
+        );
+        assert_eq!(row.extra["origin"], "sessionNotice");
+        assert_eq!(row.extra["severity"], "warning");
+        let after = mapper.apply(&json!({"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"After."}}));
+        assert_ne!(after.deltas[0].0, "turn:assistant:1");
+    }
 
     fn chunk(kind: &str, text: &str) -> Value {
         json!({"sessionUpdate":kind,"messageId":"m1","content":{"type":"text","text":text}})

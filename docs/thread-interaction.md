@@ -330,12 +330,18 @@ together with any files already attached in the composer.
 
 On a phone (under 640 px wide) the controls sit at the bottom for one-handed use.
 The top bar shows only status: the device monitor, the subscription usage windows
-(such as 5h and 7d; tapping them shows the details), how many threads are running on the account (a threads mark with a live dot and
+(such as 5h and 7d; tapping them shows the details), how many conversations are running on the account (a threads mark with a live dot and
 the count, "running" where there is room), the connection and notifications.
-Tapping the count opens a sheet with those threads, each with how long it has
-run, then the finished threads that were opened before and not read since, and
+Tapping the count opens a sheet with those conversations, each with how long it has
+run, then the finished ones that were opened before and not read since, and
 a way to all threads. It counts every running thread of the devices the
-navigation reads, also ones never opened. The composer (or the files prompt)
+navigation reads, also ones never opened, by conversation.
+
+An agent thread is never listed on its own. Wherever one appears (this sheet,
+the sidebar, the drawer, the thread sheet, the tab bar, notifications), its
+conversation's root comes with it and the agent threads fold under the root's row;
+the root's dot says when its agent threads run. Notifications from agent threads
+sit under their conversation's title. The composer (or the files prompt)
 and a row under it form one bottom panel; the row holds the current thread,
 Chat / Files / Terminal and More. Tapping the thread, or swiping up anywhere on
 the panel, opens a sheet with the workspace's threads (the current thread's group
@@ -357,9 +363,10 @@ The workspace drawer shows the app's mark and close, **All workspaces**, the
 **Thread map**, then shortcuts (folded until opened), **This workspace** and, from
 halfway down after a gap, recent conversations elsewhere; each half scrolls on its
 own. The desktop sidebar is laid out the same way. The tab bar and **This workspace**
-list the current workspace's threads with the agent threads its conversations
-started in other workspaces; an agent thread working here whose conversation lives
-elsewhere appears alone, without that conversation. Shortcuts keep the account's own order:
+list the conversations started in the current workspace, each with all its agent
+threads wherever they work. An agent thread working here for a conversation started
+elsewhere belongs to that workspace; while it is open it shows inside its
+conversation. Shortcuts keep the account's own order:
 drag one with the mouse, long-press and drag on touch, or press Alt+↑/↓ on a
 focused shortcut. The order is saved with the account (relay
 `PUT /relay/account/workbench/shortcuts`, `favoriteOrder` in the workbench
