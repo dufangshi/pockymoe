@@ -614,7 +614,7 @@
   :theme .thread-ui-shell form[data-agent='deepseek']::before { --pc-peek-w: 37px; }
   :theme .thread-ui-shell form:is([data-agent='cursor'], [data-agent='copilot'], [data-agent='opencode'])::before { --pc-peek-w: 39px; }
   :theme .thread-ui-shell .matter-workbench .thread-composer-pending-queue { width: auto; margin: 0 9px 8px; border-radius: 16px; }
-  :theme .thread-ui-shell .thread-composer-pending-row :is(.thread-composer-steer-button, .thread-composer-queue-remove) { height: 40px; }
+  :theme .thread-ui-shell .thread-composer-pending-row :is(.thread-composer-steer-button, .thread-composer-queue-edit, .thread-composer-queue-remove) { height: 40px; }
   :theme .thread-ui-shell .thread-composer-pending-row .thread-composer-queue-remove { width: 40px; }
 }
 /* Touch: 36px keys, each with a 44px hit area; the gaps keep the areas apart. */

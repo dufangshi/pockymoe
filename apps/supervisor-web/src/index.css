@@ -2665,6 +2665,33 @@ main:has(.product-navigation) { padding-top: 0 !important; }
   font-variant-numeric: tabular-nums;
 }
 .file-ask-bar-attachments svg { width: 13px; height: 13px; }
+/* The file the question is about, above the field; × sends it without. */
+.file-ask-bar-target {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: calc(100% - 16px);
+  margin: 0 8px 6px;
+  padding: 0 0 0 8px;
+  border: 1px solid var(--theme-border);
+  border-radius: 999px;
+  background: var(--theme-panel);
+  color: var(--theme-fg-soft);
+  font-size: 12px;
+}
+.file-ask-bar-target > svg { flex: none; width: 13px; height: 13px; }
+.file-ask-bar-target > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-ask-bar-target > button {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 28px;
+  border-radius: 999px;
+  color: var(--theme-fg-muted);
+}
+.file-ask-bar-target > button svg { width: 13px; height: 13px; }
 .file-ask-bar[data-state='failed'] .file-ask-bar-shell { border-color: #c2413a; }
 .file-ask-bar textarea {
   flex: 1;

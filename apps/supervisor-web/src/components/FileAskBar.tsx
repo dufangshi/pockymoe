@@ -1,5 +1,5 @@
 import { useLayoutEffect, useRef, useState } from 'react';
-import { ArrowUp, Check, Paperclip } from 'lucide-react';
+import { ArrowUp, Check, FileText, Paperclip, X } from 'lucide-react';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 
 const MAX_HEIGHT = 112;
@@ -8,14 +8,17 @@ const MAX_HEIGHT = 112;
     without going back to the conversation. Sends like the main composer's Send.
     Given `value` and `onChange` it edits the conversation's own draft, so what is
     typed here is in the composer too and the other way round; the host then
-    clears the draft when a send is accepted. */
-export function FileAskBar({ onSend, disabledReason, value, onChange, attachmentCount = 0 }: {
+    clears the draft when a send is accepted. The file being read goes with the
+    question as its workspace path, unless the reader removes its label. */
+export function FileAskBar({ onSend, disabledReason, value, onChange, attachmentCount = 0, file = null }: {
   onSend: (prompt: string) => Promise<boolean>;
   disabledReason?: string | null;
   value?: string;
   onChange?: (text: string) => void;
   /** Files already attached in the shared draft; they go with the text. */
   attachmentCount?: number;
+  /** The workspace-relative path of the file being read. */
+  file?: string | null;
 }) {
   useI18n();
   const [ownText, setOwnText] = useState('');
@@ -24,6 +27,8 @@ export function FileAskBar({ onSend, disabledReason, value, onChange, attachment
   const setText = (next: string) => (controlled ? onChange(next) : setOwnText(next));
   const [state, setState] = useState<'idle' | 'sending' | 'sent' | 'failed'>('idle');
   const field = useRef<HTMLTextAreaElement>(null);
+  const [droppedFile, setDroppedFile] = useState<string | null>(null);
+  const target = file && droppedFile !== file ? file : null;
 
   useLayoutEffect(() => {
     const element = field.current;
@@ -43,7 +48,7 @@ export function FileAskBar({ onSend, disabledReason, value, onChange, attachment
   const send = async () => {
     if (!prompt || blocked) return;
     setState('sending');
-    const sent = await onSend(prompt).catch(() => false);
+    const sent = await onSend(target ? `\`${target}\` ${prompt}` : prompt).catch(() => false);
     if (sent && !controlled) setText('');
     setState(sent ? 'sent' : 'failed');
   };
@@ -54,6 +59,15 @@ export function FileAskBar({ onSend, disabledReason, value, onChange, attachment
       {state === 'sent' || state === 'failed'
         ? <p className="file-ask-bar-note" role="status">{translate(state === 'sent' ? 'files.askSent' : 'files.askFailed')}</p>
         : null}
+      {target ? (
+        <p className="file-ask-bar-target">
+          <FileText aria-hidden="true" />
+          <span title={target}>{target.split('/').at(-1)}</span>
+          <button type="button" aria-label={translate('files.askWithoutFile', { name: target })} onClick={() => setDroppedFile(target)}>
+            <X aria-hidden="true" />
+          </button>
+        </p>
+      ) : null}
       <div className="file-ask-bar-shell">
         {attachmentCount > 0 && (
           <span className="file-ask-bar-attachments" title={translate('files.askAttachments', { count: attachmentCount })}

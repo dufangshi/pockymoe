@@ -103,3 +103,20 @@ it('edits a draft it is given, so the composer shows the same text, and leaves c
   // The host clears its draft once the send is accepted; the bar does not do it twice.
   expect(onChange).not.toHaveBeenCalledWith('');
 });
+
+it('names the file being read with the question unless its label is removed', async () => {
+  const onSend = vi.fn().mockResolvedValue(true);
+  const { rerender } = render(<FileAskBar onSend={onSend} file="docs/README.md" />);
+  expect(screen.getByTitle('docs/README.md')).toHaveTextContent('README.md');
+  fill('What is this for?');
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Send' })); });
+  expect(onSend).toHaveBeenLastCalledWith('`docs/README.md` What is this for?');
+  fireEvent.click(screen.getByRole('button', { name: 'Ask without docs/README.md' }));
+  expect(screen.queryByTitle('docs/README.md')).toBeNull();
+  fill('And this?');
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Send' })); });
+  expect(onSend).toHaveBeenLastCalledWith('And this?');
+  // Another file brings its label back.
+  rerender(<FileAskBar onSend={onSend} file="src/main.rs" />);
+  expect(screen.getByTitle('src/main.rs')).toHaveTextContent('main.rs');
+});

@@ -99,7 +99,8 @@
 .recent-thread-menu > .recent-thread-delete { color: var(--status-danger-fg); }
 .recent-thread-menu :focus-visible { outline: 2px solid var(--theme-accent-solid); outline-offset: -2px; }
 .recent-thread-menu > p { padding: 8px; font-size: 11px; line-height: 1.5; color: var(--theme-fg-muted); }
-.recent-thread-menu > .recent-thread-menu-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; color: var(--theme-fg); border-bottom: 1px solid var(--theme-border); margin-bottom: 4px; }
+/* Up to two lines of the title, so threads with one prefix stay apart. */
+.recent-thread-menu > .recent-thread-menu-title { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow-wrap: anywhere; font-weight: 600; color: var(--theme-fg); border-bottom: 1px solid var(--theme-border); margin-bottom: 4px; }
 @media (max-width: 639px) {
   .product-page-header.product-page-header { padding-block: 20px 16px; }
   .product-page .product-row { padding: 14px 12px; }

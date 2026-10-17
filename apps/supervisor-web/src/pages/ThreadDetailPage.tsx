@@ -857,6 +857,8 @@ export function ThreadDetailPage() {
   // typed there is in that composer too; an accepted send clears it.
   const toolsDraft = toolsUseReference ? referenceDraft : chatDraft;
   const setToolsDraft = toolsUseReference ? setReferenceDraft : setChatDraft;
+  // The file the files pane shows; a question asked there names it.
+  const [toolsFile, setToolsFile] = useState<string | null>(null);
   const sendFromFiles = async (prompt: string) => {
     const { attachments } = toolsDraft;
     const input = { prompt, ...(attachments.length ? { attachments } : {}) };
@@ -4177,11 +4179,12 @@ export function ThreadDetailPage() {
       threadActionsButton={threadActionsButton}
       surfaceActions={surfaceActions}
       workspaceFeatures={SUPERVISOR_WORKSPACE_FEATURES}
-      workspaceContent={<div className="workbench-tool-target flex min-h-0 flex-1 flex-col" data-testid="workbench-tool-target" data-device={toolsDevice} data-workspace={toolsDetail?.workspace.id ?? ''} data-thread={toolsDetail?.thread.id ?? ''}>{toolsDetail ? <ThreadGraphWorkspacePanel detail={toolsDetail} status={toolsUseReference ? null : status} plugins={plugins} workspaceAdapter={workspaceAdapter} activeView="chat" features={SUPERVISOR_WORKSPACE_FEATURES} focusPathRequest={workspaceFocusPathRequest} /> : <p className="workbench-reference-status">{translate('workbench.loadingThreadDetail')}</p>}
+      workspaceContent={<div className="workbench-tool-target flex min-h-0 flex-1 flex-col" data-testid="workbench-tool-target" data-device={toolsDevice} data-workspace={toolsDetail?.workspace.id ?? ''} data-thread={toolsDetail?.thread.id ?? ''}>{toolsDetail ? <ThreadGraphWorkspacePanel detail={toolsDetail} status={toolsUseReference ? null : status} plugins={plugins} workspaceAdapter={workspaceAdapter} activeView="chat" features={SUPERVISOR_WORKSPACE_FEATURES} focusPathRequest={workspaceFocusPathRequest} onActiveFileChange={setToolsFile} /> : <p className="workbench-reference-status">{translate('workbench.loadingThreadDetail')}</p>}
         {toolsDetail && toolsCanControl ? <FileAskBar
           disabledReason={toolsUseReference ? null : promptDisabledReason}
           value={toolsDraft.prompt} attachmentCount={toolsDraft.attachments.length}
           onChange={prompt => setToolsDraft(draft => ({ ...draft, prompt }))}
+          file={toolsFile}
           onSend={sendFromFiles} /> : null}</div>}
       workspaceFocusPathRequest={workspaceFocusPathRequest}
       activeView={activeView}

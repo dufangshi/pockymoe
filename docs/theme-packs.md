@@ -224,7 +224,7 @@ when the applied pack lists the flag (`useThemeFeature(flag)`):
 | `workbench.phoneDrawerTools` | With the phone dock switched off, Home and Chat move from the top bar into the thread drawer |
 | `composer.modelAvatar` | The model chip shows the agent avatar and a menu chevron |
 | `composer.richMenus` | Icon rows with descriptions in the slash toolbox and attach menu, a `/` glyph and a paperclip trigger |
-| `composer.intentIcons` | Per-intent send icons, and "Send after this turn" while a turn runs |
+| `composer.intentIcons` | A paper plane for "Send" (every theme already shows distinct Send, "Send after this turn" and "Set goal" icons) |
 | `transcript.agentByline` | Each reply opens with the agent's avatar and name |
 | `explorer.shortMenuLabels` | No longer needed: Explorer row-menu labels are always short, with the node name in the accessible name |
 | `code.cssSyntaxPalette` | Code blocks use the CSS-variable Shiki theme (`--shiki-*`) |
