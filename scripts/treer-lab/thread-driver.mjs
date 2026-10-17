@@ -8,6 +8,8 @@ const dir = `${process.env.POCKYMOE_E2E_FAKE_CLI_JOB_DIR ?? '/workspace/l2-threa
 const binaries = {
   pockymoe: process.env.POCKYMOE_E2E_FAKE_CLI_BIN ?? '/usr/local/bin/pockymoe',
   treer: '/usr/local/bin/treer',
+  // Treer App calls through the thread's inherited workload proxy (issues-e2e.mjs).
+  curl: '/usr/bin/curl',
 };
 await mkdir(dir, { recursive: true, mode: 0o700 });
 try {

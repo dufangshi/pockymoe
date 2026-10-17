@@ -112,12 +112,7 @@ impl Hub {
         let mut live = self.live.lock().unwrap();
         for b in live.values_mut().filter(|b| b.thread == id) {
             b.cancelled.cancel();
-            b.identity = AttachTreerIdentity {
-                agent_server_url: None,
-                workload_credential: None,
-                workspace_id: None,
-                server_id: None,
-            };
+            b.identity = AttachTreerIdentity::default();
         }
         // Keep the cancelled reservation until attach-loop cleanup finishes;
         // a replacement instance must not race the old detach's harness release.

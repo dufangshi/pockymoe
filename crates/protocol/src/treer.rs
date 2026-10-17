@@ -55,7 +55,7 @@ pub struct AttachCreateThread {
 }
 
 /// Values of the `TREER_*` environment Treer gives the attach process.
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AttachTreerIdentity {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -66,6 +66,10 @@ pub struct AttachTreerIdentity {
     pub workspace_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub server_id: Option<String>,
+    /// The Agent's own loopback workload proxy (`TREER_HTTP_PROXY`). It signs
+    /// `*.treer` App requests as this Agent; it is a URL, not a credential.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http_proxy: Option<String>,
 }
 
 impl std::fmt::Debug for AttachTreerIdentity {
@@ -78,6 +82,7 @@ impl std::fmt::Debug for AttachTreerIdentity {
             )
             .field("workspace_id", &self.workspace_id)
             .field("server_id", &self.server_id)
+            .field("http_proxy", &self.http_proxy)
             .finish()
     }
 }
@@ -125,12 +130,14 @@ mod tests {
                 workload_credential: Some("secret".into()),
                 workspace_id: None,
                 server_id: None,
+                http_proxy: Some("http://127.0.0.1:2".into()),
             },
         };
         let json = serde_json::to_value(&hello).unwrap();
         assert_eq!(json["protocolVersion"], 1);
         assert_eq!(json["create"]["reasoningEffort"], "high");
         assert_eq!(json["treer"]["workloadCredential"], "secret");
+        assert_eq!(json["treer"]["httpProxy"], "http://127.0.0.1:2");
         assert!(!format!("{hello:?}").contains("secret"));
 
         let reply: AttachReply = serde_json::from_value(serde_json::json!({

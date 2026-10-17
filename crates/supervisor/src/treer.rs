@@ -42,6 +42,7 @@ pub(crate) struct Hub {
     message_executable: Mutex<std::path::PathBuf>,
     message_operations: tokio::sync::Mutex<()>,
     message_workers: Mutex<HashSet<(String, String)>>,
+    wake_apps: Mutex<messages::WakeApps>,
 }
 #[derive(Clone)]
 struct Binding {
@@ -318,6 +319,7 @@ impl Hub {
             message_executable: Mutex::new("treer".into()),
             message_operations: Default::default(),
             message_workers: Default::default(),
+            wake_apps: Default::default(),
         });
         hub.state
             .set_thread_host(Arc::new(registry::Registry::new(&hub)))?;
@@ -512,12 +514,7 @@ impl Hub {
                 return;
             }
             current.cancelled.cancel();
-            current.identity = AttachTreerIdentity {
-                agent_server_url: None,
-                workload_credential: None,
-                workspace_id: None,
-                server_id: None,
-            };
+            current.identity = AttachTreerIdentity::default();
         }
         self.state.pause_integration_thread(&binding.thread);
         self.state.clear_thread_cli_identity(&binding.thread);

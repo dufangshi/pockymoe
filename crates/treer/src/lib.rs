@@ -39,7 +39,44 @@ pub fn identity_env(
             env.push((key.into(), value.clone()));
         }
     }
+    // `*.treer` App requests must carry this Agent's identity, never the hub's.
+    if let Some(proxy) = identity.http_proxy.as_deref().and_then(workload_proxy) {
+        for key in PROXY_KEYS {
+            env.push(((*key).into(), proxy.clone()));
+        }
+        let inherited = std::env::var("no_proxy")
+            .or_else(|_| std::env::var("NO_PROXY"))
+            .unwrap_or_default();
+        let bypass = if inherited.is_empty() {
+            "localhost,127.0.0.1,::1".to_owned()
+        } else {
+            format!("localhost,127.0.0.1,::1,{inherited}")
+        };
+        env.push(("no_proxy".into(), bypass.clone()));
+        env.push(("NO_PROXY".into(), bypass));
+    }
     env
+}
+
+/// Variables Treer sets to an Agent's workload proxy.
+pub const PROXY_KEYS: &[&str] = &[
+    "http_proxy",
+    "https_proxy",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "TREER_HTTP_PROXY",
+];
+
+/// Treer's workload proxy is always `http://127.0.0.1:PORT`. Anything else is ignored.
+pub fn workload_proxy(value: &str) -> Option<String> {
+    let port = value
+        .strip_prefix("http://127.0.0.1:")?
+        .trim_end_matches('/');
+    let port = port
+        .bytes()
+        .all(|b| b.is_ascii_digit())
+        .then(|| port.parse::<u16>().ok())??;
+    (port != 0).then(|| format!("http://127.0.0.1:{port}"))
 }
 
 pub fn validate_hello(hello: &pockymoe_protocol::treer::AttachHello) -> anyhow::Result<()> {
@@ -397,6 +434,33 @@ pub fn transcript_page(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn identity_env_uses_only_the_agents_loopback_proxy() {
+        for (value, expected) in [
+            ("http://127.0.0.1:4100", Some("http://127.0.0.1:4100")),
+            ("http://127.0.0.1:4100/", Some("http://127.0.0.1:4100")),
+            ("http://127.0.0.1:0", None),
+            ("http://127.0.0.1:99999", None),
+            ("http://127.0.0.1:41+0", None),
+            ("http://user:pw@127.0.0.1:4100", None),
+            ("http://127.0.0.1.evil:4100", None),
+            ("https://127.0.0.1:4100", None),
+            ("http://10.0.0.1:4100", None),
+            ("http://127.0.0.1:4100/path", None),
+        ] {
+            assert_eq!(workload_proxy(value).as_deref(), expected, "{value}");
+        }
+        let mut identity = pockymoe_protocol::treer::AttachTreerIdentity::default();
+        let env = identity_env("ag_1", &identity);
+        assert!(!env.iter().any(|(k, _)| PROXY_KEYS.contains(&k.as_str())));
+        identity.http_proxy = Some("http://127.0.0.1:4100".into());
+        let env = identity_env("ag_1", &identity);
+        for key in PROXY_KEYS {
+            assert!(env.contains(&((*key).into(), "http://127.0.0.1:4100".into())));
+        }
+        let bypass = env.iter().find(|(k, _)| k == "NO_PROXY").unwrap();
+        assert!(bypass.1.starts_with("localhost,127.0.0.1,::1"));
+    }
     #[test]
     fn bound_workspace_scope_matrix_and_labels() {
         for (root, bound, creating, expected) in [

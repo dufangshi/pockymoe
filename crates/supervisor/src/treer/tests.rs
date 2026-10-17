@@ -122,6 +122,7 @@ pub(super) fn hello(f: &Fixture, agent: &str) -> AttachHello {
             workload_credential: Some("fixture-credential".into()),
             workspace_id: Some("workspace".into()),
             server_id: Some("server".into()),
+            http_proxy: Some("http://127.0.0.1:19".into()),
         },
     }
 }

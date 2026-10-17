@@ -362,9 +362,10 @@ credentials to a remote URL or use the general Supervisor API token.
 
 Treer credentials are held only in attach/hub process memory and the managed
 workload environment. They are not written into startup arguments, profile
-JSON, thread history, logs or integration state. The hub may deliver them only
-to the bound top-level thread's harness, never automatically to child threads.
-The token-file **path** is saved; its contents are not.
+JSON, thread history, logs or integration state. The hub delivers each Agent's
+credentials only to the harness of the thread bound to that Agent; a child gets
+its own Agent's credentials when that Agent attaches. The token-file **path** is
+saved; its contents are not.
 
 Treer's injected source/Agent/instance markers are provenance, not secrets.
 They support browser and routing checks but do not authenticate an OS process.
@@ -390,12 +391,28 @@ visibility filtering; local HTTP authentication alone does not supply that.
 - A shared hub across isolated containers or devices without shared loopback.
 - Windows installation/profile wrappers in this Unix packaging; Windows needs
   a stable owner-controlled launcher that follows `native/current.json`.
-- Treer-side Agent-delete reconciliation: deletion is indistinguishable from
-  stop/disconnection today, so the hub retains the thread and its history.
-- Core Message bridging, child Agent registration, cross-device split views,
-  and fine-grained human/App authorization.
+- Deleting a thread from Treer alone: the registry archives the thread of a
+  deleted Agent and keeps its history instead of deleting it.
+- Cross-device split views and fine-grained human/App authorization.
 - Release rollback, automated profile upgrades, or replacing a running
   Supervisor through the installer.
+
+## Treer Apps
+
+A bound thread uses workspace Apps as its own Agent, as Treer's own Agents do:
+`curl -fsS http://NAME.treer/` reaches the App through the thread's workload
+proxy, which adds a short-lived identity token for that Agent. The hosted guide
+lists this with the Issues entry points (`/`, `/v1/issues?assignee=me&unresolved=1`
+and `/v1/issues/N`).
+
+The Treer Issues App (`apps/issues`) needs no changes. A thread can read the
+directory, create and assign issues, comment, claim and close them, and every
+activity entry names that thread's Agent. Issues' change notifications are sent
+with the actor's token: a human actor's notice wakes the assignee, an Agent's
+stays passive mail. Issues' reminders and digests come from the App's runtime
+Agent; with the default `POCKYMOE_TREER_WAKE_APPS=issues` they wake an idle
+assignee. Issues sends reminders only when `treer agent show` reports the Agent
+`idle` and not busy, which the hub supplies through `state.observe`.
 
 ## Hub internals
 
@@ -410,7 +427,7 @@ attach wire types are in [`crates/protocol/src/treer.rs`](../crates/protocol/src
 `Authorization: Bearer` set to the hex 256-bit token in `treer-attach.token`
 beside the hub database (Unix mode 0600; a symlink, non-file or wider mode is
 refused). Requests with `Origin` or `Sec-Fetch-*` are refused. One live Agent may
-bind each top-level thread; child threads cannot be bound. A repeated `create`
+bind each thread. A repeated `create`
 from a known Agent rebinds its saved thread instead of creating another.
 Bindings are stored in their own table; core thread tables are unchanged.
 
@@ -420,8 +437,16 @@ the running turn and releases its harness, keeping the thread, its history and
 queued inputs. Persisted bindings wait for the next attach after a hub restart.
 
 **Credentials.** The Treer identity from the hello is installed only into the
-bound top-level thread's harness and ACP terminal environment. It is held in
-memory, never persisted or logged, and never inherited by child threads.
+bound thread's harness and ACP terminal environment. It is held in memory, never
+persisted or logged, and never inherited by another thread. Harnesses, terminals
+and the fake-runtime fixture never inherit the hub's own `TREER_*` identity or
+its workload proxy (`HTTP_PROXY` and related variables equal to the hub's
+`TREER_HTTP_PROXY`); any other configured proxy is kept. Attach also sends its
+own `TREER_HTTP_PROXY` (`httpProxy`, accepted only as `http://127.0.0.1:PORT`),
+and the bound thread uses it as `http_proxy`, `https_proxy`, `HTTP_PROXY`,
+`HTTPS_PROXY` and `TREER_HTTP_PROXY`, with loopback in `no_proxy`. Treer signs
+`*.treer` requests through that proxy as the thread's Agent, so an unbound
+thread reaches no App with the hub's identity.
 
 **Agent Interface (`treer.agent-interface/v1`).** The hub advertises
 `prompt.submit`, `prompt.queue`, `prompt.queue.read`, `prompt.notify`,
@@ -515,8 +540,14 @@ external-source envelope also queue a prompt with quoted third-party data,
 message IDs and a `treer message get <id>` hint. This decision uses only the Core
 envelope, never body text, labels or completion-looking JSON. Automatic prompts
 allow three wakes per sender kind/ID and recipient per minute; additional mail
-stays unread in the inbox. Other Agent, machine and service mail stays passive,
-and the existing unread reminder applies. Replies map their context IDs to
+stays unread in the inbox. Mail whose attested sender is an Agent equal to the
+runtime Agent of an allowed Managed App also wakes. `POCKYMOE_TREER_WAKE_APPS`
+lists the App names (comma-separated, default `issues`; empty disables). The hub
+resolves the names with `treer app list` as the hub App, at most every 10 seconds
+after mail from an unknown Agent and otherwise each minute; a failed lookup keeps
+the previous answer. That wake prompt names the App and its `http://NAME.treer/`
+manual. Other Agent, machine and service mail stays passive, and the existing
+unread reminder applies. Replies map their context IDs to
 `inReplyTo` and satisfy matching existing inbox waits without starting a turn.
 
 `--notify-on-complete` maps to Treer's opt-in `--notify`. A completion is correlated

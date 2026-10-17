@@ -32,6 +32,29 @@ CREATE TABLE IF NOT EXISTS treer_message_wake_rate (
 
 pub(super) struct Bridge(pub Weak<Hub>);
 
+/// Runtime Agent IDs of the Managed Apps allowed to start a turn the way a human
+/// can (`POCKYMOE_TREER_WAKE_APPS`, default `issues`). The ID is the Proxy-attested
+/// sender; names are resolved through `treer app list`, never taken from a message.
+#[derive(Default)]
+pub(super) struct WakeApps {
+    /// Runtime Agent ID -> App name.
+    pub ids: HashMap<String, String>,
+    checked: Option<std::time::Instant>,
+}
+
+fn wake_app_names() -> Vec<String> {
+    std::env::var("POCKYMOE_TREER_WAKE_APPS")
+        .map(|names| {
+            names
+                .split(',')
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_else(|_| vec!["issues".into()])
+}
+
 pub(crate) fn interaction_text(state: &Supervisor, text: &str) -> String {
     if state.config.treer_enabled
         && state.config.host_mode == pockymoe_runtime::host_mode::HostMode::Hosted
@@ -456,6 +479,16 @@ impl Hub {
             })?;
             return Ok(false);
         }
+        let wake_app = (message.sender.kind == "agent")
+            .then(|| {
+                self.wake_apps
+                    .lock()
+                    .unwrap()
+                    .ids
+                    .get(&message.sender.id)
+                    .cloned()
+            })
+            .flatten();
         let fresh = self.state.db.with(|c| {
             let tx = c.unchecked_transaction()?;
             let seen = tx.query_row("SELECT EXISTS(SELECT 1 FROM treer_message_inbound WHERE thread_id=?1 AND core_id=?2)",params![binding.thread,message.message_id],|r|r.get::<_,bool>(0))?;
@@ -484,7 +517,7 @@ impl Hub {
                 }
                 store_inbound(&tx,InboundMail {thread_id:&binding.thread,message_id:&id,from_thread_id:from.as_deref(),text:&message.body,created_at:&message.created_at,subject:subject.as_deref(),kind:&kind,in_reply_to:reply.as_deref(),metadata:json!({"provider":"treer","coreMessageId":message.message_id,"senderKind":message.sender.kind,"senderId":message.sender.id,"senderPath":message.sender.path,"contextIds":message.context_ids,"externalSource":message.external_source})})?;
                 tx.execute("INSERT INTO treer_message_inbound(thread_id,core_id,message_id) VALUES(?1,?2,?3)",params![binding.thread,message.message_id,id])?;
-                if core::wakes(message) {
+                if core::wakes(message) || wake_app.is_some() {
                     let now = chrono::Utc::now().timestamp();
                     // Fixed one-minute per authenticated sender window, maximum three wakes.
                     tx.execute("INSERT INTO treer_message_wake_rate(thread_id,sender_kind,sender_id,window_start,count) VALUES(?1,?2,?3,?4,0) ON CONFLICT(thread_id,sender_kind,sender_id) DO UPDATE SET count=CASE WHEN window_start<=?4-60 THEN 0 ELSE count END,window_start=CASE WHEN window_start<=?4-60 THEN ?4 ELSE window_start END",params![binding.thread,message.sender.kind,message.sender.id,now])?;
@@ -492,7 +525,7 @@ impl Hub {
                     if count < 3 {
                         let pending = uuid::Uuid::new_v4().to_string();
                         // Queued in this same transaction, so restart or ack retries cannot duplicate wakes.
-                        tx.execute("INSERT INTO thread_pending_steers(id,thread_id,turn_id,client_request_id,display_prompt,submitted_prompt,delivery,created_at,updated_at) VALUES(?1,?2,'',?3,?4,?4,'continuation',?5,?5)",params![pending,binding.thread,format!("treer-message/{}",message.message_id),core::message_prompt(message),now_rfc3339()])?;
+                        tx.execute("INSERT INTO thread_pending_steers(id,thread_id,turn_id,client_request_id,display_prompt,submitted_prompt,delivery,created_at,updated_at) VALUES(?1,?2,'',?3,?4,?4,'continuation',?5,?5)",params![pending,binding.thread,format!("treer-message/{}",message.message_id),core::message_prompt_from(message,wake_app.as_deref()),now_rfc3339()])?;
                         tx.execute("UPDATE treer_message_wake_rate SET count=count+1 WHERE thread_id=?1 AND sender_kind=?2 AND sender_id=?3",params![binding.thread,message.sender.kind,message.sender.id])?;
                     }
                 }
@@ -555,6 +588,50 @@ impl Hub {
         Ok(())
     }
 
+    /// Re-resolve allowed App senders as the hub App: at most every 10 seconds
+    /// when an unknown Agent sent mail (a newly created App), otherwise each minute.
+    async fn refresh_wake_apps(&self, senders: &[&str]) {
+        let names = wake_app_names();
+        {
+            let wake = self.wake_apps.lock().unwrap();
+            let unknown = senders.iter().any(|id| !wake.ids.contains_key(*id));
+            let age = if unknown { 10 } else { 60 };
+            if wake
+                .checked
+                .is_some_and(|at| at.elapsed() < Duration::from_secs(age))
+            {
+                return;
+            }
+        }
+        let caller = self.hub_identity.lock().unwrap().clone();
+        let ids = match caller {
+            Some(caller) if !names.is_empty() => self
+                .registry_command_async(&caller, vec!["app".into(), "list".into()])
+                .await
+                .ok()
+                .map(|reply| {
+                    reply["apps"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|app| {
+                            let name = app["name"].as_str()?;
+                            let id = app["runtime_agent_id"].as_str()?;
+                            (names.iter().any(|n| n == name) && core::valid_id(id))
+                                .then(|| (id.to_owned(), name.to_owned()))
+                        })
+                        .collect::<HashMap<_, _>>()
+                }),
+            _ => Some(HashMap::new()),
+        };
+        let mut wake = self.wake_apps.lock().unwrap();
+        // A failed lookup keeps the last answer; it is retried after the same minute.
+        if let Some(ids) = ids {
+            wake.ids = ids;
+        }
+        wake.checked = Some(std::time::Instant::now());
+    }
+
     pub(super) fn start_message_workers(self: &Arc<Self>) {
         let bindings = self
             .live
@@ -597,6 +674,14 @@ impl Hub {
                             serde_json::from_value::<Vec<Delivery>>(reply["deliveries"].clone())
                                 .map_err(|_| anyhow::anyhow!("Invalid Treer deliveries"))?;
                         ensure!(deliveries.len() <= 50, "Invalid Treer batch size");
+                        let agents = deliveries
+                            .iter()
+                            .filter(|d| d.message.sender.kind == "agent")
+                            .map(|d| d.message.sender.id.as_str())
+                            .collect::<Vec<_>>();
+                        if !agents.is_empty() {
+                            hub.refresh_wake_apps(&agents).await;
+                        }
                         // Serialize against outbound mapping commits, after polling.
                         {
                             let _operation = hub.message_operations.lock().await;

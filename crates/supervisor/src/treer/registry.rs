@@ -55,6 +55,7 @@ pub(super) fn app_identity() -> Option<Binding> {
             agent_server_url: std::env::var("TREER_AGENT_SERVER_URL").ok(),
             workspace_id: std::env::var("TREER_WORKSPACE_ID").ok(),
             server_id: std::env::var("TREER_SERVER_ID").ok(),
+            http_proxy: std::env::var("TREER_HTTP_PROXY").ok(),
         },
         thread: String::new(),
         instance: String::new(),
@@ -164,7 +165,7 @@ impl Hub {
             command(&executable, binding, &args)
         }
     }
-    async fn registry_command_async(
+    pub(super) async fn registry_command_async(
         &self,
         binding: &Binding,
         args: Vec<String>,

@@ -159,6 +159,28 @@ running. It does not replace the device container or change the setup-created Ap
 Evidence goes to `.scratch/treer-bidirectional/`; set
 `TREER_LAB_SYNC_EVIDENCE_DIR` to select another ignored evidence directory.
 
+## Treer Issues App
+
+`issues-e2e.mjs` runs Treer's unmodified Issues App (`apps/issues` from the Treer
+checkout) against two new bound threads on the fake hub. It installs the candidate
+binary, the strict CLI fixture (now also allowing `curl`) and the Issues source,
+restarts the fake hub App, and creates the `issues` App if absent with
+`ISSUES_REMINDER_FIRST=1m`. It checks that each thread's `/v1/me` is its own Agent
+rather than the hub App, that an Agent-assigned issue reaches the assignee's inbox
+without a turn, that the App's reminder wakes the idle assignee with the App hint,
+and that the assignee's comment and status change are attributed to its Agent.
+It deletes its two Agents afterward and leaves the Issues App running. The run takes
+about three minutes because of the reminder interval.
+
+```bash
+TREER_LAB_POCKYMOE_BIN=/path/to/candidate/target/debug/pockymoe \
+  node scripts/treer-lab/issues-e2e.mjs
+```
+
+`TREER_LAB_ISSUES_SOURCE` selects another Issues checkout and
+`TREER_LAB_ISSUES_EVIDENCE_DIR` the ignored evidence directory (default
+`.scratch/treer-issues/`).
+
 ## Strict registry CLI fixture
 
 The fake runtime has no OS harness process. To exercise the real CLI with the
