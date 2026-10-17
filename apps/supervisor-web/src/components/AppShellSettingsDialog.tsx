@@ -51,6 +51,10 @@ import {
   themeOptions,
 } from './appShellNavigationModel';
 
+// The Rust Supervisor answers every plugin import with 501 (`import_plugin_unsupported`
+// in crates/supervisor/src/http.rs), so the form stays hidden until it can import.
+const PLUGIN_IMPORT_SUPPORTED = false;
+
 function unavailablePluginReason(plugin: unknown) {
   if (!plugin || typeof plugin !== 'object') {
     return null;
@@ -759,7 +763,7 @@ export function AppShellSettingsDialog({
             {translate("files.noPluginsAreRegistered")}</p>
         )}
       </div>
-      <div className="mt-3 border-t border-[var(--theme-border)] pt-3">
+      {PLUGIN_IMPORT_SUPPORTED && <div className="mt-3 border-t border-[var(--theme-border)] pt-3">
         <label className="block text-xs font-medium text-[var(--theme-fg)]">
           {translate("files.importManifestJSON")}</label>
         <textarea
@@ -807,7 +811,7 @@ export function AppShellSettingsDialog({
             {pluginImportState.message}
           </p>
         )}
-      </div>
+      </div>}
       {plugins.error && (
         <p
           className="host-error mt-2 rounded-md border px-3 py-2 text-xs"

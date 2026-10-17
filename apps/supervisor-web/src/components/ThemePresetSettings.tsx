@@ -17,6 +17,8 @@ import {
   type ThemePackErrorCode,
 } from '../lib/themePacks';
 
+const REMOVE_UNDO_MS = 10_000;
+
 const ERROR_KEYS: Record<ThemePackErrorCode, TranslationKey> = {
   archive: 'files.themeErrorArchive',
   limits: 'files.themeErrorLimits',
@@ -71,6 +73,13 @@ export function ThemePresetSettings() {
   const { locale } = useI18n();
   const { entries, selected } = useThemeRegistry();
   const [status, setStatus] = useState<{ error: boolean; text: string } | null>(null);
+  // A removed pack can come back for a few seconds: its file is kept until then.
+  const [removed, setRemoved] = useState<{ id: string; name: string; blob: Blob; selected: boolean } | null>(null);
+  useEffect(() => {
+    if (!removed) return;
+    const timer = window.setTimeout(() => setRemoved(null), REMOVE_UNDO_MS);
+    return () => window.clearTimeout(timer);
+  }, [removed]);
   const [busy, setBusy] = useState(false);
   const input = useRef<HTMLInputElement>(null);
   const checked = entries.some((entry) => entry.id === selected) ? selected : CLASSIC_THEME_ID;
@@ -104,7 +113,25 @@ export function ThemePresetSettings() {
   };
   const onRemove = async (entry: ThemeEntry) => {
     setStatus(null);
-    await removeThemePack(entry.id).catch((error: unknown) => setStatus({ error: true, text: errorText(error) }));
+    try {
+      const { blob } = await exportThemePack(entry.id);
+      const wasSelected = selected === entry.id;
+      await removeThemePack(entry.id);
+      setRemoved({ id: entry.id, name: themeName(entry, locale), blob, selected: wasSelected });
+    } catch (error) {
+      setStatus({ error: true, text: errorText(error) });
+    }
+  };
+  const onUndoRemove = async () => {
+    if (!removed) return;
+    const restore = removed;
+    setRemoved(null);
+    try {
+      await importThemePack(restore.blob);
+      if (restore.selected) await selectTheme(restore.id);
+    } catch (error) {
+      setStatus({ error: true, text: translate('files.themeImportFailed', { value1: errorText(error) }) });
+    }
   };
 
   return (
@@ -120,6 +147,12 @@ export function ThemePresetSettings() {
       <p className="settings-hint mt-1 text-xs leading-5 text-[var(--theme-fg-muted)]">
         {translate('files.themePresetDescription')} {translate('files.themeImportHint')}
       </p>
+      {removed ? (
+        <p role="status" className="theme-preset-status theme-preset-undo">
+          <span>{translate('files.themeRemoved', { value1: removed.name })}</span>
+          <button type="button" onClick={() => void onUndoRemove()}>{translate('files.undo')}</button>
+        </p>
+      ) : null}
       {status ? (
         <p role={status.error ? 'alert' : 'status'} className={`theme-preset-status ${status.error ? 'is-error' : ''}`} title={status.text}>
           {status.text}
@@ -152,7 +185,7 @@ export function ThemePresetSettings() {
                     <Download aria-hidden="true" />
                   </button>
                   {entry.source === 'imported' ? (
-                    <button type="button" aria-label={translate('files.themeRemove', { value1: name })} title={translate('files.themeRemove', { value1: name })} onClick={() => void onRemove(entry)}>
+                    <button type="button" className="is-danger" aria-label={translate('files.themeRemove', { value1: name })} title={translate('files.themeRemove', { value1: name })} onClick={() => void onRemove(entry)}>
                       <Trash2 aria-hidden="true" />
                     </button>
                   ) : null}

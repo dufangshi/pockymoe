@@ -41,6 +41,7 @@ export function ThreadImportPage() {
   const [candidates, setCandidates] = useState<ImportThreadCandidateDto[]>([]);
   const [candidatesLoading, setCandidatesLoading] = useState(true);
   const [candidatesError, setCandidatesError] = useState<string | null>(null);
+  const [candidateLoadAttempt, setCandidateLoadAttempt] = useState(0);
   const [candidateQuery, setCandidateQuery] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -149,7 +150,7 @@ export function ThreadImportPage() {
     return () => {
       cancelled = true;
     };
-  }, [agentId, agentsLoading, provider]);
+  }, [agentId, agentsLoading, provider, candidateLoadAttempt]);
 
   const backendOptions = backends;
   const selectedBackend = backendOptions.find((backend) => backend.provider === provider) ?? null;
@@ -333,7 +334,7 @@ export function ThreadImportPage() {
             <div>
               <h2 className="text-sm font-semibold text-[var(--theme-fg)]">{translate("workbench.recentSessions")}</h2>
               <p className="mt-1 text-xs text-[var(--theme-fg-muted)]">
-                {candidatesLoading ? translate("workbench.scanningThisSupervisor") : translate("workbench.ofSessions", { value1: filteredCandidates.length, value2: candidates.length })}
+                {candidatesLoading ? translate("workbench.scanningThisSupervisor") : candidatesError ? translate("workbench.sessionScanFailed") : translate("workbench.ofSessions", { value1: filteredCandidates.length, value2: candidates.length })}
               </p>
             </div>
           </div>
@@ -381,7 +382,9 @@ export function ThreadImportPage() {
               {candidatesLoading
                 ? translate("workbench.loadingSessions")
                 : filteredCandidates.length === 0
-                  ? candidateQuery
+                  ? candidatesError
+                    ? translate("workbench.sessionScanFailed")
+                    : candidateQuery
                     ? translate("workbench.noMatchingSessions")
                     : translate("workbench.noUnmanagedSessionsFound")
                   : translate("workbench.selectASession")}
@@ -401,9 +404,23 @@ export function ThreadImportPage() {
               )}
             </div>
           )}
-          {candidatesError && (
-            <p className="text-xs text-[var(--status-warning-fg)]" role="status">
-              {translate("workbench.sessionDiscoveryUnavailableManualImportIsStill")}</p>
+          {/* A failed scan is not an empty list: say why, offer a rescan, and
+              promise a manual import only when the Harness can import. */}
+          {candidatesError && !backendsError && (
+            <div className="host-error flex flex-col gap-3 rounded-md border px-4 py-3 text-sm sm:flex-row sm:items-center sm:justify-between" role="alert">
+              <span>
+                {translate("workbench.sessionScanFailedReason", { reason: candidatesError })}
+                {canImportSelection ? ` ${translate("workbench.manualImportStillWorks")}` : ''}
+              </span>
+              <button
+                className="host-secondary-button inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-md border px-3 text-xs font-semibold"
+                onClick={() => setCandidateLoadAttempt((attempt) => attempt + 1)}
+                disabled={candidatesLoading}
+                type="button"
+              >
+                <RefreshCw aria-hidden="true" className="h-3.5 w-3.5" />
+                {translate("workbench.rescanSessions")}</button>
+            </div>
           )}
         </section>
 
