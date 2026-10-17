@@ -13,15 +13,15 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 use tower::ServiceExt;
 
-struct Fixture {
+pub(crate) struct Fixture {
     _dir: tempfile::TempDir,
-    state: Arc<Supervisor>,
+    pub(crate) state: Arc<Supervisor>,
     router: Router,
-    open: String,
-    isolated: String,
+    pub(crate) open: String,
+    pub(crate) isolated: String,
 }
 
-async fn setup() -> Fixture {
+pub(crate) async fn setup() -> Fixture {
     let dir = tempfile::tempdir().unwrap();
     let config = RuntimeConfig {
         treer_enabled: false,
@@ -87,7 +87,7 @@ async fn setup() -> Fixture {
     }
 }
 
-async fn thread(state: &Supervisor, workspace: &str) -> String {
+pub(crate) async fn thread(state: &Supervisor, workspace: &str) -> String {
     state
         .create_thread(CreateThreadInput {
             workspace_id: workspace.into(),
@@ -104,7 +104,7 @@ async fn thread(state: &Supervisor, workspace: &str) -> String {
         .id
 }
 
-async fn cli(f: &Fixture, caller: Option<&str>, input: Value) -> anyhow::Result<Value> {
+pub(crate) async fn cli(f: &Fixture, caller: Option<&str>, input: Value) -> anyhow::Result<Value> {
     crate::interaction::run(&f.state, input, caller.map(str::to_owned)).await
 }
 

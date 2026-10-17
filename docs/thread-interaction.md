@@ -24,6 +24,8 @@ pockymoe transcript THREAD_ID --turn TURN_ID --item ITEM_ID --raw
 
 `thread create` also accepts `--text` / `--text-file` for an initial prompt. Without a managed caller, specify `--workspace`. Model IDs and reasoning levels must be advertised by the target harness. Creation inherits the caller's workspace and approval mode unless explicitly overridden. It does not copy the caller's history.
 
+`thread list` lists the threads a person started (lineage roots), each with a count of its agent threads; `--all` lists every thread and `--group ROOT_ID` one root's agent threads. With `--workspace`, it also lists the agent threads that work in that workspace for a conversation started in another one, because there they are top-level. An agent thread folds into its topmost ancestor in its own workspace, so one that works where its root (or an earlier ancestor) works is not listed again. `totalCount` counts the same rows.
+
 Ordinary `send` stores passive inbox mail without immediately starting or interrupting a turn. Explicit `queue --kind task` assigns executable work: idle recipients start automatically and busy recipients process it after current work. Urgent peer corrections/unblock requests may use direct/steer with an interrupt reason. The receiver sees the sender's Pockymoe thread ID and can use the same CLI to reply. `--request-id KEY` makes retries of the same send return the original receipt; reusing a key with different content is rejected. A send receipt does not mean execution has completed.
 
 `--notify-on-complete` is optional per executable send. It requires a caller identity. When that receiving turn ends, the Supervisor stores a passive inbox result with the peer/turn IDs and completed, failed or interrupted status. It does not immediately wake the caller or queue a turn. Multiple opted-in messages steered into one turn keep independent subscriptions; cancelling an unconsumed queued prompt removes its subscription.
@@ -301,9 +303,18 @@ A toggle stays where it was clicked while what it opens or closes changes size,
 so it can be clicked again in place; the timeline does not jump to its end. An
 opened turn keeps its work line at the top, and an opened long message keeps
 "Show less" just above the composer. A task from another thread on this device
-links to that thread. A workspace link brings its file or folder near the top of
+links to that thread, named by its title when the page knows the thread (by its
+short ID otherwise, and always for another device's). A workspace link brings its file or folder near the top of
 the file tree; a link to a file that is not on the device shows its path instead
 of an error.
+
+A sub-thread (a thread another thread created) opened on its own has one line
+pinned above its conversation: a branch mark, "Sub-thread · from" and the title of
+the thread that created it as a link, that thread's workspace when it is another
+one, and Back to parent at the end; on a phone the workspace is left out and Back
+is an icon. The line takes its own row, so it stays while the conversation scrolls
+and covers no message. It names only the direct parent. A parent that is gone, or
+that the reader may not open, reads "Parent unavailable" without a link.
 
 A photo or file in a prompt, while it is written and once it is sent, is a small
 tile: the file's page glyph in its kind's color with its extension (PDF, ZIP, …),
@@ -372,7 +383,7 @@ The workspace drawer shows the app's mark and close, **All workspaces**, the
 halfway down after a gap, recent conversations elsewhere; each half scrolls on its
 own. The desktop sidebar is laid out the same way. The tab bar and **This workspace**
 list the conversations started in the current workspace, each with all its agent
-threads wherever they work. An agent thread working here for a conversation started
+threads wherever they work; each row names the workspace its own thread works in. An agent thread working here for a conversation started
 elsewhere belongs to that workspace; while it is open it shows inside its
 conversation. Shortcuts keep the account's own order:
 drag one with the mouse, long-press and drag on touch, or press Alt+↑/↓ on a
@@ -412,9 +423,12 @@ without a duplicate overflow menu.
 ## Thread map
 
 The thread map shows every thread on the account's devices at once: devices hold
-workspaces, workspaces hold threads, and agent threads are folded into the thread
-that started them. A thread's area grows with its turns (as 1 + √turns, so a long
-thread does not crowd out the rest). Its fill takes one of five light steps toward
+workspaces, workspaces hold threads, and agent threads are folded into their
+conversation's root thread. An agent thread working in another workspace than that
+root has a tile of its own under the workspace it works in, with the agent threads
+it started there folded in, so its time and tokens count where the work happened;
+a wide tile says which thread started it ("from …"). A thread's area grows with
+its turns (as 1 + √turns, so a long thread does not crowd out the rest). Its fill takes one of five light steps toward
 the accent by how long its turns ran in the last 24 hours (none, up to 10 minutes,
 an hour, three hours, more), light enough to read the title on; themes may set
 `--thread-map-heat`. Running threads have their own color (orange; themes may set
@@ -439,9 +453,9 @@ by hour as bars, each full when the thread ran the whole hour. Small tiles keep 
 agent mark and title, the smallest only their color. Device and workspace bars and
 the map's summary add up the API price.
 
-Agent threads are folded into the thread that started them. That thread's tile has
-a small button with their count; it opens the tile up: the thread keeps a bar on
-top (tapping it folds them back, its arrow opens the thread) and its agent threads
+A tile with agent threads folded in has a small button with their count; it opens
+the tile up: the thread keeps a bar on top (tapping it folds them back, its arrow
+opens the thread) and its agent threads
 fill the rest, each a tile of its own. The map zooms, and every level answers:
 tapping a device's or workspace's header row (its name, count and price) fills the
 map with that block, from any level and growing from where it was; a block too small

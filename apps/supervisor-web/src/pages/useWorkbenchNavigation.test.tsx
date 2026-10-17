@@ -261,6 +261,24 @@ describe('account thread navigation', () => {
     expect(opened.result.current.workspaceThreads[2]!.rootKey).toBe('wsl:slack');
     opened.unmount();
   });
+  it('labels each tab with its own workspace, read from the device when nothing else names it', async () => {
+    const calls: string[] = [];
+    vi.mocked(request).mockImplementation(async url => {
+      calls.push(String(url));
+      if (url === 'relay/devices/wsl/api/workspaces') return [{ id: 'site', label: 'Site' }, { id: 'docs', label: 'Docs' }];
+      return { threads: [], notifications: [] };
+    });
+    const root = { id: 'root', workspaceId: 'site', title: 'Rebuild', status: 'idle', createdAt: '2026-10-01' } as ThreadDto;
+    const child = { ...root, id: 'child', workspaceId: 'docs', title: 'Update docs', parentThreadId: 'root', rootThreadId: 'root', createdAt: '2026-10-02' } as ThreadDto;
+    const detail = { thread: child, workspace: { id: 'docs', label: 'Docs' } } as ThreadDetailDto;
+    const { result, unmount } = renderHook(() => useWorkbenchNavigation(detail, [root, child], 'wsl'));
+    // The open child's workspace is known at once; its conversation's is read once.
+    expect(result.current.workspaceThreads.map(t => [t.key, t.subtitle])).toEqual([['wsl:root', ''], ['wsl:child', 'Docs']]);
+    await waitFor(() => expect(result.current.workspaceThreads.map(t => t.subtitle)).toEqual(['Site', 'Docs']));
+    expect(result.current.workspaceLabel('site')).toBe('Site');
+    expect(calls.filter(url => url.endsWith('/api/workspaces'))).toHaveLength(1);
+    unmount();
+  });
   it('brings the conversation of a running agent thread along, for grouping', async () => {
     vi.mocked(request).mockResolvedValue({ threads: [], notifications: [] });
     const detail = { thread: { id: 'here', workspaceId: 'w', title: 'Here', status: 'idle', createdAt: '2026-10-01' }, workspace: { label: 'W' } } as ThreadDetailDto;

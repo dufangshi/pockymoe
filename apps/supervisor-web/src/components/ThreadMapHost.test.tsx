@@ -45,6 +45,32 @@ describe('mapDevice', () => {
     expect(device.workspaces[1]!.threads[0]).toMatchObject({ key: 'laptop:orphan', turns: 0, activeMs: 0 });
   });
 
+  it('gives an agent thread working in another workspace a tile of its own there', () => {
+    const device = mapDevice(null, 'This device', [...workspaces, { id: 'w2', label: 'docs', absPath: '/src/docs' }] as WorkspaceDto[], [
+      thread('root', { title: 'Rebuild the home page' }),
+      thread('beside', { parentThreadId: 'root', rootThreadId: 'root' }),
+      thread('docs', { parentThreadId: 'root', rootThreadId: 'root', workspaceId: 'w2', title: 'Update docs' }),
+      // Its own agent thread in the same workspace folds into it; one back home folds into the root.
+      thread('docs-helper', { parentThreadId: 'docs', rootThreadId: 'root', workspaceId: 'w2' }),
+      thread('back-home', { parentThreadId: 'docs', rootThreadId: 'root' }),
+    ], { since: '', hours: 24, threads: [
+      { threadId: 'root', turns: 2, activeMs: 1000, totalMs: 1000 },
+      { threadId: 'docs', turns: 5, activeMs: 50_000, totalMs: 50_000 },
+      { threadId: 'docs-helper', turns: 1, activeMs: 7000, totalMs: 7000 },
+      { threadId: 'back-home', turns: 1, activeMs: 3000, totalMs: 3000 },
+    ] });
+    const [app, docs] = device.workspaces;
+    expect(app!.threads.map(tile => [tile.key, tile.turns, tile.activeMs, tile.agentThreads, tile.from])).toEqual([
+      ['local:root', 3, 4000, 2, undefined],
+    ]);
+    expect(app!.threads[0]!.children!.map(child => child.key)).toEqual(['local:beside', 'local:back-home']);
+    expect(docs).toMatchObject({ id: 'w2', label: 'docs' });
+    expect(docs!.threads.map(tile => [tile.key, tile.turns, tile.activeMs, tile.agentThreads, tile.from])).toEqual([
+      ['local:docs', 6, 57_000, 1, 'Rebuild the home page'],
+    ]);
+    expect(docs!.threads[0]!.children!.map(child => child.key)).toEqual(['local:docs-helper']);
+  });
+
   it('leaves turns and run time unknown without activity', () => {
     const device = mapDevice(null, 'This device', workspaces, [thread('a')], null);
     expect(device.workspaces[0]!.threads[0]).toMatchObject({ key: 'local:a', href: '/threads/a', turns: null, activeMs: null });

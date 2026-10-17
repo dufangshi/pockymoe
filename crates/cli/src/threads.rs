@@ -106,6 +106,8 @@ pub enum ThreadCommand {
     #[command(name = "self")]
     SelfInfo,
     /// Threads a person started, with a count of the agent threads under each.
+    /// With --workspace, also agent threads working there for a conversation
+    /// started in another workspace.
     List {
         /// Relay device ID or unique device name; defaults to this device.
         #[arg(long)]

@@ -22,6 +22,7 @@ import { DEEPSEEK_HARNESS_PANEL_KIND } from '@pockymoe/thread-ui/builtin-plugins
 import { ConversationSearch } from '../components/ConversationSearch';
 import { useSearchMessages } from '../components/searchMessages';
 import { useWorkbenchNavigation } from './useWorkbenchNavigation';
+import { useThreadDirectory } from './useThreadDirectory';
 import { useScopedState } from './useScopedState';
 import { useSubscriptionUsage } from './useSubscriptionUsage';
 import { useThreadTabStatus } from '../lib/useThreadTabStatus';
@@ -537,6 +538,8 @@ export function ThreadDetailPage() {
   const resolvedRequestIdsRef = useRef<Set<string>>(new Set());
   const [detail, setDetail] = useScopedState<ThreadDetailDto | null>(routeKey, null);
   const [threads, setThreads] = useScopedState<ThreadDto[]>(relayRouteDeviceId ?? 'local', []);
+  // The first read of the thread list on this device has answered (or failed).
+  const [threadListSettled, setThreadListSettled] = useScopedState(relayRouteDeviceId ?? 'local', false);
   detailRef.current = detail;
   const [modelOptions, setModelOptions] = useState<ModelOptionDto[]>([]);
   const [agentOptions, setAgentOptions] = useState<ModelOptionDto[]>([]);
@@ -750,6 +753,14 @@ export function ThreadDetailPage() {
     error: null,
   });
   const workbenchNavigation = useWorkbenchNavigation(detail, threads, relayRouteDeviceId, id, { sharesDeviceThreads: true });
+  // Task senders and a sub-thread's parent read by their titles.
+  const describeThread = useThreadDirectory({
+    device: relayRouteDeviceId ?? 'local',
+    detail,
+    threads,
+    listSettled: threadListSettled || threads.some(thread => thread.id !== detail?.thread.id),
+    workspaceLabel: workbenchNavigation.workspaceLabel,
+  });
   const relayDeviceRouteActive =
     relayModeActive() && Boolean(relayRouteDeviceId);
   const relayAccess = relayAccessState.access;
@@ -1584,6 +1595,7 @@ export function ThreadDetailPage() {
       } else if (seedThread) {
         setThreads((current) => mergeThreadIntoList(current, seedThread));
       }
+      setThreadListSettled(true);
 
       if (statusResult.status === 'fulfilled') {
         setStatus(statusResult.value.status);
@@ -1620,7 +1632,7 @@ export function ThreadDetailPage() {
         }
       }
     },
-    [relayRouteDeviceId, setThreads],
+    [relayRouteDeviceId, setThreads, setThreadListSettled],
   );
 
   const loadThreadDetail = useCallback(
@@ -3985,6 +3997,7 @@ export function ThreadDetailPage() {
     () => ({
       openThread,
       getThreadHref,
+      describeThread,
       getNewThreadHref,
       renderNewThreadDialogContent,
       ...(relayThreadIsOwner || hostScope ? { renameThread: handleRenameThread } : {}),
@@ -4010,6 +4023,7 @@ export function ThreadDetailPage() {
       getCurrentThreadImageAssetUrl,
       getNewThreadHref,
       getThreadHref,
+      describeThread,
       renderNewThreadDialogContent,
       handleCompactThread,
       handleCancelPendingSteer,
