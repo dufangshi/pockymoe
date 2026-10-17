@@ -1,4 +1,5 @@
 import { appUrl } from '../lib/webBase';
+import { confirmAsync } from '@pockymoe/thread-ui';
 import { SecurityVerification } from './RelaySecurity';
 import { securityRequest, type SecurityStatus } from '../lib/relaySecurity';
 import { getLocale, translate, useI18n } from '@pockymoe/thread-ui/i18n';
@@ -57,8 +58,8 @@ export function AccountSecurityPanel() {
         <span className="block text-xs text-[var(--theme-fg-muted)]">{translate('auth.accountCreated', { value1: date(b.createdAt) })}</span>
         <span className="block text-xs text-[var(--theme-fg-muted)]">{translate('auth.accountLastSeen', { value1: date(b.lastSeenAt) })}</span>
       </span>
-      <button className="relay-button-secondary min-h-11 px-3" disabled={busy} onClick={() => {
-        if (window.confirm(translate('auth.accountRemoveBrowserConfirm', { value1: b.label || b.certificate.browserId.slice(0, 8) })))
+      <button className="relay-button-secondary min-h-11 px-3" disabled={busy} onClick={async () => {
+        if (await confirmAsync({ title: translate('auth.accountRemoveBrowser'), description: translate('auth.accountRemoveBrowserConfirm', { value1: b.label || b.certificate.browserId.slice(0, 8) }), confirmLabel: translate('auth.accountRemoveBrowser') }))
           void run(async () => { await revokeAccountSubject('browser', b.certificate.browserId); });
       }}>{translate('auth.accountRemoveBrowser')}</button>
     </li>)}</ul>

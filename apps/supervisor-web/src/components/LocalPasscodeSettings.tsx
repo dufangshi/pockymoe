@@ -1,5 +1,6 @@
 import type { AuthSessionDto } from '@pockymoe/shared';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
+import { confirmAsync } from '@pockymoe/thread-ui';
 import { type FormEvent, useEffect, useState } from 'react';
 
 import { ApiError, fetchAuthSession, relayModeActive, removeLocalPasscode, setLocalPasscode } from '../lib/api';
@@ -42,8 +43,8 @@ export function LocalPasscodeSettings() {
     }, translate('settings.passcodeSaved'));
   }
 
-  function disable() {
-    if (!window.confirm(translate('settings.passcodeDisableConfirm'))) return;
+  async function disable() {
+    if (!(await confirmAsync({ title: translate('settings.passcodeDisableTitle'), description: translate('settings.passcodeDisableConfirm'), confirmLabel: translate('settings.passcodeDisableAction') }))) return;
     void run(async () => { setSession(await removeLocalPasscode()); }, translate('settings.passcodeRemoved'));
   }
 

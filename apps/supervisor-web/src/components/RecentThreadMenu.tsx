@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Copy, ExternalLink, MoreHorizontal, Pencil, Star, Trash2 } from 'lucide-react';
 import type { ThreadDetailDto } from '@pockymoe/shared';
-import type { WorkbenchThread } from '@pockymoe/thread-ui';
+import { useMenuKeyboard, type WorkbenchThread } from '@pockymoe/thread-ui';
 import { fetchRelayAccess, isInvisibleThreadError, request } from '../lib/api';
 import { RenameDialog } from './RenameDialog';
 import { ConfirmDialog } from './ConfirmDialog';
@@ -50,12 +50,16 @@ export function RecentThreadMenu({ thread, onFavorite, onRenamed, onRemoved, onN
       setPosition(null);
       if (event.type === 'keydown') trigger.current?.focus();
     };
+    // The menu belongs to its row: scrolling the list away closes it.
+    const scroll = (event: Event) => { if (!menu.current?.contains(event.target as Node)) setPosition(null); };
     document.addEventListener('pointerdown', close);
     document.addEventListener('keydown', close);
     window.addEventListener('resize', close);
+    window.addEventListener('scroll', scroll, true);
     menu.current?.querySelector('button')?.focus();
-    return () => { active = false; document.removeEventListener('pointerdown', close); document.removeEventListener('keydown', close); window.removeEventListener('resize', close); };
+    return () => { active = false; document.removeEventListener('pointerdown', close); document.removeEventListener('keydown', close); window.removeEventListener('resize', close); window.removeEventListener('scroll', scroll, true); };
   }, [position, base, device, id]);
+  useMenuKeyboard(menu, Boolean(position), (restore) => { setPosition(null); if (restore) trigger.current?.focus(); }, 'button:not([disabled])');
   const copy = async (text: string) => {
     try { await navigator.clipboard.writeText(text); setNotice(translate("workbench.copied_dd2ce2")); }
     catch { setNotice(translate("workbench.couldNotCopyCheckBrowserClipboardPermissions")); }
