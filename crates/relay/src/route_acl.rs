@@ -482,4 +482,38 @@ mod automation_acl_tests {
             true
         ));
     }
+    #[test]
+    fn thread_plugin_scope_relay_uses_control_for_private_settings() {
+        for control in [false, true] {
+            assert!(shared_thread_path_allowed(
+                "GET",
+                "/api/threads/t/plugins",
+                "t",
+                control
+            ));
+            for method in ["GET", "PUT"] {
+                assert_eq!(
+                    shared_thread_path_allowed(
+                        method,
+                        "/api/threads/t/plugins/p/settings",
+                        "t",
+                        control
+                    ),
+                    control
+                );
+                assert!(!shared_thread_path_allowed(
+                    method,
+                    "/api/threads/other/plugins/p/settings",
+                    "t",
+                    control
+                ));
+                assert!(!shared_thread_path_allowed(
+                    method,
+                    "/api/threads/t/plugins/p/settings/extra",
+                    "t",
+                    control
+                ));
+            }
+        }
+    }
 }

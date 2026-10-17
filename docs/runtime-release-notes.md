@@ -1,18 +1,27 @@
-A device you share with people who can control its agents (a share or grant
-with control, or permission to create threads) can no longer reach your other
-devices through cross-device agent access. Before, an agent those people drove
-could turn on that device's own peer access and read or command your other
-devices that had access on. The relay now refuses such requests with
-`peer_source_shared`, and devices check the same flag. Read-only shares do not
-count, and your other devices can still send work to the shared device.
+Content Quality can now write a fresh answer for the reader instead of making
+small wording changes. It may shorten process logs, reorganize the answer or add
+plain explanations and illustrative analogies. Reader preferences take priority
+over preset defaults. The original answer remains available; the editor must
+still report outcomes, tests and limitations truthfully.
 
-On the Devices page such a device shows a small unlinked-chain icon; hover or tap
-it for the reason. Results that a shared device would send back with
-`--notify-on-complete` are refused as well, so read its status or transcript
-instead.
+The editor receives the thread's public text context: user questions and delivered
+steers, assistant progress explanations and original answers in chronological
+order, with one exact target message identified. Tools, command output and private
+reasoning are excluded. Context ends at the target's execution boundary, uses the
+existing `/api/threads/{id}/summary` extractor, and has no hidden history cap.
+Known local connection credentials and recognizable historical API keys are
+removed before submission. Long threads therefore use more input tokens.
 
-Validated with the relay, Supervisor and protocol suites, new tests for which
-shares count, the relay refusal, the device-side check and the outbox, and the
-Web tests. The relay is redeployed. Windows Device Manager is unchanged.
-Installing this release is a separate device update; publication does not
-restart an existing Supervisor.
+A Plugins button on each thread lets you inherit the device default or enable,
+disable and configure a plugin for that thread. Settings can return to inherited
+defaults without changing another conversation. The device switch remains the
+master switch. This is a shared plugin convention, including scoped panels,
+renderers, actions and automatic hooks. Read-only shares can see plugin status
+but cannot read private settings or change them. Older Supervisors show an
+update notice instead of failing repeatedly.
+
+Validated with focused runtime, summary, plugin HTTP/grant and relay/protocol
+tests, reader-rewrite upstream probes, and shared UI/component and targeted
+browser checks. Windows Device Manager is unchanged. Publication does not restart
+an existing Supervisor; update that device through Settings to use the new
+backend behavior.

@@ -3,7 +3,7 @@ use axum::{
     http::header,
     Json,
 };
-use pockymoe_runtime::plugins::PluginSettings;
+use pockymoe_runtime::plugins::{PluginSettings, ThreadPluginOverride};
 
 use crate::http::{map_err, ApiErr, AppState};
 
@@ -57,5 +57,44 @@ pub async fn action(
                 &input.client_request_id,
             )
             .map_err(map_err)?,
+    ))
+}
+
+pub async fn thread_list(
+    State(state): State<AppState>,
+    Path(thread): Path<String>,
+) -> Result<impl axum::response::IntoResponse, ApiErr> {
+    Ok((
+        [(header::CACHE_CONTROL, "no-store")],
+        Json(state.list_thread_plugins(&thread).map_err(map_err)?),
+    ))
+}
+
+pub async fn thread_settings(
+    State(state): State<AppState>,
+    Path((thread, plugin)): Path<(String, String)>,
+) -> Result<impl axum::response::IntoResponse, ApiErr> {
+    Ok((
+        [(header::CACHE_CONTROL, "no-store")],
+        Json(
+            state
+                .thread_plugin_settings(&thread, &plugin)
+                .map_err(map_err)?,
+        ),
+    ))
+}
+
+pub async fn save_thread_settings(
+    State(state): State<AppState>,
+    Path((thread, plugin)): Path<(String, String)>,
+    Json(input): Json<ThreadPluginOverride>,
+) -> Result<impl axum::response::IntoResponse, ApiErr> {
+    Ok((
+        [(header::CACHE_CONTROL, "no-store")],
+        Json(
+            state
+                .save_thread_plugin_settings(&thread, &plugin, input)
+                .map_err(map_err)?,
+        ),
     ))
 }

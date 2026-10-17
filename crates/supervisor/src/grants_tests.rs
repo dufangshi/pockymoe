@@ -1424,3 +1424,198 @@ async fn an_unbound_device_marks_prompts_the_relay_attributes_to_someone_else() 
     assert!(items[1].get("sender").is_none());
     assert!(items[2].get("sender").is_none());
 }
+
+#[tokio::test]
+async fn thread_plugin_scope_http_preserves_control_and_thread_boundaries() {
+    let (_dir, state, owner, mut g, _r, key, p) = fixture().await;
+    let ws = state
+        .create_workspace(pockymoe_protocol::CreateWorkspaceInput {
+            abs_path: Some(state.config.workspace_root.to_string_lossy().into()),
+            git_url: None,
+            label: None,
+        })
+        .unwrap();
+    for t in ["plugin-A", "plugin-B"] {
+        state.db.with(|c| {
+            c.execute("INSERT INTO threads(id,workspace_id,provider,title,source,status,created_at,updated_at) VALUES(?1,?2,'codex','Plugin ACL','web','idle','now','now')", params![t,ws.id])?;
+            Ok(())
+        }).unwrap();
+    }
+    g.thread_id = Some("plugin-A".into());
+    g.workspace_id = Some(ws.id);
+    put(&state.db, &g.grant_id, &g, &owner, owner_trust::now()).unwrap();
+    {
+        use axum::response::IntoResponse;
+        let response = crate::plugins::thread_settings(
+            State(state.clone()),
+            Path(("plugin-A".into(), "remote-codex.terminal".into())),
+        )
+        .await
+        .ok()
+        .unwrap()
+        .into_response();
+        assert_eq!(
+            response.headers()[axum::http::header::CACHE_CONTROL],
+            "no-store"
+        );
+        let response = crate::plugins::thread_list(State(state.clone()), Path("plugin-A".into()))
+            .await
+            .ok()
+            .unwrap()
+            .into_response();
+        assert_eq!(
+            response.headers()[axum::http::header::CACHE_CONTROL],
+            "no-store"
+        );
+    }
+    let list = "/api/threads/plugin-A/plugins";
+    let settings = "/api/threads/plugin-A/plugins/remote-codex.terminal/settings";
+    let save = json!({"revision":0,"enabled":false,"values":{}});
+    let (status, body) = request(&state, Some(&p), &key, "GET", list, Value::Null).await;
+    assert_eq!(status, 200, "{body}");
+    assert!(body
+        .as_array()
+        .is_some_and(|plugins| plugins
+            .iter()
+            .all(|plugin| plugin.get("globalEnabled").is_some()
+                && plugin.get("enabledOverride").is_some()
+                && plugin.get("settingsOverridden").is_some())));
+    // Even inherited values are private: a read-only share sees descriptors only.
+    for (method, path, body) in [
+        ("GET", settings, Value::Null),
+        ("PUT", settings, save.clone()),
+        ("GET", "/api/threads/plugin-B/plugins", Value::Null),
+        (
+            "GET",
+            "/api/threads/plugin-B/plugins/remote-codex.terminal/settings",
+            Value::Null,
+        ),
+        (
+            "PUT",
+            "/api/threads/plugin-B/plugins/remote-codex.terminal/settings",
+            save.clone(),
+        ),
+        (
+            "GET",
+            "/api/plugins/remote-codex.terminal/settings",
+            Value::Null,
+        ),
+    ] {
+        assert_eq!(
+            request(&state, Some(&p), &key, method, path, body).await.0,
+            403,
+            "{method} {path}"
+        );
+    }
+    g.thread_access = "control".into();
+    put(&state.db, &g.grant_id, &g, &owner, owner_trust::now()).unwrap();
+    let (status, body) = request(&state, Some(&p), &key, "GET", settings, Value::Null).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        body,
+        json!({"revision":0,"globalRevision":0,"enabled":null,"values":null,"effective":{"enabled":cfg!(unix),"values":{}}})
+    );
+    let (status, body) = request(&state, Some(&p), &key, "PUT", settings, save.clone()).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["revision"], 1);
+    assert_eq!(body["effective"]["enabled"], false);
+    assert_eq!(
+        request(&state, Some(&p), &key, "PUT", settings, save)
+            .await
+            .0,
+        409
+    );
+    assert_eq!(
+        request(
+            &state,
+            Some(&p),
+            &key,
+            "PUT",
+            settings,
+            json!({"revision":1,"enabled":null,"values":{"unknown":true}})
+        )
+        .await
+        .0,
+        400
+    );
+    let (status, body) = request(
+        &state,
+        Some(&p),
+        &key,
+        "PUT",
+        settings,
+        json!({"revision":1,"enabled":null,"values":null}),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["revision"], 2);
+    assert!(body["values"].is_null());
+    for (method, path) in [
+        ("GET", "/api/threads/plugin-B/plugins"),
+        (
+            "GET",
+            "/api/threads/plugin-B/plugins/remote-codex.terminal/settings",
+        ),
+        (
+            "PUT",
+            "/api/threads/plugin-B/plugins/remote-codex.terminal/settings",
+        ),
+        ("GET", "/api/plugins/remote-codex.terminal/settings"),
+        ("PUT", "/api/plugins/remote-codex.terminal/settings"),
+    ] {
+        assert_eq!(
+            request(&state, Some(&p), &key, method, path, Value::Null)
+                .await
+                .0,
+            403,
+            "{method} {path}"
+        );
+    }
+    let owner_key = crate::owner_trust::tests::session_key();
+    for path in [
+        "/api/threads/missing/plugins",
+        "/api/threads/missing/plugins/remote-codex.terminal/settings",
+        "/api/threads/plugin-A/plugins/missing/settings",
+    ] {
+        assert_eq!(
+            request(&state, Some(&owner), &owner_key, "GET", path, Value::Null)
+                .await
+                .0,
+            404,
+            "{path}"
+        );
+    }
+    // A device control grant uses the same routes; a read grant still cannot read settings.
+    g.relay_ref.kind = "grant".into();
+    g.scope = "device".into();
+    g.workspace_scope = "all".into();
+    g.thread_id = None;
+    put(&state.db, &g.grant_id, &g, &owner, owner_trust::now()).unwrap();
+    assert_eq!(
+        request(
+            &state,
+            Some(&p),
+            &key,
+            "PUT",
+            "/api/threads/plugin-B/plugins/remote-codex.terminal/settings",
+            json!({"revision":0,"enabled":false,"values":null})
+        )
+        .await
+        .0,
+        200
+    );
+    g.thread_access = "read".into();
+    put(&state.db, &g.grant_id, &g, &owner, owner_trust::now()).unwrap();
+    assert_eq!(
+        request(&state, Some(&p), &key, "GET", settings, Value::Null)
+            .await
+            .0,
+        403
+    );
+    assert_eq!(
+        request(&state, Some(&p), &key, "GET", list, Value::Null)
+            .await
+            .0,
+        200
+    );
+}

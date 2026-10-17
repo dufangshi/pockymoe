@@ -935,12 +935,14 @@ impl Supervisor {
             !enabled || plugin.available != Some(false),
             "plugin is unavailable"
         );
+        let available = self.plugins.availability(self);
         self.db.with(|conn| {
             let tx = conn.unchecked_transaction()?;
             tx.execute("INSERT INTO kv(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", params![format!("plugin:{plugin_id}:enabled"), enabled.to_string()])?;
             if !enabled {
-                tx.execute("UPDATE automation_runs SET state='cancelled',completed_at=?2,error='pluginDisabled' WHERE state='due' AND json_extract(definition_json,'$.action.kind')='pluginAction' AND json_extract(definition_json,'$.action.pluginId')=?1", params![plugin_id, now_rfc3339()])?;
+                Self::cancel_pending_plugin_actions(&tx, None, plugin_id, &now_rfc3339())?;
             }
+            self.plugins.sync_plugin_automations(&tx, plugin_id, &now_rfc3339(), &available)?;
             tx.commit()?;
             Ok(())
         })
@@ -3040,6 +3042,7 @@ impl Supervisor {
         items: &[ThreadHistoryItemDto],
         now: &str,
     ) -> Result<()> {
+        let available = self.plugins.availability(self);
         self.db.with(|conn| {
             let tx = conn.unchecked_transaction()?;
             let conn = &tx;
@@ -3101,7 +3104,7 @@ impl Supervisor {
             crate::interaction::finish_notification(conn, thread_id, turn_id, status, now)?;
             if matches!(status, "completed" | "failed" | "interrupted") {
                 // Plugin configuration errors must not roll back the agent's completed turn.
-                if let Err(error) = self.plugins.sync_turn_automations(conn, thread_id, now) {
+                if let Err(error) = self.plugins.sync_turn_automations(conn, thread_id, now, &available, None) {
                     tracing::warn!(%error, "could not configure plugin turn hooks");
                 }
             }
@@ -3498,6 +3501,10 @@ impl Supervisor {
     }
     pub(crate) fn delete_thread_record(&self, id: &str) -> Result<()> {
         self.db.with(|conn| {
+            conn.execute(
+                "DELETE FROM kv WHERE substr(key,1,length(?1))=?1",
+                [format!("thread:{id}:plugin:")],
+            )?;
             conn.execute(
                 "DELETE FROM thread_history_items WHERE thread_id=?1",
                 params![id],

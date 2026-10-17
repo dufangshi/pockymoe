@@ -56,6 +56,75 @@ fn final_reply_prefers_final_phase_and_falls_back_to_unknown_phases() {
     assert!(!terminal("unknown"));
     assert!(terminal("failed"));
 }
+
+#[test]
+fn final_reply_private_analysis_does_not_hide_public_unknown_phase_fallback() {
+    let items = json!([
+        {"id":"public","kind":"agentMessage","phase":"future","text":"Public answer"},
+        {"id":"private-channel","kind":"agentMessage","channel":"analysis","text":"Private analysis"},
+        {"id":"private-phase","kind":"agentMessage","phase":"analysis","text":"Private analysis"}
+    ]);
+    assert_eq!(
+        final_reply(items.as_array().unwrap()).unwrap()["id"],
+        "public"
+    );
+    assert!(final_reply(&items.as_array().unwrap()[1..]).is_none());
+}
+
+#[test]
+fn final_reply_private_final_does_not_hide_public_final() {
+    let items = json!([
+        {"id":"public","kind":"agentMessage","responsePhase":"final","text":"Public answer"},
+        {"id":"private-channel","kind":"agentMessage","channel":"analysis","phase":"final","text":"Private final"},
+        {"id":"private-phase","kind":"agentMessage","phase":"private","responsePhase":"final","text":"Private final"},
+        {"id":"private-role","kind":"agentMessage","role":"developer","phase":"final_answer","text":"Private final"},
+        {"id":"private-origin","kind":"agentMessage","origin":{"kind":"systemInjection"},"phase":"final","text":"Private final"}
+    ]);
+    assert_eq!(
+        final_reply(items.as_array().unwrap()).unwrap()["id"],
+        "public"
+    );
+    assert!(final_reply(&items.as_array().unwrap()[1..]).is_none());
+}
+
+#[tokio::test]
+async fn final_reply_candidates_agree_with_public_summary_visibility_and_precedence() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = supervisor(dir.path());
+    reply_thread(&s);
+    let items = json!([
+        {"id":"public","kind":"agentMessage","phase":"future","text":"Public answer"},
+        {"id":"channel","kind":"agentMessage","channel":"internal","text":"Hidden"},
+        {"id":"phase","kind":"agentMessage","phase":"reasoning","responsePhase":"final","text":"Hidden"},
+        {"id":"response","kind":"agentMessage","phase":null,"responsePhase":"private","text":"Hidden"},
+        {"id":"status","kind":"agentMessage","status":"analysis","text":"Hidden"},
+        {"id":"role","kind":"agentMessage","role":"tool","text":"Hidden"},
+        {"id":"origin","kind":"agentMessage","origin":"automation","text":"Hidden"},
+        {"id":"origin-kind","kind":"agentMessage","origin":{"kind":"nativeBackgroundWait"},"text":"Hidden"},
+        {"id":"public-phase","kind":"agentMessage","phase":"future","responsePhase":"analysis","status":"private","text":"Public phase takes precedence"},
+        {"id":"public-empty-phase","kind":"agentMessage","phase":"","responsePhase":"analysis","text":"Empty phase takes precedence"},
+        {"id":"public-nonstring-phase","kind":"agentMessage","phase":0,"responsePhase":"analysis","text":"Non-null phase takes precedence"}
+    ]);
+    s.db.with(|c| {
+        c.execute("INSERT INTO thread_turns(id,thread_id,status,ordinal) VALUES('turn','thread','completed',0)", [])?;
+        for item in items.as_array().unwrap() {
+            c.execute("INSERT INTO thread_history_items(id,thread_id,turn_id,item_id,item_json,created_at,updated_at) VALUES(?1,'thread','turn',?1,?2,'now','now')", params![item["id"].as_str().unwrap(),item.to_string()])?;
+        }
+        Ok(())
+    }).unwrap();
+    for item in items.as_array().unwrap() {
+        let candidate = final_reply(std::slice::from_ref(item));
+        let summary = s.thread_summary_for_reply("thread", "turn", item["id"].as_str().unwrap());
+        assert_eq!(candidate.is_some(), summary.is_ok(), "{}", item["id"]);
+        if let Ok((summary, target)) = summary {
+            assert_eq!(
+                summary.messages[target].text,
+                item["text"].as_str().unwrap()
+            );
+        }
+    }
+}
+
 #[test]
 fn protected_content_roundtrips_and_rejects_missing_reordered_or_duplicate_markers() {
     let text = "---\ntitle: Keep 42\n---\nOriginal prose `cmd --flag` and [link](./docs/v2.md).\n```rust\nlet n = 3;\n```\nhttps://example.com/a?q=2\n";
@@ -275,13 +344,14 @@ fn context(s: Arc<Supervisor>, settings: Value, input: Value) -> PluginActionCon
 async fn rewrite_persists_only_metadata_emits_live_event_and_skips_duplicate() {
     let dir = tempfile::tempdir().unwrap();
     let s = supervisor(dir.path());
+    reply_thread(&s);
     let (base, count, handle) = mock(200, |body| {
         let request: Value =
             serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
         assert!(!request.to_string().contains("PRIVATE_REASONING"));
         assert!(!request.to_string().contains("PRIVATE_COMMAND_OUTPUT"));
         assert_eq!(request["turnStatus"], "failed");
-        completion(&json!({"text":request["source"].as_str().unwrap().replace("Original prose", "Clear prose"),"findings":["Clearer wording; limitations retained."]}).to_string())
+        completion(&json!({"text":request["messages"][request["target"].as_u64().unwrap() as usize]["text"].as_str().unwrap().replace("Original prose", "Clear prose"),"findings":["Clearer wording; limitations retained."]}).to_string())
     });
     let path = connection(dir.path(), &base);
     let items = [
@@ -332,6 +402,127 @@ async fn rewrite_persists_only_metadata_emits_live_event_and_skips_duplicate() {
         .is_err());
 }
 
+fn reply_thread(s: &Supervisor) {
+    s.db.with(|c| {
+        c.execute("INSERT INTO workspaces(id,host_id,label,abs_path,created_at) VALUES('workspace','host','fixture',?1,'now')", [s.config.workspace_root.to_string_lossy().as_ref()])?;
+        c.execute("INSERT INTO threads(id,workspace_id,provider,title,created_at,updated_at,status) VALUES('thread','workspace','codex','fixture','now','now','idle')", [])?;
+        Ok(())
+    }).unwrap();
+}
+
+#[tokio::test]
+async fn reader_rewrite_can_remove_process_code_links_and_terms_or_add_an_analogy() {
+    for (reader, original, rewritten) in [
+        (
+            "只要结果，不要过程。",
+            "# Work log\nRan 17 HTTP checks using sourceHash and opened README.md.\n`cargo check`\n[Docs](https://example.test/docs)\n| Check | Count |\n| done | 17 |\nThe deployment failed; the site is not live.",
+            "**还没上线。** 部署失败，需要修好后再试。",
+        ),
+        (
+            "纯新手，解释陌生概念，可以打比方。",
+            "The update now uses atomic replacement.\n```sh\nexample of an unfinished code fence",
+            "更新现在会先准备好新文件，再一次换掉旧文件。\n\n可以把它想成换门牌：先把新门牌做好，最后直接替换，避免让别人看见只写到一半的门牌。",
+        ),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let s = supervisor(dir.path());
+        reply_thread(&s);
+        let (base, count, server) = mock(200, move |body| {
+            let system = body["messages"][0]["content"].as_str().unwrap();
+            assert_eq!(system, reply_instruction());
+            let request: Value = serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
+            let target = request["target"].as_u64().unwrap() as usize;
+            assert_eq!(request["messages"][target]["text"], original);
+            assert_eq!(request["preferences"]["readerBackground"], reader);
+            assert!(request.get("source").is_none(), "do not duplicate the target");
+            assert!(request.get("publicOperations").is_none());
+            completion(&json!({"text":rewritten,"findings":[]}).to_string())
+        });
+        s.db.with(|c| {
+            c.execute("INSERT INTO thread_turns(id,thread_id,status,ordinal) VALUES('turn','thread','completed',0)", [])?;
+            let item = json!({"id":"answer","kind":"agentMessage","phase":"final_answer","text":original,"polishedReply":{"requestHash":"old-copyedit-policy","text":"old lightly edited answer"}});
+            c.execute("INSERT INTO thread_history_items(id,thread_id,turn_id,item_id,item_json,created_at,updated_at) VALUES('answer','thread','turn','answer',?1,'now','now')", [item.to_string()])?;
+            Ok(())
+        }).unwrap();
+        let result = ContentQualityPlugin.invoke("rewriteReply", context(
+            s.clone(),
+            json!({"connectionFile":connection(dir.path(), &base),"minReplyChars":0,"readerBackground":reader}),
+            json!({"turnId":"turn"}),
+        )).await.unwrap();
+        server.join().unwrap();
+        assert_eq!(result["status"], "completed");
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        let stored = stored_turn(&s, "thread", "turn").unwrap();
+        assert_eq!(stored.items[0]["text"], original);
+        assert_eq!(stored.items[0]["polishedReply"]["text"], rewritten);
+    }
+}
+
+#[tokio::test]
+async fn reply_request_redacts_other_saved_connection_opaque_key_from_history() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = supervisor(dir.path());
+    reply_thread(&s);
+    let active = "fixtureActiveConnectionCredential723508";
+    let historical = "fixtureOpaqueConnectionCredential907241";
+    let directory = crate::upstreams::directory(&s.config.database_url);
+    for (name, key) in [
+        ("Active fixture", active),
+        ("Historical fixture", historical),
+    ] {
+        let connection = serde_json::from_value(json!({
+            "name":name,"protocol":"openai_chat","baseUrl":"https://example.test/v1",
+            "apiKey":key,"model":"fixture-model"
+        }))
+        .unwrap();
+        crate::upstreams::connections::upsert(&directory, connection).unwrap();
+    }
+    let original = "The check failed; no deployment happened.";
+    s.db.with(|c| {
+        c.execute("INSERT INTO thread_turns(id,thread_id,status,ordinal) VALUES('old','thread','completed',0),('turn','thread','completed',1)", [])?;
+        for (turn, item) in [
+            ("old", json!({"id":"old:user","kind":"userMessage","text":format!("Old connection key: {historical}"),"createdAt":"2030-01-01T00:00:00Z"})),
+            ("old", json!({"id":"old:reply","kind":"agentMessage","text":"Already checked.","createdAt":"2030-01-01T00:00:01Z"})),
+            ("turn", json!({"id":"turn:user","kind":"userMessage","text":"Summarize the result.","createdAt":"2030-01-01T00:00:02Z"})),
+            ("turn", json!({"id":"answer","kind":"agentMessage","phase":"final","text":original,"createdAt":"2030-01-01T00:00:03Z"})),
+        ] {
+            c.execute("INSERT INTO thread_history_items(id,thread_id,turn_id,item_id,item_json,created_at,updated_at) VALUES(?1,'thread',?2,?1,?3,'now','now')", params![item["id"].as_str().unwrap(),turn,item.to_string()])?;
+        }
+        Ok(())
+    }).unwrap();
+    let request = reply::request(
+        &s,
+        "thread",
+        "turn",
+        "answer",
+        "completed",
+        &settings(json!({"readerBackground":format!("Reader note: {historical}")})),
+        active,
+    )
+    .unwrap();
+    let payload = request.to_string();
+    assert!(!contains_credential(&payload, historical));
+    assert!(!contains_credential(&payload, active));
+    assert_eq!(request["messages"].as_array().unwrap().len(), 4);
+    assert_eq!(request["target"], 3);
+    assert_eq!(
+        request["messages"][0]["text"],
+        "Old connection key: [credential omitted]"
+    );
+    assert_eq!(request["messages"][3]["text"], original);
+    assert_eq!(
+        request["preferences"]["readerBackground"],
+        "Reader note: [credential omitted]"
+    );
+    assert!(request.get("source").is_none());
+    // Sanitizing the outgoing request never changes the saved public history.
+    let (summary, target) = s
+        .thread_summary_for_reply("thread", "turn", "answer")
+        .unwrap();
+    assert!(summary.messages[0].text.contains(historical));
+    assert_eq!(summary.messages[target].text, original);
+}
+
 // Explicitly opt in to the user's private connection file; prints no responses or settings.
 #[tokio::test]
 #[ignore = "requires authorized private upstream and network"]
@@ -374,7 +565,7 @@ async fn live_connection_and_editorial_protocol() {
     let p = Protected::new(original).unwrap();
     let result = edited(
         &u.complete(
-            &instruction(&settings(json!({"language":"en","preset":"copyedit"}))),
+            &document_instruction(&settings(json!({"language":"en","preset":"copyedit"}))),
             &json!({"turnStatus":"failed","source":p.masked}).to_string(),
             4000,
         )
@@ -384,6 +575,123 @@ async fn live_connection_and_editorial_protocol() {
     .unwrap();
     let revised = p.restore(&result.text).unwrap();
     preserve_facts(original, &revised).unwrap();
+}
+
+// Diagnostic seam: the caller supplies an isolated database snapshot, never the
+// live database. Only sanitized request text and public editorial output are saved.
+#[tokio::test]
+#[ignore = "requires an isolated thread snapshot and authorized private upstream"]
+async fn live_reader_rewrite_context_and_input_usage() {
+    let snapshot = PathBuf::from(
+        std::env::var_os("POCKYMOE_CONTENT_QUALITY_SNAPSHOT").expect("isolated snapshot path"),
+    );
+    let output = PathBuf::from(
+        std::env::var_os("POCKYMOE_CONTENT_QUALITY_OUTPUT").expect("diagnostic output directory"),
+    );
+    let thread = std::env::var("POCKYMOE_CONTENT_QUALITY_THREAD").expect("thread id");
+    let turn = std::env::var("POCKYMOE_CONTENT_QUALITY_TURN").expect("target turn id");
+    let path = std::env::var_os("POCKYMOE_CONTENT_QUALITY_LIVE_CONNECTION")
+        .expect("private connection path");
+    let connections_directory = crate::upstreams::directory(&snapshot);
+    assert!(
+        connections_directory.join("connections.json").is_file(),
+        "isolated snapshot requires the complete private connection registry"
+    );
+    let isolated = tempfile::tempdir().unwrap();
+    let mut config = supervisor(isolated.path()).config.clone();
+    config.database_url = snapshot;
+    let db = crate::db::Database::open(&config.database_url).unwrap();
+    let s = Supervisor::new(config, db, vec![]);
+    let mut preferences = Settings::parse(&s.plugin_settings(PLUGIN_ID).unwrap().values).unwrap();
+    if let Ok(reader) = std::env::var("POCKYMOE_CONTENT_QUALITY_READER_OVERRIDE") {
+        preferences.reader_background = reader;
+    }
+    let upstream = Upstream::from_file(Path::new(&path), &preferences.model).unwrap();
+    let original = stored_turn(&s, &thread, &turn).unwrap();
+    let item = final_reply(&original.items).unwrap();
+    let input = reply::request(
+        &s,
+        &thread,
+        &turn,
+        item["id"].as_str().unwrap(),
+        &original.status,
+        &preferences,
+        &upstream.api_key,
+    )
+    .unwrap();
+    let system = reply_instruction();
+    let user = input.to_string();
+    assert!(!contains_credential(system, &upstream.api_key));
+    assert!(!contains_credential(&user, &upstream.api_key));
+    for metadata in crate::upstreams::connections::metadata(&connections_directory)
+        .expect("read isolated connection metadata")
+        .as_array()
+        .expect("isolated connection metadata must be an array")
+    {
+        let connection = crate::upstreams::connections::get(
+            &connections_directory,
+            metadata["id"].as_str().expect("isolated connection id"),
+        )
+        .expect("read isolated connection credential");
+        if !connection.api_key.is_empty() {
+            assert!(
+                !contains_credential(&user, &connection.api_key),
+                "sanitized request contains a saved connection credential"
+            );
+        }
+    }
+    let body = json!({"model":upstream.model,"stream":false,"temperature":0.2,"max_tokens":16000,"messages":[{"role":"system","content":system},{"role":"user","content":user}]});
+    std::fs::create_dir_all(&output).unwrap();
+    std::fs::write(
+        output.join("request.json"),
+        serde_json::to_vec_pretty(&body).unwrap(),
+    )
+    .unwrap();
+    let response = reqwest::Client::builder()
+        .timeout(Duration::from_secs(90))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap()
+        .post(upstream.endpoint.clone())
+        .bearer_auth(&upstream.api_key)
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    let status = response.status();
+    assert!(
+        status.is_success(),
+        "live upstream HTTP {}",
+        status.as_u16()
+    );
+    let value: Value = response.json().await.unwrap();
+    assert_eq!(
+        value["choices"][0]["finish_reason"], "stop",
+        "live response incomplete"
+    );
+    let revised = upstream
+        .edit(value["choices"][0]["message"]["content"].as_str().unwrap())
+        .unwrap();
+    let usage = &value["usage"];
+    assert!(
+        usage["prompt_tokens"].as_u64().is_some(),
+        "upstream did not provide input token usage"
+    );
+    let target = input["target"].as_u64().unwrap() as usize;
+    let messages = input["messages"].as_array().unwrap();
+    let evidence = json!({
+        "model":upstream.model,"messages":messages.len(),"target":target,
+        "contextChars":messages.iter().map(|m|m["text"].as_str().unwrap().chars().count()).sum::<usize>(),
+        "systemChars":system.chars().count(),"userPayloadChars":user.chars().count(),
+        "originalChars":item["text"].as_str().unwrap().chars().count(),
+        "rewrittenChars":revised.text.chars().count(),"usage":usage,
+    });
+    std::fs::write(
+        output.join("usage.json"),
+        serde_json::to_vec_pretty(&evidence).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(output.join("rewritten.md"), revised.text).unwrap();
 }
 
 #[test]

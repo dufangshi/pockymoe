@@ -1396,6 +1396,34 @@ export function savePluginSettings(pluginId: string, settings: import('@pockymoe
   );
 }
 
+/** One conversation's plugins: `enabled` is the effective switch there. */
+export function fetchThreadPlugins(threadId: string, deviceId?: string | null) {
+  return request<import('@pockymoe/thread-ui').ThreadPluginDto[]>(
+    `api/threads/${encodeURIComponent(threadId)}/plugins`, { cache: 'no-store' }, { deviceId },
+  );
+}
+
+export function loadThreadPluginSettings(threadId: string, pluginId: string, deviceId?: string | null) {
+  return request<import('@pockymoe/thread-ui').ThreadPluginSettingsSnapshot>(
+    `api/threads/${encodeURIComponent(threadId)}/plugins/${encodeURIComponent(pluginId)}/settings`, { cache: 'no-store' }, { deviceId },
+  );
+}
+
+export function saveThreadPluginSettings(threadId: string, pluginId: string, input: import('@pockymoe/thread-ui').ThreadPluginSettingsInput, deviceId?: string | null) {
+  return request<import('@pockymoe/thread-ui').ThreadPluginSettingsSnapshot>(
+    `api/threads/${encodeURIComponent(threadId)}/plugins/${encodeURIComponent(pluginId)}/settings`, { method: 'PUT', body: JSON.stringify(input) }, { deviceId },
+  );
+}
+
+/** One device route's conversation plugin scope; hosts key scopes by device and thread. */
+export function threadPluginAdapter(deviceId?: string | null): import('@pockymoe/thread-ui').ThreadPluginAdapter {
+  return {
+    fetchPlugins: threadId => fetchThreadPlugins(threadId, deviceId),
+    loadSettings: (threadId, pluginId) => loadThreadPluginSettings(threadId, pluginId, deviceId),
+    saveSettings: (threadId, pluginId, input) => saveThreadPluginSettings(threadId, pluginId, input, deviceId),
+  };
+}
+
 export function fetchPlugins(deviceId?: string | null) {
   return request<PluginDto[]>('api/plugins', {
     cache: 'no-store',

@@ -88,6 +88,12 @@ struct MessageRow {
     chars: u64,
 }
 
+struct ReplyTarget {
+    history_row: i64,
+    turn_row: i64,
+    ordinal: i64,
+}
+
 pub(super) fn prompt_sender_key(pending: &str) -> String {
     format!("prompt-sender:{pending}")
 }
@@ -131,6 +137,37 @@ impl Supervisor {
         query: &ThreadSummaryQuery,
         now: DateTime<Utc>,
     ) -> Result<ThreadSummaryDto> {
+        self.thread_summary_impl(id, query, now, None)
+            .map(|(summary, _)| summary)
+    }
+
+    /// The same public timeline, bounded by execution order through this exact
+    /// history item. The returned index follows timeline sorting, not row order.
+    pub(crate) fn thread_summary_for_reply(
+        &self,
+        id: &str,
+        turn: &str,
+        item: &str,
+    ) -> Result<(ThreadSummaryDto, usize)> {
+        let (summary, target) = self.thread_summary_impl(
+            id,
+            &ThreadSummaryQuery::default(),
+            Utc::now(),
+            Some((turn, item)),
+        )?;
+        Ok((
+            summary,
+            target.ok_or_else(|| anyhow!("reply target is not a public assistant message"))?,
+        ))
+    }
+
+    fn thread_summary_impl(
+        &self,
+        id: &str,
+        query: &ThreadSummaryQuery,
+        now: DateTime<Utc>,
+        target: Option<(&str, &str)>,
+    ) -> Result<(ThreadSummaryDto, Option<usize>)> {
         let since = cutoff(query, now)?;
         self.get_thread(id)?;
         self.db.with(|conn| {
@@ -138,10 +175,20 @@ impl Supervisor {
             // Keep metadata selection and selected text reads in one SQLite
             // snapshot, including while the assistant is streaming.
             let tx = conn.unchecked_transaction()?;
+            let target = target.map(|(turn, item)| {
+                tx.query_row(
+                    "SELECT h.rowid,t.rowid,t.ordinal FROM thread_history_items h
+                     JOIN thread_turns t ON t.id=h.turn_id AND t.thread_id=h.thread_id
+                     WHERE h.thread_id=?1 AND h.turn_id=?2 AND h.item_id=?3",
+                    params![id, turn, item],
+                    |r| Ok(ReplyTarget { history_row: r.get(0)?, turn_row: r.get(1)?, ordinal: r.get(2)? }),
+                ).optional()?.ok_or_else(|| anyhow!("reply target not found"))
+            }).transpose()?;
             let mut stmt = tx.prepare(
                 "WITH selected_turns AS (
                    SELECT rowid AS turn_row,id,ordinal,started_at,display_prompt
                    FROM thread_turns WHERE thread_id=?1
+                     AND (?3 IS NULL OR (ordinal,rowid)<=(?3,?4))
                    ORDER BY ordinal DESC,rowid DESC LIMIT COALESCE(?2,-1)
                  ), public AS (
                    SELECT h.rowid AS history_row,t.turn_row,t.ordinal,t.started_at,
@@ -160,6 +207,7 @@ impl Supervisor {
                    JOIN thread_history_items h ON h.id=substr(d.document_key,6)
                      AND h.thread_id=?1 AND h.turn_id=t.id
                    WHERE json_extract(h.item_json,'$.kind') IN ('userMessage','agentMessage')
+                     AND (?5 IS NULL OR t.turn_row!=?4 OR h.rowid<=?5)
                      AND json_type(h.item_json,'$.text')='text'
                      AND COALESCE(json_extract(h.item_json,'$.channel'),'') NOT IN
                        ('analysis','reasoning','private','internal')
@@ -195,7 +243,12 @@ impl Supervisor {
                  ) SELECT history_row,turn_row,ordinal,started_at,emission,kind,chars,prefix,controlled,authored
                    FROM public WHERE chars>0 ORDER BY ordinal,turn_row,history_row"
             )?;
-            let mut rows = stmt.query(params![id, query.turns])?;
+            let mut rows = stmt.query(params![
+                id, query.turns,
+                target.as_ref().map(|t| t.ordinal),
+                target.as_ref().map(|t| t.turn_row),
+                target.as_ref().map(|t| t.history_row),
+            ])?;
             let mut selected = Vec::new();
             let mut previous = None;
             let mut previous_turn = None;
@@ -236,6 +289,12 @@ impl Supervisor {
                 }
             }
             slices.reverse();
+            let target_index = target.as_ref().map(|target| {
+                slices.iter().position(|(row, _)| {
+                    row.history_row == Some(target.history_row)
+                        && row.role == ThreadSummaryRole::Assistant
+                }).ok_or_else(|| anyhow!("reply target is not a public assistant message"))
+            }).transpose()?;
             let mut history = tx.prepare("SELECT summary_tail(json_extract(item_json,'$.text'),?2) FROM thread_history_items WHERE rowid=?1 AND thread_id=?3")?;
             let mut prompt = tx.prepare("SELECT summary_tail(display_prompt,?2) FROM thread_turns WHERE rowid=?1 AND thread_id=?3")?;
             let messages = slices.into_iter().map(|(row,take)| {
@@ -249,7 +308,7 @@ impl Supervisor {
                     role:row.role,text,truncated:take<row.chars,
                 })
             }).collect::<Result<Vec<_>>>()?;
-            Ok(ThreadSummaryDto {messages,truncated})
+            Ok((ThreadSummaryDto {messages,truncated}, target_index))
         })
     }
 }

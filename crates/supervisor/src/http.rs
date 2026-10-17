@@ -98,6 +98,14 @@ pub(crate) fn router_with_treer(state: AppState, hub: Option<Arc<crate::treer::H
         )
         .route("/api/cli", post(crate::interaction::command))
         .route(
+            "/api/threads/{thread}/plugins",
+            get(crate::plugins::thread_list),
+        )
+        .route(
+            "/api/threads/{thread}/plugins/{plugin}/settings",
+            get(crate::plugins::thread_settings).put(crate::plugins::save_thread_settings),
+        )
+        .route(
             "/api/threads/{thread}/plugins/{plugin}/actions/{action}",
             post(crate::plugins::action),
         )

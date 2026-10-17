@@ -224,6 +224,25 @@ async fn public_chronology_preserves_commentary_steer_and_every_final() {
         .unwrap()
         .iter()
         .all(|m| m.as_object().unwrap().len() == 3));
+    let (context, target) = s
+        .thread_summary_for_reply(&id, "one", "claude-final")
+        .unwrap();
+    assert_eq!(
+        texts(&context),
+        [
+            "  question\n",
+            "working",
+            "please adjust",
+            "adjusting",
+            "done one"
+        ]
+    );
+    assert_eq!(target, 4);
+    assert_eq!(context.messages[2].role, ThreadSummaryRole::User);
+    assert_eq!(
+        context.messages[2].time.as_deref(),
+        Some("2030-01-01T00:00:02Z")
+    );
 }
 
 #[tokio::test]
@@ -440,6 +459,13 @@ async fn controls_are_not_user_prose_but_agent_responses_and_actual_user_steer_s
             "public agent response"
         ]
     );
+    let (context, target) = s.thread_summary_for_reply(&id, "auto", "reply").unwrap();
+    assert_eq!(
+        context,
+        s.thread_summary(&id, &ThreadSummaryQuery::default())
+            .unwrap()
+    );
+    assert_eq!(target, 2);
     for key in ["peer", "automation"] {
         assert!(
             serde_json::from_str::<ThreadSummaryQuery>(&format!("{{\"{key}\":true}}")).is_err()
@@ -512,6 +538,209 @@ async fn validation_empty_not_found_and_unlimited_default() {
         .unwrap();
     assert_eq!(summary.messages[0].text, large);
     assert!(!summary.truncated);
+    let (context, target) = s.thread_summary_for_reply(&id, "large", "large").unwrap();
+    assert_eq!(context, summary);
+    assert_eq!(target, 0);
+}
+
+#[tokio::test]
+async fn reply_target_uses_exact_identity_after_timeline_sort_and_keeps_original_text() {
+    let (_d, s, id) = fixture().await;
+    turn(&s, &id, "old", 1, None, None);
+    turn(&s, &id, "target", 2, None, None);
+    let original = "  repeated reply\n";
+    for (turn, key, time, extra) in [
+        ("old", "reply", "2030-01-01T00:00:01Z", json!({})),
+        ("target", "before", "2030-01-01T00:00:12Z", json!({})),
+        (
+            "target",
+            "reply",
+            "2030-01-01T00:00:11Z",
+            json!({"phase":"final","polishedReply":{"text":"previously polished"}}),
+        ),
+        ("target", "after", "2030-01-01T00:00:10Z", json!({})),
+    ] {
+        item(
+            &s,
+            &id,
+            turn,
+            key,
+            "agentMessage",
+            original,
+            Some(time),
+            extra,
+        );
+    }
+    let (context, target) = s.thread_summary_for_reply(&id, "target", "reply").unwrap();
+    assert_eq!(texts(&context), [original, original, original]);
+    assert_eq!(target, 1);
+    assert_eq!(
+        context
+            .messages
+            .iter()
+            .map(|m| m.time.as_deref())
+            .collect::<Vec<_>>(),
+        [
+            Some("2030-01-01T00:00:01Z"),
+            Some("2030-01-01T00:00:11Z"),
+            Some("2030-01-01T00:00:12Z")
+        ]
+    );
+    assert!(!context.truncated);
+    // The ordinary endpoint still includes every item, including the later row.
+    assert_eq!(
+        s.thread_summary(&id, &ThreadSummaryQuery::default())
+            .unwrap()
+            .messages
+            .len(),
+        4
+    );
+}
+
+#[tokio::test]
+async fn reply_context_bounds_execution_turns_and_history_rows_not_timestamps() {
+    let (_d, s, id) = fixture().await;
+    turn(&s, &id, "earlier", 1, None, Some("legacy question"));
+    turn(&s, &id, "target", 2, None, None);
+    // Equal ordinals use the same stable rowid tie-break as the public summary.
+    turn(&s, &id, "later-tie", 2, None, Some("later tied turn"));
+    turn(&s, &id, "later", 3, None, Some("later user question"));
+    item(
+        &s,
+        &id,
+        "target",
+        "reply",
+        "agentMessage",
+        "target",
+        Some("2030-01-01T00:00:02Z"),
+        json!({}),
+    );
+    // Backfilled earlier-turn records remain context even when their history
+    // rowid and timestamp are both greater than the target's.
+    item(
+        &s,
+        &id,
+        "earlier",
+        "reply",
+        "agentMessage",
+        "earlier reply",
+        Some("2030-01-01T00:00:03Z"),
+        json!({}),
+    );
+    for (turn, key, kind, text) in [
+        (
+            "target",
+            "steer:later",
+            "userMessage",
+            "later same-turn steer",
+        ),
+        ("target", "after", "agentMessage", "later same-turn reply"),
+        ("later", "later:user", "userMessage", "later user question"),
+        ("later", "reply", "agentMessage", "later reply"),
+    ] {
+        item(
+            &s,
+            &id,
+            turn,
+            key,
+            kind,
+            text,
+            Some("2029-01-01T00:00:00Z"),
+            json!({}),
+        );
+    }
+    let (context, target) = s.thread_summary_for_reply(&id, "target", "reply").unwrap();
+    assert_eq!(
+        texts(&context),
+        ["legacy question", "target", "earlier reply"]
+    );
+    assert_eq!(target, 1);
+    assert!(context.messages[0].time.is_none());
+    assert!(!context.truncated);
+}
+
+#[tokio::test]
+async fn reply_target_must_exist_in_thread_turn_and_survive_public_assistant_filters() {
+    let (_d, s, id) = fixture().await;
+    turn(&s, &id, "one", 1, None, None);
+    turn(&s, &id, "two", 2, None, None);
+    for (key, kind, extra) in [
+        ("one:user", "userMessage", json!({})),
+        ("reasoning", "reasoning", json!({})),
+        ("tool", "commandExecution", json!({})),
+        ("channel", "agentMessage", json!({"channel":"analysis"})),
+        ("phase", "agentMessage", json!({"phase":"private"})),
+        (
+            "response-phase",
+            "agentMessage",
+            json!({"responsePhase":"reasoning"}),
+        ),
+        ("status", "agentMessage", json!({"status":"internal"})),
+        ("role", "agentMessage", json!({"role":"system"})),
+        ("origin", "agentMessage", json!({"origin":{"kind":"peer"}})),
+        ("no-text", "agentMessage", json!({"text":null})),
+    ] {
+        item(&s, &id, "one", key, kind, "same text", None, extra);
+        assert!(
+            s.thread_summary_for_reply(&id, "one", key)
+                .unwrap_err()
+                .to_string()
+                .contains("not a public assistant message"),
+            "{key}"
+        );
+    }
+    item(&s, &id, "one", "empty", "agentMessage", "", None, json!({}));
+    assert!(s
+        .thread_summary_for_reply(&id, "one", "empty")
+        .unwrap_err()
+        .to_string()
+        .contains("not a public assistant message"));
+    item(
+        &s,
+        &id,
+        "one",
+        "visible",
+        "agentMessage",
+        "same text",
+        None,
+        json!({}),
+    );
+    // A visible identical message must not rescue a filtered or missing target.
+    assert!(s.thread_summary_for_reply(&id, "one", "channel").is_err());
+    for (turn, item) in [
+        ("one", "missing"),
+        ("missing", "visible"),
+        ("two", "visible"),
+    ] {
+        assert!(s
+            .thread_summary_for_reply(&id, turn, item)
+            .unwrap_err()
+            .to_string()
+            .contains("reply target not found"));
+    }
+    let other = s
+        .create_thread(CreateThreadInput {
+            workspace_id: s.get_thread(&id).unwrap().workspace_id,
+            title: None,
+            provider: Some(Provider::Codex),
+            agent_id: None,
+            model: "default".into(),
+            reasoning_effort: None,
+            approval_mode: "yolo".into(),
+            parent_thread_id: None,
+        })
+        .await
+        .unwrap();
+    assert!(s
+        .thread_summary_for_reply(&other.id, "one", "visible")
+        .unwrap_err()
+        .to_string()
+        .contains("reply target not found"));
+    assert!(s
+        .thread_summary_for_reply("missing", "one", "visible")
+        .unwrap_err()
+        .to_string()
+        .contains("not found"));
 }
 
 #[tokio::test]

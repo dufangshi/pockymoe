@@ -226,11 +226,17 @@ async fn parent_can_delete_finished_direct_children_only_and_preserve_the_result
         Ok(())
     }).unwrap();
     let mut events = s.bus.subscribe();
+    let child_plugin_key = format!("thread:{}:plugin:remote-codex.terminal:settings", child.id);
+    let root_plugin_key = format!("thread:{}:plugin:remote-codex.terminal:settings", root.id);
+    s.db.set_kv(&child_plugin_key, "{}").unwrap();
+    s.db.set_kv(&root_plugin_key, "{}").unwrap();
     let receipt = s.delete_child_thread(&root.id, &child.id).await.unwrap();
     assert_eq!(receipt["deleted"], true);
     assert!(s.get_thread(&child.id).is_err());
     assert!(s.get_thread(&root.id).is_ok());
     assert!(s.get_thread(&other.id).is_ok());
+    assert!(s.db.get_kv(&child_plugin_key).unwrap().is_none());
+    assert!(s.db.get_kv(&root_plugin_key).unwrap().is_some());
     assert_eq!(s.cli_token_thread(&token), None);
     let mail = s.inbox_list(&root.id, &json!({})).unwrap();
     let message = &mail["messages"][0]["id"];

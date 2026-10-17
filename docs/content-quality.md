@@ -15,6 +15,12 @@ disabled, so the connection and writing preferences can be configured first.
 Saving these preferences does not enable the plugin. Enable Content Quality in
 the Plugins list as well as its automatic reply polishing option.
 
+The thread header's Plugins button controls this conversation. By default it
+inherits the device settings; choose on/off or open its settings to save a full
+thread-specific writing profile. Restore global settings to resume inheritance.
+The device switch remains the master switch. Disabling processing does not hide
+previously saved polished replies. See the shared [thread plugin convention](builtin-plugins.md).
+
 Settings use camelCase, reject unknown fields, and have these defaults:
 
 ```json
@@ -87,13 +93,61 @@ turn does not trigger automatic reply polishing.
 resolve the turn from their event, requiring its `sourceThreadId` to match
 the target thread. Only stored terminal turns are eligible; manual actions
 can also polish failed or interrupted turns while retaining their limitations.
-The final-phase nonempty `agentMessage` is preferred, with the last nonempty
-agent message as fallback for unrecognized phases. The reply must meet the
+The public final-phase nonempty `agentMessage` is preferred, with the last public
+nonempty agent message as fallback for unrecognized phases. Private channels,
+roles and origins cannot become targets. The reply must meet the
 configured minimum and be no larger than 64 KiB.
 
-The upstream receives the original reply, bounded public user prompt, turn
-status, and a bounded summary of operation kinds and statuses. Reasoning items,
-provider detail payloads, command output and tool result bodies are excluded.
+Replies are reader-oriented rewrites, rather than constrained copyedits. The
+model chooses length, structure, Markdown and wording. It can omit process logs,
+repetition, technical detail, code or links; combine sections; translate jargon;
+and add basic background, everyday analogies or clearly illustrative examples.
+The reader's explicit needs and reading preferences take priority over the
+preset and detail defaults. `copyedit` still favors light changes unless the
+reader asks otherwise. The instruction retains truthfulness about project
+outcomes, tests and limitations; illustrative explanations are not new claims
+about what the agent actually did.
+
+Each request has a system writing instruction followed by one user message
+containing a JSON object:
+
+```json
+{
+  "preferences": {"language":"zh-CN","preset":"clear","detail":"balanced","readerBackground":"Explain unfamiliar terms."},
+  "messages": [
+    {"time":"2026-10-15T10:00:00Z","role":"user","text":"Did the update work?"},
+    {"time":"2026-10-15T10:01:00Z","role":"assistant","text":"The update completed; verification remains incomplete."}
+  ],
+  "target": 1,
+  "turnStatus": "completed"
+}
+```
+
+`target` is the zero-based index of the exact assistant message to rewrite, not
+a text match and not necessarily the final array entry. The source appears only
+once. The host uses the same persisted-public-text extraction as
+[Text Context (`/summary`)](thread-summary.md): user inputs, delivered steers,
+assistant commentary and original final answers, ordered by recorded chronology.
+The execution-turn boundary and target history row exclude later turns and later
+rows in the target turn. Earlier-turn history backfilled later remains eligible.
+There is no hidden turn/character cap. Prior `polishedReply` presentations are
+not substituted for original messages. Tools, operation summaries, command
+output, reasoning and private/control messages are excluded. The Supervisor
+prepares this context before the request; the model needs no device API access
+or extra tool round trip.
+
+Known local connection credentials and recognizable old API-key strings in
+public text are replaced with `[credential omitted]` before submission. This is
+a narrow credential filter, not general anonymization. The connection credential
+is used only for transport authentication; it is never a prompt field.
+
+The model returns the internal JSON envelope `{text, findings}`; the user sees
+only `text`, whose layout is unrestricted. Reply handling no longer requires
+lossless protection markers, unchanged bracket counts, or identical number and
+technical-token multisets. Nonempty/bounded output, credential rejection,
+source-concurrency checks and immutable original storage remain. Document file
+editing has its own stricter checks below.
+
 The original message `text` remains unchanged. A successful edit adds flattened
 message metadata:
 
@@ -102,19 +156,18 @@ polishedReply: {text, preset, language, model, sourceHash, createdAt, requestHas
 ```
 
 `sourceHash` is SHA-256 of the original UTF-8 reply. `requestHash` fingerprints
-the source, public settings and effective model for duplicate suppression;
+the editorial policy version, source, sanitized context, public settings and
+effective model for duplicate suppression;
 it excludes the connection path and credential. Identical requests skip the
 upstream call. Before saving, the plugin rechecks terminal status and the
 original text in a database transaction. It emits `thread.item.completed`
 after the durable update so subscribers can refresh the edited presentation.
 Action receipts contain identifiers and status, rather than the full reply.
 
-The editor is instructed to retain uncertainty, limitations and negative
-results and to avoid inventing work, tests, citations or success. Protected
-code/link content and a numeric/technical token inventory are checked before
-accepting the result. These checks are conservative and can reject otherwise
-reasonable edits; they do not prove semantic equivalence. The original answer
-remains available for comparison.
+The writing instruction preserves truthful outcomes while permitting information
+selection and explanatory additions. It is not a semantic proof: compare the
+original when needed. A new editorial policy version invalidates old copyedit
+fingerprints, so an explicit repeat action can apply the reader rewrite policy.
 
 ## Documents
 
