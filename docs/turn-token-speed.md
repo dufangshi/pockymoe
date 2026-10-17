@@ -36,6 +36,16 @@ If native usage is unavailable, ACP usage remains the fallback. Codex retains
 its native rollout reader. Final timing is stored with turn usage and survives reload
 and restart. Tools never alter billable token counts or price categories.
 
+The per-request split (`splitMethod: "streamedRequests"`) times only requests whose
+output streamed for at least a second. A reply delivered in one piece (hidden
+thinking, then the tool call) lands milliseconds apart; it is counted in
+`burstRequests` and left out of first token, prefill and decode. Decode divides a
+request's own `last` usage report, reasoning tokens left out, by the time its answer
+(text and tool calls) streamed; the turn total is not used, since late reports carry
+earlier requests' tokens. A report that arrives after a quick tool, before the next
+request outputs anything, still belongs to the request that wrote it. Snapshots
+without `splitMethod` timed bursts as streams and are shown as the combined speed only.
+
 Targeted checks:
 
 ```sh
