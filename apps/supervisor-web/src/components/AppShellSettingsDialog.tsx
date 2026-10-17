@@ -1,4 +1,4 @@
-import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
+import { translate, useI18n, type TranslationKey } from '@pockymoe/thread-ui/i18n';
 import { LanguageSwitcher } from '@pockymoe/thread-ui/i18n';
 import { FormDialog } from './FormDialog';
 import { useFontSize } from '../lib/fontSize';
@@ -55,6 +55,11 @@ import {
 // in crates/supervisor/src/http.rs), so the form stays hidden until it can import.
 const PLUGIN_IMPORT_SUPPORTED = false;
 
+const UNAVAILABLE_REASONS: Record<string, TranslationKey> = {
+  harness_missing: 'files.pluginHarnessMissing',
+  unsupported_platform: 'files.pluginUnsupportedPlatform',
+};
+
 function unavailablePluginReason(plugin: unknown) {
   if (!plugin || typeof plugin !== 'object') {
     return null;
@@ -62,11 +67,17 @@ function unavailablePluginReason(plugin: unknown) {
   const availability = plugin as {
     available?: unknown;
     unavailableReason?: unknown;
+    unavailableReasonCode?: unknown;
   };
-  return availability.available === false &&
-    typeof availability.unavailableReason === 'string'
-    ? availability.unavailableReason
-    : null;
+  if (availability.available !== false) return null;
+  const known = typeof availability.unavailableReasonCode === 'string' ? UNAVAILABLE_REASONS[availability.unavailableReasonCode] : undefined;
+  if (known) return translate(known);
+  return typeof availability.unavailableReason === 'string' ? availability.unavailableReason : null;
+}
+
+// The built-in Terminal plugin's manifest is English; show it in the reader's language.
+function pluginDescription(plugin: { id: string; description?: string | null }) {
+  return plugin.id === 'remote-codex.terminal' ? translate('files.terminalPluginDescription') : plugin.description;
 }
 
 export function AppShellSettingsDialog({
@@ -222,7 +233,7 @@ export function AppShellSettingsDialog({
   ).length;
   const pluginCountLabel = plugins.loading
     ? translate("files.loading")
-    : `${enabledPluginCount}/${plugins.plugins.length} enabled`;
+    : translate('files.pluginsEnabledCount', { value1: enabledPluginCount, value2: plugins.plugins.length });
   const activeBackend =
     backends.find((backend) => backend.provider === selectedBackend) ??
     fallbackBackends.find((backend) => backend.provider === selectedBackend) ??
@@ -717,7 +728,7 @@ export function AppShellSettingsDialog({
                   {plugin.name}
                 </span>
                 <span className="settings-hint mt-1 block text-xs leading-5 text-[var(--theme-fg-muted)]">
-                  {plugin.description}
+                  {pluginDescription(plugin)}
                 </span>
                 <span className="settings-hint mt-1 block text-[11px] leading-5 text-[var(--theme-fg-muted)]">
                   {[
@@ -846,8 +857,7 @@ export function AppShellSettingsDialog({
                 ) : null}
               </p>
               <p className="settings-hint mt-1 text-xs leading-5 text-[var(--theme-fg-muted)]">
-                {translate("files.chooseAThemeForThisBrowserThe")}{' '}
-                {effectiveTheme}.
+                {translate("files.colorModeShowing", { value1: translate(effectiveTheme === 'light' ? 'files.light' : 'files.dark') })}
               </p>
               <div className="product-segmented mt-3 grid w-full grid-cols-3 sm:w-auto">
                 {themeOptions.map((option) => {

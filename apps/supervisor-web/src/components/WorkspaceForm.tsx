@@ -197,7 +197,7 @@ export function WorkspaceForm({
     : 'space-y-6';
   const hintText =
     mode === 'folder' && newFolderRoot
-      ? `Creates a new directory under ${newFolderRoot}.`
+      ? translate('workbench.createsFolderUnder', { value1: newFolderRoot })
       : field.hint;
 
   return (

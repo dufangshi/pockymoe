@@ -1124,7 +1124,13 @@ export function UpstreamManagement({
                     setText('');
                     setImportKey('');
                   } else {
-                    const template = JSON.parse(text);
+                    let template: unknown;
+                    try {
+                      template = JSON.parse(text);
+                    } catch (error) {
+                      // The parser's own words stay as the detail after a plain explanation.
+                      throw new Error(translate('settings.templateNotJson', { value1: error instanceof Error ? error.message : String(error) }));
+                    }
                     if (!preview) {
                       setPreview(
                         await api('templates', { template, apply: false }),

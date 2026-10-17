@@ -1,4 +1,4 @@
-import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
+import { translate, useI18n, type TranslationKey } from '@pockymoe/thread-ui/i18n';
 import { useEffect, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import { Download, RefreshCw, RotateCw } from 'lucide-react';
@@ -581,7 +581,7 @@ function DeviceRuntimeManagement({
               role="status"
               className="mt-2 text-xs text-[var(--theme-fg-muted)]"
             >
-              {supervisor.reason}
+              {supervisorReasonText(supervisor.reason)}
             </p>
           )}
           {supervisor?.job && (
@@ -707,4 +707,18 @@ function DeviceRuntimeManagement({
       )}
     </section>
   );
+}
+
+// The Supervisor explains why it cannot update itself in English; show the
+// reasons it is known to give in the reader's language.
+const SUPERVISOR_REASONS: Record<string, TranslationKey> = {
+  'This is a source or unmanaged executable. Run the GitHub setup command to install a managed native runtime.': 'devices.reasonUnmanaged',
+  'Host-managed updates require a native installation and a stable native launch command. Run the GitHub setup command first.': 'devices.reasonHostManaged',
+  'This Windows Device Manager device runs the retired npm package. Run the Windows setup command from the Devices page to move it to the native GitHub runtime.': 'devices.reasonRetiredNpmWindows',
+  'This device still runs from the retired npm package. Update installs the native GitHub runtime and moves its service to it.': 'devices.reasonRetiredNpm',
+};
+
+function supervisorReasonText(reason: string) {
+  const key = SUPERVISOR_REASONS[reason];
+  return key ? translate(key) : reason;
 }
