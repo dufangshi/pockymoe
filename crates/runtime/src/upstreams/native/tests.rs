@@ -194,6 +194,7 @@ fn oauth_roundtrips_across_multiple_apis_and_restart_preserve_latest_user_config
                     .and_then(|m| m.get("native-model"))
                     .and_then(|m| m.get("api_key"))
                     .is_none());
+                assert!(d.get("model").and_then(|m| m.get("native-model")).is_none());
             }
             _ => unreachable!(),
         }
@@ -450,9 +451,13 @@ fn gemini_and_grok_native_api_configuration_restores_its_own_key_and_preserves_e
     assert_eq!(inventory_one(&dir, "gemini", &root)["kind"], "config");
     let root = t.path().join("grok");
     let dir = t.path().join("grok-store");
-    text(&root,"config.toml","[models]\ndefault='same-model'\n[model.same-model]\napi_key='fixture-original'\nbase_url='https://native.invalid'\n");
+    text(&root,"config.toml","[models]\ndefault='same-model'\n[model.same-model]\napi_key='fixture-original'\nbase_url='https://native.invalid'\ncontext_window=32768\n");
     api(&dir, "grok", &root, "same-model");
     let mut d = toml_doc(&root.join("config.toml")).unwrap();
+    assert_ne!(
+        d["model"]["same-model"]["context_window"].as_integer(),
+        Some(32768)
+    );
     d["model"]["same-model"]["external_option"] = value("new");
     text(&root, "config.toml", &d.to_string());
     activate_at(&dir, "grok", &root, None).unwrap();
@@ -464,6 +469,10 @@ fn gemini_and_grok_native_api_configuration_restores_its_own_key_and_preserves_e
     assert_eq!(
         d["model"]["same-model"]["external_option"].as_str(),
         Some("new")
+    );
+    assert_eq!(
+        d["model"]["same-model"]["context_window"].as_integer(),
+        Some(32768)
     );
     assert_eq!(inventory_one(&dir, "grok", &root)["kind"], "config");
 }

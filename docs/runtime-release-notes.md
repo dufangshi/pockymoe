@@ -2,6 +2,7 @@ Harness selectors now offer a device-local Account sign-in or Native config
 option when usable authentication/configuration is detected. Switching to a saved
 API connection preserves that baseline; selecting the native option and clicking
 Apply restores it without replacing unrelated hooks, MCP, or other user settings.
+Grok restores its native context window and removes empty generated model slots.
 The option stays with its harness and device and is excluded from shared saved
 connections, plugin pickers, and cross-device synchronization.
 

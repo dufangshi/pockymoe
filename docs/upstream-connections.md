@@ -75,7 +75,9 @@ connection pickers. The Supervisor preserves the baseline before applying a
 managed connection, so switching between several API connections does not replace
 the original baseline with the previous API connection. Restoration updates only
 provider-owned configuration and necessary authentication fields, keeping unrelated
-settings such as hooks and MCP servers. OAuth credentials that stay in the
+settings such as hooks and MCP servers. Grok also restores the native context
+window and removes generated model entries that have no remaining user fields.
+OAuth credentials that stay in the
 harness's own credential store are not copied into a generic connection.
 
 Availability is a local credential/configuration check, not a remote provider
