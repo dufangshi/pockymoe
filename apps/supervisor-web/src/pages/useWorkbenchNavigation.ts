@@ -100,7 +100,7 @@ export function useWorkbenchNavigation(
   const [busy, setBusy] = useState(false);
   const [navigationReady, setNavigationReady] = useState(false);
   const [readAt, setReadAt] = useState(Date.now());
-  const [notificationDetails, setNotificationDetails] = useState<Record<string, { title: string; summary: string }>>({});
+  const [notificationDetails, setNotificationDetails] = useState<Record<string, { title: string; summary: string; status: 'unread' | 'failed' | 'interrupted' }>>({});
   const [notificationsOpened, setNotificationsOpened] = useState(0);
   // Renames and deletions made from the sidebar, shown before the device's
   // thread list catches up: a rename holds while the list keeps the old title.
@@ -439,7 +439,9 @@ export function useWorkbenchNavigation(
             .sort((a, b) => Math.abs(Date.parse(a.completedAt!) - eventTime) - Math.abs(Date.parse(b.completedAt!) - eventTime))[0];
           const text = [...(turn?.items ?? [])].reverse().find(item => item.kind === 'agentMessage' && item.text.trim())?.text.trim().replace(/\s+/g, ' ') ?? '';
           const summary = text ? Array.from(text).slice(0, 180).join('') + (Array.from(text).length > 180 ? '…' : '') : translate("workbench.openTheThreadToViewItsResponse");
-          if (alive) setNotificationDetails(previous => ({ ...previous, [notification.id]: { title: `${value.thread.title} · ${turn?.status === 'failed' ? translate("workbench.failed") : turn?.status === 'interrupted' ? translate("workbench.interrupted") : translate("workbench.completed")}`, summary } }));
+          // The mark says how the turn ended, as in the sidebar.
+          const status = turn?.status === 'failed' ? 'failed' as const : turn?.status === 'interrupted' ? 'interrupted' as const : 'unread' as const;
+          if (alive) setNotificationDetails(previous => ({ ...previous, [notification.id]: { title: `${value.thread.title} · ${status === 'failed' ? translate("workbench.failed") : status === 'interrupted' ? translate("workbench.interrupted") : translate("workbench.completed")}`, summary, status } }));
         } catch { /* Leave metadata visible; retry unavailable previews when the bell opens again. */ }
       }
     }));

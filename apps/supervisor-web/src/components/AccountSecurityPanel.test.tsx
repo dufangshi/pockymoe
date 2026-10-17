@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, expect, it, vi } from 'vitest';
 import { setLocale, translate } from '@pockymoe/thread-ui/i18n';
 import { AccountSecurityPanel } from './AccountSecurityPanel';
@@ -51,8 +51,10 @@ it('uses the shared unlock-backed password change for an OAuth-only vault', asyn
   await waitFor(() => expect(state.change).toHaveBeenCalledWith('a sufficiently long new password', true));
 });
 it('requires explicit confirmation to remove a browser and shows a regenerated recovery code once', async () => {
-  vi.spyOn(window, 'confirm').mockReturnValue(true); render(<AccountSecurityPanel />); await screen.findByText('My laptop');
+  render(<AccountSecurityPanel />); await screen.findByText('My laptop');
   fireEvent.click(screen.getByRole('button', { name: translate('auth.accountRemoveBrowser') }));
+  // The app's own confirmation window asks first.
+  fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: translate('auth.accountRemoveBrowser') }));
   await waitFor(() => expect(state.revoked).toHaveBeenCalledWith('browser', vectors.browserCertificate.certificate.browserId));
   await waitFor(() => expect(screen.getByRole('button', { name: translate('auth.accountRegenerateRecovery') })).toBeEnabled());
   fireEvent.click(screen.getByRole('button', { name: translate('auth.accountRegenerateRecovery') }));

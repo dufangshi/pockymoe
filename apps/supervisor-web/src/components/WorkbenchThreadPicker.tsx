@@ -24,6 +24,7 @@ import {
   X,
 } from 'lucide-react';
 import type { ThreadDto, WorkspaceDto } from '@pockymoe/shared';
+import { StatusMark, navigationStatusLabel } from '@pockymoe/thread-ui';
 import { translate as t, useI18n } from '@pockymoe/thread-ui/i18n';
 import {
   rankSplitDevices,
@@ -226,18 +227,10 @@ export function WorkbenchThreadPicker(props: WorkbenchThreadPickerProps) {
           <span className="workbench-thread-picker-row-label">
             <strong>{thread.title || t('workbench.splitUntitled')}</strong>
             <small>
-              <span
-                className={`workbench-split-status is-${t(thread.status === 'running' || thread.status === 'recovering' ? 'workbench.running' : thread.status === 'failed' ? 'workbench.failed' : thread.status === 'interrupted' ? 'workbench.interrupted' : 'workbench.ready')}`}
-              />
-              {t(
-                thread.status === 'running' || thread.status === 'recovering'
-                  ? 'workbench.running'
-                  : thread.status === 'failed'
-                    ? 'workbench.failed'
-                    : thread.status === 'interrupted'
-                      ? 'workbench.interrupted'
-                      : 'workbench.ready',
-              )}
+              {/* The same status mark and words as the sidebar and tabs; the
+                  navigation knows which finished threads are unread. */}
+              <StatusMark status={pickerStatus(thread, navigationThreads.find((item) => item.key === key)?.status)} />
+              {pickerLabel(thread, navigationThreads.find((item) => item.key === key)?.status, t)}
             </small>
           </span>
           {selected && (
@@ -555,4 +548,20 @@ export function WorkbenchThreadPicker(props: WorkbenchThreadPickerProps) {
         )}
     </span>
   );
+}
+
+/** A thread's navigation status: the sidebar's when it knows the thread, else
+    from the thread itself (running, failed, interrupted or idle). */
+function pickerStatus(thread: ThreadDto, navigationStatus: string | undefined) {
+  if (navigationStatus) return navigationStatus;
+  if (thread.status === 'running' || thread.status === 'recovering') return 'running';
+  if (thread.status === 'failed' || thread.status === 'interrupted') return thread.status;
+  return 'idle';
+}
+
+/** Its words: the sidebar's when known; an idle thread the navigation has not
+    seen is "Ready" (whether it was read is unknown). */
+function pickerLabel(thread: ThreadDto, navigationStatus: string | undefined, t: (key: 'workbench.ready') => string) {
+  const status = pickerStatus(thread, navigationStatus);
+  return !navigationStatus && status === 'idle' ? t('workbench.ready') : navigationStatusLabel(status);
 }

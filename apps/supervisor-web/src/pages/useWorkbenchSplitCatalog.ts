@@ -18,7 +18,7 @@ export interface SplitThreadSelection {
 export type SplitNavigationThread = Pick<
   WorkbenchThread,
   'key' | 'favorite'
-> & { visitedAt?: string };
+> & { visitedAt?: string; status?: string };
 export interface CatalogResource<T> {
   items: T[];
   loading: boolean;

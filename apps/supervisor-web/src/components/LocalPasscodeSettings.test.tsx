@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { setLocale, translate } from '@pockymoe/thread-ui/i18n';
 import { beforeEach, expect, it, vi } from 'vitest';
 import { LocalPasscodeSettings } from './LocalPasscodeSettings';
@@ -28,7 +28,6 @@ it('turns a passcode on, changes it and turns it off', async () => {
   api.session.mockResolvedValue(session(false));
   api.set.mockResolvedValue({ token: 't', session: session(true) });
   api.remove.mockResolvedValue(session(false));
-  vi.spyOn(window, 'confirm').mockReturnValue(true);
   render(<LocalPasscodeSettings />);
   expect(await screen.findByText(translate('settings.passcodeOffDescription'))).toBeVisible();
   const input = screen.getByLabelText(translate('settings.passcodeLabel'));
@@ -42,6 +41,7 @@ it('turns a passcode on, changes it and turns it off', async () => {
   expect(api.set).toHaveBeenCalledWith('open sesame');
   expect(screen.getByText(translate('settings.passcodeForgot'))).toBeVisible();
   fireEvent.click(screen.getByRole('button', { name: translate('settings.passcodeDisable') }));
+  fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: translate('settings.passcodeDisableAction') }));
   expect(await screen.findByText(translate('settings.passcodeOffDescription'))).toBeVisible();
   expect(api.remove).toHaveBeenCalledOnce();
 });
