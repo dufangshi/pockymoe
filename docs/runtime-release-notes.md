@@ -1,21 +1,18 @@
-Upstream settings now start with saved API connections. Add, edit, test and sync a
-connection without choosing or installing a harness. A separate section lets each
-harness use a compatible local connection through an explicit Apply action.
-Saving or synchronizing a connection never applies it to a harness. Plugins use
-the same saved connections and shared Add form.
+A device you share with people who can control its agents (a share or grant
+with control, or permission to create threads) can no longer reach your other
+devices through cross-device agent access. Before, an agent those people drove
+could turn on that device's own peer access and read or command your other
+devices that had access on. The relay now refuses such requests with
+`peer_source_shared`, and devices check the same flag. Read-only shares do not
+count, and your other devices can still send work to the shared device.
 
-Content Quality settings no longer show a legacy connection-file path. Existing
-private-file settings remain compatible in the backend. The reply-length field
-now explains that automatic polishing starts when the final reply's prose reaches
-the configured number of characters; code does not count. A disabled plugin's
-settings show that it must also be enabled in the Plugins list.
+On the Devices page such a device shows a small unlinked-chain icon; hover or tap
+it for the reason. Results that a shared device would send back with
+`--notify-on-complete` are refused as well, so read its status or transcript
+instead.
 
-Connection checks allow a reasoning model enough output budget to finish its
-brief response instead of misreporting a small token limit as a broken connection.
-Incomplete responses are still rejected. Original agent replies remain available
-when automatic polishing succeeds or fails.
-
-Validated with focused runtime and Web checks, a live saved-connection editorial
-request, and desktop/mobile settings interactions. Windows Device Manager is
-unchanged. Installing the runtime is a separate device update; publication does
-not restart an existing Supervisor.
+Validated with the relay, Supervisor and protocol suites, new tests for which
+shares count, the relay refusal, the device-side check and the outbox, and the
+Web tests. The relay is redeployed. Windows Device Manager is unchanged.
+Installing this release is a separate device update; publication does not
+restart an existing Supervisor.
