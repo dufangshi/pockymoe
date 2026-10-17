@@ -1619,3 +1619,42 @@ async fn thread_plugin_scope_http_preserves_control_and_thread_boundaries() {
         200
     );
 }
+
+#[tokio::test]
+async fn a_whole_device_grant_with_write_previews_files_outside_the_workspace() {
+    let (_dir, state, owner, mut g, _r, key, p) = fixture().await;
+    let ws = state
+        .create_workspace(pockymoe_protocol::CreateWorkspaceInput {
+            abs_path: Some(state.config.workspace_root.to_string_lossy().into()),
+            git_url: None,
+            label: Some("Shared".into()),
+        })
+        .unwrap();
+    let thread = "linked-thread";
+    state.db.with(|c| { c.execute("INSERT INTO threads(id,workspace_id,provider,title,source,status,created_at,updated_at,lineage_depth) VALUES(?1,?2,'codex','Video','web','idle','now','now',0)", params![thread, ws.id])?; Ok(()) }).unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let clip = outside.path().join("clip.mp4");
+    std::fs::write(&clip, b"video").unwrap();
+    let path = format!(
+        "/api/threads/{thread}/linked-files/stat?path={}",
+        url::form_urlencoded::byte_serialize(clip.to_string_lossy().as_bytes()).collect::<String>()
+    );
+    g.relay_ref.kind = "grant".into();
+    g.scope = "device".into();
+    g.thread_id = None;
+    g.workspace_id = None;
+    g.workspace_scope = "all".into();
+    g.thread_access = "read".into();
+    for (workspace_access, allowed) in [("read", false), ("write", true)] {
+        g.workspace_access = workspace_access.into();
+        put(&state.db, &g.grant_id, &g, &owner, owner_trust::now()).unwrap();
+        let (status, body) = request(&state, Some(&p), &key, "GET", &path, Value::Null).await;
+        if allowed {
+            assert_eq!(status, 200, "{body}");
+            assert_eq!(body["name"], "clip.mp4");
+            assert_eq!(body["size"], 5);
+        } else {
+            assert_eq!(status, 403, "{body}");
+        }
+    }
+}

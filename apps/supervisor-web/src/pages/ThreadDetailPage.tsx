@@ -108,6 +108,7 @@ import {
   fetchThreadShellState,
   fetchSupervisorHealth,
   fetchThreads,
+  canReadLinkedFiles,
   fetchThreadDetail,
   fetchThreadDelivery,
   interruptThread,
@@ -759,6 +760,8 @@ export function ThreadDetailPage() {
     (relayAccess?.kind === 'shared' && relayAccess.threadAccess === 'control');
   const relayThreadCanShare =
     relayDeviceRouteActive && relayAccess?.kind === 'owner';
+  // Files a reply links to outside the workspace: the owner, or a whole device shared with write access.
+  const relayThreadReadsLinkedFiles = relayThreadIsOwner || canReadLinkedFiles(relayAccess);
   const currentWorkspaceId =
     detail?.workspace.id ?? detail?.thread.workspaceId ?? null;
   const [presentationAccount, setPresentationAccount] = useScopedState<string | null>(relayRouteDeviceId ?? 'local', relayDeviceRouteActive ? null : 'local');
@@ -3943,7 +3946,7 @@ export function ThreadDetailPage() {
         : '',
     [detail?.thread.id, getThreadImageAssetUrl],
   );
-  const primaryWorkspaceAdapter = useThreadWorkspaceAdapter({ setError, workspaceId: detail?.workspace.id ?? null, deviceId: relayRouteDeviceId ?? 'local', access: effectiveWorkspaceAccess, allowLinkedFiles: relayThreadIsOwner });
+  const primaryWorkspaceAdapter = useThreadWorkspaceAdapter({ setError, workspaceId: detail?.workspace.id ?? null, deviceId: relayRouteDeviceId ?? 'local', access: effectiveWorkspaceAccess, allowLinkedFiles: relayThreadReadsLinkedFiles });
   const workspaceAdapter = useThreadWorkspaceAdapter({
     setError,
     workspaceId: toolsDetail?.workspace.id ?? null,

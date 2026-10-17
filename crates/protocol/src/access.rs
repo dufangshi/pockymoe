@@ -66,6 +66,13 @@ pub fn grantee_registration_allowed(method: &str, path: &str, encrypted: bool) -
         )
 }
 
+/// Read-only previews of host files a conversation links to outside its workspace
+/// (`/api/threads/{id}/linked-files/*`). A whole-device grant with workspace
+/// write access needs no workspace boundary, so it reads them like the owner.
+pub fn linked_files_allowed(access: &EffectiveAccess) -> bool {
+    access.kind == "owner" || (access.scope == "device" && access.workspace_access == "write")
+}
+
 pub fn access_allows(access: &EffectiveAccess, method: &str, path: &str) -> bool {
     if access.kind == "owner" {
         return true;
@@ -110,6 +117,12 @@ pub fn access_allows(access: &EffectiveAccess, method: &str, path: &str) -> bool
     if let Some(thread_id) = thread_id {
         if access.scope != "device" && access.thread_id.as_deref() != Some(thread_id.as_str()) {
             return false;
+        }
+        if pathname
+            .strip_prefix(&format!("/api/threads/{thread_id}/linked-files/"))
+            .is_some_and(|action| matches!(action, "stat" | "preview" | "raw"))
+        {
+            return method == "GET" && linked_files_allowed(access);
         }
         return shared_thread_path_allowed(
             method,
@@ -520,6 +533,33 @@ mod tests {
             resource_id_from_path("/api/threads/root/history", "threads").as_deref(),
             Some("root")
         );
+    }
+    #[test]
+    fn linked_host_files_need_the_whole_device_with_workspace_write() {
+        let path = "/api/threads/root/linked-files/preview?path=%2Fdata%2Fclip.mp4";
+        for action in ["stat", "preview", "raw"] {
+            let path = format!("/api/threads/root/linked-files/{action}?path=%2Fdata%2Fclip.mp4");
+            assert!(
+                access_allows(&shared("device", "read", "write"), "GET", &path),
+                "{action}"
+            );
+            assert!(access_allows(&owner_access(), "GET", &path));
+        }
+        for access in [
+            shared("device", "control", "read"),
+            shared("device", "control", "none"),
+            shared("thread", "control", "write"),
+            shared("workspace", "control", "write"),
+        ] {
+            assert!(!access_allows(&access, "GET", path), "{access:?}");
+        }
+        let device = shared("device", "control", "write");
+        assert!(!access_allows(&device, "POST", path));
+        assert!(!access_allows(
+            &device,
+            "GET",
+            "/api/threads/root/linked-files/delete?path=x"
+        ));
     }
     #[test]
     fn grantee_registration_exception_is_encrypted_post_to_one_exact_endpoint() {

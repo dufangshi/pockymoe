@@ -3,6 +3,7 @@ import { GraphChatThreadChatPanel, ThreadLoadingIndicator, createWorkspacePathRe
 import { translate as t, useI18n } from '@pockymoe/thread-ui/i18n';
 import {
   buildThreadImageAssetUrl,
+  canReadLinkedFiles,
   fetchThreadHistoryItemDetail,
   fetchThreadTurnDetail,
   fetchWorkspaceFileTree,
@@ -47,10 +48,10 @@ export function WorkbenchReferencePane({
       workspaceRootPath: detail?.workspace.absPath,
       ...(detail ? { resolveWorkspacePath: createWorkspacePathResolver({
         listTree: input => fetchWorkspaceFileTree(detail.workspace.id, { path: input.path ?? null }, controller.deviceId),
-        ...(controller.deviceId === 'local' || controller.access?.kind === 'owner' ? { statLinkedFile: (input: {threadId: string; path: string}) => fetchLinkedFile(input.threadId, input.path, controller.deviceId) } : {}),
+        ...(controller.deviceId === 'local' || canReadLinkedFiles(controller.access) ? { statLinkedFile: (input: {threadId: string; path: string}) => fetchLinkedFile(input.threadId, input.path, controller.deviceId) } : {}),
       }, { threadId: detail.thread.id, workspaceId: detail.workspace.id }, detail.workspace.absPath) } : {}),
     }),
-    [threadId, onOpenThread, controller.deviceId, onOpenWorkspaceFile, detail?.workspace.absPath, detail?.workspace.id, controller.access?.kind],
+    [threadId, onOpenThread, controller.deviceId, onOpenWorkspaceFile, detail?.workspace.absPath, detail?.workspace.id, controller.access],
   );
   return (
     <>

@@ -286,11 +286,15 @@ mod tests {
         for action in ["stat", "preview", "raw"] {
             let path = format!("/api/threads/thread-1/linked-files/{action}?path=/private/file");
             assert!(!access_allows(&access, &Method::GET, &path));
+            // Only a whole device shared with workspace write reads files outside workspaces.
             let mut device = access.clone();
             device.scope = "device".into();
             device.thread_access = "control".into();
-            device.workspace_access = "write".into();
+            device.workspace_access = "read".into();
             assert!(!access_allows(&device, &Method::GET, &path));
+            device.workspace_access = "write".into();
+            assert!(access_allows(&device, &Method::GET, &path));
+            assert!(!access_allows(&device, &Method::POST, &path));
             assert!(access_allows(&owner_access(), &Method::GET, &path));
         }
 

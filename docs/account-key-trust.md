@@ -771,6 +771,12 @@ Creating or editing shared access for a protected device:
 
 If any step after the first fails, the relay change is rolled back.
 
+Files a conversation links to outside its workspace open as read-only previews
+through `/api/threads/{id}/linked-files/{stat|preview|raw}`. Besides the owner,
+only a whole-device grant with workspace write access reaches them
+(`access::linked_files_allowed`, enforced by the relay and by a bound device);
+narrower grants see those paths as plain text.
+
 Validation: a recipient key must hash to its ID and must not be the device's own
 key (`grantee_is_owner`); one recipient key maps to one user and public key across
 grants; device-scope grants need `workspaceScope: "all"`; shares are thread-scoped;
