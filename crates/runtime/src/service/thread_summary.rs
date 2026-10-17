@@ -142,19 +142,26 @@ impl Supervisor {
     }
 
     /// The same public timeline, bounded by execution order through this exact
-    /// history item. The returned index follows timeline sorting, not row order.
+    /// history item and the most recent `turns` execution turns. Reserve enough
+    /// of the Unicode character budget for the complete target before keeping
+    /// the newest other text. The index follows timeline sorting, not row order.
     pub(crate) fn thread_summary_for_reply(
         &self,
         id: &str,
         turn: &str,
         item: &str,
+        turns: u64,
+        max_chars: u64,
     ) -> Result<(ThreadSummaryDto, usize)> {
-        let (summary, target) = self.thread_summary_impl(
-            id,
-            &ThreadSummaryQuery::default(),
-            Utc::now(),
-            Some((turn, item)),
-        )?;
+        let query = ThreadSummaryQuery {
+            turns: Some(
+                u32::try_from(turns).map_err(|_| anyhow!("turns must be between 1 and 1000000"))?,
+            ),
+            max_chars: Some(max_chars),
+            ..Default::default()
+        };
+        let (summary, target) =
+            self.thread_summary_impl(id, &query, Utc::now(), Some((turn, item)))?;
         Ok((
             summary,
             target.ok_or_else(|| anyhow!("reply target is not a public assistant message"))?,
@@ -278,13 +285,30 @@ impl Supervisor {
             }
             selected.sort_by_key(|r| (r.order_time, r.ordinal, r.turn_row, r.history_row));
             let mut remaining = query.max_chars.unwrap_or(u64::MAX);
+            // The exact target can sort before backfilled earlier-turn text.
+            // Reserve it before suffix selection so newer context cannot evict
+            // or truncate the answer being rewritten.
+            let target_chars = target.as_ref().map(|target| {
+                let row = selected.iter().find(|row| {
+                    row.history_row == Some(target.history_row)
+                        && row.role == ThreadSummaryRole::Assistant
+                }).ok_or_else(|| anyhow!("reply target is not a public assistant message"))?;
+                ensure!(row.chars <= remaining,
+                    "replyContextTargetTooLarge: target requires {} Unicode characters but maxChars is {}",
+                    row.chars, remaining);
+                Ok::<_, anyhow::Error>(row.chars)
+            }).transpose()?.unwrap_or(0);
+            remaining -= target_chars;
             let mut truncated = false;
             let mut slices = Vec::new();
             for row in selected.into_iter().rev() {
-                let take = row.chars.min(remaining);
+                let is_target = target.as_ref().is_some_and(|target| row.history_row == Some(target.history_row));
+                let take = if is_target { row.chars } else { row.chars.min(remaining) };
                 truncated |= take < row.chars;
                 if take > 0 {
-                    remaining -= take;
+                    if !is_target {
+                        remaining -= take;
+                    }
                     slices.push((row, take));
                 }
             }

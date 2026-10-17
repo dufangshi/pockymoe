@@ -21,6 +21,12 @@ fn typed_settings_and_inputs_reject_unknown_or_invalid_values() {
         json!({"documentMode":"write"}),
         json!({"minReplyChars":-1}),
         json!({"minReplyChars":1.2}),
+        json!({"replyContextTurns":0}),
+        json!({"replyContextTurns":1001}),
+        json!({"replyContextTurns":1.5}),
+        json!({"replyContextMaxChars":0}),
+        json!({"replyContextMaxChars":10_000_001}),
+        json!({"replyContextMaxChars":-1}),
         json!({"autoReplies":"yes"}),
         json!({"language":""}),
     ] {
@@ -39,6 +45,13 @@ fn typed_settings_and_inputs_reject_unknown_or_invalid_values() {
         )
         .is_ok());
     assert_eq!(settings(json!({})).min_reply_chars, 800);
+    // Old global and thread-specific profiles acquire the bounded defaults.
+    let legacy = settings(json!({"readerBackground":"Keep it simple."}));
+    assert_eq!(legacy.reply_context_turns, 5);
+    assert_eq!(legacy.reply_context_max_chars, 10_000);
+    let limits = settings(json!({"replyContextTurns":1,"replyContextMaxChars":10_000_000}));
+    assert_eq!(limits.reply_context_turns, 1);
+    assert_eq!(limits.reply_context_max_chars, 10_000_000);
 }
 #[test]
 fn final_reply_prefers_final_phase_and_falls_back_to_unknown_phases() {
@@ -114,7 +127,8 @@ async fn final_reply_candidates_agree_with_public_summary_visibility_and_precede
     }).unwrap();
     for item in items.as_array().unwrap() {
         let candidate = final_reply(std::slice::from_ref(item));
-        let summary = s.thread_summary_for_reply("thread", "turn", item["id"].as_str().unwrap());
+        let summary =
+            s.thread_summary_for_reply("thread", "turn", item["id"].as_str().unwrap(), 5, 10_000);
         assert_eq!(candidate.is_some(), summary.is_ok(), "{}", item["id"]);
         if let Ok((summary, target)) = summary {
             assert_eq!(
@@ -411,6 +425,148 @@ fn reply_thread(s: &Supervisor) {
 }
 
 #[tokio::test]
+async fn reply_larger_than_context_budget_skips_without_loading_a_connection() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = supervisor(dir.path());
+    reply_thread(&s);
+    let original = "完整原文🙂";
+    s.db.with(|c| {
+        c.execute("INSERT INTO thread_turns(id,thread_id,status,ordinal) VALUES('turn','thread','completed',0)", [])?;
+        let item = json!({"id":"answer","kind":"agentMessage","phase":"final","text":original});
+        c.execute("INSERT INTO thread_history_items(id,thread_id,turn_id,item_id,item_json,created_at,updated_at) VALUES('answer','thread','turn','answer',?1,'now','now')", [item.to_string()])?;
+        Ok(())
+    }).unwrap();
+    let mut events = s.bus.subscribe();
+    let result = ContentQualityPlugin
+        .invoke(
+            "rewriteReply",
+            context(
+                s.clone(),
+                json!({"minReplyChars":0,"replyContextMaxChars":4}),
+                json!({"turnId":"turn"}),
+            ),
+        )
+        .await
+        .unwrap();
+    assert_eq!(result["status"], "skipped");
+    assert_eq!(result["reason"], "replyExceedsContextBudget");
+    assert_eq!(result["maxChars"], 4);
+    let stored = stored_turn(&s, "thread", "turn").unwrap();
+    assert_eq!(stored.items[0]["text"], original);
+    assert!(stored.items[0].get("polishedReply").is_none());
+    assert!(events.try_recv().is_err());
+}
+
+#[test]
+fn reply_request_applies_default_and_custom_context_limits() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = supervisor(dir.path());
+    reply_thread(&s);
+    let original = "待润色的完整结果🙂";
+    s.db.with(|c| {
+        for i in 0..8 {
+            let turn = format!("turn-{i}");
+            c.execute("INSERT INTO thread_turns(id,thread_id,status,ordinal) VALUES(?1,'thread','completed',?2)", params![turn,i])?;
+            for (j, kind) in ["userMessage", "agentMessage"].iter().enumerate() {
+                let id = format!("item-{i}-{j}");
+                let text = if i == 7 && j == 1 { original.to_string() } else { format!("轮{i} {}", "背景🙂".repeat(500)) };
+                let item = json!({"id":id,"kind":kind,"text":text,"createdAt":format!("2030-01-01T00:{i:02}:{j:02}Z")});
+                c.execute("INSERT INTO thread_history_items(id,thread_id,turn_id,item_id,item_json,created_at,updated_at) VALUES(?1,'thread',?2,?1,?3,'now','now')", params![id,turn,item.to_string()])?;
+            }
+        }
+        Ok(())
+    }).unwrap();
+    for (values, turns, budget) in [
+        (json!({}), 5, 10_000),
+        (
+            json!({"replyContextTurns":2,"replyContextMaxChars":1000}),
+            2,
+            1000,
+        ),
+    ] {
+        let request = reply::request(
+            &s,
+            "thread",
+            "turn-7",
+            "item-7-1",
+            "completed",
+            &settings(values),
+            "fixture-active-credential",
+        )
+        .unwrap();
+        let messages = request["messages"].as_array().unwrap();
+        let chars = messages
+            .iter()
+            .map(|m| m["text"].as_str().unwrap().chars().count())
+            .sum::<usize>();
+        assert_eq!(chars, budget);
+        assert_eq!(
+            request["messages"][request["target"].as_u64().unwrap() as usize]["text"],
+            original
+        );
+        assert!(messages.len() <= turns * 2);
+        for i in 0..(8 - turns) {
+            assert!(!request.to_string().contains(&format!("轮{i}")));
+        }
+    }
+}
+
+#[test]
+fn context_limits_round_trip_independently_in_device_and_thread_profiles() {
+    use crate::plugins::{PluginSettings, ThreadPluginOverride};
+    let dir = tempfile::tempdir().unwrap();
+    let s = supervisor(dir.path());
+    reply_thread(&s);
+    assert_eq!(
+        s.get_plugin(PLUGIN_ID).unwrap().capabilities["replyContextLimits"],
+        true
+    );
+    let global = s
+        .save_plugin_settings(
+            PLUGIN_ID,
+            PluginSettings {
+                revision: 0,
+                values: json!({"replyContextTurns":3,"replyContextMaxChars":8000}),
+            },
+        )
+        .unwrap();
+    let inherited = s.thread_plugin_settings("thread", PLUGIN_ID).unwrap();
+    assert_eq!(settings(inherited.effective.values).reply_context_turns, 3);
+    let customized = s
+        .save_thread_plugin_settings(
+            "thread",
+            PLUGIN_ID,
+            ThreadPluginOverride {
+                revision: 0,
+                enabled: None,
+                values: Some(json!({"replyContextTurns":2,"replyContextMaxChars":3000})),
+            },
+        )
+        .unwrap();
+    let effective = settings(customized.effective.values);
+    assert_eq!(
+        (
+            effective.reply_context_turns,
+            effective.reply_context_max_chars
+        ),
+        (2, 3000)
+    );
+    assert_eq!(s.plugin_settings(PLUGIN_ID).unwrap().values, global.values);
+    let reset = s
+        .save_thread_plugin_settings(
+            "thread",
+            PLUGIN_ID,
+            ThreadPluginOverride {
+                revision: customized.revision,
+                enabled: None,
+                values: None,
+            },
+        )
+        .unwrap();
+    assert_eq!(reset.effective.values, global.values);
+}
+
+#[tokio::test]
 async fn reader_rewrite_can_remove_process_code_links_and_terms_or_add_an_analogy() {
     for (reader, original, rewritten) in [
         (
@@ -517,7 +673,7 @@ async fn reply_request_redacts_other_saved_connection_opaque_key_from_history() 
     assert!(request.get("source").is_none());
     // Sanitizing the outgoing request never changes the saved public history.
     let (summary, target) = s
-        .thread_summary_for_reply("thread", "turn", "answer")
+        .thread_summary_for_reply("thread", "turn", "answer", 5, 10_000)
         .unwrap();
     assert!(summary.messages[0].text.contains(historical));
     assert_eq!(summary.messages[target].text, original);
@@ -681,6 +837,8 @@ async fn live_reader_rewrite_context_and_input_usage() {
     let messages = input["messages"].as_array().unwrap();
     let evidence = json!({
         "model":upstream.model,"messages":messages.len(),"target":target,
+        "replyContextTurns":preferences.reply_context_turns,
+        "replyContextMaxChars":preferences.reply_context_max_chars,
         "contextChars":messages.iter().map(|m|m["text"].as_str().unwrap().chars().count()).sum::<usize>(),
         "systemChars":system.chars().count(),"userPayloadChars":user.chars().count(),
         "originalChars":item["text"].as_str().unwrap().chars().count(),

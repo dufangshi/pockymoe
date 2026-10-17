@@ -225,7 +225,7 @@ async fn public_chronology_preserves_commentary_steer_and_every_final() {
         .iter()
         .all(|m| m.as_object().unwrap().len() == 3));
     let (context, target) = s
-        .thread_summary_for_reply(&id, "one", "claude-final")
+        .thread_summary_for_reply(&id, "one", "claude-final", 1_000_000, 10_000_000)
         .unwrap();
     assert_eq!(
         texts(&context),
@@ -459,7 +459,9 @@ async fn controls_are_not_user_prose_but_agent_responses_and_actual_user_steer_s
             "public agent response"
         ]
     );
-    let (context, target) = s.thread_summary_for_reply(&id, "auto", "reply").unwrap();
+    let (context, target) = s
+        .thread_summary_for_reply(&id, "auto", "reply", 1_000_000, 10_000_000)
+        .unwrap();
     assert_eq!(
         context,
         s.thread_summary(&id, &ThreadSummaryQuery::default())
@@ -538,7 +540,9 @@ async fn validation_empty_not_found_and_unlimited_default() {
         .unwrap();
     assert_eq!(summary.messages[0].text, large);
     assert!(!summary.truncated);
-    let (context, target) = s.thread_summary_for_reply(&id, "large", "large").unwrap();
+    let (context, target) = s
+        .thread_summary_for_reply(&id, "large", "large", 1_000_000, 10_000_000)
+        .unwrap();
     assert_eq!(context, summary);
     assert_eq!(target, 0);
 }
@@ -571,7 +575,9 @@ async fn reply_target_uses_exact_identity_after_timeline_sort_and_keeps_original
             extra,
         );
     }
-    let (context, target) = s.thread_summary_for_reply(&id, "target", "reply").unwrap();
+    let (context, target) = s
+        .thread_summary_for_reply(&id, "target", "reply", 1_000_000, 10_000_000)
+        .unwrap();
     assert_eq!(texts(&context), [original, original, original]);
     assert_eq!(target, 1);
     assert_eq!(
@@ -649,7 +655,9 @@ async fn reply_context_bounds_execution_turns_and_history_rows_not_timestamps() 
             json!({}),
         );
     }
-    let (context, target) = s.thread_summary_for_reply(&id, "target", "reply").unwrap();
+    let (context, target) = s
+        .thread_summary_for_reply(&id, "target", "reply", 1_000_000, 10_000_000)
+        .unwrap();
     assert_eq!(
         texts(&context),
         ["legacy question", "target", "earlier reply"]
@@ -657,6 +665,176 @@ async fn reply_context_bounds_execution_turns_and_history_rows_not_timestamps() 
     assert_eq!(target, 1);
     assert!(context.messages[0].time.is_none());
     assert!(!context.truncated);
+}
+
+#[tokio::test]
+async fn reply_context_selects_recent_execution_turns_through_target_including_empty_turns() {
+    let (_d, s, id) = fixture().await;
+    for n in 0..8 {
+        let key = format!("turn-{n}");
+        turn(&s, &id, &key, n, None, None);
+        // An execution turn with no public text still occupies one turn in the
+        // window; do not backfill extra older turns to reach five messages.
+        if n == 5 {
+            continue;
+        }
+        item(
+            &s,
+            &id,
+            &key,
+            "reply",
+            if n == 7 {
+                "userMessage"
+            } else {
+                "agentMessage"
+            },
+            &format!("text-{n}"),
+            Some(if n == 7 {
+                "2029-01-01T00:00:00Z"
+            } else {
+                "2030-01-01T00:00:00Z"
+            }),
+            json!({}),
+        );
+    }
+    let (summary, target) = s
+        .thread_summary_for_reply(&id, "turn-6", "reply", 5, 10_000)
+        .unwrap();
+    assert_eq!(texts(&summary), ["text-2", "text-3", "text-4", "text-6"]);
+    assert_eq!(target, 3);
+    assert!(!summary.truncated);
+    for count in [1, 2] {
+        let (summary, target) = s
+            .thread_summary_for_reply(&id, "turn-6", "reply", count, 10_000)
+            .unwrap();
+        assert_eq!(texts(&summary), ["text-6"]);
+        assert_eq!(target, 0);
+    }
+    assert_eq!(
+        s.thread_summary(&id, &ThreadSummaryQuery::default())
+            .unwrap()
+            .messages
+            .len(),
+        7
+    );
+}
+
+#[tokio::test]
+async fn reply_budget_reserves_exact_target_before_newer_backfilled_duplicate_and_unicode_tail() {
+    let (_d, s, id) = fixture().await;
+    turn(&s, &id, "earlier", 1, None, None);
+    turn(&s, &id, "target", 2, None, None);
+    let original = "同\0🙂e\u{301}";
+    for (turn, key, text, time) in [
+        ("earlier", "oldest", "oldest", "2030-01-01T00:00:00Z"),
+        ("target", "commentary", "最尾🦀x", "2030-01-01T00:00:03Z"),
+        ("target", "reply", original, "2030-01-01T00:00:01Z"),
+        // The same text from an older execution turn sorts after the target,
+        // and is persisted later too. Neither order can substitute its identity.
+        ("earlier", "reply", original, "2030-01-01T00:00:02Z"),
+        (
+            "target",
+            "after",
+            "excluded after target",
+            "2030-01-01T00:00:00Z",
+        ),
+    ] {
+        item(
+            &s,
+            &id,
+            turn,
+            key,
+            "agentMessage",
+            text,
+            Some(time),
+            json!({}),
+        );
+    }
+    let (summary, target) = s
+        .thread_summary_for_reply(&id, "target", "reply", 2, 12)
+        .unwrap();
+    assert_eq!(texts(&summary), [original, "🙂e\u{301}", "最尾🦀x"]);
+    assert_eq!(target, 0);
+    assert!(summary.truncated);
+    assert!(!summary.messages[target].truncated);
+    assert!(summary.messages[1].truncated);
+    assert!(!summary.messages[2].truncated);
+    assert_eq!(
+        summary
+            .messages
+            .iter()
+            .map(|m| m.text.chars().count())
+            .sum::<usize>(),
+        12
+    );
+    // Exactly the target's Unicode size leaves room for no other context.
+    let (summary, target) = s
+        .thread_summary_for_reply(&id, "target", "reply", 2, 5)
+        .unwrap();
+    assert_eq!(texts(&summary), [original]);
+    assert_eq!(target, 0);
+    assert!(summary.truncated);
+    assert!(!summary.messages[0].truncated);
+    let error = s
+        .thread_summary_for_reply(&id, "target", "reply", 2, 4)
+        .unwrap_err()
+        .to_string();
+    assert!(error.starts_with("replyContextTargetTooLarge:"));
+    assert!(error.contains("requires 5 Unicode characters"));
+    assert!(error.contains("maxChars is 4"));
+    // Public maxChars keeps its existing newest-suffix semantics; reserving the
+    // target is exclusive to the internal rewrite projection.
+    let public = s
+        .thread_summary(
+            &id,
+            &ThreadSummaryQuery {
+                max_chars: Some(12),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(texts(&public), ["🙂e\u{301}", original, "最尾🦀x"]);
+    assert!(public.messages[0].truncated);
+}
+
+#[tokio::test]
+async fn reply_context_validates_explicit_limits_without_changing_public_unlimited_default() {
+    let (_d, s, id) = fixture().await;
+    turn(&s, &id, "target", 1, None, None);
+    item(
+        &s,
+        &id,
+        "target",
+        "reply",
+        "agentMessage",
+        "ok",
+        None,
+        json!({}),
+    );
+    for (turns, chars) in [
+        (0, 10_000),
+        (1_000_001, 10_000),
+        (u64::MAX, 10_000),
+        (5, 0),
+        (5, 10_000_001),
+        (5, u64::MAX),
+    ] {
+        let error = s
+            .thread_summary_for_reply(&id, "target", "reply", turns, chars)
+            .unwrap_err()
+            .to_string();
+        assert!(!error.starts_with("replyContextTargetTooLarge:"));
+        assert!(error.contains("must be between"), "{error}");
+    }
+    let (summary, target) = s
+        .thread_summary_for_reply(&id, "target", "reply", 5, 10_000)
+        .unwrap();
+    assert_eq!(target, 0);
+    assert_eq!(
+        summary,
+        s.thread_summary(&id, &ThreadSummaryQuery::default())
+            .unwrap()
+    );
 }
 
 #[tokio::test]
@@ -682,7 +860,7 @@ async fn reply_target_must_exist_in_thread_turn_and_survive_public_assistant_fil
     ] {
         item(&s, &id, "one", key, kind, "same text", None, extra);
         assert!(
-            s.thread_summary_for_reply(&id, "one", key)
+            s.thread_summary_for_reply(&id, "one", key, 1_000_000, 10_000_000)
                 .unwrap_err()
                 .to_string()
                 .contains("not a public assistant message"),
@@ -691,7 +869,7 @@ async fn reply_target_must_exist_in_thread_turn_and_survive_public_assistant_fil
     }
     item(&s, &id, "one", "empty", "agentMessage", "", None, json!({}));
     assert!(s
-        .thread_summary_for_reply(&id, "one", "empty")
+        .thread_summary_for_reply(&id, "one", "empty", 1_000_000, 10_000_000)
         .unwrap_err()
         .to_string()
         .contains("not a public assistant message"));
@@ -706,14 +884,16 @@ async fn reply_target_must_exist_in_thread_turn_and_survive_public_assistant_fil
         json!({}),
     );
     // A visible identical message must not rescue a filtered or missing target.
-    assert!(s.thread_summary_for_reply(&id, "one", "channel").is_err());
+    assert!(s
+        .thread_summary_for_reply(&id, "one", "channel", 1_000_000, 10_000_000)
+        .is_err());
     for (turn, item) in [
         ("one", "missing"),
         ("missing", "visible"),
         ("two", "visible"),
     ] {
         assert!(s
-            .thread_summary_for_reply(&id, turn, item)
+            .thread_summary_for_reply(&id, turn, item, 1_000_000, 10_000_000)
             .unwrap_err()
             .to_string()
             .contains("reply target not found"));
@@ -732,12 +912,12 @@ async fn reply_target_must_exist_in_thread_turn_and_survive_public_assistant_fil
         .await
         .unwrap();
     assert!(s
-        .thread_summary_for_reply(&other.id, "one", "visible")
+        .thread_summary_for_reply(&other.id, "one", "visible", 1_000_000, 10_000_000)
         .unwrap_err()
         .to_string()
         .contains("reply target not found"));
     assert!(s
-        .thread_summary_for_reply("missing", "one", "visible")
+        .thread_summary_for_reply("missing", "one", "visible", 1_000_000, 10_000_000)
         .unwrap_err()
         .to_string()
         .contains("not found"));

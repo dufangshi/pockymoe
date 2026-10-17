@@ -33,6 +33,8 @@ Settings use camelCase, reject unknown fields, and have these defaults:
   "detail": "balanced",
   "readerBackground": "",
   "minReplyChars": 800,
+  "replyContextTurns": 5,
+  "replyContextMaxChars": 10000,
   "autoReplies": true,
   "autoDocuments": false,
   "documentMode": "review"
@@ -44,6 +46,10 @@ Presets are `concise`, `clear`, `technical`, `beginner`, and `copyedit`.
 `review` or `rewrite`. Language is a nonempty string up to 64 bytes; reader
 background is limited to 2,000 bytes. `minReplyChars` is an integer from 0 to
 65,536. The model can be selected in settings or inherited from the saved connection.
+`replyContextTurns` accepts integers from 1 to 1,000 and
+`replyContextMaxChars` from 1 to 10,000,000. Both limits apply together and can
+be overridden in the thread's plugin settings. Profiles saved before these
+fields existed inherit the defaults of 5 turns and 10,000 characters.
 
 Select a saved connection and a model in the plugin settings. The shared Add
 connection form is available from the selector. Remote entries must first be
@@ -130,7 +136,18 @@ once. The host uses the same persisted-public-text extraction as
 assistant commentary and original final answers, ordered by recorded chronology.
 The execution-turn boundary and target history row exclude later turns and later
 rows in the target turn. Earlier-turn history backfilled later remains eligible.
-There is no hidden turn/character cap. Prior `polishedReply` presentations are
+By default, only the latest **5 execution turns, including the target turn**,
+are eligible, with at most **10,000 Unicode characters** across message text.
+These are the plugin's configurable limits; the public `/summary` endpoint
+retains its all-history default. The character budget includes the complete
+target reply but excludes JSON keys, timestamps and writing instructions; it
+is not a token limit. The target is reserved first, then the newest remaining
+text is retained within the budget, trimming the beginning of the oldest
+retained context message when necessary. Chronological order and the exact
+target index are preserved, including earlier-turn backfilled history.
+If the target reply alone exceeds the character budget, polishing skips with
+`replyExceedsContextBudget`; increase the limit to polish it in full. The
+plugin never rewrites a partially truncated target. Prior `polishedReply` presentations are
 not substituted for original messages. Tools, operation summaries, command
 output, reasoning and private/control messages are excluded. The Supervisor
 prepares this context before the request; the model needs no device API access
