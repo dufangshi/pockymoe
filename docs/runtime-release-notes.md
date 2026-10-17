@@ -1,13 +1,15 @@
-Someone you share a whole device with, with read and write access to its
-workspaces, can now open the files a reply links to outside the workspace, such
-as a rendered video, as read-only previews like you can. Before, those paths
-were plain text for them. Narrower shares (one thread, one workspace, or
-read-only file access) still see such paths as text.
+An agent thread opened on its own now says where it came from. A slim bar
+pinned above the conversation reads "子线程 · 由 <parent>" (with the parent's
+workspace when it differs) and offers a button back to the parent thread; on a
+phone the button is an icon. A task message from another thread names that
+thread instead of an 8-character id.
 
-The relay applies the rule already; a device bound to your account key applies
-it after this update.
+Agent threads that work in another workspace than their conversation now count
+there: the thread map gives them their own tile in that workspace ("由 … 创建"),
+and `pockymoe thread list --workspace` lists them without `--all`. The sidebar
+shows each thread's own workspace instead of the open thread's.
 
-Validated with the protocol, relay and Supervisor suites, including a signed
-recipient opening a file outside the workspace, and the Web tests. Windows Device
-Manager is unchanged. Installing this release is a separate device update;
-publication does not restart an existing Supervisor.
+Validated with the Supervisor suite including a new listing test, the shared UI
+and Web tests, and screenshots in every theme and pack on desktop and phone.
+Windows Device Manager is unchanged. Installing this release is a separate
+device update; publication does not restart an existing Supervisor.
