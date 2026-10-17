@@ -486,7 +486,7 @@
 :theme .thread-ui-shell .matter-workbench .matter-group-toggle:is(:hover, [aria-expanded='true']) { background: rgb(199 166 255 / 28%); color: var(--plum-chrome-fg); }
 :theme .thread-ui-shell .matter-workbench .matter-thread-group:has(> [aria-current='page']) .matter-group-toggle { background: var(--thread-gc-muted); color: var(--thread-gc-fg-soft); }
 :theme .thread-ui-shell .matter-workbench .matter-thread-group:has(> [aria-current='page']) .matter-group-toggle:is(:hover, [aria-expanded='true']) { background: var(--thread-gc-hover); color: var(--thread-gc-fg); }
-:theme .thread-ui-shell .matter-workbench .matter-thread-tabs .matter-new-thread {
+:theme .thread-ui-shell .matter-workbench .matter-tab-add .matter-new-thread {
   width: 28px;
   height: 28px;
   margin: 0 8px 3px 6px;
@@ -494,7 +494,7 @@
   border-radius: 10px;
   color: #f2c15c;
 }
-:theme .thread-ui-shell .matter-workbench .matter-thread-tabs .matter-new-thread:hover { border-style: solid; background: var(--theme-accent-solid); color: var(--plum-chrome); }
+:theme .thread-ui-shell .matter-workbench .matter-tab-add .matter-new-thread:hover { border-style: solid; background: var(--theme-accent-solid); color: var(--plum-chrome); }
 
 /* Tools at the strip's end: one felt toolbelt. The buttons are segments of a single
    capsule, and the lucide glyphs are replaced by Plum Pocket icons drawn as masks in
@@ -892,7 +892,7 @@
   :theme .thread-ui-shell .matter-workbench :is(.matter-thread-tabs > a, .matter-group-tab) { max-width: 160px; padding-inline: 8px 12px; font-size: 13px; }
   :theme .thread-ui-shell .matter-workbench .matter-group-toggle { height: 26px; }
   :theme .thread-ui-shell .matter-workbench .matter-group-toggle::after { content: ''; position: absolute; inset: -9px -4px; }
-  :theme .thread-ui-shell .matter-workbench .matter-thread-tabs .matter-new-thread { width: 36px; height: 36px; margin-bottom: 2px; }
+  :theme .thread-ui-shell .matter-workbench .matter-tab-add .matter-new-thread { width: 36px; height: 36px; margin-bottom: 2px; }
   /* A 44px-wide segment; the hit area grows to 44px tall around the 38px capsule. */
   :theme .thread-ui-shell .matter-workbench .matter-tabs-row > :is(.matter-toolbar-toggle, .matter-watches-toggle),
   :theme .thread-ui-shell .matter-workbench .matter-tabs-row .workbench-thread-picker-trigger { position: relative; min-width: 44px; height: 38px; padding: 0 10px; }

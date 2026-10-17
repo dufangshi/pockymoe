@@ -26,12 +26,13 @@ export function ConversationSearch({ threadId, workspaceId, deviceLabel, allowGl
   workspaceId: string;
   deviceLabel: string;
   allowGlobal: boolean;
-  onNavigate: (match: GlobalConversationSearchMatch) => void;
+  onNavigate: (match: GlobalConversationSearchMatch, query: string) => void;
   turns: ThreadTurnDto[];
   open: boolean;
   onOpen: () => void;
   onClose: () => void;
-  onSelect: (turns: ThreadTurnDto[], turnId: string, itemId: string) => void;
+  /** `query` is what was searched, for marking it where the reader lands. */
+  onSelect: (turns: ThreadTurnDto[], turnId: string, itemId: string, query: string) => void;
 }) {
   const labels = useSearchMessages();
   const root = useRef<HTMLDivElement>(null);
@@ -149,7 +150,7 @@ export function ConversationSearch({ threadId, workspaceId, deviceLabel, allowGl
   const close = () => { restoreFocus.current = true; onClose(); };
   const select = async (match: SearchMatch) => {
     if (isGlobal(match) && (match.threadId !== threadId || !match.turnId || !match.itemId)) {
-      onNavigate(match); close(); return;
+      onNavigate(match, query.trim()); close(); return;
     }
     if (!match.turnId || !match.itemId) return;
     if (selecting) return;
@@ -161,7 +162,7 @@ export function ConversationSearch({ threadId, workspaceId, deviceLabel, allowGl
       const loaded = turns.find(turn => turn.id === match.turnId && !turn.hasDeferredItems);
       const turn = loaded ?? await fetchThreadTurnDetail(threadId, match.turnId);
       if (controller.signal.aborted) return;
-      onSelect([turn], match.turnId, match.itemId);
+      onSelect([turn], match.turnId, match.itemId, query.trim());
       close();
     } catch (e) {
       if (!controller.signal.aborted) setError(e instanceof Error ? e.message : labels.openFailed);

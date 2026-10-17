@@ -574,13 +574,13 @@ export function ThreadDetailPage() {
   const [activeView, setActiveView] = useState<'chat' | 'shell'>('chat');
   const searchLabels = useSearchMessages();
   const [searchOpen, setSearchOpen] = useState(false);
-  const [searchTarget, setSearchTarget] = useState<{ turnId: string; itemId: string; key: number }>();
+  const [searchTarget, setSearchTarget] = useState<{ turnId: string; itemId: string; key: number; query?: string }>();
   // Global search opens a message through a shareable, device-scoped deep link.
   // Load only the destination turn, including turns outside the summary page.
   useEffect(() => {
     if (!id || detail?.thread.id !== id) return;
     const params = new URLSearchParams(location.search);
-    const turnId = params.get('searchTurn'), itemId = params.get('searchItem');
+    const turnId = params.get('searchTurn'), itemId = params.get('searchItem'), query = params.get('searchQuery');
     if (!turnId || !itemId) return;
     let cancelled = false;
     void fetchThreadTurnDetail(id, turnId).then(turn => {
@@ -589,7 +589,7 @@ export function ThreadDetailPage() {
         ...current,
         turns: prependTurns(current.turns.map(existing => existing.id === turnId ? turn : existing), [turn]),
       } : current);
-      setSearchTarget({ turnId, itemId, key: Date.now() });
+      setSearchTarget({ turnId, itemId, key: Date.now(), ...(query ? { query } : {}) });
     }).catch(caught => { if (!cancelled) setError(caught instanceof Error ? caught.message : searchLabels.openFailed); });
     return () => { cancelled = true; };
   }, [id, detail?.thread.id, location.search]);
@@ -4150,18 +4150,18 @@ export function ThreadDetailPage() {
         toolPanels: dshPanelAvailable ? [{ id: 'deepseek-harness', label: translate('workbench.deepseekHarness'), icon: <Puzzle data-icon="harness-panel" />, active: dshPanelOpen, onToggle: toggleDshPanel }] : [], onNavigate: navigate, onPrefetchThread: prefetchThread, onSearch: () => setSearchOpen(true), searchOpen, search: id && detail ? <ConversationSearch key={id} threadId={id} workspaceId={detail.thread.workspaceId}
         deviceLabel={relayRouteDeviceId ?? searchLabels.localDevice}
         allowGlobal={!hostScope && (relayThreadIsOwner || (relayAccess?.scope === 'device' && (relayAccess.threadAccess === 'read' || relayAccess.threadAccess === 'control')))}
-        onNavigate={match => {
+        onNavigate={(match, query) => {
           const params = new URLSearchParams();
-          if (match.turnId && match.itemId) { params.set('searchTurn', match.turnId); params.set('searchItem', match.itemId); }
+          if (match.turnId && match.itemId) { params.set('searchTurn', match.turnId); params.set('searchItem', match.itemId); if (query) params.set('searchQuery', query); }
           navigate(`${currentThreadHref(match.threadId)}${params.size ? `?${params}` : ''}`);
         }} turns={detail.turns} open={searchOpen}
         onOpen={() => setSearchOpen(true)} onClose={() => setSearchOpen(false)}
-        onSelect={(turns, turnId, itemId) => {
+        onSelect={(turns, turnId, itemId, query) => {
           setDetail(current => current ? { ...current, turns: prependTurns(current.turns.map(turn => {
             const full = turns.find(t => t.id === turn.id);
             return full && turn.status !== 'inProgress' ? full : turn;
           }), turns) } : current);
-          setSearchTarget({ turnId, itemId, key: Date.now() });
+          setSearchTarget({ turnId, itemId, key: Date.now(), ...(query ? { query } : {}) });
         }} /> : undefined, })}
       threads={threads}
       detail={detail}

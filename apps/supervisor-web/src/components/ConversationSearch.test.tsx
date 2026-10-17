@@ -34,7 +34,7 @@ it('opens without loading history, searches live text immediately, and fetches o
   await screen.findByRole('option', { name: /Older cobalt decision/ });
   expect(fetchThreadTurnDetail).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole('option', { name: /Older cobalt decision/ }));
-  await waitFor(() => expect(onSelect).toHaveBeenCalledWith([older], 'old', 'old-msg'));
+  await waitFor(() => expect(onSelect).toHaveBeenCalledWith([older], 'old', 'old-msg', 'cobalt'));
   expect(fetchThreadTurnDetail).toHaveBeenCalledExactlyOnceWith('thread-1', 'old');
   expect(fetchThreadConversationPage).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole('button', { name: 'Search conversation' }));
@@ -95,7 +95,7 @@ it('searches authorized scopes with pagination and keyboard navigation without s
   await screen.findByRole('option', { name: /Next cobalt page/ });
   expect(searchConversations).toHaveBeenLastCalledWith('cobalt', 'workspace-1', 50, expect.any(AbortSignal));
   fireEvent.keyDown(screen.getByRole('combobox', { name: 'Search messages' }), { key: 'Enter' });
-  expect(onNavigate).toHaveBeenCalledWith(expect.objectContaining({ threadId: 'other-thread', itemId: 'old-msg' }));
+  expect(onNavigate).toHaveBeenCalledWith(expect.objectContaining({ threadId: 'other-thread', itemId: 'old-msg' }), 'cobalt');
   expect(fetchThreadConversationPage).not.toHaveBeenCalled();
   expect(fetchThreadTurnDetail).not.toHaveBeenCalled();
   expect(searchThreadMessages).not.toHaveBeenCalled();
