@@ -8,15 +8,19 @@ describe('font size preference', () => {
     for (const value of [null, '', 'NaN', 0, 100, -1, undefined]) expect(normalizeFontSize(value)).toBe(16);
     expect(normalizeFontSize('18')).toBe(18);
   });
-  it('applies immediately and restores on a later page load', () => {
+  it('scales the conversation (not the page) immediately and on a later page load', () => {
+    const zoom = () => document.documentElement.style.getPropertyValue('--chat-zoom');
+    document.documentElement.style.fontSize = '20px';
     setFontSize(20);
     expect(localStorage.getItem(FONT_SIZE_KEY)).toBe('20');
-    expect(document.documentElement.style.fontSize).toBe('20px');
-    document.documentElement.style.fontSize = '';
+    expect(zoom()).toBe('1.25');
+    // The page's own text size is left to the browser, so settings and buttons keep theirs.
+    expect(document.documentElement.style.fontSize).toBe('');
+    document.documentElement.style.removeProperty('--chat-zoom');
     applyFontSize();
-    expect(document.documentElement.style.fontSize).toBe('20px');
+    expect(zoom()).toBe('1.25');
     expect(readFontSize()).toBe(20);
     setFontSize(16);
-    expect(document.documentElement.style.fontSize).toBe('16px');
+    expect(zoom()).toBe('1');
   });
 });

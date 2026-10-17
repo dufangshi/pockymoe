@@ -284,6 +284,13 @@ worked carries a merge mark and its time above it. Waiting for a wake and runnin
 background agents show as small moving marks (an hourglass, a bot with its count)
 whose wording is in their label.
 
+Settings > Preferences > Text size (12–22 px, 16 by default, stored in this
+browser) scales the conversation and the prompt as a whole in every theme pack,
+whatever sizes the pack gives them: the host sets `--chat-zoom` (size ÷ 16) and the
+conversation's content and the prompt field are zoomed by it, so lines still wrap
+at the same width and the prompt still opens when its text no longer fits on one
+line. Settings, menus, the toolbar and buttons keep their size.
+
 A toggle stays where it was clicked while what it opens or closes changes size,
 so it can be clicked again in place; the timeline does not jump to its end. An
 opened turn keeps its work line at the top, and an opened long message keeps

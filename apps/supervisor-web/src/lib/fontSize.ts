@@ -9,8 +9,13 @@ export function normalizeFontSize(value: unknown): number {
 export function readFontSize(): number {
   try { return normalizeFontSize(localStorage.getItem(FONT_SIZE_KEY)); } catch { return DEFAULT_FONT_SIZE; }
 }
+/** Text size scales the conversation and the prompt (the shared UI zooms them by
+    `--chat-zoom`), whatever sizes a theme gives them; settings, menus and buttons
+    keep their size. */
 export function applyFontSize(size = readFontSize()) {
-  document.documentElement.style.fontSize = `${normalizeFontSize(size)}px`;
+  const root = document.documentElement;
+  root.style.removeProperty('font-size');
+  root.style.setProperty('--chat-zoom', String(normalizeFontSize(size) / DEFAULT_FONT_SIZE));
 }
 export function setFontSize(size: number) {
   const next = normalizeFontSize(size);
