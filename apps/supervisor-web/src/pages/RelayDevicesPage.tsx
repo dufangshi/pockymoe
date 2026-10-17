@@ -22,9 +22,11 @@ import { request } from '../lib/api';
 import { DeviceEncryptionStatus } from '../components/DeviceEncryptionStatus';
 import { TourLauncherButton } from '../components/onboarding/TourProvider';
 import { ProductHeader } from '../components/ProductHeader';
+import { AnchoredPopover } from '../components/AnchoredPopover';
 import {
   Copy,
   Ellipsis,
+  Link2Off,
   Lock,
   MonitorSmartphone,
   Plug,
@@ -2205,6 +2207,7 @@ function DeviceRow({
             {translate('devices.deviceIsolated')}
           </span>
         ) : null}
+        {device.sharedControl ? <SharedControlMark /> : null}
         {copiedSetup ? (
           <p
             className="basis-full text-[var(--status-success-fg)]"
@@ -2338,6 +2341,34 @@ function DeviceRow({
   );
 }
 
+/** The relay refuses this device's requests to the owner's other devices; tap shows why. */
+function SharedControlMark() {
+  useI18n();
+  const [open, setOpen] = useState(false);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const detail = translate('devices.sharedControlDetail');
+  return (
+    <>
+      <button
+        aria-expanded={open}
+        aria-haspopup="dialog"
+        aria-label={translate('devices.sharedControl')}
+        className="device-status-chip"
+        data-tone="mark"
+        onClick={() => setOpen(!open)}
+        ref={trigger}
+        title={detail}
+        type="button"
+      >
+        <Link2Off aria-hidden="true" className="h-3.5 w-3.5" />
+      </button>
+      <AnchoredPopover anchor={trigger} label={translate('devices.sharedControl')} onClose={() => setOpen(false)} open={open} width={260}>
+        <p className="text-[var(--theme-fg-muted)]">{detail}</p>
+      </AnchoredPopover>
+    </>
+  );
+}
+
 /** Whether agents on other devices may reach this one; the device decides and enforces it. */
 function DeviceIsolationDialog({
   device,
@@ -2411,6 +2442,12 @@ function DeviceIsolationDialog({
             <span className="font-medium text-[var(--theme-fg)]">{translate('devices.isolateDevice')}</span>
           </label>
         )}
+        {device.sharedControl ? (
+          <p className="mt-3 flex items-start gap-2 text-[var(--theme-fg-muted)]">
+            <Link2Off aria-hidden="true" className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            {translate('devices.sharedControlDetail')}
+          </p>
+        ) : null}
       </div>
     </RelayDialog>
   );

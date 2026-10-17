@@ -149,6 +149,8 @@ export interface RelayDeviceDto {
   connectedAt: string | null;
   lastHeartbeatAt: string | null;
   createdAt: string;
+  /** Someone else can control its agents, so it cannot reach the owner's other devices. Absent from older relays. */
+  sharedControl?: boolean;
 }
 
 export interface RelayAdminUserDto extends RelayUserDto {

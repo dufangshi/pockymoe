@@ -16,6 +16,7 @@ fn caller(id: &str) -> PeerCaller {
         device_id: id.into(),
         device_name: "Test peer".into(),
         user_id: "test-owner".into(),
+        shared_control: None,
     }
 }
 async fn register(target: &Arc<Supervisor>, certificate: Value, device: &str) -> (u64, Value) {

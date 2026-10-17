@@ -754,6 +754,7 @@ struct DeviceJsonInput<'a> {
     last_heartbeat_at: Option<&'a str>,
     token: Option<&'a str>,
     token_preview: Option<&'a str>,
+    shared_control: bool,
 }
 
 fn device_json(input: DeviceJsonInput<'_>) -> Value {
@@ -770,7 +771,8 @@ fn device_json(input: DeviceJsonInput<'_>) -> Value {
         "connected": input.connected,
         "connectedAt": input.connected_at,
         "lastHeartbeatAt": input.last_heartbeat_at,
-        "createdAt": input.created_at
+        "createdAt": input.created_at,
+        "sharedControl": input.shared_control
     })
 }
 
@@ -1723,6 +1725,7 @@ async fn list_user_devices(state: &AppState, user_id: &str) -> Vec<Value> {
                 .map(|socket| socket.last_heartbeat_at.as_str()),
             token: None,
             token_preview: token_preview.as_deref(),
+            shared_control: peer::device_shared_for_control(&conn, &id),
         }))
     })
     .ok()
@@ -2300,6 +2303,7 @@ async fn create_device(
             last_heartbeat_at: None,
             token: Some(&token),
             token_preview: Some(&token_preview),
+            shared_control: false,
         }),
         "token": token
     }))

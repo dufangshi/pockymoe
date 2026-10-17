@@ -241,3 +241,29 @@ describe('agent isolation', () => {
     expect(screen.queryByRole('checkbox')).toBeNull();
   });
 });
+
+describe('device shared for control', () => {
+  const detail = 'Shared with others who can control its agents, so its agents cannot reach your other devices.';
+  it('marks the row with a small icon that explains itself on hover and tap', async () => {
+    vi.mocked(fetchRelayPortal).mockResolvedValue({ user: { id: 'test-user' } as never, devices: [{ ...device, sharedControl: true }], sharedWithMe: [], sharedByMe: [] });
+    await openPage();
+    const mark = screen.getByRole('button', { name: 'Shared for control' });
+    expect(mark).toHaveAttribute('title', detail);
+    expect(mark).not.toHaveTextContent(/\S/);
+    expect(screen.queryByRole('dialog')).toBeNull();
+    fireEvent.click(mark);
+    expect(screen.getByRole('dialog', { name: 'Shared for control' })).toHaveTextContent(detail);
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(screen.queryByRole('dialog')).toBeNull();
+    // The isolation dialog names the opposite direction too.
+    fireEvent.click(screen.getByRole('button', { name: `More actions for ${device.name}` }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Agent isolation…' }));
+    expect(await screen.findByRole('dialog', { name: `Agent isolation · ${device.name}` })).toHaveTextContent(detail);
+  });
+
+  it.each([[{ sharedControl: false }], [{}]])('shows no mark for %j', async (flag) => {
+    vi.mocked(fetchRelayPortal).mockResolvedValue({ user: { id: 'test-user' } as never, devices: [{ ...device, ...flag }], sharedWithMe: [], sharedByMe: [] });
+    await openPage();
+    expect(screen.queryByRole('button', { name: 'Shared for control' })).toBeNull();
+  });
+});

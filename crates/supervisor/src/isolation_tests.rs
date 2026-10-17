@@ -116,6 +116,15 @@ fn forbidden(result: anyhow::Result<Value>) -> String {
     error
 }
 
+fn peer(shared_control: Option<bool>) -> PeerCaller {
+    PeerCaller {
+        device_id: "device-b".into(),
+        device_name: "Laptop".into(),
+        user_id: "same-owner".into(),
+        shared_control,
+    }
+}
+
 async fn call(
     router: &Router,
     method: &str,
@@ -123,18 +132,22 @@ async fn call(
     body: Value,
     peer: bool,
 ) -> (StatusCode, Value) {
+    call_as(router, method, uri, body, peer.then(|| self::peer(None))).await
+}
+
+async fn call_as(
+    router: &Router,
+    method: &str,
+    uri: &str,
+    body: Value,
+    peer: Option<PeerCaller>,
+) -> (StatusCode, Value) {
     let mut request = Request::builder()
         .method(method)
         .uri(uri)
         .header("content-type", "application/json");
-    if peer {
-        request = request
-            .extension(TrustedRelayForward)
-            .extension(PeerCaller {
-                device_id: "device-b".into(),
-                device_name: "Laptop".into(),
-                user_id: "same-owner".into(),
-            });
+    if let Some(peer) = peer {
+        request = request.extension(TrustedRelayForward).extension(peer);
     }
     let response = router
         .clone()
@@ -389,6 +402,103 @@ async fn other_devices_cannot_reach_an_isolated_device_or_workspace() {
     )
     .await
     .unwrap();
+}
+
+#[tokio::test]
+async fn a_device_shared_for_control_cannot_reach_this_device_but_others_still_can() {
+    let f = setup().await;
+    f.state.set_peer_access(true).unwrap();
+    let open = thread(&f.state, &f.open).await;
+    let requests = [
+        (
+            "POST",
+            "/api/peer/cli".to_string(),
+            json!({"operation":"workspaces"}),
+        ),
+        (
+            "POST",
+            "/api/peer/cli".to_string(),
+            json!({"operation":"list"}),
+        ),
+        (
+            "POST",
+            "/api/peer/cli".to_string(),
+            json!({"operation":"transcript","threadId":open}),
+        ),
+        (
+            "POST",
+            "/api/peer/cli".to_string(),
+            json!({"operation":"send","threadId":open,"text":"hi"}),
+        ),
+        (
+            "POST",
+            "/api/peer/cli".to_string(),
+            json!({"operation":"create","workspaceId":f.open,"provider":"codex","model":"default"}),
+        ),
+        (
+            "POST",
+            "/api/peer/files/list".to_string(),
+            json!({"workspaceId":f.open}),
+        ),
+        (
+            "GET",
+            format!("/api/peer/files/read?workspaceId={}&path=notes.txt", f.open),
+            Value::Null,
+        ),
+        (
+            "POST",
+            "/api/peer/files/uploads".to_string(),
+            json!({"threadId":open,"name":"a.txt","size":1,"sha256":"0".repeat(64)}),
+        ),
+    ];
+    for (method, uri, input) in &requests {
+        let (status, body) = call_as(
+            &f.router,
+            method,
+            uri,
+            input.clone(),
+            Some(peer(Some(true))),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{uri} {input}: {body}");
+        assert_eq!(body["code"], "peer_source_shared", "{uri} {input}");
+        assert!(body["message"]
+            .as_str()
+            .unwrap()
+            .contains("can control its agents"));
+    }
+    // `info` still answers, like an isolated device, so callers can tell why.
+    let (status, info) = call_as(
+        &f.router,
+        "POST",
+        "/api/peer/cli",
+        json!({"operation":"info"}),
+        Some(peer(Some(true))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{info}");
+    assert!(f.state.list_threads(None, true).unwrap().len() == 1);
+    // A private source, or a relay that predates the rule, keeps today's behavior.
+    for flag in [Some(false), None] {
+        let (status, body) = call_as(
+            &f.router,
+            "POST",
+            "/api/peer/cli",
+            json!({"operation":"workspaces"}),
+            Some(peer(flag)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{flag:?}: {body}");
+        let (status, body) = call_as(
+            &f.router,
+            "POST",
+            "/api/peer/files/list",
+            json!({"workspaceId":f.open}),
+            Some(peer(flag)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{flag:?}: {body}");
+    }
 }
 
 #[tokio::test]

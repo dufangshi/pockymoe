@@ -55,6 +55,7 @@ pub(crate) async fn cli(
     // An isolated device still answers `info`, so callers can tell why.
     if operation != "info" {
         state.ensure_peer_reaches_device().map_err(map_err)?;
+        caller.ensure_source_private()?;
     }
     let sender = RemoteSender {
         device_id: caller.device_id,
@@ -228,6 +229,7 @@ mod tests {
             device_id: device.into(),
             device_name: "Peer laptop".into(),
             user_id: "same-owner".into(),
+            shared_control: None,
         }
     }
 

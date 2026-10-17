@@ -191,6 +191,7 @@ async fn remote_bind_refuses_plaintext_peer_and_non_tunnel_requests() {
         device_id: "peer".into(),
         device_name: "Peer".into(),
         user_id: "owner".into(),
+        shared_control: None,
     };
     let denied = crate::tunnel::forward_local(&state, payload, Some(peer)).await;
     assert_eq!(denied["statusCode"], 403);
@@ -263,6 +264,7 @@ async fn remote_bind_capability_is_present_in_device_and_peer_descriptors() {
         device_id: "peer".into(),
         device_name: "Peer".into(),
         user_id: "owner".into(),
+        shared_control: None,
     };
     for (path, caller) in [
         ("/api/transport/key", None),

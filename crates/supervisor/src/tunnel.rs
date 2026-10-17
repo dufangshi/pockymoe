@@ -473,6 +473,11 @@ fn peer_caller(value: &Value) -> Option<PeerCaller> {
             .into(),
         device_name: value["deviceName"].as_str()?.into(),
         user_id: value["userId"].as_str().filter(|id| !id.is_empty())?.into(),
+        // Older relays send nothing: unknown, as before the rule existed.
+        shared_control: match value.get("sharedControl") {
+            None | Some(Value::Null) => None,
+            Some(flag) => Some(flag.as_bool()?),
+        },
     })
 }
 
@@ -1150,6 +1155,7 @@ pub(crate) mod tests {
             device_id: "source".into(),
             device_name: "Source device".into(),
             user_id: "owner".into(),
+            shared_control: None,
         }
     }
     async fn relay_frame(
@@ -1233,6 +1239,21 @@ pub(crate) mod tests {
                 .is_some()
         );
         assert!(peer_caller(&json!({"deviceId":"source","deviceName":"Source"})).is_none());
+        let identity = json!({"deviceId":"source","deviceName":"Source","userId":"owner"});
+        assert_eq!(peer_caller(&identity).unwrap().shared_control, None);
+        for (flag, expected) in [
+            (json!(true), Some(Some(true))),
+            (json!(false), Some(Some(false))),
+            (Value::Null, Some(None)),
+            (json!("true"), None),
+        ] {
+            let mut value = identity.clone();
+            value["sharedControl"] = flag;
+            assert_eq!(
+                peer_caller(&value).map(|caller| caller.shared_control),
+                expected
+            );
+        }
     }
 
     #[tokio::test]
@@ -1482,6 +1503,7 @@ mod owner_channel_tests {
             device_id: device.into(),
             device_name: "Peer".into(),
             user_id: "owner".into(),
+            shared_control: None,
         };
         let headers = json!({"headers":{"x-rcd-peer-device":device,"x-rcd-peer-signature":peer["signature"]}});
         let aad = peer["aad"].as_str().unwrap();

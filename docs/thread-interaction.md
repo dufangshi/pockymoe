@@ -78,7 +78,10 @@ relay requests between devices of the same owner. Access defaults to off on each
 device. `device list` works before opting in and reports this device's `peerAccess`.
 `device access` views it; `device access on|off` and `device trust DEVICE
 --reset` require a local machine credential. Trust reset follows independent
-verification of the peer's `relay-fingerprint`.
+verification of the peer's `relay-fingerprint`. A device shared with other
+people who can control its agents cannot reach your other devices: its requests
+fail with `peer_source_shared`, and `device list` marks it `sharedControl: true`
+([agent isolation](agent-isolation.md#devices-shared-with-other-people)).
 
 ```sh
 pockymoe device list

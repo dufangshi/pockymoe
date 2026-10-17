@@ -14,6 +14,9 @@ isolated workspace is missing from `device workspaces` and listings, and request
 for its threads or files are refused. The owner sets this on the Devices and
 Workspaces pages; do not work around it.
 
+A device shared with people who can control its agents (`sharedControl: true` in
+`device list`) cannot reach other devices (`peer_source_shared`); report it, do not work around it.
+
 ```bash
 pockymoe device list
 pockymoe device access                    # inspect; managed threads can view
