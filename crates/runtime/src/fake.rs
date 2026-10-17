@@ -351,6 +351,9 @@ impl AgentRuntime for FakeRuntime {
         // that an ACP harness receives. No identity is written to test state.
         if let Some(driver) = std::env::var_os("POCKYMOE_E2E_FAKE_CLI_DRIVER") {
             let mut command = tokio::process::Command::new(driver);
+            for key in crate::child_process::inherited_host_identity() {
+                command.env_remove(key);
+            }
             command
                 .envs(crate::interaction::launch_env())
                 .stdin(std::process::Stdio::null())

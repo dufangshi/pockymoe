@@ -46,13 +46,7 @@ impl AgentTerminals {
         crate::child_process::hide_tokio(&mut cmd);
         // ACP terminals are spawned by the hub, not the harness. Discard any
         // identity inherited by the hub before applying the owning process env.
-        for key in [
-            "TREER_AGENT_ID",
-            "TREER_WORKLOAD_CREDENTIAL",
-            "TREER_AGENT_SERVER_URL",
-            "TREER_WORKSPACE_ID",
-            "TREER_SERVER_ID",
-        ] {
+        for key in crate::child_process::inherited_host_identity() {
             cmd.env_remove(key);
         }
         cmd.args(&parsed_args)

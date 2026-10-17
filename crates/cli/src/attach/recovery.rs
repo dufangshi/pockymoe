@@ -132,6 +132,7 @@ esac
                             workload_credential: None,
                             workspace_id: None,
                             server_id: None,
+                            http_proxy: None,
                         },
                     },
                     hub: "http://127.0.0.1:8787".into(),

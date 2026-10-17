@@ -91,6 +91,40 @@ async fn inbound_atomic_store_dedup_ack_checkpoint_and_context() {
     assert!(f.hub.store_delivery(&a, &invalid).is_err());
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn wake_apps_resolve_names_as_the_hub_app() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = fixture().await;
+    let script = f._dir.path().join("app-list");
+    let calls = f._dir.path().join("app-list.calls");
+    std::fs::write(&script, format!("#!/bin/sh\n[ \"$TREER_AGENT_ID\" = app-hub ] || exit 2\n[ \"$1 $2\" = 'app list' ] || exit 3\necho x >> '{}'\necho '{{\"apps\":[{{\"name\":\"issues\",\"runtime_agent_id\":\"app_issues\"}},{{\"name\":\"mail\",\"runtime_agent_id\":\"app_mail\"}},{{\"name\":\"issues\",\"runtime_agent_id\":\"bad id\"}}]}}'\n", calls.display())).unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+    *f.hub.browser_commands.lock().unwrap() = browser::Commands {
+        treer: script,
+        pockymoe: None,
+    };
+    let mut app = hello(&f, "app-hub");
+    app.create = None;
+    *f.hub.hub_identity.lock().unwrap() = Some(Binding {
+        thread: String::new(),
+        agent: app.agent_id,
+        instance: "app-instance".into(),
+        identity: app.treer,
+        cancelled: Default::default(),
+    });
+    f.hub.refresh_wake_apps(&["app_issues"]).await;
+    let ids = f.hub.wake_apps.lock().unwrap().ids.clone();
+    assert_eq!(
+        ids,
+        HashMap::from([("app_issues".to_owned(), "issues".to_owned())])
+    );
+    // Known senders reuse the answer; an unknown one waits out the short interval.
+    f.hub.refresh_wake_apps(&["app_issues"]).await;
+    f.hub.refresh_wake_apps(&["ag_other"]).await;
+    assert_eq!(std::fs::read_to_string(&calls).unwrap().lines().count(), 1);
+}
+
 #[tokio::test]
 async fn envelope_wake_rules_and_per_sender_rate_limit() {
     let f = fixture().await;
@@ -129,6 +163,58 @@ async fn envelope_wake_rules_and_per_sender_rate_limit() {
     }
     assert_eq!(pending(&f.hub, &a.thread), 5);
     assert_eq!(f.hub.state.inbox_unread_count(&a.thread).unwrap(), 10);
+    // An allowed App's runtime Agent wakes; the same ID under another kind does not.
+    f.hub
+        .wake_apps
+        .lock()
+        .unwrap()
+        .ids
+        .insert("app_issues".into(), "issues".into());
+    f.hub
+        .store_delivery(&a, &mail(&a, "issues-svc", "service", "app_issues", "x"))
+        .unwrap();
+    assert_eq!(pending(&f.hub, &a.thread), 5);
+    f.hub
+        .store_delivery(
+            &a,
+            &mail(&a, "issues-1", "agent", "app_issues", "Issues reminder"),
+        )
+        .unwrap();
+    assert_eq!(pending(&f.hub, &a.thread), 6);
+    let woken = f
+        .hub
+        .state
+        .db
+        .with(|c| {
+            Ok(c.query_row(
+                "SELECT submitted_prompt FROM thread_pending_steers WHERE client_request_id='treer-message/issues-1'",
+                [],
+                |r| r.get::<_, String>(0),
+            )?)
+        })
+        .unwrap();
+    assert!(woken.contains("curl -fsS http://issues.treer/"));
+    f.hub.wake_apps.lock().unwrap().ids.clear();
+    f.hub
+        .store_delivery(
+            &a,
+            &mail(&a, "issues-2", "agent", "app_issues", "Issues reminder"),
+        )
+        .unwrap();
+    assert_eq!(pending(&f.hub, &a.thread), 6);
+    for id in ["issues-svc", "issues-1", "issues-2"] {
+        f.hub
+            .state
+            .db
+            .with(|c| {
+                c.execute(
+                    "DELETE FROM thread_pending_steers WHERE client_request_id=?1",
+                    [format!("treer-message/{id}")],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+    }
     let prompt = f
         .hub
         .state
