@@ -826,6 +826,7 @@ pub(crate) async fn forward_local(
         opened.principal = principal.clone();
         if principal.is_none() {
             opened.request["fileActor"] = payload["headers"]["x-rcd-file-actor"].clone();
+            opened.request["relayActor"] = relay_actor_headers(&payload["headers"]);
         }
         let response = if path.ends_with("/transport/shell-scope") && method == "GET" {
             let thread = path
@@ -874,7 +875,18 @@ pub(crate) async fn forward_local(
     }
     let mut payload = payload;
     payload["fileActor"] = payload["headers"]["x-rcd-file-actor"].clone();
+    payload["relayActor"] = relay_actor_headers(&payload["headers"]);
     dispatch_local(state, payload, peer).await
+}
+/// The relay's account headers, kept apart from the request's own headers.
+fn relay_actor_headers(headers: &Value) -> Value {
+    let mut actor = serde_json::Map::new();
+    for name in ["x-rcd-file-actor", "x-rcd-actor-owner", "x-rcd-actor-name"] {
+        if let Some(value) = headers[name].as_str() {
+            actor.insert(name.into(), json!(value));
+        }
+    }
+    Value::Object(actor)
 }
 fn json_response(value: Value) -> Value {
     json!({"statusCode":200,"headers":{"content-type":"application/json","cache-control":"no-store"},"body":value.to_string()})
@@ -917,6 +929,10 @@ async fn dispatch_raw(
             .extension(principal);
     } else if let Some(actor) = payload["fileActor"].as_str().filter(|s| !s.is_empty()) {
         request = request.extension(crate::file_documents::FileActor(format!("relay:{actor}")));
+        if let Some(actor) = crate::message_sender::RelayActor::from_headers(&payload["relayActor"])
+        {
+            request = request.extension(actor);
+        }
     }
     if let Some(headers) = payload.get("headers").and_then(Value::as_object) {
         for name in ["content-type", "accept", "if-none-match", "range"] {

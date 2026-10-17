@@ -88,6 +88,22 @@ struct MessageRow {
     chars: u64,
 }
 
+pub(super) fn prompt_sender_key(pending: &str) -> String {
+    format!("prompt-sender:{pending}")
+}
+
+/// The non-owner sender recorded when a prompt was accepted, if any.
+pub(super) fn prompt_sender(conn: &Connection, pending: &str) -> Result<Option<Value>> {
+    Ok(conn
+        .query_row(
+            "SELECT value FROM kv WHERE key=?1",
+            [prompt_sender_key(pending)],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()?
+        .and_then(|raw| serde_json::from_str(&raw).ok()))
+}
+
 pub(super) fn prompt_origin(conn: &Connection, pending: &str) -> Result<Option<&'static str>> {
     if conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM automation_runs WHERE pending_id=?1)",

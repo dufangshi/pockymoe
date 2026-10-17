@@ -1294,3 +1294,133 @@ async fn grantee_browser_cap_allows_idempotent_registration_at_limit() {
     );
     assert!(owner.valid(&state));
 }
+
+async fn prompt_thread(state: &Arc<Supervisor>) -> (String, String) {
+    let ws = state
+        .create_workspace(pockymoe_protocol::CreateWorkspaceInput {
+            abs_path: Some(state.config.workspace_root.to_string_lossy().into()),
+            git_url: None,
+            label: Some("Shared".into()),
+        })
+        .unwrap();
+    let thread = state
+        .create_thread(pockymoe_protocol::CreateThreadInput {
+            workspace_id: ws.id.clone(),
+            title: None,
+            provider: Some(pockymoe_protocol::Provider::Codex),
+            agent_id: None,
+            model: "ios-e2e-stream".into(),
+            reasoning_effort: None,
+            approval_mode: "guarded".into(),
+            parent_thread_id: None,
+        })
+        .await
+        .unwrap();
+    (ws.id, thread.id)
+}
+
+async fn user_items(state: &Arc<Supervisor>, thread: &str, count: usize) -> Vec<Value> {
+    for _ in 0..200 {
+        let items: Vec<Value> = state
+            .db
+            .with(|c| {
+                let mut q = c.prepare("SELECT item_json FROM thread_history_items WHERE thread_id=?1 AND json_extract(item_json,'$.kind')='userMessage' ORDER BY created_at,rowid")?;
+                let rows = q
+                    .query_map([thread], |r| r.get::<_, String>(0))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows.into_iter().map(|raw| serde_json::from_str(&raw).unwrap()).collect())
+            })
+            .unwrap();
+        if items.len() >= count && state.get_thread(thread).unwrap().status != "running" {
+            return items;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    panic!("the prompts did not run");
+}
+
+#[tokio::test]
+async fn prompts_from_grantees_record_the_signed_sender_and_ignore_relay_claims() {
+    let (_dir, state, owner, mut g, _r, key, p) = fixture().await;
+    let (workspace, thread) = prompt_thread(&state).await;
+    g.thread_id = Some(thread.clone());
+    g.workspace_id = Some(workspace);
+    g.thread_access = "control".into();
+    put(&state.db, &g.grant_id, &g, &owner, owner_trust::now()).unwrap();
+    let path = format!("/api/threads/{thread}/prompt");
+    let (mut r, response_key, aad) = encrypted_with_key(
+        &state,
+        "POST",
+        &path,
+        json!({"prompt":"from the recipient"}),
+        Some(&p),
+        &key,
+    );
+    // The relay cannot rename or disown a signed grantee.
+    r["headers"]["x-rcd-actor-owner"] = json!("1");
+    r["headers"]["x-rcd-actor-name"] = json!("Mallory");
+    let (status, body) = decoded(
+        crate::tunnel::forward_local(&state, r, None).await,
+        &response_key,
+        &aad,
+    );
+    assert_eq!(status, 200, "{body}");
+    let items = user_items(&state, &thread, 1).await;
+    assert_eq!(
+        items[0]["sender"],
+        json!({"userId":"recipient","name":"Recipient"})
+    );
+    let owner_key = crate::owner_trust::tests::session_key();
+    let (status, body) = request(
+        &state,
+        Some(&owner),
+        &owner_key,
+        "POST",
+        &path,
+        json!({"prompt":"from the owner"}),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    let items = user_items(&state, &thread, 2).await;
+    assert_eq!(items[1]["text"], "from the owner");
+    assert!(items[1].get("sender").is_none(), "{}", items[1]);
+    // The recorded sender does not outlive its prompt.
+    let left: i64 = state
+        .db
+        .with(|c| {
+            Ok(c.query_row(
+                "SELECT count(*) FROM kv WHERE key LIKE 'prompt-sender:%'",
+                [],
+                |r| r.get(0),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(left, 0);
+}
+
+#[tokio::test]
+async fn an_unbound_device_marks_prompts_the_relay_attributes_to_someone_else() {
+    let (_dir, state) = crate::tunnel::tests::state_with_relay_url("http://127.0.0.1:1");
+    let (_, thread) = prompt_thread(&state).await;
+    let path = format!("/api/threads/{thread}/prompt");
+    let send = |owner: Option<&str>, text: &str| {
+        let mut headers = json!({"content-type":"application/json","x-rcd-file-actor":"user-7","x-rcd-actor-name":"bob"});
+        if let Some(owner) = owner {
+            headers["x-rcd-actor-owner"] = json!(owner);
+        }
+        json!({"method":"POST","path":path,"headers":headers,"body":json!({"prompt":text}).to_string()})
+    };
+    for (owner, text) in [
+        (Some("0"), "shared"),
+        (Some("1"), "owner"),
+        (None, "older relay"),
+    ] {
+        let response = crate::tunnel::forward_local(&state, send(owner, text), None).await;
+        assert_eq!(response["statusCode"], 200, "{response}");
+        user_items(&state, &thread, 1).await;
+    }
+    let items = user_items(&state, &thread, 3).await;
+    assert_eq!(items[0]["sender"], json!({"userId":"user-7","name":"bob"}));
+    assert!(items[1].get("sender").is_none());
+    assert!(items[2].get("sender").is_none());
+}

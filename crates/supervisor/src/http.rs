@@ -2027,6 +2027,7 @@ async fn thread_prompt(
     State(state): State<AppState>,
     request: Request,
 ) -> Result<Json<Value>, ApiErr> {
+    let sender = crate::message_sender::sender(&state, request.extensions());
     let content_type = request
         .headers()
         .get("content-type")
@@ -2188,7 +2189,10 @@ async fn thread_prompt(
         serde_json::from_slice::<SendThreadPromptInput>(&bytes)
             .map_err(|e| err(StatusCode::BAD_REQUEST, "bad_request", e.to_string()))?
     };
-    state.accept_prompt(&id, &input).await.map_err(map_err)?;
+    state
+        .accept_prompt_from(&id, &input, sender.as_ref())
+        .await
+        .map_err(map_err)?;
     state.dispatch_inbox(id.clone());
     Ok(Json(
         serde_json::to_value(state.get_thread(&id).map_err(map_err)?).unwrap(),
@@ -2393,8 +2397,18 @@ fn parse_goal_token_budget(value: Value) -> Result<Option<Option<u64>>, ApiErr> 
 async fn thread_goal(
     Path(id): Path<String>,
     State(state): State<AppState>,
+    principal: Option<axum::Extension<crate::owner_trust::BrowserPrincipal>>,
+    relay_actor: Option<axum::Extension<crate::message_sender::RelayActor>>,
     body: Option<Json<GoalBody>>,
 ) -> Result<Json<Value>, ApiErr> {
+    let mut extensions = axum::http::Extensions::new();
+    if let Some(axum::Extension(principal)) = principal {
+        extensions.insert(principal);
+    }
+    if let Some(axum::Extension(actor)) = relay_actor {
+        extensions.insert(actor);
+    }
+    let sender = crate::message_sender::sender(&state, &extensions);
     let (objective, status, token_budget) = body
         .map(|Json(body)| {
             Ok((
@@ -2407,7 +2421,7 @@ async fn thread_goal(
         .unwrap_or((None, None, None));
     Ok(Json(
         state
-            .submit_thread_goal(&id, objective, status, token_budget)
+            .submit_thread_goal(&id, objective, status, token_budget, sender)
             .await
             .map_err(map_err)?,
     ))

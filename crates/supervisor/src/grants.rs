@@ -95,6 +95,20 @@ pub(crate) fn live_account(
     }
     Ok(None)
 }
+/// The account name the owner signed for a grantee, from its newest grant.
+pub(crate) fn grantee_label(state: &Supervisor, user_id: &str) -> Option<String> {
+    state
+        .db
+        .with(|c| {
+            Ok(rows(c)?
+                .into_iter()
+                .find(|row| row.grant.grantee.user_id == user_id)
+                .map(|row| row.grant.grantee.label))
+        })
+        .ok()
+        .flatten()
+        .filter(|label| !label.trim().is_empty())
+}
 fn valid_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 256 && !id.contains(['\n', '\r', '/', '?', '#', '%', '\\'])
 }
