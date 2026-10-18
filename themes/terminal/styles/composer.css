@@ -7,7 +7,7 @@
   box-shadow: none;
   backdrop-filter: none;
 }
-:theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-shell:focus-within {
+:theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-shell:has(:focus-visible, input:focus, textarea:focus, select:focus, [contenteditable="true"]:focus) {
   border-color: var(--theme-accent-solid);
   box-shadow: 0 0 0 1px var(--theme-accent-solid);
 }

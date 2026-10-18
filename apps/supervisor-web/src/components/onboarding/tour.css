@@ -30,7 +30,7 @@
   line-height: 1.55;
   transition: top 160ms ease, left 160ms ease;
 }
-.pm-tour-card:focus-within {
+.pm-tour-card:focus-visible {
   outline: none;
 }
 .pm-tour-card-header {

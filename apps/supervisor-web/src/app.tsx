@@ -524,7 +524,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
             {state.error}
           </p>
           <button
-            className="mt-5 h-11 rounded-lg bg-[var(--theme-accent-solid)] px-4 text-sm font-semibold text-[var(--theme-accent-solid-fg)] transition hover:bg-[var(--theme-accent-solid-hover)] focus:outline-none focus:ring-2 focus:ring-[var(--theme-accent-border)]"
+            className="mt-5 h-11 rounded-lg bg-[var(--theme-accent-solid)] px-4 text-sm font-semibold text-[var(--theme-accent-solid-fg)] transition hover:bg-[var(--theme-accent-solid-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-accent-border)]"
             onClick={handleRetry}
             type="button"
           >

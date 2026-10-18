@@ -191,7 +191,7 @@
   border-radius: 8px;
   color: var(--theme-fg-soft);
 }
-:theme .thread-ui-shell .thread-graph-tree-row:is(:hover, :focus-within) {
+:theme .thread-ui-shell .thread-graph-tree-row:is(:hover, :focus-visible, :has(:focus-visible)) {
   --thread-graph-tree-row-background: var(--tx-row-hover);
   background: var(--tx-row-hover);
   color: var(--theme-fg);

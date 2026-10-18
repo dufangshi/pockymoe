@@ -241,7 +241,7 @@ export function WorkspacesPage() {
       </>} />
 
       <details className="group border-y border-[var(--theme-border)]">
-        <summary className="flex min-h-11 cursor-pointer list-none items-center gap-3 py-2.5 text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--theme-accent-ring)] [&::-webkit-details-marker]:hidden">
+        <summary className="flex min-h-11 cursor-pointer list-none items-center gap-3 py-2.5 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--theme-accent-ring)] [&::-webkit-details-marker]:hidden">
           <span
             aria-hidden="true"
             className={`h-2 w-2 shrink-0 rounded-full ${
@@ -345,7 +345,7 @@ export function WorkspacesPage() {
                 >
                   <Link
                     to={latestThreads[workspace.id] ? currentThreadHref(latestThreads[workspace.id]!) : currentThreadsHref(workspace.id)}
-                    className="group min-w-0 px-4 py-3.5 focus:outline-none focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--theme-accent-ring)] sm:px-5"
+                    className="group min-w-0 px-4 py-3.5 focus-visible:outline-none focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--theme-accent-ring)] sm:px-5"
                   >
                     <span className="flex min-w-0 items-center gap-2">
                       <span className="truncate text-sm font-semibold text-[var(--theme-fg)] sm:text-base">
@@ -572,7 +572,7 @@ function WorkspaceActionsMenu({
             type="button"
             role="menuitem"
             onClick={() => runAction(onViewPath)}
-            className="flex min-h-11 w-full items-center gap-3 rounded-md px-3 text-left text-sm text-[var(--theme-fg)] transition hover:bg-[var(--theme-hover)] focus:outline-none focus-visible:bg-[var(--theme-hover)]"
+            className="flex min-h-11 w-full items-center gap-3 rounded-md px-3 text-left text-sm text-[var(--theme-fg)] transition hover:bg-[var(--theme-hover)] focus-visible:outline-none focus-visible:bg-[var(--theme-hover)]"
           >
             <Eye data-icon="view-path" aria-hidden="true" className="h-4 w-4 text-[var(--theme-fg-muted)]" />
             {translate("files.viewFullPath")}</button>
@@ -580,7 +580,7 @@ function WorkspaceActionsMenu({
             type="button"
             role="menuitem"
             onClick={() => runAction(onRename)}
-            className="flex min-h-11 w-full items-center gap-3 rounded-md px-3 text-left text-sm text-[var(--theme-fg)] transition hover:bg-[var(--theme-hover)] focus:outline-none focus-visible:bg-[var(--theme-hover)]"
+            className="flex min-h-11 w-full items-center gap-3 rounded-md px-3 text-left text-sm text-[var(--theme-fg)] transition hover:bg-[var(--theme-hover)] focus-visible:outline-none focus-visible:bg-[var(--theme-hover)]"
           >
             <Pencil data-icon="rename" aria-hidden="true" className="h-4 w-4 text-[var(--theme-fg-muted)]" />
             {translate("files.rename_d3f4cb")}</button>
@@ -590,7 +590,7 @@ function WorkspaceActionsMenu({
               role="menuitem"
               onClick={() => runAction(onToggleIsolation)}
               title={translate('files.workspaceIsolatedHint')}
-              className="flex min-h-11 w-full items-center gap-3 rounded-md px-3 text-left text-sm text-[var(--theme-fg)] transition hover:bg-[var(--theme-hover)] focus:outline-none focus-visible:bg-[var(--theme-hover)]"
+              className="flex min-h-11 w-full items-center gap-3 rounded-md px-3 text-left text-sm text-[var(--theme-fg)] transition hover:bg-[var(--theme-hover)] focus-visible:outline-none focus-visible:bg-[var(--theme-hover)]"
             >
               {workspace.agentIsolated ? (
                 <LockOpen data-icon="unisolate" aria-hidden="true" className="h-4 w-4 text-[var(--theme-fg-muted)]" />
@@ -605,7 +605,7 @@ function WorkspaceActionsMenu({
             type="button"
             role="menuitem"
             onClick={() => runAction(onDelete)}
-            className="flex min-h-11 w-full items-center gap-3 rounded-md px-3 text-left text-sm text-[var(--status-danger-fg)] transition hover:bg-[var(--status-danger-bg)] focus:outline-none focus-visible:bg-[var(--status-danger-bg)]"
+            className="flex min-h-11 w-full items-center gap-3 rounded-md px-3 text-left text-sm text-[var(--status-danger-fg)] transition hover:bg-[var(--status-danger-bg)] focus-visible:outline-none focus-visible:bg-[var(--status-danger-bg)]"
           >
             <Trash2 data-icon="delete" aria-hidden="true" className="h-4 w-4" />
             {translate("files.deleteWorkspace_bc2cf9")}</button>

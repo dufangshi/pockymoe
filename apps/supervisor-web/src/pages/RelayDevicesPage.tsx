@@ -906,7 +906,7 @@ export function RelayDevicesPage() {
                 <button
                   aria-controls={`shared-panel-${tab.id}`}
                   aria-selected={selected}
-                  className="product-segment inline-flex min-h-11 shrink-0 items-center gap-2 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--theme-accent-ring)]"
+                  className="product-segment inline-flex min-h-11 shrink-0 items-center gap-2 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--theme-accent-ring)]"
                   id={`shared-tab-${tab.id}`}
                   key={tab.id}
                   onClick={() => setActiveSharedView(tab.id)}
@@ -2262,7 +2262,7 @@ function DeviceRow({
               role="menu"
             >
               <button
-                className="flex min-h-11 w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm text-[var(--theme-fg)] transition hover:bg-[var(--theme-hover)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-accent-ring)] disabled:cursor-not-allowed disabled:opacity-50"
+                className="flex min-h-11 w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm text-[var(--theme-fg)] transition hover:bg-[var(--theme-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-accent-ring)] disabled:cursor-not-allowed disabled:opacity-50"
                 onClick={() => copySetup('unix')}
                 role="menuitem"
                 type="button"
@@ -2270,7 +2270,7 @@ function DeviceRow({
                 <Copy className="h-4 w-4" />
                 {translate("devices.copySetupForMacOSLinux")}</button>
               <button
-                className="flex min-h-11 w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm text-[var(--theme-fg)] transition hover:bg-[var(--theme-hover)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-accent-ring)] disabled:cursor-not-allowed disabled:opacity-50"
+                className="flex min-h-11 w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm text-[var(--theme-fg)] transition hover:bg-[var(--theme-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-accent-ring)] disabled:cursor-not-allowed disabled:opacity-50"
                 onClick={() => copySetup('windows')}
                 role="menuitem"
                 type="button"
@@ -2278,7 +2278,7 @@ function DeviceRow({
                 <Copy className="h-4 w-4" />
                 {translate("devices.copySetupForWindows")}</button>
               <button
-                className="flex min-h-11 w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm text-[var(--theme-fg)] transition hover:bg-[var(--theme-hover)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-accent-ring)]"
+                className="flex min-h-11 w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm text-[var(--theme-fg)] transition hover:bg-[var(--theme-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-accent-ring)]"
                 onClick={() => {
                   actionsTriggerRef.current?.focus();
                   setActionsMenuOpen(false);
@@ -2290,7 +2290,7 @@ function DeviceRow({
                 <Share2 className="h-4 w-4" />
                 {translate("devices.shareDevice")}</button>
               <button
-                className="flex min-h-11 w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm text-[var(--theme-fg)] transition hover:bg-[var(--theme-hover)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-accent-ring)]"
+                className="flex min-h-11 w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm text-[var(--theme-fg)] transition hover:bg-[var(--theme-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-accent-ring)]"
                 onClick={() => {
                   actionsTriggerRef.current?.focus();
                   setActionsMenuOpen(false);
@@ -2304,7 +2304,7 @@ function DeviceRow({
               <button className="flex min-h-11 w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm hover:bg-[var(--theme-hover)]" role="menuitem" onClick={()=>{setActionsMenuOpen(false);onRotate();}}>{translate("devices.replaceDeviceToken_268410")}</button>
               <div className="mt-1 border-t border-[var(--theme-border)] pt-1">
                 <button
-                  className="flex min-h-11 w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm text-[var(--status-danger-fg)] transition hover:bg-[var(--status-danger-bg)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-accent-ring)] disabled:cursor-not-allowed disabled:opacity-50"
+                  className="flex min-h-11 w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm text-[var(--status-danger-fg)] transition hover:bg-[var(--status-danger-bg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-accent-ring)] disabled:cursor-not-allowed disabled:opacity-50"
                   disabled={busy}
                   onClick={() => {
                     actionsTriggerRef.current?.focus();
@@ -2518,7 +2518,7 @@ function PlatformButton({
   return (
     <button
       aria-pressed={active}
-      className={`min-h-11 rounded-md px-2.5 text-xs font-medium transition focus:outline-none focus:ring-2 focus:ring-[var(--theme-accent-ring)] sm:min-h-9 ${
+      className={`min-h-11 rounded-md px-2.5 text-xs font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-accent-ring)] sm:min-h-9 ${
         active
           ? 'bg-[var(--theme-surface-strong)] text-[var(--theme-fg)] shadow-sm'
           : 'text-[var(--theme-fg-muted)] hover:bg-[var(--theme-hover)] hover:text-[var(--theme-fg)]'

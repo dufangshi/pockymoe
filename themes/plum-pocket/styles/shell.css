@@ -233,9 +233,9 @@
 :theme .matter-thread-entry > .recent-thread-actions:is(:hover, [aria-expanded='true']) { background: var(--plum-chrome-active); color: var(--plum-chrome-fg); }
 @media (hover: hover) {
   :theme .thread-ui-shell .matter-workbench .matter-thread-entry > .matter-thread-row { padding-right: 10px; }
-  :theme .thread-ui-shell .matter-workbench .matter-thread-entry:is(:hover, :focus-within, :has(> [aria-expanded='true'])) > .matter-thread-row { padding-right: 38px; }
+  :theme .thread-ui-shell .matter-workbench .matter-thread-entry:is(:hover, :focus-visible, :has(:focus-visible), :has(> [aria-expanded='true'])) > .matter-thread-row { padding-right: 38px; }
   :theme .matter-thread-entry > .recent-thread-actions { opacity: 0; transition: opacity 120ms; }
-  :theme .matter-thread-entry:is(:hover, :focus-within) > .recent-thread-actions,
+  :theme .matter-thread-entry:is(:hover, :focus-visible, :has(:focus-visible)) > .recent-thread-actions,
   :theme .matter-thread-entry > .recent-thread-actions[aria-expanded='true'] { opacity: 1; }
 }
 

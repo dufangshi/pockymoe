@@ -186,7 +186,7 @@ export function RelayUserMenu({
         aria-expanded={open}
         aria-haspopup="menu"
         aria-label={translate("auth.relayAccountMenuFor", { value1: user.username })}
-        className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-[var(--theme-border)] bg-[var(--theme-surface-strong)] text-sm font-semibold text-[var(--theme-fg)] transition hover:bg-[var(--theme-hover)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-accent-ring)]"
+        className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-[var(--theme-border)] bg-[var(--theme-surface-strong)] text-sm font-semibold text-[var(--theme-fg)] transition hover:bg-[var(--theme-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-accent-ring)]"
         onClick={() => {
           initialFocusRef.current = 'first';
           setLogoutError(null);
@@ -222,7 +222,7 @@ export function RelayUserMenu({
             <p className="truncate text-xs text-[var(--theme-fg-muted)]">{user.email}</p>
           </div>
           <Link
-            className="flex h-11 items-center gap-2 rounded-md px-3 text-sm text-[var(--theme-fg)] transition hover:bg-[var(--theme-hover)] focus:outline-none focus-visible:bg-[var(--theme-hover)] focus-visible:ring-2 focus-visible:ring-[var(--theme-accent-ring)]"
+            className="flex h-11 items-center gap-2 rounded-md px-3 text-sm text-[var(--theme-fg)] transition hover:bg-[var(--theme-hover)] focus-visible:outline-none focus-visible:bg-[var(--theme-hover)] focus-visible:ring-2 focus-visible:ring-[var(--theme-accent-ring)]"
             onClick={() => setOpen(false)}
             role="menuitem"
             to="/relay-account"
@@ -248,7 +248,7 @@ export function RelayUserMenu({
           <button
             aria-busy={loggingOut}
             aria-disabled={loggingOut}
-            className="flex h-11 w-full items-center gap-2 rounded-md px-3 text-left text-sm text-[var(--status-danger-fg)] transition hover:bg-[var(--status-danger-bg)] focus:outline-none focus-visible:bg-[var(--status-danger-bg)] focus-visible:ring-2 focus-visible:ring-[var(--theme-accent-ring)] aria-disabled:cursor-wait aria-disabled:opacity-60"
+            className="flex h-11 w-full items-center gap-2 rounded-md px-3 text-left text-sm text-[var(--status-danger-fg)] transition hover:bg-[var(--status-danger-bg)] focus-visible:outline-none focus-visible:bg-[var(--status-danger-bg)] focus-visible:ring-2 focus-visible:ring-[var(--theme-accent-ring)] aria-disabled:cursor-wait aria-disabled:opacity-60"
             onClick={() => void logout()}
             role="menuitem"
             type="button"

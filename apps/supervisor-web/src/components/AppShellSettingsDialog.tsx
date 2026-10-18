@@ -1139,7 +1139,7 @@ export function AppShellSettingsDialog({
                         key={file.name}
                         type="button"
                         onClick={() => setSelectedFileName(file.name)}
-                        className="block min-h-11 w-full px-2 py-3 text-left transition hover:bg-[var(--theme-hover)] focus:outline-none focus-visible:bg-[var(--theme-hover)] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--theme-accent-ring)]"
+                        className="block min-h-11 w-full px-2 py-3 text-left transition hover:bg-[var(--theme-hover)] focus-visible:outline-none focus-visible:bg-[var(--theme-hover)] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--theme-accent-ring)]"
                       >
                         <div className="flex items-start justify-between gap-3">
                           <div className="min-w-0">

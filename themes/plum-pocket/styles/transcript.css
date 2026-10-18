@@ -195,7 +195,7 @@
   color: var(--theme-fg-muted);
 }
 :theme .thread-ui-shell .thread-graph-worked-summary > button,
-:theme .thread-ui-shell .thread-graph-worked-summary > button:is(:hover, :active, :focus, [aria-expanded='true']) {
+:theme .thread-ui-shell .thread-graph-worked-summary > button:is(:hover, :active, :focus-visible, [aria-expanded='true']) {
   border: 0;
   background: none;
   box-shadow: none;

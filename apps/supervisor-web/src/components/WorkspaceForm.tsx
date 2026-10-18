@@ -211,7 +211,7 @@ export function WorkspaceForm({
               type="button"
               aria-pressed={mode === value}
               onClick={() => changeMode(value)}
-              className="product-segment flex !min-h-14 min-w-0 items-center justify-center gap-1.5 !whitespace-normal px-1.5 text-center leading-4 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-accent-ring)] sm:!min-h-11 sm:px-3"
+              className="product-segment flex !min-h-14 min-w-0 items-center justify-center gap-1.5 !whitespace-normal px-1.5 text-center leading-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-accent-ring)] sm:!min-h-11 sm:px-3"
             >
               <Icon aria-hidden="true" className="hidden h-4 w-4 shrink-0 sm:block" />
               <span>{optionLabel}</span>

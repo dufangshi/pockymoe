@@ -26,7 +26,7 @@
 .matter-topbar.is-search-open .matter-topbar-search { flex: 1; max-width: 520px; margin: 0 8px; }
 .workbench-search { position: relative; min-width: 0; width: 100%; }
 .workbench-search-field { display: flex; align-items: center; gap: 8px; padding-left: 10px; height: 34px; border: 1px solid var(--theme-border-strong); border-radius: 8px; background: var(--theme-surface); color: var(--theme-fg-muted); }
-.workbench-search-field:focus-within { border-color: var(--theme-accent-solid); }
+.workbench-search-field:has(:focus-visible, input:focus, textarea:focus, select:focus, [contenteditable="true"]:focus) { border-color: var(--theme-accent-solid); }
 .workbench-search-field input { flex: 1; min-width: 0; width: 100%; outline: none; border: 0; background: transparent; color: var(--theme-fg); font-size: 14px; }
 .thread-ui-shell .matter-workbench .workbench-search-field button { width: 30px; height: 30px; flex-shrink: 0; }
 .workbench-search-scope { flex-shrink: 0; max-width: 38%; min-width: 0; height: 28px; border: 0; border-right: 1px solid var(--theme-border); background: var(--theme-surface); color: var(--theme-fg); font-size: 12px; padding-right: 6px; }
@@ -2652,7 +2652,7 @@ main:has(.product-navigation) { padding-top: 0 !important; }
   box-shadow: inset 0 1px 0 var(--matter-glass-highlight, transparent), var(--matter-composer-shadow, 0 6px 22px rgb(18 32 25 / 14%));
   transition: border-color 150ms ease;
 }
-.file-ask-bar-shell:focus-within { border-color: var(--theme-accent-solid); }
+.file-ask-bar-shell:has(:focus-visible, input:focus, textarea:focus, select:focus, [contenteditable="true"]:focus) { border-color: var(--theme-accent-solid); }
 /* Files attached in the composer go with the text sent from here. */
 .file-ask-bar-attachments {
   display: inline-flex;

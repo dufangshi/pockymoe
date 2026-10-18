@@ -450,7 +450,7 @@ export function RelayAdminPage() {
           >
             <span>{error}</span>
             <button
-              className="shrink-0 rounded-md px-2 py-1 font-medium hover:bg-[var(--theme-hover)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-accent-ring)]"
+              className="shrink-0 rounded-md px-2 py-1 font-medium hover:bg-[var(--theme-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-accent-ring)]"
               onClick={() => setError(null)}
               type="button"
             >
@@ -529,7 +529,7 @@ export function RelayAdminPage() {
                 <button
                   aria-controls={`relay-admin-panel-${item}`}
                   aria-selected={tab === item}
-                  className="product-segment min-h-11 shrink-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-accent-ring)]"
+                  className="product-segment min-h-11 shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-accent-ring)]"
                   id={`relay-admin-tab-${item}`}
                   key={item}
                   onClick={() => selectTab(item)}
@@ -545,7 +545,7 @@ export function RelayAdminPage() {
 
             <div
               aria-labelledby={`relay-admin-tab-${tab}`}
-              className="min-w-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-accent-ring)]"
+              className="min-w-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-accent-ring)]"
               id={`relay-admin-panel-${tab}`}
               role="tabpanel"
               tabIndex={0}
@@ -727,7 +727,7 @@ function RelayAdminUserMenu({
         aria-expanded={open}
         aria-haspopup="menu"
         aria-label={translate("devices.relayAdminMenuFor", { value1: user.username })}
-        className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-[var(--theme-border)] bg-[var(--theme-panel)] text-sm font-semibold text-[var(--theme-fg)] transition hover:bg-[var(--theme-hover)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-accent-ring)]"
+        className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-[var(--theme-border)] bg-[var(--theme-panel)] text-sm font-semibold text-[var(--theme-fg)] transition hover:bg-[var(--theme-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-accent-ring)]"
         onClick={() => setOpen((current) => !current)}
         onKeyDown={(event) => {
           if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {

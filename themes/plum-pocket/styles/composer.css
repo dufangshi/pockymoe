@@ -78,14 +78,14 @@
   pointer-events: none;
   transition: border-color 160ms ease;
 }
-:theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-shell:focus-within {
+:theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-shell:has(:focus-visible, input:focus, textarea:focus, select:focus, [contenteditable="true"]:focus) {
   border-color: var(--pc-edge-focus);
   box-shadow:
     inset 0 1px 0 var(--matter-glass-highlight),
     0 0 0 3px color-mix(in srgb, var(--theme-accent-solid) 18%, transparent),
     var(--pc-shadow);
 }
-:theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-shell:focus-within::before {
+:theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-shell:has(:focus-visible, input:focus, textarea:focus, select:focus, [contenteditable="true"]:focus)::before {
   border-color: color-mix(in srgb, var(--theme-accent-solid) 85%, transparent);
 }
 /* A running turn: the seam turns lavender. */
@@ -133,7 +133,7 @@
 :theme .thread-ui-shell form[data-agent='cursor'] { --pc-peek-ratio: 160 / 149; --pc-peek-w: 50px; }
 :theme .thread-ui-shell form[data-agent='copilot'] { --pc-peek-ratio: 160 / 146; --pc-peek-w: 50px; }
 :theme .thread-ui-shell form[data-agent='opencode'] { --pc-peek-ratio: 160 / 155; --pc-peek-w: 50px; }
-:theme .thread-ui-shell form[data-composer-layout][data-agent]:focus-within::before { transform: translateY(-3px); }
+:theme .thread-ui-shell form[data-composer-layout][data-agent]:has(:focus-visible, input:focus, textarea:focus, select:focus, [contenteditable="true"]:focus)::before { transform: translateY(-3px); }
 :theme .thread-ui-shell form[data-composer-layout][data-agent][data-composer-busy]::before { transform: translateY(58%); }
 /* Queued slips and the phone pane switch take the space above the pocket. */
 :theme .thread-ui-shell .thread-graph-composer-layer:is(:has(> .thread-composer-pending-queue), :has(.thread-pane-switch)) form[data-agent]::before { display: none; }
