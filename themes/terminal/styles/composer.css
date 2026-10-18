@@ -20,7 +20,8 @@
   content: '❯';
   position: absolute;
   left: 2px;
-  top: 50%;
+  /* On the first line, however many lines the prompt has. */
+  top: 12px;
   translate: 0 -50%;
   color: var(--theme-accent-solid);
   font-weight: 700;
@@ -42,3 +43,7 @@
 :theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-stop-button:hover { border-color: var(--tlog-failed); color: var(--tlog-failed); }
 :theme .thread-ui-shell [data-composer-layout] .composer-model-label { border: 1px solid var(--term-line); font-size: 12px; }
 :theme .thread-ui-shell :is(.thread-jump-nav, .thread-jump-nav > button) { border-radius: 0; box-shadow: none; }
+/* Square on phones too: the phone panel's rounded frame is not this theme's. */
+@media (max-width: 639px) {
+  :theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-shell { border-radius: 0 !important; }
+}
