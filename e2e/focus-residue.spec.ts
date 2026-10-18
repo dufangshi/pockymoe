@@ -97,12 +97,27 @@ for (const preset of ['classic', 'plum-pocket', 'terminal']) {
         await expect(codeCopy).toHaveCSS('opacity', '0');
 
         const composer = page.getByTestId('chat-composer');
-        const button = composer.locator('.thread-graph-composer-icon-button').first();
+        // The folded composer shows Send once there is a draft. Pressing it and
+        // releasing elsewhere sends nothing (no click), but leaves it focused.
+        const prompt = composer.getByRole('textbox', { name: 'Prompt' });
+        await prompt.fill('press check');
+        await prompt.evaluate(element => (element as HTMLElement).blur());
+        const button = composer.getByRole('button', { name: 'Send Prompt' });
+        await expect(button).toBeEnabled();
         const shell = composer.locator('.thread-graph-composer-shell');
-        const shellResting = await appearance(shell);
-        const buttonResting = await appearance(button);
+        // Read the resting look once blur transitions have finished.
+        const settled = async (target: typeof shell) => {
+          let previous = JSON.stringify(await appearance(target));
+          for (;;) {
+            await page.waitForTimeout(150);
+            const next = JSON.stringify(await appearance(target));
+            if (next === previous) return JSON.parse(next);
+            previous = next;
+          }
+        };
+        const shellResting = await settled(shell);
+        const buttonResting = await settled(button);
         await button.hover();
-        await expect.poll(() => appearance(button)).not.toEqual(buttonResting);
         await page.mouse.down();
         expect(await button.evaluate(element => element.matches(':active'))).toBe(true);
         await away();
@@ -110,6 +125,7 @@ for (const preset of ['classic', 'plum-pocket', 'terminal']) {
         await expect(button).toBeFocused();
         await expect.poll(() => appearance(button)).toEqual(buttonResting);
         await expect.poll(() => appearance(shell)).toEqual(shellResting);
+        await prompt.fill('');
 
         // A touch tap reveals and a second tap dismisses. Dispatch only the
         // pointer event here; desktop-chromium remains the one browser project.
