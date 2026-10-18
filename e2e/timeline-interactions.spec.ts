@@ -93,11 +93,11 @@ test('turn navigation changes direction reliably and tool details load only on c
   page.on('request', request => { if (request.url().includes(`/api/threads/${id}/items/`)) detailRequests.push(request.url()); });
   await page.goto(`/threads/${id}`);
   await expect(page.getByRole('textbox', { name: 'Prompt' })).toBeVisible();
-  await expect(page.locator('.matter-breadcrumb')).toHaveCount(0);
+  await expect(page.locator('#matter-thread-tools')).toHaveCount(0);
   await page.getByRole('button', { name: 'Thread tools', exact: true }).click();
-  await expect(page.locator('.matter-breadcrumb')).toBeVisible();
+  await expect(page.locator('#matter-thread-tools')).toBeVisible();
   await page.getByRole('button', { name: 'Thread tools', exact: true }).click();
-  await expect(page.locator('.matter-breadcrumb')).toHaveCount(0);
+  await expect(page.locator('#matter-thread-tools')).toHaveCount(0);
   if (testInfo.project.name === 'mobile-chromium') {
     await expect(page.locator('.matter-rail')).toHaveCount(0);
     await expect(page.locator('.matter-topbar').getByRole('button', { name: 'Chat', exact: true })).toBeVisible();

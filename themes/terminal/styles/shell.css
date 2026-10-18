@@ -102,3 +102,12 @@
 
 /* Settings → Resources: square cards and bars like the rest of the pack. */
 :theme :is(.pm-res-card, .pm-res-input, .pm-res-button, .pm-res-primary, .pm-res-bar, .pm-res-bar > span) { border-radius: 0; }
+
+/* Thread tools dropdown: square, mono, the hovered row inverse like a selected line. */
+:theme .thread-ui-shell .matter-thread-tools-menu { border-radius: 0; box-shadow: 4px 4px 0 rgb(0 0 0 / 35%); font-family: var(--term-font); font-size: 12.5px; }
+:theme .thread-ui-shell :is(.matter-thread-tools-items :is(button, a), .matter-thread-tools-star, .matter-thread-tools-copy) { border-radius: 0; }
+:theme .thread-ui-shell .matter-thread-tools-items :is(button, a)[aria-label]:is(:hover, :focus-visible):not(:disabled) { background: var(--theme-accent-solid); color: var(--theme-accent-solid-fg); }
+:theme .thread-ui-shell .matter-thread-tools-items :is(button, a)[aria-label]:is(:hover, :focus-visible):not(:disabled) > svg { color: inherit; }
+:theme .thread-ui-shell .matter-thread-tools-path::before { content: '$'; margin-right: 7px; color: var(--theme-accent-solid); }
+:theme .thread-ui-shell .matter-thread-tools-path > svg { display: none; }
+:theme .thread-ui-shell .matter-thread-tools-title { padding-left: 15px; font-family: var(--term-font); }

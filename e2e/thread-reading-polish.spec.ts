@@ -496,7 +496,7 @@ test('reading layout stays still with bounded images, visible effort and ten rec
   await expect.poll(() => scroll.evaluate(e => e.scrollTop)).toBe(350);
   const before = await position();
   await page.getByRole('button', { name: 'Thread tools', exact: true }).click();
-  await expect(page.locator('.matter-breadcrumb')).toBeVisible();
+  await expect(page.locator('#matter-thread-tools')).toBeVisible();
   expect.soft(await position()).toEqual(before);
   await page.getByRole('button', { name: 'Thread tools', exact: true }).click();
   expect.soft(await position()).toEqual(before);

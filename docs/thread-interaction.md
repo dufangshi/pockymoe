@@ -417,8 +417,12 @@ tokens below the reasoning controls. Missing readings show a dash.
 Thread loading uses a quiet spinner and placeholder lines until the initial
 conversation is ready, including the secondary split pane. Expanding deferred
 execution history shows an inline spinner until that request settles. Reduced
-motion disables these animations. The thread tools bar keeps its direct actions
-without a duplicate overflow menu.
+motion disables these animations. The thread tools toggle opens a dropdown
+under it instead of a second row: its head is the workspace path (shortened in the
+middle, with copy) and the thread's name beside its shortcut star; below are the
+thread actions (share as link, sharing permissions, download transcript, and port
+mappings on remote devices), each an icon with its name. Arrow keys move through it,
+Esc or a press outside closes it, and an action closes it before opening its window.
 
 ## Thread map
 

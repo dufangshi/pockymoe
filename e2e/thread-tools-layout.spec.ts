@@ -20,7 +20,7 @@ async function expectUncovered(control: Locator) {
   })).toBe(true);
 }
 
-for (const preset of ['classic', 'plum-pocket'] as const) test(`thread tools open as a row and leave the file panel controls reachable (${preset})`, async ({ page, request }, testInfo) => {
+for (const preset of ['classic', 'plum-pocket'] as const) test(`thread tools open as a dropdown and leave the file panel controls reachable (${preset})`, async ({ page, request }, testInfo) => {
   await page.addInitScript(value => localStorage.setItem('pockymoe-theme-preset', value), preset);
   const mobile = testInfo.project.name === 'mobile-chromium';
   const base = `http://127.0.0.1:${process.env.E2E_API_PORT ?? 8787}`;
@@ -38,11 +38,19 @@ for (const preset of ['classic', 'plum-pocket'] as const) test(`thread tools ope
   const tools = page.locator('#matter-thread-tools');
   await expect(tools).toBeVisible();
   const tabs = await page.locator('.matter-thread-tabs').boundingBox();
-  const bar = (await tools.boundingBox())!;
-  expect(bar.y).toBeGreaterThanOrEqual(tabs!.y + tabs!.height - 1);
-  expect(bar.x + bar.width).toBeLessThanOrEqual(page.viewportSize()!.width + 1);
-  // The row pushes the conversation down rather than opening under it.
-  await expectUncovered(tools.getByRole('button').first());
+  const menu = (await tools.boundingBox())!;
+  expect(menu.y).toBeGreaterThanOrEqual(tabs!.y + tabs!.height - 1);
+  expect(menu.x + menu.width).toBeLessThanOrEqual(page.viewportSize()!.width + 1);
+  // A dropdown over the page: the workspace path heads it, every action is named.
+  await expect(tools.locator('.matter-thread-tools-path')).toContainText('/');
+  await expect(tools.getByRole('button', { name: 'Download transcript', exact: true })).toBeVisible();
+  await expectUncovered(tools.getByRole('button', { name: 'Download transcript', exact: true }));
+  // Esc closes it and returns to its toggle.
+  await page.keyboard.press('Escape');
+  await expect(tools).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Thread tools', exact: true })).toBeFocused();
+  await page.getByRole('button', { name: 'Thread tools', exact: true }).click();
+  await expect(tools).toBeVisible();
 
   if (mobile && preset === 'plum-pocket') {
     await page.locator('header.matter-topbar').getByRole('button', { name: 'Toggle Explorer', exact: true }).click();
@@ -55,5 +63,6 @@ for (const preset of ['classic', 'plum-pocket'] as const) test(`thread tools ope
   await page.getByRole('treeitem', { name: 'notes.txt', exact: true }).click();
   await expectUncovered(page.getByRole('button', { name: 'File actions' }).first());
   await page.screenshot({ path: testInfo.outputPath(`tools-and-file-${preset}.png`) });
-  await expectUncovered(tools.getByRole('button').first());
+  // Pressing outside closed the dropdown.
+  await expect(tools).toHaveCount(0);
 });

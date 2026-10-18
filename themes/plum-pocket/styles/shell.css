@@ -567,30 +567,6 @@
 }
 :theme .matter-tabs-row .matter-watches-toggle .native-agents-running-count > svg { display: none; }
 
-/* Thread tools: a cream shelf under the tabs with the path on a small tag. */
-:theme .thread-ui-shell .matter-workbench .matter-breadcrumb {
-  min-width: 0;
-  overflow: hidden;
-  height: 44px;
-  padding: 0 10px 0 14px;
-  border-bottom: 1.5px dashed var(--theme-border-strong);
-  background: var(--theme-panel);
-  box-shadow: 0 8px 18px rgb(47 26 59 / 12%);
-  color: var(--theme-fg-soft);
-  font-size: 12px;
-}
-:theme .thread-ui-shell .matter-workbench .matter-breadcrumb :where(button, a) { border-radius: 10px; }
-:theme .thread-ui-shell .matter-workbench .matter-breadcrumb .matter-workspace-path {
-  flex: 0 1 auto;
-  max-width: 45%;
-  padding: 3px 9px;
-  border-radius: 8px;
-  background: var(--theme-muted);
-  color: var(--theme-fg-soft);
-  font-size: 11px;
-}
-:theme .thread-ui-shell .matter-workbench .matter-breadcrumb .matter-current-title { color: var(--theme-fg); font-weight: 700; }
-:theme .thread-ui-shell .matter-workbench .matter-breadcrumb button[aria-pressed='true'] { color: var(--theme-accent-strong); }
 :theme .thread-ui-shell .matter-workbench .matter-thread-menu > div { border-radius: 16px; border-color: var(--theme-border); }
 :theme .thread-ui-shell .matter-workbench .matter-thread-menu > div > button { border-radius: 10px; }
 
@@ -904,9 +880,6 @@
   :theme .thread-ui-shell .matter-workbench .matter-tabs-row > :last-child:is(button, .workbench-thread-picker-actions) { margin-right: 4px; }
   :theme .matter-tabs-row :is(.matter-toolbar-toggle, .matter-watches-toggle, .workbench-thread-picker-trigger)::before { width: 20px; height: 20px; }
   :theme .matter-tabs-row .matter-watches-toggle .native-agents-running-count { top: 1px; right: 3px; min-width: 15px; height: 15px; }
-  :theme .thread-ui-shell .matter-workbench .matter-breadcrumb { right: 0; height: 48px; padding: 0 4px 0 8px; }
-  :theme .thread-ui-shell .matter-workbench .matter-breadcrumb button { width: 40px; height: 44px; }
-  :theme .thread-ui-shell .matter-workbench .matter-breadcrumb .matter-workspace-path { max-width: none; font-size: 10.5px; }
   :theme .thread-ui-shell .matter-workbench .matter-notifications { top: calc(48px + env(safe-area-inset-top)); right: 8px; width: calc(100vw - 16px); }
   :theme .thread-ui-shell .matter-workbench .matter-notifications > a { min-height: 56px; }
   :theme .thread-ui-shell .matter-workbench .matter-notifications-heading :where(button) { width: 44px; height: 44px; }
@@ -942,3 +915,10 @@
 @media (max-width: 639px) and (hover: hover) {
   :theme .thread-ui-shell .matter-workbench .matter-phone-sheet .matter-thread-row:not([aria-current='page']):hover { --plum-badge-ring: var(--theme-accent-soft); background: var(--theme-accent-soft); color: var(--theme-fg); }
 }
+
+/* Thread tools dropdown: a rounder card, the pack's dashed seam, accent icons. */
+:theme .thread-ui-shell .matter-thread-tools-menu { border-radius: 18px; padding: 8px; border-color: color-mix(in srgb, var(--theme-accent-solid) 30%, var(--theme-border)); }
+:theme .thread-ui-shell .matter-thread-tools-head { border-bottom: 1px dashed color-mix(in srgb, var(--theme-accent-solid) 35%, var(--theme-border)); }
+:theme .thread-ui-shell .matter-thread-tools-items :is(button, a)[aria-label] { border-radius: 12px; }
+:theme .thread-ui-shell .matter-thread-tools-items :is(button, a)[aria-label] > svg { color: var(--theme-accent-solid); }
+:theme .thread-ui-shell .matter-thread-tools-star { border-radius: 10px; }

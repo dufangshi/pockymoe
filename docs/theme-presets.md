@@ -54,8 +54,9 @@ every [capability flag](theme-packs.md#capability-flags).
   appears (below 400px the meter shows only percentages), while the sidebar,
   settings and notifications buttons keep their size; an empty healthy
   connection slot takes no room.
-- The thread tools open as a second line of the tab row (`.matter-breadcrumb`), so
-  the theme lets `.matter-tabs-row` grow and fixes the height of the tab strip.
+- The thread tools open as a dropdown under their toggle (`.matter-thread-tools-menu`):
+  a rounder card with the pack's dashed seam and accent icons (Terminal: square,
+  monospace, the hovered row inverse).
   The tab bar's tools (thread tools, subagents, automations, split) are redrawn as
   CSS masks over the existing buttons; labels, titles and badges stay.
 - Outer pages (`data-page`) hide help paragraphs and eyebrows, turn boxed lists
