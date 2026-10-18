@@ -52,6 +52,7 @@ import {
   truncateAutoThreadTitle,
 } from '../../../../packages/shared/src/index';
 import { appSettingsSections } from '../components/AppShellSettingsDialog';
+import { OpenFullPageButton } from '../components/OpenFullPageButton';
 import { useAppShellNav } from '../components/AppShellNavContext';
 import {
   ConfirmDialog,
@@ -4127,7 +4128,7 @@ export function ThreadDetailPage() {
     <ThreadDetailSurface
       restrictedNavigation={Boolean(hostScope)}
       scopedSettings={Boolean(hostScope)}
-      deviceMonitor={hostScope ? null : <><DeviceMonitor key={relayRouteDeviceId ?? 'local'} /><TourLauncherButton /></>}
+      deviceMonitor={hostScope ? <OpenFullPageButton /> : <><DeviceMonitor key={relayRouteDeviceId ?? 'local'} /><TourLauncherButton /></>}
       workbench={workbenchUrls({ ...workbenchNavigation, panels: {
         deviceLabel: presentationDeviceName ?? (relayRouteDeviceId ? relayRouteDeviceId.slice(0, 8) : translate('workbench.localDeviceName')),
         workspaceLabel: detail?.workspace.label ?? workbenchNavigation.workspacePath,

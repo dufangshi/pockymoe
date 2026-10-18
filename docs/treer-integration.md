@@ -480,6 +480,12 @@ pricing, the message-shortcut setting (saved to a relay account) and the tour.
 The other tabs administer the whole device and are not offered. The tunnel
 serves the built-in theme packs under `/themes/` read-only.
 
+Inside a Treer frame the workbench rail (or the phone top bar) has **Open in a new
+browser tab**, which opens the same page full size. It needs a Treer whose
+frame sandbox allows popups (`allow-popups allow-popups-to-escape-sandbox`); in
+an older frame the button explains Treer's own tab menu entry instead. A
+top-level page shows no button.
+
 Scoped runtime config responses include camelCase `hostScope` with kind
 `treerAgent`, `boundThreadId`, stable non-secret `hubId` and allowed operations;
 ordinary requests omit it. Browser navigation, favorites, presentation and seen

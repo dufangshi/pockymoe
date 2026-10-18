@@ -94,7 +94,31 @@ test('Treer UI prefix opens only the bound thread and accepts a prompt', async (
     await expect(page.locator('html')).toHaveAttribute('data-theme-preset', 'plum-pocket');
     expect(requests.filter(r => r.path.startsWith('/themes/') && r.status !== 200)).toEqual([]);
     expect(requests.some(r => r.path.startsWith('/themes/plum-pocket.css'))).toBe(true);
+    await settings.locator('label[data-preset="classic"]').click();
+    await expect(page.locator('html')).toHaveAttribute('data-theme-preset', 'classic');
+    await page.keyboard.press('Escape');
     // Keep the observed page dependencies visible in the test evidence.
+    // Top-level pages need no "open in a new tab" button.
+    await expect(page.getByRole('button', { name: 'Open in a new browser tab' })).toHaveCount(0);
+    // Inside a Treer frame that allows popups the button opens this page as a full tab;
+    // in an older frame without them it explains Treer's own menu entry instead.
+    const sandbox = 'allow-scripts allow-forms allow-same-origin allow-modals allow-downloads';
+    for (const extra of [' allow-popups allow-popups-to-escape-sandbox', '']) {
+      await page.setContent(`<iframe style="width:1200px;height:680px" sandbox="${sandbox}${extra}" src="${proxyBase}threads/${bound.threadId}"></iframe>`);
+      const frame = page.frameLocator('iframe');
+      const open = frame.getByRole('button', { name: 'Open in a new browser tab' });
+      await expect(open).toBeVisible();
+      if (extra) {
+        const [tab] = await Promise.all([page.context().waitForEvent('page'), open.click()]);
+        await expect(tab).toHaveURL(proxyBase + 'threads/' + bound.threadId);
+        await expect(tab.getByRole('textbox', { name: 'Prompt' })).toBeVisible();
+        await expect(tab.getByRole('button', { name: 'Open in a new browser tab' })).toHaveCount(0);
+        await tab.close();
+      } else {
+        await open.click();
+        await expect(frame.getByRole('status').filter({ hasText: 'Open in new browser tab' })).toBeVisible();
+      }
+    }
     console.log('Treer UI request audit:', JSON.stringify(requests.filter(r => r.path.startsWith('/api/') || r.status >= 400)));
   } finally {
     await page.close(); attach?.terminate();

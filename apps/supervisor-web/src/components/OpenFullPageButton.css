@@ -1,0 +1,43 @@
+.pm-open-full-page {
+  position: relative;
+  display: inline-flex;
+}
+.pm-open-full-page > button {
+  display: inline-flex;
+  width: 35px;
+  height: 35px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  color: var(--theme-fg-muted);
+}
+.pm-open-full-page > button:hover {
+  background: var(--theme-hover);
+  color: var(--theme-fg);
+}
+.pm-open-full-page > button svg {
+  width: 16px;
+  height: 16px;
+}
+/* Beside the rail button on wide screens, below it in a top bar. */
+.pm-open-full-page-hint {
+  position: absolute;
+  z-index: 60;
+  bottom: 0;
+  left: calc(100% + 8px);
+  width: 240px;
+  padding: 8px 10px;
+  border: 1px solid var(--theme-border);
+  border-radius: 8px;
+  background: var(--theme-panel);
+  box-shadow: var(--theme-shadow);
+  color: var(--theme-fg);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.matter-topbar .pm-open-full-page-hint {
+  top: calc(100% + 6px);
+  right: 0;
+  bottom: auto;
+  left: auto;
+}
