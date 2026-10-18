@@ -1,24 +1,19 @@
-Pockymoe inside Treer gets its Settings back and can open itself full page.
+Pockymoe inside Treer can now update itself from Settings, and switching
+threads no longer empties the tab strip.
 
-- **Settings in Treer**: the gear returns in a Treer Agent tab with two tabs,
-  Session (this thread's own model and harness settings) and Preferences
-  (language, theme and theme packs, color mode, text size, phone dock, folding,
-  status summaries). Built-in theme packs now load through the Treer tunnel
-  instead of falling back to Classic. Tabs that administer the whole device stay
-  hidden, and standalone Settings are unchanged.
-- **Open in a new browser tab**: inside a Treer frame the workbench rail (phone:
-  top bar) has a button that opens the same page full size. It needs a Treer
-  whose frame allows popups (EvoEvolver/treer#17); in an older Treer the button
-  explains Treer's own tab menu entry instead.
-- **Consistent interface**: one copy button, path chip, status mark and
-  confirmation dialog everywhere; menus work with arrow keys and long press;
-  send intents, empty-send and queued-prompt editing behave alike in every
-  theme; tool failures say so with Retry; New thread stays pinned in the tab
-  strip and search marks what it found; phone hit areas are at least 40 px; the
-  wording uses one name per concept.
+- **Update the hub from Settings in Treer**: Settings in a Treer Agent tab gain
+  a Device tab with the hub's running and latest version, Check updates, Update
+  and Restart Supervisor. It uses the same management API as Treer setup; the
+  hub exits and Treer relaunches it, and the page waits for it to return. After
+  this release, updating no longer needs a Treer Agent running setup. Harnesses,
+  device templates and the local passcode stay out of it.
+- **Steady tab strip**: switching to another thread keeps every tab in the top
+  strip and only moves the highlight. Before, the strip showed just the target
+  thread for up to a second while the page reloaded the thread list.
 
-Validated with the Treer crate and focused Web/shared UI tests, and a browser
-check of the Treer tunnel: scoped Settings, a theme pack through the tunnel, and
-the new-tab button in framed pages with and without popups. Windows Device
-Manager is unchanged. Installing this release is a separate device update;
-publication does not restart an existing Supervisor.
+Validated with the Treer crate and Supervisor Treer tests, Web tests including
+a new thread-switch regression, and a browser check of the Treer tunnel: the
+Device tab loads only the Supervisor status. The tab strip was traced on a
+snapshot of a real database. Windows Device Manager is unchanged. Installing this
+release is a separate device update; publication does not restart an existing
+Supervisor.
