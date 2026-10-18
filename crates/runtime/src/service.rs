@@ -9,6 +9,7 @@ mod inbox_reminder;
 pub(crate) mod peer_work;
 mod reliability;
 mod search;
+mod storage;
 mod thread_summary;
 mod update;
 mod watches;
@@ -46,6 +47,7 @@ use crate::import_id::{
 use crate::local_sessions::{find_local_session, list_local_sessions, LocalSessionHomes};
 pub use harness_release::{DisplayChange, HarnessViewer, InvalidSettings, MAX_VIEWED_THREADS};
 use pockymoe_protocol::HarnessLoadReason;
+pub use storage::STORAGE_PAGE_LIMIT;
 
 fn thread_session_settings(thread: &ThreadDto) -> SessionSettings {
     SessionSettings {
@@ -322,6 +324,7 @@ pub struct Supervisor {
     update_recovering: std::sync::Mutex<HashSet<String>>,
     pub maintenance_gate: Arc<tokio::sync::RwLock<()>>,
     pub management_jobs: std::sync::Mutex<HashMap<String, Value>>,
+    pub(crate) storage: storage::StorageState,
     steer_locks: Mutex<HashMap<String, std::sync::Weak<Mutex<()>>>>,
     pub(crate) local_session_homes: LocalSessionHomes,
     usage_history: crate::usage_history::UsageHistoryCache,
@@ -436,6 +439,7 @@ impl Supervisor {
             live: Mutex::new(HashMap::new()),
             harness_gates: Default::default(),
             management_jobs: Default::default(),
+            storage: Default::default(),
             maintenance_gate: Default::default(),
             update_lock: Default::default(),
             supervisor_update_status: Default::default(),

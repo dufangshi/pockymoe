@@ -7,6 +7,8 @@ mod automation;
 pub use automation::*;
 mod harness_resources;
 pub use harness_resources::*;
+mod storage;
+pub use storage::*;
 mod interaction;
 mod metrics;
 pub use interaction::{

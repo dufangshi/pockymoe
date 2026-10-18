@@ -16,6 +16,11 @@ import type {
   AgentCapabilitySnapshotDto,
   HarnessProcessesDto,
   HarnessResourceSettingsDto,
+  StorageCompactResultDto,
+  StorageOverviewDto,
+  StoragePruneResultDto,
+  StorageScanDto,
+  StorageSettingsDto,
   ReleaseThreadInput,
   ReleaseThreadResultDto,
   AgentSubscriptionUsageDto,
@@ -967,6 +972,31 @@ export function fetchHarnessProcesses(signal?: AbortSignal) {
 
 export function fetchHarnessResourceSettings(deviceId?: string | null) {
   return deviceRequest<HarnessResourceSettingsDto>(deviceId, 'api/harness-resources/settings', { cache: 'no-store' });
+}
+
+/** The device name and the last scan's page (null before the first scan). */
+export function fetchStorageOverview(offset = 0, deviceId?: string | null) {
+  return deviceRequest<StorageOverviewDto>(deviceId, `api/storage?offset=${offset}`, { cache: 'no-store' });
+}
+
+export function scanStorage(deviceId?: string | null) {
+  return deviceRequest<StorageScanDto>(deviceId, 'api/storage/scan', { method: 'POST', body: '{}' });
+}
+
+export function fetchStorageSettings(deviceId?: string | null) {
+  return deviceRequest<StorageSettingsDto>(deviceId, 'api/storage/settings', { cache: 'no-store' });
+}
+
+export function updateStorageSettings(input: StorageSettingsDto, deviceId?: string | null) {
+  return deviceRequest<StorageSettingsDto>(deviceId, 'api/storage/settings', { method: 'PUT', body: JSON.stringify(input) });
+}
+
+export function pruneStorage(deviceId?: string | null) {
+  return deviceRequest<StoragePruneResultDto>(deviceId, 'api/storage/prune', { method: 'POST', body: '{}' });
+}
+
+export function compactStorage(deviceId?: string | null) {
+  return deviceRequest<StorageCompactResultDto>(deviceId, 'api/storage/compact', { method: 'POST', body: '{}' });
 }
 
 export function updateHarnessResourceSettings(input: HarnessResourceSettingsDto,

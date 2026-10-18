@@ -137,6 +137,8 @@ slower, with fresh MCP servers.
 
 ## Settings
 
+Settings → Resources shows these under **Memory**; its **Disk** part is described in [storage](storage.md).
+
 `HarnessResourceSettingsDto`, stored in the Supervisor database
 (`harness_resource_settings`, migration 17). `null` disables a rule.
 

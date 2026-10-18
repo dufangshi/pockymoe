@@ -682,6 +682,11 @@ async fn harness_processes_settings_and_thread_view_follow_grant_scope() {
         ("GET", "/api/device/processes"),
         ("GET", settings),
         ("PUT", settings),
+        ("GET", "/api/storage"),
+        ("POST", "/api/storage/scan"),
+        ("PUT", "/api/storage/settings"),
+        ("POST", "/api/storage/prune"),
+        ("POST", "/api/storage/compact"),
     ] {
         let (status, body) = request(&state, Some(&p), &key, method, path, json!({})).await;
         assert_eq!(

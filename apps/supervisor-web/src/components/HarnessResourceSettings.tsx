@@ -10,6 +10,8 @@ import {
 } from '../lib/api';
 import { relayDeviceIdFromPath } from '../lib/relayRoutes';
 import { gibText, parseResourceField, RESOURCE_LIMITS, type ResourceField as Field } from './harnessResourceModel';
+import { StorageSettings } from './StorageSettings';
+import './ResourceSettings.css';
 
 type Draft = Record<Field, { on: boolean; text: string }>;
 
@@ -44,7 +46,18 @@ export function HarnessResourceSettings() {
   if (relayModeActive() && !deviceId) {
     return <p className="py-5 text-sm text-[var(--theme-fg-muted)]">{translate('settings.resourcesChooseDevice')}</p>;
   }
-  return <DeviceResourceSettings key={deviceId ?? 'local'} deviceId={deviceId} />;
+  return (
+    <div className="pm-resources">
+      <section className="pm-res-section" aria-labelledby="pm-res-memory">
+        <h3 id="pm-res-memory" className="pm-res-heading">{translate('settings.resourcesMemory')}</h3>
+        <DeviceResourceSettings key={deviceId ?? 'local'} deviceId={deviceId} />
+      </section>
+      <section className="pm-res-section" aria-labelledby="pm-res-disk">
+        <h3 id="pm-res-disk" className="pm-res-heading">{translate('settings.resourcesDisk')}</h3>
+        <StorageSettings key={deviceId ?? 'local'} deviceId={deviceId} />
+      </section>
+    </div>
+  );
 }
 
 function DeviceResourceSettings({ deviceId }: { deviceId: string | null }) {
@@ -110,41 +123,37 @@ function DeviceResourceSettings({ deviceId }: { deviceId: string | null }) {
   };
 
   return (
-    <section className="grid gap-4 py-4">
+    <div className="pm-res-card">
       {FIELDS.map(({ field, label, hint, range, unit, fallback, step }) => {
         const entry = draft[field];
         const bad = values[field] === undefined;
         const id = `${scope}-${field}`;
         return (
-          <div key={field}>
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-              <label className="flex min-w-0 flex-1 items-center gap-2 text-sm font-medium text-[var(--theme-fg)]">
-                <input type="checkbox" checked={entry.on} disabled={busy}
-                  onChange={event => change(field, { on: event.target.checked, ...(entry.text ? {} : { text: fallback }) })} />
-                {translate(label)}
-              </label>
-              <span className="flex items-center gap-1.5 text-xs text-[var(--theme-fg-muted)]">
-                <input id={id} type="number" inputMode="decimal" step={step} min={field === 'maxHarnessMemoryBytes' ? 0.25 : RESOURCE_LIMITS[field].min}
-                  aria-label={translate(label)} aria-invalid={bad || undefined} aria-describedby={`${id}-hint`}
-                  disabled={!entry.on || busy} value={entry.text}
-                  onChange={event => change(field, { text: event.target.value })}
-                  className="relay-input min-h-9 w-24 rounded-md text-right disabled:opacity-50" />
-                {unit()}
-              </span>
-            </div>
-            <p id={`${id}-hint`} className={`settings-hint mt-1 text-xs leading-5 ${bad ? 'text-[var(--status-danger-fg)]' : 'text-[var(--theme-fg-muted)]'}`}>
-              {translate(bad ? range : hint)}
-            </p>
+          <div key={field} className="pm-res-row" data-off={!entry.on || undefined}>
+            <label className="pm-res-label">
+              <input type="checkbox" checked={entry.on} disabled={busy}
+                onChange={event => change(field, { on: event.target.checked, ...(entry.text ? {} : { text: fallback }) })} />
+              <span>{translate(label)}</span>
+            </label>
+            <span className="pm-res-value">
+              <input id={id} type="number" inputMode="decimal" step={step} min={field === 'maxHarnessMemoryBytes' ? 0.25 : RESOURCE_LIMITS[field].min}
+                aria-label={translate(label)} aria-invalid={bad || undefined} aria-describedby={`${id}-hint`}
+                disabled={!entry.on || busy} value={entry.text}
+                onChange={event => change(field, { text: event.target.value })}
+                className="relay-input pm-res-input" />
+              <span className="pm-res-unit">{unit()}</span>
+            </span>
+            <p id={`${id}-hint`} className={`pm-res-hint${bad ? ' is-error' : ''}`}>{translate(bad ? range : hint)}</p>
           </div>
         );
       })}
-      <div className="flex items-center gap-3">
-        <button type="button" className="relay-button-primary min-h-10 rounded-md px-4" disabled={invalid || busy} onClick={() => void save()}>
+      <div className="pm-res-footer">
+        {message && <span role="status" className="pm-res-saved">{message}</span>}
+        {error && <p className="host-error pm-res-error" role="alert">{error}</p>}
+        <button type="button" className="relay-button-primary pm-res-primary" disabled={invalid || busy} onClick={() => void save()}>
           {busy ? translate('settings.saving') : translate('files.save')}
         </button>
-        {message && <span role="status" className="text-xs text-[var(--status-success-fg)]">{message}</span>}
       </div>
-      {error && <p className="host-error rounded-md border px-3 py-2 text-xs" role="alert">{error}</p>}
-    </section>
+    </div>
   );
 }

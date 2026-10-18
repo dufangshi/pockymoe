@@ -99,3 +99,6 @@
   box-shadow: none;
 }
 :theme [role='menu'] { border: 1px solid var(--theme-fg); }
+
+/* Settings → Resources: square cards and bars like the rest of the pack. */
+:theme :is(.pm-res-card, .pm-res-input, .pm-res-button, .pm-res-primary, .pm-res-bar, .pm-res-bar > span) { border-radius: 0; }

@@ -206,6 +206,20 @@ const RUNTIME_MIGRATIONS: &[Migration] = &[
             Ok(())
         },
     },
+    Migration {
+        version: 18,
+        name: "storage_settings",
+        apply: |conn| {
+            // One row; absent or NULL keeps command output forever.
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS storage_settings (
+                   id INTEGER PRIMARY KEY CHECK (id = 1),
+                   command_output_retention_days INTEGER,
+                   updated_at TEXT NOT NULL);",
+            )?;
+            Ok(())
+        },
+    },
 ];
 
 /// The Node Supervisor's migrations, in the order its migrator applied them

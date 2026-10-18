@@ -977,6 +977,9 @@ export interface MessageSenderDto {
 }
 
 export interface ThreadHistoryItemDto {
+  /** Set when storage cleanup removed this command's output (its command and input stay). */
+  outputPrunedAt?: string | null;
+  outputPrunedBytes?: number | null;
   polishedReply?: PolishedReplyDto | null;
   peerWork?: ThreadPeerWorkDto | null;
   /** Set on prompts that someone other than the device owner sent. */
@@ -2004,5 +2007,14 @@ export type {
   ReleaseThreadResultDto,
   ThreadViewMessage,
 } from './harnessResources';
+
+export type {
+  StorageCompactResultDto,
+  StorageOverviewDto,
+  StoragePruneResultDto,
+  StorageScanDto,
+  StorageSettingsDto,
+  StorageThreadDto,
+} from './storage';
 
 export type { AutomationTrigger, AutomationCondition, AutomationCommandSpec, AutomationAction, AutomationDefinition, AutomationDto, AutomationRunDto } from "./automation";

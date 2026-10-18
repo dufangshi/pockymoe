@@ -151,6 +151,14 @@ pub(crate) fn router_with_treer(state: AppState, hub: Option<Arc<crate::treer::H
             "/api/harness-resources/settings",
             get(harness_resource_settings).put(put_harness_resource_settings),
         )
+        .route("/api/storage", get(storage_overview))
+        .route("/api/storage/scan", post(storage_scan))
+        .route(
+            "/api/storage/settings",
+            get(storage_settings).put(put_storage_settings),
+        )
+        .route("/api/storage/prune", post(storage_prune))
+        .route("/api/storage/compact", post(storage_compact))
         .route(
             "/api/port-mappings",
             get(crate::ports::list).post(crate::ports::create),
@@ -830,6 +838,113 @@ async fn harness_resource_settings(
             .harness_resource_settings()
             .map_err(settings_storage_error)?,
     ))
+}
+
+#[derive(Deserialize)]
+struct StoragePageQuery {
+    offset: Option<u64>,
+    limit: Option<u64>,
+}
+
+/// The device name and the last scan's page (scans run only on request).
+async fn storage_overview(
+    State(state): State<AppState>,
+    Query(query): Query<StoragePageQuery>,
+) -> Result<Json<pockymoe_protocol::StorageOverviewDto>, ApiErr> {
+    state
+        .storage_overview(
+            query.offset.unwrap_or(0),
+            query
+                .limit
+                .unwrap_or(pockymoe_runtime::service::STORAGE_PAGE_LIMIT),
+        )
+        .map(Json)
+        .map_err(settings_storage_error)
+}
+
+async fn storage_scan(
+    State(state): State<AppState>,
+) -> Result<Json<pockymoe_protocol::StorageScanDto>, ApiErr> {
+    state.storage_scan().await.map(Json).map_err(|e| {
+        err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "storage_scan_failed",
+            e.to_string(),
+        )
+    })
+}
+
+async fn storage_settings(
+    State(state): State<AppState>,
+) -> Result<Json<pockymoe_protocol::StorageSettingsDto>, ApiErr> {
+    Ok(Json(
+        state.storage_settings().map_err(settings_storage_error)?,
+    ))
+}
+
+/// The body replaces the policy; `commandOutputRetentionDays` must be present.
+async fn put_storage_settings(
+    State(state): State<AppState>,
+    body: Bytes,
+) -> Result<Json<pockymoe_protocol::StorageSettingsDto>, ApiErr> {
+    let invalid = |message: String| err(StatusCode::BAD_REQUEST, "invalid_settings", message);
+    let value: Value = serde_json::from_slice(&body).map_err(|e| invalid(e.to_string()))?;
+    if value.get("commandOutputRetentionDays").is_none() {
+        return Err(invalid(
+            "commandOutputRetentionDays is required (null keeps output)".to_owned(),
+        ));
+    }
+    let settings = serde_json::from_value(value).map_err(|e| invalid(e.to_string()))?;
+    state
+        .update_storage_settings(settings)
+        .map(Json)
+        .map_err(|e| {
+            if e.is::<pockymoe_runtime::service::InvalidSettings>() {
+                invalid(e.to_string())
+            } else {
+                settings_storage_error(e)
+            }
+        })
+}
+
+/// Apply the saved retention now (409 when none is set).
+async fn storage_prune(
+    State(state): State<AppState>,
+) -> Result<Json<pockymoe_protocol::StoragePruneResultDto>, ApiErr> {
+    let days = state
+        .storage_settings()
+        .map_err(settings_storage_error)?
+        .command_output_retention_days
+        .ok_or_else(|| {
+            err(
+                StatusCode::CONFLICT,
+                "retention_off",
+                "Set a retention period first",
+            )
+        })?;
+    state
+        .prune_command_outputs(days)
+        .await
+        .map(Json)
+        .map_err(|e| {
+            err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "storage_prune_failed",
+                e.to_string(),
+            )
+        })
+}
+
+async fn storage_compact(
+    State(state): State<AppState>,
+) -> Result<Json<pockymoe_protocol::StorageCompactResultDto>, ApiErr> {
+    state.storage_compact().await.map(Json).map_err(|e| {
+        err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "storage_compact_failed",
+            e.to_string(),
+        )
+    })
 }
 
 /// The body replaces the policy, so every key must be present: a missing

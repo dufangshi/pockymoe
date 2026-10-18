@@ -55,6 +55,7 @@ Maintained documentation for Pockymoe. For the product overview, start with the
 **Harnesses**
 
 - [Harness lifecycle](harness-lifecycle.md): when harness processes load and are released, limits, memory
+- [Storage](storage.md): disk use of the Supervisor database, command-output retention and reclaiming space
 - [Managed ACP adapters](managed-acp-adapters.md)
 - [DeepSeek Harness bridge](dsh-adapter.md)
 - Claude: [background waits and wakes](claude-background-wake.md), [scheduled-turn history](claude-scheduled-history.md)
