@@ -470,6 +470,9 @@ function writeTerminalOpen(routeKey: string, open: boolean) {
   } catch { /* Optional preference. */ }
 }
 
+/** The last thread list per device, kept across thread switches (page remounts). */
+const lastThreadLists = new Map<string, ThreadDto[]>();
+
 export function ThreadDetailPage() {
   const hostScope = useHostScope();
   const { locale: i18nLocale } = useI18n();
@@ -538,7 +541,11 @@ export function ThreadDetailPage() {
   const pendingThreadSettingsRef = useRef<PendingThreadSettings | null>(null);
   const resolvedRequestIdsRef = useRef<Set<string>>(new Set());
   const [detail, setDetail] = useScopedState<ThreadDetailDto | null>(routeKey, null);
-  const [threads, setThreads] = useScopedState<ThreadDto[]>(relayRouteDeviceId ?? 'local', []);
+  const threadListScope = relayRouteDeviceId ?? 'local';
+  // A thread switch remounts this page; the tab strip keeps the device's last
+  // list until the fresh read answers, so only the highlight moves.
+  const [threads, setThreads] = useScopedState<ThreadDto[]>(threadListScope, lastThreadLists.get(threadListScope) ?? []);
+  useEffect(() => { lastThreadLists.set(threadListScope, threads); }, [threadListScope, threads]);
   // The first read of the thread list on this device has answered (or failed).
   const [threadListSettled, setThreadListSettled] = useScopedState(relayRouteDeviceId ?? 'local', false);
   detailRef.current = detail;

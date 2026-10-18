@@ -64,6 +64,9 @@ function loadLocal(storageKey: string): NavigationSnapshot {
   }
 }
 
+/** Navigation state per browser scope, kept across thread switches (page remounts). */
+const lastNavigation = new Map<string, { snapshot: NavigationSnapshot; statuses: Record<string, ThreadActivity>; families: Record<string, ThreadDto[]> }>();
+
 /** Relay navigation re-reads other devices this often while visible. */
 export const RELAY_NAVIGATION_REFRESH_MS = 30_000;
 
@@ -87,12 +90,17 @@ export function useWorkbenchNavigation(
   threadsRef.current = threads;
   useI18n();
   const relay = !hostScope && relayModeActive();
-  const [snapshot, setSnapshot] = useState<NavigationSnapshot>({
+  // Thread switches remount the page: start from the last navigation state seen
+  // in this browser scope (favorites, read marks, statuses) until it refreshes.
+  const cacheKey = `${relay ? 'relay' : 'local'}:${storageKey}`;
+  const cached = lastNavigation.get(cacheKey);
+  const [snapshot, setSnapshot] = useState<NavigationSnapshot>(() => cached?.snapshot ?? {
     threads: [],
     notifications: [],
   });
-  const [statuses, setStatuses] = useState<Record<string, ThreadActivity>>({});
-  const [families, setFamilies] = useState<Record<string, ThreadDto[]>>({});
+  const [statuses, setStatuses] = useState<Record<string, ThreadActivity>>(() => cached?.statuses ?? {});
+  const [families, setFamilies] = useState<Record<string, ThreadDto[]>>(() => cached?.families ?? {});
+  useEffect(() => { lastNavigation.set(cacheKey, { snapshot, statuses, families }); }, [cacheKey, snapshot, statuses, families]);
   // Every thread listed by the devices navigation read, for the running sheet:
   // running threads count wherever they are, opened before or not.
   const [deviceLists, setDeviceLists] = useState<Record<string, ThreadDto[]>>({});
@@ -469,8 +477,10 @@ export function useWorkbenchNavigation(
   // with all its agent threads wherever they work. An agent thread belongs to its
   // conversation's workspace: one working here for a conversation elsewhere is
   // listed there, unless it is open, when it shows inside its conversation.
-  const workspaceId = tabContext.detail?.thread.workspaceId;
-  const open = tabContext.detail?.thread;
+  // While a switched-to thread loads, its entry in the device list places the tabs.
+  const open = tabContext.detail?.thread
+    ?? (routeThreadId ? threads.find(thread => thread.id === routeThreadId) : undefined);
+  const workspaceId = open?.workspaceId;
   const tabDevice = tabContext.deviceId ?? 'local';
   // Each listed thread says where it works: a label from the visits saved on this
   // device, then from the device itself, then the open thread's own.

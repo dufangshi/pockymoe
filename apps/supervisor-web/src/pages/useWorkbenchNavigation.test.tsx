@@ -512,3 +512,19 @@ it('isolates navigation by hub and mount without importing legacy shortcuts', ()
   expect(key('hub-a','/agent-a/')).not.toBe('remote-codex.local-workbench.v1');
   expect(browserStateKey('test',null)).toBe('test');
 });
+
+describe('thread switch', () => {
+  it('keeps the workspace tabs while the switched-to thread is still loading', async () => {
+    vi.mocked(request).mockImplementation(async url => {
+      if (url === 'relay/account/workbench') return { threads: [], notifications: [] };
+      return { thread: { id: String(url).split('/threads/')[1]?.split('?')[0], status: 'idle' } };
+    });
+    const thread = (id: string, createdAt: string) => ({ id, workspaceId: 'research', title: id, status: 'idle', createdAt }) as ThreadDto;
+    const list = [thread('a', '2026-10-01'), thread('b', '2026-10-02'), thread('c', '2026-10-03')];
+    // The page remounts on a switch: no detail yet, only the route and the device's list.
+    const { result, unmount } = renderHook(() => useWorkbenchNavigation(null, list, 'wsl', 'b'));
+    expect(result.current.workspaceThreads.map(tab => tab.key)).toEqual(['wsl:a', 'wsl:b', 'wsl:c']);
+    expect(result.current.currentKey).toBe('wsl:b');
+    unmount();
+  });
+});
