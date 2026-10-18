@@ -472,6 +472,14 @@ read-only. Fork/import, sharing, terminal, device/global settings and harness
 administration controls are hidden. Denied requests with
 `thread_scope_forbidden` have a clear fallback message.
 
+Settings stay available with two tabs. **Session** holds the current thread's
+own settings, the same ones its composer opens. **Preferences** keeps what is
+stored in this browser: language, theme and theme packs, color mode, text size,
+phone dock and hand, timeline folding and status summaries. It omits model
+pricing, the message-shortcut setting (saved to a relay account) and the tour.
+The other tabs administer the whole device and are not offered. The tunnel
+serves the built-in theme packs under `/themes/` read-only.
+
 Scoped runtime config responses include camelCase `hostScope` with kind
 `treerAgent`, `boundThreadId`, stable non-secret `hubId` and allowed operations;
 ordinary requests omit it. Browser navigation, favorites, presentation and seen

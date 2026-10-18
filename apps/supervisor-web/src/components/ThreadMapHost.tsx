@@ -33,8 +33,10 @@ const LOCAL = 'local';
 
 /**
  * One device on the map: its workspaces and their root threads, each with its
- * agent threads folded in. Without activity (an older Supervisor) turns, run
- * time and the latest prompt are unknown rather than zero.
+ * agent threads folded in. An agent thread working in another workspace than its
+ * conversation has a tile of its own there, with the agent threads it started in
+ * that workspace. Without activity (an older Supervisor) turns, run time and the
+ * latest prompt are unknown rather than zero.
  */
 export function mapDevice(
   deviceId: string | null,
@@ -45,16 +47,27 @@ export function mapDevice(
 ): ThreadMapDevice {
   const key = deviceId ?? LOCAL;
   const stats = new Map(activity?.threads.map(entry => [entry.threadId, entry]));
-  const listed = new Set(threads.map(thread => thread.id));
-  // An agent thread belongs to its root; one whose root is not listed stands alone.
-  const rootOf = (thread: ThreadDto) => {
-    const root = thread.rootThreadId || thread.parentThreadId;
-    return root && root !== thread.id && listed.has(root) ? root : null;
-  };
+  const byId = new Map(threads.map(thread => [thread.id, thread]));
+  // A thread's tile is its topmost listed ancestor in the same workspace: the root
+  // for agent threads working where their conversation started. An agent thread
+  // with no such ancestor (its conversation is elsewhere or gone) leads its own.
+  const tileOf = new Map<string, ThreadDto>();
+  for (const thread of threads) {
+    let owner = thread;
+    let parent = thread.parentThreadId ? byId.get(thread.parentThreadId) : undefined;
+    // Lineages are a few levels deep; the bound only guards bad data.
+    for (let depth = 0; parent && depth < 16; depth++) {
+      if (parent.workspaceId === thread.workspaceId) owner = parent;
+      parent = parent.parentThreadId ? byId.get(parent.parentThreadId) : undefined;
+    }
+    const root = thread.rootThreadId ? byId.get(thread.rootThreadId) : undefined;
+    if (root && root.id !== thread.id && root.workspaceId === thread.workspaceId) owner = root;
+    tileOf.set(thread.id, owner);
+  }
   const family = new Map<string, ThreadDto[]>();
   for (const thread of threads) {
-    const root = rootOf(thread);
-    if (root) family.set(root, [...(family.get(root) ?? []), thread]);
+    const owner = tileOf.get(thread.id)!;
+    if (owner !== thread) family.set(owner.id, [...(family.get(owner.id) ?? []), thread]);
   }
   const TOKENS = ['totalTokens', 'inputTokens', 'cachedInputTokens', 'cacheWriteInputTokens', 'outputTokens', 'reasoningOutputTokens'] as const;
   const USD = ['totalUsd', 'inputUsd', 'cachedInputUsd', 'cacheWriteInputUsd', 'outputUsd'] as const;
@@ -94,11 +107,14 @@ export function mapDevice(
   };
   const byWorkspace = new Map<string, ThreadMapThread[]>();
   for (const thread of threads) {
-    if (rootOf(thread)) continue;
+    if (tileOf.get(thread.id) !== thread) continue;
     const children = family.get(thread.id) ?? [];
     const tile = entry(thread, [thread, ...children]);
     // Each agent thread on its own, for opening the root's tile up into them.
     if (children.length) tile.children = children.map(child => entry(child, [child]));
+    // An agent thread on a tile of its own says which thread started it.
+    const starter = byId.get(thread.parentThreadId ?? '') ?? byId.get(thread.rootThreadId ?? '');
+    if (starter && starter !== thread) tile.from = starter.title.trim() || translate('workbench.splitUntitled');
     byWorkspace.set(thread.workspaceId, [...(byWorkspace.get(thread.workspaceId) ?? []), tile]);
   }
   const labels = new Map(workspaces.map(workspace => [workspace.id, workspace]));

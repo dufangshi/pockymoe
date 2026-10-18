@@ -695,7 +695,13 @@ fn effective_bindings(dir: &Path, s: &Connections) -> Result<BTreeMap<String, Bi
 pub fn apply(dir: &Path, c: &Connection, harness: &str, model: &str) -> Result<Value> {
     apply_at(dir, c, harness, model, &home(harness))
 }
-fn apply_at(dir: &Path, c: &Connection, harness: &str, model: &str, root: &Path) -> Result<Value> {
+pub fn apply_at(
+    dir: &Path,
+    c: &Connection,
+    harness: &str,
+    model: &str,
+    root: &Path,
+) -> Result<Value> {
     c.validate_application(harness)?;
     let original = load(dir)?;
     let connections_before = read(dir)?;
@@ -757,6 +763,14 @@ fn apply_at(dir: &Path, c: &Connection, harness: &str, model: &str, root: &Path)
         return Err(e);
     }
     Ok(json!({"ok":true,"profileId":id,"backupId":backup}))
+}
+
+// Serialized alongside native configuration and profile state by one rollback-
+// protected write plan. Historical applied rows remain available for reuse.
+pub(super) fn without_binding(dir: &Path, harness: &str) -> Result<String> {
+    let mut s = read(dir)?;
+    s.bindings.remove(harness);
+    Ok(serde_json::to_string_pretty(&s)?)
 }
 
 #[cfg(test)]

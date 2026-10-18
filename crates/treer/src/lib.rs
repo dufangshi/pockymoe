@@ -227,6 +227,8 @@ pub fn gate(method: &str, path: &str, allowed_thread: impl Fn(&str) -> bool) -> 
             | "/threads"
     ) || path.starts_with("/assets/")
         || path.starts_with("/fonts/")
+        // Built-in theme packs: static CSS, fonts and previews for Preferences.
+        || path.starts_with("/themes/")
         || path == "/favicon.ico"
         || path
             .strip_prefix("/threads/")
@@ -517,6 +519,9 @@ mod tests {
             ("POST", "/api/agent-runtimes/codex/install", false),
             ("POST", "/api/threads/root/prompt", true),
             ("GET", "/ws", true),
+            ("GET", "/themes/sakura/theme.css", true),
+            ("HEAD", "/themes/sakura/preview.webp", true),
+            ("POST", "/themes/sakura/theme.css", false),
             ("POST", "/api/cli", false),
         ] {
             assert_eq!(

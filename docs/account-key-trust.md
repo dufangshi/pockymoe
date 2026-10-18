@@ -771,6 +771,12 @@ Creating or editing shared access for a protected device:
 
 If any step after the first fails, the relay change is rolled back.
 
+Files a conversation links to outside its workspace open as read-only previews
+through `/api/threads/{id}/linked-files/{stat|preview|raw}`. Besides the owner,
+only a whole-device grant with workspace write access reaches them
+(`access::linked_files_allowed`, enforced by the relay and by a bound device);
+narrower grants see those paths as plain text.
+
 Validation: a recipient key must hash to its ID and must not be the device's own
 key (`grantee_is_owner`); one recipient key maps to one user and public key across
 grants; device-scope grants need `workspaceScope: "all"`; shares are thread-scoped;
@@ -968,7 +974,13 @@ checks out `dufangshi/pockymoe-thread-ui-rust` at exactly that commit and refuse
 one that is not on that repository's `main`, builds with
 `VITE_POCKYMOE_RELAY_ORIGIN` from the repository variable `POCKYMOE_RELAY_ORIGIN`
 and `POCKYMOE_WEB_DOMAIN=app.lnz-study.com`, runs the check script and deploys
-with `actions/deploy-pages`. Whoever can push to `main`, change that variable or
+with `actions/deploy-pages`. Before deploying, `scripts/carry-web-assets.mjs` copies the
+hashed assets the live site serves (and those it carried itself) into the new build
+for 72 hours after they stopped being current, up to 300 MB, and records them in
+`asset-history.json`. A page opened before a deployment then still loads its lazy
+chunks (Files, the editor) instead of reloading; past that window it reloads once
+(`installStaleBuildReload`). The carried assets come only from this site's own
+earlier deployments. Whoever can push to `main`, change that variable or
 publish to the shared UI's `main` decides the code that receives users' passwords.
 
 The relay at `https://remote.lnz-study.com` runs API-only: its environment file

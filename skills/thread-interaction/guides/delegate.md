@@ -83,8 +83,11 @@ Reuse a peer when its workspace, model, and earlier work fit. Read status and on
 A thread you create records you as its parent and inherits your lineage root — the
 thread a person actually started. `thread list` shows only those roots by default,
 each with the number of agent threads beneath it, so a fan-out does not bury the
-person's own conversations. Pass `--all` to see every thread flat, or
-`--group THREAD_ID` to list one root's descendants.
+person's own conversations. With `--workspace`, it also lists the agent threads
+working in that workspace for a conversation started in another one: there they
+are top-level (an agent thread they started in the same workspace stays folded
+under them). Pass `--all` to see every thread flat, or `--group THREAD_ID` to list
+one root's descendants.
 
 Two bounds apply, and both are refusals rather than queues:
 

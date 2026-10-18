@@ -22,6 +22,7 @@ import { DEEPSEEK_HARNESS_PANEL_KIND } from '@pockymoe/thread-ui/builtin-plugins
 import { ConversationSearch } from '../components/ConversationSearch';
 import { useSearchMessages } from '../components/searchMessages';
 import { useWorkbenchNavigation } from './useWorkbenchNavigation';
+import { useThreadDirectory } from './useThreadDirectory';
 import { useScopedState } from './useScopedState';
 import { useSubscriptionUsage } from './useSubscriptionUsage';
 import { useThreadTabStatus } from '../lib/useThreadTabStatus';
@@ -108,6 +109,7 @@ import {
   fetchThreadShellState,
   fetchSupervisorHealth,
   fetchThreads,
+  canReadLinkedFiles,
   fetchThreadDetail,
   fetchThreadDelivery,
   interruptThread,
@@ -536,6 +538,8 @@ export function ThreadDetailPage() {
   const resolvedRequestIdsRef = useRef<Set<string>>(new Set());
   const [detail, setDetail] = useScopedState<ThreadDetailDto | null>(routeKey, null);
   const [threads, setThreads] = useScopedState<ThreadDto[]>(relayRouteDeviceId ?? 'local', []);
+  // The first read of the thread list on this device has answered (or failed).
+  const [threadListSettled, setThreadListSettled] = useScopedState(relayRouteDeviceId ?? 'local', false);
   detailRef.current = detail;
   const [modelOptions, setModelOptions] = useState<ModelOptionDto[]>([]);
   const [agentOptions, setAgentOptions] = useState<ModelOptionDto[]>([]);
@@ -749,6 +753,14 @@ export function ThreadDetailPage() {
     error: null,
   });
   const workbenchNavigation = useWorkbenchNavigation(detail, threads, relayRouteDeviceId, id, { sharesDeviceThreads: true });
+  // Task senders and a sub-thread's parent read by their titles.
+  const describeThread = useThreadDirectory({
+    device: relayRouteDeviceId ?? 'local',
+    detail,
+    threads,
+    listSettled: threadListSettled || threads.some(thread => thread.id !== detail?.thread.id),
+    workspaceLabel: workbenchNavigation.workspaceLabel,
+  });
   const relayDeviceRouteActive =
     relayModeActive() && Boolean(relayRouteDeviceId);
   const relayAccess = relayAccessState.access;
@@ -759,6 +771,8 @@ export function ThreadDetailPage() {
     (relayAccess?.kind === 'shared' && relayAccess.threadAccess === 'control');
   const relayThreadCanShare =
     relayDeviceRouteActive && relayAccess?.kind === 'owner';
+  // Files a reply links to outside the workspace: the owner, or a whole device shared with write access.
+  const relayThreadReadsLinkedFiles = relayThreadIsOwner || canReadLinkedFiles(relayAccess);
   const currentWorkspaceId =
     detail?.workspace.id ?? detail?.thread.workspaceId ?? null;
   const [presentationAccount, setPresentationAccount] = useScopedState<string | null>(relayRouteDeviceId ?? 'local', relayDeviceRouteActive ? null : 'local');
@@ -1583,6 +1597,7 @@ export function ThreadDetailPage() {
       } else if (seedThread) {
         setThreads((current) => mergeThreadIntoList(current, seedThread));
       }
+      setThreadListSettled(true);
 
       if (statusResult.status === 'fulfilled') {
         setStatus(statusResult.value.status);
@@ -1619,7 +1634,7 @@ export function ThreadDetailPage() {
         }
       }
     },
-    [relayRouteDeviceId, setThreads],
+    [relayRouteDeviceId, setThreads, setThreadListSettled],
   );
 
   const loadThreadDetail = useCallback(
@@ -3945,7 +3960,7 @@ export function ThreadDetailPage() {
         : '',
     [detail?.thread.id, getThreadImageAssetUrl],
   );
-  const primaryWorkspaceAdapter = useThreadWorkspaceAdapter({ setError, workspaceId: detail?.workspace.id ?? null, deviceId: relayRouteDeviceId ?? 'local', access: effectiveWorkspaceAccess, allowLinkedFiles: relayThreadIsOwner });
+  const primaryWorkspaceAdapter = useThreadWorkspaceAdapter({ setError, workspaceId: detail?.workspace.id ?? null, deviceId: relayRouteDeviceId ?? 'local', access: effectiveWorkspaceAccess, allowLinkedFiles: relayThreadReadsLinkedFiles });
   const workspaceAdapter = useThreadWorkspaceAdapter({
     setError,
     workspaceId: toolsDetail?.workspace.id ?? null,
@@ -3984,6 +3999,7 @@ export function ThreadDetailPage() {
     () => ({
       openThread,
       getThreadHref,
+      describeThread,
       getNewThreadHref,
       renderNewThreadDialogContent,
       ...(relayThreadIsOwner || hostScope ? { renameThread: handleRenameThread } : {}),
@@ -4009,6 +4025,7 @@ export function ThreadDetailPage() {
       getCurrentThreadImageAssetUrl,
       getNewThreadHref,
       getThreadHref,
+      describeThread,
       renderNewThreadDialogContent,
       handleCompactThread,
       handleCancelPendingSteer,
@@ -4109,6 +4126,7 @@ export function ThreadDetailPage() {
     {relayThreadIsOwner && relayRouteDeviceId && <HostFeatureGate feature="previews"><PortMappingsControl key={relayRouteDeviceId} deviceId={relayRouteDeviceId} open={portsOpen} onOpenChange={setPortsOpen} /></HostFeatureGate>}
     <ThreadDetailSurface
       restrictedNavigation={Boolean(hostScope)}
+      scopedSettings={Boolean(hostScope)}
       deviceMonitor={hostScope ? null : <><DeviceMonitor key={relayRouteDeviceId ?? 'local'} /><TourLauncherButton /></>}
       workbench={workbenchUrls({ ...workbenchNavigation, panels: {
         deviceLabel: presentationDeviceName ?? (relayRouteDeviceId ? relayRouteDeviceId.slice(0, 8) : translate('workbench.localDeviceName')),
@@ -4179,7 +4197,7 @@ export function ThreadDetailPage() {
       adapter={surfaceAdapter}
       metaContent={metaContent}
       settingsContent={settingsContent}
-      settingsSections={appSettingsSections()}
+      settingsSections={appSettingsSections({ scoped: Boolean(hostScope) })}
       mobileHeaderAction={mobileSessionConnectionButton}
       workspaceReturnHref={workspaceReturnHref}
       onCloseAppNavigation={shellNav?.closeNav ?? (() => {})}

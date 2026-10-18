@@ -12,6 +12,7 @@ import { TourSettingsEntry } from './onboarding/TourProvider';
 import { ThemePresetSettings } from './ThemePresetSettings';
 import { useThemeRegistry } from '../lib/themePacks';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useHostScope } from '../lib/hostCapabilities';
 
 import type {
   AgentBackendDto,
@@ -89,6 +90,8 @@ export function AppShellSettingsDialog({
 } = {}) {
   useI18n();
   const shellNav = useAppShellNav();
+  // A host scope (Treer Agent UI) keeps only this browser's own preferences.
+  const hostScope = useHostScope();
   // Global plugin management, even when this dialog opens inside a conversation.
   const plugins = useDevicePlugins();
   const [pluginImportDraft, setPluginImportDraft] = useState('');
@@ -842,8 +845,8 @@ export function AppShellSettingsDialog({
       >
         <div className="divide-y divide-[var(--theme-border)]">
           {section === 'preferences' && <fieldset className="py-5"><LanguageSwitcher /><p className="settings-hint mt-1 text-xs text-[var(--theme-fg-muted)]">{translate("files.chooseTheInterfaceLanguageForThisBrowser")}</p></fieldset>}
-          {section === 'preferences' && <ComposerShortcutSettings />}
-          {section === 'preferences' && <TourSettingsEntry />}
+          {section === 'preferences' && !hostScope && <ComposerShortcutSettings />}
+          {section === 'preferences' && !hostScope && <TourSettingsEntry />}
           {section === 'preferences' ? (
             <fieldset className="py-5">
               <legend className="text-sm font-semibold text-[var(--theme-fg)]">
@@ -981,7 +984,7 @@ export function AppShellSettingsDialog({
               </label>
             </section>
           )}
-          {section === 'preferences' && (
+          {section === 'preferences' && !hostScope && (
             <details className="settings-detail">
               <summary>{translate("files.modelPricing")}</summary>
               <div>
@@ -1436,9 +1439,11 @@ export function AppShellSettingsDialog({
 
 }
 
-/** Plugin settings open from the gear on their row in Plugins, not as top-level tabs. */
-export function appSettingsSections(): SettingsSection[] {
-  return [
+/** Plugin settings open from the gear on their row in Plugins, not as top-level tabs.
+ * A host scope (Treer Agent UI) gets Preferences only: the other tabs administer the
+ * whole device, which that tunnel cannot authorize. */
+export function appSettingsSections({ scoped = false }: { scoped?: boolean } = {}): SettingsSection[] {
+  const sections = [
     {
       id: 'preferences',
       label: translate("files.preferences"),
@@ -1480,7 +1485,8 @@ export function appSettingsSections(): SettingsSection[] {
       label: translate("files.advanced"),
       description: translate("files.nativeConfigurationFilesAndRecoveryBackups"),
     },
-  ].map((section) => ({
+  ];
+  return sections.filter((section) => !scoped || section.id === 'preferences').map((section) => ({
     ...section,
     content: <AppShellSettingsDialog embedded section={section.id} />,
   }));

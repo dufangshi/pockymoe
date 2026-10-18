@@ -1,7 +1,7 @@
 use super::http::{map_err, ApiErr};
 use anyhow::Context;
 use axum::{extract::State, Extension, Json};
-use pockymoe_protocol::{CreateThreadInput, Provider};
+use pockymoe_protocol::{CreateThreadInput, Provider, ThreadDto};
 use pockymoe_runtime::{
     interaction::{
         clamp_wait, list_roles, load_role, AgentOptions, AgentRequester, SendInput, TranscriptQuery,
@@ -9,7 +9,11 @@ use pockymoe_runtime::{
     Supervisor,
 };
 use serde_json::{json, Value};
-use std::{path::Path, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    path::Path,
+    sync::Arc,
+};
 
 fn strings(value: &Value) -> Vec<String> {
     value
@@ -21,6 +25,46 @@ fn strings(value: &Value) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Threads that are top-level from one workspace's point of view: the lineage
+/// roots started there, and agent threads that work there for a conversation
+/// started in another workspace. An agent thread folds into its topmost ancestor
+/// in its own workspace, so one working where its root or an earlier ancestor
+/// also works is not listed again. `threads` must hold every thread, of every
+/// workspace, so ancestors can be found; their order is kept.
+fn workspace_top_level(threads: Vec<ThreadDto>, workspace: &str) -> Vec<ThreadDto> {
+    let by_id: HashMap<&str, &ThreadDto> = threads.iter().map(|t| (t.id.as_str(), t)).collect();
+    let folded = |thread: &ThreadDto| {
+        let shares_workspace = |id: &str| {
+            by_id.get(id).is_some_and(|ancestor| {
+                ancestor.id != thread.id && ancestor.workspace_id == thread.workspace_id
+            })
+        };
+        let mut parent = thread.parent_thread_id.as_deref();
+        // Lineages are at most a few levels deep; the bound only guards bad data.
+        for _ in 0..16 {
+            let Some(id) = parent else { break };
+            if shares_workspace(id) {
+                return true;
+            }
+            parent = by_id.get(id).and_then(|t| t.parent_thread_id.as_deref());
+        }
+        // A missing intermediate thread still leaves the root to fold into.
+        thread
+            .root_thread_id
+            .as_deref()
+            .is_some_and(shares_workspace)
+    };
+    let top: HashSet<String> = threads
+        .iter()
+        .filter(|t| t.workspace_id == workspace && !folded(t))
+        .map(|t| t.id.clone())
+        .collect();
+    threads
+        .into_iter()
+        .filter(|t| top.contains(&t.id))
+        .collect()
 }
 
 /// Roles are looked up from the caller's workspace, or the default root.
@@ -132,12 +176,17 @@ async fn run_as(
             let group = input["groupId"].as_str().map(str::to_owned);
             // Drilling into a group, or asking for --all, needs every row; the
             // default listing keeps to lineage roots so a fan-out stays collapsed.
+            // A workspace's listing also has the agent threads working there for
+            // a conversation started elsewhere: there, they are top-level.
             let include_all =
                 group.is_some() || input["includeAgentThreads"].as_bool() == Some(true);
-            let mut threads = state.list_threads(
-                input.get("workspaceId").and_then(Value::as_str),
-                include_all,
-            )?;
+            let workspace = input.get("workspaceId").and_then(Value::as_str);
+            let mut threads = match workspace {
+                Some(workspace) if !include_all => {
+                    workspace_top_level(state.list_threads(None, true)?, workspace)
+                }
+                _ => state.list_threads(workspace, include_all)?,
+            };
             if let Some(group) = &group {
                 threads.retain(|t| t.root_thread_id.as_deref() == Some(group.as_str()));
             }
@@ -399,5 +448,81 @@ async fn run_as(
             )
         }
         _ => anyhow::bail!("unknown CLI operation"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::isolation_tests::{cli, setup, thread};
+    use pockymoe_protocol::{CreateThreadInput, Provider};
+    use pockymoe_runtime::Supervisor;
+    use serde_json::{json, Value};
+
+    async fn child(state: &Supervisor, workspace: &str, parent: &str) -> String {
+        state
+            .create_thread(CreateThreadInput {
+                workspace_id: workspace.into(),
+                title: None,
+                provider: Some(Provider::Codex),
+                agent_id: None,
+                model: "ios-e2e-stream".into(),
+                reasoning_effort: None,
+                approval_mode: "guarded".into(),
+                parent_thread_id: Some(parent.into()),
+            })
+            .await
+            .unwrap()
+            .id
+    }
+
+    fn ids(listed: &Value) -> Vec<String> {
+        let mut ids: Vec<_> = listed["threads"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["id"].as_str().unwrap().to_owned())
+            .collect();
+        ids.sort();
+        ids
+    }
+
+    fn sorted<const N: usize>(ids: [&String; N]) -> Vec<String> {
+        let mut ids: Vec<_> = ids.into_iter().cloned().collect();
+        ids.sort();
+        ids
+    }
+
+    #[tokio::test]
+    async fn a_workspace_listing_includes_agent_threads_working_there_for_a_conversation_elsewhere()
+    {
+        let f = setup().await;
+        let (here, there) = (f.open.clone(), f.isolated.clone());
+        let root = thread(&f.state, &here).await;
+        let other_root = thread(&f.state, &there).await;
+        // Started from `here`, working `there`: top-level there.
+        let worker = child(&f.state, &there, &root).await;
+        // Its own agent thread there folds into it; one back `here` folds into the root.
+        let worker_helper = child(&f.state, &there, &worker).await;
+        let back_here = child(&f.state, &here, &worker).await;
+        let beside = child(&f.state, &here, &root).await;
+        let list = |workspace: &str, all: bool| json!({"operation":"list","workspaceId":workspace,"includeAgentThreads":all});
+
+        let there_listed = cli(&f, None, list(&there, false)).await.unwrap();
+        assert_eq!(ids(&there_listed), sorted([&other_root, &worker]));
+        assert_eq!(there_listed["totalCount"], 2);
+        let here_listed = cli(&f, None, list(&here, false)).await.unwrap();
+        assert_eq!(ids(&here_listed), sorted([&root]));
+        assert_eq!(here_listed["totalCount"], 1);
+        // --all and the device-wide listing are unchanged.
+        let everything = cli(&f, None, list(&there, true)).await.unwrap();
+        assert_eq!(
+            ids(&everything),
+            sorted([&other_root, &worker, &worker_helper])
+        );
+        let everything_here = cli(&f, None, list(&here, true)).await.unwrap();
+        assert_eq!(ids(&everything_here), sorted([&root, &back_here, &beside]));
+        let roots = cli(&f, None, json!({"operation":"list"})).await.unwrap();
+        assert_eq!(ids(&roots), sorted([&root, &other_root]));
+        assert_eq!(roots["totalCount"], 2);
     }
 }

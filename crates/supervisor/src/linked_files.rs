@@ -1,5 +1,5 @@
-//! Read-only host file previews. These routes are authenticated locally and are
-//! deliberately absent from the relay's shared thread/device route allowlists.
+//! Read-only host file previews. Besides the owner, only a whole-device grant with
+//! workspace write access reaches them (`access::linked_files_allowed`).
 use crate::http::{static_content_type, stream_file, AppState};
 use axum::{
     extract::{Path, Query, State},

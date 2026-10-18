@@ -1137,6 +1137,12 @@ export function fetchWorkspaces() {
   return request<WorkspaceDto[]>('api/workspaces');
 }
 
+/** Mirrors `access::linked_files_allowed`: the owner, or a whole device shared with workspace write access. */
+export function canReadLinkedFiles(access: RelayEffectiveAccessDto | null | undefined) {
+  return access?.kind === 'owner'
+    || (access?.kind === 'shared' && access.scope === 'device' && access.workspaceAccess === 'write');
+}
+
 export function fetchLinkedFile(threadId: string, path: string,
   deviceId?: string | null,
 ) {

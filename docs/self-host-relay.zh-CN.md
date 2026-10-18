@@ -182,7 +182,7 @@ node scripts/check-static-web.mjs   # 设置同样的两个变量
 
 Cloudflare Pages 等托管服务会直接应用 `_headers` 和 `_redirects`；其他托管服务需要换成对应的响应头和重写规则。GitHub Pages 两者都不应用：它使用 `CNAME` 和 `404.html`，页面只靠 meta 标签和应用自身的 frame 检查保护（缺少哪些保护见[静态托管](account-key-trust.md#static-hosting)）。请通过 HTTPS 在 Web origin 上提供这个目录。不设置 `VITE_POCKYMOE_RELAY_ORIGIN` 时，构建结果访问自身 origin。
 
-本仓库用 `.github/workflows/pages-deploy.yml` 发布公共网页。fork 可以沿用它：设置仓库变量 `POCKYMOE_RELAY_ORIGIN`，修改工作流中的 `POCKYMOE_WEB_DOMAIN`，在 `thread-ui.sha` 中固定共享 UI 的提交，并把 Pages 的发布来源设为 GitHub Actions。
+本仓库用 `.github/workflows/pages-deploy.yml` 发布公共网页。fork 可以沿用它：设置仓库变量 `POCKYMOE_RELAY_ORIGIN`，修改工作流中的 `POCKYMOE_WEB_DOMAIN`，在 `thread-ui.sha` 中固定共享 UI 的提交，并把 Pages 的发布来源设为 GitHub Actions。每次发布会保留之前构建的资源 72 小时（`scripts/carry-web-assets.mjs`），发布前已打开的页面因此仍能正常加载。
 
 ### 已安装的设备
 

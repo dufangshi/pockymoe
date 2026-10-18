@@ -15,6 +15,15 @@ fn add(s: &Supervisor) -> saved::Connection {
 }
 fn protected() -> (tempfile::TempDir, Arc<Supervisor>, BrowserPrincipal, String) {
     let (temp, s) = state_with_relay_url("http://127.0.0.1:1");
+    let roots = upstreams::native::HARNESSES
+        .into_iter()
+        .map(|h| (h.into(), temp.path().join(h)))
+        .collect();
+    let s = Arc::new(
+        Arc::try_unwrap(s)
+            .unwrap_or_else(|_| panic!("fixture unexpectedly shared"))
+            .with_upstream_homes(roots),
+    );
     let id = uuid::Uuid::new_v4().to_string();
     let p = live_owner_for_device(&s, &id);
     bound_peer(&s, &id);
@@ -321,4 +330,139 @@ fn catalog_merges_replicas_without_conflating_name_or_versions() {
     assert_eq!(v["connections"][0]["name"], "Local");
     assert_eq!(v["connections"][0]["conflict"], true);
     assert_eq!(v["connections"][0]["sources"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn native_upstream_owner_api_restores_local_oauth_clears_binding_and_checks_revision_and_busy_gates(
+) {
+    let (_temp, s, p, _id) = protected();
+    let root = s.upstream_home("claude");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(
+        root.join("settings.json"),
+        json!({"hooks":{"fixture":"keep"}}).to_string(),
+    )
+    .unwrap();
+    std::fs::write(root.join(".credentials.json"),json!({"claudeAiOauth":{"refreshToken":"fixture-refresh","accessToken":"fixture-access","expiresAt":1}}).to_string()).unwrap();
+    let (status, list) = request(
+        &s,
+        Some(&p),
+        &session_key(),
+        "GET",
+        "/api/management/connections",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(list["native"]["claude"]["kind"], "oauth");
+    assert_eq!(list["native"]["claude"]["active"], true);
+    assert!(!list.to_string().contains("fixture-refresh"));
+    assert!(!list.to_string().contains("fixture-access"));
+    assert!(!snapshot(&s).to_string().contains("native"));
+    let c:saved::Connection=serde_json::from_value(json!({"name":"fixture API","protocol":"anthropic","baseUrl":"https://fixture.invalid","apiKey":"fixture-api-key","model":"fixture-model"})).unwrap();
+    let c = saved::upsert(&dir(&s), c).unwrap();
+    let path = format!(
+        "/api/management/connections/{}/apply",
+        c["id"].as_str().unwrap()
+    );
+    let (status, _) = request(
+        &s,
+        Some(&p),
+        &session_key(),
+        "POST",
+        &path,
+        json!({"harness":"claude"}),
+    )
+    .await;
+    assert_eq!(status, 200);
+    let path = "/api/management/upstreams/native/claude/activate";
+    let (status, body) = request(
+        &s,
+        Some(&p),
+        &session_key(),
+        "POST",
+        path,
+        json!({"revision":list["native"]["claude"]["revision"]}),
+    )
+    .await;
+    assert_eq!(status, 409);
+    assert_eq!(body["code"], "edit_conflict");
+    let busy = s.harness_gate("claude").read_owned().await;
+    let (status, body) = request(&s, Some(&p), &session_key(), "POST", path, json!({})).await;
+    assert_eq!(status, 409);
+    assert_eq!(body["code"], "harness_busy");
+    drop(busy);
+    let maintenance = s.maintenance_gate.clone().write_owned().await;
+    let (status, body) = request(&s, Some(&p), &session_key(), "POST", path, json!({})).await;
+    assert_eq!(status, 409);
+    assert_eq!(body["code"], "harness_busy");
+    drop(maintenance);
+    let (status, list) = request(
+        &s,
+        Some(&p),
+        &session_key(),
+        "GET",
+        "/api/management/connections",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(list["native"]["claude"]["active"], false);
+    let (status, result) = request(
+        &s,
+        Some(&p),
+        &session_key(),
+        "POST",
+        path,
+        json!({"revision":list["native"]["claude"]["revision"]}),
+    )
+    .await;
+    assert_eq!(status, 200, "{result}");
+    assert_eq!(result["native"], true);
+    assert_eq!(result["restartRequired"], false);
+    assert_eq!(result["restartedSessions"], 0);
+    assert!(saved::binding(&dir(&s), "claude").unwrap().is_none());
+    assert!(upstreams::active_profile(&dir(&s), "claude")
+        .unwrap()
+        .is_none());
+    let d: Value =
+        serde_json::from_slice(&std::fs::read(root.join("settings.json")).unwrap()).unwrap();
+    assert_eq!(d["hooks"]["fixture"], "keep");
+    assert!(d["env"].get("ANTHROPIC_API_KEY").is_none());
+    let (status, body) = request(
+        &s,
+        Some(&p),
+        &session_key(),
+        "POST",
+        "/api/management/upstreams/native/gemini/activate",
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, 400);
+    assert_eq!(body["code"], "connection_error");
+    let (status, _) = request(
+        &s,
+        Some(&p),
+        &session_key(),
+        "POST",
+        "/api/management/upstreams/native/unknown/activate",
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, 400);
+}
+#[tokio::test]
+async fn native_upstream_management_rejects_shared_grantee_http_requests() {
+    let (_temp, s, _owner, _grant, _cert, key, grantee) = crate::grants::tests::fixture().await;
+    for (method, path, body) in [
+        ("GET", "/api/management/connections", Value::Null),
+        (
+            "POST",
+            "/api/management/upstreams/native/claude/activate",
+            json!({}),
+        ),
+    ] {
+        let (status, _) = request(&s, Some(&grantee), &key, method, path, body).await;
+        assert_eq!(status, 403);
+    }
 }

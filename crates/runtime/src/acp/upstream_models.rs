@@ -32,6 +32,10 @@ mod tests {
     }
 }
 impl UpstreamModels {
+    pub fn native_oauth_selected(&self, harness: &str) -> bool {
+        upstreams::native::oauth_selected(&self.directory, harness)
+    }
+
     pub fn revision(profile: &Profile, models: &[DiscoveredModel]) -> Result<Vec<u8>> {
         Ok(Sha256::digest(serde_json::to_vec(&(profile, models))?).to_vec())
     }

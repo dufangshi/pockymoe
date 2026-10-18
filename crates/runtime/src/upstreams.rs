@@ -15,6 +15,7 @@ pub mod connections;
 mod discovery;
 mod dsh;
 mod model_meta;
+pub mod native;
 mod provider_config;
 mod write_engine;
 pub use discovery::{discover_models, discovery_profile, DiscoveryInput};
@@ -68,6 +69,8 @@ struct Store {
     /// Original native model entries, retained until managed configuration is removed.
     #[serde(default)]
     grok_models: BTreeMap<String, Option<String>>,
+    #[serde(default)]
+    native: BTreeMap<String, native::NativeState>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -432,7 +435,7 @@ pub fn profile(dir: &Path, id: &str) -> Result<Profile> {
         .find(|p| p.id == id)
         .ok_or_else(|| anyhow!("Profile not found"))
 }
-fn home(harness: &str) -> PathBuf {
+pub fn home(harness: &str) -> PathBuf {
     let (key, suffix) = match harness {
         "codex" => ("CODEX_HOME", ".codex"),
         "claude" => ("CLAUDE_CONFIG_DIR", ".claude"),
@@ -662,6 +665,7 @@ fn activate_at(dir: &Path, target: &Profile, root: &Path) -> Result<String> {
             })
         })
         .collect::<Result<Vec<_>>>()?;
+    native::preserve(&mut s, &target.harness, root)?;
     if let Some(expected) = &target.live_revision {
         use sha2::{Digest, Sha256};
         let current = hex::encode(Sha256::digest(serde_json::to_vec(

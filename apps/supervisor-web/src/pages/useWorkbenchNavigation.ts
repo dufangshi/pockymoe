@@ -3,7 +3,7 @@ import { narrationQuery } from '../lib/transcriptPreferences';
 import { useHostScope } from '../lib/hostCapabilities';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { ThreadDetailDto, ThreadDto } from '@pockymoe/shared';
+import type { ThreadDetailDto, ThreadDto, WorkspaceDto } from '@pockymoe/shared';
 import type {
   WorkbenchNotification,
   WorkbenchThread,
@@ -105,6 +105,11 @@ export function useWorkbenchNavigation(
   // Renames and deletions made from the sidebar, shown before the device's
   // thread list catches up: a rename holds while the list keeps the old title.
   const [localEdits, setLocalEdits] = useState<{ renamed: Record<string, { from: string; to: string }>; removed: string[] }>({ renamed: {}, removed: [] });
+  // Workspace labels read from the device, once per workspace the tabs need and
+  // nothing else names (a conversation here working in another workspace).
+  const [readLabels, setReadLabels] = useState<{ device: string; labels: Record<string, string>; tried: string[] }>({ device: '', labels: {}, tried: [] });
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const revision = useRef(0);
   const currentKey = `${deviceId ?? 'local'}:${routeThreadId ?? detail?.thread.id ?? ''}`;
   const current = useRef({ detail, deviceId });
@@ -466,12 +471,41 @@ export function useWorkbenchNavigation(
   // listed there, unless it is open, when it shows inside its conversation.
   const workspaceId = tabContext.detail?.thread.workspaceId;
   const open = tabContext.detail?.thread;
+  const tabDevice = tabContext.deviceId ?? 'local';
+  // Each listed thread says where it works: a label from the visits saved on this
+  // device, then from the device itself, then the open thread's own.
+  const workspaceLabels = new Map<string, string>();
+  for (const r of snapshot.threads) {
+    if ((r.deviceId ?? 'local') === tabDevice && r.workspaceId && r.workspaceLabel) workspaceLabels.set(r.workspaceId, r.workspaceLabel);
+  }
+  if (readLabels.device === tabDevice) for (const [id, label] of Object.entries(readLabels.labels)) workspaceLabels.set(id, label);
+  if (tabContext.detail && workspaceId) workspaceLabels.set(workspaceId, tabContext.detail.workspace.label);
   const workspaceRoots = new Set(tabContext.threads
     .filter(thread => thread.workspaceId === workspaceId && !thread.rootThreadId)
     .map(thread => thread.id));
-  const workspaceThreads = tabContext.threads
+  const tabListed = tabContext.threads
       .filter(thread => workspaceRoots.has(thread.rootThreadId ?? thread.id) || thread.id === open?.id
-        || (!!open?.rootThreadId && thread.id === open.rootThreadId))
+        || (!!open?.rootThreadId && thread.id === open.rootThreadId));
+  const openParent = open?.parentThreadId ? tabContext.threads.find(thread => thread.id === open.parentThreadId) : undefined;
+  const unlabelled = [...new Set([...tabListed, ...(openParent ? [openParent] : [])].map(thread => thread.workspaceId))]
+    .filter(id => id && !workspaceLabels.has(id) && !(readLabels.device === tabDevice && readLabels.tried.includes(id)))
+    .sort().join(',');
+  useEffect(() => {
+    if (!unlabelled) return;
+    const device = tabDevice;
+    setReadLabels(previous => previous.device === device
+      ? { ...previous, tried: [...previous.tried, ...unlabelled.split(',')] }
+      : { device, labels: {}, tried: unlabelled.split(',') });
+    // Shared and scoped readers may not list workspaces; their tabs keep blank places.
+    void request<WorkspaceDto[]>(device === 'local' ? 'api/workspaces' : `relay/devices/${encodeURIComponent(device)}/api/workspaces`, { cache: 'no-store' })
+      .then(list => {
+        if (!mounted.current || !Array.isArray(list)) return;
+        setReadLabels(previous => previous.device !== device ? previous
+          : { ...previous, labels: { ...previous.labels, ...Object.fromEntries(list.map(workspace => [workspace.id, workspace.label])) } });
+      })
+      .catch(() => undefined);
+  }, [unlabelled, tabDevice]);
+  const workspaceThreads = tabListed
       .filter(thread => !localEdits.removed.includes(`${tabContext.deviceId ?? 'local'}:${thread.id}`))
       .slice()
       .sort((a, b) => (a.createdAt ?? '').localeCompare(b.createdAt ?? '') || a.id.localeCompare(b.id))
@@ -480,7 +514,7 @@ export function useWorkbenchNavigation(
         const reference = snapshot.threads.find(r => referenceKey(r) === key);
         const renamed = localEdits.renamed[key];
         return {
-          key, title: renamed?.from === thread.title ? renamed.to : thread.title, subtitle: tabContext.detail?.workspace.label ?? '',
+          key, title: renamed?.from === thread.title ? renamed.to : thread.title, subtitle: workspaceLabels.get(thread.workspaceId) ?? '',
           href: threadHref(thread.id, tabContext.deviceId), favorite: reference?.favorite ?? false,
           ...(thread.parentThreadId ? {parentKey: `${tabContext.deviceId ?? 'local'}:${thread.parentThreadId}`} : {}),
           ...(thread.rootThreadId ? {rootKey: `${tabContext.deviceId ?? 'local'}:${thread.rootThreadId}`} : {}),
@@ -499,10 +533,15 @@ export function useWorkbenchNavigation(
     const key = `${familyDevice}:${thread.id}`;
     const reference = snapshot.threads.find(r => referenceKey(r) === key);
     const activity = familyDevice === (deviceId ?? 'local') && thread.id === detail?.thread.id ? detail.thread : thread;
+    // Its own workspace, also for an agent thread working away from its root.
+    const rootReference = snapshot.threads.find(r => r.deviceId === familyDevice && r.threadId === (thread.rootThreadId ?? thread.id));
+    const place = reference?.workspaceLabel
+      ?? (familyDevice === tabDevice ? workspaceLabels.get(thread.workspaceId) : undefined)
+      ?? snapshot.threads.find(r => (r.deviceId ?? 'local') === familyDevice && r.workspaceId === thread.workspaceId)?.workspaceLabel
+      ?? (rootReference && (!rootReference.workspaceId || rootReference.workspaceId === thread.workspaceId) ? rootReference.workspaceLabel : undefined);
     return [key, {
       key, title: activity.title,
-      subtitle: [reference?.deviceName, reference?.workspaceLabel ?? snapshot.threads.find(r =>
-        r.deviceId === familyDevice && r.threadId === (thread.rootThreadId ?? thread.id))?.workspaceLabel].filter(Boolean).join(' · '),
+      subtitle: [reference?.deviceName, place].filter(Boolean).join(' · '),
       href: threadHref(thread.id, familyDevice === 'local' ? null : familyDevice),
       favorite: reference?.favorite ?? false,
       ...(thread.parentThreadId ? { parentKey: `${familyDevice}:${thread.parentThreadId}` } : {}),
@@ -521,7 +560,7 @@ export function useWorkbenchNavigation(
     const references = referenceOn(device);
     const workspaceLabel = references.find(r => r.threadId === thread.id)?.workspaceLabel
       ?? references.find(r => r.workspaceId === thread.workspaceId)?.workspaceLabel
-      ?? (tabContext.detail && device === (tabContext.deviceId ?? 'local') && tabContext.detail.workspace.id === thread.workspaceId ? tabContext.detail.workspace.label : undefined);
+      ?? (device === tabDevice ? workspaceLabels.get(thread.workspaceId) : undefined);
     return [references.find(r => r.deviceName)?.deviceName, workspaceLabel];
   };
   const activeThreads: WorkbenchThread[] = [
@@ -580,6 +619,8 @@ export function useWorkbenchNavigation(
   }
   return {
     navigationReady,
+    /** The label of a workspace on the open thread's device, when known. */
+    workspaceLabel: (id: string) => workspaceLabels.get(id),
     threads: sidebarThreads,
     activeThreads,
     workspacePath: tabContext.detail?.workspace.absPath ?? '',
