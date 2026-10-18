@@ -20,7 +20,6 @@ import {
 } from '@pockymoe/thread-ui';
 import { translate } from '@pockymoe/thread-ui/i18n';
 import { relayModeActive, request } from '../lib/api';
-import { useHostScope } from '../lib/hostCapabilities';
 import { relayDeviceIdFromPath, threadHref, threadIdFromPath } from '../lib/relayRoutes';
 import { appPathname, appUrl } from '../lib/webBase';
 import { workbenchThreadStatus } from '../pages/useWorkbenchNavigation';
@@ -225,17 +224,17 @@ function ThreadMapLayer({ open, onOpenChange }: { open: boolean; onOpenChange: (
 
 /**
  * Offers the thread map to the app (`openThreadMap` on the shell context) and
- * renders it. A host-scoped Supervisor shows only part of a device, so it has none.
+ * renders it. In a Treer Agent UI its one root is this hub: the hub answers the
+ * workspace, thread and activity reads with the threads that tunnel may open.
  */
 export function ThreadMapProvider({ children }: { children: ReactNode }) {
   const shell = useAppShellNav();
-  const scoped = useHostScope();
   const [open, setOpen] = useState(false);
-  const value = useMemo(() => (shell && !scoped ? { ...shell, openThreadMap: () => setOpen(true) } : shell), [shell, scoped]);
+  const value = useMemo(() => (shell ? { ...shell, openThreadMap: () => setOpen(true) } : shell), [shell]);
   return (
     <AppShellNavContext.Provider value={value}>
       {children}
-      {!scoped && <ThreadMapLayer open={open} onOpenChange={setOpen} />}
+      <ThreadMapLayer open={open} onOpenChange={setOpen} />
     </AppShellNavContext.Provider>
   );
 }

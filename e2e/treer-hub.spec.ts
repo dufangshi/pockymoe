@@ -104,6 +104,15 @@ test('Treer UI prefix opens only the bound thread and accepts a prompt', async (
     await settings.locator('label[data-preset="classic"]').click();
     await expect(page.locator('html')).toHaveAttribute('data-theme-preset', 'classic');
     await page.keyboard.press('Escape');
+    // The thread map stays: its one root is this hub, with only the tunnel's threads.
+    const beforeMap = requests.length;
+    await page.getByRole('button', { name: 'Thread map' }).first().click();
+    await expect(page.getByRole('link', { name: /^Treer bound thread/ })).toBeVisible();
+    await expect(page.getByRole('link', { name: /^Private other thread/ })).toHaveCount(0);
+    expect(requests.slice(beforeMap).filter(r => /^\/api\/(workspaces|threads|thread-activity)(\?|$)/.test(r.path)).map(r => r.status))
+      .toEqual(expect.arrayContaining([200]));
+    expect(requests.slice(beforeMap).filter(r => r.status >= 400)).toEqual([]);
+    await page.keyboard.press('Escape');
     // Keep the observed page dependencies visible in the test evidence.
     // Top-level pages need no "open in a new tab" button.
     await expect(page.getByRole('button', { name: 'Open in a new browser tab' })).toHaveCount(0);

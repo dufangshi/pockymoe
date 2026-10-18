@@ -235,6 +235,8 @@ pub fn gate(method: &str, path: &str, allowed_thread: impl Fn(&str) -> bool) -> 
             | "/api/config/runtime"
             | "/api/config/model-pricing"
             | "/api/management/supervisor"
+            // The handler keeps only threads the tunnel scope allows.
+            | "/api/thread-activity"
             | "/api/agent-runtimes"
             | "/api/plugins"
             | "/threads"
@@ -541,6 +543,8 @@ mod tests {
             ("POST", "/api/threads/root/prompt", true),
             ("GET", "/ws", true),
             ("GET", "/themes/sakura/theme.css", true),
+            ("GET", "/api/thread-activity", true),
+            ("POST", "/api/thread-activity", false),
             ("HEAD", "/themes/sakura/preview.webp", true),
             ("POST", "/themes/sakura/theme.css", false),
             ("POST", "/api/cli", false),

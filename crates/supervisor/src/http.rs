@@ -1689,15 +1689,20 @@ struct ThreadActivityQuery {
 async fn thread_activity(
     Query(query): Query<ThreadActivityQuery>,
     State(state): State<AppState>,
+    scope: Option<axum::Extension<crate::treer::Scope>>,
 ) -> Result<Json<Value>, ApiErr> {
     let hours = query.hours.unwrap_or(24).clamp(1, 168);
     let now = chrono::Utc::now();
     let stamp =
         |at: chrono::DateTime<chrono::Utc>| at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     let since = stamp(now - chrono::Duration::hours(i64::from(hours)));
-    let threads = state
+    let mut threads = state
         .thread_activity(&since, &stamp(now), hours as usize)
         .map_err(map_err)?;
+    // A Treer Agent UI sees the activity of the threads its tunnel may open only.
+    if let Some(scope) = scope {
+        threads.retain(|thread| scope.allows(&thread.thread_id));
+    }
     Ok(Json(
         json!({ "since": since, "hours": hours, "threads": threads }),
     ))

@@ -487,6 +487,11 @@ prompt an agent on this machine, which can run the same setup command. The other
 tabs administer the whole device and are not offered. The tunnel serves the
 built-in theme packs under `/themes/` read-only.
 
+The thread map stays available with this hub as its one root. Its workspace and
+thread reads are the scoped collections above, and `GET /api/thread-activity`
+keeps only threads the tunnel scope allows, so sizes and hourly activity never
+include other threads on the machine.
+
 Inside a Treer frame the workbench rail (or the phone top bar) has **Open in a new
 browser tab**, which opens the same page full size. It needs a Treer whose
 frame sandbox allows popups (`allow-popups allow-popups-to-escape-sandbox`); in

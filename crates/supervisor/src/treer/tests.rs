@@ -656,6 +656,37 @@ async fn gate_provenance_matrix_http_and_websocket() {
         )
         .await
         .unwrap();
+    // The thread map's activity read lists only threads this tunnel may open.
+    let started = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    for (turn, thread) in [("turn-bound", root.to_owned()), ("turn-hidden", unbound.id.clone())] {
+        f.hub
+            .state
+            .db
+            .with(|c| {
+                c.execute(
+                    "INSERT INTO thread_turns(id, thread_id, status, started_at, completed_at, ordinal)
+                     VALUES (?1, ?2, 'completed', ?3, ?3, 0)",
+                    rusqlite::params![turn, thread, started],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+    }
+    let activity: Value = request(&f, &h, reqwest::Method::GET, "/api/thread-activity?hours=24", true)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let listed: Vec<&str> = activity["threads"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|t| t["threadId"].as_str())
+        .collect();
+    assert!(listed.contains(&root), "{activity}");
+    assert!(!listed.contains(&unbound.id.as_str()), "{activity}");
     for path in [
         format!("/api/threads/{root}"),
         format!("/api/threads/{other_id}"),
