@@ -96,6 +96,8 @@
 .recent-thread-menu > button { display: flex; align-items: center; gap: 9px; width: 100%; min-height: 36px; padding: 8px; border: 0; border-radius: 7px; font-size: 12px; text-align: left; }
 .recent-thread-menu > button:hover:not(:disabled) { background: var(--theme-hover); }
 .recent-thread-menu > button:disabled { opacity: .45; }
+.recent-thread-menu > button[data-copy-state='copied'] { color: var(--status-success-fg, #15803d); }
+.recent-thread-menu > button[data-copy-state='failed'] { color: var(--theme-danger, #c2410c); }
 .recent-thread-menu > .recent-thread-delete { color: var(--status-danger-fg); }
 .recent-thread-menu :focus-visible { outline: 2px solid var(--theme-accent-solid); outline-offset: -2px; }
 .recent-thread-menu > p { padding: 8px; font-size: 11px; line-height: 1.5; color: var(--theme-fg-muted); }

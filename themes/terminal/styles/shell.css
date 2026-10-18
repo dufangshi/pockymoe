@@ -59,8 +59,21 @@
 :theme .matter-status-dot { border-radius: 0; }
 /* Beside an emblem only a state worth noticing keeps its mark. */
 :theme :is(.matter-thread-row, .matter-group-tab, .matter-agent-threads-item, .matter-thread-tabs > a) > .matter-thread-avatar + .matter-status-dot[data-status='idle'] { display: none; }
-:theme .matter-status-dot[data-status='running'] { animation: terminal-shell-blink 1.1s steps(1) infinite; }
-@keyframes terminal-shell-blink { 50% { opacity: 0.2; } }
+/* The terminal's own marks, with the same meanings: running is a blinking block
+   cursor, agent threads working an outlined block that breathes, interrupted a
+   short bar (a stop), so no two states differ by color alone. */
+:theme .matter-status-dot[data-status='running'] {
+  width: 6px; height: 11px; border: 0; border-radius: 0;
+  background: var(--theme-accent-solid);
+  animation: terminal-shell-blink 1.1s steps(1) infinite;
+}
+:theme .matter-status-dot[data-status='agents-running'] {
+  width: 7px; height: 11px; border-width: 1.5px; background: none;
+  animation: matter-agents-running 1.8s ease-in-out infinite;
+}
+:theme .matter-status-dot[data-status='interrupted'] { width: 9px; height: 3px; border: 0; background: #c08a3e; }
+:theme .matter-status-dot[data-status='unread'] { box-shadow: none; }
+@keyframes terminal-shell-blink { 50% { opacity: 0.15; } }
 
 /* Tab strip: square tabs, the current one inverse. */
 :theme .thread-ui-shell .matter-workbench .matter-tabs-row {

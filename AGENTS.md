@@ -13,6 +13,14 @@ checked out at `pockymoe-thread-ui/`. Documentation index: [docs/README.md](docs
 - Some `remote-codex`, `REMOTE_CODEX_` and `remoteCodex` identifiers must keep their old names. Read [docs/rename-pockymoe.md](docs/rename-pockymoe.md) before renaming one.
 - Do not copy Android, iOS or Windows app sources into this tree.
 
+## UI
+
+- Every change to the Web, the shared UI or a theme pack follows [docs/ui-principles.md](docs/ui-principles.md). Read it before designing a control, menu, window, status mark, input or wording.
+- Reuse the shared building blocks it names instead of making variants: `CopyButton`/`PathChip` for copying and paths, `StatusMark` for thread status, `useMenuKeyboard` for menus, `useModalFocus` for windows, `confirmAsync`/`ConfirmDialog` instead of `window.confirm`, `MiddleName` for truncated file names.
+- An exception needs a reason in a code comment and in that document, in the same commit.
+- Theme packs change appearance only, never behavior or meaning ([docs/theme-packs.md](docs/theme-packs.md)).
+- Before finishing a UI change, look at it in every theme (Classic, Plum Pocket, Terminal), light and dark, at a phone and a desktop width.
+
 ## Checks and commits
 
 - Run checks in proportion to the change: the affected crates or test names, formatting and compilation. Do not run `cargo test --workspace`, full browser suites, platform matrices or release dry-runs unless the user asks. See [docs/ci.md](docs/ci.md).

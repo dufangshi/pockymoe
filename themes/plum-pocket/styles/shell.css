@@ -328,7 +328,7 @@
 :theme .matter-status-dot[data-status='agents-running'] { border-color: var(--plum-status-agents); background: radial-gradient(circle, var(--plum-status-agents) 0 2px, transparent 2.5px); }
 :theme .matter-status-dot[data-status='unread'] { border-color: var(--plum-status-unread); background: var(--plum-status-unread); box-shadow: none; }
 :theme .matter-status-dot:is([data-status='failed'], [data-status='error']) { border-color: var(--plum-status-failed); background: var(--plum-status-failed); }
-:theme .matter-status-dot[data-status='interrupted'] { border-color: var(--plum-status-interrupted); }
+:theme .matter-status-dot[data-status='interrupted'] { border-color: var(--plum-status-interrupted); background: var(--plum-status-interrupted); }
 
 /* On an avatar the dot becomes a badge at its lower right, on a ring that matches
    the row. Idle needs no badge: the mascot alone means "ready". */

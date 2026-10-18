@@ -7,6 +7,11 @@ Export (every pack) and Remove (imported packs only); **Import…** takes a
 `.pockytheme` file. The choice and the imported packs are stored per browser.
 The built-in themes are described in [theme presets](theme-presets.md).
 
+A pack keeps the meanings set by the [UI and interaction principles](ui-principles.md):
+it may redraw status marks, icons and small controls, but every status stays
+recognizable by shape alone, menus, windows and copy behave the same, and text
+stays aligned on the shared baseline in the pack's fonts.
+
 Packs hold no JavaScript. Their CSS is checked and rewritten so that it cannot
 reach the network, but a pack can still hide or restyle any part of the page, so
 import only packs you trust.

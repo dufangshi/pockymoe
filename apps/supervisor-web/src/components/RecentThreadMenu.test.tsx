@@ -53,3 +53,17 @@ it('names its icons with data-icon for theme packs', async () => {
   expect(await icon('Rename thread')).toBe('rename');
   expect(await icon('Delete thread')).toBe('delete');
 });
+it('confirms a copy on the item that copied, then closes', async () => {
+  const writeText = vi.fn(async () => undefined);
+  Object.assign(navigator, { clipboard: { writeText } });
+  mount();
+  fireEvent.click(await screen.findByRole('button',{name:'Actions for reply 1'}));
+  const item = await screen.findByRole('button',{name:'Copy Pockymoe session ID'});
+  fireEvent.click(item);
+  await waitFor(() => expect(item).toHaveAttribute('data-copy-state','copied'));
+  expect(writeText).toHaveBeenCalledWith('reply-1');
+  expect(item).toHaveTextContent('Copied');
+  // No separate notice at the foot of the menu.
+  expect(screen.queryByRole('status')).toBeNull();
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull(), { timeout: 2000 });
+});

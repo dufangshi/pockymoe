@@ -3,9 +3,9 @@ import { narrationQuery } from '../lib/transcriptPreferences';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Copy, ExternalLink, MoreHorizontal, Pencil, Star, Trash2 } from 'lucide-react';
+import { Check, Copy, ExternalLink, MoreHorizontal, Pencil, Star, Trash2, TriangleAlert } from 'lucide-react';
 import type { ThreadDetailDto } from '@pockymoe/shared';
-import { useMenuKeyboard, type WorkbenchThread } from '@pockymoe/thread-ui';
+import { copyText, useMenuKeyboard, type WorkbenchThread } from '@pockymoe/thread-ui';
 import { fetchRelayAccess, isInvisibleThreadError, request } from '../lib/api';
 import { RenameDialog } from './RenameDialog';
 import { ConfirmDialog } from './ConfirmDialog';
@@ -29,6 +29,8 @@ export function RecentThreadMenu({ thread, onFavorite, onRenamed, onRemoved, onN
   const [deleting, setDeleting] = useState(false);
   const [title, setTitle] = useState(thread.title);
   const [busy, setBusy] = useState(false);
+  // Copy feedback shows on the item that copied, as in every other menu.
+  const [copied, setCopied] = useState<{ key: string; state: 'copied' | 'failed' } | null>(null);
   const trigger = useRef<HTMLButtonElement>(null);
   const menu = useRef<HTMLDivElement>(null);
   const split = thread.key.indexOf(':');
@@ -38,7 +40,7 @@ export function RecentThreadMenu({ thread, onFavorite, onRenamed, onRemoved, onN
   useEffect(() => {
     if (!position) return;
     let active = true;
-    setNotice(''); setDetail(null); setOwner(false);
+    setNotice(''); setDetail(null); setOwner(false); setCopied(null);
     void Promise.all([
       request<ThreadDetailDto>(`${base}?view=summary&limit=1&compact=1${narrationQuery()}`),
       device === 'local' ? Promise.resolve({ kind: 'owner' }) : fetchRelayAccess({ deviceId: device, threadId: id }),
@@ -60,9 +62,19 @@ export function RecentThreadMenu({ thread, onFavorite, onRenamed, onRemoved, onN
     return () => { active = false; document.removeEventListener('pointerdown', close); document.removeEventListener('keydown', close); window.removeEventListener('resize', close); window.removeEventListener('scroll', scroll, true); };
   }, [position, base, device, id]);
   useMenuKeyboard(menu, Boolean(position), (restore) => { setPosition(null); if (restore) trigger.current?.focus(); }, 'button:not([disabled])');
-  const copy = async (text: string) => {
-    try { await navigator.clipboard.writeText(text); setNotice(translate("workbench.copied_dd2ce2")); }
-    catch { setNotice(translate("workbench.couldNotCopyCheckBrowserClipboardPermissions")); }
+  const copyItem = (key: string, label: string, text: string | null | undefined) => {
+    const state = copied?.key === key ? copied.state : null;
+    return (
+      <button data-copy-state={state ?? undefined} disabled={!text} onClick={async () => {
+        if (!text) return;
+        const ok = await copyText(text);
+        setCopied({ key, state: ok ? 'copied' : 'failed' });
+        if (ok) window.setTimeout(() => { setCopied(null); setPosition(null); }, 700);
+      }}>
+        {state === 'copied' ? <Check size={15} /> : state === 'failed' ? <TriangleAlert size={15} /> : <Copy data-icon="copy" size={15} />}
+        {state ? translate(state === 'copied' ? 'common.copied' : 'common.copyFailed') : label}
+      </button>
+    );
   };
   return <>
     <button ref={trigger} className="recent-thread-actions" aria-label={translate("workbench.actionsFor", { value1: thread.title })} aria-expanded={!!position} aria-haspopup="dialog" onClick={() => {
@@ -74,9 +86,9 @@ export function RecentThreadMenu({ thread, onFavorite, onRenamed, onRemoved, onN
       <p className="recent-thread-menu-title">{thread.title}</p>
       <button disabled={busy} onClick={async () => { setBusy(true); try { await onFavorite(thread.key); setPosition(null); } finally { setBusy(false); } }}><Star data-icon="shortcut" size={15} fill={thread.favorite ? 'currentColor' : 'none'} />{thread.favorite ? translate("workbench.unstarThread") : translate("workbench.starThread")}</button>
       <button onClick={() => { setPosition(null); onNavigate(thread.href); }}><ExternalLink data-icon="open" size={15} />{translate("workbench.openThread")}</button>
-      <button onClick={() => void copy(id)}><Copy data-icon="copy" size={15} />{translate("workbench.copyPockymoeSessionID")}</button>
-      <button disabled={!detail?.thread.providerSessionId} onClick={() => void copy(detail!.thread.providerSessionId!)}><Copy data-icon="copy" size={15} />{translate("workbench.copyHarnessSessionID")}</button>
-      {detail?.thread.providerSessionId && (detail.thread.agentId === 'codex' || detail.thread.provider === 'codex') && <button onClick={() => void copy(`codex://threads/${encodeURIComponent(detail.thread.providerSessionId!)}`)}><Copy data-icon="copy" size={15} />{translate("workbench.copyCodexDeeplink")}</button>}
+      {copyItem('pockymoe', translate("workbench.copyPockymoeSessionID"), id)}
+      {copyItem('harness', translate("workbench.copyHarnessSessionID"), detail?.thread.providerSessionId)}
+      {detail?.thread.providerSessionId && (detail.thread.agentId === 'codex' || detail.thread.provider === 'codex') && copyItem('codex', translate("workbench.copyCodexDeeplink"), `codex://threads/${encodeURIComponent(detail.thread.providerSessionId)}`)}
       {owner && <button onClick={() => { setTitle(detail?.thread.title ?? thread.title); setNotice(''); setPosition(null); setRenaming(true); }}><Pencil data-icon="rename" size={15} />{translate("workbench.renameThread")}</button>}
       {owner && <button className="recent-thread-delete" onClick={() => { setNotice(''); setPosition(null); setDeleting(true); }}><Trash2 data-icon="delete" size={15} />{translate("workbench.deleteThread")}</button>}
       {notice && <p role="status">{notice}</p>}

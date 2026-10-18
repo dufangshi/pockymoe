@@ -22,7 +22,7 @@ Maintained documentation for Pockymoe. For the product overview, start with the
 - [CI scope](ci.md)
 - [Web i18n](i18n.md)
 - [Theme presets](theme-presets.md) and [theme packs](theme-packs.md)
-- [UI and interaction principles](ui-principles.md): one pattern per action, copy, menus, secondary windows, status marks, touch sizes, wording
+- [UI and interaction principles](ui-principles.md): one pattern per action, copy, menus, secondary windows, expansion, status marks, alignment, touch sizes, input layout, wording; binding for every UI change
 - [Web live updates and request budget](web-live-updates.md)
 - [Rename: Remote Codex → Pockymoe](rename-pockymoe.md): identifiers that must keep their old names
 
