@@ -83,6 +83,17 @@ test('Treer UI prefix opens only the bound thread and accepts a prompt', async (
       return results;
     }, { prefix, otherId: other.id });
     expect(denied).toEqual([403, 403, 403]);
+    // Settings keep this browser's own preferences; device administration stays out.
+    await page.getByRole('button', { name: 'Open settings' }).first().click();
+    const settings = page.getByTestId('settings-dialog');
+    await expect(settings.getByRole('tab')).toHaveText(['Session', 'Preferences']);
+    await settings.getByRole('tab', { name: 'Preferences' }).click();
+    await expect(settings.getByText('Model pricing')).toHaveCount(0);
+    // A built-in theme pack loads through the tunnel prefix instead of falling back to Classic.
+    await settings.locator('label[data-preset="plum-pocket"]').click();
+    await expect(page.locator('html')).toHaveAttribute('data-theme-preset', 'plum-pocket');
+    expect(requests.filter(r => r.path.startsWith('/themes/') && r.status !== 200)).toEqual([]);
+    expect(requests.some(r => r.path.startsWith('/themes/plum-pocket.css'))).toBe(true);
     // Keep the observed page dependencies visible in the test evidence.
     console.log('Treer UI request audit:', JSON.stringify(requests.filter(r => r.path.startsWith('/api/') || r.status >= 400)));
   } finally {

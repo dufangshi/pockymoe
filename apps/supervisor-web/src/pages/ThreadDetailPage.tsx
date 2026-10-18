@@ -4124,6 +4124,7 @@ export function ThreadDetailPage() {
     {relayThreadIsOwner && relayRouteDeviceId && <HostFeatureGate feature="previews"><PortMappingsControl key={relayRouteDeviceId} deviceId={relayRouteDeviceId} open={portsOpen} onOpenChange={setPortsOpen} /></HostFeatureGate>}
     <ThreadDetailSurface
       restrictedNavigation={Boolean(hostScope)}
+      scopedSettings={Boolean(hostScope)}
       deviceMonitor={hostScope ? null : <><DeviceMonitor key={relayRouteDeviceId ?? 'local'} /><TourLauncherButton /></>}
       workbench={workbenchUrls({ ...workbenchNavigation, panels: {
         deviceLabel: presentationDeviceName ?? (relayRouteDeviceId ? relayRouteDeviceId.slice(0, 8) : translate('workbench.localDeviceName')),
@@ -4189,7 +4190,7 @@ export function ThreadDetailPage() {
       adapter={surfaceAdapter}
       metaContent={metaContent}
       settingsContent={settingsContent}
-      settingsSections={appSettingsSections()}
+      settingsSections={appSettingsSections({ scoped: Boolean(hostScope) })}
       mobileHeaderAction={mobileSessionConnectionButton}
       workspaceReturnHref={workspaceReturnHref}
       onCloseAppNavigation={shellNav?.closeNav ?? (() => {})}
