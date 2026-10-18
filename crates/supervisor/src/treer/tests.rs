@@ -658,7 +658,10 @@ async fn gate_provenance_matrix_http_and_websocket() {
         .unwrap();
     // The thread map's activity read lists only threads this tunnel may open.
     let started = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-    for (turn, thread) in [("turn-bound", root.to_owned()), ("turn-hidden", unbound.id.clone())] {
+    for (turn, thread) in [
+        ("turn-bound", root.to_owned()),
+        ("turn-hidden", unbound.id.clone()),
+    ] {
         f.hub
             .state
             .db
@@ -672,13 +675,19 @@ async fn gate_provenance_matrix_http_and_websocket() {
             })
             .unwrap();
     }
-    let activity: Value = request(&f, &h, reqwest::Method::GET, "/api/thread-activity?hours=24", true)
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let activity: Value = request(
+        &f,
+        &h,
+        reqwest::Method::GET,
+        "/api/thread-activity?hours=24",
+        true,
+    )
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
     let listed: Vec<&str> = activity["threads"]
         .as_array()
         .unwrap()
