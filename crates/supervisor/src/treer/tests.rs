@@ -675,7 +675,7 @@ async fn gate_provenance_matrix_http_and_websocket() {
     }
     for (method, path) in [
         (reqwest::Method::GET, format!("/api/threads/{}", unbound.id)),
-        (reqwest::Method::GET, "/api/management/supervisor".into()),
+        (reqwest::Method::GET, "/api/management/harnesses".into()),
         (
             reqwest::Method::PATCH,
             "/api/config/workspace-settings".into(),
@@ -1158,7 +1158,7 @@ async fn embedded_scope_supplies_server_session_without_granting_unmarked_access
             &f,
             &h,
             reqwest::Method::GET,
-            "/api/management/supervisor",
+            "/api/management/harnesses",
             true
         )
         .send()
@@ -1304,7 +1304,7 @@ async fn runtime_config_exposes_scope_only_to_bound_proxy_ui() {
     for (method, path) in [
         (reqwest::Method::POST, "/api/threads"),
         (reqwest::Method::POST, "/api/workspaces"),
-        (reqwest::Method::GET, "/api/management/supervisor"),
+        (reqwest::Method::GET, "/api/management/harnesses"),
     ] {
         let response = request(&f, &h, method, path, true).send().await.unwrap();
         assert_eq!(response.status(), 403);

@@ -179,6 +179,18 @@ pub fn gate(method: &str, path: &str, allowed_thread: impl Fn(&str) -> bool) -> 
     if method == "POST" && path == "/api/threads/start" {
         return true; // The scoped handler creates the corresponding Treer Agent.
     }
+    // Hub maintenance only: the same GitHub-latest Check/Update/Restart that
+    // Treer setup drives over loopback; Treer relaunches the App afterwards.
+    if method == "POST"
+        && matches!(
+            path,
+            "/api/management/supervisor/check"
+                | "/api/management/supervisor/update"
+                | "/api/management/supervisor/restart"
+        )
+    {
+        return true;
+    }
     if let Some(tail) = path.strip_prefix("/api/threads/") {
         let mut parts = tail.split('/');
         let id = parts.next().unwrap_or_default();
@@ -222,6 +234,7 @@ pub fn gate(method: &str, path: &str, allowed_thread: impl Fn(&str) -> bool) -> 
             | "/api/auth/session"
             | "/api/config/runtime"
             | "/api/config/model-pricing"
+            | "/api/management/supervisor"
             | "/api/agent-runtimes"
             | "/api/plugins"
             | "/threads"
@@ -506,7 +519,15 @@ mod tests {
             ("GET", "/api/threads/root", true),
             ("GET", "/api/threads/child", true),
             ("GET", "/api/threads/other", false),
-            ("GET", "/api/management/supervisor", false),
+            ("GET", "/api/management/supervisor", true),
+            ("POST", "/api/management/supervisor/update", true),
+            ("POST", "/api/management/supervisor/restart", true),
+            ("POST", "/api/management/supervisor/check", true),
+            ("PATCH", "/api/management/supervisor", false),
+            ("GET", "/api/management/harnesses", false),
+            ("POST", "/api/management/harnesses/codex", false),
+            ("GET", "/api/management/jobs", false),
+            ("GET", "/api/management/connections", false),
             ("PATCH", "/api/config/workspace-settings", false),
             ("GET", "/api/workspaces", false),
             ("POST", "/api/threads/root/fork", true),

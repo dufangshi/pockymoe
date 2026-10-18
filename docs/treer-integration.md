@@ -383,7 +383,7 @@ threads remain invisible, including in collections and WebSocket events.
 marked hook to intersect future Treer `policy/check` results and per-node
 permission bits. Controller AIS access remains limited to its own Agent family.
 Management, global settings writes, devices, upstreams and harness administration stay
-denied. An unrestricted App/workbench still requires verified human identity and
+denied, except the hub's own Supervisor status, check, update and restart. An unrestricted App/workbench still requires verified human identity and
 visibility filtering; local HTTP authentication alone does not supply that.
 
 ## Unsupported scope
@@ -472,13 +472,20 @@ read-only. Fork/import, sharing, terminal, device/global settings and harness
 administration controls are hidden. Denied requests with
 `thread_scope_forbidden` have a clear fallback message.
 
-Settings stay available with two tabs. **Session** holds the current thread's
+Settings stay available with three tabs. **Session** holds the current thread's
 own settings, the same ones its composer opens. **Preferences** keeps what is
 stored in this browser: language, theme and theme packs, color mode, text size,
 phone dock and hand, timeline folding and status summaries. It omits model
 pricing, the message-shortcut setting (saved to a relay account) and the tour.
-The other tabs administer the whole device and are not offered. The tunnel
-serves the built-in theme packs under `/themes/` read-only.
+**Device** holds only hub maintenance: the running and latest version, **Check
+updates**, **Update** and **Restart Supervisor**, without the local passcode or
+device templates. These use the same management API as Treer setup
+(`GET /api/management/supervisor`, `POST …/check|update|restart`). Updates go
+to GitHub latest only; the hub then exits and Treer relaunches it, and the page
+waits for it to return. Any user who can open a Pockymoe Agent here can already
+prompt an agent on this machine, which can run the same setup command. The other
+tabs administer the whole device and are not offered. The tunnel serves the
+built-in theme packs under `/themes/` read-only.
 
 Inside a Treer frame the workbench rail (or the phone top bar) has **Open in a new
 browser tab**, which opens the same page full size. It needs a Treer whose

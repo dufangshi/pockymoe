@@ -1085,9 +1085,9 @@ export function AppShellSettingsDialog({
           )}
           {section === 'upstreams' && <UpstreamsSettings />}
           {section === 'resources' && <HarnessResourceSettings />}
-          {section === 'device' && <LocalPasscodeSettings />}
+          {section === 'device' && !hostScope && <LocalPasscodeSettings />}
           {(section === 'device' || section === 'harnesses') && (
-            <RuntimeManagement view={section} />
+            <RuntimeManagement view={section === 'device' && hostScope ? 'supervisor' : section} />
           )}
 
           {section === 'advanced' && (
@@ -1440,8 +1440,8 @@ export function AppShellSettingsDialog({
 }
 
 /** Plugin settings open from the gear on their row in Plugins, not as top-level tabs.
- * A host scope (Treer Agent UI) gets Preferences only: the other tabs administer the
- * whole device, which that tunnel cannot authorize. */
+ * A host scope (Treer Agent UI) gets Preferences and Device, which there holds only
+ * hub maintenance (Check/Update/Restart); the other tabs administer the device. */
 export function appSettingsSections({ scoped = false }: { scoped?: boolean } = {}): SettingsSection[] {
   const sections = [
     {
@@ -1486,7 +1486,10 @@ export function appSettingsSections({ scoped = false }: { scoped?: boolean } = {
       description: translate("files.nativeConfigurationFilesAndRecoveryBackups"),
     },
   ];
-  return sections.filter((section) => !scoped || section.id === 'preferences').map((section) => ({
+  return sections.filter((section) => !scoped || section.id === 'preferences' || section.id === 'device').map((section) => ({
+    ...section,
+    ...(scoped && section.id === 'device' ? { description: translate('settings.treerDeviceDescription') } : {}),
+  })).map((section) => ({
     ...section,
     content: <AppShellSettingsDialog embedded section={section.id} />,
   }));

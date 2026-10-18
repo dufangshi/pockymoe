@@ -79,14 +79,21 @@ test('Treer UI prefix opens only the bound thread and accepts a prompt', async (
     await expect(page.getByText('Showing 1 of 1 turns')).toBeVisible();
     const denied = await page.evaluate(async ({ prefix, otherId }) => {
       const results = [];
-      for (const endpoint of [`api/threads/${otherId}`, 'api/management/supervisor', 'api/device/metrics']) results.push((await fetch(prefix + endpoint)).status);
+      for (const endpoint of [`api/threads/${otherId}`, 'api/management/harnesses', 'api/device/metrics']) results.push((await fetch(prefix + endpoint)).status);
       return results;
     }, { prefix, otherId: other.id });
     expect(denied).toEqual([403, 403, 403]);
     // Settings keep this browser's own preferences; device administration stays out.
     await page.getByRole('button', { name: 'Open settings' }).first().click();
     const settings = page.getByTestId('settings-dialog');
-    await expect(settings.getByRole('tab')).toHaveText(['Session', 'Preferences']);
+    await expect(settings.getByRole('tab')).toHaveText(['Session', 'Preferences', 'Device']);
+    // Device holds hub maintenance only: the Supervisor status loads through the tunnel.
+    const beforeDevice = requests.length;
+    await settings.getByRole('tab', { name: 'Device' }).click();
+    await expect(settings.getByText(/Running 0\.\d+\.\d+/)).toBeVisible();
+    await expect(settings.getByRole('button', { name: /Check updates/ })).toBeVisible();
+    await expect(settings.getByText('Local passcode')).toHaveCount(0);
+    expect(requests.slice(beforeDevice).filter(r => r.path.startsWith('/api/management/') && (r.path !== '/api/management/supervisor' || r.status !== 200))).toEqual([]);
     await settings.getByRole('tab', { name: 'Preferences' }).click();
     await expect(settings.getByText('Model pricing')).toHaveCount(0);
     // A built-in theme pack loads through the tunnel prefix instead of falling back to Classic.

@@ -130,10 +130,12 @@ function supervisorJobText(job: Job) {
 }
 const button =
   'host-secondary-button inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md border px-2.5 text-xs disabled:opacity-50';
+/** `supervisor` is the hub maintenance block alone (a Treer Agent UI): status,
+ *  Check, Update and Restart, without harnesses, jobs or device templates. */
 export function RuntimeManagement({
   view = 'all',
 }: {
-  view?: 'all' | 'device' | 'harnesses';
+  view?: 'all' | 'device' | 'harnesses' | 'supervisor';
 }) {
   const { locale: i18nLocale } = useI18n();
   const { pathname } = useLocation();
@@ -165,7 +167,7 @@ function DeviceRuntimeManagement({
   view,
 }: {
   apiRoot: string;
-  view: 'all' | 'device' | 'harnesses';
+  view: 'all' | 'device' | 'harnesses' | 'supervisor';
 }) {
   const { locale: i18nLocale } = useI18n();
   const [selectedHarness, setSelectedHarness] = useState('codex');
@@ -201,7 +203,7 @@ function DeviceRuntimeManagement({
     try {
       const [s, h] = await Promise.all([
         api<Supervisor>('supervisor'),
-        api<Harness[]>('harnesses'),
+        view === 'supervisor' ? Promise.resolve([]) : api<Harness[]>('harnesses'),
       ]);
       setSupervisor((previous) => ({
         ...previous,
@@ -251,7 +253,7 @@ function DeviceRuntimeManagement({
       loading = true;
       try {
         const [j, s] = await Promise.all([
-          api<Record<string, Job>>('jobs'),
+          view === 'supervisor' ? Promise.resolve<Record<string, Job>>({}) : api<Record<string, Job>>('jobs'),
           api<Supervisor>('supervisor'),
         ]);
         if (stopped) return;
@@ -601,7 +603,7 @@ function DeviceRuntimeManagement({
           )}
         </>
       )}
-      {view !== 'device' && (
+      {view !== 'device' && view !== 'supervisor' && (
         <>
           <div
             className="settings-harness-picker flex flex-wrap gap-2 pb-4"
@@ -642,7 +644,7 @@ function DeviceRuntimeManagement({
           {harnesses.filter((h) => h.id === selectedHarness).map(row)}
         </>
       )}
-      {view !== 'harnesses' && (
+      {view !== 'harnesses' && view !== 'supervisor' && (
         <UpstreamManagement
           key={apiRoot + 'templates'}
           apiRoot={apiRoot}
