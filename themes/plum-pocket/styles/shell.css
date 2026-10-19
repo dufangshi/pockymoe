@@ -932,3 +932,9 @@
 :theme .thread-ui-shell .matter-thread-tools-items :is(button, a)[aria-label] { border-radius: 12px; }
 :theme .thread-ui-shell .matter-thread-tools-items :is(button, a)[aria-label] > svg { color: var(--theme-accent-solid); }
 :theme .thread-ui-shell .matter-thread-tools-star { border-radius: 10px; }
+
+/* The desktop navigation strip and search on the plum chrome: chrome ink, as the rail's. */
+:theme .thread-ui-shell .matter-workbench .matter-tabs-row :is(.matter-nav-strip > button, .matter-tabs-search .matter-search-trigger) { color: var(--plum-chrome-muted); }
+:theme .thread-ui-shell .matter-workbench .matter-tabs-row :is(.matter-nav-strip > button, .matter-tabs-search .matter-search-trigger):hover { background: var(--plum-chrome-hover); color: var(--plum-chrome-fg); }
+:theme .thread-ui-shell .matter-workbench .matter-tabs-row > .matter-nav-strip { border-right-color: var(--plum-chrome-border); }
+:theme .thread-ui-shell .matter-workbench .matter-sidebar > .matter-nav-strip { border-bottom-color: color-mix(in srgb, var(--plum-chrome-border) 70%, transparent); }
