@@ -391,7 +391,26 @@ focused shortcut. The order is saved with the account (relay
 `PUT /relay/account/workbench/shortcuts`, `favoriteOrder` in the workbench
 snapshot; this browser's storage in local mode), so every device lists shortcuts
 the same way. Until the first reorder they list by recency; a new shortcut goes
-last. The drawer follows a sideways drag: rightwards from anywhere in the left 40% of the conversation or
+last.
+
+This workspace's conversations keep an order of their own, the same in the tab
+bar, the sidebar's **This workspace** and the phone's thread sheet: a mouse drags
+one once it moves, a touch after resting still for 0.7 s (the item sinks under a
+deepening tint, then lifts; the sheet does not slide away meanwhile). An agent
+thread stays with its conversation. The order is kept in this browser per device
+and workspace (`pockymoe.workspace-order.v1`); new conversations follow it by age.
+A conversation's agent threads are a small robot and count inside its row that
+opens them below it; the row keeps its place, and the thread sheet keeps its height
+and scrolls rather than growing upward. Both sections of the thread sheet fold.
+
+On the desktop the tabs row is the only bar: search at its left (Ctrl/⌘+F opens
+it, except in the terminal and code editors, which keep their own find; the open
+field covers the tabs), then the tabs, New thread and the thread tools, with the
+connection and notifications at the right. The sidebar switch, Back and Forward
+moved to the rail under the brand, which leads home. The thread tools menu holds
+the thread's actions, then its panels (agents, automations, plugins, split); it
+stays mounted while closed so the windows they open live on, and keeps clear of
+the screen edges. Phones keep their top bar. The drawer follows a sideways drag: rightwards from anywhere in the left 40% of the conversation or
 the files opens it, leftwards on it or on the dimmed page closes it, and so does
 a tap outside. Browsers cannot keep the screen edge from the system back gesture
 (Android gesture navigation, Safari's swipe back), so a drag that starts on the

@@ -38,7 +38,8 @@
 :theme .thread-ui-shell .matter-workbench {
   --plum-shell-card: var(--theme-bg);
   grid-template-columns: 49px 264px minmax(0, 1fr);
-  grid-template-rows: 44px minmax(0, 1fr);
+  /* One bar on the desktop: the tabs row (phones keep their top bar below). */
+  grid-template-rows: minmax(0, 1fr);
   background: var(--plum-chrome);
 }
 :theme .thread-ui-shell .matter-workbench :is(.matter-rail, .matter-topbar) { background: var(--plum-chrome); border: 0; }
@@ -283,6 +284,16 @@
 :theme .thread-ui-shell .matter-workbench .matter-agent-threads-summary:hover { background: rgb(199 166 255 / 20%); color: var(--plum-chrome-fg) !important; }
 :theme .thread-ui-shell .matter-workbench .matter-agent-threads .matter-thread-row { --plum-row-avatar: 24px; min-height: 40px; padding-block: 4px; }
 :theme .thread-ui-shell .matter-workbench .matter-agent-threads .matter-thread-copy > span { font-size: 12px; }
+
+/* A conversation's agent threads: a soft plum pill in its row, opening a
+   smaller-avatar list below on a plum guide line. */
+:theme .thread-ui-shell .matter-workbench .matter-thread-entry.matter-thread-entry:has(> .matter-agent-toggle) > .matter-thread-row { padding-right: 86px; }
+:theme .thread-ui-shell .matter-workbench .matter-agent-toggle { right: 36px; border-color: var(--plum-chrome-border); background: rgb(255 255 255 / 5%); color: var(--plum-chrome-muted); }
+:theme .thread-ui-shell .matter-workbench .matter-agent-toggle:is(:hover, [aria-expanded='true']) { background: rgb(199 166 255 / 20%); color: var(--plum-chrome-fg); }
+:theme .thread-ui-shell .matter-workbench .matter-agent-toggle[data-running] > svg:first-child { color: #f2c15c; }
+:theme .thread-ui-shell .matter-workbench .matter-agent-children::before { background: var(--plum-chrome-border); }
+:theme .thread-ui-shell .matter-workbench .matter-agent-children .matter-thread-row { --plum-row-avatar: 24px; min-height: 40px; padding-block: 4px; }
+:theme .thread-ui-shell .matter-workbench .matter-agent-children .matter-thread-copy > span { font-size: 12px; }
 
 /* The three pocket friends peek out at the foot of the list. */
 :theme .thread-ui-shell .matter-workbench .matter-sidebar-footer {
