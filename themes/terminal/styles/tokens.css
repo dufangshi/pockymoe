@@ -33,8 +33,16 @@
   --matter-chrome: #0b0d0c;
   --theme-shadow: none;
   --overlay-scrim: rgb(0 0 0 / 70%);
-  --scrollbar-thumb: #2d3330;
-  --scrollbar-thumb-hover: #5b6560;
+  /* Scrollbar: a square block on a hairline rail, lit in the accent when held. */
+  --scrollbar-radius: 0;
+  --scrollbar-inset: 3px;
+  --scrollbar-inset-hover: 2px;
+  --scrollbar-thumb-idle: #2d3330;
+  --scrollbar-thumb: #5b6560;
+  --scrollbar-thumb-hover: rgb(77 227 162 / 70%);
+  --scrollbar-thumb-active: #4de3a2;
+  --scrollbar-rail-y: linear-gradient(#2d3330, #2d3330) 50% 0 / 1px 100% no-repeat;
+  --scrollbar-rail-x: linear-gradient(#2d3330, #2d3330) 0 50% / 100% 1px no-repeat;
 }
 :root:root:theme[data-theme-effective='light'] {
   --term-ok: #00692c;
@@ -64,8 +72,12 @@
   --matter-chrome: #f0f0ee;
   --theme-shadow: none;
   --overlay-scrim: rgb(10 10 10 / 35%);
-  --scrollbar-thumb: #c9c9c4;
-  --scrollbar-thumb-hover: #a9a9a3;
+  --scrollbar-thumb-idle: #d9d9d4;
+  --scrollbar-thumb: #a9a9a3;
+  --scrollbar-thumb-hover: rgb(10 71 196 / 65%);
+  --scrollbar-thumb-active: #0a47c4;
+  --scrollbar-rail-y: linear-gradient(#e0e0dc, #e0e0dc) 50% 0 / 1px 100% no-repeat;
+  --scrollbar-rail-x: linear-gradient(#e0e0dc, #e0e0dc) 0 50% / 100% 1px no-repeat;
 }
 
 /* Shared UI tokens; the workbench and dialogs set their own palette. */

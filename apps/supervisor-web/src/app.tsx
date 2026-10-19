@@ -729,7 +729,7 @@ export function App() {
   }, [effectiveTheme, shownThemeMode, appliedTheme, themeRegistry.fixedMode]);
 
   return (
-    <div className="theme-shell theme-scrollbar">
+    <div className="theme-shell">
       <BrowserRouter basename={webBase}>
         <WorkspaceDocumentNavigationGuard>
         <DocumentTitleUpdater />

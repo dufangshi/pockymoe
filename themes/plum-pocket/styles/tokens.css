@@ -34,8 +34,16 @@
   --matter-chrome: #170d1d;
   --theme-shadow: 0 14px 36px rgb(10 4 14 / 45%);
   --overlay-scrim: rgb(14 6 18 / 72%);
-  --scrollbar-thumb: #4d3260;
-  --scrollbar-thumb-hover: #6a4682;
+  /* Scrollbar: a soft plum pill on the pack's dashed seam that turns honey when held. */
+  --scrollbar-size: 12px;
+  --scrollbar-inset: 3.5px;
+  --scrollbar-inset-hover: 2.5px;
+  --scrollbar-thumb-idle: rgb(106 70 130 / 45%);
+  --scrollbar-thumb: #6a4682;
+  --scrollbar-thumb-hover: rgb(240 181 74 / 75%);
+  --scrollbar-thumb-active: #f0b54a;
+  --scrollbar-rail-y: repeating-linear-gradient(to bottom, rgb(240 181 74 / 22%) 0 3px, transparent 3px 7px) 50% 0 / 1px 100% no-repeat;
+  --scrollbar-rail-x: repeating-linear-gradient(to right, rgb(240 181 74 / 22%) 0 3px, transparent 3px 7px) 0 50% / 100% 1px no-repeat;
   /* Plum chrome around the content, in both modes. */
   --plum-chrome: #170d1d;
   --plum-chrome-panel: #22142c;
@@ -72,8 +80,12 @@
   --matter-chrome: #2f1a3b;
   --theme-shadow: 0 14px 36px rgb(61 35 73 / 16%);
   --overlay-scrim: rgb(47 26 59 / 45%);
-  --scrollbar-thumb: #dcc5a3;
-  --scrollbar-thumb-hover: #c9a97c;
+  --scrollbar-thumb-idle: rgb(201 169 124 / 45%);
+  --scrollbar-thumb: #d4b88e;
+  --scrollbar-thumb-hover: rgb(232 169 58 / 80%);
+  --scrollbar-thumb-active: #dc9a26;
+  --scrollbar-rail-y: repeating-linear-gradient(to bottom, rgb(232 169 58 / 30%) 0 3px, transparent 3px 7px) 50% 0 / 1px 100% no-repeat;
+  --scrollbar-rail-x: repeating-linear-gradient(to right, rgb(232 169 58 / 30%) 0 3px, transparent 3px 7px) 0 50% / 100% 1px no-repeat;
   --plum-chrome: #2f1a3b;
   --plum-chrome-panel: #3d2349;
   --plum-chrome-hover: #4a2b58;
@@ -179,7 +191,6 @@
 :theme .thread-ui-shell .thread-goal-compose-cancel { border-color: var(--theme-border-strong); background: var(--theme-surface); }
 :theme .thread-ui-shell .thread-goal-compose-cancel:hover { background: var(--theme-hover); }
 :theme .thread-ui-shell .thread-chat-usage-footer { color: var(--theme-fg-muted); }
-:theme .thread-ui-shell .thread-graph-scroll-container { scrollbar-color: var(--scrollbar-thumb) transparent; }
 :theme .thread-ui-shell .thread-token-popover { border-color: var(--theme-border); background: var(--theme-panel); }
 :theme .thread-ui-shell .thread-token-popover-row { border-color: var(--theme-border); background: var(--theme-surface); }
 :theme .thread-workspace-link-menu { background: var(--theme-panel); border-color: var(--theme-border-strong); }

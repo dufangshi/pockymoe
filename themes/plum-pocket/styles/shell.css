@@ -152,8 +152,6 @@
     repeating-linear-gradient(45deg, transparent 0 13px, rgb(242 193 92 / 8%) 13px 14px),
     repeating-linear-gradient(-45deg, transparent 0 13px, rgb(242 193 92 / 8%) 13px 14px),
     var(--plum-chrome-panel);
-  scrollbar-width: thin;
-  scrollbar-color: var(--plum-chrome-active) transparent;
 }
 :theme .thread-ui-shell .matter-workbench.is-sidebar-hidden { grid-template-columns: 49px 0 minmax(0, 1fr); }
 :theme .thread-ui-shell .matter-workbench.is-sidebar-hidden .matter-sidebar { margin: 0; outline: 0; }

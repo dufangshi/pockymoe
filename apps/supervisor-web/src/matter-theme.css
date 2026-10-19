@@ -42,8 +42,6 @@
   --status-neutral-bg: var(--theme-surface);
   --status-neutral-border: var(--theme-border-strong);
   --status-neutral-fg: var(--theme-fg-soft);
-  --scrollbar-track: var(--theme-bg);
-  --scrollbar-corner: var(--theme-bg);
   color: var(--theme-fg);
   background: var(--theme-bg);
 }

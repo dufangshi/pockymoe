@@ -144,6 +144,16 @@ when the theme changes: `--terminal-bg`, `--terminal-fg`, `--terminal-cursor`,
 Monaco editor and diff view; `--shiki-*` for code blocks with the
 `code.cssSyntaxPalette` flag.
 
+**Scrollbars.** Every scrolling box draws the same scrollbar from these tokens,
+set on `:root` per mode: `--scrollbar-thumb-idle` (the box is not pointed at),
+`--scrollbar-thumb` (it is), `--scrollbar-thumb-hover`, `--scrollbar-thumb-active`;
+the shape `--scrollbar-size` (gutter, default 10px), `--scrollbar-inset` and
+`--scrollbar-inset-hover` (space around the thumb), `--scrollbar-radius`; and an
+optional rail shown while the box is pointed at, `--scrollbar-rail-y` and
+`--scrollbar-rail-x` (a `background` value). Do not set `scrollbar-width` or
+`scrollbar-color` except `scrollbar-width: none`: Chromium then draws the system
+bar instead.
+
 **Document attributes.** `<html>` carries `data-theme-preset` (the pack id or
 `classic`), `data-theme-features` (the pack's flags, space separated) and
 `data-theme-effective` (`light` or `dark`).

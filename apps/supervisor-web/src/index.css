@@ -127,10 +127,10 @@
   --status-neutral-border: oklch(0.45 0.018 95 / 0.7);
   --status-neutral-fg: oklch(0.79 0.012 90);
   --overlay-scrim: oklch(0.105 0.008 95 / 0.78);
-  --scrollbar-thumb: oklch(0.42 0.016 95 / 0.9);
-  --scrollbar-thumb-hover: oklch(0.53 0.02 90 / 0.95);
-  --scrollbar-track: oklch(0.175 0.008 95 / 0.92);
-  --scrollbar-corner: oklch(0.175 0.008 95 / 0.92);
+  --scrollbar-thumb-idle: oklch(0.85 0.01 95 / 0.12);
+  --scrollbar-thumb: oklch(0.85 0.01 95 / 0.24);
+  --scrollbar-thumb-hover: oklch(0.85 0.01 95 / 0.4);
+  --scrollbar-thumb-active: oklch(0.85 0.01 95 / 0.55);
 }
 
 :root[data-theme-effective='light'] {
@@ -188,10 +188,10 @@
   --status-neutral-border: oklch(0.67 0.023 220 / 0.52);
   --status-neutral-fg: oklch(0.38 0.018 235);
   --overlay-scrim: oklch(0.2 0.012 235 / 0.46);
-  --scrollbar-thumb: oklch(0.68 0.02 220 / 0.8);
-  --scrollbar-thumb-hover: oklch(0.54 0.023 235 / 0.88);
-  --scrollbar-track: oklch(0.925 0.011 220 / 0.9);
-  --scrollbar-corner: oklch(0.925 0.011 220 / 0.9);
+  --scrollbar-thumb-idle: oklch(0.35 0.02 235 / 0.12);
+  --scrollbar-thumb: oklch(0.35 0.02 235 / 0.24);
+  --scrollbar-thumb-hover: oklch(0.35 0.02 235 / 0.4);
+  --scrollbar-thumb-active: oklch(0.35 0.02 235 / 0.55);
 }
 
 html {
@@ -266,39 +266,60 @@ fieldset {
   color: var(--app-fg);
 }
 
-.theme-scrollbar,
-.theme-scrollbar * {
-  scrollbar-width: thin;
-  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+/* One drawn scrollbar for every scrolling box, never the system's: no arrows,
+   no track, a thumb that stays faint until the pointer is over its box. A theme
+   sets the --scrollbar-* tokens (docs/theme-packs.md). Setting scrollbar-width
+   or scrollbar-color on a box makes Chromium drop these rules and draw the
+   system bar again, so only hidden bars (scrollbar-width: none) may use them. */
+@supports selector(::-webkit-scrollbar) {
+  *::-webkit-scrollbar {
+    width: var(--scrollbar-size, 10px);
+    height: var(--scrollbar-size, 10px);
+    background: transparent;
+  }
+  *::-webkit-scrollbar-button,
+  *::-webkit-scrollbar-corner {
+    width: 0;
+    height: 0;
+    background: transparent;
+  }
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  /* A theme may draw a rail the thumb runs on, shown while the box is pointed at. */
+  *:hover::-webkit-scrollbar-track:vertical {
+    background: var(--scrollbar-rail-y, transparent);
+  }
+  *:hover::-webkit-scrollbar-track:horizontal {
+    background: var(--scrollbar-rail-x, transparent);
+  }
+  *::-webkit-scrollbar-thumb {
+    min-width: 28px;
+    min-height: 28px;
+    border: var(--scrollbar-inset, 3px) solid transparent;
+    border-radius: var(--scrollbar-radius, 999px);
+    background-color: var(--scrollbar-thumb-idle);
+    background-clip: padding-box;
+  }
+  *:hover::-webkit-scrollbar-thumb {
+    background-color: var(--scrollbar-thumb);
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    border-width: var(--scrollbar-inset-hover, 2px);
+    background-color: var(--scrollbar-thumb-hover);
+  }
+  *::-webkit-scrollbar-thumb:active {
+    border-width: var(--scrollbar-inset-hover, 2px);
+    background-color: var(--scrollbar-thumb-active);
+  }
 }
 
-.theme-scrollbar::-webkit-scrollbar,
-.theme-scrollbar *::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
-}
-
-.theme-scrollbar::-webkit-scrollbar-track,
-.theme-scrollbar *::-webkit-scrollbar-track {
-  background: var(--scrollbar-track);
-}
-
-.theme-scrollbar::-webkit-scrollbar-thumb,
-.theme-scrollbar *::-webkit-scrollbar-thumb {
-  border: 2px solid transparent;
-  border-radius: 999px;
-  background-clip: padding-box;
-  background: var(--scrollbar-thumb);
-}
-
-.theme-scrollbar::-webkit-scrollbar-thumb:hover,
-.theme-scrollbar *::-webkit-scrollbar-thumb:hover {
-  background: var(--scrollbar-thumb-hover);
-}
-
-.theme-scrollbar::-webkit-scrollbar-corner,
-.theme-scrollbar *::-webkit-scrollbar-corner {
-  background: var(--scrollbar-corner);
+/* Firefox has no scrollbar pseudo-elements: a thin bar in the theme's colour. */
+@supports not selector(::-webkit-scrollbar) {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--scrollbar-thumb) transparent;
+  }
 }
 
 .thread-sidebar-surface {
