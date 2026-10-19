@@ -46,6 +46,14 @@ interface NavigationSnapshot {
   notifications: WorkbenchNotification[];
 }
 const LOCAL_KEY = 'remote-codex.local-workbench.v1';
+const WORKSPACE_ORDER_KEY = 'pockymoe.workspace-order.v1';
+function loadWorkspaceOrders(key: string): Record<string, string[]> {
+  try {
+    const value: unknown = JSON.parse(localStorage.getItem(key) ?? '{}');
+    if (!value || typeof value !== 'object') return {};
+    return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string[]] => Array.isArray(entry[1]) && entry[1].every(item => typeof item === 'string')));
+  } catch { return {}; }
+}
 const referenceKey = (r: { deviceId: string | null; threadId: string }) =>
   `${r.deviceId ?? 'local'}:${r.threadId}`;
 function loadLocal(storageKey: string): NavigationSnapshot {
@@ -85,6 +93,11 @@ export function useWorkbenchNavigation(
 ) {
   const hostScope = useHostScope();
   const storageKey = useBrowserStateKey(LOCAL_KEY);
+  // The order the reader dragged each workspace's conversations into, kept in
+  // this browser: `device:workspace` -> root thread keys, first to last.
+  const orderKey = useBrowserStateKey(WORKSPACE_ORDER_KEY);
+  const [workspaceOrders, setWorkspaceOrders] = useState<Record<string, string[]>>(() => loadWorkspaceOrders(orderKey));
+  useEffect(() => { setWorkspaceOrders(loadWorkspaceOrders(orderKey)); }, [orderKey]);
   const sharesDeviceThreads = options.sharesDeviceThreads === true;
   const threadsRef = useRef(threads);
   threadsRef.current = threads;
@@ -515,10 +528,15 @@ export function useWorkbenchNavigation(
       })
       .catch(() => undefined);
   }, [unlabelled, tabDevice]);
+  const orderScope = workspaceId ? `${tabDevice}:${workspaceId}` : '';
+  const rank = new Map((workspaceOrders[orderScope] ?? []).map((key, index) => [key, index]));
+  // Dragged conversations first in their order, the rest after them by age; an
+  // agent thread goes with its root.
+  const rankOf = (thread: ThreadDto) => rank.get(`${tabDevice}:${thread.rootThreadId ?? thread.id}`) ?? Number.MAX_SAFE_INTEGER;
   const workspaceThreads = tabListed
       .filter(thread => !localEdits.removed.includes(`${tabContext.deviceId ?? 'local'}:${thread.id}`))
       .slice()
-      .sort((a, b) => (a.createdAt ?? '').localeCompare(b.createdAt ?? '') || a.id.localeCompare(b.id))
+      .sort((a, b) => rankOf(a) - rankOf(b) || (a.createdAt ?? '').localeCompare(b.createdAt ?? '') || a.id.localeCompare(b.id))
       .map(thread => {
         const key = `${tabContext.deviceId ?? 'local'}:${thread.id}`;
         const reference = snapshot.threads.find(r => referenceKey(r) === key);
@@ -641,6 +659,13 @@ export function useWorkbenchNavigation(
     error,
     onToggleFavorite: () => void toggleFavorite(),
     onReorderShortcuts: (keys: string[]) => void reorderShortcuts(keys),
+    onReorderWorkspaceThreads: orderScope ? (keys: string[]) => {
+      setWorkspaceOrders(orders => {
+        const next = { ...orders, [orderScope]: keys };
+        try { localStorage.setItem(orderKey, JSON.stringify(next)); } catch { /* The order still holds for this visit. */ }
+        return next;
+      });
+    } : undefined,
     onToggleThreadFavorite: (key: string) => toggleFavorite(key),
     onThreadRenamed: async (key: string, title: string) => {
       const listed = tabContext.threads.find(thread => `${tabContext.deviceId ?? 'local'}:${thread.id}` === key);

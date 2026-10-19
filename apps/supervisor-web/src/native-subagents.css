@@ -331,6 +331,23 @@
 .native-agents-history-toggle svg.is-expanded { transform: rotate(90deg); }
 .native-agents-running-count { display: inline-flex; align-items: center; gap: 4px; color: #20bc87; font-size: 11px; font-variant-numeric: tabular-nums; }
 .native-agents-running-count svg { animation: native-agent-running 1.4s linear infinite; }
+/* In the thread tools menu the row already says how many run: a small spinner closes the row. */
+.thread-ui-shell .matter-thread-tools-panels .native-agents-running-count { order: 2; margin-left: auto; font-size: 0; gap: 0; }
+.thread-ui-shell .matter-thread-tools-panels .native-agents-running-count svg { width: 12px; height: 12px; }
+/* While the menu is closed, its toggle carries a small green dot for running subagents. */
+.thread-ui-shell:has(.matter-thread-tools-panels .native-agents-running-count) .matter-toolbar-toggle { position: relative; }
+.thread-ui-shell:has(.matter-thread-tools-panels .native-agents-running-count) .matter-toolbar-toggle::before {
+  content: ''; position: absolute; top: 5px; right: 5px; width: 6px; height: 6px; border-radius: 50%;
+  background: #20bc87; box-shadow: 0 0 0 2px var(--theme-surface, var(--theme-panel));
+}
+/* In the phone's More sheet the count is a small badge on the icon's corner. */
+.thread-ui-shell .matter-workbench .matter-phone-sheet-host :is(button, a):has(.native-agents-running-count) { position: relative; }
+.thread-ui-shell .matter-workbench .matter-phone-sheet-host .native-agents-running-count {
+  position: absolute; top: 6px; left: calc(50% + 5px); min-width: 15px; height: 15px; padding: 0 4px;
+  justify-content: center; border-radius: 999px; background: #20bc87; color: #04150e;
+  font-size: 10px; font-weight: 700; line-height: 1; box-shadow: 0 0 0 2px var(--theme-panel);
+}
+.thread-ui-shell .matter-workbench .matter-phone-sheet-host .native-agents-running-count svg { display: none; }
 .native-agents-heading > span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 @keyframes native-agent-running { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .native-agents-running-count svg { animation: none; } .native-agents-history-toggle svg { transition: none; } }
