@@ -1,11 +1,11 @@
-The Windows Device Manager now follows Pockymoe's native GitHub release installation and maintenance model.
+Pockymoe Windows Device Manager 0.2.1 fixes connections stuck at “Installing the verified runtime and Web UI…”.
 
-- Rebuilt the desktop interface with Classic and Plum, each in light and dark mode. Connection details are collapsible; common actions stay visible. The product icon matches the Web app.
-- Supports current PowerShell setup commands, account enrollment, one-use setup codes and legacy REMOTE_CODEX configuration. Pasted commands are parsed locally, never executed as shell code.
-- Downloads a versioned Rust runtime from GitHub, verifies its SHA-256 and actual version, and lets native setup install the matching Web bundle. No Pockymoe npm package, Node or Agent is installed by the Manager.
-- Requires native runtime 0.13.3 or newer, which fixes Windows PowerShell 5.1 background startup and maintenance stop. For an older native runtime, Disconnect then Connect performs a one-time migration with the saved registration.
-- Uses authenticated local Supervisor Check/Update APIs. The Supervisor owns update restart and task recovery. Tray reconnect resolves native/current.json on each launch and waits during maintenance.
-- Preserves the existing Manager install location, startup entry, device configuration, database and encryption identity. A running legacy npm device must be disconnected before the Manager migrates it; paste the current Windows setup command from the Devices page. Agents are managed in Web Settings.
+- Connect starts the hidden Supervisor launcher directly and detaches it from the caller's Windows Job, avoiding WMI/CIM process creation.
+- First-time setup detects an unconsumed launcher after five seconds and starts it after validating the activated runtime, device configuration and log paths. Registration is not repeated.
+- Manager-initiated restart/update can also recover an unconsumed native worker after verifying its plan and executable checksum. The native worker continues to own task draining and restart verification.
+- Recovery handles native restart payloads with System.Text.Json instead of Windows PowerShell's legacy JSON parser.
+- Setup reports connection progress and has a three-minute deadline instead of waiting ten minutes at the installation stage.
+- Device configuration, database history, account binding and transport identity remain in place. Runtime downloads retain GitHub release checksum and version verification.
 
 Validation includes Windows builds, isolated parser/auth/checksum tests, real native setup with a local Relay and account binding, maintenance restart, tray reconnect and identity preservation, plus screenshots of four themes at 100%, 150% and 200% scale.
 

@@ -36,7 +36,7 @@ internal sealed class MainForm : Form
         var header = Grid(2, DockStyle.Fill); header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 170));
         var brand = new Panel { Dock = DockStyle.Fill };
         brand.Controls.Add(new Label { Text = "Pockymoe", Font = new Font("Segoe UI", 22F, FontStyle.Bold), AutoSize = true, Location = Point.Empty });
-        brand.Controls.Add(new Label { Text = "Windows Device Manager  ·  0.2.0", Tag = "muted", AutoSize = true, Location = new Point(2, 40) });
+        brand.Controls.Add(new Label { Text = $"Windows Device Manager  ·  {typeof(MainForm).Assembly.GetName().Version!.ToString(3)}", Tag = "muted", AutoSize = true, Location = new Point(2, 40) });
         var names = new[] { "plum-dark", "plum-light", "classic-dark", "classic-light" };
         var labels = new[] { "Plum · Dark", "Plum · Light", "Classic · Dark", "Classic · Light" };
         var themes = new ThemedButton { Text = labels[Math.Max(0, Array.IndexOf(names, _themeName))] + "  ▾", Dock = DockStyle.Top, Height = 32, AccessibleName = "Color theme", Margin = new Padding(0, 10, 0, 0) };

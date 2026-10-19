@@ -7,6 +7,8 @@ namespace RemoteCodex.DeviceManager.Services;
 
 internal sealed class RelaySupervisorService(ProcessRunner runner, AppLogger logger)
 {
+    private HashSet<string>? _maintenanceLaunchers;
+    private HashSet<string>? _supervisorLaunchers;
     internal static Dictionary<string, JsonElement> ReadConfiguration()
     {
         var raw = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(File.ReadAllText(AppPaths.RelayConfigPath)) ?? [];
@@ -23,6 +25,17 @@ internal sealed class RelaySupervisorService(ProcessRunner runner, AppLogger log
     private static HttpClient LocalClient() => new(new HttpClientHandler { UseProxy = false, AllowAutoRedirect = false }) { Timeout = TimeSpan.FromSeconds(20) };
     public async Task<JsonElement> ManagementAsync(string action, bool post, CancellationToken cancellationToken)
     {
+        if (_maintenanceLaunchers is not null && _supervisorLaunchers is not null)
+        {
+            WindowsSupervisorLauncher.RecoverMaintenance(_maintenanceLaunchers, logger);
+            if (RuntimeState.ResolveNative() is { } installed)
+                WindowsSupervisorLauncher.TryRecoverSetup(installed.Version, _supervisorLaunchers, logger);
+        }
+        if (post && action is "/restart" or "/update")
+        {
+            _maintenanceLaunchers = WindowsSupervisorLauncher.PendingMaintenanceLaunchers();
+            _supervisorLaunchers = WindowsSupervisorLauncher.PendingLaunchers();
+        }
         using var client = LocalClient();
         var root = $"http://127.0.0.1:{Port}";
         var credentials = new { username = Saved("POCKYMOE_ADMIN_USERNAME"), password = Saved("POCKYMOE_ADMIN_PASSWORD") };
@@ -32,6 +45,12 @@ internal sealed class RelaySupervisorService(ProcessRunner runner, AppLogger log
             : await client.GetAsync(root + "/api/management/supervisor" + action, cancellationToken);
         if (!response.IsSuccessStatusCode) throw new InvalidOperationException($"Device management returned {(int)response.StatusCode}. Use Web Settings to inspect the device.");
         using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
+        if (body.RootElement.TryGetProperty("job", out var job) && job.TryGetProperty("phase", out var phase)
+            && phase.GetString() is "completed" or "failed")
+        {
+            _maintenanceLaunchers = null;
+            _supervisorLaunchers = null;
+        }
         return body.RootElement.Clone();
     }
     public async Task<SupervisorState> GetStateAsync(RuntimeState runtime, CancellationToken cancellationToken)
@@ -72,9 +91,8 @@ internal sealed class RelaySupervisorService(ProcessRunner runner, AppLogger log
         static string Quote(string value) => "'" + value.Replace("'", "''") + "'";
         await File.WriteAllTextAsync(script, $"$ErrorActionPreference='Stop'\nRemove-Item -LiteralPath $PSCommandPath -Force\n$env:HOME={Quote(AppPaths.UserHome)}\n$env:USERPROFILE={Quote(AppPaths.UserHome)}\nRemove-Item Env:POCKYMOE_ENROLL_SECRET -ErrorAction SilentlyContinue\n$ErrorActionPreference='Continue'\n& {Quote(installed.Executable)} device-run --config {Quote(AppPaths.RelayConfigPath)} *> {Quote(AppPaths.RelayLogPath)}\nexit $LASTEXITCODE\n", cancellationToken);
         Directory.CreateDirectory(Path.GetDirectoryName(AppPaths.RelayLogPath)!);
-        var commandLine = $"powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File \"{script}\"";
-        var result = await runner.RunAsync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", "$r=Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine=" + Quote(commandLine) + "}; exit $r.ReturnValue"], TimeSpan.FromSeconds(20), cancellationToken: cancellationToken);
-        if (!result.Success) { File.Delete(script); throw new InvalidOperationException("Unable to launch the native Supervisor."); }
+        try { WindowsSupervisorLauncher.StartScript(script); }
+        catch { File.Delete(script); throw; }
         for (var i = 0; i < 60; i++)
         {
             if (await GetStateAsync(runtime, cancellationToken) == SupervisorState.Running) { await ManagementAsync("", false, cancellationToken); return; }

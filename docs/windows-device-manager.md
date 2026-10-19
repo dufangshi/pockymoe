@@ -50,6 +50,22 @@ installations are not silently stopped or reinstalled during Manager startup.
 
 ## Validation and release
 
+Manager 0.2.1 starts its hidden Windows Supervisor launcher directly instead of
+using WMI/CIM process creation, requesting breakaway from the caller's Windows
+Job so maintenance is independent of the Manager's lifetime. During setup with existing runtime releases it
+also watches for an unconsumed one-use launcher: after five seconds it checks
+the activated version, executable, device configuration and log path before
+starting that launcher directly. It ignores launchers from before the current
+setup attempt and never repeats enrollment. Setup has a three-minute deadline
+and reports when it is waiting for the Relay connection. These changes require
+only a Manager update; the downloaded runtime remains the verified GitHub release.
+Manager-initiated maintenance uses the same recovery while polling its job. It
+validates the worker plan's device/status paths and checks the copied worker's
+SHA-256 against the installed executable before starting it. The native worker
+still owns draining, restart, verification and task recovery.
+Recovery parses payloads with System.Text.Json and writes a UTF-8 launcher,
+avoiding the legacy Windows PowerShell JSON parser during native restarts.
+
 `dotnet build apps/windows-device-manager/RemoteCodex.DeviceManager.csproj`
 can cross-compile on Linux. Windows validation is
 `scripts/windows/build-device-manager.ps1`: self-contained publish, isolated

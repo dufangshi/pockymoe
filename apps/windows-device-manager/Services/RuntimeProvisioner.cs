@@ -11,7 +11,7 @@ internal sealed class RuntimeProvisioner(AppLogger logger, ProcessRunner runner)
     private static HttpClient CreateClient()
     {
         var client = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("Pockymoe-DeviceManager/0.2.0");
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("Pockymoe-DeviceManager/0.2.1");
         return client;
     }
     public async Task<string> GetLatestRemoteCodexVersionAsync(CancellationToken cancellationToken)
@@ -77,7 +77,26 @@ internal sealed class RuntimeProvisioner(AppLogger logger, ProcessRunner runner)
                 ["HOME"] = AppPaths.UserHome,
                 ["USERPROFILE"] = AppPaths.UserHome
             };
-            var result = await runner.RunAsync(binary, args, TimeSpan.FromMinutes(10), env, cancellationToken: cancellationToken);
+            var previousLaunchers = WindowsSupervisorLauncher.PendingLaunchers();
+            using var setupCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            var setup = runner.RunAsync(binary, args, TimeSpan.FromMinutes(3), env, cancellationToken: setupCancellation.Token);
+            try
+            {
+                while (!setup.IsCompleted)
+                {
+                    await Task.WhenAny(setup, Task.Delay(1000, cancellationToken));
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (!setup.IsCompleted && WindowsSupervisorLauncher.TryRecoverSetup(version, previousLaunchers, logger))
+                        progress.Report(new("Connection", "Runtime installed. Starting the Supervisor and waiting for the Relay connection…", ProvisioningStepState.Running, 85));
+                }
+            }
+            catch
+            {
+                setupCancellation.Cancel();
+                try { await setup; } catch { }
+                throw;
+            }
+            var result = await setup;
             if (!result.Success) throw new InvalidOperationException("Native setup failed. " + AppLogger.Redact(result.CombinedOutput));
             var runtime = RuntimeState.FromNative() ?? throw new InvalidOperationException("Native setup did not produce a valid installation.");
             runtime.Save();

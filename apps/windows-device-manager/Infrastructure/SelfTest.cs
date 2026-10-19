@@ -36,6 +36,7 @@ internal static class SelfTest
             Require(RuntimeState.ResolveNative() is null, "Unmanaged executable rejected");
             File.WriteAllText(AppPaths.NativeCurrentPath, JsonSerializer.Serialize(installed, RuntimeState.JsonOptions));
             var runner = new ProcessRunner(new AppLogger());
+            await TestWindowsSetupRecoveryAsync(installed);
             var service = new RelaySupervisorService(runner, new AppLogger());
             var tcp = new TcpListener(IPAddress.Loopback, 0); tcp.Start(); var port = ((IPEndPoint)tcp.LocalEndpoint).Port; tcp.Stop();
             var database = Path.Combine(AppPaths.RelayDataRoot, "preserved.sqlite"); File.WriteAllText(database, "preserve-device-and-history");
@@ -77,6 +78,53 @@ internal static class SelfTest
         }
         catch (Exception e) { new AppLogger().Error("Self-test failed", e); return 1; }
     }
+    private static async Task TestWindowsSetupRecoveryAsync(NativeInstallation installed)
+    {
+        Directory.CreateDirectory(AppPaths.UserHome);
+        Directory.CreateDirectory(Path.GetDirectoryName(AppPaths.RelayLogPath)!);
+        var previous = WindowsSupervisorLauncher.PendingLaunchers();
+        var payload = Path.Combine(Path.GetDirectoryName(AppPaths.RelayLogPath)!, $"relay-supervisor.{Guid.NewGuid()}.launch.json");
+        var script = Path.ChangeExtension(payload, ".ps1");
+        var marker = Path.Combine(AppPaths.RuntimeRoot, "direct-launch-marker");
+        static string Quote(string value) => "'" + value.Replace("'", "''") + "'";
+        void WritePayload(string config) => File.WriteAllText(payload, JsonSerializer.Serialize(new
+        {
+            binary = installed.Executable, args = new[] { "device-run", "--config", config }, log = AppPaths.RelayLogPath,
+        }));
+        WritePayload(AppPaths.RelayConfigPath);
+        File.WriteAllText(script, "# Native setup launcher fixture\n");
+        var logger = new AppLogger();
+        Require(!WindowsSupervisorLauncher.TryRecoverSetup(installed.Version, previous, logger), "Allow normal setup launcher to start first");
+        File.SetLastWriteTimeUtc(payload, DateTime.UtcNow.AddSeconds(-10));
+        Require(!WindowsSupervisorLauncher.TryRecoverSetup("0.0.0", previous, logger), "Do not launch a different runtime version");
+        var stale = WindowsSupervisorLauncher.PendingLaunchers();
+        Require(!WindowsSupervisorLauncher.TryRecoverSetup(installed.Version, stale, logger), "Do not launch payloads left by earlier setup attempts");
+        WritePayload(Path.Combine(AppPaths.UserHome, "other-device.json"));
+        File.SetLastWriteTimeUtc(payload, DateTime.UtcNow.AddSeconds(-10));
+        Require(!WindowsSupervisorLauncher.TryRecoverSetup(installed.Version, previous, logger), "Do not launch a different device configuration");
+        WritePayload(AppPaths.RelayConfigPath);
+        File.SetLastWriteTimeUtc(payload, DateTime.UtcNow.AddSeconds(-10));
+        var secret = Environment.GetEnvironmentVariable("POCKYMOE_ENROLL_SECRET");
+        try
+        {
+            Environment.SetEnvironmentVariable("POCKYMOE_ENROLL_SECRET", "synthetic-launch-secret");
+            Require(WindowsSupervisorLauncher.TryRecoverSetup(installed.Version, previous, logger), "Recover the unconsumed native setup launcher without WMI");
+        }
+        finally { Environment.SetEnvironmentVariable("POCKYMOE_ENROLL_SECRET", secret); }
+        Require(!WindowsSupervisorLauncher.TryRecoverSetup(installed.Version, previous, logger), "Launch a pending setup only once");
+        for (var i = 0; i < 50 && File.Exists(payload); i++) await Task.Delay(100);
+        Require(!File.Exists(payload) && !File.Exists(script), "Hidden launcher consumes its one-use files before running the worker");
+        File.WriteAllText(script, $"$ErrorActionPreference='Stop'\nRemove-Item -LiteralPath $PSCommandPath -Force\nif($env:POCKYMOE_ENROLL_SECRET){{exit 1}}\n[IO.File]::WriteAllText({Quote(marker)},'started')\n");
+        try
+        {
+            Environment.SetEnvironmentVariable("POCKYMOE_ENROLL_SECRET", "synthetic-launch-secret");
+            WindowsSupervisorLauncher.StartScript(script);
+        }
+        finally { Environment.SetEnvironmentVariable("POCKYMOE_ENROLL_SECRET", secret); }
+        for (var i = 0; i < 50 && !File.Exists(marker); i++) await Task.Delay(100);
+        Require(File.Exists(marker), "Direct hidden launcher runs without the enrollment secret");
+    }
+
     public static async Task<int> RunNativeAsync(string binary)
     {
         System.Diagnostics.Process? relay = null;
