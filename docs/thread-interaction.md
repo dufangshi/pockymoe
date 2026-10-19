@@ -526,6 +526,13 @@ enabled, stored in this browser):
   the shell would run the lines one by one.
 - On a Mac ⌘C and ⌘V copy and paste, and Ctrl stays with the terminal.
 
+The shell runs with `TERM=xterm-256color` and `COLORTERM=truecolor`, since the
+terminal is always xterm.js, and without the variables that name the Supervisor's
+own terminal (`TMUX`, `TERM_PROGRAM`, …). Without any locale (a launchd or systemd
+service has none) it gets `LANG=en_US.UTF-8` on macOS and `C.UTF-8` elsewhere. A
+service-started Supervisor has no `TERM`, and zsh then cannot move the cursor
+left, so Delete looked like it typed spaces.
+
 On a phone, xterm cannot be drag-selected, so a long press on the terminal (or
 Select in the key bar) shows its lines as plain text in the same place, with the
 word under the finger selected; the phone's own handles and copy menu work there,

@@ -118,6 +118,7 @@ impl ShellHub {
         })?;
         let mut cmd = CommandBuilder::new(default_shell());
         cmd.cwd(cwd);
+        terminal_env(&mut cmd, |name| std::env::var_os(name));
         let child = pair.slave.spawn_command(cmd)?;
         let mut reader = pair.master.try_clone_reader()?;
         let writer = pair.master.take_writer()?;
@@ -350,6 +351,42 @@ impl ShellHub {
     }
 }
 
+/// The shell's terminal is xterm.js, whatever terminal (if any) started the
+/// Supervisor. A service manager starts it with no TERM and no locale: zsh then
+/// has no way to move the cursor left, so a deletion redraws as spaces after the
+/// text, and multibyte input breaks. Variables naming the Supervisor's own
+/// terminal (an enclosing tmux, Terminal.app) would mislead programs here.
+fn terminal_env(cmd: &mut CommandBuilder, get: impl Fn(&str) -> Option<std::ffi::OsString>) {
+    if cfg!(windows) {
+        return;
+    }
+    for name in [
+        "TMUX",
+        "TMUX_PANE",
+        "TERM_PROGRAM",
+        "TERM_PROGRAM_VERSION",
+        "TERM_SESSION_ID",
+    ] {
+        cmd.env_remove(name);
+    }
+    cmd.env("TERM", "xterm-256color");
+    cmd.env("COLORTERM", "truecolor");
+    let has_locale = ["LC_ALL", "LC_CTYPE", "LANG"]
+        .iter()
+        .any(|name| get(name).is_some_and(|value| !value.is_empty()));
+    if !has_locale {
+        // macOS ships no C.UTF-8; Linux may lack en_US.UTF-8.
+        cmd.env(
+            "LANG",
+            if cfg!(target_os = "macos") {
+                "en_US.UTF-8"
+            } else {
+                "C.UTF-8"
+            },
+        );
+    }
+}
+
 fn default_shell() -> String {
     #[cfg(windows)]
     {
@@ -358,5 +395,35 @@ fn default_shell() -> String {
     #[cfg(not(windows))]
     {
         std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into())
+    }
+}
+
+#[cfg(all(test, not(windows)))]
+mod terminal_env_tests {
+    use super::*;
+    use std::ffi::{OsStr, OsString};
+
+    #[test]
+    fn the_shell_gets_an_xterm_and_a_utf8_locale() {
+        let mut cmd = CommandBuilder::new("/bin/sh");
+        cmd.env("TERM", "dumb");
+        cmd.env("TMUX", "/tmp/tmux-1000/default,1,0");
+        terminal_env(&mut cmd, |_| None);
+        assert_eq!(cmd.get_env("TERM"), Some(OsStr::new("xterm-256color")));
+        assert_eq!(cmd.get_env("COLORTERM"), Some(OsStr::new("truecolor")));
+        assert_eq!(cmd.get_env("TMUX"), None);
+        assert!(cmd
+            .get_env("LANG")
+            .is_some_and(|lang| lang.to_string_lossy().ends_with("UTF-8")));
+    }
+
+    #[test]
+    fn a_locale_the_supervisor_has_is_kept() {
+        let mut cmd = CommandBuilder::new("/bin/sh");
+        cmd.env("LANG", "zh_CN.UTF-8");
+        terminal_env(&mut cmd, |name| {
+            (name == "LANG").then(|| OsString::from("zh_CN.UTF-8"))
+        });
+        assert_eq!(cmd.get_env("LANG"), Some(OsStr::new("zh_CN.UTF-8")));
     }
 }
