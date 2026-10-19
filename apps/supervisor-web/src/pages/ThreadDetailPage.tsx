@@ -1,3 +1,4 @@
+import { TurnNotification } from '../components/TurnNotification';
 import { useBrowserStateKey } from '../lib/browserStateScope';
 import { TRANSCRIPT_PREFERENCE_EVENT } from '../lib/transcriptPreferences';
 import { SupervisorHeartbeat, SUPERVISOR_HEARTBEAT_TIMEOUT_MS } from '../lib/supervisorHeartbeat';
@@ -3798,6 +3799,7 @@ export function ThreadDetailPage() {
     () => ({
       livePlan,
       liveItems,
+      renderTurnNotification: (turnId: string) => <TurnNotification key={`${relayRouteDeviceId}:${id}:${turnId}`} deviceId={relayRouteDeviceId} threadId={id!} turnId={turnId} />,
       backendProgress: backendProgress?.threadId === id ? backendProgress : null,
       backgroundAgentCount: detail?.activeSubagents?.filter((agent) => agent.isBackground && agent.status === 'running').length ?? 0,
       respondingRequestId,
@@ -3832,6 +3834,7 @@ export function ThreadDetailPage() {
       livePlan,
       backendProgress,
       id,
+      relayRouteDeviceId,
       loadingEarlier,
       openThread,
       optimisticSteers,

@@ -1,3 +1,4 @@
+import { NotificationSettings } from './NotificationSettings';
 import { translate, useI18n, type TranslationKey } from '@pockymoe/thread-ui/i18n';
 import { LanguageSwitcher } from '@pockymoe/thread-ui/i18n';
 import { FormDialog } from './FormDialog';
@@ -844,6 +845,7 @@ export function AppShellSettingsDialog({
         className={`min-h-0 flex-1 overflow-y-auto ${embedded ? '!overflow-visible !flex-none p-0' : 'px-4 pb-[max(1.5rem,env(safe-area-inset-bottom))] sm:px-5'}`}
       >
         <div className="divide-y divide-[var(--theme-border)]">
+          {section === 'notifications' && !hostScope && <NotificationSettings />}
           {section === 'preferences' && <fieldset className="py-5"><LanguageSwitcher /><p className="settings-hint mt-1 text-xs text-[var(--theme-fg-muted)]">{translate("files.chooseTheInterfaceLanguageForThisBrowser")}</p></fieldset>}
           {section === 'preferences' && !hostScope && <ComposerShortcutSettings />}
           {section === 'preferences' && !hostScope && <TourSettingsEntry />}
@@ -1448,6 +1450,12 @@ export function appSettingsSections({ scoped = false }: { scoped?: boolean } = {
       id: 'preferences',
       label: translate("files.preferences"),
       description: translate("files.appearanceAndConversationDisplayTailoredToYou"),
+    },
+    {
+      id: 'notifications',
+      label: translate('settings.notificationsTab'),
+      description: translate('settings.notificationsDescription'),
+      account: true,
     },
     {
       id: 'harnesses',

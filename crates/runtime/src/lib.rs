@@ -14,6 +14,7 @@ pub mod host_mode;
 pub mod import_id;
 pub mod interaction;
 pub mod local_access;
+mod local_notifications;
 pub mod local_sessions;
 pub mod management;
 mod node_runtime;

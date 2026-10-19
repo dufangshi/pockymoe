@@ -450,6 +450,7 @@ impl RelayStore {
         auth_factors::ensure_schema(&conn)?;
         share_activity::ensure_schema(&conn)?;
         notifications::ensure_schema(&conn)?;
+        notification_scope::ensure_schema(&conn)?;
         workbench::ensure_schema(&conn)?;
         preferences::ensure_schema(&conn)?;
         thread_groups::ensure_schema(&conn)?;

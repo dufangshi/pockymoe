@@ -17,6 +17,7 @@ mod linked_files;
 mod local_passcode_tests;
 mod management;
 mod message_sender;
+mod notifications;
 mod owner_trust;
 mod preview_cli;
 // Device-to-device messaging and files (docs/cross-device-peer.zh.md).

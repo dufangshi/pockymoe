@@ -1,3 +1,4 @@
+import { TurnNotification } from './TurnNotification';
 import { useMemo } from 'react';
 import { GraphChatThreadChatPanel, ThreadLoadingIndicator, createWorkspacePathResolver, type ThreadComposerProps } from '@pockymoe/thread-ui';
 import { translate as t, useI18n } from '@pockymoe/thread-ui/i18n';
@@ -79,6 +80,7 @@ export function WorkbenchReferencePane({
             timelineAdapter={adapter}
             transcriptItemCount={detail.turns.reduce((total, turn) => total + turn.items.length, 0)}
             timelineProps={{
+              renderTurnNotification: turnId => <TurnNotification key={`${controller.deviceId}:${threadId}:${turnId}`} deviceId={controller.deviceId === 'local' ? null : controller.deviceId} threadId={threadId!} turnId={turnId} />,
               liveItems: detail.liveItems ?? null,
               respondingRequestId: controller.respondingRequestId,
               ...(controller.canControl ? { onRespondToRequest: controller.respond } : {}),

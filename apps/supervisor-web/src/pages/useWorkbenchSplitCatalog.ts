@@ -7,7 +7,7 @@ import type {
   WorkspaceDto,
 } from '@pockymoe/shared';
 import type { WorkbenchThread } from '@pockymoe/thread-ui';
-import { request } from '../lib/api';
+import { relayModeActive, request } from '../lib/api';
 
 export interface SplitThreadSelection {
   deviceId: string | null;
@@ -100,9 +100,10 @@ export function useWorkbenchSplitCatalog(
   open: boolean,
   deviceId: string | null,
   workspaceId: string,
+  selectionMode = false,
 ) {
   const { devicePeer } = useHostCapabilities();
-  const scope = JSON.stringify([deviceId, workspaceId]);
+  const scope = JSON.stringify([deviceId, workspaceId, selectionMode]);
   const owner = useRef({
     scope,
     workspaces: new Map<string, CatalogResource<WorkspaceDto>>(),
@@ -177,7 +178,7 @@ export function useWorkbenchSplitCatalog(
   const loadDevices = useCallback(
     async (retry = false) => {
       if (
-        !devicePeer || !deviceId ||
+        !devicePeer || (!deviceId && !selectionMode) || (selectionMode && !relayModeActive()) ||
         current.devices.loading ||
         (current.devices.loaded && !retry) ||
         (current.devices.error && !retry)
@@ -192,7 +193,7 @@ export function useWorkbenchSplitCatalog(
         });
         // Only the user's own devices; shared access keeps its existing server checks.
         current.devices = {
-          items: portal.devices.filter((device) => device.id !== deviceId),
+          items: selectionMode ? portal.devices : portal.devices.filter((device) => device.id !== deviceId),
           loading: false,
           loaded: true,
           error: null,
@@ -206,14 +207,14 @@ export function useWorkbenchSplitCatalog(
       }
       publish();
     },
-    [current, deviceId, devicePeer, publish],
+    [current, deviceId, devicePeer, selectionMode, publish],
   );
   useEffect(() => {
     if (!open) return;
-    void loadWorkspaces(deviceId);
-    void loadThreads(deviceId);
-    void loadDevices();
-  }, [open, deviceId, loadWorkspaces, loadThreads, loadDevices]);
+    if (!selectionMode || !relayModeActive()) void loadWorkspaces(deviceId);
+    if (!selectionMode) void loadThreads(deviceId);
+    if (!selectionMode || relayModeActive()) void loadDevices();
+  }, [open, deviceId, selectionMode, loadWorkspaces, loadThreads, loadDevices]);
   return {
     devices: current.devices,
     workspaces: (id: string | null) =>

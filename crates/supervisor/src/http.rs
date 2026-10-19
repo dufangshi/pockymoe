@@ -67,6 +67,7 @@ pub(crate) fn router_with_treer(state: AppState, hub: Option<Arc<crate::treer::H
     crate::peer_send::start_outbox_worker(&state);
     let router = Router::new()
         .merge(crate::treer::routes())
+        .merge(crate::notifications::routes())
         .route(
             "/api/transport/bind",
             post(crate::owner_trust::bind_endpoint),

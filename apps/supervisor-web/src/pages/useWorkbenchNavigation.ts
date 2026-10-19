@@ -1,3 +1,4 @@
+import { NOTIFICATION_CHANGE } from '../lib/notificationSettings';
 import { useBrowserStateKey } from '../lib/browserStateScope';
 import { narrationQuery } from '../lib/transcriptPreferences';
 import { useHostScope } from '../lib/hostCapabilities';
@@ -141,6 +142,12 @@ export function useWorkbenchNavigation(
               signal: controller.signal,
             })
           : loadLocal(storageKey);
+        if (!relay && !hostScope) {
+          try {
+            const events = await request<WorkbenchNotification[]>('api/account/notifications/events', { signal: controller.signal, cache: 'no-store' });
+            next.notifications = Array.isArray(events) ? events : [];
+          } catch { next.notifications = []; }
+        }
         if (!relay && hostScope) {
           const missing = new Set<string>();
           await Promise.all(next.threads.map(async r => {
@@ -257,19 +264,21 @@ export function useWorkbenchNavigation(
       }
     }
     void refresh();
-    // Local navigation is localStorage only; relay navigation crosses devices.
+    // Local shortcuts stay in this browser; notifications belong to the owner.
     const interval = window.setInterval(() => void refresh(), relay ? RELAY_NAVIGATION_REFRESH_MS : 5000);
     const onVisible = () => {
       if (document.visibilityState === 'visible') void refresh();
     };
     document.addEventListener('visibilitychange', onVisible);
     window.addEventListener('storage', onVisible);
+    window.addEventListener(NOTIFICATION_CHANGE, onVisible);
     return () => {
       alive = false;
       controller.abort();
       clearInterval(interval);
       document.removeEventListener('visibilitychange', onVisible);
       window.removeEventListener('storage', onVisible);
+      window.removeEventListener(NOTIFICATION_CHANGE, onVisible);
     };
   }, [relay, deviceId, sharesDeviceThreads, storageKey, hostScope]);
 
@@ -419,7 +428,7 @@ export function useWorkbenchNavigation(
   });
   const localNotifications: WorkbenchNotification[] = relay
     ? []
-    : threads
+    : !hostScope ? snapshot.notifications : threads
         .filter((t) => t.lastTurnCompletedAt)
         .map((t) => ({
           id: `${t.id}:${t.lastTurnCompletedAt}`,

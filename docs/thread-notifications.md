@@ -2,18 +2,83 @@
 
 ## Behavior
 
-Open **Relay account → Thread notifications → Enable notifications** in each
-browser that should receive updates. Browser permission requires an explicit
-click. The setting belongs to the Relay account, and includes every device the
-account owns; it is independent of Supervisor settings and currently open tabs.
-Devices and threads shared *to* that account are excluded. Ownership here means
-the device's Relay owner, including threads created on that device by a guest.
+Open **Settings → Notifications** to choose the account's notification scope:
+
+- **Subscribed turns** (default): click the bell in a working turn's footer. The
+  filled accent bell, pressed state and inline confirmation show that this exact
+  turn will notify you. Click again to cancel. Subscriptions persist across
+  refreshes, browsers and devices; they do not carry into a subsequent turn.
+- **All turns**: every eligible turn notifies, matching the previous push policy.
+- **Selected devices and workspaces**: add removable device/workspace cards. A
+  device includes all its threads; a workspace includes its threads on that
+  specific device. Workspace selection uses the same device-first picker as split
+  conversations. Removing a card offers Undo. An empty list sends no notices.
+
+Preferences save immediately and show Saved or an inline error with Retry. The
+turn bell is hidden in All/Selected scope. Settings tabs carry an account icon
+only when the entire tab is account-scoped: Notifications qualifies; Preferences
+and Upstreams mix browser/device/account settings and do not. Other existing tabs
+administer the selected device.
+
+Relay stores settings and exact device/thread/turn subscriptions under the
+currently authenticated account. The scope applies equally to Web Push, native
+Relay push and the workbench notification list. Push still covers only devices
+owned by that account (including threads created there by a guest); devices shared
+*to* it do not gain push delivery. Workbench events retain their existing access
+checks, and a scope/card/subscription never grants thread access.
+
+Without a Relay account, the standalone local owner stores notification settings,
+subscriptions and completed-event evidence in SQLite `kv`, alongside the existing
+local access data, under `local:owner:*`. They are shared by browsers reaching that
+local owner, not by independent Supervisors with independent local owners. Local
+workbench shortcuts still use browser local storage; there was no existing
+server-side local account preference table. Treer host-scoped pages do not expose
+this account tab.
+
+Enable **system notifications in this browser** separately in every browser that
+should receive Relay updates. Browser permission requires an explicit click and
+remains browser-specific. Pages may be closed after registering Web Push; local
+mode uses the workbench bell. Signing out/revoking a Relay session still disables
+that session's push subscriptions.
 
 Notifications report a **completed or failed turn**, regardless of its provider.
 Token streaming, tool progress, interruption and uncertain/recovering states do
-not send notifications. A queued follow-up may already be working by the time a
-previous turn's notification arrives. Notices contain a generic outcome and the
-thread URL, without prompts, responses, thread titles or workspace names.
+not send notifications. Interruption ends a turn subscription without notifying.
+The shared Rust `should_notify_turn` policy combines the account settings,
+authenticated device, device-reported workspace and exact turn subscription. A
+queued follow-up may already be working when the preceding turn's notice arrives.
+Push notices contain a generic outcome and thread URL, without prompts, responses,
+thread titles or workspace names.
+
+Missing settings default to **Subscribed turns**, including accounts that used
+notifications before scope settings existed. This deliberately changes the old
+notify-every-turn default: old users must subscribe to working turns or choose All
+turns. Browser push permissions/subscriptions are preserved. Old clients can still
+register push but need updated Web assets to choose scope or subscribe. Old
+Supervisors' events without `workspaceId` support turn subscriptions and device
+cards; a workspace card cannot match missing metadata and never guesses from a
+browser-supplied navigation reference.
+
+## Account API
+
+| Endpoint | Methods | Purpose |
+| --- | --- | --- |
+| `/relay/account/notifications/preferences` | GET, PUT | Account scope and device/workspace cards |
+| `/relay/account/notifications/turns/{device}/{thread}/{turn}` | GET, PUT | Exact turn subscription (`subscribed` boolean) |
+| `/relay/account/notifications` | GET | Existing browser/native push registration settings |
+| `/api/account/notifications/preferences` | GET, PUT | Standalone local owner scope/cards |
+| `/api/account/notifications/turns/{thread}/{turn}` | GET, PUT | Standalone local owner turn subscription |
+| `/api/account/notifications/events` | GET | Local workbench events, filtered by the same policy |
+
+Preferences use camelCase JSON: `scope` is `subscribed`, `all` or `selected`;
+`devices` contains `{deviceId,name}` and `workspaces` contains
+`{deviceId,workspaceId,name,deviceName}`. Standalone cards use `deviceId: "local"`.
+There are at most 200 cards. Responses are not cached. All Relay endpoints require
+account authentication; local endpoints inherit local authentication and cannot
+be used to override a Relay account. A late subscription write after event
+acceptance returns conflict. Ended subscriptions are no longer active; their
+frozen evidence is retained only with the bounded event history so subsequent
+workbench reads agree with push eligibility.
 
 Clicking a notification focuses a tab already showing the same device/thread
 path, ignoring query strings and fragments. Otherwise it opens a new tab. The
@@ -38,12 +103,14 @@ Tab status works for local Supervisor pages too and needs no push permission.
 
 ## Delivery and retention
 
-1. Supervisor persists a completion notice in its existing `kv` store, in the
+1. Supervisor persists a terminal notice (including workspace identity) in its existing `kv` store, in the
    same transaction as the completed turn. Connected Supervisors retry pending
    notices over their authenticated Relay tunnel every heartbeat.
 2. Relay determines the device owner from its authenticated device record. It
-   atomically records the event and fans out to that owner's active browser
-   subscriptions, then acknowledges the turn to remove the device's notice.
+   atomically records the event, ends subscriptions and applies the account policy
+   before fan-out to that owner's active browser subscriptions, then acknowledges
+   the turn to remove the device's notice. Filtered events are still acknowledged
+   and deduplicated; pending deliveries recheck the policy before sending.
 3. A background Relay worker encrypts each payload with Web Push `aes128gcm`,
    signs VAPID, and sends it to the browser's push service. Browser pages do not
    need to stay open or maintain a connection to each Supervisor.
@@ -53,8 +120,9 @@ Tab status works for local Supervisor pages too and needs no push permission.
    ambiguity or process crash after acceptance can still cause redelivery;
    notification tags coalesce repeated deliveries of the same turn.
 
-Relay SQLite contains `relay_push_subscriptions`, `relay_push_events` and
-`relay_push_deliveries`. Supervisor needs no additional table. Relay generates
+Relay SQLite contains `relay_push_subscriptions`, `relay_push_events`,
+`relay_push_deliveries`, `relay_notification_preferences` and
+`relay_turn_subscriptions`. Supervisor uses its existing `kv` table. Relay generates
 its VAPID key pair once in `relay_settings`; include this database in backups to
 preserve subscriptions. The private VAPID key is never returned by the API.
 
@@ -86,10 +154,13 @@ subscription registration cannot turn the Relay into an HTTP proxy.
 
 ## Validation
 
-The focused Rust regressions exercise cross-device owner-only fan-out, share
-exclusion, deduplication, session revocation, event expiry, payload encryption
-round-trip and subscription endpoint restrictions. Runtime interaction tests
-check durable outbox read/ACK and that passive inbox messages produce no notice.
+The focused Rust regressions exercise account isolation, exact-turn subscriptions,
+device/workspace scope, missing legacy metadata, owner-only fan-out, share
+exclusion, deduplication, session revocation, event expiry, payload encryption and
+subscription endpoint restrictions. The workbench caps eligible notices after
+filtering, so unrelated turns cannot evict subscribed notices. Runtime interaction
+tests cover durable outbox read/ACK, subscriptions through recovery and explicit
+interruption, and passive inbox messages producing no notice.
 
 Vitest covers current SPA-route matching and focus/new-tab policy, plus persistent
 background unread state. `e2e/notifications.spec.ts` uses an isolated real Relay
@@ -98,6 +169,11 @@ disable, encrypted thread access, completion persistence/ACK, tab read state and
 Chromium's Service Worker push dispatcher. Only browser vendor subscription
 creation is mocked: automated Chromium has no vendor push credentials. This is
 not a live FCM/APNs delivery test or an OS notification click test.
+
+`e2e/notification-scope.spec.ts` exercises the local owner through two browser
+contexts: refresh and cross-browser subscription persistence, turn completion,
+late-write rejection, the next turn, saved scope and workspace cards with Undo.
+Component tests cover optimistic save rollback and distinct read/write retries.
 
 Build `cargo build -p pockymoe` and
 `pnpm --filter @pockymoe/supervisor-web build` first. Run the spec with explicit

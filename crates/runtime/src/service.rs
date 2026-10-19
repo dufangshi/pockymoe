@@ -858,7 +858,14 @@ impl Supervisor {
                     rows
                 };
                 if turn_status=="interrupted" {
-                    for turn in &transitioned {automation::turn_ended(&tx,thread_id,turn,"interrupted",&now)?;}
+                    for turn in &transitioned {
+                        automation::turn_ended(&tx,thread_id,turn,"interrupted",&now)?;
+                        if self.config.relay_server_url.is_some() {
+                            crate::relay_notifications::record(&tx, thread_id, turn, "interrupted", &now)?;
+                        } else {
+                            crate::local_notifications::record(&tx, thread_id, turn, "interrupted", &now)?;
+                        }
+                    }
                 }
                 tx.execute(
                     "UPDATE thread_turns
@@ -3133,6 +3140,8 @@ impl Supervisor {
             automation::turn_ended(conn, thread_id, turn_id, status, now)?;
             if self.config.relay_server_url.is_some() {
                 crate::relay_notifications::record(conn, thread_id, turn_id, status, now)?;
+            } else {
+                crate::local_notifications::record(conn, thread_id, turn_id, status, now)?;
             }
             tx.commit()?;
             Ok(())

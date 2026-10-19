@@ -1,7 +1,6 @@
 import { AccountSecurityPanel } from '../components/AccountSecurityPanel';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { ProductHeader } from '../components/ProductHeader';
-import { RelayNotifications } from '../components/RelayNotifications';
 import {
   RelaySecurityPanel,
 } from '../components/RelaySecurity';
@@ -235,7 +234,6 @@ export function RelayAccountSettingsPanel({
       </section>
 
       <AccountSecurityPanel />
-      <RelayNotifications />
       <RelaySecurityPanel />
 
     </div>
