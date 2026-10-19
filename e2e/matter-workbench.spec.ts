@@ -33,7 +33,9 @@ test('recent thread menus manage shortcuts and history while glass controls and 
   const menu = page.getByRole('dialog', { name: 'Thread actions: Manage from Recent chats', exact: true });
   await menu.getByRole('button', { name: 'Star thread', exact: true }).click();
   // Shortcuts start folded.
-  await page.getByRole('button', { name: /^Shortcuts/, expanded: false }).click();
+  // Shortcuts start open on the desktop; a phone's drawer keeps them folded.
+  if (testInfo.project.name === 'mobile-chromium') await page.getByRole('button', { name: /^Shortcuts/, expanded: false }).click();
+  await expect(page.getByRole('button', { name: /^Shortcuts/ })).toHaveAttribute('aria-expanded', 'true');
   await expect(page.getByTestId('shortcuts').getByRole('link', { name: /Manage from Recent chats/ })).toBeVisible();
   await expect(page.locator('.matter-thread-tabs a[aria-current="page"]')).toContainText('Keep this conversation');
   await recent.getByRole('button', { name: 'Actions for Manage from Recent chats' }).click();
@@ -323,7 +325,9 @@ test('Matter workbench floats the composer, persists shortcuts, searches history
     await page
       .getByRole('button', { name: 'Toggle shortcuts sidebar' })
       .click();
-  await page.getByRole('button', { name: /^Shortcuts/, expanded: false }).click();
+  // Shortcuts start open on the desktop; a phone's drawer keeps them folded.
+  if (testInfo.project.name === 'mobile-chromium') await page.getByRole('button', { name: /^Shortcuts/, expanded: false }).click();
+  await expect(page.getByRole('button', { name: /^Shortcuts/ })).toHaveAttribute('aria-expanded', 'true');
   await expect(
     page
       .getByTestId('shortcuts')

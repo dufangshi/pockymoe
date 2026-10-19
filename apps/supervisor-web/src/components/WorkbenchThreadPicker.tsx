@@ -572,7 +572,7 @@ export function WorkbenchThreadPicker(props: WorkbenchThreadPickerProps) {
           setLocation(null);
           setOpen((value) => !value);
         }}
-        data-testid="workbench-split-trigger"
+        data-testid={props.selectScope ? `notification-add-${props.selectScope}` : 'workbench-split-trigger'}
       >
         {props.selectScope ? <><Plus size={16} />{t(props.selectScope === 'device' ? 'settings.notificationsAddDevice' : 'settings.notificationsAddWorkspace')}</> : <Columns2 data-icon="split" size={16} />}
       </button>

@@ -1,7 +1,7 @@
 //! Device-side durable lifecycle outbox. Relay ACK follows durable fan-out.
 use crate::Supervisor;
 use anyhow::Result;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 
 pub(crate) fn record(
@@ -14,11 +14,14 @@ pub(crate) fn record(
     if !matches!(status, "completed" | "failed" | "interrupted") {
         return Ok(());
     }
-    let workspace: String = conn.query_row(
-        "SELECT workspace_id FROM threads WHERE id=?1",
-        [thread],
-        |r| r.get(0),
-    )?;
+    // A missing row only loses the workspace; it must never fail the turn's end.
+    let workspace: Option<String> = conn
+        .query_row(
+            "SELECT workspace_id FROM threads WHERE id=?1",
+            [thread],
+            |r| r.get(0),
+        )
+        .optional()?;
     conn.execute(
         "INSERT OR IGNORE INTO kv(key,value) VALUES (?1,?2)",
         params![

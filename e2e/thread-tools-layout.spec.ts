@@ -45,9 +45,13 @@ for (const preset of ['classic', 'plum-pocket'] as const) test(`thread tools ope
   await expect(tools.locator('.matter-thread-tools-path')).toContainText('/');
   await expect(tools.getByRole('button', { name: 'Download transcript', exact: true })).toBeVisible();
   await expectUncovered(tools.getByRole('button', { name: 'Download transcript', exact: true }));
+  // The thread's panels moved in from the tabs row, which keeps only tabs, New thread and the toggle.
+  if (!mobile) await expectUncovered(tools.getByTestId('workbench-split-trigger'));
+  await expect(page.locator('.matter-tabs-row').getByTestId('workbench-split-trigger')).toHaveCount(0);
   // Esc closes it and returns to its toggle.
   await page.keyboard.press('Escape');
-  await expect(tools).toHaveCount(0);
+  // Closed, it stays mounted for the windows its controls opened, but hidden.
+  await expect(tools).toBeHidden();
   await expect(page.getByRole('button', { name: 'Thread tools', exact: true })).toBeFocused();
   await page.getByRole('button', { name: 'Thread tools', exact: true }).click();
   await expect(tools).toBeVisible();
@@ -64,5 +68,5 @@ for (const preset of ['classic', 'plum-pocket'] as const) test(`thread tools ope
   await expectUncovered(page.getByRole('button', { name: 'File actions' }).first());
   await page.screenshot({ path: testInfo.outputPath(`tools-and-file-${preset}.png`) });
   // Pressing outside closed the dropdown.
-  await expect(tools).toHaveCount(0);
+  await expect(tools).toBeHidden();
 });

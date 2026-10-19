@@ -41,10 +41,19 @@ pub(crate) fn record(
     if status == "interrupted" {
         return Ok(());
     }
-    let workspace: String = conn.query_row(
-        "SELECT workspace_id FROM threads WHERE id=?1",
-        [thread],
-        |r| r.get(0),
+    // A missing row only loses the workspace; it must never fail the turn's end.
+    let workspace: Option<String> = conn
+        .query_row(
+            "SELECT workspace_id FROM threads WHERE id=?1",
+            [thread],
+            |r| r.get(0),
+        )
+        .optional()?;
+    // Notices last a day whether or not a browser ever reads them.
+    let cutoff = (chrono::Utc::now() - chrono::Duration::days(1)).to_rfc3339();
+    conn.execute(
+        "DELETE FROM kv WHERE key GLOB 'local:owner:notice:*' AND json_extract(value,'$.occurredAt')<?1",
+        [cutoff],
     )?;
     let event = json!({"id":turn,"threadId":thread,"workspaceId":workspace,"status":status,"subscribed":subscribed,"occurredAt":now});
     conn.execute(

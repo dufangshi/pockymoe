@@ -59,7 +59,8 @@ for (const preset of ['classic', 'plum-pocket'] as const) test(`topbar search qu
   expect(searches).toHaveLength(1);
   expect(fullPages).toHaveLength(0);
   expect(hydrations).toHaveLength(0);
-  const header = (await page.locator('.matter-topbar').boundingBox())!;
+  // The desktop's only bar is the tabs row; a phone keeps its top bar.
+  const header = (await page.locator(testInfo.project.name === 'mobile-chromium' ? '.matter-topbar' : '.matter-tabs-row').boundingBox())!;
   const field = (await input.boundingBox())!;
   const dropdown = (await page.locator('.workbench-search-dropdown').boundingBox())!;
   expect(field.y).toBeGreaterThanOrEqual(header.y);

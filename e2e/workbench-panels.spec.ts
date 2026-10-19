@@ -16,10 +16,17 @@ test.use({ actionTimeout: 15_000 });
 
 const base = `http://127.0.0.1:${process.env.E2E_API_PORT ?? 8787}`;
 const screenshotRoot = process.env.WORKBENCH_SCREENSHOT_DIR;
-// One fixed split trigger opens the picker in every arrangement.
+// The split trigger lives in the thread tools menu beside the tabs; open it when hidden.
+async function revealSplitTrigger(page: Page) {
+  const trigger = page.getByTestId('workbench-split-trigger');
+  if (!(await trigger.isVisible())) await page.locator('.matter-tabs-row .matter-toolbar-toggle').click();
+  await expect(trigger).toBeVisible();
+  return trigger;
+}
+// One split trigger opens the picker in every arrangement.
 async function openSplitPicker(page: Page) {
   const trigger = page.getByTestId('workbench-split-trigger');
-  if ((await trigger.getAttribute('aria-expanded')) !== 'true') await trigger.click();
+  if ((await trigger.getAttribute('aria-expanded')) !== 'true') await (await revealSplitTrigger(page)).click();
 }
 
 async function selectSplit(page: Page, id: string) {
@@ -184,8 +191,8 @@ test('dual conversations send concurrently to real thread IDs with independent d
   await expect(primary.locator('.workbench-pane-heading')).toHaveCount(0);
   await expect(page.getByText('发送目标 · 主会话', { exact: true })).toHaveCount(0);
   await left.fill('左侧独立草稿');
-  // One exposed selection opens the second conversation, without a nested tools menu.
-  await expect(page.getByTestId('workbench-split-trigger')).toBeVisible();
+  // One selection in the thread tools menu opens the second conversation.
+  await revealSplitTrigger(page);
   await selectSplit(page, b.id);
   await expect(right).toBeVisible();
   await expect(reference).toContainText('独立评审结论');
@@ -268,7 +275,7 @@ test('dual conversations send concurrently to real thread IDs with independent d
   const trigger = page.getByTestId('workbench-split-trigger');
   await expect(trigger).toHaveAttribute('aria-pressed', 'true');
   const toolbarCount = await page.locator('.matter-tabs-row > button, .matter-tabs-row > span > button').count();
-  await trigger.click();
+  await (await revealSplitTrigger(page)).click();
   await expect(page.getByTestId('workbench-thread-picker')).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath('split-menu.png'), scale: 'css', animations: 'disabled' });
   await page.getByTestId('workbench-thread-picker').getByRole('button', { name: '关闭分屏', exact: true }).click();
@@ -418,7 +425,7 @@ test('secondary queue, steer, stop and failed sends stay bound to their conversa
   await expect(stop).toBeVisible();
   await expect(primary.getByRole('button', { name: 'Stop Current Turn', exact: true })).toBeVisible();
   await right.fill('queued for right only');
-  await secondary.getByRole('button', { name: 'Send Prompt', exact: true }).click();
+  await secondary.getByRole('button', { name: 'Send after this turn', exact: true }).click();
   const queue = secondary.getByRole('region', { name: 'Queued prompts' });
   await expect(queue).toContainText('queued for right only');
   await expect(primary.getByRole('region', { name: 'Queued prompts' })).toHaveCount(0);

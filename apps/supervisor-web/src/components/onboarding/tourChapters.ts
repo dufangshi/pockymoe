@@ -69,7 +69,9 @@ const OPEN_SHEET = 'section.matter-phone-sheet[data-open]';
 /** Any of the selectors; the first visible match is used. */
 const either = (...selectors: TourSelector[]): TourSelector => () => selectors.map(resolveSelector).join(', ');
 /** On a phone with the dock, a control inside More: open More first. */
-const inMore = { prerequisite: 'tour.openMore.prereq' as const, prerequisiteTarget: DOCK_MORE };
+// On a phone these live in More; on the desktop, in the thread tools menu.
+const TOOLS_TOGGLE = '.matter-tabs-row button.matter-toolbar-toggle';
+const inMore = { prerequisite: 'tour.openMore.prereq' as const, prerequisiteTarget: either(DOCK_MORE, TOOLS_TOGGLE) };
 
 const terminalToggle = (layout: TourLayout) => layout === 'mobile'
   ? either(labelled('button', 'workbench.terminal', TOPBAR), labelled('button', 'workbench.terminal', DOCK))
@@ -234,6 +236,7 @@ const threadSteps: TourStep[] = [
     body: 'tour.threads.search.body',
     targets: [
       { selector: `${TOPBAR} button.matter-search-trigger` },
+      { selector: '.matter-tabs-search button.matter-search-trigger' },
       { selector: `${OPEN_SHEET} .matter-phone-sheet-tools button:has([data-icon="search"])` },
     ],
     ...inMore,
@@ -343,7 +346,7 @@ const splitSteps: TourStep[] = [
     body: 'tour.split.picker.body',
     targets: [{ selector: '[data-testid="workbench-thread-picker"]' }],
     prerequisite: 'tour.split.picker.prereq',
-    prerequisiteTarget: either(splitTrigger, DOCK_MORE),
+    prerequisiteTarget: either(splitTrigger, DOCK_MORE, TOOLS_TOGGLE),
   },
   {
     id: 'panes',
@@ -356,7 +359,7 @@ const splitSteps: TourStep[] = [
       { selector: '.thread-jump-latest-cluster.has-pane-switch', body: 'tour.split.mobile.body' },
     ],
     prerequisite: 'tour.split.panes.prereq',
-    prerequisiteTarget: either(splitTrigger, DOCK_MORE),
+    prerequisiteTarget: either(splitTrigger, DOCK_MORE, TOOLS_TOGGLE),
   },
   {
     id: 'focus',
@@ -367,7 +370,7 @@ const splitSteps: TourStep[] = [
     // Phones have no pane header; the split trigger closes the split.
     only: { layout: 'desktop' },
     prerequisite: 'tour.split.panes.prereq',
-    prerequisiteTarget: either(splitTrigger, DOCK_MORE),
+    prerequisiteTarget: either(splitTrigger, DOCK_MORE, TOOLS_TOGGLE),
   },
 ];
 
