@@ -436,10 +436,11 @@ fn history_item_from_codex_json(
         }
         "commandExecution" => {
             let title = command.or(label).unwrap_or_else(|| "Command output".into());
+            // The command is the text; the detail holds only what it printed.
             let detail = output
                 .filter(|output| !output.trim().is_empty())
-                .map(|output| format!("{title}\n\n{output}"));
-            (title.clone(), Some(title), detail)
+                .map(|output| format!("Output:\n{output}"));
+            (title, None, detail)
         }
         "toolCall" | "agentToolCall" => {
             let title = label.unwrap_or_else(|| "Tool call".into());

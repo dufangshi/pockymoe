@@ -177,7 +177,7 @@
 }
 .pm-res-stats {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   border-top: 1px solid var(--theme-border);
 }
 .pm-res-stats > div {
@@ -218,7 +218,8 @@
 }
 .pm-res-thread {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
   column-gap: 12px;
   row-gap: 2px;
   padding: 9px 0;
@@ -261,11 +262,105 @@
   background: var(--theme-border-strong, var(--theme-border));
   overflow: hidden;
 }
+.pm-res-bar {
+  display: flex;
+}
 .pm-res-bar > span {
   display: block;
   height: 100%;
-  border-radius: inherit;
   background: var(--theme-accent-solid);
+}
+.pm-res-bar > span.is-diff {
+  background: var(--status-warning-fg, #d97706);
+}
+/* The row's cleanup menu: ⋯ shows on hover or keyboard focus on desktop, always on touch. */
+.pm-res-thread-actions {
+  grid-column: 3;
+  grid-row: 1 / span 2;
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border-radius: 8px;
+  color: var(--theme-fg-muted);
+  position: relative;
+}
+.pm-res-thread-actions::after {
+  content: '';
+  position: absolute;
+  inset: -4px;
+}
+.pm-res-thread-actions:hover,
+.pm-res-thread-actions[aria-expanded='true'] {
+  background: var(--theme-hover);
+  color: var(--theme-fg);
+}
+.pm-res-thread-actions:focus-visible {
+  outline: 2px solid var(--theme-accent-solid);
+  outline-offset: 1px;
+}
+@media (hover: hover) and (pointer: fine) {
+  .pm-res-thread-actions {
+    opacity: 0;
+  }
+  .pm-res-thread:hover .pm-res-thread-actions,
+  .pm-res-thread:has(:focus-visible) .pm-res-thread-actions,
+  .pm-res-thread-actions[aria-expanded='true'] {
+    opacity: 1;
+  }
+}
+.pm-res-thread-job {
+  grid-column: 1 / -1;
+  height: 4px;
+  margin-top: 3px;
+}
+.pm-res-menu {
+  position: fixed;
+  z-index: 60;
+  display: grid;
+  min-width: 240px;
+  padding: 4px;
+  border: 1px solid var(--theme-border);
+  border-radius: 12px;
+  background: var(--theme-panel);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 0.18);
+}
+/* Every item removes history for good, so all carry the danger colour. */
+.pm-res-menu > button {
+  display: flex;
+  min-height: 40px;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px;
+  border-radius: 8px;
+  text-align: left;
+  font-size: 13px;
+  color: var(--status-danger-fg);
+}
+.pm-res-menu > button:hover,
+.pm-res-menu > button:focus-visible {
+  background: var(--theme-hover);
+  outline: none;
+}
+.pm-res-menu > button:disabled {
+  opacity: 0.4;
+}
+.pm-res-options[data-off] {
+  opacity: 0.6;
+}
+.pm-res-options {
+  border-top: 1px solid var(--theme-border);
+}
+.pm-res-options .pm-res-row {
+  padding-left: 40px;
+}
+.pm-res-options + .pm-res-row {
+  border-top: 1px solid var(--theme-border);
+}
+.pm-res-select {
+  min-height: 34px;
+  border-radius: 7px;
+  padding: 0 8px;
 }
 .pm-res-more {
   display: flex;
@@ -279,6 +374,22 @@
 }
 
 @media (max-width: 639px) {
+  .pm-res-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .pm-res-stats > div:nth-child(3) {
+    border-left: 0;
+  }
+  .pm-res-stats > div:nth-child(n + 3) {
+    border-top: 1px solid var(--theme-border);
+  }
+  .pm-res-thread-actions {
+    width: 40px;
+    height: 40px;
+  }
+  .pm-res-options .pm-res-row {
+    padding-left: 24px;
+  }
   .pm-res-stats > div {
     padding: 9px 10px;
   }

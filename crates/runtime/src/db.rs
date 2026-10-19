@@ -220,6 +220,29 @@ const RUNTIME_MIGRATIONS: &[Migration] = &[
             Ok(())
         },
     },
+    Migration {
+        version: 19,
+        name: "storage_cleanup_options",
+        apply: |conn| {
+            // The retention column becomes the one age for everything below.
+            // Idempotent, like every migration a downgrade may leave behind.
+            let existing = table_columns(conn, "storage_settings")?;
+            for (column, definition) in [
+                ("clean_command_output", "INTEGER NOT NULL DEFAULT 1"),
+                ("command_text", "TEXT NOT NULL DEFAULT 'keep'"),
+                ("command_text_chars", "INTEGER NOT NULL DEFAULT 512"),
+                ("clean_file_diffs", "INTEGER NOT NULL DEFAULT 0"),
+            ] {
+                if !existing.contains(column) {
+                    conn.execute(
+                        &format!("ALTER TABLE storage_settings ADD COLUMN {column} {definition}"),
+                        [],
+                    )?;
+                }
+            }
+            Ok(())
+        },
+    },
 ];
 
 /// The Node Supervisor's migrations, in the order its migrator applied them

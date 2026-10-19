@@ -47,9 +47,12 @@ export function useDialogLifecycle({
       const focusedDialog = document.activeElement?.closest('[role="dialog"]');
       if (focusedDialog && focusedDialog !== containerRef.current && !containerRef.current?.contains(focusedDialog)) return;
 
-      if (event.key === 'Escape' && !busyRef.current) {
+      if (event.key === 'Escape') {
         event.preventDefault();
-        onCloseRef.current();
+        // Only the top window closes, not a window it was opened from; a busy
+        // one stays, and so does the window under it.
+        event.stopPropagation();
+        if (!busyRef.current) onCloseRef.current();
         return;
       }
 
@@ -80,10 +83,12 @@ export function useDialogLifecycle({
       }
     }
 
-    document.addEventListener('keydown', handleKeyDown);
+    // Capture on window runs before the document listeners of an enclosing
+    // modal window (Radix closes on Escape there).
+    window.addEventListener('keydown', handleKeyDown, true);
     return () => {
       window.clearTimeout(focusTimer);
-      document.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keydown', handleKeyDown, true);
       document.body.style.overflow = previousOverflow;
       window.setTimeout(() => {
         if (previousFocus instanceof HTMLElement && previousFocus.isConnected) {

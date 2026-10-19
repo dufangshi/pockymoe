@@ -4,7 +4,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { HarnessResourceSettings } from './HarnessResourceSettings';
 import { parseResourceField } from './harnessResourceModel';
 import {
-  ApiError, compactStorage, fetchHarnessResourceSettings, fetchStorageOverview, fetchStorageSettings, pruneStorage,
+  ApiError, cleanStorageThread, compactStorage, fetchHarnessResourceSettings, fetchStorageOverview, fetchStorageSettings, pruneStorage,
   relayModeActive, scanStorage, updateHarnessResourceSettings, updateStorageSettings,
 } from '../lib/api';
 
@@ -17,17 +17,18 @@ vi.mock('../lib/api', () => {
   return {
     ApiError, fetchHarnessResourceSettings: vi.fn(), updateHarnessResourceSettings: vi.fn(), relayModeActive: vi.fn(),
     fetchStorageOverview: vi.fn(), fetchStorageSettings: vi.fn(), updateStorageSettings: vi.fn(), scanStorage: vi.fn(),
-    pruneStorage: vi.fn(), compactStorage: vi.fn(),
+    pruneStorage: vi.fn(), compactStorage: vi.fn(), cleanStorageThread: vi.fn(),
   };
 });
 
 const GIB = 2 ** 30;
+const DEFAULT_CLEANUP = { commandOutput: true, commandText: 'keep' as const, commandTextChars: 512, fileDiffs: false };
 beforeEach(() => {
   vi.mocked(relayModeActive).mockReset().mockReturnValue(false);
   vi.mocked(fetchHarnessResourceSettings).mockReset().mockResolvedValue({ idleReleaseMinutes: 10, maxLoadedThreads: null, maxHarnessMemoryBytes: null });
   vi.mocked(updateHarnessResourceSettings).mockReset().mockImplementation(async input => input);
   vi.mocked(fetchStorageOverview).mockReset().mockResolvedValue({ deviceName: 'ubuntu-ms', scan: null });
-  vi.mocked(fetchStorageSettings).mockReset().mockResolvedValue({ commandOutputRetentionDays: null });
+  vi.mocked(fetchStorageSettings).mockReset().mockResolvedValue({ retentionDays: null, ...DEFAULT_CLEANUP });
   vi.mocked(updateStorageSettings).mockReset().mockImplementation(async input => input);
 });
 const memory = () => within(screen.getByRole('region', { name: 'Memory' }));
@@ -101,11 +102,11 @@ it('explains an older Supervisor instead of failing', async () => {
 
 const MB = 2 ** 20;
 const conversation = (id: string, bytes: number, commandBytes: number) => ({
-  threadId: id, title: `Thread ${id}`, workspaceLabel: 'lab', bytes, commandBytes, items: 10, agentThreads: id === 'a' ? 2 : 0, lastActivityAt: null,
+  threadId: id, title: `Thread ${id}`, workspaceLabel: 'lab', bytes, commandBytes, fileChangeBytes: 5 * MB, items: 10, agentThreads: id === 'a' ? 2 : 0, lastActivityAt: null,
 });
 const scanResult = (offset: number, ids: string[], nextOffset: number | null) => ({
   scannedAt: '2026-10-18T10:00:00.000Z', deviceName: 'ubuntu-ms', databaseBytes: 640 * MB, freeBytes: 2 * MB,
-  historyBytes: 450 * MB, commandBytes: 373 * MB, prunedItems: 0, prunedBytes: 0, threadCount: 300, conversationCount: 74,
+  historyBytes: 450 * MB, commandBytes: 373 * MB, fileChangeBytes: 45 * MB, prunedItems: 0, prunedBytes: 0, threadCount: 300, conversationCount: 74,
   threads: ids.map((id, index) => conversation(id, (60 - index) * MB, (50 - index) * MB)), offset, nextOffset,
 });
 
@@ -122,7 +123,8 @@ it('measures the disk only on request and pages the largest conversations', asyn
   expect(disk.getByText('640 MB')).toBeVisible();
   expect(disk.getByText('83% of history')).toBeVisible();
   expect(disk.getByText('lab · with 2 agent threads')).toBeVisible();
-  expect(disk.getByText('Commands 50 MB · 83%')).toBeVisible();
+  expect(disk.getByText('10% of history')).toBeVisible();
+  expect(disk.getByText('Commands 50 MB · diffs 5 MB')).toBeVisible();
   fireEvent.click(disk.getByRole('button', { name: 'Load more' }));
   expect(await disk.findByText('Thread c')).toBeVisible();
   expect(fetchStorageOverview).toHaveBeenLastCalledWith(2, null);
@@ -134,21 +136,30 @@ const job = (state: 'running' | 'done', processed: number, items: number, bytes:
   startedAt: '2026-10-19T00:00:00.000Z', finishedAt: state === 'done' ? '2026-10-19T00:01:00.000Z' : null, error: null,
 });
 
-it('saves a retention, then cleans up in the background with progress after a red confirmation', async () => {
+it('saves one age with what to clean up, then cleans up in the background with progress after a red confirmation', async () => {
   // Just started: the device is still counting what to clean up.
   vi.mocked(pruneStorage).mockResolvedValue({ ...job('running', 0, 0, 0), total: 0 });
   renderAt();
   const disk = within(await screen.findByRole('region', { name: 'Disk' }));
   const clean = await disk.findByRole('button', { name: 'Clean up now' });
   expect(clean).toBeDisabled();
-  fireEvent.click(disk.getByRole('checkbox', { name: 'Clean up command output' }));
-  fireEvent.change(disk.getByRole('spinbutton', { name: 'Clean up command output' }), { target: { value: '14' } });
+  fireEvent.click(disk.getByRole('checkbox', { name: 'Clean up automatically' }));
+  fireEvent.change(disk.getByRole('spinbutton', { name: 'Clean up automatically' }), { target: { value: '14' } });
+  // Nothing chosen cannot be saved.
+  fireEvent.click(disk.getByRole('checkbox', { name: 'Command output' }));
+  expect(disk.getByText('Choose something to clean up.')).toBeVisible();
+  expect(disk.getByRole('button', { name: 'Save' })).toBeDisabled();
+  fireEvent.click(disk.getByRole('checkbox', { name: 'Command output' }));
+  fireEvent.change(disk.getByRole('combobox', { name: 'Command text' }), { target: { value: 'truncate' } });
+  fireEvent.change(disk.getByRole('spinbutton', { name: 'Keep the first' }), { target: { value: '200' } });
+  fireEvent.click(disk.getByRole('checkbox', { name: 'File-change diffs' }));
   fireEvent.click(disk.getByRole('button', { name: 'Save' }));
-  await waitFor(() => expect(updateStorageSettings).toHaveBeenCalledWith({ commandOutputRetentionDays: 14 }, null));
+  await waitFor(() => expect(updateStorageSettings).toHaveBeenCalledWith(
+    { retentionDays: 14, commandOutput: true, commandText: 'truncate', commandTextChars: 200, fileDiffs: true }, null));
   await waitFor(() => expect(clean).toBeEnabled());
   fireEvent.click(clean);
   const dialog = await screen.findByRole('dialog');
-  expect(dialog).toHaveTextContent('over 14 days ago');
+  expect(dialog).toHaveTextContent('Removes command output, command text past 200 characters, file-change diffs from turns that ended over 14 days ago.');
   expect(pruneStorage).not.toHaveBeenCalled();
   vi.mocked(fetchStorageOverview).mockResolvedValueOnce({ deviceName: 'ubuntu-ms', scan: null, job: job('running', 400, 380, 2 * MB) })
     .mockResolvedValue({ deviceName: 'ubuntu-ms', scan: null, job: job('done', 1000, 912, 3 * MB) });
@@ -156,9 +167,34 @@ it('saves a retention, then cleans up in the background with progress after a re
   // The dialog closes at once; the job's progress follows on the page.
   await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
   await waitFor(() => expect(pruneStorage).toHaveBeenCalled());
-  expect(await disk.findByText('Finding output to clean up…')).toBeVisible();
+  expect(await disk.findByText('Finding what to clean up…')).toBeVisible();
   expect(await disk.findByText('Cleaning up 400 / 1,000 · 2 MB removed', {}, { timeout: 3000 })).toBeVisible();
   expect(clean).toBeDisabled();
-  expect(await disk.findByText('Cleaned up 912 outputs, 3 MB', {}, { timeout: 3000 })).toBeVisible();
+  expect(await disk.findByText('Cleaned up 912 items, 3 MB', {}, { timeout: 3000 })).toBeVisible();
   expect(compactStorage).not.toHaveBeenCalled();
+});
+
+it('cleans up one conversation from its menu, whatever its age, with progress on its row', async () => {
+  vi.mocked(scanStorage).mockResolvedValue(scanResult(0, ['a', 'b'], null));
+  vi.mocked(cleanStorageThread).mockResolvedValue({ ...job('running', 0, 0, 0), total: 0, threadId: 'a' });
+  renderAt();
+  const disk = within(await screen.findByRole('region', { name: 'Disk' }));
+  fireEvent.click(await disk.findByRole('button', { name: 'Scan' }));
+  fireEvent.click(await disk.findByRole('button', { name: 'Clean up “Thread a”' }));
+  const menu = await screen.findByRole('menu', { name: 'Clean up “Thread a”' });
+  expect(within(menu).getAllByRole('menuitem').map(item => item.textContent)).toEqual([
+    'Clean up command output', 'Clean up diffs', 'Shorten commands to 512 characters', 'Remove commands',
+  ]);
+  await waitFor(() => expect(within(menu).getAllByRole('menuitem')[0]).toHaveFocus());
+  fireEvent.click(within(menu).getByRole('menuitem', { name: 'Remove commands' }));
+  expect(screen.queryByRole('menu')).toBeNull();
+  const dialog = await screen.findByRole('dialog');
+  expect(dialog).toHaveTextContent('Clean up “Thread a”?');
+  expect(dialog).toHaveTextContent('Removes command text from every ended turn of this conversation and its agent threads, however recent.');
+  vi.mocked(fetchStorageOverview).mockResolvedValue({ deviceName: 'ubuntu-ms', scan: null, job: { ...job('running', 400, 380, MB), threadId: 'a' } });
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Clean up now' }));
+  await waitFor(() => expect(cleanStorageThread).toHaveBeenCalledWith('a', { commandOutput: false, commandText: 'remove', commandTextChars: 512, fileDiffs: false }, null));
+  expect(await disk.findByText('Cleaning up 400 / 1,000', {}, { timeout: 3000 })).toBeVisible();
+  expect(disk.getByRole('button', { name: 'Clean up “Thread b”' })).toBeEnabled();
+  expect(disk.getByRole('button', { name: 'Clean up now' })).toBeDisabled();
 });

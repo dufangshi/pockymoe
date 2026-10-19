@@ -16,6 +16,7 @@ import type {
   AgentCapabilitySnapshotDto,
   HarnessProcessesDto,
   HarnessResourceSettingsDto,
+  StorageCleanupDto,
   StorageJobDto,
   StorageOverviewDto,
   StorageScanDto,
@@ -992,6 +993,11 @@ export function updateStorageSettings(input: StorageSettingsDto, deviceId?: stri
 
 export function pruneStorage(deviceId?: string | null) {
   return deviceRequest<StorageJobDto>(deviceId, 'api/storage/prune', { method: 'POST', body: '{}' });
+}
+
+/** Clean up one conversation (the scan row's thread and its agent threads) now. */
+export function cleanStorageThread(threadId: string, options: StorageCleanupDto, deviceId?: string | null) {
+  return deviceRequest<StorageJobDto>(deviceId, `api/storage/threads/${encodeURIComponent(threadId)}/clean`, { method: 'POST', body: JSON.stringify(options) });
 }
 
 export function compactStorage(deviceId?: string | null) {

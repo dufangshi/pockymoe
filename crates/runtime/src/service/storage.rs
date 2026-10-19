@@ -1,19 +1,22 @@
-//! Disk use of the Supervisor database and the command-output retention policy.
+//! Disk use of the Supervisor database and history cleanup.
 //!
 //! A scan runs only on request, on its own read-only connection, so the shared
 //! connection stays free. Cleanup and compaction run as background jobs whose
 //! progress the overview reports. Cleanup finds its items on a read-only
 //! connection too and rewrites them in transactions of a few milliseconds, so
-//! every other database user waits at most that long. It keeps each command's
-//! text and the detail header (tool, kind, status) and removes the input
-//! (the command again) and the output.
+//! every other database user waits at most that long. Depending on its options
+//! it removes command output (and input details), shortens or removes command
+//! text, and removes file-change diffs. Every pass also drops the input's copy
+//! of the command, which older versions stored twice.
 use super::*;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use crate::acp::mapper::{pretty_json, split_command_input};
 use chrono::{SecondsFormat, Utc};
 use pockymoe_protocol::{
-    StorageJobDto, StorageOverviewDto, StorageScanDto, StorageSettingsDto, StorageThreadDto,
+    CommandTextCleanup, StorageCleanupDto, StorageJobDto, StorageOverviewDto, StorageScanDto,
+    StorageSettingsDto, StorageThreadDto,
 };
 use rusqlite::OpenFlags;
 
@@ -28,6 +31,9 @@ const PRUNE_PAUSE: Duration = Duration::from_millis(15);
 const CHECKPOINT_INTERVAL: Duration = Duration::from_millis(1_000);
 const RETENTION_INTERVAL: Duration = Duration::from_secs(60 * 60);
 const MAX_RETENTION_DAYS: u32 = 3650;
+const COMMAND_TEXT_CHARS: std::ops::RangeInclusive<u32> = 16..=10_000;
+/// Set once the input copies of commands were removed from older history.
+const INPUT_DEDUPE_KEY: &str = "storage.commandInputDedupe.v1";
 /// Detail sections after the header: the input repeats the command, then the
 /// output. Everything before the first one stays.
 const BODY_MARKERS: &[&str] = &["\n\nInput:\n", "\n\nOutput:\n", "\n\nResult:\n"];
@@ -38,11 +44,68 @@ pub(crate) struct StorageState {
     gate: tokio::sync::Mutex<()>,
     started: AtomicBool,
     job: std::sync::Mutex<Option<StorageJobDto>>,
+    /// The saved cleanup could not start because another job ran: run it after.
+    rerun: AtomicBool,
 }
 
 enum StorageAction {
-    Prune(u32),
+    Prune(Cleanup),
     Compact,
+}
+
+/// One cleanup pass: what to remove, and from which turns.
+#[derive(Clone)]
+pub(crate) struct Cleanup {
+    /// Turns that ended before this time; `None` for any ended turn.
+    cutoff: Option<String>,
+    /// The conversation (root thread and its agent threads); `None` for all.
+    thread: Option<String>,
+    options: StorageCleanupDto,
+    /// Only remove the command's copy from inputs (a lossless one-time pass).
+    dedupe: bool,
+}
+
+impl Cleanup {
+    fn dedupe_only() -> Self {
+        Self {
+            cutoff: None,
+            thread: None,
+            options: StorageCleanupDto {
+                command_output: false,
+                command_text: CommandTextCleanup::Keep,
+                command_text_chars: pockymoe_protocol::DEFAULT_COMMAND_TEXT_CHARS,
+                file_diffs: false,
+            },
+            dedupe: true,
+        }
+    }
+}
+
+/// Another cleanup or compaction is running.
+#[derive(Debug)]
+pub struct StorageBusy(pub StorageJobDto);
+impl std::fmt::Display for StorageBusy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Another storage job is running")
+    }
+}
+impl std::error::Error for StorageBusy {}
+
+fn cutoff(days: u32) -> String {
+    (Utc::now() - chrono::Duration::days(i64::from(days)))
+        .to_rfc3339_opts(SecondsFormat::Millis, true)
+}
+
+fn validate_cleanup(options: &StorageCleanupDto) -> Result<()> {
+    if !COMMAND_TEXT_CHARS.contains(&options.command_text_chars) {
+        return Err(InvalidSettings(format!(
+            "commandTextChars must be {}-{}",
+            COMMAND_TEXT_CHARS.start(),
+            COMMAND_TEXT_CHARS.end()
+        ))
+        .into());
+    }
+    Ok(())
 }
 
 impl Supervisor {
@@ -50,13 +113,26 @@ impl Supervisor {
         self.db.with(|conn| {
             Ok(conn
                 .query_row(
-                    "SELECT command_output_retention_days FROM storage_settings WHERE id=1",
+                    "SELECT command_output_retention_days, clean_command_output, command_text,
+                            command_text_chars, clean_file_diffs
+                     FROM storage_settings WHERE id=1",
                     [],
                     |row| {
                         Ok(StorageSettingsDto {
-                            command_output_retention_days: row
+                            retention_days: row
                                 .get::<_, Option<i64>>(0)?
                                 .and_then(|days| u32::try_from(days).ok()),
+                            cleanup: StorageCleanupDto {
+                                command_output: row.get::<_, i64>(1)? != 0,
+                                command_text: match row.get::<_, String>(2)?.as_str() {
+                                    "truncate" => CommandTextCleanup::Truncate,
+                                    "remove" => CommandTextCleanup::Remove,
+                                    _ => CommandTextCleanup::Keep,
+                                },
+                                command_text_chars: u32::try_from(row.get::<_, i64>(3)?)
+                                    .unwrap_or(pockymoe_protocol::DEFAULT_COMMAND_TEXT_CHARS),
+                                file_diffs: row.get::<_, i64>(4)? != 0,
+                            },
                         })
                     },
                 )
@@ -65,37 +141,55 @@ impl Supervisor {
         })
     }
 
-    /// Replace the policy; a set retention prunes at once in the background.
+    /// Replace the policy; a set age cleans up at once in the background.
     pub fn update_storage_settings(
         self: &Arc<Self>,
         settings: StorageSettingsDto,
     ) -> Result<StorageSettingsDto> {
-        if let Some(days) = settings.command_output_retention_days {
+        if let Some(days) = settings.retention_days {
             if !(1..=MAX_RETENTION_DAYS).contains(&days) {
                 return Err(InvalidSettings(format!(
-                    "commandOutputRetentionDays must be 1-{MAX_RETENTION_DAYS}"
+                    "retentionDays must be 1-{MAX_RETENTION_DAYS}"
                 ))
                 .into());
             }
         }
+        validate_cleanup(&settings.cleanup)?;
+        let text = match settings.cleanup.command_text {
+            CommandTextCleanup::Keep => "keep",
+            CommandTextCleanup::Truncate => "truncate",
+            CommandTextCleanup::Remove => "remove",
+        };
         self.db.with(|conn| {
             conn.execute(
-                "INSERT INTO storage_settings(id, command_output_retention_days, updated_at)
-                 VALUES (1, ?1, ?2)
+                "INSERT INTO storage_settings(id, command_output_retention_days, clean_command_output,
+                   command_text, command_text_chars, clean_file_diffs, updated_at)
+                 VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6)
                  ON CONFLICT(id) DO UPDATE SET
                    command_output_retention_days=excluded.command_output_retention_days,
+                   clean_command_output=excluded.clean_command_output,
+                   command_text=excluded.command_text,
+                   command_text_chars=excluded.command_text_chars,
+                   clean_file_diffs=excluded.clean_file_diffs,
                    updated_at=excluded.updated_at",
-                params![settings.command_output_retention_days, now_rfc3339()],
+                params![
+                    settings.retention_days,
+                    settings.cleanup.command_output,
+                    text,
+                    settings.cleanup.command_text_chars,
+                    settings.cleanup.file_diffs,
+                    now_rfc3339()
+                ],
             )?;
             Ok(())
         })?;
-        if let Some(days) = settings.command_output_retention_days {
-            self.start_storage_job(StorageAction::Prune(days));
-        }
-        self.storage_settings()
+        let saved = self.storage_settings()?;
+        self.start_saved_cleanup();
+        Ok(saved)
     }
 
-    /// Hourly retention pass; the first one runs a few minutes after start.
+    /// Hourly pass: first the one-time input deduplication, then the saved
+    /// automatic cleanup. The first one runs a few minutes after start.
     pub fn spawn_storage_retention(self: &Arc<Self>) {
         if self.storage.started.swap(true, Ordering::SeqCst) {
             return;
@@ -105,19 +199,34 @@ impl Supervisor {
             tokio::time::sleep(Duration::from_secs(180)).await;
             loop {
                 let Some(state) = weak.upgrade() else { break };
-                match state.storage_settings() {
-                    Ok(StorageSettingsDto {
-                        command_output_retention_days: Some(days),
-                    }) => {
-                        state.start_storage_job(StorageAction::Prune(days));
+                if !matches!(state.db.get_kv(INPUT_DEDUPE_KEY), Ok(Some(_))) {
+                    if let Ok(job) =
+                        state.start_storage_job(StorageAction::Prune(Cleanup::dedupe_only()))
+                    {
+                        state.wait_for_job(&job.started_at).await;
                     }
-                    Ok(_) => {}
-                    Err(error) => tracing::warn!(%error, "reading storage settings failed"),
                 }
+                state.start_saved_cleanup();
                 drop(state);
                 tokio::time::sleep(RETENTION_INTERVAL).await;
             }
         });
+    }
+
+    async fn wait_for_job(&self, started_at: &str) {
+        loop {
+            let running = self
+                .storage
+                .job
+                .lock()
+                .unwrap()
+                .as_ref()
+                .is_some_and(|job| job.started_at == started_at && job.state == "running");
+            if !running {
+                return;
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
     }
 
     /// Measure the database now and keep the result for paging.
@@ -154,28 +263,75 @@ impl Supervisor {
         })
     }
 
-    /// Start a cleanup with the given retention; returns the running job
-    /// (an already running one is returned as is).
-    pub fn start_storage_prune(self: &Arc<Self>, days: u32) -> StorageJobDto {
-        self.start_storage_job(StorageAction::Prune(days))
+    /// Start the saved automatic cleanup, or run it once the running job ends.
+    fn start_saved_cleanup(self: &Arc<Self>) {
+        match self.start_storage_prune() {
+            Ok(_) => {}
+            Err(error) if error.is::<StorageBusy>() => {
+                self.storage.rerun.store(true, Ordering::SeqCst);
+            }
+            Err(error) => tracing::warn!(%error, "starting the storage cleanup failed"),
+        }
+    }
+
+    /// Clean up now with the saved settings (`None` when no age is saved).
+    pub fn start_storage_prune(self: &Arc<Self>) -> Result<Option<StorageJobDto>> {
+        let settings = self.storage_settings()?;
+        let Some(days) = settings.retention_days else {
+            return Ok(None);
+        };
+        self.start_storage_job(StorageAction::Prune(Cleanup {
+            cutoff: Some(cutoff(days)),
+            thread: None,
+            options: settings.cleanup,
+            dedupe: false,
+        }))
+        .map(Some)
+    }
+
+    /// Clean up one conversation now, whatever the age of its ended turns:
+    /// the thread a scan row names and the agent threads under it.
+    pub fn start_thread_cleanup(
+        self: &Arc<Self>,
+        thread_id: &str,
+        options: StorageCleanupDto,
+    ) -> Result<StorageJobDto> {
+        validate_cleanup(&options)?;
+        let known = self.db.with(|conn| {
+            Ok(conn
+                .query_row("SELECT 1 FROM threads WHERE id=?1", [thread_id], |_| Ok(()))
+                .optional()?
+                .is_some())
+        })?;
+        if !known {
+            return Err(anyhow!("thread not found"));
+        }
+        self.start_storage_job(StorageAction::Prune(Cleanup {
+            cutoff: None,
+            thread: Some(thread_id.to_owned()),
+            options,
+            dedupe: false,
+        }))
     }
 
     /// Start rewriting the file without its free pages.
-    pub fn start_storage_compact(self: &Arc<Self>) -> StorageJobDto {
+    pub fn start_storage_compact(self: &Arc<Self>) -> Result<StorageJobDto> {
         self.start_storage_job(StorageAction::Compact)
     }
 
-    fn start_storage_job(self: &Arc<Self>, action: StorageAction) -> StorageJobDto {
+    /// Start a job, or fail with [`StorageBusy`] naming the running one.
+    fn start_storage_job(self: &Arc<Self>, action: StorageAction) -> Result<StorageJobDto> {
         let mut slot = self.storage.job.lock().unwrap();
         if let Some(job) = slot.as_ref().filter(|job| job.state == "running") {
-            return job.clone();
+            return Err(StorageBusy(job.clone()).into());
         }
+        let (name, thread_id) = match &action {
+            StorageAction::Prune(cleanup) if cleanup.dedupe => ("dedupe", None),
+            StorageAction::Prune(cleanup) => ("prune", cleanup.thread.clone()),
+            StorageAction::Compact => ("compact", None),
+        };
         let job = StorageJobDto {
-            action: match action {
-                StorageAction::Prune(_) => "prune",
-                StorageAction::Compact => "compact",
-            }
-            .into(),
+            action: name.into(),
             state: "running".into(),
             total: 0,
             processed: 0,
@@ -186,15 +342,32 @@ impl Supervisor {
             started_at: now_rfc3339(),
             finished_at: None,
             error: None,
+            thread_id,
         };
+        match &action {
+            StorageAction::Prune(cleanup) => tracing::info!(
+                action = name,
+                cutoff = cleanup.cutoff.as_deref().unwrap_or("-"),
+                thread = cleanup.thread.as_deref().unwrap_or("-"),
+                options = ?cleanup.options,
+                "storage job started"
+            ),
+            StorageAction::Compact => tracing::info!(action = name, "storage job started"),
+        }
         *slot = Some(job.clone());
         drop(slot);
         let state = self.clone();
         tokio::spawn(async move {
+            let dedupe = matches!(&action, StorageAction::Prune(cleanup) if cleanup.dedupe);
             let result = match action {
-                StorageAction::Prune(days) => state.run_prune(days).await,
+                StorageAction::Prune(cleanup) => state.run_prune(cleanup).await,
                 StorageAction::Compact => state.run_compact().await,
             };
+            if dedupe && result.is_ok() {
+                if let Err(error) = state.db.set_kv(INPUT_DEDUPE_KEY, &now_rfc3339()) {
+                    tracing::warn!(%error, "recording the input deduplication failed");
+                }
+            }
             *state.storage.scan.lock().unwrap() = None;
             state.update_job(|job| {
                 job.finished_at = Some(now_rfc3339());
@@ -214,8 +387,11 @@ impl Supervisor {
                 }
                 Err(error) => tracing::warn!(%error, "storage job failed"),
             }
+            if state.storage.rerun.swap(false, Ordering::SeqCst) {
+                state.start_saved_cleanup();
+            }
         });
-        job
+        Ok(job)
     }
 
     fn update_job(&self, change: impl FnOnce(&mut StorageJobDto)) {
@@ -230,17 +406,17 @@ impl Supervisor {
             .ok_or_else(|| anyhow!("The database has no file to clean up"))
     }
 
-    /// Remove command output from turns that ended at least `days` ago.
-    async fn run_prune(self: &Arc<Self>, days: u32) -> Result<()> {
+    /// Rewrite the history items the cleanup selects.
+    async fn run_prune(self: &Arc<Self>, cleanup: Cleanup) -> Result<()> {
         let _gate = self.storage.gate.lock().await;
-        let cutoff = (Utc::now() - chrono::Duration::days(i64::from(days)))
-            .to_rfc3339_opts(SecondsFormat::Millis, true);
         let path = self.database_path()?;
         // Finding candidates reads every history item: never on the shared connection.
         let counting = std::time::Instant::now();
         let candidates_path = path.clone();
-        let rows = tokio::task::spawn_blocking(move || prune_candidates(&candidates_path, &cutoff))
-            .await??;
+        let selection = cleanup.clone();
+        let rows =
+            tokio::task::spawn_blocking(move || prune_candidates(&candidates_path, &selection))
+                .await??;
         tracing::info!(
             items = rows.len(),
             ms = counting.elapsed().as_millis() as u64,
@@ -249,6 +425,7 @@ impl Supervisor {
         self.update_job(|job| job.total = rows.len() as u64);
         let pruned_at = now_rfc3339();
         let rows = Arc::new(rows);
+        let cleanup = Arc::new(cleanup);
         // The shared connection would otherwise checkpoint inside one of its
         // commits; the side checkpoints below do it outside its lock.
         let _autocheckpoint = AutocheckpointPause::new(self.clone())?;
@@ -256,12 +433,12 @@ impl Supervisor {
         let mut checkpointed = std::time::Instant::now();
         while done < rows.len() {
             let state = self.clone();
-            let (rows_ref, at) = (rows.clone(), pruned_at.clone());
+            let (rows_ref, at, options) = (rows.clone(), pruned_at.clone(), cleanup.clone());
             let timer = std::time::Instant::now();
             let slice = tokio::task::spawn_blocking(move || {
                 state
                     .db
-                    .with(|conn| prune_rows(conn, &rows_ref[done..], &at))
+                    .with(|conn| prune_rows(conn, &rows_ref[done..], &at, &options))
             })
             .await??;
             if timer.elapsed() > Duration::from_millis(200) {
@@ -368,8 +545,8 @@ fn scan_database(path: &Path, host_id: &str) -> Result<StorageScanDto> {
             threads.insert(row.id.clone(), row);
         }
     }
-    // (bytes, command bytes, items, pruned items, pruned bytes) per thread.
-    let mut usage: Vec<(String, [u64; 5])> = Vec::new();
+    // (bytes, command bytes, items, pruned items, pruned bytes, file-change bytes) per thread.
+    let mut usage: Vec<(String, [u64; 6])> = Vec::new();
     {
         let mut statement = conn.prepare(
             "SELECT thread_id,
@@ -378,7 +555,9 @@ fn scan_database(path: &Path, host_id: &str) -> Result<StorageScanDto> {
                    THEN length(CAST(item_json AS BLOB)) ELSE 0 END),
                COUNT(*),
                SUM(json_extract(item_json, '$.outputPrunedAt') IS NOT NULL),
-               SUM(COALESCE(json_extract(item_json, '$.outputPrunedBytes'), 0))
+               SUM(COALESCE(json_extract(item_json, '$.outputPrunedBytes'), 0)),
+               SUM(CASE WHEN json_extract(item_json, '$.kind') = 'fileChange'
+                   THEN length(CAST(item_json AS BLOB)) ELSE 0 END)
              FROM thread_history_items GROUP BY thread_id",
         )?;
         let rows = statement.query_map([], |row| {
@@ -388,14 +567,21 @@ fn scan_database(path: &Path, host_id: &str) -> Result<StorageScanDto> {
             };
             Ok((
                 row.get::<_, String>(0)?,
-                [number(1)?, number(2)?, number(3)?, number(4)?, number(5)?],
+                [
+                    number(1)?,
+                    number(2)?,
+                    number(3)?,
+                    number(4)?,
+                    number(5)?,
+                    number(6)?,
+                ],
             ))
         })?;
         for row in rows {
             usage.push(row?);
         }
     }
-    let mut totals = [0_u64; 5];
+    let mut totals = [0_u64; 6];
     let mut conversations: HashMap<String, StorageThreadDto> = HashMap::new();
     for (thread_id, values) in &usage {
         for (total, value) in totals.iter_mut().zip(values) {
@@ -416,12 +602,14 @@ fn scan_database(path: &Path, host_id: &str) -> Result<StorageScanDto> {
                 workspace_label: root.and_then(|root| root.workspace_label.clone()),
                 bytes: 0,
                 command_bytes: 0,
+                file_change_bytes: 0,
                 items: 0,
                 agent_threads: 0,
                 last_activity_at: None,
             });
         entry.bytes += values[0];
         entry.command_bytes += values[1];
+        entry.file_change_bytes += values[5];
         entry.items += values[2];
         if *thread_id != root_id {
             entry.agent_threads += 1;
@@ -444,6 +632,7 @@ fn scan_database(path: &Path, host_id: &str) -> Result<StorageScanDto> {
         free_bytes,
         history_bytes: totals[0],
         command_bytes: totals[1],
+        file_change_bytes: totals[5],
         pruned_items: totals[3],
         pruned_bytes: totals[4],
         thread_count: threads.len() as u64,
@@ -465,25 +654,57 @@ fn page(scan: &StorageScanDto, offset: u64, limit: u64) -> StorageScanDto {
     }
 }
 
-/// Command executions of ended turns before the cutoff that still hold more
-/// than their header, in storage order.
-fn prune_candidates(path: &Path, cutoff: &str) -> Result<Vec<i64>> {
+/// History items of ended turns (before the cutoff, in the conversation) that
+/// this cleanup would change, in storage order.
+fn prune_candidates(path: &Path, cleanup: &Cleanup) -> Result<Vec<i64>> {
     let conn = Connection::open_with_flags(
         path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
     conn.busy_timeout(Duration::from_secs(10))?;
+    let text_mode = match cleanup.options.command_text {
+        CommandTextCleanup::Keep => "keep",
+        CommandTextCleanup::Truncate => "truncate",
+        CommandTextCleanup::Remove => "remove",
+    };
     let mut statement = conn.prepare(
         "SELECT h.rowid FROM thread_history_items h
          JOIN thread_turns t ON t.id = h.turn_id
          WHERE t.status NOT IN ('inProgress', 'running')
-           AND COALESCE(t.completed_at, t.started_at) < ?1
-           AND json_extract(h.item_json, '$.kind') = 'commandExecution'
-           AND (json_extract(h.item_json, '$.outputPrunedAt') IS NULL
-                OR instr(COALESCE(json_extract(h.item_json, '$.detailText'), ''), 'Input:' || char(10)) > 0)
+           AND (?1 IS NULL OR COALESCE(t.completed_at, t.started_at) < ?1)
+           AND (?2 IS NULL OR h.thread_id IN (SELECT id FROM threads WHERE id = ?2 OR root_thread_id = ?2))
+           AND CASE json_extract(h.item_json, '$.kind')
+             WHEN 'commandExecution' THEN
+               (?3 AND ((json_extract(h.item_json, '$.outputPrunedAt') IS NULL
+                         AND length(COALESCE(json_extract(h.item_json, '$.detailText'), '')) > 0)
+                        OR instr(COALESCE(json_extract(h.item_json, '$.detailText'), ''), 'Input:' || char(10)) > 0))
+               OR (?4 = 'truncate' AND json_extract(h.item_json, '$.textPruned') IS NULL
+                   AND length(COALESCE(json_extract(h.item_json, '$.text'), '')) > ?5)
+               OR (?4 = 'remove' AND COALESCE(json_extract(h.item_json, '$.textPruned'), '') != 'removed'
+                   AND length(COALESCE(json_extract(h.item_json, '$.text'), '')) > 0)
+               OR (?6 AND (instr(COALESCE(json_extract(h.item_json, '$.detailText'), ''), 'Input:' || char(10)) > 0
+                   OR json_extract(h.item_json, '$.previewText') = json_extract(h.item_json, '$.text')
+                   OR substr(COALESCE(json_extract(h.item_json, '$.detailText'), ''), 1,
+                             length(json_extract(h.item_json, '$.text')) + 2)
+                      = json_extract(h.item_json, '$.text') || char(10) || char(10)))
+             WHEN 'fileChange' THEN
+               ?7 AND json_extract(h.item_json, '$.outputPrunedAt') IS NULL
+               AND length(COALESCE(json_extract(h.item_json, '$.detailText'), '')) > 0
+             ELSE 0 END
          ORDER BY h.rowid",
     )?;
-    let rows = statement.query_map([cutoff], |row| row.get::<_, i64>(0))?;
+    let rows = statement.query_map(
+        params![
+            cleanup.cutoff,
+            cleanup.thread,
+            cleanup.options.command_output,
+            text_mode,
+            cleanup.options.command_text_chars,
+            cleanup.dedupe,
+            cleanup.options.file_diffs
+        ],
+        |row| row.get::<_, i64>(0),
+    )?;
     Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
 }
 
@@ -541,7 +762,12 @@ struct PruneSlice {
 }
 
 /// Rewrite rows from the front of `rows` for at most [`PRUNE_SLICE`].
-fn prune_rows(conn: &Connection, rows: &[i64], pruned_at: &str) -> Result<PruneSlice> {
+fn prune_rows(
+    conn: &Connection,
+    rows: &[i64],
+    pruned_at: &str,
+    cleanup: &Cleanup,
+) -> Result<PruneSlice> {
     let started = std::time::Instant::now();
     let tx = conn.unchecked_transaction()?;
     let mut slice = PruneSlice {
@@ -565,7 +791,7 @@ fn prune_rows(conn: &Connection, rows: &[i64], pruned_at: &str) -> Result<PruneS
         else {
             continue;
         };
-        let Some((pruned, removed)) = prune_item(&json, pruned_at) else {
+        let Some(pruned) = prune_item(&json, pruned_at, &cleanup.options) else {
             continue;
         };
         tx.execute(
@@ -573,73 +799,188 @@ fn prune_rows(conn: &Connection, rows: &[i64], pruned_at: &str) -> Result<PruneS
             params![pruned, rowid],
         )?;
         slice.items += 1;
-        slice.bytes += removed;
+        slice.bytes += json.len().saturating_sub(pruned.len()) as u64;
     }
     tx.commit()?;
     Ok(slice)
 }
 
-/// The command execution reduced to its text and detail header, and the bytes
-/// that went. `None` when there is nothing left to remove.
-pub(crate) fn prune_item(json: &str, pruned_at: &str) -> Option<(String, u64)> {
+/// The item after this cleanup; `None` when it would not change.
+///
+/// Every pass also stores the command once: it drops the command from the
+/// input and the preview, where older versions copied it. Removed output and
+/// diffs are recorded in `outputPrunedAt` and `outputPrunedBytes`; a shortened
+/// or removed command in `textPruned`.
+pub(crate) fn prune_item(
+    json: &str,
+    pruned_at: &str,
+    options: &StorageCleanupDto,
+) -> Option<String> {
     let mut value: Value = serde_json::from_str(json).ok()?;
     let item = value.as_object_mut()?;
-    if item.get("kind").and_then(Value::as_str) != Some("commandExecution") {
-        return None;
-    }
     let detail = item
         .get("detailText")
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_owned();
     let earlier = item.get("outputPrunedBytes").and_then(Value::as_u64);
-    // A detail may also start with its input or output, without a header. One
-    // with no known section is all output, unless an earlier cleanup left it.
-    let kept = if ["Input:\n", "Output:\n", "Result:\n"]
+    let mut kept = detail.clone();
+    let mut changed = false;
+    match item.get("kind").and_then(Value::as_str) {
+        Some("commandExecution") => {
+            let text = item
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            if options.command_output {
+                kept = detail_header(&detail, earlier.is_some());
+            }
+            if let Some(slim) = without_command(&kept, &text, item.contains_key("textPruned")) {
+                kept = slim;
+            }
+            let shortened = match options.command_text {
+                CommandTextCleanup::Truncate
+                    if !item.contains_key("textPruned")
+                        && text.chars().count() > options.command_text_chars as usize =>
+                {
+                    let mut short: String = text
+                        .chars()
+                        .take(options.command_text_chars as usize)
+                        .collect();
+                    short.push('…');
+                    Some((short, "truncated"))
+                }
+                CommandTextCleanup::Remove
+                    if !text.is_empty()
+                        && item.get("textPruned").and_then(Value::as_str) != Some("removed") =>
+                {
+                    Some((String::new(), "removed"))
+                }
+                _ => None,
+            };
+            // Readers of command executions show the text when there is no preview.
+            if item.get("previewText").is_some()
+                && (shortened.is_some() || item.get("previewText") == item.get("text"))
+            {
+                item.remove("previewText");
+                changed = true;
+            }
+            if let Some((short, mark)) = shortened {
+                item.insert("text".into(), short.into());
+                item.insert("textPruned".into(), mark.into());
+                changed = true;
+            }
+        }
+        Some("fileChange") if options.file_diffs && earlier.is_none() => kept.clear(),
+        _ => return None,
+    }
+    if kept != detail {
+        changed = true;
+        if kept.is_empty() {
+            item.remove("detailText");
+        } else {
+            item.insert("detailText".into(), kept.clone().into());
+        }
+        // Without the cleanup asking, only the input's copy of the command went.
+        let removed_output = options.command_output
+            || (options.file_diffs
+                && item.get("kind").and_then(Value::as_str) == Some("fileChange"));
+        if removed_output {
+            if earlier.is_none() {
+                item.insert("outputPrunedAt".into(), pruned_at.into());
+            }
+            item.insert(
+                "outputPrunedBytes".into(),
+                (earlier.unwrap_or(0) + (detail.len() - kept.len()) as u64).into(),
+            );
+        }
+    }
+    if !changed {
+        return None;
+    }
+    serde_json::to_string(&value).ok()
+}
+
+/// The detail's header (tool, kind, status): everything before its input,
+/// output or result. A detail that starts with one of those, or has none of
+/// them, is all output, unless an earlier cleanup already left only a header.
+fn detail_header(detail: &str, pruned_before: bool) -> String {
+    if ["Input:\n", "Output:\n", "Result:\n"]
         .iter()
         .any(|start| detail.starts_with(start))
     {
-        String::new()
-    } else {
-        match BODY_MARKERS
-            .iter()
-            .filter_map(|marker| detail.find(marker))
-            .min()
+        return String::new();
+    }
+    match BODY_MARKERS
+        .iter()
+        .filter_map(|marker| detail.find(marker))
+        .min()
+    {
+        Some(end) => detail[..end].to_owned(),
+        None if pruned_before => detail.to_owned(),
+        None => String::new(),
+    }
+}
+
+/// The detail without its copy of the command `text`, or `None` when it holds
+/// none. A shortened or removed text no longer matches; its copy goes anyway.
+fn without_command(detail: &str, text: &str, text_pruned: bool) -> Option<String> {
+    // Imported sessions put the command above the output.
+    if !text.is_empty() && !detail.starts_with("Tool: ") {
+        if let Some(output) = detail
+            .strip_prefix(text)
+            .and_then(|rest| rest.strip_prefix("\n\n"))
         {
-            Some(end) => detail[..end].to_owned(),
-            None if earlier.is_some() => detail.clone(),
-            None => String::new(),
+            return Some(format!("Output:\n{output}"));
         }
-    };
-    let mut removed = (detail.len() - kept.len()) as u64;
-    if kept.is_empty() {
-        item.remove("detailText");
+    }
+    let start = if detail.starts_with("Input:\n") {
+        0
     } else {
-        item.insert("detailText".into(), kept.into());
-    }
-    // Readers of command executions treat a missing previewText as the text.
-    if item.get("previewText").is_some() && item.get("previewText") == item.get("text") {
-        removed += item
-            .remove("previewText")
-            .and_then(|text| text.as_str().map(str::len))
-            .unwrap_or(0) as u64;
-    }
-    if removed == 0 && earlier.is_some() {
+        detail.find("\n\nInput:\n")? + 2
+    };
+    let body = start + "Input:\n".len();
+    let end = ["\n\nOutput:\n", "\n\nResult:\n"]
+        .iter()
+        .filter_map(|marker| detail[body..].find(marker))
+        .min()
+        .map_or(detail.len(), |end| body + end);
+    let input: Value = serde_json::from_str(&detail[body..end]).ok()?;
+    let (command, rest) = split_command_input(&input)?;
+    if command != text && !text_pruned {
         return None;
     }
-    if earlier.is_none() {
-        item.insert("outputPrunedAt".into(), pruned_at.into());
+    let before = detail[..start].trim_end_matches('\n');
+    let after = &detail[end..];
+    let mut slim = before.to_owned();
+    if let Some(rest) = rest {
+        if !slim.is_empty() {
+            slim.push_str("\n\n");
+        }
+        slim.push_str("Input:\n");
+        slim.push_str(&pretty_json(&rest));
     }
-    item.insert(
-        "outputPrunedBytes".into(),
-        (earlier.unwrap_or(0) + removed).into(),
-    );
-    Some((serde_json::to_string(&value).ok()?, removed))
+    if slim.is_empty() {
+        slim.push_str(after.trim_start_matches('\n'));
+    } else {
+        slim.push_str(after);
+    }
+    Some(slim)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn output_only() -> StorageCleanupDto {
+        StorageCleanupDto::default()
+    }
+
+    fn prune(item: &Value, options: &StorageCleanupDto) -> Option<Value> {
+        prune_item(&item.to_string(), "2026-10-18T00:00:00.000Z", options)
+            .map(|json| serde_json::from_str(&json).unwrap())
+    }
 
     #[test]
     fn prune_keeps_the_command_and_header_only() {
@@ -648,35 +989,122 @@ mod tests {
             "detailText": "Tool: exec\n\nStatus: completed\n\nInput:\n{\n  \"command\": \"ls\"\n}\n\nOutput:\nfile-a\nfile-b",
             "status": "completed"
         });
-        let (pruned, removed) = prune_item(&item.to_string(), "2026-10-18T00:00:00.000Z").unwrap();
-        let pruned: Value = serde_json::from_str(&pruned).unwrap();
+        let pruned = prune(&item, &output_only()).unwrap();
         assert_eq!(pruned["detailText"], "Tool: exec\n\nStatus: completed");
         assert_eq!(pruned["text"], "ls");
         assert!(pruned.get("previewText").is_none());
         assert_eq!(pruned["outputPrunedAt"], "2026-10-18T00:00:00.000Z");
+        let removed =
+            item["detailText"].as_str().unwrap().len() - "Tool: exec\n\nStatus: completed".len();
         assert_eq!(pruned["outputPrunedBytes"], removed);
         // Nothing more to remove: no rewrite.
-        assert!(prune_item(&pruned.to_string(), "later").is_none());
+        assert!(prune(&pruned, &output_only()).is_none());
         // An item cleaned by an earlier version still held its input.
         let earlier = json!({"kind": "commandExecution", "text": "ls", "outputPrunedAt": "first", "outputPrunedBytes": 10,
             "detailText": "Tool: exec\n\nInput:\n{\"command\":\"ls\"}"});
-        let (slim, removed) = prune_item(&earlier.to_string(), "later").unwrap();
-        let slim: Value = serde_json::from_str(&slim).unwrap();
+        let slim = prune(&earlier, &output_only()).unwrap();
         assert_eq!(slim["detailText"], "Tool: exec");
         assert_eq!(slim["outputPrunedAt"], "first");
-        assert_eq!(slim["outputPrunedBytes"], 10 + removed);
+        assert_eq!(
+            slim["outputPrunedBytes"],
+            10 + "\n\nInput:\n{\"command\":\"ls\"}".len()
+        );
         // Without a header, or without known sections, the whole detail goes.
         for detail in ["raw", "Input:\n{}\n\nResult:\nok"] {
             let plain = json!({"kind": "commandExecution", "text": "x", "detailText": detail});
-            let (pruned, _) = prune_item(&plain.to_string(), "t").unwrap();
-            assert!(serde_json::from_str::<Value>(&pruned)
+            assert!(prune(&plain, &output_only())
                 .unwrap()
                 .get("detailText")
                 .is_none());
         }
         // Other kinds are never touched.
         let tool = json!({"kind": "toolCall", "text": "CronCreate", "detailText": "Input:\n{}\n\nResult:\nok"});
-        assert!(prune_item(&tool.to_string(), "t").is_none());
+        assert!(prune(&tool, &output_only()).is_none());
+    }
+
+    #[test]
+    fn every_pass_stores_the_command_once() {
+        let keep = StorageCleanupDto {
+            command_output: false,
+            ..StorageCleanupDto::default()
+        };
+        // The input keeps its other fields; the output stays.
+        let item = json!({"kind": "commandExecution", "text": "ls -la", "previewText": "ls -la",
+            "detailText": "Tool: Bash\n\nInput:\n{\n  \"command\": \"ls -la\",\n  \"timeout\": 5\n}\n\nOutput:\nfile"});
+        let slim = prune(&item, &keep).unwrap();
+        assert_eq!(
+            slim["detailText"],
+            "Tool: Bash\n\nInput:\n{\n  \"timeout\": 5\n}\n\nOutput:\nfile"
+        );
+        assert!(slim.get("previewText").is_none());
+        assert!(slim.get("outputPrunedAt").is_none());
+        assert!(prune(&slim, &keep).is_none());
+        // An input of only the command goes; so does an argv that spells it.
+        let argv = json!({"kind": "commandExecution", "text": "git status",
+            "detailText": "Tool: exec\n\nInput:\n{\"argv\": [\"git\", \"status\"]}\n\nOutput:\nclean"});
+        assert_eq!(
+            prune(&argv, &keep).unwrap()["detailText"],
+            "Tool: exec\n\nOutput:\nclean"
+        );
+        // An input naming another command is not a copy.
+        let other = json!({"kind": "commandExecution", "text": "Run tests",
+            "detailText": "Tool: exec\n\nInput:\n{\"command\": \"cargo test\"}"});
+        assert!(prune(&other, &keep).is_none());
+        // Imported sessions put the command above the output.
+        let imported = json!({"kind": "commandExecution", "text": "make", "previewText": "make",
+            "detailText": "make\n\nbuilt"});
+        let slim = prune(&imported, &keep).unwrap();
+        assert_eq!(slim["detailText"], "Output:\nbuilt");
+        assert!(slim.get("previewText").is_none());
+    }
+
+    #[test]
+    fn prune_shortens_or_removes_the_command_and_removes_diffs() {
+        let long = "x".repeat(40);
+        let item = json!({"kind": "commandExecution", "text": long, "previewText": long,
+            "detailText": format!("Tool: exec\n\nInput:\n{{\"command\": \"{long}\"}}\n\nOutput:\nok")});
+        let truncate = StorageCleanupDto {
+            command_output: false,
+            command_text: CommandTextCleanup::Truncate,
+            command_text_chars: 16,
+            file_diffs: false,
+        };
+        let short = prune(&item, &truncate).unwrap();
+        assert_eq!(short["text"], format!("{}…", "x".repeat(16)));
+        assert_eq!(short["textPruned"], "truncated");
+        assert_eq!(short["detailText"], "Tool: exec\n\nOutput:\nok");
+        assert!(short.get("previewText").is_none());
+        assert!(prune(&short, &truncate).is_none());
+        // Removing goes further, also after a truncation.
+        let remove = StorageCleanupDto {
+            command_text: CommandTextCleanup::Remove,
+            ..truncate.clone()
+        };
+        let gone = prune(&short, &remove).unwrap();
+        assert_eq!(
+            (gone["text"].as_str(), gone["textPruned"].as_str()),
+            (Some(""), Some("removed"))
+        );
+        assert!(prune(&gone, &remove).is_none());
+        // Multibyte text is cut on characters.
+        let wide = json!({"kind": "commandExecution", "text": "echo 你好你好你好你好你好你好你好"});
+        assert_eq!(
+            prune(&wide, &truncate).unwrap()["text"],
+            "echo 你好你好你好你好你好你…"
+        );
+        // Diffs go only when asked, once.
+        let diffs = StorageCleanupDto {
+            command_output: false,
+            file_diffs: true,
+            ..StorageCleanupDto::default()
+        };
+        let change = json!({"kind": "fileChange", "text": "a.rs", "detailText": "--- a/a.rs\n+++ b/a.rs\n+x", "addedLines": 1});
+        assert!(prune(&change, &output_only()).is_none());
+        let pruned = prune(&change, &diffs).unwrap();
+        assert!(pruned.get("detailText").is_none());
+        assert_eq!(pruned["outputPrunedBytes"], 24);
+        assert_eq!(pruned["addedLines"], 1);
+        assert!(prune(&pruned, &diffs).is_none());
     }
 
     #[tokio::test]
@@ -705,13 +1133,25 @@ mod tests {
             Ok(())
         })
         .unwrap();
-        let started = s.start_storage_prune(3);
+        s.db.with(|c| {
+            c.execute(
+                "INSERT INTO storage_settings(id, command_output_retention_days, updated_at) VALUES (1, 3, ?1)",
+                [old],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let started = s.start_storage_prune().unwrap().unwrap();
         assert_eq!(
             (started.action.as_str(), started.state.as_str()),
             ("prune", "running")
         );
-        // A second request while it runs returns the same job.
-        assert_eq!(s.start_storage_prune(3).started_at, started.started_at);
+        // A second request while it runs is refused, naming the running job.
+        let busy = s.start_storage_prune().unwrap_err();
+        assert_eq!(
+            busy.downcast_ref::<StorageBusy>().unwrap().0.started_at,
+            started.started_at
+        );
         let mut job = started;
         for _ in 0..200 {
             job = s.storage_overview(0, 10).unwrap().job.unwrap();
@@ -755,7 +1195,13 @@ mod tests {
             )
             .unwrap();
         }
-        let slice = prune_rows(&conn, &[1, 99, 2, 3], "t").unwrap();
+        let cleanup = Cleanup {
+            cutoff: None,
+            thread: None,
+            options: StorageCleanupDto::default(),
+            dedupe: false,
+        };
+        let slice = prune_rows(&conn, &[1, 99, 2, 3], "t", &cleanup).unwrap();
         assert_eq!((slice.processed, slice.items), (4, 3));
         let left: i64 = conn
             .query_row(

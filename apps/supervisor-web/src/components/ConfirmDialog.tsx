@@ -1,5 +1,5 @@
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
-import { useId, useRef } from 'react';
+import { useCallback, useId, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { X } from 'lucide-react';
 
@@ -33,6 +33,12 @@ export function ConfirmDialog({
   const cancelRef = useRef<HTMLButtonElement>(null);
   const titleId = useId();
   const descriptionId = useId();
+  // Opened from inside another modal window (Settings), the dialog renders in
+  // that window: it keeps focus and Esc within itself and would take them back.
+  const [host, setHost] = useState<HTMLElement | null>(null);
+  const anchor = useCallback((node: HTMLSpanElement | null) => {
+    setHost(node?.closest<HTMLElement>('[role="dialog"]') ?? null);
+  }, []);
 
   useDialogLifecycle({
     busy,
@@ -42,11 +48,12 @@ export function ConfirmDialog({
     open,
   });
 
+  const marker = <span hidden ref={anchor} />;
   if (!open) {
-    return null;
+    return marker;
   }
 
-  return createPortal(
+  return <>{marker}{createPortal(
     <div className="fixed inset-0 z-[95] flex items-center justify-center p-4 sm:p-6">
       <button
         aria-label={translate("workbench.closeConfirmationDialog")}
@@ -111,6 +118,6 @@ export function ConfirmDialog({
         </div>
       </div>
     </div>,
-    document.body,
-  );
+    host ?? document.body,
+  )}</>;
 }

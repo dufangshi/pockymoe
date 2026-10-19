@@ -47,7 +47,7 @@ use crate::import_id::{
 use crate::local_sessions::{find_local_session, list_local_sessions, LocalSessionHomes};
 pub use harness_release::{DisplayChange, HarnessViewer, InvalidSettings, MAX_VIEWED_THREADS};
 use pockymoe_protocol::HarnessLoadReason;
-pub use storage::STORAGE_PAGE_LIMIT;
+pub use storage::{StorageBusy, STORAGE_PAGE_LIMIT};
 
 fn thread_session_settings(thread: &ThreadDto) -> SessionSettings {
     SessionSettings {

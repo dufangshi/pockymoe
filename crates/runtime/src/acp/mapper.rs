@@ -854,7 +854,7 @@ fn tool_item(turn_id: &str, body: &Value) -> ThreadHistoryItemDto {
         body.get("title").and_then(Value::as_str).unwrap_or("")
     )
     .to_ascii_lowercase();
-    let command = record_value(body.get("rawInput"), &["command", "cmd", "argv"]);
+    let command = record_value(body.get("rawInput"), COMMAND_KEYS);
     let kind = if is_subagent_tool(raw_kind, &normalized_name) {
         ThreadItemKind::AgentToolCall
     } else {
@@ -905,7 +905,15 @@ fn tool_item(turn_id: &str, body: &Value) -> ThreadHistoryItemDto {
         "in_progress" => Some("running"),
         _ => Some("running"),
     };
-    let detail = tool_detail(body, tool_name, raw_kind, &location_text);
+    // A command's input holds the command again; store it once, as the text.
+    let input = match (&kind, body.get("rawInput")) {
+        (ThreadItemKind::CommandExecution, Some(input)) => match split_command_input(input) {
+            Some((_, rest)) => rest,
+            None => Some(input.clone()),
+        },
+        (_, input) => input.cloned(),
+    };
+    let detail = tool_detail(body, input.as_ref(), tool_name, raw_kind, &location_text);
     let mut mapped = item(
         id,
         kind,
@@ -913,7 +921,10 @@ fn tool_item(turn_id: &str, body: &Value) -> ThreadHistoryItemDto {
         status.unwrap_or("running"),
         turn_id,
     );
-    mapped.preview_text = Some(title);
+    // Readers of command executions show the text when there is no preview.
+    if mapped.kind != ThreadItemKind::CommandExecution {
+        mapped.preview_text = Some(title);
+    }
     mapped.detail_text = (!detail.is_empty()).then_some(detail);
     if mapped.kind == ThreadItemKind::FileChange {
         apply_file_changes(&mut mapped, body);
@@ -994,19 +1005,43 @@ fn nonempty_string(value: Option<&Value>) -> Option<String> {
         .map(str::to_string)
 }
 
+/// Keys a tool input holds its shell command under, in order of preference.
+pub(crate) const COMMAND_KEYS: &[&str] = &["command", "cmd", "argv"];
+
 fn record_value(value: Option<&Value>, keys: &[&str]) -> Option<String> {
-    let record = value?.as_object()?;
+    record_entry(value?.as_object()?, keys).map(|(_, value)| value)
+}
+
+fn record_entry<'a>(
+    record: &serde_json::Map<String, Value>,
+    keys: &[&'a str],
+) -> Option<(&'a str, String)> {
     keys.iter().find_map(|key| match record.get(*key) {
-        Some(Value::String(value)) if !value.trim().is_empty() => Some(value.trim().to_string()),
-        Some(Value::Array(values)) if values.iter().all(Value::is_string) => Some(
+        Some(Value::String(value)) if !value.trim().is_empty() => {
+            Some((*key, value.trim().to_string()))
+        }
+        Some(Value::Array(values)) if values.iter().all(Value::is_string) => Some((
+            *key,
             values
                 .iter()
                 .filter_map(Value::as_str)
                 .collect::<Vec<_>>()
                 .join(" "),
-        ),
+        )),
         _ => None,
     })
+}
+
+/// The command a tool input runs, and the input without it (`None` when
+/// nothing else is left).
+pub(crate) fn split_command_input(input: &Value) -> Option<(String, Option<Value>)> {
+    let mut record = input.as_object()?.clone();
+    let (key, command) = record_entry(&record, COMMAND_KEYS)?;
+    record.remove(key);
+    Some((
+        command,
+        (!record.is_empty()).then_some(Value::Object(record)),
+    ))
 }
 
 fn tool_locations(body: &Value) -> Vec<(String, Option<u64>)> {
@@ -1023,7 +1058,13 @@ fn tool_locations(body: &Value) -> Vec<(String, Option<u64>)> {
         .collect()
 }
 
-fn tool_detail(body: &Value, tool_name: Option<&str>, raw_kind: &str, locations: &str) -> String {
+fn tool_detail(
+    body: &Value,
+    input: Option<&Value>,
+    tool_name: Option<&str>,
+    raw_kind: &str,
+    locations: &str,
+) -> String {
     let mut parts = Vec::new();
     if let Some(name) = tool_name.or_else(|| body.get("title").and_then(Value::as_str)) {
         parts.push(format!("Tool: {name}"));
@@ -1037,7 +1078,7 @@ fn tool_detail(body: &Value, tool_name: Option<&str>, raw_kind: &str, locations:
     if !locations.is_empty() {
         parts.push(format!("Locations:\n{locations}"));
     }
-    if let Some(input) = body.get("rawInput") {
+    if let Some(input) = input {
         parts.push(format!("Input:\n{}", pretty_json(input)));
     }
     let content = tool_content_text(body);
@@ -1150,7 +1191,7 @@ fn readable_output(output: &Value) -> String {
     pretty_json(output)
 }
 
-fn pretty_json(value: &Value) -> String {
+pub(crate) fn pretty_json(value: &Value) -> String {
     serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
 }
 
@@ -1414,6 +1455,32 @@ mod presentation_tests {
         let bash = item("bash", json!({"command":"python3 -m unittest"}));
         assert_eq!(bash.kind, "commandExecution");
         assert_eq!(bash.text, "python3 -m unittest");
+    }
+
+    #[test]
+    fn a_command_is_stored_once() {
+        let item = |input: Value| {
+            tool_item(
+                "turn",
+                &json!({"toolCallId":"c","kind":"execute","title":"Bash","status":"completed","rawInput":input}),
+            )
+        };
+        let run = item(json!({"command":"cargo test","timeout":60}));
+        assert_eq!(run.text, "cargo test");
+        assert_eq!(run.preview_text, None);
+        let detail = run.detail_text.unwrap();
+        assert!(detail.contains("Input:\n{\n  \"timeout\": 60\n}"));
+        assert!(!detail.contains("cargo test"));
+        // An input of only the command leaves no input section.
+        let bare = item(json!({"argv":["ls","-la"]}));
+        assert_eq!(bare.text, "ls -la");
+        assert!(!bare.detail_text.unwrap().contains("Input:"));
+        // Other tools keep their whole input.
+        let read = tool_item(
+            "turn",
+            &json!({"toolCallId":"r","kind":"read","title":"Read","rawInput":{"path":"a.rs"}}),
+        );
+        assert!(read.detail_text.unwrap().contains("\"path\": \"a.rs\""));
     }
 
     #[test]

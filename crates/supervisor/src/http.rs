@@ -161,6 +161,10 @@ pub(crate) fn router_with_treer(state: AppState, hub: Option<Arc<crate::treer::H
             get(storage_settings).put(put_storage_settings),
         )
         .route("/api/storage/prune", post(storage_prune))
+        .route(
+            "/api/storage/threads/{id}/clean",
+            post(storage_clean_thread),
+        )
         .route("/api/storage/compact", post(storage_compact))
         .route(
             "/api/port-mappings",
@@ -885,51 +889,82 @@ async fn storage_settings(
     ))
 }
 
-/// The body replaces the policy; `commandOutputRetentionDays` must be present.
+/// The body replaces the policy; `retentionDays` (or its old name
+/// `commandOutputRetentionDays`) must be present. Missing options keep their
+/// defaults.
 async fn put_storage_settings(
     State(state): State<AppState>,
     body: Bytes,
 ) -> Result<Json<pockymoe_protocol::StorageSettingsDto>, ApiErr> {
     let invalid = |message: String| err(StatusCode::BAD_REQUEST, "invalid_settings", message);
     let value: Value = serde_json::from_slice(&body).map_err(|e| invalid(e.to_string()))?;
-    if value.get("commandOutputRetentionDays").is_none() {
+    if value.get("retentionDays").is_none() && value.get("commandOutputRetentionDays").is_none() {
         return Err(invalid(
-            "commandOutputRetentionDays is required (null keeps output)".to_owned(),
+            "retentionDays is required (null turns automatic cleanup off)".to_owned(),
         ));
     }
     let settings = serde_json::from_value(value).map_err(|e| invalid(e.to_string()))?;
     state
         .update_storage_settings(settings)
         .map(Json)
-        .map_err(|e| {
-            if e.is::<pockymoe_runtime::service::InvalidSettings>() {
-                invalid(e.to_string())
-            } else {
-                settings_storage_error(e)
-            }
-        })
+        .map_err(storage_job_error)
 }
 
-/// Start a cleanup with the saved retention (409 when none is set). Returns
+fn storage_job_error(error: anyhow::Error) -> ApiErr {
+    if let Some(busy) = error.downcast_ref::<pockymoe_runtime::service::StorageBusy>() {
+        let job = busy.0.action.clone();
+        err(
+            StatusCode::CONFLICT,
+            "storage_busy",
+            format!("A {job} job is running"),
+        )
+    } else if error.is::<pockymoe_runtime::service::InvalidSettings>() {
+        err(
+            StatusCode::BAD_REQUEST,
+            "invalid_settings",
+            error.to_string(),
+        )
+    } else if error.to_string().contains("not found") {
+        err(StatusCode::NOT_FOUND, "not_found", error.to_string())
+    } else {
+        settings_storage_error(error)
+    }
+}
+
+/// Start a cleanup with the saved settings (409 when no age is set). Returns
 /// the background job at once; the storage overview reports its progress.
 async fn storage_prune(State(state): State<AppState>) -> Result<Response, ApiErr> {
-    let days = state
-        .storage_settings()
-        .map_err(settings_storage_error)?
-        .command_output_retention_days
+    let job = state
+        .start_storage_prune()
+        .map_err(storage_job_error)?
         .ok_or_else(|| {
             err(
                 StatusCode::CONFLICT,
                 "retention_off",
-                "Set a retention period first",
+                "Set a cleanup age first",
             )
         })?;
-    Ok((StatusCode::ACCEPTED, Json(state.start_storage_prune(days))).into_response())
+    Ok((StatusCode::ACCEPTED, Json(job)).into_response())
+}
+
+/// Clean up one conversation now with the options in the body.
+async fn storage_clean_thread(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    body: Bytes,
+) -> Result<Response, ApiErr> {
+    let options: pockymoe_protocol::StorageCleanupDto = serde_json::from_slice(&body)
+        .map_err(|e| err(StatusCode::BAD_REQUEST, "invalid_settings", e.to_string()))?;
+    let job = state
+        .start_thread_cleanup(&id, options)
+        .map_err(storage_job_error)?;
+    Ok((StatusCode::ACCEPTED, Json(job)).into_response())
 }
 
 /// Start compacting the database file in the background.
-async fn storage_compact(State(state): State<AppState>) -> Response {
-    (StatusCode::ACCEPTED, Json(state.start_storage_compact())).into_response()
+async fn storage_compact(State(state): State<AppState>) -> Result<Response, ApiErr> {
+    let job = state.start_storage_compact().map_err(storage_job_error)?;
+    Ok((StatusCode::ACCEPTED, Json(job)).into_response())
 }
 
 /// The body replaces the policy, so every key must be present: a missing

@@ -1,13 +1,65 @@
-//! Disk use of the Supervisor database and the command-output retention policy.
+//! Disk use of the Supervisor database and history cleanup.
 use serde::{Deserialize, Serialize};
 
-/// `None` keeps command output forever.
+/// What a cleanup removes from a command's text.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CommandTextCleanup {
+    /// Keep the whole command.
+    #[default]
+    Keep,
+    /// Keep its first `commandTextChars` characters.
+    Truncate,
+    /// Keep only that a command ran, and when.
+    Remove,
+}
+
+pub const DEFAULT_COMMAND_TEXT_CHARS: u32 = 512;
+
+/// What a cleanup removes from turns that ended (never from running ones).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StorageCleanupDto {
+    /// Command output (and the command's input details).
+    #[serde(default = "yes")]
+    pub command_output: bool,
+    #[serde(default)]
+    pub command_text: CommandTextCleanup,
+    #[serde(default = "default_command_text_chars")]
+    pub command_text_chars: u32,
+    /// The diffs of file changes; their paths and line counts stay.
+    #[serde(default)]
+    pub file_diffs: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+fn default_command_text_chars() -> u32 {
+    DEFAULT_COMMAND_TEXT_CHARS
+}
+
+impl Default for StorageCleanupDto {
+    fn default() -> Self {
+        Self {
+            command_output: true,
+            command_text: CommandTextCleanup::Keep,
+            command_text_chars: DEFAULT_COMMAND_TEXT_CHARS,
+            file_diffs: false,
+        }
+    }
+}
+
+/// Automatic cleanup: one age for everything it removes. `None` turns it off.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StorageSettingsDto {
-    /// Remove a command's output once its turn ended this many days ago.
-    /// The command itself, its status and its input stay.
-    pub command_output_retention_days: Option<u32>,
+    /// Clean up turns that ended this many days ago (0.13.28 called it
+    /// `commandOutputRetentionDays`).
+    #[serde(alias = "commandOutputRetentionDays")]
+    pub retention_days: Option<u32>,
+    #[serde(flatten)]
+    pub cleanup: StorageCleanupDto,
 }
 
 /// One conversation: a root thread with its agent threads.
@@ -21,6 +73,9 @@ pub struct StorageThreadDto {
     pub bytes: u64,
     /// The part of `bytes` held by command executions.
     pub command_bytes: u64,
+    /// The part of `bytes` held by file changes (their diffs).
+    #[serde(default)]
+    pub file_change_bytes: u64,
     pub items: u64,
     /// Agent threads counted in this row.
     pub agent_threads: u64,
@@ -39,7 +94,9 @@ pub struct StorageScanDto {
     pub free_bytes: u64,
     pub history_bytes: u64,
     pub command_bytes: u64,
-    /// Command outputs already removed by the retention policy.
+    #[serde(default)]
+    pub file_change_bytes: u64,
+    /// Command outputs and diffs already removed by cleanup.
     pub pruned_items: u64,
     pub pruned_bytes: u64,
     pub thread_count: u64,
@@ -53,7 +110,8 @@ pub struct StorageScanDto {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StorageJobDto {
-    /// `prune` or `compact`.
+    /// `prune`, `dedupe` (the one-time removal of input copies of commands)
+    /// or `compact`.
     pub action: String,
     /// `running`, `done` or `failed`.
     pub state: String,
@@ -69,6 +127,9 @@ pub struct StorageJobDto {
     pub started_at: String,
     pub finished_at: Option<String>,
     pub error: Option<String>,
+    /// The conversation a manual cleanup targets; `None` for the whole device.
+    #[serde(default)]
+    pub thread_id: Option<String>,
 }
 
 /// What the Disk section shows before and after a scan.

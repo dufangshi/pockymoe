@@ -979,9 +979,11 @@ export interface MessageSenderDto {
 }
 
 export interface ThreadHistoryItemDto {
-  /** Set when storage cleanup removed this command's output (its command and input stay). */
+  /** Set when storage cleanup removed this command's output or this edit's diff. */
   outputPrunedAt?: string | null;
   outputPrunedBytes?: number | null;
+  /** Set when storage cleanup shortened or removed this command's text. */
+  textPruned?: 'truncated' | 'removed' | null;
   polishedReply?: PolishedReplyDto | null;
   peerWork?: ThreadPeerWorkDto | null;
   /** Set on prompts that someone other than the device owner sent. */
@@ -2018,6 +2020,8 @@ export type {
 } from './harnessResources';
 
 export type {
+  CommandTextCleanup,
+  StorageCleanupDto,
   StorageJobDto,
   StorageOverviewDto,
   StorageScanDto,

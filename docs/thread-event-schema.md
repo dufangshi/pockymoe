@@ -54,6 +54,10 @@ and `text`; optional fields include `createdAt`, `previewText`, `detailText`,
 `status`, `sequence`, `sourceTurnId`, and `artifact`. Rust retains additional
 top-level fields in the flattened `extra` map, including provider metadata,
 background-wait information, file-change details and deferred-detail markers.
+Storage cleanup adds `outputPrunedAt` and `outputPrunedBytes` (command output
+or a diff removed) and `textPruned` (`truncated` or `removed` command text); see
+[storage](storage.md#cleanup). A command's `text` is its only copy: its
+`detailText` input leaves the command out.
 
 The optional Content Quality plugin attaches `polishedReply` to a completed
 `agentMessage`: `{text, preset, language, model, sourceHash, createdAt,

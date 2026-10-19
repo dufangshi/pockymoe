@@ -56,7 +56,7 @@ Maintained documentation for Pockymoe. For the product overview, start with the
 
 - [Harness lifecycle](harness-lifecycle.md): when harness processes load and are released, limits, memory
 - [Model and reasoning effort](model-settings.md): effort levels per model, changes during a turn, the models a turn shows
-- [Storage](storage.md): disk use of the Supervisor database, command-output retention and reclaiming space
+- [Storage](storage.md): disk use of the Supervisor database, history cleanup (command output, command text, diffs) and reclaiming space
 - [Managed ACP adapters](managed-acp-adapters.md)
 - [DeepSeek Harness bridge](dsh-adapter.md)
 - Claude: [background waits and wakes](claude-background-wake.md), [scheduled-turn history](claude-scheduled-history.md)
