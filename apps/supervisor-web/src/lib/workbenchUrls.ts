@@ -16,8 +16,12 @@ export function workbenchUrls(options: MatterWorkbenchOptions): MatterWorkbenchO
     notifications: options.notifications.map(notification => ({ ...notification, href: appUrl(notification.href) })),
     onNavigate: href => options.onNavigate(appPathname(href)),
     ...(options.onPrefetchThread ? { onPrefetchThread: (href: string) => options.onPrefetchThread!(appPathname(href)) } : {}),
+    ...(options.openTabs ? {
+      openTabs: options.openTabs.map(thread => ({ ...thread, href: appUrl(thread.href) })),
+    } : {}),
     ...(options.renderThreadMenu ? {
-      renderThreadMenu: thread => options.renderThreadMenu!({ ...thread, href: appPathname(thread.href) }),
+      // The context (a right-click's place) passes through untouched.
+      renderThreadMenu: (thread, context) => options.renderThreadMenu!({ ...thread, href: appPathname(thread.href) }, context),
     } : {}),
   };
 }

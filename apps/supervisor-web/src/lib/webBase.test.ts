@@ -51,8 +51,14 @@ describe('runtime Web base', () => {
     base.href = '/changed/';
     expect(webBase).toBe(prefix);
     const navigate = vi.fn();
-    const source = { threads: [{ href: '/threads/t' }], workspaceThreads: [{ href: '/threads/t' }], notifications: [{ href: '/devices/d/threads/t' }], onNavigate: navigate };
+    const menu = vi.fn();
+    const source = { threads: [{ href: '/threads/t' }], workspaceThreads: [{ href: '/threads/t' }], openTabs: [{ href: '/threads/o' }], notifications: [{ href: '/devices/d/threads/t' }], onNavigate: navigate, renderThreadMenu: menu };
     const options = workbenchUrls(source as never);
+    expect(options.openTabs?.[0]?.href).toBe(`${prefix}threads/o`);
+    // A right-click's place reaches the host's thread menu with the logical href.
+    const context = { x: 1, y: 2, onClose: () => {} };
+    options.renderThreadMenu!({ href: `${prefix}threads/t` } as never, context);
+    expect(menu).toHaveBeenCalledWith({ href: '/threads/t' }, context);
     expect(options.threads[0]?.href).toBe(`${prefix}threads/t`);
     expect(options.workspaceThreads?.[0]?.href).toBe(`${prefix}threads/t`);
     expect(options.notifications[0]?.href).toBe(`${prefix}devices/d/threads/t`);

@@ -5,14 +5,17 @@ import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Check, Copy, ExternalLink, MoreHorizontal, Pencil, Star, Trash2, TriangleAlert } from 'lucide-react';
 import type { ThreadDetailDto } from '@pockymoe/shared';
-import { copyText, useMenuKeyboard, type WorkbenchThread } from '@pockymoe/thread-ui';
+import { copyText, useMenuKeyboard, type ThreadMenuContext, type WorkbenchThread } from '@pockymoe/thread-ui';
 import { fetchRelayAccess, isInvisibleThreadError, request } from '../lib/api';
 import { RenameDialog } from './RenameDialog';
 import { ConfirmDialog } from './ConfirmDialog';
 import { threadsHref } from '../lib/relayRoutes';
 
-export function RecentThreadMenu({ thread, onFavorite, onRenamed, onRemoved, onNavigate, currentKey }: {
+/** A thread's menu. With `context` it opens where the thread was right-clicked
+    (a tab or a row), has no ⋯ button of its own, and reports when it is done. */
+export function RecentThreadMenu({ thread, onFavorite, onRenamed, onRemoved, onNavigate, currentKey, context }: {
   thread: WorkbenchThread;
+  context?: ThreadMenuContext | undefined;
   onFavorite: (key: string) => Promise<void>;
   onRenamed: (key: string, title: string) => Promise<void>;
   onRemoved: (key: string) => Promise<void>;
@@ -21,7 +24,8 @@ export function RecentThreadMenu({ thread, onFavorite, onRenamed, onRemoved, onN
 }) {
   useI18n();
   const hostScope = useHostScope();
-  const [position, setPosition] = useState<{ top: number; left: number } | null>(null);
+  const place = (left: number, top: number) => ({ left: Math.min(Math.max(8, left), innerWidth - 268), top: Math.max(8, Math.min(top, innerHeight - 340)) });
+  const [position, setPosition] = useState<{ top: number; left: number } | null>(() => context ? place(context.x, context.y) : null);
   const [detail, setDetail] = useState<ThreadDetailDto | null>(null);
   const [owner, setOwner] = useState(false);
   const [notice, setNotice] = useState('');
@@ -50,7 +54,7 @@ export function RecentThreadMenu({ thread, onFavorite, onRenamed, onRemoved, onN
       if (event.type === 'keydown' && (event as KeyboardEvent).key !== 'Escape') return;
       if (event.type === 'pointerdown' && (menu.current?.contains(event.target as Node) || trigger.current?.contains(event.target as Node))) return;
       setPosition(null);
-      if (event.type === 'keydown') trigger.current?.focus();
+      if (event.type === 'keydown') (trigger.current ?? context?.returnFocus)?.focus();
     };
     // The menu belongs to its row: scrolling the list away closes it.
     const scroll = (event: Event) => { if (!menu.current?.contains(event.target as Node)) setPosition(null); };
@@ -61,7 +65,13 @@ export function RecentThreadMenu({ thread, onFavorite, onRenamed, onRemoved, onN
     menu.current?.querySelector('button')?.focus();
     return () => { active = false; document.removeEventListener('pointerdown', close); document.removeEventListener('keydown', close); window.removeEventListener('resize', close); window.removeEventListener('scroll', scroll, true); };
   }, [position, base, device, id]);
-  useMenuKeyboard(menu, Boolean(position), (restore) => { setPosition(null); if (restore) trigger.current?.focus(); }, 'button:not([disabled])');
+  useMenuKeyboard(menu, Boolean(position), (restore) => { setPosition(null); if (restore) (trigger.current ?? context?.returnFocus)?.focus(); }, 'button:not([disabled])');
+  // Opened from a right-click, it is done once its menu and any window it opened close.
+  const dismiss = useRef(context?.onClose);
+  dismiss.current = context?.onClose;
+  useEffect(() => {
+    if (context && !position && !renaming && !deleting) dismiss.current?.();
+  }, [Boolean(context), position, renaming, deleting]);
   const copyItem = (key: string, label: string, text: string | null | undefined) => {
     const state = copied?.key === key ? copied.state : null;
     return (
@@ -77,11 +87,11 @@ export function RecentThreadMenu({ thread, onFavorite, onRenamed, onRemoved, onN
     );
   };
   return <>
-    <button ref={trigger} className="recent-thread-actions" aria-label={translate("workbench.actionsFor", { value1: thread.title })} aria-expanded={!!position} aria-haspopup="dialog" onClick={() => {
+    {!context && <button ref={trigger} className="recent-thread-actions" aria-label={translate("workbench.actionsFor", { value1: thread.title })} aria-expanded={!!position} aria-haspopup="dialog" onClick={() => {
       if (position) { setPosition(null); return; }
       const box = trigger.current!.getBoundingClientRect();
-      setPosition({ left: Math.min(Math.max(8, box.right - 260), innerWidth - 268), top: Math.max(8, Math.min(box.bottom + 6, innerHeight - 340)) });
-    }}><MoreHorizontal data-icon="more" size={16} /></button>
+      setPosition(place(box.right - 260, box.bottom + 6));
+    }}><MoreHorizontal data-icon="more" size={16} /></button>}
     {position && createPortal(<div ref={menu} role="dialog" aria-label={translate("workbench.threadActions", { value1: thread.title })} className="recent-thread-menu" style={position}>
       <p className="recent-thread-menu-title">{thread.title}</p>
       <button disabled={busy} onClick={async () => { setBusy(true); try { await onFavorite(thread.key); setPosition(null); } finally { setBusy(false); } }}><Star data-icon="shortcut" size={15} fill={thread.favorite ? 'currentColor' : 'none'} />{thread.favorite ? translate("workbench.unstarThread") : translate("workbench.starThread")}</button>
