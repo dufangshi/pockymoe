@@ -37,7 +37,7 @@
 
 :theme .thread-ui-shell .matter-workbench {
   --plum-shell-card: var(--theme-bg);
-  grid-template-columns: 49px 264px minmax(0, 1fr);
+  grid-template-columns: 49px var(--matter-sidebar-width, 264px) minmax(0, 1fr);
   /* One bar on the desktop: the tabs row (phones keep their top bar below). */
   grid-template-rows: minmax(0, 1fr);
   background: var(--plum-chrome);
@@ -708,7 +708,7 @@
 /* ── Tablet ────────────────────────────────────────────────────────────── */
 
 @media (max-width: 1000px) and (min-width: 640px) {
-  :theme .thread-ui-shell .matter-workbench { grid-template-columns: 43px 224px minmax(0, 1fr); }
+  :theme .thread-ui-shell .matter-workbench { grid-template-columns: 43px var(--matter-sidebar-width, 224px) minmax(0, 1fr); }
   :theme .thread-ui-shell .matter-workbench.is-sidebar-hidden { grid-template-columns: 43px 0 minmax(0, 1fr); }
   :theme .thread-ui-shell .matter-workbench .matter-rail > button { width: 34px; height: 34px; }
   :theme .thread-ui-shell .matter-workbench .matter-rail > .matter-brand { width: 32px; height: 32px; }

@@ -47,6 +47,16 @@ interface NavigationSnapshot {
 }
 const LOCAL_KEY = 'remote-codex.local-workbench.v1';
 const WORKSPACE_ORDER_KEY = 'pockymoe.workspace-order.v1';
+const OPEN_TABS_KEY = 'pockymoe.open-tabs.v1';
+const OPEN_TABS_LIMIT = 40;
+/** A conversation open as a desktop tab, as last seen (it may be on another device). */
+interface OpenTab { key: string; title: string; subtitle: string; href: string; agent?: string }
+function loadOpenTabs(key: string): OpenTab[] {
+  try {
+    const value: unknown = JSON.parse(localStorage.getItem(key) ?? '[]');
+    return Array.isArray(value) ? value.filter((tab): tab is OpenTab => !!tab && typeof tab.key === 'string' && typeof tab.href === 'string' && typeof tab.title === 'string').slice(0, OPEN_TABS_LIMIT) : [];
+  } catch { return []; }
+}
 function loadWorkspaceOrders(key: string): Record<string, string[]> {
   try {
     const value: unknown = JSON.parse(localStorage.getItem(key) ?? '{}');
@@ -96,6 +106,9 @@ export function useWorkbenchNavigation(
   // The order the reader dragged each workspace's conversations into, kept in
   // this browser: `device:workspace` -> root thread keys, first to last.
   const orderKey = useBrowserStateKey(WORKSPACE_ORDER_KEY);
+  const openTabsKey = useBrowserStateKey(OPEN_TABS_KEY);
+  const [openTabs, setOpenTabs] = useState<OpenTab[]>(() => loadOpenTabs(openTabsKey));
+  useEffect(() => { setOpenTabs(loadOpenTabs(openTabsKey)); }, [openTabsKey]);
   const [workspaceOrders, setWorkspaceOrders] = useState<Record<string, string[]>>(() => loadWorkspaceOrders(orderKey));
   useEffect(() => { setWorkspaceOrders(loadWorkspaceOrders(orderKey)); }, [orderKey]);
   const sharesDeviceThreads = options.sharesDeviceThreads === true;
@@ -645,6 +658,45 @@ export function useWorkbenchNavigation(
       sidebarThreads.push(thread); seen.add(thread.key);
     }
   }
+  // Desktop tabs are the conversations the reader opened, like an editor's: the
+  // open one joins after the tab that was active, and stays until closed.
+  const known = new Map<string, WorkbenchThread>();
+  for (const thread of [...activeThreads, ...familyByKey.values(), ...sidebarThreads, ...workspaceThreads]) known.set(thread.key, thread);
+  const openThread = known.get(currentKey);
+  const currentRootKey = openThread?.rootKey && openThread.rootKey !== currentKey ? openThread.rootKey : currentKey;
+  const currentRoot = known.get(currentRootKey) ?? (currentRootKey === currentKey ? openThread : undefined);
+  const lastActiveTab = useRef<string | null>(null);
+  useEffect(() => {
+    if (!currentRoot || !routeThreadId) return;
+    const entry: OpenTab = { key: currentRoot.key, title: currentRoot.title, subtitle: currentRoot.subtitle, href: currentRoot.href, ...(currentRoot.agent ? { agent: currentRoot.agent } : {}) };
+    setOpenTabs(tabs => {
+      const at = tabs.findIndex(tab => tab.key === entry.key);
+      let next: OpenTab[];
+      if (at >= 0) {
+        const stored = tabs[at]!;
+        if (stored.title === entry.title && stored.subtitle === entry.subtitle && stored.href === entry.href) return tabs;
+        next = tabs.map((tab, index) => index === at ? entry : tab);
+      } else {
+        const after = tabs.findIndex(tab => tab.key === lastActiveTab.current);
+        next = after >= 0 ? [...tabs.slice(0, after + 1), entry, ...tabs.slice(after + 1)] : [...tabs, entry];
+        if (next.length > OPEN_TABS_LIMIT) next = next.filter(tab => tab.key !== next.find(other => other.key !== entry.key)?.key);
+      }
+      try { localStorage.setItem(openTabsKey, JSON.stringify(next)); } catch { /* Tabs still hold for this visit. */ }
+      return next;
+    });
+    lastActiveTab.current = entry.key;
+  }, [currentRoot?.key, currentRoot?.title, currentRoot?.subtitle, currentRoot?.href, currentRoot?.agent, routeThreadId, openTabsKey]);
+  const storeOpenTabs = (update: (tabs: OpenTab[]) => OpenTab[]) => setOpenTabs(tabs => {
+    const next = update(tabs);
+    try { localStorage.setItem(openTabsKey, JSON.stringify(next)); } catch { /* Tabs still hold for this visit. */ }
+    return next;
+  });
+  // Each tab shows the conversation as known now, with its agent threads.
+  const openTabThreads: WorkbenchThread[] = openTabs.flatMap(tab => {
+    const root = known.get(tab.key) ?? { ...tab, favorite: false, status: 'idle' };
+    return [root, ...[...known.values()].filter(thread => thread.rootKey === tab.key && thread.key !== tab.key)];
+  });
+
   return {
     navigationReady,
     /** The label of a workspace on the open thread's device, when known. */
@@ -653,6 +705,9 @@ export function useWorkbenchNavigation(
     activeThreads,
     workspacePath: tabContext.detail?.workspace.absPath ?? '',
     workspaceThreads,
+    openTabs: openTabThreads,
+    onCloseTab: (key: string) => storeOpenTabs(tabs => tabs.filter(tab => tab.key !== key)),
+    onReorderOpenTabs: (keys: string[]) => storeOpenTabs(tabs => [...keys.flatMap(key => tabs.filter(tab => tab.key === key)), ...tabs.filter(tab => !keys.includes(tab.key))]),
     currentKey,
     favorite,
     favoriteBusy: busy,
@@ -675,6 +730,7 @@ export function useWorkbenchNavigation(
     },
     onThreadRemoved: async (key: string) => {
       setLocalEdits(edits => ({ ...edits, removed: [...edits.removed, key] }));
+      storeOpenTabs(tabs => tabs.filter(tab => tab.key !== key));
       const target = snapshot.threads.find(t => referenceKey(t) === key);
       if (relay && !target) return;
       ++revision.current;

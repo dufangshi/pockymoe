@@ -393,8 +393,20 @@ snapshot; this browser's storage in local mode), so every device lists shortcuts
 the same way. Until the first reorder they list by recency; a new shortcut goes
 last.
 
-This workspace's conversations keep an order of their own, the same in the tab
-bar, the sidebar's **This workspace** and the phone's thread sheet: a mouse drags
+On the desktop the tabs are the conversations the reader opened, like an
+editor's files: opening one adds its tab after the active one; ✕ (or a middle
+click) closes it, and closing the open one moves to its neighbour (or home when
+it was the last). They are kept in this browser (`pockymoe.open-tabs.v1`, up to
+40) and can be dragged into another order. Recent chats in the sidebar therefore
+start folded; shortcuts and **This workspace** start open, and every fold is
+remembered (`pockymoe.sidebar-sections.v1`). The sidebar's width follows a drag
+on its edge (200–420px, Arrow keys on the focused edge, double-click resets;
+`pockymoe.sidebar-width`). Its lists scroll against the very edge, rows are
+compact, and each row's menu is a vertical ⋯ shown when the row is pointed at
+(always shown without hover). Phones keep the tabs of the current workspace.
+
+This workspace's conversations keep an order of their own, the same in the
+sidebar's **This workspace**, the phone's tab bar and its thread sheet: a mouse drags
 one once it moves, a touch after resting still for 0.7 s (the item sinks under a
 deepening tint, then lifts; the sheet does not slide away meanwhile). An agent
 thread stays with its conversation. The order is kept in this browser per device
