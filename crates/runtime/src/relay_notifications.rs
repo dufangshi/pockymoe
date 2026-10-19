@@ -11,14 +11,19 @@ pub(crate) fn record(
     status: &str,
     now: &str,
 ) -> Result<()> {
-    if !matches!(status, "completed" | "failed") {
+    if !matches!(status, "completed" | "failed" | "interrupted") {
         return Ok(());
     }
+    let workspace: String = conn.query_row(
+        "SELECT workspace_id FROM threads WHERE id=?1",
+        [thread],
+        |r| r.get(0),
+    )?;
     conn.execute(
         "INSERT OR IGNORE INTO kv(key,value) VALUES (?1,?2)",
         params![
             format!("relay:notice:{turn}"),
-            json!({"threadId":thread,"turnId":turn,"status":status,"occurredAt":now}).to_string()
+            json!({"threadId":thread,"turnId":turn,"workspaceId":workspace,"status":status,"occurredAt":now}).to_string()
         ],
     )?;
     Ok(())

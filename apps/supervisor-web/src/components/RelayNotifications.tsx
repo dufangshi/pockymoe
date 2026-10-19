@@ -59,7 +59,7 @@ export function RelayNotifications() {
   }
   if (native) return (
     <section className="grid gap-4 py-6">
-      <h2 className="text-base font-semibold">{translate("workbench.threadNotifications")}</h2>
+      <h2 className="text-base font-semibold">{translate("settings.notificationsBrowser")}</h2>
       <p className="text-sm text-[var(--theme-fg-muted)]">{translate("workbench.tapASystemNotificationToOpenIts")}</p>
       <p className="text-sm">{native.platform === 'ios'
         ? settings?.nativePushAvailable ? translate("workbench.backgroundPushIsAvailableOnThisRelay") : translate("workbench.thisRelayHasNotConfiguredApplePush")
@@ -74,7 +74,7 @@ export function RelayNotifications() {
   return (
     <section className="grid gap-5 py-6 sm:grid-cols-[11rem_minmax(0,1fr)] sm:gap-8">
       <header>
-        <h2 className="text-base font-semibold">{translate("workbench.threadNotifications")}</h2>
+        <h2 className="text-base font-semibold">{translate("settings.notificationsBrowser")}</h2>
         <p className="mt-1 text-sm text-[var(--theme-fg-muted)]">
           {translate("workbench.yourRelayAccount")}</p>
       </header>

@@ -1,19 +1,19 @@
 import { test, expect } from '@playwright/test';
-import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdtemp, mkdir, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { createECDH, randomBytes } from 'node:crypto';
 import { createServer } from 'node:net';
 import { DatabaseSync } from 'node:sqlite';
+import { Fixture, ok } from './helpers/account-key-fixture';
 
 // Use full Chromium's headless mode: headless-shell cannot display notifications.
-test.use({ channel: 'chromium' });
+test.use({ channel: 'chromium', trace: 'off', video: 'off', screenshot: 'off', actionTimeout: 15_000 });
 
 test('account push registration, durable completion and background tab read state', async ({
   browser,
-}) => {
+}, info) => {
+  await mkdir(resolve('.local'), { recursive: true });
   const root = await mkdtemp(resolve('.local/push-e2e-'));
-  const procs: ChildProcess[] = [];
   const freePort = () =>
     new Promise<number>((done) => {
       const server = createServer();
@@ -22,86 +22,26 @@ test('account push registration, durable completion and background tab read stat
         server.close(() => done(port));
       });
     });
-  const relayPort = await freePort(),
-    devicePort = await freePort();
-  const base = `http://127.0.0.1:${relayPort}`;
-  const password = randomBytes(24).toString('hex');
-  const cleanEnv = Object.fromEntries(
-    Object.entries(process.env).filter(
-      ([key]) => !/^(POCKYMOE|REMOTE_CODEX)_/.test(key),
-    ),
-  );
-  function start(command: string, extra: Record<string, string>) {
-    const proc = spawn(resolve('target/debug/pockymoe'), [command], {
-      env: {
-        ...cleanEnv,
-        HOST: '127.0.0.1',
-        POCKYMOE_ADMIN_USERNAME: 'admin',
-        POCKYMOE_ADMIN_PASSWORD: password,
-        POCKYMOE_E2E_FAKE_RUNTIME: '1',
-        POCKYMOE_SESSION_SECRET: randomBytes(32).toString('hex'),
-        POCKYMOE_RELAY_SESSION_SECRET: randomBytes(32).toString('hex'),
-        ...extra,
-      },
-      stdio: 'ignore',
-    });
-    procs.push(proc);
-  }
-  let token = '';
-  async function api(path: string, method = 'GET', body?: unknown) {
-    const res = await fetch(base + path, {
-      method,
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      signal: AbortSignal.timeout(10000),
-    });
-    expect(res.ok, `${method} ${path}: ${res.status}`).toBe(true);
-    return res.json();
-  }
-  const context = await browser.newContext({ permissions: ['notifications'] });
+  const relayPort = await freePort();
+  const base = `http://localhost:${relayPort}`;
+  class NotificationsFixture extends Fixture { override readonly base = base; }
+  const fixture = new NotificationsFixture(root, browser, info);
+  await mkdir(join(root, 'home'));
   try {
-    start('relay', {
+    fixture.start('relay', {
       PORT: String(relayPort),
       POCKYMOE_RELAY_DATA_DIR: join(root, 'relay'),
       POCKYMOE_RELAY_REGISTRATION_ENABLED: 'true',
+      POCKYMOE_PUBLIC_BASE_URL: base,
       POCKYMOE_RELAY_WEB_DIST_DIR: resolve('apps/supervisor-web/dist'),
     });
-    await expect
-      .poll(() =>
-        fetch(base + '/healthz')
-          .then((r) => r.status)
-          .catch(() => 0),
-      )
-      .toBe(200);
-    await api('/relay/auth/register', 'POST', {
-      username: 'owner',
-      email: 'owner@example.test',
-      password,
-    });
-    token = (
-      await api('/relay/auth/login', 'POST', { username: 'owner', password })
-    ).token;
-    const device = await api('/relay/devices', 'POST', {
-      name: 'Notification fixture',
-    });
-    start('relay-supervisor', {
-      PORT: String(devicePort),
-      POCKYMOE_RELAY_SUPERVISOR_PORT: String(devicePort),
-      POCKYMOE_RELAY_SERVER_URL: base,
-      POCKYMOE_RELAY_AGENT_TOKEN: device.token,
-      POCKYMOE_DATABASE_PATH: join(root, 'supervisor.sqlite'),
-      POCKYMOE_WORKSPACE_ROOT: join(root, 'workspaces'),
-    });
-    await expect
-      .poll(async () => (await api('/healthz')).connectedSupervisors)
-      .toBe(1);
+    await expect.poll(() => fetch(base + '/healthz').then(r => r.status).catch(() => 0)).toBe(200);
+    const owner = await fixture.account('notification-owner');
+    const { context, page } = owner;
+    const api = async (path: string, method = 'GET', body?: unknown) =>
+      ok(await fixture.api(path, method, body, owner.cookie), `${method} ${path}`);
+    const device = await fixture.device(owner, 1);
     await context.grantPermissions(['notifications'], { origin: base });
-    await context.addCookies([
-      { name: 'remote_codex_relay_session', value: token, url: base },
-    ]);
     // Chromium automation has no vendor push credentials. Mock only PushManager;
     // permission, worker registration, account UI and HTTP storage are real.
     const key = createECDH('prime256v1');
@@ -132,14 +72,14 @@ test('account push registration, durable completion and background tab read stat
         },
       },
     );
-    const page = await context.newPage();
     const cdp = await context.newCDPSession(page);
     // Playwright enables focus emulation on every page; use real tab visibility.
     await cdp.send('Emulation.setFocusEmulationEnabled', { enabled: false });
-    await page.goto(base + '/relay-account');
-    await expect(
-      page.getByRole('heading', { name: 'Thread notifications' }),
-    ).toBeVisible();
+    await page.goto(base + '/relay-settings');
+    const settingsDialog = page.getByRole('dialog', { name: 'Settings', exact: true });
+    await settingsDialog.getByRole('tab', { name: /^Notifications/ }).click();
+    await expect(page.getByRole('heading', { name: 'System notifications in this browser' })).toBeVisible();
+    expect((await api('/relay/account/notifications/preferences')).scope).toBe('subscribed');
     await page
       .getByRole('button', { name: 'Enable notifications', exact: true })
       .click();
@@ -165,22 +105,11 @@ test('account push registration, durable completion and background tab read stat
       (await api('/relay/account/notifications')).subscriptionIds,
     ).toHaveLength(0);
 
-    const prefix = `/relay/devices/${device.device.id}/api`;
-    const work = join(root, 'workspace');
-    await mkdir(work);
-    const workspace = await api(prefix + '/workspaces', 'POST', {
-      absPath: work,
-      label: 'Push fixture',
-    });
-    const created = await api(prefix + '/threads/start', 'POST', {
-      workspaceId: workspace.id,
-      title: 'Notification fixture',
-      model: 'fake',
-    });
-    const id = created.id ?? created.thread.id;
-    const url = `${base}/devices/${device.device.id}/threads/${id}`;
+    const prefix = device.api;
+    const id = device.thread;
+    const url = device.url;
     const expectTab = async (shape: string) => {
-      await expect(page).toHaveTitle('Notification fixture');
+      await expect(page).toHaveTitle('Signed thread 1');
       await expect
         .poll(
           () =>
@@ -198,6 +127,7 @@ test('account push registration, durable completion and background tab read stat
     await page.goto(url);
     await expect(page.getByRole('textbox', { name: 'Prompt' })).toBeVisible();
     await expectTab('m8 16 5 5 11-11');
+    await expect(page.getByRole('textbox', { name: 'Prompt', exact: true })).toHaveAttribute('contenteditable', /^(true|plaintext-only)$/);
     await page
       .getByRole('textbox', { name: 'Prompt' })
       .fill('Inspect this repository in depth');
@@ -205,6 +135,9 @@ test('account push registration, durable completion and background tab read stat
       .getByRole('button', { name: 'Send Prompt', exact: true })
       .click();
     await expectTab('M25 16a9');
+    await expect(page.getByRole('button', { name: 'Subscribe to this turn', exact: true })).toBeEnabled();
+    await page.getByRole('button', { name: 'Subscribe to this turn', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Notify you when this turn ends', exact: true })).toHaveAttribute('aria-pressed', 'true');
     const foreground = await context.newPage();
     await foreground.goto(base + '/relay-account');
     await foreground.bringToFront();
@@ -214,13 +147,15 @@ test('account push registration, durable completion and background tab read stat
     await expectTab('fill="#f85149"');
     const detail = await api(`${prefix}/threads/${id}`);
     const turn = detail.turns.at(-1).id;
+    await expect.poll(async () => (await api('/relay/account/workbench')).notifications.length).toBe(1);
+    expect((await api(`/relay/account/notifications/turns/${device.id}/${id}/${turn}`)).subscribed).toBe(false);
     // No browser subscription exists now, so no synthetic endpoint is contacted.
     // The authenticated device tunnel must still durably persist and ACK its event.
     const relayDb = new DatabaseSync(
       join(root, 'relay', 'relay-store.sqlite'),
       { readOnly: true },
     );
-    const supervisorDb = new DatabaseSync(join(root, 'supervisor.sqlite'), {
+    const supervisorDb = new DatabaseSync(device.db, {
       readOnly: true,
     });
     try {
@@ -229,7 +164,7 @@ test('account push registration, durable completion and background tab read stat
           () =>
             relayDb
               .prepare('SELECT count(*) AS n FROM relay_push_events WHERE id=?')
-              .get(`${device.device.id}:${turn}`)?.n,
+              .get(`${device.id}:${turn}`)?.n,
         )
         .toBe(1);
       await expect
@@ -281,19 +216,6 @@ test('account push registration, durable completion and background tab read stat
       )
       .toContain(url);
   } finally {
-    await context.close();
-    await Promise.all(
-      procs.map(
-        (proc) =>
-          new Promise<void>((done) => {
-            if (proc.exitCode !== null || proc.signalCode !== null)
-              return done();
-            proc.once('exit', () => done());
-            proc.kill('SIGTERM');
-            setTimeout(() => proc.kill('SIGKILL'), 2000).unref();
-          }),
-      ),
-    );
-    await rm(root, { recursive: true, force: true });
+    await fixture.close();
   }
 });

@@ -187,7 +187,7 @@ fn snapshot(conn: &Connection, user: &str) -> Result<Value> {
         .collect();
     let mut stmt = conn.prepare("SELECT e.id,e.device_id,e.payload,e.created_at FROM relay_push_events e
         WHERE e.user_id=?1 OR EXISTS (SELECT 1 FROM relay_thread_navigation n WHERE n.user_id=?1 AND n.device_id=e.device_id)
-        ORDER BY e.created_at DESC LIMIT 100")?;
+        ORDER BY e.created_at DESC")?;
     let events = stmt
         .query_map([user], |r| {
             Ok((
@@ -200,6 +200,7 @@ fn snapshot(conn: &Connection, user: &str) -> Result<Value> {
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let notifications: Vec<Value> = events.into_iter().filter_map(|(id,device,raw,at)| {
         let event: Value = serde_json::from_str(&raw).ok()?;
+        if !notification_scope::allowed(conn,user,&device,&event).ok()? { return None; }
         let href = event["url"].as_str()?;
         let thread = href.rsplit('/').next()?;
         let reference = threads.iter().find(|r| r["deviceId"]==device && r["threadId"]==thread);
@@ -212,7 +213,7 @@ fn snapshot(conn: &Connection, user: &str) -> Result<Value> {
         let failed = event["body"].as_str().unwrap_or("").contains("failed");
         Some(json!({"id":id,"title":format!("{title} {}",if failed {"failed"} else {"completed"}),"href":href,
             "occurredAt":chrono::DateTime::from_timestamp_millis(at)?.to_rfc3339()}))
-    }).collect();
+    }).take(100).collect();
     Ok(json!({"threads":threads,"notifications":notifications}))
 }
 
@@ -316,6 +317,11 @@ mod tests {
         conn.execute_batch("INSERT INTO relay_users VALUES ('owner','o@test','owner','user',1,NULL,'now','salt','hash'),('reader','r@test','reader','user',1,NULL,'now','salt','hash'),('stranger','s@test','stranger','user',1,NULL,'now','salt','hash');
             INSERT INTO relay_devices VALUES ('mac','owner','Mac',NULL,'hash','preview','now');
             INSERT INTO relay_shares(id,owner_user_id,target_user_id,device_id,thread_id,created_at) VALUES ('share','owner','reader','mac','thread','now');").unwrap();
+        conn.execute(
+            "INSERT INTO relay_notification_preferences VALUES ('reader',?1)",
+            [json!({"scope":"all"}).to_string()],
+        )
+        .unwrap();
         let visit = Visit {
             device_id: "mac".into(),
             thread_id: "thread".into(),

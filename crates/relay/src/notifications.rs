@@ -271,7 +271,7 @@ pub(super) fn accept(conn: &Connection, device: &str, event: &Value) -> Result<S
     Uuid::parse_str(turn)?;
     let status = event["status"].as_str().unwrap_or("");
     anyhow::ensure!(
-        ["completed", "failed"].contains(&status),
+        ["completed", "failed", "interrupted"].contains(&status),
         "Unsupported notification event"
     );
     let at = chrono::DateTime::parse_from_rfc3339(event["occurredAt"].as_str().unwrap_or(""))?
@@ -288,11 +288,13 @@ pub(super) fn accept(conn: &Connection, device: &str, event: &Value) -> Result<S
         |r| r.get(0),
     )?;
     let id = format!("{device}:{turn}");
-    let payload = json!({"title":"Pockymoe","body":if status=="completed" {"A thread turn completed. Click to view."} else {"A thread turn failed. Click to view."},"url":format!("/devices/{device}/threads/{thread}"),"tag":id,"userId":owner,"occurredAt":at});
+    tx.execute("UPDATE relay_turn_subscriptions SET ended_at=?4 WHERE device_id=?1 AND thread_id=?2 AND turn_id=?3 AND ended_at IS NULL",params![device,thread,turn,now])?;
+    let payload = json!({"title":"Pockymoe","body":if status=="completed" {"A thread turn completed. Click to view."} else {"A thread turn failed. Click to view."},"url":format!("/devices/{device}/threads/{thread}"),"tag":id,"userId":owner,"occurredAt":at,"threadId":thread,"turnId":turn,"status":status,"workspaceId":event["workspaceId"]});
     if tx.execute(
         "INSERT OR IGNORE INTO relay_push_events VALUES (?1,?2,?3,?4,?5)",
         params![id, device, owner, payload.to_string(), at],
     )? > 0
+        && notification_scope::allowed(&tx, &owner, device, &payload)?
     {
         tx.execute("INSERT INTO relay_push_deliveries(event_id,subscription_id) SELECT ?1,p.id FROM relay_push_subscriptions p JOIN relay_auth_sessions s ON s.token_hash=p.session_hash JOIN relay_users u ON u.id=p.user_id WHERE p.user_id=?2 AND p.created_at<=?3 AND s.expires_at>?4 AND u.enabled=1",params![id,owner,at,now])?;
     }
@@ -339,6 +341,10 @@ async fn deliver_batch(state: &AppState, http: &reqwest::Client) -> Result<()> {
             "DELETE FROM relay_push_events WHERE created_at<?1",
             [now - DAY],
         )?;
+        conn.execute(
+            "DELETE FROM relay_turn_subscriptions WHERE ended_at<?1",
+            [now - DAY],
+        )?;
         conn.execute("DELETE FROM relay_push_subscriptions WHERE session_hash NOT IN (SELECT token_hash FROM relay_auth_sessions WHERE expires_at>?1)",[now])?;
         let pem: String = conn.query_row(
             "SELECT value FROM relay_settings WHERE key='webPushVapidPem'",
@@ -362,6 +368,21 @@ async fn deliver_batch(state: &AppState, http: &reqwest::Client) -> Result<()> {
     for (event, id, raw, payload, attempts) in jobs {
         // Recheck before sending: unsubscribe/logout may happen during a batch.
         if !state.store.conn.lock().await.query_row("SELECT EXISTS(SELECT 1 FROM relay_push_subscriptions p JOIN relay_auth_sessions s ON s.token_hash=p.session_hash JOIN relay_push_events e ON e.id=?3 JOIN relay_devices d ON d.id=e.device_id WHERE p.id=?1 AND s.expires_at>?2 AND p.subscription=?4 AND p.user_id=e.user_id AND d.owner_user_id=p.user_id)",params![id,chrono::Utc::now().timestamp_millis(),event,raw],|r|r.get::<_,bool>(0))? { continue; }
+        let payload_value: Value = serde_json::from_str(&payload)?;
+        let device = event.rsplit_once(':').map(|(d, _)| d).unwrap_or("");
+        let user = payload_value["userId"].as_str().unwrap_or("");
+        if !notification_scope::allowed(
+            &*state.store.conn.lock().await,
+            user,
+            device,
+            &payload_value,
+        )? {
+            state.store.conn.lock().await.execute(
+                "DELETE FROM relay_push_deliveries WHERE event_id=?1 AND subscription_id=?2",
+                params![event, id],
+            )?;
+            continue;
+        }
         let result = async {
             if let Ok(sub) = serde_json::from_str::<apns::Subscription>(&raw) {
                 return apns::deliver(http, &sub, &payload).await;
@@ -428,6 +449,11 @@ mod tests {
                 .unwrap();
             }
         }
+        conn.execute(
+            "INSERT INTO relay_notification_preferences VALUES ('owner',?1)",
+            [json!({"scope":"all"}).to_string()],
+        )
+        .unwrap();
         let thread = Uuid::new_v4().to_string();
         for device in ["device-a", "device-b"] {
             conn.execute(

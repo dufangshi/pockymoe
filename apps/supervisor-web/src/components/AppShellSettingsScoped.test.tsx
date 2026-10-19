@@ -21,7 +21,11 @@ function open(scoped: boolean, initialId = 'preferences') {
 
 it('keeps every tab for a standalone Supervisor', () => {
   expect(appSettingsSections().map(section => section.id)).toEqual(
-    ['preferences', 'harnesses', 'upstreams', 'resources', 'device', 'workspace', 'plugins', 'advanced']);
+    ['preferences', 'notifications', 'harnesses', 'upstreams', 'resources', 'device', 'workspace', 'plugins', 'advanced']);
+});
+
+it('marks only fully account-scoped tabs', () => {
+  expect(appSettingsSections().filter(s => s.account).map(s => s.id)).toEqual(['notifications']);
 });
 
 it('offers a Treer Agent UI only this browser\'s own preferences and hub maintenance', () => {

@@ -6,6 +6,7 @@ mod apns;
 mod auth_api;
 mod auth_factors;
 mod device_tokens;
+mod notification_scope;
 mod notifications;
 mod oauth;
 mod peer;
@@ -232,6 +233,7 @@ pub async fn serve() -> Result<()> {
     let app = Router::new()
         .merge(auth_api::routes())
         .merge(notifications::routes())
+        .merge(notification_scope::routes())
         .merge(workbench::routes())
         .merge(preferences::routes())
         .merge(preview::routes())

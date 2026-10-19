@@ -1478,3 +1478,33 @@ async fn host_hook_handles_public_send_and_local_delivery_bypasses_it() {
     assert_eq!(hook.0.load(Ordering::SeqCst), 1);
     assert_eq!(state.inbox_unread_count(&recipient).unwrap(), 1);
 }
+
+#[tokio::test]
+async fn local_notification_subscription_survives_recovery_and_is_cleared_on_stop() {
+    let (_dir, original) = setup();
+    let id = thread(&original, Provider::Codex).await;
+    let turn = uuid::Uuid::new_v4().to_string();
+    original.db.with(|conn| {
+        conn.execute("INSERT INTO thread_turns(id,thread_id,status,ordinal) VALUES(?1,?2,'inProgress',0)", params![turn,id])?;
+        conn.execute("UPDATE threads SET status='running' WHERE id=?1", [&id])?;
+        Ok(())
+    }).unwrap();
+    original
+        .set_local_turn_subscription(&id, &turn, true)
+        .unwrap();
+    let mut config = original.config.clone();
+    config.relay_server_url = None;
+    drop(original);
+    // A restarted runtime has no in-memory turn and marks persisted work recovering.
+    let restarted = Supervisor::new(
+        config.clone(),
+        Database::open(&config.database_url).unwrap(),
+        vec![Arc::new(FakeRuntime::new(Provider::Codex))],
+    );
+    assert!(restarted.local_notifications().unwrap().is_empty());
+    let key = format!("local:owner:turn-subscription:{id}:{turn}");
+    assert_eq!(restarted.db.get_kv(&key).unwrap().as_deref(), Some("true"));
+    restarted.interrupt(&id).await.unwrap();
+    assert!(restarted.db.get_kv(&key).unwrap().is_none());
+    assert!(restarted.local_notifications().unwrap().is_empty());
+}

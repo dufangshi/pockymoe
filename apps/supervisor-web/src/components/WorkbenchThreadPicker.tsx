@@ -1,3 +1,4 @@
+import { relayModeActive } from '../lib/api';
 import { useHostCapabilities } from '../lib/hostCapabilities';
 import {
   useEffect,
@@ -18,13 +19,14 @@ import {
   Laptop,
   Loader2,
   MessageSquare,
+  Plus,
   RotateCcw,
   Star,
   Users,
   X,
 } from 'lucide-react';
 import type { ThreadDto, WorkspaceDto } from '@pockymoe/shared';
-import { StatusMark, navigationStatusLabel } from '@pockymoe/thread-ui';
+import { Dialog, DialogContent, DialogTitle, StatusMark, navigationStatusLabel } from '@pockymoe/thread-ui';
 import { translate as t, useI18n } from '@pockymoe/thread-ui/i18n';
 import {
   rankSplitDevices,
@@ -38,7 +40,14 @@ import {
 } from '../pages/useWorkbenchSplitCatalog';
 
 export type { SplitThreadSelection } from '../pages/useWorkbenchSplitCatalog';
+export interface ScopeSelection {
+  deviceId: string | null;
+  deviceName: string;
+  workspace?: WorkspaceDto;
+}
 export interface WorkbenchThreadPickerProps {
+  selectScope?: 'device' | 'workspace';
+  onSelectScope?: (selection: ScopeSelection) => void;
   deviceId: string | null;
   workspaceId: string;
   threadId: string;
@@ -84,7 +93,7 @@ export function WorkbenchThreadPicker(props: WorkbenchThreadPickerProps) {
   // the other secondary windows; elsewhere it hangs under its button.
   const [sheet, setSheet] = useState(false);
   const titleId = useId();
-  const catalog = useWorkbenchSplitCatalog(open, deviceId, workspaceId);
+  const catalog = useWorkbenchSplitCatalog(open, deviceId, workspaceId, Boolean(props.selectScope));
   const close = () => {
     setOpen(false);
     trigger.current?.focus();
@@ -252,8 +261,13 @@ export function WorkbenchThreadPicker(props: WorkbenchThreadPickerProps) {
         data-workspace-id={workspace.id}
         data-device-id={targetDevice ?? 'local'}
         onClick={() => {
-          setLocation({ deviceId: targetDevice, deviceName, workspace });
-          void catalog.loadThreads(targetDevice);
+          if (props.selectScope === 'workspace') {
+            props.onSelectScope?.({ deviceId: targetDevice, deviceName: deviceName ?? t('workbench.splitThisDevice'), workspace });
+            close();
+          } else {
+            setLocation({ deviceId: targetDevice, deviceName, workspace });
+            void catalog.loadThreads(targetDevice);
+          }
         }}
       >
         <span className="workbench-thread-picker-row-icon">
@@ -285,36 +299,14 @@ export function WorkbenchThreadPicker(props: WorkbenchThreadPickerProps) {
   const title =
     location?.workspace?.label ??
     location?.deviceName ??
-    t('workbench.splitSession');
-  return (
-    <span className="workbench-thread-picker-actions">
-      <button
-        type="button"
-        ref={trigger}
-        className={`workbench-thread-picker-trigger ${splitActive ? 'is-active' : ''}`}
-        title={t('workbench.splitSession')}
-        aria-label={t('workbench.splitSession')}
-        aria-pressed={splitActive}
-        aria-haspopup="dialog"
-        aria-expanded={open}
-        aria-controls={open ? titleId + '-panel' : undefined}
-        disabled={props.disabled}
-        onClick={() => {
-          setLocation(null);
-          setOpen((value) => !value);
-        }}
-        data-testid="workbench-split-trigger"
-      >
-        <Columns2 data-icon="split" size={16} />
-      </button>
-      {open &&
-        createPortal(
+    (props.selectScope ? t('settings.notificationsChooseDevice') : t('workbench.splitSession'));
+  const popup = open ? (
           <>
-          {sheet && <div className="workbench-thread-picker-scrim" aria-hidden="true" />}
+          {sheet && !props.selectScope && <div className="workbench-thread-picker-scrim" aria-hidden="true" />}
           <div
             ref={panel}
             id={titleId + '-panel'}
-            role="dialog"
+            role={props.selectScope ? undefined : "dialog"}
             data-testid="workbench-thread-picker"
             aria-labelledby={titleId}
             className={`workbench-thread-picker-popover${sheet ? ' is-sheet' : ''}`}
@@ -378,7 +370,7 @@ export function WorkbenchThreadPicker(props: WorkbenchThreadPickerProps) {
                 <small>
                   {location?.workspace
                     ? (location.deviceName ?? t('workbench.splitThisDevice'))
-                    : t('workbench.splitChooseThread')}
+                    : props.selectScope === 'workspace' ? t('settings.notificationsChooseWorkspace') : props.selectScope ? t('settings.notificationsChooseDevice') : t('workbench.splitChooseThread')}
                 </small>
               </div>
               <button
@@ -408,7 +400,25 @@ export function WorkbenchThreadPicker(props: WorkbenchThreadPickerProps) {
               </button>
             )}
             <div className="workbench-thread-picker-scroll">
-              {!location ? (
+              {!location && props.selectScope ? (
+                <>
+                  {(relayModeActive() ? rankSplitDevices(catalog.devices.items).map(d => ({ id: d.id as string | null, name: d.name, connected: d.connected })) : [{ id: null, name: t('workbench.splitThisDevice'), connected: true }]).map(device => <button
+                    type="button" className="workbench-thread-picker-row" key={device.id ?? 'local'} data-device-id={device.id ?? 'local'}
+                    onClick={() => {
+                      if (props.selectScope === 'device') {
+                        props.onSelectScope?.({ deviceId: device.id, deviceName: device.name }); close();
+                      } else {
+                        setLocation({ deviceId: device.id, deviceName: device.name });
+                        void catalog.loadWorkspaces(device.id);
+                      }
+                    }}>
+                    <span className="workbench-thread-picker-row-icon"><Laptop size={17} /></span>
+                    <span className="workbench-thread-picker-row-label"><strong>{device.name}</strong><small>{t(device.connected ? 'workbench.splitOnline' : 'workbench.splitOffline')}</small></span>
+                    {props.selectScope === 'workspace' ? <ChevronRight size={15} /> : <Plus size={15} />}
+                  </button>)}
+                  {relayModeActive() && resourceState(catalog.devices, () => void catalog.loadDevices(true), t('workbench.splitNoDevices'))}
+                </>
+              ) : !location ? (
                 <>
                   <div className="workbench-thread-picker-section-label">
                     {t('workbench.splitCurrentWorkspace')}
@@ -543,9 +553,36 @@ export function WorkbenchThreadPicker(props: WorkbenchThreadPickerProps) {
               </footer>
             )}
           </div>
-          </>,
-          document.body,
-        )}
+          </>
+  ) : null;
+  return (
+    <span className="workbench-thread-picker-actions">
+      <button
+        type="button"
+        ref={trigger}
+        className={`workbench-thread-picker-trigger ${splitActive ? 'is-active' : ''}`}
+        title={props.selectScope ? t(props.selectScope === 'device' ? 'settings.notificationsAddDevice' : 'settings.notificationsAddWorkspace') : t('workbench.splitSession')}
+        aria-label={props.selectScope ? t(props.selectScope === 'device' ? 'settings.notificationsAddDevice' : 'settings.notificationsAddWorkspace') : t('workbench.splitSession')}
+        aria-pressed={splitActive}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        aria-controls={open ? titleId + '-panel' : undefined}
+        disabled={props.disabled}
+        onClick={() => {
+          setLocation(null);
+          setOpen((value) => !value);
+        }}
+        data-testid="workbench-split-trigger"
+      >
+        {props.selectScope ? <><Plus size={16} />{t(props.selectScope === 'device' ? 'settings.notificationsAddDevice' : 'settings.notificationsAddWorkspace')}</> : <Columns2 data-icon="split" size={16} />}
+      </button>
+      {props.selectScope ? <Dialog open={open} onOpenChange={value => { setOpen(value); if (!value) trigger.current?.focus(); }}>
+        <DialogContent showCloseButton={false} className="workbench-thread-picker-dialog" overlayClassName="workbench-thread-picker-overlay" aria-describedby={undefined}
+          onCloseAutoFocus={event => { event.preventDefault(); trigger.current?.focus(); }}>
+          <DialogTitle className="sr-only">{title}</DialogTitle>
+          {popup}
+        </DialogContent>
+      </Dialog> : open && createPortal(popup, document.body)}
     </span>
   );
 }
