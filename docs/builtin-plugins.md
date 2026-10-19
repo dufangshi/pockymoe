@@ -37,9 +37,19 @@ routes use existing device owner authorization, not shared-thread access.
 ## Thread scope convention
 
 Built-in descriptors advertise `capabilities.scopes: ["device", "thread"]`.
-The device enabled flag is the master switch. A thread's enabled override is
-`null` (inherit), `true` or `false`; it cannot enable an unavailable or globally
-disabled module. Missing overrides inherit device behavior. Settings are either
+The device enabled flag is the master switch. Beside it, each plugin has a
+default for conversations (`defaultEnabled`, on unless the owner turns it off):
+what a conversation that follows the device gets. A thread's enabled override is
+`null` (follow the default), `true` or `false`; it cannot enable an unavailable
+or globally disabled module, but can turn on an enabled plugin whose default is
+off. Missing overrides follow the default.
+
+```text
+PATCH /api/plugins/{plugin}   {"enabled":true} or {"defaultEnabled":false}
+```
+
+Turning the default off cancels unclaimed actions in the conversations it turns
+off and refreshes their managed hooks, like a thread override would. Settings are either
 `null` (inherit current device values) or a full validated object snapshot.
 Changing an unrelated device default does not patch a thread's custom snapshot.
 
@@ -51,7 +61,9 @@ PUT /api/threads/{thread}/plugins/{plugin}/settings
 ```
 
 The list flattens `PluginDto`, with its `enabled` field resolved for the thread,
-and adds `globalEnabled`, `enabledOverride` and `settingsOverridden`. Settings
+and adds `globalEnabled`, `defaultEnabled`, `enabledOverride` and
+`settingsOverridden`. The thread choice labels its follow option with what it
+resolves to: Default (on) or Default (off). Settings
 return `{revision, globalRevision, enabled, values, effective:{enabled,values}}`.
 `effective.values` is always an object. Writes compare the thread revision and
 increment it, including reset-to-inherit writes, so stale requests cannot cross

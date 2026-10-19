@@ -726,7 +726,8 @@ export function AppShellSettingsDialog({
           const toggleId = `plugin-enabled-${plugin.id}`;
           return (
             // The gear is a sibling of the label so opening settings never toggles the plugin.
-            <div key={plugin.id} className="flex min-h-11 items-start gap-2 py-3">
+            <div key={plugin.id} className="py-3">
+            <div className="flex min-h-11 items-start gap-2">
               <label htmlFor={toggleId} className="min-w-0 flex-1 cursor-pointer">
                 <span className="block text-sm font-medium text-[var(--theme-fg)]">
                   {plugin.name}
@@ -770,6 +771,19 @@ export function AppShellSettingsDialog({
                   type="checkbox"
                 />
               </span>
+            </div>
+            {/* An enabled plugin says whether conversations that follow the default have it on. */}
+            {plugin.enabled && plugin.defaultEnabled !== undefined && (
+              <div className="plugin-default-row" role="radiogroup" aria-label={`${plugin.name} · ${translate('settings.pluginDefaultLabel')}`} title={translate('settings.pluginDefaultHint')}>
+                <span>{translate('settings.pluginDefaultLabel')}</span>
+                {[true, false].map((value) => (
+                  <button key={String(value)} type="button" role="radio" aria-checked={plugin.defaultEnabled === value}
+                    onClick={() => { if (plugin.defaultEnabled !== value) void plugins.setPluginDefaultEnabled(plugin.id, value); }}>
+                    {translate(value ? 'settings.pluginDefaultOn' : 'settings.pluginDefaultOff')}
+                  </button>
+                ))}
+              </div>
+            )}
             </div>
           );
         })}

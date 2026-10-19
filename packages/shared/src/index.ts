@@ -1115,10 +1115,14 @@ export interface PluginDto extends PluginManifestDto {
   available?: boolean;
   unavailableReasonCode?: 'unsupported_platform' | 'harness_missing' | string | null;
   unavailableReason?: string | null;
+  /** Whether a conversation that follows the device has it on (absent from older Supervisors). */
+  defaultEnabled?: boolean;
 }
 
 export interface UpdatePluginInput {
-  enabled: boolean;
+  enabled?: boolean;
+  /** Whether conversations that follow the device have the plugin on. */
+  defaultEnabled?: boolean;
 }
 
 export interface ImportPluginInput {

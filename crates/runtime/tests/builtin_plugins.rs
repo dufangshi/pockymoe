@@ -614,6 +614,65 @@ async fn thread_plugin_scope_inheritance_master_switch_cas_and_reset_are_persist
     assert!(!s.thread_plugin_settings(&b, id).unwrap().effective.enabled);
 }
 
+#[tokio::test]
+async fn thread_plugin_default_decides_conversations_that_follow_the_device() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = setup(dir.path(), Arc::new(AtomicUsize::new(0)));
+    let following = thread(&s, dir.path()).await;
+    let chosen = thread(&s, dir.path()).await;
+    let id = "fixture.feature";
+    assert_eq!(s.get_plugin(id).unwrap().default_enabled, Some(true));
+    // Enabled but off by default: a conversation that follows the device has
+    // it off, one can still turn it on.
+    s.set_plugin_default_enabled(id, false).unwrap();
+    assert_eq!(s.get_plugin(id).unwrap().default_enabled, Some(false));
+    assert!(
+        !s.thread_plugin_settings(&following, id)
+            .unwrap()
+            .effective
+            .enabled
+    );
+    let on = s
+        .save_thread_plugin_settings(&chosen, id, overlay(0, Some(true), None))
+        .unwrap();
+    assert!(on.effective.enabled);
+    let row = serde_json::to_value(
+        s.list_thread_plugins(&following)
+            .unwrap()
+            .into_iter()
+            .find(|p| p.plugin.id == id)
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        (
+            row["enabled"].clone(),
+            row["globalEnabled"].clone(),
+            row["defaultEnabled"].clone()
+        ),
+        (json!(false), json!(true), json!(false))
+    );
+    assert!(s
+        .submit_plugin_action(&following, id, "echo", json!({}), 120, "default-off")
+        .is_err());
+    // The device switch still wins over a conversation's own choice.
+    s.set_plugin_enabled(id, false).unwrap();
+    assert!(
+        !s.thread_plugin_settings(&chosen, id)
+            .unwrap()
+            .effective
+            .enabled
+    );
+    s.set_plugin_enabled(id, true).unwrap();
+    s.set_plugin_default_enabled(id, true).unwrap();
+    assert!(
+        s.thread_plugin_settings(&following, id)
+            .unwrap()
+            .effective
+            .enabled
+    );
+}
+
 struct BoundaryFixture;
 #[async_trait]
 impl BuiltinPlugin for BoundaryFixture {

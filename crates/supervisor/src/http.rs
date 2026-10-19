@@ -41,8 +41,10 @@ struct PromptAttachmentManifestEntry {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct UpdatePluginInput {
-    enabled: bool,
+    enabled: Option<bool>,
+    default_enabled: Option<bool>,
 }
 
 #[derive(Default, Deserialize)]
@@ -3138,9 +3140,14 @@ async fn update_plugin(
     State(state): State<AppState>,
     Json(input): Json<UpdatePluginInput>,
 ) -> Result<Json<Value>, ApiErr> {
-    state
-        .set_plugin_enabled(&id, input.enabled)
-        .map_err(map_err)?;
+    if let Some(enabled) = input.enabled {
+        state.set_plugin_enabled(&id, enabled).map_err(map_err)?;
+    }
+    if let Some(enabled) = input.default_enabled {
+        state
+            .set_plugin_default_enabled(&id, enabled)
+            .map_err(map_err)?;
+    }
     Ok(Json(json!(state.get_plugin(&id).map_err(map_err)?)))
 }
 

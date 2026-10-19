@@ -951,6 +951,43 @@ impl Supervisor {
             .unwrap_or(default_enabled)
     }
 
+    pub fn plugin_default_enabled(&self, plugin_id: &str) -> bool {
+        self.db
+            .get_kv(&format!("plugin:{plugin_id}:defaultEnabled"))
+            .ok()
+            .flatten()
+            .and_then(|value| value.parse::<bool>().ok())
+            .unwrap_or(true)
+    }
+
+    /// Whether conversations that follow the device have the plugin on. Ones
+    /// that the change turns off lose their waiting plugin actions.
+    pub fn set_plugin_default_enabled(&self, plugin_id: &str, enabled: bool) -> Result<()> {
+        self.get_plugin(plugin_id)?;
+        let available = self.plugins.availability(self);
+        self.db.with(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            tx.execute("INSERT INTO kv(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", params![format!("plugin:{plugin_id}:defaultEnabled"), enabled.to_string()])?;
+            let now = now_rfc3339();
+            if !enabled {
+                let threads = {
+                    let mut q = tx.prepare("SELECT DISTINCT thread_id FROM automations WHERE json_extract(definition_json,'$.action.pluginId')=?1")?;
+                    let rows = q.query_map([plugin_id], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+                    rows
+                };
+                for thread in threads {
+                    let on = self.plugins.thread_settings(&tx, &thread, plugin_id, available.get(plugin_id).copied().unwrap_or(false))?.effective.enabled;
+                    if !on {
+                        Self::cancel_pending_plugin_actions(&tx, Some(&thread), plugin_id, &now)?;
+                    }
+                }
+            }
+            self.plugins.sync_plugin_automations(&tx, plugin_id, &now, &available)?;
+            tx.commit()?;
+            Ok(())
+        })
+    }
+
     pub fn set_plugin_enabled(&self, plugin_id: &str, enabled: bool) -> Result<()> {
         let plugin = self.get_plugin(plugin_id)?;
         ensure!(

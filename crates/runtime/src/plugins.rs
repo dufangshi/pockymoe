@@ -48,6 +48,8 @@ pub struct ThreadPluginSettings {
     pub effective: EffectivePluginSettings,
     #[serde(skip)]
     global_enabled: bool,
+    #[serde(skip)]
+    default_enabled: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -56,6 +58,8 @@ pub struct ThreadPluginDto {
     #[serde(flatten)]
     pub plugin: PluginDto,
     pub global_enabled: bool,
+    /// What `enabledOverride: null` (follow the device) resolves to.
+    pub default_enabled: bool,
     pub enabled_override: Option<bool>,
     pub settings_overridden: bool,
 }
@@ -263,14 +267,21 @@ impl PluginHost {
         let global_enabled = read(format!("plugin:{id}:enabled"))?
             .and_then(|s| s.parse::<bool>().ok())
             .unwrap_or(plugin.enabled_by_default());
+        // A conversation that follows the device gets the plugin's default, on
+        // unless the owner set it off; an enabled plugin can still be turned on
+        // in one conversation.
+        let default_enabled = read(format!("plugin:{id}:defaultEnabled"))?
+            .and_then(|s| s.parse::<bool>().ok())
+            .unwrap_or(true);
         Ok(ThreadPluginSettings {
             revision: overlay.revision,
             global_revision: global.revision,
             enabled: overlay.enabled,
             values: overlay.values.clone(),
             global_enabled: available && global_enabled,
+            default_enabled,
             effective: EffectivePluginSettings {
-                enabled: available && global_enabled && overlay.enabled.unwrap_or(true),
+                enabled: available && global_enabled && overlay.enabled.unwrap_or(default_enabled),
                 values: overlay.values.unwrap_or(global.values),
             },
         })
@@ -446,6 +457,7 @@ impl Supervisor {
         dto.source = Some("builtin".into());
         dto.enabled = dto.available != Some(false)
             && self.plugin_enabled(plugin.id(), plugin.enabled_by_default());
+        dto.default_enabled = Some(self.plugin_default_enabled(plugin.id()));
         if !dto.capabilities.is_object() {
             dto.capabilities = json!({});
         }
@@ -513,6 +525,7 @@ impl Supervisor {
                     Ok(ThreadPluginDto {
                         plugin,
                         global_enabled: settings.global_enabled,
+                        default_enabled: settings.default_enabled,
                         enabled_override: settings.enabled,
                         settings_overridden: settings.values.is_some(),
                     })
@@ -616,6 +629,7 @@ fn descriptor(
         enabled: false,
         source: Some("builtin".into()),
         available: Some(available),
+        default_enabled: None,
         unavailable_reason_code: (!available).then(|| {
             if id == TERMINAL_PLUGIN_ID {
                 "unsupported_platform"

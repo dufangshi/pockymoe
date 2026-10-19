@@ -904,6 +904,9 @@ pub struct PluginDto {
     pub unavailable_reason_code: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unavailable_reason: Option<String>,
+    /// Whether a conversation that follows the device's setting has it on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_enabled: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
