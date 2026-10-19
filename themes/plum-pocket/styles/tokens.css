@@ -35,9 +35,9 @@
   --theme-shadow: 0 14px 36px rgb(10 4 14 / 45%);
   --overlay-scrim: rgb(14 6 18 / 72%);
   /* Scrollbar: a soft plum pill on the pack's dashed seam that turns honey when held. */
-  --scrollbar-size: 12px;
-  --scrollbar-inset: 3.5px;
-  --scrollbar-inset-hover: 2.5px;
+  --scrollbar-size: 10px;
+  --scrollbar-inset: 2.5px;
+  --scrollbar-inset-hover: 1.5px;
   --scrollbar-thumb-idle: rgb(106 70 130 / 45%);
   --scrollbar-thumb: #6a4682;
   --scrollbar-thumb-hover: rgb(240 181 74 / 75%);

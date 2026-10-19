@@ -35,8 +35,6 @@
   --overlay-scrim: rgb(0 0 0 / 70%);
   /* Scrollbar: a square block on a hairline rail, lit in the accent when held. */
   --scrollbar-radius: 0;
-  --scrollbar-inset: 3px;
-  --scrollbar-inset-hover: 2px;
   --scrollbar-thumb-idle: #2d3330;
   --scrollbar-thumb: #5b6560;
   --scrollbar-thumb-hover: rgb(77 227 162 / 70%);

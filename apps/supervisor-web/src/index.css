@@ -270,11 +270,14 @@ fieldset {
    no track, a thumb that stays faint until the pointer is over its box. A theme
    sets the --scrollbar-* tokens (docs/theme-packs.md). Setting scrollbar-width
    or scrollbar-color on a box makes Chromium drop these rules and draw the
-   system bar again, so only hidden bars (scrollbar-width: none) may use them. */
+   system bar again, so only hidden bars (scrollbar-width: none) may use them.
+   Without a mouse or trackpad the platform's overlay indicator stays: it takes
+   no room and only shows while scrolling, where a drawn bar would take a gutter. */
 @supports selector(::-webkit-scrollbar) {
+@media (any-pointer: fine) {
   *::-webkit-scrollbar {
-    width: var(--scrollbar-size, 10px);
-    height: var(--scrollbar-size, 10px);
+    width: var(--scrollbar-size, 8px);
+    height: var(--scrollbar-size, 8px);
     background: transparent;
   }
   *::-webkit-scrollbar-button,
@@ -296,7 +299,7 @@ fieldset {
   *::-webkit-scrollbar-thumb {
     min-width: 28px;
     min-height: 28px;
-    border: var(--scrollbar-inset, 3px) solid transparent;
+    border: var(--scrollbar-inset, 2px) solid transparent;
     border-radius: var(--scrollbar-radius, 999px);
     background-color: var(--scrollbar-thumb-idle);
     background-clip: padding-box;
@@ -305,13 +308,14 @@ fieldset {
     background-color: var(--scrollbar-thumb);
   }
   *::-webkit-scrollbar-thumb:hover {
-    border-width: var(--scrollbar-inset-hover, 2px);
+    border-width: var(--scrollbar-inset-hover, 1px);
     background-color: var(--scrollbar-thumb-hover);
   }
   *::-webkit-scrollbar-thumb:active {
-    border-width: var(--scrollbar-inset-hover, 2px);
+    border-width: var(--scrollbar-inset-hover, 1px);
     background-color: var(--scrollbar-thumb-active);
   }
+}
 }
 
 /* Firefox has no scrollbar pseudo-elements: a thin bar in the theme's colour. */

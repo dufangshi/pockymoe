@@ -147,12 +147,12 @@ Monaco editor and diff view; `--shiki-*` for code blocks with the
 **Scrollbars.** Every scrolling box draws the same scrollbar from these tokens,
 set on `:root` per mode: `--scrollbar-thumb-idle` (the box is not pointed at),
 `--scrollbar-thumb` (it is), `--scrollbar-thumb-hover`, `--scrollbar-thumb-active`;
-the shape `--scrollbar-size` (gutter, default 10px), `--scrollbar-inset` and
-`--scrollbar-inset-hover` (space around the thumb), `--scrollbar-radius`; and an
+the shape `--scrollbar-size` (gutter, default 8px), `--scrollbar-inset` and
+`--scrollbar-inset-hover` (space around the thumb, 2px and 1px), `--scrollbar-radius`; and an
 optional rail shown while the box is pointed at, `--scrollbar-rail-y` and
 `--scrollbar-rail-x` (a `background` value). Do not set `scrollbar-width` or
 `scrollbar-color` except `scrollbar-width: none`: Chromium then draws the system
-bar instead.
+bar instead. Touch-only devices keep the platform's overlay indicator.
 
 **Document attributes.** `<html>` carries `data-theme-preset` (the pack id or
 `classic`), `data-theme-features` (the pack's flags, space separated) and
