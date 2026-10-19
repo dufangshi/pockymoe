@@ -143,3 +143,29 @@ pub struct StorageOverviewDto {
     #[serde(default)]
     pub job: Option<StorageJobDto>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_accept_the_old_age_name_with_options_and_default_the_rest() {
+        let settings: StorageSettingsDto = serde_json::from_str(
+            r#"{"commandOutputRetentionDays":7,"commandText":"truncate","commandTextChars":64}"#,
+        )
+        .unwrap();
+        assert_eq!(settings.retention_days, Some(7));
+        assert!(settings.cleanup.command_output);
+        assert_eq!(settings.cleanup.command_text, CommandTextCleanup::Truncate);
+        assert_eq!(settings.cleanup.command_text_chars, 64);
+        assert!(!settings.cleanup.file_diffs);
+        let current: StorageSettingsDto =
+            serde_json::from_str(r#"{"retentionDays":null,"fileDiffs":true}"#).unwrap();
+        assert_eq!(current.retention_days, None);
+        assert!(current.cleanup.file_diffs);
+        assert_eq!(
+            serde_json::to_value(&current).unwrap()["retentionDays"],
+            serde_json::Value::Null
+        );
+    }
+}

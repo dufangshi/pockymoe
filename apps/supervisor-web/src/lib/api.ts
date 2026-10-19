@@ -983,12 +983,28 @@ export function scanStorage(deviceId?: string | null) {
   return deviceRequest<StorageScanDto>(deviceId, 'api/storage/scan', { method: 'POST', body: '{}' });
 }
 
-export function fetchStorageSettings(deviceId?: string | null) {
-  return deviceRequest<StorageSettingsDto>(deviceId, 'api/storage/settings', { cache: 'no-store' });
+/** Supervisors before 0.13.30 store only `commandOutputRetentionDays`. */
+type StoredStorageSettings = Partial<StorageSettingsDto> & { commandOutputRetentionDays?: number | null };
+
+function storageSettings(value: StoredStorageSettings): StorageSettingsDto {
+  return {
+    retentionDays: value.retentionDays !== undefined ? value.retentionDays : value.commandOutputRetentionDays ?? null,
+    commandOutput: value.commandOutput ?? true,
+    commandText: value.commandText ?? 'keep',
+    commandTextChars: value.commandTextChars ?? 512,
+    fileDiffs: value.fileDiffs ?? false,
+  };
 }
 
-export function updateStorageSettings(input: StorageSettingsDto, deviceId?: string | null) {
-  return deviceRequest<StorageSettingsDto>(deviceId, 'api/storage/settings', { method: 'PUT', body: JSON.stringify(input) });
+export async function fetchStorageSettings(deviceId?: string | null) {
+  return storageSettings(await deviceRequest<StoredStorageSettings>(deviceId, 'api/storage/settings', { cache: 'no-store' }));
+}
+
+export async function updateStorageSettings({ retentionDays, ...options }: StorageSettingsDto, deviceId?: string | null) {
+  // The old key name: newer Supervisors accept it, older ones know only it and
+  // ignore the options.
+  const body = { commandOutputRetentionDays: retentionDays, ...options };
+  return storageSettings(await deviceRequest<StoredStorageSettings>(deviceId, 'api/storage/settings', { method: 'PUT', body: JSON.stringify(body) }));
 }
 
 export function pruneStorage(deviceId?: string | null) {
