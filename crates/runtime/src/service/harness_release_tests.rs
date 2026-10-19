@@ -1022,3 +1022,38 @@ async fn release_keeps_sessions_of_forks_imports_and_threads_with_history() {
         .unwrap();
     assert_eq!(session(&with_turn), kept);
 }
+
+#[tokio::test]
+async fn an_effort_changed_mid_turn_is_the_running_turns_effort() {
+    let dir = tempfile::tempdir().unwrap();
+    let (s, _fake) = supervisor_with(dir.path(), Provider::Codex);
+    let id = thread(&s, dir.path(), None).await;
+    s.db.with(|conn| {
+        conn.execute(
+            "INSERT INTO thread_turns(id,thread_id,status,reasoning_effort,ordinal) VALUES('done',?1,'completed','low',1),('running',?1,'inProgress','high',2)",
+            params![id],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    s.update_settings(&id, None, Some("max".into()), None, None, None)
+        .await
+        .unwrap();
+    let effort = |turn: &str| {
+        s.db.with(|conn| {
+            Ok(conn.query_row(
+                "SELECT reasoning_effort FROM thread_turns WHERE id=?1",
+                params![turn],
+                |row| row.get::<_, Option<String>>(0),
+            )?)
+        })
+        .unwrap()
+    };
+    // The live session takes it for its next call; a finished turn keeps its own.
+    assert_eq!(effort("running").as_deref(), Some("max"));
+    assert_eq!(effort("done").as_deref(), Some("low"));
+    assert_eq!(
+        s.get_thread(&id).unwrap().reasoning_effort.as_deref(),
+        Some("max")
+    );
+}

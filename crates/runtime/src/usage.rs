@@ -439,12 +439,73 @@ pub(crate) fn public_usage(value: &Value) -> Option<Value> {
     if let Some(speed) = value.get("generationSpeed") {
         usage["generationSpeed"] = speed.clone();
     }
+    let models = turn_models(value);
+    if !models.is_empty() {
+        usage["models"] = json!(models);
+    }
     Some(usage)
+}
+
+/// The models the turn's own agent called, in order: consecutive calls to one
+/// model form a run, so a switch mid-turn shows where it took effect.
+/// Subagents' calls are left out; records without the `parent` mark predate it.
+fn turn_models(value: &Value) -> Vec<Value> {
+    let Some(requests) = value.get("requests").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let mut calls: Vec<(&str, &str)> = requests
+        .iter()
+        .filter(|request| request.get("parent").and_then(Value::as_bool) == Some(true))
+        .filter_map(|request| {
+            let model = request["model"]
+                .as_str()
+                .filter(|m| !m.is_empty() && *m != "<synthetic>")?;
+            Some((request["observedAt"].as_str().unwrap_or_default(), model))
+        })
+        .collect();
+    calls.sort_by(|a, b| a.0.cmp(b.0));
+    let mut runs: Vec<(&str, u64)> = Vec::new();
+    for (_, model) in calls {
+        match runs.last_mut() {
+            Some((last, count)) if *last == model => *count += 1,
+            _ => runs.push((model, 1)),
+        }
+    }
+    runs.into_iter()
+        .map(|(model, calls)| json!({"model": model, "calls": calls}))
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn public_usage_lists_the_models_the_turn_switched_between() {
+        let raw = json!({"total":{"inputTokens":3,"outputTokens":3},"last":{"inputTokens":1,"outputTokens":1},"requests":[
+            {"messageId":"a","model":"claude-sonnet-4-6","parent":true,"observedAt":"2026-10-18T10:02:00Z"},
+            {"messageId":"b","model":"claude-opus-4-7","parent":true,"observedAt":"2026-10-18T10:00:00Z"},
+            {"messageId":"c","model":"claude-opus-4-7","parent":true,"observedAt":"2026-10-18T10:01:00Z"},
+            {"messageId":"d","model":"claude-haiku-4-5","parent":false,"observedAt":"2026-10-18T10:01:30Z"},
+            {"messageId":"e","model":"<synthetic>","parent":true,"observedAt":"2026-10-18T10:03:00Z"},
+            {"messageId":"f","model":"claude-opus-4-6","observedAt":"2026-10-18T09:00:00Z"}
+        ]});
+        assert_eq!(
+            public_usage(&raw).unwrap()["models"],
+            json!([{"model":"claude-opus-4-7","calls":2},{"model":"claude-sonnet-4-6","calls":1}])
+        );
+        // Switching back is a run of its own.
+        let mut back = raw.clone();
+        back["requests"].as_array_mut().unwrap().push(
+            json!({"messageId":"g","model":"claude-opus-4-7","parent":true,"observedAt":"2026-10-18T10:04:00Z"}),
+        );
+        assert_eq!(
+            public_usage(&back).unwrap()["models"],
+            json!([{"model":"claude-opus-4-7","calls":2},{"model":"claude-sonnet-4-6","calls":1},{"model":"claude-opus-4-7","calls":1}])
+        );
+        let single = json!({"total":{"inputTokens":1,"outputTokens":1},"last":{"inputTokens":1,"outputTokens":1}});
+        assert!(public_usage(&single).unwrap().get("models").is_none());
+    }
 
     #[test]
     fn native_request_snapshots_price_mixed_models_and_reprice_custom_rates() {

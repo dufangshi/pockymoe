@@ -3597,6 +3597,16 @@ impl Supervisor {
                     "UPDATE threads SET reasoning_effort=?1 WHERE id=?2",
                     params![effort, id],
                 )?;
+                // The live session took it for its next model call, so the running
+                // turn now runs at it too. Usage reports correct the model the same
+                // way, but Claude's do not carry the effort.
+                if let (Some(_), Some(turn)) = (&thread.provider_session_id, &thread.active_turn_id)
+                {
+                    conn.execute(
+                        "UPDATE thread_turns SET reasoning_effort=?1 WHERE thread_id=?2 AND id=?3",
+                        params![effort, id, turn],
+                    )?;
+                }
             }
             if let Some(fast) = fast {
                 conn.execute(

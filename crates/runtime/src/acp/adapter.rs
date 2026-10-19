@@ -75,6 +75,11 @@ pub trait HarnessAdapter: Send + Sync {
     fn model_list_method(&self) -> Option<&'static str> {
         None
     }
+    /// The session's effort option lists only its current model's levels, which
+    /// differ by model, so a probe session visits the others to learn theirs.
+    fn effort_options_follow_model(&self) -> bool {
+        false
+    }
     fn project_model_list(&self, _response: &Value) -> Option<Vec<ModelOptionDto>> {
         None
     }
@@ -204,12 +209,18 @@ impl HarnessAdapter for ClaudeAdapter {
     fn session_load_meta(&self) -> Value {
         self.session_new_meta(None)
     }
+    fn effort_options_follow_model(&self) -> bool {
+        true
+    }
     fn patch_capabilities(
         &self,
         caps: &mut AgentProviderCapabilitiesDto,
         negotiated: &NegotiatedCaps,
     ) {
         apply_negotiated(caps, negotiated);
+        // A model or effort chosen mid-turn goes to the running query and takes
+        // effect at its next model call.
+        caps.controls.live_model_switch = true;
     }
 }
 

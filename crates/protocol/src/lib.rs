@@ -620,6 +620,10 @@ pub struct ControlCaps {
     pub sandbox_mode: bool,
     pub performance_mode: bool,
     pub goals: bool,
+    /// A model or effort changed during a turn applies from that turn's next
+    /// model call; otherwise from the next turn.
+    #[serde(default)]
+    pub live_model_switch: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -685,6 +689,7 @@ impl AgentProviderCapabilitiesDto {
                 sandbox_mode: true,
                 performance_mode: false,
                 goals: false,
+                live_model_switch: false,
             },
             management: ManagementCaps {
                 models: true,

@@ -3246,6 +3246,16 @@ export function ThreadDetailPage() {
     }
   }
 
+  // A model's reasoning efforts are learned as the harness shows them, so the
+  // list is fetched again where it is about to be read and after a switch.
+  const refreshModelOptions = useCallback(() => {
+    const threadId = detailRef.current?.thread.id;
+    if (!threadId) return;
+    void fetchThreadModels(threadId).then((models) => {
+      if (models.length && detailRef.current?.thread.id === threadId) setModelOptions(models);
+    }).catch(() => {});
+  }, []);
+
   async function handleUpdateThreadSettings(input: {
     model?: string;
     reasoningEffort?: ThreadDto['reasoningEffort'];
@@ -3325,6 +3335,7 @@ export function ThreadDetailPage() {
       setThreads((current) =>
         current.map((entry) => (entry.id === updated.id ? updated : entry)),
       );
+      if (input.model !== undefined) refreshModelOptions();
     } catch (caught) {
       pendingThreadSettingsRef.current = null;
       detailRef.current = previousDetail;
@@ -3681,6 +3692,8 @@ export function ThreadDetailPage() {
       models={toolsUseReference ? referenceController.models : modelOptions}
       busy={toolsUseReference ? referenceController.busy : settingsBusy} readOnly={!toolsCanControl}
       onChange={async input => { if (toolsUseReference) await referenceController.updateSettings(input); else await handleUpdateThreadSettings(input); }}
+      {...(toolsUseReference ? {} : { onOpen: refreshModelOptions })}
+      liveModelSwitch={Boolean((toolsUseReference ? referenceController.capabilities : backendCapabilities)?.controls.liveModelSwitch)}
       loadCapabilities={loadToolsCapabilities}
       {...harnessPanel(toolsDetail.thread.id, toolsDevice)} harnessReadOnly={!toolsHarnessOwner} />
   </div> : null;
@@ -3925,6 +3938,7 @@ export function ThreadDetailPage() {
         ...(relayThreadCanControl
           ? { onUpdateSettings: handleUpdateThreadSettings }
           : {}),
+        onModelMenuOpen: refreshModelOptions,
         onToggleView: handleToggleView,
         onShellCopy: handleShellCopy,
         ...(relayThreadCanControl ? { onShellControl: handleShellControl } : {}),
@@ -4247,6 +4261,8 @@ export function ThreadDetailPage() {
         readOnly={dialogUseReference ? !referenceController.canControl : !relayThreadCanControl}
         {...(harnessSettingsTarget?.composerFocusOwner ? {composerFocusOwner:harnessSettingsTarget.composerFocusOwner} : {})}
         loadCapabilities={loadDialogCapabilities}
+        {...(dialogUseReference ? {} : { onOpen: refreshModelOptions })}
+        liveModelSwitch={Boolean((dialogUseReference ? referenceController.capabilities : backendCapabilities)?.controls.liveModelSwitch)}
         {...harnessPanel(dialogDetail.thread.id, harnessSettingsTarget?.deviceId)}
         harnessReadOnly={dialogUseReference ? !referenceHarnessOwner : !relayThreadIsOwner}
         onChange={async input => { if (dialogUseReference) await referenceController.updateSettings(input); else await handleUpdateThreadSettings(input); }}

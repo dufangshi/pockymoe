@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -56,6 +56,10 @@ mod release_tests;
 #[cfg(all(test, unix))]
 #[path = "completion_tests.rs"]
 mod completion_tests;
+
+#[cfg(test)]
+#[path = "effort_tests.rs"]
+mod effort_tests;
 
 // Startup and cancelled probes must not leave the notification mux holding a child alive.
 struct StartupProcess(Option<Arc<AcpProcess>>);
@@ -150,10 +154,17 @@ struct Inner {
     /// Latest DSH run modes and features, for thread creation forms.
     dsh_catalog: Mutex<Option<Value>>,
     load_events: broadcast::Sender<crate::actor::SessionLifecycle>,
+    /// The reasoning efforts each model offers, per agent. A session's effort
+    /// option lists only its current model's levels, so they are learned from
+    /// every session's options and from a probe that visits the other models.
+    model_efforts:
+        std::sync::Mutex<HashMap<String, HashMap<String, Vec<ReasoningEffortOptionDto>>>>,
+    /// Models a probe has already visited (or is visiting), per agent.
+    effort_probes: std::sync::Mutex<HashMap<String, HashSet<String>>>,
 }
 
 pub struct AcpRuntime {
-    upstreams: Option<super::upstream_models::UpstreamModels>,
+    upstreams: Option<Arc<super::upstream_models::UpstreamModels>>,
     provider: Provider,
     bound_agent: Option<String>,
     custom_command: Option<String>,
@@ -221,8 +232,127 @@ impl AcpRuntime {
                 terminals: AgentTerminals::default(),
                 dsh_catalog: Mutex::new(None),
                 load_events: broadcast::channel(256).0,
+                model_efforts: Default::default(),
+                effort_probes: Default::default(),
             }),
         }
+    }
+
+    /// The same runtime for work that outlives the request that started it.
+    fn detached(&self) -> Self {
+        Self {
+            upstreams: self.upstreams.clone(),
+            provider: self.provider,
+            bound_agent: self.bound_agent.clone(),
+            custom_command: self.custom_command.clone(),
+            startup_timeout: self.startup_timeout,
+            started_at: Mutex::new(None),
+            inner: self.inner.clone(),
+        }
+    }
+
+    fn learn_efforts(&self, agent_id: &str, options: &Value) {
+        if let Some((model, efforts)) = current_model_efforts(options) {
+            self.inner
+                .model_efforts
+                .lock()
+                .unwrap()
+                .entry(agent_id.to_string())
+                .or_default()
+                .insert(model, efforts);
+        }
+    }
+
+    /// Each model with the efforts learned for it; the others keep the list
+    /// they came with (the current model's).
+    fn with_learned_efforts(
+        &self,
+        agent_id: &str,
+        mut models: Vec<ModelOptionDto>,
+    ) -> Vec<ModelOptionDto> {
+        let learned = self.inner.model_efforts.lock().unwrap();
+        if let Some(learned) = learned.get(agent_id) {
+            for model in &mut models {
+                if let Some(efforts) = learned.get(&model.model) {
+                    model.default_reasoning_effort = default_effort(efforts);
+                    model.supported_reasoning_efforts = efforts.clone();
+                }
+            }
+        }
+        models
+    }
+
+    /// Models whose efforts are unknown and no probe has visited; they are
+    /// marked visited so each is probed at most once per process.
+    fn claim_unprobed(&self, agent_id: &str, models: &[ModelOptionDto]) -> Vec<String> {
+        let learned = self.inner.model_efforts.lock().unwrap();
+        let mut probes = self.inner.effort_probes.lock().unwrap();
+        let visited = probes.entry(agent_id.to_string()).or_default();
+        models
+            .iter()
+            .filter(|model| {
+                learned
+                    .get(agent_id)
+                    .is_none_or(|known| !known.contains_key(&model.model))
+            })
+            .filter(|model| visited.insert(model.model.clone()))
+            .map(|model| model.model.clone())
+            .collect()
+    }
+
+    /// Switches a probe session through `models` and learns each one's efforts.
+    async fn visit_models(&self, agent_id: &str, live: &LiveSession, models: &[String]) {
+        let Some(config_id) = live
+            .config_options
+            .as_array()
+            .and_then(|options| model_option(options))
+            .and_then(|option| option.get("id"))
+            .and_then(Value::as_str)
+        else {
+            return;
+        };
+        for model in models {
+            let response = live
+                .process
+                .request(
+                    "session/set_config_option",
+                    json!({"sessionId": live.session_id, "configId": config_id, "value": model}),
+                )
+                .await;
+            if let Some(options) = response.ok().as_ref().and_then(|r| r.get("configOptions")) {
+                self.learn_efforts(agent_id, options);
+            }
+        }
+    }
+
+    /// Learns the efforts of models no session has shown yet, in a probe session
+    /// of its own; the next model list carries them.
+    fn probe_efforts_in_background(&self, def: &AcpAgentDef, cwd: &str, models: &[ModelOptionDto]) {
+        let unprobed = self.claim_unprobed(&def.id, models);
+        if unprobed.is_empty() {
+            return;
+        }
+        let (runtime, def, cwd) = (self.detached(), def.clone(), cwd.to_string());
+        tokio::spawn(async move {
+            let probe = runtime
+                .spawn_session(
+                    &def,
+                    &cwd,
+                    ProductSessionPolicy {
+                        approval_mode: Some("yolo".into()),
+                        ..ProductSessionPolicy::default()
+                    },
+                    None,
+                    None,
+                )
+                .await;
+            let Ok((_scoped, live)) = probe else {
+                return;
+            };
+            let _probe_process = StartupProcess(Some(live.process.clone()));
+            runtime.visit_models(&def.id, &live, &unprobed).await;
+            let _ = live.process.shutdown().await;
+        });
     }
 
     fn agent_def(&self, agent_id: Option<&str>) -> Result<AcpAgentDef> {
@@ -237,7 +367,9 @@ impl AcpRuntime {
     }
 
     pub fn with_upstreams(mut self, directory: PathBuf) -> Self {
-        self.upstreams = Some(super::upstream_models::UpstreamModels::new(directory));
+        self.upstreams = Some(Arc::new(super::upstream_models::UpstreamModels::new(
+            directory,
+        )));
         self
     }
 
@@ -440,6 +572,7 @@ impl AcpRuntime {
         if let Some(caps) = self.inner.caps_by_agent.lock().await.get_mut(&def.id) {
             apply_config_option_caps(caps, &config_options);
         }
+        self.learn_efforts(&def.id, &config_options);
         let projection = adapter.project_session(&raw_session);
         let (harness_state, harness_models, model, reasoning_effort) =
             if let Some(proj) = projection {
@@ -690,22 +823,37 @@ impl AcpRuntime {
     }
 
     async fn models_from_live(&self, agent_id: &str) -> Option<Vec<ModelOptionDto>> {
-        let (cached, configured, process) = {
+        self.live_models(agent_id).await.map(|(models, _)| models)
+    }
+
+    /// The models a live session of the agent offers. When they come from its
+    /// config options, whose effort list is only its current model's, the
+    /// session's cwd comes along for a probe of the other models.
+    async fn live_models(&self, agent_id: &str) -> Option<(Vec<ModelOptionDto>, Option<PathBuf>)> {
+        let (cached, configured, process, cwd) = {
             let sessions = self.inner.sessions.lock().await;
-            let live = sessions
+            let mut first = None;
+            for session in sessions
                 .values()
-                .find(|session| session.adapter_id == agent_id)?;
+                .filter(|session| session.adapter_id == agent_id)
+            {
+                // Every session shows the efforts of the model it is on now.
+                self.learn_efforts(agent_id, &session.config_options);
+                first.get_or_insert(session);
+            }
+            let live = first?;
             (
                 live.harness_models.clone(),
                 models_from_config_options(&live.config_options),
                 live.process.clone(),
+                live.cwd.clone(),
             )
         };
         if !cached.is_empty() {
-            return Some(cached);
+            return Some((cached, None));
         }
         if !configured.is_empty() {
-            return Some(configured);
+            return Some((self.with_learned_efforts(agent_id, configured), Some(cwd)));
         }
         let models = self.request_adapter_models(agent_id, &process).await?;
         if let Some(live) = self
@@ -718,7 +866,7 @@ impl AcpRuntime {
         {
             live.harness_models = models.clone();
         }
-        Some(models)
+        Some((models, None))
     }
 
     async fn request_adapter_models(
@@ -754,11 +902,15 @@ impl AcpRuntime {
             .await?;
         let _probe_process = StartupProcess(Some(live.process.clone()));
         let models = if !live.harness_models.is_empty() {
-            live.harness_models
+            live.harness_models.clone()
         } else {
             let configured = models_from_config_options(&live.config_options);
             if !configured.is_empty() {
-                configured
+                if adapter_for(&def.id).effort_options_follow_model() {
+                    let unprobed = self.claim_unprobed(&def.id, &configured);
+                    self.visit_models(&def.id, &live, &unprobed).await;
+                }
+                self.with_learned_efforts(&def.id, configured)
             } else {
                 self.request_adapter_models(&def.id, &live.process)
                     .await
@@ -1535,8 +1687,13 @@ impl AgentRuntime for AcpRuntime {
         if classify_availability(&def) != "ready" {
             return Ok(default_model_stub(Some(&def.id)));
         }
-        if let Some(models) = self.models_from_live(&def.id).await {
+        if let Some((models, probe_cwd)) = self.live_models(&def.id).await {
             if !models.is_empty() {
+                if let Some(probe_cwd) =
+                    probe_cwd.filter(|_| adapter_for(&def.id).effort_options_follow_model())
+                {
+                    self.probe_efforts_in_background(&def, &probe_cwd.to_string_lossy(), &models);
+                }
                 return Ok(models);
             }
         }
@@ -4334,18 +4491,36 @@ fn reasoning_config_id(options: &Value) -> Option<&str> {
     })
 }
 
-pub(super) fn models_from_config_options(options: &Value) -> Vec<ModelOptionDto> {
-    let Some(arr) = options.as_array() else {
-        return Vec::new();
-    };
-    let model_opt = arr.iter().find(|opt| {
+fn model_option(options: &[Value]) -> Option<&Value> {
+    options.iter().find(|opt| {
         opt.get("category").and_then(Value::as_str) == Some("model")
             || opt
                 .get("id")
                 .and_then(Value::as_str)
                 .is_some_and(|id| id.to_ascii_lowercase().contains("model"))
-    });
-    let Some(model_opt) = model_opt else {
+    })
+}
+
+/// The model a session is on and the efforts its options offer for it.
+fn current_model_efforts(options: &Value) -> Option<(String, Vec<ReasoningEffortOptionDto>)> {
+    let options = options.as_array()?;
+    let model = model_option(options)?.get("currentValue")?.as_str()?;
+    (!model.is_empty()).then(|| (model.to_string(), reasoning_efforts_from_options(options)))
+}
+
+fn default_effort(efforts: &[ReasoningEffortOptionDto]) -> Option<String> {
+    efforts
+        .iter()
+        .find(|effort| effort.reasoning_effort == "medium")
+        .or(efforts.first())
+        .map(|effort| effort.reasoning_effort.clone())
+}
+
+pub(super) fn models_from_config_options(options: &Value) -> Vec<ModelOptionDto> {
+    let Some(arr) = options.as_array() else {
+        return Vec::new();
+    };
+    let Some(model_opt) = model_option(arr) else {
         return Vec::new();
     };
     let current = model_opt
@@ -4373,11 +4548,7 @@ pub(super) fn models_from_config_options(options: &Value) -> Vec<ModelOptionDto>
                 is_default: value == current,
                 hidden: false,
                 supported_reasoning_efforts: efforts.clone(),
-                default_reasoning_effort: efforts
-                    .iter()
-                    .find(|effort| effort.reasoning_effort == "medium")
-                    .or(efforts.first())
-                    .map(|effort| effort.reasoning_effort.clone()),
+                default_reasoning_effort: default_effort(&efforts),
                 selection_kind: Some("model".into()),
                 acp_agent: None,
             })

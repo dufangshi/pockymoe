@@ -519,6 +519,8 @@ export interface AgentProviderCapabilitiesDto {
     sandboxMode: boolean;
     performanceMode: boolean;
     goals: boolean;
+    /** A model or effort changed during a turn applies from its next model call; otherwise from the next turn. */
+    liveModelSwitch?: boolean;
   };
   management: {
     models: boolean;
@@ -1141,6 +1143,9 @@ export interface ThreadTurnTokenUsageDto {
   total: ThreadTurnTokenBreakdownDto;
   last: ThreadTurnTokenBreakdownDto;
   modelContextWindow: number | null;
+  /** The models the turn's own agent called, in order; consecutive calls to
+      one model form a run, so a switch mid-turn shows as a second run. */
+  models?: { model: string; calls: number }[];
   generationSpeed?: {
     outputTokens: number;
     llmTimeMs: number;

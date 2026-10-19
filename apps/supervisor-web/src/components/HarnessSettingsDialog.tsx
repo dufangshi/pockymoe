@@ -1,5 +1,5 @@
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   AgentCapabilitySnapshotDto,
   ModelOptionDto,
@@ -32,6 +32,11 @@ export interface HarnessSettingsFieldsProps {
   harnessReadOnly?: boolean;
   /** Browser address of the native DSH console for this thread's device. */
   dshConsoleUrl?: ((target: DshConsoleTarget) => Promise<string>) | undefined;
+  /** The fields came into view: the host may refresh the model list. */
+  onOpen?: () => void;
+  /** A model or effort changed during a turn applies from its next model call;
+      otherwise from the next turn. */
+  liveModelSwitch?: boolean;
 }
 
 export function HarnessSettingsDialog({
@@ -77,8 +82,15 @@ export function HarnessSettingsFields({
   runHarnessAction,
   dshConsoleUrl,
   harnessReadOnly = false,
+  onOpen,
+  liveModelSwitch = false,
 }: HarnessSettingsFieldsProps) {
   useI18n();
+  const opened = useRef(onOpen);
+  opened.current = onOpen;
+  useEffect(() => {
+    opened.current?.();
+  }, [thread.id]);
   const [info, setInfo] = useState<{
     profile?: string;
     notice?: string;
@@ -111,7 +123,8 @@ export function HarnessSettingsFields({
     };
   }, [thread.id, loadCapabilities]);
   const model = models.find((model) => model.model === thread.model);
-  const disabled = readOnly || busy || Boolean(thread.activeTurnId);
+  // A running turn does not lock them: the harness takes a change mid-turn.
+  const disabled = readOnly || busy;
   return (
     <div className="space-y-4 text-sm">
       {error && <p role="alert">{error}</p>}
@@ -185,8 +198,10 @@ export function HarnessSettingsFields({
           <option value="read-only">{translate('chat.readOnly')}</option>
         </select>
       </label>
-      {thread.activeTurnId && (
-        <p>{translate('settings.sessionSettingsCanBeChangedAfterThe')}</p>
+      {thread.activeTurnId && !readOnly && (
+        <p className="settings-hint text-[var(--theme-fg-muted)]">
+          {translate(liveModelSwitch ? 'settings.sessionSettingsApplyNextCall' : 'settings.sessionSettingsApplyNextTurn')}
+        </p>
       )}
       {isDshHarness(info) ? (
         <DshHarnessPanel info={info} readOnly={readOnly || harnessReadOnly} runAction={harnessAction}

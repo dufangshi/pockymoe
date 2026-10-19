@@ -89,13 +89,17 @@ describe('session settings fields', () => {
     expect(onChange).not.toHaveBeenCalled();
   });
 
-  it('marks the whole portal dialog as owned and makes running session settings read-only', async () => {
+  it('marks the whole portal dialog as owned and keeps running session settings editable', async () => {
+    const onOpen = vi.fn();
+    const onChange = vi.fn(async () => {});
     render(
       <HarnessSettingsDialog
         thread={{ ...thread, activeTurnId: 'running' }}
         models={models}
         busy={false}
-        onChange={vi.fn(async () => {})}
+        onChange={onChange}
+        onOpen={onOpen}
+        liveModelSwitch
         loadCapabilities={loadCapabilities}
         composerFocusOwner="composer-one"
         onClose={vi.fn()}
@@ -107,13 +111,29 @@ describe('session settings fields', () => {
         'composer-one',
       ),
     );
+    // The model list is refreshed where it is about to be read.
+    expect(onOpen).toHaveBeenCalledOnce();
     for (const select of screen.getAllByRole('combobox'))
-      expect(select).toBeDisabled();
+      expect(select).toBeEnabled();
+    // The harness takes the change mid-turn and the fields say when.
+    expect(screen.getByText(/applies from its next model call/)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Harness reasoning effort'), { target: { value: 'medium' } });
+    expect(onChange).toHaveBeenCalledWith({ reasoningEffort: 'medium' });
     expect(
       screen
         .getByRole('button', { name: 'Close' })
         .closest('[data-composer-focus-owner]'),
     ).toBe(screen.getByRole('dialog'));
+  });
+});
+
+describe('session settings timing', () => {
+  it('says a change waits for the next turn where the harness cannot take it live', async () => {
+    render(
+      <HarnessSettingsFields thread={{ ...thread, activeTurnId: 'running' }} models={models} busy={false}
+        onChange={vi.fn(async () => {})} loadCapabilities={loadCapabilities} />,
+    );
+    expect(await screen.findByText(/changes apply from the next turn/)).toBeInTheDocument();
   });
 });
 

@@ -315,7 +315,7 @@ impl ClaudeUsageReader {
         self.messages.insert(
             id.clone(),
             json!({"messageId":id,"total":tokens,"last":tokens,
-            "model":message["model"],"observedAt":at}),
+            "model":message["model"],"parent":parent,"observedAt":at}),
         );
         let total = self
             .messages
