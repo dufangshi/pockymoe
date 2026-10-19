@@ -129,8 +129,14 @@ it('measures the disk only on request and pages the largest conversations', asyn
   expect(disk.queryByRole('button', { name: 'Load more' })).toBeNull();
 });
 
-it('saves a command-output retention and cleans up only after a red confirmation', async () => {
-  vi.mocked(pruneStorage).mockResolvedValue({ items: 12, bytes: 3 * MB });
+const job = (state: 'running' | 'done', processed: number, items: number, bytes: number) => ({
+  action: 'prune' as const, state, total: 1000, processed, items, bytes, beforeBytes: null, afterBytes: null,
+  startedAt: '2026-10-19T00:00:00.000Z', finishedAt: state === 'done' ? '2026-10-19T00:01:00.000Z' : null, error: null,
+});
+
+it('saves a retention, then cleans up in the background with progress after a red confirmation', async () => {
+  // Just started: the device is still counting what to clean up.
+  vi.mocked(pruneStorage).mockResolvedValue({ ...job('running', 0, 0, 0), total: 0 });
   renderAt();
   const disk = within(await screen.findByRole('region', { name: 'Disk' }));
   const clean = await disk.findByRole('button', { name: 'Clean up now' });
@@ -144,7 +150,15 @@ it('saves a command-output retention and cleans up only after a red confirmation
   const dialog = await screen.findByRole('dialog');
   expect(dialog).toHaveTextContent('over 14 days ago');
   expect(pruneStorage).not.toHaveBeenCalled();
+  vi.mocked(fetchStorageOverview).mockResolvedValueOnce({ deviceName: 'ubuntu-ms', scan: null, job: job('running', 400, 380, 2 * MB) })
+    .mockResolvedValue({ deviceName: 'ubuntu-ms', scan: null, job: job('done', 1000, 912, 3 * MB) });
   fireEvent.click(within(dialog).getByRole('button', { name: 'Clean up now' }));
-  expect(await disk.findByText('Cleaned up 12 outputs, 3 MB')).toBeVisible();
+  // The dialog closes at once; the job's progress follows on the page.
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  await waitFor(() => expect(pruneStorage).toHaveBeenCalled());
+  expect(await disk.findByText('Finding output to clean up…')).toBeVisible();
+  expect(await disk.findByText('Cleaning up 400 / 1,000 · 2 MB removed', {}, { timeout: 3000 })).toBeVisible();
+  expect(clean).toBeDisabled();
+  expect(await disk.findByText('Cleaned up 912 outputs, 3 MB', {}, { timeout: 3000 })).toBeVisible();
   expect(compactStorage).not.toHaveBeenCalled();
 });

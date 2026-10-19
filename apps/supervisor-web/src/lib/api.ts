@@ -16,9 +16,8 @@ import type {
   AgentCapabilitySnapshotDto,
   HarnessProcessesDto,
   HarnessResourceSettingsDto,
-  StorageCompactResultDto,
+  StorageJobDto,
   StorageOverviewDto,
-  StoragePruneResultDto,
   StorageScanDto,
   StorageSettingsDto,
   ReleaseThreadInput,
@@ -992,11 +991,11 @@ export function updateStorageSettings(input: StorageSettingsDto, deviceId?: stri
 }
 
 export function pruneStorage(deviceId?: string | null) {
-  return deviceRequest<StoragePruneResultDto>(deviceId, 'api/storage/prune', { method: 'POST', body: '{}' });
+  return deviceRequest<StorageJobDto>(deviceId, 'api/storage/prune', { method: 'POST', body: '{}' });
 }
 
 export function compactStorage(deviceId?: string | null) {
-  return deviceRequest<StorageCompactResultDto>(deviceId, 'api/storage/compact', { method: 'POST', body: '{}' });
+  return deviceRequest<StorageJobDto>(deviceId, 'api/storage/compact', { method: 'POST', body: '{}' });
 }
 
 export function updateHarnessResourceSettings(input: HarnessResourceSettingsDto,

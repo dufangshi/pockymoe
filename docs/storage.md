@@ -27,17 +27,38 @@ pages of up to 100.
 
 `StorageSettingsDto.commandOutputRetentionDays` (1–3650, `null` keeps output) is
 stored in `storage_settings`. Saving a value starts a cleanup at once; afterwards
-one runs three minutes after start and then hourly. **Clean up now** runs one with
+one runs three minutes after start and then hourly. **Clean up now** starts one with
 the saved value after a confirmation.
 
 A cleanup changes command executions whose turn ended (or, for turns that never
 recorded an end, started) before the cutoff and is no longer running. It keeps
-the command text, status and the detail up to the first `Output:` or `Result:`
-section (watches read the `Input:` section), drops `previewText` when it equals
-`text`, and records `outputPrunedAt` and `outputPrunedBytes` on the item. A detail
-without those sections is removed whole. The transcript then shows "Output
-cleaned up on DATE (was SIZE)" instead of loading the detail. Each batch of 200
-items is one short transaction. Search indexes only messages, so it is unaffected.
+the command text and the detail header (tool, kind, status) and removes the
+`Input:` section, which repeats the command, and the output. It drops
+`previewText` when it equals `text` and records `outputPrunedAt` and
+`outputPrunedBytes` on the item; items an earlier version cleaned up lose their
+input on the next pass. A detail without a header is removed whole. Watches read
+the input of tool calls only, never of commands. The transcript then shows
+"Output cleaned up on DATE (was SIZE)" instead of loading the detail. Search
+indexes only messages, so it is unaffected.
+
+### Running in the background
+
+Cleanup and reclaiming are jobs: their routes answer `202` with the job at once,
+and `GET /api/storage` reports it (`job`: action, state, items to look at and
+looked at, items changed and bytes removed, sizes before and after a compaction,
+error). Settings → Resources shows a progress bar and follows it every second,
+also after a reload. One job runs at a time; starting another returns the
+running one. The latest job is kept until the Supervisor restarts.
+
+A cleanup reads its candidates on its own read-only connection, then rewrites
+them on the shared connection in transactions of about 20 ms of work, pausing
+15 ms between them. The shared connection uses `synchronous=FULL`, and its
+automatic checkpoint would copy the log inside one of those commits while every
+other user waits; during a cleanup it is off, and a passive checkpoint runs each
+second on a separate connection instead, outside the shared lock. The setting is
+restored when the job ends. On a copy of a real database (3 days, 58,508 items,
+8 concurrent request loops) the slowest request waited 289 ms, median 8 ms,
+instead of 1.7–3.2 s and 52 ms with one-step cleanup; the log stayed near 12 MB.
 
 ## Reclaiming disk space
 
@@ -50,11 +71,11 @@ about 7 seconds and the file went from 647 MB to 460 MB after a 7-day cleanup.
 
 | Route | Body/response |
 | --- | --- |
-| `GET /api/storage?offset=&limit=` | `StorageOverviewDto`: `deviceName` and the last scan's page (`null` before a scan) |
+| `GET /api/storage?offset=&limit=` | `StorageOverviewDto`: `deviceName`, the last scan's page (`null` before a scan) and the running or last `job` |
 | `POST /api/storage/scan` | `StorageScanDto` (first page) |
 | `GET`/`PUT /api/storage/settings` | `StorageSettingsDto`; the key must be present |
-| `POST /api/storage/prune` | `StoragePruneResultDto`; 409 `retention_off` without a saved value |
-| `POST /api/storage/compact` | `StorageCompactResultDto` |
+| `POST /api/storage/prune` | `202` `StorageJobDto`; 409 `retention_off` without a saved value |
+| `POST /api/storage/compact` | `202` `StorageJobDto` |
 
 They follow the device owner like the resource settings; grant holders get
 `grant_denied`, and a Treer Agent UI tunnel does not offer them. Types:

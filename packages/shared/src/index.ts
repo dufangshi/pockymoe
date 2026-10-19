@@ -2014,9 +2014,8 @@ export type {
 } from './harnessResources';
 
 export type {
-  StorageCompactResultDto,
+  StorageJobDto,
   StorageOverviewDto,
-  StoragePruneResultDto,
   StorageScanDto,
   StorageSettingsDto,
   StorageThreadDto,

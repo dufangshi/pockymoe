@@ -101,7 +101,7 @@
 :theme [role='menu'] { border: 1px solid var(--theme-fg); }
 
 /* Settings → Resources: square cards and bars like the rest of the pack. */
-:theme :is(.pm-res-card, .pm-res-input, .pm-res-button, .pm-res-primary, .pm-res-bar, .pm-res-bar > span) { border-radius: 0; }
+:theme :is(.pm-res-card, .pm-res-input, .pm-res-button, .pm-res-primary, .pm-res-bar, .pm-res-bar > span, .pm-res-job-bar, .pm-res-job-bar > span) { border-radius: 0; }
 
 /* Thread tools dropdown: square, mono, the hovered row inverse like a selected line. */
 :theme .thread-ui-shell .matter-thread-tools-menu { border-radius: 0; box-shadow: 4px 4px 0 rgb(0 0 0 / 35%); font-family: var(--term-font); font-size: 12.5px; }

@@ -907,10 +907,9 @@ async fn put_storage_settings(
         })
 }
 
-/// Apply the saved retention now (409 when none is set).
-async fn storage_prune(
-    State(state): State<AppState>,
-) -> Result<Json<pockymoe_protocol::StoragePruneResultDto>, ApiErr> {
+/// Start a cleanup with the saved retention (409 when none is set). Returns
+/// the background job at once; the storage overview reports its progress.
+async fn storage_prune(State(state): State<AppState>) -> Result<Response, ApiErr> {
     let days = state
         .storage_settings()
         .map_err(settings_storage_error)?
@@ -922,29 +921,12 @@ async fn storage_prune(
                 "Set a retention period first",
             )
         })?;
-    state
-        .prune_command_outputs(days)
-        .await
-        .map(Json)
-        .map_err(|e| {
-            err(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "storage_prune_failed",
-                e.to_string(),
-            )
-        })
+    Ok((StatusCode::ACCEPTED, Json(state.start_storage_prune(days))).into_response())
 }
 
-async fn storage_compact(
-    State(state): State<AppState>,
-) -> Result<Json<pockymoe_protocol::StorageCompactResultDto>, ApiErr> {
-    state.storage_compact().await.map(Json).map_err(|e| {
-        err(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "storage_compact_failed",
-            e.to_string(),
-        )
-    })
+/// Start compacting the database file in the background.
+async fn storage_compact(State(state): State<AppState>) -> Response {
+    (StatusCode::ACCEPTED, Json(state.start_storage_compact())).into_response()
 }
 
 /// The body replaces the policy, so every key must be present: a missing

@@ -1328,4 +1328,4 @@ fn finish_command(
 
 #[cfg(test)]
 #[path = "automation_tests.rs"]
-mod tests;
+pub(crate) mod tests;

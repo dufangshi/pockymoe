@@ -1,31 +1,48 @@
 //! Disk use of the Supervisor database and the command-output retention policy.
 //!
 //! A scan runs only on request, on its own read-only connection, so the shared
-//! connection stays free. Pruning keeps each command, its status and its input
-//! (watches read the input) and removes the output that follows.
+//! connection stays free. Cleanup and compaction run as background jobs whose
+//! progress the overview reports. Cleanup finds its items on a read-only
+//! connection too and rewrites them in transactions of a few milliseconds, so
+//! every other database user waits at most that long. It keeps each command's
+//! text and the detail header (tool, kind, status) and removes the input
+//! (the command again) and the output.
 use super::*;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use chrono::{SecondsFormat, Utc};
 use pockymoe_protocol::{
-    StorageCompactResultDto, StorageOverviewDto, StoragePruneResultDto, StorageScanDto,
-    StorageSettingsDto, StorageThreadDto,
+    StorageJobDto, StorageOverviewDto, StorageScanDto, StorageSettingsDto, StorageThreadDto,
 };
 use rusqlite::OpenFlags;
 
 pub const STORAGE_PAGE_LIMIT: u64 = 100;
-const PRUNE_BATCH: usize = 200;
+/// Longest a cleanup transaction holds the shared connection.
+const PRUNE_SLICE: Duration = Duration::from_millis(20);
+/// Pause between slices, so queued database users run first.
+const PRUNE_PAUSE: Duration = Duration::from_millis(15);
+/// Copy the write-ahead log into the file this often, on a separate connection:
+/// a long log would otherwise be copied by an automatic checkpoint inside one
+/// of the shared connection's commits, while everyone waits for it.
+const CHECKPOINT_INTERVAL: Duration = Duration::from_millis(1_000);
 const RETENTION_INTERVAL: Duration = Duration::from_secs(60 * 60);
 const MAX_RETENTION_DAYS: u32 = 3650;
-/// Detail sections holding a tool's output; everything before the first stays.
-const OUTPUT_MARKERS: &[&str] = &["\n\nOutput:\n", "\n\nResult:\n"];
+/// Detail sections after the header: the input repeats the command, then the
+/// output. Everything before the first one stays.
+const BODY_MARKERS: &[&str] = &["\n\nInput:\n", "\n\nOutput:\n", "\n\nResult:\n"];
 
 #[derive(Default)]
 pub(crate) struct StorageState {
     scan: std::sync::Mutex<Option<Arc<StorageScanDto>>>,
     gate: tokio::sync::Mutex<()>,
     started: AtomicBool,
+    job: std::sync::Mutex<Option<StorageJobDto>>,
+}
+
+enum StorageAction {
+    Prune(u32),
+    Compact,
 }
 
 impl Supervisor {
@@ -73,12 +90,7 @@ impl Supervisor {
             Ok(())
         })?;
         if let Some(days) = settings.command_output_retention_days {
-            let state = self.clone();
-            tokio::spawn(async move {
-                if let Err(error) = state.prune_command_outputs(days).await {
-                    tracing::warn!(%error, "command output retention failed");
-                }
-            });
+            self.start_storage_job(StorageAction::Prune(days));
         }
         self.storage_settings()
     }
@@ -97,9 +109,7 @@ impl Supervisor {
                     Ok(StorageSettingsDto {
                         command_output_retention_days: Some(days),
                     }) => {
-                        if let Err(error) = state.prune_command_outputs(days).await {
-                            tracing::warn!(%error, "command output retention failed");
-                        }
+                        state.start_storage_job(StorageAction::Prune(days));
                     }
                     Ok(_) => {}
                     Err(error) => tracing::warn!(%error, "reading storage settings failed"),
@@ -140,57 +150,161 @@ impl Supervisor {
         Ok(StorageOverviewDto {
             device_name,
             scan: scan.map(|scan| page(&scan, offset, limit.clamp(1, STORAGE_PAGE_LIMIT))),
+            job: self.storage.job.lock().unwrap().clone(),
         })
+    }
+
+    /// Start a cleanup with the given retention; returns the running job
+    /// (an already running one is returned as is).
+    pub fn start_storage_prune(self: &Arc<Self>, days: u32) -> StorageJobDto {
+        self.start_storage_job(StorageAction::Prune(days))
+    }
+
+    /// Start rewriting the file without its free pages.
+    pub fn start_storage_compact(self: &Arc<Self>) -> StorageJobDto {
+        self.start_storage_job(StorageAction::Compact)
+    }
+
+    fn start_storage_job(self: &Arc<Self>, action: StorageAction) -> StorageJobDto {
+        let mut slot = self.storage.job.lock().unwrap();
+        if let Some(job) = slot.as_ref().filter(|job| job.state == "running") {
+            return job.clone();
+        }
+        let job = StorageJobDto {
+            action: match action {
+                StorageAction::Prune(_) => "prune",
+                StorageAction::Compact => "compact",
+            }
+            .into(),
+            state: "running".into(),
+            total: 0,
+            processed: 0,
+            items: 0,
+            bytes: 0,
+            before_bytes: None,
+            after_bytes: None,
+            started_at: now_rfc3339(),
+            finished_at: None,
+            error: None,
+        };
+        *slot = Some(job.clone());
+        drop(slot);
+        let state = self.clone();
+        tokio::spawn(async move {
+            let result = match action {
+                StorageAction::Prune(days) => state.run_prune(days).await,
+                StorageAction::Compact => state.run_compact().await,
+            };
+            *state.storage.scan.lock().unwrap() = None;
+            state.update_job(|job| {
+                job.finished_at = Some(now_rfc3339());
+                match &result {
+                    Ok(()) => job.state = "done".into(),
+                    Err(error) => {
+                        job.state = "failed".into();
+                        job.error = Some(format!("{error:#}"));
+                    }
+                }
+            });
+            match result {
+                Ok(()) => {
+                    if let Some(job) = state.storage.job.lock().unwrap().clone() {
+                        tracing::info!(action = %job.action, items = job.items, bytes = job.bytes, "storage job finished");
+                    }
+                }
+                Err(error) => tracing::warn!(%error, "storage job failed"),
+            }
+        });
+        job
+    }
+
+    fn update_job(&self, change: impl FnOnce(&mut StorageJobDto)) {
+        if let Some(job) = self.storage.job.lock().unwrap().as_mut() {
+            change(job);
+        }
+    }
+
+    fn database_path(&self) -> Result<PathBuf> {
+        self.db
+            .with(|conn| Ok(conn.path().map(PathBuf::from)))?
+            .ok_or_else(|| anyhow!("The database has no file to clean up"))
     }
 
     /// Remove command output from turns that ended at least `days` ago.
-    pub async fn prune_command_outputs(&self, days: u32) -> Result<StoragePruneResultDto> {
+    async fn run_prune(self: &Arc<Self>, days: u32) -> Result<()> {
         let _gate = self.storage.gate.lock().await;
         let cutoff = (Utc::now() - chrono::Duration::days(i64::from(days)))
             .to_rfc3339_opts(SecondsFormat::Millis, true);
+        let path = self.database_path()?;
+        // Finding candidates reads every history item: never on the shared connection.
+        let counting = std::time::Instant::now();
+        let candidates_path = path.clone();
+        let rows = tokio::task::spawn_blocking(move || prune_candidates(&candidates_path, &cutoff))
+            .await??;
+        tracing::info!(
+            items = rows.len(),
+            ms = counting.elapsed().as_millis() as u64,
+            "storage cleanup candidates"
+        );
+        self.update_job(|job| job.total = rows.len() as u64);
         let pruned_at = now_rfc3339();
-        let mut result = StoragePruneResultDto { items: 0, bytes: 0 };
-        let mut after = 0_i64;
-        loop {
-            let batch = self
-                .db
-                .with(|conn| prune_batch(conn, &cutoff, &pruned_at, after))?;
-            result.items += batch.items;
-            result.bytes += batch.bytes;
-            let Some(last) = batch.last_rowid else { break };
-            after = last;
-            // Each batch is one short transaction; let other writers in between.
-            tokio::time::sleep(Duration::from_millis(5)).await;
+        let rows = Arc::new(rows);
+        // The shared connection would otherwise checkpoint inside one of its
+        // commits; the side checkpoints below do it outside its lock.
+        let _autocheckpoint = AutocheckpointPause::new(self.clone())?;
+        let mut done = 0_usize;
+        let mut checkpointed = std::time::Instant::now();
+        while done < rows.len() {
+            let state = self.clone();
+            let (rows_ref, at) = (rows.clone(), pruned_at.clone());
+            let timer = std::time::Instant::now();
+            let slice = tokio::task::spawn_blocking(move || {
+                state
+                    .db
+                    .with(|conn| prune_rows(conn, &rows_ref[done..], &at))
+            })
+            .await??;
+            if timer.elapsed() > Duration::from_millis(200) {
+                tracing::warn!(
+                    ms = timer.elapsed().as_millis() as u64,
+                    rows = slice.processed,
+                    "slow storage cleanup slice"
+                );
+            }
+            done += slice.processed;
+            self.update_job(|job| {
+                job.processed = done as u64;
+                job.items += slice.items;
+                job.bytes += slice.bytes;
+            });
+            if checkpointed.elapsed() >= CHECKPOINT_INTERVAL || done == rows.len() {
+                let checkpoint_path = path.clone();
+                tokio::task::spawn_blocking(move || side_checkpoint(&checkpoint_path)).await??;
+                checkpointed = std::time::Instant::now();
+            }
+            tokio::time::sleep(PRUNE_PAUSE).await;
         }
-        if result.items > 0 {
-            *self.storage.scan.lock().unwrap() = None;
-            tracing::info!(
-                items = result.items,
-                bytes = result.bytes,
-                days,
-                "pruned command output"
-            );
-        }
-        Ok(result)
+        Ok(())
     }
 
     /// Rewrite the file without its free pages. Every database use waits meanwhile.
-    pub async fn storage_compact(self: &Arc<Self>) -> Result<StorageCompactResultDto> {
+    async fn run_compact(self: &Arc<Self>) -> Result<()> {
         let _gate = self.storage.gate.lock().await;
         let state = self.clone();
-        let result = tokio::task::spawn_blocking(move || {
+        let (before, after) = tokio::task::spawn_blocking(move || {
             state.db.with(|conn| {
                 let before = file_bytes(conn)?;
-                conn.execute_batch("VACUUM; PRAGMA wal_checkpoint(TRUNCATE);")?;
-                Ok(StorageCompactResultDto {
-                    before_bytes: before,
-                    after_bytes: file_bytes(conn)?,
-                })
+                conn.execute_batch("VACUUM;")?;
+                conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
+                Ok((before, file_bytes(conn)?))
             })
         })
         .await??;
-        *self.storage.scan.lock().unwrap() = None;
-        Ok(result)
+        self.update_job(|job| {
+            job.before_bytes = Some(before);
+            job.after_bytes = Some(after);
+        });
+        Ok(())
     }
 }
 
@@ -351,62 +465,152 @@ fn page(scan: &StorageScanDto, offset: u64, limit: u64) -> StorageScanDto {
     }
 }
 
-struct PruneBatch {
-    items: u64,
-    bytes: u64,
-    last_rowid: Option<i64>,
+/// Command executions of ended turns before the cutoff that still hold more
+/// than their header, in storage order.
+fn prune_candidates(path: &Path, cutoff: &str) -> Result<Vec<i64>> {
+    let conn = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    conn.busy_timeout(Duration::from_secs(10))?;
+    let mut statement = conn.prepare(
+        "SELECT h.rowid FROM thread_history_items h
+         JOIN thread_turns t ON t.id = h.turn_id
+         WHERE t.status NOT IN ('inProgress', 'running')
+           AND COALESCE(t.completed_at, t.started_at) < ?1
+           AND json_extract(h.item_json, '$.kind') = 'commandExecution'
+           AND (json_extract(h.item_json, '$.outputPrunedAt') IS NULL
+                OR instr(COALESCE(json_extract(h.item_json, '$.detailText'), ''), 'Input:' || char(10)) > 0)
+         ORDER BY h.rowid",
+    )?;
+    let rows = statement.query_map([cutoff], |row| row.get::<_, i64>(0))?;
+    Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
 }
 
-fn prune_batch(conn: &Connection, cutoff: &str, pruned_at: &str, after: i64) -> Result<PruneBatch> {
-    let tx = conn.unchecked_transaction()?;
-    let candidates = {
-        let mut statement = tx.prepare(
-            "SELECT h.rowid, h.item_json FROM thread_history_items h
-             JOIN thread_turns t ON t.id = h.turn_id
-             WHERE h.rowid > ?1
-               AND t.status NOT IN ('inProgress', 'running')
-               AND COALESCE(t.completed_at, t.started_at) < ?2
-               AND json_extract(h.item_json, '$.kind') = 'commandExecution'
-               AND json_extract(h.item_json, '$.outputPrunedAt') IS NULL
-               AND length(COALESCE(json_extract(h.item_json, '$.detailText'), '')) > 0
-             ORDER BY h.rowid LIMIT ?3",
-        )?;
-        let rows = statement.query_map(params![after, cutoff, PRUNE_BATCH as i64], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+/// Turns the shared connection's automatic checkpoint off until dropped.
+struct AutocheckpointPause {
+    state: Arc<Supervisor>,
+    pages: i64,
+}
+
+impl AutocheckpointPause {
+    fn new(state: Arc<Supervisor>) -> Result<Self> {
+        let pages = state.db.with(|conn| {
+            let pages =
+                conn.query_row("PRAGMA wal_autocheckpoint", [], |row| row.get::<_, i64>(0))?;
+            conn.query_row("PRAGMA wal_autocheckpoint=0", [], |_| Ok(()))?;
+            Ok(pages)
         })?;
-        rows.collect::<std::result::Result<Vec<_>, _>>()?
-    };
-    let mut batch = PruneBatch {
+        Ok(Self { state, pages })
+    }
+}
+
+impl Drop for AutocheckpointPause {
+    fn drop(&mut self) {
+        let pages = self.pages;
+        let restored = self.state.db.with(|conn| {
+            conn.query_row(
+                &format!("PRAGMA wal_autocheckpoint={pages}"),
+                [],
+                |_| Ok(()),
+            )?;
+            Ok(())
+        });
+        if let Err(error) = restored {
+            tracing::warn!(%error, "restoring the automatic checkpoint failed");
+        }
+    }
+}
+
+/// A passive checkpoint on its own connection: it copies what it can while
+/// the shared connection keeps reading and writing.
+fn side_checkpoint(path: &Path) -> Result<()> {
+    let conn = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    conn.busy_timeout(Duration::from_secs(5))?;
+    conn.query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |_| Ok(()))?;
+    Ok(())
+}
+
+struct PruneSlice {
+    processed: usize,
+    items: u64,
+    bytes: u64,
+}
+
+/// Rewrite rows from the front of `rows` for at most [`PRUNE_SLICE`].
+fn prune_rows(conn: &Connection, rows: &[i64], pruned_at: &str) -> Result<PruneSlice> {
+    let started = std::time::Instant::now();
+    let tx = conn.unchecked_transaction()?;
+    let mut slice = PruneSlice {
+        processed: 0,
         items: 0,
         bytes: 0,
-        last_rowid: candidates.last().map(|row| row.0),
     };
-    for (rowid, json) in &candidates {
-        let Some((pruned, removed)) = prune_item(json, pruned_at) else {
+    for rowid in rows {
+        if slice.processed > 0 && started.elapsed() >= PRUNE_SLICE {
+            break;
+        }
+        slice.processed += 1;
+        // The row may have changed or gone since the candidates were read.
+        let Some(json) = tx
+            .query_row(
+                "SELECT item_json FROM thread_history_items WHERE rowid=?1",
+                [rowid],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+        else {
+            continue;
+        };
+        let Some((pruned, removed)) = prune_item(&json, pruned_at) else {
             continue;
         };
         tx.execute(
             "UPDATE thread_history_items SET item_json=?1 WHERE rowid=?2",
             params![pruned, rowid],
         )?;
-        batch.items += 1;
-        batch.bytes += removed;
+        slice.items += 1;
+        slice.bytes += removed;
     }
     tx.commit()?;
-    Ok(batch)
+    Ok(slice)
 }
 
-/// The item without its command output, and the bytes that went.
+/// The command execution reduced to its text and detail header, and the bytes
+/// that went. `None` when there is nothing left to remove.
 pub(crate) fn prune_item(json: &str, pruned_at: &str) -> Option<(String, u64)> {
     let mut value: Value = serde_json::from_str(json).ok()?;
     let item = value.as_object_mut()?;
-    let detail = item.get("detailText")?.as_str()?.to_owned();
-    let kept = OUTPUT_MARKERS
+    if item.get("kind").and_then(Value::as_str) != Some("commandExecution") {
+        return None;
+    }
+    let detail = item
+        .get("detailText")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let earlier = item.get("outputPrunedBytes").and_then(Value::as_u64);
+    // A detail may also start with its input or output, without a header. One
+    // with no known section is all output, unless an earlier cleanup left it.
+    let kept = if ["Input:\n", "Output:\n", "Result:\n"]
         .iter()
-        .filter_map(|marker| detail.find(marker))
-        .min()
-        .map(|end| detail[..end].to_owned())
-        .unwrap_or_default();
+        .any(|start| detail.starts_with(start))
+    {
+        String::new()
+    } else {
+        match BODY_MARKERS
+            .iter()
+            .filter_map(|marker| detail.find(marker))
+            .min()
+        {
+            Some(end) => detail[..end].to_owned(),
+            None if earlier.is_some() => detail.clone(),
+            None => String::new(),
+        }
+    };
     let mut removed = (detail.len() - kept.len()) as u64;
     if kept.is_empty() {
         item.remove("detailText");
@@ -420,8 +624,16 @@ pub(crate) fn prune_item(json: &str, pruned_at: &str) -> Option<(String, u64)> {
             .and_then(|text| text.as_str().map(str::len))
             .unwrap_or(0) as u64;
     }
-    item.insert("outputPrunedAt".into(), pruned_at.into());
-    item.insert("outputPrunedBytes".into(), removed.into());
+    if removed == 0 && earlier.is_some() {
+        return None;
+    }
+    if earlier.is_none() {
+        item.insert("outputPrunedAt".into(), pruned_at.into());
+    }
+    item.insert(
+        "outputPrunedBytes".into(),
+        (earlier.unwrap_or(0) + removed).into(),
+    );
     Some((serde_json::to_string(&value).ok()?, removed))
 }
 
@@ -430,7 +642,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn prune_keeps_command_input_and_marks_the_item() {
+    fn prune_keeps_the_command_and_header_only() {
         let item = json!({
             "id": "exec-1", "kind": "commandExecution", "text": "ls", "previewText": "ls",
             "detailText": "Tool: exec\n\nStatus: completed\n\nInput:\n{\n  \"command\": \"ls\"\n}\n\nOutput:\nfile-a\nfile-b",
@@ -438,27 +650,120 @@ mod tests {
         });
         let (pruned, removed) = prune_item(&item.to_string(), "2026-10-18T00:00:00.000Z").unwrap();
         let pruned: Value = serde_json::from_str(&pruned).unwrap();
-        assert_eq!(
-            pruned["detailText"],
-            "Tool: exec\n\nStatus: completed\n\nInput:\n{\n  \"command\": \"ls\"\n}"
-        );
+        assert_eq!(pruned["detailText"], "Tool: exec\n\nStatus: completed");
         assert_eq!(pruned["text"], "ls");
         assert!(pruned.get("previewText").is_none());
         assert_eq!(pruned["outputPrunedAt"], "2026-10-18T00:00:00.000Z");
         assert_eq!(pruned["outputPrunedBytes"], removed);
-        assert_eq!(removed, ("\n\nOutput:\nfile-a\nfile-b".len() + 2) as u64);
-        // Without a known section the whole detail is the output.
-        let plain = json!({"kind": "commandExecution", "text": "ls", "detailText": "raw"});
-        let (pruned, _) = prune_item(&plain.to_string(), "t").unwrap();
-        assert!(serde_json::from_str::<Value>(&pruned)
-            .unwrap()
-            .get("detailText")
-            .is_none());
-        let result = json!({"kind": "commandExecution", "text": "x", "detailText": "Input:\n{}\n\nResult:\nok"});
-        let (pruned, _) = prune_item(&result.to_string(), "t").unwrap();
+        // Nothing more to remove: no rewrite.
+        assert!(prune_item(&pruned.to_string(), "later").is_none());
+        // An item cleaned by an earlier version still held its input.
+        let earlier = json!({"kind": "commandExecution", "text": "ls", "outputPrunedAt": "first", "outputPrunedBytes": 10,
+            "detailText": "Tool: exec\n\nInput:\n{\"command\":\"ls\"}"});
+        let (slim, removed) = prune_item(&earlier.to_string(), "later").unwrap();
+        let slim: Value = serde_json::from_str(&slim).unwrap();
+        assert_eq!(slim["detailText"], "Tool: exec");
+        assert_eq!(slim["outputPrunedAt"], "first");
+        assert_eq!(slim["outputPrunedBytes"], 10 + removed);
+        // Without a header, or without known sections, the whole detail goes.
+        for detail in ["raw", "Input:\n{}\n\nResult:\nok"] {
+            let plain = json!({"kind": "commandExecution", "text": "x", "detailText": detail});
+            let (pruned, _) = prune_item(&plain.to_string(), "t").unwrap();
+            assert!(serde_json::from_str::<Value>(&pruned)
+                .unwrap()
+                .get("detailText")
+                .is_none());
+        }
+        // Other kinds are never touched.
+        let tool = json!({"kind": "toolCall", "text": "CronCreate", "detailText": "Input:\n{}\n\nResult:\nok"});
+        assert!(prune_item(&tool.to_string(), "t").is_none());
+    }
+
+    #[tokio::test]
+    async fn prune_job_reports_progress_and_restores_the_automatic_checkpoint() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = crate::service::automation::tests::supervisor(dir.path());
+        let old = "2026-01-01T00:00:00.000Z";
+        let output = json!({"id": "exec-1", "kind": "commandExecution", "text": "ls",
+            "detailText": "Tool: exec\n\nInput:\n{\"command\":\"ls\"}\n\nOutput:\nfile"})
+        .to_string();
+        s.db.with(|c| {
+            c.execute_batch(&format!(
+                "INSERT INTO hosts(id, hostname, platform, created_at, last_seen_at) VALUES ('h', 'h', 'linux', '{old}', '{old}');
+                 INSERT INTO workspaces(id, host_id, label, abs_path, created_at, updated_at) VALUES ('w', 'h', 'w', '/w', '{old}', '{old}');"
+            )).ok();
+            c.execute(
+                "INSERT INTO thread_turns(id, thread_id, status, started_at, completed_at, ordinal)
+                 VALUES ('turn-old', 'thread', 'completed', ?1, ?1, 0)",
+                [old],
+            )?;
+            c.execute(
+                "INSERT INTO thread_history_items(id, thread_id, turn_id, item_id, item_json, created_at, updated_at)
+                 VALUES ('row-1', 'thread', 'turn-old', 'exec-1', ?1, ?2, ?2)",
+                params![output, old],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let started = s.start_storage_prune(3);
         assert_eq!(
-            serde_json::from_str::<Value>(&pruned).unwrap()["detailText"],
-            "Input:\n{}"
+            (started.action.as_str(), started.state.as_str()),
+            ("prune", "running")
         );
+        // A second request while it runs returns the same job.
+        assert_eq!(s.start_storage_prune(3).started_at, started.started_at);
+        let mut job = started;
+        for _ in 0..200 {
+            job = s.storage_overview(0, 10).unwrap().job.unwrap();
+            if job.state != "running" {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(
+            (job.state.as_str(), job.total, job.processed, job.items),
+            ("done", 1, 1, 1)
+        );
+        let (item, pages): (String, i64) =
+            s.db.with(|c| {
+                Ok((
+                    c.query_row(
+                        "SELECT item_json FROM thread_history_items WHERE id='row-1'",
+                        [],
+                        |r| r.get(0),
+                    )?,
+                    c.query_row("PRAGMA wal_autocheckpoint", [], |r| r.get(0))?,
+                ))
+            })
+            .unwrap();
+        let item: Value = serde_json::from_str(&item).unwrap();
+        assert_eq!(item["detailText"], "Tool: exec");
+        assert!(item["outputPrunedAt"].is_string());
+        assert_eq!(pages, 1000);
+    }
+
+    #[test]
+    fn prune_rows_stops_after_its_slice_and_skips_missing_rows() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE thread_history_items(item_json TEXT NOT NULL);")
+            .unwrap();
+        let item = json!({"kind": "commandExecution", "text": "ls", "detailText": "Tool: t\n\nOutput:\nx"}).to_string();
+        for _ in 0..3 {
+            conn.execute(
+                "INSERT INTO thread_history_items(item_json) VALUES (?1)",
+                [&item],
+            )
+            .unwrap();
+        }
+        let slice = prune_rows(&conn, &[1, 99, 2, 3], "t").unwrap();
+        assert_eq!((slice.processed, slice.items), (4, 3));
+        let left: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM thread_history_items WHERE instr(item_json, 'Output') > 0",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(left, 0);
     }
 }

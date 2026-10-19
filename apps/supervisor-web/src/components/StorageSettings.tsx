@@ -2,7 +2,7 @@ import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { formatFileSize } from '@pockymoe/thread-ui';
 import { HardDrive, RefreshCw } from 'lucide-react';
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
-import type { StorageScanDto, StorageSettingsDto, StorageThreadDto } from '@pockymoe/shared';
+import type { StorageJobDto, StorageScanDto, StorageSettingsDto, StorageThreadDto } from '@pockymoe/shared';
 import {
   ApiError,
   compactStorage,
@@ -42,8 +42,10 @@ export function StorageSettings({ deviceId }: { deviceId: string | null }) {
   const [savingRetention, setSavingRetention] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<'clean' | 'compact' | null>(null);
-  const [working, setWorking] = useState(false);
+  const [starting, setStarting] = useState(false);
   const [confirmError, setConfirmError] = useState<string | null>(null);
+  // Cleanup and compaction run on the device; this follows the job.
+  const [job, setJob] = useState<StorageJobDto | null>(null);
   const sentinel = useRef<HTMLDivElement>(null);
 
   const apply = useCallback((next: StorageScanDto | null) => {
@@ -58,6 +60,7 @@ export function StorageSettings({ deviceId }: { deviceId: string | null }) {
       if (!alive) return;
       setDeviceName(overview.deviceName);
       apply(overview.scan);
+      setJob(overview.job ?? null);
       setSaved(settings);
       setRetention({ on: settings.commandOutputRetentionDays != null, text: String(settings.commandOutputRetentionDays ?? DEFAULT_DAYS) });
     }).catch((cause: unknown) => {
@@ -68,7 +71,7 @@ export function StorageSettings({ deviceId }: { deviceId: string | null }) {
     return () => { alive = false; };
   }, [deviceId, apply]);
 
-  const runScan = async () => {
+  const runScan = useCallback(async () => {
     setScanning(true);
     setError(null);
     try {
@@ -78,7 +81,33 @@ export function StorageSettings({ deviceId }: { deviceId: string | null }) {
     } finally {
       setScanning(false);
     }
-  };
+  }, [deviceId, apply]);
+
+  // Follow a running job every second; when it ends, say what it did and measure again.
+  const running = job?.state === 'running';
+  const hadScan = scan != null;
+  useEffect(() => {
+    if (!running) return;
+    let alive = true;
+    const timer = window.setInterval(() => {
+      void fetchStorageOverview(0, deviceId).then(overview => {
+        if (!alive) return;
+        const next = overview.job ?? null;
+        setJob(next);
+        if (next?.state === 'done') {
+          setNotice(next.action === 'compact'
+            ? translate('settings.storageCompacted', { before: formatFileSize(next.beforeBytes ?? 0), after: formatFileSize(next.afterBytes ?? 0) })
+            : next.items
+              ? translate('settings.storageCleaned', { count: next.items.toLocaleString(), size: formatFileSize(next.bytes) })
+              : translate('settings.storageNothingToClean'));
+          if (hadScan) void runScan();
+        } else if (next?.state === 'failed') {
+          setError(translate('settings.storageJobFailed', { reason: next.error ?? '' }));
+        }
+      }).catch(() => { /* The device may pause during compaction; keep following. */ });
+    }, 1000);
+    return () => { alive = false; window.clearInterval(timer); };
+  }, [running, deviceId, hadScan, runScan]);
 
   const loadMore = useCallback(async () => {
     if (!scan?.nextOffset || loadingMore) return;
@@ -120,6 +149,8 @@ export function StorageSettings({ deviceId }: { deviceId: string | null }) {
       const next = await updateStorageSettings({ commandOutputRetentionDays: days }, deviceId);
       setSaved(next);
       setNotice(translate('settings.resourcesSaved'));
+      // A saved retention starts a cleanup on the device.
+      if (next.commandOutputRetentionDays != null) setJob((await fetchStorageOverview(0, deviceId)).job ?? null);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -127,26 +158,19 @@ export function StorageSettings({ deviceId }: { deviceId: string | null }) {
     }
   };
 
+  // The device answers at once; the job then runs there with its progress below.
   const confirmAction = async () => {
-    setWorking(true);
+    setStarting(true);
     setConfirmError(null);
     try {
-      if (confirm === 'clean') {
-        const result = await pruneStorage(deviceId);
-        setNotice(result.items
-          ? translate('settings.storageCleaned', { count: result.items, size: formatFileSize(result.bytes) })
-          : translate('settings.storageNothingToClean'));
-      } else {
-        const result = await compactStorage(deviceId);
-        setNotice(translate('settings.storageCompacted', { before: formatFileSize(result.beforeBytes), after: formatFileSize(result.afterBytes) }));
-      }
+      setJob(confirm === 'clean' ? await pruneStorage(deviceId) : await compactStorage(deviceId));
+      setNotice(null);
+      setError(null);
       setConfirm(null);
-      // Both change what the last scan measured; measure again.
-      if (scan) await runScan();
     } catch (cause) {
       setConfirmError(cause instanceof Error ? cause.message : String(cause));
     } finally {
-      setWorking(false);
+      setStarting(false);
     }
   };
 
@@ -155,6 +179,12 @@ export function StorageSettings({ deviceId }: { deviceId: string | null }) {
   const scannedAt = scan ? new Date(scan.scannedAt).toLocaleString(locale, { dateStyle: 'medium', timeStyle: 'short' }) : null;
   const largest = rows[0]?.bytes ?? 0;
   const savedDays = saved?.commandOutputRetentionDays ?? null;
+  const progress = running && job.action === 'prune' && job.total > 0 ? Math.min(100, (job.processed / job.total) * 100) : null;
+  const jobText = !running ? null : job.action === 'compact'
+    ? translate('settings.storageJobCompacting')
+    : job.total === 0
+      ? translate('settings.storageJobFinding')
+      : translate('settings.storageJobPruning', { done: job.processed.toLocaleString(), total: job.total.toLocaleString(), size: formatFileSize(job.bytes) });
   return (
     <>
       <div className="pm-res-card">
@@ -242,20 +272,28 @@ export function StorageSettings({ deviceId }: { deviceId: string | null }) {
         <div className="pm-res-row">
           <span className="pm-res-label is-plain">{translate('settings.storageCompact')}</span>
           <span className="pm-res-value is-action">
-            <button type="button" className="ui-action-danger pm-res-button" onClick={() => { setConfirmError(null); setConfirm('compact'); }}>
+            <button type="button" className="ui-action-danger pm-res-button" disabled={running} onClick={() => { setConfirmError(null); setConfirm('compact'); }}>
               {translate('settings.storageCompactAction')}
             </button>
           </span>
           <p className="pm-res-hint">{translate('settings.storageCompactHint')}</p>
         </div>
+        {jobText && (
+          <div className="pm-res-job" role="status">
+            <span className="pm-res-job-text">{jobText}</span>
+            <span className={`pm-res-job-bar${progress == null ? ' is-indeterminate' : ''}`} aria-hidden="true">
+              <span style={progress == null ? undefined : { width: `${progress}%` }} />
+            </span>
+          </div>
+        )}
         <div className="pm-res-footer">
           {notice && <span role="status" className="pm-res-saved">{notice}</span>}
           {error && <p className="host-error pm-res-error" role="alert">{error}</p>}
-          <button type="button" className="ui-action-danger pm-res-button" disabled={savedDays == null || retentionChanged}
+          <button type="button" className="ui-action-danger pm-res-button" disabled={savedDays == null || retentionChanged || running}
             onClick={() => { setConfirmError(null); setConfirm('clean'); }}>
             {translate('settings.storageCleanNow')}
           </button>
-          <button type="button" className="relay-button-primary pm-res-primary" disabled={!retentionChanged || savingRetention} onClick={() => void saveRetention()}>
+          <button type="button" className="relay-button-primary pm-res-primary" disabled={!retentionChanged || savingRetention || running} onClick={() => void saveRetention()}>
             {savingRetention ? translate('settings.saving') : translate('files.save')}
           </button>
         </div>
@@ -269,9 +307,9 @@ export function StorageSettings({ deviceId }: { deviceId: string | null }) {
           : translate('settings.storageCleanBody', { days: savedDays ?? 0 })}
         confirmLabel={translate(confirm === 'compact' ? 'settings.storageCompact' : 'settings.storageCleanNow')}
         busyLabel={translate(confirm === 'compact' ? 'settings.storageCompacting' : 'settings.storageCleaning')}
-        busy={working}
+        busy={starting}
         error={confirmError}
-        onCancel={() => { if (!working) setConfirm(null); }}
+        onCancel={() => { if (!starting) setConfirm(null); }}
         onConfirm={() => void confirmAction()}
       />
     </>

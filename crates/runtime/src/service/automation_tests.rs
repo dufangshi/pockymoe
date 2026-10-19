@@ -14,7 +14,7 @@ fn reply_threshold_counts_unicode_prose_without_code() {
     ));
 }
 
-fn supervisor(dir: &Path) -> Arc<Supervisor> {
+pub(crate) fn supervisor(dir: &Path) -> Arc<Supervisor> {
     let config = RuntimeConfig {
         treer_enabled: false,
         host_mode: Default::default(),

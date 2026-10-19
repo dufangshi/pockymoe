@@ -49,6 +49,28 @@ pub struct StorageScanDto {
     pub next_offset: Option<u64>,
 }
 
+/// A cleanup or compaction running in the background, or the last one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StorageJobDto {
+    /// `prune` or `compact`.
+    pub action: String,
+    /// `running`, `done` or `failed`.
+    pub state: String,
+    /// Items to look at (prune); 0 until counted, and for compaction.
+    pub total: u64,
+    pub processed: u64,
+    /// Items changed and bytes removed so far (prune).
+    pub items: u64,
+    pub bytes: u64,
+    /// Database file size before and after (compact).
+    pub before_bytes: Option<u64>,
+    pub after_bytes: Option<u64>,
+    pub started_at: String,
+    pub finished_at: Option<String>,
+    pub error: Option<String>,
+}
+
 /// What the Disk section shows before and after a scan.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -56,18 +78,7 @@ pub struct StorageOverviewDto {
     pub device_name: String,
     /// The last scan's page; `None` until a scan runs (only on request).
     pub scan: Option<StorageScanDto>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct StoragePruneResultDto {
-    pub items: u64,
-    pub bytes: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct StorageCompactResultDto {
-    pub before_bytes: u64,
-    pub after_bytes: u64,
+    /// The running or last cleanup/compaction since the Supervisor started.
+    #[serde(default)]
+    pub job: Option<StorageJobDto>,
 }
