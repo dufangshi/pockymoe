@@ -1,37 +1,45 @@
-Composer menus pick what you tap again; each model offers its own reasoning
-efforts, and a model switched during a turn is visible; scrollbars follow the
-theme; the web terminal handles Delete with zsh on macOS.
+Disk cleanup gets finer and stays responsive; the desktop's tabs are the
+conversations you opened, under one bar; notifications follow a scope you choose
+and the turns you subscribe to; plugins have a default for conversations.
 
-- **Composer menus**: picking from the slash list or the model menu ran the last
-  entry instead (choosing /debug ran /mcp, and a model could not be chosen). The
-  keys' enlarged touch area covered every menu row; it now belongs to the keys
-  only. The menus size to their content: no sideways scrolling, and the model
-  list no longer scrolls inside a small box.
-- **Reasoning efforts per model**: the list was the current model's for every
-  model, so a session on Sonnet 4.6 hid xhigh everywhere. Each model now shows
-  its own levels (xhigh for Opus 4.7 and later, Sonnet 5 and Fable; Sonnet 4.6
-  and Opus 4.6 stop at max; Haiku has none), learned from the harness without
-  sending a prompt.
-- **Switching during a turn**: Settings → Session accepts model, effort and
-  permission changes while a turn runs, like the composer. Claude takes a new
-  model or effort from the turn's next model call; other harnesses from the next
-  turn. The model menu and Settings say which applies.
-- **Which models a turn called**: a turn whose model was switched heads with the
-  models in the order they ran, such as "opus 4.7 → sonnet 4.6 · max"; tapping it
-  lists the calls each made. An effort changed mid-turn becomes the turn's effort.
-- **Themed scrollbars**: every scrolling box draws the theme's own scrollbar
-  instead of the system's (Classic a thin pill, Plum Pocket a capsule on a dashed
-  rail, Terminal a square block on a hairline rail). Touch-only devices keep the
-  platform's overlay indicator.
-- **Web terminal on macOS**: a Supervisor started by launchd gave shells no TERM,
-  so zsh redrew Delete as spaces. Shells now run as xterm-256color with a UTF-8
-  locale when none is set.
+- **Disk cleanup in the background**: cleaning up ran inside the request and
+  froze Pockymoe for a minute on a large database. It is now a job with a
+  progress bar that follows it after a reload, rewriting history in steps of a
+  few milliseconds; on a copy of a real database the slowest of thousands of
+  concurrent requests waited 63 ms.
+- **What to clean up, under one age**: Settings → Resources → Disk cleans up
+  command output, command text (kept, shortened to its first 512 characters, or
+  removed so only "a command ran" stays) and file-change diffs (the files and
+  line counts stay), all after the same number of days. Every scanned
+  conversation has a menu (⋯, right click or long press) to clean up its output,
+  diffs or commands now, with progress on its row. The scan reports diffs.
+- **Commands stored once**: a command's detail repeated it as its input and
+  preview. New commands keep it only as their text, and three minutes after the
+  update a one-time pass removes the copies from history; on the measured
+  database that was 50 MB, 37% of command bytes, in 8 seconds.
+- **Desktop tabs and one bar**: the tabs are the conversations you opened, like
+  an editor's files (✕ or a middle click closes one), kept in this browser and
+  ordered by dragging. The tabs row is the only bar: search at its left
+  (Ctrl/⌘+F), the thread tools menu with the thread's panels, notifications at
+  the right; sidebar, Back and Forward moved to the rail. The sidebar's width
+  follows a drag. A workspace's conversations keep a dragged order in the
+  sidebar and on phones (hold 0.7 s on touch).
+- **Notification scope**: Settings → Notifications chooses subscribed turns
+  (the default: tap the bell on a working turn), all turns, or selected devices
+  and workspaces, for Web Push, native push and the notification list alike.
+  Accounts that were notified of every turn now need to subscribe or choose
+  All. Interrupted turns send their own notice.
+- **Plugin defaults**: each plugin has a default for conversations that follow
+  the device; turning it off stops it there.
+- **Reasoning effort on phones** shows under the model again, in the slider's
+  colour.
+- **Confirmations inside Settings** take focus on Cancel, and Esc closes only
+  the confirmation, not Settings.
 
-Validated with the runtime, supervisor and protocol Rust tests and the Claude
-usage and turn integration tests, the Web and shared UI tests, browser checks in
-an isolated Supervisor (every composer menu row hit-tested on desktop and phone,
-the model menu, Settings and turn head during a running turn, themes light and
-dark, the terminal environment), the per-model efforts read from the installed
-Claude harness, and the zsh redraw reproduced with and without TERM. Windows
+Validated with the runtime, supervisor, protocol and relay Rust tests, the Web
+and shared UI tests, the storage jobs measured on a copy of a real database
+under concurrent load, browser checks of the Disk settings and cleanup menu on
+desktop and phone, and focused browser suites for tabs and notifications. The
+relay was deployed before this release, as interrupted notices need it. Windows
 Device Manager is unchanged. Installing this release is a separate device
 update; publication does not restart an existing Supervisor.
