@@ -20,6 +20,12 @@ function Harness({ onSelect = vi.fn(), onNavigate = vi.fn(), allowGlobal = false
   return <ConversationSearch threadId="thread-1" workspaceId="workspace-1" deviceLabel="Local device" allowGlobal={allowGlobal} onNavigate={onNavigate} turns={turns} open={open} onOpen={() => setOpen(true)} onClose={() => setOpen(false)} onSelect={onSelect} />;
 }
 
+// The scope is our own menu: open it, then choose the item in its order.
+const pickScope = (scope: 'thread' | 'workspace' | 'device') => {
+  fireEvent.click(screen.getByRole('button', { name: /^Search scope/ }));
+  fireEvent.click(screen.getAllByRole('menuitemradio')[['thread', 'workspace', 'device'].indexOf(scope)]!);
+};
+
 it('opens without loading history, searches live text immediately, and fetches only a selected older turn', async () => {
   vi.mocked(searchThreadMessages).mockResolvedValue({ matches: [{ turnId: 'old', itemId: 'old-msg', role: 'Assistant', text: 'Older cobalt decision' }], hasMore: false });
   vi.mocked(fetchThreadTurnDetail).mockResolvedValue(older);
@@ -86,7 +92,7 @@ it('searches authorized scopes with pagination and keyboard navigation without s
   const onNavigate = vi.fn();
   render(<Harness allowGlobal onNavigate={onNavigate} />);
   fireEvent.click(screen.getByRole('button', { name: 'Search conversation' }));
-  fireEvent.change(screen.getByRole('combobox', { name: 'Search scope' }), { target: { value: 'workspace' } });
+  pickScope('workspace');
   fireEvent.change(screen.getByRole('combobox', { name: 'Search messages' }), { target: { value: 'cobalt' } });
   await screen.findByRole('option', { name: /Earlier decision.*Older cobalt decision/ });
   expect(searchConversations).toHaveBeenCalledWith('cobalt', 'workspace-1', 0, expect.any(AbortSignal));
@@ -106,11 +112,11 @@ it('cancels global queries on scope changes and reports failure without falling 
   vi.mocked(searchConversations).mockRejectedValueOnce(new Error('Device unavailable'));
   render(<Harness allowGlobal turns={[]} />);
   fireEvent.click(screen.getByRole('button', { name: 'Search conversation' }));
-  fireEvent.change(screen.getByRole('combobox', { name: 'Search scope' }), { target: { value: 'device' } });
+  pickScope('device');
   fireEvent.change(screen.getByRole('combobox', { name: 'Search messages' }), { target: { value: 'cobalt' } });
   await waitFor(() => expect(searchConversations).toHaveBeenCalledTimes(1));
   const signal = vi.mocked(searchConversations).mock.calls[0]![3]!;
-  fireEvent.change(screen.getByRole('combobox', { name: 'Search scope' }), { target: { value: 'workspace' } });
+  pickScope('workspace');
   expect(signal.aborted).toBe(true);
   await screen.findByRole('alert');
   resolveFirst({ matches: [globalMatch], hasMore: false, nextOffset: null, scope: 'device' });
@@ -145,18 +151,26 @@ it.each([
   setLocale(locale);
   render(<Harness allowGlobal turns={[]} />);
   fireEvent.click(screen.getByRole('button', { name: trigger }));
-  const picker = screen.getByRole('combobox', { name: scopeLabel });
-  fireEvent.change(picker, { target: { value: scope } });
+  const picker = () => screen.getByRole('button', { name: new RegExp(`^${scopeLabel}`) });
+  const choose = (value: string) => {
+    fireEvent.click(picker());
+    fireEvent.click(screen.getAllByRole('menuitemradio')[['thread', 'workspace', 'device'].indexOf(value)]!);
+  };
+  choose(scope);
   fireEvent.change(screen.getByRole('combobox', { name: input }), { target: { value: 'cobalt' } });
   expect(await screen.findByRole('alert')).toHaveTextContent(hint);
-  expect(picker).toHaveValue(scope);
+  // The trigger names the chosen scope, not the current conversation.
+  const threadName = locale === 'en' ? 'Current conversation' : '当前会话';
+  expect(picker().textContent).not.toBe(threadName);
   expect(searchConversations).toHaveBeenCalledTimes(1);
   expect(searchThreadMessages).not.toHaveBeenCalled();
   expect(fetchThreadConversationPage).not.toHaveBeenCalled();
   expect(fetchThreadTurnDetail).not.toHaveBeenCalled();
-  fireEvent.change(picker, { target: { value: 'thread' } });
+  const scoped = picker().textContent;
+  choose('thread');
   await screen.findByRole('option', { name: /Older cobalt decision/ });
-  expect(picker).toHaveValue('thread');
+  expect(picker().textContent).not.toBe(scoped);
+  expect(picker().textContent).toBe(threadName);
   expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   expect(searchThreadMessages).toHaveBeenCalledExactlyOnceWith('thread-1', 'cobalt', expect.any(AbortSignal));
   expect(fetchThreadConversationPage).toHaveBeenCalledTimes(1);
@@ -169,7 +183,7 @@ it('keeps a global permission denial separate from an unavailable endpoint', asy
   vi.mocked(searchConversations).mockRejectedValue(denied);
   render(<Harness allowGlobal turns={[]} />);
   fireEvent.click(screen.getByRole('button', { name: 'Search conversation' }));
-  fireEvent.change(screen.getByRole('combobox', { name: 'Search scope' }), { target: { value: 'device' } });
+  pickScope('device');
   fireEvent.change(screen.getByRole('combobox', { name: 'Search messages' }), { target: { value: 'cobalt' } });
   expect(await screen.findByRole('alert')).toHaveTextContent('Access denied');
   expect(screen.getByRole('alert')).not.toHaveTextContent('Update the device runtime');

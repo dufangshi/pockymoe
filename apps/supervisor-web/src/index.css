@@ -29,7 +29,23 @@
 .workbench-search-field:has(:focus-visible, input:focus, textarea:focus, select:focus, [contenteditable="true"]:focus) { border-color: var(--theme-accent-solid); }
 .workbench-search-field input { flex: 1; min-width: 0; width: 100%; outline: none; border: 0; background: transparent; color: var(--theme-fg); font-size: 14px; }
 .thread-ui-shell .matter-workbench .workbench-search-field button { width: 30px; height: 30px; flex-shrink: 0; }
-.workbench-search-scope { flex-shrink: 0; max-width: 38%; min-width: 0; height: 28px; border: 0; border-right: 1px solid var(--theme-border); background: var(--theme-surface); color: var(--theme-fg); font-size: 12px; padding-right: 6px; }
+/* Scope: our own small menu at the field's start, inside its rounded edge. */
+.workbench-search-scope-picker { position: relative; flex-shrink: 0; align-self: stretch; display: flex; margin-left: -10px; }
+.thread-ui-shell .matter-workbench .workbench-search-field .workbench-search-scope,
+.workbench-search-scope { display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; width: auto; height: auto; min-width: 0; max-width: 9rem; padding: 0 8px 0 12px; border: 0; border-right: 1px solid var(--theme-border); border-radius: 7px 0 0 7px; background: transparent; color: var(--theme-fg); font-size: 12px; white-space: nowrap; }
+.workbench-search-scope > span { overflow: hidden; text-overflow: ellipsis; }
+.workbench-search-scope > svg { flex: none; width: 13px; height: 13px; color: var(--theme-fg-muted); transition: transform 120ms; }
+.workbench-search-scope[aria-expanded='true'] > svg { transform: rotate(180deg); }
+.thread-ui-shell .matter-workbench .workbench-search-field .workbench-search-scope:hover { background: var(--theme-hover); }
+.workbench-search-scope.is-fixed { align-self: stretch; margin-left: -10px; color: var(--theme-fg-muted); }
+.workbench-search-scope-menu { position: absolute; top: calc(100% + 6px); left: 0; z-index: 120; display: flex; flex-direction: column; min-width: 9.5rem; padding: 4px; border: 1px solid var(--theme-border-strong, var(--theme-border)); border-radius: 10px; background: var(--theme-panel); box-shadow: 0 12px 32px -8px rgb(0 0 0 / 30%); }
+.thread-ui-shell .matter-workbench .workbench-search-field .workbench-search-scope-menu > button,
+.thread-ui-shell .matter-workbench .matter-topbar .workbench-search-scope-menu > button,
+.workbench-search-scope-menu > button { display: flex; align-items: center; justify-content: flex-start; gap: 8px; width: 100%; height: 32px; padding: 0 10px 0 8px; border: 0; border-radius: 7px; background: transparent; color: var(--theme-fg); font-size: 13px; text-align: left; white-space: nowrap; }
+.workbench-search-scope-menu > button > svg { flex: none; width: 14px; height: 14px; visibility: hidden; color: var(--theme-accent-strong, var(--theme-accent-solid)); }
+.workbench-search-scope-menu > button[aria-checked='true'] > svg { visibility: visible; }
+.thread-ui-shell .matter-workbench .workbench-search-field .workbench-search-scope-menu > button:is(:hover, :focus-visible) { background: var(--theme-hover); outline: none; }
+@media (prefers-reduced-motion: reduce) { .workbench-search-scope > svg { transition: none; } }
 .thread-ui-shell .matter-workbench .workbench-search-pagination { display: flex; justify-content: space-between; gap: 8px; }
 .thread-ui-shell .matter-workbench .workbench-search-pagination button { width: auto; height: auto; padding: 6px 10px; font-size: 12px; }
 .workbench-search-dropdown { position: absolute; top: calc(100% + 8px); left: 0; right: 0; z-index: 100; max-height: min(560px, 70dvh); overflow-y: auto; padding: 8px; border: 1px solid var(--theme-border); border-radius: 10px; background: var(--theme-panel); color: var(--theme-fg); box-shadow: 0 12px 40px rgb(0 0 0 / 20%); }
