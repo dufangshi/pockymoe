@@ -455,12 +455,15 @@
 /* Reasoning effort: a plum-to-rose heat scale on a felt track. */
 :theme .composer-reasoning { padding: 6px 10px 0; margin-top: 4px; --pc-effort-ink: color-mix(in srgb, var(--effort-color) 52%, #1f0f26); border-top: 1.5px dashed var(--theme-border); }
 :theme[data-theme-effective='dark'] .composer-reasoning { --pc-effort-ink: color-mix(in srgb, var(--effort-color) 55%, #fff6ea); }
-:theme .composer-reasoning:is([data-effort='none'], [data-effort='minimal']) { --effort-color: #8c9bd0 !important; }
-:theme .composer-reasoning[data-effort='low'] { --effort-color: #9479cf !important; }
-:theme .composer-reasoning[data-effort='medium'] { --effort-color: #d99a28 !important; }
-:theme .composer-reasoning[data-effort='high'] { --effort-color: #e07a3c !important; }
-:theme .composer-reasoning[data-effort='xhigh'] { --effort-color: #d4566f !important; }
-:theme .composer-reasoning:is([data-effort='max'], [data-effort='ultra']) { --effort-color: #b04a9c !important; }
+:theme :is(.composer-reasoning, .composer-model-effort):is([data-effort='none'], [data-effort='minimal']) { --effort-color: #6f86e0 !important; }
+:theme :is(.composer-reasoning, .composer-model-effort)[data-effort='low'] { --effort-color: #8a5fe0 !important; }
+:theme :is(.composer-reasoning, .composer-model-effort)[data-effort='medium'] { --effort-color: #f0a414 !important; }
+:theme :is(.composer-reasoning, .composer-model-effort)[data-effort='high'] { --effort-color: #f2702a !important; }
+:theme :is(.composer-reasoning, .composer-model-effort)[data-effort='xhigh'] { --effort-color: #e83e65 !important; }
+:theme :is(.composer-reasoning, .composer-model-effort):is([data-effort='max'], [data-effort='ultra']) { --effort-color: #c43aa8 !important; }
+/* The label under the model name takes the same ink as the slider's value. */
+:theme .thread-ui-shell [data-composer-layout] .composer-model-effort { color: color-mix(in srgb, var(--effort-color) 60%, #1f0f26); }
+:theme[data-theme-effective='dark'] .thread-ui-shell [data-composer-layout] .composer-model-effort { color: color-mix(in srgb, var(--effort-color) 70%, #fff6ea); }
 :theme .composer-reasoning-value {
   border: 0;
   border-radius: 999px;
