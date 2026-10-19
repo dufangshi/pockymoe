@@ -875,6 +875,7 @@
   :theme .thread-ui-shell .matter-workbench .matter-thread-tabs { height: 100%; padding-left: 4px; }
   :theme .thread-ui-shell .matter-workbench :is(.matter-thread-group, .matter-thread-tabs > a, .matter-group-tab) { height: 40px; }
   :theme .thread-ui-shell .matter-workbench :is(.matter-thread-tabs > a, .matter-group-tab) { max-width: 160px; padding-inline: 8px 12px; font-size: 13px; }
+  :theme .thread-ui-shell .matter-workbench .matter-thread-group { max-width: 180px; }
   :theme .thread-ui-shell .matter-workbench .matter-group-toggle { height: 26px; }
   :theme .thread-ui-shell .matter-workbench .matter-group-toggle::after { content: ''; position: absolute; inset: -9px -4px; }
   :theme .thread-ui-shell .matter-workbench .matter-tab-add .matter-new-thread { width: 36px; height: 36px; margin-bottom: 2px; }
