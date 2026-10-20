@@ -42,11 +42,11 @@ function unlock(deviceIds = ['a']) {
 describe('device views resume their original blocked loads', () => {
   it('loads the workspace list after matching unlock without Retry or a page reload, leaving completed data alone', async () => {
     render(<MemoryRouter><WorkspacesPage /></MemoryRouter>);
-    // Workspaces, runtime configuration and the threads that rows link to.
-    await waitFor(() => expect(exchange).toHaveBeenCalledTimes(3));
+    // Workspaces and runtime configuration (rows open the workspace, not a thread).
+    await waitFor(() => expect(exchange).toHaveBeenCalledTimes(2));
     expect(screen.queryByText('Recovered workspace')).toBeNull();
     unlock(['b']);
-    expect(exchange).toHaveBeenCalledTimes(3);
+    expect(exchange).toHaveBeenCalledTimes(2);
     unlock();
     expect(await screen.findByText('Recovered workspace')).toBeVisible();
     expect(screen.queryByRole('alert')).toBeNull();

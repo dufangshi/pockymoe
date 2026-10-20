@@ -68,7 +68,7 @@ it('lets the reader choose another bound Agent from the unselected scoped worksp
     <Route path="/threads" element={<HostScopeRouteGate><ThreadsPage /></HostScopeRouteGate>} />
     <Route path="/threads/333" element={<p>Codex conversation opened</p>} />
   </Routes></HostCapabilitiesProvider></MemoryRouter>);
-  expect(await screen.findByRole('heading', { name: 'Project', exact: true })).toBeVisible();
+  expect(await screen.findByRole('heading', { name: /^Project$/ })).toBeVisible();
   expect(screen.queryByText('Codex conversation opened')).toBeNull();
   fireEvent.click(screen.getByTestId('workspace-threads').querySelector('a')!);
   expect(await screen.findByText('Codex conversation opened')).toBeVisible();
