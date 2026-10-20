@@ -214,7 +214,11 @@ On first contact with each protected device in a page session, a browser:
 
 If a device answers 401 `browser_registration_required` (it forgot the browser,
 or the signature failed), the browser registers again and retries once; the
-device rejects before dispatch, so a mutation runs at most once. On 401
+device rejects before dispatch, so a mutation runs at most once. While this browser
+still has its key, that and `device_strict_mode` never ask for the password, which
+could not help: after the retry the request fails like any other, for example on
+a shared device that keeps refusing this browser. The password prompt is only for
+a browser without a key or one that was removed. On 401
 `browser_revoked` in an encrypted device response the browser deletes its key and
 shows "This browser was removed. Enter your password to reconnect."; entering the
 password creates a new browser key. A plaintext `browser_revoked` (which the relay

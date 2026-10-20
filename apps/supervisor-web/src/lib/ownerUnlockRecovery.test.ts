@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { notifyOwnerUnlocked, readAfterOwnerUnlock } from './ownerUnlockRecovery';
-afterEach(() => vi.restoreAllMocks());
+import { currentBrowser } from './accountVaultState';
+import { notifyOwnerUnlocked, OWNER_READ_BLOCKED_EVENT, readAfterOwnerUnlock } from './ownerUnlockRecovery';
+vi.mock('./accountVaultState', () => ({ currentBrowser: vi.fn(async () => null) }));
+afterEach(() => { vi.restoreAllMocks(); vi.mocked(currentBrowser).mockResolvedValue(null); });
 describe('device-scoped owner unlock read recovery', () => {
   it.each(['browser_registration_required', 'browser_revoked', 'device_strict_mode'])('waits after %s and resumes only for the matching device', async (code) => {
     const read = vi.fn().mockResolvedValueOnce({ response: Response.json({ code }, { status: 401 }) })
@@ -44,5 +46,30 @@ describe('device-scoped owner unlock read recovery', () => {
     notifyOwnerUnlocked(['a']);
     expect(read).toHaveBeenCalledTimes(1);
     expect(remove).toHaveBeenCalledWith('remote-codex-owner-unlocked', expect.any(Function));
+  });
+  describe('when this browser still has its key', () => {
+    it.each(['browser_registration_required', 'device_strict_mode'])('retries %s once by itself and never asks for the password', async (code) => {
+      vi.mocked(currentBrowser).mockResolvedValue({ browserId: 'b' } as never);
+      const blocked = vi.fn();
+      window.addEventListener(OWNER_READ_BLOCKED_EVENT, blocked);
+      const read = vi.fn().mockResolvedValue({ response: Response.json({ code }, { status: 401 }) });
+      expect((await readAfterOwnerUnlock('a', read)).response.status).toBe(401);
+      expect(read).toHaveBeenCalledTimes(2);
+      read.mockResolvedValueOnce({ response: Response.json({ code }, { status: 401 }) }).mockResolvedValueOnce({ response: Response.json({ ok: true }) });
+      expect((await readAfterOwnerUnlock('a', read)).response.ok).toBe(true);
+      read.mockRejectedValue({ code });
+      await expect(readAfterOwnerUnlock('a', read)).rejects.toMatchObject({ code });
+      expect(blocked).not.toHaveBeenCalled();
+      window.removeEventListener(OWNER_READ_BLOCKED_EVENT, blocked);
+    });
+    it('still asks after a removed browser', async () => {
+      vi.mocked(currentBrowser).mockResolvedValue({ browserId: 'b' } as never);
+      const read = vi.fn().mockResolvedValueOnce({ response: Response.json({ code: 'browser_revoked' }, { status: 401 }) })
+        .mockResolvedValue({ response: Response.json({ ok: true }) });
+      const pending = readAfterOwnerUnlock('a', read);
+      await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(1));
+      notifyOwnerUnlocked(['a']);
+      expect((await pending).response.ok).toBe(true);
+    });
   });
 });

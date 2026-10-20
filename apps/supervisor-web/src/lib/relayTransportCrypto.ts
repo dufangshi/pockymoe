@@ -366,8 +366,10 @@ async function reportOwnerRequired(response: Response, deviceId: string, encrypt
   }
   if (revoked || body?.code === 'browser_registration_required' || body?.code === 'device_strict_mode') {
     keys.delete(deviceId);
-    reportTransport({ deviceId, state: 'unlock-required', paired: true, bound: true, strict: true,
-      ...(revoked ? { unlockReason: 'browser_revoked' as const } : {}) });
+    // With this browser's key the next request registers again; a password cannot help.
+    if (revoked || !(await currentBrowser().catch(() => null)))
+      reportTransport({ deviceId, state: 'unlock-required', paired: true, bound: true, strict: true,
+        ...(revoked ? { unlockReason: 'browser_revoked' as const } : {}) });
   }
 }
 // Sealed bodies cannot be compressed by the relay or the CDN. Announcing gzip
