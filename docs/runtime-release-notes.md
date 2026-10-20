@@ -1,45 +1,42 @@
-Disk cleanup gets finer and stays responsive; the desktop's tabs are the
-conversations you opened, under one bar; notifications follow a scope you choose
-and the turns you subscribe to; plugins have a default for conversations.
+Tab switches show the conversation at once in any workspace; a busy relay
+tunnel queues instead of reporting the device offline; no background loop asks
+for the password; DSH can use a Responses-only upstream; the upstream page shows
+each result where it was asked for. This release also carries 0.13.31, whose
+release page showed the previous notes.
 
-- **Disk cleanup in the background**: cleaning up ran inside the request and
-  froze Pockymoe for a minute on a large database. It is now a job with a
-  progress bar that follows it after a reload, rewriting history in steps of a
-  few milliseconds; on a copy of a real database the slowest of thousands of
-  concurrent requests waited 63 ms.
-- **What to clean up, under one age**: Settings → Resources → Disk cleans up
-  command output, command text (kept, shortened to its first 512 characters, or
-  removed so only "a command ran" stays) and file-change diffs (the files and
-  line counts stay), all after the same number of days. Every scanned
-  conversation has a menu (⋯, right click or long press) to clean up its output,
-  diffs or commands now, with progress on its row. The scan reports diffs.
-- **Commands stored once**: a command's detail repeated it as its input and
-  preview. New commands keep it only as their text, and three minutes after the
-  update a one-time pass removes the copies from history; on the measured
-  database that was 50 MB, 37% of command bytes, in 8 seconds.
-- **Desktop tabs and one bar**: the tabs are the conversations you opened, like
-  an editor's files (✕ or a middle click closes one), kept in this browser and
-  ordered by dragging. The tabs row is the only bar: search at its left
-  (Ctrl/⌘+F), the thread tools menu with the thread's panels, notifications at
-  the right; sidebar, Back and Forward moved to the rail. The sidebar's width
-  follows a drag. A workspace's conversations keep a dragged order in the
-  sidebar and on phones (hold 0.7 s on touch).
-- **Notification scope**: Settings → Notifications chooses subscribed turns
-  (the default: tap the bell on a working turn), all turns, or selected devices
-  and workspaces, for Web Push, native push and the notification list alike.
-  Accounts that were notified of every turn now need to subscribe or choose
-  All. Interrupted turns send their own notice.
-- **Plugin defaults**: each plugin has a default for conversations that follow
-  the device; turning it off stops it there.
-- **Reasoning effort on phones** shows under the model again, in the slider's
-  colour.
-- **Confirmations inside Settings** take focus on Cancel, and Esc closes only
-  the confirmation, not Settings.
+- **Tab switches without a flash**: switching conversations keeps the page,
+  tabs and sidebar in place, and a draft typed in one tab is still there on
+  return. Once a conversation shows, the other open tabs (up to 11, any
+  workspace) are read one by one in the background, so a tab not yet visited
+  (often one from another workspace) no longer waits for the device. A thread's
+  relay access as last checked is reused while it is checked again.
+- **Tabs**: the mouse wheel scrolls the tab strip sideways; a tab other than the
+  open one shows its ✕ only when pointed at, floating over its end; a working
+  tab's icon wears a ring (the accent while the thread runs, pink-violet while
+  only its agent threads do); the agent count sits right after the icon,
+  without a fill, and the sidebar's agent toggles lose their border. The split
+  picker no longer jumps to the left edge.
+- **"Device offline" that a refresh cured**: the Supervisor's and the relay's
+  64-message socket queues overflowed in bursts and dropped the tunnel. They now
+  hold 8192 messages, the Supervisor writes queued messages in batches, waits 15
+  seconds instead of 5 before reconnecting and tells the relay when it gives up.
+  A full relay queue answers busy (429), not offline; the Web UI asks once more
+  for a read that meets 429 or 503, and clears a connection error once the
+  thread loads again.
+- **No background password prompts**: the 15-second device-protection check
+  that asked to unlock the browser is gone. A device whose protection is not
+  finished shows **Finish protection**, done when you press it.
+- **Phone composer**: the tap that opens the folded composer only opens it, even
+  when the open layout puts send, the model or attachments under the finger.
+- **Upstreams**: a test, sync or save result shows on its connection, an apply
+  result on its harness, an advanced-panel result under its buttons. Being used
+  by a harness no longer moves a connection to the top or paints it green; the
+  harness tags are small enough for several. DeepSeek Harness is offered
+  connections that serve only the OpenAI Responses API (written as pi-ai
+  `openai-responses`); where Chat Completions or Messages is served it keeps
+  using that.
 
-Validated with the runtime, supervisor, protocol and relay Rust tests, the Web
-and shared UI tests, the storage jobs measured on a copy of a real database
-under concurrent load, browser checks of the Disk settings and cleanup menu on
-desktop and phone, and focused browser suites for tabs and notifications. The
-relay was deployed before this release, as interrupted notices need it. Windows
-Device Manager is unchanged. Installing this release is a separate device
-update; publication does not restart an existing Supervisor.
+Validated with the supervisor, relay and runtime Rust tests, the Web and shared
+UI tests, and browser checks in an isolated environment at phone and desktop
+widths in every theme: tab switches measured frame by frame with 500 ms of
+added latency, and a slow tap on the folded composer at every position.
