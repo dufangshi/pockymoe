@@ -89,6 +89,22 @@ const lastNavigation = new Map<string, { snapshot: NavigationSnapshot; statuses:
 /** Relay navigation re-reads other devices this often while visible. */
 export const RELAY_NAVIGATION_REFRESH_MS = 30_000;
 
+/**
+ * Devices the account-wide poll could not reach (offline, refusing this browser, timing
+ * out) are left alone for a while instead of every 30 seconds; their last known
+ * statuses stay. The wait grows from 30 seconds to 10 minutes.
+ */
+type Unreachable = Map<string, { until: number; count: number }>;
+function reachable(unreachable: Unreachable, deviceId: string) { return (unreachable.get(deviceId)?.until ?? 0) <= Date.now(); }
+function noteReach(unreachable: Unreachable, deviceId: string, error?: unknown) {
+  if (error === undefined) { unreachable.delete(deviceId); return; }
+  // A refusal for this thread only (403/404) says the device answered.
+  if (error instanceof ApiError && ![502, 503, 504].includes(error.statusCode)) return;
+  if (error instanceof DOMException && error.name === 'AbortError') return;
+  const count = (unreachable.get(deviceId)?.count ?? 0) + 1;
+  unreachable.set(deviceId, { count, until: Date.now() + Math.min(10 * 60_000, 30_000 * 2 ** (count - 1)) });
+}
+
 export function useWorkbenchNavigation(
   detail: ThreadDetailDto | null,
   threads: ThreadDto[],
@@ -114,6 +130,8 @@ export function useWorkbenchNavigation(
   useEffect(() => { setWorkspaceOrders(loadWorkspaceOrders(orderKey)); }, [orderKey]);
   const sharesDeviceThreads = options.sharesDeviceThreads === true;
   const threadsRef = useRef(threads);
+  // Per page: devices the poll could not reach and when to try them again.
+  const unreachableRef = useRef<Unreachable>(new Map());
   threadsRef.current = threads;
   useI18n();
   const relay = !hostScope && relayModeActive();
@@ -158,6 +176,7 @@ export function useWorkbenchNavigation(
     let alive = true;
     let inFlight = false;
     const controller = new AbortController();
+    const unreachable = unreachableRef.current;
     async function refresh() {
       if (inFlight || document.visibilityState === 'hidden') return;
       inFlight = true;
@@ -196,7 +215,7 @@ export function useWorkbenchNavigation(
           // The page keeps the current device's list current from its events.
           const sharedDevice = sharesDeviceThreads ? deviceId : null;
           if (sharedDevice && threadsRef.current.length) deviceSnapshots.set(sharedDevice, threadsRef.current);
-          const pendingDevices = [...new Set(next.threads.map(r => r.deviceId).filter((id): id is string => !!id && id !== sharedDevice))];
+          const pendingDevices = [...new Set(next.threads.map(r => r.deviceId).filter((id): id is string => !!id && id !== sharedDevice && reachable(unreachable, id)))];
           await Promise.all(Array.from({ length: Math.min(6, pendingDevices.length) }, async () => {
             while (alive && pendingDevices.length) {
               const id = pendingDevices.shift()!;
@@ -206,14 +225,21 @@ export function useWorkbenchNavigation(
                   { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(5000)]), cache: 'no-store' },
                 );
                 if (Array.isArray(list)) deviceSnapshots.set(id, list);
-              } catch { /* Thread-scoped access falls back to summary/group endpoints below. */ }
+                noteReach(unreachable, id);
+              } catch (error) {
+                // Thread-scoped access falls back to summary/group endpoints below.
+                noteReach(unreachable, id, error);
+              }
             }
           }));
           // Until the shared list has loaded, its threads wait for the next pass
           // instead of one summary request each.
-          const pending = next.threads.filter(r => !sharedDevice || r.deviceId !== sharedDevice || deviceSnapshots.has(sharedDevice));
+          const waiting = next.threads.filter(r => !sharedDevice || r.deviceId !== sharedDevice || deviceSnapshots.has(sharedDevice));
+          const pending = waiting.filter(r => r.deviceId === sharedDevice || reachable(unreachable, r.deviceId!));
           const missing: ThreadReference[] = [];
           const updates: Record<string, ThreadActivity> = {};
+          // Skipped while their device is unreachable: shown as unknown, not as stale.
+          for (const r of waiting) if (!pending.includes(r)) updates[referenceKey(r)] = { status: 'unknown' };
           const groups = new Map<string, ThreadReference>();
           await Promise.all(
             Array.from({ length: Math.min(6, pending.length) }, async () => {
@@ -235,6 +261,7 @@ export function useWorkbenchNavigation(
                   groups.set(referenceKey(root), root);
                 } catch (error) {
                   if (error instanceof ApiError && error.statusCode === 404 && /thread.*not found/i.test(error.message)) missing.push(r);
+                  else if (r.deviceId !== sharedDevice) noteReach(unreachable, r.deviceId!, error);
                   updates[referenceKey(r)] = { status: 'unknown' };
                 }
               }
@@ -244,7 +271,7 @@ export function useWorkbenchNavigation(
           // family once, including on devices/workspaces that are not selected.
           // The group endpoint also respects thread-scoped sharing permissions.
           const familyUpdates: Record<string, ThreadDto[]> = {};
-          const pendingGroups = [...groups.values()].filter(root => {
+          const pendingGroups = [...groups.values()].filter(root => reachable(unreachable, root.deviceId!)).filter(root => {
             const list = deviceSnapshots.get(root.deviceId!);
             if (!list) return true;
             familyUpdates[referenceKey(root)] = list.filter(thread => thread.id === root.threadId || thread.rootThreadId === root.threadId);

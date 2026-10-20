@@ -208,7 +208,8 @@ On first contact with each protected device in a page session, a browser:
    not revoked. A device keeps at most 32 browser registrations per recipient key;
    a new one beyond that replaces the least recently seen (dropping a row revokes
    nothing, and that browser can register again), so private tabs and cleared
-   storage cannot lock a recipient out;
+   storage cannot lock a recipient out; a browser whose registration a device refused
+   does not ask that device again for one minute, doubling to thirty;
 3. signs every later encrypted request, including download chunks and
    service-worker requests, with `x-rcd-session: <browserId>` and
    `x-rcd-signature`. A WebSocket channel inherits the principal of the signed

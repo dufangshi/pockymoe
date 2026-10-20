@@ -867,7 +867,8 @@ export function ThreadDetailPage() {
   const [terminalOpenRequest, setTerminalOpenRequest] = useState<TerminalOpenRequest | null>(null);
   const [chatDraft, setChatDraft, referenceDraft, setReferenceDraft] = useThreadDrafts(routeKey, `${referenceDevice}:${referenceId ?? ''}`);
   const referenceShown = Boolean(referenceId) && workbenchPresentation.value.mode === 'thread';
-  const referenceController = useWorkbenchReference(referenceDevice, referenceId, relayRouteDeviceId ?? 'local', referenceShown);
+  // A closed split keeps its reference for reopening but must not keep polling it.
+  const referenceController = useWorkbenchReference(referenceDevice, referenceShown ? referenceId : null, relayRouteDeviceId ?? 'local', referenceShown);
   useEffect(() => {
     if (!hostScope || !referenceId || !referenceController.unavailable) return;
     void workbenchNavigation.onThreadRemoved(`local:${referenceId}`);

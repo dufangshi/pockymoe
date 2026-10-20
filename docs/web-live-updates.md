@@ -26,6 +26,10 @@ The agent status, models and capability bundle loads once per provider.
 The thread list is the single source for the page, its workspace tabs and the
 workbench navigation. In relay mode the navigation reuses it for the current
 device, and re-reads other devices' lists every 30 s and on return to the tab.
+A device it cannot reach (offline, timing out, or refusing this browser) is
+skipped for 30 s, doubling to 10 min, and its threads show as unknown meanwhile.
+A closed split does not keep polling its reference thread, and subscription usage
+is not polled while the tab is hidden.
 
 Thread renames and deletions made elsewhere emit no event; they appear on the
 list fallback or on return to the tab. A rename in this browser updates locally.

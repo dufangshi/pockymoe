@@ -267,6 +267,18 @@ it('refuses a newly learned signed device revocation before any application requ
   expect(send).toHaveBeenCalledWith([vectors.revocations.device]);
 });
 
+it('does not ask a device that refused this browser again on every request', async () => {
+  const original = state.fetch.getMockImplementation()!;
+  let registrations = 0;
+  state.fetch.mockImplementation(async (input, init) => {
+    if (!String(input).endsWith('/transport/browser')) return original(input, init);
+    registrations++;
+    return Response.json({ code: 'browser_limit' }, { status: 429 });
+  });
+  await expect(transport.exchange(new Request(endpoint('version')))).rejects.toMatchObject({ code: 'browser_limit' });
+  await expect(transport.exchange(new Request(endpoint('version')))).rejects.toMatchObject({ code: 'browser_limit' });
+  expect(registrations).toBe(1);
+});
 it('does not delete a browser key on a forged plaintext registration rejection', async () => {
   const original = state.fetch.getMockImplementation()!;
   state.fetch.mockImplementation(async (input, init) => String(input).endsWith('/transport/browser')

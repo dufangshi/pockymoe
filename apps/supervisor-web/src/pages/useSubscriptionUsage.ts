@@ -85,7 +85,14 @@ export function useSubscriptionUsage({
     cache.set(key, entry);
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let resume: (() => void) | undefined;
     const poll = async () => {
+      // A background tab (often a forgotten one) does not keep asking the device.
+      if (typeof document !== 'undefined' && document.hidden) {
+        resume = () => { document.removeEventListener('visibilitychange', resume!); resume = undefined; if (!cancelled) void poll(); };
+        document.addEventListener('visibilitychange', resume);
+        return;
+      }
       setUsage(read(entry));
       await refresh(entry, provider, agentId);
       if (cancelled) return;
@@ -94,7 +101,7 @@ export function useSubscriptionUsage({
       timer = setTimeout(() => { void poll(); }, Math.max(1, Math.min(entry.refreshAt, expiry) - Date.now()));
     };
     void poll();
-    return () => { cancelled = true; clearTimeout(timer); };
+    return () => { cancelled = true; clearTimeout(timer); if (resume) document.removeEventListener('visibilitychange', resume); };
   }, [key, threadId, provider, agentId, setUsage]);
   return usage;
 }

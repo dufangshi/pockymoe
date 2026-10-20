@@ -95,6 +95,14 @@ interface Key {
   fingerprint: string;
 }
 const keys = new Map<string, Promise<Key | null>>();
+/**
+ * A device that refused to register this browser (no live grant, a full registry,
+ * a server error) is not asked again on every request: each attempt costs an
+ * owner-account lookup and a registration, and pollers would repeat it every few
+ * seconds. Failures back off from one minute to thirty.
+ */
+const registrationFailures = new Map<string, { until: number; code: string; count: number }>();
+
 export function clearAllTransportKeys() { keys.clear(); resetBrowserTransport(); }
 export function clearTransportKeyCache(deviceId: string) {
   keys.delete(deviceId);
@@ -529,6 +537,9 @@ export async function exchange(
       throw e;
     }
     if (!isBrowserRegistered(owner, route.deviceId)) {
+      const failureKey = `${route.deviceId}\n${owner.browserId}`;
+      const previous = registrationFailures.get(failureKey);
+      if (previous && previous.until > Date.now()) throw new AccountTrustError(previous.code);
       const registered = await exchange(new Request(new URL(relayUrl(`relay/devices/${encodeURIComponent(route.deviceId)}/api/transport/browser`), url.origin), {
         method: 'POST', credentials: request.credentials, signal: request.signal,
         headers: { 'content-type': 'application/json' }, body: JSON.stringify(owner.certificate),
@@ -540,8 +551,12 @@ export async function exchange(
           reportTransport({ deviceId: route.deviceId, state: 'unlock-required', paired: true, bound: true, unlockReason: 'browser_revoked',
             unlockCause: unlockCause('browser-removed', { deviceId: route.deviceId, method: 'POST', path: supervisorPath('api/transport/browser'), code: 'browser_revoked' }) });
         }
-        throw new AccountTrustError(failure?.code ?? 'accountRegistrationFailed');
+        const code = failure?.code ?? 'accountRegistrationFailed';
+        const count = (previous?.count ?? 0) + 1;
+        registrationFailures.set(failureKey, { code, count, until: Date.now() + Math.min(30 * 60_000, 60_000 * 2 ** (count - 1)) });
+        throw new AccountTrustError(code);
       }
+      registrationFailures.delete(failureKey);
       const registration = await registered.response.json() as { browserId: string; role: 'owner' | 'grantee' };
       if (registration.browserId !== owner.browserId || registration.role !== (key.grantee ? 'grantee' : 'owner')) throw new AccountTrustError('accountCertificateInvalid');
       key.grantee = registration.role === 'grantee';

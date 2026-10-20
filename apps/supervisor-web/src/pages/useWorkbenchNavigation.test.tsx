@@ -82,6 +82,13 @@ describe('account thread navigation', () => {
     act(() => document.dispatchEvent(new Event('visibilitychange')));
     await waitFor(() => expect(result.current.threads.find(thread => thread.key === 'wsl:root')?.status).toBe('unknown'));
     expect(agents()).toHaveLength(7);
+    // An unreachable device is left alone for a while instead of on every refresh.
+    const before = vi.mocked(request).mock.calls.filter(([url]) => String(url).includes('relay/devices/wsl/')).length;
+    act(() => document.dispatchEvent(new Event('visibilitychange')));
+    await waitFor(() => expect(vi.mocked(request).mock.calls.filter(([url]) => url === 'relay/account/workbench').length).toBeGreaterThan(3));
+    await new Promise(resolve => setTimeout(resolve, 50));
+    expect(vi.mocked(request).mock.calls.filter(([url]) => String(url).includes('relay/devices/wsl/')).length).toBe(before);
+    expect(result.current.threads.find(thread => thread.key === 'wsl:root')?.status).toBe('unknown');
     unmount();
     offline = false;
     const reloaded = renderHook(() => useWorkbenchNavigation(mac, [mac.thread], 'mac'));
