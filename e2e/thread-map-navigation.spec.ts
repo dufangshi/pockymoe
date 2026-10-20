@@ -27,7 +27,7 @@ test('workspace links and map breadcrumbs open an unselected workspace with its 
   await page.getByRole('link', { name: /^Navigation workspace/ }).click();
   await expect(page).toHaveURL(new RegExp(`/threads\\?workspaceId=${workspace.id}$`));
   await expect(page.getByRole('heading', { name: workspace.label, exact: true })).toBeVisible();
-  await expect(page.getByText('Choose a thread from the sidebar, or create a new one.')).toBeVisible();
+  await expect(page.getByText('Choose a thread, or create a new one.')).toBeVisible();
   await expect(page.getByTestId('workspace-threads').getByRole('link', { name: /Choose this conversation/ })).toBeVisible();
   await expect(page.locator('[data-testid="workspace-threads"] [aria-current="page"]')).toHaveCount(0);
   await page.reload();
