@@ -38,9 +38,10 @@ are not synchronized.
 
 Harness compatibility follows the native adapters. A connection is offered to a
 harness when its saved protocol, or another format its upstream was seen to serve
-(see below), is one the harness speaks. The saved protocol is preferred; DSH, for
-example, uses Chat Completions on a Responses connection whose endpoint also
-serves Chat Completions.
+(see below), is one the harness speaks. The saved protocol is preferred, except
+that DSH uses Responses only for an upstream that serves nothing else it speaks:
+on a Responses connection whose endpoint also serves Chat Completions it uses
+Chat Completions.
 
 | Harness | Connection protocols |
 | --- | --- |
@@ -48,7 +49,7 @@ serves Chat Completions.
 | Claude | `anthropic` |
 | Gemini CLI | `gemini` |
 | Grok | `openai_chat`, `openai_responses` |
-| DeepSeek Harness | `openai_chat`, `anthropic` |
+| DeepSeek Harness | `openai_chat`, `anthropic`, `openai_responses` |
 
 Grok's native adapter does not support custom HTTP headers. Applying a connection
 that requires them to Grok returns an error instead of silently dropping them;

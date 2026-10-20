@@ -326,6 +326,24 @@ export function UpstreamManagement({
         })}
     </details>
   );
+  // The result of a press shows next to the buttons that made it.
+  const status = (
+    <>
+      {notice && (
+        <p
+          role="status"
+          className="mt-3 text-xs text-[var(--theme-accent-strong)]"
+        >
+          {notice}
+        </p>
+      )}
+      {error && !editor && !mode && (
+        <p role="alert" className="mt-3 text-xs text-[var(--status-danger-fg)]">
+          {error}
+        </p>
+      )}
+    </>
+  );
   return (
     <section
       className={
@@ -370,6 +388,7 @@ export function UpstreamManagement({
               {translate('settings.upstreamsImportLive')}
             </button>
           </div>
+          {status}
           {backupsView}
         </>
       )}
@@ -744,19 +763,7 @@ export function UpstreamManagement({
           ))}
         </div>
       )}
-      {notice && (
-        <p
-          role="status"
-          className="mt-3 text-xs text-[var(--theme-accent-strong)]"
-        >
-          {notice}
-        </p>
-      )}
-      {error && !editor && !mode && (
-        <p role="alert" className="mt-3 text-xs text-[var(--status-danger-fg)]">
-          {error}
-        </p>
-      )}
+      {(appearance !== 'advanced' || templatesOnly) && status}
       {editConflict && (
         <FormDialog
           title={translate('settings.upstreamsEditConflict')}

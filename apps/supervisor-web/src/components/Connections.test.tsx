@@ -1082,3 +1082,60 @@ it('keeps a native option usable without compatible connections and shows none o
     'its own sign-in or native configuration',
   );
 });
+
+it('keeps the list order when a harness uses a connection and shows each result on its own row', async () => {
+  let applied = false;
+  server(({ path, method }) => {
+    if (path === 'api/management/connections' && method === 'GET')
+      return catalog(
+        [
+          local({ id: 'alpha', name: 'Alpha' }),
+          local({ id: 'beta', name: 'Beta' }),
+        ],
+        {
+          bindings: applied
+            ? { codex: { connectionId: 'beta', model: 'model-a', revision: 'r1' } }
+            : {},
+        },
+      );
+    if (path === 'api/management/connections/beta/test')
+      return { ok: true, latencyMs: 12 };
+    if (path === 'api/management/connections/beta/models') return { models: [] };
+    if (path === 'api/management/connections/beta/apply') {
+      applied = true;
+      return { ok: true };
+    }
+    throw Error(`unexpected ${method} ${path}`);
+  });
+  renderPage();
+  const names = () =>
+    within(screen.getByRole('region', { name: 'Connections' }))
+      .getAllByRole('listitem')
+      .map((row) => row.getAttribute('aria-label'));
+  await waitFor(() => expect(names()).toEqual(['Alpha', 'Beta']));
+  const codexRow = await harnessRow('Codex');
+  fireEvent.change(within(codexRow).getByLabelText('Connection for Codex'), {
+    target: { value: 'beta' },
+  });
+  fireEvent.click(
+    within(codexRow).getByRole('button', { name: 'Apply Beta to Codex' }),
+  );
+  const dialog = await screen.findByRole('dialog', {
+    name: 'Apply Beta to Codex',
+  });
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Apply' }));
+  // The result shows on the harness that changed.
+  expect(
+    await within(codexRow).findByText('Codex now uses Beta · model-a.'),
+  ).toBeVisible();
+  const beta = () => screen.getByRole('listitem', { name: 'Beta' });
+  await waitFor(() => expect(within(beta()).getByText('Codex')).toBeVisible());
+  // Used, it stays where it was, without a highlighted card.
+  expect(names()).toEqual(['Alpha', 'Beta']);
+  expect(beta().className).not.toContain('accent');
+  fireEvent.click(
+    within(beta()).getByRole('button', { name: 'More actions for Beta' }),
+  );
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Test connection' }));
+  expect(await within(beta()).findByText('Beta works (12 ms).')).toBeVisible();
+});

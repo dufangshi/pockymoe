@@ -61,7 +61,6 @@ export function HarnessConnections({
 }) {
   useI18n();
   const [showUninstalled, setShowUninstalled] = useState(false);
-  const [notice, setNotice] = useState('');
   const managed = harnesses.filter((h) => managedHarnesses.includes(h.id));
   const visible = managed.filter((h) => showUninstalled || isInstalled(h));
   return (
@@ -117,18 +116,9 @@ export function HarnessConnections({
               apiRoot={apiRoot}
               store={store}
               harness={h}
-              onApplied={setNotice}
             />
           ))}
         </ul>
-      )}
-      {notice && (
-        <p
-          role="status"
-          className="mt-3 text-xs text-[var(--theme-accent-strong)]"
-        >
-          {notice}
-        </p>
       )}
     </section>
   );
@@ -138,13 +128,14 @@ function HarnessRow({
   apiRoot,
   store,
   harness,
-  onApplied,
 }: {
   apiRoot: string;
   store: ConnectionCatalogStore;
   harness: InventoryHarness;
-  onApplied: (notice: string) => void;
 }) {
+  // What applying did shows on this harness, not at the end of the list.
+  const [notice, setNotice] = useState('');
+  const onApplied = setNotice;
   const { catalog, reload } = store;
   const installed = isInstalled(harness);
   const binding = catalog?.bindings[harness.id];
@@ -313,6 +304,14 @@ function HarnessRow({
           </button>
         </div>
       </div>
+      {notice && (
+        <p
+          role="status"
+          className="mt-1.5 break-words text-xs text-[var(--theme-accent-strong)]"
+        >
+          {notice}
+        </p>
+      )}
       {nativeOpen && (
         <UpstreamManagement
           key={apiRoot + harness.id}

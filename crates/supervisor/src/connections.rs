@@ -101,7 +101,7 @@ pub async fn list(State(s): State<Arc<Supervisor>>) -> Result<Json<Value>, Failu
     let identity = crate::peer_link::relay_identity(&s);
     result["deviceId"] = json!(identity.as_ref().map(|i| &i.device_id));
     result["catalogAvailable"] = json!(false);
-    result["harnessProtocols"] = json!({"codex":["openai_responses"],"claude":["anthropic"],"gemini":["gemini"],"grok":["openai_responses","openai_chat"],"deepseek":["anthropic","openai_chat"]});
+    result["harnessProtocols"] = json!({"codex":["openai_responses"],"claude":["anthropic"],"gemini":["gemini"],"grok":["openai_responses","openai_chat"],"deepseek":["anthropic","openai_chat","openai_responses"]});
     if s.relay_connected.load(std::sync::atomic::Ordering::SeqCst) {
         match tokio::time::timeout(
             std::time::Duration::from_secs(3),

@@ -79,8 +79,19 @@ export function ConnectionCatalog({
   );
   const [choosing, setChoosing] = useState<ConnectionSummary | null>(null);
   const [deleting, setDeleting] = useState<ConnectionSummary | null>(null);
+  // A result shows where it was asked for: on its row. Only a notice with no row
+  // left (a removal) shows at the top of the list.
   const [notice, setNotice] = useState('');
+  const [rowNotice, setRowNotice] = useState<Record<string, string>>({});
   const [rowError, setRowError] = useState<Record<string, string>>({});
+  const noteRow = (id: string, text: string) => {
+    setNotice('');
+    setRowNotice((current) => ({ ...current, [id]: text }));
+  };
+  const clearRow = (id: string) => {
+    setNotice('');
+    setRowNotice(({ [id]: _, ...rest }) => rest);
+  };
   const [testing, setTesting] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const deviceId = catalog?.deviceId ?? null;
@@ -112,9 +123,9 @@ export function ConnectionCatalog({
           .includes(keyword),
     )
     .map((c) => ({ c, state: connectionState(c, deviceId), used: usage(c) }))
+    // Being used by a harness never moves a connection: the order stays put.
     .sort(
       (a, b) =>
-        Number(b.used.length > 0) - Number(a.used.length > 0) ||
         stateOrder[a.state] - stateOrder[b.state] ||
         a.c.name.localeCompare(b.c.name),
     );
@@ -127,17 +138,18 @@ export function ConnectionCatalog({
       return;
     }
     setChoosing(null);
-    setNotice('');
+    clearRow(c.id);
     const result = await sync(c, chosen);
     if (result)
-      setNotice(
+      noteRow(
+        c.id,
         translate('settings.connSyncedHint', { name: result.name ?? c.name }),
       );
   }
 
   async function runTest(c: ConnectionSummary) {
     setTesting(c.id);
-    setNotice('');
+    clearRow(c.id);
     setRowError(({ [c.id]: _, ...rest }) => rest);
     try {
       const result = await api.test({
@@ -146,7 +158,8 @@ export function ConnectionCatalog({
       });
       if (result.ok === false)
         throw Error(translate('settings.connTestFailed'));
-      setNotice(
+      noteRow(
+        c.id,
         typeof result.latencyMs === 'number'
           ? translate('settings.connTestOkNamed', {
               name: c.name,
@@ -196,6 +209,14 @@ export function ConnectionCatalog({
           </button>
         </div>
       </div>
+      {notice && (
+        <p
+          role="status"
+          className="mt-2 text-xs text-[var(--theme-accent-strong)]"
+        >
+          {notice}
+        </p>
+      )}
       {catalog && deviceId && !catalog.catalogAvailable && (
         <p
           role="status"
@@ -264,6 +285,7 @@ export function ConnectionCatalog({
               syncing={syncing === c.id}
               testing={testing === c.id}
               error={syncErrors[c.id] ?? rowError[c.id] ?? ''}
+              notice={rowNotice[c.id] ?? ''}
               onSync={() => void startSync(c)}
               onEdit={() => setEditing(c)}
               onTest={() => void runTest(c)}
@@ -277,14 +299,6 @@ export function ConnectionCatalog({
           {error}
         </p>
       )}
-      {notice && (
-        <p
-          role="status"
-          className="mt-3 text-xs text-[var(--theme-accent-strong)]"
-        >
-          {notice}
-        </p>
-      )}
       {editing && (
         <ConnectionDialog
           apiRoot={apiRoot}
@@ -294,7 +308,8 @@ export function ConnectionCatalog({
             const inUse = editing !== 'new' && usage(editing).length > 0;
             upsert(saved);
             setEditing(null);
-            setNotice(
+            noteRow(
+              saved.id,
               translate(
                 inUse ? 'settings.connSavedInUse' : 'settings.connSaved',
                 { name: saved.name },
@@ -354,6 +369,7 @@ function ConnectionRow({
   syncing,
   testing,
   error,
+  notice,
   onSync,
   onEdit,
   onTest,
@@ -366,6 +382,7 @@ function ConnectionRow({
   syncing: boolean;
   testing: boolean;
   error: string;
+  notice: string;
   onSync: () => void;
   onEdit: () => void;
   onTest: () => void;
@@ -394,7 +411,7 @@ function ConnectionRow({
     .join(' · ');
   return (
     <li
-      className={`rounded-xl border px-3 py-2.5 ${usage.length ? 'border-[var(--theme-accent-border)] bg-[var(--theme-accent-soft)]' : 'border-[var(--theme-border)] bg-[var(--theme-panel)]'}`}
+      className="rounded-xl border border-[var(--theme-border)] bg-[var(--theme-panel)] px-3 py-2.5"
       aria-label={c.name}
     >
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
@@ -420,7 +437,8 @@ function ConnectionRow({
             {usage.map((u) => (
               <span
                 key={u.harness}
-                className={`inline-flex shrink-0 rounded-full px-1.5 text-[11px] leading-[18px] ${u.pending ? warnPill : 'bg-[var(--theme-panel)] text-[var(--theme-accent-strong)]'}`}
+                // Small: one connection can serve several harnesses.
+                className={`inline-block min-w-0 max-w-[9rem] shrink truncate rounded px-1 text-[10px] leading-[15px] ${u.pending ? warnPill : 'bg-[var(--theme-hover)] text-[var(--theme-fg-soft)]'}`}
                 title={translate(
                   u.pending
                     ? 'settings.connPendingHint'
@@ -477,13 +495,22 @@ function ConnectionRow({
           )}
         </div>
       </div>
-      {error && (
+      {error ? (
         <p
           role="alert"
           className="mt-1.5 break-words text-xs text-[var(--status-danger-fg)]"
         >
           {error}
         </p>
+      ) : (
+        notice && (
+          <p
+            role="status"
+            className="mt-1.5 break-words text-xs text-[var(--theme-accent-strong)]"
+          >
+            {notice}
+          </p>
+        )
       )}
     </li>
   );

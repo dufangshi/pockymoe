@@ -374,7 +374,9 @@ composer shows one line of a longer prompt until the prompt is focused; it then
 opens to its full height, also while a dictation or an IME's underlined candidates
 are still being composed, and stays open through its own buttons, the row, menus
 and the keyboard closing. Only tapping the conversation (not scrolling it) folds
-it back to one line, as does emptying the prompt. A split pins its two conversations in the
+it back to one line, as does emptying the prompt. The tap that opens it only
+opens it: if the open layout puts a button (send, the model, attachments) under
+the finger, the rest of that tap does not press it. A split pins its two conversations in the
 thread's place in that row: one tap brings the other forward, and tapping the
 shown one opens the thread sheet.
 

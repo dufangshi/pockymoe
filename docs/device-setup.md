@@ -119,7 +119,7 @@ Supervisor installs a private Node 22.
 
 Upstream profiles support OpenAI Codex Responses, Claude Agent Messages, Gemini
 GenerateContent, Grok Responses/Chat Completions, and DSH DeepSeek official /
-OpenAI-compatible APIs. Profiles, keys and exact
+OpenAI-compatible (Chat Completions or Responses) APIs. Profiles, keys and exact
 configuration backups are stored privately on the device. The browser receives
 a `hasApiKey` flag and redacted provider fragments. Activation updates provider-owned fields while preserving
 MCP, skills and other settings. It retires idle ACP processes; the next turn

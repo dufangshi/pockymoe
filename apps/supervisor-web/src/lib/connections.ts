@@ -266,7 +266,7 @@ export const harnessProtocols: Record<string, ConnectionProtocol[]> = {
   claude: ['anthropic'],
   gemini: ['gemini'],
   grok: ['openai_responses', 'openai_chat'],
-  deepseek: ['anthropic', 'openai_chat'],
+  deepseek: ['anthropic', 'openai_chat', 'openai_responses'],
 };
 
 /** The saved format first, then the others the upstream was seen to serve. */

@@ -193,7 +193,14 @@ impl Connection {
     /// The wire format a harness uses with this connection: the saved protocol
     /// when the harness speaks it, otherwise another format the upstream serves.
     pub fn protocol_for(&self, harness: &str) -> Option<&str> {
-        self.protocols().into_iter().find(|p| speaks(harness, p))
+        let protocols = self.protocols();
+        // DSH reads Responses too, but keeps its Chat Completions or Messages route
+        // whenever the upstream serves one: Responses only for a Responses-only upstream.
+        protocols
+            .iter()
+            .copied()
+            .find(|p| speaks(harness, p) && !(harness == "deepseek" && *p == "openai_responses"))
+            .or_else(|| protocols.into_iter().find(|p| speaks(harness, p)))
     }
     pub fn compatible(&self, harness: &str) -> bool {
         self.protocol_for(harness).is_some()
@@ -318,6 +325,7 @@ fn speaks(harness: &str, protocol: &str) -> bool {
     matches!(
         (protocol, harness),
         ("openai_responses", "codex" | "grok")
+            | ("openai_responses", "deepseek")
             | ("openai_chat", "grok" | "deepseek")
             | ("anthropic", "claude" | "deepseek")
             | ("gemini", "gemini")
@@ -976,9 +984,11 @@ mod tests {
     #[test]
     fn served_formats_extend_harness_compatibility_and_windows_follow_the_model() {
         let mut c = fixture("openai_responses");
-        assert!(!c.compatible("deepseek"));
+        // A Responses-only upstream reaches DSH through its Responses route.
+        assert_eq!(c.protocol_for("deepseek"), Some("openai_responses"));
+        assert_eq!(c.profile("deepseek", "", "").unwrap().api_type, "responses");
         c.catalog = Some(catalog(&["openai_chat", "openai_responses"]));
-        // The saved protocol stays first; DSH falls back to a served format.
+        // The saved protocol stays first; DSH prefers a served Chat Completions.
         assert_eq!(c.protocol_for("codex"), Some("openai_responses"));
         assert_eq!(c.protocol_for("grok"), Some("openai_responses"));
         assert_eq!(c.protocol_for("deepseek"), Some("openai_chat"));
@@ -1386,7 +1396,7 @@ mod tests {
     fn protocol_compatibility_tracks_real_harness_adapters() {
         assert!(!fixture("openai_chat").compatible("codex"));
         assert!(fixture("openai_responses").compatible("codex"));
-        assert!(!fixture("openai_responses").compatible("deepseek"));
+        assert!(fixture("openai_responses").compatible("deepseek"));
         assert!(fixture("anthropic").compatible("deepseek"));
         assert!(!fixture("gemini").compatible("claude"));
         let mut headers = fixture("openai_chat");
