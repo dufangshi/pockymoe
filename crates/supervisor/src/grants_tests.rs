@@ -1271,16 +1271,30 @@ async fn grantee_browser_revocations_are_scoped_and_grantee_registrations_are_ca
         first.get_or_insert(c);
     }
     assert_eq!(register(&state, first.as_ref().unwrap()).await.0, 200);
+    // A full registry drops its least recently seen recipient browser instead of refusing.
+    let count = |state: &Supervisor| -> u64 {
+        state.db.with(|c| Ok(c.query_row("SELECT count(*) FROM browser_registrations WHERE role='grantee' AND account_key_id=?1", [&first.as_ref().unwrap().account_key_id], |r| r.get(0))?)).unwrap()
+    };
+    let before = count(&state);
     let overflow =
         crate::owner_trust::tests::browser_certificate(&account, &SigningKey::random(&mut OsRng));
-    assert_eq!(
-        register(&state, &overflow).await,
-        (429, json!({"code":"browser_limit"}))
-    );
+    assert_eq!(register(&state, &overflow).await.0, 200);
+    assert_eq!(count(&state), before);
+    let kept: bool = state
+        .db
+        .with(|c| {
+            Ok(c.query_row(
+                "SELECT EXISTS(SELECT 1 FROM browser_registrations WHERE browser_id=?1)",
+                [&overflow.browser_id],
+                |r| r.get(0),
+            )?)
+        })
+        .unwrap();
+    assert!(kept);
 }
 
 #[tokio::test]
-async fn grantee_browser_cap_allows_idempotent_registration_at_limit() {
+async fn a_full_recipient_registry_drops_its_least_recently_seen_browser() {
     let (_dir, state, owner, _grant, cert, _key, _principal, account) =
         fixture_with_account().await;
     for _ in 1..32 {
@@ -1291,12 +1305,34 @@ async fn grantee_browser_cap_allows_idempotent_registration_at_limit() {
         assert_eq!(register(&state, &c).await.0, 200);
     }
     assert_eq!(register(&state, &cert).await.0, 200);
+    // The browser seen least recently goes, not the one just registered again.
+    state.db.with(|c| { c.execute("UPDATE browser_registrations SET last_seen_at=0 WHERE role='grantee' AND browser_id=(SELECT browser_id FROM browser_registrations WHERE role='grantee' AND browser_id<>?1 ORDER BY rowid LIMIT 1)", [&cert.browser_id])?; Ok(()) }).unwrap();
+    let oldest: String = state.db.with(|c| Ok(c.query_row("SELECT browser_id FROM browser_registrations WHERE role='grantee' ORDER BY last_seen_at LIMIT 1", [], |r| r.get(0))?)).unwrap();
     let c =
         crate::owner_trust::tests::browser_certificate(&account, &SigningKey::random(&mut OsRng));
-    assert_eq!(
-        register(&state, &c).await,
-        (429, json!({"code":"browser_limit"}))
-    );
+    assert_eq!(register(&state, &c).await.0, 200);
+    let gone: bool = state
+        .db
+        .with(|db| {
+            Ok(!db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM browser_registrations WHERE browser_id=?1)",
+                [&oldest],
+                |r| r.get::<_, bool>(0),
+            )?)
+        })
+        .unwrap();
+    assert!(gone);
+    let still: bool = state
+        .db
+        .with(|db| {
+            Ok(db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM browser_registrations WHERE browser_id=?1)",
+                [&cert.browser_id],
+                |r| r.get(0),
+            )?)
+        })
+        .unwrap();
+    assert!(still);
     assert!(owner.valid(&state));
 }
 

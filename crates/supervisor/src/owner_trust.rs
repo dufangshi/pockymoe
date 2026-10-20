@@ -425,7 +425,13 @@ fn register(db: &Database, certificate: &BrowserCertificate) -> Result<Value> {
         }
         if user.is_some() && !tx.query_row("SELECT EXISTS(SELECT 1 FROM browser_registrations WHERE browser_id=?1)", [&certificate.browser_id], |r| r.get::<_,bool>(0))? {
             let count: u64 = tx.query_row("SELECT count(*) FROM browser_registrations WHERE account_key_id=?1 AND role='grantee'", [&account.account_key_id], |r| r.get(0))?;
-            if count >= 32 { return reject(429,"browser_limit") }
+            if count >= 32 {
+                // A recipient's browsers that lost their key (private tabs, cleared
+                // storage) leave rows behind; the least recently seen one makes room.
+                // Dropping a row revokes nothing: that browser can register again.
+                let evicted = tx.execute("DELETE FROM browser_registrations WHERE browser_id=(SELECT browser_id FROM browser_registrations WHERE account_key_id=?1 AND role='grantee' ORDER BY last_seen_at ASC, registered_at ASC, rowid ASC LIMIT 1)", [&account.account_key_id])?;
+                if evicted == 0 { return reject(429,"browser_limit") }
+            }
         }
         tx.execute("INSERT INTO browser_registrations(browser_id,public_key,role,account_key_id,user_id,registered_at,last_seen_at) VALUES(?1,?2,?3,?4,?5,?6,?6) ON CONFLICT(browser_id) DO UPDATE SET last_seen_at=excluded.last_seen_at",params![certificate.browser_id,certificate.public_key,role,account.account_key_id,user,now()])?;
         tx.commit()?; Ok(json!({"browserId":certificate.browser_id,"role":role}))

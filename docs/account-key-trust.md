@@ -205,8 +205,10 @@ On first contact with each protected device in a page session, a browser:
 2. registers its certificate (encrypted `POST /api/transport/browser`). The device
    accepts a certificate that verifies with its pinned account key (role `owner`)
    or with the account key of a recipient in a live grant (role `grantee`), and is
-   not revoked. A device keeps at most 32 browser registrations per recipient key
-   (429 `browser_limit`);
+   not revoked. A device keeps at most 32 browser registrations per recipient key;
+   a new one beyond that replaces the least recently seen (dropping a row revokes
+   nothing, and that browser can register again), so private tabs and cleared
+   storage cannot lock a recipient out;
 3. signs every later encrypted request, including download chunks and
    service-worker requests, with `x-rcd-session: <browserId>` and
    `x-rcd-signature`. A WebSocket channel inherits the principal of the signed
@@ -510,7 +512,7 @@ only encrypted tunnel requests.
 | `browser_registration_required` | 401 | Encrypted request without `x-rcd-session`, from an unregistered browser, with an invalid signature or a registration that is no longer valid; trust endpoints on an unbound device |
 | `browser_revoked` | 401 | The browser is revoked by the pinned key or by the key of a recipient in a live grant (request or registration) |
 | `account_mismatch` | 403 | The certificate's account key is neither the pinned key nor a recipient key in a live grant, or the browser ID is registered for another account or user (an owner certificate replaces a recipient registration with the same browser ID) |
-| `browser_limit` | 429 | A new recipient browser while 32 are registered for that recipient key |
+| `browser_limit` | 429 | No longer sent by the device: a new recipient browser beyond 32 replaces the least recently seen one |
 | `revocation_limit` | 429 | A revocation push that would store more than 1024 tombstones for one recipient key; the whole push is refused |
 | `owner_required` | 403 | Recipient request to an owner-only path, a preview lease for a browser that is not a registered owner, or a bind request from a peer or recipient |
 | `already_bound` | 409 | Bind request to a bound device |
