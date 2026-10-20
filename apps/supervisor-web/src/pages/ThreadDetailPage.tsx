@@ -133,6 +133,7 @@ import {
   steerPendingPrompt,
   steerSubmittedPrompt,
   threadPluginAdapter,
+  isConnectionError,
 } from '../lib/api';
 import {
   appendLiveAgentDeltaToItems,
@@ -708,6 +709,19 @@ export function ThreadDetailPage() {
   const [deletingThread, setDeletingThread] = useState<ThreadDto | null>(null);
   const [deletingThreadBusy, setDeletingThreadBusy] = useState(false);
   const [error, setError] = useScopedState<string | null>(routeKey, null);
+  // A connection failure ("offline", "busy") shown here clears itself once the
+  // thread reads again; other errors stay until the next action.
+  const connectionErrorRef = useRef<string | null>(null);
+  const showConnectionError = (caught: unknown, message: string) => {
+    connectionErrorRef.current = isConnectionError(caught) ? message : null;
+    setError(message);
+  };
+  const clearConnectionError = () => {
+    const stale = connectionErrorRef.current;
+    if (stale === null) return;
+    connectionErrorRef.current = null;
+    setError(current => (current === stale ? null : current));
+  };
   const mcpProviderConfigFileName =
     backendManagementSchema?.hostConfigFiles.find((file) => file.roles?.includes('mcp'))
       ?.name ?? null;
@@ -1687,6 +1701,7 @@ export function ThreadDetailPage() {
         }
 
         applyDetailResponse(detailResponse);
+        clearConnectionError();
         if (pageContextProviderRef.current !== detailResponse.thread.provider) {
           void loadPageContext({ seedThread: detailResponse.thread });
         }
@@ -1707,7 +1722,8 @@ export function ThreadDetailPage() {
           return;
         }
         if (!reportError) return;
-        setError(
+        showConnectionError(
+          caught,
           caught instanceof Error
             ? caught.message
             : translate("workbench.unableToLoadThreadDetail"),
@@ -1817,7 +1833,7 @@ export function ThreadDetailPage() {
     let cancelled = false;
     setAutoConnectingRoute(routeKey);
     void pending.catch((caught) => {
-      if (!cancelled) setError(caught instanceof Error ? caught.message : translate("workbench.unableToConnectToThisThread"));
+      if (!cancelled) showConnectionError(caught, caught instanceof Error ? caught.message : translate("workbench.unableToConnectToThisThread"));
     }).finally(() => {
       if (!cancelled) setAutoConnectingRoute(null);
     });
@@ -2547,6 +2563,12 @@ export function ThreadDetailPage() {
     };
 
     const runHeartbeat = () => {
+      // A missed "online" event (sleep, a network switch) must not leave the
+      // page offline until a reload.
+      if (!isDisposed && !supervisorBrowserOnlineRef.current && navigator.onLine) {
+        handleBrowserOnline();
+        return;
+      }
       if (isDisposed || !supervisorBrowserOnlineRef.current) {
         syncRealtimeConnectionState();
         return;

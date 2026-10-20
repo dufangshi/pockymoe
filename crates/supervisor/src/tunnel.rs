@@ -18,7 +18,11 @@ use tower::ServiceExt;
 use url::Url;
 
 const RELAY_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(3);
-const RELAY_RECEIVE_TIMEOUT: Duration = Duration::from_secs(5);
+// A busy relay (a burst of traffic, a slow database moment) may be quiet for a few
+// seconds; 5 seconds turned those moments into reconnects and "offline" pages.
+const RELAY_RECEIVE_TIMEOUT: Duration = Duration::from_secs(15);
+// Writes waiting in the queue go out together, then one flush.
+const RELAY_WRITE_BATCH: usize = 256;
 const RELAY_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const RELAY_RECONNECT_INITIAL_DELAY: Duration = Duration::from_secs(1);
 const RELAY_RECONNECT_MAX_DELAY: Duration = Duration::from_secs(3);
@@ -171,13 +175,20 @@ async fn run_connected_tunnel_with_deadline(
     // was queued explicitly above.
     heartbeat.tick().await;
 
-    loop {
+    let ended: Result<()> = async { loop {
         tokio::select! {
             message = outbound.recv() => {
                 let Some(message) = message else {
-                    return Err(anyhow!("relay tunnel writer closed"));
+                    return Err(writer_closed(&outbound));
                 };
-                tokio::time::timeout(RELAY_RECEIVE_TIMEOUT,sink.send(Message::Text(message.to_string().into()))).await??;
+                tokio::time::timeout(RELAY_RECEIVE_TIMEOUT, async {
+                    sink.feed(Message::Text(message.to_string().into())).await?;
+                    for _ in 1..RELAY_WRITE_BATCH {
+                        let Some(next) = outbound.try_recv() else { break };
+                        sink.feed(Message::Text(next.to_string().into())).await?;
+                    }
+                    sink.flush().await
+                }).await??;
             }
             _ = tokio::time::sleep_until(last_received + receive_timeout) => {
                 return Err(anyhow!("relay stopped responding; reconnecting"));
@@ -254,7 +265,7 @@ async fn run_connected_tunnel_with_deadline(
                     "timestamp": now_rfc3339(),
                     "threadLineage":thread_lineage(&state), "portMappings":crate::ports::snapshot(&state), "upstreamConnections":crate::connections::snapshot(&state)
                 })).is_err() {
-                    return Err(anyhow!("relay tunnel writer closed"));
+                    return Err(writer_closed(&outbound));
                 }
             }
             event = activity.recv() => {
@@ -277,6 +288,22 @@ async fn run_connected_tunnel_with_deadline(
                 }
             }
         }
+    } }.await;
+    // Tell the relay at once, so it drops this connection's clients now rather
+    // than after its own timeout.
+    let _ = tokio::time::timeout(Duration::from_secs(1), sink.send(Message::Close(None))).await;
+    ended
+}
+
+/// Why the outgoing queue ended: its bound reached, or every sender gone.
+fn writer_closed(outbound: &mpsc::Receiver<Value>) -> anyhow::Error {
+    if outbound.overflowed() {
+        anyhow!(
+            "relay tunnel queue overflowed ({} messages waiting)",
+            crate::bounded_channel::CAPACITY
+        )
+    } else {
+        anyhow!("relay tunnel writer closed")
     }
 }
 
@@ -1436,10 +1463,13 @@ pub(crate) mod tests {
         let (tcp, _) = listener.accept().await.unwrap();
         let _silent = tokio_tungstenite::accept_async(tcp).await.unwrap();
         // TCP remains open and writable. No return frames reach the supervisor.
-        let (tcp, _) = tokio::time::timeout(Duration::from_secs(7), listener.accept())
-            .await
-            .expect("reconnect without user intervention or process restart")
-            .unwrap();
+        let (tcp, _) = tokio::time::timeout(
+            RELAY_RECEIVE_TIMEOUT + Duration::from_secs(2),
+            listener.accept(),
+        )
+        .await
+        .expect("reconnect without user intervention or process restart")
+        .unwrap();
         let mut replacement = tokio_tungstenite::accept_async(tcp).await.unwrap();
         assert!(!state
             .relay_connected

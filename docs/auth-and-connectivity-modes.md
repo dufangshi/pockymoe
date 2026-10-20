@@ -272,6 +272,23 @@ The current implementation establishes the supervisor-initiated outbound tunnel,
 - relay websocket clients can use `supervisor.ping` and receive `supervisor.pong`,
 - relay websocket client messages are routed through the home supervisor websocket plugin handlers, so terminal plugin messages such as shell attach, input, resize, clear, and detach can use the relay path.
 
+Tunnel liveness and queues:
+
+- the supervisor pings every 3 seconds and reconnects after 15 seconds without a
+  frame from the relay, or when a write takes longer than 15 seconds. On giving
+  up it sends a Close frame, so the relay drops the connection at once.
+- the supervisor writes queued frames in batches with one flush.
+- each socket queue (supervisor outbound, relay per device, relay per browser
+  client) holds 8192 messages. A burst waits in the queue; only a peer that has
+  stopped reading fills it. The supervisor logs "relay tunnel queue overflowed"
+  in that case.
+- a request that finds the device's relay queue full gets `429` (busy), not
+  `503` "device is offline".
+- the Web UI asks once more for a read (`GET`/`HEAD`) that meets `429` or
+  `503`, but never repeats a write.
+- a connection error shown on a thread clears itself once the thread loads
+  again.
+
 ## Relay Users, Devices, And Sharing
 
 The relay server stores users, devices, shares, grants, and settings in

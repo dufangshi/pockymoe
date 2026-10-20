@@ -1,4 +1,6 @@
 //! A slow peer must reconnect, never retain an unlimited backlog or silently lose events.
+//! The bound is loose: a burst of streamed output or a large response must not
+//! tear a healthy connection down (a 64-message bound did, several times an hour).
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
@@ -10,13 +12,15 @@ pub(crate) struct Sender<T> {
     failed: Arc<AtomicBool>,
     wake: Arc<Notify>,
 }
+/// Messages a connection may have waiting before it is considered stuck.
+pub(crate) const CAPACITY: usize = 8192;
 pub(crate) struct Receiver<T> {
     rx: mpsc::Receiver<T>,
     failed: Arc<AtomicBool>,
     wake: Arc<Notify>,
 }
 pub(crate) fn channel<T>() -> (Sender<T>, Receiver<T>) {
-    let (tx, rx) = mpsc::channel(64);
+    let (tx, rx) = mpsc::channel(CAPACITY);
     let failed = Arc::new(AtomicBool::new(false));
     let wake = Arc::new(Notify::new());
     (
@@ -40,6 +44,17 @@ impl<T> Sender<T> {
     }
 }
 impl<T> Receiver<T> {
+    /// Whether the channel closed because its bound was reached.
+    pub fn overflowed(&self) -> bool {
+        self.failed.load(Ordering::Acquire)
+    }
+    /// A message already waiting, without blocking; none after an overflow.
+    pub fn try_recv(&mut self) -> Option<T> {
+        if self.failed.load(Ordering::Acquire) {
+            return None;
+        }
+        self.rx.try_recv().ok()
+    }
     pub async fn recv(&mut self) -> Option<T> {
         if self.failed.load(Ordering::Acquire) {
             return None;
@@ -52,10 +67,11 @@ mod tests {
     #[tokio::test]
     async fn overflow_disconnects_instead_of_dropping_a_message() {
         let (sender, mut receiver) = super::channel();
-        for n in 0..64 {
+        for n in 0..super::CAPACITY {
             sender.send(n).unwrap();
         }
-        assert!(sender.send(65).is_err());
+        assert!(sender.send(super::CAPACITY).is_err());
+        assert!(receiver.overflowed());
         assert_eq!(receiver.recv().await, None);
     }
 }

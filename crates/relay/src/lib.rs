@@ -3436,14 +3436,22 @@ async fn forward_device_payload_with_timeout(
                     tx,
                 },
             );
-            socket.tx.try_send(payload).is_ok()
+            match socket.tx.try_send(payload) {
+                Ok(()) => Ok(()),
+                // Connected but behind: busy, not offline.
+                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                    tracing::warn!(%device_id, "device queue full; request refused as busy");
+                    Err(DeviceForwardError::Busy)
+                }
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                    Err(DeviceForwardError::Offline)
+                }
+            }
         } else {
-            false
+            Err(DeviceForwardError::Offline)
         }
     };
-    if !sent {
-        return Err(DeviceForwardError::Offline);
-    }
+    sent?;
     match tokio::time::timeout(response_timeout, rx).await {
         Ok(Ok(value)) => Ok(value),
         Ok(Err(_)) => Err(DeviceForwardError::Offline),
@@ -3600,6 +3608,11 @@ async fn handle_supervisor(socket: WebSocket, state: Arc<AppState>, device_id: S
     handle_supervisor_with_timeout(socket, state, device_id, Duration::from_secs(90)).await;
 }
 
+/// Messages waiting for one socket. A loose bound: a burst (a long reply, many
+/// open tabs) must queue, not cost the device its connection; only a socket that
+/// stops draining reaches it.
+const SOCKET_QUEUE: usize = 8192;
+
 async fn handle_supervisor_with_timeout(
     socket: WebSocket,
     state: Arc<AppState>,
@@ -3608,7 +3621,7 @@ async fn handle_supervisor_with_timeout(
 ) {
     let connection_id = Uuid::new_v4();
     let connected_at = now_rfc3339();
-    let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+    let (tx, mut rx) = tokio::sync::mpsc::channel(SOCKET_QUEUE);
     state.sockets.write().await.insert(
         device_id.clone(),
         DeviceSocket {
@@ -3962,7 +3975,7 @@ async fn handle_client_socket(
     secure_channel_id: Option<String>,
 ) {
     let client_id = Uuid::new_v4().to_string();
-    let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+    let (tx, mut rx) = tokio::sync::mpsc::channel(SOCKET_QUEUE);
     let supervisor_connection_id = {
         let sockets = state.sockets.read().await;
         let Some(supervisor) = sockets.get(&device_id) else {
@@ -4116,6 +4129,7 @@ async fn send_to_supervisor_connection(
                 && supervisor.tx.try_send(message.to_string()).is_err()
         });
     if overflow {
+        tracing::warn!(%device_id, "device queue full; dropping its connection");
         let mut sockets = state.sockets.write().await;
         if sockets
             .get(device_id)

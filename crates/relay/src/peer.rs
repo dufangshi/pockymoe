@@ -1125,7 +1125,8 @@ mod tests {
             Duration::from_millis(20),
         )
         .await;
-        assert_error(&receive(&mut a_rx).await, 503, "device_offline");
+        // Connected but behind is busy, not offline.
+        assert_error(&receive(&mut a_rx).await, 429, "busy");
         assert!(fixture.state.pending.lock().unwrap().is_empty());
     }
 

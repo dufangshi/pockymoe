@@ -1,6 +1,6 @@
 import { appPathname, appUrl } from './webBase';
 import { readAutoCollapseCompletedTurns } from './transcriptPreferences';
-import { deviceRoute } from './relayTransportCrypto';
+import { deviceRoute, TransportError } from './relayTransportCrypto';
 import { markOwnedDevices } from './accountTransport';
 import { sharingMutation, type SharingInput } from './signedSharing';
 import { relayOrigin, relayUrl, relaySocketUrl, relayFetchInit } from './relayOrigin';
@@ -439,6 +439,35 @@ function fetchApi(path: string, init: RequestInit, deviceId?: string | null, thr
   return endpoint.origin === relayOrigin() && deviceRoute(endpoint) ? encryptedBrowserFetch(target, requestInit, threadScope) : fetch(target, requestInit);
 }
 
+// A device that is reconnecting or briefly busy answers 503/429 for a moment. A
+// read asks once more before the page shows "offline"; a write never repeats.
+const READ_RETRY_DELAY_MS = 800;
+
+function transientStatus(status: number) {
+  return status === 429 || status === 503;
+}
+
+async function fetchRetryingRead(send: () => Promise<Response>, init: RequestInit) {
+  const read = !init.method || init.method.toUpperCase() === 'GET' || init.method.toUpperCase() === 'HEAD';
+  const again = () => !init.signal?.aborted && new Promise(resolve => setTimeout(resolve, READ_RETRY_DELAY_MS)).then(() => !init.signal?.aborted);
+  let response: Response;
+  try {
+    response = await send();
+  } catch (error) {
+    if (!read || !(error instanceof TransportError && (error.code === 'device_offline' || (error.status && transientStatus(error.status)))) || !(await again())) throw error;
+    return send();
+  }
+  if (read && transientStatus(response.status) && (await again())) return send();
+  return response;
+}
+
+/** A failure of the way to the device (offline, busy, no answer), not of the request. */
+export function isConnectionError(error: unknown) {
+  if (error instanceof TransportError) return error.code === 'device_offline' || error.code === 'device_unresponsive';
+  if (error instanceof ApiError) return [429, 502, 503, 504].includes(error.statusCode);
+  return error instanceof TypeError;
+}
+
 export async function request<T>(
   input: RequestInfo,
   init?: RequestInit,
@@ -461,7 +490,7 @@ export async function request<T>(
     options.auth,
   );
   const targetPath = apiPath(String(input), options.deviceId);
-  const response = await fetchApi(targetPath, requestInit, null, options.threadScope);
+  const response = await fetchRetryingRead(() => fetchApi(targetPath, requestInit, null, options.threadScope), requestInit);
   if (!response.ok) {
     throw new ApiError(response.status, await readApiErrorPayload(response));
   }
@@ -684,7 +713,8 @@ export async function relayLogout() {
 }
 
 export async function fetchRelayPortal() {
-  const summary = await request<RelayPortalSummaryDto>('relay/portal');
+  // A relay that hangs must not leave the device list "refreshing" for good.
+  const summary = await request<RelayPortalSummaryDto>('relay/portal', { signal: AbortSignal.timeout(15_000) });
   await markOwnedDevices(summary.devices.filter(d => d.ownerUserId === summary.user.id).map(d => d.id));
   return summary;
 }
