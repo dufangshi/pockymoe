@@ -185,8 +185,13 @@ relay at every sign-in (`POST /relay/account/browsers`, labelled with the browse
 and platform name). Certificates have no expiry. A browser stays authorized until
 its key is deleted locally (sign-out) or the browser is removed. The relay keeps
 at most 32 browser rows per account key, counting only rows that are not revoked;
-a browser that already has a row registers again as usual, and a new one beyond
-the limit answers 429 `browser_limit` until a browser is removed.
+a browser that already has a row registers again as usual. A new one beyond the
+limit replaces the least recently seen row: browsers that lost their key (cleared
+storage, a phone that keeps signing in again) leave rows behind, and dropping a row
+revokes nothing; that browser can register again. Only if no row can go does it
+answer 429 `browser_limit`. Signing out in the Web first deletes this browser's
+own row (`DELETE /relay/account/browsers/{browserId}`), so sign-outs do not use up
+the limit.
 
 Registering binds the relay session to that browser and account key: the session
 cannot register a different browser (403 `forbidden`), and removing the browser
@@ -1081,8 +1086,8 @@ senders).
 | `PUT /relay/account/vault` | Signed in | `{vault, expectedRevision, currentAuthKey?, currentRecoveryAuthKey?, authKey?, recoveryAuthKey?}` → vault; 409 `vault_conflict`; 429 `rate_limited` (with `DELETE`, 10 per 5 minutes) |
 | `DELETE /relay/account/vault` | Signed in | `{currentAuthKey?}` → `{}` |
 | `GET /relay/account/browsers` | Signed in | → `{browsers: [{certificate, label, createdAt, lastSeenAt}], revocations}` (revocations of the current key only) |
-| `POST /relay/account/browsers` | Signed in | `{certificate, label}` (label at most 80 characters) → `{}`; binds the session to the browser; 401 `browser_revoked`; 403 `forbidden` for a session bound to another browser; 429 `browser_limit` |
-| `DELETE /relay/account/browsers/{browserId}` | Signed in | → `{}`; deletes a signed-out browser row of the current key without a revocation; 409 `browser_in_use` while a live session is bound to it, 404 `not_found`. The Web does not use it |
+| `POST /relay/account/browsers` | Signed in | `{certificate, label}` (label at most 80 characters) → `{}`; binds the session to the browser; at the limit drops the least recently seen other row; 401 `browser_revoked`; 403 `forbidden` for a session bound to another browser; 429 `browser_limit` only when no row can go |
+| `DELETE /relay/account/browsers/{browserId}` | Signed in | → `{}`; deletes a browser row of the current key without a revocation; 409 `browser_in_use` while another live session is bound to it (the calling session does not count), 404 `not_found`. The Web calls it for its own browser when signing out |
 | `POST /relay/account/revocations` | Signed in | `{revocation}` → `{}`; 429 `revocation_limit` |
 | `POST /relay/account/security/reauth` | Signed in | `{authKey}` for accounts with a vault, `{password}` for accounts without one and the administrator, `{code}` when a second factor exists |
 | `POST /relay/devices`, `POST /relay/devices/{id}/setup-token`, `/bootstrap`, `/token` | Owner, recent authentication | Create a device or return, issue or replace its token; 403 `reauthentication_required` |

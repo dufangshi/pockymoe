@@ -4,7 +4,7 @@ import { deviceRoute, TransportError } from './relayTransportCrypto';
 import { markOwnedDevices } from './accountTransport';
 import { sharingMutation, type SharingInput } from './signedSharing';
 import { relayOrigin, relayUrl, relaySocketUrl, relayFetchInit } from './relayOrigin';
-import { logoutAccount } from './accountVaultState';
+import { accountRequest, currentBrowser, logoutAccount } from './accountVaultState';
 import { startAccountLogin, setAccountSession, cancelAccountLogin, rememberAccountLogin, type AccountSessionState } from './accountAuth';
 import { confirmWorkspaceDocumentLeave, type WorkspaceDocumentSnapshot, type WorkspaceDocumentSaveInput, type WorkspaceSaveReceipt } from "@pockymoe/thread-ui";
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
@@ -704,6 +704,10 @@ export async function relayAdminLogout() {
 
 export async function relayLogout() {
   if (!confirmWorkspaceDocumentLeave()) throw new Error(translate('files.keepEditing'));
+  // Signing out discards this browser's key, so its registry row would only use up the
+  // account's browser limit. Remove it while the session can still say so.
+  const browser = await currentBrowser().catch(() => null);
+  if (browser) await accountRequest(`relay/account/browsers/${encodeURIComponent(browser.browserId)}`, 'DELETE').catch(() => undefined);
   try {
     return await request<RelaySessionDto>('relay/auth/logout', { method: 'POST' });
   } finally {

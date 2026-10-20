@@ -1021,14 +1021,27 @@ async fn register_browser(
             |r| r.get(0),
         )
         .map_err(internal)?;
-    if !exists && count >= MAX_BROWSERS {
-        return Err(failure(
-            StatusCode::TOO_MANY_REQUESTS,
-            "browser_limit",
-            "Browser limit reached",
-        ));
-    }
     let tx = conn.unchecked_transaction().map_err(internal)?;
+    if !exists && count >= MAX_BROWSERS {
+        // Browsers that lost their key (cleared storage, a new sign-in) leave rows
+        // behind; the least recently seen one makes room instead of refusing.
+        // Only the registry row goes: no revocation, and the browser may register again.
+        let evicted = tx.execute(
+            "DELETE FROM relay_account_browsers WHERE user_id=?1 AND browser_id=(
+               SELECT b.browser_id FROM relay_account_browsers b
+               WHERE b.user_id=?1 AND json_extract(b.certificate_json,'$.accountKeyId')=?2 AND b.browser_id<>?3
+                 AND NOT EXISTS(SELECT 1 FROM relay_account_revocations r WHERE r.user_id=b.user_id AND r.account_key_id=?2 AND r.kind='browser' AND r.subject_id=b.browser_id)
+               ORDER BY b.last_seen_at ASC, b.created_at ASC LIMIT 1)",
+            params![user.id, cert["accountKeyId"].as_str(), cert["browserId"].as_str()],
+        ).map_err(internal)?;
+        if evicted == 0 {
+            return Err(failure(
+                StatusCode::TOO_MANY_REQUESTS,
+                "browser_limit",
+                "Browser limit reached",
+            ));
+        }
+    }
     tx.execute("INSERT INTO relay_account_browsers(user_id,browser_id,certificate_json,label,created_at,last_seen_at) VALUES (?1,?2,?3,?4,?5,?6)
         ON CONFLICT(user_id,browser_id) DO UPDATE SET certificate_json=excluded.certificate_json,label=excluded.label,created_at=excluded.created_at,last_seen_at=excluded.last_seen_at",
         params![user.id,cert["browserId"].as_str(),serde_json::to_string(cert).map_err(internal)?,body.label,cert["createdAt"].as_i64(),factors::now()]).map_err(internal)?;
@@ -1044,7 +1057,7 @@ async fn delete_browser(
     Path(browser): Path<String>,
 ) -> ApiResult {
     let conn = state.store.conn.lock().await;
-    let (user, _) = auth(&conn, &state, &headers)?;
+    let (user, token) = auth(&conn, &state, &headers)?;
     let key = vault(&conn, &user.id)?.and_then(|v| v["accountKeyId"].as_str().map(str::to_owned));
     let exists:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM relay_account_browsers WHERE user_id=?1 AND browser_id=?2 AND json_extract(certificate_json,'$.accountKeyId')=?3)",params![user.id,browser,key],|r|r.get(0)).map_err(internal)?;
     if !exists {
@@ -1054,7 +1067,8 @@ async fn delete_browser(
             "Browser not found",
         ));
     }
-    let active:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM relay_auth_sessions WHERE user_id=?1 AND account_browser_id=?2 AND account_browser_key_id=?3 AND expires_at>?4)",params![user.id,browser,key,factors::now()],|r|r.get(0)).map_err(internal)?;
+    // A browser signing out removes its own row first; only other live sessions keep it.
+    let active:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM relay_auth_sessions WHERE user_id=?1 AND account_browser_id=?2 AND account_browser_key_id=?3 AND expires_at>?4 AND token_hash<>?5)",params![user.id,browser,key,factors::now(),security::token_hash(&token)],|r|r.get(0)).map_err(internal)?;
     if active {
         return Err(failure(
             StatusCode::CONFLICT,

@@ -2521,18 +2521,19 @@ async fn security_revision_recovery_proof_can_update_vault_and_recover_interrupt
 }
 
 #[tokio::test]
-async fn security_revision_browser_cap_keeps_idempotent_registration_working() {
+async fn a_full_browser_registry_makes_room_by_dropping_the_least_recently_seen_row() {
     let f = Fixture::new("security-browser-cap").await;
     let token = f.register().await;
     {
         let conn = f.state.store.conn.lock().await;
         for n in 0..32 {
             conn.execute(
-                "INSERT INTO relay_account_browsers VALUES (?1,?2,?3,'synthetic',0,0)",
+                "INSERT INTO relay_account_browsers VALUES (?1,?2,?3,'synthetic',?4,?4)",
                 params![
                     ACCOUNT_USER,
                     format!("synthetic-{n}"),
-                    vectors()["browserCertificate"]["certificate"].to_string()
+                    vectors()["browserCertificate"]["certificate"].to_string(),
+                    100 + n
                 ],
             )
             .unwrap();
@@ -2540,37 +2541,95 @@ async fn security_revision_browser_cap_keeps_idempotent_registration_working() {
     }
     let body =
         json!({"certificate":vectors()["browserCertificate"]["certificate"],"label":"synthetic"});
-    let (s, v) = f
-        .json(
+    for _ in 0..2 {
+        let (s, v) = f
+            .json(
+                Method::POST,
+                "/relay/account/browsers",
+                Some(&token),
+                body.clone(),
+            )
+            .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+    }
+    let conn = f.state.store.conn.lock().await;
+    let rows: Vec<String> = conn
+        .prepare("SELECT browser_id FROM relay_account_browsers WHERE user_id=?1")
+        .unwrap()
+        .query_map([ACCOUNT_USER], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    // Only the oldest row went, once; the repeat registration was idempotent.
+    assert_eq!(rows.len(), 32);
+    assert!(!rows.contains(&"synthetic-0".to_string()));
+    assert!(rows.contains(&"synthetic-1".to_string()));
+}
+
+#[tokio::test]
+async fn a_signing_out_browser_removes_its_own_row_but_not_one_another_session_uses() {
+    let f = Fixture::new("security-browser-signout").await;
+    let token = f.register().await;
+    let body =
+        json!({"certificate":vectors()["browserCertificate"]["certificate"],"label":"phone"});
+    assert_eq!(
+        f.json(
             Method::POST,
             "/relay/account/browsers",
             Some(&token),
-            body.clone(),
+            body.clone()
         )
-        .await;
-    assert_eq!(s, StatusCode::TOO_MANY_REQUESTS);
-    assert_eq!(v["code"], "browser_limit");
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let id = vectors()["browserCertificate"]["certificate"]["browserId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let path = format!(
+        "/relay/account/browsers/{}",
+        url::form_urlencoded::byte_serialize(id.as_bytes()).collect::<String>()
+    );
+    {
+        // Another live session bound to the same browser keeps the row.
+        let conn = f.state.store.conn.lock().await;
+        let columns: Vec<String> = conn
+            .prepare("PRAGMA table_info(relay_auth_sessions)")
+            .unwrap()
+            .query_map([], |r| r.get(1))
+            .unwrap()
+            .map(Result::unwrap)
+            .filter(|c: &String| c != "token_hash")
+            .collect();
+        let list = columns.join(",");
+        conn.execute(
+            &format!("INSERT INTO relay_auth_sessions(token_hash,{list}) SELECT 'other-session',{list} FROM relay_auth_sessions WHERE account_browser_id=?1 LIMIT 1"),
+            [&id],
+        )
+        .unwrap();
+    }
+    let (s, v) = f.json(Method::DELETE, &path, Some(&token), json!({})).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
     {
         let conn = f.state.store.conn.lock().await;
         conn.execute(
-            "DELETE FROM relay_account_browsers WHERE browser_id='synthetic-0'",
+            "DELETE FROM relay_auth_sessions WHERE token_hash='other-session'",
             [],
         )
         .unwrap();
     }
-    for _ in 0..2 {
-        assert_eq!(
-            f.json(
-                Method::POST,
-                "/relay/account/browsers",
-                Some(&token),
-                body.clone()
-            )
-            .await
-            .0,
-            StatusCode::OK
-        );
-    }
+    let (s, v) = f.json(Method::DELETE, &path, Some(&token), json!({})).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let conn = f.state.store.conn.lock().await;
+    let left: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM relay_account_browsers WHERE browser_id=?1",
+            [&id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(left, 0);
 }
 
 #[tokio::test]
