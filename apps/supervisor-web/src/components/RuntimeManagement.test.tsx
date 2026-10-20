@@ -152,3 +152,32 @@ it('explains a command missing from PATH and blocks the adapter until it is inst
   expect(screen.getByText('Last operation failed: Install the base agent first: codex')).toHaveAttribute('role','alert');
   expect(screen.getByRole('button',{name:'OpenAI Codex'})).toHaveAttribute('title','Not installed');
 });
+
+it('installs DSH as one managed package with no separate adapter', async () => {
+  api.request.mockImplementation((path: string) => Promise.resolve(path.endsWith('/harnesses') ? [{
+    id:'deepseek', name:'DeepSeek Harness', transport:'native', baseCommand:'dsh',
+    base:{installed:false,canInstall:true,canUpdate:false,path:'',resolvedPath:'',manager:'pockymoe',reason:''},
+    adapter:null,
+  }] : {}));
+  mount('/devices/a/threads/thread-a');
+  fireEvent.click(await screen.findByRole('button',{name:'DeepSeek Harness'}));
+  const install = await screen.findByRole('button',{name:'Install DeepSeek Harness'});
+  expect(install).toBeEnabled();
+  expect(screen.queryByRole('button',{name:/DeepSeek Harness adapter/})).not.toBeInTheDocument();
+  fireEvent.click(install);
+  fireEvent.click(screen.getByRole('button',{name:/^Install$/}));
+  await waitFor(()=>expect(api.request).toHaveBeenCalledWith('relay/devices/a/api/management/harnesses/deepseek',expect.objectContaining({method:'POST',body:JSON.stringify({action:'install',component:'base'})})));
+});
+
+it('lets a pockymoe-managed DSH update in place', async () => {
+  api.request.mockImplementation((path: string) => Promise.resolve(path.endsWith('/harnesses') ? [{
+    id:'deepseek', name:'DeepSeek Harness', transport:'native', baseCommand:'dsh',
+    base:{path:'/home/u/.local/share/remote-codex/harnesses/bin/dsh',resolvedPath:'/home/u/.local/share/remote-codex/harnesses/lib/node_modules/@deepseek-ai/dsh/lib/bin.js',version:'0.2.1-rc.2',manager:'pockymoe',canUpdate:true,updateCommand:'npm install --global --prefix /home/u/.local/share/remote-codex/harnesses @deepseek-ai/dsh@latest --no-audit --no-fund'},
+    adapter:null,
+  }] : {}));
+  mount('/devices/a/threads/thread-a');
+  fireEvent.click(await screen.findByRole('button',{name:'DeepSeek Harness'}));
+  const components = await screen.findByRole('list', {name:'DeepSeek Harness components'});
+  expect(components).toHaveTextContent('0.2.1-rc.2 · Managed by Pockymoe');
+  expect(screen.getByRole('button',{name:'Update DeepSeek Harness'})).toBeEnabled();
+});

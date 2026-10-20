@@ -108,9 +108,14 @@ Open a device's Settings to manage its Supervisor, harnesses and upstreams.
 Only the device owner can change these settings. Install/Update jobs keep running
 when the page closes; their progress is visible when reopening Settings. The
 managed install catalog includes Codex, Claude Code, Gemini CLI, Grok Build,
-Cursor Agent, GitHub Copilot and OpenCode. Codex and Claude also install the ACP
-adapter. Updates preserve the detected installation owner. DeepSeek/custom
-executables still need an externally managed installation.
+Cursor Agent, GitHub Copilot, OpenCode and DeepSeek Harness. Codex and Claude also
+install the ACP adapter. DeepSeek Harness is one npm package (`@deepseek-ai/dsh`)
+with ACP and its Web console built in, so it has no separate adapter; Install and
+Update use its `latest` tag, which is currently a release candidate. Updates
+preserve the detected installation owner, and a global npm installation of
+`@deepseek-ai/dsh` updates in place. Custom executables still need an externally
+managed installation. npm installs use Node `^22.19 || >=24`; without one, the
+Supervisor installs a private Node 22.
 
 Upstream profiles support OpenAI Codex Responses, Claude Agent Messages, Gemini
 GenerateContent, Grok Responses/Chat Completions, and DSH DeepSeek official /

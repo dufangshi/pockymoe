@@ -25,11 +25,22 @@ fn npm_package(id: &str) -> Option<&'static str> {
         "gemini" => Some("@google/gemini-cli"),
         "copilot" => Some("@github/copilot"),
         "opencode" => Some("opencode-ai"),
+        // DSH ships ACP and its Web console bundle in one package; `latest`
+        // is its current release candidate while it publishes no stable line.
+        "deepseek" => Some("@deepseek-ai/dsh"),
         _ => None,
     }
 }
 pub fn can_install(id: &str) -> bool {
     npm_package(id).is_some() || (!cfg!(windows) && matches!(id, "grok" | "cursor"))
+}
+/// Why a harness has no Install action.
+fn no_installer(id: &str) -> &'static str {
+    if matches!(id, "grok" | "cursor") {
+        "This harness has no managed installer on Windows. Install it with its own installer."
+    } else {
+        "This harness has no managed installer. Install it with its own installer."
+    }
 }
 pub async fn ensure_adapter(def: &crate::acp::catalog::AcpAgentDef) -> Result<()> {
     crate::acp::dependencies::ensure(def, false).await
@@ -89,7 +100,7 @@ pub async fn install_harness(state: &Supervisor, id: &str) -> Result<()> {
         )
         .await?;
     } else {
-        bail!("No supported installer for this harness on this platform");
+        bail!(no_installer(id));
     }
     let installed = inspect(&def.base_command, id)
         .await
@@ -249,6 +260,7 @@ pub fn installation(path: PathBuf, agent: &str) -> Installation {
                 | "@google/gemini-cli"
                 | "@github/copilot"
                 | "opencode-ai"
+                | "@deepseek-ai/dsh"
                 | "@agentclientprotocol/codex-acp"
                 | "@agentclientprotocol/claude-agent-acp"
                 | "pockymoe"
@@ -378,7 +390,7 @@ pub async fn inventory(state: &Supervisor) -> Value {
             if def.transport == "adapter" { Some(adapter_inventory(&def).await) } else { None }
         });
         let job = state.management_jobs.lock().unwrap().get(&def.id).cloned();
-        let base=base.map(dto).unwrap_or_else(|_|json!({"installed":false,"canInstall":can_install(&def.id),"canUpdate":false,"path":"","resolvedPath":"","manager":"pockymoe","reason":if can_install(&def.id){""}else{"No managed installer available for this platform."}}));
+        let base=base.map(dto).unwrap_or_else(|_|json!({"installed":false,"canInstall":can_install(&def.id),"canUpdate":false,"path":"","resolvedPath":"","manager":"pockymoe","reason":if can_install(&def.id){""}else{no_installer(&def.id)}}));
         let adapter_command = (def.transport == "adapter").then_some(&def.server_command);
         json!({"id":def.id,"name":def.display_name,"transport":def.transport,"baseCommand":def.base_command,"adapterCommand":adapter_command,"base":base,"adapter":adapter,"job":job})
     })).await;

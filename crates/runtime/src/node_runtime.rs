@@ -18,13 +18,20 @@ pub(crate) fn bin_dir() -> PathBuf {
         root.join("bin")
     }
 }
+/// Node `^22.19 || >=24`, the strictest range among managed harnesses (DSH).
 fn node_ready(stdout: &[u8]) -> bool {
-    std::str::from_utf8(stdout)
+    let Some(version) = std::str::from_utf8(stdout)
         .ok()
         .and_then(|s| s.trim().strip_prefix('v'))
-        .and_then(|s| s.split('.').next())
-        .and_then(|s| s.parse::<u32>().ok())
-        .is_some_and(|major| major >= 22)
+    else {
+        return false;
+    };
+    let mut parts = version.split('.').map(|part| part.parse::<u32>().ok());
+    match (parts.next().flatten(), parts.next().flatten()) {
+        (Some(22), Some(minor)) => minor >= 19,
+        (Some(major), _) => major >= 24,
+        _ => false,
+    }
 }
 async fn ready() -> bool {
     let Some(node) = crate::acp::resolve_executable("node") else {
@@ -202,7 +209,10 @@ mod tests {
     #[test]
     fn agent_node_version_gate() {
         assert!(node_ready(b"v22.22.0\n"));
+        assert!(node_ready(b"v22.19.0"));
         assert!(node_ready(b"v24.1.0"));
+        assert!(!node_ready(b"v22.18.1"));
+        assert!(!node_ready(b"v23.11.0"));
         assert!(!node_ready(b"v20.1.0"));
         assert!(!node_ready(b"not-node"));
         assert!(archive_name().unwrap().starts_with("node-v22.22.0-"));
