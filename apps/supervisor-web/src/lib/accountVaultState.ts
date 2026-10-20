@@ -1,4 +1,5 @@
 import { translate } from '@pockymoe/thread-ui/i18n';
+import { unlockCause, type UnlockCause } from './unlockCause';
 import type { AccountKeyInfo, BoundDevice, BrowserIdentity, DeviceCertificate, Revocation, UnlockedAccount, UnlockReason } from './accountVault';
 import { accountStore } from './accountStore';
 import { relayUrl } from './relayOrigin';
@@ -157,11 +158,12 @@ function windowHandle(): UnlockedAccount {
     },
   };
 }
-export async function requireUnlock(reason: UnlockReason): Promise<UnlockedAccount> {
+/** `cause` says why, for the prompt and support reports; by default the action itself. */
+export async function requireUnlock(reason: UnlockReason, cause: UnlockCause = unlockCause('action', { action: reason })): Promise<UnlockedAccount> {
   if (isAccountUnlocked()) return windowHandle();
   if (typeof window === 'undefined') throw new AccountTrustError('accountUnlockRequired');
   return new Promise((resolve, reject) => window.dispatchEvent(new CustomEvent(ACCOUNT_UNLOCK_REQUEST, {
-    detail: { reason, resolve, reject },
+    detail: { reason, cause, resolve, reject },
   })));
 }
 export async function verifyDeviceCertificate(cert: DeviceCertificate, account: AccountKeyInfo, deviceId: string, identityKey: string) {
@@ -202,7 +204,7 @@ export async function unlockAccount(secret: string, recovery = false) {
   const vault = await accountRequest<Vault>('relay/account/vault');
   return openVault(vault, secret, recovery, id);
 }
-export async function registerBrowser(label = browserLabel()) {
+export async function registerBrowser(label = browserLabel(), source = 'registerBrowser') {
   let browser = await currentBrowser();
   const revoked = await accountRevocations(true);
   if (browser && revoked.some(r => r.kind === 'browser' && r.subjectId === browser!.browserId)) {
@@ -212,7 +214,7 @@ export async function registerBrowser(label = browserLabel()) {
   }
   let w: WindowState | undefined;
   if (!browser) {
-    const handle = await requireUnlock('connect'); w = windowState();
+    const handle = await requireUnlock('connect', unlockCause('missing-browser-key', { source })); w = windowState();
     const pair = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign', 'verify']);
     const publicKey = c.encode64(await crypto.subtle.exportKey('spki', pair.publicKey));
     const fields = { accountKeyId: handle.accountKeyId, browserId: await c.hash64(c.decode64(publicKey)), publicKey, createdAt: Date.now() };

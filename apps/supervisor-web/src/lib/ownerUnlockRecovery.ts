@@ -4,6 +4,8 @@ export const OWNER_READ_BLOCKED_EVENT = 'remote-codex-owner-read-blocked';
 export interface OwnerReadBlockedDetail {
   deviceId: string;
   revoked: boolean;
+  /** The device's or transport's answer that blocked the read. */
+  code?: string | undefined;
 }
 export interface OwnerUnlockedDetail {
   deviceIds: string[];
@@ -81,7 +83,7 @@ export async function readAfterOwnerUnlock<T extends { response: Response }>(
       // The gesture can finish while the encrypted failure is still in flight.
       if (generation !== attempt) continue;
       window.dispatchEvent(new CustomEvent<OwnerReadBlockedDetail>(OWNER_READ_BLOCKED_EVENT, {
-        detail: { deviceId, revoked },
+        detail: { deviceId, revoked, code },
       }));
       if (generation !== attempt) continue;
       await new Promise<void>((resolve, reject) => {

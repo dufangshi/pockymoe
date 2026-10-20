@@ -12,7 +12,7 @@ vi.mock('../lib/accountVaultState', () => ({ ACCOUNT_UNLOCK_REQUEST: 'pockymoe-a
   AccountTrustError: class extends Error { constructor(public code: string) { super(code); } },
 }));
 vi.mock('../lib/accountAuth', () => ({ isOAuthAccount: state.oauth, accountSessionState: state.session }));
-vi.mock('../lib/api', () => ({ relayLogout: state.logout }));
+vi.mock('../lib/api', () => ({ relayLogout: state.logout, fetchRelayPortal: vi.fn().mockResolvedValue({ devices: [], sharedWithMe: [{ deviceId: 'dev-device-1', deviceName: 'dev' }], sharedByMe: [] }) }));
 vi.mock('../lib/relayTransportCrypto', () => ({ clearTransportKeyCache: vi.fn() }));
 vi.mock('../lib/relayTransport', () => ({ probeDeviceEncryption: vi.fn().mockResolvedValue(undefined), getTransportStatus: () => ({ state: 'encrypted' }) }));
 beforeEach(() => {
@@ -126,4 +126,21 @@ it('explains a browser that found itself in the account-signed revocation list',
   act(() => { window.dispatchEvent(new Event(BROWSER_REMOVED)); });
   ask('connect');
   expect(await screen.findByRole('dialog', { name: translate('auth.ui.removedTitle') })).toBeVisible();
+});
+
+it('says which device refused which request, and copies the details', async () => {
+  render(<AccountUnlockPrompt />);
+  act(() => window.dispatchEvent(new CustomEvent('remote-codex-transport', { detail: {
+    deviceId: 'dev-device-1', state: 'unlock-required',
+    unlockCause: { kind: 'device-refused', deviceId: 'dev-device-1', method: 'GET', path: '/api/threads/t1/subagents', code: 'browser_registration_required', at: Date.now() },
+  } })));
+  expect(await screen.findByText(translate('auth.unlockCause.deviceRefused', { device: 'dev' }))).toBeVisible();
+  expect(screen.getByText(/GET \/api\/threads\/t1\/subagents · browser_registration_required/)).toBeVisible();
+  expect(screen.getByRole('button', { name: translate('auth.unlockCause.copy') })).toBeVisible();
+});
+
+it('names the action an explicit unlock is for', async () => {
+  render(<AccountUnlockPrompt />);
+  ask('bind-device');
+  expect(await screen.findByText(translate('auth.unlockCause.action', { action: translate('auth.unlockAction.bindDevice') }))).toBeVisible();
 });

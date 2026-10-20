@@ -50,7 +50,7 @@ export function AccountSessionGate({ children }: { children: ReactNode }) {
       // again; check first so registration never opens a second prompt.
       const revoked = (await accountRevocations(true)).some(r => r.kind === 'browser' && r.subjectId === browser.browserId);
       if (revoked) { await clearBrowser(browser.browserId); setGate({ kind: 'unlock', removed: true }); return; }
-      await registerBrowser();
+      await registerBrowser(undefined, 'session-gate');
       setGate({ kind: 'ready' });
     } catch (caught) { setGate({ kind: 'error', message: message(caught) }); }
   }, []);
@@ -121,7 +121,7 @@ function UnlockCard({ oauth, removed, footer, onDone, onKeyLost }: { oauth: bool
     try {
       await unlockAccount(secret, recovery);
       if (recovery) { setNewPassword('ask'); return; }
-      await registerBrowser(); onDone();
+      await registerBrowser(undefined, 'session-gate'); onDone();
     } catch (caught) {
       // A relay without `browserBound` refuses the new key for a bound session.
       if (caught instanceof AccountTrustError && caught.code === 'forbidden') { onKeyLost(); return; }
@@ -167,7 +167,7 @@ function NewPasswordCard({ oauth, footer, subtitle, onDone }: { oauth: boolean; 
     setBusy(true);
     try {
       await changeAccountPassword(password, oauth);
-      await registerBrowser(); onDone();
+      await registerBrowser(undefined, 'session-gate'); onDone();
     } catch (caught) { setError(message(caught)); }
     finally { setBusy(false); }
   }
@@ -196,7 +196,7 @@ function ResetCard({ oauth, footer, onDone, onStartedOver }: { oauth: boolean; f
       const account = await unlockAccount(code, true);
       await changeAccountPassword(password, oauth);
       await setAccountSession(account.userId, { mode: oauth ? 'oauth' : 'account', setupRequired: false, recovery: false, hasVault: true, accountKeyId: account.accountKeyId });
-      await registerBrowser(); onDone();
+      await registerBrowser(undefined, 'session-gate'); onDone();
     } catch (caught) { setError(message(caught)); }
     finally { setBusy(false); }
   }

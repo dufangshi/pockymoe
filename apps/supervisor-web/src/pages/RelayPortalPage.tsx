@@ -300,7 +300,7 @@ function RegisterCard({ settings, onBack, onRegistered }: {
       const prepared = await createVault(crypto.randomUUID(), password);
       const trimmed = code.trim();
       const result = await registerAccount({ email, username, ...(trimmed ? { registrationPassword: trimmed } : {}) }, prepared);
-      if (!result.pendingApproval) { await openVault(prepared.vault, password); await registerBrowser(); }
+      if (!result.pendingApproval) { await openVault(prepared.vault, password); await registerBrowser(undefined, 'registration'); }
       onRegistered(prepared.recoveryCode, Boolean(result.pendingApproval));
     } catch (caught) { setError(errorMessage(caught)); }
     finally { setBusy(false); }
@@ -354,7 +354,7 @@ function ResetPasswordCard({ onBack, onAuthenticated, onChallenge }: {
       if (!session.user) throw new Error(translate('auth.accountUnlockRequired'));
       await finishAccountLogin(session.user.id, session.user);
       await changeAccountPassword(password, await isOAuthAccount());
-      await registerBrowser();
+      await registerBrowser(undefined, 'sign-in');
       await onAuthenticated();
     } catch (caught) { setError(errorMessage(caught)); }
     finally { setBusy(false); }

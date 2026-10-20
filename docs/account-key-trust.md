@@ -226,6 +226,11 @@ shows "This browser was removed. Enter your password to reconnect."; entering th
 password creates a new browser key. A plaintext `browser_revoked` (which the relay
 could forge) never deletes the key.
 
+Every unlock prompt states its cause under the description: no browser key in
+this browser, a device that refused a request (device name, method, path and
+code), a removed browser, or the action that needs the account key, with a button
+that copies these details for support.
+
 A signed-in session whose browser has no browser key shows **Unlock this browser**
 on every account page until it has one: "Enter your password once to connect to
 your devices. Your account key stays unlocked for sensitive changes for 10

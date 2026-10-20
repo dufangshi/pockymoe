@@ -10,6 +10,7 @@ import {
 } from '@hpke/core';
 
 import { currentAccount, currentBrowser, boundDevices, type DeviceCertificate } from './accountVault';
+import { unlockCause, type UnlockCause } from './unlockCause';
 import { AccountTrustError, browserRequestHeaders, isBrowserRegistered, markBrowserRegistered,
   forgetBrowserRegistration, handleBrowserRevoked, syncDeviceRevocations, verifyTransportDevice,
   hasAccountDeviceCertificate, resetBrowserTransport } from './accountTransport';
@@ -55,6 +56,8 @@ export interface TransportStatus {
   accountKeyId?: string | undefined;
   bound?: boolean;
   unlockReason?: 'browser_revoked';
+  /** Why an unlock is asked for; shown in the unlock prompt. */
+  unlockCause?: UnlockCause;
   strict?: boolean;
   certificateVerified?: boolean;
   role?: 'owner' | 'grantee';
@@ -355,7 +358,7 @@ export async function inspectEnrollmentDevice(deviceId: string) {
   if (!key) throw new AccountTrustError('accountIdentityMismatch');
   return key.descriptor;
 }
-async function reportOwnerRequired(response: Response, deviceId: string, encryptedBrowserId?: string, trustedIdentity = false) {
+async function reportOwnerRequired(response: Response, deviceId: string, request: { method: string; path: string }, encryptedBrowserId?: string, trustedIdentity = false) {
   if (response.ok) return;
   const body = await response.clone().json().catch(() => null) as { code?: string } | null;
   const revoked = response.status === 401 && body?.code === 'browser_revoked' && !!encryptedBrowserId && trustedIdentity;
@@ -369,6 +372,7 @@ async function reportOwnerRequired(response: Response, deviceId: string, encrypt
     // With this browser's key the next request registers again; a password cannot help.
     if (revoked || !(await currentBrowser().catch(() => null)))
       reportTransport({ deviceId, state: 'unlock-required', paired: true, bound: true, strict: true,
+        unlockCause: unlockCause(revoked ? 'browser-removed' : 'missing-browser-key', { deviceId, ...request, code: body?.code }),
         ...(revoked ? { unlockReason: 'browser_revoked' as const } : {}) });
   }
 }
@@ -477,7 +481,8 @@ export async function exchange(
     key = await keyFor(route.deviceId, route.path, scope);
   } catch (error) {
     if (error instanceof AccountTrustError && error.code === 'accountUnlockRequired') {
-      reportTransport({ deviceId: route.deviceId, state: 'unlock-required', paired: true, bound: true });
+      reportTransport({ deviceId: route.deviceId, state: 'unlock-required', paired: true, bound: true,
+        unlockCause: unlockCause('account-missing', { deviceId: route.deviceId, method: request.method, path: route.path, code: error.code }) });
     }
     if (error instanceof TransportError && error.status)
       return {
@@ -499,7 +504,7 @@ export async function exchange(
     if (route.path.split('?')[0] === supervisorPath('api/transport/bind'))
       throw new TransportError('transport_unavailable', translate('devices.remoteProtectionFailed'));
     const response = await nativeFetch(request);
-    await reportOwnerRequired(response, route.deviceId);
+    await reportOwnerRequired(response, route.deviceId, { method: request.method, path: route.path });
     return { response };
   }
   await beforeEncrypt?.();
@@ -508,7 +513,8 @@ export async function exchange(
   const bootstrap = [supervisorPath('api/transport/browser'), supervisorPath('api/transport/enrollment'), supervisorPath('api/transport/revocations')].includes(wirePath);
   if (key.paired && !bootstrap) {
     if (!owner) {
-      reportTransport({ deviceId: route.deviceId, state: 'unlock-required', paired: true, bound: true });
+      reportTransport({ deviceId: route.deviceId, state: 'unlock-required', paired: true, bound: true,
+        unlockCause: unlockCause('missing-browser-key', { deviceId: route.deviceId, method: request.method, path: route.path }) });
       throw new AccountTrustError('accountUnlockRequired');
     }
     try { await syncDeviceRevocations(route.deviceId, async revocations => {
@@ -517,7 +523,8 @@ export async function exchange(
       }));
       if (!result.response.ok) throw new AccountTrustError('accountRevocationsFailed');
     }); } catch (e) {
-      if (e instanceof AccountTrustError && e.code === 'browser_revoked') reportTransport({ deviceId: route.deviceId, state: 'unlock-required', paired: true, bound: true, unlockReason: 'browser_revoked' });
+      if (e instanceof AccountTrustError && e.code === 'browser_revoked') reportTransport({ deviceId: route.deviceId, state: 'unlock-required', paired: true, bound: true, unlockReason: 'browser_revoked',
+        unlockCause: unlockCause('browser-removed', { deviceId: route.deviceId, method: 'PUT', path: supervisorPath('api/transport/revocations'), code: e.code }) });
       if (e instanceof AccountTrustError && e.code === 'accountDeviceRevoked') reportTransport({ deviceId: route.deviceId, state: 'identity-changed', bound: true, certificateVerified: false });
       throw e;
     }
@@ -530,7 +537,8 @@ export async function exchange(
         const failure = await registered.response.clone().json().catch(() => null) as { code?: string } | null;
         if (registered.authenticated && registered.trustedIdentity && registered.response.status === 401 && failure?.code === 'browser_revoked') {
           await handleBrowserRevoked(owner.browserId);
-          reportTransport({ deviceId: route.deviceId, state: 'unlock-required', paired: true, bound: true, unlockReason: 'browser_revoked' });
+          reportTransport({ deviceId: route.deviceId, state: 'unlock-required', paired: true, bound: true, unlockReason: 'browser_revoked',
+            unlockCause: unlockCause('browser-removed', { deviceId: route.deviceId, method: 'POST', path: supervisorPath('api/transport/browser'), code: 'browser_revoked' }) });
         }
         throw new AccountTrustError(failure?.code ?? 'accountRegistrationFailed');
       }
@@ -661,7 +669,7 @@ export async function exchange(
     if (!response.ok) {
       const recovered = await recoverOwner(response);
       if (recovered) return recovered;
-      await reportOwnerRequired(response, route.deviceId);
+      await reportOwnerRequired(response, route.deviceId, { method: request.method, path: route.path });
       return { response };
     }
     throw new TransportError(
@@ -765,7 +773,7 @@ export async function exchange(
   const recovered = await recoverOwner(result, true);
   if (recovered) return recovered;
   const trustedIdentity = key.certificateVerified && (key.identityTrust === 'certificate' || key.identityTrust === 'invite');
-  await reportOwnerRequired(result, route.deviceId, key.paired || wirePath === supervisorPath('api/transport/browser') ? owner?.browserId : undefined, trustedIdentity);
+  await reportOwnerRequired(result, route.deviceId, { method: request.method, path: route.path }, key.paired || wirePath === supervisorPath('api/transport/browser') ? owner?.browserId : undefined, trustedIdentity);
   if (!socketKeys)
     return { response: result, continuation: data.streamNext ?? null, authenticated: true, trustedIdentity };
   return {

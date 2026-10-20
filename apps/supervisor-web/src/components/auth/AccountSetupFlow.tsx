@@ -42,7 +42,7 @@ export function AccountSetupFlow({ oauth, initialPassword, footer, onDone, onRea
       if (!step.prepared) { step.secret = secret; step.prepared = await createVault(userId, secret); }
       if (!step.stored) { await setupAccount(step.prepared, oauth); step.stored = true; setStored(true); }
       await openVault(step.prepared.vault, step.secret!);
-      await registerBrowser();
+      await registerBrowser(undefined, 'account-setup');
       setRecoveryCode(step.prepared.recoveryCode);
     } catch (caught) {
       if (!step.stored) progress.current = {};

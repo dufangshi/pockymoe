@@ -13,8 +13,10 @@ import { getTransportStatus, probeDeviceEncryption } from '../lib/relayTransport
 import { OWNER_READ_BLOCKED_EVENT, OWNER_UNLOCKED_EVENT, notifyOwnerUnlocked,
   type OwnerReadBlockedDetail, type OwnerUnlockedDetail } from '../lib/ownerUnlockRecovery';
 import { AuthField, AuthLink, AuthNotice, RecoveryCodeBody } from './auth/AuthUi';
+import { UnlockCauseNote } from './UnlockCauseNote';
+import { unlockCause, type UnlockCause } from '../lib/unlockCause';
 
-interface UnlockRequest { reason: UnlockReason; resolve: (a: UnlockedAccount) => void; reject: (e: unknown) => void }
+interface UnlockRequest { reason: UnlockReason; cause?: UnlockCause; resolve: (a: UnlockedAccount) => void; reject: (e: unknown) => void }
 
 /** Kept for the account security panel: a regenerated recovery code. */
 export function RecoveryConfirmation({ code, onConfirm, busy = false }: { code: string; onConfirm: () => void; busy?: boolean }) {
@@ -31,6 +33,8 @@ export function AccountUnlockPrompt() {
   const [devices, setDevices] = useState<string[]>([]), locked = useRef(new Map<string, boolean>());
   const [request, setRequest] = useState<UnlockRequest | null>(null), queue = useRef<UnlockRequest[]>([]);
   const [needsConnect, setNeedsConnect] = useState(false);
+  // Why the prompt is open; the latest reason wins and is shown to the user.
+  const [cause, setCause] = useState<UnlockCause | null>(null);
   const [dismissed, setDismissed] = useState(false), [lockedRevoked, setRevoked] = useState(false);
   const [browserRemoved, setBrowserRemoved] = useState(false), revoked = lockedRevoked || browserRemoved;
   const [secret, setSecret] = useState(''), [recovery, setRecovery] = useState(false), [oauth, setOAuth] = useState(false);
@@ -49,12 +53,16 @@ export function AccountUnlockPrompt() {
       if (event.type === 'remote-codex-owner-unlock-request') setDismissed(false);
       const s = (event as CustomEvent<TransportStatus>).detail; if (s?.state !== 'unlock-required') return;
       const wasRevoked = locked.current.get(s.deviceId) === true, removed = s.unlockReason === 'browser_revoked';
+      setCause(s.unlockCause ?? unlockCause(removed ? 'browser-removed' : 'device-refused', { deviceId: s.deviceId }));
       locked.current.set(s.deviceId, wasRevoked || removed);
       if (removed && !wasRevoked) setDismissed(false);
       setDevices([...locked.current.keys()]); setRevoked([...locked.current.values()].some(Boolean));
     };
     const blocked = (event: Event) => {
       const d = (event as CustomEvent<OwnerReadBlockedDetail>).detail;
+      // The transport usually reported the exact request just before; keep that one.
+      setCause(previous => previous?.deviceId === d.deviceId && Date.now() - previous.at < 10_000 ? previous
+        : unlockCause(d.revoked ? 'browser-removed' : 'device-refused', { deviceId: d.deviceId, code: d.code }));
       status(new CustomEvent('remote-codex-transport', { detail: { deviceId: d.deviceId, state: 'unlock-required', ...(d.revoked ? { unlockReason: 'browser_revoked' } : {}) } }));
     };
     const done = (event: Event) => {
@@ -62,7 +70,8 @@ export function AccountUnlockPrompt() {
       setDevices([...locked.current.keys()]); setRevoked([...locked.current.values()].some(Boolean));
     };
     const ask = (event: Event) => {
-      const req = (event as CustomEvent<UnlockRequest>).detail; queue.current.push(req); if (req.reason === 'connect') setNeedsConnect(true); setRequest(req); setDismissed(false);
+      const req = (event as CustomEvent<UnlockRequest>).detail; queue.current.push(req);
+      setCause(req.cause ?? unlockCause('action', { action: req.reason })); if (req.reason === 'connect') setNeedsConnect(true); setRequest(req); setDismissed(false);
     };
     const removedBrowser = () => { setBrowserRemoved(true); setDismissed(false); };
     window.addEventListener('remote-codex-transport', status); window.addEventListener('remote-codex-owner-unlock-request', status);
@@ -89,7 +98,7 @@ export function AccountUnlockPrompt() {
   }, [open]);
 
   async function complete(account: UnlockedAccount) {
-    await registerBrowser(); setBrowserRemoved(false);
+    await registerBrowser(undefined, 'unlock-prompt'); setBrowserRemoved(false);
     // Only reissue the original reads after a device confirms the new identity.
     const waitingDevices = [...locked.current.keys()];
     for (const id of waitingDevices) {
@@ -134,6 +143,7 @@ export function AccountUnlockPrompt() {
         <LockKeyhole aria-hidden="true" className="h-7 w-7 text-[var(--theme-accent-strong)]" />
         <DialogTitle className="text-lg font-semibold">{translate(title)}</DialogTitle>
         <DialogDescription className="text-sm leading-6 text-[var(--theme-fg-muted)]">{translate(description)}</DialogDescription>
+        {cause ? <UnlockCauseNote cause={cause} /> : null}
       </div>
       {setupPending ? (
         <button className="relay-button-primary h-11 w-full" onClick={() => window.location.reload()} type="button">{translate('auth.ui.setupContinue')}</button>
@@ -167,6 +177,6 @@ export function AccountUnlockPrompt() {
   </Dialog>;
 }
 
-export async function ensureBrowserAccess() {
-  if (!await currentBrowser()) await requireUnlock('connect');
+export async function ensureBrowserAccess(source = 'ensureBrowserAccess') {
+  if (!await currentBrowser()) await requireUnlock('connect', unlockCause('missing-browser-key', { source }));
 }

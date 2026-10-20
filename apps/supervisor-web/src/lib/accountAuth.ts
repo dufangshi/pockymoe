@@ -78,7 +78,7 @@ export async function finishAccountLogin(userId: string, user?: { username?: str
     if (state?.hasVault && !state.recovery && await currentAccount()) {
       if (user) await rememberAccountLogin({ id: userId, ...user });
       const { currentBrowser } = await import('./accountVaultState');
-      if (await currentBrowser()) await registerBrowser();
+      if (await currentBrowser()) await registerBrowser(undefined, 'sign-in');
     }
     return { setup: !state?.hasVault, recovery: !!state?.recovery };
   }
@@ -89,7 +89,7 @@ export async function finishAccountLogin(userId: string, user?: { username?: str
     const data = await decryptVault(vault, attempt.wrapKey, attempt.recovery ? 'recovery' : 'password', userId);
     await installUnlockedVault(vault, data, attempt.authKey);
     if (user) await rememberAccountLogin({ id: userId, ...user });
-    if (!attempt.recovery) await registerBrowser();
+    if (!attempt.recovery) await registerBrowser(undefined, 'sign-in');
     if (pendingIdentifier) await accountStore(loginCacheKey(pendingIdentifier), userId);
     return { setup: false, recovery: attempt.recovery };
   } finally { attempt.wrapKey.fill(0); if (pending === attempt) { pending = undefined; if (pendingExpiry) clearTimeout(pendingExpiry); pendingExpiry = undefined; } }
