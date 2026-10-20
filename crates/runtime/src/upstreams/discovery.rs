@@ -185,6 +185,10 @@ fn reasoning_capabilities(row: &Value) -> Option<ReasoningCapabilities> {
     let rows = row
         .get("reasoningEfforts")
         .or_else(|| row.get("reasoning_efforts"))
+        // llama.cpp gateways and Codex-style catalogs.
+        .or_else(|| row.get("supported_reasoning_efforts"))
+        .or_else(|| row.get("supportedReasoningEfforts"))
+        .or_else(|| row.get("supported_reasoning_levels"))
         .or_else(|| nested.get("options"))
         .or_else(|| nested.get("values"))
         .or_else(|| nested.as_array().map(|_| nested))?
@@ -225,6 +229,9 @@ fn reasoning_capabilities(row: &Value) -> Option<ReasoningCapabilities> {
     let declared = row
         .get("reasoningEffort")
         .or_else(|| row.get("reasoning_effort"))
+        .or_else(|| row.get("default_reasoning_effort"))
+        .or_else(|| row.get("defaultReasoningEffort"))
+        .or_else(|| row.get("default_reasoning_level"))
         .or_else(|| nested.get("default"))
         .and_then(Value::as_str)
         .and_then(normalize_effort);
@@ -422,8 +429,19 @@ mod tests {
             {"id":"unknown"},
             {"id":"disabled","supportsReasoningEffort":false,"reasoningEfforts":["high"]},
             {"id":"nested","capabilities":{"reasoning_effort":{"options":[{"id":"medium","default":true}],"default":"bogus"}}},
-            {"id":"no-default","reasoningEfforts":["low","high"],"reasoningEffort":"xhigh"}
+            {"id":"no-default","reasoningEfforts":["low","high"],"reasoningEffort":"xhigh"},
+            {"id":"llamacpp","supported_reasoning_efforts":["low","medium","xhigh"],"default_reasoning_effort":"medium"}
         ]}), false, &mut models).unwrap();
+        let declared = models["llamacpp"].reasoning.as_ref().unwrap();
+        assert_eq!(
+            declared
+                .efforts
+                .iter()
+                .map(|e| e.reasoning_effort.as_str())
+                .collect::<Vec<_>>(),
+            ["low", "medium", "xhigh"]
+        );
+        assert_eq!(declared.default.as_deref(), Some("medium"));
         let profile = super::super::tests::fixture("grok");
         let fallback = models["grok-4.6"].option(&profile, None);
         let build = models["grok-build-0.1"].option(&profile, Some(&fallback));
@@ -469,7 +487,7 @@ mod tests {
             serde_json::to_value(models.into_values().collect::<Vec<_>>()).unwrap(),
         )
         .unwrap();
-        assert_eq!(roundtrip.len(), 6);
+        assert_eq!(roundtrip.len(), 7);
     }
 
     #[test]
