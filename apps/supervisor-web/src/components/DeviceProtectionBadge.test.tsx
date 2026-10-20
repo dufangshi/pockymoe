@@ -23,6 +23,8 @@ vi.mock('../lib/remoteDeviceProtection', () => ({
   REMOTE_PROTECTION_CHANGED_EVENT: 'pockymoe-remote-protection-changed',
 }));
 vi.mock('../lib/accountVault', () => ({ currentAccount: async () => ({ accountKeyId: 'Jj39GRPC2V9Pe1hV2KdIojvRxmQ' }) }));
+vi.mock('../lib/finishPendingProtection', () => ({ finishPendingProtection: vi.fn(async () => true) }));
+import { finishPendingProtection } from '../lib/finishPendingProtection';
 vi.mock('./DeviceBindingPanel', () => ({
   DeviceBindingPanel: ({ repair }: { repair?: boolean }) => <p>binding panel{repair ? ' (repair)' : ''}</p>,
 }));
@@ -101,13 +103,14 @@ it.each([
   );
 });
 
-it.each(['en', 'zh-CN'] as const)('explains a pending local command in %s without offering remote retry', async (locale) => {
+it.each(['en', 'zh-CN'] as const)('explains a pending local command in %s, offering to finish it rather than a remote retry', async (locale) => {
   setLocale(locale);
   vi.mocked(deviceProtectionProgress).mockResolvedValue({ phase: 'local-command-pending' });
   render(<DeviceProtectionBadge device={device} protection="pending" />);
   const panel = await openBadge(translate('devices.state.waitingBind'));
   expect(within(panel).getByText(translate('devices.detail.waitingBind'))).toBeVisible();
-  expect(within(panel).getAllByRole('button').map(b => b.textContent)).toEqual([translate('devices.showLocalBindCommand')]);
+  // Nothing finishes protection in the background: the reader finishes it here.
+  expect(within(panel).getAllByRole('button').map(b => b.textContent)).toEqual([translate('devices.finishProtection'), translate('devices.showLocalBindCommand')]);
   expect(protectDevices).not.toHaveBeenCalled();
 });
 
@@ -147,11 +150,14 @@ it('hides switching offline and refreshes eligibility on reconnect', async () =>
   expect(await screen.findByRole('button', { name: 'Use one-click protection instead' })).toBeVisible();
 });
 
-it('does not offer switching while remote protection is queued', async () => {
+it('does not offer switching while remote protection is queued, and finishes it only when asked', async () => {
   vi.mocked(deviceProtectionProgress).mockResolvedValue({ phase: 'queued' });
   vi.mocked(canSwitchLocalEnrollmentToRemote).mockResolvedValue(true);
   render(<DeviceProtectionBadge device={device} protection="pending" />);
   const panel = await openBadge('Waiting for device');
   expect(canSwitchLocalEnrollmentToRemote).not.toHaveBeenCalled();
-  expect(within(panel).queryByRole('button')).toBeNull();
+  expect(within(panel).getAllByRole('button').map(b => b.textContent)).toEqual(['Finish protection']);
+  expect(finishPendingProtection).not.toHaveBeenCalled();
+  await act(async () => fireEvent.click(within(panel).getByRole('button', { name: 'Finish protection' })));
+  expect(finishPendingProtection).toHaveBeenCalledWith(device.id);
 });

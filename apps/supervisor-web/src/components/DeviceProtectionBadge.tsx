@@ -11,6 +11,7 @@ import { DeviceBindingPanel } from './DeviceBindingPanel';
 import { protectionView, useRemoteProtection, type Tone } from './DeviceProtectionStatus';
 import { FormDialog } from './FormDialog';
 import { ProtectDevicesButton } from './RemoteProtectionControls';
+import { finishPendingProtection } from '../lib/finishPendingProtection';
 
 const icons: Record<Tone, typeof ShieldCheck> = {
   ok: ShieldCheck, neutral: ShieldOff, info: ShieldQuestion, warn: ShieldAlert, error: ShieldAlert,
@@ -50,9 +51,12 @@ export function DeviceProtectionBadge({ device, protection }: {
     needsRepair: <button className="relay-button-secondary px-3 py-2" onClick={openBinding} type="button">{translate('devices.repairDevice')}</button>,
     updateNeeded: <button className="relay-button-primary px-3 py-2" disabled={busy || !device.connected} onClick={() => remote(() => updateAndProtectDevice(device.id))} type="button">{translate(busy ? 'devices.starting' : 'devices.updateAndProtect')}</button>,
     retry: <button className="relay-button-primary px-3 py-2" disabled={busy || !device.connected} onClick={() => remote(() => protectDevices([device]))} type="button">{translate(busy ? 'devices.starting' : 'devices.retryProtection')}</button>,
+    // Nothing finishes protection in the background any more: the reader does, here.
+    finish: <button className="relay-button-primary px-3 py-2" disabled={busy || !device.connected} onClick={() => remote(() => finishPendingProtection(device.id))} type="button">{translate(busy ? 'devices.starting' : 'devices.finishProtection')}</button>,
   };
   const action = status.key === 'notProtected' ? actions.notProtected
-    : status.key === 'waitingBind' ? actions.waitingBind
+    : status.key === 'waitingDevice' || status.key === 'protecting' ? actions.finish
+    : status.key === 'waitingBind' ? <>{device.connected ? actions.finish : null}{actions.waitingBind}</>
       : status.key === 'needsRepair' ? actions.needsRepair
         : status.key === 'updateNeeded' || status.key === 'updateFailed' ? actions.updateNeeded
           : status.key === 'otherAccount' || status.key === 'failed' ? actions.retry

@@ -13,7 +13,6 @@ import { WorkspaceDocumentNavigationGuard } from "./components/WorkspaceDocument
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { installNotificationRouteResponder } from './lib/relayPush';
 import { PortPreviewPage } from './pages/PortPreviewPage';
-import { DeviceEnrollmentMonitor } from './components/DeviceEnrollmentMonitor';
 import { AccountUnlockPrompt } from './components/AccountUnlockPrompt';
 import { PublicThreadPage } from './pages/PublicThreadPage';
 import {
@@ -737,7 +736,6 @@ export function App() {
         <WorkspaceDocumentNavigationGuard>
         <DocumentTitleUpdater />
         <AccountUnlockPrompt />
-        <DeviceEnrollmentMonitor />
           <Routes>
             <Route path="/shared" element={<SharedInvitePage />} />
             <Route path="/devices/:deviceId/ports/:mappingId" element={<RelayGate><PortPreviewPage /></RelayGate>} />

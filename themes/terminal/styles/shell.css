@@ -111,3 +111,9 @@
 :theme .thread-ui-shell .matter-thread-tools-path::before { content: '$'; margin-right: 7px; color: var(--theme-accent-solid); }
 :theme .thread-ui-shell .matter-thread-tools-path > svg { display: none; }
 :theme .thread-ui-shell .matter-thread-tools-title { padding-left: 15px; font-family: var(--term-font); }
+
+/* On a tab's icon the status is a small square at its corner (a bar when interrupted). */
+:theme .matter-thread-group[data-avatar] > .matter-group-tab > .matter-thread-avatar + .matter-status-dot { width: 6px; height: 6px; border: 0; box-shadow: 0 0 0 2px var(--theme-surface); }
+:theme .matter-thread-group[data-avatar] > .matter-group-tab[aria-current='page'] > .matter-thread-avatar + .matter-status-dot { box-shadow: 0 0 0 2px var(--theme-bg); }
+:theme .matter-thread-group[data-avatar] > .matter-group-tab > .matter-thread-avatar + .matter-status-dot[data-status='interrupted'] { width: 8px; height: 3px; }
+:theme .matter-thread-group[data-avatar] > .matter-group-tab > .matter-thread-avatar + .matter-status-dot[data-status='failed'] { rotate: 45deg; }

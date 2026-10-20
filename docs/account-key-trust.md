@@ -383,9 +383,11 @@ endpoint; it is a feature hint, never a security decision.
 
 ### Enrollment
 
-Enrollment completes on its own in the browser that created the command or
-started remote protection, on any page, while the device is online (checked every
-15 seconds while the page is visible, backing off to 2 minutes after failures):
+Enrollment completes when the reader asks for it: the device's protection chip
+on the devices page offers **Finish protection** while the device is online and
+an enrollment from this browser is pending. Nothing runs it in the background: a
+background loop that needed the account key interrupted work with password
+prompts, so it was removed. Finishing may ask for the password once.
 
 1. The browser fetches the device's key descriptor. If the descriptor already
    carries a certificate that verifies for this account, device and identity, and
