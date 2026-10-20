@@ -227,6 +227,9 @@ const EMPTY_PENDING_STEERS: NonNullable<ThreadDetailDto['pendingSteers']> = [];
 const recentThreadDetails = new Map<string, ThreadDetailDto>();
 /** Prefetches still in flight, reused by the page that opens the thread. */
 const pendingThreadDetails = new Map<string, Promise<ThreadDetailDto>>();
+/** Each thread's relay access as last checked: a switch shows it at once and
+    checks again quietly, instead of disabling the composer while it asks. */
+const recentRelayAccess = new Map<string, RelayEffectiveAccessDto>();
 function rememberThreadDetail(routeKey: string, detail: ThreadDetailDto) {
   recentThreadDetails.delete(routeKey);
   recentThreadDetails.set(routeKey, detail);
@@ -779,6 +782,30 @@ export function ThreadDetailPage() {
     error: null,
   });
   const workbenchNavigation = useWorkbenchNavigation(detail, threads, relayRouteDeviceId, id, { sharesDeviceThreads: true });
+  // Once this thread shows, the other open tabs are read one by one in the
+  // background, so switching to any of them (any workspace, not only a pointed-at
+  // one) paints its conversation at once instead of waiting for the device.
+  const openTabHrefs = workbenchNavigation.openTabs
+    .filter(tab => !tab.rootKey || tab.rootKey === tab.key)
+    .map(tab => tab.href)
+    .slice(0, 11)
+    .join('\n');
+  const threadShown = detail?.thread.id === id;
+  useEffect(() => {
+    if (!threadShown || !openTabHrefs) return;
+    const hrefs = openTabHrefs.split('\n');
+    let index = 0;
+    let timer = 0;
+    const next = () => {
+      if (document.visibilityState === 'hidden') { timer = window.setTimeout(next, 2000); return; }
+      const href = hrefs[index++];
+      if (href === undefined) return;
+      prefetchThread(href);
+      timer = window.setTimeout(next, 400);
+    };
+    timer = window.setTimeout(next, 1500);
+    return () => window.clearTimeout(timer);
+  }, [threadShown, openTabHrefs, prefetchThread]);
   // Task senders and a sub-thread's parent read by their titles.
   const describeThread = useThreadDirectory({
     device: relayRouteDeviceId ?? 'local',
@@ -1176,16 +1203,17 @@ export function ThreadDetailPage() {
     }
 
     let cancelled = false;
-    setRelayAccessState((current) => ({
-      ...current,
-      status: 'loading',
-      error: null,
-    }));
+    const accessKey = `${deviceId}:${currentDetail.thread.id}`;
+    const known = recentRelayAccess.get(accessKey);
+    setRelayAccessState((current) => known
+      ? { status: 'ready', access: known, error: null }
+      : { ...current, status: 'loading', error: null });
     fetchRelayAccess({
       deviceId,
       threadId: currentDetail.thread.id,
     })
       .then((access) => {
+        recentRelayAccess.set(accessKey, access);
         if (cancelled) {
           return;
         }
@@ -1196,6 +1224,7 @@ export function ThreadDetailPage() {
         });
       })
       .catch((caught) => {
+        recentRelayAccess.delete(accessKey);
         if (cancelled) {
           return;
         }
@@ -1896,7 +1925,9 @@ export function ThreadDetailPage() {
     recheckAfterFirstOpenRef.current = false;
     initialLoadRetriesRef.current = 0;
     const recent = recentThreadDetails.get(`${relayRouteDeviceId ?? 'local'}:${id}`) ?? null;
-    setDetail(null);
+    // A thread read recently shows at once; the load below refreshes it quietly.
+    // Clearing it here made every switch wait for the network (a flash over relay).
+    setDetail(recent);
     setError(null);
     setLoading(!recent);
     setLoadingEarlier(false);

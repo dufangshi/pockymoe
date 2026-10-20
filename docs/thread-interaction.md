@@ -399,7 +399,12 @@ On the desktop the tabs are the conversations the reader opened, like an
 editor's files: opening one adds its tab after the active one; ✕ (or a middle
 click) closes it, and closing the open one moves to its neighbour (or home when
 it was the last). They are kept in this browser (`pockymoe.open-tabs.v1`, up to
-40) and can be dragged into another order. Recent chats in the sidebar therefore
+40) and can be dragged into another order. Switching tabs keeps the page in
+place and shows the conversation at once: a conversation read in this visit is
+shown as last read and refreshed quietly, and once a conversation shows, the
+other open tabs (up to 11, any workspace) are read one by one in the background.
+Each tab's agent threads are a small robot and count right after its icon, on
+the tab's own background. Recent chats in the sidebar therefore
 start folded; shortcuts and **This workspace** start open, and every fold is
 remembered (`pockymoe.sidebar-sections.v1`). The sidebar's width follows a drag
 on its edge (200–420px, Arrow keys on the focused edge, double-click resets;

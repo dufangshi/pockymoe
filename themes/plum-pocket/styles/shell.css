@@ -287,8 +287,8 @@
 
 /* A conversation's agent threads: a soft plum pill in its row, opening a
    smaller-avatar list below on a plum guide line. */
-:theme .thread-ui-shell .matter-workbench .matter-thread-entry.matter-thread-entry:has(> .matter-agent-toggle) > .matter-thread-row { padding-right: 86px; }
-:theme .thread-ui-shell .matter-workbench .matter-agent-toggle { right: 36px; border-color: var(--plum-chrome-border); background: rgb(255 255 255 / 5%); color: var(--plum-chrome-muted); }
+:theme .thread-ui-shell .matter-workbench .matter-thread-entry.matter-thread-entry:has(> .matter-agent-toggle) > .matter-thread-row { padding-right: 72px; }
+:theme .thread-ui-shell .matter-workbench .matter-agent-toggle { right: 36px; color: var(--plum-chrome-muted); }
 :theme .thread-ui-shell .matter-workbench .matter-agent-toggle:is(:hover, [aria-expanded='true']) { background: rgb(199 166 255 / 20%); color: var(--plum-chrome-fg); }
 :theme .thread-ui-shell .matter-workbench .matter-agent-toggle[data-running] > svg:first-child { color: #f2c15c; }
 :theme .thread-ui-shell .matter-workbench .matter-agent-children::before { background: var(--plum-chrome-border); }
@@ -481,13 +481,13 @@
   --plum-status-interrupted: #f0b46a;
 }
 :theme .thread-ui-shell .matter-workbench .matter-thread-tabs > a[aria-current='page'] { background: var(--plum-shell-card); }
-/* The agent count rides right after the mascot as a small pill (base positions it). */
+/* The agent count rides right after the mascot, plain on the tab (base positions it). */
 :theme .thread-ui-shell .matter-workbench .matter-thread-group > .matter-group-toggle.is-badge {
   height: 18px;
-  padding: 0 6px 0 5px;
+  padding: 0 2px;
   border: 0;
-  border-radius: 999px;
-  background: rgb(199 166 255 / 16%);
+  border-radius: 6px;
+  background: transparent;
   color: var(--plum-chrome-soft);
   font-size: 10.5px;
   font-weight: 800;
@@ -508,6 +508,7 @@
 }
 :theme .thread-ui-shell .matter-workbench .matter-group-toggle:is(:hover, [aria-expanded='true']) { background: rgb(199 166 255 / 28%); color: var(--plum-chrome-fg); }
 :theme .thread-ui-shell .matter-workbench .matter-thread-group:has(> [aria-current='page']) .matter-group-toggle { background: var(--thread-gc-muted); color: var(--thread-gc-fg-soft); }
+:theme .thread-ui-shell .matter-workbench .matter-thread-group:has(> [aria-current='page']) .matter-group-toggle.is-badge:not(:hover, [aria-expanded='true']) { background: transparent; }
 :theme .thread-ui-shell .matter-workbench .matter-thread-group:has(> [aria-current='page']) .matter-group-toggle:is(:hover, [aria-expanded='true']) { background: var(--thread-gc-hover); color: var(--thread-gc-fg); }
 :theme .thread-ui-shell .matter-workbench .matter-tab-add .matter-new-thread {
   width: 28px;
