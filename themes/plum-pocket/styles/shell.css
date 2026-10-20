@@ -367,12 +367,12 @@
 :theme :is(.matter-thread-row, .matter-group-tab, .matter-agent-threads-item) > .matter-thread-avatar + .matter-status-dot[data-status='interrupted'] { --plum-badge: 10px; border-radius: 3px; background-color: var(--plum-status-interrupted); }
 /* A running mascot wears a soft breathing halo. */
 :theme :is(.matter-thread-row, .matter-group-tab, .matter-agent-threads-item):has(> .matter-status-dot[data-status='running']) > .matter-thread-avatar {
-  box-shadow: 0 0 0 1.5px var(--plum-status-running), 0 0 0 4px color-mix(in srgb, var(--plum-status-running) 22%, transparent);
+  box-shadow: 0 0 0 2px var(--plum-status-running), 0 0 0 4.5px color-mix(in srgb, var(--plum-status-running) 22%, transparent);
   animation: plum-shell-halo 1.8s ease-in-out infinite;
 }
 :theme :is(.matter-thread-row, .matter-group-tab, .matter-agent-threads-item):has(> .matter-status-dot:is([data-status='failed'], [data-status='error'])) > .matter-thread-avatar { box-shadow: 0 0 0 1.5px var(--plum-status-failed); }
 :theme :is(.matter-thread-row, .matter-group-tab, .matter-agent-threads-item):has(> .matter-status-dot[data-status='unknown']) > .matter-thread-avatar { filter: grayscale(.7); opacity: .7; }
-@keyframes plum-shell-halo { 50% { box-shadow: 0 0 0 1.5px var(--plum-status-running), 0 0 0 6px color-mix(in srgb, var(--plum-status-running) 8%, transparent); } }
+@keyframes plum-shell-halo { 50% { box-shadow: 0 0 0 2px var(--plum-status-running), 0 0 0 6px color-mix(in srgb, var(--plum-status-running) 8%, transparent); } }
 
 /* ── Tab strip and the conversation card ──────────────────────────────── */
 
@@ -426,6 +426,8 @@
   color: var(--theme-fg);
 }
 :theme[data-theme-effective='dark'] .thread-ui-shell .matter-workbench .matter-tabs-row > :not(.matter-tab-scroll, button, .workbench-thread-picker-actions) { --plum-shell-focus: #f2c15c; --plum-status-running: #8fc3ff; }
+/* Tabs other than the open one sit on the dark chrome in both modes: their running halo uses the light blue. */
+:theme .thread-ui-shell .matter-workbench .matter-tab-scroll .matter-group-tab:not([aria-current='page']) { --plum-status-running: #8fc3ff; }
 :theme .thread-ui-shell .matter-workbench .matter-tab-scroll { z-index: 1; height: 40px; align-items: flex-end; box-shadow: none; }
 :theme .thread-ui-shell .matter-workbench .matter-tab-scroll::before { background: linear-gradient(to right, var(--plum-chrome) 30%, transparent); text-shadow: none; color: var(--plum-chrome-soft); }
 :theme .thread-ui-shell .matter-workbench .matter-tab-scroll::after { background: linear-gradient(to left, var(--plum-chrome) 30%, transparent); text-shadow: none; color: var(--plum-chrome-soft); }
@@ -454,6 +456,7 @@
 :theme .thread-ui-shell .matter-workbench .matter-thread-group:hover:not(:has([aria-current='page'])) { --plum-badge-ring: var(--plum-chrome-hover); background: var(--plum-chrome-hover); }
 :theme .thread-ui-shell .matter-workbench .matter-thread-group:hover:not(:has([aria-current='page'])) .matter-group-tab { --plum-badge-ring: var(--plum-chrome-hover); color: var(--plum-chrome-fg); }
 :theme .thread-ui-shell .matter-workbench .matter-group-tab .matter-thread-avatar { width: 20px; height: 20px; box-shadow: 0 0 0 1px var(--plum-stitch); }
+:theme .thread-ui-shell .matter-workbench .matter-group-tab:has(> .matter-status-dot[data-status='running']) > .matter-thread-avatar { box-shadow: 0 0 0 2px var(--plum-status-running), 0 0 0 4.5px color-mix(in srgb, var(--plum-status-running) 22%, transparent); }
 :theme .thread-ui-shell .matter-workbench :is(.matter-thread-tabs > a[aria-current='page'], .matter-thread-group:has(> [aria-current='page'])) {
   background: var(--plum-shell-card);
   box-shadow: inset 0 2.5px 0 var(--theme-accent-solid), 0 -1px 0 var(--plum-shell-card-edge), 1px 0 0 var(--plum-shell-card-edge), -1px 0 0 var(--plum-shell-card-edge);
