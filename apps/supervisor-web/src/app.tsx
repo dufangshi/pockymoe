@@ -124,12 +124,15 @@ function RoutePluginProvider({ children }: { children: ReactNode }) {
 
 /**
  * The opened conversation's plugin scope: its renderers, panels and actions follow
- * its own switches. Keyed by device and thread, so switching never mixes settings.
+ * its own switches. It follows the thread in place (never showing one thread's
+ * answers as another's), so switching conversations keeps the workbench mounted:
+ * tabs, sidebar and composer stay, drafts survive, only the conversation changes.
+ * A different device has its own provider (RoutePluginProvider).
  */
 function ThreadRoutePluginScope({ children }: { children: ReactNode }) {
-  const { id = '', relayDeviceId } = useParams();
+  const { id = '' } = useParams();
   return (
-    <ThreadPluginScope key={`${relayDeviceId ?? 'local'}:${id}`} threadId={id}>
+    <ThreadPluginScope threadId={id}>
       {children}
     </ThreadPluginScope>
   );

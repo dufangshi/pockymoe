@@ -1,6 +1,7 @@
 import { act, renderHook } from '@testing-library/react';
-import { expect, it } from 'vitest';
-import { useThreadDrafts } from './useThreadDrafts';
+import { beforeEach, expect, it } from 'vitest';
+import { resetKeptDrafts, useThreadDrafts } from './useThreadDrafts';
+beforeEach(() => resetKeptDrafts());
 it('keeps drafts by device and thread and ignores a departed composer callback', () => {
   const { result, rerender } = renderHook(
     ({ source }) => useThreadDrafts(source),
@@ -39,4 +40,17 @@ it('shares both pane drafts including attachments across swaps and rejects stale
   expect(result.current[2].prompt).toBe('');
   rerender({ a: 'dev:b', b: 'dev:a' });
   expect(result.current[2].prompt).toBe('A');
+});
+
+
+it('keeps a draft when the page that edits it remounts (another device, another route)', () => {
+  const first = renderHook(() => useThreadDrafts('dev:a'));
+  act(() => first.result.current[1]({ prompt: 'half written', attachments: [] }));
+  first.unmount();
+  const second = renderHook(() => useThreadDrafts('dev:a'));
+  expect(second.result.current[0].prompt).toBe('half written');
+  // An emptied draft is forgotten, not kept as blank.
+  act(() => second.result.current[1]({ prompt: '', attachments: [] }));
+  second.unmount();
+  expect(renderHook(() => useThreadDrafts('dev:a')).result.current[0].prompt).toBe('');
 });

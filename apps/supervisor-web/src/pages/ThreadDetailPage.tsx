@@ -541,9 +541,12 @@ export function ThreadDetailPage() {
   const interruptingRef = useRef(false);
   const pendingThreadSettingsRef = useRef<PendingThreadSettings | null>(null);
   const resolvedRequestIdsRef = useRef<Set<string>>(new Set());
-  const [detail, setDetail] = useScopedState<ThreadDetailDto | null>(routeKey, null);
+  // A conversation seen recently shows at once on the switch's first render: the
+  // workbench (tabs, sidebar, composer) stays mounted and only the conversation
+  // changes, with no blank frame between. A fresh one is loaded below as before.
+  const [detail, setDetail] = useScopedState<ThreadDetailDto | null>(routeKey, recentThreadDetails.get(routeKey) ?? null);
   const threadListScope = relayRouteDeviceId ?? 'local';
-  // A thread switch remounts this page; the tab strip keeps the device's last
+  // A thread switch on another device remounts this page; the tab strip keeps the device's last
   // list until the fresh read answers, so only the highlight moves.
   const [threads, setThreads] = useScopedState<ThreadDto[]>(threadListScope, lastThreadLists.get(threadListScope) ?? []);
   useEffect(() => { lastThreadLists.set(threadListScope, threads); }, [threadListScope, threads]);
@@ -581,7 +584,7 @@ export function ThreadDetailPage() {
   const [nextTurnScrollRequestKey, setNextTurnScrollRequestKey] = useState(0);
   const [canJumpToPreviousTurn, setCanJumpToPreviousTurn] = useState(false);
   const [canJumpToNextTurn, setCanJumpToNextTurn] = useState(false);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useScopedState(routeKey, !recentThreadDetails.has(routeKey));
   const [loadingEarlier, setLoadingEarlier] = useState(false);
   const [mutationBusy, setBusy] = useScopedState(routeKey, false);
   const autoConnectionAttempt = useRef<{ key: string; promise: Promise<ThreadDetailDto> | null } | null>(null);

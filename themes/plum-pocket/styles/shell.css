@@ -478,7 +478,18 @@
   --plum-status-interrupted: #f0b46a;
 }
 :theme .thread-ui-shell .matter-workbench .matter-thread-tabs > a[aria-current='page'] { background: var(--plum-shell-card); }
-:theme .thread-ui-shell .matter-workbench .matter-group-toggle {
+/* The agent count rides right after the mascot as a small pill (base positions it). */
+:theme .thread-ui-shell .matter-workbench .matter-thread-group > .matter-group-toggle.is-badge {
+  height: 18px;
+  padding: 0 6px 0 5px;
+  border: 0;
+  border-radius: 999px;
+  background: rgb(199 166 255 / 16%);
+  color: var(--plum-chrome-soft);
+  font-size: 10.5px;
+  font-weight: 800;
+}
+:theme .thread-ui-shell .matter-workbench .matter-group-toggle:not(.is-badge) {
   position: relative;
   align-self: center;
   height: 22px;
