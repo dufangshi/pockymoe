@@ -503,7 +503,10 @@ tapping a device's or workspace's header row (its name, count and price) fills t
 map with that block, from any level and growing from where it was; a block too small
 to show what it holds opens when tapped anywhere; and a thread's tile opens the
 thread wherever it shows. Hovering a tile or its price shows their details at any
-level. The path above and the back arrow lead back, and on touch two fingers
+level. The path above and the back arrow lead back. Beside each device and
+workspace breadcrumb, an arrow link opens the device's workspace list or that
+workspace's unselected page; modified clicks retain normal browser behavior.
+On touch two fingers
 pinching in go up a level, spreading them opens the block under them, and dragging
 the map down closes it. A block too small for what it holds folds up. Go to (the list icon) reaches every block of the current level,
 however small. Hovering or focusing a block shows its details. The map reads its
@@ -511,9 +514,10 @@ devices again every 30 seconds while it is open.
 
 It opens from More on a phone, the workspace drawer, the rail on wider screens and
 the workspace list's header. In relay mode it reads each of the account's own
-devices through the relay: an offline device is a hatched block and one that
-cannot be read offers Retry. In local mode it reads this Supervisor. Shared
-devices and host-scoped Supervisors have no map.
+online devices through the relay, using `relay/portal` connectivity. Offline
+devices and their cached threads are excluded; an online device that cannot be
+read offers Retry. In local mode it reads this Supervisor. Shared devices have
+no map; a host-scoped Supervisor shows only the threads that tunnel may open.
 
 Each Supervisor reports turns and run time at `GET /api/thread-activity?hours=24`
 (1–168, default 24; owner only):
@@ -534,7 +538,12 @@ Moving around keeps the screen steady:
 
 - Home, the workspace list and the workspace drawer navigate inside the app; only
   a modified or middle click opens a new page.
-- A workspace row opens that workspace's most recent thread directly.
+- Opening a workspace from its list, navigation or map uses
+  `/threads?workspaceId=…` (under `/devices/:id` in relay mode). It shows an
+  unselected workspace with its conversations and their agent threads in the
+  sidebar. The main area offers a new thread and points to the sidebar.
+  Loading, polling and refreshing never select a conversation automatically;
+  the reader opens one explicitly.
 - A recently opened thread (the last twelve, per device) shows its conversation
   at once and refreshes quietly. Pressing a thread row starts loading it early; a
   load that finishes within a moment never shows the loader.

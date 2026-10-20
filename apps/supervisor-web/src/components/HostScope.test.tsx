@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import type { RuntimeConfigDto } from '@pockymoe/shared';
@@ -61,13 +61,16 @@ it.each(['/threads/new', '/threads', '/threads/another-bound-root'])('allows sco
   expect(await screen.findByText('Allowed page')).toBeVisible();
 });
 
-it('opens another bound Agent from the scoped workbench after a stale-route redirect', async () => {
+it('lets the reader choose another bound Agent from the unselected scoped workspace', async () => {
   vi.mocked(fetchThreads).mockResolvedValue([{ id:'333', title:'Codex conversation',workspaceId:'project',updatedAt:'2026-10-14T01:00:00Z' }] as never);
   vi.mocked(fetchWorkspaces).mockResolvedValue([{id:'project',label:'Project',absPath:'/project'}] as never);
   render(<MemoryRouter initialEntries={['/threads']}><HostCapabilitiesProvider scope="local"><Routes>
     <Route path="/threads" element={<HostScopeRouteGate><ThreadsPage /></HostScopeRouteGate>} />
     <Route path="/threads/333" element={<p>Codex conversation opened</p>} />
   </Routes></HostCapabilitiesProvider></MemoryRouter>);
+  expect(await screen.findByRole('heading', { name: 'Project', exact: true })).toBeVisible();
+  expect(screen.queryByText('Codex conversation opened')).toBeNull();
+  fireEvent.click(screen.getByTestId('workspace-threads').querySelector('a')!);
   expect(await screen.findByText('Codex conversation opened')).toBeVisible();
   expect(fetchThreads).toHaveBeenCalledWith(true);
   expect(screen.queryByRole('alert')).toBeNull();

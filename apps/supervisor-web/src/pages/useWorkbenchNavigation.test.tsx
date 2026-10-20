@@ -4,7 +4,7 @@ import type { ReactNode } from 'react';
 import type { RuntimeConfigDto } from '@pockymoe/shared';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import type { ThreadDetailDto, ThreadDto } from '@pockymoe/shared';
+import type { ThreadDetailDto, ThreadDto, WorkspaceDto } from '@pockymoe/shared';
 import { useWorkbenchNavigation, workbenchThreadStatus } from './useWorkbenchNavigation';
 import { ApiError, request, fetchRuntimeConfig, relayModeActive } from '../lib/api';
 import { useScopedState } from './useScopedState';
@@ -17,6 +17,27 @@ vi.mock('../lib/api', async original => ({
 }));
 
 describe('account thread navigation', () => {
+  it('lists a workspace before any thread is selected and follows workspace switches', async () => {
+    vi.mocked(request).mockImplementation(async url => {
+      if (url === 'relay/account/workbench') return { threads: [], notifications: [] };
+      throw new Error(`Unexpected URL: ${url}`);
+    });
+    const root = { id: 'root', workspaceId: 'app', title: 'Root', status: 'idle' } as ThreadDto;
+    const worker = { ...root, id: 'worker', workspaceId: 'docs', parentThreadId: root.id, rootThreadId: root.id };
+    const other = { ...root, id: 'other', workspaceId: 'docs' };
+    const { result, rerender, unmount } = renderHook(({ workspace }) =>
+      useWorkbenchNavigation(null, [root, worker, other], 'laptop', undefined, { workspace, sharesDeviceThreads: true }), {
+        initialProps: { workspace: { id: 'app', label: 'App' } as WorkspaceDto },
+      });
+    await waitFor(() => expect(result.current.navigationReady).toBe(true));
+    expect(result.current.currentKey).toBe('laptop:');
+    expect(result.current.workspaceThreads.map(thread => thread.key)).toEqual(['laptop:root', 'laptop:worker']);
+    expect(result.current.workspaceThreads[0]?.subtitle).toBe('App');
+    rerender({ workspace: { id: 'docs', label: 'Docs' } as WorkspaceDto });
+    expect(result.current.workspaceThreads.map(thread => thread.key)).toEqual(['laptop:other']);
+    expect(result.current.currentKey).toBe('laptop:');
+    unmount();
+  });
   it('saves a shortcut order for the account and shows it before the relay answers', async () => {
     const reference = (threadId: string, favoriteOrder?: number) => ({
       deviceId: 'wsl', threadId, title: threadId.toUpperCase(), workspaceLabel: 'Research', favorite: true,

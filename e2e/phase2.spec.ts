@@ -32,7 +32,7 @@ test.describe('Phase 2 acceptance', () => {
 
     await expect(page).toHaveURL(/\/threads\?workspaceId=.+/);
     await expect(
-      page.getByRole('heading', { level: 1, name: `Start a thread in ${workspaceName}` }),
+      page.getByRole('heading', { level: 1, name: workspaceName }),
     ).toBeVisible();
     await expect(
       page.locator('.matter-workbench'),
@@ -56,6 +56,7 @@ test.describe('Phase 2 acceptance', () => {
     await expect(page.getByText('Showing 1 of 1 turns')).toBeVisible({
       timeout: 30_000,
     });
+    await page.getByRole('textbox', { name: 'Prompt' }).fill('A follow-up draft');
     await expect(page.getByRole('button', { name: 'Send Prompt' })).toBeEnabled();
   });
 });

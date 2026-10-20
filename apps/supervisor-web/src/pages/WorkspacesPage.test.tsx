@@ -32,6 +32,13 @@ async function openMenu() {
 }
 
 describe('workspace isolation', () => {
+  it('links to the workspace shell even when the workspace already has threads', async () => {
+    vi.mocked(fetchWorkspaces).mockResolvedValue([workspace]);
+    render(<MemoryRouter><WorkspacesPage /></MemoryRouter>);
+    const link = await screen.findByRole('link', { name: /^Payroll/ });
+    expect(link.getAttribute('href')).toBe('/threads?workspaceId=workspace-1');
+    expect(fetchThreads).not.toHaveBeenCalled();
+  });
   it('isolates a workspace from its menu and marks the row', async () => {
     vi.mocked(fetchWorkspaces).mockResolvedValue([workspace]);
     vi.mocked(setWorkspaceIsolation).mockResolvedValue({ ...workspace, agentIsolated: true });

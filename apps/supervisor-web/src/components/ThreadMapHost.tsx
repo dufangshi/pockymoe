@@ -20,7 +20,7 @@ import {
 } from '@pockymoe/thread-ui';
 import { translate } from '@pockymoe/thread-ui/i18n';
 import { relayModeActive, request } from '../lib/api';
-import { relayDeviceIdFromPath, threadHref, threadIdFromPath } from '../lib/relayRoutes';
+import { relayDeviceIdFromPath, threadHref, threadIdFromPath, threadsHref, workspacesHref } from '../lib/relayRoutes';
 import { appPathname, appUrl } from '../lib/webBase';
 import { workbenchThreadStatus } from '../pages/useWorkbenchNavigation';
 
@@ -120,10 +120,12 @@ export function mapDevice(
   return {
     id: key,
     name,
+    href: appUrl(workspacesHref(deviceId)),
     state: 'ready',
     workspaces: [...byWorkspace].map(([id, list]) => ({
       id,
       label: labels.get(id)?.label ?? id.slice(0, 8),
+      href: appUrl(threadsHref(id, deviceId)),
       path: labels.get(id)?.absPath,
       threads: list,
     })),
@@ -166,7 +168,7 @@ export function useThreadMapDevices(open: boolean) {
     if (relayModeActive()) {
       try {
         const portal = await request<RelayPortalSummaryDto>('relay/portal', { signal: AbortSignal.timeout(15_000), cache: 'no-store' });
-        list = portal.devices.map(device => ({ id: device.id, name: device.name, connected: device.connected }));
+        list = portal.devices.filter(device => device.connected).map(device => ({ id: device.id, name: device.name, connected: true }));
       } catch {
         list = entries.current;
       }
@@ -178,7 +180,6 @@ export function useThreadMapDevices(open: boolean) {
     setDevices(previous => list.map(entry => {
       const id = entry.id ?? LOCAL;
       const known = previous.find(device => device.id === id);
-      if (!entry.connected) return { id, name: entry.name, state: 'offline', workspaces: [] };
       return known && known.state !== 'offline' ? { ...known, name: entry.name } : { id, name: entry.name, state: 'loading', workspaces: [] };
     }));
     await Promise.all(list.filter(entry => entry.connected).map(async entry => settle(run, await readDevice(entry.id, entry.name))));
@@ -215,6 +216,10 @@ function ThreadMapLayer({ open, onOpenChange }: { open: boolean; onOpenChange: (
     <ThreadMapDialog open={open} onOpenChange={onOpenChange} devices={devices} currentKey={currentKey}
       hours={THREAD_MAP_HOURS} themeMode={shell?.themeMode} effectiveTheme={shell?.effectiveTheme}
       onRetry={retry}
+      onNavigate={href => {
+        onOpenChange(false);
+        navigate(appPathname(href));
+      }}
       onOpen={thread => {
         onOpenChange(false);
         navigate(appPathname(thread.href));

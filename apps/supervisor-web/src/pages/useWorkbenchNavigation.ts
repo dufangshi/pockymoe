@@ -116,6 +116,8 @@ export function useWorkbenchNavigation(
      * (including agent threads), so navigation does not fetch it again.
      */
     sharesDeviceThreads?: boolean;
+    /** A workspace shell with no selected thread, including while it loads. */
+    workspace?: WorkspaceDto | null;
   } = {},
 ) {
   const hostScope = useHostScope();
@@ -169,7 +171,7 @@ export function useWorkbenchNavigation(
   current.current = { detail, deviceId };
   const navigationContext = useRef({ detail, threads, deviceId });
   if (detail) navigationContext.current = { detail, threads, deviceId };
-  const tabContext = detail ? { detail, threads, deviceId } : navigationContext.current;
+  const tabContext = detail || options.workspace !== undefined ? { detail, threads, deviceId } : navigationContext.current;
   const threadId = detail?.thread.id;
 
   useEffect(() => {
@@ -542,7 +544,7 @@ export function useWorkbenchNavigation(
   // While a switched-to thread loads, its entry in the device list places the tabs.
   const open = tabContext.detail?.thread
     ?? (routeThreadId ? threads.find(thread => thread.id === routeThreadId) : undefined);
-  const workspaceId = open?.workspaceId;
+  const workspaceId = open?.workspaceId ?? options.workspace?.id;
   const tabDevice = tabContext.deviceId ?? 'local';
   // Each listed thread says where it works: a label from the visits saved on this
   // device, then from the device itself, then the open thread's own.
@@ -552,6 +554,7 @@ export function useWorkbenchNavigation(
   }
   if (readLabels.device === tabDevice) for (const [id, label] of Object.entries(readLabels.labels)) workspaceLabels.set(id, label);
   if (tabContext.detail && workspaceId) workspaceLabels.set(workspaceId, tabContext.detail.workspace.label);
+  if (options.workspace) workspaceLabels.set(options.workspace.id, options.workspace.label);
   const workspaceRoots = new Set(tabContext.threads
     .filter(thread => thread.workspaceId === workspaceId && !thread.rootThreadId)
     .map(thread => thread.id));

@@ -27,6 +27,8 @@ describe('mapDevice', () => {
         priceEstimate: { currency: 'USD', totalUsd: 0.5, inputUsd: 0.2, cachedInputUsd: 0, outputUsd: 0.3 }, pricePartial: true },
     ] });
     expect(device.workspaces.map(workspace => workspace.label)).toEqual(['app', 'w2']);
+    expect(device.href).toBe('/devices/laptop/workspaces');
+    expect(device.workspaces[0]?.href).toBe('/devices/laptop/threads?workspaceId=w1');
     expect(device.workspaces[0]!.threads).toEqual([expect.objectContaining({
       key: 'laptop:root', href: '/devices/laptop/threads/root', agent: 'claude', agentName: 'Claude',
       running: true, turns: 13, activeMs: 180_000, agentThreads: 2,
@@ -83,7 +85,7 @@ describe('useThreadMapDevices', () => {
     vi.mocked(relayModeActive).mockReturnValue(true);
   });
 
-  it('reads every own device once opened, shows offline ones and tolerates old Supervisors', async () => {
+  it('reads online devices once opened, omits offline ones and tolerates old Supervisors', async () => {
     vi.mocked(request).mockImplementation(async (path) => {
       const url = String(path);
       if (url === 'relay/portal') return { devices: [
@@ -100,11 +102,29 @@ describe('useThreadMapDevices', () => {
     expect(request).not.toHaveBeenCalled();
     rerender({ open: true });
     await waitFor(() => expect(result.current.devices.filter(device => device.state === 'ready')).toHaveLength(2));
-    expect(result.current.devices.map(device => [device.id, device.state])).toEqual([['laptop', 'ready'], ['old', 'ready'], ['server', 'offline']]);
+    expect(result.current.devices.map(device => [device.id, device.state])).toEqual([['laptop', 'ready'], ['old', 'ready']]);
     expect(result.current.devices[0]!.workspaces[0]!.threads[0]).toMatchObject({ turns: 5, activeMs: 1000 });
     expect(result.current.devices[1]!.workspaces[0]!.threads[0]).toMatchObject({ turns: null, activeMs: null });
     expect(vi.mocked(request).mock.calls.map(([path]) => path)).toContain('relay/devices/laptop/api/thread-activity?hours=24');
     expect(vi.mocked(request).mock.calls.some(([path]) => String(path).includes('/server/'))).toBe(false);
+  });
+
+  it('removes a previously loaded device when the portal says it disconnected', async () => {
+    let connected = true;
+    vi.mocked(request).mockImplementation(async path => {
+      if (path === 'relay/portal') return { devices: [{ id: 'laptop', name: 'Laptop', connected }] };
+      if (String(path).endsWith('/api/workspaces')) return workspaces;
+      if (String(path).includes('/api/threads?')) return [thread('a')];
+      return { since: '', hours: 24, threads: [] };
+    });
+    const { result, rerender } = renderHook(({ open }) => useThreadMapDevices(open), { initialProps: { open: true } });
+    await waitFor(() => expect(result.current.devices[0]?.state).toBe('ready'));
+    connected = false;
+    rerender({ open: false });
+    rerender({ open: true });
+    await waitFor(() => expect(result.current.devices).toEqual([]));
+    act(() => result.current.retry('laptop'));
+    expect(result.current.devices).toEqual([]);
   });
 
   it('marks a device it cannot read and retries it on request', async () => {
