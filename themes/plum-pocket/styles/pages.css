@@ -56,6 +56,10 @@
   font-weight: 600;
   color: var(--plum-chrome-fg);
 }
+:theme .product-navigation-subtitle {
+  margin-left: 4px;
+  color: var(--plum-chrome-muted);
+}
 /* The pocket mark leads every page title. */
 :theme .product-navigation h1::before {
   content: '';
@@ -75,7 +79,10 @@
   background: transparent;
   color: var(--plum-chrome-soft);
 }
-:theme .product-navigation :is(.product-icon-button, .pm-tour-launcher):hover { background: var(--plum-chrome-hover); color: var(--plum-chrome-fg); }
+:theme .product-navigation :is(.product-icon-button, .pm-tour-launcher):active { background: var(--plum-chrome-hover); color: var(--plum-chrome-fg); }
+@media (hover: hover) {
+  :theme .product-navigation :is(.product-icon-button, .pm-tour-launcher):hover { background: var(--plum-chrome-hover); color: var(--plum-chrome-fg); }
+}
 :theme .product-navigation :where(button, a):focus-visible { outline: 2px solid #f2c15c; outline-offset: 1px; }
 /* Labelled tour launcher: an icon with a tooltip, like the other header tools. */
 :theme .product-navigation .pm-tour-launcher-labeled { width: 40px; min-height: 40px; padding: 0; font-size: 0; gap: 0; }
@@ -122,8 +129,14 @@
   border-top: 1px dashed var(--plum-page-rule);
   pointer-events: none;
 }
-:theme .product-page .product-row:hover { background: var(--plum-page-row-hover); }
-:theme .product-page :is(.product-row:hover + .product-row, .product-row:hover)::after { opacity: 0; }
+:theme .product-page .product-row:active { background: var(--plum-page-row-hover); }
+@media (hover: hover) {
+  :theme .product-page .product-row:hover { background: var(--plum-page-row-hover); }
+}
+:theme .product-page :is(.product-row:active + .product-row, .product-row:active)::after { opacity: 0; }
+@media (hover: hover) {
+  :theme .product-page :is(.product-row:hover + .product-row, .product-row:hover)::after { opacity: 0; }
+}
 :theme .product-page .product-icon-button { border: 0; border-radius: 12px; }
 :theme .product-page .product-skeleton { border-radius: 8px; }
 
@@ -230,7 +243,10 @@
   inset-inline: 16px;
   border-top: 1px dashed var(--plum-page-rule);
 }
-:theme [data-page='devices'] article:has(.device-presence-dot):hover { background: var(--plum-page-row-hover); }
+:theme [data-page='devices'] article:has(.device-presence-dot):active { background: var(--plum-page-row-hover); }
+@media (hover: hover) {
+  :theme [data-page='devices'] article:has(.device-presence-dot):hover { background: var(--plum-page-row-hover); }
+}
 :theme [data-page='devices'] article:has(.device-presence-dot)::before {
   content: '';
   grid-row: 1 / span 2;
@@ -267,7 +283,10 @@
   border: 0;
   box-shadow: 0 0 0 2.5px var(--theme-bg);
 }
-:theme [data-page='devices'] article:has(.device-presence-dot):hover .device-presence-dot { box-shadow: 0 0 0 2.5px color-mix(in srgb, var(--theme-hover) 70%, var(--theme-bg)); }
+:theme [data-page='devices'] article:has(.device-presence-dot):active .device-presence-dot { box-shadow: 0 0 0 2.5px color-mix(in srgb, var(--theme-hover) 70%, var(--theme-bg)); }
+@media (hover: hover) {
+  :theme [data-page='devices'] article:has(.device-presence-dot):hover .device-presence-dot { box-shadow: 0 0 0 2.5px color-mix(in srgb, var(--theme-hover) 70%, var(--theme-bg)); }
+}
 :theme [data-page='devices'] .device-presence-label { padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; }
 :theme [data-page='devices'] article:has(.device-presence-dot) > div:nth-child(2) > p:first-child { font-size: 12px; }
 :theme [data-page='devices'] article:has(.device-presence-dot) .relay-button-primary { min-height: 36px; padding-inline: 14px 16px; border-radius: 999px; }
@@ -385,7 +404,10 @@
   border-bottom: 0;
 }
 :theme [data-page='relay-portal'] > header > a:first-child { min-height: 40px; padding: 0 14px 0 8px; border-radius: 999px; font-size: 13px; }
-:theme [data-page='relay-portal'] > header > a:first-child:hover { background: color-mix(in srgb, var(--theme-hover) 70%, transparent); }
+:theme [data-page='relay-portal'] > header > a:first-child:active { background: color-mix(in srgb, var(--theme-hover) 70%, transparent); }
+@media (hover: hover) {
+  :theme [data-page='relay-portal'] > header > a:first-child:hover { background: color-mix(in srgb, var(--theme-hover) 70%, transparent); }
+}
 :theme [data-page='relay-portal'] > header > a:first-child img { display: none; }
 :theme [data-page='relay-portal'] > header > a:last-child { min-height: 40px; height: 40px; padding-inline: 12px 14px; border-radius: 999px; }
 :theme [data-page='relay-portal'] > div { padding-top: 12px; }
@@ -502,7 +524,10 @@
 :theme [data-page='admin'] .admin-responsive-table { border: 0; border-radius: 0; }
 :theme [data-page='admin'] .admin-responsive-table th { border-bottom: 1.5px dashed var(--plum-page-rule); letter-spacing: .06em; }
 :theme [data-page='admin'] .admin-responsive-table td { border-bottom: 1px dashed var(--plum-page-rule); }
-:theme [data-page='admin'] .admin-responsive-table tr:hover td { background: var(--plum-page-row-hover); }
+:theme [data-page='admin'] .admin-responsive-table tr:active td { background: var(--plum-page-row-hover); }
+@media (hover: hover) {
+  :theme [data-page='admin'] .admin-responsive-table tr:hover td { background: var(--plum-page-row-hover); }
+}
 :theme [data-page='admin'] .admin-responsive-table :is(.relay-button-secondary, .relay-button-primary) { min-height: 34px; padding-inline: 12px; border-radius: 999px; white-space: nowrap; }
 :theme [data-page='admin'] .admin-responsive-table td > div.flex-wrap { flex-wrap: nowrap; }
 
@@ -579,7 +604,10 @@
   font-size: 13px;
   font-weight: 700;
 }
-:theme .product-page > section > .product-topbar:not(.product-navigation) > button:hover { background: var(--plum-chrome-active); color: var(--plum-chrome-fg); }
+:theme .product-page > section > .product-topbar:not(.product-navigation) > button:active { background: var(--plum-chrome-active); color: var(--plum-chrome-fg); }
+@media (hover: hover) {
+  :theme .product-page > section > .product-topbar:not(.product-navigation) > button:hover { background: var(--plum-chrome-active); color: var(--plum-chrome-fg); }
+}
 :theme .product-page > section > header {
   padding-top: 18px;
   padding-bottom: 6px;

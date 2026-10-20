@@ -71,7 +71,10 @@
   opacity: 1;
   color: var(--theme-fg-soft);
 }
-:theme .thread-graph-dialog.thread-graph-settings-dialog > [data-slot='dialog-close']:hover { background: var(--pc-key-hover); color: var(--theme-fg); }
+:theme .thread-graph-dialog.thread-graph-settings-dialog > [data-slot='dialog-close']:active { background: var(--pc-key-hover); color: var(--theme-fg); }
+@media (hover: hover) {
+  :theme .thread-graph-dialog.thread-graph-settings-dialog > [data-slot='dialog-close']:hover { background: var(--pc-key-hover); color: var(--theme-fg); }
+}
 :theme .thread-graph-dialog.thread-graph-settings-dialog > [data-slot='dialog-close']:focus-visible { outline: 2px solid var(--pc-focus); outline-offset: 2px; box-shadow: none; }
 
 /* Tabs: icon and label on desktop, icons only on phones so all fit on one line. */
@@ -105,7 +108,10 @@
   mask: var(--settings-icon) center / contain no-repeat;
   opacity: 0.85;
 }
-:theme .settings-navigation [role='tab']:hover { background: color-mix(in srgb, var(--pc-key) 70%, transparent); color: var(--theme-fg); }
+:theme .settings-navigation [role='tab']:active { background: color-mix(in srgb, var(--pc-key) 70%, transparent); color: var(--theme-fg); }
+@media (hover: hover) {
+  :theme .settings-navigation [role='tab']:hover { background: color-mix(in srgb, var(--pc-key) 70%, transparent); color: var(--theme-fg); }
+}
 :theme .settings-navigation [role='tab'][aria-selected='true'] {
   background: var(--theme-accent-soft);
   color: var(--theme-accent-strong);
@@ -292,7 +298,10 @@
   box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--action-primary-bg) 70%, #5a3a10);
   font-weight: 700;
 }
-:theme :is(.relay-button-primary, .ui-action-primary, .ui-action-success):hover:not(:disabled) { background: var(--action-primary-bg-hover); }
+:theme :is(.relay-button-primary, .ui-action-primary, .ui-action-success):active:not(:disabled) { background: var(--action-primary-bg-hover); }
+@media (hover: hover) {
+  :theme :is(.relay-button-primary, .ui-action-primary, .ui-action-success):hover:not(:disabled) { background: var(--action-primary-bg-hover); }
+}
 :theme :is(.relay-button-primary, .ui-action-primary, .ui-action-success):disabled {
   border-color: var(--status-neutral-border);
   background: var(--status-neutral-bg);
@@ -306,7 +315,10 @@
   color: var(--theme-fg-soft);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--pc-edge) 80%, transparent);
 }
-:theme :is(.relay-button-secondary, .host-secondary-button, .host-icon-button):hover:not(:disabled) { background: var(--pc-key-hover); color: var(--theme-fg); }
+:theme :is(.relay-button-secondary, .host-secondary-button, .host-icon-button):active:not(:disabled) { background: var(--pc-key-hover); color: var(--theme-fg); }
+@media (hover: hover) {
+  :theme :is(.relay-button-secondary, .host-secondary-button, .host-icon-button):hover:not(:disabled) { background: var(--pc-key-hover); color: var(--theme-fg); }
+}
 :theme :is(.relay-button-primary, .relay-button-secondary, .host-secondary-button, .host-icon-button, .ui-action-primary, .ui-action-info, .ui-action-success, .ui-action-danger):focus-visible { outline: 2px solid var(--pc-focus); outline-offset: 2px; }
 /* Lighter controls on desktop; touch keeps 44px. */
 @media (pointer: fine) {
@@ -342,9 +354,15 @@
   box-shadow: var(--pc-menu-shadow);
 }
 :theme :is(.recent-thread-menu, .thread-workspace-link-menu) button { border-radius: 9px; }
-:theme :is(.recent-thread-menu, .thread-workspace-link-menu) button:hover:not(:disabled) { background: var(--pc-key); }
+:theme :is(.recent-thread-menu, .thread-workspace-link-menu) button:active:not(:disabled) { background: var(--pc-key); }
+@media (hover: hover) {
+  :theme :is(.recent-thread-menu, .thread-workspace-link-menu) button:hover:not(:disabled) { background: var(--pc-key); }
+}
 :theme .recent-thread-menu .recent-thread-delete { color: var(--pc-stop-fg); }
-:theme .recent-thread-menu .recent-thread-delete:hover { background: var(--pc-stop); }
+:theme .recent-thread-menu .recent-thread-delete:active { background: var(--pc-stop); }
+@media (hover: hover) {
+  :theme .recent-thread-menu .recent-thread-delete:hover { background: var(--pc-stop); }
+}
 
 /* ── Phones ───────────────────────────────────────────────────────────────── */
 

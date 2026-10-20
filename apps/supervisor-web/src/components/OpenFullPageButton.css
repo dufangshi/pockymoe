@@ -11,9 +11,15 @@
   border-radius: 8px;
   color: var(--theme-fg-muted);
 }
-.pm-open-full-page > button:hover {
+.pm-open-full-page > button:active {
   background: var(--theme-hover);
   color: var(--theme-fg);
+}
+@media (hover: hover) {
+  .pm-open-full-page > button:hover {
+    background: var(--theme-hover);
+    color: var(--theme-fg);
+  }
 }
 .pm-open-full-page > button svg {
   width: 16px;

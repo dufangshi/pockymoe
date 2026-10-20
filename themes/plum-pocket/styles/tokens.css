@@ -185,16 +185,25 @@
   --plum-code-bg: #150b1a;
 }
 :theme .thread-ui-shell .thread-graph-new-room-button { border-color: var(--theme-border-strong); background: var(--theme-surface); }
-:theme .thread-ui-shell .thread-graph-new-room-button:hover { border-color: var(--theme-border-contrast); background: var(--theme-hover); }
+:theme .thread-ui-shell .thread-graph-new-room-button:active { border-color: var(--theme-border-contrast); background: var(--theme-hover); }
+@media (hover: hover) {
+  :theme .thread-ui-shell .thread-graph-new-room-button:hover { border-color: var(--theme-border-contrast); background: var(--theme-hover); }
+}
 :theme .thread-ui-shell .ui-status-neutral { border-color: var(--theme-border); }
 :theme .thread-ui-shell .thread-graph-room-card.is-active .ui-status-neutral { border-color: var(--theme-border-strong); background: var(--theme-muted); }
 :theme .thread-ui-shell .thread-goal-compose-cancel { border-color: var(--theme-border-strong); background: var(--theme-surface); }
-:theme .thread-ui-shell .thread-goal-compose-cancel:hover { background: var(--theme-hover); }
+:theme .thread-ui-shell .thread-goal-compose-cancel:active { background: var(--theme-hover); }
+@media (hover: hover) {
+  :theme .thread-ui-shell .thread-goal-compose-cancel:hover { background: var(--theme-hover); }
+}
 :theme .thread-ui-shell .thread-chat-usage-footer { color: var(--theme-fg-muted); }
 :theme .thread-ui-shell .thread-token-popover { border-color: var(--theme-border); background: var(--theme-panel); }
 :theme .thread-ui-shell .thread-token-popover-row { border-color: var(--theme-border); background: var(--theme-surface); }
 :theme .thread-workspace-link-menu { background: var(--theme-panel); border-color: var(--theme-border-strong); }
-:theme .thread-workspace-link-menu button:hover { background: var(--theme-hover); }
+:theme .thread-workspace-link-menu button:active { background: var(--theme-hover); }
+@media (hover: hover) {
+  :theme .thread-workspace-link-menu button:hover { background: var(--theme-hover); }
+}
 :theme .device-connection-popover { background: var(--theme-panel); color: var(--theme-fg); border-color: var(--theme-border-strong); }
 :theme .device-connection-popover > span { color: var(--theme-fg-muted); }
 

@@ -115,10 +115,17 @@
   color: var(--theme-fg-soft);
   font-weight: 700;
 }
-:theme .thread-ui-shell .thread-history-earlier:hover:not(:disabled) {
+:theme .thread-ui-shell .thread-history-earlier:active:not(:disabled) {
   border-style: solid;
   border-color: var(--theme-accent-solid);
   color: var(--theme-fg);
+}
+@media (hover: hover) {
+  :theme .thread-ui-shell .thread-history-earlier:hover:not(:disabled) {
+    border-style: solid;
+    border-color: var(--theme-accent-solid);
+    color: var(--theme-fg);
+  }
 }
 :theme .thread-ui-shell .thread-graph-history-control .timeline-meta-text {
   color: var(--theme-fg-muted);
@@ -147,10 +154,17 @@
   background: var(--theme-panel);
   color: var(--theme-fg-soft);
 }
-:theme .thread-ui-shell .thread-graph-message-copy:is(:hover, :focus-visible) {
+:theme .thread-ui-shell .thread-graph-message-copy:is(:active, :focus-visible) {
   border-color: var(--theme-accent-solid);
   background: var(--theme-accent-soft);
   color: var(--theme-fg);
+}
+@media (hover: hover) {
+  :theme .thread-ui-shell .thread-graph-message-copy:is(:hover, :focus-visible) {
+    border-color: var(--theme-accent-solid);
+    background: var(--theme-accent-soft);
+    color: var(--theme-fg);
+  }
 }
 
 /* ── Turn head: dashed rules around the time worked and the cost ───────── */
@@ -195,10 +209,17 @@
   color: var(--theme-fg-muted);
 }
 :theme .thread-ui-shell .thread-graph-worked-summary > button,
-:theme .thread-ui-shell .thread-graph-worked-summary > button:is(:hover, :active, :focus-visible, [aria-expanded='true']) {
+:theme .thread-ui-shell .thread-graph-worked-summary > button:is(:active, :focus-visible, [aria-expanded='true']) {
   border: 0;
   background: none;
   box-shadow: none;
+}
+@media (hover: hover) {
+  :theme .thread-ui-shell .thread-graph-worked-summary > button:is(:hover, :active, :focus-visible, [aria-expanded='true']) {
+    border: 0;
+    background: none;
+    box-shadow: none;
+  }
 }
 @media (hover: hover) {
   :theme .thread-ui-shell .thread-graph-worked-summary > button:hover:not(:disabled) { color: var(--theme-fg); }
@@ -241,7 +262,10 @@
   color: var(--tx-badge-fg);
   font-weight: 700;
 }
-:theme .thread-ui-shell .thread-turn-usage-price:is(:hover, :focus-visible) { border-style: solid; border-color: var(--theme-accent-solid); }
+:theme .thread-ui-shell .thread-turn-usage-price:is(:active, :focus-visible) { border-style: solid; border-color: var(--theme-accent-solid); }
+@media (hover: hover) {
+  :theme .thread-ui-shell .thread-turn-usage-price:is(:hover, :focus-visible) { border-style: solid; border-color: var(--theme-accent-solid); }
+}
 /* The token breakdown opens as a small receipt (a tooltip portal, outside the shell). */
 :theme .thread-usage-details {
   border: 1.5px solid var(--theme-border-strong);
@@ -353,6 +377,7 @@
 :theme .thread-ui-shell .thread-execution-timeline :is(.is-compact-group > .thread-graph-history-group-card > .thread-graph-history-group-toggle, .thread-history-direct-action) { margin-left: -4px; }
 :theme .thread-ui-shell .thread-history-direct-row { gap: 6px; padding: 0; font-size: 12px; }
 /* Touch screens keep :hover after a tap, so only pointers that hover get a tint. */
+:theme .thread-ui-shell :is(.thread-graph-history-group-toggle, .thread-history-direct-action, .matter-command-step):active { background: var(--tx-row-hover); color: var(--theme-fg-soft); }
 @media (hover: hover) {
   :theme .thread-ui-shell :is(.thread-graph-history-group-toggle, .thread-history-direct-action, .matter-command-step):hover { background: var(--tx-row-hover); color: var(--theme-fg-soft); }
 }
@@ -606,7 +631,10 @@
   text-underline-offset: 3px;
   border-radius: 4px;
 }
-:theme .thread-ui-shell .thread-graph-markdown a:hover { background: var(--theme-accent-soft); text-decoration-color: var(--theme-accent-solid); }
+:theme .thread-ui-shell .thread-graph-markdown a:active { background: var(--theme-accent-soft); text-decoration-color: var(--theme-accent-solid); }
+@media (hover: hover) {
+  :theme .thread-ui-shell .thread-graph-markdown a:hover { background: var(--theme-accent-soft); text-decoration-color: var(--theme-accent-solid); }
+}
 
 /* Inline code: a little felt chip. */
 :theme .thread-ui-shell .thread-graph-inline-code {
@@ -672,7 +700,10 @@
   background: var(--theme-panel);
   color: var(--theme-fg-soft);
 }
-:theme .thread-ui-shell .thread-graph-code-copy:is(:hover, :focus-visible) { background: var(--theme-accent-soft); border-color: var(--theme-accent-solid); color: var(--theme-fg); }
+:theme .thread-ui-shell .thread-graph-code-copy:is(:active, :focus-visible) { background: var(--theme-accent-soft); border-color: var(--theme-accent-solid); color: var(--theme-fg); }
+@media (hover: hover) {
+  :theme .thread-ui-shell .thread-graph-code-copy:is(:hover, :focus-visible) { background: var(--theme-accent-soft); border-color: var(--theme-accent-solid); color: var(--theme-fg); }
+}
 
 /* Images in replies: a soft frame. */
 :theme .thread-ui-shell :is(.thread-graph-markdown img, .thread-graph-history-event-image) {

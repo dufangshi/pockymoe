@@ -54,9 +54,15 @@
   border-radius: 11px;
   color: var(--plum-chrome-soft);
 }
-:theme .thread-ui-shell .matter-workbench :is(.matter-rail, .matter-topbar, .matter-sidebar-heading) :where(button, a):not(:is(.workbench-search-field, .workbench-search-dropdown) *):hover {
+:theme .thread-ui-shell .matter-workbench :is(.matter-rail, .matter-topbar, .matter-sidebar-heading) :where(button, a):not(:is(.workbench-search-field, .workbench-search-dropdown) *):active {
   background: var(--plum-chrome-hover);
   color: var(--plum-chrome-fg);
+}
+@media (hover: hover) {
+  :theme .thread-ui-shell .matter-workbench :is(.matter-rail, .matter-topbar, .matter-sidebar-heading) :where(button, a):not(:is(.workbench-search-field, .workbench-search-dropdown) *):hover {
+    background: var(--plum-chrome-hover);
+    color: var(--plum-chrome-fg);
+  }
 }
 :theme .thread-ui-shell .matter-workbench :is(.matter-rail, .matter-topbar) svg:not(:is(.workbench-search-field, .workbench-search-dropdown) *) { width: 17px; height: 17px; stroke-width: 1.85; }
 
@@ -74,7 +80,10 @@
   box-shadow: 0 0 0 1.5px var(--plum-stitch), 0 3px 0 rgb(0 0 0 / 28%);
   transition: transform 180ms ease;
 }
-:theme .thread-ui-shell .matter-workbench .matter-rail > .matter-brand:hover { background: url("asset:assets/pockymoe-icon.png") center / cover no-repeat; transform: rotate(-6deg) scale(1.04); }
+:theme .thread-ui-shell .matter-workbench .matter-rail > .matter-brand:active { background: url("asset:assets/pockymoe-icon.png") center / cover no-repeat; transform: rotate(-6deg) scale(1.04); }
+@media (hover: hover) {
+  :theme .thread-ui-shell .matter-workbench .matter-rail > .matter-brand:hover { background: url("asset:assets/pockymoe-icon.png") center / cover no-repeat; transform: rotate(-6deg) scale(1.04); }
+}
 :theme .matter-brand span { color: transparent; }
 :theme .thread-ui-shell .matter-workbench .matter-rail > button { width: 36px; height: 36px; }
 :theme .thread-ui-shell .matter-workbench .matter-rail > button[aria-pressed='true'] {
@@ -82,7 +91,10 @@
   background: var(--theme-accent-solid);
   box-shadow: inset 0 -2.5px 0 rgb(122 72 0 / 45%);
 }
-:theme .thread-ui-shell .matter-workbench .matter-rail > button[aria-pressed='true']:hover { background: var(--theme-accent-solid-hover); color: var(--plum-chrome); }
+:theme .thread-ui-shell .matter-workbench .matter-rail > button[aria-pressed='true']:active { background: var(--theme-accent-solid-hover); color: var(--plum-chrome); }
+@media (hover: hover) {
+  :theme .thread-ui-shell .matter-workbench .matter-rail > button[aria-pressed='true']:hover { background: var(--theme-accent-solid-hover); color: var(--plum-chrome); }
+}
 :theme .thread-ui-shell .matter-workbench .matter-rail .device-monitor-button {
   width: 44px;
   border-radius: 10px;
@@ -120,10 +132,17 @@
   color: var(--plum-chrome-muted);
   font-size: 12.5px;
 }
-:theme .thread-ui-shell .matter-workbench .matter-topbar .matter-search-trigger:hover:not(:disabled) {
+:theme .thread-ui-shell .matter-workbench .matter-topbar .matter-search-trigger:active:not(:disabled) {
   border-color: rgb(242 193 92 / 45%);
   background: rgb(255 255 255 / 10%);
   color: var(--plum-chrome-fg);
+}
+@media (hover: hover) {
+  :theme .thread-ui-shell .matter-workbench .matter-topbar .matter-search-trigger:hover:not(:disabled) {
+    border-color: rgb(242 193 92 / 45%);
+    background: rgb(255 255 255 / 10%);
+    color: var(--plum-chrome-fg);
+  }
 }
 :theme .thread-ui-shell .matter-workbench .matter-topbar .matter-search-trigger svg { width: 15px; height: 15px; color: #f2c15c; }
 :theme .thread-ui-shell .matter-workbench .matter-topbar-end { gap: 4px; }
@@ -175,7 +194,10 @@
   letter-spacing: .08em;
   text-transform: uppercase;
 }
-:theme .thread-ui-shell .matter-workbench .matter-section-heading:hover { background: var(--plum-chrome-hover); color: var(--plum-chrome-fg); }
+:theme .thread-ui-shell .matter-workbench .matter-section-heading:active { background: var(--plum-chrome-hover); color: var(--plum-chrome-fg); }
+@media (hover: hover) {
+  :theme .thread-ui-shell .matter-workbench .matter-section-heading:hover { background: var(--plum-chrome-hover); color: var(--plum-chrome-fg); }
+}
 :theme .thread-ui-shell .matter-workbench .matter-section-heading svg:last-child { width: 14px; height: 14px; color: #f2c15c; }
 :theme .thread-ui-shell .matter-workbench .matter-section-count {
   min-width: 22px;
@@ -211,7 +233,10 @@
   color: var(--plum-chrome-soft);
   transition: background-color 140ms, border-color 140ms;
 }
-:theme .thread-ui-shell .matter-workbench .matter-thread-row:hover { --plum-badge-ring: var(--plum-chrome-hover); background: var(--plum-chrome-hover); color: var(--plum-chrome-fg); }
+:theme .thread-ui-shell .matter-workbench .matter-thread-row:active { --plum-badge-ring: var(--plum-chrome-hover); background: var(--plum-chrome-hover); color: var(--plum-chrome-fg); }
+@media (hover: hover) {
+  :theme .thread-ui-shell .matter-workbench .matter-thread-row:hover { --plum-badge-ring: var(--plum-chrome-hover); background: var(--plum-chrome-hover); color: var(--plum-chrome-fg); }
+}
 :theme .thread-ui-shell .matter-workbench .matter-thread-row[aria-current='page'] {
   --plum-badge-ring: var(--plum-chrome-active);
   background: var(--plum-chrome-active);
@@ -229,7 +254,10 @@
 
 /* The "…" menu appears on hover or focus with a mouse; touch keeps it visible. */
 :theme .matter-thread-entry > .recent-thread-actions { right: 5px; border-radius: 10px; color: var(--plum-chrome-muted); }
-:theme .matter-thread-entry > .recent-thread-actions:is(:hover, [aria-expanded='true']) { background: var(--plum-chrome-active); color: var(--plum-chrome-fg); }
+:theme .matter-thread-entry > .recent-thread-actions:is(:active, [aria-expanded='true']) { background: var(--plum-chrome-active); color: var(--plum-chrome-fg); }
+@media (hover: hover) {
+  :theme .matter-thread-entry > .recent-thread-actions:is(:hover, [aria-expanded='true']) { background: var(--plum-chrome-active); color: var(--plum-chrome-fg); }
+}
 @media (hover: hover) {
   :theme .thread-ui-shell .matter-workbench .matter-thread-entry > .matter-thread-row { padding-right: 10px; }
   :theme .thread-ui-shell .matter-workbench .matter-thread-entry:is(:hover, :focus-visible, :has(:focus-visible), :has(> [aria-expanded='true'])) > .matter-thread-row { padding-right: 38px; }
@@ -281,7 +309,10 @@
   transition: transform 140ms;
 }
 :theme .thread-ui-shell .matter-workbench .matter-agent-threads[open] > .matter-agent-threads-summary::before { transform: translateY(-2px) rotate(45deg); }
-:theme .thread-ui-shell .matter-workbench .matter-agent-threads-summary:hover { background: rgb(199 166 255 / 20%); color: var(--plum-chrome-fg) !important; }
+:theme .thread-ui-shell .matter-workbench .matter-agent-threads-summary:active { background: rgb(199 166 255 / 20%); color: var(--plum-chrome-fg) !important; }
+@media (hover: hover) {
+  :theme .thread-ui-shell .matter-workbench .matter-agent-threads-summary:hover { background: rgb(199 166 255 / 20%); color: var(--plum-chrome-fg) !important; }
+}
 :theme .thread-ui-shell .matter-workbench .matter-agent-threads .matter-thread-row { --plum-row-avatar: 24px; min-height: 40px; padding-block: 4px; }
 :theme .thread-ui-shell .matter-workbench .matter-agent-threads .matter-thread-copy > span { font-size: 12px; }
 
@@ -289,7 +320,10 @@
    smaller-avatar list below on a plum guide line. */
 :theme .thread-ui-shell .matter-workbench .matter-thread-entry.matter-thread-entry:has(> .matter-agent-toggle) > .matter-thread-row { padding-right: 72px; }
 :theme .thread-ui-shell .matter-workbench .matter-agent-toggle { right: 36px; color: var(--plum-chrome-muted); }
-:theme .thread-ui-shell .matter-workbench .matter-agent-toggle:is(:hover, [aria-expanded='true']) { background: rgb(199 166 255 / 20%); color: var(--plum-chrome-fg); }
+:theme .thread-ui-shell .matter-workbench .matter-agent-toggle:is(:active, [aria-expanded='true']) { background: rgb(199 166 255 / 20%); color: var(--plum-chrome-fg); }
+@media (hover: hover) {
+  :theme .thread-ui-shell .matter-workbench .matter-agent-toggle:is(:hover, [aria-expanded='true']) { background: rgb(199 166 255 / 20%); color: var(--plum-chrome-fg); }
+}
 :theme .thread-ui-shell .matter-workbench .matter-agent-toggle[data-running] > svg:first-child { color: #f2c15c; }
 :theme .thread-ui-shell .matter-workbench .matter-agent-children::before { background: var(--plum-chrome-border); }
 :theme .thread-ui-shell .matter-workbench .matter-agent-children .matter-thread-row { --plum-row-avatar: 24px; min-height: 40px; padding-block: 4px; }
@@ -312,7 +346,10 @@
   background: url("asset:assets/pocket-friends.webp") center bottom / contain no-repeat;
   transform-origin: 50% 100%;
 }
-:theme .thread-ui-shell .matter-workbench .matter-sidebar-footer:hover::before { animation: plum-shell-hop 700ms ease; }
+:theme .thread-ui-shell .matter-workbench .matter-sidebar-footer:active::before { animation: plum-shell-hop 700ms ease; }
+@media (hover: hover) {
+  :theme .thread-ui-shell .matter-workbench .matter-sidebar-footer:hover::before { animation: plum-shell-hop 700ms ease; }
+}
 @keyframes plum-shell-hop { 30% { transform: translateY(-5px) scaleY(1.03); } 60% { transform: translateY(0) scaleY(.97); } }
 @media (max-height: 640px) {
   :theme .thread-ui-shell .matter-workbench .matter-sidebar-footer::before { display: none; }
@@ -453,8 +490,14 @@
   color: var(--plum-chrome-soft);
   font-weight: 600;
 }
-:theme .thread-ui-shell .matter-workbench .matter-thread-group:hover:not(:has([aria-current='page'])) { --plum-badge-ring: var(--plum-chrome-hover); background: var(--plum-chrome-hover); }
-:theme .thread-ui-shell .matter-workbench .matter-thread-group:hover:not(:has([aria-current='page'])) .matter-group-tab { --plum-badge-ring: var(--plum-chrome-hover); color: var(--plum-chrome-fg); }
+:theme .thread-ui-shell .matter-workbench .matter-thread-group:active:not(:has([aria-current='page'])) { --plum-badge-ring: var(--plum-chrome-hover); background: var(--plum-chrome-hover); }
+@media (hover: hover) {
+  :theme .thread-ui-shell .matter-workbench .matter-thread-group:hover:not(:has([aria-current='page'])) { --plum-badge-ring: var(--plum-chrome-hover); background: var(--plum-chrome-hover); }
+}
+:theme .thread-ui-shell .matter-workbench .matter-thread-group:active:not(:has([aria-current='page'])) .matter-group-tab { --plum-badge-ring: var(--plum-chrome-hover); color: var(--plum-chrome-fg); }
+@media (hover: hover) {
+  :theme .thread-ui-shell .matter-workbench .matter-thread-group:hover:not(:has([aria-current='page'])) .matter-group-tab { --plum-badge-ring: var(--plum-chrome-hover); color: var(--plum-chrome-fg); }
+}
 :theme .thread-ui-shell .matter-workbench .matter-group-tab .matter-thread-avatar { width: 20px; height: 20px; box-shadow: 0 0 0 1px var(--plum-stitch); }
 :theme .thread-ui-shell .matter-workbench .matter-group-tab:has(> .matter-status-dot[data-status='running']) > .matter-thread-avatar { box-shadow: 0 0 0 2px var(--plum-status-running), 0 0 0 4.5px color-mix(in srgb, var(--plum-status-running) 22%, transparent); }
 :theme .thread-ui-shell .matter-workbench :is(.matter-thread-tabs > a[aria-current='page'], .matter-thread-group:has(> [aria-current='page'])) {
@@ -506,10 +549,16 @@
   font-size: 11px;
   font-weight: 800;
 }
-:theme .thread-ui-shell .matter-workbench .matter-group-toggle:is(:hover, [aria-expanded='true']) { background: rgb(199 166 255 / 28%); color: var(--plum-chrome-fg); }
+:theme .thread-ui-shell .matter-workbench .matter-group-toggle:is(:active, [aria-expanded='true']) { background: rgb(199 166 255 / 28%); color: var(--plum-chrome-fg); }
+@media (hover: hover) {
+  :theme .thread-ui-shell .matter-workbench .matter-group-toggle:is(:hover, [aria-expanded='true']) { background: rgb(199 166 255 / 28%); color: var(--plum-chrome-fg); }
+}
 :theme .thread-ui-shell .matter-workbench .matter-thread-group:has(> [aria-current='page']) .matter-group-toggle { background: var(--thread-gc-muted); color: var(--thread-gc-fg-soft); }
-:theme .thread-ui-shell .matter-workbench .matter-thread-group:has(> [aria-current='page']) .matter-group-toggle.is-badge:not(:hover, [aria-expanded='true']) { background: transparent; }
-:theme .thread-ui-shell .matter-workbench .matter-thread-group:has(> [aria-current='page']) .matter-group-toggle:is(:hover, [aria-expanded='true']) { background: var(--thread-gc-hover); color: var(--thread-gc-fg); }
+:theme .thread-ui-shell .matter-workbench .matter-thread-group:has(> [aria-current='page']) .matter-group-toggle.is-badge { background: transparent; }
+:theme .thread-ui-shell .matter-workbench .matter-thread-group:has(> [aria-current='page']) .matter-group-toggle:is(:active, [aria-expanded='true']) { background: var(--thread-gc-hover); color: var(--thread-gc-fg); }
+@media (hover: hover) {
+  :theme .thread-ui-shell .matter-workbench .matter-thread-group:has(> [aria-current='page']) .matter-group-toggle:is(:hover, [aria-expanded='true']) { background: var(--thread-gc-hover); color: var(--thread-gc-fg); }
+}
 :theme .thread-ui-shell .matter-workbench .matter-tab-add .matter-new-thread {
   width: 28px;
   height: 28px;
@@ -518,7 +567,10 @@
   border-radius: 10px;
   color: #f2c15c;
 }
-:theme .thread-ui-shell .matter-workbench .matter-tab-add .matter-new-thread:hover { border-style: solid; background: var(--theme-accent-solid); color: var(--plum-chrome); }
+:theme .thread-ui-shell .matter-workbench .matter-tab-add .matter-new-thread:active { border-style: solid; background: var(--theme-accent-solid); color: var(--plum-chrome); }
+@media (hover: hover) {
+  :theme .thread-ui-shell .matter-workbench .matter-tab-add .matter-new-thread:hover { border-style: solid; background: var(--theme-accent-solid); color: var(--plum-chrome); }
+}
 
 /* Tools at the strip's end: one felt toolbelt. The buttons are segments of a single
    capsule, and the lucide glyphs are replaced by Plum Pocket icons drawn as masks in
@@ -549,8 +601,12 @@
 :theme .thread-ui-shell .matter-workbench .matter-tabs-row > :is(.matter-toolbar-toggle, .matter-watches-toggle):last-child,
 :theme .thread-ui-shell .matter-workbench .matter-tabs-row .workbench-thread-picker-actions > :last-child { border-radius: 0 12px 12px 0; }
 :theme .thread-ui-shell .matter-workbench .matter-tabs-row > .matter-toolbar-toggle:last-child { border-radius: 12px; }
-:theme .thread-ui-shell .matter-workbench .matter-tabs-row > :is(.matter-toolbar-toggle, .matter-watches-toggle):is(:hover, [aria-expanded='true']),
-:theme .thread-ui-shell .matter-workbench .matter-tabs-row .workbench-thread-picker-trigger:is(:hover, [aria-expanded='true']) { background: var(--plum-chrome-active); color: var(--plum-chrome-fg); }
+:theme .thread-ui-shell .matter-workbench .matter-tabs-row > :is(.matter-toolbar-toggle, .matter-watches-toggle):is(:active, [aria-expanded='true']),
+:theme .thread-ui-shell .matter-workbench .matter-tabs-row .workbench-thread-picker-trigger:is(:active, [aria-expanded='true']) { background: var(--plum-chrome-active); color: var(--plum-chrome-fg); }
+@media (hover: hover) {
+  :theme .thread-ui-shell .matter-workbench .matter-tabs-row > :is(.matter-toolbar-toggle, .matter-watches-toggle):is(:hover, [aria-expanded='true']),
+  :theme .thread-ui-shell .matter-workbench .matter-tabs-row .workbench-thread-picker-trigger:is(:hover, [aria-expanded='true']) { background: var(--plum-chrome-active); color: var(--plum-chrome-fg); }
+}
 :theme .thread-ui-shell .matter-workbench .matter-tabs-row > .matter-toolbar-toggle[aria-expanded='true'],
 :theme .thread-ui-shell .matter-workbench .matter-tabs-row .workbench-thread-picker-trigger:is(.is-active, [aria-pressed='true']) { background: rgb(240 181 74 / 24%); color: #f6cf7c; }
 :theme .thread-ui-shell .matter-workbench .matter-tabs-row > :last-child:is(button, .workbench-thread-picker-actions) { margin-right: 8px; }
@@ -630,7 +686,10 @@
   font-weight: 700;
   color: var(--theme-fg);
 }
-:theme .thread-ui-shell .matter-workbench .matter-notifications > a:hover { background: var(--theme-hover); }
+:theme .thread-ui-shell .matter-workbench .matter-notifications > a:active { background: var(--theme-hover); }
+@media (hover: hover) {
+  :theme .thread-ui-shell .matter-workbench .matter-notifications > a:hover { background: var(--theme-hover); }
+}
 :theme .thread-ui-shell .matter-workbench .matter-notifications > a > .matter-status-dot {
   width: 10px;
   height: 10px;
@@ -669,7 +728,10 @@
   font-size: 13px;
   font-weight: 600;
 }
-:theme .matter-agent-threads-menu .matter-agent-threads-item:hover { --plum-badge-ring: var(--theme-hover); background: var(--theme-hover); }
+:theme .matter-agent-threads-menu .matter-agent-threads-item:active { --plum-badge-ring: var(--theme-hover); background: var(--theme-hover); }
+@media (hover: hover) {
+  :theme .matter-agent-threads-menu .matter-agent-threads-item:hover { --plum-badge-ring: var(--theme-hover); background: var(--theme-hover); }
+}
 :theme .matter-agent-threads-menu .matter-agent-threads-item[aria-current='page'] { --plum-badge-ring: var(--theme-accent-soft); background: var(--theme-accent-soft) !important; color: var(--theme-fg); font-weight: 800; }
 :theme .matter-agent-threads-menu .matter-agent-threads-item:focus-visible { outline: 2px solid var(--plum-shell-focus); outline-offset: -2px; }
 :theme .matter-agent-threads-menu .matter-agent-threads-item:not(:first-child) { margin-left: 14px; }
@@ -693,7 +755,10 @@
 }
 :theme .recent-thread-menu > button { gap: 10px; min-height: 38px; padding: 8px 10px; border-radius: 10px; font-size: 12.5px; font-weight: 600; }
 :theme .recent-thread-menu > button > svg { color: var(--theme-fg-muted); }
-:theme .recent-thread-menu > button:hover:not(:disabled) > svg { color: var(--theme-accent-strong); }
+:theme .recent-thread-menu > button:active:not(:disabled) > svg { color: var(--theme-accent-strong); }
+@media (hover: hover) {
+  :theme .recent-thread-menu > button:hover:not(:disabled) > svg { color: var(--theme-accent-strong); }
+}
 :theme .recent-thread-menu > button:first-of-type > svg { color: var(--theme-accent-strong); }
 :theme .recent-thread-menu > .recent-thread-delete > svg { color: inherit; }
 :theme .recent-thread-menu :focus-visible { outline-color: var(--plum-shell-focus); }
@@ -717,7 +782,10 @@
 @media (prefers-reduced-motion: reduce) {
   :theme :is(.matter-agent-threads-menu, .recent-thread-menu) { animation: none; }
   :theme .matter-thread-avatar { animation: none !important; }
-  :theme .thread-ui-shell .matter-workbench .matter-rail > .matter-brand:hover { transform: none; }
+  :theme .thread-ui-shell .matter-workbench .matter-rail > .matter-brand:active { transform: none; }
+  @media (hover: hover) {
+    :theme .thread-ui-shell .matter-workbench .matter-rail > .matter-brand:hover { transform: none; }
+  }
 }
 
 /* ── Tablet ────────────────────────────────────────────────────────────── */
@@ -827,7 +895,10 @@
     color: #f2c15c;
   }
   :theme .thread-ui-shell .matter-workbench .matter-topbar.is-status-only > .matter-running-chip svg { width: 13px; height: 13px; }
-  :theme .thread-ui-shell .matter-workbench .matter-topbar-end > .device-monitor-button:is(:hover, [aria-expanded='true']) { background-color: transparent; background-image: linear-gradient(var(--plum-chrome-hover), var(--plum-chrome-hover)); background-clip: content-box; color: var(--plum-chrome-soft); }
+  :theme .thread-ui-shell .matter-workbench .matter-topbar-end > .device-monitor-button:is(:active, [aria-expanded='true']) { background-color: transparent; background-image: linear-gradient(var(--plum-chrome-hover), var(--plum-chrome-hover)); background-clip: content-box; color: var(--plum-chrome-soft); }
+  @media (hover: hover) {
+    :theme .thread-ui-shell .matter-workbench .matter-topbar-end > .device-monitor-button:is(:hover, [aria-expanded='true']) { background-color: transparent; background-image: linear-gradient(var(--plum-chrome-hover), var(--plum-chrome-hover)); background-clip: content-box; color: var(--plum-chrome-soft); }
+  }
 
   /* The drawer is a pocket sliding over everything, full height. */
   :theme .thread-ui-shell .matter-workbench .matter-sidebar {
@@ -950,7 +1021,10 @@
 
 /* The desktop navigation strip and search on the plum chrome: chrome ink, as the rail's. */
 :theme .thread-ui-shell .matter-workbench .matter-tabs-row :is(.matter-nav-strip > :is(button, a), .matter-tabs-search .matter-search-trigger) { color: var(--plum-chrome-muted); }
-:theme .thread-ui-shell .matter-workbench .matter-tabs-row :is(.matter-nav-strip > :is(button, a), .matter-tabs-search .matter-search-trigger):hover { background: var(--plum-chrome-hover); color: var(--plum-chrome-fg); }
+:theme .thread-ui-shell .matter-workbench .matter-tabs-row :is(.matter-nav-strip > :is(button, a), .matter-tabs-search .matter-search-trigger):active { background: var(--plum-chrome-hover); color: var(--plum-chrome-fg); }
+@media (hover: hover) {
+  :theme .thread-ui-shell .matter-workbench .matter-tabs-row :is(.matter-nav-strip > :is(button, a), .matter-tabs-search .matter-search-trigger):hover { background: var(--plum-chrome-hover); color: var(--plum-chrome-fg); }
+}
 :theme .thread-ui-shell .matter-workbench .matter-tabs-row > .matter-nav-strip { border-right-color: var(--plum-chrome-border); }
 :theme .thread-ui-shell .matter-workbench .matter-sidebar > .matter-nav-strip { border-bottom-color: color-mix(in srgb, var(--plum-chrome-border) 70%, transparent); }
 /* A workspace's own page on a phone lists its threads on the page, not on the

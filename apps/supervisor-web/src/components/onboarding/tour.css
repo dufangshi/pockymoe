@@ -133,16 +133,26 @@
   background: var(--theme-accent-solid);
   color: var(--theme-accent-solid-fg);
 }
-.pm-tour-primary:hover {
+.pm-tour-primary:active {
   background: var(--theme-accent-solid-hover, var(--theme-accent-solid));
+}
+@media (hover: hover) {
+  .pm-tour-primary:hover {
+    background: var(--theme-accent-solid-hover, var(--theme-accent-solid));
+  }
 }
 .pm-tour-secondary {
   border: 1px solid var(--theme-border);
   background: transparent;
   color: var(--theme-fg);
 }
-.pm-tour-secondary:hover:not(:disabled) {
+.pm-tour-secondary:active:not(:disabled) {
   background: var(--theme-hover);
+}
+@media (hover: hover) {
+  .pm-tour-secondary:hover:not(:disabled) {
+    background: var(--theme-hover);
+  }
 }
 .pm-tour-secondary:disabled {
   cursor: default;
@@ -156,8 +166,13 @@
   text-decoration: underline;
   text-underline-offset: 3px;
 }
-.pm-tour-link:hover {
+.pm-tour-link:active {
   color: var(--theme-fg);
+}
+@media (hover: hover) {
+  .pm-tour-link:hover {
+    color: var(--theme-fg);
+  }
 }
 .pm-tour-icon {
   display: inline-flex;
@@ -170,9 +185,15 @@
   border-radius: 6px;
   color: var(--theme-fg-muted);
 }
-.pm-tour-icon:hover {
+.pm-tour-icon:active {
   background: var(--theme-hover);
   color: var(--theme-fg);
+}
+@media (hover: hover) {
+  .pm-tour-icon:hover {
+    background: var(--theme-hover);
+    color: var(--theme-fg);
+  }
 }
 .pm-tour-icon svg {
   width: 16px;
@@ -202,9 +223,14 @@
   text-align: left;
   color: var(--theme-fg);
 }
-.pm-tour-chapter:hover,
+.pm-tour-chapter:active,
 .pm-tour-chapter.is-next {
   background: var(--theme-hover);
+}
+@media (hover: hover) {
+  .pm-tour-chapter:hover {
+    background: var(--theme-hover);
+  }
 }
 .pm-tour-chapter-index {
   display: inline-flex;
@@ -255,9 +281,15 @@
   border-radius: 8px;
   color: var(--theme-fg-muted);
 }
-.pm-tour-launcher:hover {
+.pm-tour-launcher:active {
   background: var(--theme-hover);
   color: var(--theme-fg);
+}
+@media (hover: hover) {
+  .pm-tour-launcher:hover {
+    background: var(--theme-hover);
+    color: var(--theme-fg);
+  }
 }
 .pm-tour-launcher svg {
   width: 16px;

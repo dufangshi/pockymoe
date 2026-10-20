@@ -290,10 +290,16 @@
   position: absolute;
   inset: -4px;
 }
-.pm-res-thread-actions:hover,
+.pm-res-thread-actions:active,
 .pm-res-thread-actions[aria-expanded='true'] {
   background: var(--theme-hover);
   color: var(--theme-fg);
+}
+@media (hover: hover) {
+  .pm-res-thread-actions:hover {
+    background: var(--theme-hover);
+    color: var(--theme-fg);
+  }
 }
 .pm-res-thread-actions:focus-visible {
   outline: 2px solid var(--theme-accent-solid);
@@ -337,10 +343,16 @@
   font-size: 13px;
   color: var(--status-danger-fg);
 }
-.pm-res-menu > button:hover,
+.pm-res-menu > button:active,
 .pm-res-menu > button:focus-visible {
   background: var(--theme-hover);
   outline: none;
+}
+@media (hover: hover) {
+  .pm-res-menu > button:hover {
+    background: var(--theme-hover);
+    outline: none;
+  }
 }
 .pm-res-menu > button:disabled {
   opacity: 0.4;

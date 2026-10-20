@@ -24,10 +24,38 @@ function unsafeCss(source: string) {
     .map(match => css.slice(Math.max(0, css.lastIndexOf('}', match.index) + 1), match.index + match[0].length).trim());
 }
 
+function unguardedHover(source: string) {
+  const ancestors: string[] = [];
+  const failures: string[] = [];
+  const css = source.replace(/\/\*[\s\S]*?\*\//g, '');
+  for (const match of css.matchAll(/([^{};]*)\{|([{};])/g)) {
+    if (match[1] !== undefined) {
+      const prelude = match[1].trim();
+      const hoverMedia = /^@media\b(?!.*\b(?:not|or)\b)(?!.*,)[^{}]*\(hover:\s*hover\)/;
+      if (/:hover\b/.test(prelude) && !ancestors.some(value => hoverMedia.test(value))) failures.push(prelude);
+      ancestors.push(prelude);
+    } else if (match[2] === '}') ancestors.pop();
+  }
+  return failures;
+}
+
 describe('pointer clicks leave no focus styling behind', () => {
   it('rejects reveal/accent selectors while allowing explicit typing focus', () => {
     expect(unsafeCss('.row:focus-within .copy { opacity: 1 } button:focus { color: red }')).toHaveLength(2);
     expect(unsafeCss('.row:has(:focus-visible) .copy {} button:active {} button:focus-visible {} input:focus {} .composer:has([contenteditable="true"]:focus) {}')).toEqual([]);
+  });
+
+  it('rejects sticky touch hover, including mixed state selectors', () => {
+    expect(unguardedHover('button:hover, button:focus-visible { color: red } @media (max-width: 639px) { .row:is(:hover, [data-open]) { color: red } }')).toHaveLength(2);
+    expect(unguardedHover('@media not (hover: hover) { button:hover {} } @media (hover: hover), (pointer: coarse) { button:hover {} }')).toHaveLength(2);
+    expect(unguardedHover('button:active {} button:focus-visible {} @media (hover: hover) { button:hover {} @media (min-width: 640px) { .row:has(:hover) {} } }')).toEqual([]);
+  });
+
+  it.each(roots)('%s limits hover styling to pointers that hover', directory => {
+    const failures = files(path.join(root, directory)).filter(name => name.endsWith('.css')).flatMap(name =>
+      unguardedHover(readFileSync(name, 'utf8')).map(selector => `${path.relative(root, name)}: ${selector}`),
+    );
+    expect(failures).toEqual([]);
   });
 
   it.each(roots)('%s uses keyboard focus for controls and hover affordances', directory => {

@@ -181,9 +181,15 @@
   background: transparent;
   color: var(--theme-fg-muted);
 }
-:theme .thread-ui-shell .thread-graph-explorer-header :is(.thread-graph-explorer-icon-button, .thread-graph-explorer-collapse-button):is(:hover, :focus-visible, [aria-pressed='true']) {
+:theme .thread-ui-shell .thread-graph-explorer-header :is(.thread-graph-explorer-icon-button, .thread-graph-explorer-collapse-button):is(:active, :focus-visible, [aria-pressed='true']) {
   background: var(--theme-hover);
   color: var(--theme-fg);
+}
+@media (hover: hover) {
+  :theme .thread-ui-shell .thread-graph-explorer-header :is(.thread-graph-explorer-icon-button, .thread-graph-explorer-collapse-button):is(:hover, :focus-visible, [aria-pressed='true']) {
+    background: var(--theme-hover);
+    color: var(--theme-fg);
+  }
 }
 
 /* Rows: soft hover, lilac selection, a focus ring only for keyboard focus. */
@@ -191,10 +197,17 @@
   border-radius: 8px;
   color: var(--theme-fg-soft);
 }
-:theme .thread-ui-shell .thread-graph-tree-row:is(:hover, :focus-visible, :has(:focus-visible)) {
+:theme .thread-ui-shell .thread-graph-tree-row:is(:active, :focus-visible, :has(:focus-visible)) {
   --thread-graph-tree-row-background: var(--tx-row-hover);
   background: var(--tx-row-hover);
   color: var(--theme-fg);
+}
+@media (hover: hover) {
+  :theme .thread-ui-shell .thread-graph-tree-row:is(:hover, :focus-visible, :has(:focus-visible)) {
+    --thread-graph-tree-row-background: var(--tx-row-hover);
+    background: var(--tx-row-hover);
+    color: var(--theme-fg);
+  }
 }
 :theme .thread-ui-shell .thread-graph-tree-row.is-selected {
   --thread-graph-tree-row-background: var(--ws-selected);
@@ -224,10 +237,17 @@
   background: transparent;
   color: var(--theme-fg-muted);
 }
-:theme .thread-ui-shell .thread-graph-tree-action:is(:hover, :focus-visible),
-:theme .thread-ui-shell .thread-graph-tree-row.is-selected .thread-graph-tree-action:hover {
+:theme .thread-ui-shell .thread-graph-tree-action:is(:active, :focus-visible),
+:theme .thread-ui-shell .thread-graph-tree-row.is-selected .thread-graph-tree-action:active {
   background: color-mix(in srgb, var(--theme-fg) 8%, transparent);
   color: var(--theme-fg);
+}
+@media (hover: hover) {
+  :theme .thread-ui-shell .thread-graph-tree-action:is(:hover, :focus-visible),
+  :theme .thread-ui-shell .thread-graph-tree-row.is-selected .thread-graph-tree-action:hover {
+    background: color-mix(in srgb, var(--theme-fg) 8%, transparent);
+    color: var(--theme-fg);
+  }
 }
 :theme .thread-ui-shell .thread-graph-tree-row.is-selected .thread-graph-tree-action { color: color-mix(in srgb, var(--ws-selected-fg) 70%, transparent); }
 
@@ -247,7 +267,10 @@
   color: var(--theme-fg-soft);
 }
 :theme .workspace-node-menu button svg { width: 15px; height: 15px; flex: none; color: var(--theme-fg-muted); }
-:theme .workspace-node-menu button:is(:hover, :focus-visible) { background: var(--theme-hover); color: var(--theme-fg); outline: none; }
+:theme .workspace-node-menu button:is(:active, :focus-visible) { background: var(--theme-hover); color: var(--theme-fg); outline: none; }
+@media (hover: hover) {
+  :theme .workspace-node-menu button:is(:hover, :focus-visible) { background: var(--theme-hover); color: var(--theme-fg); outline: none; }
+}
 :theme .workspace-node-menu button:has(.lucide-trash-2),
 :theme .workspace-node-menu button:has(.lucide-trash-2) svg { color: var(--tx-fail); }
 :theme .workspace-node-menu button:has(.lucide-trash-2) {
@@ -319,7 +342,10 @@
   line-height: 1.5;
   text-align: left;
 }
-:theme .thread-ui-shell .matter-workbench .matter-topbar .workbench-search-results > :is(button:hover, button[aria-selected='true']) { background: var(--ws-content-hover); }
+:theme .thread-ui-shell .matter-workbench .matter-topbar .workbench-search-results > :is(button:active, button[aria-selected='true']) { background: var(--ws-content-hover); }
+@media (hover: hover) {
+  :theme .thread-ui-shell .matter-workbench .matter-topbar .workbench-search-results > :is(button:hover, button[aria-selected='true']) { background: var(--ws-content-hover); }
+}
 :theme .thread-ui-shell .matter-workbench .matter-topbar .workbench-search-results > button + button { margin-top: 2px; }
 :theme .workbench-search-results strong {
   font-family: var(--plum-display);
@@ -358,7 +384,10 @@
   border-radius: 999px;
   color: var(--theme-fg-muted);
 }
-:theme .thread-ui-shell .terminal-icon-button:is(:hover, :focus-visible) { background: var(--theme-hover); color: var(--theme-fg); }
+:theme .thread-ui-shell .terminal-icon-button:is(:active, :focus-visible) { background: var(--theme-hover); color: var(--theme-fg); }
+@media (hover: hover) {
+  :theme .thread-ui-shell .terminal-icon-button:is(:hover, :focus-visible) { background: var(--theme-hover); color: var(--theme-fg); }
+}
 
 /* ── Device monitor: Fredoka names and values, dashed dividers, felt chips ── */
 :theme .device-monitor-dialog h2 { font-family: var(--plum-display); font-weight: 600; }

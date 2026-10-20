@@ -157,9 +157,15 @@
   color: var(--pc-key-fg) !important;
   box-shadow: inset 0 -1.5px 0 color-mix(in srgb, var(--pc-key-lip) 60%, transparent) !important;
 }
-:theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-icon-button:hover {
+:theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-icon-button:active {
   background: var(--pc-key-hover) !important;
   color: var(--theme-fg) !important;
+}
+@media (hover: hover) {
+  :theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-icon-button:hover {
+    background: var(--pc-key-hover) !important;
+    color: var(--theme-fg) !important;
+  }
 }
 :theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-icon-button[aria-expanded='true'],
 :theme .thread-ui-shell [data-composer-layout] .relative:has(> [data-composer-menu-surface]) > .thread-graph-composer-icon-button {
@@ -183,7 +189,10 @@
   color: var(--pc-send-fg) !important;
   box-shadow: inset 0 -2px 0 var(--pc-send-lip) !important;
 }
-:theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-send-button:hover:not(:disabled) { background: var(--pc-send-hover) !important; }
+:theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-send-button:active:not(:disabled) { background: var(--pc-send-hover) !important; }
+@media (hover: hover) {
+  :theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-send-button:hover:not(:disabled) { background: var(--pc-send-hover) !important; }
+}
 :theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-send-button.ui-action-info { background: var(--theme-accent-soft) !important; color: var(--theme-accent-strong) !important; box-shadow: inset 0 0 0 1.5px var(--theme-accent-border), inset 0 -3px 0 var(--theme-accent-border) !important; }
 :theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-send-button.ui-action-danger { background: var(--pc-stop) !important; color: var(--pc-stop-fg) !important; box-shadow: inset 0 -3px 0 var(--pc-stop-lip) !important; }
 :theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-send-button:disabled {
@@ -207,14 +216,20 @@
   color: var(--pc-stop-fg) !important;
   box-shadow: inset 0 0 0 1.5px var(--pc-stop-ring) !important;
 }
-:theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-stop-button:hover { background: var(--pc-stop) !important; }
+:theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-stop-button:active { background: var(--pc-stop) !important; }
+@media (hover: hover) {
+  :theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-stop-button:hover { background: var(--pc-stop) !important; }
+}
 :theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-stop-button > span { width: 8px; height: 8px; border-radius: 2px; }
 :theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-send-button[data-send-intent='queue']:not(:disabled) {
   background: color-mix(in srgb, var(--theme-accent-soft) 85%, transparent) !important;
   color: var(--theme-accent-strong) !important;
   box-shadow: inset 0 0 0 1.5px var(--theme-accent-border) !important;
 }
-:theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-send-button[data-send-intent='queue']:hover:not(:disabled) { background: var(--theme-accent-soft) !important; }
+:theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-send-button[data-send-intent='queue']:active:not(:disabled) { background: var(--theme-accent-soft) !important; }
+@media (hover: hover) {
+  :theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-send-button[data-send-intent='queue']:hover:not(:disabled) { background: var(--theme-accent-soft) !important; }
+}
 
 /* Pressing a key pushes it into the felt. */
 :theme .thread-ui-shell [data-composer-layout] :is(.thread-graph-composer-icon-button, .thread-graph-composer-stop-button, .thread-graph-composer-send-button):active:not(:disabled) {
@@ -249,7 +264,10 @@
   transition: background-color 140ms ease, border-color 140ms ease;
 }
 :theme .thread-ui-shell [data-composer-layout] .composer-model-control:has(> .thread-context-progress-track) .composer-model-label { padding-bottom: 7px; }
-:theme .thread-ui-shell [data-composer-layout] .composer-model-label:hover:not(:disabled) { background: color-mix(in srgb, var(--pc-key) 70%, transparent); }
+:theme .thread-ui-shell [data-composer-layout] .composer-model-label:active:not(:disabled) { background: color-mix(in srgb, var(--pc-key) 70%, transparent); }
+@media (hover: hover) {
+  :theme .thread-ui-shell [data-composer-layout] .composer-model-label:hover:not(:disabled) { background: color-mix(in srgb, var(--pc-key) 70%, transparent); }
+}
 :theme .thread-ui-shell [data-composer-layout] .composer-model-label[aria-expanded='true'] {
   background: var(--theme-accent-soft);
   border-color: var(--theme-accent-border);
@@ -332,8 +350,13 @@
   border-radius: 12px !important;
   color: var(--theme-fg) !important;
 }
-:theme .thread-ui-shell [data-composer-menu-surface='true'] :is(.thread-graph-composer-menu-item, [role='menuitemradio'], [data-toolbox-action] > button, button[data-toolbox-action]):hover:not(:disabled) {
+:theme .thread-ui-shell [data-composer-menu-surface='true'] :is(.thread-graph-composer-menu-item, [role='menuitemradio'], [data-toolbox-action] > button, button[data-toolbox-action]):active:not(:disabled) {
   background: var(--pc-key) !important;
+}
+@media (hover: hover) {
+  :theme .thread-ui-shell [data-composer-menu-surface='true'] :is(.thread-graph-composer-menu-item, [role='menuitemradio'], [data-toolbox-action] > button, button[data-toolbox-action]):hover:not(:disabled) {
+    background: var(--pc-key) !important;
+  }
 }
 :theme .thread-ui-shell [data-composer-menu-surface='true'] :is(button, [role='menuitemradio']):focus-visible {
   outline: 2px solid var(--pc-focus);
@@ -424,7 +447,10 @@
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
-:theme .thread-ui-shell .composer-toolbox-split > button:last-child:hover:not(:disabled) { background: var(--theme-accent-solid) !important; color: var(--theme-accent-solid-fg) !important; }
+:theme .thread-ui-shell .composer-toolbox-split > button:last-child:active:not(:disabled) { background: var(--theme-accent-solid) !important; color: var(--theme-accent-solid-fg) !important; }
+@media (hover: hover) {
+  :theme .thread-ui-shell .composer-toolbox-split > button:last-child:hover:not(:disabled) { background: var(--theme-accent-solid) !important; color: var(--theme-accent-solid-fg) !important; }
+}
 
 /* Model menu. */
 :theme .thread-ui-shell .composer-model-control [data-composer-menu-surface='true'] { --composer-menu-surface-bg: var(--pc-felt); padding: 6px !important; }
@@ -556,9 +582,15 @@
   box-shadow: inset 0 -2px 0 var(--pc-key-lip);
   font-weight: 700;
 }
-:theme .thread-ui-shell .thread-composer-steer-button:hover:not(:disabled) { background: var(--theme-accent-solid); color: var(--theme-accent-solid-fg); box-shadow: inset 0 -2px 0 var(--pc-send-lip); }
+:theme .thread-ui-shell .thread-composer-steer-button:active:not(:disabled) { background: var(--theme-accent-solid); color: var(--theme-accent-solid-fg); box-shadow: inset 0 -2px 0 var(--pc-send-lip); }
+@media (hover: hover) {
+  :theme .thread-ui-shell .thread-composer-steer-button:hover:not(:disabled) { background: var(--theme-accent-solid); color: var(--theme-accent-solid-fg); box-shadow: inset 0 -2px 0 var(--pc-send-lip); }
+}
 :theme .thread-ui-shell .thread-composer-queue-remove { border-radius: 10px; color: var(--theme-fg-muted); }
-:theme .thread-ui-shell .thread-composer-queue-remove:hover:not(:disabled) { background: var(--pc-stop); color: var(--pc-stop-fg); }
+:theme .thread-ui-shell .thread-composer-queue-remove:active:not(:disabled) { background: var(--pc-stop); color: var(--pc-stop-fg); }
+@media (hover: hover) {
+  :theme .thread-ui-shell .thread-composer-queue-remove:hover:not(:disabled) { background: var(--pc-stop); color: var(--pc-stop-fg); }
+}
 :theme .thread-ui-shell :is(.thread-composer-steer-button, .thread-composer-queue-remove):focus-visible { outline: 2px solid var(--pc-focus); outline-offset: 1px; }
 
 /* ── Goal composer card: a ribbon tag stitched on top of the pocket ───────── */
@@ -592,7 +624,10 @@
 :theme .thread-ui-shell .thread-goal-compose-input { border-color: var(--theme-accent-border); background: var(--pc-felt); color: var(--theme-fg); }
 :theme .thread-ui-shell .thread-goal-compose-input:focus { border-color: var(--pc-focus); }
 :theme .thread-ui-shell .thread-goal-compose-cancel { border-color: var(--theme-accent-border); background: var(--pc-felt); color: var(--theme-fg-soft); }
-:theme .thread-ui-shell .thread-goal-compose-cancel:hover { background: var(--pc-key); }
+:theme .thread-ui-shell .thread-goal-compose-cancel:active { background: var(--pc-key); }
+@media (hover: hover) {
+  :theme .thread-ui-shell .thread-goal-compose-cancel:hover { background: var(--pc-key); }
+}
 
 /* ── Narrow panes and phones ──────────────────────────────────────────────── */
 
@@ -725,7 +760,10 @@
   box-shadow: inset 0 -3px 0 var(--pc-send-lip);
   font-weight: 700;
 }
-:theme .thread-export-dialog-root .matter-dialog-primary:hover:not(:disabled) { background: var(--pc-send-hover); }
+:theme .thread-export-dialog-root .matter-dialog-primary:active:not(:disabled) { background: var(--pc-send-hover); }
+@media (hover: hover) {
+  :theme .thread-export-dialog-root .matter-dialog-primary:hover:not(:disabled) { background: var(--pc-send-hover); }
+}
 :theme .thread-export-dialog-root input[type='checkbox'] { accent-color: var(--theme-accent-solid); }
 @media (max-width: 639px) {
   :theme .thread-export-dialog-root .thread-export-dialog-panel { border-radius: 22px 22px 0 0; }
@@ -743,7 +781,10 @@
   background: var(--theme-muted) !important;
   color: var(--theme-fg-soft) !important;
 }
-:theme .thread-ui-shell .thread-composer-icon-button:hover { background: var(--theme-hover) !important; color: var(--theme-fg) !important; }
+:theme .thread-ui-shell .thread-composer-icon-button:active { background: var(--theme-hover) !important; color: var(--theme-fg) !important; }
+@media (hover: hover) {
+  :theme .thread-ui-shell .thread-composer-icon-button:hover { background: var(--theme-hover) !important; color: var(--theme-fg) !important; }
+}
 :theme .thread-ui-shell .thread-composer-send-button.ui-action-danger { border-color: var(--theme-border-strong) !important; background: var(--theme-muted) !important; }
 :theme .thread-ui-shell :where(.thread-composer-menu, .thread-graph-composer-menu, [data-composer-menu-surface='true']) :where(input, textarea, select) {
   border-color: var(--theme-border) !important;

@@ -16,7 +16,10 @@
   white-space: nowrap;
   cursor: pointer;
 }
-.theme-preset-import:hover { border-color: var(--theme-border-strong); }
+.theme-preset-import:active { border-color: var(--theme-border-strong); }
+@media (hover: hover) {
+  .theme-preset-import:hover { border-color: var(--theme-border-strong); }
+}
 .theme-preset-import:disabled { opacity: 0.6; cursor: progress; }
 .theme-preset-import > svg { width: 14px; height: 14px; }
 .theme-preset-status {
@@ -44,7 +47,10 @@
   cursor: pointer;
   transition: border-color 150ms, box-shadow 150ms;
 }
-.theme-preset-option:hover { border-color: var(--theme-border-strong); }
+.theme-preset-option:active { border-color: var(--theme-border-strong); }
+@media (hover: hover) {
+  .theme-preset-option:hover { border-color: var(--theme-border-strong); }
+}
 .theme-preset-option:has(input:checked) {
   border-color: var(--theme-accent-solid);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--theme-accent-solid) 25%, transparent);
@@ -81,12 +87,21 @@
   color: var(--theme-fg-muted);
   cursor: pointer;
 }
-.theme-preset-actions > button:hover { color: var(--theme-fg); background: var(--theme-hover); }
+.theme-preset-actions > button:active { color: var(--theme-fg); background: var(--theme-hover); }
+@media (hover: hover) {
+  .theme-preset-actions > button:hover { color: var(--theme-fg); background: var(--theme-hover); }
+}
 .theme-preset-actions > button > svg { width: 14px; height: 14px; }
 .theme-preset-actions > button.is-danger { color: var(--theme-danger, #c2410c); }
-.theme-preset-actions > button.is-danger:hover { color: var(--theme-danger, #c2410c); background: color-mix(in srgb, var(--theme-danger, #c2410c) 12%, transparent); }
+.theme-preset-actions > button.is-danger:active { color: var(--theme-danger, #c2410c); background: color-mix(in srgb, var(--theme-danger, #c2410c) 12%, transparent); }
+@media (hover: hover) {
+  .theme-preset-actions > button.is-danger:hover { color: var(--theme-danger, #c2410c); background: color-mix(in srgb, var(--theme-danger, #c2410c) 12%, transparent); }
+}
 /* "Removed X · Undo" for ten seconds after removing an imported pack. */
 .theme-preset-undo { display: flex; align-items: center; gap: 8px; }
 .theme-preset-undo > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .theme-preset-undo > button { flex: none; min-height: 32px; padding: 0 10px; border: 1px solid var(--theme-border-strong); border-radius: 6px; color: var(--theme-fg); font-weight: 600; }
-.theme-preset-undo > button:hover { background: var(--theme-hover); }
+.theme-preset-undo > button:active { background: var(--theme-hover); }
+@media (hover: hover) {
+  .theme-preset-undo > button:hover { background: var(--theme-hover); }
+}

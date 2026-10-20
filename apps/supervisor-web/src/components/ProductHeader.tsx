@@ -11,11 +11,13 @@ import { RelayUserMenu } from './RelayUserMenu';
 
 export function ProductHeader({
   title,
+  subtitle,
   backHref,
   backLabel,
   actions,
 }: {
   title: string;
+  subtitle?: string | undefined;
   backHref?: string;
   backLabel?: string;
   actions?: ReactNode;
@@ -38,9 +40,12 @@ export function ProductHeader({
             <ArrowLeft size={19} />
           </Link>
         )}
-        <h1 className="min-w-0 flex-1 truncate text-sm font-semibold sm:text-base">
-          {title}
-        </h1>
+        <div className="product-navigation-heading min-w-0 flex-1">
+          <h1 className="min-w-0 truncate text-sm font-semibold sm:text-base">
+            <span className="min-w-0 truncate">{title}</span>
+          </h1>
+          {subtitle && <p className="product-navigation-subtitle truncate text-xs text-[var(--theme-fg-muted)]">{subtitle}</p>}
+        </div>
         {actions}
 
       </header>

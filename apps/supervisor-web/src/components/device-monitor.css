@@ -42,8 +42,13 @@
 .device-monitor-button[data-stale] b {
   color: var(--theme-fg-muted);
 }
-.device-monitor-button:hover {
+.device-monitor-button:active {
   background: var(--theme-hover);
+}
+@media (hover: hover) {
+  .device-monitor-button:hover {
+    background: var(--theme-hover);
+  }
 }
 .thread-ui-shell .matter-workbench .matter-rail .device-monitor-button {
   width: 44px;
@@ -234,7 +239,10 @@ button.dm-head:focus-visible { outline: 2px solid var(--theme-accent-solid); out
 .dm-na svg { width: 13px; height: 13px; }
 .dm-value .dm-na svg { width: 15px; height: 15px; }
 a.dm-na { cursor: pointer; }
-a.dm-na:hover { color: var(--theme-accent-strong); }
+a.dm-na:active { color: var(--theme-accent-strong); }
+@media (hover: hover) {
+  a.dm-na:hover { color: var(--theme-accent-strong); }
+}
 .dm-subrow { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .dm-subrow .dm-icon { width: 13px; height: 13px; }
 .dm-subrow .dm-name { font-size: 11.5px; font-weight: 500; }
@@ -332,7 +340,10 @@ a.dm-na:hover { color: var(--theme-accent-strong); }
   border-radius: 6px;
   color: var(--theme-fg-muted);
 }
-.dm-harness-settings:hover { background: var(--theme-hover); color: var(--theme-fg); }
+.dm-harness-settings:active { background: var(--theme-hover); color: var(--theme-fg); }
+@media (hover: hover) {
+  .dm-harness-settings:hover { background: var(--theme-hover); color: var(--theme-fg); }
+}
 .dm-harness-settings svg { width: 14px; height: 14px; }
 .dm-harness .dm-notice { padding: 0; }
 .dm-harness-empty { color: var(--theme-fg-muted); }
@@ -349,7 +360,10 @@ a.dm-na:hover { color: var(--theme-accent-strong); }
   color: inherit;
   text-align: left;
 }
-.dm-harness-toggle:hover { background: var(--theme-hover); }
+.dm-harness-toggle:active { background: var(--theme-hover); }
+@media (hover: hover) {
+  .dm-harness-toggle:hover { background: var(--theme-hover); }
+}
 .dm-harness-chevron { flex: none; width: 12px; height: 12px; color: var(--theme-fg-muted); transition: transform 180ms ease; }
 .dm-harness-toggle[aria-expanded='true'] .dm-harness-chevron { transform: rotate(90deg); }
 .dm-harness-kind {
@@ -375,7 +389,10 @@ a.dm-na:hover { color: var(--theme-accent-strong); }
   color: var(--theme-fg-soft);
   font-size: 10.5px;
 }
-.dm-harness-end:hover:not(:disabled) { border-color: var(--status-danger-border); color: var(--status-danger-fg); }
+.dm-harness-end:active:not(:disabled) { border-color: var(--status-danger-border); color: var(--status-danger-fg); }
+@media (hover: hover) {
+  .dm-harness-end:hover:not(:disabled) { border-color: var(--status-danger-border); color: var(--status-danger-fg); }
+}
 .dm-harness-end:disabled { opacity: .5; cursor: default; }
 .dm-procs { display: grid; gap: 1px; margin: 2px 0 4px 17px; color: var(--theme-fg-soft); font-size: 10.5px; }
 .dm-procs > li { display: flex; gap: 6px; min-width: 0; }

@@ -2,13 +2,13 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter } from 'react-router-dom';
 import type { WorkspaceDto } from '@pockymoe/shared';
-import { fetchRuntimeConfig, fetchThreads, fetchWorkspaces, setWorkspaceIsolation } from '../lib/api';
+import { fetchRuntimeConfig, fetchStorageOverview, fetchThreads, fetchWorkspaces, relayModeActive, setWorkspaceIsolation } from '../lib/api';
 import { WorkspacesPage } from './WorkspacesPage';
 
 vi.mock('../lib/api', () => ({
-  deleteWorkspace: vi.fn(), fetchRuntimeConfig: vi.fn(), fetchThreads: vi.fn(),
+  deleteWorkspace: vi.fn(), fetchRelayPortal: vi.fn(), fetchRuntimeConfig: vi.fn(), fetchStorageOverview: vi.fn(), fetchThreads: vi.fn(),
   fetchWorkspaces: vi.fn(), setWorkspaceIsolation: vi.fn(), updateWorkspace: vi.fn(),
-  updateWorkspaceFavorite: vi.fn(),
+  updateWorkspaceFavorite: vi.fn(), relayModeActive: vi.fn(), readSelectedRelayDeviceId: () => null,
 }));
 vi.mock('../components/DeviceEncryptionStatus', () => ({ DeviceEncryptionStatus: () => null }));
 vi.mock('../components/ProductHeader', () => ({ ProductHeader: () => null }));
@@ -23,6 +23,8 @@ beforeEach(() => {
   vi.resetAllMocks();
   vi.mocked(fetchThreads).mockResolvedValue([]);
   vi.mocked(fetchRuntimeConfig).mockRejectedValue(new Error('offline'));
+  vi.mocked(relayModeActive).mockReturnValue(false);
+  vi.mocked(fetchStorageOverview).mockResolvedValue({ deviceName: 'Local desktop', scan: null });
 });
 
 async function openMenu() {

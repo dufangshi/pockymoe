@@ -64,7 +64,10 @@
 /* Work summary: "› Worked for 51s · …" in the gutter column, then a dashed rule. */
 :theme .thread-ui-shell .thread-graph-worked-summary { padding-left: var(--term-gutter); font-size: 12px; }
 :theme .thread-ui-shell .thread-graph-worked-label { font-weight: 700; color: var(--theme-fg); }
-:theme .thread-ui-shell .thread-worked-toggle:hover .thread-graph-worked-label { color: var(--theme-accent-solid); }
+:theme .thread-ui-shell .thread-worked-toggle:active .thread-graph-worked-label { color: var(--theme-accent-solid); }
+@media (hover: hover) {
+  :theme .thread-ui-shell .thread-worked-toggle:hover .thread-graph-worked-label { color: var(--theme-accent-solid); }
+}
 :theme .thread-ui-shell .thread-worked-chevron { width: 12px; height: 12px; }
 
 /* Runs, rows and the working line share the text column. */
@@ -79,7 +82,10 @@
   border-left: 1px solid var(--term-line);
 }
 :theme .thread-ui-shell .tlog-row-head { border-radius: 0; font-size: 12px; }
-:theme .thread-ui-shell .tlog-row-head:hover { background: var(--theme-surface); }
+:theme .thread-ui-shell .tlog-row-head:active { background: var(--theme-surface); }
+@media (hover: hover) {
+  :theme .thread-ui-shell .tlog-row-head:hover { background: var(--theme-surface); }
+}
 :theme .thread-ui-shell .tlog-title.is-mono { font-size: 12px; }
 :theme .thread-ui-shell .tlog-glyph { color: var(--theme-accent-solid); }
 :theme .thread-ui-shell .tlog-tag::before { content: '['; }

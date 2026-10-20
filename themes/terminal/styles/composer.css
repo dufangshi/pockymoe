@@ -33,14 +33,23 @@
   box-shadow: none;
 }
 :theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-icon-button { border: 1px solid transparent; background: transparent; }
-:theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-icon-button:hover { border-color: var(--theme-border-strong); background: var(--theme-surface); }
+:theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-icon-button:active { border-color: var(--theme-border-strong); background: var(--theme-surface); }
+@media (hover: hover) {
+  :theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-icon-button:hover { border-color: var(--theme-border-strong); background: var(--theme-surface); }
+}
 :theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-send-button {
   background: var(--theme-accent-solid);
   color: var(--theme-accent-solid-fg);
 }
-:theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-send-button:hover:not(:disabled) { background: var(--theme-fg); color: var(--theme-bg); }
+:theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-send-button:active:not(:disabled) { background: var(--theme-fg); color: var(--theme-bg); }
+@media (hover: hover) {
+  :theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-send-button:hover:not(:disabled) { background: var(--theme-fg); color: var(--theme-bg); }
+}
 :theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-stop-button { border: 1px solid var(--theme-border-strong); background: transparent; }
-:theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-stop-button:hover { border-color: var(--tlog-failed); color: var(--tlog-failed); }
+:theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-stop-button:active { border-color: var(--tlog-failed); color: var(--tlog-failed); }
+@media (hover: hover) {
+  :theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-stop-button:hover { border-color: var(--tlog-failed); color: var(--tlog-failed); }
+}
 :theme .thread-ui-shell [data-composer-layout] .composer-model-label { border: 1px solid var(--term-line); font-size: 12px; }
 :theme .thread-ui-shell :is(.thread-jump-nav, .thread-jump-nav > button) { border-radius: 0; box-shadow: none; }
 /* Square on phones too: the phone panel's rounded frame is not this theme's. */

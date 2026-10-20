@@ -58,9 +58,15 @@
   flex-shrink: 0;
   color: var(--theme-fg-muted);
 }
-.automation-refresh:hover {
+.automation-refresh:active {
   background: var(--theme-hover);
   color: var(--theme-fg);
+}
+@media (hover: hover) {
+  .automation-refresh:hover {
+    background: var(--theme-hover);
+    color: var(--theme-fg);
+  }
 }
 .automation-refresh:disabled {
   opacity: 0.5;
@@ -355,10 +361,17 @@ div.automation-rule-usage {
 .automation-rule-actions > button[aria-expanded='true'] > svg {
   transform: rotate(90deg);
 }
-.automation-rule-actions > button:hover,
-.automation-link-button:hover,
-.automation-native-details:hover {
+.automation-rule-actions > button:active,
+.automation-link-button:active,
+.automation-native-details:active {
   color: var(--theme-fg);
+}
+@media (hover: hover) {
+  .automation-rule-actions > button:hover,
+  .automation-link-button:hover,
+  .automation-native-details:hover {
+    color: var(--theme-fg);
+  }
 }
 .automation-rule-actions > .automation-help {
   margin-left: auto;
@@ -407,8 +420,13 @@ div.automation-rule-usage {
   cursor: pointer;
   list-style: none;
 }
-.automation-run > summary:hover {
+.automation-run > summary:active {
   background: var(--theme-hover);
+}
+@media (hover: hover) {
+  .automation-run > summary:hover {
+    background: var(--theme-hover);
+  }
 }
 .automation-run-chevron {
   flex-shrink: 0;

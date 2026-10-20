@@ -14,6 +14,8 @@ Open **Settings → Notifications** to choose the account's notification scope:
   specific device. Workspace selection uses the same device-first picker as split
   conversations. Removing a card offers Undo. An empty list sends no notices.
 
+铃铛的点击背景只在按压期间显示，抬手后恢复；已订阅状态由实心铃铛、强调色和确认文字表示。
+
 Preferences save immediately and show Saved or an inline error with Retry. The
 turn bell is hidden in All/Selected scope. Settings tabs carry an account icon
 only when the entire tab is account-scoped: Notifications qualifies; Preferences

@@ -68,9 +68,15 @@
   color: var(--theme-fg-muted);
   cursor: pointer;
 }
-.native-agents-icon:hover {
+.native-agents-icon:active {
   background: var(--theme-hover);
   color: var(--theme-fg);
+}
+@media (hover: hover) {
+  .native-agents-icon:hover {
+    background: var(--theme-hover);
+    color: var(--theme-fg);
+  }
 }
 .native-agents-body {
   overflow-y: auto;
@@ -96,9 +102,15 @@
   color: inherit;
   text-align: left;
 }
-.native-agents-row:hover {
+.native-agents-row:active {
   background: var(--theme-hover);
   border-color: var(--theme-border-strong);
+}
+@media (hover: hover) {
+  .native-agents-row:hover {
+    background: var(--theme-hover);
+    border-color: var(--theme-border-strong);
+  }
 }
 .native-agents-row-main {
   flex: 1;
@@ -298,7 +310,10 @@
 .native-agents-row-meta { margin-top: 9px; gap: 6px 16px; font-size: 11px; }
 .native-agents-activity .native-agents-record { padding: 0; overflow: hidden; border-radius: 8px; }
 .native-agents-record-toggle { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 44px; padding: 10px; border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; }
-.native-agents-record-toggle:hover { background: var(--theme-hover); }
+.native-agents-record-toggle:active { background: var(--theme-hover); }
+@media (hover: hover) {
+  .native-agents-record-toggle:hover { background: var(--theme-hover); }
+}
 .native-agents-record-toggle > svg { flex: none; transition: transform 150ms ease; }
 .native-agents-record-toggle > svg.is-expanded { transform: rotate(90deg); }
 .native-agents-record-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }

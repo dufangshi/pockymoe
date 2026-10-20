@@ -36,8 +36,11 @@ import {
   deleteWorkspace,
   fetchRelayPortal,
   fetchRuntimeConfig,
+  fetchStorageOverview,
   fetchWorkspace,
   fetchWorkspaces,
+  readSelectedRelayDeviceId,
+  relayModeActive,
   setWorkspaceIsolation,
   updateWorkspace,
   updateWorkspaceFavorite,
@@ -82,6 +85,7 @@ export function WorkspacesPage() {
   const { locale: i18nLocale } = useI18n();
   const location = useLocation();
   const relayDeviceId = relayDeviceIdFromPath(location.pathname);
+  const deviceId = relayDeviceId ?? (relayModeActive() ? readSelectedRelayDeviceId() : null);
   const shellNav = useAppShellNav();
   const [workspaces, setWorkspaces] = useState<WorkspaceDto[]>([]);
   const [loading, setLoading] = useState(true);
@@ -89,6 +93,21 @@ export function WorkspacesPage() {
   const [runtimeConfig, setRuntimeConfig] = useState<RuntimeConfigDto | null>(null);
   const [runtimeError, setRuntimeError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [deviceName, setDeviceName] = useState<{ deviceId: string | null; name: string } | null>(null);
+  useEffect(() => {
+    let active = true;
+    const loadName = relayModeActive()
+      ? fetchRelayPortal().then(portal =>
+        portal.devices.find(device => device.id === deviceId)?.name
+        ?? portal.sharedDevicesWithMe?.find(grant => grant.deviceId === deviceId)?.deviceName
+        ?? '')
+      // This reads the saved hostname and cached scan, without starting a disk scan.
+      : fetchStorageOverview().then(overview => overview.deviceName);
+    void loadName.then(name => {
+      if (active) setDeviceName({ deviceId, name });
+    }).catch(() => { /* An unavailable name must not block the workspace list. */ });
+    return () => { active = false; };
+  }, [deviceId]);
   const [editingWorkspaceId, setEditingWorkspaceId] = useState<string | null>(null);
   const [draftLabel, setDraftLabel] = useState('');
   const [savingWorkspaceId, setSavingWorkspaceId] = useState<string | null>(null);
@@ -241,7 +260,7 @@ export function WorkspacesPage() {
 
   return (
     <div className="product-page space-y-4" data-page="workspaces">
-      <ProductHeader title={translate("files.workspaces")} {...(relayDeviceId ? {backHref: '/relay-devices', backLabel: translate("files.backToDevices")} : {})} actions={<>
+      <ProductHeader title={translate("files.workspaces")} subtitle={deviceName?.deviceId === deviceId ? deviceName.name : undefined} {...(relayDeviceId ? {backHref: '/relay-devices', backLabel: translate("files.backToDevices")} : {})} actions={<>
         {!relayDeviceId && <TourLauncherButton showLabel />}
         {shellNav?.openThreadMap && <button type="button" onClick={shellNav.openThreadMap} aria-label={translate('workbench.threadMap')} title={translate('workbench.threadMap')} className="product-icon-button"><LayoutDashboard data-icon="thread-map" size={19} /></button>}
         {!sharedOnly && <Link to={currentRelayScopedPath('/threads/import')} aria-label={translate("files.importSession")} title={translate("files.importSession")} className="product-icon-button"><FileInput data-icon="import" size={19} /></Link>}

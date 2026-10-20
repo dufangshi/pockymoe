@@ -7,7 +7,10 @@
 :theme .thread-ui-shell .matter-workbench .matter-rail { border-right: 1px solid var(--term-line); }
 :theme .thread-ui-shell .matter-workbench .matter-topbar-brand { font-weight: 700; letter-spacing: 0; }
 :theme .thread-ui-shell .matter-workbench .matter-topbar-brand::before { content: '❯ '; color: var(--theme-accent-solid); }
-:theme .thread-ui-shell .matter-workbench :is(.matter-rail, .matter-topbar) :where(button, a):hover { background: var(--theme-hover); }
+:theme .thread-ui-shell .matter-workbench :is(.matter-rail, .matter-topbar) :where(button, a):active { background: var(--theme-hover); }
+@media (hover: hover) {
+  :theme .thread-ui-shell .matter-workbench :is(.matter-rail, .matter-topbar) :where(button, a):hover { background: var(--theme-hover); }
+}
 :theme .thread-ui-shell .matter-workbench .matter-rail > button[aria-pressed='true'] {
   background: var(--theme-fg);
   color: var(--theme-bg);
@@ -16,7 +19,10 @@
   border: 1px solid var(--term-line);
   background: var(--theme-panel);
 }
-:theme .thread-ui-shell .matter-workbench .matter-topbar .matter-search-trigger:hover:not(:disabled) { border-color: var(--theme-fg); }
+:theme .thread-ui-shell .matter-workbench .matter-topbar .matter-search-trigger:active:not(:disabled) { border-color: var(--theme-fg); }
+@media (hover: hover) {
+  :theme .thread-ui-shell .matter-workbench .matter-topbar .matter-search-trigger:hover:not(:disabled) { border-color: var(--theme-fg); }
+}
 
 /* Sidebar */
 :theme .thread-ui-shell .matter-workbench .matter-sidebar {
@@ -35,7 +41,10 @@
   box-shadow: none;
   background: transparent;
 }
-:theme .thread-ui-shell .matter-workbench .matter-thread-row:hover { background: var(--theme-hover); }
+:theme .thread-ui-shell .matter-workbench .matter-thread-row:active { background: var(--theme-hover); }
+@media (hover: hover) {
+  :theme .thread-ui-shell .matter-workbench .matter-thread-row:hover { background: var(--theme-hover); }
+}
 :theme .thread-ui-shell .matter-workbench .matter-thread-row[aria-current='page'] {
   background: var(--theme-fg);
   color: var(--theme-bg);
@@ -106,8 +115,14 @@
 /* Thread tools dropdown: square, mono, the hovered row inverse like a selected line. */
 :theme .thread-ui-shell .matter-thread-tools-menu { border-radius: 0; box-shadow: 4px 4px 0 rgb(0 0 0 / 35%); font-family: var(--term-font); font-size: 12.5px; }
 :theme .thread-ui-shell :is(.matter-thread-tools-items :is(button, a), .matter-thread-tools-star, .matter-thread-tools-copy) { border-radius: 0; }
-:theme .thread-ui-shell .matter-thread-tools-items :is(button, a)[aria-label]:is(:hover, :focus-visible):not(:disabled) { background: var(--theme-accent-solid); color: var(--theme-accent-solid-fg); }
-:theme .thread-ui-shell .matter-thread-tools-items :is(button, a)[aria-label]:is(:hover, :focus-visible):not(:disabled) > svg { color: inherit; }
+:theme .thread-ui-shell .matter-thread-tools-items :is(button, a)[aria-label]:is(:active, :focus-visible):not(:disabled) { background: var(--theme-accent-solid); color: var(--theme-accent-solid-fg); }
+@media (hover: hover) {
+  :theme .thread-ui-shell .matter-thread-tools-items :is(button, a)[aria-label]:is(:hover, :focus-visible):not(:disabled) { background: var(--theme-accent-solid); color: var(--theme-accent-solid-fg); }
+}
+:theme .thread-ui-shell .matter-thread-tools-items :is(button, a)[aria-label]:is(:active, :focus-visible):not(:disabled) > svg { color: inherit; }
+@media (hover: hover) {
+  :theme .thread-ui-shell .matter-thread-tools-items :is(button, a)[aria-label]:is(:hover, :focus-visible):not(:disabled) > svg { color: inherit; }
+}
 :theme .thread-ui-shell .matter-thread-tools-path::before { content: '$'; margin-right: 7px; color: var(--theme-accent-solid); }
 :theme .thread-ui-shell .matter-thread-tools-path > svg { display: none; }
 :theme .thread-ui-shell .matter-thread-tools-title { padding-left: 15px; font-family: var(--term-font); }
