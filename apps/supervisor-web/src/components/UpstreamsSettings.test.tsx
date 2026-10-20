@@ -249,3 +249,44 @@ it('requires a device selection on relay home', () => {
   ).toBeVisible();
   expect(request).not.toHaveBeenCalled();
 });
+
+it('offers a connection to every harness whose format its upstream serves', async () => {
+  const served = {
+    ...catalog,
+    connections: [
+      {
+        ...catalog.connections[0],
+        catalog: {
+          checkedAt: '2026-10-19T00:00:00Z',
+          protocols: ['openai_chat', 'openai_responses'],
+          models: [{ id: 'model-a', name: 'Model A', contextWindow: 200192 }],
+        },
+      },
+      catalog.connections[1],
+    ],
+  };
+  vi.mocked(request).mockImplementation(async (path) => {
+    if (String(path).endsWith('/harnesses')) return inventory;
+    if (String(path).endsWith('/management/connections')) return served;
+    return { profiles: [], active: {}, backups: [] };
+  });
+  render(
+    <MemoryRouter initialEntries={['/devices/a/workspaces']}>
+      <UpstreamsSettings />
+    </MemoryRouter>,
+  );
+  const work = await screen.findByRole('listitem', { name: 'Work API' });
+  expect(
+    within(work).getByText(
+      'Responses + Chat · work.test/v1 · model-a · Context window 200K',
+    ),
+  ).toBeVisible();
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Show uninstalled' }));
+  const harnesses = screen.getByRole('region', { name: 'Use in harnesses' });
+  const dsh = within(harnesses).getByRole('listitem', { name: 'DSH' });
+  expect(options(within(dsh).getByLabelText('Connection for DSH'))).toEqual([
+    'Choose a connection',
+    'Work API',
+    'Anthropic Direct',
+  ]);
+});

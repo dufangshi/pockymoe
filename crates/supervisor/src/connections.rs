@@ -161,12 +161,39 @@ pub async fn save(
     State(s): State<Arc<Supervisor>>,
     Json(input): Json<Value>,
 ) -> Result<Json<Value>, Failure> {
-    let _g = s.upstream_gate.lock().await;
-    saved::migrate(&dir(&s)).map_err(failure)?;
-    let c = draft(&s, input)?;
-    let value = saved::upsert(&dir(&s), c).map_err(failure)?;
-    announce(&s);
+    let value = {
+        let _g = s.upstream_gate.lock().await;
+        saved::migrate(&dir(&s)).map_err(failure)?;
+        let c = draft(&s, input)?;
+        let value = saved::upsert(&dir(&s), c).map_err(failure)?;
+        announce(&s);
+        value
+    };
+    // A new or re-pointed connection learns what its upstream declares. An
+    // unreachable upstream still saves; its metadata stays absent.
+    if value["catalog"].is_null() {
+        if let Some(id) = value["id"].as_str() {
+            if let Ok(Some(refreshed)) = refresh_catalog(&s, id).await {
+                return Ok(Json(refreshed));
+            }
+        }
+    }
     Ok(Json(value))
+}
+/// Inspects a saved connection's upstream and records the result. Returns the
+/// updated summary, or None when the connection changed meanwhile.
+async fn refresh_catalog(s: &Supervisor, id: &str) -> Result<Option<Value>> {
+    let c = {
+        let _g = s.upstream_gate.lock().await;
+        saved::get(&dir(s), id)?
+    };
+    let catalog = saved::inspect(&c).await?;
+    let _g = s.upstream_gate.lock().await;
+    Ok(saved::set_catalog(&dir(s), id, &c.revision, catalog).ok())
+}
+fn catalog_view(catalog: &saved::Catalog) -> Value {
+    json!({"models":catalog.models,"truncated":catalog.truncated,
+        "protocols":catalog.protocols,"checkedAt":catalog.checked_at})
 }
 pub async fn remove(
     State(s): State<Arc<Supervisor>>,
@@ -191,11 +218,12 @@ pub async fn models(
         let _g = s.upstream_gate.lock().await;
         saved::get(&dir(&s), &id).map_err(failure)?
     };
-    let p = c.discovery_profile().map_err(failure)?;
-    upstreams::discover_models(&p)
-        .await
-        .map(Json)
-        .map_err(failure)
+    let catalog = saved::inspect(&c).await.map_err(failure)?;
+    let view = catalog_view(&catalog);
+    let _g = s.upstream_gate.lock().await;
+    // An edit made meanwhile keeps its own (absent) metadata.
+    let _ = saved::set_catalog(&dir(&s), &id, &c.revision, catalog);
+    Ok(Json(view))
 }
 pub async fn discover(
     State(s): State<Arc<Supervisor>>,
@@ -205,11 +233,8 @@ pub async fn discover(
         let _g = s.upstream_gate.lock().await;
         saved::prepare(&dir(&s), draft(&s, input)?).map_err(failure)?
     };
-    let p = c.discovery_profile().map_err(failure)?;
-    upstreams::discover_models(&p)
-        .await
-        .map(Json)
-        .map_err(failure)
+    let catalog = saved::inspect(&c).await.map_err(failure)?;
+    Ok(Json(catalog_view(&catalog)))
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -274,6 +299,18 @@ pub async fn apply(
     Path(id): Path<String>,
     Json(input): Json<Apply>,
 ) -> Result<Json<Value>, Failure> {
+    // Connections saved before metadata existed learn it before their first
+    // apply; an unreachable upstream applies with what is known.
+    let known = {
+        let _g = s.upstream_gate.lock().await;
+        saved::get(&dir(&s), &id)
+            .map_err(failure)?
+            .catalog
+            .is_some()
+    };
+    if !known {
+        let _ = refresh_catalog(&s, &id).await;
+    }
     let _g = s.upstream_gate.lock().await;
     let root = dir(&s);
     let c = saved::get(&root, &id).map_err(failure)?;
@@ -414,6 +451,10 @@ pub async fn export(
     let _g = s.upstream_gate.lock().await;
     let c = saved::get(&dir(&s), &id).map_err(failure)?;
     consume_grant(&s,&peer.device_id,&id,&c.revision,&input).map_err(|_|(StatusCode::FORBIDDEN,Json(json!({"code":"transfer_token_invalid","message":"Transfer authorization is invalid or expired. Retry synchronization."}))))?;
+    // Metadata is what this device saw; the destination inspects for itself,
+    // and older destinations do not know the field.
+    let mut c = c;
+    c.catalog = None;
     Ok(Json(serde_json::to_value(c).map_err(failure)?))
 }
 fn consume_grant(
@@ -469,9 +510,18 @@ pub async fn sync(
     if c.id != id || c.revision != input.revision {
         return Err(failure("Connection version conflict: refresh the list"));
     }
-    let _g = s.upstream_gate.lock().await;
-    let value = saved::import(&dir(&s), c, input.expected_revision.as_deref()).map_err(failure)?;
-    announce(&s);
+    let value = {
+        let _g = s.upstream_gate.lock().await;
+        let value =
+            saved::import(&dir(&s), c, input.expected_revision.as_deref()).map_err(failure)?;
+        announce(&s);
+        value
+    };
+    if value["catalog"].is_null() {
+        if let Ok(Some(refreshed)) = refresh_catalog(&s, &id).await {
+            return Ok(Json(refreshed));
+        }
+    }
     Ok(Json(value))
 }
 

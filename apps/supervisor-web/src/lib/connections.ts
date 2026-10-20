@@ -31,6 +31,16 @@ export type ConnectionSummary = {
   sources: ConnectionSource[];
   conflict?: boolean;
   legacyHarness?: string;
+  /** What the upstream declared when the Supervisor last inspected it. */
+  catalog?: UpstreamCatalog;
+};
+
+export type UpstreamCatalog = {
+  checkedAt: string;
+  /** Wire formats the endpoint serves with this credential. */
+  protocols: ConnectionProtocol[];
+  models: DiscoveredModel[];
+  truncated?: boolean;
 };
 
 export type HarnessBinding = {
@@ -74,7 +84,21 @@ export type ConnectionDraft = {
   revision?: string;
 };
 
-export type DiscoveredModel = { id: string; name?: string };
+export type DiscoveredModel = {
+  id: string;
+  name?: string;
+  aliases?: string[];
+  contextWindow?: number;
+  maxOutputTokens?: number;
+  input?: string[];
+};
+
+type Discovery = {
+  models: DiscoveredModel[];
+  truncated?: boolean;
+  protocols?: ConnectionProtocol[];
+  checkedAt?: string;
+};
 
 /** `apiRoot` is `api` or `relay/devices/{id}/api`, matching the other management pages. */
 export function connectionsApi(apiRoot: string) {
@@ -119,12 +143,8 @@ export function connectionsApi(apiRoot: string) {
     /** Saved connections reuse their stored key; drafts send their fields. */
     models: (target: { id: string } | ConnectionDraft, signal?: AbortSignal) =>
       'name' in target
-        ? post<{ models: DiscoveredModel[]; truncated?: boolean }>(
-            '/models',
-            target,
-            signal,
-          )
-        : post<{ models: DiscoveredModel[]; truncated?: boolean }>(
+        ? post<Discovery>('/models', target, signal)
+        : post<Discovery>(
             `/${encodeURIComponent(target.id)}/models`,
             {},
             signal,
@@ -248,6 +268,25 @@ export const harnessProtocols: Record<string, ConnectionProtocol[]> = {
   grok: ['openai_responses', 'openai_chat'],
   deepseek: ['anthropic', 'openai_chat'],
 };
+
+/** The saved format first, then the others the upstream was seen to serve. */
+export function servedProtocols(c: ConnectionSummary): ConnectionProtocol[] {
+  return [...new Set([c.protocol, ...(c.catalog?.protocols ?? [])])];
+}
+
+/** The window the upstream declares for a model, if it does. */
+export function declaredContextWindow(c: ConnectionSummary, model?: string) {
+  const id = model || c.model;
+  return c.catalog?.models.find(
+    (m) => m.id === id || m.aliases?.includes(id ?? ''),
+  )?.contextWindow;
+}
+
+/** 200192 → "200K", 1048576 → "1M". */
+export function tokenCount(tokens: number) {
+  if (tokens >= 1_000_000) return `${+(tokens / 1_000_000).toFixed(1)}M`;
+  return `${Math.round(tokens / 1000)}K`;
+}
 
 /** Compact protocol tag for dense rows; the full label stays in forms and hints. */
 export function protocolShort(protocol: string) {

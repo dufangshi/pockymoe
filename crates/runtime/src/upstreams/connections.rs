@@ -32,7 +32,34 @@ pub struct Connection {
     pub legacy_harness: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub context_windows: BTreeMap<String, i64>,
+    /// What the upstream declared about itself when last inspected. Owned by
+    /// the Supervisor: clients cannot supply it, and it is not synchronized.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalog: Option<Catalog>,
 }
+/// Upstream metadata gathered from the endpoint, not entered by the user.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Catalog {
+    pub checked_at: String,
+    /// Wire formats the endpoint serves with this credential, in `PROTOCOLS` order.
+    #[serde(default)]
+    pub protocols: Vec<String>,
+    #[serde(default)]
+    pub models: Vec<DiscoveredModel>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub truncated: bool,
+}
+impl Catalog {
+    pub fn model(&self, id: &str) -> Option<&DiscoveredModel> {
+        self.models.iter().find(|m| m.id == id).or_else(|| {
+            self.models
+                .iter()
+                .find(|m| m.aliases.iter().any(|a| a == id))
+        })
+    }
+}
+pub const PROTOCOLS: [&str; 4] = ["openai_chat", "openai_responses", "anthropic", "gemini"];
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Binding {
@@ -72,7 +99,8 @@ impl Connection {
     pub fn summary(&self) -> Value {
         json!({"id":self.id,"name":self.name,"protocol":self.protocol,"baseUrl":self.base_url,
             "authType":self.auth_type,"model":self.model,"headers":self.headers.keys().map(|k|(k,MASK)).collect::<BTreeMap<_,_>>(),
-            "hasApiKey":!self.api_key.is_empty(),"revision":self.revision,"local":true,"sources":[],"legacyHarness":self.legacy_harness})
+            "hasApiKey":!self.api_key.is_empty(),"revision":self.revision,"local":true,"sources":[],"legacyHarness":self.legacy_harness,
+            "catalog":self.catalog})
     }
     pub fn metadata(&self) -> Value {
         json!({"id":self.id,"name":self.name,"protocol":self.protocol,"revision":self.revision})
@@ -152,14 +180,23 @@ impl Connection {
         }
         Ok(())
     }
+    /// The saved protocol, then the other formats the upstream was seen to serve.
+    pub fn protocols(&self) -> Vec<&str> {
+        let mut out = vec![self.protocol.as_str()];
+        for p in self.catalog.iter().flat_map(|c| &c.protocols) {
+            if !out.contains(&p.as_str()) {
+                out.push(p);
+            }
+        }
+        out
+    }
+    /// The wire format a harness uses with this connection: the saved protocol
+    /// when the harness speaks it, otherwise another format the upstream serves.
+    pub fn protocol_for(&self, harness: &str) -> Option<&str> {
+        self.protocols().into_iter().find(|p| speaks(harness, p))
+    }
     pub fn compatible(&self, harness: &str) -> bool {
-        matches!(
-            (self.protocol.as_str(), harness),
-            ("openai_responses", "codex" | "grok")
-                | ("openai_chat", "grok" | "deepseek")
-                | ("anthropic", "claude" | "deepseek")
-                | ("gemini", "gemini")
-        )
+        self.protocol_for(harness).is_some()
     }
     pub fn validate_application(&self, harness: &str) -> Result<()> {
         ensure!(
@@ -232,21 +269,30 @@ impl Connection {
             } else {
                 model.into()
             },
-            api_type: match self.protocol.as_str() {
+            api_type: match self.protocol_for(harness).unwrap_or(&self.protocol) {
                 "openai_chat" => "chat_completions",
                 "anthropic" => "anthropic",
                 _ => "responses",
             }
             .into(),
+            // What the upstream declares for the model wins over a window
+            // carried over from an imported native configuration.
             context_window: self
-                .context_windows
-                .get(harness)
-                .copied()
+                .catalog
+                .as_ref()
+                .and_then(|c| c.model(if model.is_empty() { &self.model } else { model }))
+                .and_then(|m| m.context_window)
+                .or_else(|| self.context_windows.get(harness).copied())
                 .unwrap_or_else(context_window),
             settings_config: cfg,
             sort_index: 0,
             revision: None,
             live_revision: None,
+            // DSH declares every model natively, with its facts.
+            models: match (harness, &self.catalog) {
+                ("deepseek", Some(c)) => c.models.clone(),
+                _ => Vec::new(),
+            },
         })
     }
     pub fn discovery_profile(&self) -> Result<Profile> {
@@ -267,8 +313,18 @@ impl Connection {
         )
     }
 }
+/// Native adapters' wire formats; see docs/upstream-connections.md.
+fn speaks(harness: &str, protocol: &str) -> bool {
+    matches!(
+        (protocol, harness),
+        ("openai_responses", "codex" | "grok")
+            | ("openai_chat", "grok" | "deepseek")
+            | ("anthropic", "claude" | "deepseek")
+            | ("gemini", "gemini")
+    )
+}
 fn ensure_protocol(p: &str) -> Result<()> {
-    if !["openai_chat", "openai_responses", "anthropic", "gemini"].contains(&p) {
+    if !PROTOCOLS.contains(&p) {
         bail!("Unsupported connection protocol");
     }
     Ok(())
@@ -298,6 +354,7 @@ fn from_profile(p: &Profile) -> Connection {
         harness_configs: BTreeMap::from([(p.harness.clone(), config)]),
         legacy_harness: Some(p.harness.clone()),
         context_windows: BTreeMap::from([(p.harness.clone(), p.context_window)]),
+        catalog: None,
     }
 }
 /// Caller serializes mutations with Supervisor.upstream_gate. Never touches native files.
@@ -361,7 +418,7 @@ pub fn prepare(dir: &Path, mut c: Connection) -> Result<Connection> {
         }
         if c.base_url == old.base_url && c.protocol == old.protocol {
             if c.api_key.is_empty() {
-                c.api_key = old.api_key;
+                c.api_key = old.api_key.clone();
             }
             for (k, v) in &mut c.headers {
                 if v == MASK {
@@ -374,9 +431,11 @@ pub fn prepare(dir: &Path, mut c: Connection) -> Result<Connection> {
             }
         }
         // API clients cannot overwrite hidden native fragments.
-        c.harness_configs = old.harness_configs;
-        c.legacy_harness = old.legacy_harness;
-        c.context_windows = old.context_windows;
+        c.harness_configs = old.harness_configs.clone();
+        c.legacy_harness = old.legacy_harness.clone();
+        c.context_windows = old.context_windows.clone();
+        // Metadata describes one endpoint as one credential sees it.
+        c.catalog = old.catalog.clone().filter(|_| same_endpoint(&c, &old));
     } else if !c.harness_configs.is_empty()
         || c.legacy_harness.is_some()
         || !c.context_windows.is_empty()
@@ -386,8 +445,34 @@ pub fn prepare(dir: &Path, mut c: Connection) -> Result<Connection> {
     if c.headers.values().any(|v| v == MASK) {
         bail!("Enter custom header values for the new endpoint");
     }
+    if c.id.is_empty() {
+        c.catalog = None;
+    }
     c.validate()?;
     Ok(c)
+}
+fn same_endpoint(a: &Connection, b: &Connection) -> bool {
+    a.base_url == b.base_url
+        && a.protocol == b.protocol
+        && a.api_key == b.api_key
+        && a.auth_type == b.auth_type
+        && a.headers == b.headers
+}
+/// Records freshly gathered metadata unless the connection changed meanwhile.
+pub fn set_catalog(dir: &Path, id: &str, revision: &str, catalog: Catalog) -> Result<Value> {
+    let mut s = read(dir)?;
+    let c = s
+        .connections
+        .iter_mut()
+        .find(|c| c.id == id)
+        .ok_or_else(|| anyhow!("Connection not found"))?;
+    if c.revision != revision {
+        bail!("Connection edit conflict: reload before saving");
+    }
+    c.catalog = Some(catalog);
+    let summary = c.summary();
+    write(dir, &s)?;
+    Ok(summary)
 }
 pub fn upsert(dir: &Path, c: Connection) -> Result<Value> {
     let mut c = prepare(dir, c)?;
@@ -490,57 +575,18 @@ pub async fn complete(
     if system.contains(&c.api_key) || user.contains(&c.api_key) {
         bail!("Source contains the upstream credential");
     }
-    let base = c.base_url.trim_end_matches('/');
-    let (endpoint, body) = match c.protocol.as_str() {
-        "openai_chat" => (
-            format!(
-                "{base}{}",
-                if base.ends_with("/chat/completions") {
-                    ""
-                } else {
-                    "/chat/completions"
-                }
-            ),
-            json!({"model":model,"stream":false,"temperature":0.2,"max_tokens":max_tokens,"messages":[{"role":"system","content":system},{"role":"user","content":user}]}),
-        ),
-        "openai_responses" => (
-            format!(
-                "{base}{}",
-                if base.ends_with("/responses") {
-                    ""
-                } else {
-                    "/responses"
-                }
-            ),
-            json!({"model":model,"stream":false,"instructions":system,"input":user,"max_output_tokens":max_tokens}),
-        ),
-        "anthropic" => (
-            format!(
-                "{base}/{}messages",
-                if base.ends_with("/v1") { "" } else { "v1/" }
-            ),
-            json!({"model":model,"max_tokens":max_tokens,"system":system,"messages":[{"role":"user","content":user}]}),
-        ),
+    let body = match c.protocol.as_str() {
+        "openai_chat" => {
+            json!({"model":model,"stream":false,"temperature":0.2,"max_tokens":max_tokens,"messages":[{"role":"system","content":system},{"role":"user","content":user}]})
+        }
+        "openai_responses" => {
+            json!({"model":model,"stream":false,"instructions":system,"input":user,"max_output_tokens":max_tokens})
+        }
+        "anthropic" => {
+            json!({"model":model,"max_tokens":max_tokens,"system":system,"messages":[{"role":"user","content":user}]})
+        }
         "gemini" => {
-            let mut u = url::Url::parse(&format!(
-                "{base}/{v}models/",
-                v = if base.ends_with("/v1") || base.ends_with("/v1beta") {
-                    ""
-                } else {
-                    "v1beta/"
-                }
-            ))?;
-            u.path_segments_mut()
-                .map_err(|_| anyhow!("Invalid upstream URL"))?
-                .pop_if_empty()
-                .push(&format!(
-                    "{}:generateContent",
-                    model.strip_prefix("models/").unwrap_or(model)
-                ));
-            (
-                u.to_string(),
-                json!({"systemInstruction":{"parts":[{"text":system}]},"contents":[{"role":"user","parts":[{"text":user}]}],"generationConfig":{"maxOutputTokens":max_tokens,"temperature":0.2}}),
-            )
+            json!({"systemInstruction":{"parts":[{"text":system}]},"contents":[{"role":"user","parts":[{"text":user}]}],"generationConfig":{"maxOutputTokens":max_tokens,"temperature":0.2}})
         }
         _ => bail!("Unsupported connection protocol"),
     };
@@ -550,22 +596,8 @@ pub async fn complete(
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|_| anyhow!("Cannot initialize upstream client"))?;
-    let mut req = client.post(endpoint).json(&body);
-    req = match c.protocol.as_str() {
-        "gemini" => req.header("x-goog-api-key", &c.api_key),
-        "anthropic" => {
-            let r = req.header("anthropic-version", "2023-06-01");
-            if c.auth_type == "bearer" {
-                r.bearer_auth(&c.api_key)
-            } else {
-                r.header("x-api-key", &c.api_key)
-            }
-        }
-        _ => req.bearer_auth(&c.api_key),
-    };
-    for (k, v) in &c.headers {
-        req = req.header(k, v);
-    }
+    let url = endpoint(&c.base_url, &c.protocol, model)?;
+    let req = authorize(client.post(url).json(&body), c, &c.protocol);
     let mut response = req
         .send()
         .await
@@ -653,13 +685,145 @@ pub async fn complete(
     Ok(text)
 }
 
+/// Where one request in `protocol`'s wire format goes for this base URL.
+fn endpoint(base_url: &str, protocol: &str, model: &str) -> Result<String> {
+    let base = base_url.trim_end_matches('/');
+    Ok(match protocol {
+        "openai_chat" => format!(
+            "{base}{}",
+            if base.ends_with("/chat/completions") {
+                ""
+            } else {
+                "/chat/completions"
+            }
+        ),
+        "openai_responses" => format!(
+            "{base}{}",
+            if base.ends_with("/responses") {
+                ""
+            } else {
+                "/responses"
+            }
+        ),
+        "anthropic" => format!(
+            "{base}/{}messages",
+            if base.ends_with("/v1") { "" } else { "v1/" }
+        ),
+        "gemini" => {
+            let mut u = url::Url::parse(&format!(
+                "{base}/{v}models/",
+                v = if base.ends_with("/v1") || base.ends_with("/v1beta") {
+                    ""
+                } else {
+                    "v1beta/"
+                }
+            ))?;
+            u.path_segments_mut()
+                .map_err(|_| anyhow!("Invalid upstream URL"))?
+                .pop_if_empty()
+                .push(&format!(
+                    "{}:generateContent",
+                    model.strip_prefix("models/").unwrap_or(model)
+                ));
+            u.to_string()
+        }
+        _ => bail!("Unsupported connection protocol"),
+    })
+}
+fn authorize(
+    req: reqwest::RequestBuilder,
+    c: &Connection,
+    protocol: &str,
+) -> reqwest::RequestBuilder {
+    let mut req = match protocol {
+        "gemini" => req.header("x-goog-api-key", &c.api_key),
+        "anthropic" => {
+            let r = req.header("anthropic-version", "2023-06-01");
+            if c.auth_type == "bearer" {
+                r.bearer_auth(&c.api_key)
+            } else {
+                r.header("x-api-key", &c.api_key)
+            }
+        }
+        _ => req.bearer_auth(&c.api_key),
+    };
+    for (k, v) in &c.headers {
+        req = req.header(k, v);
+    }
+    req
+}
+
+/// The wire formats the endpoint serves with this credential. An empty body
+/// reaches each format's route without generating anything: an existing route
+/// rejects the body (400/422), a missing one answers 404 and a credential the
+/// route does not accept answers 401/403. Gemini routes need a model id.
+pub async fn probe_protocols(c: &Connection, model: &str) -> Vec<String> {
+    let Ok(client) = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .timeout(std::time::Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+    else {
+        return Vec::new();
+    };
+    let checks = PROTOCOLS.map(|protocol| {
+        let client = &client;
+        async move {
+            if protocol == "gemini" && model.is_empty() {
+                return None;
+            }
+            let url = endpoint(&c.base_url, protocol, model).ok()?;
+            let req = authorize(client.post(url).json(&json!({})), c, protocol);
+            let status = req.send().await.ok()?.status().as_u16();
+            matches!(status, 200..=299 | 400 | 409 | 413 | 415 | 422 | 429).then_some(protocol)
+        }
+    });
+    futures_util::future::join_all(checks)
+        .await
+        .into_iter()
+        .flatten()
+        .map(String::from)
+        .collect()
+}
+
+/// Gathers what the upstream declares: its models with their facts, and the
+/// wire formats it serves. Never writes anything.
+pub async fn inspect(c: &Connection) -> Result<Catalog> {
+    let discovered = discover_models(&c.discovery_profile()?).await;
+    let (models, truncated) = match &discovered {
+        Ok(v) => (
+            serde_json::from_value::<Vec<DiscoveredModel>>(v["models"].clone())?,
+            v["truncated"] == true,
+        ),
+        Err(_) => (Vec::new(), false),
+    };
+    let model = if c.model.is_empty() {
+        models.first().map(|m| m.id.as_str()).unwrap_or("")
+    } else {
+        &c.model
+    };
+    let protocols = probe_protocols(c, model).await;
+    if protocols.is_empty() {
+        discovered?;
+        bail!("Upstream did not answer in any supported format");
+    }
+    Ok(Catalog {
+        checked_at: chrono::Utc::now().to_rfc3339(),
+        protocols,
+        models,
+        truncated,
+    })
+}
+
 /// Legacy editors still save provider-owned configuration, without applying it.
 pub fn refresh_legacy(dir: &Path, id: &str) -> Result<()> {
     migrate(dir)?;
     let p = super::profile(dir, id)?;
     let mut s = read(dir)?;
     if let Some(c) = s.connections.iter_mut().find(|c| c.id == id) {
-        *c = from_profile(&p);
+        let mut fresh = from_profile(&p);
+        fresh.catalog = c.catalog.take().filter(|_| same_endpoint(&fresh, c));
+        *c = fresh;
         write(dir, &s)?;
     }
     Ok(())
@@ -790,11 +954,138 @@ mod tests {
             harness_configs: BTreeMap::new(),
             legacy_harness: None,
             context_windows: BTreeMap::new(),
+            catalog: None,
         }
     }
     fn saved(dir: &Path, protocol: &str) -> Connection {
         let v = upsert(dir, fixture(protocol)).unwrap();
         get(dir, v["id"].as_str().unwrap()).unwrap()
+    }
+    fn catalog(protocols: &[&str]) -> Catalog {
+        Catalog {
+            checked_at: "2026-10-19T00:00:00Z".into(),
+            protocols: protocols.iter().map(|p| p.to_string()).collect(),
+            models: serde_json::from_value(json!([
+                {"id":"fixture-model","name":"Fixture","contextWindow":200192},
+                {"id":"other","name":"other","aliases":["other-alias"],"contextWindow":32768}
+            ]))
+            .unwrap(),
+            truncated: false,
+        }
+    }
+    #[test]
+    fn served_formats_extend_harness_compatibility_and_windows_follow_the_model() {
+        let mut c = fixture("openai_responses");
+        assert!(!c.compatible("deepseek"));
+        c.catalog = Some(catalog(&["openai_chat", "openai_responses"]));
+        // The saved protocol stays first; DSH falls back to a served format.
+        assert_eq!(c.protocol_for("codex"), Some("openai_responses"));
+        assert_eq!(c.protocol_for("grok"), Some("openai_responses"));
+        assert_eq!(c.protocol_for("deepseek"), Some("openai_chat"));
+        assert!(!c.compatible("claude"));
+        let p = c.profile("deepseek", "", "").unwrap();
+        assert_eq!(p.api_type, "chat_completions");
+        assert_eq!(p.context_window, 200192);
+        assert_eq!(p.models.len(), 2);
+        // Declared windows beat a carried-over native one; aliases resolve.
+        c.context_windows.insert("deepseek".into(), 500_000);
+        assert_eq!(
+            c.profile("deepseek", "", "other-alias")
+                .unwrap()
+                .context_window,
+            32768
+        );
+        assert_eq!(
+            c.profile("deepseek", "", "unlisted")
+                .unwrap()
+                .context_window,
+            500_000
+        );
+        assert!(c.profile("codex", "", "").unwrap().models.is_empty());
+    }
+    #[test]
+    fn metadata_is_server_owned_and_dropped_when_the_endpoint_changes() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut injected = fixture("openai_chat");
+        injected.catalog = Some(catalog(&["openai_chat"]));
+        let v = upsert(temp.path(), injected).unwrap();
+        assert!(v["catalog"].is_null());
+        let id = v["id"].as_str().unwrap().to_string();
+        let revision = v["revision"].as_str().unwrap().to_string();
+        assert!(set_catalog(temp.path(), &id, "stale", catalog(&["openai_chat"])).is_err());
+        let v = set_catalog(temp.path(), &id, &revision, catalog(&["openai_chat"])).unwrap();
+        assert_eq!(v["catalog"]["models"][0]["contextWindow"], 200192);
+        // Renaming keeps it; a different key or URL needs fresh metadata.
+        let mut edit = get(temp.path(), &id).unwrap();
+        edit.name = "Renamed".into();
+        edit.api_key = String::new();
+        edit.catalog = None;
+        let v = upsert(temp.path(), edit).unwrap();
+        assert_eq!(v["catalog"]["protocols"], json!(["openai_chat"]));
+        let mut edit = get(temp.path(), &id).unwrap();
+        edit.api_key = "another-fixture-secret".into();
+        let v = upsert(temp.path(), edit).unwrap();
+        assert!(v["catalog"].is_null());
+    }
+    #[tokio::test]
+    async fn probing_formats_reads_route_answers_without_generating() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            let mut seen = Vec::new();
+            for _ in 0..4 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = Vec::new();
+                loop {
+                    let mut chunk = [0; 4096];
+                    let n = stream.read(&mut chunk).unwrap();
+                    request.extend_from_slice(&chunk[..n]);
+                    let text = String::from_utf8_lossy(&request);
+                    if let Some(end) = text.find("\r\n\r\n") {
+                        if request.len() >= end + 4 + 2 {
+                            break;
+                        }
+                    }
+                }
+                let text = String::from_utf8_lossy(&request).to_lowercase();
+                let path = text.split_whitespace().nth(1).unwrap().to_string();
+                assert!(text.ends_with("{}"));
+                let status = if path.ends_with("/chat/completions") || path.ends_with("/responses")
+                {
+                    if text.contains("authorization: bearer test-fixture-secret-123") {
+                        "400 Bad Request"
+                    } else {
+                        "401 Unauthorized"
+                    }
+                } else {
+                    "404 Not Found"
+                };
+                seen.push(path);
+                write!(
+                    stream,
+                    "HTTP/1.1 {status}\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
+                )
+                .unwrap();
+            }
+            seen.sort();
+            seen
+        });
+        let mut c = fixture("openai_chat");
+        c.base_url = format!("http://localhost:{}/v1", address.port());
+        assert_eq!(
+            probe_protocols(&c, "fixture-model").await,
+            ["openai_chat", "openai_responses"]
+        );
+        assert_eq!(
+            server.join().unwrap(),
+            [
+                "/v1/chat/completions",
+                "/v1/messages",
+                "/v1/models/fixture-model:generatecontent",
+                "/v1/responses"
+            ]
+        );
     }
     #[test]
     fn save_is_private_and_does_not_apply_or_touch_native_files() {

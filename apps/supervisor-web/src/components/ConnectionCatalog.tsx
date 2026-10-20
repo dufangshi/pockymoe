@@ -18,6 +18,9 @@ import {
   connectionErrorMessage,
   connectionState,
   protocolShort,
+  servedProtocols,
+  declaredContextWindow,
+  tokenCount,
   remoteSources,
   syncSources,
   type ConnectionSource,
@@ -371,10 +374,16 @@ function ConnectionRow({
   const remote = remoteSources(c, deviceId);
   const sources = syncSources(c, deviceId);
   const canSync = !!deviceId && (state !== 'local' || sources.length > 0);
+  const window = declaredContextWindow(c);
   const meta = [
-    protocolShort(c.protocol),
+    servedProtocols(c).map(protocolShort).join(' + '),
     ...(c.local
-      ? [c.baseUrl?.replace(/^https?:\/\//, ''), c.model]
+      ? [
+          c.baseUrl?.replace(/^https?:\/\//, ''),
+          c.model,
+          window &&
+            `${translate('settings.contextWindow')} ${tokenCount(window)}`,
+        ]
       : [
           translate('settings.connOnDevices', {
             devices: remote.map((s) => s.name).join(', '),

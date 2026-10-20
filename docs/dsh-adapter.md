@@ -76,6 +76,7 @@ bridge 是 DSH 的又一个 carrier：它通过 `ctx.typertGateway.invoke()` 调
 **语义映射：**
 
 - **模型：** ACP config options 是可选项的真相源。bridge 只补充每个模型自己的推理档位和 provider 名称。切换模型后列表重新计算。
+- **上游模型事实：** 应用连接时，Pockymoe 把上游声明的每个模型（名称、上下文窗口、输入模态、推理档位）写进 pi-ai 路由的 `models`；上游说不推理的写 `reasoningEfforts: false`，`none` 写成 `off: none`。上游没声明的事实才用 Codex 模型目录补。规则见 [upstream-connections.md](upstream-connections.md#upstream-metadata)。
 - **权限：** 产品的 sandbox 映射为 `read-only` / `workspace-write` / `danger-full-access`。每次应用前读 `permissions` projection，不一致才执行 `/permission`，执行后再读回校验。必须读回，是因为用户的 `permission.defaultPreset` 会覆盖启动 env。
   - profile 没有 permission 插件时，只有启动 env 与要求一致才放行，否则拒绝（fail closed），不会用更宽的沙箱运行。
   - DSH 对未注册的命令返回空结果，一律按错误处理。

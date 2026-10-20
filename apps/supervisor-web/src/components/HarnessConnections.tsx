@@ -5,6 +5,7 @@ import {
   connectionErrorMessage,
   connectionsApi,
   harnessProtocols,
+  servedProtocols,
   type ConnectionSummary,
 } from '../lib/connections';
 import type { ConnectionCatalogStore } from '../lib/useConnectionCatalog';
@@ -155,7 +156,9 @@ function HarnessRow({
     catalog?.harnessProtocols?.[harness.id] ??
     harnessProtocols[harness.id] ??
     [];
-  const compatible = local.filter((c) => protocols.includes(c.protocol));
+  const compatible = local.filter((c) =>
+    servedProtocols(c).some((p) => protocols.includes(p)),
+  );
   // The harness's own sign-in or native configuration: offered here only, and only
   // when the device reports it (older Supervisors report nothing).
   const native = catalog?.native?.[harness.id];

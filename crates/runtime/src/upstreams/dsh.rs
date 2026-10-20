@@ -74,41 +74,87 @@ fn previous_models(rows: &[Yaml], id: &str, path: &[&str]) -> Result<Vec<Value>>
 /// DSH's reasoning levels; Codex-only levels (`ultra`) have no DSH equivalent.
 const DSH_EFFORTS: [&str; 6] = ["minimal", "low", "medium", "high", "xhigh", "max"];
 
-/// One OpenAI-compatible model as DSH's pi-ai provider declares it. Context
-/// window, reasoning levels and inputs come from the model's real facts when
-/// known. The output cap is left to the route (see `changes`).
+/// DSH's reasoning levels as pi-ai routes declare them, keyed by DSH level
+/// with the upstream's own spelling as the wire value. DSH calls "no
+/// reasoning" `off`; Codex-only levels (`ultra`) have no DSH equivalent.
+fn dsh_efforts<'a>(efforts: impl Iterator<Item = &'a str>) -> serde_json::Map<String, Value> {
+    efforts
+        .filter_map(|effort| match effort {
+            "none" | "off" => Some(("off", effort)),
+            effort if DSH_EFFORTS.contains(&effort) => Some((effort, effort)),
+            _ => None,
+        })
+        .map(|(level, wire)| (level.to_string(), json!(wire)))
+        .collect()
+}
+
+fn dsh_level(effort: &str) -> Option<&str> {
+    match effort {
+        "none" | "off" => Some("off"),
+        effort => DSH_EFFORTS.contains(&effort).then_some(effort),
+    }
+}
+
+/// At most this many models are declared on the route; the selected and
+/// earlier ones always are.
+const MAX_MODELS: usize = 200;
+
+/// One OpenAI-compatible model as DSH's pi-ai provider declares it. Each fact
+/// comes from what the upstream declared, then Codex's catalog, then what an
+/// earlier write had. The output cap is left to the route (see `changes`):
+/// a declared maximum would become every request's `max_tokens`.
 fn compatible_model(
     id: &str,
     configured_window: Option<i64>,
+    declared: Option<&DiscoveredModel>,
     meta: Option<&super::model_meta::ModelMeta>,
     previous: Option<&Value>,
 ) -> Value {
     let window = configured_window
+        .or_else(|| declared.and_then(|m| m.context_window))
         .or_else(|| meta.and_then(|meta| meta.context_window))
         .or_else(|| previous.and_then(|entry| entry["contextWindow"].as_i64()));
-    let mut model = json!({"id": id, "name": id});
+    let name = declared
+        .map(|m| m.name.trim())
+        .filter(|name| !name.is_empty())
+        .unwrap_or(id);
+    let mut model = json!({"id": id, "name": name});
     if let Some(window) = window {
         model["contextWindow"] = json!(window);
     }
-    let efforts: serde_json::Map<String, Value> = meta
-        .map(|meta| {
-            meta.efforts
-                .iter()
-                .filter(|effort| DSH_EFFORTS.contains(&effort.as_str()))
-                .map(|effort| (effort.clone(), json!(effort)))
-                .collect()
-        })
-        .unwrap_or_default();
-    if !efforts.is_empty() {
-        model["reasoningEfforts"] = Value::Object(efforts);
-    } else if let Some(previous) = previous
-        .map(|entry| &entry["reasoningEfforts"])
-        .filter(|v| !v.is_null())
-    {
-        model["reasoningEfforts"] = previous.clone();
+    match declared.and_then(|m| m.reasoning.as_ref()) {
+        // The upstream says this model does not reason.
+        Some(cap) if cap.efforts.is_empty() => model["reasoningEfforts"] = json!(false),
+        Some(cap) => {
+            let efforts = dsh_efforts(cap.efforts.iter().map(|e| e.reasoning_effort.as_str()));
+            if !efforts.is_empty() {
+                model["reasoningEfforts"] = Value::Object(efforts);
+            }
+        }
+        None => {}
     }
-    match meta.filter(|meta| !meta.input.is_empty()) {
-        Some(meta) => model["input"] = json!(meta.input),
+    if model.get("reasoningEfforts").is_none() {
+        let efforts = meta
+            .map(|meta| dsh_efforts(meta.efforts.iter().map(String::as_str)))
+            .unwrap_or_default();
+        if !efforts.is_empty() {
+            model["reasoningEfforts"] = Value::Object(efforts);
+        } else if let Some(previous) = previous
+            .map(|entry| &entry["reasoningEfforts"])
+            .filter(|v| !v.is_null())
+        {
+            model["reasoningEfforts"] = previous.clone();
+        }
+    }
+    let input = declared
+        .map(|m| &m.input)
+        .filter(|input| !input.is_empty())
+        .or_else(|| {
+            meta.map(|meta| &meta.input)
+                .filter(|input| !input.is_empty())
+        });
+    match input {
+        Some(input) => model["input"] = json!(input),
         None => {
             if let Some(input) = previous
                 .map(|entry| &entry["input"])
@@ -206,8 +252,20 @@ pub fn changes(p: &Profile, root: &Path) -> Result<Vec<(PathBuf, String)>> {
     } else {
         // The form's untouched default window is not a fact about the model.
         let configured = (p.context_window != super::context_window()).then_some(p.context_window);
+        let declared = |id: &str| {
+            p.models
+                .iter()
+                .find(|m| m.id == id || m.aliases.iter().any(|a| a == id))
+        };
         let meta = super::model_meta::lookup(&p.model);
-        let mut models = vec![compatible_model(&p.model, configured, meta.as_ref(), None)];
+        let selected = declared(&p.model);
+        let mut models = vec![compatible_model(
+            &p.model,
+            configured,
+            selected,
+            meta.as_ref(),
+            None,
+        )];
         for previous in
             previous_models(rows, "llm-pi-ai", &["providers", "remote-codex", "models"])?
         {
@@ -215,7 +273,29 @@ pub fn changes(p: &Profile, root: &Path) -> Result<Vec<(PathBuf, String)>> {
                 continue;
             };
             let meta = super::model_meta::lookup(id);
-            models.push(compatible_model(id, None, meta.as_ref(), Some(&previous)));
+            models.push(compatible_model(
+                id,
+                None,
+                declared(id),
+                meta.as_ref(),
+                Some(&previous),
+            ));
+        }
+        // Everything else the upstream serves, so a thread can switch models.
+        for model in &p.models {
+            if models.len() >= MAX_MODELS {
+                break;
+            }
+            if models.iter().all(|entry| entry["id"] != model.id.as_str()) {
+                let meta = super::model_meta::lookup(&model.id);
+                models.push(compatible_model(
+                    &model.id,
+                    None,
+                    Some(model),
+                    meta.as_ref(),
+                    None,
+                ));
+            }
         }
         if models[0].get("contextWindow").is_none() {
             models[0]["contextWindow"] = json!(p.context_window);
@@ -233,9 +313,13 @@ pub fn changes(p: &Profile, root: &Path) -> Result<Vec<(PathBuf, String)>> {
             route["compat"] = json!({"supportsMaxOutputTokens": false});
         }
         // The model's own default level, used until a thread picks one.
-        if let Some(level) = meta
-            .and_then(|meta| meta.default_effort)
-            .filter(|level| DSH_EFFORTS.contains(&level.as_str()))
+        if let Some(level) = selected
+            .and_then(|m| m.reasoning.as_ref())
+            .and_then(|cap| cap.default.as_deref())
+            .or(meta
+                .as_ref()
+                .and_then(|meta| meta.default_effort.as_deref()))
+            .and_then(dsh_level)
         {
             route["reasoning"] = json!(level);
         }
@@ -380,6 +464,7 @@ pub fn import_live(root: &Path, name: &str) -> Result<Profile> {
         sort_index: 0,
         revision: None,
         live_revision: None,
+        models: Vec::new(),
     })
 }
 #[cfg(test)]
@@ -456,7 +541,7 @@ mod tests {
             default_effort: Some("low".into()),
             input: vec!["text".into(), "image".into()],
         };
-        let model = compatible_model("gpt-6-astra", None, Some(&meta), None);
+        let model = compatible_model("gpt-6-astra", None, None, Some(&meta), None);
         assert_eq!(
             model,
             json!({"id":"gpt-6-astra","name":"gpt-6-astra","contextWindow":272000,
@@ -466,10 +551,10 @@ mod tests {
         // An explicit window wins; an earlier entry keeps what it had.
         let previous = json!({"id":"old","contextWindow":128000,"maxTokens":4096,"reasoningEfforts":{"high":"high"}});
         assert_eq!(
-            compatible_model("x", Some(64000), Some(&meta), None)["contextWindow"],
+            compatible_model("x", Some(64000), None, Some(&meta), None)["contextWindow"],
             64000
         );
-        let kept = compatible_model("old", None, None, Some(&previous));
+        let kept = compatible_model("old", None, None, None, Some(&previous));
         assert_eq!(
             kept,
             json!({"id":"old","name":"old","contextWindow":128000,"reasoningEfforts":{"high":"high"}})
@@ -482,6 +567,70 @@ mod tests {
                 .unwrap(),
             "PI_AI_ERROR"
         );
+    }
+
+    #[test]
+    fn declared_upstream_facts_win_and_every_served_model_is_declared() {
+        let declared: Vec<DiscoveredModel> = serde_json::from_value(json!([
+            {"id":"qwen-local","name":"Qwen Local","contextWindow":200192,"maxOutputTokens":8192,
+             "input":["text","image"],"reasoning":{"efforts":[
+                {"reasoningEffort":"none","description":"None"},{"reasoningEffort":"low","description":"Low"},
+                {"reasoningEffort":"xhigh","description":"Extra high"},{"reasoningEffort":"ultra","description":"Ultra"}],
+                "default":"xhigh"}},
+            {"id":"plain","name":"plain","reasoning":{"efforts":[],"default":null}},
+            {"id":"unknown","name":"Unknown facts"}
+        ]))
+        .unwrap();
+        let codex = super::super::model_meta::ModelMeta {
+            context_window: Some(272000),
+            efforts: vec!["high".into()],
+            default_effort: Some("high".into()),
+            input: vec!["text".into()],
+        };
+        assert_eq!(
+            compatible_model("qwen-local", None, Some(&declared[0]), Some(&codex), None),
+            json!({"id":"qwen-local","name":"Qwen Local","contextWindow":200192,
+                "reasoningEfforts":{"off":"none","low":"low","xhigh":"xhigh"},"input":["text","image"]})
+        );
+        assert_eq!(
+            compatible_model("plain", None, Some(&declared[1]), Some(&codex), None)
+                ["reasoningEfforts"],
+            json!(false)
+        );
+        // Unknown upstream facts still fall back to Codex's catalog.
+        assert_eq!(
+            compatible_model("unknown", None, Some(&declared[2]), Some(&codex), None),
+            json!({"id":"unknown","name":"Unknown facts","contextWindow":272000,
+                "reasoningEfforts":{"high":"high"},"input":["text"]})
+        );
+
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("isolated-dsh-home");
+        let store = temp.path().join("store");
+        let mut p = super::super::tests::fixture("deepseek");
+        p.api_type = "chat_completions".into();
+        p.model = "unknown".into();
+        p.models = declared;
+        upsert(&store, p.clone()).unwrap();
+        activate_at(&store, &p, &root).unwrap();
+        let rows = yaml_doc(&root.join("profiles/acp/cordis.patch.yml"), "").unwrap();
+        let pi = rows
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .find(|v| v["id"].as_str() == Some("llm-pi-ai"))
+            .unwrap();
+        let route = serde_json::to_value(&pi["config"]["providers"]["remote-codex"]).unwrap();
+        let ids: Vec<_> = route["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, ["unknown", "qwen-local", "plain"]);
+        assert_eq!(route["api"], "openai-completions");
+        assert_eq!(route["models"][1]["contextWindow"], 200192);
+        assert!(route["models"][1].get("maxTokens").is_none());
     }
 
     #[test]

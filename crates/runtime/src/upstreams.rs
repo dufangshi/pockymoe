@@ -47,6 +47,10 @@ pub struct Profile {
     pub revision: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub live_revision: Option<String>,
+    /// Facts the connection's upstream declared about its models, for
+    /// harnesses that declare each model natively (DSH).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub models: Vec<DiscoveredModel>,
 }
 fn empty_config() -> Value {
     json!({})
@@ -951,6 +955,7 @@ pub fn import_config(harness: &str, name: &str, text: &str, key: &str) -> Result
         sort_index: 0,
         revision: None,
         live_revision: None,
+        models: Vec::new(),
     };
     if matches!(harness, "codex" | "grok") {
         let doc = native
@@ -1170,7 +1175,7 @@ mod tests {
         let models = ["model-a", "model-b"].map(|id| DiscoveredModel {
             id: id.into(),
             name: id.into(),
-            reasoning: None,
+            ..Default::default()
         });
         prepare_grok_models_at(&temp.path().join("store"), &p, &models, temp.path()).unwrap();
         let doc = toml_doc(&temp.path().join("config.toml")).unwrap();
@@ -1306,6 +1311,7 @@ mod tests {
             sort_index: 0,
             revision: None,
             live_revision: None,
+            models: Vec::new(),
         }
     }
     #[test]

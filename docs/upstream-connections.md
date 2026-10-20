@@ -36,7 +36,11 @@ Supported protocols are `openai_chat`, `openai_responses`, `anthropic`, and
 Gemini models behind an OpenAI-compatible proxy use `openai_chat`. OAuth sessions
 are not synchronized.
 
-Harness compatibility follows the native adapters:
+Harness compatibility follows the native adapters. A connection is offered to a
+harness when its saved protocol, or another format its upstream was seen to serve
+(see below), is one the harness speaks. The saved protocol is preferred; DSH, for
+example, uses Chat Completions on a Responses connection whose endpoint also
+serves Chat Completions.
 
 | Harness | Connection protocols |
 | --- | --- |
@@ -58,6 +62,45 @@ latest saved revision. Native backup restoration is reflected in the binding lis
 Each backup also retains its previous binding, including when the same connection
 was reapplied with a different model or revision. Restoring it does not revert the
 saved connection; applying its newer revision remains an explicit choice.
+
+## Upstream metadata
+
+The Supervisor records what the upstream declares about itself in the
+connection's `catalog`: the wire formats it serves and each model's facts. It is
+gathered when a connection is added, when its URL, protocol, key, authentication
+type or custom headers change, when models are loaded for a saved connection, and
+before the first apply of a connection that has none. Renaming keeps it. An
+unreachable upstream still saves; the metadata stays absent until a later load.
+Clients cannot supply it.
+
+- **Formats.** One empty request per wire format (`{}` to Chat Completions,
+  Responses, Messages and Gemini `generateContent`, with that format's
+  authentication). An existing route rejects the body (400/422) without
+  generating anything; 404/405 means the endpoint does not serve the format, and
+  401/403 means it does not accept this credential in that format. Gemini needs
+  a model ID, so it is checked only when one is known.
+- **Model facts.** Model discovery reads, when declared: the display name;
+  `aliases`; the context window (`context_window`, `context_length`,
+  `max_model_len`, `max_input_tokens`, `inputTokenLimit`,
+  `top_provider.context_length`, llama.cpp `meta.n_ctx` then `meta.n_ctx_train`);
+  the output limit (`max_output_tokens`, `max_completion_tokens`,
+  `outputTokenLimit`, `top_provider.max_completion_tokens`, `max_tokens`); input
+  modalities (`architecture.input_modalities`, `input_modalities`, or a `vision`
+  capability); and reasoning levels (`reasoningEfforts`/`reasoning_efforts`,
+  `capabilities.reasoning_effort`, with `supportsReasoningEffort: false` meaning
+  none). A fact the upstream does not declare stays unknown rather than guessed.
+
+Applying a connection uses the declared context window of the selected model; a
+window carried over from an imported native configuration applies only to models
+without one. DSH declares every model the upstream lists (up to 200, the selected
+and earlier ones first) with its declared name, context window, input modalities
+and reasoning levels. Missing facts fall back to Codex's model catalog, then to
+what DSH already had. The output limit is not written, because DSH would send it
+as every request's output cap. Applying writes the metadata as last gathered;
+apply again after loading models to pick up changes.
+
+Metadata belongs to the device that gathered it. Synchronization does not copy
+it; the destination gathers its own after importing.
 
 ## Harness-local sign-in and native configuration
 
@@ -154,9 +197,9 @@ cannot list connections, apply them, or authorize transfers. Responses use
 | `GET /api/management/connections` | Local connections, bindings, harness-local native availability, and account discovery metadata |
 | `POST /api/management/connections` | Save connection; never apply |
 | `DELETE /api/management/connections/{id}` | Remove this device's unreferenced copy |
-| `POST /api/management/connections/models` | Discover models using an unsaved draft |
+| `POST /api/management/connections/models` | Gather an unsaved draft's metadata without saving it |
 | `POST /api/management/connections/test` | Test an unsaved draft with a small text request |
-| `POST /api/management/connections/{id}/models` | Discover using saved credentials |
+| `POST /api/management/connections/{id}/models` | Gather metadata using saved credentials and record it |
 | `POST /api/management/connections/{id}/test` | Test saved connection, optionally overriding `model` |
 | `POST /api/management/connections/{id}/apply` | Apply `{harness, model?}` explicitly |
 | `POST /api/management/upstreams/native/{harness}/activate` | Restore this harness's native option; body `{revision?}` |
@@ -169,6 +212,11 @@ contains `available`, `active`, `kind` (`oauth` or `config`), and an opaque
 `revision` when a native baseline exists. No credentials or native configuration
 are returned. Clients omit the native choice when availability is false or the
 field is absent, and send its revision when applying the choice.
+
+Both model routes return `{models, truncated, protocols, checkedAt}`; each model
+has `id`, `name` and, when declared, `aliases`, `contextWindow`, `maxOutputTokens`,
+`input` and `reasoning`. List and save responses include the recorded `catalog`
+in the same shape (`{checkedAt, protocols, models, truncated?}`).
 
 The save body contains `name`, `protocol`, `baseUrl`, `apiKey`, optional `model`,
 `authType`, and `headers`; edits also supply `id` and `revision`. Native fragments

@@ -1,11 +1,22 @@
 use super::*;
 use pockymoe_protocol::{ModelOptionDto, ReasoningEffortOptionDto};
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DiscoveredModel {
     pub id: String,
     pub name: String,
+    /// Other ids the upstream accepts for this model.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<String>,
+    /// Declared maximum context in tokens; None means the upstream did not say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<i64>,
+    /// Declared request modalities (`text`, `image`); empty means unknown.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub input: Vec<String>,
     /// None means unknown, not unsupported. An explicit empty list is authoritative.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<ReasoningCapabilities>,
@@ -54,6 +65,105 @@ pub fn normalize_effort(value: &str) -> Option<String> {
         "xhigh" | "extra_high" => Some("xhigh".into()),
         _ => None,
     }
+}
+
+/// The first positive token count among `pointers`. Gateways name the same
+/// fact differently: OpenRouter `context_length`, vLLM `max_model_len`,
+/// Anthropic `max_input_tokens`, Gemini `inputTokenLimit`, llama.cpp `meta.n_ctx`.
+fn token_limit(row: &Value, pointers: &[&str]) -> Option<i64> {
+    pointers.iter().find_map(|pointer| {
+        let value = row.pointer(pointer)?;
+        value
+            .as_i64()
+            .or_else(|| {
+                value
+                    .as_f64()
+                    .filter(|n| n.fract() == 0.0)
+                    .map(|n| n as i64)
+            })
+            .or_else(|| value.as_str().and_then(|s| s.trim().parse().ok()))
+            .filter(|n| (1..=100_000_000).contains(n))
+    })
+}
+
+const CONTEXT_FIELDS: [&str; 11] = [
+    "/context_window",
+    "/contextWindow",
+    "/context_length",
+    "/max_context_length",
+    "/max_model_len",
+    "/max_input_tokens",
+    "/inputTokenLimit",
+    "/top_provider/context_length",
+    "/limits/context_window",
+    // llama.cpp: the served context first, then the trained one.
+    "/meta/n_ctx",
+    "/meta/n_ctx_train",
+];
+const OUTPUT_FIELDS: [&str; 7] = [
+    "/max_output_tokens",
+    "/maxOutputTokens",
+    "/max_completion_tokens",
+    "/outputTokenLimit",
+    "/top_provider/max_completion_tokens",
+    "/limits/max_output_tokens",
+    "/max_tokens",
+];
+
+fn input_modalities(row: &Value) -> Vec<String> {
+    let declared = [
+        "/architecture/input_modalities",
+        "/input_modalities",
+        "/modalities/input",
+        "/input",
+    ]
+    .iter()
+    .find_map(|pointer| row.pointer(pointer).and_then(Value::as_array));
+    let mut input: Vec<String> = match declared {
+        Some(values) => values
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_ascii_lowercase)
+            .filter(|kind| kind == "text" || kind == "image")
+            .collect(),
+        // Ollama-style capability lists and boolean vision flags.
+        None => {
+            let vision = row
+                .get("capabilities")
+                .and_then(Value::as_array)
+                .is_some_and(|caps| caps.iter().any(|c| c == "vision"))
+                || row.pointer("/capabilities/vision") == Some(&Value::Bool(true));
+            if vision {
+                vec!["text".into(), "image".into()]
+            } else {
+                vec![]
+            }
+        }
+    };
+    input.dedup();
+    input
+}
+
+fn aliases(row: &Value, id: &str) -> Vec<String> {
+    let mut aliases: Vec<String> = Vec::new();
+    for alias in row
+        .get("aliases")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+    {
+        if alias != id
+            && !alias.is_empty()
+            && alias.len() <= 200
+            && !alias.chars().any(char::is_control)
+            && !aliases.iter().any(|a| a == alias)
+            && aliases.len() < 16
+        {
+            aliases.push(alias.into());
+        }
+    }
+    aliases
 }
 
 fn reasoning_capabilities(row: &Value) -> Option<ReasoningCapabilities> {
@@ -156,6 +266,7 @@ pub fn discovery_profile(dir: &Path, input: DiscoveryInput) -> Result<Profile> {
         sort_index: 0,
         revision: None,
         live_revision: None,
+        models: Vec::new(),
     };
     if !p.id.is_empty() {
         let saved = profile(dir, &p.id)?;
@@ -240,6 +351,10 @@ fn collect_models(
             DiscoveredModel {
                 id: id.into(),
                 name,
+                aliases: aliases(row, id),
+                context_window: token_limit(row, &CONTEXT_FIELDS),
+                max_output_tokens: token_limit(row, &OUTPUT_FIELDS),
+                input: input_modalities(row),
                 reasoning: reasoning_capabilities(row),
             },
         );
@@ -355,6 +470,50 @@ mod tests {
         )
         .unwrap();
         assert_eq!(roundtrip.len(), 6);
+    }
+
+    #[test]
+    fn declared_limits_modalities_and_aliases_are_read_from_common_gateways() {
+        let mut models = BTreeMap::new();
+        collect_models(&json!({"data": [
+            // llama.cpp: the served context wins over the trained one.
+            {"id":"qwen-local","aliases":["qwen-local","qwen"],"owned_by":"llamacpp",
+             "meta":{"n_ctx":200192,"n_ctx_train":262144}},
+            // OpenRouter
+            {"id":"vendor/model","name":"Vendor Model","context_length":131072,
+             "architecture":{"input_modalities":["text","image","file"]},
+             "top_provider":{"context_length":65536,"max_completion_tokens":16384}},
+            // Anthropic
+            {"id":"claude-x","display_name":"Claude X","max_input_tokens":200000,"max_tokens":64000},
+            // vLLM, with a string count; nonsense values are ignored
+            {"id":"served","max_model_len":"32768","max_output_tokens":0},
+            {"id":"bare"}
+        ]}), false, &mut models).unwrap();
+        let local = &models["qwen-local"];
+        assert_eq!(local.context_window, Some(200192));
+        assert_eq!(local.aliases, ["qwen"]);
+        assert!(local.input.is_empty() && local.reasoning.is_none());
+        let routed = &models["vendor/model"];
+        assert_eq!(routed.context_window, Some(131072));
+        assert_eq!(routed.max_output_tokens, Some(16384));
+        assert_eq!(routed.input, ["text", "image"]);
+        let claude = &models["claude-x"];
+        assert_eq!(
+            (claude.context_window, claude.max_output_tokens),
+            (Some(200000), Some(64000))
+        );
+        assert_eq!(claude.name, "Claude X");
+        assert_eq!(models["served"].context_window, Some(32768));
+        assert_eq!(models["served"].max_output_tokens, None);
+        let bare = serde_json::to_value(&models["bare"]).unwrap();
+        assert_eq!(bare, json!({"id":"bare","name":"bare"}));
+
+        models.clear();
+        collect_models(&json!({"models":[{"name":"models/gemini-x","displayName":"Gemini X",
+            "inputTokenLimit":1048576,"outputTokenLimit":65536,"supportedGenerationMethods":["generateContent"]}]}),
+            true, &mut models).unwrap();
+        assert_eq!(models["gemini-x"].context_window, Some(1048576));
+        assert_eq!(models["gemini-x"].max_output_tokens, Some(65536));
     }
 
     #[test]
