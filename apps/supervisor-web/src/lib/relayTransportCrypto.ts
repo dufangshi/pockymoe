@@ -366,6 +366,8 @@ export async function inspectEnrollmentDevice(deviceId: string) {
   if (!key) throw new AccountTrustError('accountIdentityMismatch');
   return key.descriptor;
 }
+/** A page, not the service worker: Safari's worker cannot always read stored keys. */
+const inPage = () => typeof window !== 'undefined';
 async function reportOwnerRequired(response: Response, deviceId: string, request: { method: string; path: string }, encryptedBrowserId?: string, trustedIdentity = false) {
   if (response.ok) return;
   const body = await response.clone().json().catch(() => null) as { code?: string } | null;
@@ -378,7 +380,9 @@ async function reportOwnerRequired(response: Response, deviceId: string, request
   if (revoked || body?.code === 'browser_registration_required' || body?.code === 'device_strict_mode') {
     keys.delete(deviceId);
     // With this browser's key the next request registers again; a password cannot help.
-    if (revoked || !(await currentBrowser().catch(() => null)))
+    // A worker may read the key as missing when the page holds it (Safari): only a
+    // page decides that the browser has none.
+    if (revoked || (inPage() && !(await currentBrowser().catch(() => null))))
       reportTransport({ deviceId, state: 'unlock-required', paired: true, bound: true, strict: true,
         unlockCause: unlockCause(revoked ? 'browser-removed' : 'missing-browser-key', { deviceId, ...request, code: body?.code }),
         ...(revoked ? { unlockReason: 'browser_revoked' as const } : {}) });
@@ -521,7 +525,7 @@ export async function exchange(
   const bootstrap = [supervisorPath('api/transport/browser'), supervisorPath('api/transport/enrollment'), supervisorPath('api/transport/revocations')].includes(wirePath);
   if (key.paired && !bootstrap) {
     if (!owner) {
-      reportTransport({ deviceId: route.deviceId, state: 'unlock-required', paired: true, bound: true,
+      if (inPage()) reportTransport({ deviceId: route.deviceId, state: 'unlock-required', paired: true, bound: true,
         unlockCause: unlockCause('missing-browser-key', { deviceId: route.deviceId, method: request.method, path: route.path }) });
       throw new AccountTrustError('accountUnlockRequired');
     }

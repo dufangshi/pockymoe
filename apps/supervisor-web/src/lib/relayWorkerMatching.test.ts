@@ -18,3 +18,11 @@ describe('relay service worker routing', () => {
     });
   }
 });
+
+it('lets a read the page makes for the worker pass through it', async () => {
+  const { matchesRelayWorkerRequest, PAGE_FETCH_HEADER } = await import('./relayWorkerMatching');
+  const url = 'https://relay.test/relay/devices/d1/api/threads/t1/assets/image?path=a.png';
+  expect(matchesRelayWorkerRequest(new Request(url), 'https://relay.test', '')).toBe(true);
+  expect(matchesRelayWorkerRequest(new Request(url, { headers: { [PAGE_FETCH_HEADER]: '1' } }), 'https://relay.test', '')).toBe(false);
+  expect(PAGE_FETCH_HEADER.startsWith('x-rcd-')).toBe(true);
+});

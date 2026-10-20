@@ -236,6 +236,12 @@ origins are on the same site (registrable domain), such as `app.example.com` and
 Device files reach the page through the Web origin's service worker, which
 encrypts the requests the page makes itself: `fetch` calls and subresources such
 as the images in Markdown files, chat photos and the Explorer's image preview.
+Safari's worker cannot always read the browser key the page stored (WebKit bugs
+183167 and 312279). When the worker finds no browser key, or the device answers
+401, it hands a read (`GET`/`HEAD`) to the page that asked, which makes it with
+its own key and returns the response (marked `x-rcd-page-fetch` so the worker
+lets it pass). Only a page, never the worker, opens the unlock prompt for a
+missing browser key.
 A frame or tab that opens a relay URL is a navigation on the relay origin, which
 that worker never sees and which the relay refuses to frame. The Web therefore
 reads previews a browser would navigate to, such as PDFs, through the encrypted

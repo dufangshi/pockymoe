@@ -67,7 +67,26 @@ if (typeof navigator !== 'undefined' && navigator.serviceWorker)
   navigator.serviceWorker.addEventListener('message', (event) => {
     if (event.data?.type === 'remote-codex-transport')
       report(event.data.status);
+    if (event.data?.type === 'pockymoe-page-fetch' && event.ports[0])
+      void answerPageFetch(event.data, event.ports[0]);
   });
+function headerList(headers: Headers) {
+  const list: [string, string][] = [];
+  headers.forEach((value, name) => list.push([name, value]));
+  return list;
+}
+/** Makes a read the worker could not (its browser key read as missing there). */
+async function answerPageFetch(ask: { url: string; method: string; headers: [string, string][]; header: string }, port: MessagePort) {
+  try {
+    const headers = new Headers(ask.headers);
+    headers.set(ask.header, '1');
+    const response = await encryptedBrowserFetch(ask.url, { method: ask.method, headers, credentials: 'include' });
+    const body = ask.method === 'HEAD' ? new ArrayBuffer(0) : await response.arrayBuffer();
+    port.postMessage({ status: response.status, statusText: response.statusText, headers: headerList(response.headers), body }, [body]);
+  } catch (error) {
+    port.postMessage({ error: error instanceof Error ? error.message : String(error) });
+  }
+}
 export async function trustDeviceIdentity(deviceId: string, identityKey: string, fingerprint: string) {
   await trustPinnedDevice(deviceId, identityKey, fingerprint);
   statuses.delete(deviceId);
