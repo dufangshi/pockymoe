@@ -559,6 +559,12 @@ Moving around keeps the screen steady:
   moment it is sent. Queued lists only what the Supervisor holds
   (`thread_pending_steers`, `continuation`), so it is the same on every device
   and survives a reload; the page's own copy only bridges the request.
+- The files view's tree comes back with the folders that were open, all at
+  once: a reload reads them a level at a time, each level's folders together,
+  before the tree shows, instead of the tree growing (and jumping) folder by
+  folder. A shortened file name shows in full in a small bubble: after the
+  pointer rests on it, or while a finger holds it (it goes when the finger
+  lifts). The bubble sits over or under the row and never covers the ⋯ column.
 - Earlier turns load above what is on screen without moving it: the turn at the
   top of the screen stays where it was, through the loading row, the insertion
   and the new turns' rendering, until the reader scrolls.
