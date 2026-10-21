@@ -76,6 +76,36 @@ test('a signed workspace share reaches its threads and files but never a termina
     });
     await dialog.getByRole('button', { name: 'Close dialog', exact: true }).click();
 
+    // The same share, from the workspace's menu on the device's Workspaces page,
+    // whose header names the device.
+    await owner.page.goto(`${f.base}/devices/${d1.id}/workspaces`);
+    await expect(owner.page.locator('.product-navigation-subtitle')).not.toBeEmpty();
+    await owner.page.getByRole('button', { name: `More actions for ${sharedWs.label}`, exact: true }).click();
+    await owner.page.getByRole('menuitem', { name: 'Share workspace', exact: true }).click();
+    const menuDialog = owner.page.getByRole('dialog');
+    await expect(menuDialog.getByText('Choose who can view or collaborate on the threads in this workspace.')).toBeVisible();
+    await expect(menuDialog.getByRole('radio', { name: /^This workspace/ })).toBeChecked();
+    await expect(menuDialog.getByRole('radio', { name: /^This thread|^Whole device/ })).toHaveCount(0);
+    await expect(menuDialog.getByText('ws-recipient', { exact: true })).toBeVisible();
+    for (const width of [1280, 390]) for (const theme of ['classic', 'plum-pocket', 'terminal']) for (const mode of ['light', 'dark']) {
+      await owner.page.setViewportSize({ width, height: width > 600 ? 720 : 844 });
+      await owner.page.evaluate(([t, m]) => {
+        localStorage.setItem('pockymoe-theme-preset', t);
+        localStorage.setItem('remote-codex-theme-mode', m);
+        window.dispatchEvent(new StorageEvent('storage', { key: 'pockymoe-theme-preset' }));
+      }, [theme, mode]);
+      await owner.page.reload();
+      await expect(owner.page.locator('.product-navigation-subtitle')).not.toBeEmpty();
+      await screenshot(owner.page, info, `workspace-menu-page-${theme}-${mode}-${width}`);
+      await owner.page.getByRole('button', { name: `More actions for ${sharedWs.label}`, exact: true }).click();
+      await screenshot(owner.page, info, `workspace-menu-open-${theme}-${mode}-${width}`);
+      await owner.page.getByRole('menuitem', { name: 'Share workspace', exact: true }).click();
+      await expect(owner.page.getByRole('dialog').getByText('ws-recipient', { exact: true })).toBeVisible();
+      await screenshot(owner.page, info, `workspace-menu-share-${theme}-${mode}-${width}`);
+    }
+    await owner.page.setViewportSize({ width: 1280, height: 720 });
+    await owner.page.evaluate(() => { localStorage.removeItem('pockymoe-theme-preset'); localStorage.removeItem('remote-codex-theme-mode'); });
+
     // The recipient opens the workspace from the device's card on Devices.
     await recipient.page.goto(f.base + '/relay-devices');
     await recipient.page.getByRole('tab', { name: /Devices with me/ }).click();

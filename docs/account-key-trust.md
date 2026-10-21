@@ -776,7 +776,8 @@ messages itself. Grants are created only while the device is online.
 | Device (grant) | Every thread | Every workspace; with write, also files a conversation links to outside them | Anywhere, with control and **Allow new threads** |
 
 **Workspace shares.** The thread page's share dialog offers this thread, this
-workspace or the whole device. A workspace share is a relay grant
+workspace or the whole device; on the owner's device, each workspace's menu on
+the Workspaces page opens the same window with only this workspace. A workspace share is a relay grant
 (`scope: "workspace"`, `workspaceId`, `workspaceLabel`) signed for a bound device
 like a device grant. Its recipient lists the conversations with
 `GET /api/workspaces/{id}/threads` and starts one with

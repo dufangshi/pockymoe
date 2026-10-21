@@ -24,6 +24,7 @@ import {
   Pin,
   Plus,
   RefreshCw,
+  Share2,
   Trash2,
 } from 'lucide-react';
 
@@ -31,6 +32,7 @@ import type { RuntimeConfigDto, WorkspaceDto } from '@pockymoe/shared';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { LongTextDialog } from '../components/LongTextDialog';
 import { RenameDialog } from '../components/RenameDialog';
+import { WorkspaceShareDialog } from '../components/WorkspaceShareDialog';
 import {
   ApiError,
   deleteWorkspace,
@@ -93,21 +95,27 @@ export function WorkspacesPage() {
   const [runtimeConfig, setRuntimeConfig] = useState<RuntimeConfigDto | null>(null);
   const [runtimeError, setRuntimeError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [deviceName, setDeviceName] = useState<{ deviceId: string | null; name: string } | null>(null);
+  const [deviceName, setDeviceName] = useState<{ deviceId: string | null; name: string; owned: boolean } | null>(null);
   useEffect(() => {
     let active = true;
     const loadName = relayModeActive()
-      ? fetchRelayPortal().then(portal =>
-        portal.devices.find(device => device.id === deviceId)?.name
-        ?? portal.sharedDevicesWithMe?.find(grant => grant.deviceId === deviceId)?.deviceName
-        ?? '')
+      ? fetchRelayPortal().then(portal => {
+        const owned = portal.devices.find(device => device.id === deviceId);
+        return {
+          name: owned?.name ?? portal.sharedDevicesWithMe?.find(grant => grant.deviceId === deviceId)?.deviceName ?? '',
+          owned: Boolean(owned),
+        };
+      })
       // This reads the saved hostname and cached scan, without starting a disk scan.
-      : fetchStorageOverview().then(overview => overview.deviceName);
-    void loadName.then(name => {
-      if (active) setDeviceName({ deviceId, name });
+      : fetchStorageOverview().then(overview => ({ name: overview.deviceName, owned: false }));
+    void loadName.then(({ name, owned }) => {
+      if (active) setDeviceName({ deviceId, name, owned });
     }).catch(() => { /* An unavailable name must not block the workspace list. */ });
     return () => { active = false; };
   }, [deviceId]);
+  // Only the device's owner shares its workspaces, through the relay.
+  const shareDeviceId = deviceId && deviceName?.deviceId === deviceId && deviceName.owned ? deviceId : null;
+  const [sharingWorkspace, setSharingWorkspace] = useState<WorkspaceDto | null>(null);
   const [editingWorkspaceId, setEditingWorkspaceId] = useState<string | null>(null);
   const [draftLabel, setDraftLabel] = useState('');
   const [savingWorkspaceId, setSavingWorkspaceId] = useState<string | null>(null);
@@ -428,6 +436,7 @@ export function WorkspacesPage() {
                       onOpenChange={(nextOpen) => setOpenMenuId(nextOpen ? workspace.id : null)}
                       onViewPath={() => setExpandedPath(workspace.absPath)}
                       onRename={() => beginRename(workspace)}
+                      onShare={shareDeviceId ? () => setSharingWorkspace(workspace) : undefined}
                       onToggleIsolation={workspace.agentIsolated === undefined ? undefined : () => void handleIsolation(workspace)}
                       onDelete={() => beginDelete(workspace)}
                     />
@@ -454,6 +463,9 @@ export function WorkspacesPage() {
         }}
         onSubmit={() => (editingWorkspaceId ? handleRenameWorkspace(editingWorkspaceId) : undefined)}
       />
+      {shareDeviceId ? (
+        <WorkspaceShareDialog deviceId={shareDeviceId} workspace={sharingWorkspace} onClose={() => setSharingWorkspace(null)} />
+      ) : null}
       <LongTextDialog
         open={expandedPath !== null}
         title={translate("files.workspacePath")}
@@ -489,6 +501,7 @@ function WorkspaceActionsMenu({
   onOpenChange,
   onViewPath,
   onRename,
+  onShare,
   onToggleIsolation,
   onDelete,
 }: {
@@ -497,6 +510,8 @@ function WorkspaceActionsMenu({
   onOpenChange: (open: boolean) => void;
   onViewPath: () => void;
   onRename: () => void;
+  /** Absent unless this is the owner's device, opened through the relay. */
+  onShare?: (() => void) | undefined;
   /** Absent when the device's runtime predates agent isolation. */
   onToggleIsolation?: (() => void) | undefined;
   onDelete: () => void;
@@ -593,7 +608,7 @@ function WorkspaceActionsMenu({
           role="menu"
           aria-label={translate("files.actionsFor", { value1: workspace.label })}
           onKeyDown={handleMenuKeyDown}
-          className="absolute right-0 top-[calc(100%+0.375rem)] z-30 w-52 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-panel)] p-1.5 shadow-[var(--theme-shadow)]"
+          className="absolute right-0 top-[calc(100%+0.375rem)] z-30 w-max min-w-52 max-w-[calc(100vw-2rem)] whitespace-nowrap rounded-lg border border-[var(--theme-border)] bg-[var(--theme-panel)] p-1.5 shadow-[var(--theme-shadow)]"
         >
           <button
             type="button"
@@ -611,6 +626,17 @@ function WorkspaceActionsMenu({
           >
             <Pencil data-icon="rename" aria-hidden="true" className="h-4 w-4 text-[var(--theme-fg-muted)]" />
             {translate("files.rename_d3f4cb")}</button>
+          {onShare ? (
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => runAction(onShare)}
+              className="flex min-h-11 w-full items-center gap-3 rounded-md px-3 text-left text-sm text-[var(--theme-fg)] transition hover:bg-[var(--theme-hover)] focus-visible:outline-none focus-visible:bg-[var(--theme-hover)]"
+            >
+              <Share2 data-icon="share" aria-hidden="true" className="h-4 w-4 text-[var(--theme-fg-muted)]" />
+              {translate("sharing.shareWorkspace")}
+            </button>
+          ) : null}
           {onToggleIsolation ? (
             <button
               type="button"

@@ -2,14 +2,16 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter } from 'react-router-dom';
 import type { WorkspaceDto } from '@pockymoe/shared';
-import { fetchRuntimeConfig, fetchStorageOverview, fetchThreads, fetchWorkspaces, relayModeActive, setWorkspaceIsolation } from '../lib/api';
+import { createRelayGrant, fetchRelayPortal, fetchRuntimeConfig, fetchStorageOverview, fetchThreads, fetchWorkspaces, readSelectedRelayDeviceId, relayModeActive, setWorkspaceIsolation } from '../lib/api';
 import { WorkspacesPage } from './WorkspacesPage';
 
 vi.mock('../lib/api', () => ({
   deleteWorkspace: vi.fn(), fetchRelayPortal: vi.fn(), fetchRuntimeConfig: vi.fn(), fetchStorageOverview: vi.fn(), fetchThreads: vi.fn(),
   fetchWorkspaces: vi.fn(), setWorkspaceIsolation: vi.fn(), updateWorkspace: vi.fn(),
-  updateWorkspaceFavorite: vi.fn(), relayModeActive: vi.fn(), readSelectedRelayDeviceId: () => null,
+  updateWorkspaceFavorite: vi.fn(), relayModeActive: vi.fn(), readSelectedRelayDeviceId: vi.fn(),
+  createRelayGrant: vi.fn(), updateRelayGrant: vi.fn(), revokeRelayGrant: vi.fn(),
 }));
+vi.mock('../components/SignedShareDetails', () => ({ SignedShareDetails: () => null }));
 vi.mock('../components/DeviceEncryptionStatus', () => ({ DeviceEncryptionStatus: () => null }));
 vi.mock('../components/ProductHeader', () => ({ ProductHeader: () => null }));
 vi.mock('../components/onboarding/TourProvider', () => ({ TourLauncherButton: () => null }));
@@ -67,5 +69,35 @@ describe('workspace isolation', () => {
     vi.mocked(fetchWorkspaces).mockResolvedValue([older]);
     await openMenu();
     expect(screen.queryByRole('menuitem', { name: 'Isolate workspace' })).toBeNull();
+  });
+});
+
+describe('workspace sharing from the menu', () => {
+  const portal = (devices: Array<{ id: string; name: string }>) => ({ devices, sharedDevicesWithMe: [], grantsByMe: [], sharedByMe: [] }) as never;
+
+  it('shares the workspace on the owner\'s device', async () => {
+    vi.mocked(relayModeActive).mockReturnValue(true);
+    vi.mocked(readSelectedRelayDeviceId).mockReturnValue('dev-1');
+    vi.mocked(fetchRelayPortal).mockResolvedValue(portal([{ id: 'dev-1', name: 'Laptop' }]));
+    vi.mocked(createRelayGrant).mockResolvedValue({} as never);
+    vi.mocked(fetchWorkspaces).mockResolvedValue([workspace]);
+    await openMenu();
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Share workspace' }));
+    expect(await screen.findByText('No active shares for this workspace.')).toBeTruthy();
+    fireEvent.change(screen.getByPlaceholderText('username or email'), { target: { value: 'carol' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Share workspace' }));
+    await waitFor(() => expect(createRelayGrant).toHaveBeenCalledWith(expect.objectContaining({
+      deviceId: 'dev-1', scope: 'workspace', workspaceId: 'workspace-1', workspaceLabel: 'Payroll', targetIdentifier: 'carol',
+    })));
+  });
+
+  it('offers no sharing on a device shared with you or without the relay', async () => {
+    vi.mocked(relayModeActive).mockReturnValue(true);
+    vi.mocked(readSelectedRelayDeviceId).mockReturnValue('dev-2');
+    vi.mocked(fetchRelayPortal).mockResolvedValue(portal([{ id: 'dev-1', name: 'Laptop' }]));
+    vi.mocked(fetchWorkspaces).mockResolvedValue([workspace]);
+    await openMenu();
+    await waitFor(() => expect(fetchRelayPortal).toHaveBeenCalled());
+    expect(screen.queryByRole('menuitem', { name: 'Share workspace' })).toBeNull();
   });
 });
