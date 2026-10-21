@@ -26,7 +26,8 @@ export function TurnNotification({ deviceId, threadId, turnId }: { deviceId: str
         const next = await request<{ subscribed: boolean }>(path, { cache: 'no-store', signal: AbortSignal.timeout(15000) });
         if (current.mounted && version === current.version) { setSubscribed(next.subscribed); setError(null); failedMutation.current = false; }
       } catch {
-        if (current.mounted && version === current.version) setError(t('settings.notificationsTurnError'));
+        // A background read that fails (a weak network, a sleeping device) keeps
+        // what is shown; only a change the reader asked for reports a failure.
       } finally {
         if (current.mounted && version === current.version) setLoading(false);
       }
@@ -70,6 +71,6 @@ export function TurnNotification({ deviceId, threadId, turnId }: { deviceId: str
     }
   }
   return <TurnNotificationButton subscribed={subscribed} busy={saving || loading || settings.loading}
-    error={error ?? settings.error} onToggle={() => void toggle()}
-    onRetry={() => { if (settings.error) settings.retry(); else if (failedMutation.current) void toggle(); else retryLoad.current(); }} />;
+    error={error} onToggle={() => void toggle()}
+    onRetry={() => { if (failedMutation.current) void toggle(); else retryLoad.current(); }} />;
 }
