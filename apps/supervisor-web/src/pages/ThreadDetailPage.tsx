@@ -64,6 +64,7 @@ import {
   ThreadPluginScope,
   ThreadPluginsControl,
   useWorkbenchPresentation,
+  splitShown,
   ThreadShellPanel,
   ThreadGraphWorkspacePanel,
   ThreadTimeline,
@@ -886,7 +887,8 @@ export function ThreadDetailPage() {
   }, [routeKey, setTerminalOpenState]);
   const [terminalOpenRequest, setTerminalOpenRequest] = useState<TerminalOpenRequest | null>(null);
   const [chatDraft, setChatDraft, referenceDraft, setReferenceDraft] = useThreadDrafts(routeKey, `${referenceDevice}:${referenceId ?? ''}`);
-  const referenceShown = Boolean(referenceId) && workbenchPresentation.value.mode === 'thread';
+  // A files view opened over the split keeps it beside it (and may browse its files).
+  const referenceShown = Boolean(referenceId) && splitShown(workbenchPresentation.value);
   // A closed split keeps its reference for reopening but must not keep polling it.
   const referenceController = useWorkbenchReference(referenceDevice, referenceShown ? referenceId : null, relayRouteDeviceId ?? 'local', referenceShown);
   useEffect(() => {
@@ -920,6 +922,20 @@ export function ThreadDetailPage() {
       state: { workbenchSwap: { targetDevice: referenceDevice, targetThread: referenceId, referenceId: id, referenceDeviceId: relayRouteDeviceId } },
     });
   };
+  // A desktop tab dropped beside the conversation: on the right it opens as the
+  // split; on the left it becomes the conversation and this one moves right.
+  const splitFromTab = (key: string, side: 'left' | 'right') => {
+    const at = key.indexOf(':');
+    const device = key.slice(0, at), threadId = key.slice(at + 1);
+    if (at < 0 || !threadId || (threadId === id && device === (relayRouteDeviceId ?? 'local'))) return;
+    const deviceId = device === 'local' ? null : device;
+    if (side === 'right') { selectSplitThread({ deviceId, workspaceId: '', threadId, title: '' }); return; }
+    if (!confirmWorkspaceDocumentLeave()) return;
+    workbenchPresentation.update({ referenceId: id, referenceDeviceId: relayRouteDeviceId, mode: 'thread' });
+    navigate(threadHref(threadId, deviceId), {
+      state: { workbenchSwap: { targetDevice: device, targetThread: threadId, referenceId: id, referenceDeviceId: relayRouteDeviceId } },
+    });
+  };
   const effectiveWorkspaceAccess: 'none' | 'read' | 'write' =
     hostScope ? 'read' : !relayDeviceRouteActive
       ? 'write'
@@ -943,7 +959,7 @@ export function ThreadDetailPage() {
     workbenchPresentation.update({referenceId:swap.referenceId, referenceDeviceId:swap.referenceDeviceId, mode:'thread'});
     navigate(`${location.pathname}${location.search}${location.hash}`, {replace:true, state:null});
   }, [location.state, location.pathname, location.search, location.hash, relayRouteDeviceId, id, navigate, workbenchPresentation.update]);
-  const toolsUseReference = focusedPane === 'reference' && Boolean(referenceId) && workbenchPresentation.value.mode !== 'focus';
+  const toolsUseReference = focusedPane === 'reference' && referenceShown;
   // The files' prompt edits the draft of the conversation it sends to, so text
   // typed there is in that composer too; an accepted send clears it.
   const toolsDraft = toolsUseReference ? referenceDraft : chatDraft;
@@ -4304,6 +4320,7 @@ export function ThreadDetailPage() {
           }).catch(caught => { if (activeRouteRef.current === source) setError(actionErrorMessage(caught, translate('workbench.statusUnavailable'))); });
         }} />,
         onMakePrimary: makeReferencePrimary,
+        ...(hostScope ? {} : { onSplitThread: splitFromTab }),
         focusedPane: toolsUseReference ? 'reference' : 'primary',
         onFocusPane: focusPane,
         toolsOpen: toolsTerminalOpen || dshPanelOpen,
@@ -4316,7 +4333,7 @@ export function ThreadDetailPage() {
         </>,
         onCloseTools: closeTerminal,
         storageFailed: workbenchPresentation.storageFailed,
-      }, subscriptionUsage, statusActions: detail ? <><ThreadSubagentsControl key={`subagents-${detail.thread.id}`} detail={detail} /><UnscopedOnly><ThreadWatchesControl key={`watches-${detail.thread.id}`} thread={detail.thread} /></UnscopedOnly><ThreadPluginsControl key={`plugins-${detail.thread.id}`} readOnly={!relayThreadCanControl} {...(relayThreadIsOwner ? {} : { hiddenPluginIds: [TERMINAL_PLUGIN_ID] })} /><WorkbenchThreadPicker deviceId={relayRouteDeviceId} workspaceId={detail.workspace.id} threadId={detail.thread.id} threads={threads} navigationThreads={[...workbenchNavigation.workspaceThreads, ...workbenchNavigation.threads]} reference={referenceId ? {deviceId: referenceDevice === 'local' ? null : referenceDevice, threadId:referenceId} : null} splitActive={Boolean(referenceId && ['thread','files'].includes(workbenchPresentation.value.mode))} onSelect={selectSplitThread} onRestore={() => changePresentation({mode:'thread'})} onClose={() => changePresentation({mode:'focus'})} onCollaboration={() => changePresentation({mode:'collaboration'})} /></> : null, renderThreadMenu: (thread, context) => <RecentThreadMenu thread={thread} context={context} currentKey={workbenchNavigation.currentKey} onFavorite={workbenchNavigation.onToggleThreadFavorite} onRenamed={workbenchNavigation.onThreadRenamed} onRemoved={workbenchNavigation.onThreadRemoved} onNavigate={navigate} />, harnessSessionId: detail?.thread.providerSessionId ?? null, harnessSessionUrl: detail?.thread.providerSessionId && (detail.thread.provider === 'codex' || detail.thread.agentId === 'codex') ? `codex://threads/${encodeURIComponent(detail.thread.providerSessionId)}` : null, activeView: toolsTerminalOpen ? 'shell' : 'chat', terminalEnabled: toolsTerminalAvailable, onViewChange: view => { if (view === 'shell') toggleTerminal(); },
+      }, subscriptionUsage, statusActions: detail ? <><ThreadSubagentsControl key={`subagents-${detail.thread.id}`} detail={detail} /><UnscopedOnly><ThreadWatchesControl key={`watches-${detail.thread.id}`} thread={detail.thread} /></UnscopedOnly><ThreadPluginsControl key={`plugins-${detail.thread.id}`} readOnly={!relayThreadCanControl} {...(relayThreadIsOwner ? {} : { hiddenPluginIds: [TERMINAL_PLUGIN_ID] })} /><WorkbenchThreadPicker deviceId={relayRouteDeviceId} workspaceId={detail.workspace.id} threadId={detail.thread.id} threads={threads} navigationThreads={[...workbenchNavigation.workspaceThreads, ...workbenchNavigation.threads]} reference={referenceId ? {deviceId: referenceDevice === 'local' ? null : referenceDevice, threadId:referenceId} : null} splitActive={referenceShown} onSelect={selectSplitThread} onRestore={() => changePresentation({mode:'thread'})} onClose={() => changePresentation({mode:'focus'})} onCollaboration={() => changePresentation({mode:'collaboration'})} /></> : null, renderThreadMenu: (thread, context) => <RecentThreadMenu thread={thread} context={context} currentKey={workbenchNavigation.currentKey} onFavorite={workbenchNavigation.onToggleThreadFavorite} onRenamed={workbenchNavigation.onThreadRenamed} onRemoved={workbenchNavigation.onThreadRemoved} onNavigate={navigate} />, harnessSessionId: detail?.thread.providerSessionId ?? null, harnessSessionUrl: detail?.thread.providerSessionId && (detail.thread.provider === 'codex' || detail.thread.agentId === 'codex') ? `codex://threads/${encodeURIComponent(detail.thread.providerSessionId)}` : null, activeView: toolsTerminalOpen ? 'shell' : 'chat', terminalEnabled: toolsTerminalAvailable, onViewChange: view => { if (view === 'shell') toggleTerminal(); },
         toolPanels: dshPanelAvailable ? [{ id: 'deepseek-harness', label: translate('workbench.deepseekHarness'), icon: <Puzzle data-icon="harness-panel" />, active: dshPanelOpen, onToggle: toggleDshPanel }] : [], onNavigate: navigate, onPrefetchThread: prefetchThread, onSearch: () => setSearchOpen(true), searchOpen, search: id && detail ? <ConversationSearch key={id} threadId={id} workspaceId={detail.thread.workspaceId}
         deviceLabel={relayRouteDeviceId ?? searchLabels.localDevice}
         allowGlobal={!hostScope && (relayThreadIsOwner || (relayAccess?.scope === 'device' && (relayAccess.threadAccess === 'read' || relayAccess.threadAccess === 'control')))}

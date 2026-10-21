@@ -328,7 +328,8 @@ line shows each tile as a one-line chip.
 
 Entering a thread always shows its conversation: the files view opens only when
 asked for (the Files button or a file link), and is not restored from the last
-visit. Where the files view sits beside the conversation, the start of its tree's
+visit. Opened over a split, the files view keeps the split beside it and closes back
+to it; opened after the split was closed, it leaves the split closed. Where the files view sits beside the conversation, the start of its tree's
 toolbar has window controls as on a Mac: the red one closes the view and the amber
 one minimizes it. Minimized, the tree stays as a strip at the right edge and the
 editor folds into a small tab on the strip's left edge; that tab, the amber control
@@ -403,7 +404,11 @@ On the desktop the tabs are the conversations the reader opened, like an
 editor's files: opening one adds its tab after the active one; ✕ (or a middle
 click) closes it, and closing the open one moves to its neighbour (or home when
 it was the last). They are kept in this browser (`pockymoe.open-tabs.v1`, up to
-40) and can be dragged into another order. Switching tabs keeps the page in
+40) and can be dragged into another order. A tab held and pulled down onto the
+conversation opens split: while it is held, both halves say what a drop there
+does (the half under the pointer deepens); on the right it opens as the split, on
+the left it becomes the conversation and the open one moves to the right. Esc
+cancels the drag. Switching tabs keeps the page in
 place and shows the conversation at once: a conversation read in this visit is
 shown as last read and refreshed quietly, and once a conversation shows, the
 other open tabs (up to 11, any workspace) are read one by one in the background.
@@ -433,7 +438,9 @@ connection and notifications at the right. The sidebar switch, Back and Forward
 moved to the rail under the brand, which leads home. The thread tools menu holds
 the thread's actions, then its panels (agents, automations, plugins, split); it
 stays mounted while closed so the windows they open live on, and keeps clear of
-the screen edges. Phones keep their top bar. The drawer follows a sideways drag: rightwards from anywhere in the left 40% of the conversation or
+the screen edges. Phones keep their top bar; it and the tab bar never start a text selection, so a
+long press there only drags a tab. The drawer follows a sideways drag, with or
+without the one-handed layout: rightwards from anywhere in the left 40% of the conversation or
 the files opens it, leftwards on it or on the dimmed page closes it, and so does
 a tap outside. Browsers cannot keep the screen edge from the system back gesture
 (Android gesture navigation, Safari's swipe back), so a drag that starts on the
@@ -454,7 +461,8 @@ less" rides just above the composer, or just above the strip where the strip is
 under it (in either hand), so neither covers the other and no gap opens.
 
 The compact model menu shows reported context use and capacity in thousands of
-tokens below the reasoning controls. Missing readings show a dash.
+tokens below the reasoning controls. Missing readings show a dash. Picking a model
+or a reasoning effort keeps the menu open, so the other can be set right after.
 
 Thread loading uses a quiet spinner and placeholder lines until the initial
 conversation is ready, including the secondary split pane. Expanding deferred
