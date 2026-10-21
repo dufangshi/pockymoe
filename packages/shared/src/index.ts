@@ -1455,6 +1455,13 @@ export interface ThreadPendingSteerDto {
   sender?: MessageSenderDto | null;
 }
 
+/** A `thread wait --wake` registration that has not fired yet. */
+export interface ThreadPendingWakeDto {
+  id: string;
+  createdAt: string | null;
+  members: Array<{ threadId: string; name: string | null; status: string | null }>;
+}
+
 export interface ThreadSubagentDto {
   id: string;
   name: string | null;
@@ -1500,6 +1507,8 @@ export interface ThreadDetailDto {
   pendingRequests: ThreadActionRequestDto[];
   pendingSteers: ThreadPendingSteerDto[];
   activeSubagents?: ThreadSubagentDto[];
+  /** Delegate wakes this thread registered; absent from older devices. */
+  pendingWakes?: ThreadPendingWakeDto[];
   answeredRequestNotes?: ThreadAnsweredRequestNoteDto[];
   activityNotes?: ThreadActivityNoteDto[];
   goal?: ThreadGoalDto | null;

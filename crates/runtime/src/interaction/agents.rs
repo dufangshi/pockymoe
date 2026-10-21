@@ -4,7 +4,9 @@
 use super::{closing_message, enqueue};
 use crate::Supervisor;
 use anyhow::{anyhow, bail, ensure, Result};
-use pockymoe_protocol::{now_rfc3339, ThreadEventEnvelope};
+use pockymoe_protocol::{
+    now_rfc3339, ThreadEventEnvelope, ThreadPendingWakeDto, ThreadWakeMemberDto,
+};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use std::{
@@ -712,9 +714,57 @@ impl Supervisor {
             )?;
             Ok(())
         })?;
+        self.bus.emit(ThreadEventEnvelope {
+            event_type: pockymoe_protocol::ThreadEventType::ThreadUpdated,
+            thread_id: caller.into(),
+            timestamp: now_rfc3339(),
+            payload: json!({"reason":"wake_registered"}),
+        });
         Ok(
-            json!({"wakeId":id,"threadId":caller,"members":ids,"behavior":"One turn will be queued on you when all of these settle or one blocks. You may end your turn now."}),
+            json!({"wakeId":id,"threadId":caller,"members":ids,"behavior":"When all of these settle or one blocks, their report joins your running turn if your harness takes steers, or is queued as your next turn. You may end your turn now."}),
         )
+    }
+
+    /// Wakes `thread` registered that have not fired, for its detail view.
+    pub fn pending_wakes(&self, thread: &str) -> Result<Vec<ThreadPendingWakeDto>> {
+        self.db.with(|c| {
+            let mut stmt = c.prepare("SELECT key,value FROM kv WHERE key GLOB ?1 ORDER BY key")?;
+            let rows = stmt
+                .query_map([format!("cli:wake:{thread}:*")], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            let mut wakes = Vec::new();
+            for (key, raw) in rows {
+                let Ok(record) = serde_json::from_str::<Value>(&raw) else {
+                    continue;
+                };
+                let mut members = Vec::new();
+                for id in record["members"].as_array().into_iter().flatten() {
+                    let Some(id) = id.as_str() else { continue };
+                    let row: Option<(Option<String>, Option<String>)> = c
+                        .query_row(
+                            "SELECT COALESCE(agent_name,title),status FROM threads WHERE id=?1",
+                            [id],
+                            |r| Ok((r.get(0)?, r.get(1)?)),
+                        )
+                        .optional()?;
+                    let (name, status) = row.unwrap_or_default();
+                    members.push(ThreadWakeMemberDto {
+                        thread_id: id.into(),
+                        name,
+                        status,
+                    });
+                }
+                wakes.push(ThreadPendingWakeDto {
+                    id: key.rsplit(':').next().unwrap_or_default().into(),
+                    created_at: record["createdAt"].as_str().map(str::to_owned),
+                    members,
+                });
+            }
+            wakes.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+            Ok(wakes)
+        })
     }
 
     pub(super) async fn fire_wakes(&self) -> Result<()> {
@@ -764,37 +814,76 @@ impl Supervisor {
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
+            use crate::service::peer_work::{WAKE_BLOCKED, WAKE_NOTE, WAKE_SETTLED};
+            let header = if states.iter().any(|s| s["state"] == "blocked") {
+                WAKE_BLOCKED
+            } else {
+                WAKE_SETTLED
+            };
             let text = format!(
-                "[Pockymoe wake: the delegates you registered a wake for have settled]\n{lines}\n\nVerify results before acting on them. Full transcripts: pockymoe transcript ID --limit 1"
+                "{header}{WAKE_NOTE}{lines}\n\nVerify results before acting on them. Full transcripts: pockymoe transcript ID --limit 1"
             );
+            // A running turn that takes steers hears the report now, e.g. Claude
+            // waiting on a native subagent; otherwise it is the caller's next turn.
+            let steer_turn = self.get_thread(&caller).ok().and_then(|thread| {
+                let steer = self.runtime(thread.provider).is_ok_and(|runtime| {
+                    runtime
+                        .negotiated_caps(thread.agent_id.as_deref())
+                        .turns
+                        .steer
+                });
+                thread
+                    .active_turn_id
+                    .filter(|_| steer && thread.status == "running")
+            });
             let now = now_rfc3339();
-            self.db.with(|c| {
+            let pending = Uuid::new_v4().to_string();
+            let queued = self.db.with(|c| {
                 let tx = c.unchecked_transaction()?;
                 let exists = tx
                     .query_row("SELECT 1 FROM threads WHERE id=?1", [&caller], |_| Ok(()))
                     .optional()?
                     .is_some();
                 if exists {
-                    let pending = Uuid::new_v4().to_string();
                     enqueue(&tx, &pending, &caller, &text, None, &now)?;
-                    if let Some(task) = registered["taskTurnId"].as_str() {
-                        if let Some(context) =
-                            crate::service::peer_work::context(&tx, &caller, task, &text)?
-                        {
+                    tx.execute(
+                        "INSERT INTO kv(key,value) VALUES(?1,'system')",
+                        [format!("cli:prompt-origin:{pending}")],
+                    )?;
+                    match &steer_turn {
+                        // Held for that turn, so the queue worker cannot start it too.
+                        Some(turn) => {
                             tx.execute(
-                                "INSERT INTO kv(key,value) VALUES(?1,?2)",
-                                params![
-                                    format!("cli:peer-work:pending:{pending}"),
-                                    context.to_string()
-                                ],
+                                "UPDATE thread_pending_steers SET delivery='cli-steer',turn_id=?2 WHERE id=?1",
+                                params![pending, turn],
                             )?;
                         }
+                        None => wake_task_context(&tx, &caller, &pending, &registered, &text)?,
                     }
                 }
                 tx.execute("DELETE FROM kv WHERE key=?1", [&key])?;
                 tx.commit()?;
-                Ok(())
+                Ok(exists)
             })?;
+            if queued && steer_turn.is_some() {
+                if let Err(error) = self.steer_pending_prompt(&caller, &pending).await {
+                    // A wake must not be lost: the turn ended or refused it, so
+                    // it becomes the next turn, nested under the original task.
+                    tracing::info!(%error, thread_id = %caller, "delegate wake queued instead of steered");
+                    self.db.with(|c| {
+                        let tx = c.unchecked_transaction()?;
+                        if tx.execute(
+                            "UPDATE thread_pending_steers SET delivery='continuation',turn_id='' WHERE id=?1 AND delivery='cli-steer'",
+                            [&pending],
+                        )? > 0
+                        {
+                            wake_task_context(&tx, &caller, &pending, &registered, &text)?;
+                        }
+                        tx.commit()?;
+                        Ok(())
+                    })?;
+                }
+            }
             self.bus.emit(ThreadEventEnvelope {
                 event_type: pockymoe_protocol::ThreadEventType::ThreadUpdated,
                 thread_id: caller,
@@ -804,6 +893,28 @@ impl Supervisor {
         }
         Ok(())
     }
+}
+
+/// Links a queued wake turn to the task turn that registered the wake.
+fn wake_task_context(
+    tx: &Connection,
+    caller: &str,
+    pending: &str,
+    registered: &Value,
+    text: &str,
+) -> Result<()> {
+    if let Some(task) = registered["taskTurnId"].as_str() {
+        if let Some(context) = crate::service::peer_work::context(tx, caller, task, text)? {
+            tx.execute(
+                "INSERT INTO kv(key,value) VALUES(?1,?2)",
+                params![
+                    format!("cli:peer-work:pending:{pending}"),
+                    context.to_string()
+                ],
+            )?;
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn clip(text: &str, max: usize) -> String {

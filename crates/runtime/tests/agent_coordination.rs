@@ -630,6 +630,14 @@ async fn a_wake_queues_one_turn_on_the_parent_once_delegates_settle() {
     s.send_to_thread(&a, mail(&lead, "queue", "task", "work"))
         .unwrap();
     s.register_wake(&lead, &[a.clone()]).unwrap();
+    // Until it fires, the parent's detail names what it waits for.
+    let detail = s.get_thread_detail(&lead, None).await.unwrap();
+    assert_eq!(detail.pending_wakes.len(), 1);
+    assert_eq!(detail.pending_wakes[0].members[0].thread_id, a);
+    assert_eq!(
+        detail.pending_wakes[0].members[0].name.as_deref(),
+        Some("a")
+    );
     s.start_interaction_worker();
     // The lead starts exactly one turn, which carries a's outcome.
     until(|| {
@@ -654,9 +662,27 @@ async fn a_wake_queues_one_turn_on_the_parent_once_delegates_settle() {
         })
         .unwrap();
     assert!(
-        prompt.contains("Pockymoe wake") && prompt.contains("a ("),
+        prompt.starts_with("[Pockymoe wake: the delegates you registered a wake for have settled]\nThis continues the task")
+            && prompt.contains("a ("),
         "{prompt}"
     );
+    let origin: String = s
+        .db
+        .with(|c| {
+            Ok(c.query_row(
+                "SELECT json_extract(h.item_json,'$.origin') FROM thread_history_items h JOIN thread_turns t ON t.id=h.turn_id WHERE t.thread_id=?1 AND h.item_id=t.id||':user'",
+                [&lead],
+                |r| r.get(0),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(origin, "system", "a wake is not the user's speech");
+    assert!(s
+        .get_thread_detail(&lead, None)
+        .await
+        .unwrap()
+        .pending_wakes
+        .is_empty());
     tokio::time::sleep(Duration::from_millis(600)).await;
     let wakes: i64 =
         s.db.with(|c| {
@@ -731,6 +757,19 @@ async fn peer_work_wake_persists_the_question_and_causal_task_through_queue_acce
             Ok(serde_json::from_str(&raw)?)
         })
         .unwrap();
+    let prompt: String =
+        s.db.with(|c| {
+            Ok(c.query_row(
+                "SELECT display_prompt FROM thread_turns WHERE id=?1",
+                [&turn],
+                |r| r.get(0),
+            )?)
+        })
+        .unwrap();
+    assert!(
+        prompt.starts_with("[Pockymoe wake: a delegate you registered a wake for is blocked]\n"),
+        "the header names why it fired: {prompt}"
+    );
     assert_eq!(metadata["taskTurnId"], "original-task");
     assert_eq!(metadata["messages"][0]["id"], receipt["messageId"]);
     assert_eq!(metadata["messages"][0]["name"], "reviewer");
@@ -769,6 +808,55 @@ async fn peer_work_wake_persists_the_question_and_causal_task_through_queue_acce
         })
         .unwrap();
     assert!(acknowledged.is_none());
+}
+
+#[tokio::test]
+async fn a_wake_joins_the_running_turn_of_a_parent_that_takes_steers() {
+    let (_dir, s) = setup();
+    let ws = workspace(&s);
+    let lead = s.create_thread(input(&ws, None)).await.unwrap().id;
+    let a = named(&s, &ws, &lead, "a").await;
+    s.start_interaction_worker();
+    // A long turn, like Claude waiting for a native subagent.
+    s.send_to_thread(&lead, mail(&a, "queue", "task", "inspect this repository"))
+        .unwrap();
+    until(|| s.get_thread(&lead).unwrap().status == "running").await;
+    let turn = s.get_thread(&lead).unwrap().active_turn_id.unwrap();
+    s.register_wake(&lead, &[a.clone()]).unwrap();
+    let steered = || {
+        s.db.with(|c| {
+            Ok(c
+                .query_row(
+                    "SELECT turn_id,item_json FROM thread_history_items WHERE thread_id=?1 AND item_id LIKE 'steer:%'",
+                    [&lead],
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+                )
+                .ok())
+        })
+        .unwrap()
+    };
+    until(|| steered().is_some()).await;
+    let (steer_turn, item) = steered().unwrap();
+    let item: serde_json::Value = serde_json::from_str(&item).unwrap();
+    assert_eq!(steer_turn, turn, "the report joins the running turn");
+    assert_eq!(item["origin"], "system");
+    assert!(item["text"]
+        .as_str()
+        .unwrap()
+        .starts_with("[Pockymoe wake: the delegates you registered a wake for have settled]\n"));
+    let (turns, queued): (i64, i64) = s
+        .db
+        .with(|c| {
+            Ok(c.query_row(
+                "SELECT (SELECT COUNT(*) FROM thread_turns WHERE thread_id=?1),
+                        (SELECT COUNT(*) FROM thread_pending_steers WHERE thread_id=?1 AND delivery IN ('continuation','cli-steer'))",
+                [&lead],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?)
+        })
+        .unwrap();
+    assert_eq!((turns, queued), (1, 0), "nothing waits for the turn to end");
+    s.interrupt(&lead).await.unwrap();
 }
 
 #[tokio::test]

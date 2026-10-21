@@ -87,3 +87,48 @@ for (const preset of ['classic', 'plum-pocket']) test(`registered delegate wakes
   await expect(group).toHaveCount(0);
   await expect(page.getByText('报告已核实；合并请求等待用户确认。', { exact: true })).toBeVisible();
 });
+
+for (const preset of ['classic', 'plum-pocket', 'terminal']) for (const mode of ['light', 'dark']) test(`a registered wake and a queued wake report say where they come from (${preset}, ${mode})`, async ({ page, request }, info) => {
+  const absPath = path.resolve(process.env.E2E_WORKSPACE_ROOT!, randomUUID());
+  await mkdir(absPath, { recursive: true });
+  const workspace = await (await request.post(`${base}/api/workspaces`, { data: { absPath, label: 'Pending wake UI' } })).json();
+  const response = await request.post(`${base}/api/threads/start`, { data: { workspaceId: workspace.id, title: 'Pending wake UI', provider: 'acp', agentId: 'codex', model: 'ios-e2e-stream', approvalMode: 'yolo' } });
+  expect(response.ok()).toBeTruthy();
+  const created = await response.json(), id = created.id ?? created.thread.id;
+  const detail = await (await request.get(`${base}/api/threads/${id}`)).json();
+  await page.addInitScript(([value, theme]) => {
+    localStorage.setItem('remote-codex.locale', 'zh-CN');
+    localStorage.setItem('remote-codex-theme-mode', theme);
+    localStorage.setItem('pockymoe-theme-preset', value);
+    localStorage.setItem(`pockymoe.onboarding.v1:${JSON.stringify([location.origin, 'local:owner'])}`, JSON.stringify({ welcomeDismissed: true, completed: [] }));
+  }, [preset, mode]);
+  await page.routeWebSocket(/\/ws(?:\?.*)?$/, socket => {
+    socket.send(JSON.stringify({ type: 'supervisor.connected' }));
+    socket.onMessage(() => socket.send(JSON.stringify({ type: 'supervisor.pong' })));
+  });
+  const oil = '14b40fee-0794-4fc4-ac30-9f98cc75adfa', macro = 'dc65117b-8c4e-47db-abf1-26dc5888a8b4';
+  const report = `[Pockymoe wake: a delegate you registered a wake for is blocked]\nThis continues the task you delegated from: it adds information, not a new instruction.\n- xa-oil (${oil}): running\n- xa-macro (${macro}): blocked, waiting on: question q1\n\nVerify results before acting on them. Full transcripts: pockymoe transcript ID --limit 1`;
+  const now = new Date().toISOString();
+  await page.route(`**/api/threads/${id}?**`, route => route.fulfill({ json: { ...detail, totalTurnCount: 0, activeSubagents: [], thread: { ...detail.thread, status: 'idle', activeTurnId: null }, turns: [],
+    pendingSteers: [{ id: 'queued-wake', clientRequestId: null, turnId: '', prompt: report, delivery: 'continuation', createdAt: now }],
+    pendingWakes: [{ id: 'w1', createdAt: now, members: [
+      { threadId: oil, name: 'xa-oil', status: 'running' },
+      { threadId: 'f7a53d7d-3aca-4510-a735-497f4e34f849', name: 'xa-regime', status: 'running' },
+      { threadId: macro, name: 'xa-macro', status: 'idle' },
+    ] }] } }));
+  await page.goto(`/threads/${id}`);
+  const wakes = page.locator('.thread-composer-pending-wakes');
+  const head = wakes.locator('.thread-composer-pending-wake-head');
+  await expect(head).toContainText('等待唤醒');
+  await expect(head).toContainText('xa-regime');
+  await expect(head.locator('[data-status="running"]')).toHaveCount(2);
+  const queued = page.locator('.thread-composer-pending-row');
+  await expect(queued.locator('.thread-composer-pending-source')).toHaveText('子线程唤醒');
+  await expect(queued).toContainText('xa-macro 等待答复');
+  await expect(queued).not.toContainText('[Pockymoe wake');
+  await page.screenshot({ path: info.outputPath(`${preset}-${mode}-pending-wake.png`), scale: 'css' });
+  await head.click();
+  await expect(wakes.locator('.thread-composer-pending-wake-body')).toContainText('插话');
+  await page.screenshot({ path: info.outputPath(`${preset}-${mode}-pending-wake-open.png`), scale: 'css' });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1);
+});

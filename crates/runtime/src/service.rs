@@ -2244,6 +2244,7 @@ impl Supervisor {
             pending_requests,
             pending_steers: self.load_steers(id)?,
             active_subagents,
+            pending_wakes: self.pending_wakes(id)?,
             activity_notes: None,
             goal: self
                 .stored_goal(id)?
@@ -2346,6 +2347,7 @@ impl Supervisor {
             pending_requests,
             pending_steers,
             active_subagents,
+            pending_wakes: self.pending_wakes(id)?,
             activity_notes: Some(vec![]),
             goal,
         })

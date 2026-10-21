@@ -118,12 +118,19 @@ pub(super) fn prompt_origin(conn: &Connection, pending: &str) -> Result<Option<&
     )? {
         return Ok(Some("automation"));
     }
-    let peer = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM kv WHERE key=?1 AND value='peer')",
-        [format!("cli:prompt-origin:{pending}")],
-        |r| r.get::<_, bool>(0),
-    )?;
-    Ok(peer.then_some("peer"))
+    // A delegate wake is written by the Supervisor, not said by anyone.
+    let origin = conn
+        .query_row(
+            "SELECT value FROM kv WHERE key=?1",
+            [format!("cli:prompt-origin:{pending}")],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()?;
+    Ok(match origin.as_deref() {
+        Some("peer") => Some("peer"),
+        Some("system") => Some("system"),
+        _ => None,
+    })
 }
 
 impl Supervisor {

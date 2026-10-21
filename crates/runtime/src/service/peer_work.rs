@@ -2,8 +2,21 @@
 //! billing stay separate; the transcript can nest them under the original task.
 use super::*;
 
-pub(crate) const WAKE_HEADER: &str =
+/// Every wake header starts with this; the rest of the line names the reason.
+pub(crate) const WAKE_PREFIX: &str = "[Pockymoe wake: ";
+pub(crate) const WAKE_SETTLED: &str =
     "[Pockymoe wake: the delegates you registered a wake for have settled]\n";
+pub(crate) const WAKE_BLOCKED: &str =
+    "[Pockymoe wake: a delegate you registered a wake for is blocked]\n";
+/// A wake reports on delegated work, so it can join the caller's running turn.
+pub(crate) const WAKE_NOTE: &str =
+    "This continues the task you delegated from: it adds information, not a new instruction.\n";
+
+/// The text after a wake header line, whatever its reason.
+pub(crate) fn wake_body(prompt: &str) -> Option<&str> {
+    let (header, body) = prompt.strip_prefix(WAKE_PREFIX)?.split_once('\n')?;
+    header.ends_with(']').then_some(body)
+}
 
 pub(crate) fn root_turn(conn: &Connection, thread: &str, turn: &str) -> Result<String> {
     if let Some(raw) = conn
@@ -24,7 +37,7 @@ pub(crate) fn root_turn(conn: &Connection, thread: &str, turn: &str) -> Result<S
     Ok(conn.query_row(
         "SELECT id FROM thread_turns WHERE thread_id=?1 AND ordinal <= (SELECT ordinal FROM thread_turns WHERE id=?2 AND thread_id=?1)
          AND (display_prompt IS NULL OR substr(display_prompt,1,?3)!=?4) ORDER BY ordinal DESC LIMIT 1",
-        params![thread,turn,WAKE_HEADER.chars().count(),WAKE_HEADER], |r| r.get(0),
+        params![thread,turn,WAKE_PREFIX.chars().count(),WAKE_PREFIX], |r| r.get(0),
     ).optional()?.unwrap_or_else(|| turn.to_owned()))
 }
 
@@ -34,7 +47,7 @@ pub(crate) fn context(
     task: &str,
     prompt: &str,
 ) -> Result<Option<Value>> {
-    let Some(body) = prompt.strip_prefix(WAKE_HEADER) else {
+    let Some(body) = wake_body(prompt) else {
         return Ok(None);
     };
     if !body.contains("Verify results before acting on them. Full transcripts:") {
@@ -142,7 +155,7 @@ mod tests {
         conn
     }
     fn prompt() -> String {
-        format!("{WAKE_HEADER}- trust-web (12345678-1234-1234-1234-123456789012): blocked, waiting on: question question-one to parent: Session lifetime\n\nVerify results before acting on them. Full transcripts: pockymoe transcript ID --limit 1")
+        format!("{WAKE_SETTLED}- trust-web (12345678-1234-1234-1234-123456789012): blocked, waiting on: question question-one to parent: Session lifetime\n\nVerify results before acting on them. Full transcripts: pockymoe transcript ID --limit 1")
     }
     #[test]
     fn peer_work_projects_the_full_question_only_on_detail_without_acknowledging_it() {

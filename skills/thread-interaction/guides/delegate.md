@@ -47,8 +47,10 @@ Choose by how long you expect to wait:
   every 30 s); just keep waiting on the same command. Each of those returns costs you
   a model call, so a long blocking wait is not free.
 - **Long, and nothing else to do:** `pockymoe thread wait tests docs --wake`, then
-  end your turn saying what you are waiting for. Exactly one turn is queued on you when
-  they all settle (or one blocks), carrying their closing messages; it costs nothing
+  end your turn saying what you are waiting for. When they all settle (or one blocks),
+  one report carrying their closing messages reaches you: it joins your turn if that
+  turn is still running and your harness takes steers (for example while you wait on
+  a native subagent), otherwise it is queued as your next turn. It costs nothing
   while you wait. That explicitly requests an immediate continuation; delayed unread inbox reminders
   are a separate 10-minute fallback.
 

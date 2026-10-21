@@ -411,6 +411,24 @@ pub struct ThreadPendingSteerDto {
     pub sender: Option<MessageSenderDto>,
 }
 
+/// A `thread wait --wake` registration: one report reaches the thread when
+/// every member settles or one blocks.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadPendingWakeDto {
+    pub id: String,
+    pub created_at: Option<String>,
+    pub members: Vec<ThreadWakeMemberDto>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadWakeMemberDto {
+    pub thread_id: String,
+    pub name: Option<String>,
+    pub status: Option<String>,
+}
+
 /// A native subagent currently managed by the provider harness.
 /// Native Claude/Codex agents run inside the provider session and do not have
 /// their own Pockymoe thread id.
@@ -481,6 +499,9 @@ pub struct ThreadDetailDto {
     pub pending_steers: Vec<ThreadPendingSteerDto>,
     #[serde(default)]
     pub active_subagents: Vec<ThreadSubagentDto>,
+    /// Delegate wakes this thread registered that have not fired yet.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_wakes: Vec<ThreadPendingWakeDto>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub activity_notes: Option<Vec<Value>>,
     #[serde(skip_serializing_if = "Option::is_none")]
