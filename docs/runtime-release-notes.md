@@ -1,26 +1,33 @@
-A working turn no longer goes missing steps after a weak connection or a
-backgrounded tab: what the page missed comes back without a reload. Releases
-now also carry the setup scripts.
+A delegate's report reaches an agent that is still working instead of waiting
+for its turn to end, and people a conversation is shared with can open the port
+previews its agent creates.
 
-- **Missed steps come back**: a working turn's summary carries its messages, and
-  its tool calls, commands and edits came from one detail read plus live events.
-  Events lost while the connection was down or the tab was suspended were never
-  read again, so the turn showed fewer steps (and a wrong command count) until a
-  reload. The summary now says how many steps the turn has; when the page holds
-  fewer, it reads the turn's detail again, and a failed read is retried when
-  that count changes.
-- **No silent gaps**: a Supervisor socket that falls behind its thread events
-  used to skip them and stay open. It now closes, so the page reconnects and
-  reads the thread again (over the relay, the browser's connection closes too).
-- **Back from the background**: returning to a tab while a turn runs reads the
-  thread once, even when its socket still looks open; a suspended phone's socket
-  can stop delivering without closing.
-- **Setup scripts in every release**: `setup.sh` and `setup.ps1` are release
-  assets alongside the binaries.
+- **Wakes join the running turn**: when the agent threads an agent registered a
+  wake for (`thread wait --wake`) all finish or one is blocked, their report is
+  delivered as an interjection into the agent's running turn when its harness
+  takes steers, for example while Claude waits on a native subagent. An idle
+  agent, or one whose harness cannot steer, gets it as its next turn as before.
+- **Wakes say why and where from**: the report's first line says whether the
+  agent threads finished or one is blocked, and that it adds information to the
+  delegated task rather than giving a new instruction. It no longer counts as
+  something you said. Wakes still waiting show above the composer as **Waiting
+  for wake** with each agent thread's status; a queued report reads **Delegate
+  wake** with each agent thread's state instead of its raw header.
+- **Shared previews**: a port preview an agent creates with `pockymoe preview
+  create` records its conversation. Anyone that conversation (or one of its
+  parents) is shared with, or whose share covers the whole device, can open the
+  link the agent gives them; revoking the share ends their access at their next
+  request. Previews you create yourself stay yours. Renewing a preview's access
+  stays with you or the conversation's agent (`preview create` again prints a
+  fresh link).
+- **Install from GitHub**: the README's one-line install now downloads
+  `setup.sh` from the latest GitHub release instead of the Pockymoe website.
 
-Validated with the Supervisor socket tests (a lagging client is now
-disconnected), the timeline tests (missed steps are read again, once per
-reported count), new end-to-end scenarios for a lost connection and a suspended
-tab that fail without the fix, and a comparison of the live page with a
-reloaded one under dropped connections, offline periods and suspension.
-Installing this release is a separate device update.
+Validated with the runtime coordination tests (a wake steered into a running
+turn, a queued wake, a blocked wake's header), the relay preview tests (a
+recipient of the creating conversation opens it, other accounts and revoked
+shares are refused) and Supervisor port tests, the shared UI and Web tests,
+end-to-end runs of a shared preview on bound and unbound devices, and the wake
+rows in every theme, light and dark, on phone and desktop. Both the relay and
+the device must be updated for shared previews. Installing this release is a
+separate device update.
