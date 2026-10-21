@@ -9,13 +9,13 @@ on a phone or computer in the same network.
 macOS and Linux:
 
 ```sh
-curl -fsSL https://app.lnz-study.com/setup.sh | sh
+curl -fsSL https://github.com/dufangshi/pockymoe/releases/latest/download/setup.sh | sh
 ```
 
 Windows (PowerShell):
 
 ```powershell
-irm https://app.lnz-study.com/setup.ps1 | iex
+irm https://github.com/dufangshi/pockymoe/releases/latest/download/setup.ps1 | iex
 ```
 
 Then open the address it prints, normally <http://127.0.0.1:8787>. Run in a
@@ -42,7 +42,7 @@ for relay devices ([device setup](device-setup.md)).
 
 ### Options
 
-Add them after `sh -s --` (PowerShell: run `& ([scriptblock]::Create((irm https://app.lnz-study.com/setup.ps1))) -Lan`):
+Add them after `sh -s --` (PowerShell: run `& ([scriptblock]::Create((irm https://github.com/dufangshi/pockymoe/releases/latest/download/setup.ps1))) -Lan`):
 
 | SH | PowerShell | Effect |
 | --- | --- | --- |
@@ -52,7 +52,7 @@ Add them after `sh -s --` (PowerShell: run `& ([scriptblock]::Create((irm https:
 | `--reset-database` | `-ResetDatabase` | Move an old database that cannot be upgraded aside instead of asking. |
 
 ```sh
-curl -fsSL https://app.lnz-study.com/setup.sh | sh -s -- --lan --port 9000
+curl -fsSL https://github.com/dufangshi/pockymoe/releases/latest/download/setup.sh | sh -s -- --lan --port 9000
 ```
 
 ## Phones and other computers

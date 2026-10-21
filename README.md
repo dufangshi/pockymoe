@@ -89,7 +89,7 @@ folder and start a conversation with any installed agent. That's it.
 Skip the relay: run one line, then open <http://127.0.0.1:8787>.
 
 ```sh
-curl -fsSL https://app.lnz-study.com/setup.sh | sh
+curl -fsSL https://github.com/dufangshi/pockymoe/releases/latest/download/setup.sh | sh
 ```
 
 Windows, phones on your network, a passcode and other options:

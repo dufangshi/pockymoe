@@ -77,7 +77,7 @@ Relay 就是你登录的那个网站，它把浏览器和你的电脑连接起�
 不需要 Relay：运行一行命令，然后打开 <http://127.0.0.1:8787>。
 
 ```sh
-curl -fsSL https://app.lnz-study.com/setup.sh | sh
+curl -fsSL https://github.com/dufangshi/pockymoe/releases/latest/download/setup.sh | sh
 ```
 
 Windows、局域网里的手机访问、访问口令和其他选项见[本机模式](docs/local-mode.md)。
