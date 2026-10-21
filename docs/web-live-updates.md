@@ -11,7 +11,8 @@ idle, while a turn runs and while hidden, and fails when a change exceeds them.
 
 | Data | Refreshed by | Fallback |
 | --- | --- | --- |
-| Thread summary (`/api/threads/<id>?view=summary`) | Current-thread `thread.turn.started`, `thread.updated`, goal and request events; a reconnected socket; a turn end without a following `thread.updated` (older Supervisors) | Every 3 s while a turn runs and no socket is open |
+| Thread summary (`/api/threads/<id>?view=summary`) | Current-thread `thread.turn.started`, `thread.updated`, goal and request events; a reconnected socket; a return to the tab while a turn runs; a turn end without a following `thread.updated` (older Supervisors) | Every 3 s while a turn runs and no socket is open |
+| Working turn's operations (`/api/threads/<id>/turns/<turnId>/detail`) | Once when the turn shows open; again when a summary reports more deferred operations (`deferredItemCount`) than that detail and the live item events hold | none |
 | Thread list (`/api/threads?includeAgentThreads=true`) | Other threads' `thread.turn.*` and `thread.updated` events, at most every 2 s; a reconnect | 60 s (10 s while the socket is down) |
 | Capability snapshot (`/api/threads/<id>/capabilities`) | Current-thread turn, `thread.updated`, `thread.harness.ready` and collaboration events; 1.5 s and 6 s after the thread connects while the page is open, because ACP agents announce commands after a session opens; a reconnect | 60 s |
 | `/healthz` | Every 2 s, only while the socket is not open | none |
@@ -40,6 +41,18 @@ first sends a fresh probe instead of rejecting the connection for an old pong.
 Close/error events from an already replaced socket cannot restart the new one.
 The topbar reserves a fixed connection-status slot even when healthy status is
 hidden, so connecting/offline/security indicators never shift the other buttons.
+
+Thread events carry no sequence and are not replayed, so the page recovers a
+gap by reading again. A socket that closes does that when it reopens. A
+suspended tab's socket can stop delivering without closing; returning to the tab
+while a turn runs therefore reads the summary even when the socket looks open.
+The summary leaves a working turn's operations out, so the shared timeline
+compares its `deferredItemCount` with the operations it holds (the turn detail it
+loaded plus live item events) and reads the turn detail again when the summary
+reports more, at most once per reported count; a failed read retries the same
+way. The Supervisor closes a socket whose subscription falls behind the event
+bus instead of skipping the events it missed, and the Relay passes that close to
+the browser.
 
 The page also tells its socket which threads it displays, so the Supervisor
 keeps their harnesses loaded: `{"type":"thread.view","threadIds":[...]}` with the

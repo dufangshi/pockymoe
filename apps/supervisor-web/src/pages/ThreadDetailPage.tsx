@@ -2003,6 +2003,7 @@ export function ThreadDetailPage() {
     let detailRefreshTimer: number | null = null;
     const turnEndTimers = new Set<number>();
     let socketOpenedBefore = false;
+    let wasHidden = document.visibilityState === 'hidden';
 
     // Events often arrive together (turn start and status); read once.
     const refreshThreadDetailSilently = () => {
@@ -2636,10 +2637,21 @@ export function ThreadDetailPage() {
     };
 
     const handleVisibilityChange = () => {
-      if (document.visibilityState !== 'hidden') {
-        supervisorHeartbeatRef.current.probe(Date.now());
-        runHeartbeat();
+      if (document.visibilityState === 'hidden') {
+        wasHidden = true;
+        return;
       }
+      const returned = wasHidden;
+      wasHidden = false;
+      supervisorHeartbeatRef.current.probe(Date.now());
+      // A suspended tab's socket can stop delivering without closing, so a
+      // running turn may have missed events. A socket that reopens reads the
+      // summary itself; one that still looks open does not, so read it here.
+      if (returned && threadIsActive(detailRef.current)
+        && (supervisorSocketRef.current?.readyState ?? SOCKET_CLOSED) === SOCKET_OPEN) {
+        refreshThreadDetailSilently();
+      }
+      runHeartbeat();
     };
 
     window.addEventListener('online', handleBrowserOnline);

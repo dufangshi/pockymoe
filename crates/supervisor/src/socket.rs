@@ -146,8 +146,12 @@ async fn run_socket_session(
                             break;
                         }
                     }
+                    // Skipped events are gone; an open socket would hide the gap
+                    // from the page. Close it: a reconnecting page reads the
+                    // thread again (docs/web-live-updates.md).
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                        tracing::warn!(skipped, "supervisor socket client lagged thread events");
+                        tracing::warn!(skipped, "supervisor socket client lagged thread events; closing it");
+                        break;
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
@@ -468,6 +472,35 @@ mod tests {
         // A closed browser tab or a relay client that went away.
         drop(session);
         eventually(|| !state.thread_displayed("b")).await;
+    }
+
+    #[tokio::test]
+    async fn a_client_that_lags_thread_events_is_disconnected_instead_of_skipping_them() {
+        let (_dir, state) = crate::tunnel::tests::state_with_relay_url("http://127.0.0.1:1");
+        let (output, mut outgoing) = mpsc::channel();
+        let _session = SocketSession::spawn(state.clone(), output);
+        let connected = outgoing.recv().await.expect("connected envelope");
+        assert_eq!(connected["type"], "supervisor.connected");
+        // The single-threaded test runtime cannot run the session meanwhile, so
+        // its subscription falls further behind than the bus keeps.
+        for n in 0..3000 {
+            state.bus.emit(pockymoe_protocol::ThreadEventEnvelope {
+                event_type: pockymoe_protocol::ThreadEventType::ThreadPlanUpdated,
+                thread_id: "lagging".into(),
+                timestamp: pockymoe_protocol::now_rfc3339(),
+                payload: json!({ "turnId": "turn", "n": n, "plan": [] }),
+            });
+        }
+        let delivered = tokio::time::timeout(Duration::from_secs(5), async {
+            let mut delivered = 0;
+            while outgoing.recv().await.is_some() {
+                delivered += 1;
+            }
+            delivered
+        })
+        .await
+        .expect("a lagging session closes its connection");
+        assert_eq!(delivered, 0, "no event after the gap reaches the client");
     }
 
     #[tokio::test]

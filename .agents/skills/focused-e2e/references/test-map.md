@@ -9,7 +9,7 @@
 | 风险 | 文件 | 场景 |
 | --- | --- | --- |
 | 创建 workspace/thread、发送首条 prompt | e2e/phase2.spec.ts | receive a hello response |
-| ACP 状态修复、队列跨刷新只执行一次 | e2e/session-state-recovery.spec.ts | queued composer input survives reload |
+| ACP 状态修复、队列跨刷新只执行一次；断线/后台挂起后运行中的回合补齐漏掉的步骤 | e2e/session-state-recovery.spec.ts | queued composer input survives reload；working turn shows the steps it missed |
 | 两台设备、两个浏览器分别验证加密 | e2e/device-encryption-status.spec.ts | device locks are verified independently |
 | 附件、WS、Origin、会话撤销 | e2e/relay-security.spec.ts | 文件内唯一场景 |
 | 离线禁止降级、真实加密、多分块、防重放、公开快照 | e2e/relay-encryption.spec.ts | 两个场景按风险选择 |
