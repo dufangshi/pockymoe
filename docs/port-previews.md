@@ -29,8 +29,8 @@ The device's account owner can open every mapping. When an agent runs
 that thread (`threadId`; the CLI reports `access: "thread"` instead of
 `"deviceOwner"`). The Relay then also opens it for anyone it currently gives
 access to that thread, with read or control access: a share or thread grant on
-the thread or one of its three nearest ancestors, or a device grant. Workspace
-grants do not cover conversations and do not count. Relay administrators cannot
+the thread or one of its three nearest ancestors, a workspace share of the
+workspace the device reports the thread in, or a device grant. Relay administrators cannot
 open previews. A `fromThreadId` in the request does not set the thread; only the
 credential does.
 

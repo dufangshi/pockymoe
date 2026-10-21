@@ -741,8 +741,8 @@ fn owns(conn: &Connection, user: &str, device: &str) -> bool {
 
 /// The device owner opens every mapping. A mapping an agent created from a
 /// thread also opens for anyone with live access to that thread: a share or a
-/// thread grant on it or an ancestor, or a device grant, at any access level.
-/// Workspace grants do not cover conversations, so they do not count.
+/// thread grant on it or an ancestor, a grant on the workspace the device
+/// reports it in, or a device grant, at any access level.
 fn may_open(conn: &Connection, user: &str, device: &str, thread: Option<&str>) -> bool {
     owns(conn, user, device)
         || thread.is_some_and(|thread| {
@@ -2282,7 +2282,9 @@ mod tests {
         let sessions: HashMap<&str, String> = {
             let conn = state.store.conn.lock().await;
             let mut sessions = HashMap::new();
-            for user in ["reader", "stranger", "viewer", "files", "nobody"] {
+            for user in [
+                "reader", "stranger", "viewer", "files", "outsider", "nobody",
+            ] {
                 conn.execute("INSERT INTO relay_users (id,email,username,role,enabled,created_at,password_salt,password_hash) VALUES (?1,?1||'@example.test',?1,'user',1,'now','','')", [user]).unwrap();
                 sessions.insert(
                     user,
@@ -2296,14 +2298,15 @@ mod tests {
             crate::thread_groups::replace(
                 &conn,
                 "device",
-                &json!([{"id":root},{"id":child,"parentThreadId":root},{"id":other}]),
+                &json!([{"id":root,"workspaceId":"project"},{"id":child,"parentThreadId":root,"workspaceId":"project"},{"id":other,"workspaceId":"elsewhere"}]),
             )
             .unwrap();
             // A read-only share of the parent, a share of another thread, a
-            // whole-device grant and a workspace (files) grant.
+            // whole-device grant, a grant on the thread's workspace and one on
+            // another workspace.
             conn.execute("INSERT INTO relay_shares(id,owner_user_id,target_user_id,device_id,thread_id,thread_access,created_at) VALUES ('share','owner','reader','device',?1,'read','now'),('elsewhere','owner','stranger','device',?2,'control','now')", params![root, other]).unwrap();
             conn.execute_batch("INSERT INTO relay_access_grants(id,owner_user_id,target_user_id,device_id,scope,thread_access,created_at) VALUES ('device-grant','owner','viewer','device','device','read','now');
-                INSERT INTO relay_access_grants(id,owner_user_id,target_user_id,device_id,scope,workspace_id,workspace_access,created_at) VALUES ('files-grant','owner','files','device','workspace','project','write','now');").unwrap();
+                INSERT INTO relay_access_grants(id,owner_user_id,target_user_id,device_id,scope,workspace_id,workspace_access,created_at) VALUES ('files-grant','owner','files','device','workspace','project','write','now'),('outside-grant','owner','outsider','device','workspace','elsewhere','write','now');").unwrap();
             sessions
         };
         let launch = |user: &str| {
@@ -2328,7 +2331,9 @@ mod tests {
         };
         // Without a thread, a mapping stays owner-only.
         assert_eq!(launch("owner").await, StatusCode::OK);
-        for user in ["reader", "stranger", "viewer", "files", "nobody"] {
+        for user in [
+            "reader", "stranger", "viewer", "files", "outsider", "nobody",
+        ] {
             assert_eq!(launch(user).await, StatusCode::FORBIDDEN, "{user}");
         }
         let connection = state.sockets.read().await["device"].connection_id;
@@ -2346,7 +2351,8 @@ mod tests {
             ("reader", StatusCode::OK),
             ("viewer", StatusCode::OK),
             ("stranger", StatusCode::FORBIDDEN),
-            ("files", StatusCode::FORBIDDEN),
+            ("files", StatusCode::OK),
+            ("outsider", StatusCode::FORBIDDEN),
             ("nobody", StatusCode::FORBIDDEN),
         ] {
             assert_eq!(launch(user).await, status, "{user}");
