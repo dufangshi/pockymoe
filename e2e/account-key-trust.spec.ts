@@ -1,23 +1,32 @@
 import { test, expect } from '@playwright/test';
-import { createServer } from 'node:http';
+import { createServer, type RequestListener } from 'node:http';
 import { randomBytes } from 'node:crypto';
-import { fixture, browserRequest, retainBrowserRequest, ok, sendPrompt, sockets, screenshot, unlock, UNLOCK_DIALOG, readRecoveryCode, confirmRecoveryCode } from './helpers/account-key-fixture';
+import { readFile, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { fixture, browserRequest, type Device, type Result, retainBrowserRequest, ok, sendPrompt, sockets, screenshot, unlock, UNLOCK_DIALOG, readRecoveryCode, confirmRecoveryCode } from './helpers/account-key-fixture';
 
 // Passwords, recovery codes, binding commands and relay cookies stay in memory.
 test.use({ trace: 'off', video: 'off', screenshot: 'off', actionTimeout: 15_000 });
 
-test('preview leases authorize bound Web and CLI previews while unbound previews stay compatible', async ({ browser }, info) => {
+test('preview leases authorize bound Web, CLI and thread-recipient previews while unbound previews stay compatible', async ({ browser }, info) => {
   test.skip(info.project.name !== 'desktop-chromium', 'Preview protocol coverage runs on desktop only');
-  test.setTimeout(180_000);
+  test.setTimeout(300_000);
   const f = await fixture(browser, info, { previews: true });
   const requests: { path: string; lease: boolean; app: string | null }[] = [];
-  const service = createServer((request, response) => {
+  const handler: RequestListener = (request, response) => {
     const url = new URL(request.url ?? '/', 'http://127.0.0.1:16275');
     // Keep only safe facts: lease ids and preview cookies never enter evidence.
     requests.push({ path: url.pathname, lease: url.searchParams.has('lease'), app: url.searchParams.get('app') });
     response.writeHead(200, { 'content-type': 'text/html', 'cache-control': 'no-store' });
     response.end('<!doctype html><html><body><h1>ACCOUNT_KEY_PREVIEW</h1></body></html>');
-  });
+  };
+  const service = createServer(handler);
+  // A thread's own agent maps this second port: when a turn starts, the fake
+  // harness runs the driver with that thread's CLI credential.
+  const shared = createServer(handler);
+  const driver = join(f.root, 'thread-driver.sh');
+  await writeFile(driver, `#!/bin/sh\nout="${f.root}/preview-$POCKYMOE_THREAD_ID"\n"${f.binary}" preview create --port 16276 --path /shared-preview > "$out.part" && mv "$out.part" "$out.json"\n`, { mode: 0o755 });
+  const agentDriver = { POCKYMOE_E2E_FAKE_CLI_DRIVER: driver };
   // Navigation errors can include the lease and one-time login ticket in their
   // URLs. Retain only a status, and diagnose failures with the labeled assertions.
   const navigate = async (page: import('@playwright/test').Page, url: string) => {
@@ -27,7 +36,7 @@ test('preview leases authorize bound Web and CLI previews while unbound previews
   try {
     await new Promise<void>((done, fail) => { service.once('error', fail); service.listen(16275, '127.0.0.1', done); });
     const owner = await f.account('preview-owner');
-    const bound = await f.device(owner, 1);
+    const bound = await f.device(owner, 1, agentDriver);
     await f.bind(owner, bound);
     await owner.page.locator('[aria-controls="matter-thread-tools"]').click();
     await owner.page.getByRole('button', { name: 'Port mappings', exact: true }).click();
@@ -94,7 +103,9 @@ test('preview leases authorize bound Web and CLI previews while unbound previews
     await navigate(cliPage, cliURL.href);
     await expect.soft(cliPage.getByRole('heading', { name: 'ACCOUNT_KEY_PREVIEW', exact: true }),
       'PREVIEW_CLI_LOAD: agent CLI openUrl must load the app through its own lease').toBeVisible({ timeout: 5_000 });
-    expect.soft(cliOpenedWithOwnLease && cliLeaseRequests === 0,
+    // A signed-in owner's link is redeemed by the Relay's document route with the
+    // link's lease, without the Web page's open POST; a page fallback must POST it.
+    expect.soft((cliOpenStatus === 0 || cliOpenedWithOwnLease) && cliLeaseRequests === 0,
       'PREVIEW_CLI_LEASE_REUSED: preview page must use the supplied local CLI lease without requesting a browser lease').toBe(true);
     expect.soft(new URL(cliPage.url()).hostname === expectedHost,
       'PREVIEW_CLI_ORIGIN: CLI preview must load on the mapping-specific relay origin').toBe(true);
@@ -122,7 +133,7 @@ test('preview leases authorize bound Web and CLI previews while unbound previews
 
     // A second real Supervisor stays unbound and accepts the legacy no-lease
     // relay path. It shares only the tiny local service, never trust state.
-    const unbound = await f.device(owner, 2);
+    const unbound = await f.device(owner, 2, agentDriver);
     const legacy = ok(await f.api(unbound.api + '/port-mappings', 'POST', { port: 16275, label: 'Unbound app' }, owner.cookie), 'Unbound mapping');
     const legacyOpen = `/relay/devices/${unbound.id}/port-mappings/${legacy.id}/open`;
     await expect.poll(async () => (await f.api(legacyOpen, 'POST', { path: '/unbound-preview?app=legacy' }, owner.cookie)).status,
@@ -136,10 +147,42 @@ test('preview leases authorize bound Web and CLI previews while unbound previews
     expect(requests.some(request => request.path === '/unbound-preview' && request.app === 'legacy' && !request.lease)).toBe(true);
     expect.soft(requests.some(request => request.lease), 'PREVIEW_LEASE_NOT_FORWARDED: no previewed-app request may receive the lease query parameter').toBe(false);
     f.events.push(`preview missingLease=${missing.status}/${missing.data?.code} unissuedLeaseOpen=${foreign.status} unboundWithoutLease=200 appReceivedLease=${requests.some(request => request.lease)}`);
+
+    // The people a thread is shared with open the CLI link of a mapping that
+    // thread's agent made, on a bound and an unbound device, until the share
+    // is revoked; before the share they cannot.
+    await new Promise<void>((done, fail) => { shared.once('error', fail); shared.listen(16276, '127.0.0.1', done); });
+    const friend = await f.account('preview-friend');
+    const threadPreview = async (device: Device, label: string, send: (path: string, body: unknown) => Promise<Result>) => {
+      const result = join(f.root, `preview-${device.thread}.json`);
+      expect((await send(`${device.api}/threads/${device.thread}/prompt`, { prompt: 'Map the shared preview' })).status, `${label}: owner starts a turn`).toBe(200);
+      await expect.poll(() => readFile(result, 'utf8').then(text => JSON.parse(text).threadId, () => null),
+        { message: `${label}: the agent's own credential records its thread` }).toBe(device.thread);
+      const preview = JSON.parse(await readFile(result, 'utf8'));
+      f.secrets.push(preview.leaseId);
+      expect(preview.access, `${label}: thread mapping`).toBe('thread');
+      const page = await friend.context.newPage();
+      const before = requests.filter(request => request.path === '/shared-preview').length;
+      await navigate(page, preview.openUrl);
+      await expect(page.getByRole('alert'), `${label}: without a share the recipient is refused`).toBeVisible();
+      expect(requests.filter(request => request.path === '/shared-preview').length).toBe(before);
+      const share = ok(await f.api('/relay/shares', 'POST', { targetIdentifier: 'preview-friend', deviceId: device.id, threadId: device.thread, threadAccess: 'read', workspaceAccess: 'none' }, owner.cookie), `${label}: share the thread`);
+      await navigate(page, preview.openUrl);
+      await expect(page.getByRole('heading', { name: 'ACCOUNT_KEY_PREVIEW', exact: true }), `${label}: the recipient opens the CLI link`).toBeVisible();
+      expect(new URL(page.url()).hostname).toBe(`p-${preview.id}.preview.localhost`);
+      ok(await f.api(`/relay/shares/${share.id}`, 'DELETE', undefined, owner.cookie), `${label}: revoke the share`);
+      const after = await page.evaluate(() => fetch(location.href, { cache: 'no-store' }).then(response => response.status));
+      expect(after, `${label}: revoking the share ends access at the next request`).toBe(401);
+      f.events.push(`preview thread recipient ${label} opened=true afterRevoke=${after}`);
+      await page.close();
+    };
+    await threadPreview(bound, 'bound', (path, body) => browserRequest(owner.page, path, 'POST', body));
+    await threadPreview(unbound, 'unbound', (path, body) => f.api(path, 'POST', body, owner.cookie));
   } finally {
     await f.close();
-    service.closeAllConnections();
+    service.closeAllConnections(); shared.closeAllConnections();
     await new Promise<void>(done => service.close(() => done()));
+    await new Promise<void>(done => shared.close(() => done()));
   }
 });
 

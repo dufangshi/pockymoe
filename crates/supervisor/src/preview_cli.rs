@@ -87,18 +87,26 @@ fn describe(
             .append_pair("lease", &lease.lease_id)
             .append_pair("leaseExpiresAt", &lease.expires_at.to_string());
     }
+    let open_step = if mapping.thread_id.is_some() {
+        "Run preview check after starting the service. Share openUrl: the device owner and people this conversation is shared with can open it after signing in; no account token is needed in CLI output."
+    } else {
+        "Run preview check after starting the service. Share openUrl for the device owner's browser login and access; no account token is needed in CLI output."
+    };
     Ok(
         json!({"leaseId":lease.as_ref().map(|l| &l.lease_id),"expiresAt":lease.as_ref().map(|l|l.expires_at),"id":mapping.id,"port":mapping.port,"label":mapping.label,"createdAt":mapping.created_at,
         "url":url.as_str(),"origin":preview_origin,"hostname":hostname,"openUrl":control.as_str(),
         "relayConnected":state.relay_connected.load(Ordering::SeqCst),
-        "access":"deviceOwner",
+        "access":if mapping.thread_id.is_some() { "thread" } else { "deviceOwner" },
+        "threadId":mapping.thread_id,
         "nextSteps":["This reserves an address; it does not start the service. Bind an HTTP service to this port on loopback.",
             "If the framework requires an allowlist, add only hostname (or origin for origin-based settings); never allow all hosts.",
-            "Run preview check after starting the service. Share openUrl for browser login and access; no account token is needed in CLI output."]}),
+            open_step]}),
     )
 }
 
-pub(crate) async fn run(state: &Supervisor, input: &Value) -> Result<Value> {
+/// `caller` is the thread whose own CLI credential made the request (`None` for
+/// the machine credential or a peer device); creation records it on the mapping.
+pub(crate) async fn run(state: &Supervisor, input: &Value, caller: Option<&str>) -> Result<Value> {
     let requested_path = path(input["path"].as_str())?;
     match input["operation"].as_str().unwrap_or("") {
         "previewList" => {
@@ -124,12 +132,14 @@ pub(crate) async fn run(state: &Supervisor, input: &Value) -> Result<Value> {
                 port,
                 label: String::new(),
                 created_at: String::new(),
+                thread_id: None,
             };
             describe(state, &placeholder, requested_path)?;
             let mapping = crate::ports::create_local_mapping(
                 state,
                 port,
                 input["label"].as_str().unwrap_or(""),
+                caller,
             )?;
             describe(state, &mapping, requested_path)
         }
@@ -335,6 +345,81 @@ mod tests {
         assert_eq!(crate::ports::snapshot(&state).len(), 2);
     }
 
+    #[tokio::test]
+    async fn cli_create_records_only_the_authenticated_thread_and_the_latest_thread_decides() {
+        use axum::{body::Body, http::Request};
+        use tower::ServiceExt;
+        let (_dir, state) =
+            crate::tunnel::tests::state_with_relay_url("https://remote.example.test");
+        let (connection, _outbound) = crate::peer_link::tests::connected(&state, "device");
+        connection.connected(Some(crate::peer_link::RelayIdentity {
+            device_id: "device".into(),
+            device_name: "Device".into(),
+            port_preview_base_url: Some("https://example.test".into()),
+            public_base_url: Some("https://remote.example.test".into()),
+        }));
+        state.relay_connected.store(true, Ordering::SeqCst);
+        let machine = state.configure_cli("http://127.0.0.1:0".into()).token;
+        let router = crate::http::router(state.clone());
+        let create = |token: String, port: u16| {
+            let router = router.clone();
+            async move {
+                // A claimed caller identity must never stand in for the credential.
+                let input =
+                    json!({"operation":"previewCreate","port":port,"fromThreadId":"claimed"});
+                let request = Request::builder()
+                    .method("POST")
+                    .uri("/api/cli")
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::from(input.to_string()))
+                    .unwrap();
+                let response = router.oneshot(request).await.unwrap();
+                assert_eq!(response.status(), axum::http::StatusCode::OK);
+                let body = axum::body::to_bytes(response.into_body(), 65536)
+                    .await
+                    .unwrap();
+                serde_json::from_slice::<Value>(&body).unwrap()
+            }
+        };
+        let owner = create(machine.clone(), 4016).await;
+        assert_eq!(owner["access"], "deviceOwner");
+        assert!(owner["threadId"].is_null());
+        let shared = create(state.cli_thread_token("thread-a"), 4017).await;
+        assert_eq!(shared["access"], "thread");
+        assert_eq!(shared["threadId"], "thread-a");
+        let thread_of = |id: &Value| {
+            crate::ports::snapshot(&state)
+                .into_iter()
+                .find(|m| m.id == id.as_str().unwrap())
+                .unwrap()
+                .thread_id
+        };
+        assert_eq!(thread_of(&owner["id"]), None);
+        assert_eq!(thread_of(&shared["id"]).as_deref(), Some("thread-a"));
+        // The heartbeat names the thread only for thread mappings.
+        let wire = serde_json::to_value(crate::ports::snapshot(&state)).unwrap();
+        assert!(wire
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["threadId"] == "thread-a"));
+        assert!(wire
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["id"] == owner["id"] && m.get("threadId").is_none()));
+        // The same port keeps its address; the latest thread decides who opens it,
+        // and the machine credential (an owner renewing the link) keeps it.
+        let moved = create(state.cli_thread_token("thread-b"), 4017).await;
+        assert_eq!(moved["id"], shared["id"]);
+        assert_eq!(thread_of(&shared["id"]).as_deref(), Some("thread-b"));
+        let renewed = create(machine, 4017).await;
+        assert_eq!(renewed["access"], "thread");
+        assert_eq!(renewed["threadId"], "thread-b");
+        assert_eq!(thread_of(&shared["id"]).as_deref(), Some("thread-b"));
+    }
+
     #[test]
     fn validates_paths_and_distinguishes_host_rejection_from_application_errors() {
         for invalid in [
@@ -370,8 +455,8 @@ mod tests {
         state.relay_connected.store(true, Ordering::SeqCst);
         let create =
             json!({"operation":"previewCreate","port":4013,"label":"Demo","path":"/app?q=1"});
-        let first = run(&state, &create).await.unwrap();
-        let second = run(&state, &create).await.unwrap();
+        let first = run(&state, &create, None).await.unwrap();
+        let second = run(&state, &create, None).await.unwrap();
         assert_eq!(first["id"], second["id"]);
         assert_eq!(
             first["hostname"],
@@ -399,20 +484,27 @@ mod tests {
             .starts_with("https://remote.example.test/devices/device/ports/"));
         assert_eq!(crate::ports::snapshot(&state).len(), 1);
         assert!(!first.to_string().contains("__rc_launch"));
-        assert!(run(&state, &json!({"operation":"previewCreate","port":0}))
-            .await
-            .is_err());
+        assert!(
+            run(&state, &json!({"operation":"previewCreate","port":0}), None)
+                .await
+                .is_err()
+        );
         assert!(run(
             &state,
-            &json!({"operation":"previewCreate","port":state.config.port})
+            &json!({"operation":"previewCreate","port":state.config.port}),
+            None
         )
         .await
         .is_err());
-        run(&state, &json!({"operation":"previewStop","target":"4013"}))
-            .await
-            .unwrap();
+        run(
+            &state,
+            &json!({"operation":"previewStop","target":"4013"}),
+            None,
+        )
+        .await
+        .unwrap();
         assert!(crate::ports::snapshot(&state).is_empty());
         state.relay_connected.store(false, Ordering::SeqCst);
-        assert!(run(&state, &create).await.is_err());
+        assert!(run(&state, &create, None).await.is_err());
     }
 }

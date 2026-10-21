@@ -22,7 +22,8 @@ pockymoe preview stop 4013
 - Creation reserves a mapping, **not a running server**. Repeating it for an
   enabled port keeps the same address. Stop then recreate gets a new address;
   update exact-host configuration accordingly. Avoid stopping another task's
-  mapping; mappings are device-wide, not thread-local.
+  mapping; mappings are device-wide, not thread-local. Creating an enabled port
+  from this thread makes this thread decide who else can open it.
 - Bind to loopback in the Supervisor's own network namespace. For Vite use a
   fixed port (`--strictPort`) so automatic port fallback cannot break the mapping.
 - If the installed framework requires a host/origin allowlist, add only the
@@ -45,9 +46,11 @@ pockymoe preview stop 4013
   framework-specific auth/subprotocols are required.
 - Give the user **`openUrl`** as the clickable entry. It authenticates in their
   browser and opens `url`; the mapped hostname can also initiate browser login.
-  Previews remain private to the device owner; shared device access alone does
-  not grant preview access. Never copy account tokens or one-use launch tickets
-  into reports or CLI commands. CLI output contains neither.
+  The device owner and the people this conversation is shared with can open it
+  (`access: "thread"`); a mapping made outside a thread is owner-only. The link
+  carries an 8-hour lease (`expiresAt`); create the port again for a fresh one.
+  Never copy account tokens or one-use launch tickets into reports or CLI
+  commands. CLI output contains neither.
 - A disconnected Supervisor, disabled preview gateway or old runtime/Relay must
   be fixed explicitly. Do not invent a domain or bypass authentication. See
   `pockymoe preview --help`; an older installation may need updating.

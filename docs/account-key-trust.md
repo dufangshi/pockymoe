@@ -96,7 +96,8 @@ Limits:
 - **Control access.** A recipient with control access to a thread can make its
   agent run commands on the device, including `pockymoe bind --reset`, which
   returns the device to relay trust, and `pockymoe preview create`, which creates
-  a local port mapping and preview lease.
+  a local port mapping and preview lease that the thread's recipients can open
+  ([Port previews](#port-previews)).
 
 Local authority is outside this model. Whoever can write the Supervisor database
 can bind or reset the device (`pockymoe bind`), and whoever can use its local API
@@ -927,8 +928,14 @@ lease it refuses with 403 `preview_lease_required` unless the device reports tha
 it is not strict. It removes `lease`, `leaseExpiresAt` and its launch ticket from
 URLs before they reach the previewed application. The device ignores a
 `preview.open` without a live lease and closes open connections when their lease
-expires or ends. Recipients get `owner_required`. Details:
-[port previews](port-previews.md#bound-devices).
+expires or ends. Recipients get `owner_required` when they ask for a lease.
+
+A mapping that an agent created from a thread (`threadId` in its heartbeat
+entry) also opens for that thread's recipients, with the lease in the CLI link.
+The device checks only that the lease is live, not which account uses it, so the
+relay's shares and grants alone decide this, as they decide who may use any
+lease the relay forwards. Details:
+[port previews](port-previews.md#who-can-open-a-mapping).
 
 ## Web origin
 
@@ -1107,7 +1114,7 @@ senders).
 | `PUT /relay/devices/{id}/certificate` | Owner | Device certificate (at most 16 KiB, matching `deviceId`), stored unverified |
 | `GET /relay/devices/{id}/owner-account` | Owner or recipient | → `{accountKeyId, accountPublicKey}`; 404 |
 | `GET /relay/shares/{id}/recipient-account`, `GET /relay/grants/{id}/recipient-account` | Owner of the live row | → `{accountKeyId, accountPublicKey}`; 404 `recipient_account_missing` (recipient without a vault) or `not_found` |
-| `POST /relay/devices/{id}/port-mappings/{mappingId}/open?lease=` | Owner | `{path}` → `{url}`; 403 `preview_lease_required`; 400 `invalid_lease` (not 43 characters of `[A-Za-z0-9_-]`) |
+| `POST /relay/devices/{id}/port-mappings/{mappingId}/open?lease=` | Owner, or a recipient of the thread that created the mapping | `{path}` → `{url}`; 403 `preview_lease_required`; 400 `invalid_lease` (not 43 characters of `[A-Za-z0-9_-]`) |
 | `POST /relay/admin/users/{id}/reset-password` | Relay admin | `{password}` (at least 12 characters, not for admin accounts) → one-time temporary password |
 
 The relay checks browser certificates and revocations against the vault's account

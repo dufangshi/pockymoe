@@ -269,7 +269,7 @@ export class Fixture {
     expect(verify('sha256', Buffer.from(input), { key: createPublicKey({ key: Buffer.from(publicKey, 'base64url'), format: 'der', type: 'spki' }), dsaEncoding: 'ieee-p1363' }, Buffer.from(certificate.signature, 'base64url')), 'Independent browser certificate signature verification').toBe(true);
     return Object.assign(account, { cookies, cookie, userId, code, accountKeyId, publicKey, browserId: browserId! });
   }
-  async device(owner: Account, count: number): Promise<Device> {
+  async device(owner: Account, count: number, extra: Record<string, string> = {}): Promise<Device> {
     const created = ok(await this.api('/relay/devices', 'POST', { name: `Signed device ${count}` }, owner.cookie), 'Create test device');
     this.secrets.push(created.token);
     const id = created.device.id, db = join(this.root, `device-${count}.sqlite`), workspacePath = join(this.root, `workspace-${count}`);
@@ -277,7 +277,7 @@ export class Fixture {
     this.start('relay-supervisor', { PORT: port, POCKYMOE_RELAY_SUPERVISOR_PORT: port,
       POCKYMOE_RELAY_SERVER_URL: this.base, POCKYMOE_RELAY_AGENT_TOKEN: created.token,
       POCKYMOE_DATABASE_PATH: db, DATABASE_URL: db,
-      POCKYMOE_WORKSPACE_ROOT: workspacePath, WORKSPACE_ROOT: workspacePath });
+      POCKYMOE_WORKSPACE_ROOT: workspacePath, WORKSPACE_ROOT: workspacePath, ...extra });
     await expect.poll(async () => (await this.api('/healthz')).data.connectedSupervisors).toBe(count);
     await expect.poll(async () => (await this.api(`/relay/devices/${id}/api/version`, 'GET', undefined, owner.cookie)).status).toBe(200);
     await mkdir(workspacePath, { recursive: true });
@@ -320,10 +320,15 @@ export class Fixture {
     if (capture) await screenshot(page, this.info, 'v2-device-enrolling');
     expect((await this.cli([...args, '--database', device.db], { POCKYMOE_ENROLL_SECRET: prefix![1] })).code, 'Run real UI bind command on isolated DB').toBe(0);
     await dialog.getByRole('button', { name: 'Close', exact: true }).click();
-    // The monitor keeps polling an already-online device until the command runs,
-    // then completes enrollment without a reload or a second password entry.
+    // Nothing finishes enrollment in the background: the reader asks for it on
+    // the device row, which may ask for the password once.
     await page.bringToFront();
+    await row.locator('.device-status-chip').click();
+    await page.getByRole('button', { name: 'Finish protection', exact: true }).click();
+    const finishing = page.getByRole('dialog', { name: UNLOCK_DIALOG });
     const failed = row.getByRole('button', { name: /^(Protection failed|Bound to another account|Update failed|Needs repair)$/ });
+    await expect.poll(async () => await finishing.isVisible() || await row.getByRole('button', { name: 'Protected', exact: true }).isVisible() || await failed.isVisible(), { timeout: 20_000 }).toBe(true);
+    if (await finishing.isVisible()) await unlock(page, owner.password);
     await expect.poll(async () => await row.getByRole('button', { name: 'Protected', exact: true }).isVisible() || await failed.isVisible(), { timeout: 40_000 }).toBe(true);
     if (await failed.isVisible()) {
       const diagnosis = await failed.allTextContents();

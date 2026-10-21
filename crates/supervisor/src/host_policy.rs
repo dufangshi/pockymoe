@@ -259,10 +259,12 @@ mod tests {
                 .await
                 .is_err()
         );
-        assert!(crate::ports::create_local_mapping(&state, 4013, "test")
-            .err()
-            .unwrap()
-            .is::<pockymoe_runtime::host_mode::FeatureDisabled>());
+        assert!(
+            crate::ports::create_local_mapping(&state, 4013, "test", None)
+                .err()
+                .unwrap()
+                .is::<pockymoe_runtime::host_mode::FeatureDisabled>()
+        );
         assert!(crate::ports::snapshot(&state).is_empty());
     }
 }

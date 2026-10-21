@@ -213,7 +213,7 @@ DSH 的运行模式就是 agent preset：每种模式是一套工具与 persona 
 
 **本地访问。** 控制台使用当前页面的回环主机名。从局域网 IP 访问 Supervisor 时控制台不可达，界面会说明原因。
 
-**远程访问（relay）。** 走现有的仅 owner 端口预览：
+**远程访问（relay）。** 走端口预览；控制台映射不记录线程，所以只有 owner 能打开：
 
 1. 设备上的 Supervisor 为控制台端口建映射，标签为 `DSH console <线程前 8 位>`。DSH 进程退出后控制台端口不再监听，这类旧映射在下一次打开时删除，所以不会累积到设备的 32 个映射上限。
 2. 用 owner 签名的 `POST /api/port-mappings/{id}/lease` 向设备申请预览租约（已绑定设备只在租约有效期内打开连接，见 [port previews](port-previews.md#bound-devices)；签名的控制台请求本身也返回 `leaseId`），再调用 `POST /relay/devices/{device}/port-mappings/{id}/open?lease=<leaseId> {path}`，在新标签页打开 `p-<id>.<base>`。

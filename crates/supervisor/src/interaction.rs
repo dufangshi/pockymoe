@@ -137,7 +137,8 @@ async fn run_as(
     let wait = clamp_wait(input["timeoutSeconds"].as_u64());
     match input.get("operation").and_then(Value::as_str).unwrap_or("") {
         "previewCreate" | "previewList" | "previewCheck" | "previewStop" => {
-            crate::preview_cli::run(state, &input).await
+            // Only the authenticated credential names the thread, never `fromThreadId`.
+            crate::preview_cli::run(state, &input, caller.as_deref()).await
         }
         "automationCreate" | "automationPreview" | "automationList" | "automationShow"
         | "automationRuns" | "automationPause" | "automationResume" | "automationCancel"

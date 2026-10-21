@@ -7,11 +7,13 @@ port and optional label, then enable and open it in a new tab. Clicking a chat
 link to `http://localhost:4013/...` or `http://127.0.0.1:4013/...` offers a
 confirmation before enabling and opening that port. Cancelling makes no change.
 Mappings belong to the device and persist across Supervisor restarts. Only the
-device's account owner can manage or open them from the Web. Control access to a
-shared thread still reaches them indirectly: the recipient can have the thread's
-agent run `pockymoe preview create` or `preview stop`, and the agent CLI uses the
-device's local API, which creates local mappings and preview leases
-([bound devices](#bound-devices)).
+device's account owner can manage them from the Web. A mapping that a thread's
+agent creates with `pockymoe preview create` also opens for the people that
+thread is shared with ([who can open a mapping](#who-can-open-a-mapping)).
+Control access to a shared thread reaches mappings indirectly: the recipient can
+have the thread's agent run `pockymoe preview create` or `preview stop`, and the
+agent CLI uses the device's local API, which creates local mappings and preview
+leases ([bound devices](#bound-devices)).
 
 **Open** signs the current browser in to that preview. **Copy address** copies
 the stable private address, without a login ticket. Browser navigation to that
@@ -19,6 +21,36 @@ address enters the Relay login/open flow automatically; API and WebSocket
 requests without a preview session still receive 401. **Stop** revokes the mapping and
 closes its connections; the local service keeps running. Re-enabling a stopped
 port creates a new address. Supervisors predating this feature must be updated.
+
+## Who can open a mapping
+
+The device's account owner can open every mapping. When an agent runs
+`pockymoe preview create` with its own thread credential, the mapping records
+that thread (`threadId`; the CLI reports `access: "thread"` instead of
+`"deviceOwner"`). The Relay then also opens it for anyone it currently gives
+access to that thread, with read or control access: a share or thread grant on
+the thread or one of its three nearest ancestors, or a device grant. Workspace
+grants do not cover conversations and do not count. Relay administrators cannot
+open previews. A `fromThreadId` in the request does not set the thread; only the
+credential does.
+
+Mappings created with the machine CLI credential, from the Web or for a DSH
+console record no thread and stay owner-only. For a port that is already
+enabled, a `preview create` from another thread moves the mapping to that thread
+and keeps its address; the machine credential and the Web keep the recorded
+thread. The device reports the thread in its heartbeat, and a change restarts
+the mapping's open connections.
+
+The Relay checks this access for every launch, request and WebSocket upgrade,
+and every 15 seconds on long-lived connections, against the thread the device
+reports now. Revoking or expiring the share or grant ends access at the next
+check.
+
+Recipients open the CLI `openUrl` while its lease is live. They cannot ask the
+device for a lease: `POST /api/port-mappings/{id}/lease` stays owner-only, as
+does the Web's Port mappings button. After `leaseExpiresAt`, running
+`preview create` for the port again (by the thread's agent or the owner) renews
+the lease and prints a fresh `openUrl`.
 
 ## Deployment: DNS, proxy and TLS
 
@@ -31,7 +63,7 @@ POCKYMOE_PORT_PREVIEW_BASE_URL=https://lnz-study.com
 This produces `https://p-<32-hex-mapping-id>.lnz-study.com`. Each mapping has its
 own origin, so root-relative assets, client routing, application cookies and
 WebSocket paths do not need a device/path prefix. The random ID is a route,
-not an access credential; the Relay authenticates the owner separately.
+not an access credential; the Relay authenticates the account separately.
 
 Before setting that environment variable on the Relay:
 
@@ -154,20 +186,22 @@ The main account session stays at the Relay. **Open** exchanges a one-use,
 60-second launch ticket for a mapping-scoped, HttpOnly, Secure, host-only cookie
 on the preview origin. The ticket is removed with a redirect before requesting
 the application. The preview gateway checks the original account session and
-device ownership on every HTTP request and WebSocket upgrade. Main account and
-gateway cookies are filtered out of requests to the local application; the
-application cannot set gateway cookies through its HTTP responses. Cross-origin
+its access to the mapping ([who can open a mapping](#who-can-open-a-mapping)) on
+every HTTP request and WebSocket upgrade. Main account and gateway cookies are
+filtered out of requests to the local application; the application cannot set
+gateway cookies through its HTTP responses. Cross-origin
 Origin headers are rejected. Stop, device disconnect and connection replacement
 cancel active tunnels. A copied address does not grant another user access.
 Long-lived connections recheck session validity every 15 seconds and close after
-logout, account disablement, session expiry or ownership revocation.
+logout, account disablement, session expiry, ownership revocation or the end of
+thread access.
 
 Ordinary HTTP requests reuse a bounded pool of device data connections after the
 previous response has been completely consumed. A connection belongs to one
 mapping, device connection, account session and lease; it is never shared across
 those authorization boundaries. Each request still checks the account session
-and device ownership. Idle connections expire after 10 seconds, with at most
-six per capability, eight per device and 64 per Relay. Capacity pressure reclaims
+and its access to the mapping. Idle connections expire after 10 seconds, with at
+most six per capability, eight per device and 64 per Relay. Capacity pressure reclaims
 idle connections before refusing new traffic; it never preempts active traffic.
 Stop/disconnect cancels both active and idle connections. This uses the existing
 raw TCP bridge and does not require a new device wire protocol.
@@ -184,11 +218,10 @@ the ordinary JSON API response deadline.
 ### Opening and latency
 
 CLI `openUrl` links point at the Relay's
-`GET /devices/{deviceId}/ports/{mappingId}` document route. With a live owner
-account cookie and an existing device lease with a future `leaseExpiresAt`, the
-Relay redirects directly to a one-use preview launch URL; redemption sets the
-preview-origin cookie and
-redirects to the application. No Web page, JavaScript bundle or cross-origin
+`GET /devices/{deviceId}/ports/{mappingId}` document route. With a live account
+cookie that may open the mapping and an existing device lease with a future
+`leaseExpiresAt`, the Relay redirects directly to a one-use preview launch URL;
+redemption sets the preview-origin cookie and redirects to the application. No Web page, JavaScript bundle or cross-origin
 API fetch is required for this handoff. Only top-level browser document
 navigations can use it: iframe, fetch, prefetch, bearer and URL-token credentials
 cannot create a launch this way. Missing/expired lease timestamps or account
@@ -272,7 +305,7 @@ mapping:
   same port again renews it). `preview create`, `preview list` and `preview check`
   report `leaseId` and `expiresAt` and add `lease=` and `leaseExpiresAt=` to
   `openUrl` while it is live. The Web reuses that lease until `leaseExpiresAt` and
-  then asks the device for a new one.
+  then asks the device for a new one, which only the owner can do.
   Local leases survive browser removal and `pockymoe bind --reset`.
 - The signed DSH console request returns a lease for the console mapping.
 
@@ -308,7 +341,7 @@ origin, or uses a second port for hot reload may need application configuration.
 Use same-origin WebSocket URLs or explicitly configure the app’s public HMR URL.
 Do not disable its host/origin checks globally. Previews open in new tabs.
 
-The gateway authenticates the preview owner and validates the browser Origin
+The gateway authenticates the preview account and validates the browser Origin
 before forwarding. It then sends `Host: 127.0.0.1:<port>` and, if an Origin was
 present, rewrites it to `http://127.0.0.1:<port>`. Ordinary Vite dev servers allow
 IP addresses by default, so a preview hostname does not normally need adding to
@@ -335,8 +368,13 @@ processes plus a local HTTP/WebSocket service. It covers encrypted management,
 owner isolation, binary POST/GET, redirects, cookie filtering, streamed responses,
 WebSocket echo and stopping a live socket, plus confirmation/cancellation of
 chat-localhost links. `preview::tests` covers origin/config validation, header
-rewrites, reconnect cancellation and failed-upgrade resource cleanup. Web unit
-tests cover local link parsing, confirmation and unavailable configuration.
+rewrites, reconnect cancellation, failed-upgrade resource cleanup and which
+recipients open a thread's mapping until their access ends. Web unit tests
+cover local link parsing, confirmation and unavailable configuration.
+`e2e/account-key-trust.spec.ts` (preview leases) opens Web and CLI links on a
+bound device, the no-lease path on an unbound one, and, on both, a thread
+recipient's CLI link for a mapping that thread's agent made, before and after
+the share.
 
 ## References
 
@@ -349,8 +387,9 @@ tests cover local link parsing, confirmation and unavailable configuration.
 `pockymoe preview create --port 4013 --label "App preview"` reserves a
 persistent address without requiring a listening service. Its JSON includes
 `id`, `port`, exact `hostname`, `origin`, stable `url`, `openUrl`, and the local
-preview lease (`leaseId`, `expiresAt`, see [bound devices](#bound-devices)). The
-`openUrl` enters the owner's browser login/open flow; it contains no account
+preview lease (`leaseId`, `expiresAt`, see [bound devices](#bound-devices)), and
+`access` with `threadId` ([who can open a mapping](#who-can-open-a-mapping)).
+The `openUrl` enters the browser login/open flow; it contains no account
 session or launch ticket. Creation for an existing port is idempotent. The CLI uses its
 normal local Supervisor credential and obtains the configured base domain from
 the authenticated Relay connection, rather than guessing a hostname.
@@ -366,9 +405,9 @@ actual browser hot reload. A rejected handshake can also mean the framework
 requires a token/subprotocol, so do not diagnose it as a broken Relay by itself.
 
 Use `preview list` to recover addresses and `preview stop PORT_OR_ID` to revoke
-one. Stop does not terminate the application process. Opening a preview through
-the Relay stays limited to the device owner, and shared-device access does not
-change that. The CLI acts with the device's local authority, though: an agent in
-a thread that a share recipient controls can create, list and stop mappings and
-their local leases like any local user.
+one. Stop does not terminate the application process. Through the Relay, a
+mapping opens for the device owner and, when a thread's agent created it, for
+that thread's recipients. The CLI acts with the device's local authority: an
+agent in a thread that a share recipient controls can create, list and stop any
+mapping and its local lease like any local user.
 The embedded `pockymoe skill` documents the required agent workflow.

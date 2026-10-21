@@ -17,6 +17,9 @@ struct Mapping {
     device: String,
     connection: Uuid,
     port: u16,
+    /// The conversation whose agent created the mapping, as the device reports
+    /// it. People that conversation is shared with may open the mapping too.
+    thread: Option<String>,
 }
 #[derive(Clone, PartialEq, Eq)]
 struct Grant {
@@ -604,12 +607,26 @@ async fn issue_launch(
     query: OpenQuery,
     input: OpenInput,
 ) -> std::result::Result<url::Url, Response> {
+    let mapping = state
+        .preview
+        .mappings
+        .lock()
+        .unwrap()
+        .get(&id)
+        .filter(|m| m.device == device)
+        .cloned();
     let conn = state.store.conn.lock().await;
     let Some(user) = authenticated_user(&conn, &state.store.session_secret, &headers, &query.token)
     else {
         return Err(unauthorized());
     };
-    if !owns(&conn, &user.id, &device) {
+    // Refuse before revealing whether the mapping exists.
+    if !may_open(
+        &conn,
+        &user.id,
+        &device,
+        mapping.as_ref().and_then(|m| m.thread.as_deref()),
+    ) {
         return Err(StatusCode::FORBIDDEN.into_response());
     }
     let Some(session) = extract_session_token(&headers, &query.token) else {
@@ -625,14 +642,6 @@ async fn issue_launch(
         )
             .into_response());
     };
-    let mapping = state
-        .preview
-        .mappings
-        .lock()
-        .unwrap()
-        .get(&id)
-        .filter(|m| m.device == device)
-        .cloned();
     let Some(mapping) = mapping else {
         return Err((StatusCode::CONFLICT, Json(json!({"message":"This port is not enabled on the online device. Update its Supervisor if port mappings are unavailable."}))).into_response());
     };
@@ -730,6 +739,25 @@ fn owns(conn: &Connection, user: &str, device: &str) -> bool {
     .unwrap_or(false)
 }
 
+/// The device owner opens every mapping. A mapping an agent created from a
+/// thread also opens for anyone with live access to that thread: a share or a
+/// thread grant on it or an ancestor, or a device grant, at any access level.
+/// Workspace grants do not cover conversations, so they do not count.
+fn may_open(conn: &Connection, user: &str, device: &str, thread: Option<&str>) -> bool {
+    owns(conn, user, device)
+        || thread.is_some_and(|thread| {
+            effective_access(conn, user, device, Some(thread), None).is_some()
+        })
+}
+
+fn valid_thread_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+}
+
 pub(super) fn update(state: &AppState, device: &str, connection: Uuid, value: &Value) {
     let Some(items) = value.as_array().filter(|a| a.len() <= 32) else {
         return;
@@ -758,6 +786,11 @@ pub(super) fn update(state: &AppState, device: &str, connection: Uuid, value: &V
                 device: device.into(),
                 connection,
                 port: port as u16,
+                // An unusable thread ID leaves the mapping owner-only.
+                thread: item["threadId"]
+                    .as_str()
+                    .filter(|thread| valid_thread_id(thread))
+                    .map(Into::into),
             },
         );
     }
@@ -1043,9 +1076,20 @@ pub(super) async fn middleware(
 }
 
 async fn valid_grant(state: &AppState, grant: &Grant) -> bool {
+    // Use the thread the device reports now, so moving the mapping to another
+    // thread or revoking a share ends a recipient's access at the next check.
+    let thread = state
+        .preview
+        .mappings
+        .lock()
+        .unwrap()
+        .get(&grant.mapping)
+        .filter(|m| m.device == grant.device)
+        .and_then(|m| m.thread.clone());
     let conn = state.store.conn.lock().await;
-    load_user_by_session(&conn, &state.store.session_secret, &grant.session)
-        .is_some_and(|u| u.role != "admin" && owns(&conn, &u.id, &grant.device))
+    load_user_by_session(&conn, &state.store.session_secret, &grant.session).is_some_and(|u| {
+        u.role != "admin" && may_open(&conn, &u.id, &grant.device, thread.as_deref())
+    })
 }
 
 fn app_cookies(headers: &HeaderMap) -> String {
@@ -1734,7 +1778,8 @@ mod tests {
                 headers.insert(name, value.parse().unwrap());
                 headers
             };
-            // These must not mint a capability or start a device connection.
+            // These must not mint a capability or start a device connection. The
+            // mapping has no thread, so another account cannot open it.
             let cases = [
                 ("anonymous", document("/", &lease, &future)),
                 (
@@ -1883,6 +1928,35 @@ mod tests {
                 redeem().send().await.unwrap().status(),
                 StatusCode::UNAUTHORIZED
             );
+            // Someone the creating thread is shared with follows the same CLI link.
+            let thread = Uuid::new_v4().to_string();
+            state.store.conn.lock().await.execute("INSERT INTO relay_shares(id,owner_user_id,target_user_id,device_id,thread_id,thread_access,created_at) VALUES ('share','owner','other','device',?1,'read','now')", [&thread]).unwrap();
+            let connection = state.sockets.read().await["device"].connection_id;
+            update(
+                &state,
+                "device",
+                connection,
+                &json!([{"id":mapping,"port":4013,"threadId":thread}]),
+            );
+            let response = document("/app", &lease, &future)
+                .header(
+                    header::COOKIE,
+                    format!("remote_codex_relay_session={other}"),
+                )
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::SEE_OTHER);
+            let destination =
+                url::Url::parse(response.headers()[header::LOCATION].to_str().unwrap()).unwrap();
+            assert!(destination.host_str().unwrap().starts_with("p-"));
+            assert!(state
+                .preview
+                .launches
+                .lock()
+                .unwrap()
+                .values()
+                .any(|launch| launch.grant.session == other));
             update(&state, "device", Uuid::new_v4(), &json!([]));
             relay.abort();
             drop(state);
@@ -1900,6 +1974,7 @@ mod tests {
             device: "device".into(),
             connection: Uuid::new_v4(),
             port: 4013,
+            thread: None,
         };
         let request = Request::builder()
             .uri("/work?app=a%2Fb&app=two&flag&lease=existing&leaseExpiresAt=123")
@@ -2190,6 +2265,187 @@ mod tests {
                 .count(),
             3
         );
+    }
+
+    #[tokio::test]
+    async fn thread_mappings_open_for_that_threads_recipients_until_access_ends() {
+        let fixture = http_fixture("preview-thread-share", Duration::ZERO, |_| async {
+            Ok(Response::new(Body::from("shared app")))
+        })
+        .await;
+        let state = &fixture.state;
+        let (root, child, other) = (
+            Uuid::new_v4().to_string(),
+            Uuid::new_v4().to_string(),
+            Uuid::new_v4().to_string(),
+        );
+        let sessions: HashMap<&str, String> = {
+            let conn = state.store.conn.lock().await;
+            let mut sessions = HashMap::new();
+            for user in ["reader", "stranger", "viewer", "files", "nobody"] {
+                conn.execute("INSERT INTO relay_users (id,email,username,role,enabled,created_at,password_salt,password_hash) VALUES (?1,?1||'@example.test',?1,'user',1,'now','','')", [user]).unwrap();
+                sessions.insert(
+                    user,
+                    create_session(&conn, &state.store.session_secret, user).unwrap(),
+                );
+            }
+            sessions.insert(
+                "owner",
+                create_session(&conn, &state.store.session_secret, "owner").unwrap(),
+            );
+            crate::thread_groups::replace(
+                &conn,
+                "device",
+                &json!([{"id":root},{"id":child,"parentThreadId":root},{"id":other}]),
+            )
+            .unwrap();
+            // A read-only share of the parent, a share of another thread, a
+            // whole-device grant and a workspace (files) grant.
+            conn.execute("INSERT INTO relay_shares(id,owner_user_id,target_user_id,device_id,thread_id,thread_access,created_at) VALUES ('share','owner','reader','device',?1,'read','now'),('elsewhere','owner','stranger','device',?2,'control','now')", params![root, other]).unwrap();
+            conn.execute_batch("INSERT INTO relay_access_grants(id,owner_user_id,target_user_id,device_id,scope,thread_access,created_at) VALUES ('device-grant','owner','viewer','device','device','read','now');
+                INSERT INTO relay_access_grants(id,owner_user_id,target_user_id,device_id,scope,workspace_id,workspace_access,created_at) VALUES ('files-grant','owner','files','device','workspace','project','write','now');").unwrap();
+            sessions
+        };
+        let launch = |user: &str| {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                header::AUTHORIZATION,
+                format!("Bearer {}", sessions[user]).parse().unwrap(),
+            );
+            let state = state.clone();
+            let mapping = fixture.mapping.clone();
+            async move {
+                open(
+                    State(state),
+                    Path(("device".into(), mapping)),
+                    headers,
+                    Query(serde_json::from_value(json!({"lease":"L".repeat(43)})).unwrap()),
+                    Json(OpenInput::default()),
+                )
+                .await
+                .status()
+            }
+        };
+        // Without a thread, a mapping stays owner-only.
+        assert_eq!(launch("owner").await, StatusCode::OK);
+        for user in ["reader", "stranger", "viewer", "files", "nobody"] {
+            assert_eq!(launch(user).await, StatusCode::FORBIDDEN, "{user}");
+        }
+        let connection = state.sockets.read().await["device"].connection_id;
+        let report = |thread: &str| {
+            update(
+                state,
+                "device",
+                connection,
+                &json!([{"id":fixture.mapping,"port":4013,"threadId":thread}]),
+            )
+        };
+        report(&child);
+        for (user, status) in [
+            ("owner", StatusCode::OK),
+            ("reader", StatusCode::OK),
+            ("viewer", StatusCode::OK),
+            ("stranger", StatusCode::FORBIDDEN),
+            ("files", StatusCode::FORBIDDEN),
+            ("nobody", StatusCode::FORBIDDEN),
+        ] {
+            assert_eq!(launch(user).await, status, "{user}");
+        }
+        // The recipient's preview session reaches the device and application.
+        let recipient = |cookie: &'static str, user: &str| {
+            state.preview.sessions.lock().unwrap().insert(
+                cookie.into(),
+                Grant {
+                    mapping: fixture.mapping.clone(),
+                    device: "device".into(),
+                    session: sessions[user].clone(),
+                    lease: Some("test-lease".into()),
+                    expires: std::time::Instant::now() + Duration::from_secs(60),
+                },
+            );
+            fixture
+                .browser
+                .get(format!("{}/page", fixture.base))
+                .header(
+                    header::HOST,
+                    format!("p-{}.preview.example.test", fixture.mapping),
+                )
+                .header(header::COOKIE, format!("{COOKIE}={cookie}"))
+        };
+        let response = recipient("reader-cookie", "reader").send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.text().await.unwrap(), "shared app");
+        let stranger = recipient("stranger-cookie", "stranger")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(stranger.status(), StatusCode::UNAUTHORIZED);
+        // A mapping reported for another thread follows that thread's recipients.
+        report(&other);
+        assert_eq!(
+            recipient("reader-cookie", "reader")
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(launch("stranger").await, StatusCode::OK);
+        report(&child);
+        assert_eq!(launch("stranger").await, StatusCode::FORBIDDEN);
+        // Revoking the share ends access at the next request.
+        assert_eq!(
+            recipient("reader-cookie", "reader")
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
+        );
+        state
+            .store
+            .conn
+            .lock()
+            .await
+            .execute(
+                "UPDATE relay_shares SET revoked_at='now' WHERE id='share'",
+                [],
+            )
+            .unwrap();
+        let revoked = recipient("reader-cookie", "reader").send().await.unwrap();
+        assert_eq!(revoked.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(launch("reader").await, StatusCode::FORBIDDEN);
+        // An expired grant ends like a revoked one.
+        assert_eq!(
+            recipient("viewer-cookie", "viewer")
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
+        );
+        state
+            .store
+            .conn
+            .lock()
+            .await
+            .execute(
+                "UPDATE relay_access_grants SET expires_at='2000-01-01T00:00:00Z' WHERE id='device-grant'",
+                [],
+            )
+            .unwrap();
+        assert_eq!(
+            recipient("viewer-cookie", "viewer")
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        // An unusable thread ID from the device leaves the mapping owner-only.
+        report("../not a thread");
+        assert_eq!(launch("stranger").await, StatusCode::FORBIDDEN);
+        assert_eq!(launch("owner").await, StatusCode::OK);
     }
 
     #[tokio::test]

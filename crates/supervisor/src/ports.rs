@@ -25,6 +25,11 @@ pub(crate) struct Mapping {
     pub port: u16,
     pub label: String,
     pub created_at: String,
+    /// The last conversation whose own CLI credential approved the port. The
+    /// Relay also opens such a mapping to people that conversation is shared
+    /// with. Owner approvals (machine credential, Web, DSH console) leave it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
 }
 
 const KEY: &str = "devicePortMappings";
@@ -190,6 +195,7 @@ pub(crate) async fn create(
             forwarded.as_ref().map(|f| &f.0),
             owner.as_ref().map(|p| &p.0),
         ),
+        None,
     ) {
         Ok(mapping) => Json(json!(mapping)).into_response(),
         Err(error) => (
@@ -210,9 +216,16 @@ fn changed(state: &Supervisor) {
 }
 
 /// Called by the authenticated local CLI, which the tunnel cannot access.
-pub(crate) fn create_local_mapping(state: &Supervisor, port: u16, label: &str) -> Result<Mapping> {
+/// `thread` comes from the caller's own thread credential, never a claimed
+/// `--from`; the machine credential passes `None`.
+pub(crate) fn create_local_mapping(
+    state: &Supervisor,
+    port: u16,
+    label: &str,
+    thread: Option<&str>,
+) -> Result<Mapping> {
     pockymoe_runtime::host_mode::require_feature(state.host_capabilities.previews, "previews")?;
-    let mapping = create_authorized_mapping(state, port, label, MappingAuthority::Local)?;
+    let mapping = create_authorized_mapping(state, port, label, MappingAuthority::Local, thread)?;
     create_lease(state, &mapping.id, MappingAuthority::Local)?;
     Ok(mapping)
 }
@@ -221,6 +234,7 @@ fn create_authorized_mapping(
     port: u16,
     label: &str,
     authority: MappingAuthority<'_>,
+    thread: Option<&str>,
 ) -> Result<Mapping> {
     pockymoe_runtime::host_mode::require_feature(state.host_capabilities.previews, "previews")?;
     if port == 0 || port == state.config.port || label.len() > 120 {
@@ -250,13 +264,19 @@ fn create_authorized_mapping(
         )?;
         let mut mappings: Vec<Mapping> = serde_json::from_str(&saved)?;
         let mut local = local_mappings(&tx)?;
-        let mapping = if let Some(existing) = mappings.iter().find(|m| m.port == port) {
+        let mapping = if let Some(existing) = mappings.iter_mut().find(|m| m.port == port) {
+            // The latest thread to approve the port decides who else opens it;
+            // owner approvals never take it away from that thread's recipients.
+            if let Some(thread) = thread {
+                existing.thread_id = Some(thread.to_owned());
+            }
             existing.clone()
         } else {
             if mappings.len() >= 32 { bail!("At most 32 port mappings can be enabled on a device"); }
             let mapping = Mapping {
                 id: Uuid::new_v4().simple().to_string(), port,
                 label: label.trim().to_string(), created_at: pockymoe_protocol::now_rfc3339(),
+                thread_id: thread.map(str::to_owned),
             };
             mappings.push(mapping.clone());
             mapping
@@ -358,8 +378,13 @@ pub(crate) async fn dsh_console_mapping(
         }
     }
     let short: String = thread_id.chars().take(8).collect();
-    let mapping =
-        create_authorized_mapping(state, port, &format!("{DSH_CONSOLE}{short}"), authority)?;
+    let mapping = create_authorized_mapping(
+        state,
+        port,
+        &format!("{DSH_CONSOLE}{short}"),
+        authority,
+        None,
+    )?;
     if !matches!(authority, MappingAuthority::Tunnel(None)) {
         create_lease(state, &mapping.id, authority)?;
     }
@@ -647,8 +672,8 @@ mod owner_mapping_tests {
     async fn leases_are_mapping_scoped_expire_and_local_and_dsh_leases_survive_owner_revocation() {
         let (_dir, state) = crate::tunnel::tests::state_with_relay_url("http://127.0.0.1:1");
         let owner = live_owner(&state);
-        let local = create_local_mapping(&state, 3025, "local").unwrap();
-        let other = create_local_mapping(&state, 3026, "other").unwrap();
+        let local = create_local_mapping(&state, 3025, "local", None).unwrap();
+        let other = create_local_mapping(&state, 3026, "other", None).unwrap();
         let local_lease = local_lease(&state, &local.id).unwrap().unwrap();
         assert!(lease_live(&state, &local.id, Some(&local_lease.lease_id)));
         assert!(!lease_live(&state, &other.id, Some(&local_lease.lease_id)));
@@ -711,7 +736,8 @@ mod owner_mapping_tests {
             let owner = live_owner(&state);
             let app = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let mapping =
-                create_local_mapping(&state, app.local_addr().unwrap().port(), "local").unwrap();
+                create_local_mapping(&state, app.local_addr().unwrap().port(), "local", None)
+                    .unwrap();
             let lease =
                 create_lease(&state, &mapping.id, MappingAuthority::Tunnel(Some(&owner))).unwrap();
             open(
@@ -768,7 +794,8 @@ mod owner_mapping_tests {
         let owner = live_owner(&state);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let mapping =
-            create_local_mapping(&state, listener.local_addr().unwrap().port(), "local").unwrap();
+            create_local_mapping(&state, listener.local_addr().unwrap().port(), "local", None)
+                .unwrap();
         let lease =
             create_lease(&state, &mapping.id, MappingAuthority::Tunnel(Some(&owner))).unwrap();
         state
@@ -808,7 +835,8 @@ mod owner_mapping_tests {
         let owner = live_owner(&state);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let mapping =
-            create_local_mapping(&state, listener.local_addr().unwrap().port(), "local").unwrap();
+            create_local_mapping(&state, listener.local_addr().unwrap().port(), "local", None)
+                .unwrap();
         open(
             state.clone(),
             &json!({"mappingId":mapping.id,"ticket":Uuid::new_v4().to_string()}),
@@ -859,7 +887,14 @@ mod owner_mapping_tests {
     async fn signed_owner_lease_endpoint_exists_and_unsigned_or_grantee_is_refused() {
         let (_dir, state, owner, _grant, _cert, key, grantee) =
             crate::grants::tests::fixture().await;
-        let mapping = create_local_mapping(&state, 3023, "local").unwrap();
+        // Even a recipient of the thread that created the mapping cannot renew
+        // its lease; it opens with the lease in the CLI link.
+        let mapping = create_local_mapping(&state, 3023, "local", Some("root")).unwrap();
+        assert!(lease_live(
+            &state,
+            &mapping.id,
+            Some(&local_lease(&state, &mapping.id).unwrap().unwrap().lease_id)
+        ));
         let path = format!("/api/port-mappings/{}/lease", mapping.id);
         let (r, k, aad) = encrypted(&state, "POST", &path, Value::Null, Some(&owner));
         assert_eq!(
@@ -1016,9 +1051,10 @@ mod owner_mapping_tests {
             3005,
             "Remote service",
             MappingAuthority::Tunnel(Some(&owner)),
+            None,
         )
         .unwrap();
-        let reapproved = create_local_mapping(&state, 3005, "Local service").unwrap();
+        let reapproved = create_local_mapping(&state, 3005, "Local service", None).unwrap();
         assert_eq!(remote.id, reapproved.id);
         let console = dsh_console_mapping(&state, "local-thread", 3006, MappingAuthority::Local)
             .await
@@ -1041,10 +1077,36 @@ mod owner_mapping_tests {
     }
 
     #[tokio::test]
+    async fn older_records_stay_owner_only_and_owner_approvals_keep_the_thread() {
+        let (_dir, state) = crate::tunnel::tests::state_with_relay_url("http://127.0.0.1:1");
+        state
+            .db
+            .set_kv(
+                KEY,
+                &json!([{"id":"a".repeat(32),"port":3010,"label":"old","createdAt":"then"}])
+                    .to_string(),
+            )
+            .unwrap();
+        assert_eq!(snapshot(&state)[0].thread_id, None);
+        let shared = create_local_mapping(&state, 3011, "shared", Some("thread")).unwrap();
+        assert_eq!(shared.thread_id.as_deref(), Some("thread"));
+        let web =
+            create_authorized_mapping(&state, 3011, "web", MappingAuthority::Local, None).unwrap();
+        assert_eq!(web.id, shared.id);
+        assert_eq!(web.thread_id.as_deref(), Some("thread"));
+        let machine = create_local_mapping(&state, 3011, "machine", None).unwrap();
+        assert_eq!(machine.thread_id.as_deref(), Some("thread"));
+        let console = dsh_console_mapping(&state, "thread", 3012, MappingAuthority::Local)
+            .await
+            .unwrap();
+        assert_eq!(console.thread_id, None);
+    }
+
+    #[tokio::test]
     async fn mappings_require_owner_and_are_removed_on_browser_revocation_or_reset() {
         let (_dir, state) = crate::tunnel::tests::state_with_relay_url("http://127.0.0.1:1");
         let legacy =
-            create_authorized_mapping(&state, 3001, "legacy", MappingAuthority::Tunnel(None))
+            create_authorized_mapping(&state, 3001, "legacy", MappingAuthority::Tunnel(None), None)
                 .unwrap();
         assert!(snapshot(&state).iter().any(|m| m.id == legacy.id));
         let owner = crate::owner_trust::tests::live_owner(&state);
@@ -1053,7 +1115,8 @@ mod owner_mapping_tests {
             &state,
             3002,
             "tunnel unsigned",
-            MappingAuthority::Tunnel(None)
+            MappingAuthority::Tunnel(None),
+            None,
         )
         .is_err());
         let mapping = create_authorized_mapping(
@@ -1061,6 +1124,7 @@ mod owner_mapping_tests {
             3002,
             "owner",
             MappingAuthority::Tunnel(Some(&owner)),
+            None,
         )
         .unwrap();
         assert_eq!(snapshot(&state).len(), 1);
