@@ -11,6 +11,7 @@ export function popoverPosition(
   viewport: Size & { left?: number; top?: number },
   margin = 12,
   gap = 8,
+  align: 'start' | 'end' = 'end',
 ) {
   const minX = (viewport.left ?? 0) + margin;
   const minY = (viewport.top ?? 0) + margin;
@@ -23,7 +24,7 @@ export function popoverPosition(
   // Preserve the existing desktop end alignment; flip to start alignment if
   // the trigger is on the left, then clamp even when neither alignment fits.
   const end = anchor.right - width;
-  const left = Math.min(maxX, Math.max(minX, end < minX ? anchor.left : end));
+  const left = Math.min(maxX, Math.max(minX, align === 'start' || end < minX ? anchor.left : end));
   const below = anchor.bottom + gap;
   const above = anchor.top - gap - height;
   const top = Math.min(maxY, Math.max(minY, below > maxY ? above : below));
