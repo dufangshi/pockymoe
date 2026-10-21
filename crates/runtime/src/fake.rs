@@ -24,6 +24,48 @@ use crate::actor::{
 use crate::import_id::session_ids_match;
 use pockymoe_protocol::{HarnessBusyReason, HarnessLoadReason};
 
+/// What the fake harness was asked, as the model would read it: turn prompts by
+/// thread ID, steering input by provider session ID. Tests read it back with
+/// `model_prompts`; IDs are unique, so parallel tests never share an entry.
+static MODEL_PROMPTS: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+
+/// Every prompt the fake harness received for a thread (turns) or a provider
+/// session (steering), oldest first.
+pub fn model_prompts(key: &str) -> Vec<String> {
+    MODEL_PROMPTS
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(id, _)| id == key)
+        .map(|(_, prompt)| prompt.clone())
+        .collect()
+}
+
+fn record_prompt(key: &str, prompt: &str) {
+    let mut prompts = MODEL_PROMPTS.lock().unwrap();
+    if prompts.len() >= 4096 {
+        prompts.drain(..1024);
+    }
+    prompts.push((key.to_string(), prompt.to_string()));
+}
+
+/// The fake answers what the person typed; a share recipient's guardrail
+/// (`[Pockymoe: sent by …]`, before a prompt or inside a goal) only reaches the
+/// recorder.
+fn typed_prompt(prompt: &str) -> std::borrow::Cow<'_, str> {
+    let (command, rest) = match prompt.strip_prefix("/goal ") {
+        Some(rest) => ("/goal ", rest),
+        None => ("", prompt),
+    };
+    match rest
+        .strip_prefix("[Pockymoe: sent by ")
+        .and_then(|rest| rest.split_once(']'))
+    {
+        Some((_, typed)) => format!("{command}{}", typed.trim_start()).into(),
+        None => prompt.into(),
+    }
+}
+
 pub struct FakeRuntime {
     provider: Provider,
     active: Mutex<HashMap<String, String>>,
@@ -375,6 +417,7 @@ impl AgentRuntime for FakeRuntime {
         }
         let _active = ActiveGuard(&self.active, input.provider_session_id.clone());
         self.touch(&input.provider_session_id, true);
+        record_prompt(&input.thread_id, &input.prompt);
         if let Some(argument) = input.prompt.strip_prefix("/goal ") {
             self.set_goal(
                 &input.provider_session_id,
@@ -383,7 +426,8 @@ impl AgentRuntime for FakeRuntime {
             )
             .await?;
         }
-        let reply = reply_for(&input.prompt);
+        let typed = typed_prompt(&input.prompt);
+        let reply = reply_for(&typed);
         let item_id = format!("{}:assistant", input.turn_id);
         emit(
             &bus,
@@ -395,11 +439,7 @@ impl AgentRuntime for FakeRuntime {
             let hold = input.prompt.ends_with("(live)");
             return demo_live_turn(&input, &bus, &cancel, hold).await;
         }
-        let slow = input.prompt.len() > 180
-            || input
-                .prompt
-                .to_lowercase()
-                .contains("inspect this repository");
+        let slow = typed.len() > 180 || typed.to_lowercase().contains("inspect this repository");
         if slow {
             tokio::select! {
                 _ = cancel.cancelled() => {
@@ -465,7 +505,8 @@ impl AgentRuntime for FakeRuntime {
         Ok(())
     }
 
-    async fn send_input(&self, _session_id: &str, _turn_id: &str, _prompt: &str) -> Result<()> {
+    async fn send_input(&self, session_id: &str, _turn_id: &str, prompt: &str) -> Result<()> {
+        record_prompt(session_id, prompt);
         Ok(())
     }
 

@@ -1001,3 +1001,22 @@ async fn peer_origin_is_recorded_at_acceptance_and_preserved_when_queue_is_consu
     let origin=s.db.with(|c|Ok(c.query_row("SELECT json_extract(item_json,'$.origin') FROM thread_history_items WHERE thread_id=?1 AND json_extract(item_json,'$.kind')='userMessage'",[&id],|r|r.get::<_,String>(0))?)).unwrap();
     assert_eq!(origin, "peer");
 }
+
+#[test]
+fn the_recipient_guardrail_names_the_verified_sender_and_strips_cleanly() {
+    let line = recipient_guardrail(&json!({"userId": "u-1", "name": "Ma]l\nlo[ry"}));
+    assert!(
+        line.starts_with("[Pockymoe: sent by Mallory, a share recipient"),
+        "{line}"
+    );
+    assert!(line.ends_with("system settings.]"));
+    assert_eq!(line.matches(']').count(), 1);
+    assert!(recipient_guardrail(&json!({"userId": "u-1"})).contains("sent by u-1,"));
+    assert_eq!(guarded_prompt(None, "as typed"), "as typed");
+    let guarded = guarded_prompt(Some(&json!({"userId": "u-1"})), "as typed");
+    assert_eq!(without_recipient_guardrail(&guarded), "as typed");
+    assert_eq!(
+        without_recipient_guardrail("[Pockymoe task from x] keep"),
+        "[Pockymoe task from x] keep"
+    );
+}

@@ -2121,9 +2121,11 @@ impl Supervisor {
         runtime_goal: Option<GoalState>,
     ) -> Result<Option<ThreadGoalDto>> {
         let stored = self.stored_goal(thread_id)?;
-        let Some(runtime_goal) = runtime_goal else {
+        let Some(mut runtime_goal) = runtime_goal else {
             return Ok(stored);
         };
+        runtime_goal.objective =
+            thread_summary::without_recipient_guardrail(&runtime_goal.objective).to_string();
         let now = now_rfc3339();
         let mut goal = if let Some(existing) =
             stored.filter(|goal| goal.objective == runtime_goal.objective)
@@ -2160,10 +2162,12 @@ impl Supervisor {
     fn updated_goal_snapshot(
         &self,
         thread_id: &str,
-        runtime_goal: GoalState,
+        mut runtime_goal: GoalState,
         requested_status: Option<&str>,
         token_budget: Option<Option<u64>>,
     ) -> Result<ThreadGoalDto> {
+        runtime_goal.objective =
+            thread_summary::without_recipient_guardrail(&runtime_goal.objective).to_string();
         let now = now_rfc3339();
         let stored = self.stored_goal(thread_id)?;
         let mut goal = if let Some(existing) =
@@ -2876,6 +2880,8 @@ impl Supervisor {
         if let (Some(host), Some(title)) = (self.thread_host.get(), title.as_deref()) {
             host.before_rename(&thread, title)?;
         }
+        // A share recipient's queued prompt: the model also reads a guardrail.
+        let mut recipient: Option<Value> = None;
         self.db.with(|conn| {
             let tx = conn.unchecked_transaction()?;
             let conn = &tx;
@@ -2928,6 +2934,7 @@ impl Supervisor {
             }
             if let Some(pending) = pending_steer_id {
                 if let Some(sender) = thread_summary::prompt_sender(conn, pending)? {
+                    recipient = Some(sender.clone());
                     user_item.extra.insert("sender".into(), sender);
                     conn.execute("DELETE FROM kv WHERE key=?1", [thread_summary::prompt_sender_key(pending)])?;
                 }
@@ -2986,9 +2993,11 @@ impl Supervisor {
                 submission.token_budget,
             )?;
             let _ = submission.accepted.send(());
+            // A recipient's goal carries the guardrail in its objective
+            // (`submit_thread_goal`), so it reaches every autonomous round.
             submission.wire_prompt
         } else {
-            prompt
+            thread_summary::guarded_prompt(recipient.as_ref(), &prompt)
         };
         // The inbox is passive by design: mail never interrupts a turn, and the
         // receiver is expected to poll. Nothing surfaced it though, so a peer's
@@ -3423,11 +3432,17 @@ impl Supervisor {
             bail!("conflict: This backend does not support steering an active turn.");
         }
         let submitted_at = now_rfc3339();
+        let (origin, sender) = self.db.with(|conn| {
+            Ok((
+                thread_summary::prompt_origin(conn, &pending.id)?,
+                thread_summary::prompt_sender(conn, &pending.id)?,
+            ))
+        })?;
         runtime
             .send_input(
                 provider_session_id,
                 active_turn_id,
-                &pending.submitted_prompt,
+                &thread_summary::guarded_prompt(sender.as_ref(), &pending.submitted_prompt),
             )
             .await?;
 
@@ -3448,12 +3463,6 @@ impl Supervisor {
             artifact: None,
             extra: Default::default(),
         };
-        let (origin, sender) = self.db.with(|conn| {
-            Ok((
-                thread_summary::prompt_origin(conn, &pending.id)?,
-                thread_summary::prompt_sender(conn, &pending.id)?,
-            ))
-        })?;
         item.extra
             .insert("origin".into(), json!(origin.unwrap_or("user")));
         if let Some(sender) = sender {
@@ -4117,7 +4126,16 @@ impl Supervisor {
             .await?;
         }
         let argument = objective.as_deref().unwrap_or("resume").trim();
-        let Some(wire_prompt) = runtime.goal_prompt(session, argument).await? else {
+        // A recipient's new objective carries the guardrail inside the command,
+        // which must stay first; stored and shown goals drop it again.
+        let wire_argument = match (&sender, objective.is_some()) {
+            (Some(sender), true) => format!(
+                "{} {argument}",
+                thread_summary::recipient_guardrail(&serde_json::to_value(sender)?)
+            ),
+            _ => argument.to_string(),
+        };
+        let Some(wire_prompt) = runtime.goal_prompt(session, &wire_argument).await? else {
             return self
                 .thread_goal(id, objective, status, token_budget, false)
                 .await;
@@ -4666,7 +4684,8 @@ fn thread_from_row(row: &rusqlite::Row<'_>) -> ThreadDto {
 // placeholders in display text. Compare their textual prompt within the same
 // turn time window, still requiring exactly one match.
 fn usage_prompt_key(text: &str) -> String {
-    let mut remaining = text;
+    // The harness saw a recipient's prompt behind its guardrail line.
+    let mut remaining = thread_summary::without_recipient_guardrail(text.trim_start());
     let mut result = String::new();
     while let Some(start) = remaining.find("[PHOTO ") {
         result.push_str(&remaining[..start]);
