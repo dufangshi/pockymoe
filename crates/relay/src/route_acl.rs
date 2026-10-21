@@ -455,7 +455,6 @@ mod automation_acl_tests {
             "/automations/hook/pause",
             "/automations/hook/resume",
             "/automations/hook/cancel",
-            "/commands",
         ] {
             let path = format!("/api/threads/t{suffix}");
             assert!(!shared_thread_path_allowed("POST", &path, "t", false));
@@ -467,18 +466,21 @@ mod automation_acl_tests {
             "t",
             true
         ));
-        assert!(!shared_thread_path_allowed(
-            "GET",
-            "/api/threads/t/commands/c",
-            "t",
-            false
-        ));
-        assert!(shared_thread_path_allowed(
-            "GET",
-            "/api/threads/t/commands/c",
-            "t",
-            true
-        ));
+        // Shell commands are terminal use: never shared, even with control.
+        for control in [false, true] {
+            assert!(!shared_thread_path_allowed(
+                "POST",
+                "/api/threads/t/commands",
+                "t",
+                control
+            ));
+            assert!(!shared_thread_path_allowed(
+                "GET",
+                "/api/threads/t/commands/c",
+                "t",
+                control
+            ));
+        }
         assert!(!shared_workspace_path_allowed(
             "POST",
             "/api/workspaces/w/automations",

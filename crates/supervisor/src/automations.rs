@@ -3,7 +3,7 @@ use axum::{
     extract::{Path, Query, State},
     Json,
 };
-use pockymoe_protocol::{AutomationDefinition, CommandRunInput};
+use pockymoe_protocol::{AutomationAction, AutomationDefinition, CommandRunInput};
 use pockymoe_runtime::Supervisor;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -24,11 +24,42 @@ pub async fn list(
 ) -> Result<Json<Value>, ApiErr> {
     Ok(Json(s.automation_list(&id).map_err(map_err)?))
 }
+/// A script action runs shell text on the device: terminal use, which no share
+/// or grant allows (`access::terminal_route`). The sender is the verified
+/// non-owner identity also used to mark prompts (`message_sender`).
+fn refuse_recipient_script(
+    s: &Supervisor,
+    principal: Option<axum::Extension<crate::owner_trust::BrowserPrincipal>>,
+    relay_actor: Option<axum::Extension<crate::message_sender::RelayActor>>,
+    definition: &AutomationDefinition,
+) -> Result<(), ApiErr> {
+    if !matches!(definition.action, AutomationAction::RunScript { .. }) {
+        return Ok(());
+    }
+    let mut extensions = axum::http::Extensions::new();
+    if let Some(axum::Extension(principal)) = principal {
+        extensions.insert(principal);
+    }
+    if let Some(axum::Extension(actor)) = relay_actor {
+        extensions.insert(actor);
+    }
+    match crate::message_sender::sender(s, &extensions) {
+        Some(_) => Err(crate::http::err(
+            axum::http::StatusCode::FORBIDDEN,
+            "owner_required",
+            "Only the device owner can run scripts on this device.",
+        )),
+        None => Ok(()),
+    }
+}
 pub async fn create(
     State(s): State<Arc<Supervisor>>,
     Path(id): Path<String>,
+    principal: Option<axum::Extension<crate::owner_trust::BrowserPrincipal>>,
+    relay_actor: Option<axum::Extension<crate::message_sender::RelayActor>>,
     Json(v): Json<CreateInput>,
 ) -> Result<Json<Value>, ApiErr> {
+    refuse_recipient_script(&s, principal, relay_actor, &v.definition)?;
     Ok(Json(
         s.automation_create(&id, v.definition, v.client_request_id.as_deref())
             .map_err(map_err)?,
@@ -37,8 +68,11 @@ pub async fn create(
 pub async fn preview(
     State(s): State<Arc<Supervisor>>,
     Path(id): Path<String>,
+    principal: Option<axum::Extension<crate::owner_trust::BrowserPrincipal>>,
+    relay_actor: Option<axum::Extension<crate::message_sender::RelayActor>>,
     Json(v): Json<AutomationDefinition>,
 ) -> Result<Json<Value>, ApiErr> {
+    refuse_recipient_script(&s, principal, relay_actor, &v)?;
     Ok(Json(s.automation_preview(&id, v).map_err(map_err)?))
 }
 pub async fn show(

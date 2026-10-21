@@ -313,7 +313,8 @@ fn thread_lineage(state: &Supervisor) -> Value {
         .map(|threads| {
             json!(threads
                 .iter()
-                .map(|t| json!({"id":t.id,"parentThreadId":t.parent_thread_id}))
+                // The workspace lets the relay apply workspace grants to threads.
+                .map(|t| json!({"id":t.id,"parentThreadId":t.parent_thread_id,"workspaceId":t.workspace_id}))
                 .collect::<Vec<_>>())
         })
         .unwrap_or(Value::Null)

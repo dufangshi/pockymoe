@@ -1370,6 +1370,26 @@ export function fetchThreads(includeAgentThreads = false) {
   return request<ThreadDto[]>(`api/threads${includeAgentThreads ? '?includeAgentThreads=true' : ''}`);
 }
 
+/**
+ * One workspace's threads, its record and new threads there. A workspace share
+ * reaches only these routes; the device's own collections stay whole-device
+ * (docs/account-key-trust.md#sharing).
+ */
+export function fetchWorkspaceThreads(workspaceId: string, includeAgentThreads = false) {
+  return request<ThreadDto[]>(`api/workspaces/${encodeURIComponent(workspaceId)}/threads${includeAgentThreads ? '?includeAgentThreads=true' : ''}`);
+}
+
+export function fetchWorkspace(workspaceId: string) {
+  return request<WorkspaceDto>(`api/workspaces/${encodeURIComponent(workspaceId)}`);
+}
+
+export function createWorkspaceThread(workspaceId: string, input: CreateThreadInput) {
+  return request<ThreadDto>(`api/workspaces/${encodeURIComponent(workspaceId)}/threads`, {
+    method: 'POST',
+    body: JSON.stringify({ ...input, workspaceId }),
+  });
+}
+
 export function renameWorkspaceNode(workspaceId: string, input: {fromPath: string; toPath: string},
   deviceId?: string | null,
 ) {

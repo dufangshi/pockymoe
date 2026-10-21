@@ -70,7 +70,7 @@ import {
   updateRelayGrant,
   updateRelayShare,
 } from '../lib/api';
-import { threadHref, workspacesHref } from '../lib/relayRoutes';
+import { threadHref, threadsHref, workspacesHref } from '../lib/relayRoutes';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { useDevicePresence } from '../lib/useDevicePresence';
 
@@ -541,6 +541,11 @@ export function RelayDevicesPage() {
       navigate(threadHref(grant.threadId, grant.deviceId));
       return;
     }
+    // A shared workspace opens on its own threads; the device's list is not shared.
+    if (grant.scope === 'workspace' && grant.workspaceId) {
+      navigate(threadsHref(grant.workspaceId, grant.deviceId));
+      return;
+    }
     navigate(workspacesHref(grant.deviceId));
   }
 
@@ -715,7 +720,11 @@ export function RelayDevicesPage() {
     }
   }
 
-  const sharedDevicesWithMe = portal?.sharedDevicesWithMe ?? [];
+  // A shared workspace belongs to its device: it is a row on that device's card.
+  const sharedDevicesWithMe = [
+    ...(portal?.sharedDevicesWithMe ?? []),
+    ...(portal?.sharedThreadsWithMe ?? []).filter((grant) => grant.scope === 'workspace'),
+  ];
   const outgoingGrants = portal?.grantsByMe ?? [];
   const sharedViewTabs: Array<{
     count: number;

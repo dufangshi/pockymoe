@@ -27,8 +27,17 @@ it('round trips thread and device invites with the pin exclusively in the fragme
     );
   }
 });
+it('opens a workspace invite on the threads of that workspace', async () => {
+  const invite = { deviceId: 'device', ownerAccountKeyId, workspaceId: 'ws /?' };
+  const url = new URL(sharedInviteUrl('https://pockymoe.test', invite));
+  expect(parseSharedInvite(url.hash)).toEqual(invite);
+  expect(await acceptSharedInvite(invite)).toBe('/devices/device/threads?workspaceId=ws%20%2F%3F');
+});
 it.each([
   '',
+  '#v=2&device=d&owner=' + ownerAccountKeyId + '&workspace=',
+  '#v=2&device=d&owner=' + ownerAccountKeyId + '&workspace=a&workspace=b',
+  '#v=2&device=d&owner=' + ownerAccountKeyId + '&workspace=a&thread=t',
   '#v=1&device=d&owner=' + ownerAccountKeyId,
   '#v=2&owner=' + ownerAccountKeyId,
   '#v=2&device=d&owner=wrong',

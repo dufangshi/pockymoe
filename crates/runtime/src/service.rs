@@ -4043,10 +4043,14 @@ impl Supervisor {
         }
         let thread = self.get_thread(thread_id)?;
         let workspace = self.get_workspace(&thread.workspace_id)?;
-        let dir = PathBuf::from(&workspace.abs_path)
-            .join(".temp")
-            .join("threads")
-            .join(thread_id);
+        let root = PathBuf::from(&workspace.abs_path);
+        let dir = root.join(".temp").join("threads").join(thread_id);
+        // Uploads land inside the workspace even when a link inside it points out.
+        let inside = |path: &std::path::Path| {
+            crate::files::assert_within(&root, path)
+                .map_err(|_| anyhow!("Attachments must stay inside the workspace."))
+        };
+        inside(&dir)?;
         std::fs::create_dir_all(&dir)?;
         let mut rewritten = prompt.to_string();
         for attachment in attachments {
@@ -4057,7 +4061,7 @@ impl Supervisor {
                 );
             }
             let safe = sanitize_file_name(&attachment.original_name);
-            std::fs::write(dir.join(&safe), &attachment.bytes)?;
+            std::fs::write(inside(&dir.join(&safe))?, &attachment.bytes)?;
             let rel = format!("./.temp/threads/{thread_id}/{safe}");
             let token = if attachment.kind == "photo" {
                 format!("[PHOTO {rel}]")

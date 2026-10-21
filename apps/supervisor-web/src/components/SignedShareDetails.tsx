@@ -156,7 +156,8 @@ export function SignedShareDetails({
                 sharedInviteUrl(location.origin, {
                   deviceId: row.deviceId,
                   ownerAccountKeyId,
-                  ...(row.threadId ? { threadId: row.threadId } : {}),
+                  ...(row.threadId ? { threadId: row.threadId }
+                    : 'scope' in row && row.scope === 'workspace' && row.workspaceId ? { workspaceId: row.workspaceId } : {}),
                 }),
               ),
             )

@@ -117,6 +117,29 @@ describe('signed grant sharing', () => {
       expiresAt: Date.parse(deviceRow.expiresAt!),
     });
   });
+  it('signs a workspace share for exactly the workspace and new-thread choice in the dialog', async () => {
+    const workspaceRow = {
+      ...row, threadId: null, scope: 'workspace', workspaceId: 'workspace', workspaceLabel: 'docs-site',
+      workspaceScope: 'all', workspaceIds: [], threadAccess: 'control', workspaceAccess: 'read', canCreateThreads: true,
+    } as unknown as RelayAccessGrantDto;
+    current = workspaceRow;
+    const chosen = {
+      targetIdentifier: 'Recipient', deviceId: 'device', scope: 'workspace' as const, workspaceId: 'workspace',
+      workspaceLabel: 'docs-site', workspaceScope: 'all' as const, workspaceIds: [],
+      threadAccess: 'control' as const, workspaceAccess: 'read' as const, canCreateThreads: true,
+    };
+    await sharingMutation('grant', 'create', undefined, async () => ({ id: row.id }), chosen);
+    const put = state.request.mock.calls.find((c) => c[1]?.method === 'PUT')!;
+    expect(JSON.parse(put[1].body)).toMatchObject({
+      relayRef: { kind: 'grant', id: 'row' }, scope: 'workspace', threadId: null, workspaceId: 'workspace',
+      threadAccess: 'control', workspaceAccess: 'read', canCreateThreads: true,
+    });
+    // A relay row naming another workspace is never signed, and it is rolled back.
+    state.request.mockClear();
+    current = { ...workspaceRow, workspaceId: 'other-workspace' } as RelayAccessGrantDto;
+    await expect(sharingMutation('grant', 'create', undefined, async () => ({ id: row.id }), chosen)).rejects.toThrow(/rolled back/);
+    expect(state.request.mock.calls.some((c) => c[1]?.method === 'PUT')).toBe(false);
+  });
   it.each(['share', 'grant'] as const)(
     'rolls back a new %s row on device failure and requires a recipient account key',
     async (kind) => {

@@ -238,6 +238,22 @@ fn lineage(c: &Connection, target: Option<&str>) -> Result<Vec<String>> {
     Ok(c.prepare("WITH RECURSIVE ancestors(id,depth) AS (SELECT parent_thread_id,1 FROM threads WHERE id=?1 UNION ALL SELECT t.parent_thread_id,a.depth+1 FROM threads t JOIN ancestors a ON t.id=a.id WHERE a.depth<3) SELECT id FROM ancestors WHERE id IS NOT NULL ORDER BY depth")?
         .query_map([target],|r|r.get(0))?.collect::<rusqlite::Result<Vec<_>>>()?)
 }
+/// The workspaces of a thread and of its ancestors (up to three levels), nearest
+/// first, so a workspace grant reaches the conversations in its workspace.
+fn thread_workspaces(c: &Connection, thread: &str, ancestors: &[String]) -> Result<Vec<String>> {
+    let mut workspaces = Vec::new();
+    for id in std::iter::once(thread).chain(ancestors.iter().map(String::as_str)) {
+        if let Some(workspace) = c
+            .query_row("SELECT workspace_id FROM threads WHERE id=?1", [id], |r| {
+                r.get::<_, String>(0)
+            })
+            .optional()?
+        {
+            workspaces.push(workspace);
+        }
+    }
+    Ok(workspaces)
+}
 pub(crate) fn effective_access(
     state: &Supervisor,
     principal: &BrowserPrincipal,
@@ -249,6 +265,10 @@ pub(crate) fn effective_access(
     }
     state.db.with(|c| {
         let ancestors = lineage(c, thread)?;
+        let workspaces = match thread {
+            Some(thread) => thread_workspaces(c, thread, &ancestors)?,
+            None => Vec::new(),
+        };
         let rows: Vec<_> = live_rows(c, owner_trust::now())?
             .into_iter()
             .filter(|r| {
@@ -266,8 +286,14 @@ pub(crate) fn effective_access(
             .filter(|r| r.grant.relay_ref.kind == "grant")
             .map(|r| row_access(&r.grant))
             .collect();
-        Ok(access::effective_access_from_rows(
-            false, &shares, &grants, thread, workspace, &ancestors,
+        Ok(access::effective_access_from_rows_in(
+            false,
+            &shares,
+            &grants,
+            thread,
+            workspace,
+            &ancestors,
+            &workspaces,
         ))
     })
 }
@@ -302,10 +328,23 @@ pub(crate) fn authorize_path(
     if effective_access(state, p, thread.as_deref(), workspace.as_deref())?
         .is_some_and(|a| access::access_allows(&a, method, path))
     {
-        Ok(())
-    } else {
-        owner_trust::reject(403, "grant_denied")
+        return Ok(());
     }
+    // Runtime metadata names no thread or workspace: any live grant reads it,
+    // like the relay (`device_request_access`).
+    let pathname = path.split('?').next().unwrap_or(path);
+    if access::shared_runtime_metadata_allowed(method, pathname) && has_live_grant(state, p)? {
+        return Ok(());
+    }
+    owner_trust::reject(403, "grant_denied")
+}
+fn has_live_grant(state: &Supervisor, p: &BrowserPrincipal) -> Result<bool> {
+    state.db.with(|c| {
+        Ok(live_rows(c, owner_trust::now())?.into_iter().any(|r| {
+            Some(&r.grant.grantee.user_id) == p.grantee_user_id.as_ref()
+                && r.grant.grantee.account_key_id == p.account_key_id
+        }))
+    })
 }
 pub(crate) fn websocket_message_allowed(
     state: &Supervisor,
@@ -373,13 +412,8 @@ pub(crate) fn websocket_event_allowed(
     effective_access(state, p, thread.or(configured_thread), None)
         .ok()
         .flatten()
-        .is_some_and(|a| {
-            if shell.is_some() {
-                a.thread_access == "control"
-            } else {
-                control || thread.is_some()
-            }
-        })
+        // Terminal output is the owner's only (`access::terminal_route`).
+        .is_some_and(|_| shell.is_none() && (control || thread.is_some()))
 }
 pub(crate) async fn list_endpoint(
     State(state): State<Arc<Supervisor>>,

@@ -257,8 +257,10 @@ async fn certificates_preserve_json_and_enforce_access_and_deletion() {
         )
         .unwrap();
         conn.execute("UPDATE relay_access_grants SET expires_at='2000-01-01T00:00:00Z' WHERE id='thread-guest'", []).unwrap();
+        // A workspace grant without file access still shares the workspace's
+        // conversations, so only revoking it ends access.
         conn.execute(
-            "UPDATE relay_access_grants SET workspace_access='none' WHERE id='workspace-guest'",
+            "UPDATE relay_access_grants SET revoked_at='now' WHERE id='workspace-guest'",
             [],
         )
         .unwrap();
@@ -915,5 +917,175 @@ async fn forwarded_requests_carry_the_authorized_account_and_whether_it_owns_the
             .send(json!({"statusCode":200,"body":"[]"}))
             .unwrap();
         assert_eq!(result.await.unwrap().status(), StatusCode::OK);
+    }
+}
+
+async fn forwarded(
+    fixture: &Fixture,
+    rx: &mut tokio::sync::mpsc::Receiver<String>,
+    method: Method,
+    path: &str,
+    user: &str,
+) -> Result<String, StatusCode> {
+    let request = fixture.request(method, path, Some(user));
+    let mut result = tokio::spawn(async move { request.send().await.unwrap().status() });
+    tokio::select! {
+        status = &mut result => Err(status.unwrap()),
+        raw = rx.recv() => {
+            let frame: Value = serde_json::from_str(&raw.unwrap()).unwrap();
+            fixture
+                .state
+                .pending
+                .lock()
+                .unwrap()
+                .remove(frame["requestId"].as_str().unwrap())
+                .unwrap()
+                .tx
+                .send(json!({"statusCode":200,"body":"{}"}))
+                .unwrap();
+            assert_eq!(result.await.unwrap(), StatusCode::OK);
+            Ok(frame["payload"]["path"].as_str().unwrap().to_string())
+        }
+    }
+}
+
+#[tokio::test]
+async fn workspace_grants_reach_threads_the_device_reports_in_that_workspace() {
+    let fixture = Fixture::new("workspace-grant-threads").await;
+    let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+    fixture.state.sockets.write().await.insert(
+        "device".into(),
+        DeviceSocket {
+            tx,
+            connection_id: Uuid::new_v4(),
+            connected_at: now_rfc3339(),
+            last_heartbeat_at: now_rfc3339(),
+        },
+    );
+    let [inside, child, outside, unreported] = [(); 4].map(|_| Uuid::new_v4().to_string());
+    {
+        let conn = fixture.state.store.conn.lock().await;
+        thread_groups::replace(
+            &conn,
+            "device",
+            &json!([
+                {"id": inside, "workspaceId": "workspace"},
+                {"id": child, "parentThreadId": inside, "workspaceId": "elsewhere"},
+                {"id": outside, "workspaceId": "private"},
+                {"id": unreported}
+            ]),
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE relay_access_grants SET thread_access='control',can_create_threads=1 WHERE id='workspace-guest'",
+            [],
+        )
+        .unwrap();
+    }
+    let base = "/relay/devices/device/api";
+    for thread in [&inside, &child] {
+        for (method, suffix) in [(Method::GET, ""), (Method::POST, "/prompt")] {
+            let path = format!("{base}/threads/{thread}{suffix}");
+            assert_eq!(
+                forwarded(&fixture, &mut rx, method, &path, "workspace-guest").await,
+                Ok(format!("/api/threads/{thread}{suffix}"))
+            );
+        }
+    }
+    for thread in [&outside, &unreported] {
+        assert!(forwarded(
+            &fixture,
+            &mut rx,
+            Method::GET,
+            &format!("{base}/threads/{thread}"),
+            "workspace-guest"
+        )
+        .await
+        .is_err());
+    }
+    for (method, path) in [
+        (Method::GET, "/workspaces/workspace/threads"),
+        (Method::POST, "/workspaces/workspace/threads"),
+        (Method::GET, "/workspaces/workspace/files/tree"),
+        // Harness metadata names no resource; any live share reads it.
+        (Method::GET, "/agent-runtimes"),
+        (Method::GET, "/agent-runtimes/codex/models?cwd=%2Fx"),
+    ] {
+        assert!(
+            forwarded(
+                &fixture,
+                &mut rx,
+                method,
+                &format!("{base}{path}"),
+                "workspace-guest"
+            )
+            .await
+            .is_ok(),
+            "{path}"
+        );
+    }
+    let denied = [
+        (Method::POST, "/threads/start".to_string()),
+        (Method::GET, "/threads".to_string()),
+        (Method::GET, "/workspaces".to_string()),
+        (Method::GET, "/workspaces/private/threads".to_string()),
+        (Method::POST, "/workspaces/workspace/files/save".to_string()),
+        (Method::GET, format!("/threads/{inside}/shell")),
+        (Method::POST, format!("/threads/{inside}/shell")),
+        (Method::POST, format!("/threads/{inside}/commands")),
+        (
+            Method::GET,
+            format!("/threads/{inside}/linked-files/raw?path=%2Fetc%2Fpasswd"),
+        ),
+    ];
+    for (method, path) in denied {
+        assert!(
+            forwarded(
+                &fixture,
+                &mut rx,
+                method,
+                &format!("{base}{path}"),
+                "workspace-guest"
+            )
+            .await
+            .is_err(),
+            "{path}"
+        );
+    }
+    // The owner keeps every route, terminals included.
+    assert!(forwarded(
+        &fixture,
+        &mut rx,
+        Method::POST,
+        &format!("{base}/threads/{inside}/shell"),
+        "owner"
+    )
+    .await
+    .is_ok());
+    for path in ["/agent-runtimes", "/transport/key"] {
+        assert!(
+            forwarded(
+                &fixture,
+                &mut rx,
+                Method::GET,
+                &format!("{base}{path}"),
+                "stranger"
+            )
+            .await
+            .is_err(),
+            "{path}"
+        );
+    }
+    // Other recipients never gain the workspace's threads.
+    for user in ["thread-guest", "share-guest", "stranger"] {
+        assert!(forwarded(
+            &fixture,
+            &mut rx,
+            Method::GET,
+            &format!("{base}/threads/{inside}"),
+            user
+        )
+        .await
+        .is_err());
     }
 }

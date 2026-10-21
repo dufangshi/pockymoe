@@ -760,14 +760,57 @@ cleaned up by the relay ([old Web origin](#old-web-origin)).
 
 ## Sharing
 
-A bound device enforces shares (one thread) and grants (device or workspace
-access) from its own grant list, in addition to the relay. Only owner browsers can
-read or change it; each grant mirrors one relay row and names the recipient's
-account key ([grant format](#records)). The device recomputes a recipient's access
-on every request with the relay's rules (`crates/protocol` access: owner, then a
-share with thread lineage up to three levels, then grants merged by highest scope
-and access) and filters recipient WebSocket events and messages itself. Grants are
-created only while the device is online.
+A bound device enforces shares (one thread) and grants (one workspace or the
+whole device) from its own grant list, in addition to the relay. Only owner
+browsers can read or change it; each grant mirrors one relay row and names the
+recipient's account key ([grant format](#records)). The device recomputes a
+recipient's access on every request with the relay's rules (`crates/protocol`
+access: owner, then a share with thread lineage up to three levels, then grants
+merged by highest scope and access) and filters recipient WebSocket events and
+messages itself. Grants are created only while the device is online.
+
+| Scope | Conversations | Files | New conversations |
+| --- | --- | --- | --- |
+| Thread (share) | The thread and the agent threads it started, three levels deep | Its workspace, with read or write file access | None |
+| Workspace (grant) | Every thread in the workspace, and the agent threads they started elsewhere, three levels deep | That workspace only | Only there, with control and **Allow new threads** |
+| Device (grant) | Every thread | Every workspace; with write, also files a conversation links to outside them | Anywhere, with control and **Allow new threads** |
+
+**Workspace shares.** The thread page's share dialog offers this thread, this
+workspace or the whole device. A workspace share is a relay grant
+(`scope: "workspace"`, `workspaceId`, `workspaceLabel`) signed for a bound device
+like a device grant. Its recipient lists the conversations with
+`GET /api/workspaces/{id}/threads` and starts one with
+`POST /api/workspaces/{id}/threads`; the device refuses a body naming another
+workspace. `GET /api/threads`, `GET /api/workspaces` and `POST /api/threads/start`
+stay whole-device routes. The relay learns each thread's workspace from the
+device's heartbeat (`threadLineage[].workspaceId`) and a bound device reads its own
+database, so a thread the device has not reported is outside every workspace share.
+The recipient finds the workspace as a row on the device's card under **Devices
+with me**; the device's Workspaces page lists only the workspaces shared with them,
+without the owner's actions. Runtime metadata (`/api/agent-runtimes…`), which names
+no thread or workspace, is readable with any live share or grant on the device, so
+a workspace share can choose a harness and model for a new thread. Devices on
+0.13.36 or earlier report no workspaces and have no workspace thread routes: there
+a workspace share reaches its files only.
+
+**No terminal for recipients.** No share or grant, read or control, reaches a
+terminal: thread shells (`/api/threads/{id}/shell`, the relay's
+`/transport/shell-scope` probe), `/api/shells/*`, one-off commands
+(`/api/threads/{id}/commands*`), the terminal plugin's routes, and the WebSocket
+`shell.*` messages and shell output (`access::terminal_route` and
+`client_message_allowed`, enforced by the relay and by a bound device). A device
+also refuses a script automation (`runScript`) from a recipient. The relay reads
+the cleartext message type of every forwarded WebSocket message, so recipients of
+older devices lose `shell.*` too once the relay is updated. The Web hides the
+terminal panel, its buttons and its plugin switch from recipients. This is a fixed
+rule, not a share option; a whole-device share that used the terminal before loses
+it.
+
+**Files stay in the workspace.** Thread and workspace shares reach files only
+through their workspace's `/api/workspaces/{id}/files/*` routes, where every path
+resolves `..` and symbolic links inside the workspace root; prompt attachments are
+written inside it even when `.temp` links elsewhere. The Web's file tree for them
+starts at the workspace root and has no way above it.
 
 Creating or editing shared access for a protected device:
 
@@ -799,8 +842,8 @@ narrower grants see those paths as plain text.
 
 Validation: a recipient key must hash to its ID and must not be the device's own
 key (`grantee_is_owner`); one recipient key maps to one user and public key across
-grants; device-scope grants need `workspaceScope: "all"`; shares are thread-scoped;
-at most 256 grants (`grant_limit`).
+grants; device-scope grants need `workspaceScope: "all"`; workspace-scope grants
+need a `workspaceId`; shares are thread-scoped; at most 256 grants (`grant_limit`).
 
 **Safety code.** The first 12 characters of the Crockford base32 encoding of
 `SHA256("pockymoe-acct-safety-v1\n" + accountKeyId)`, in groups of four. Each user
@@ -828,8 +871,11 @@ verify the device certificate with the owner's account key from
 invite link pins it beforehand:
 
 ```text
-{webOrigin}/shared#v=2&device={deviceId}&owner={ownerAccountKeyId}[&thread={threadId}]
+{webOrigin}/shared#v=2&device={deviceId}&owner={ownerAccountKeyId}[&thread={threadId}|&workspace={workspaceId}]
 ```
+
+A thread share's invite opens the thread, a workspace share's invite opens that
+workspace's threads, and a whole-device invite opens the device's workspaces.
 
 After the recipient confirms the device and owner key shown, the browser pins that
 key; a different key from the relay, or a certificate that does not verify with

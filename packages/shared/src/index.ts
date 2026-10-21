@@ -289,6 +289,8 @@ export interface CreateRelayAccessGrantInput {
   scope: RelayShareScopeDto;
   threadId?: string | null;
   workspaceId?: string | null;
+  /** A workspace grant's name for both sides; never signed or enforced. */
+  workspaceLabel?: string | null;
   workspaceScope?: RelayWorkspaceScopeDto;
   workspaceIds?: string[];
   label?: string | null;

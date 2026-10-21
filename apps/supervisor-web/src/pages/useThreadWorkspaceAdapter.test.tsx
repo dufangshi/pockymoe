@@ -75,3 +75,34 @@ it('captures both device and workspace through focus changes and an in-flight sa
   await b.createFile!({threadId:'thread-b',workspaceId:'untrusted',path:'b.md'});
   expect(api.createWorkspaceFile).toHaveBeenCalledWith('workspace-b','b.md','device-b');
 });
+it('keeps a thread or workspace share inside its workspace root', async () => {
+  vi.mocked(api.fetchWorkspaceFileTree).mockClear();
+  vi.mocked(api.fetchWorkspaceFilePreview).mockClear();
+  vi.mocked(api.fetchLinkedFilePreview).mockClear();
+  vi.mocked(api.downloadWorkspaceFile).mockClear();
+  const { result } = renderHook(() => useThreadWorkspaceAdapter({
+    setError: vi.fn(), workspaceId: 'shared-ws', deviceId: 'device', access: 'write',
+    // Even if a caller offers linked files, a confined share never reads them.
+    allowLinkedFiles: true, confined: true,
+  }));
+  const adapter = result.current!;
+  // The tree starts at the workspace root.
+  await adapter.listTree({ threadId: 't', workspaceId: 'shared-ws' });
+  expect(api.fetchWorkspaceFileTree).toHaveBeenCalledWith('shared-ws', { path: '' }, 'device');
+  expect(adapter.statLinkedFile).toBeUndefined();
+  for (const path of ['/etc', '..', 'src/../../home']) {
+    await expect(adapter.listTree({ threadId: 't', workspaceId: 'shared-ws', path })).rejects.toThrow('Only files in this shared workspace are available.');
+  }
+  for (const path of ['/etc/passwd', '../outside.txt', 'C:/Users/me/a.txt']) {
+    await expect(adapter.readFile({ threadId: 't', workspaceId: 'shared-ws', path })).rejects.toThrow(/shared workspace/);
+    await expect(adapter.readRawFile!({ threadId: 't', workspaceId: 'shared-ws', path })).rejects.toThrow(/shared workspace/);
+    expect(adapter.getRawFileUrl!({ threadId: 't', workspaceId: 'shared-ws', path })).toBe('data:,');
+    expect(() => adapter.saveDocument!({ threadId: 't', workspaceId: 'shared-ws', path, operationId: 'op', draftRevision: 1 } as never)).toThrow(/shared workspace/);
+  }
+  expect(api.fetchWorkspaceFileTree).toHaveBeenCalledTimes(1);
+  expect(api.fetchWorkspaceFilePreview).not.toHaveBeenCalled();
+  expect(api.fetchLinkedFilePreview).not.toHaveBeenCalled();
+  expect(api.downloadWorkspaceFile).not.toHaveBeenCalled();
+  await adapter.readFile({ threadId: 't', workspaceId: 'shared-ws', path: 'docs/readme.md' });
+  expect(api.fetchWorkspaceFilePreview).toHaveBeenCalledWith('shared-ws', { path: 'docs/readme.md' }, 'device');
+});

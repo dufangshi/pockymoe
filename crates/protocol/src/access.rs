@@ -73,11 +73,58 @@ pub fn linked_files_allowed(access: &EffectiveAccess) -> bool {
     access.kind == "owner" || (access.scope == "device" && access.workspace_access == "write")
 }
 
+/// Terminal and shell routes: a thread's shell sessions (`/api/threads/{id}/shell`,
+/// the relay's `/transport/shell-scope` probe), `/api/shells/*`, and any
+/// `terminal` plugin. They belong to the device owner only, whatever a share or
+/// grant allows; the WebSocket `shell.*` messages follow the same rule
+/// (`client_message_allowed`).
+pub fn terminal_route(path: &str) -> bool {
+    let pathname = path.split('?').next().unwrap_or(path);
+    let segments: Vec<&str> = pathname
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    match segments.as_slice() {
+        ["api", "shells", ..] => true,
+        ["api", "threads", _, "shell", ..] => true,
+        ["api", "threads", _, "transport", "shell-scope", ..] => true,
+        ["api", "workspaces", _, "terminal" | "terminals" | "shell", ..] => true,
+        // One-off shell commands (`/bin/sh -c`) and their output.
+        ["api", "threads", _, "commands", ..] => true,
+        ["api", "threads", _, "plugins", plugin, ..] | ["api", "plugins", plugin, ..] => {
+            plugin_is_terminal(plugin)
+        }
+        _ => false,
+    }
+}
+
+fn plugin_is_terminal(plugin: &str) -> bool {
+    let plugin = plugin.to_ascii_lowercase();
+    plugin
+        .rsplit(['.', '/', ':'])
+        .next()
+        .is_some_and(|name| matches!(name, "terminal" | "shell" | "pty"))
+}
+
+/// The thread collection inside one workspace: `GET` lists its conversations,
+/// `POST` starts one there. A workspace share needs no file access for them.
+fn workspace_threads_allowed(access: &EffectiveAccess, method: &str) -> bool {
+    match method {
+        "GET" => matches!(access.thread_access.as_str(), "read" | "control"),
+        "POST" => access.thread_access == "control" && access.can_create_threads,
+        _ => false,
+    }
+}
+
 pub fn access_allows(access: &EffectiveAccess, method: &str, path: &str) -> bool {
     if access.kind == "owner" {
         return true;
     }
     let pathname = path.split('?').next().unwrap_or(path);
+    // No share or grant ever reaches a terminal, read or control.
+    if terminal_route(pathname) {
+        return false;
+    }
     if shared_runtime_metadata_allowed(method, pathname) {
         return true;
     }
@@ -136,7 +183,25 @@ pub fn access_allows(access: &EffectiveAccess, method: &str, path: &str) -> bool
             || access.workspace_id.as_deref() == Some(workspace_id.as_str())
             || (access.workspace_scope.as_deref() == Some("selected")
                 && access.workspace_ids.iter().any(|id| id == &workspace_id));
-        if !workspace_matches || access.workspace_access == "none" {
+        if !workspace_matches {
+            return false;
+        }
+        let suffix = pathname
+            .strip_prefix(&format!("/api/workspaces/{workspace_id}"))
+            .unwrap_or("/invalid");
+        // Conversations of a shared workspace: listing them and starting new ones
+        // there. A thread share's workspace never lists its other conversations.
+        if suffix == "/threads" {
+            return matches!(access.scope.as_str(), "workspace" | "device")
+                && workspace_threads_allowed(access, method);
+        }
+        // The workspace record and the device's signed transport key, which the
+        // browser fetches before its first workspace request.
+        if access.scope == "workspace" && method == "GET" && matches!(suffix, "" | "/transport/key")
+        {
+            return true;
+        }
+        if access.workspace_access == "none" {
             return false;
         }
         return shared_workspace_path_allowed(
@@ -217,12 +282,8 @@ pub fn shared_thread_path_allowed(
         };
     }
     if automation.first() == Some(&"commands") {
-        // Command argv/output belong to device control access, not read-only shares.
-        return control
-            && matches!(
-                (method, automation.as_slice()),
-                ("POST", ["commands"]) | ("GET", ["commands", _])
-            );
+        // Shell commands and their output are terminal use (`terminal_route`).
+        return false;
     }
     if method == "GET" && suffix.starts_with("/transport/stream/") {
         return true;
@@ -348,6 +409,18 @@ pub fn merge_access(
         if workspace_id.is_none_or(|id| {
             share.workspace_id.as_deref() == Some(id) && share.workspace_access != "none"
         }) {
+            // A workspace route that a workspace or device grant also covers
+            // takes the grants' scope, so a thread share in the same workspace
+            // does not hide its conversations; the share adds only its file access.
+            if thread_id.is_none() && workspace_id.is_some() && !matching.is_empty() {
+                let mut merged = merge_access(false, None, matching, thread_id, workspace_id)?;
+                if rank_workspace_access(&share.workspace_access)
+                    > rank_workspace_access(&merged.workspace_access)
+                {
+                    merged.workspace_access = share.workspace_access;
+                }
+                return Some(merged);
+            }
             return Some(share);
         }
     }
@@ -367,25 +440,19 @@ pub fn merge_access(
     } else {
         "read"
     };
-    let workspace_access = if matching
+    let workspace_access = matching
         .iter()
-        .any(|grant| grant.workspace_access == "write")
-    {
-        "write"
-    } else if matching
-        .iter()
-        .any(|grant| grant.workspace_access == "read")
-    {
-        "read"
-    } else {
-        "none"
-    };
+        .map(|grant| grant.workspace_access.as_str())
+        .max_by_key(|access| rank_workspace_access(access))
+        .unwrap_or("none");
     let mut merged = representative;
     merged.scope = merged_scope.to_string();
-    merged.thread_id = if merged_scope == "thread" {
-        thread_id.map(str::to_string).or(merged.thread_id)
-    } else {
-        None
+    // A workspace grant reaches a thread through the thread's workspace; the
+    // merged access names that thread like a thread share does.
+    merged.thread_id = match merged_scope {
+        "thread" => thread_id.map(str::to_string).or(merged.thread_id),
+        "workspace" => thread_id.map(str::to_string),
+        _ => None,
     };
     merged.thread_access = thread_access.to_string();
     merged.workspace_access = workspace_access.to_string();
@@ -398,11 +465,35 @@ pub fn merge_access(
     Some(merged)
 }
 
+fn rank_workspace_access(access: &str) -> u8 {
+    match access {
+        "write" => 2,
+        "read" => 1,
+        _ => 0,
+    }
+}
+
 pub fn grant_matches(
     grant: &EffectiveAccess,
     thread_id: Option<&str>,
     workspace_id: Option<&str>,
     lineage: &[String],
+) -> bool {
+    grant_matches_in(grant, thread_id, workspace_id, lineage, &[])
+}
+
+/// `thread_workspaces` lists the workspace of the requested thread, then those
+/// of its ancestors (nearest first), from the caller's own storage. A workspace
+/// grant covers every conversation there, including agent threads its
+/// conversations started elsewhere (up to three levels, like a thread share),
+/// and the workspace's own routes whatever its file access; `access_allows`
+/// decides which of those routes need file access.
+pub fn grant_matches_in(
+    grant: &EffectiveAccess,
+    thread_id: Option<&str>,
+    workspace_id: Option<&str>,
+    lineage: &[String],
+    thread_workspaces: &[String],
 ) -> bool {
     match grant.scope.as_str() {
         "device" => workspace_id.is_none() || grant.workspace_access != "none",
@@ -411,10 +502,13 @@ pub fn grant_matches(
                 parent == id || lineage.iter().take(3).any(|ancestor| ancestor == parent)
             })
         }),
-        "workspace" => {
-            grant.workspace_access != "none"
-                && workspace_id.is_some_and(|id| Some(id) == grant.workspace_id.as_deref())
-        }
+        "workspace" => grant.workspace_id.as_deref().is_some_and(|granted| {
+            if thread_id.is_some() {
+                thread_workspaces.iter().take(4).any(|id| id == granted)
+            } else {
+                workspace_id == Some(granted)
+            }
+        }),
         _ => false,
     }
 }
@@ -428,6 +522,20 @@ pub fn effective_access_from_rows(
     thread_id: Option<&str>,
     workspace_id: Option<&str>,
     lineage: &[String],
+) -> Option<EffectiveAccess> {
+    effective_access_from_rows_in(owner, shares, grants, thread_id, workspace_id, lineage, &[])
+}
+
+/// `effective_access_from_rows` with the requested thread's workspaces
+/// (`grant_matches_in`), so workspace grants reach that workspace's threads.
+pub fn effective_access_from_rows_in(
+    owner: bool,
+    shares: &[EffectiveAccess],
+    grants: &[EffectiveAccess],
+    thread_id: Option<&str>,
+    workspace_id: Option<&str>,
+    lineage: &[String],
+    thread_workspaces: &[String],
 ) -> Option<EffectiveAccess> {
     if owner {
         return Some(owner_access());
@@ -454,7 +562,7 @@ pub fn effective_access_from_rows(
         });
     let mut matching: Vec<_> = grants
         .iter()
-        .filter(|g| grant_matches(g, thread_id, workspace_id, lineage))
+        .filter(|g| grant_matches_in(g, thread_id, workspace_id, lineage, thread_workspaces))
         .cloned()
         .collect();
     matching.sort_by_key(|g| {
@@ -467,6 +575,8 @@ pub fn effective_access_from_rows(
     merge_access(false, share, &matching, thread_id, workspace_id)
 }
 
+/// WebSocket messages a browser may send. Terminal messages (`shell.*`) are the
+/// owner's only; shares and grants never attach to, type into or resize a shell.
 pub fn client_message_allowed(access: &EffectiveAccess, kind: &str) -> bool {
     matches!(
         kind,
@@ -477,9 +587,7 @@ pub fn client_message_allowed(access: &EffectiveAccess, kind: &str) -> bool {
             | "shell.input"
             | "shell.resize"
             | "shell.clear"
-    ) && (matches!(kind, "supervisor.ping" | "thread.view")
-        || access.kind == "owner"
-        || access.thread_access == "control")
+    ) && (matches!(kind, "supervisor.ping" | "thread.view") || access.kind == "owner")
 }
 
 pub fn outbound_event_in_scope(
@@ -514,6 +622,284 @@ mod tests {
             can_create_threads: false,
         }
     }
+    fn workspace_grant(thread_access: &str, workspace_access: &str) -> EffectiveAccess {
+        EffectiveAccess {
+            thread_id: None,
+            workspace_id: Some("ws".into()),
+            ..shared("workspace", thread_access, workspace_access)
+        }
+    }
+
+    #[test]
+    fn workspace_grants_reach_the_conversations_in_their_workspace() {
+        let grant = workspace_grant("read", "none");
+        let here = ["ws".to_string()];
+        // Its own workspace, or an ancestor's within three levels.
+        assert!(grant_matches_in(&grant, Some("t"), None, &[], &here));
+        assert!(grant_matches_in(
+            &grant,
+            Some("child"),
+            None,
+            &[],
+            &["elsewhere".into(), "ws".into()]
+        ));
+        assert!(!grant_matches_in(
+            &grant,
+            Some("deep"),
+            None,
+            &[],
+            &["a".into(), "b".into(), "c".into(), "d".into(), "ws".into()]
+        ));
+        assert!(!grant_matches_in(
+            &grant,
+            Some("t"),
+            None,
+            &[],
+            &["other".into()]
+        ));
+        // Without the device's report a thread is never in a shared workspace.
+        assert!(!grant_matches(&grant, Some("t"), None, &[]));
+        // Its workspace routes match whatever the file access; other workspaces never.
+        assert!(grant_matches_in(&grant, None, Some("ws"), &[], &[]));
+        assert!(!grant_matches_in(&grant, None, Some("other"), &[], &[]));
+        assert!(!grant_matches_in(&grant, None, None, &[], &[]));
+
+        let access = effective_access_from_rows_in(
+            false,
+            &[],
+            std::slice::from_ref(&grant),
+            Some("t"),
+            None,
+            &[],
+            &here,
+        )
+        .unwrap();
+        assert_eq!(access.scope, "workspace");
+        assert_eq!(access.thread_id.as_deref(), Some("t"));
+        assert_eq!(access.workspace_id.as_deref(), Some("ws"));
+        assert!(access_allows(&access, "GET", "/api/threads/t"));
+        assert!(access_allows(&access, "GET", "/api/threads/t/summary"));
+        assert!(!access_allows(&access, "POST", "/api/threads/t/prompt"));
+        assert!(!access_allows(&access, "GET", "/api/threads/other"));
+        let control = effective_access_from_rows_in(
+            false,
+            &[],
+            &[workspace_grant("control", "none")],
+            Some("t"),
+            None,
+            &[],
+            &here,
+        )
+        .unwrap();
+        assert!(access_allows(&control, "POST", "/api/threads/t/prompt"));
+        assert!(access_allows(
+            &control,
+            "POST",
+            "/api/threads/t/pending-steers/p/steer"
+        ));
+        assert!(
+            effective_access_from_rows_in(false, &[], &[grant], Some("t"), None, &[], &[])
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn workspace_shares_list_and_start_threads_only_in_their_workspace() {
+        let list = "/api/workspaces/ws/threads";
+        let read = workspace_grant("read", "none");
+        assert!(access_allows(&read, "GET", list));
+        assert!(access_allows(
+            &read,
+            "GET",
+            "/api/workspaces/ws/threads?includeAgentThreads=true"
+        ));
+        assert!(access_allows(&read, "GET", "/api/workspaces/ws"));
+        assert!(access_allows(
+            &read,
+            "GET",
+            "/api/workspaces/ws/transport/key?challenge=x"
+        ));
+        assert!(!access_allows(&read, "POST", list));
+        assert!(!access_allows(
+            &read,
+            "GET",
+            "/api/workspaces/other/threads"
+        ));
+        assert!(!access_allows(&read, "GET", "/api/workspaces/other"));
+        let mut control = workspace_grant("control", "none");
+        assert!(!access_allows(&control, "POST", list));
+        control.can_create_threads = true;
+        assert!(access_allows(&control, "POST", list));
+        assert!(!access_allows(
+            &control,
+            "POST",
+            "/api/workspaces/other/threads"
+        ));
+        for method in ["PUT", "PATCH", "DELETE"] {
+            assert!(!access_allows(&control, method, list));
+        }
+        // Creating threads anywhere else, and the device's thread collection, stay closed.
+        for (method, path) in [
+            ("POST", "/api/threads/start"),
+            ("GET", "/api/threads"),
+            ("GET", "/api/threads?workspaceId=ws"),
+            ("GET", "/api/workspaces"),
+            ("GET", "/api/search"),
+            ("GET", "/api/workspaces/ws/search"),
+            ("GET", "/api/device/metrics"),
+            ("PATCH", "/api/workspaces/ws"),
+            ("DELETE", "/api/workspaces/ws"),
+        ] {
+            assert!(!access_allows(&control, method, path), "{method} {path}");
+        }
+        // A thread share's workspace gives files at most, never its other conversations.
+        let mut thread = shared("thread", "control", "write");
+        thread.workspace_id = Some("ws".into());
+        thread.can_create_threads = true;
+        assert!(!access_allows(&thread, "GET", list));
+        assert!(!access_allows(&thread, "POST", list));
+        // The whole device lists any workspace's threads.
+        assert!(access_allows(
+            &shared("device", "read", "read"),
+            "GET",
+            list
+        ));
+    }
+
+    #[test]
+    fn workspace_files_follow_the_workspace_share_file_access() {
+        for (file_access, read, write) in [
+            ("none", false, false),
+            ("read", true, false),
+            ("write", true, true),
+        ] {
+            let access = workspace_grant("control", file_access);
+            for path in [
+                "/api/workspaces/ws/files/tree",
+                "/api/workspaces/ws/files/raw?path=a",
+                "/api/workspaces/ws/files/download?path=a",
+            ] {
+                assert_eq!(
+                    access_allows(&access, "GET", path),
+                    read,
+                    "{file_access} {path}"
+                );
+            }
+            for (method, path) in [
+                ("POST", "/api/workspaces/ws/files/save"),
+                ("PUT", "/api/workspaces/ws/files"),
+                ("POST", "/api/workspaces/ws/files/upload"),
+                ("PATCH", "/api/workspaces/ws/files/move"),
+            ] {
+                assert_eq!(
+                    access_allows(&access, method, path),
+                    write,
+                    "{file_access} {path}"
+                );
+            }
+            assert!(!access_allows(
+                &access,
+                "GET",
+                "/api/workspaces/other/files/tree"
+            ));
+            // Files outside the workspace, even ones a conversation links to.
+            assert!(!access_allows(
+                &EffectiveAccess {
+                    thread_id: Some("t".into()),
+                    ..access.clone()
+                },
+                "GET",
+                "/api/threads/t/linked-files/raw?path=%2Fetc%2Fpasswd"
+            ));
+        }
+    }
+
+    #[test]
+    fn a_thread_share_does_not_hide_a_workspace_share_of_the_same_workspace() {
+        let mut share = shared("thread", "control", "write");
+        share.share_id = Some("share".into());
+        share.grant_id = None;
+        share.workspace_id = Some("ws".into());
+        let grant = workspace_grant("read", "read");
+        let access = effective_access_from_rows_in(
+            false,
+            &[share.clone()],
+            std::slice::from_ref(&grant),
+            None,
+            Some("ws"),
+            &[],
+            &[],
+        )
+        .unwrap();
+        assert_eq!(access.scope, "workspace");
+        assert_eq!(access.thread_access, "read");
+        assert_eq!(access.workspace_access, "write");
+        assert!(access_allows(&access, "GET", "/api/workspaces/ws/threads"));
+        assert!(access_allows(
+            &access,
+            "POST",
+            "/api/workspaces/ws/files/save"
+        ));
+        // The shared thread itself keeps the share's own permissions.
+        let thread = effective_access_from_rows_in(
+            false,
+            &[share],
+            &[grant],
+            Some("root"),
+            None,
+            &[],
+            &["ws".into()],
+        )
+        .unwrap();
+        assert_eq!(thread.scope, "thread");
+        assert_eq!(thread.thread_access, "control");
+    }
+
+    #[test]
+    fn no_share_or_grant_reaches_a_terminal() {
+        let routes = [
+            ("GET", "/api/threads/root/shell"),
+            ("POST", "/api/threads/root/shell"),
+            ("GET", "/api/threads/root/transport/shell-scope"),
+            ("PATCH", "/api/shells/s1"),
+            ("POST", "/api/shells/s1/terminate"),
+            ("POST", "/api/threads/root/commands"),
+            ("GET", "/api/threads/root/commands/c1"),
+            (
+                "GET",
+                "/api/threads/root/plugins/remote-codex.terminal/settings",
+            ),
+            (
+                "PUT",
+                "/api/threads/root/plugins/remote-codex.terminal/settings",
+            ),
+            ("GET", "/api/plugins/remote-codex.terminal"),
+            ("PATCH", "/api/plugins/remote-codex.terminal"),
+        ];
+        for (method, path) in routes {
+            assert!(terminal_route(path), "{path}");
+            assert!(access_allows(&owner_access(), method, path), "{path}");
+            for scope in ["thread", "workspace", "device"] {
+                for level in ["read", "control"] {
+                    let mut access = shared(scope, level, "write");
+                    access.can_create_threads = true;
+                    assert!(
+                        !access_allows(&access, method, path),
+                        "{scope} {level} {method} {path}"
+                    );
+                }
+            }
+        }
+        for path in [
+            "/api/threads/root/plugins",
+            "/api/threads/root/plugins/pockymoe.content-quality/settings",
+            "/api/threads/root/summary",
+            "/api/plugins",
+        ] {
+            assert!(!terminal_route(path), "{path}");
+        }
+    }
+
     #[test]
     fn literal_thread_routes_do_not_become_thread_ids() {
         for literal in ["start", "import", "import-candidates"] {
@@ -844,18 +1230,32 @@ mod tests {
             "GET",
             "/api/workspaces/any/files/raw"
         ));
+        let owner = EffectiveAccess {
+            kind: "owner",
+            ..read.clone()
+        };
         assert!(client_message_allowed(&read, "supervisor.ping"));
         // Viewer reports are transport control messages. The Supervisor checks
         // every listed thread and ignores read-only viewers for harness retention.
         assert!(client_message_allowed(&read, "thread.view"));
         assert!(client_message_allowed(&control, "thread.view"));
-        let owner = EffectiveAccess {
-            kind: "owner".into(),
-            ..read.clone()
-        };
         assert!(client_message_allowed(&owner, "thread.view"));
-        assert!(!client_message_allowed(&read, "shell.attach"));
-        assert!(client_message_allowed(&control, "shell.attach"));
+        // Terminals are the owner's only, even for control access.
+        for kind in [
+            "shell.attach",
+            "shell.input",
+            "shell.resize",
+            "shell.detach",
+            "shell.clear",
+        ] {
+            assert!(!client_message_allowed(&read, kind));
+            assert!(!client_message_allowed(&control, kind));
+            assert!(!client_message_allowed(
+                &shared("device", "control", "write"),
+                kind
+            ));
+            assert!(client_message_allowed(&owner, kind));
+        }
         assert!(!client_message_allowed(&control, "thread.prompt"));
         assert!(outbound_event_in_scope(
             Some("root"),

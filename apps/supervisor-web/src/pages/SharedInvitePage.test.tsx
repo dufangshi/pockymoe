@@ -53,7 +53,7 @@ it('pins the invite before checking the signed descriptor, then navigates to the
     '/devices/device/threads/thread',
   );
   expect(state.pin).toHaveBeenCalledWith('device', identity);
-  expect(state.fingerprint).toHaveBeenCalledWith('device', 'thread');
+  expect(state.fingerprint).toHaveBeenCalledWith('device', 'thread', undefined);
   expect(state.pin.mock.invocationCallOrder[0]).toBeLessThan(
     state.fingerprint.mock.invocationCallOrder[0]!,
   );

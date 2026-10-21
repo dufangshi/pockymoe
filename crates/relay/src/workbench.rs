@@ -151,18 +151,10 @@ fn upsert(conn: &Connection, user: &str, visit: &Visit) -> Result<()> {
     Ok(())
 }
 
-fn accessible(
-    conn: &Connection,
-    user: &str,
-    device: &str,
-    thread: &str,
-    workspace: Option<&str>,
-) -> bool {
+/// A workspace grant reaches a thread through the workspace its device reports
+/// (`thread_groups::workspaces`), never through the browser's visit record.
+fn accessible(conn: &Connection, user: &str, device: &str, thread: &str) -> bool {
     effective_access(conn, user, device, Some(thread), None).is_some()
-        || workspace.is_some_and(|workspace| {
-            effective_access(conn, user, device, Some(thread), Some(workspace))
-                .is_some_and(|access| access.scope == "workspace")
-        })
 }
 
 fn snapshot(conn: &Connection, user: &str) -> Result<Value> {
@@ -181,7 +173,6 @@ fn snapshot(conn: &Connection, user: &str) -> Result<Value> {
                 user,
                 r["deviceId"].as_str().unwrap_or(""),
                 r["threadId"].as_str().unwrap_or(""),
-                r["workspaceId"].as_str(),
             )
         })
         .collect();
@@ -207,7 +198,7 @@ fn snapshot(conn: &Connection, user: &str) -> Result<Value> {
         // Navigation workspace IDs are supplied by the browser, not proof that an
         // event's thread belongs to that workspace. Require an independently
         // verifiable device/thread grant before exposing server-side events.
-        if !accessible(conn,user,&device,thread,None) { return None; }
+        if !accessible(conn,user,&device,thread) { return None; }
         let title = reference
             .and_then(|r|r["title"].as_str()).unwrap_or("Thread");
         let failed = event["body"].as_str().unwrap_or("").contains("failed");
@@ -258,13 +249,7 @@ async fn save(
     {
         return StatusCode::BAD_REQUEST.into_response();
     }
-    if !accessible(
-        &conn,
-        &user.id,
-        &visit.device_id,
-        &visit.thread_id,
-        visit.workspace_id.as_deref(),
-    ) {
+    if !accessible(&conn, &user.id, &visit.device_id, &visit.thread_id) {
         return StatusCode::FORBIDDEN.into_response();
     }
     let count: i64 = conn.query_row("SELECT count(*) FROM relay_thread_navigation WHERE user_id=?1 AND favorite=1 AND NOT(device_id=?2 AND thread_id=?3)",params![user.id,visit.device_id,visit.thread_id],|r|r.get(0)).unwrap_or(300);
@@ -356,33 +341,26 @@ mod tests {
         assert!(revoked["threads"].as_array().unwrap().is_empty());
         assert!(revoked["notifications"].as_array().unwrap().is_empty());
         conn.execute_batch("INSERT INTO relay_access_grants(id,owner_user_id,target_user_id,device_id,scope,workspace_id,workspace_access,created_at) VALUES ('workspace-grant','owner','reader','mac','workspace','project','read','now');").unwrap();
-        assert!(accessible(
-            &conn,
-            "reader",
-            "mac",
-            "thread",
-            Some("project")
-        ));
-        assert!(!accessible(
-            &conn,
-            "reader",
-            "mac",
-            "thread",
-            Some("other-project")
-        ));
-        assert_eq!(
-            snapshot(&conn, "reader").unwrap()["threads"]
-                .as_array()
-                .unwrap()
-                .len(),
-            1
-        );
-        // A browser-supplied workspace ID must not authorize reading events
-        // for a thread whose workspace the relay cannot independently verify.
-        assert!(snapshot(&conn, "reader").unwrap()["notifications"]
-            .as_array()
-            .unwrap()
-            .is_empty());
+        // The visit's own workspace ID proves nothing; only the device's report does.
+        assert!(!accessible(&conn, "reader", "mac", "thread"));
+        let empty = snapshot(&conn, "reader").unwrap();
+        assert!(empty["threads"].as_array().unwrap().is_empty());
+        assert!(empty["notifications"].as_array().unwrap().is_empty());
+        conn.execute(
+            "INSERT INTO relay_thread_lineage(device_id,thread_id,parent_thread_id,workspace_id) VALUES ('mac','thread',NULL,'other-project')",
+            [],
+        )
+        .unwrap();
+        assert!(!accessible(&conn, "reader", "mac", "thread"));
+        conn.execute(
+            "UPDATE relay_thread_lineage SET workspace_id='project' WHERE thread_id='thread'",
+            [],
+        )
+        .unwrap();
+        assert!(accessible(&conn, "reader", "mac", "thread"));
+        let shared = snapshot(&conn, "reader").unwrap();
+        assert_eq!(shared["threads"].as_array().unwrap().len(), 1);
+        assert_eq!(shared["notifications"].as_array().unwrap().len(), 1);
         conn.execute("UPDATE relay_users SET enabled=0 WHERE id='reader'", [])
             .unwrap();
         assert!(snapshot(&conn, "reader").unwrap()["threads"]

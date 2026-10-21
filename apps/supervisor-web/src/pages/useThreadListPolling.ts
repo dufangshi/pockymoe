@@ -2,7 +2,7 @@ import { useCallback } from 'react';
 
 import type { ThreadDto } from '@pockymoe/shared';
 import type { Dispatch, SetStateAction } from 'react';
-import { fetchThreads } from '../lib/api';
+import { fetchThreads, fetchWorkspaceThreads } from '../lib/api';
 import { useEventDrivenRefresh } from '../lib/useEventDrivenRefresh';
 
 /** Fallback while the Supervisor socket announces thread changes. */
@@ -57,6 +57,8 @@ export function useThreadListPolling(input: {
   /** A socket is connected and announces thread changes. */
   live?: boolean;
   includeAgentThreads?: boolean;
+  /** A workspace share reads only its workspace's threads. */
+  sharedWorkspaceId?: string | null;
 }) {
   const {
     enabled,
@@ -65,16 +67,19 @@ export function useThreadListPolling(input: {
     offlineIntervalMs = THREAD_LIST_OFFLINE_POLL_INTERVAL_MS,
     live = true,
     includeAgentThreads = false,
+    sharedWorkspaceId = null,
   } = input;
 
   const load = useCallback(async () => {
     try {
-      const nextThreads = await fetchThreads(includeAgentThreads);
+      const nextThreads = sharedWorkspaceId
+        ? await fetchWorkspaceThreads(sharedWorkspaceId, includeAgentThreads)
+        : await fetchThreads(includeAgentThreads);
       setThreads((current) => mergeThreadListSnapshot(current, nextThreads));
     } catch {
       // Keep the existing room list stable; the next refresh can recover.
     }
-  }, [setThreads, includeAgentThreads]);
+  }, [setThreads, includeAgentThreads, sharedWorkspaceId]);
 
   const { request, markFresh } = useEventDrivenRefresh({
     enabled,

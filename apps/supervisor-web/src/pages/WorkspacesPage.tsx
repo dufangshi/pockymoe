@@ -32,8 +32,11 @@ import { ConfirmDialog } from '../components/ConfirmDialog';
 import { LongTextDialog } from '../components/LongTextDialog';
 import { RenameDialog } from '../components/RenameDialog';
 import {
+  ApiError,
   deleteWorkspace,
+  fetchRelayPortal,
   fetchRuntimeConfig,
+  fetchWorkspace,
   fetchWorkspaces,
   setWorkspaceIsolation,
   updateWorkspace,
@@ -64,6 +67,17 @@ function lastOpenedLabel(value: string | null) {
   return translate("files.opened", { value1: new Date(value).toLocaleString(getLocale()) });
 }
 
+/** The workspaces of this device shared with this account, from the relay's grants. */
+async function sharedWorkspaces(deviceId: string): Promise<WorkspaceDto[] | null> {
+  const portal = await fetchRelayPortal();
+  const ids = [...new Set((portal.sharedThreadsWithMe ?? [])
+    .filter((grant) => grant.deviceId === deviceId && grant.scope === 'workspace' && grant.workspaceId)
+    .map((grant) => grant.workspaceId!))];
+  if (!ids.length) return null;
+  const records = await Promise.allSettled(ids.map((id) => fetchWorkspace(id)));
+  return records.flatMap((record) => (record.status === 'fulfilled' ? [record.value] : []));
+}
+
 export function WorkspacesPage() {
   const { locale: i18nLocale } = useI18n();
   const location = useLocation();
@@ -84,6 +98,8 @@ export function WorkspacesPage() {
   const [deletingWorkspace, setDeletingWorkspace] = useState<WorkspaceDto | null>(null);
   const [deletingWorkspaceBusy, setDeletingWorkspaceBusy] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  // A recipient of workspace shares sees those workspaces only, without the owner's actions.
+  const [sharedOnly, setSharedOnly] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -97,7 +113,18 @@ export function WorkspacesPage() {
         return;
       }
       setLoading(false);
-      if (workspaceResult.status === 'fulfilled') {
+      const shared = workspaceResult.status === 'rejected' && relayDeviceId
+        && workspaceResult.reason instanceof ApiError && [401, 403].includes(workspaceResult.reason.statusCode)
+        ? await sharedWorkspaces(relayDeviceId).catch(() => null)
+        : null;
+      if (cancelled) {
+        return;
+      }
+      setSharedOnly(Boolean(shared));
+      if (shared) {
+        setWorkspaces(shared);
+        setError(null);
+      } else if (workspaceResult.status === 'fulfilled') {
         setWorkspaces(workspaceResult.value);
         setError(null);
       } else {
@@ -115,7 +142,7 @@ export function WorkspacesPage() {
     return () => {
       cancelled = true;
     };
-  }, [loadAttempt]);
+  }, [loadAttempt, relayDeviceId]);
 
   const sortedWorkspaces = useMemo(() => [...workspaces].sort(sortWorkspaces), [workspaces]);
 
@@ -217,8 +244,8 @@ export function WorkspacesPage() {
       <ProductHeader title={translate("files.workspaces")} {...(relayDeviceId ? {backHref: '/relay-devices', backLabel: translate("files.backToDevices")} : {})} actions={<>
         {!relayDeviceId && <TourLauncherButton showLabel />}
         {shellNav?.openThreadMap && <button type="button" onClick={shellNav.openThreadMap} aria-label={translate('workbench.threadMap')} title={translate('workbench.threadMap')} className="product-icon-button"><LayoutDashboard data-icon="thread-map" size={19} /></button>}
-        <Link to={currentRelayScopedPath('/threads/import')} aria-label={translate("files.importSession")} title={translate("files.importSession")} className="product-icon-button"><FileInput data-icon="import" size={19} /></Link>
-        <Link to={currentRelayScopedPath('/workspaces/new')} aria-label={translate("files.addWorkspace")} title={translate("files.addWorkspace")} className="product-icon-button"><Plus data-icon="add" size={20} /></Link>
+        {!sharedOnly && <Link to={currentRelayScopedPath('/threads/import')} aria-label={translate("files.importSession")} title={translate("files.importSession")} className="product-icon-button"><FileInput data-icon="import" size={19} /></Link>}
+        {!sharedOnly && <Link to={currentRelayScopedPath('/workspaces/new')} aria-label={translate("files.addWorkspace")} title={translate("files.addWorkspace")} className="product-icon-button"><Plus data-icon="add" size={20} /></Link>}
       </>} />
 
       <details className="group border-y border-[var(--theme-border)]">
@@ -357,7 +384,7 @@ export function WorkspacesPage() {
                     </time>
                   </Link>
 
-                  <div className="flex items-center gap-1 pr-2 sm:pr-3">
+                  {sharedOnly ? null : <div className="flex items-center gap-1 pr-2 sm:pr-3">
                     <button
                       type="button"
                       disabled={favoriteBusy}
@@ -385,7 +412,7 @@ export function WorkspacesPage() {
                       onToggleIsolation={workspace.agentIsolated === undefined ? undefined : () => void handleIsolation(workspace)}
                       onDelete={() => beginDelete(workspace)}
                     />
-                  </div>
+                  </div>}
                 </article>
               );
             })}

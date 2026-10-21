@@ -106,7 +106,8 @@ test('workbench shares images publicly and grants device access without leaving 
     } finally { await anonymous.close(); }
     await page.getByRole('button', { name: 'Close dialog', exact: true }).click();
     await page.getByRole('button', { name: 'Sharing permissions', exact: true }).click();
-    const scope = page.getByRole('checkbox', { name: /Share whole device/ });
+    await expect(page.getByRole('radio', { name: /^This thread/ })).toBeChecked();
+    const scope = page.getByRole('radio', { name: /^Whole device/ });
     await expect(scope).not.toBeChecked();
     await scope.check();
     await page.getByPlaceholder('username or email').fill('reviewer');

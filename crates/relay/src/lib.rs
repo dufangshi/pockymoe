@@ -1877,18 +1877,6 @@ fn effective_access(
     } else {
         None
     };
-    if let Some(share) = share {
-        if let Some(access) = pockymoe_protocol::access::merge_access(
-            false,
-            Some(share),
-            &[],
-            thread_id,
-            workspace_id,
-        ) {
-            return Some(access);
-        }
-    }
-
     let mut stmt = conn
         .prepare(
             "SELECT id,scope,thread_id,workspace_id,workspace_scope,workspace_ids,
@@ -1915,6 +1903,11 @@ fn effective_access(
             ))
         })
         .ok()?;
+    // The device reports which workspace each thread is in; a workspace grant
+    // reaches a thread only through that report.
+    let thread_workspaces = thread_id
+        .map(|thread| thread_groups::workspaces(conn, device_id, thread))
+        .unwrap_or_default();
     let mut matching = Vec::new();
     for row in rows.flatten() {
         let (
@@ -1952,11 +1945,17 @@ fn effective_access(
             })
             .map(|parent| vec![parent.to_owned()])
             .unwrap_or_default();
-        if pockymoe_protocol::access::grant_matches(&grant, thread_id, workspace_id, &lineage) {
+        if pockymoe_protocol::access::grant_matches_in(
+            &grant,
+            thread_id,
+            workspace_id,
+            &lineage,
+            &thread_workspaces,
+        ) {
             matching.push(grant);
         }
     }
-    pockymoe_protocol::access::merge_access(false, None, &matching, thread_id, workspace_id)
+    pockymoe_protocol::access::merge_access(false, share, &matching, thread_id, workspace_id)
 }
 
 fn grantee_registration_request(method: &Method, path: &str, headers: &HeaderMap) -> bool {
@@ -2026,9 +2025,16 @@ fn device_request_access(
         resource_id_from_path(path, "workspaces").as_deref(),
     )
     .or_else(|| {
-        grantee_registration_request(method, path, headers)
-            .then(|| registration_access(conn, user, device))
-            .flatten()
+        // Runtime metadata (harness list, models) names no thread or workspace;
+        // any live share or grant on the device may read it, for example to
+        // start a thread in a shared workspace.
+        (grantee_registration_request(method, path, headers)
+            || pockymoe_protocol::access::shared_runtime_metadata_allowed(
+                method.as_str(),
+                path.split('?').next().unwrap_or(path),
+            ))
+        .then(|| registration_access(conn, user, device))
+        .flatten()
     })
 }
 
@@ -2630,6 +2636,8 @@ struct CreateGrantInput {
     scope: Option<String>,
     thread_id: Option<String>,
     workspace_id: Option<String>,
+    /// Shown to both sides for a workspace grant; the device never reads it.
+    workspace_label: Option<String>,
     workspace_scope: Option<String>,
     workspace_ids: Option<Vec<String>>,
     label: Option<String>,
@@ -2736,7 +2744,7 @@ async fn create_grant(
          (id,owner_user_id,owner_username,target_user_id,target_username,device_id,device_name,
           scope,thread_id,thread_title,workspace_id,workspace_label,workspace_scope,workspace_ids,label,
           thread_access,workspace_access,can_create_threads,created_at,revoked_at,expires_at)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,NULL,?10,NULL,?11,?12,?13,?14,?15,?16,?17,NULL,?18)",
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,NULL,?10,?19,?11,?12,?13,?14,?15,?16,?17,NULL,?18)",
         params![
             id,
             owner.id,
@@ -2756,6 +2764,7 @@ async fn create_grant(
             body.can_create_threads.unwrap_or(false) as i64,
             created_at,
             body.expires_at,
+            body.workspace_label,
         ],
     ).is_err() {
         return (
@@ -4179,7 +4188,7 @@ async fn forward_server_message_to_client(
     ) {
         return;
     }
-    let authorized = {
+    let (authorized, owner) = {
         let conn = state.store.conn.lock().await;
         let access = effective_access(
             &conn,
@@ -4188,12 +4197,28 @@ async fn forward_server_message_to_client(
             configured_thread.as_deref().or(event_thread),
             None,
         );
-        access.is_some()
-            && load_user_by_session(&conn, &state.store.session_secret, &session_token).is_some()
+        (
+            access.is_some()
+                && load_user_by_session(&conn, &state.store.session_secret, &session_token)
+                    .is_some(),
+            access.is_some_and(|access| access.kind == "owner"),
+        )
     };
+    // Terminal output is the owner's only (`access::terminal_route`).
+    if authorized && !owner && terminal_event(payload) {
+        return;
+    }
     if !authorized || tx.try_send(payload.to_string()).is_err() {
         state.clients.write().await.remove(client_id);
     }
+}
+
+fn terminal_event(payload: &Value) -> bool {
+    payload.get("shellId").is_some()
+        || payload
+            .get("type")
+            .and_then(Value::as_str)
+            .is_some_and(|kind| kind.starts_with("shell."))
 }
 
 const RELAY_BOOTSTRAP: &str = r#"<script>window.__POCKYMOE_BOOTSTRAP__={"mode":"relay"};</script>"#;

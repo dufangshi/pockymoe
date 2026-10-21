@@ -103,9 +103,12 @@ export async function sharingGrantDevices() {
   }
   return [...ids];
 }
-async function deviceDescriptor(deviceId: string, threadId?: string) {
+async function deviceDescriptor(deviceId: string, threadId?: string, workspaceId?: string) {
   const challenge = encode64(crypto.getRandomValues(new Uint8Array(32)));
-  const prefix = threadId ? supervisorPath(`api/threads/${encodeURIComponent(threadId)}`) : supervisorPath('api');
+  // A thread or workspace share reads the key under its own resource.
+  const prefix = threadId ? supervisorPath(`api/threads/${encodeURIComponent(threadId)}`)
+    : workspaceId ? supervisorPath(`api/workspaces/${encodeURIComponent(workspaceId)}`)
+      : supervisorPath('api');
   const response = await nativeFetch(relayUrl(`relay/devices/${encodeURIComponent(deviceId)}${prefix}/transport/key?challenge=${challenge}`), { credentials: 'include', cache: 'no-store' });
   if (response.status === 404) return null;
   if (response.status === 503 || response.status === 504) throw new Error(translate('sharing.protectedOnline'));
@@ -172,10 +175,10 @@ export async function verifySharedDevice(deviceId: string, identityKey: string, 
 }
 // Invite checks are unsigned: normal browser registration happens on destination
 // requests. Certificate trust covers the descriptor identity without a passkey.
-export async function checkSharedInviteDevice(deviceId: string, threadId?: string) {
+export async function checkSharedInviteDevice(deviceId: string, threadId?: string, workspaceId?: string) {
   const saved = await localOwnerCertificate(deviceId);
   const expectedOwner = !!saved || (await boundDevices()).includes(deviceId);
-  const descriptor = await deviceDescriptor(deviceId, threadId);
+  const descriptor = await deviceDescriptor(deviceId, threadId, workspaceId);
   if (!descriptor?.certificate) throw new SharingTrustError('invalid_certificate');
   const own = await currentAccount();
   if (expectedOwner || (own && descriptor.certificate.accountKeyId === own.accountKeyId)) {

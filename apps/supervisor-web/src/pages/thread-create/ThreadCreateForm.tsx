@@ -19,16 +19,20 @@ import { dshRunModeHint, dshRunModeName, type DshRunMode } from '../../component
 import {
   ApiError,
   createThread,
+  createWorkspaceThread,
   fetchAgentBackendAgents,
   fetchAgentBackends,
   fetchAgentBackendModels,
   fetchAgentBackendModelsFor,
   fetchAgentHarnessCatalog,
   fetchRelayAccess,
+  fetchWorkspace,
   fetchWorkspaces,
   installOrUpdateAgentBackend,
   postThreadHarnessAction,
+  relayModeActive,
 } from '../../lib/api';
+import { workspaceShare } from '../../lib/shareRules';
 import { currentRelayDeviceIdFromPath, currentRelayScopedPath } from '../../lib/relayRoutes';
 
 function canStart(backend: AgentBackendDto) {
@@ -120,6 +124,8 @@ export function ThreadCreateForm({
   const [models, setModels] = useState<ModelOptionDto[]>([]);
   const [provider, setProvider] = useState<AgentBackendIdDto>(defaultBackend);
   const [workspaceId, setWorkspaceId] = useState('');
+  // A workspace share starts threads only in its workspace, through that workspace's route.
+  const [sharedWorkspaceId, setSharedWorkspaceId] = useState<string | null>(null);
   const [agentId, setAgentId] = useState('');
   const [model, setModel] = useState('');
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffortDto | null>(null);
@@ -161,11 +167,24 @@ export function ThreadCreateForm({
 
   useEffect(() => {
     let cancelled = false;
-    Promise.all([fetchWorkspaces(), fetchAgentBackends()])
-      .then(([workspaceRecords, backendRecords]) => {
+    const device = currentRelayDeviceIdFromPath();
+    const shared = device && relayModeActive() && initialWorkspaceId && !hostScope
+      ? fetchRelayAccess({ deviceId: device, workspaceId: initialWorkspaceId })
+        .then((access) => (workspaceShare(access) ? access.workspaceId : null), () => null)
+      : Promise.resolve(null);
+    shared
+      // A workspace share's first device request names its workspace, so the
+      // encrypted handshake runs under that resource before the harness list.
+      .then(async (sharedId): Promise<[WorkspaceDto[], AgentBackendDto[], string | null]> => {
+        if (!sharedId) return [...await Promise.all([fetchWorkspaces(), fetchAgentBackends()]), null];
+        const record = await fetchWorkspace(sharedId);
+        return [[record], await fetchAgentBackends(), sharedId];
+      })
+      .then(([workspaceRecords, backendRecords, sharedId]) => {
         if (cancelled) {
           return;
         }
+        setSharedWorkspaceId(sharedId);
         setProvider(chooseProvider(backendRecords, defaultBackend));
         setBackends(backendRecords);
         setWorkspaces(workspaceRecords);
@@ -191,7 +210,7 @@ export function ThreadCreateForm({
     return () => {
       cancelled = true;
     };
-  }, [defaultBackend, initialWorkspaceId]);
+  }, [defaultBackend, initialWorkspaceId, hostScope]);
 
   useEffect(() => {
     if (!provider || !workspaceId) {
@@ -328,11 +347,14 @@ export function ThreadCreateForm({
   async function createSelectedThread(nextModel = model, nextEffort = reasoningEffort) {
     const trimmed = title.trim();
     // A retry after a failed run-mode selection reuses the thread already created.
-    const thread = created ?? await createThread({
+    const input = {
       workspaceId, provider, ...(provider === 'acp' ? { agentId } : {}), model: nextModel,
       ...(nextEffort ? { reasoningEffort: nextEffort } : {}), approvalMode: 'yolo',
       ...(trimmed ? { title: trimmed } : {}),
-    });
+    } as const;
+    const thread = created ?? await (sharedWorkspaceId && sharedWorkspaceId === workspaceId
+      ? createWorkspaceThread(sharedWorkspaceId, input)
+      : createThread(input));
     const mode = runModes.find((entry) => entry.id === runMode);
     // Always explicit: the cached default can be stale once DSH's own default changes.
     if (provider === 'acp' && agentId === 'deepseek' && mode) {

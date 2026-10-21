@@ -1508,3 +1508,35 @@ async fn local_notification_subscription_survives_recovery_and_is_cleared_on_sto
     assert!(restarted.db.get_kv(&key).unwrap().is_none());
     assert!(restarted.local_notifications().unwrap().is_empty());
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn prompt_attachments_never_land_outside_the_workspace() {
+    let (dir, state) = setup();
+    let id = thread(&state, Provider::Codex).await;
+    let outside = tempfile::tempdir().unwrap();
+    // A link the agent (or anyone with a shell) left inside the workspace.
+    std::os::unix::fs::symlink(outside.path(), dir.path().join(".temp")).unwrap();
+    let attachment = |name: &str| pockymoe_runtime::UploadedPromptAttachment {
+        kind: "file".into(),
+        original_name: name.into(),
+        placeholder: "{{file}}".into(),
+        bytes: b"payload".to_vec(),
+    };
+    let error = state
+        .prepare_prompt_attachments(&id, "see {{file}}", vec![attachment("notes.txt")])
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("inside the workspace"),
+        "{error}"
+    );
+    assert!(std::fs::read_dir(outside.path()).unwrap().next().is_none());
+    std::fs::remove_file(dir.path().join(".temp")).unwrap();
+    let rewritten = state
+        .prepare_prompt_attachments(&id, "see {{file}}", vec![attachment("notes.txt")])
+        .unwrap();
+    assert!(
+        rewritten.starts_with(&format!("see [FILE ./.temp/threads/{id}/notes")),
+        "{rewritten}"
+    );
+}

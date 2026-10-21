@@ -319,6 +319,10 @@ pub(crate) fn router_with_treer(state: AppState, hub: Option<Arc<crate::treer::H
                 .patch(patch_workspace)
                 .delete(delete_workspace),
         )
+        .route(
+            "/api/workspaces/{id}/threads",
+            get(list_workspace_threads).post(start_workspace_thread),
+        )
         .route("/api/workspaces/{id}/favorite", post(favorite_workspace))
         .route("/api/workspaces/{id}/open", post(open_workspace))
         .route(
@@ -1726,6 +1730,55 @@ async fn thread_activity(
     Ok(Json(
         json!({ "since": since, "hours": hours, "threads": threads }),
     ))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkspaceThreadListQuery {
+    #[serde(default)]
+    include_agent_threads: bool,
+}
+
+/// The threads of one workspace. The path names the workspace, so the relay and
+/// a bound device can confine a workspace share to it (`access::access_allows`).
+async fn list_workspace_threads(
+    Path(id): Path<String>,
+    Query(query): Query<WorkspaceThreadListQuery>,
+    State(state): State<AppState>,
+) -> Result<Json<Value>, ApiErr> {
+    state.get_workspace(&id).map_err(map_err)?;
+    Ok(Json(
+        serde_json::to_value(
+            state
+                .list_threads(Some(&id), query.include_agent_threads)
+                .map_err(map_err)?,
+        )
+        .unwrap(),
+    ))
+}
+
+/// Starts a thread in the workspace the path names; a body naming another
+/// workspace is refused rather than followed.
+async fn start_workspace_thread(
+    Path(id): Path<String>,
+    State(state): State<AppState>,
+    scope: Option<axum::Extension<crate::treer::Scope>>,
+    Json(mut body): Json<Value>,
+) -> Result<Json<Value>, ApiErr> {
+    match body.get("workspaceId") {
+        None | Some(Value::Null) => body["workspaceId"] = json!(id),
+        Some(Value::String(named)) if *named == id => {}
+        Some(_) => {
+            return Err(err(
+                StatusCode::BAD_REQUEST,
+                "bad_request",
+                "workspaceId must match the workspace in the path",
+            ))
+        }
+    }
+    let body: CreateThreadInput = serde_json::from_value(body)
+        .map_err(|error| err(StatusCode::BAD_REQUEST, "bad_request", &error.to_string()))?;
+    start_thread(State(state), scope, Json(body)).await
 }
 
 async fn start_thread(

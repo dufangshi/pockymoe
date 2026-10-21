@@ -135,6 +135,7 @@ import {
   threadPluginAdapter,
   isConnectionError,
 } from '../lib/api';
+import { canUseTerminal, filesConfinedToWorkspace, newThreadScope, TERMINAL_PLUGIN_ID, workspaceShare } from '../lib/shareRules';
 import {
   appendLiveAgentDeltaToItems,
   appendLatestTurns,
@@ -836,6 +837,13 @@ export function ThreadDetailPage() {
     (relayAccess?.kind === 'shared' && relayAccess.threadAccess === 'control');
   const relayThreadCanShare =
     relayDeviceRouteActive && relayAccess?.kind === 'owner';
+  // Terminals are the owner's only; no share or grant gets one (docs/account-key-trust.md#sharing).
+  const terminalAvailable = terminalPluginEnabled && canUseTerminal(relayAccess, relayDeviceRouteActive);
+  const terminalRefused = relayDeviceRouteActive && relayAccess !== null && !canUseTerminal(relayAccess, true);
+  useEffect(() => { if (terminalRefused) setActiveView('chat'); }, [terminalRefused]);
+  // A share starts threads only with control and that choice; a workspace share only there.
+  const newThreadsAllowed = Boolean(hostScope) || newThreadScope(relayAccess, relayDeviceRouteActive).allowed;
+  const sharedWorkspaceId = workspaceShare(relayAccess) ? relayAccess.workspaceId : null;
   // Files a reply links to outside the workspace: the owner, or a whole device shared with write access.
   const relayThreadReadsLinkedFiles = relayThreadIsOwner || canReadLinkedFiles(relayAccess);
   const currentWorkspaceId =
@@ -1004,6 +1012,9 @@ export function ThreadDetailPage() {
   const referenceHarnessOwner = !hostScope && referenceController.canControl
     && (referenceController.access?.kind === 'owner' || referenceDevice === 'local' || !relayModeActive());
   const toolsHarnessOwner = toolsUseReference ? referenceHarnessOwner : relayThreadIsOwner;
+  // The tools drawer's terminal follows the focused pane's owner, like its harness panel.
+  const toolsTerminalAvailable = terminalPluginEnabled && toolsHarnessOwner;
+  const toolsTerminalOpen = terminalOpen && toolsTerminalAvailable;
   // Harness panel actions stay on the device that owns the thread.
   const harnessPanel = useCallback((threadId: string, deviceId: string | null | undefined) => ({
     runHarnessAction: (action: DshPanelAction) => postThreadHarnessAction<DshPanelResult>(threadId, action, deviceId),
@@ -1056,10 +1067,13 @@ export function ThreadDetailPage() {
             }),
           ),
       );
+      // The whole device, and this thread's workspace, are shared from here too.
+      const threadWorkspaceId = currentDetail.workspace.id ?? currentDetail.thread.workspaceId ?? null;
+      const ownedGrants = (portal.grantsByMe ?? []).filter(grant => grant.deviceId === deviceId && (
+        grant.scope === 'device' || (grant.scope === 'workspace' && Boolean(threadWorkspaceId) && grant.workspaceId === threadWorkspaceId)));
       shareDialogContexts.current = new Map([
         ...ownedShares.map(share => [share.id, sharingEditInput('share', share)] as const),
-        ...(portal.grantsByMe ?? []).filter(grant => grant.deviceId === deviceId && grant.scope === 'device')
-          .map(grant => [`grant:${grant.id}`, sharingEditInput('grant', grant)] as const),
+        ...ownedGrants.map(grant => [`grant:${grant.id}`, sharingEditInput('grant', grant)] as const),
       ]);
       const shares: ThreadShareSummary[] = ownedShares
         .map((share) => ({
@@ -1071,10 +1085,12 @@ export function ThreadDetailPage() {
           workspaceAccess: share.workspaceAccess,
           createdAt: share.createdAt,
         }));
-      shares.push(...(portal.grantsByMe ?? []).filter(grant => grant.deviceId === deviceId && grant.scope === 'device').map(grant => ({
+      shares.push(...ownedGrants.map(grant => ({
         trustContent: <SignedShareDetails kind="grant" row={grant} />,
-        id: `grant:${grant.id}`, scope: 'device' as const, targetUsername: grant.targetUsername, label: grant.label,
-        threadAccess: grant.threadAccess, workspaceAccess: grant.workspaceAccess, createdAt: grant.createdAt,
+        id: `grant:${grant.id}`, scope: grant.scope === 'workspace' ? 'workspace' as const : 'device' as const,
+        targetUsername: grant.targetUsername, label: grant.label,
+        threadAccess: grant.threadAccess, workspaceAccess: grant.workspaceAccess, canCreateThreads: grant.canCreateThreads,
+        workspaceLabel: grant.workspaceLabel ?? currentDetail.workspace.label, createdAt: grant.createdAt,
       })));
       setThreadShareState({
         status: 'ready',
@@ -1102,13 +1118,9 @@ export function ThreadDetailPage() {
         return;
       }
 
-      const workspaceId =
-        input.workspaceAccess === 'none'
-          ? null
-          : currentDetail.workspace.id ??
-            currentDetail.thread.workspaceId ??
-            null;
-      if (input.workspaceAccess !== 'none' && !workspaceId) {
+      const threadWorkspaceId = currentDetail.workspace.id ?? currentDetail.thread.workspaceId ?? null;
+      const workspaceId = input.workspaceAccess === 'none' ? null : threadWorkspaceId;
+      if ((input.workspaceAccess !== 'none' || input.scope === 'workspace') && !threadWorkspaceId) {
         setThreadShareState((current) => ({
           ...current,
           status: 'failed',
@@ -1125,7 +1137,16 @@ export function ThreadDetailPage() {
       try {
         if (input.scope === 'device') await createRelayGrant({
           targetIdentifier: input.targetIdentifier, deviceId, scope: 'device', workspaceScope: 'all', workspaceIds: [],
-          label: input.label ?? null, threadAccess: input.threadAccess, workspaceAccess: input.workspaceAccess, canCreateThreads: false,
+          label: input.label ?? null, threadAccess: input.threadAccess, workspaceAccess: input.workspaceAccess,
+          canCreateThreads: input.canCreateThreads ?? false,
+        });
+        // Every thread of this workspace; new threads only there (docs/account-key-trust.md#sharing).
+        else if (input.scope === 'workspace') await createRelayGrant({
+          targetIdentifier: input.targetIdentifier, deviceId, scope: 'workspace',
+          workspaceId: threadWorkspaceId, workspaceLabel: currentDetail.workspace.label ?? null,
+          workspaceScope: 'all', workspaceIds: [],
+          label: input.label ?? null, threadAccess: input.threadAccess, workspaceAccess: input.workspaceAccess,
+          canCreateThreads: input.canCreateThreads ?? false,
         });
         else await createRelayShare({
           targetIdentifier: input.targetIdentifier,
@@ -1163,6 +1184,7 @@ export function ThreadDetailPage() {
       if (!context) throw new Error(translate('sharing.dialogIncomplete'));
       if (shareId.startsWith('grant:')) await updateRelayGrant(shareId.slice(6), {
         threadAccess: input.threadAccess, workspaceAccess: input.workspaceAccess, label: input.label ?? null,
+        ...(input.canCreateThreads === undefined ? {} : { canCreateThreads: input.canCreateThreads }),
       }, context);
       else await updateRelayShare(shareId, {
         threadAccess: input.threadAccess, workspaceAccess: input.workspaceAccess,
@@ -1259,6 +1281,7 @@ export function ThreadDetailPage() {
     setThreads,
     includeAgentThreads: true,
     live: realtimeConnection.socketOpen,
+    sharedWorkspaceId,
   });
   const threadListRef = useRef(threadList);
   threadListRef.current = threadList;
@@ -3959,7 +3982,7 @@ export function ThreadDetailPage() {
         mcpConfigFormat: backendManagementSchema?.mcpConfigFormat ?? 'none',
         followTail,
         threadConnected: detail.thread.isLoaded,
-        shellAvailable: terminalPluginEnabled,
+        shellAvailable: terminalAvailable,
         disabled: Boolean(promptDisabledReason),
         ...(promptDisabledReason
           ? { disabledPlaceholder: promptDisabledReason }
@@ -4053,7 +4076,7 @@ export function ThreadDetailPage() {
           backendManagementSchema?.hookCommandTemplates ?? [],
         mcpConfigFormat: backendManagementSchema?.mcpConfigFormat ?? 'none',
         threadConnected: detail.thread.isLoaded,
-        shellAvailable: terminalPluginEnabled,
+        shellAvailable: terminalAvailable,
         shellControlState,
         canInterrupt: Boolean(
           detail.thread.isLoaded &&
@@ -4073,13 +4096,14 @@ export function ThreadDetailPage() {
         : '',
     [detail?.thread.id, getThreadImageAssetUrl],
   );
-  const primaryWorkspaceAdapter = useThreadWorkspaceAdapter({ setError, workspaceId: detail?.workspace.id ?? null, deviceId: relayRouteDeviceId ?? 'local', access: effectiveWorkspaceAccess, allowLinkedFiles: relayThreadReadsLinkedFiles });
+  const primaryWorkspaceAdapter = useThreadWorkspaceAdapter({ setError, workspaceId: detail?.workspace.id ?? null, deviceId: relayRouteDeviceId ?? 'local', access: effectiveWorkspaceAccess, allowLinkedFiles: relayThreadReadsLinkedFiles, confined: filesConfinedToWorkspace(relayAccess, relayDeviceRouteActive) });
   const workspaceAdapter = useThreadWorkspaceAdapter({
     setError,
     workspaceId: toolsDetail?.workspace.id ?? null,
     deviceId: toolsDevice,
     access: hostScope ? 'read' : toolsWorkspaceAccess,
     allowLinkedFiles: !hostScope && (!toolsRelay || toolsAccess?.kind === 'owner'),
+    confined: filesConfinedToWorkspace(toolsAccess, toolsRelay),
   });
   const handleOpenWorkspaceFile = useCallback(
     (input: { path: string; line?: number }) => {
@@ -4113,8 +4137,8 @@ export function ThreadDetailPage() {
       openThread,
       getThreadHref,
       describeThread,
-      getNewThreadHref,
-      renderNewThreadDialogContent,
+      // Only people who may start threads see the way to (a share's own workspace).
+      ...(newThreadsAllowed ? { getNewThreadHref, renderNewThreadDialogContent } : {}),
       ...(relayThreadIsOwner || hostScope ? { renameThread: handleRenameThread } : {}),
       ...(relayThreadIsOwner || hostScope ? { deleteThread: setDeletingThread } : {}),
       ...(relayThreadCanControl ? { cancelPendingSteer: handleCancelPendingSteer } : {}),
@@ -4133,7 +4157,7 @@ export function ThreadDetailPage() {
       getImageAssetUrl: getCurrentThreadImageAssetUrl,
       openWorkspaceFile: handleOpenWorkspaceFile,
       workspace: primaryWorkspaceAdapter,
-      shell: localShellAdapter,
+      ...(terminalAvailable ? { shell: localShellAdapter } : {}),
     }),
     [
       canForkAtTurn,
@@ -4159,6 +4183,8 @@ export function ThreadDetailPage() {
       relayThreadIsOwner,
       hostScope,
       primaryWorkspaceAdapter,
+      newThreadsAllowed,
+      terminalAvailable,
     ],
   );
   const workspaceReturnHref = appUrl(currentWorkspacesHref());
@@ -4194,6 +4220,8 @@ export function ThreadDetailPage() {
                 onCreateShare: handleCreateThreadShare,
                 onUpdateShare: handleUpdateThreadShare,
                 deviceShareAvailable: true,
+                workspaceShareAvailable: Boolean(detail?.workspace.id ?? detail?.thread.workspaceId),
+                workspaceLabel: detail?.workspace.label ?? null,
                 onRevokeShare: handleRevokeThreadShare,
               }
             : {})}
@@ -4232,7 +4260,8 @@ export function ThreadDetailPage() {
       relayDeviceRouteActive,
       shareBusy,
       handleUpdateThreadShare, relayRouteDeviceId, id,
-      threadShareState,
+      threadShareState, relayThreadCanShare,
+      detail?.workspace.id, detail?.thread.workspaceId, detail?.workspace.label,
     , i18nLocale],
   );
 
@@ -4277,17 +4306,17 @@ export function ThreadDetailPage() {
         onMakePrimary: makeReferencePrimary,
         focusedPane: toolsUseReference ? 'reference' : 'primary',
         onFocusPane: focusPane,
-        toolsOpen: terminalOpen || dshPanelOpen,
+        toolsOpen: toolsTerminalOpen || dshPanelOpen,
         toolsTargetLabel,
         inlineFilesHeader: true,
         toolTitle: `${translate(dshPanelOpen ? 'workbench.deepseekHarness' : 'workbench.terminal')} · ${toolsDetail?.workspace.label ?? ''} · ${toolsDetail?.thread.title ?? ''}`,
         toolContent: controls => <>
-          <WorkbenchTerminal deviceId={toolsDevice} detail={toolsDetail} canControl={toolsCanControl} open={terminalOpen} controls={controls} onClose={closeTerminal} effectiveTheme={shellNav?.effectiveTheme ?? 'dark'} targetLabel={toolsTargetLabel} openRequest={terminalOpenRequest} />
+          <WorkbenchTerminal deviceId={toolsDevice} detail={toolsDetail} canControl={toolsCanControl} open={toolsTerminalOpen} controls={controls} onClose={closeTerminal} effectiveTheme={shellNav?.effectiveTheme ?? 'dark'} targetLabel={toolsTargetLabel} openRequest={terminalOpenRequest} />
           {dshPanelOpen && dshPanelProps ? <DshPluginPanel key={`${toolsDevice}:${toolsDetail?.thread.id ?? ''}`} loadCapabilities={loadToolsCapabilities} readOnly={!toolsHarnessOwner} {...dshPanelProps} /> : null}
         </>,
         onCloseTools: closeTerminal,
         storageFailed: workbenchPresentation.storageFailed,
-      }, subscriptionUsage, statusActions: detail ? <><ThreadSubagentsControl key={`subagents-${detail.thread.id}`} detail={detail} /><UnscopedOnly><ThreadWatchesControl key={`watches-${detail.thread.id}`} thread={detail.thread} /></UnscopedOnly><ThreadPluginsControl key={`plugins-${detail.thread.id}`} readOnly={!relayThreadCanControl} /><WorkbenchThreadPicker deviceId={relayRouteDeviceId} workspaceId={detail.workspace.id} threadId={detail.thread.id} threads={threads} navigationThreads={[...workbenchNavigation.workspaceThreads, ...workbenchNavigation.threads]} reference={referenceId ? {deviceId: referenceDevice === 'local' ? null : referenceDevice, threadId:referenceId} : null} splitActive={Boolean(referenceId && ['thread','files'].includes(workbenchPresentation.value.mode))} onSelect={selectSplitThread} onRestore={() => changePresentation({mode:'thread'})} onClose={() => changePresentation({mode:'focus'})} onCollaboration={() => changePresentation({mode:'collaboration'})} /></> : null, renderThreadMenu: (thread, context) => <RecentThreadMenu thread={thread} context={context} currentKey={workbenchNavigation.currentKey} onFavorite={workbenchNavigation.onToggleThreadFavorite} onRenamed={workbenchNavigation.onThreadRenamed} onRemoved={workbenchNavigation.onThreadRemoved} onNavigate={navigate} />, harnessSessionId: detail?.thread.providerSessionId ?? null, harnessSessionUrl: detail?.thread.providerSessionId && (detail.thread.provider === 'codex' || detail.thread.agentId === 'codex') ? `codex://threads/${encodeURIComponent(detail.thread.providerSessionId)}` : null, activeView: terminalOpen ? 'shell' : 'chat', terminalEnabled: terminalPluginEnabled, onViewChange: view => { if (view === 'shell') toggleTerminal(); },
+      }, subscriptionUsage, statusActions: detail ? <><ThreadSubagentsControl key={`subagents-${detail.thread.id}`} detail={detail} /><UnscopedOnly><ThreadWatchesControl key={`watches-${detail.thread.id}`} thread={detail.thread} /></UnscopedOnly><ThreadPluginsControl key={`plugins-${detail.thread.id}`} readOnly={!relayThreadCanControl} {...(relayThreadIsOwner ? {} : { hiddenPluginIds: [TERMINAL_PLUGIN_ID] })} /><WorkbenchThreadPicker deviceId={relayRouteDeviceId} workspaceId={detail.workspace.id} threadId={detail.thread.id} threads={threads} navigationThreads={[...workbenchNavigation.workspaceThreads, ...workbenchNavigation.threads]} reference={referenceId ? {deviceId: referenceDevice === 'local' ? null : referenceDevice, threadId:referenceId} : null} splitActive={Boolean(referenceId && ['thread','files'].includes(workbenchPresentation.value.mode))} onSelect={selectSplitThread} onRestore={() => changePresentation({mode:'thread'})} onClose={() => changePresentation({mode:'focus'})} onCollaboration={() => changePresentation({mode:'collaboration'})} /></> : null, renderThreadMenu: (thread, context) => <RecentThreadMenu thread={thread} context={context} currentKey={workbenchNavigation.currentKey} onFavorite={workbenchNavigation.onToggleThreadFavorite} onRenamed={workbenchNavigation.onThreadRenamed} onRemoved={workbenchNavigation.onThreadRemoved} onNavigate={navigate} />, harnessSessionId: detail?.thread.providerSessionId ?? null, harnessSessionUrl: detail?.thread.providerSessionId && (detail.thread.provider === 'codex' || detail.thread.agentId === 'codex') ? `codex://threads/${encodeURIComponent(detail.thread.providerSessionId)}` : null, activeView: toolsTerminalOpen ? 'shell' : 'chat', terminalEnabled: toolsTerminalAvailable, onViewChange: view => { if (view === 'shell') toggleTerminal(); },
         toolPanels: dshPanelAvailable ? [{ id: 'deepseek-harness', label: translate('workbench.deepseekHarness'), icon: <Puzzle data-icon="harness-panel" />, active: dshPanelOpen, onToggle: toggleDshPanel }] : [], onNavigate: navigate, onPrefetchThread: prefetchThread, onSearch: () => setSearchOpen(true), searchOpen, search: id && detail ? <ConversationSearch key={id} threadId={id} workspaceId={detail.thread.workspaceId}
         deviceLabel={relayRouteDeviceId ?? searchLabels.localDevice}
         allowGlobal={!hostScope && (relayThreadIsOwner || (relayAccess?.scope === 'device' && (relayAccess.threadAccess === 'read' || relayAccess.threadAccess === 'control')))}

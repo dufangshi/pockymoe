@@ -621,8 +621,18 @@ async fn thread_lineage_and_route_access_are_local_read_and_control() {
         &format!("/api/workspaces/{}/files/preview", ws.id)
     )
     .is_ok());
-    assert!(authorize_path(&state, &p, "GET", &format!("/api/threads/{}", ids[0])).is_err());
+    // A workspace grant covers the conversations the device keeps in it.
+    assert!(authorize_path(&state, &p, "GET", &format!("/api/threads/{}", ids[0])).is_ok());
+    assert!(authorize_path(&state, &p, "GET", "/api/threads/other").is_err());
     assert!(authorize_path(&state, &p, "GET", "/api/search").is_err());
+    assert!(authorize_path(&state, &p, "POST", "/api/threads/start").is_err());
+    assert!(authorize_path(
+        &state,
+        &p,
+        "POST",
+        &format!("/api/workspaces/{}/threads", ws.id)
+    )
+    .is_ok());
 }
 
 #[tokio::test]
@@ -820,7 +830,7 @@ async fn websocket_filters_threads_unknown_messages_and_live_changes() {
 }
 #[cfg(unix)]
 #[tokio::test]
-async fn websocket_shell_control_uses_local_shell_thread_and_rechecks_downgrades() {
+async fn websocket_shell_messages_and_output_are_the_owners_only() {
     let (_dir, state, owner, mut g, _r, _key, p) = fixture().await;
     let (id, _) = crate::shells::hub()
         .create(
@@ -832,74 +842,56 @@ async fn websocket_shell_control_uses_local_shell_thread_and_rechecks_downgrades
             None,
         )
         .unwrap();
-    let (other, _) = crate::shells::hub()
-        .create(
-            "other",
-            "workspace",
-            state.config.workspace_root.to_str().unwrap(),
-            80,
-            24,
-            None,
-        )
-        .unwrap();
-    let attach = json!({"type":"shell.attach","shellId":id,"cols":80,"rows":24});
-    assert!(!websocket_message_allowed(
-        &state,
-        &p,
-        Some("root"),
-        &attach
-    ));
-    g.thread_access = "control".into();
-    put(&state.db, &g.grant_id, &g, &owner, owner_trust::now()).unwrap();
-    for kind in [
+    let kinds = [
         "shell.attach",
         "shell.detach",
         "shell.input",
         "shell.resize",
         "shell.clear",
-    ] {
-        assert!(
-            websocket_message_allowed(&state, &p, Some("root"), &json!({"type":kind,"shellId":id})),
-            "{kind}"
-        );
-        assert!(
-            !websocket_message_allowed(
-                &state,
-                &p,
-                Some("root"),
-                &json!({"type":kind,"shellId":other,"threadId":"root"})
-            ),
-            "{kind}"
-        );
+    ];
+    let output = json!({"type":"shell.output","shellId":id,"payload":{"data":"scoped output"}});
+    let owner_principal = BrowserPrincipal {
+        account_key_id: "owner".into(),
+        browser_id: "owner-browser".into(),
+        grantee_user_id: None,
+    };
+    for (thread_access, workspace_access) in [("read", "none"), ("control", "write")] {
+        g.thread_access = thread_access.into();
+        g.workspace_access = workspace_access.into();
+        put(&state.db, &g.grant_id, &g, &owner, owner_trust::now()).unwrap();
+        for kind in kinds {
+            assert!(
+                !websocket_message_allowed(
+                    &state,
+                    &p,
+                    Some("root"),
+                    &json!({"type":kind,"shellId":id})
+                ),
+                "{thread_access} {kind}"
+            );
+        }
+        assert!(!websocket_event_allowed(&state, &p, Some("root"), &output));
+        // Conversation events still reach the recipient.
+        assert!(websocket_event_allowed(
+            &state,
+            &p,
+            Some("root"),
+            &json!({"type":"thread.updated","threadId":"root","payload":{}})
+        ));
     }
+    assert!(websocket_message_allowed(
+        &state,
+        &owner_principal,
+        Some("root"),
+        &json!({"type":"shell.attach","shellId":id})
+    ));
     assert!(websocket_event_allowed(
         &state,
-        &p,
+        &owner_principal,
         Some("root"),
-        &json!({"type":"shell.output","shellId":id,"payload":{"data":"scoped output"}})
-    ));
-    assert!(!websocket_event_allowed(
-        &state,
-        &p,
-        Some("root"),
-        &json!({"type":"shell.output","shellId":other,"threadId":"root","payload":{"data":"private output"}})
-    ));
-    g.thread_access = "read".into();
-    put(&state.db, &g.grant_id, &g, &owner, owner_trust::now()).unwrap();
-    assert!(!websocket_event_allowed(
-        &state,
-        &p,
-        Some("root"),
-        &json!({"type":"shell.output","shellId":id})
-    ));
-    assert!(!websocket_message_allowed(
-        &state,
-        &p,
-        Some("root"),
-        &attach
+        &output
     ));
     crate::shells::hub().terminate(&id).unwrap();
-    crate::shells::hub().terminate(&other).unwrap();
 }
 #[cfg(target_os = "linux")]
 #[tokio::test]
@@ -1489,7 +1481,7 @@ async fn thread_plugin_scope_http_preserves_control_and_thread_boundaries() {
         use axum::response::IntoResponse;
         let response = crate::plugins::thread_settings(
             State(state.clone()),
-            Path(("plugin-A".into(), "remote-codex.terminal".into())),
+            Path(("plugin-A".into(), "pockymoe.content-quality".into())),
         )
         .await
         .ok()
@@ -1510,7 +1502,7 @@ async fn thread_plugin_scope_http_preserves_control_and_thread_boundaries() {
         );
     }
     let list = "/api/threads/plugin-A/plugins";
-    let settings = "/api/threads/plugin-A/plugins/remote-codex.terminal/settings";
+    let settings = "/api/threads/plugin-A/plugins/pockymoe.content-quality/settings";
     let save = json!({"revision":0,"enabled":false,"values":{}});
     let (status, body) = request(&state, Some(&p), &key, "GET", list, Value::Null).await;
     assert_eq!(status, 200, "{body}");
@@ -1528,17 +1520,17 @@ async fn thread_plugin_scope_http_preserves_control_and_thread_boundaries() {
         ("GET", "/api/threads/plugin-B/plugins", Value::Null),
         (
             "GET",
-            "/api/threads/plugin-B/plugins/remote-codex.terminal/settings",
+            "/api/threads/plugin-B/plugins/pockymoe.content-quality/settings",
             Value::Null,
         ),
         (
             "PUT",
-            "/api/threads/plugin-B/plugins/remote-codex.terminal/settings",
+            "/api/threads/plugin-B/plugins/pockymoe.content-quality/settings",
             save.clone(),
         ),
         (
             "GET",
-            "/api/plugins/remote-codex.terminal/settings",
+            "/api/plugins/pockymoe.content-quality/settings",
             Value::Null,
         ),
     ] {
@@ -1550,12 +1542,31 @@ async fn thread_plugin_scope_http_preserves_control_and_thread_boundaries() {
     }
     g.thread_access = "control".into();
     put(&state.db, &g.grant_id, &g, &owner, owner_trust::now()).unwrap();
+    // The terminal plugin is the owner's only, even for control access.
+    for (method, body) in [("GET", Value::Null), ("PUT", save.clone())] {
+        assert_eq!(
+            request(
+                &state,
+                Some(&p),
+                &key,
+                method,
+                "/api/threads/plugin-A/plugins/remote-codex.terminal/settings",
+                body
+            )
+            .await
+            .0,
+            403,
+            "{method}"
+        );
+    }
     let (status, body) = request(&state, Some(&p), &key, "GET", settings, Value::Null).await;
     assert_eq!(status, 200, "{body}");
     assert_eq!(
-        body,
-        json!({"revision":0,"globalRevision":0,"enabled":null,"values":null,"effective":{"enabled":cfg!(unix),"values":{}}})
+        (&body["revision"], &body["enabled"], &body["values"]),
+        (&json!(0), &Value::Null, &Value::Null),
+        "{body}"
     );
+    assert!(body["effective"]["values"].is_object(), "{body}");
     let (status, body) = request(&state, Some(&p), &key, "PUT", settings, save.clone()).await;
     assert_eq!(status, 200, "{body}");
     assert_eq!(body["revision"], 1);
@@ -1595,14 +1606,14 @@ async fn thread_plugin_scope_http_preserves_control_and_thread_boundaries() {
         ("GET", "/api/threads/plugin-B/plugins"),
         (
             "GET",
-            "/api/threads/plugin-B/plugins/remote-codex.terminal/settings",
+            "/api/threads/plugin-B/plugins/pockymoe.content-quality/settings",
         ),
         (
             "PUT",
-            "/api/threads/plugin-B/plugins/remote-codex.terminal/settings",
+            "/api/threads/plugin-B/plugins/pockymoe.content-quality/settings",
         ),
-        ("GET", "/api/plugins/remote-codex.terminal/settings"),
-        ("PUT", "/api/plugins/remote-codex.terminal/settings"),
+        ("GET", "/api/plugins/pockymoe.content-quality/settings"),
+        ("PUT", "/api/plugins/pockymoe.content-quality/settings"),
     ] {
         assert_eq!(
             request(&state, Some(&p), &key, method, path, Value::Null)
@@ -1615,7 +1626,7 @@ async fn thread_plugin_scope_http_preserves_control_and_thread_boundaries() {
     let owner_key = crate::owner_trust::tests::session_key();
     for path in [
         "/api/threads/missing/plugins",
-        "/api/threads/missing/plugins/remote-codex.terminal/settings",
+        "/api/threads/missing/plugins/pockymoe.content-quality/settings",
         "/api/threads/plugin-A/plugins/missing/settings",
     ] {
         assert_eq!(
@@ -1638,7 +1649,7 @@ async fn thread_plugin_scope_http_preserves_control_and_thread_boundaries() {
             Some(&p),
             &key,
             "PUT",
-            "/api/threads/plugin-B/plugins/remote-codex.terminal/settings",
+            "/api/threads/plugin-B/plugins/pockymoe.content-quality/settings",
             json!({"revision":0,"enabled":false,"values":null})
         )
         .await
@@ -1698,4 +1709,140 @@ async fn a_whole_device_grant_with_write_previews_files_outside_the_workspace() 
             assert_eq!(status, 403, "{body}");
         }
     }
+}
+
+#[tokio::test]
+async fn a_workspace_grant_lists_starts_and_opens_threads_only_in_its_workspace() {
+    let (_dir, state, owner, mut g, _r, key, p) = fixture().await;
+    let shared_dir = state.config.workspace_root.join("shared");
+    let private_dir = state.config.workspace_root.join("private");
+    for dir in [&shared_dir, &private_dir] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    let workspace = |dir: &std::path::Path, label: &str| {
+        state
+            .create_workspace(pockymoe_protocol::CreateWorkspaceInput {
+                abs_path: Some(dir.to_string_lossy().into()),
+                git_url: None,
+                label: Some(label.into()),
+            })
+            .unwrap()
+    };
+    let shared = workspace(&shared_dir, "Shared");
+    let private = workspace(&private_dir, "Private");
+    for (id, ws) in [("in-shared", &shared.id), ("in-private", &private.id)] {
+        state.db.with(|c| { c.execute("INSERT INTO threads(id,workspace_id,provider,title,source,status,created_at,updated_at) VALUES(?1,?2,'codex','ACL','web','idle','now','now')",params![id,ws])?;Ok(())}).unwrap();
+    }
+    g.relay_ref.kind = "grant".into();
+    g.scope = "workspace".into();
+    g.thread_id = None;
+    g.workspace_id = Some(shared.id.clone());
+    g.workspace_scope = "all".into();
+    g.thread_access = "read".into();
+    g.workspace_access = "none".into();
+    put(&state.db, &g.grant_id, &g, &owner, owner_trust::now()).unwrap();
+    let call = |method: &'static str, path: String, body: Value| {
+        let state = state.clone();
+        let key = key.clone();
+        let p = p.clone();
+        async move { request(&state, Some(&p), &key, method, &path, body).await }
+    };
+    // Harness metadata names no resource; the grant reads it, a stranger never.
+    assert!(authorize_path(&state, &p, "GET", "/api/agent-runtimes").is_ok());
+    assert!(authorize_path(&state, &p, "GET", "/api/agent-runtimes/codex/models").is_ok());
+    assert!(authorize_path(&state, &p, "POST", "/api/agent-runtimes/codex/install").is_err());
+    let stranger = BrowserPrincipal {
+        grantee_user_id: Some("stranger".into()),
+        ..p.clone()
+    };
+    assert!(authorize_path(&state, &stranger, "GET", "/api/agent-runtimes").is_err());
+    let (status, listed) = call(
+        "GET",
+        format!("/api/workspaces/{}/threads", shared.id),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, 200, "{listed}");
+    let ids: Vec<_> = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, ["in-shared"]);
+    assert_eq!(
+        call("GET", "/api/threads/in-shared".into(), Value::Null)
+            .await
+            .0,
+        200
+    );
+    for (method, path) in [
+        ("GET", "/api/threads/in-private".to_string()),
+        ("GET", format!("/api/workspaces/{}/threads", private.id)),
+        ("GET", "/api/threads".to_string()),
+        ("GET", "/api/workspaces".to_string()),
+        ("GET", format!("/api/workspaces/{}/files/tree", shared.id)),
+        ("POST", format!("/api/workspaces/{}/threads", shared.id)),
+        ("POST", "/api/threads/in-shared/shell".to_string()),
+        (
+            "GET",
+            "/api/threads/in-shared/linked-files/raw?path=%2Fetc%2Fhostname".to_string(),
+        ),
+    ] {
+        assert_eq!(
+            call(method, path.clone(), json!({})).await.0,
+            403,
+            "{method} {path}"
+        );
+    }
+    // Control with new threads: only in the shared workspace, and the body cannot
+    // name another one.
+    g.thread_access = "control".into();
+    g.can_create_threads = true;
+    put(&state.db, &g.grant_id, &g, &owner, owner_trust::now()).unwrap();
+    let input = |workspace: &str| json!({"workspaceId": workspace, "model": "ios-e2e-stream", "approvalMode": "yolo", "provider": "codex", "agentId": "codex"});
+    assert_eq!(
+        call("POST", "/api/threads/start".into(), input(&shared.id))
+            .await
+            .0,
+        403
+    );
+    let (status, created) = call(
+        "POST",
+        format!("/api/workspaces/{}/threads", shared.id),
+        input(&shared.id),
+    )
+    .await;
+    assert_eq!(status, 200, "{created}");
+    assert_eq!(created["workspaceId"], shared.id);
+    let (status, refused) = call(
+        "POST",
+        format!("/api/workspaces/{}/threads", shared.id),
+        input(&private.id),
+    )
+    .await;
+    assert_eq!(status, 400, "{refused}");
+    assert_eq!(
+        call(
+            "POST",
+            format!("/api/workspaces/{}/threads", private.id),
+            input(&private.id)
+        )
+        .await
+        .0,
+        403
+    );
+    let created = created["id"].as_str().unwrap();
+    assert_eq!(
+        call("GET", format!("/api/threads/{created}"), Value::Null)
+            .await
+            .0,
+        200
+    );
+    assert_eq!(
+        call("POST", format!("/api/threads/{created}/shell"), json!({}))
+            .await
+            .0,
+        403
+    );
 }

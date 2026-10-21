@@ -76,7 +76,7 @@ export function SharedInvitePage() {
       });
       // Check the signed descriptor before navigating. No browser registration is
       // needed for this identity check; unlock happens on the destination page.
-      await checkSharedInviteDevice(input.invite.deviceId, input.invite.threadId);
+      await checkSharedInviteDevice(input.invite.deviceId, input.invite.threadId, input.invite.workspaceId);
       if (active) {
         sessionStorage.removeItem('pockymoe-pending-invite');
         navigate(target, { replace: true });
