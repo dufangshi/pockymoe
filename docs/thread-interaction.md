@@ -552,6 +552,13 @@ Moving around keeps the screen steady:
   load that finishes within a moment never shows the loader.
 - A thread opens at its end without first painting its top; messages on screen
   render their Markdown before the first paint.
+- Sending shows on the send key: it turns into a spinner until the request is
+  answered, with no tint over the prompt. A prompt shows once, where it goes:
+  starting a turn, in the conversation at once; steered into the running turn,
+  in the conversation; queued after the running turn, under Queued from the
+  moment it is sent. Queued lists only what the Supervisor holds
+  (`thread_pending_steers`, `continuation`), so it is the same on every device
+  and survives a reload; the page's own copy only bridges the request.
 - Earlier turns load above what is on screen without moving it: the turn at the
   top of the screen stays where it was, through the loading row, the insertion
   and the new turns' rendering, until the reader scrolls.

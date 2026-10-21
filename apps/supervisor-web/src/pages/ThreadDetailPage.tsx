@@ -341,6 +341,8 @@ interface OptimisticTurnState {
   reasoningEffortAvailable: boolean | null;
   tokenUsage: ThreadTurnTokenUsageDto | null;
   priceEstimate: ThreadTurnPriceEstimateDto | null;
+  /** The request that started it: its row in the server's queue is this turn. */
+  clientRequestId?: string | null;
 }
 
 interface OptimisticAttachmentPreview {
@@ -355,6 +357,16 @@ interface OptimisticSteerState {
   prompt: string;
   createdAt: string;
   status: 'steering' | 'accepted';
+  /** Steered into the running turn, or queued after it. */
+  delivery: 'steer' | 'continuation';
+}
+
+/** The server holds a sent prompt as it was meant: a steer only once its row is
+    a steer (it is accepted as a queued row first, then steered). Until then the
+    page keeps showing its own copy, in the place the prompt is going. */
+function steerAcknowledged(steer: OptimisticSteerState, rows: ThreadDetailDto['pendingSteers']) {
+  return (rows ?? []).some(row => row.clientRequestId === steer.clientRequestId
+    && (steer.delivery === 'continuation' || row.delivery === 'steer'));
 }
 
 interface WorkspaceFocusPathRequest {
@@ -1417,14 +1429,9 @@ export function ThreadDetailPage() {
       const nextTurnsById = new Map(
         nextDetailWithLiveTimestamps.turns.map((turn) => [turn.id, turn] as const),
       );
-      const pendingSteerRequestIds = new Set(
-        (nextDetailWithLiveTimestamps.pendingSteers ?? [])
-          .map((steer) => steer.clientRequestId)
-          .filter((value): value is string => Boolean(value)),
-      );
       setOptimisticSteers((current) =>
         current.filter((steer) => {
-          if (pendingSteerRequestIds.has(steer.clientRequestId)) {
+          if (steerAcknowledged(steer, nextDetailWithLiveTimestamps.pendingSteers)) {
             return false;
           }
 
@@ -2224,8 +2231,7 @@ export function ThreadDetailPage() {
         const pendingSteers = event.payload.pendingSteers as ThreadDetailDto['pendingSteers'];
         setDetail(current => current ? {...current, pendingSteers} : current);
         if (detailRef.current) detailRef.current = {...detailRef.current, pendingSteers};
-        const acknowledged = new Set(pendingSteers.map(item => item.clientRequestId));
-        setOptimisticSteers(current => current.filter(item => !acknowledged.has(item.clientRequestId)));
+        setOptimisticSteers(current => current.filter(item => !steerAcknowledged(item, pendingSteers)));
         return;
       }
       if (
@@ -2879,6 +2885,7 @@ export function ThreadDetailPage() {
             prompt: input.prompt,
             createdAt: optimisticStartedAt,
             status: 'steering',
+            delivery: input.delivery === 'steer' ? 'steer' : 'continuation',
           },
         ]);
       } else {
@@ -2889,6 +2896,7 @@ export function ThreadDetailPage() {
         setLiveOutput('');
         setOptimisticTurn({
           id: optimisticTurnId,
+          clientRequestId,
           serverTurnId: null,
           startedAt: optimisticStartedAt,
           status: 'sending',
@@ -2939,8 +2947,7 @@ export function ThreadDetailPage() {
           void fetchThreadDelivery(id).then((delivery) => {
             if (activeThreadIdRef.current !== id) return;
             setDetail((current) => current ? { ...current, pendingSteers: delivery.pendingSteers } : current);
-            const acknowledged = new Set(delivery.pendingSteers.map((item) => item.clientRequestId));
-            setOptimisticSteers((current) => current.filter((item) => !acknowledged.has(item.clientRequestId)));
+            setOptimisticSteers((current) => current.filter((item) => !steerAcknowledged(item, delivery.pendingSteers)));
           }).catch(() => { /* Realtime or the normal summary poll can recover. */ });
         }
         const fellBackToNewTurn =
@@ -2960,6 +2967,7 @@ export function ThreadDetailPage() {
           );
           setOptimisticTurn({
             id: optimisticTurnId,
+            clientRequestId,
             serverTurnId: nextThread.activeTurnId,
             startedAt: nextThread.lastTurnStartedAt ?? optimisticStartedAt,
             status: 'inProgress',
@@ -3009,7 +3017,9 @@ export function ThreadDetailPage() {
           await runDetailMutation(() => steerSubmittedPrompt(id, clientRequestId, steerTargetTurnId));
         } catch (caught) {
           // Acceptance succeeded. Keep the durable message and clear the draft,
-          // rather than inviting a second submission of the same prompt.
+          // rather than inviting a second submission of the same prompt. It stays
+          // queued on the server, so it shows under Queued.
+          setOptimisticSteers((current) => current.map((steer) => steer.clientRequestId === clientRequestId ? { ...steer, delivery: 'continuation' } : steer));
           setError(translate("workbench.messageSavedButSteerCouldNotBe", { value1: caught instanceof Error ? caught.message : translate("workbench.tryTheQueuedMessageAfterReconnecting") }));
         }
       }
@@ -3769,6 +3779,7 @@ export function ThreadDetailPage() {
       optimisticTurn && !optimisticMaterializedTurn
         ? {
             id: optimisticTurn.id,
+            clientRequestId: optimisticTurn.clientRequestId ?? null,
             startedAt: optimisticTurn.startedAt,
             status: optimisticTurn.status,
             error: optimisticTurn.error,
