@@ -570,8 +570,10 @@ Moving around keeps the screen steady:
   pointer rests on it, or while a finger holds it (it goes when the finger
   lifts). The bubble sits over or under the row and never covers the ⋯ column.
 - Earlier turns load above what is on screen without moving it: the turn at the
-  top of the screen stays where it was, through the loading row, the insertion
-  and the new turns' rendering, until the reader scrolls.
+  top of the screen stays where it was through the loading row, the insertion
+  and the new turns' rendering. It is corrected only when content changes size;
+  the reader's own scrolling (a swipe and its momentum) is never pulled back,
+  and a jump to a turn or to the latest ends the hold.
 - A turn the reader folded or opened stays that way while the page is open, also
   after leaving the thread and coming back; a search result opens its turn once, and
   folding it again sticks while the thread keeps working.
