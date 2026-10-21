@@ -212,6 +212,8 @@
 
 html {
   background: var(--app-bg);
+  /* No double-tap zoom; pinch is refused in lib/pageZoom.ts. */
+  touch-action: manipulation;
 }
 
 body {
