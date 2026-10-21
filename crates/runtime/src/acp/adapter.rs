@@ -63,6 +63,15 @@ pub trait HarnessAdapter: Send + Sync {
     fn fork_probe(&self) -> Option<(&'static str, &'static str)> {
         None
     }
+    /// `session/fork` metadata that keeps history only through `reply`, for
+    /// adapters that fork at a message. None means latest-only fork.
+    fn fork_point_meta(
+        &self,
+        _negotiated: &NegotiatedCaps,
+        _reply: &crate::actor::ForkReply,
+    ) -> Option<Value> {
+        None
+    }
     fn extension_fork_params(&self, session_id: &str, cwd: &str) -> Value {
         json!({"sessionId":session_id,"cwd":cwd})
     }
@@ -221,7 +230,44 @@ impl HarnessAdapter for ClaudeAdapter {
         // A model or effort chosen mid-turn goes to the running query and takes
         // effect at its next model call.
         caps.controls.live_model_switch = true;
+        caps.branching.fork_at = negotiated.fork && claude_fork_points(negotiated);
     }
+    fn fork_point_meta(
+        &self,
+        negotiated: &NegotiatedCaps,
+        reply: &crate::actor::ForkReply,
+    ) -> Option<Value> {
+        if !claude_fork_points(negotiated) {
+            return None;
+        }
+        // claude-agent-acp resolves this fork point (its JetBrains AIR
+        // extension): the API message id when known, otherwise the reply's
+        // text fingerprint and its occurrence, then forks the transcript
+        // through that message.
+        use sha2::Digest;
+        let fingerprint = format!("sha256:{:x}", sha2::Sha256::digest(reply.text.as_bytes()));
+        let fork = json!({
+            "version": 1,
+            // An id that matches nothing makes the adapter use the fingerprint.
+            "messageId": reply.message_id.as_deref().unwrap_or("pockymoe-fork-point"),
+            "messageFingerprint": fingerprint,
+            "messageOccurrence": reply.occurrence.max(1),
+        });
+        Some(json!({"jetbrains": {"air": {"fork": fork}}}))
+    }
+}
+
+/// claude-agent-acp accepts fork points from 0.86.0, the oldest version
+/// verified; older adapters would silently fork the latest turn instead.
+fn claude_fork_points(negotiated: &NegotiatedCaps) -> bool {
+    let Some(version) = negotiated.agent_version.as_deref() else {
+        return false;
+    };
+    let mut parts = version
+        .split(['.', '-'])
+        .map(|part| part.parse::<u64>().unwrap_or(0));
+    let (major, minor) = (parts.next().unwrap_or(0), parts.next().unwrap_or(0));
+    (major, minor) >= (0, 86)
 }
 
 pub struct CursorAdapter;
@@ -537,4 +583,62 @@ fn apply_negotiated(caps: &mut AgentProviderCapabilitiesDto, negotiated: &Negoti
     caps.usage.token_usage = true;
     caps.usage.cost_usd = true;
     caps.usage.context_window = true;
+}
+
+#[cfg(test)]
+mod fork_point_tests {
+    use super::*;
+    use crate::actor::ForkReply;
+
+    fn claude(version: Option<&str>) -> NegotiatedCaps {
+        NegotiatedCaps {
+            fork: true,
+            agent_version: version.map(str::to_string),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn claude_forks_at_a_reply_only_on_adapters_that_resolve_fork_points() {
+        let mut caps = AgentProviderCapabilitiesDto::conversational();
+        ClaudeAdapter.patch_capabilities(&mut caps, &claude(Some("0.86.0")));
+        assert!(caps.branching.fork && caps.branching.fork_at);
+        for old in [Some("0.85.9"), None] {
+            let mut caps = AgentProviderCapabilitiesDto::conversational();
+            ClaudeAdapter.patch_capabilities(&mut caps, &claude(old));
+            assert!(caps.branching.fork && !caps.branching.fork_at);
+        }
+        let reply = ForkReply {
+            message_id: Some("msg_1".into()),
+            text: "Done.".into(),
+            occurrence: 2,
+        };
+        let meta = ClaudeAdapter
+            .fork_point_meta(&claude(Some("1.2.0-preview.1")), &reply)
+            .unwrap();
+        let fork = &meta["jetbrains"]["air"]["fork"];
+        assert_eq!(fork["version"], 1);
+        assert_eq!(fork["messageId"], "msg_1");
+        assert_eq!(fork["messageOccurrence"], 2);
+        assert!(fork["messageFingerprint"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256:"));
+        let unnamed = ForkReply {
+            message_id: None,
+            ..reply.clone()
+        };
+        assert_eq!(
+            ClaudeAdapter
+                .fork_point_meta(&claude(Some("0.86.0")), &unnamed)
+                .unwrap()["jetbrains"]["air"]["fork"]["messageId"],
+            "pockymoe-fork-point"
+        );
+        assert!(ClaudeAdapter
+            .fork_point_meta(&claude(Some("0.80.0")), &reply)
+            .is_none());
+        assert!(StandardAdapter
+            .fork_point_meta(&claude(Some("0.86.0")), &reply)
+            .is_none());
+    }
 }

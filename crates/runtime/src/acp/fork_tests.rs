@@ -41,7 +41,16 @@ async fn codex_fork_releases_writer_before_independent_load() {
         .await
         .insert(source_id.clone(), source);
 
-    let error = runtime.fork_session_at(&source_id, 99).await.unwrap_err();
+    let error = runtime
+        .fork_session_at(
+            &source_id,
+            &crate::actor::ForkPoint {
+                rollback_count: 99,
+                reply: None,
+            },
+        )
+        .await
+        .unwrap_err();
     assert!(error
         .to_string()
         .contains("selected Codex turn was not found"));
@@ -59,7 +68,17 @@ async fn codex_fork_releases_writer_before_independent_load() {
     );
 
     for rollback in [0, 1] {
-        let fork = runtime.fork_session_at(&source_id, rollback).await.unwrap();
+        let fork = runtime
+            .fork_session_at(
+                &source_id,
+                &crate::actor::ForkPoint {
+                    rollback_count: rollback,
+                    reply: None,
+                },
+            )
+            .await
+            .unwrap()
+            .session;
         let raw = fork.provider_session_id.split_once("::").unwrap().1;
         // This is the independent load required when the fork gets its own CLI identity.
         let (_, loaded) = runtime

@@ -216,6 +216,33 @@ pub struct StartSessionResult {
     pub reasoning_effort: Option<String>,
 }
 
+/// Where a fork keeps history up to: the source's last turn when
+/// `rollback_count` is zero, otherwise that many of its latest turns dropped.
+#[derive(Debug, Clone, Default)]
+pub struct ForkPoint {
+    pub rollback_count: u32,
+    /// The kept turn's final reply, for harnesses that fork at a message.
+    pub reply: Option<ForkReply>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ForkReply {
+    /// The harness's own id for the message, when it streamed one.
+    pub message_id: Option<String>,
+    pub text: String,
+    /// 1-based count of replies with this exact text up to this one.
+    pub occurrence: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct ForkResult {
+    pub session: StartSessionResult,
+    /// The fork's harness keeps the new session open in the source's process
+    /// and does not share it with another one: release that process before
+    /// the fork loads on its own.
+    pub release_source: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct StartTurnInput {
     pub provider_session_id: String,
@@ -378,15 +405,14 @@ pub trait AgentRuntime: Send + Sync {
     async fn fork_session(&self, _session_id: &str) -> Result<StartSessionResult> {
         anyhow::bail!("fork is not supported by this harness");
     }
-    async fn fork_session_at(
-        &self,
-        session_id: &str,
-        rollback_count: u32,
-    ) -> Result<StartSessionResult> {
-        if rollback_count != 0 {
+    async fn fork_session_at(&self, session_id: &str, point: &ForkPoint) -> Result<ForkResult> {
+        if point.rollback_count != 0 {
             anyhow::bail!("conflict: This backend supports latest-session fork only.");
         }
-        self.fork_session(session_id).await
+        Ok(ForkResult {
+            session: self.fork_session(session_id).await?,
+            release_source: false,
+        })
     }
     async fn send_input(&self, _session_id: &str, _turn_id: &str, _prompt: &str) -> Result<()> {
         anyhow::bail!("steering is not supported by this harness");

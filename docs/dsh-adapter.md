@@ -36,7 +36,7 @@ bridge 是 DSH 的又一个 carrier：它通过 `ctx.typertGateway.invoke()` 调
 | 权限 | ACP mode / app-server policy | ACP mode | 进程启动时读 `DSH_PERMISSION_MODE`；会话级 `/permission` | 启动 env + 运行时命令，再读 projection 确认 |
 | 计划模式 | mode | mode + ExitPlanMode | `/plan` 命令；`exit_plan_mode` 走 user-questions 审阅 | bridge 下发 `/plan`，并充当问题应答方 |
 | 自治工作 | goal 由 Codex 驱动 | 后台任务 | `create_goal` 或 `/goal` 后在 ACP prompt **结束后**继续自动跑轮次 | 回合持续到 DSH 空闲；Stop 时同时暂停 goal |
-| 会话 | load/fork（经 bridge） | load | 只有 list/resume/close；无 load/fork/回放；所有 profile 共享 `$DSH_HOME/sessions` | 历史由 Pockymoe 自己保存 |
+| 会话 | load/fork（经 bridge） | load | 只有 list/resume/close；无 load/fork/回放；所有 profile 共享 `$DSH_HOME/sessions` | 历史由 Pockymoe 自己保存；fork 由 bridge 用 DSH 自己的种子会话实现 |
 | 设置存储 | `CODEX_HOME` config | `CLAUDE_CONFIG_DIR` | volatile 字段整行写进 profile 的 `cordis.patch.yml`；acp 禁用 HMR，需重启；凭据在 `.credentials.yaml`（监听热更新） | 带 revision 写，标注“重连生效”，写前备份 |
 | 模型 | 固定目录 | 固定目录 | 运行时 provider 注册（DeepSeek、pi-ai 的 40+ provider、自定义网关） | 可选项以 ACP 的 config options 为准；推理档位按模型逐个解析 |
 | 工具展示 | 命令、diff、终端输出 | 富卡片 | 只有 `kind:"other"`、`title` = 工具名、`rawInput`、结果文本 | 尚未做：可由 bridge 转发工具的 presentation |
@@ -148,7 +148,8 @@ relay ACL 默认拒绝共享用户访问该路径（有回归测试）。`GET /a
 | 会话标题 | ✓ 线程标题同步到 DSH | `sessionTitle.rename` |
 | 工具富展示（diff、位置） | 未做 | bridge 转发 presentation |
 | MCP 透传、子代理/后台任务面板 | 未做 | 目前 `mcpServers: []` |
-| load/fork/回放 | DSH ACP 不支持 | — |
+| fork（最新轮次或任一已完成轮次） | ✓ 需原生组合 | bridge 种子会话，见 [acp-slash-fork-and-usage.md](acp-slash-fork-and-usage.md#fork-support) |
+| load/回放 | DSH ACP 不支持 | — |
 
 ## 运行模式（preset）
 

@@ -615,6 +615,11 @@ pub(super) fn patch_capabilities(
     caps.controls.plan_mode = commands && has("plan");
     caps.turns.compact = commands && has("compact");
     caps.controls.goals = commands && features["goals"].as_bool().unwrap_or(false) && has("goal");
+    // The bridge forks through DSH's own session controller, at any turn.
+    if features["fork"].as_bool().unwrap_or(false) {
+        caps.branching.fork = true;
+        caps.branching.fork_at = true;
+    }
 }
 
 /// DSH commands mirrored by thread controls (plan mode, sandbox, goals,
@@ -817,6 +822,15 @@ pub(super) fn goal_state(value: &Value) -> Option<crate::actor::GoalState> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_bridge_fork_feature_enables_fork_at_any_turn() {
+        let mut caps = AgentProviderCapabilitiesDto::conversational();
+        patch_capabilities(&mut caps, &json!({"features":{}}), &Value::Null);
+        assert!(!caps.branching.fork && !caps.branching.fork_at);
+        patch_capabilities(&mut caps, &json!({"features":{"fork":true}}), &Value::Null);
+        assert!(caps.branching.fork && caps.branching.fork_at);
+    }
+
     use super::*;
 
     #[test]

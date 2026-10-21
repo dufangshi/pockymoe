@@ -1,18 +1,23 @@
 // Keyless DSH provider for E2E: `CALL <tool> <json>` in the latest user text
 // makes one tool call, `TOOLS?` lists the tools DSH offered (the run mode's
-// tool set); otherwise it answers. Text and reasoning stream in small chunks
+// tool set), `HISTORY?` lists the earlier user texts the model saw (what a
+// fork kept); otherwise it answers. Text and reasoning stream in small chunks
 // so bridge streaming is observable.
 export const name = 'pockymoe-e2e-scripted-llm';
 export const inject = ['llm'];
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-function lastUserText(messages) {
-  const texts = messages.filter(message => message.role === 'user').map(message =>
+function userTexts(messages) {
+  return messages.filter(message => message.role === 'user').map(message =>
     typeof message.content === 'string'
       ? message.content
-      : (message.content ?? []).filter(block => block.type === 'text').map(block => block.text).join(''));
-  return texts.filter(text => !text.startsWith('Current runtime context')).at(-1) ?? '';
+      : (message.content ?? []).filter(block => block.type === 'text').map(block => block.text).join(''))
+    .filter(text => !text.startsWith('Current runtime context'));
+}
+
+function lastUserText(messages) {
+  return userTexts(messages).at(-1) ?? '';
 }
 
 class ScriptedAdapter {
@@ -55,6 +60,7 @@ class ScriptedAdapter {
     }
     const answer = afterTool ? 'Tool finished; final answer SCRIPTED_DONE.'
       : text.includes('TOOLS?') ? `TOOLS=${tools.map(tool => tool.name).sort().join(',')}`
+      : text.includes('HISTORY?') ? `HISTORY=${userTexts(messages).slice(0, -1).join(' | ')}`
       : `Plain answer SCRIPTED_OK for: ${text.slice(0, 60)}`;
     yield* block('text', answer);
     yield { type: 'usage', usage: { inputTokens: 90, outputTokens: 10, totalTokens: 100 } };

@@ -22,6 +22,8 @@ pub struct NegotiatedCaps {
     pub image: bool,
     pub goal_method: Option<String>,
     pub agent_name: Option<String>,
+    /// `agentInfo.version` from initialize, for features adapters gained later.
+    pub agent_version: Option<String>,
     pub available_commands: Vec<NegotiatedCommand>,
 }
 
@@ -107,6 +109,10 @@ pub fn negotiate(initialize: &Value) -> NegotiatedCaps {
             .map(str::to_string),
         agent_name: initialize
             .pointer("/agentInfo/name")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        agent_version: initialize
+            .pointer("/agentInfo/version")
             .and_then(Value::as_str)
             .map(str::to_string),
         available_commands,

@@ -3863,6 +3863,14 @@ export function ThreadDetailPage() {
     ),
     [sessionConnectionIndicator, relayAccessBadge, relayRouteDeviceId],
   );
+  // Replies offer a fork at their turn where the harness forks at a chosen turn.
+  const forkTurnRef = useRef(handleForkTurn);
+  forkTurnRef.current = handleForkTurn;
+  const onForkTurn = useCallback((turnId: string) => forkTurnRef.current(turnId), []);
+  const canForkAtTurn = Boolean(
+    !hostScope && relayThreadCanControl && backendCapabilities?.branching.forkAt
+      && detail && detail.thread.status !== 'running',
+  );
   const timelineProps = useMemo<Partial<ThreadTimelineProps>>(
     () => ({
       livePlan,
@@ -4101,6 +4109,7 @@ export function ThreadDetailPage() {
       ...(relayThreadCanControl
         ? { steerPendingPrompt: handleSteerPendingPrompt }
         : {}),
+      ...(canForkAtTurn ? { forkTurn: onForkTurn } : {}),
       sendPrompt: handlePrompt,
       ...(relayThreadCanControl ? { interrupt: handleInterrupt } : {}),
       ...(relayThreadCanControl ? { compact: handleCompactThread } : {}),
@@ -4115,6 +4124,8 @@ export function ThreadDetailPage() {
       shell: localShellAdapter,
     }),
     [
+      canForkAtTurn,
+      onForkTurn,
       getCurrentThreadImageAssetUrl,
       getNewThreadHref,
       getThreadHref,

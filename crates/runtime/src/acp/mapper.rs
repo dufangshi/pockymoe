@@ -496,6 +496,12 @@ impl TurnMapper {
                             segment.created_at = Some(created_at);
                         }
                         segment.sequence = Some(sequence);
+                        // The harness's message id lets a fork stop at this reply.
+                        if let Some(id) = &message_id {
+                            segment
+                                .extra
+                                .insert("nativeMessageId".into(), Value::String(id.clone()));
+                        }
                         self.agent_segments.push(segment);
                         self.active_agent_segment = Some(index);
                         index
@@ -1276,6 +1282,24 @@ fn item(
 mod stream_tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn replies_keep_the_harness_message_id_for_forks() {
+        let mut mapper = TurnMapper::new("turn");
+        mapper.apply(&json!({"sessionUpdate":"agent_message_chunk","messageId":"msg_1","content":{"type":"text","text":"Done."}}));
+        mapper.apply(
+            &json!({"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"x"}}),
+        );
+        let items = mapper.finish(false);
+        assert_eq!(items[0].extra["nativeMessageId"], "msg_1");
+        assert!(
+            items
+                .iter()
+                .filter(|item| item.kind == ThreadItemKind::AgentMessage)
+                .count()
+                >= 1
+        );
+    }
 
     #[test]
     fn harness_notices_get_their_own_row_and_split_the_reply() {

@@ -27,7 +27,8 @@ and navigating between fork panels cannot clear an in-flight operation lock.
 | Harness | Latest fork | Selected completed turn | Transport |
 | --- | --- | --- | --- |
 | Codex | Yes | Yes | Thin bridge to the app-server owned by codex-acp |
-| Claude Code | Yes | No | Standard ACP `session/fork` |
+| Claude Code | Yes | Yes (claude-agent-acp 0.86.0+) | Standard ACP `session/fork`; a historical fork adds a fork point to `_meta` |
+| DeepSeek Harness | Yes | Yes (Web console composition) | DSH's own seeded fork through the in-process bridge |
 | Grok Build | Yes | No | `_x.ai/session/fork`, then ACP `session/load` |
 
 Codex ACP currently does not implement `session/fork`. The Rust bridge runs as
@@ -38,11 +39,41 @@ still belong to ACP. The source is never loaded by a second native app-server.
 Historical forks use the selected native `lastTurnId`; they do not roll back or
 modify the parent. This requires native Codex support for these app-server APIs.
 
+claude-agent-acp resolves a fork point given as
+`_meta.jetbrains.air.fork = {version: 1, messageId, messageFingerprint, messageOccurrence}`
+(its JetBrains AIR extension) and forks the transcript through that message.
+Pockymoe sends the selected turn's last reply: its Claude message id, recorded
+as `nativeMessageId` on replies streamed since this change, otherwise a
+`sha256:` fingerprint of the reply text and how many replies with that text came
+up to it. Older adapters would ignore the point and fork the latest turn, so
+`forkAt` needs the adapter to report version 0.86.0 or later in `agentInfo`.
+
+DSH's ACP profile has no fork, and it resumes only sessions without a parent
+link, which DSH's own session controller sets on its forks. The bridge therefore
+seeds a new root session from an exact prefix of the source's event log (DSH's
+`buildForkSeed`), the same cut the controller uses. Pockymoe turns are DSH turns
+that carry a user message, so a historical fork drops that many of the latest
+user turns; goal continuations, compaction and restart context count for
+nothing. DSH lets one process write a session, and the new session starts in the
+source's process. The bridge closes it there, and the Supervisor then releases
+the source's process (the source loads again on its next use), so the fork opens
+in its own process. `forkAt` needs DSH's composed process (agents and session
+query); the bridge reports it in its `hello` features.
+
 Fork and prompt take an exclusive operation lock on the source session. Forks
 inherit product settings, receive a new provider session ID and local thread,
 and can be loaded after a supervisor restart. `forkAt` is advertised separately
-from latest fork; Claude/Grok do not show a historical-fork action they cannot
-perform. These forks share the workspace directory, as native conversation
+from latest fork; Grok and older Claude adapters do not show a historical-fork
+action they cannot perform.
+
+## Fork from a reply
+
+Where `forkAt` is advertised, the last reply of each completed turn has a fork
+icon beside its copy button. It appears with copy (desktop hover, keyboard focus,
+a tap on the reply on touch screens). It asks for confirmation, then forks at that
+turn and opens the new thread; a failure stays on the icon with its reason. The
+icon is hidden while the thread runs, for shared users who cannot control the
+thread, and in host-scoped views. These forks share the workspace directory, as native conversation
 forks do; they do not create a Git worktree.
 
 ## Grok token costs
@@ -70,3 +101,6 @@ isolation, Codex historical boundaries, restart continuation and Grok usage
 backfill. It requires installed/authenticated harnesses and makes small real
 model requests. `FORK_TEST_AGENTS=codex,claude,grok` selects the harnesses and
 `FORK_TEST_PORT` overrides the test port. Evidence is saved under `.local/`.
+For DSH without model keys, the scripted provider (`e2e/fixtures/dsh-scripted-llm.mjs`)
+answers `HISTORY?` with the earlier user texts it was sent, which shows what a
+fork kept.

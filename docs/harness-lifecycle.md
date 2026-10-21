@@ -90,7 +90,9 @@ never block a prompt: without a releasable thread the Supervisor stays over the
 limit and the monitor reports `overThreadLimit` / `overMemoryLimit`.
 
 **Shared processes.** A Claude or Grok fork is served by its source's process
-until it is loaded on its own. Such a process is released only when every
+until it is loaded on its own. A DSH fork never is: DSH lets one process write a
+session, so after a DSH fork the source's process is released (reason
+`explicit`) and the fork loads in its own. Such a process is released only when every
 session on it may be released, and all of them are released together.
 
 **Explicit, delete and close.** `POST /api/threads/{id}/release` releases at

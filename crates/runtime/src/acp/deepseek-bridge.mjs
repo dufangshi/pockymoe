@@ -7,6 +7,7 @@ import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpat
 import { createServer, request as httpRequest } from 'node:http';
 import { pipeline } from 'node:stream';
 import { connect } from 'node:net';
+import { randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
 
 export const name = 'remote-codex-bridge';
@@ -297,6 +298,7 @@ export function apply(ctx, config) {
       }
       case 'settings': return settings(ctx);
       case 'updateSetting': return updateSetting(ctx, params);
+      case 'fork': return fork(ctx, params);
       default: throw new Error(`Unknown bridge method ${method}`);
     }
   }
@@ -421,6 +423,81 @@ function startConsoleProxy(targetPort) {
   });
 }
 
+// Fork the way DSH's session controller does (an exact event prefix seeds a
+// new root session), but without its parent link: DSH's ACP resumes only
+// sessions without one. The new session is released at once so the fork's own
+// process can open it. A rollback drops that many of the latest user turns:
+// Pockymoe's turns are DSH turns carrying a user message, while goal
+// continuations, compaction and restart context add no Pockymoe turn.
+async function fork(ctx, { sessionId, rollbackCount = 0 }) {
+  const query = ctx.get('sessionQuery');
+  const agents = ctx.get('agents');
+  if (!query || typeof agents?.create !== 'function') throw new Error('This DSH composition cannot fork sessions');
+  const observed = await query.observeSession(sessionId);
+  try {
+    const events = observed.events;
+    const boundary = forkBoundary(events, Number(rollbackCount) || 0, sessionId);
+    const seed = await forkSeed(events, boundary);
+    const preset = observed.projections?.values?.agentPreset ?? undefined;
+    const selection = ctx.get('agentDefaultModel')?.currentSelection?.();
+    const child = randomUUID();
+    const handle = await agents.create({
+      sessionId: child,
+      seed,
+      inheritedEventCount: boundary + 1,
+      meta: {
+        ...(observed.header?.cwd === undefined ? {} : { cwd: observed.header.cwd }),
+        isSeeded: true,
+        ...(preset === undefined ? {} : { agentPreset: preset }),
+      },
+      ...(selection?.provider && selection?.model
+        ? { agentOptions: { provider: selection.provider, model: selection.model } } : {}),
+    });
+    await handle.dispose();
+    return { sessionId: child };
+  } finally {
+    observed[Symbol.dispose]?.();
+  }
+}
+
+/** The inclusive event seq a fork keeps: the end of the chosen user turn and
+    what closes it, up to the next prompt (as DSH's latest-turn fork keeps). */
+function forkBoundary(events, rollback, sessionId) {
+  const turns = [];
+  let open = null;
+  for (const event of events) {
+    if (event.type === 'turn/start') open = { user: false };
+    else if (open && event.type === 'user/message' && event.surfaceOp === 'append'
+      && event.data?.source?.kind === 'user') open.user = true;
+    else if (open && event.type === 'turn/end') {
+      if (open.user) turns.push(event.seq);
+      open = null;
+    }
+  }
+  const end = turns[turns.length - 1 - rollback];
+  if (end === undefined) throw new Error(`DSH session ${sessionId} has no turn ${turns.length - rollback} to fork from`);
+  let boundary = end;
+  for (const next of events.slice(events.findIndex(event => event.seq === end) + 1)) {
+    if (next.type === 'turn/start' || (next.type === 'user/message' && next.surfaceOp === 'append')
+      || next.type === 'agent/inbox/spliced') break;
+    boundary = next.seq;
+  }
+  return boundary;
+}
+
+/** DSH's own seed builder when the installed release exports it; a cut after
+    a closed turn needs no synthetic closers, so the fallback only marks it. */
+async function forkSeed(events, boundary) {
+  try {
+    const { buildForkSeed } = await import('@deepseek-ai/dsh-session/fork');
+    return buildForkSeed(events, boundary);
+  } catch {
+    return [...events.slice(0, boundary + 1), {
+      type: 'session/end-seed', seq: boundary + 1, time: events[boundary].time, data: { inherited: true },
+    }];
+  }
+}
+
 async function remote(ctx, namespace, method, args = {}) {
   const gateway = ctx.get('typertGateway');
   if (!gateway) throw new Error('DSH Remote gateway is unavailable');
@@ -476,6 +553,7 @@ async function snapshot(ctx) {
       settings: Boolean(ctx.get('settings')),
       runModes: Boolean(registry),
       console: Boolean(ctx.get('webServer') && ctx.get('connection')),
+      fork: typeof ctx.get('agents')?.create === 'function' && Boolean(ctx.get('sessionQuery')),
     },
   };
 }

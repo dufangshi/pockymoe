@@ -20,8 +20,8 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::actor::{
-    AgentRuntime, EventBus, GoalState, ImportSessionMeta, SessionSettings, StartSessionInput,
-    StartSessionResult, StartTurnInput,
+    AgentRuntime, EventBus, ForkPoint, ForkResult, GoalState, ImportSessionMeta, SessionSettings,
+    StartSessionInput, StartSessionResult, StartTurnInput,
 };
 use crate::files::{write_file_with_scope, WriteScope};
 use crate::import_id::session_ids_match;
@@ -2922,14 +2922,14 @@ impl AgentRuntime for AcpRuntime {
     }
 
     async fn fork_session(&self, session_id: &str) -> Result<StartSessionResult> {
-        self.fork_session_at(session_id, 0).await
+        Ok(self
+            .fork_session_at(session_id, &ForkPoint::default())
+            .await?
+            .session)
     }
 
-    async fn fork_session_at(
-        &self,
-        session_id: &str,
-        rollback_count: u32,
-    ) -> Result<StartSessionResult> {
+    async fn fork_session_at(&self, session_id: &str, point: &ForkPoint) -> Result<ForkResult> {
+        let rollback_count = point.rollback_count;
         let _lifecycle = self.inner.lifecycle.lock().await;
         let operation = self
             .inner
@@ -2946,6 +2946,7 @@ impl AgentRuntime for AcpRuntime {
         let (
             process,
             codex_bridge,
+            dsh,
             raw_session,
             cwd,
             yolo,
@@ -2975,6 +2976,7 @@ impl AgentRuntime for AcpRuntime {
             (
                 live.process.clone(),
                 live.codex_bridge.clone(),
+                live.dsh.clone(),
                 live.session_id.clone(),
                 live.cwd.clone(),
                 live.yolo,
@@ -3007,18 +3009,47 @@ impl AgentRuntime for AcpRuntime {
                 .await?;
             // The fork's Pockymoe id does not exist yet. Leave it unloaded so
             // resume_session starts ACP with the new thread's own CLI environment.
-            return Ok(StartSessionResult {
-                provider_session_id: Self::scoped_id(&adapter_id, &id),
-                model,
-                reasoning_effort: effort,
+            return Ok(ForkResult {
+                session: StartSessionResult {
+                    provider_session_id: Self::scoped_id(&adapter_id, &id),
+                    model,
+                    reasoning_effort: effort,
+                },
+                release_source: false,
             });
         }
+        if let Some(bridge) = &dsh {
+            // DSH forks natively in this process, which then holds the new
+            // session's only write handle; it loads elsewhere once released.
+            let forked = bridge
+                .call(
+                    "fork",
+                    json!({"sessionId": raw_session, "rollbackCount": rollback_count}),
+                )
+                .await?;
+            let id = forked["sessionId"]
+                .as_str()
+                .ok_or_else(|| anyhow!("DSH fork returned no session id"))?;
+            return Ok(ForkResult {
+                session: StartSessionResult {
+                    provider_session_id: Self::scoped_id(&adapter_id, id),
+                    model,
+                    reasoning_effort: effort,
+                },
+                release_source: true,
+            });
+        }
+        let adapter = adapter_for(&adapter_id);
+        let fork_meta = match (rollback_count, point.reply.as_ref()) {
+            (0, _) => None,
+            (_, Some(reply)) => adapter.fork_point_meta(&negotiated, reply),
+            _ => None,
+        };
         let response = {
-            if rollback_count != 0 {
+            if rollback_count != 0 && fork_meta.is_none() {
                 bail!("conflict: This backend supports latest-session fork only.");
             }
             if let Some(method) = negotiated.fork_method.as_deref() {
-                let adapter = adapter_for(&adapter_id);
                 let forked = process
                     .request(
                         method,
@@ -3037,12 +3068,11 @@ impl AgentRuntime for AcpRuntime {
                 loaded["sessionId"] = json!(id);
                 loaded
             } else {
-                process
-                    .request(
-                        "session/fork",
-                        json!({"sessionId":raw_session, "cwd":cwd, "mcpServers":[]}),
-                    )
-                    .await?
+                let mut params = json!({"sessionId":raw_session, "cwd":cwd, "mcpServers":[]});
+                if let Some(meta) = fork_meta {
+                    params["_meta"] = meta;
+                }
+                process.request("session/fork", params).await?
             }
         };
         let new_id = response
@@ -3096,10 +3126,13 @@ impl AgentRuntime for AcpRuntime {
                 reason: pockymoe_protocol::HarnessLoadReason::Fork,
                 requested_at: chrono::Utc::now(),
             });
-        Ok(StartSessionResult {
-            provider_session_id: scoped,
-            model,
-            reasoning_effort: effort,
+        Ok(ForkResult {
+            session: StartSessionResult {
+                provider_session_id: scoped,
+                model,
+                reasoning_effort: effort,
+            },
+            release_source: false,
         })
     }
 

@@ -3759,10 +3759,15 @@ impl Supervisor {
         let rollback_count = u32::try_from(turn_options.len())
             .unwrap_or(u32::MAX)
             .saturating_sub(selected.turn_index);
-        let forked = runtime.fork_session_at(&session, rollback_count).await?;
+        let point = crate::actor::ForkPoint {
+            rollback_count,
+            reply: fork_reply(&detail.turns, &selected.turn_id),
+        };
+        let forked = runtime.fork_session_at(&session, &point).await?;
+        let release_source = forked.release_source;
         let saved = self.persist_forked_thread(
             &detail,
-            forked,
+            forked.session,
             usize::try_from(selected.turn_index).unwrap_or(usize::MAX),
             Some(selected.turn_id.clone()),
             Some(selected.turn_index),
@@ -3775,6 +3780,10 @@ impl Supervisor {
         )
         .await?;
         self.announce_fork_load(&saved.0).await;
+        if release_source {
+            drop(_harness);
+            self.release_fork_source(id).await;
+        }
         Ok(saved)
     }
 
@@ -3801,8 +3810,11 @@ impl Supervisor {
         if !caps.branching.fork {
             bail!("this harness does not support session/fork");
         }
-        let forked = runtime.fork_session(&session).await?;
-        let saved = self.persist_forked_thread(detail, forked, 0, None, None)?;
+        let forked = runtime
+            .fork_session_at(&session, &crate::actor::ForkPoint::default())
+            .await?;
+        let release_source = forked.release_source;
+        let saved = self.persist_forked_thread(detail, forked.session, 0, None, None)?;
         self.host_thread_created(
             &saved.0,
             crate::host_hooks::ThreadOrigin::Fork {
@@ -3811,10 +3823,22 @@ impl Supervisor {
         )
         .await?;
         self.announce_fork_load(&saved.0).await;
+        if release_source {
+            drop(_harness);
+            self.release_fork_source(&detail.thread.id).await;
+        }
         Ok(saved)
     }
 
     /// A Claude or Grok fork is served by its source's process until reloaded.
+    /// The source's process holds the fork's only write handle (DSH), so the
+    /// fork can load in its own process only once that one is released.
+    async fn release_fork_source(&self, source: &str) {
+        if let Err(error) = self.release_thread_harness(source, false, None).await {
+            tracing::warn!(%error, thread = source, "could not release a fork's source harness");
+        }
+    }
+
     async fn announce_fork_load(&self, fork: &ThreadDto) {
         let (Some(session), Ok(runtime)) = (&fork.provider_session_id, self.runtime(fork.provider))
         else {
@@ -4703,4 +4727,61 @@ pub fn bootstrap_runtimes(config: &RuntimeConfig) -> Vec<SharedRuntime> {
         }
     }
     out
+}
+
+/// The kept turn's final reply, so a harness can fork at that message.
+fn fork_reply(turns: &[ThreadTurnDto], turn_id: &str) -> Option<crate::actor::ForkReply> {
+    fn replies(turn: &ThreadTurnDto) -> impl Iterator<Item = &ThreadHistoryItemDto> {
+        turn.items
+            .iter()
+            .filter(|item| matches!(item.kind, pockymoe_protocol::ThreadItemKind::AgentMessage))
+            .filter(|item| !item.text.trim().is_empty())
+    }
+    let position = turns.iter().position(|turn| turn.id == turn_id)?;
+    let reply = replies(&turns[position]).last()?;
+    let occurrence = turns[..=position]
+        .iter()
+        .flat_map(replies)
+        .filter(|item| item.text == reply.text)
+        .count();
+    Some(crate::actor::ForkReply {
+        message_id: reply
+            .extra
+            .get("nativeMessageId")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        text: reply.text.clone(),
+        occurrence: u32::try_from(occurrence).unwrap_or(u32::MAX),
+    })
+}
+
+#[cfg(test)]
+mod fork_reply_tests {
+    use super::*;
+
+    #[test]
+    fn a_fork_point_is_the_turn_s_last_reply_and_its_repeat_count() {
+        let turn = |id: &str, replies: &[(&str, Option<&str>)]| -> ThreadTurnDto {
+            serde_json::from_value(json!({
+                "id": id, "startedAt": null, "status": "completed", "error": null,
+                "items": replies.iter().enumerate().map(|(n, (text, native))| {
+                    let mut item = json!({"id": format!("{id}:{n}"), "kind": "agentMessage", "text": text});
+                    if let Some(native) = native { item["nativeMessageId"] = json!(native); }
+                    item
+                }).collect::<Vec<_>>(),
+            }))
+            .unwrap()
+        };
+        let turns = [
+            turn("a", &[("Done.", None)]),
+            turn("b", &[("Working", None), ("Done.", Some("msg_b"))]),
+            turn("c", &[("Done.", None)]),
+        ];
+        let reply = fork_reply(&turns, "b").unwrap();
+        assert_eq!(reply.text, "Done.");
+        assert_eq!(reply.message_id.as_deref(), Some("msg_b"));
+        assert_eq!(reply.occurrence, 2);
+        assert_eq!(fork_reply(&turns, "c").unwrap().occurrence, 3);
+        assert!(fork_reply(&turns, "missing").is_none());
+    }
 }
