@@ -301,7 +301,7 @@ with sqlite3.connect(db) as conn:
           // ~42 KB of JSON travels gzipped inside the sealed envelope.
           expect((await response.body()).length).toBeLessThan(10_000);
           await expect(page.getByRole('button', { name: /Collapse turn 2$/ })).toBeVisible();
-          await expect(page.getByText('History unavailable, retry', { exact: true })).toHaveCount(0);
+          await expect(page.locator('.thread-execution-timeline .error-mark')).toHaveCount(0);
           await expect(page.locator('.thread-execution-timeline')).toContainText('HISTORY_STEP_MARKER');
         } finally { await historyContext.close(); }
       }

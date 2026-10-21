@@ -8,9 +8,15 @@ const base = `http://127.0.0.1:${process.env.E2E_API_PORT ?? 8787}`;
 /** WCAG contrast of an element's text against its own background. */
 function contrast(page: Page, selector: string) {
   return page.locator(selector).first().evaluate((element) => {
+    // Any CSS color (rgb, oklch, color-mix…) as sRGB bytes, through a canvas.
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = 1;
+    const paint = canvas.getContext('2d', { willReadFrequently: true })!;
     const parse = (value: string) => {
-      const numbers = value.match(/[\d.]+/g)!.map(Number);
-      return value.startsWith('color(') ? numbers.slice(0, 3).map((n) => n * 255) : numbers.slice(0, 3);
+      paint.clearRect(0, 0, 1, 1);
+      paint.fillStyle = value;
+      paint.fillRect(0, 0, 1, 1);
+      return Array.from(paint.getImageData(0, 0, 1, 1).data.slice(0, 3));
     };
     const luminance = (rgb: number[]) => {
       const [r, g, b] = rgb.map((c) => { const s = c / 255; return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4; });
@@ -70,7 +76,7 @@ test('workspace errors stay readable when the system scheme differs, and Explore
     await page.keyboard.press('Escape');
     await expect(menu).toHaveCount(0);
 
-    // The error banner is readable in every preset (AA body text).
+    // A file that cannot open shows a mark; its reason is readable in every preset (AA body text).
     const open = async (name: string) => {
       if (await backToFiles.isVisible()) await backToFiles.click();
       await files.getByRole('treeitem', { name, exact: true }).getByRole('button', { name, exact: true }).click({ force: true });
@@ -78,7 +84,11 @@ test('workspace errors stay readable when the system scheme differs, and Explore
     await open('package.json');
     await expect(page.getByRole('tab', { name: 'package.json', exact: true })).toHaveAttribute('aria-selected', 'true');
     await open('loop-link');
-    await expect(page.locator('.workspace-file-alert')).toBeVisible();
-    expect(await contrast(page, '.workspace-file-alert')).toBeGreaterThanOrEqual(4.5);
+    const mark = page.getByRole('button', { name: 'Why it failed' }).first();
+    await expect(mark).toBeVisible();
+    await mark.click();
+    await expect(page.locator('.error-mark-bubble')).toBeVisible();
+    expect(await contrast(page, '.error-mark-bubble')).toBeGreaterThanOrEqual(4.5);
+    await page.keyboard.press('Escape');
   }
 });

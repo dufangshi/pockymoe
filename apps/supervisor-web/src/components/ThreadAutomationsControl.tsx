@@ -18,6 +18,7 @@ import {
   DialogHeader,
   DialogTitle,
   DialogDescription,
+  ErrorMark,
   TokenUsageCost,
   PluginActionOutput,
   type TokenUsageCostProps,
@@ -207,16 +208,16 @@ function RunHistory({
   automation: a,
   runs,
   threadId,
-  onError,
 }: {
   automation: AutomationDto;
   runs: AutomationRunDto[];
   threadId: string;
-  onError: (message: string) => void;
 }) {
   const { t, locale } = useI18n();
   const { full, duration } = useDates();
   const [output, setOutput] = useState('');
+  // Why a run's Output could not be read: a mark after that button.
+  const [outputError, setOutputError] = useState<{ runId: string; message: string } | null>(null);
   const state = (v: string) =>
     knownStates.has(v) ? t(`automation.${v}` as TranslationKey) : v;
   const action = a.definition.action;
@@ -248,6 +249,9 @@ function RunHistory({
                         </span>
                       )}
                     </span>
+                    {/* A run's error is the record of what happened, not a failure of
+                        this window: it stays text. As marks, every failed run in
+                        the history would be announced as an alert. */}
                     {r.error && (
                       <span className="automation-run-error-preview">
                         {r.error}
@@ -273,25 +277,29 @@ function RunHistory({
                       )}
                     <div className="automation-run-tools">
                       {r.commandId && (
-                        <button
-                          type="button"
-                          className="automation-link-button"
-                          onClick={() => {
-                            void request<Record<string, unknown>>(
-                              `api/threads/${encodeURIComponent(threadId)}/commands/${encodeURIComponent(r.commandId!)}`,
-                            )
-                              .then((v) =>
-                                setOutput(
-                                  [String(v.stdout ?? ''), String(v.stderr ?? '')]
-                                    .filter(Boolean)
-                                    .join('\n') || t('automation.none'),
-                                ),
+                        <span className="inline-flex items-center gap-1">
+                          <button
+                            type="button"
+                            className="automation-link-button"
+                            onClick={() => {
+                              setOutputError(null);
+                              void request<Record<string, unknown>>(
+                                `api/threads/${encodeURIComponent(threadId)}/commands/${encodeURIComponent(r.commandId!)}`,
                               )
-                              .catch((e) => onError(String(e.message ?? e)));
-                          }}
-                        >
-                          {t('automation.output')}
-                        </button>
+                                .then((v) =>
+                                  setOutput(
+                                    [String(v.stdout ?? ''), String(v.stderr ?? '')]
+                                      .filter(Boolean)
+                                      .join('\n') || t('automation.none'),
+                                  ),
+                                )
+                                .catch((e) => setOutputError({ runId: r.id, message: String(e.message ?? e) }));
+                            }}
+                          >
+                            {t('automation.output')}
+                          </button>
+                          {outputError?.runId === r.id && <ErrorMark message={outputError.message} />}
+                        </span>
                       )}
                       <details className="plugin-report-disclosure">
                         <summary>{t('automation.runDetails')}</summary>
@@ -336,7 +344,11 @@ function AutomationCard({
   const [expanded, setExpanded] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [runs, setRuns] = useState<AutomationRunDto[]>([]);
+  // The history refreshes every 3 s: a failed refresh keeps the last runs, and
+  // only a history that never loaded says why.
+  const [runsLoaded, setRunsLoaded] = useState(false);
   const [error, setError] = useState('');
+  const retryRuns = useRef<() => void>(() => {});
   const detailsId = useId();
   const historyId = useId();
   const base = `api/threads/${encodeURIComponent(threadId)}/automations/${encodeURIComponent(a.id)}`;
@@ -381,6 +393,7 @@ function AutomationCard({
         );
         if (!controller.signal.aborted) {
           setRuns(data.runs);
+          setRunsLoaded(true);
           setError('');
         }
       } catch (e) {
@@ -390,10 +403,12 @@ function AutomationCard({
         refreshing = false;
       }
     };
+    retryRuns.current = () => void update();
     void update();
     const timer = window.setInterval(() => void update(), 3000);
     return () => {
       controller.abort();
+      retryRuns.current = () => {};
       window.clearInterval(timer);
     };
   }, [expanded, base]);
@@ -410,9 +425,13 @@ function AutomationCard({
     <article className="automation-rule">
       <div className="automation-rule-heading">
         <strong className="break-words">{a.definition.name}</strong>
-        <span className={`automation-state is-${a.state}`}>
-          <i />
-          {state(a.state)}
+        <span className="flex shrink-0 items-center gap-1">
+          <span className={`automation-state is-${a.state}`}>
+            <i />
+            {state(a.state)}
+          </span>
+          {/* The rule's last failure: a mark beside its state, the reason on a tap. */}
+          {a.error && <ErrorMark message={a.error} />}
         </span>
       </div>
       <div className="automation-rule-schedule">
@@ -453,11 +472,6 @@ function AutomationCard({
         )}
         <Usage usage={pluginAction ? null : s?.tokenUsage} price={pluginAction ? null : s?.priceEstimate} note={coverage} />
       </div>
-      {a.error && (
-        <p className="automation-rule-error" role="status">
-          {a.error}
-        </p>
-      )}
       <div className="automation-rule-actions">
         <button
           type="button"
@@ -535,17 +549,18 @@ function AutomationCard({
       )}
       {expanded && (
         <div id={historyId} className="automation-history">
-          {error && (
-            <p role="alert" className="plugin-report-error">
-              {error}
+          {error && !runsLoaded ? (
+            <p className="automation-runs-empty flex items-center gap-1.5">
+              {t('automation.unavailable')}
+              <ErrorMark message={error} onRetry={() => retryRuns.current()} />
             </p>
+          ) : (
+            <RunHistory
+              automation={a}
+              runs={runs}
+              threadId={threadId}
+            />
           )}
-          <RunHistory
-            automation={a}
-            runs={runs}
-            threadId={threadId}
-            onError={setError}
-          />
         </div>
       )}
     </article>
@@ -557,7 +572,12 @@ export function ThreadAutomationsControl({ thread }: { thread: ThreadDto }) {
   const [open, setOpen] = useState(false);
   const [items, setItems] = useState<AutomationDto[]>([]);
   const [watches, setWatches] = useState<NativeWatch[]>([]);
+  // Polls every 3 s. A failed poll keeps what was shown; only data that never
+  // loaded says why (the availability row), and a failed Refresh is a mark
+  // after the Refresh button.
   const [error, setError] = useState('');
+  const [refreshError, setRefreshError] = useState('');
+  const loaded = useRef({ rules: false, watches: false });
   const [unsupported, setUnsupported] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -572,6 +592,8 @@ export function ThreadAutomationsControl({ thread }: { thread: ThreadDto }) {
     setItems([]);
     setWatches([]);
     setError('');
+    setRefreshError('');
+    loaded.current = { rules: false, watches: false };
     setUnsupported(false);
     setTimezone('');
     setLoading(true);
@@ -581,7 +603,7 @@ export function ThreadAutomationsControl({ thread }: { thread: ThreadDto }) {
     if (!open) return;
     const controller = new AbortController();
     let inFlight = false;
-    const update = async () => {
+    const update = async (manual = false) => {
       if (document.visibilityState === 'hidden' || inFlight) return;
       inFlight = true;
       setRefreshing(true);
@@ -600,41 +622,54 @@ export function ThreadAutomationsControl({ thread }: { thread: ThreadDto }) {
           : []),
       ]);
       if (!controller.signal.aborted) {
+        // Failures of data shown before: silent on a poll, a mark on Refresh.
+        const stale: string[] = [];
         const rules = results[0];
         if (rules.status === 'fulfilled' && 'automations' in rules.value) {
+          loaded.current.rules = true;
           setItems(rules.value.automations);
           setError('');
           setUnsupported(false);
-        } else if (rules.status === 'rejected') {
-          const message = String(rules.reason?.message ?? rules.reason);
-          setError(message);
-          setUnsupported(
-            rules.reason?.statusCode === 404 ||
-              /^Route not found$/i.test(message),
-          );
         } else {
-          setError(t('automation.unavailable'));
+          const message = rules.status === 'rejected'
+            ? String(rules.reason?.message ?? rules.reason)
+            : t('automation.unavailable');
+          if (loaded.current.rules) stale.push(message);
+          else {
+            setError(message);
+            setUnsupported(
+              rules.status === 'rejected' && (
+                rules.reason?.statusCode === 404 ||
+                /^Route not found$/i.test(message)),
+            );
+          }
         }
         const native = results[1];
         if (native?.status === 'fulfilled' && 'watches' in native.value) {
+          loaded.current.watches = true;
           setWatches(native.value.watches);
           setTimezone(native.value.timezone ?? '');
           setNativeUnavailable(false);
-        } else if (native?.status === 'rejected') setNativeUnavailable(true);
+        } else if (native?.status === 'rejected') {
+          if (loaded.current.watches) stale.push(t('automation.nativeUnavailable'));
+          else setNativeUnavailable(true);
+        }
+        if (manual || !stale.length) setRefreshError(stale.join('\n'));
         setLoading(false);
         setRefreshing(false);
       }
       inFlight = false;
     };
-    refreshRef.current = () => void update();
+    refreshRef.current = () => void update(true);
     void update();
     const timer = window.setInterval(() => void update(), 3000);
-    document.addEventListener('visibilitychange', update);
+    const visible = () => void update();
+    document.addEventListener('visibilitychange', visible);
     return () => {
       controller.abort();
       refreshRef.current = () => {};
       window.clearInterval(timer);
-      document.removeEventListener('visibilitychange', update);
+      document.removeEventListener('visibilitychange', visible);
     };
   }, [open, thread.id, isClaude, t]);
   const { locale } = useI18n();
@@ -732,6 +767,7 @@ export function ThreadAutomationsControl({ thread }: { thread: ThreadDto }) {
                 className={refreshing ? 'animate-spin' : ''}
               />
             </button>
+            {refreshError && <ErrorMark message={refreshError} onRetry={() => refreshRef.current()} />}
           </DialogHeader>
           <div className="automation-body" aria-busy={loading}>
             <section
@@ -784,10 +820,7 @@ export function ThreadAutomationsControl({ thread }: { thread: ThreadDto }) {
               />
             </section>
             {unavailable && (
-              <div
-                className="automation-availability"
-                role={error && !unsupported ? 'alert' : 'status'}
-              >
+              <div className="automation-availability" role="status">
                 <CircleSlash size={16} />
                 <span>
                   {t(
@@ -796,20 +829,11 @@ export function ThreadAutomationsControl({ thread }: { thread: ThreadDto }) {
                       : 'automation.unavailable',
                   )}
                 </span>
-                <details>
-                  <summary
-                    aria-label={t('automation.diagnostics')}
-                    title={t('automation.diagnostics')}
-                  >
-                    <Info size={14} />
-                  </summary>
-                  <div>
-                    {error && <p>{error}</p>}
-                    {nativeUnavailable && (
-                      <p>{t('automation.nativeUnavailable')}</p>
-                    )}
-                  </div>
-                </details>
+                <ErrorMark
+                  kind={unsupported ? 'unavailable' : 'error'}
+                  message={[error, nativeUnavailable ? t('automation.nativeUnavailable') : ''].filter(Boolean).join('\n')}
+                  onRetry={unsupported ? undefined : () => refreshRef.current()}
+                />
               </div>
             )}
             {loading ? (

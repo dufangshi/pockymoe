@@ -15,6 +15,7 @@ import { useDeviceProtection } from '../lib/useDeviceProtection';
 import { getTransportStatus } from '../lib/relayTransport';
 import { getLocale } from '@pockymoe/thread-ui/i18n';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
+import { ErrorMark } from '@pockymoe/thread-ui';
 import { SharedAccessCard } from '../components/SharedAccessCard';
 import { SecurityVerification } from '../components/RelaySecurity';
 import { securityRequest, type SecurityStatus } from '../lib/relaySecurity';
@@ -284,7 +285,11 @@ export function RelayDevicesPage() {
       const result=await request<RelayCreateDeviceResultDto>(`relay/devices/${rotatingDevice.id}/token`,{method:'POST'});
       validateDeviceSetupToken(result.token);
       setCreatedDevice(result);setAddDeviceOpen(true);setRotatingDevice(null);setRotationVerification(null);await load({showLoading:false});
-    } catch(e) {setError(errorMessage(e,translate("devices.tokenRotationFailed")));}
+    } catch(e) {
+      // Back to the Replace token window, whose button carries the mark.
+      setRotationVerification(null);
+      setError({ at: 'rotate', message: errorMessage(e,translate("devices.tokenRotationFailed")) });
+    }
   }
   const [deviceName, setDeviceName] = useState('');
   const [createdBinding, setCreatedBinding] = useState<DeviceBindingFlags | null>(null);
@@ -297,8 +302,10 @@ export function RelayDevicesPage() {
   } | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [refreshError, setRefreshError] = useState<string | null>(null);
+  // Why the first load or an action failed, as a mark after its control
+  // (`at`: 'load', 'create', 'remove', 'revoke', 'rotate'). A failed
+  // background refresh keeps the last list silently.
+  const [error, setError] = useState<{ at: 'load' | 'create' | 'remove' | 'revoke' | 'rotate'; message: string } | null>(null);
   const [dialogError, setDialogError] = useState<string | null>(null);
   const [activeSharedView, setActiveSharedView] =
     useState<SharedView>('incoming-threads');
@@ -346,14 +353,11 @@ export function RelayDevicesPage() {
         if (recoveredInitialLoad) {
           setError(null);
         }
-        setRefreshError(null);
         return true;
       } catch (caught) {
         const message = errorMessage(caught, translate("devices.unableToLoadDevices"));
         if (showLoading || !hasLoadedPortalRef.current) {
-          setError(message);
-        } else {
-          setRefreshError(message);
+          setError({ at: 'load', message });
         }
         return false;
       } finally {
@@ -479,7 +483,7 @@ export function RelayDevicesPage() {
       await load({ showLoading: false });
     } catch (caught) {
       if (!verificationCancelled(caught)) {
-        setError(errorMessage(caught, translate("devices.unableToCreateDevice")));
+        setError({ at: 'create', message: errorMessage(caught, translate("devices.unableToCreateDevice")) });
       }
     } finally {
       setBusy(null);
@@ -514,7 +518,7 @@ export function RelayDevicesPage() {
         });
       });
     } catch (caught) {
-      setError(errorMessage(caught, translate("devices.unableToDeleteDevice")));
+      setError({ at: 'remove', message: errorMessage(caught, translate("devices.unableToDeleteDevice")) });
     } finally {
       setBusy(null);
     }
@@ -619,7 +623,7 @@ export function RelayDevicesPage() {
       setRevokeTarget(null);
       await load({ showLoading: false });
     } catch (caught) {
-      setError(errorMessage(caught, translate("devices.unableToRemoveSharedAccess")));
+      setError({ at: 'revoke', message: errorMessage(caught, translate("devices.unableToRemoveSharedAccess")) });
     } finally {
       setBusy(null);
     }
@@ -662,7 +666,7 @@ export function RelayDevicesPage() {
       setRevokeTarget(null);
       await load({ showLoading: false });
     } catch (caught) {
-      setError(errorMessage(caught, translate("devices.unableToRemoveSharedThreadAccess")));
+      setError({ at: 'revoke', message: errorMessage(caught, translate("devices.unableToRemoveSharedThreadAccess")) });
     } finally {
       setBusy(null);
     }
@@ -792,13 +796,6 @@ export function RelayDevicesPage() {
           </div>
         </section>
 
-        {error ? <Notice tone="danger">{error}</Notice> : null}
-        {refreshError ? (
-          <Notice tone="danger">
-            {translate("devices.latestDeviceStatusCouldNotBeRefreshed")} {refreshError}
-            {translate("devices.retryingAutomatically")}
-          </Notice>
-        ) : null}
         <section aria-labelledby="devices-heading">
           <div className="flex items-start justify-between gap-4">
             <div className="min-w-0">
@@ -838,6 +835,7 @@ export function RelayDevicesPage() {
               busy={busy === 'create'}
               deviceName={deviceName}
               onChangeDeviceName={setDeviceName}
+              error={error?.at === 'create' ? error.message : null}
               onClose={() => {
                 setAddDeviceOpen(false);
                 window.requestAnimationFrame(() =>
@@ -886,6 +884,11 @@ export function RelayDevicesPage() {
                     }}
                   />
                 ))}
+              </div>
+            ) : error?.at === 'load' && !portal ? (
+              <div className="product-empty flex items-center justify-center gap-1.5">
+                {translate("devices.unavailable")}
+                <ErrorMark message={error.message} onRetry={() => void load()} />
               </div>
             ) : (
               <div className="product-empty">
@@ -1088,7 +1091,7 @@ export function RelayDevicesPage() {
           onShare={(input) => void createDeviceGrant(sharingDevice, input)}
         />
       ) : null}
-      <ConfirmDialog open={Boolean(rotatingDevice) && !rotationVerification} title={translate("devices.replaceDeviceToken")} description={translate("devices.theCurrentConnectionWillCloseUpdateThe")} confirmLabel={translate("devices.replaceToken")} onConfirm={() => void rotateDevice()} onCancel={() => setRotatingDevice(null)} />
+      <ConfirmDialog open={Boolean(rotatingDevice) && !rotationVerification} title={translate("devices.replaceDeviceToken")} description={translate("devices.theCurrentConnectionWillCloseUpdateThe")} confirmLabel={translate("devices.replaceToken")} error={rotatingDevice && error?.at === 'rotate' ? error.message : null} onConfirm={() => { setError(null); void rotateDevice(); }} onCancel={() => { setRotatingDevice(null); setError(null); }} />
       {rotationVerification && <SecurityVerification status={rotationVerification} onCancel={()=> {setRotationVerification(null);setRotatingDevice(null);}} onVerified={()=>rotateDevice(true)} />}
       {setupVerification && (
         <SecurityVerification
@@ -1108,7 +1111,7 @@ export function RelayDevicesPage() {
         confirmLabel={translate("devices.removeDevice")}
         busyLabel={translate("devices.deleting")}
         busy={Boolean(deletingDevice && busy === deletingDevice.id)}
-        error={deletingDevice ? error : null}
+        error={deletingDevice && error?.at === 'remove' ? error.message : null}
         onCancel={() => {
           if (!deletingDevice || busy !== deletingDevice.id) {
             setDeletingDevice(null);
@@ -1128,7 +1131,7 @@ export function RelayDevicesPage() {
         confirmLabel={translate("devices.revokeAccess")}
         busyLabel={translate("devices.revoking")}
         busy={revokeTargetBusy(revokeTarget, busy)}
-        error={revokeTarget ? error : null}
+        error={revokeTarget && error?.at === 'revoke' ? error.message : null}
         onCancel={() => {
           if (!revokeTargetBusy(revokeTarget, busy)) {
             setRevokeTarget(null);
@@ -1151,12 +1154,14 @@ export function RelayDevicesPage() {
 function AddDeviceForm({
   busy,
   deviceName,
+  error,
   onChangeDeviceName,
   onClose,
   onSubmit,
 }: {
   busy: boolean;
   deviceName: string;
+  error: string | null;
   onChangeDeviceName: (value: string) => void;
   onClose: () => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
@@ -1188,7 +1193,7 @@ function AddDeviceForm({
             value={deviceName}
           />
         </label>
-        <div className="flex shrink-0 gap-2">
+        <div className="flex shrink-0 items-center gap-2">
           <button
             className="relay-button-secondary min-h-11"
             disabled={busy}
@@ -1204,6 +1209,7 @@ function AddDeviceForm({
             <MonitorSmartphone className="h-4 w-4" />
             {busy ? translate("devices.creating_28ea76") : translate("devices.createToken")}
           </button>
+          {error ? <ErrorMark message={error} /> : null}
         </div>
       </div>
     </form>
@@ -1575,14 +1581,12 @@ function RelayDialog({
   busy,
   children,
   description,
-  error,
   onClose,
   title,
 }: {
   busy: boolean;
   children: React.ReactNode;
   description: string;
-  error: string | null;
   onClose: () => void;
   title: string;
 }) {
@@ -1634,11 +1638,6 @@ function RelayDialog({
             <X className="h-4 w-4" />
           </button>
         </div>
-        {error ? (
-          <div className="mt-4">
-            <Notice tone="danger">{error}</Notice>
-          </div>
-        ) : null}
         {children}
       </div>
     </div>
@@ -1689,7 +1688,6 @@ function SharePermissionsDialog({
     <RelayDialog
       busy={busy}
       description={translate("devices.canAccess", { value1: share.targetUsername, value2: relayShareTitleText(share) })}
-      error={error}
       onClose={onClose}
       title={translate("devices.sharedThreadPermissions")}
     >
@@ -1760,13 +1758,16 @@ function SharePermissionsDialog({
             type="button"
           >
             {translate("devices.cancel")}</button>
-          <button
-            className="relay-button-primary min-h-11 w-full sm:w-auto"
-            disabled={busy}
-            type="submit"
-          >
-            {busy ? translate("devices.saving") : translate("devices.savePermissions")}
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              className="relay-button-primary min-h-11 w-full min-w-0 sm:w-auto"
+              disabled={busy}
+              type="submit"
+            >
+              {busy ? translate("devices.saving") : translate("devices.savePermissions")}
+            </button>
+            {error ? <ErrorMark message={error} /> : null}
+          </div>
         </div>
         </fieldset>
       </form>
@@ -1817,7 +1818,6 @@ function ShareDeviceDialog({
     <RelayDialog
       busy={busy}
       description={translate("devices.giveAnotherRelayAccountAccessToThis")}
-      error={error}
       onClose={onClose}
       title={translate("devices.share_928c7a", { value1: device.name })}
     >
@@ -1890,14 +1890,17 @@ function ShareDeviceDialog({
             type="button"
           >
             {translate("devices.cancel")}</button>
-          <button
-            className="relay-button-primary inline-flex min-h-11 w-full items-center justify-center gap-2 sm:w-auto"
-            disabled={busy || !targetIdentifier.trim()}
-            type="submit"
-          >
-            <Share2 className="h-4 w-4" />
-            {busy ? translate("devices.sharing") : translate("devices.shareDevice")}
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              className="relay-button-primary inline-flex min-h-11 w-full min-w-0 items-center justify-center gap-2 sm:w-auto"
+              disabled={busy || !targetIdentifier.trim()}
+              type="submit"
+            >
+              <Share2 className="h-4 w-4" />
+              {busy ? translate("devices.sharing") : translate("devices.shareDevice")}
+            </button>
+            {error ? <ErrorMark message={error} /> : null}
+          </div>
         </div>
         </fieldset>
       </form>
@@ -1955,7 +1958,6 @@ function GrantPermissionsDialog({
     <RelayDialog
       busy={busy}
       description={translate("devices.canAccess", { value1: grant.targetUsername, value2: grantTitleText(grant) })}
-      error={error}
       onClose={onClose}
       title={translate("devices.sharedAccessPermissions")}
     >
@@ -2034,13 +2036,16 @@ function GrantPermissionsDialog({
             type="button"
           >
             {translate("devices.cancel")}</button>
-          <button
-            className="relay-button-primary min-h-11 w-full sm:w-auto"
-            disabled={busy}
-            type="submit"
-          >
-            {busy ? translate("devices.saving") : translate("devices.savePermissions")}
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              className="relay-button-primary min-h-11 w-full min-w-0 sm:w-auto"
+              disabled={busy}
+              type="submit"
+            >
+              {busy ? translate("devices.saving") : translate("devices.savePermissions")}
+            </button>
+            {error ? <ErrorMark message={error} /> : null}
+          </div>
         </div>
         </fieldset>
       </form>
@@ -2330,15 +2335,9 @@ function DeviceRow({
             </div>
           ) : null}
         </div>
+        {/* Copy setup command is in this menu: its failure is a mark after the menu button. */}
+        {copyError ? <ErrorMark message={copyError} /> : null}
       </div>
-      {copyError ? (
-        <p
-          className="text-sm text-[var(--status-danger-fg)] md:col-span-3"
-          role="alert"
-        >
-          {copyError}
-        </p>
-      ) : null}
       {isolationOpen ? (
         <DeviceIsolationDialog
           device={device}
@@ -2391,11 +2390,15 @@ function DeviceIsolationDialog({
   useI18n();
   const [isolated, setIsolated] = useState<boolean | null>(null);
   const [busy, setBusy] = useState(false);
+  // Why the state could not be read, or why the toggle failed: marks after the toggle.
   const [error, setError] = useState<string | null>(null);
+  const [toggleError, setToggleError] = useState<string | null>(null);
   const [unsupported, setUnsupported] = useState(false);
+  const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     if (!device.connected) return;
     let active = true;
+    setError(null);
     void fetchAgentIsolation(device.id)
       .then((value) => {
         if (!active) return;
@@ -2408,48 +2411,51 @@ function DeviceIsolationDialog({
         else setError(errorMessage(caught, translate('devices.deviceIsolationOffline')));
       });
     return () => { active = false; };
-  }, [device.id, device.connected, onChange]);
+  }, [device.id, device.connected, onChange, attempt]);
 
   async function toggle(next: boolean) {
     setBusy(true);
-    setError(null);
+    setToggleError(null);
     try {
       const value = await setDeviceIsolation(next, device.id);
       setIsolated(value.device);
       onChange(value.device);
     } catch (caught) {
-      setError(errorMessage(caught, translate('devices.deviceIsolationOffline')));
+      setToggleError(errorMessage(caught, translate('devices.deviceIsolationOffline')));
     } finally {
       setBusy(false);
     }
   }
+  // Offline or too old a device: the toggle stays, disabled, and its mark says why.
+  const reason = !device.connected ? translate('devices.deviceIsolationOffline')
+    : unsupported ? translate('devices.deviceIsolationUpdate') : null;
 
   return (
     <RelayDialog
       busy={busy}
       description={translate('devices.deviceIsolationDescription')}
-      error={error}
       onClose={onClose}
       title={`${translate('devices.agentIsolation')} · ${device.name}`}
     >
       <div className="mt-4 text-sm">
-        {!device.connected ? (
-          <p className="text-[var(--theme-fg-muted)]">{translate('devices.deviceIsolationOffline')}</p>
-        ) : unsupported ? (
-          <p className="text-[var(--theme-fg-muted)]">{translate('devices.deviceIsolationUpdate')}</p>
-        ) : isolated === null ? (
+        {!reason && isolated === null && !error ? (
           <p className="text-[var(--theme-fg-muted)]">{translate('devices.deviceIsolationLoading')}</p>
         ) : (
-          <label className="flex min-h-11 cursor-pointer items-center gap-3 rounded-md border border-[var(--theme-border)] px-3 py-2">
-            <input
-              checked={isolated}
-              className="h-4 w-4"
-              disabled={busy}
-              onChange={(event) => void toggle(event.target.checked)}
-              type="checkbox"
-            />
-            <span className="font-medium text-[var(--theme-fg)]">{translate('devices.isolateDevice')}</span>
-          </label>
+          <div className="flex items-center gap-2">
+            <label className={`flex min-h-11 min-w-0 flex-1 items-center gap-3 rounded-md border border-[var(--theme-border)] px-3 py-2 ${isolated === null ? 'opacity-60' : 'cursor-pointer'}`}>
+              <input
+                checked={isolated ?? false}
+                className="h-4 w-4"
+                disabled={busy || isolated === null}
+                onChange={(event) => void toggle(event.target.checked)}
+                type="checkbox"
+              />
+              <span className="font-medium text-[var(--theme-fg)]">{translate('devices.isolateDevice')}</span>
+            </label>
+            {reason ? <ErrorMark kind="unavailable" message={reason} />
+              : error && isolated === null ? <ErrorMark message={error} onRetry={() => setAttempt((value) => value + 1)} />
+              : toggleError ? <ErrorMark message={toggleError} /> : null}
+          </div>
         )}
         {device.sharedControl ? (
           <p className="mt-3 flex items-start gap-2 text-[var(--theme-fg-muted)]">
@@ -2584,15 +2590,18 @@ function CodeBlock({
         <p className="text-xs font-medium uppercase tracking-[0.14em] text-[var(--theme-fg-muted)]">
           {label}
         </p>
-        <button
-          aria-label={copyLabel}
-          className="relay-button-secondary inline-flex min-h-11 items-center gap-1 px-2 text-xs sm:min-h-9"
-          onClick={() => void copy()}
-          type="button"
-        >
-          <Copy className="h-3.5 w-3.5" />
-          {copyState === 'copied' ? translate("devices.copied") : translate("devices.copy")}
-        </button>
+        <span className="flex items-center gap-1">
+          <button
+            aria-label={copyLabel}
+            className="relay-button-secondary inline-flex min-h-11 items-center gap-1 px-2 text-xs sm:min-h-9"
+            onClick={() => void copy()}
+            type="button"
+          >
+            <Copy className="h-3.5 w-3.5" />
+            {copyState === 'copied' ? translate("devices.copied") : translate("devices.copy")}
+          </button>
+          {copyState === 'error' ? <ErrorMark message={translate("devices.clipboardAccessFailedSelectTheTextAnd")} /> : null}
+        </span>
       </div>
       <code className="block break-all rounded-lg border border-[var(--theme-border)] bg-[var(--theme-panel)] px-3 py-2 font-mono text-xs text-[var(--theme-fg)]">
         {value}
@@ -2604,28 +2613,6 @@ function CodeBlock({
         >
           {translate("devices.copiedToClipboard")}</p>
       ) : null}
-      {copyState === 'error' ? (
-        <p
-          className="mt-1 text-xs text-[var(--status-danger-fg)]"
-          role="alert"
-        >
-          {translate("devices.clipboardAccessFailedSelectTheTextAnd")}</p>
-      ) : null}
-    </div>
-  );
-}
-
-function Notice({ children }: {
-  tone: 'danger';
-  children: React.ReactNode;
-}) {
-  const { locale: i18nLocale } = useI18n();
-  return (
-    <div
-      className="rounded-lg border border-[var(--status-danger-border)] bg-[var(--status-danger-bg)] px-3 py-2 text-sm text-[var(--status-danger-fg)]"
-      role="alert"
-    >
-      {children}
     </div>
   );
 }

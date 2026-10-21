@@ -1,5 +1,5 @@
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
-import { useMenuKeyboard } from '@pockymoe/thread-ui';
+import { ErrorMark, useMenuKeyboard } from '@pockymoe/thread-ui';
 import { CircleHelp, LogOut, Settings, UserRound, MonitorSmartphone } from 'lucide-react';
 import {
   useEffect,
@@ -150,9 +150,11 @@ export function RelayUserMenu({
     initialFocusRef.current = 'first';
 
     function handlePointerDown(event: PointerEvent) {
+      // The bubble of the log-out failure mark belongs to the menu.
       if (event.target instanceof Node
         && !triggerRef.current?.contains(event.target)
-        && !menuRef.current?.contains(event.target)) {
+        && !menuRef.current?.contains(event.target)
+        && !(event.target instanceof Element && event.target.closest('.error-mark-bubble'))) {
         setOpen(false);
       }
     }
@@ -253,26 +255,20 @@ export function RelayUserMenu({
             <CircleHelp aria-hidden="true" className="h-4 w-4" />{translate('tour.entry')}
           </button>}
 
-          <button
-            aria-busy={loggingOut}
-            aria-disabled={loggingOut}
-            className="mt-2 flex h-11 w-full items-center gap-2 rounded-md px-3 text-left text-sm text-[var(--status-danger-fg)] transition hover:bg-[var(--status-danger-bg)] focus-visible:outline-none focus-visible:bg-[var(--status-danger-bg)] focus-visible:ring-2 focus-visible:ring-[var(--theme-accent-ring)] aria-disabled:cursor-wait aria-disabled:opacity-60"
-            onClick={() => void logout()}
-            role="menuitem"
-            type="button"
-          >
-            <LogOut aria-hidden="true" className="h-4 w-4" />
-            {loggingOut ? translate("auth.loggingOut") : translate("auth.logOut")}
-          </button>
-          {logoutError ? (
-            <p
-              aria-live="assertive"
-              className="mx-2 mb-2 rounded-md bg-[var(--status-danger-bg)] px-2 py-1.5 text-xs leading-5 text-[var(--status-danger-fg)]"
-              role="alert"
+          <div className="mt-2 flex items-center gap-1" role="none">
+            <button
+              aria-busy={loggingOut}
+              aria-disabled={loggingOut}
+              className="flex h-11 min-w-0 flex-1 items-center gap-2 rounded-md px-3 text-left text-sm text-[var(--status-danger-fg)] transition hover:bg-[var(--status-danger-bg)] focus-visible:outline-none focus-visible:bg-[var(--status-danger-bg)] focus-visible:ring-2 focus-visible:ring-[var(--theme-accent-ring)] aria-disabled:cursor-wait aria-disabled:opacity-60"
+              onClick={() => void logout()}
+              role="menuitem"
+              type="button"
             >
-              {logoutError}
-            </p>
-          ) : null}
+              <LogOut aria-hidden="true" className="h-4 w-4" />
+              {loggingOut ? translate("auth.loggingOut") : translate("auth.logOut")}
+            </button>
+            {logoutError ? <ErrorMark className="mr-2" message={logoutError} /> : null}
+          </div>
         </div>, document.body,
       ) : null}
     </div>

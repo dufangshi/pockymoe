@@ -1,4 +1,5 @@
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
+import { ErrorMark } from '@pockymoe/thread-ui';
 import { KeyRound, LockKeyhole, ShieldAlert } from 'lucide-react';
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
@@ -7,7 +8,7 @@ import { currentBrowser } from '../lib/accountVault';
 import { ACCOUNT_CHANGED, AccountTrustError, accountRevocations, changeAccountPassword, clearBrowser, registerBrowser, startAccountOver, unlockAccount } from '../lib/accountVaultState';
 import { fetchRelaySession, relayLogout } from '../lib/api';
 import { AccountSetupFlow } from './auth/AccountSetupFlow';
-import { AuthCard, AuthField, AuthLink, AuthLoading, AuthNotice, AuthShell, AuthSubmit, SignedInFooter } from './auth/AuthUi';
+import { AuthCard, AuthField, AuthLink, AuthLoading, AuthShell, AuthSubmit, SignedInFooter } from './auth/AuthUi';
 
 type Gate =
   | { kind: 'loading' }
@@ -100,10 +101,12 @@ export function AccountSessionGate({ children }: { children: ReactNode }) {
       return (
         <AuthShell>
           <AuthCard footer={footer} title={translate('auth.ui.unlockTitle')}>
-            <AuthNotice>{gate.message}</AuthNotice>
-            <button className="relay-button-secondary h-11 w-full" onClick={() => { setGate({ kind: 'loading' }); void evaluate(); }} type="button">
-              {translate('auth.retryConnection')}
-            </button>
+            <div className="flex items-center gap-2">
+              <button className="relay-button-secondary h-11 w-full min-w-0" onClick={() => { setGate({ kind: 'loading' }); void evaluate(); }} type="button">
+                {translate('auth.retryConnection')}
+              </button>
+              <ErrorMark message={gate.message} />
+            </div>
           </AuthCard>
         </AuthShell>
       );
@@ -149,8 +152,7 @@ function UnlockCard({ oauth, removed, footer, onDone, onKeyLost }: { oauth: bool
           type={recovery ? 'text' : 'password'}
           value={secret}
         />
-        {error ? <AuthNotice>{error}</AuthNotice> : null}
-        <AuthSubmit busy={busy} disabled={!secret}>{translate('auth.ui.unlock')}</AuthSubmit>
+        <AuthSubmit busy={busy} disabled={!secret} error={error}>{translate('auth.ui.unlock')}</AuthSubmit>
       </form>
     </AuthCard>
   );
@@ -176,8 +178,7 @@ function NewPasswordCard({ oauth, footer, subtitle, onDone }: { oauth: boolean; 
       <form className="space-y-4" onSubmit={submit}>
         <AuthField autoComplete="new-password" autoFocus disabled={busy} hint={translate('auth.ui.passwordRule')} label={translate('auth.newPassword')} minLength={12} onChange={setPassword} type="password" value={password} />
         <AuthField autoComplete="new-password" disabled={busy} label={translate('auth.ui.confirmPassword')} onChange={setConfirm} type="password" value={confirm} />
-        {error ? <AuthNotice>{error}</AuthNotice> : null}
-        <AuthSubmit busy={busy}>{translate('auth.continue')}</AuthSubmit>
+        <AuthSubmit busy={busy} error={error}>{translate('auth.continue')}</AuthSubmit>
       </form>
     </AuthCard>
   );
@@ -208,10 +209,12 @@ function ResetCard({ oauth, footer, onDone, onStartedOver }: { oauth: boolean; f
   if (startOver) {
     return (
       <AuthCard footer={footer} icon={<ShieldAlert aria-hidden="true" className="h-8 w-8" />} subtitle={translate('auth.ui.startOverBody')} title={translate('auth.ui.startOverTitle')}>
-        {error ? <AuthNotice>{error}</AuthNotice> : null}
-        <button className="ui-action-danger h-11 w-full rounded-lg font-medium" disabled={busy} onClick={() => void confirmStartOver()} type="button">
-          {translate(busy ? 'auth.ui.pleaseWait' : 'auth.ui.startOverAction')}
-        </button>
+        <div className="flex items-center gap-2">
+          <button className="ui-action-danger h-11 w-full min-w-0 rounded-lg font-medium" disabled={busy} onClick={() => void confirmStartOver()} type="button">
+            {translate(busy ? 'auth.ui.pleaseWait' : 'auth.ui.startOverAction')}
+          </button>
+          {error ? <ErrorMark message={error} /> : null}
+        </div>
         <button className="relay-button-secondary h-11 w-full" disabled={busy} onClick={() => setStartOver(false)} type="button">{translate('auth.cancel')}</button>
       </AuthCard>
     );
@@ -222,8 +225,7 @@ function ResetCard({ oauth, footer, onDone, onStartedOver }: { oauth: boolean; f
         <AuthField autoComplete="off" autoFocus disabled={busy} hint={translate('auth.ui.resetCodeHint')} label={translate('auth.ui.resetWithCode')} onChange={setCode} spellCheck={false} value={code} />
         <AuthField autoComplete="new-password" disabled={busy} hint={translate('auth.ui.passwordRule')} label={translate(oauth ? 'auth.ui.unlockPasswordLabel' : 'auth.newPassword')} minLength={12} onChange={setPassword} type="password" value={password} />
         <AuthField autoComplete="new-password" disabled={busy} label={translate('auth.ui.confirmPassword')} onChange={setConfirm} type="password" value={confirm} />
-        {error ? <AuthNotice>{error}</AuthNotice> : null}
-        <AuthSubmit busy={busy}>{translate('auth.ui.resetAction')}</AuthSubmit>
+        <AuthSubmit busy={busy} error={error}>{translate('auth.ui.resetAction')}</AuthSubmit>
       </form>
       <div className="text-center text-sm"><AuthLink disabled={busy} onClick={() => setStartOver(true)}>{translate('auth.ui.noRecoveryCode')}</AuthLink></div>
     </AuthCard>

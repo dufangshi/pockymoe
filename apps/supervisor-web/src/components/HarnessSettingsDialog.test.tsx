@@ -380,7 +380,10 @@ describe('DeepSeek Harness plugin controls', () => {
 
   it('explains a plain ACP fallback and hides the console there', async () => {
     panel({ ...live({}), composition: 'acp', compositionError: 'web bundle failed', runModes: [], features: {} }, vi.fn(), { dshConsoleUrl: vi.fn() });
-    expect(await screen.findByText(/no run modes or native console here/)).toHaveTextContent('web bundle failed');
+    expect(await screen.findByText(/no run modes or native console here/)).toBeVisible();
+    // The technical reason sits on a small mark after the explanation.
+    fireEvent.click(screen.getByRole('button', { name: 'Why it is unavailable' }));
+    expect(screen.getByRole('dialog', { name: 'Why it is unavailable' })).toHaveTextContent('web bundle failed');
     expect(screen.queryByRole('button', { name: 'Open console' })).toBeNull();
   });
 });

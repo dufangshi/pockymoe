@@ -1,5 +1,5 @@
 import { appUrl } from '../lib/webBase';
-import { confirmAsync } from '@pockymoe/thread-ui';
+import { confirmAsync, ErrorMark } from '@pockymoe/thread-ui';
 import { SecurityVerification } from './RelaySecurity';
 import { securityRequest, type SecurityStatus } from '../lib/relaySecurity';
 import { getLocale, translate, useI18n } from '@pockymoe/thread-ui/i18n';
@@ -18,6 +18,8 @@ export function AccountSecurityPanel() {
   const [action, setAction] = useState<'password' | 'reset' | 'recovery'>(), [password, setPassword] = useState('');
   const [recovery, setRecovery] = useState<string>(), [message, setMessage] = useState<string>();
   const [recoverySession, setRecoverySession] = useState(false);
+  // Only a failed first read has nothing to show; its Retry reads again.
+  const [loadFailed, setLoadFailed] = useState(false);
   async function load() {
     setRecoverySession(!!(await accountSessionState())?.recovery);
     const account = await currentAccount(); if (!account) return;
@@ -28,11 +30,15 @@ export function AccountSecurityPanel() {
     setBrowsers(data.browsers.filter(b => !revocations.some(r => r.kind === 'browser' && r.subjectId === b.certificate.browserId)));
     setThisId((await currentBrowser())?.browserId); setCode(await safetyCode(account.accountKeyId)); setAccountId(account.accountKeyId.slice(0, 12));
   }
-  useEffect(() => { void load().catch(e => setError(e instanceof Error ? e.message : translate('auth.accountRequestFailed'))); }, []);
+  function reload() {
+    setError(undefined); setLoadFailed(false);
+    void load().catch(e => { setError(e instanceof Error ? e.message : translate('auth.accountRequestFailed')); setLoadFailed(true); });
+  }
+  useEffect(reload, []);
   const [verification, setVerification] = useState<SecurityStatus>();
   const retry = useRef<(() => Promise<void>) | null>(null);
   async function run(work: () => Promise<void>, verified = false) {
-    setBusy(true); setError(undefined); setMessage(undefined);
+    setBusy(true); setError(undefined); setLoadFailed(false); setMessage(undefined);
     try { await work(); await load(); } catch (e) {
       setError(e instanceof Error ? e.message : translate('auth.accountRequestFailed'));
       if (!verified && (e as { code?: string }).code === 'reauthentication_required') {
@@ -45,12 +51,16 @@ export function AccountSecurityPanel() {
   }
   const date = (n: number) => new Date(n).toLocaleString(getLocale());
   return <section className="space-y-4 border-t border-[var(--theme-border)] py-6">
-    <h2 className="font-semibold">{translate('auth.accountDeviceSecurity')}</h2>
+    <div className="flex items-center gap-1">
+      <h2 className="font-semibold">{translate('auth.accountDeviceSecurity')}</h2>
+      {/* While a dialog is open, its own mark sits by its Continue button. */}
+      {error && (!action || verification) && <ErrorMark message={error} onRetry={loadFailed ? reload : undefined} />}
+    </div>
     <p className="text-sm text-[var(--theme-fg-muted)]">{translate('auth.accountPasswordHelp')}</p>
     <p>{translate('auth.accountSafetyCode')} <code className="font-mono">{code}</code></p>
     {/* `pockymoe bind --status` prints the same 12 characters on a bound device. */}
     <p>{translate('auth.accountKeyIdLabel')} <code className="font-mono">{accountId}</code></p>
-    {error && <p role="alert">{error}</p>}{message && <p role="status">{message}</p>}
+    {message && <p role="status">{message}</p>}
     <h3>{translate('auth.accountBrowsers')}</h3>
     <ul className="space-y-3">{browsers.map(b => <li className="owner-trust-row" key={b.certificate.browserId}>
       <span className="min-w-0 break-words" title={b.certificate.browserId}>{b.label || `${b.certificate.browserId.slice(0, 8)}…`}
@@ -80,8 +90,10 @@ export function AccountSecurityPanel() {
       }); }}>
         {action === 'password' && <label className="block">{translate('auth.newPassword')}<input type="password" autoComplete="new-password" minLength={12} className="relay-input mt-2 w-full" value={password} required onChange={e => setPassword(e.target.value)} disabled={busy} /></label>}
         {action === 'reset' && !recoverySession && <label className="block">{translate('auth.currentPassword')}<input type="password" autoComplete="current-password" className="relay-input mt-2 w-full" value={password} required onChange={e => setPassword(e.target.value)} disabled={busy} /></label>}
-        {error && <p role="alert">{error}</p>}
-        <button className="relay-button-primary min-h-11 px-4" disabled={busy}>{translate('auth.continue')}</button>
+        <div className="flex items-center gap-2">
+          <button className="relay-button-primary min-h-11 px-4" disabled={busy}>{translate('auth.continue')}</button>
+          {error && <ErrorMark message={error} />}
+        </div>
       </form>
     </FormDialog>}
     {recovery && <FormDialog title={translate('auth.accountRecoveryCode')} onClose={() => {}}>

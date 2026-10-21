@@ -136,6 +136,8 @@ describe('hierarchical split picker', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Split conversation' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('Access denied');
     denied = false;
+    // The reason and Retry sit in the failure mark's bubble.
+    fireEvent.click(screen.getByRole('button', { name: 'Why it failed' }));
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
     fireEvent.click(await screen.findByRole('button', { name: /other.*code/ }));
     await screen.findByRole('button', { name: /local-peer/ });

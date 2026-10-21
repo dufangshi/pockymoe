@@ -1,5 +1,6 @@
 import { openDevicePortPreview } from '../lib/portPreview';
 import { getLocale } from '@pockymoe/thread-ui/i18n';
+import { ErrorMark } from '@pockymoe/thread-ui';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { useEffect, useRef, useState } from 'react';
 import { Network } from 'lucide-react';
@@ -34,7 +35,10 @@ export function PortMappingsControl({ deviceId, open: controlledOpen, onOpenChan
   const [port, setPort] = useState('');
   const [label, setLabel] = useState('');
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // A failure is a mark after the control it belongs to (`at`): the list
+  // load, Enable, Enable and open, or one mapping's Open/Copy/Stop.
+  const [error, setError] = useState<{ at: string; message: string; kind: 'error' | 'unavailable' } | null>(null);
+  const [attempt, setAttempt] = useState(0);
   const [copied, setCopied] = useState<string | null>(null);
   const lifetime = useRef<AbortController | null>(null);
   const api = `relay/devices/${encodeURIComponent(deviceId)}/api/port-mappings`;
@@ -71,17 +75,17 @@ export function PortMappingsControl({ deviceId, open: controlledOpen, onOpenChan
       if (!controller.signal.aborted) { setMappings(list.mappings); setAvailable(config.available); }
     }).catch(cause => {
       if (!controller.signal.aborted) setError(cause instanceof ApiError && cause.statusCode === 404
-        ? translate("devices.updateThisDeviceSSupervisorToEnable_827e58")
-        : cause instanceof Error ? cause.message : translate("devices.couldNotLoadPortMappings"));
+        ? { at: 'load', kind: 'unavailable', message: translate("devices.updateThisDeviceSSupervisorToEnable_827e58") }
+        : { at: 'load', kind: 'error', message: cause instanceof Error ? cause.message : translate("devices.couldNotLoadPortMappings") });
     });
     return () => controller.abort();
-  }, [api, manager, link]);
+  }, [api, manager, link, attempt]);
 
-  async function action(run: (signal: AbortSignal) => Promise<void>) {
+  async function action(at: string, run: (signal: AbortSignal) => Promise<void>) {
     const signal = lifetime.current!.signal;
     setBusy(true); setError(null); setCopied(null);
     try { await run(signal); }
-    catch (cause) { if (!signal.aborted) setError(cause instanceof Error ? cause.message : translate("devices.portMappingFailed")); }
+    catch (cause) { if (!signal.aborted) setError({ at, kind: 'error', message: cause instanceof Error ? cause.message : translate("devices.portMappingFailed") }); }
     finally { if (!signal.aborted) setBusy(false); }
   }
   async function enable(value: number, signal: AbortSignal): Promise<Mapping> {
@@ -95,12 +99,13 @@ export function PortMappingsControl({ deviceId, open: controlledOpen, onOpenChan
     return openDevicePortPreview(deviceId, mapping.id, path, signal);
   }
   function open(mapping?: Mapping, target = link) {
+    const at = mapping ? `open:${mapping.id}` : 'link';
     // Reserve the tab in the click handler so asynchronous API calls do not
     // trigger the browser's popup blocker. Never expose the main window opener.
     const tab = window.open('about:blank', '_blank');
-    if (!tab) { setError(translate("devices.allowPopupsForThisSiteThenTry")); return; }
+    if (!tab) { setError({ at, kind: 'error', message: translate("devices.allowPopupsForThisSiteThenTry") }); return; }
     tab.opener = null;
-    void action(async signal => {
+    void action(at, async signal => {
       try {
         const selected = mapping ?? await enable(target!.port, signal);
         const result = await launch(selected, target?.path ?? '/', signal);
@@ -112,40 +117,50 @@ export function PortMappingsControl({ deviceId, open: controlledOpen, onOpenChan
   }
   const buttonClass = 'host-secondary-button min-h-10 rounded-md border px-3 text-sm disabled:opacity-50';
   const inputClass = 'host-input min-h-10 w-full rounded-md border px-3';
-  const readiness = available === false
-    ? <p className="host-muted text-sm" role="status">{translate("devices.portPreviewsAreNotConfiguredOnThis")}</p>
-    : available === null && !error ? <p className="host-muted text-sm" role="status">{translate("devices.loadingPortMappings")}</p> : null;
-  const errorMessage = error ? <p className="host-error text-sm" role="alert">{error}</p> : null;
+  const readiness = available === null && !error ? <p className="host-muted text-sm" role="status">{translate("devices.loadingPortMappings")}</p> : null;
+  const mark = (at: string) => error?.at === at
+    ? <ErrorMark kind={error.kind} message={error.message} onRetry={at === 'load' && error.kind === 'error' ? () => setAttempt(value => value + 1) : undefined} />
+    : null;
+  // Why Enable cannot be used: previews are off on this Relay, or the list did not load.
+  const blocked = available === false
+    ? <ErrorMark kind="unavailable" message={translate("devices.portPreviewsAreNotConfiguredOnThis")} />
+    : mark('load');
   return <>
     {controlledOpen === undefined && <button aria-label={translate("devices.portMappings")} title={translate("devices.portMappings")} onClick={() => setManager(true)}><Network /></button>}
     {manager && <FormDialog title={translate("devices.portMappings")} description={translate("devices.openHTTPServicesRunningOnThisDevice")} busy={busy} onClose={() => setManager(false)}>
       <div className="space-y-4 min-w-0">
-        {readiness}{errorMessage}
+        {readiness}
         <form className="flex flex-wrap gap-2" onSubmit={event => {
           event.preventDefault();
-          void action(async signal => { await enable(Number(port), signal); setPort(''); setLabel(''); });
+          void action('enable', async signal => { await enable(Number(port), signal); setPort(''); setLabel(''); });
         }}>
           <label className="min-w-0 flex-1 text-sm">{translate("devices.hTTPPort")}<input aria-label={translate("devices.hTTPPort")} className={inputClass} type="number" inputMode="numeric" min="1" max="65535" required value={port} onChange={event => setPort(event.target.value)} disabled={busy} /></label>
           <label className="min-w-0 flex-1 text-sm">{translate("devices.label")}<input aria-label={translate("devices.portLabel")} className={inputClass} maxLength={40} value={label} onChange={event => setLabel(event.target.value)} disabled={busy} /></label>
-          <button className={`${buttonClass} self-end`} disabled={busy || available !== true}>{translate("devices.enable")}</button>
+          <span className="flex min-h-10 items-center gap-2 self-end">
+            <button className={buttonClass} disabled={busy || available !== true}>{translate("devices.enable")}</button>
+            {blocked}{mark('enable')}
+          </span>
         </form>
         {mappings.length === 0 && available === true && <p className="host-muted text-sm">{translate("devices.noEnabledPorts")}</p>}
         <ul className="space-y-3">
           {mappings.map(mapping => <li key={mapping.id} className="rounded-md border p-3 space-y-2">
             <div className="break-words text-sm font-medium">{mapping.label ? `${mapping.label} · ` : ''}127.0.0.1:{mapping.port}</div>
             <div className="host-muted text-xs">{translate("devices.enabled")} {new Date(mapping.createdAt).toLocaleString(getLocale())}</div>
-            <div className="flex flex-wrap gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <button className={buttonClass} type="button" disabled={busy || available !== true} onClick={() => open(mapping, null)}>{translate("devices.open")}</button>
-              <button className={buttonClass} type="button" disabled={busy || available !== true} onClick={() => void action(async signal => {
+              {mark(`open:${mapping.id}`)}
+              <button className={buttonClass} type="button" disabled={busy || available !== true} onClick={() => void action(`copy:${mapping.id}`, async signal => {
                 const { url } = await launch(mapping, '/', signal);
                 // Copy the stable address, never the short-lived login handoff.
                 const address = new URL(url); address.searchParams.delete('__rc_launch');
                 await navigator.clipboard.writeText(address.href); setCopied(mapping.id);
               })}>{copied === mapping.id ? translate("devices.copied") : translate("devices.copyAddress")}</button>
-              <button className={buttonClass} type="button" disabled={busy} onClick={() => void action(async signal => {
+              {mark(`copy:${mapping.id}`)}
+              <button className={buttonClass} type="button" disabled={busy} onClick={() => void action(`stop:${mapping.id}`, async signal => {
                 await request(api + '/' + mapping.id, { method: 'DELETE', signal });
                 setMappings(items => items.filter(item => item.id !== mapping.id));
               })}>{translate("devices.stop")}</button>
+              {mark(`stop:${mapping.id}`)}
             </div>
           </li>)}
         </ul>
@@ -155,10 +170,11 @@ export function PortMappingsControl({ deviceId, open: controlledOpen, onOpenChan
     {link && <FormDialog title={translate("devices.openDeviceWebService")} description={translate("devices.enableAPrivateMappingFor1270", { value1: link.port })} busy={busy} onClose={() => setLink(null)}>
       <div className="space-y-4 min-w-0">
         <p className="host-muted text-sm break-all">{link.path}</p>
-        {readiness}{errorMessage}
-        <div className="flex justify-end gap-2">
+        {readiness}
+        <div className="flex items-center justify-end gap-2">
           <button className={buttonClass} disabled={busy} onClick={() => setLink(null)}>{translate("devices.cancel")}</button>
           <button className={buttonClass} disabled={busy || available !== true} onClick={() => open()}>{busy ? translate("devices.opening") : translate("devices.enableAndOpen")}</button>
+          {blocked}{mark('link')}
         </div>
       </div>
     </FormDialog>}

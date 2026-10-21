@@ -2,6 +2,7 @@ import { appUrl } from '../lib/webBase';
 import { accountPasswordProof } from '../lib/accountAuth';
 import { getLocale } from '@pockymoe/thread-ui/i18n';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
+import { ErrorMark } from '@pockymoe/thread-ui';
 import { FormDialog } from './FormDialog';
 import { useDialogLifecycle } from './useDialogLifecycle';
 import { request } from '../lib/api';
@@ -34,13 +35,10 @@ import {
 const input = 'relay-input min-h-11 w-full';
 const secondary =
   'relay-button-secondary inline-flex min-h-10 items-center justify-center gap-2 px-3 text-sm disabled:opacity-50';
-function ErrorText({ error }: { error: string | null }) {
-  const { locale: i18nLocale } = useI18n();
-  return error ? (
-    <p role="alert" className="text-sm text-[var(--status-danger-fg)]">
-      {error}
-    </p>
-  ) : null;
+/** Why the action `at` failed: a mark after its button (ui-principles §11). */
+type Failure = { at: string; message: string } | null;
+function FailureMark({ failure, at }: { failure: Failure; at: string }) {
+  return failure?.at === at ? <ErrorMark message={failure.message} /> : null;
 }
 
 export function LoginVerification({
@@ -57,7 +55,7 @@ export function LoginVerification({
     [remember, setRemember] = useState(true),
     [recovery, setRecovery] = useState(false);
   const [busy, setBusy] = useState(false),
-    [error, setError] = useState<string | null>(null);
+    [error, setError] = useState<Failure>(null);
   async function verify(passkey = false) {
     setBusy(true);
     setError(null);
@@ -66,7 +64,7 @@ export function LoginVerification({
       else await verifyLoginCode(code, remember && !recovery);
       await onSuccess();
     } catch (e) {
-      setError(securityError(e));
+      setError({ at: passkey ? 'passkey' : 'code', message: securityError(e) });
     } finally {
       setBusy(false);
     }
@@ -83,12 +81,15 @@ export function LoginVerification({
           {translate("auth.oneMoreStepForThisBrowser")}</p>
       </div>
       {challenge.passkey && (
-        <button
-          className={`${secondary} w-full`}
-          disabled={busy}
-          onClick={() => void verify(true)}
-        >
-          <Fingerprint size={18} /> {translate("auth.useAPasskey")}</button>
+        <div className="flex items-center gap-2">
+          <button
+            className={`${secondary} w-full min-w-0`}
+            disabled={busy}
+            onClick={() => void verify(true)}
+          >
+            <Fingerprint size={18} /> {translate("auth.useAPasskey")}</button>
+          <FailureMark at="passkey" failure={error} />
+        </div>
       )}
       {(challenge.authenticator || recovery) && (
         <form
@@ -121,12 +122,15 @@ export function LoginVerification({
               />{' '}
               {translate("auth.trustThisBrowserFor30Days")}</label>
           )}
-          <button
-            className="relay-button-primary min-h-11 w-full"
-            disabled={busy || !code.trim()}
-          >
-            {busy ? translate("auth.verifying") : translate("auth.verify")}
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              className="relay-button-primary min-h-11 w-full min-w-0"
+              disabled={busy || !code.trim()}
+            >
+              {busy ? translate("auth.verifying") : translate("auth.verify")}
+            </button>
+            <FailureMark at="code" failure={error} />
+          </div>
         </form>
       )}
       {!challenge.authenticator && !recovery && (
@@ -138,7 +142,6 @@ export function LoginVerification({
           />{' '}
           {translate("auth.trustThisBrowserFor30Days")}</label>
       )}
-      <ErrorText error={error} />
       <div className="flex flex-wrap justify-between gap-3 text-sm">
         <button
           type="button"
@@ -151,21 +154,24 @@ export function LoginVerification({
         >
           {recovery ? translate("auth.useAnotherMethod") : translate("auth.useARecoveryCode")}
         </button>
-        <button
-          type="button"
-          className="text-[var(--theme-fg-muted)]"
-          disabled={busy}
-          onClick={() =>
-            void request(
-              'relay/auth/challenge',
-              { method: 'DELETE' },
-              { auth: 'none' },
-            )
-              .then(onBack)
-              .catch((e) => setError(securityError(e)))
-          }
-        >
-          {translate("auth.backToSignIn")}</button>
+        <span className="inline-flex items-center gap-1.5">
+          <button
+            type="button"
+            className="text-[var(--theme-fg-muted)]"
+            disabled={busy}
+            onClick={() =>
+              void request(
+                'relay/auth/challenge',
+                { method: 'DELETE' },
+                { auth: 'none' },
+              )
+                .then(onBack)
+                .catch((e) => setError({ at: 'back', message: securityError(e) }))
+            }
+          >
+            {translate("auth.backToSignIn")}</button>
+          <FailureMark at="back" failure={error} />
+        </span>
       </div>
     </section>
   );
@@ -202,7 +208,7 @@ export function SecurityVerification({
   const { locale: i18nLocale } = useI18n();
   const [value, setValue] = useState(''),
     [busy, setBusy] = useState(false),
-    [error, setError] = useState<string | null>(null);
+    [error, setError] = useState<Failure>(null);
   const factor = status.authenticatorEnabled || status.passkeys.length > 0;
   async function verify(passkey = false) {
     setBusy(true);
@@ -218,7 +224,7 @@ export function SecurityVerification({
           );
       await onVerified(result.verificationToken);
     } catch (e) {
-      setError(securityError(e));
+      setError({ at: passkey ? 'passkey' : 'code', message: securityError(e) });
     } finally {
       setBusy(false);
     }
@@ -228,12 +234,15 @@ export function SecurityVerification({
       <p className="text-sm text-[var(--theme-fg-muted)]">
         {translate("auth.confirmThisSecurityChangeWithYourAuthenticator")}</p>
       {status.passkeys.length > 0 && (
-        <button
-          className={`${secondary} w-full`}
-          disabled={busy}
-          onClick={() => void verify(true)}
-        >
-          <Fingerprint size={16} /> {translate("auth.useAPasskey")}</button>
+        <div className="flex items-center gap-2">
+          <button
+            className={`${secondary} w-full min-w-0`}
+            disabled={busy}
+            onClick={() => void verify(true)}
+          >
+            <Fingerprint size={16} /> {translate("auth.useAPasskey")}</button>
+          <FailureMark at="passkey" failure={error} />
+        </div>
       )}
       <form
         className="space-y-4"
@@ -255,8 +264,7 @@ export function SecurityVerification({
             required
           />
         </label>
-        <ErrorText error={error} />
-        <div className="flex justify-end gap-2">
+        <div className="flex items-center justify-end gap-2">
           <button
             type="button"
             className={secondary}
@@ -270,6 +278,7 @@ export function SecurityVerification({
           >
             {busy ? translate("auth.verifying") : translate("auth.verify")}
           </button>
+          <FailureMark at="code" failure={error} />
         </div>
       </form>
     </FormDialog>
@@ -320,10 +329,10 @@ function RecoveryCodes({
           <span key={code}>{code}</span>
         ))}
       </div>
-      <ErrorText error={error} />
-      <div className="flex flex-wrap gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <button className={secondary} onClick={() => void copy()}>
           {copied ? <Check size={15} /> : <Copy size={15} />} {translate("auth.copy")}</button>
+        {error && <ErrorMark message={error} />}
         <button className={secondary} onClick={download}>
           <Download size={15} /> {translate("auth.download")}</button>
         <button
@@ -346,7 +355,7 @@ export function RelaySecurityPanel({
   const call = <T,>(path: string, method = 'GET', body?: unknown) =>
     securityRequest<T>(path, method, body, realm);
   const [status, setStatus] = useState<SecurityStatus | null>(null),
-    [error, setError] = useState<string | null>(null),
+    [error, setError] = useState<Failure>(null),
     [busy, setBusy] = useState(false);
   const [enrollment, setEnrollment] = useState<Enrollment | null>(null),
     [code, setCode] = useState(''),
@@ -355,18 +364,20 @@ export function RelaySecurityPanel({
     [addingKey, setAddingKey] = useState(false),
     [editing, setEditing] = useState<string | null>(null);
   const [verifyAction, setVerifyAction] = useState<
-    (() => Promise<void>) | null
+    { at: string; action: () => Promise<void> } | null
   >(null);
   async function load() {
     const value = await call<SecurityStatus>('');
     setStatus(value);
   }
-  useEffect(() => {
-    void load().catch((e) => setError(securityError(e)));
-  }, []);
-  async function run(action: () => Promise<void>, verified = false) {
+  const reload = () => {
+    setError(null);
+    void load().catch((e) => setError({ at: 'load', message: securityError(e) }));
+  };
+  useEffect(reload, []);
+  async function run(at: string, action: () => Promise<void>, verified = false) {
     if (!verified && status && !status.recentlyVerified) {
-      setVerifyAction(() => action);
+      setVerifyAction({ at, action });
       return;
     }
     setBusy(true);
@@ -381,21 +392,21 @@ export function RelaySecurityPanel({
         (e as { payload?: { code?: string } }).payload?.code ===
           'reauthentication_required'
       )
-        setVerifyAction(() => action);
+        setVerifyAction({ at, action });
       else if (
         e instanceof Error &&
         'payload' in e &&
         (e as { payload?: { code?: string } }).payload?.code === 'unauthorized'
       )
         location.assign(appUrl('relay'));
-      else setError(securityError(e));
+      else setError({ at, message: securityError(e) });
     } finally {
       setBusy(false);
     }
   }
   async function confirm(event: FormEvent) {
     event.preventDefault();
-    await run(async () => {
+    await run('confirm', async () => {
       const result = await call<{ recoveryCodes: string[] }>(
         '/authenticator/confirm',
         'POST',
@@ -416,7 +427,12 @@ export function RelaySecurityPanel({
           {translate("auth.protectYourAccountAndDevices")}</p>
       </header>
       <div className="min-w-0 space-y-5">
-        <ErrorText error={error} />
+        {!status && error?.at === 'load' && (
+          <p className="flex items-center gap-1.5 text-sm text-[var(--theme-fg-muted)]">
+            {translate("devices.unavailable")}
+            <ErrorMark message={error.message} onRetry={reload} />
+          </p>
+        )}
         {!status && !error && (
           <p role="status" className="text-sm text-[var(--theme-fg-muted)]">
             {translate("auth.loadingSecuritySettings")}</p>
@@ -437,22 +453,25 @@ export function RelaySecurityPanel({
                 <p className="mt-1 text-sm text-[var(--theme-fg-muted)]">
                   {translate("auth.googleAuthenticatorAndCompatibleApps")}</p>
               </div>
-              <button
-                className={secondary}
-                disabled={busy}
-                onClick={() =>
-                  void run(async () => {
-                    if (status.authenticatorEnabled)
-                      await call('/authenticator', 'DELETE');
-                    else
-                      setEnrollment(
-                        await call<Enrollment>('/authenticator/enroll', 'POST'),
-                      );
-                  })
-                }
-              >
-                {status.authenticatorEnabled ? translate("auth.disable") : translate("auth.setUp")}
-              </button>
+              <span className="flex items-center gap-2">
+                <button
+                  className={secondary}
+                  disabled={busy}
+                  onClick={() =>
+                    void run('authenticator', async () => {
+                      if (status.authenticatorEnabled)
+                        await call('/authenticator', 'DELETE');
+                      else
+                        setEnrollment(
+                          await call<Enrollment>('/authenticator/enroll', 'POST'),
+                        );
+                    })
+                  }
+                >
+                  {status.authenticatorEnabled ? translate("auth.disable") : translate("auth.setUp")}
+                </button>
+                <FailureMark at="authenticator" failure={error} />
+              </span>
             </div>
             {enrollment && (
               <form
@@ -483,12 +502,13 @@ export function RelaySecurityPanel({
                   maxLength={6}
                   required
                 />
-                <div className="flex gap-2">
+                <div className="flex items-center gap-2">
                   <button
                     className="relay-button-primary min-h-10 px-4"
                     disabled={busy || code.length !== 6}
                   >
                     {translate("auth.enableAuthenticator")}</button>
+                  <FailureMark at="confirm" failure={error} />
                   <button
                     className={secondary}
                     type="button"
@@ -508,28 +528,28 @@ export function RelaySecurityPanel({
               <div className="flex items-center justify-between gap-3">
                 <h3 className="flex items-center gap-2 font-medium">
                   <Fingerprint size={17} /> {translate("auth.passkeys")}</h3>
-                {status.passkeyAvailable && (
+                {/* Without passkey support the button stays, disabled, and its mark says why. */}
+                <span className="flex items-center gap-2">
                   <button
                     className={secondary}
-                    disabled={busy}
+                    disabled={busy || !status.passkeyAvailable}
                     onClick={() => {
                       setAddingKey(true);
                       setKeyName('');
                     }}
                   >
                     {translate("auth.addPasskey")}</button>
-                )}
+                  {!status.passkeyAvailable && (
+                    <ErrorMark kind="unavailable" message={translate("auth.passkeySetupIsUnavailableOnThisRelay")} />
+                  )}
+                </span>
               </div>
-              {!status.passkeyAvailable && (
-                <p className="mt-2 text-sm text-[var(--theme-fg-muted)]">
-                  {translate("auth.passkeySetupIsUnavailableOnThisRelay")}</p>
-              )}
               {addingKey && (
                 <form
-                  className="mt-3 flex flex-wrap gap-2"
+                  className="mt-3 flex flex-wrap items-center gap-2"
                   onSubmit={(e) => {
                     e.preventDefault();
-                    void run(async () => {
+                    void run('addPasskey', async () => {
                       const result = await registerPasskey(keyName, realm);
                       setAddingKey(false);
                       setKeyName('');
@@ -551,6 +571,7 @@ export function RelaySecurityPanel({
                     disabled={busy || !keyName.trim()}
                   >
                     {translate("auth.continue")}</button>
+                  <FailureMark at="addPasskey" failure={error} />
                   <button
                     type="button"
                     className={secondary}
@@ -576,13 +597,13 @@ export function RelaySecurityPanel({
                           : ''}
                       </p>
                     </div>
-                    <div className="flex gap-2">
+                    <div className="flex items-center gap-2">
                       {editing === key.id ? (
                         <form
-                          className="flex gap-2"
+                          className="flex items-center gap-2"
                           onSubmit={(e) => {
                             e.preventDefault();
-                            void run(async () => {
+                            void run(`rename:${key.id}`, async () => {
                               await call(
                                 `/passkeys/${encodeURIComponent(key.id)}`,
                                 'PATCH',
@@ -600,6 +621,7 @@ export function RelaySecurityPanel({
                             onChange={(e) => setKeyName(e.target.value)}
                           />
                           <button className={secondary}>{translate("auth.save")}</button>
+                          <FailureMark at={`rename:${key.id}`} failure={error} />
                         </form>
                       ) : (
                         <button
@@ -616,7 +638,7 @@ export function RelaySecurityPanel({
                         aria-label={translate("auth.remove", { value1: key.name })}
                         disabled={busy}
                         onClick={() =>
-                          void run(async () => {
+                          void run(`remove:${key.id}`, async () => {
                             await call(
                               `/passkeys/${encodeURIComponent(key.id)}`,
                               'DELETE',
@@ -626,6 +648,7 @@ export function RelaySecurityPanel({
                       >
                         <Trash2 size={15} />
                       </button>
+                      <FailureMark at={`remove:${key.id}`} failure={error} />
                     </div>
                   </li>
                 ))}
@@ -639,20 +662,23 @@ export function RelaySecurityPanel({
                   <p className="mt-1 text-sm text-[var(--theme-fg-muted)]">
                     {status.recoveryCodesRemaining} {translate("auth.unusedNewCodesReplaceThePreviousSet")}</p>
                 </div>
-                <button
-                  className={secondary}
-                  disabled={busy}
-                  onClick={() =>
-                    void run(async () => {
-                      const result = await call<{ recoveryCodes: string[] }>(
-                        '/recovery-codes',
-                        'POST',
-                      );
-                      setCodes(result.recoveryCodes);
-                    })
-                  }
-                >
-                  {translate("auth.generateNewCodes")}</button>
+                <span className="flex items-center gap-2">
+                  <button
+                    className={secondary}
+                    disabled={busy}
+                    onClick={() =>
+                      void run('codes', async () => {
+                        const result = await call<{ recoveryCodes: string[] }>(
+                          '/recovery-codes',
+                          'POST',
+                        );
+                        setCodes(result.recoveryCodes);
+                      })
+                    }
+                  >
+                    {translate("auth.generateNewCodes")}</button>
+                  <FailureMark at="codes" failure={error} />
+                </span>
               </div>
             )}
             <div className="border-t border-[var(--theme-border)] pt-4">
@@ -675,16 +701,19 @@ export function RelaySecurityPanel({
                         {translate("auth.expires")} {date(browser.expiresAt)}
                       </p>
                     </div>
-                    <button
-                      className={secondary}
-                      disabled={busy}
-                      onClick={() =>
-                        void run(async () => {
-                          await call(`/browsers/${browser.id}`, 'DELETE');
-                        })
-                      }
-                    >
-                      {translate("auth.revoke")}</button>
+                    <span className="flex items-center gap-2">
+                      <button
+                        className={secondary}
+                        disabled={busy}
+                        onClick={() =>
+                          void run(`browser:${browser.id}`, async () => {
+                            await call(`/browsers/${browser.id}`, 'DELETE');
+                          })
+                        }
+                      >
+                        {translate("auth.revoke")}</button>
+                      <FailureMark at={`browser:${browser.id}`} failure={error} />
+                    </span>
                   </li>
                 ))}
               </ul>
@@ -710,16 +739,19 @@ export function RelaySecurityPanel({
                       </p>
                     </div>
                     {!session.current && (
-                      <button
-                        className={secondary}
-                        disabled={busy}
-                        onClick={() =>
-                          void run(async () => {
-                            await call(`/sessions/${session.id}`, 'DELETE');
-                          })
-                        }
-                      >
-                        {translate("auth.signOut")}</button>
+                      <span className="flex items-center gap-2">
+                        <button
+                          className={secondary}
+                          disabled={busy}
+                          onClick={() =>
+                            void run(`session:${session.id}`, async () => {
+                              await call(`/sessions/${session.id}`, 'DELETE');
+                            })
+                          }
+                        >
+                          {translate("auth.signOut")}</button>
+                        <FailureMark at={`session:${session.id}`} failure={error} />
+                      </span>
                     )}
                   </li>
                 ))}
@@ -733,9 +765,9 @@ export function RelaySecurityPanel({
             status={status}
             onCancel={() => setVerifyAction(null)}
             onVerified={async () => {
-              const action = verifyAction;
+              const { at, action } = verifyAction;
               setVerifyAction(null);
-              await run(action, true);
+              await run(at, action, true);
             }}
           />
         )}

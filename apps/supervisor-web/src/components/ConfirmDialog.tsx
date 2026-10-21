@@ -1,3 +1,4 @@
+import { ErrorMark } from '@pockymoe/thread-ui';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { useCallback, useId, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -92,12 +93,6 @@ export function ConfirmDialog({
           </button>
         </div>
 
-        {error ? (
-          <p className="host-error mt-4 rounded-md border px-3 py-2 text-sm" role="alert">
-            {error}
-          </p>
-        ) : null}
-
         <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
           <button
             className="host-secondary-button min-h-11 rounded-md border px-4 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-50"
@@ -107,14 +102,17 @@ export function ConfirmDialog({
             type="button"
           >
             {translate("workbench.cancel")}</button>
-          <button
-            className="ui-action-danger min-h-11 rounded-md px-4 text-sm font-semibold transition disabled:cursor-not-allowed"
-            disabled={busy}
-            onClick={() => void onConfirm()}
-            type="button"
-          >
-            {busy ? busyLabel : confirmLabel}
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              className="ui-action-danger min-h-11 flex-1 rounded-md px-4 text-sm font-semibold transition disabled:cursor-not-allowed sm:flex-none"
+              disabled={busy}
+              onClick={() => void onConfirm()}
+              type="button"
+            >
+              {busy ? busyLabel : confirmLabel}
+            </button>
+            {error ? <ErrorMark message={error} /> : null}
+          </div>
         </div>
       </div>
     </div>,

@@ -1,5 +1,6 @@
 import { HostFeatureGate } from '../lib/hostCapabilities';
 import { useEffect, useState } from 'react';
+import { ErrorMark } from '@pockymoe/thread-ui';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { prepareDeviceEnrollment } from '../lib/deviceEnrollment';
 import type { RelayDeviceDto } from '@pockymoe/shared';
@@ -35,7 +36,12 @@ function DeviceBindingContent({
   const [platform, setPlatform] = useState<SupervisorPlatform>('unix');
   const command = commands?.[platform];
   const [copied, setCopied] = useState(false);
-  const [error, setError] = useState<string>();
+  // A failed read of the protection progress only matters before anything
+  // was shown; later refreshes keep the last state silently.
+  const [progressError, setProgressError] = useState<string>();
+  const [prepareError, setPrepareError] = useState<string>();
+  const [copyError, setCopyError] = useState<string>();
+  const [attempt, setAttempt] = useState(0);
   const [mode, setMode] = useState<'loading' | 'choice' | 'local' | 'remote'>(
     'loading',
   );
@@ -52,6 +58,7 @@ function DeviceBindingContent({
       void deviceProtectionProgress(deviceId)
         .then((progress) => {
           if (!active || current !== generation) return;
+          setProgressError(undefined);
           setMode(
             progress?.phase === 'local-command-pending'
               ? 'local'
@@ -70,7 +77,7 @@ function DeviceBindingContent({
         })
         .catch(() => {
           if (active && current === generation)
-            setError(translate('devices.enrollmentFailed'));
+            setProgressError(translate('devices.enrollmentFailed'));
         });
     };
     refresh();
@@ -80,12 +87,13 @@ function DeviceBindingContent({
       active = false;
       for (const event of events) window.removeEventListener(event, refresh);
     };
-  }, [deviceId, !!device, repair, localRequested]);
+  }, [deviceId, !!device, repair, localRequested, attempt]);
   useEffect(() => {
     let active = true;
     setCommands(undefined);
     setCopied(false);
-    setError(undefined);
+    setCopyError(undefined);
+    setPrepareError(undefined);
     if (mode !== 'local') return;
     const preparing = repair
       ? prepareDeviceEnrollment(deviceId, { fresh: true })
@@ -100,7 +108,7 @@ function DeviceBindingContent({
       })
       .catch((e: unknown) => {
         if (active)
-          setError(
+          setPrepareError(
             e instanceof Error
               ? e.message
               : translate('devices.enrollmentFailed'),
@@ -109,7 +117,9 @@ function DeviceBindingContent({
     return () => {
       active = false;
     };
-  }, [deviceId, repair, mode]);
+  }, [deviceId, repair, mode, attempt]);
+  const failure = mode === 'loading' ? progressError
+    : mode === 'local' && !command ? prepareError : undefined;
   return (
     <div className="space-y-3 text-sm">
       <p>{translate('devices.protectDeviceHelp')}</p>
@@ -126,8 +136,13 @@ function DeviceBindingContent({
         </>
       )}
       {device && <RemoteProtectionProgress device={device} />}
-      {error && <p role="alert">{error}</p>}
-      {(mode === 'loading' || mode === 'local') && !command && !error && (
+      {failure && (
+        <p className="flex items-center gap-1.5 text-[var(--theme-fg-muted)]">
+          {translate('devices.unavailable')}
+          <ErrorMark message={failure} onRetry={() => setAttempt((value) => value + 1)} />
+        </p>
+      )}
+      {(mode === 'loading' || mode === 'local') && !command && !failure && (
         <p role="status">{translate('auth.ownerPreparing')}</p>
       )}
       {command && (
@@ -145,6 +160,7 @@ function DeviceBindingContent({
                 onClick={() => {
                   setPlatform(value);
                   setCopied(false);
+                  setCopyError(undefined);
                 }}
               >
                 {translate(
@@ -156,25 +172,29 @@ function DeviceBindingContent({
             ))}
           </div>
           <pre className="whitespace-pre-wrap break-all text-xs">{command}</pre>
-          <button
-            className="relay-button-secondary px-3 py-2"
-            onClick={() => {
-              void navigator.clipboard
-                .writeText(command)
-                .then(() => setCopied(true))
-                .catch(() =>
-                  setError(
-                    translate(
-                      'devices.clipboardAccessIsUnavailableCheckBrowserPermissions',
+          <div className="flex items-center gap-2">
+            <button
+              className="relay-button-secondary px-3 py-2"
+              onClick={() => {
+                setCopyError(undefined);
+                void navigator.clipboard
+                  .writeText(command)
+                  .then(() => setCopied(true))
+                  .catch(() =>
+                    setCopyError(
+                      translate(
+                        'devices.clipboardAccessIsUnavailableCheckBrowserPermissions',
+                      ),
                     ),
-                  ),
-                );
-            }}
-          >
-            {translate(
-              copied ? 'devices.setupCommandCopied' : 'devices.copyBindCommand',
-            )}
-          </button>
+                  );
+              }}
+            >
+              {translate(
+                copied ? 'devices.setupCommandCopied' : 'devices.copyBindCommand',
+              )}
+            </button>
+            {copyError && <ErrorMark message={copyError} />}
+          </div>
           <p>{translate('devices.waitingForConnection')}</p>
         </>
       )}

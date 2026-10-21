@@ -1,8 +1,9 @@
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
+import { ErrorMark } from '@pockymoe/thread-ui';
 import { ProductHeader } from '../components/ProductHeader';
 import type { FormEvent } from 'react';
 import { useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, RefreshCw, Search } from 'lucide-react';
+import { ArrowLeft, Search } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
 import type {
@@ -257,22 +258,18 @@ export function ThreadImportPage() {
 
       <form className="divide-y divide-[var(--theme-border)]" onSubmit={handleSubmit}>
         <section className="product-divider-section space-y-5">
-          {backendsError ? (
-            <div className="host-error flex flex-col gap-3 rounded-md border px-4 py-3 text-sm sm:flex-row sm:items-center sm:justify-between" role="alert">
-              <span>{translate("workbench.backendsCouldNotBeLoaded")} {backendsError}</span>
-              <button
-                className="host-secondary-button inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-md border px-3 text-xs font-semibold"
-                onClick={() => setBackendLoadAttempt((attempt) => attempt + 1)}
-                type="button"
-              >
-                <RefreshCw aria-hidden="true" className="h-3.5 w-3.5" />
-                {translate("workbench.retry")}</button>
-            </div>
-          ) : null}
-
           <div>
-          <label htmlFor="backend-provider" className="host-form-label text-sm font-medium">
-            {translate("workbench.backend")}</label>
+          {/* Why the list is empty sits beside its label, with Retry in the mark. */}
+          <div className="flex items-center gap-1.5">
+            <label htmlFor="backend-provider" className="host-form-label text-sm font-medium">
+              {translate("workbench.backend")}</label>
+            {backendsError ? (
+              <ErrorMark
+                message={`${translate("workbench.backendsCouldNotBeLoaded")} ${backendsError}`}
+                onRetry={() => setBackendLoadAttempt((attempt) => attempt + 1)}
+              />
+            ) : null}
+          </div>
           <select
             id="backend-provider"
             value={provider}
@@ -332,7 +329,18 @@ export function ThreadImportPage() {
         <section className="product-divider-section space-y-4">
           <div className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
             <div>
-              <h2 className="text-sm font-semibold text-[var(--theme-fg)]">{translate("workbench.recentSessions")}</h2>
+              <h2 className="flex items-center gap-1.5 text-sm font-semibold text-[var(--theme-fg)]">
+                {translate("workbench.recentSessions")}
+                {/* A failed scan is not an empty list: the mark says why, offers a
+                    rescan, and promises a manual import only when the Harness can import. */}
+                {candidatesError && !backendsError ? (
+                  <ErrorMark
+                    message={`${translate("workbench.sessionScanFailedReason", { reason: candidatesError })}${canImportSelection ? ` ${translate("workbench.manualImportStillWorks")}` : ''}`}
+                    onRetry={() => setCandidateLoadAttempt((attempt) => attempt + 1)}
+                    retryLabel={translate("workbench.rescanSessions")}
+                  />
+                ) : null}
+              </h2>
               <p className="mt-1 text-xs text-[var(--theme-fg-muted)]">
                 {candidatesLoading ? translate("workbench.scanningThisSupervisor") : candidatesError ? translate("workbench.sessionScanFailed") : translate("workbench.ofSessions", { value1: filteredCandidates.length, value2: candidates.length })}
               </p>
@@ -404,24 +412,6 @@ export function ThreadImportPage() {
               )}
             </div>
           )}
-          {/* A failed scan is not an empty list: say why, offer a rescan, and
-              promise a manual import only when the Harness can import. */}
-          {candidatesError && !backendsError && (
-            <div className="host-error flex flex-col gap-3 rounded-md border px-4 py-3 text-sm sm:flex-row sm:items-center sm:justify-between" role="alert">
-              <span>
-                {translate("workbench.sessionScanFailedReason", { reason: candidatesError })}
-                {canImportSelection ? ` ${translate("workbench.manualImportStillWorks")}` : ''}
-              </span>
-              <button
-                className="host-secondary-button inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-md border px-3 text-xs font-semibold"
-                onClick={() => setCandidateLoadAttempt((attempt) => attempt + 1)}
-                disabled={candidatesLoading}
-                type="button"
-              >
-                <RefreshCw aria-hidden="true" className="h-3.5 w-3.5" />
-                {translate("workbench.rescanSessions")}</button>
-            </div>
-          )}
         </section>
 
         <section className="product-divider-section">
@@ -440,12 +430,6 @@ export function ThreadImportPage() {
           <p className="mt-2 text-xs leading-5 text-[var(--theme-fg-muted)]">
             {translate("workbench.fullCodexLinksAndSupportedBackendPrefixes")}</p>
 
-          {error ? (
-            <div className="host-error mt-4 rounded-md border px-4 py-3 text-sm" id="import-session-error" role="alert">
-              {error}
-            </div>
-          ) : null}
-
           <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row">
             <button
               className="host-secondary-button min-h-11 rounded-md border px-5 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-50"
@@ -454,13 +438,16 @@ export function ThreadImportPage() {
               type="button"
             >
               {translate("workbench.cancel")}</button>
-            <button
-              className="ui-action-primary min-h-11 rounded-md px-5 text-sm font-semibold transition disabled:cursor-not-allowed"
-              disabled={busy || !parseSessionRef(sessionId).rawId || !canImportSelection}
-              type="submit"
-            >
-              {busy ? translate("workbench.importing") : translate("workbench.importSession")}
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                className="ui-action-primary min-h-11 flex-1 rounded-md px-5 text-sm font-semibold transition disabled:cursor-not-allowed sm:flex-none"
+                disabled={busy || !parseSessionRef(sessionId).rawId || !canImportSelection}
+                type="submit"
+              >
+                {busy ? translate("workbench.importing") : translate("workbench.importSession")}
+              </button>
+              {error ? <span className="contents" id="import-session-error"><ErrorMark message={error} /></span> : null}
+            </div>
           </div>
         </section>
       </form>

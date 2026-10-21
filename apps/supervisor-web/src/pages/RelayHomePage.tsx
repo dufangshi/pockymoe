@@ -1,4 +1,5 @@
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
+import { ErrorMark } from '@pockymoe/thread-ui';
 import { ProductHeader } from '../components/ProductHeader';
 import { ArrowRight, BookOpen, MonitorSmartphone, RefreshCw } from 'lucide-react';
 import { useEffect, useState } from 'react';
@@ -76,6 +77,8 @@ export function RelayHomePage() {
                 : authenticated
                   ? translate("auth.signedInAs", { value1: session.user?.username })
                   : translate("auth.signedOut")}
+            {/* The reason is behind a mark on the status line; Retry stays visible below. */}
+            {error && !loading ? <ErrorMark message={error} /> : null}
           </div>
 
           <h1 className="mt-4 max-w-2xl text-2xl font-semibold tracking-normal text-[var(--theme-fg)] sm:text-3xl">
@@ -90,20 +93,14 @@ export function RelayHomePage() {
           </p>
 
           {error ? (
-            <div
-              className="mt-6 max-w-2xl rounded-lg bg-[var(--status-danger-bg)] px-4 py-3 text-sm text-[var(--status-danger-fg)]"
-              role="alert"
+            <button
+              className="relay-button-secondary mt-6 inline-flex h-11 items-center gap-2"
+              disabled={loading}
+              onClick={() => void loadSession()}
+              type="button"
             >
-              <p>{error}</p>
-              <button
-                className="relay-button-secondary mt-3 inline-flex h-11 items-center gap-2"
-                disabled={loading}
-                onClick={() => void loadSession()}
-                type="button"
-              >
-                <RefreshCw aria-hidden="true" className="h-4 w-4" />
-                {translate("auth.retry")}</button>
-            </div>
+              <RefreshCw aria-hidden="true" className="h-4 w-4" />
+              {translate("auth.retry")}</button>
           ) : loading ? (
             <div className="mt-6 h-11 w-36 animate-pulse rounded-lg bg-[var(--theme-muted)]" aria-hidden="true" />
           ) : (

@@ -1,4 +1,5 @@
 import { appUrl } from '../lib/webBase';
+import { ErrorMark } from '@pockymoe/thread-ui';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { LanguageSwitcher } from '@pockymoe/thread-ui/i18n';
 import { FormEvent, useState } from 'react';
@@ -114,19 +115,16 @@ export function LoginPage({
             </span>
           </label>
 
-          {error && (
-            <p className="rounded-md border border-[var(--status-danger-border)] bg-[var(--status-danger-bg)] px-3 py-2 text-sm text-[var(--status-danger-fg)]" role="alert">
-              {error}
-            </p>
-          )}
-
-          <button
-            className="ui-action-primary h-11 w-full rounded-md px-4 text-sm font-semibold transition disabled:cursor-not-allowed"
-            disabled={submitting || (!passcode && !username.trim()) || !password}
-            type="submit"
-          >
-            {submitting ? translate("auth.signingIn") : translate("auth.signIn")}
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              className="ui-action-primary h-11 w-full min-w-0 rounded-md px-4 text-sm font-semibold transition disabled:cursor-not-allowed"
+              disabled={submitting || (!passcode && !username.trim()) || !password}
+              type="submit"
+            >
+              {submitting ? translate("auth.signingIn") : translate("auth.signIn")}
+            </button>
+            {error ? <ErrorMark message={error} /> : null}
+          </div>
         </form>
       </section>
     </main>

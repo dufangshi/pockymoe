@@ -1,4 +1,5 @@
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
+import { ErrorMark } from '@pockymoe/thread-ui';
 import { Settings2 } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import {
@@ -91,18 +92,12 @@ export function HarnessConnections({
           {translate('settings.loading')}
         </p>
       ) : error ? (
-        <div
-          role="alert"
-          className="mt-2 text-xs text-[var(--status-danger-fg)]"
-        >
-          <p>{error}</p>
-          <button
-            type="button"
-            className={`${button} mt-2 text-[var(--theme-fg)]`}
-            onClick={onRetry}
-          >
+        // Nothing could be read: an obvious Retry, with the reason on its mark.
+        <div className="mt-2 flex items-center gap-1">
+          <button type="button" className={button} onClick={onRetry}>
             {translate('settings.connRetry')}
           </button>
+          <ErrorMark message={error} />
         </div>
       ) : !visible.length ? (
         <p className="mt-2 rounded-xl border border-dashed border-[var(--theme-border)] p-3 text-xs leading-5 text-[var(--theme-fg-muted)]">
@@ -434,15 +429,7 @@ function ApplyDialog({
         <p className="text-xs leading-5 text-[var(--theme-fg-muted)]">
           {translate('settings.connApplyHint')}
         </p>
-        {error && (
-          <p
-            role="alert"
-            className="break-words text-xs text-[var(--status-danger-fg)]"
-          >
-            {error}
-          </p>
-        )}
-        <div className="flex justify-end gap-2">
+        <div className="flex items-center justify-end gap-2">
           <button
             type="button"
             className="host-secondary-button min-h-10 rounded-lg border px-3 text-[13px] sm:min-h-9"
@@ -460,6 +447,7 @@ function ApplyDialog({
               ? translate('settings.connApplying')
               : translate('settings.connApplyShort')}
           </button>
+          {error && !busy && <ErrorMark message={error} />}
         </div>
       </form>
     </FormDialog>
@@ -522,15 +510,7 @@ function NativeApplyDialog({
         <p className="text-xs leading-5 text-[var(--theme-fg-muted)]">
           {translate('settings.connApplyHint')}
         </p>
-        {error && (
-          <p
-            role="alert"
-            className="break-words text-xs text-[var(--status-danger-fg)]"
-          >
-            {error}
-          </p>
-        )}
-        <div className="flex justify-end gap-2">
+        <div className="flex items-center justify-end gap-2">
           <button
             type="button"
             className="host-secondary-button min-h-10 rounded-lg border px-3 text-[13px] sm:min-h-9"
@@ -548,6 +528,7 @@ function NativeApplyDialog({
               ? translate('settings.connApplying')
               : translate('settings.connApplyShort')}
           </button>
+          {error && !busy && <ErrorMark message={error} />}
         </div>
       </form>
     </FormDialog>

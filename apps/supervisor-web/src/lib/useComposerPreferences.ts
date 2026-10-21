@@ -18,6 +18,7 @@ export function useComposerPreferences() {
   const [error, setError] = useState<string | null>(null);
   const revision = useRef(0);
   const savingRef = useRef(false);
+  const loadedRef = useRef(false);
 
   const refresh = useCallback(async () => {
     if (!enabled || savingRef.current) return;
@@ -28,9 +29,11 @@ export function useComposerPreferences() {
       if (current !== revision.current) return;
       setShortcut(preferences.sendShortcut);
       setReady(true);
+      loadedRef.current = true;
       setError(null);
     } catch (caught) {
-      if (current !== revision.current) return;
+      // A refresh on focus that fails (a weak network) keeps what was loaded.
+      if (current !== revision.current || loadedRef.current) return;
       setError(
         caught instanceof Error
           ? caught.message

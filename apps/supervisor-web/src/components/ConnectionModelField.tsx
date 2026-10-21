@@ -1,4 +1,5 @@
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
+import { ErrorMark } from '@pockymoe/thread-ui';
 import { RefreshCw } from 'lucide-react';
 import { useEffect, useId, useRef, useState } from 'react';
 import type { DiscoveredModel } from '../lib/connections';
@@ -73,13 +74,18 @@ export function ConnectionModelField({
   }, [discoverKey, canDiscover, autoDiscover]);
 
   const listed = models?.some((m) => m.id === value);
+  // A failed discovery is a mark after its button; the field stays usable.
+  const failure =
+    state === 'error'
+      ? translate('settings.connModelsFailed', {
+          reason: error || translate('settings.connUnknownError'),
+        })
+      : '';
   const status =
     state === 'loading'
       ? translate('settings.connModelsLoading')
       : state === 'error'
-        ? translate('settings.connModelsFailed', {
-            reason: error || translate('settings.connUnknownError'),
-          })
+        ? ''
         : models && !models.length
           ? translate('settings.connModelsEmpty')
           : !canDiscover
@@ -127,6 +133,11 @@ export function ConnectionModelField({
             )}
           </span>
         </button>
+        {failure && (
+          <span className="flex shrink-0 items-center">
+            <ErrorMark message={failure} onRetry={load} />
+          </span>
+        )}
       </div>
       {!!models?.length && (
         <select
@@ -152,8 +163,7 @@ export function ConnectionModelField({
       {status && (
         <p
           id={`${id}-status`}
-          role={state === 'error' ? 'alert' : undefined}
-          className={`mt-1 break-words text-xs ${state === 'error' ? 'text-[var(--status-danger-fg)]' : 'text-[var(--theme-fg-muted)]'}`}
+          className="mt-1 break-words text-xs text-[var(--theme-fg-muted)]"
         >
           {status}
         </p>

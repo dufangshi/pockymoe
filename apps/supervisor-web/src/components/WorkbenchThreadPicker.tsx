@@ -26,7 +26,7 @@ import {
   X,
 } from 'lucide-react';
 import type { ThreadDto, WorkspaceDto } from '@pockymoe/shared';
-import { Dialog, DialogContent, DialogTitle, StatusMark, navigationStatusLabel } from '@pockymoe/thread-ui';
+import { Dialog, DialogContent, DialogTitle, ErrorMark, StatusMark, navigationStatusLabel } from '@pockymoe/thread-ui';
 import { translate as t, useI18n } from '@pockymoe/thread-ui/i18n';
 import {
   rankSplitDevices,
@@ -138,9 +138,11 @@ export function WorkbenchThreadPicker(props: WorkbenchThreadPickerProps) {
   useEffect(() => {
     if (!open) return;
     const outside = (event: PointerEvent) => {
+      // A failure mark's bubble (with its Retry) belongs to the picker.
       if (
         !panel.current?.contains(event.target as Node) &&
-        !trigger.current?.contains(event.target as Node)
+        !trigger.current?.contains(event.target as Node) &&
+        !(event.target instanceof Element && event.target.closest('.error-mark-bubble'))
       )
         setOpen(false);
     };
@@ -183,13 +185,11 @@ export function WorkbenchThreadPicker(props: WorkbenchThreadPickerProps) {
           {t('workbench.splitLoading')}
         </div>
       )}
-      {resource.error && (
-        <div className="workbench-thread-picker-error" role="alert">
-          <span>{resource.error}</span>
-          <button type="button" onClick={retry}>
-            <RotateCcw size={14} />
-            {t('workbench.splitRetry')}
-          </button>
+      {/* A list that could not load: a short label and a mark with the reason and Retry. */}
+      {resource.error && !resource.items.length && (
+        <div className="workbench-thread-picker-state">
+          {t('workbench.unavailable')}
+          <ErrorMark message={resource.error} onRetry={retry} retryLabel={t('workbench.splitRetry')} />
         </div>
       )}
       {resource.loaded && !resource.loading && !resource.items.length && (

@@ -1,5 +1,6 @@
 import { getLocale } from '@pockymoe/thread-ui/i18n';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
+import { ErrorMark } from '@pockymoe/thread-ui';
 import { LoginVerification, RelaySecurityPanel, usePendingLogin } from '../components/RelaySecurity';
 import {
   FormEvent,
@@ -114,7 +115,9 @@ export function RelayAdminPage() {
   const [summary, setSummary] = useState<RelayAdminSummaryDto | null>(null);
   const [adminSession, setAdminSession] = useState<RelaySessionDto | null>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  // Why the last load or action failed, shown as a mark after its control
+  // (`at`): 'load', 'settings', `user:<id>`, `approve:<id>`, `reject:<id>`.
+  const [error, setError] = useState<AdminFailure>(null);
   const [unsupportedStatus, setUnsupportedStatus] = useState<number | null>(null);
   const [challenge,setChallenge]=usePendingLogin();
   const [loginRequired, setLoginRequired] = useState(false);
@@ -158,7 +161,7 @@ export function RelayAdminPage() {
           setUnsupportedStatus(status);
           setError(null);
         } else {
-          setError(errorMessage(caught));
+          setError({ at: 'load', message: errorMessage(caught) });
         }
       }
     } finally {
@@ -202,11 +205,12 @@ export function RelayAdminPage() {
           setLoginRequired(true);
           setError(null);
         } else {
-          setError(
-            caught instanceof Error
+          setError({
+            at: 'load',
+            message: caught instanceof Error
               ? translate("devices.unableToVerifyTheRelayAdminSession", { value1: caught.message })
               : translate("devices.unableToVerifyTheRelayAdminSession_f228be"),
-          );
+          });
         }
         setLoading(false);
       }
@@ -255,7 +259,7 @@ export function RelayAdminPage() {
       const updated = await setRelayUserEnabled(userId, enabled);
       setSummary((current) => replaceAdminUser(current, updated));
     } catch (caught) {
-      setError(errorMessage(caught));
+      setError({ at: `user:${userId}`, message: errorMessage(caught) });
     } finally {
       setBusyKey(null);
     }
@@ -267,9 +271,6 @@ export function RelayAdminPage() {
     try {
       await deleteRelayAdminUser(userId);
       await load(days, { showLoading: false });
-    } catch (caught) {
-      setError(errorMessage(caught));
-      throw caught;
     } finally {
       setBusyKey(null);
     }
@@ -281,9 +282,6 @@ export function RelayAdminPage() {
     try {
       const updated = await resetRelayAdminUserPassword(userId, password);
       setSummary((current) => replaceAdminUser(current, updated));
-    } catch (caught) {
-      setError(errorMessage(caught));
-      throw caught;
     } finally {
       setBusyKey(null);
     }
@@ -309,7 +307,7 @@ export function RelayAdminPage() {
       );
       setSettingsDraft(result.settings);
     } catch (caught) {
-      setError(errorMessage(caught));
+      setError({ at: 'settings', message: errorMessage(caught) });
     } finally {
       setBusyKey(null);
     }
@@ -329,7 +327,7 @@ export function RelayAdminPage() {
       }
       await load(days, { showLoading: false });
     } catch (caught) {
-      setError(errorMessage(caught));
+      setError({ at: `${action}:${requestId}`, message: errorMessage(caught) });
     } finally {
       setBusyKey(null);
     }
@@ -423,15 +421,18 @@ export function RelayAdminPage() {
             </label>
             <Link className="relay-button-secondary" to="/">
               {translate("devices.relayHome")}</Link>
-            <button
-              aria-label={translate("devices.refreshAdminData")}
-              className="product-icon-button"
-              onClick={() => void load(days)}
-              title={translate("devices.refreshAdminData")}
-              type="button"
-            >
-              <RefreshCw className="h-4 w-4" />
-            </button>
+            <span className="flex items-center gap-1">
+              <button
+                aria-label={translate("devices.refreshAdminData")}
+                className="product-icon-button"
+                onClick={() => void load(days)}
+                title={translate("devices.refreshAdminData")}
+                type="button"
+              >
+                <RefreshCw className="h-4 w-4" />
+              </button>
+              {error?.at === 'load' && summary ? <ErrorMark message={error.message} onRetry={() => void load(days)} /> : null}
+            </span>
             <RelayAdminUserMenu
               session={adminSession}
               onLogout={() => {
@@ -442,21 +443,6 @@ export function RelayAdminPage() {
             />
           </div>
         </header>
-
-        {error && summary ? (
-          <div
-            className="host-error flex min-h-11 items-center justify-between gap-3 rounded-lg border px-4 py-3 text-sm"
-            role="alert"
-          >
-            <span>{error}</span>
-            <button
-              className="shrink-0 rounded-md px-2 py-1 font-medium hover:bg-[var(--theme-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-accent-ring)]"
-              onClick={() => setError(null)}
-              type="button"
-            >
-              {translate("devices.dismiss")}</button>
-          </div>
-        ) : null}
 
         {loading ? (
           <section className="product-panel" aria-busy="true" aria-label={translate("devices.loadingRelayAdministration")}>
@@ -473,12 +459,11 @@ export function RelayAdminPage() {
             onRetry={() => void load(days)}
           />
         ) : error && !summary ? (
-          <section className="product-panel" role="alert">
+          <section className="product-panel">
             <div className="p-5 sm:p-6">
-              <p className="text-base font-semibold text-[var(--theme-fg)]">
-                {translate("devices.adminDataIsUnavailable")}</p>
-              <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--status-danger-fg)]">
-                {error}
+              <p className="flex items-center gap-1.5 text-base font-semibold text-[var(--theme-fg)]">
+                {translate("devices.adminDataIsUnavailable")}
+                <ErrorMark message={error.message} />
               </p>
               <div className="mt-4 flex flex-wrap gap-2">
                 <button
@@ -554,6 +539,7 @@ export function RelayAdminPage() {
               {tab === 'users' ? (
                 <UsersTable
                   busyKey={busyKey}
+                  failure={error}
                   onDeleteUser={deleteUser}
                   onResetPassword={resetUserPassword}
                   onUpdateUser={updateUser}
@@ -569,6 +555,7 @@ export function RelayAdminPage() {
                 <SettingsPanel
                   busy={busyKey === 'settings'}
                   draft={settingsDraft}
+                  failure={error}
                   onChange={setSettingsDraft}
                   onReviewRegistration={reviewRegistration}
                   onSave={saveSettings}
@@ -601,11 +588,12 @@ function AdminCompatibilityState({
           <span className="rounded-full border border-[var(--status-warning-border)] bg-[var(--status-warning-bg)] px-2 py-0.5 text-xs font-medium text-[var(--status-warning-fg)]">
             HTTP {statusCode}
           </span>
+          {/* Why, and what to do, open from the mark. */}
+          <ErrorMark
+            kind="unavailable"
+            message={`${translate("devices.thisRelayServerDoesNotExposeThe")}\n${translate("devices.updateAndRestartTheRelayServerWith")}`}
+          />
         </div>
-        <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--theme-fg-muted)]">
-          {translate("devices.thisRelayServerDoesNotExposeThe")}</p>
-        <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--theme-fg-muted)]">
-          {translate("devices.updateAndRestartTheRelayServerWith")}</p>
         <div className="mt-5 flex flex-wrap gap-2">
           <button className="relay-button-primary" onClick={onRetry} type="button">
             {translate("devices.retry")}</button>
@@ -823,12 +811,14 @@ function Overview({ summary }: { summary: RelayAdminSummaryDto }) {
 
 function UsersTable({
   busyKey,
+  failure,
   onDeleteUser,
   onResetPassword,
   onUpdateUser,
   users,
 }: {
   busyKey: string | null;
+  failure: AdminFailure;
   onDeleteUser: (userId: string) => Promise<void>;
   onResetPassword: (userId: string, password: string) => Promise<void>;
   onUpdateUser: (userId: string, enabled: boolean) => void;
@@ -983,7 +973,7 @@ function UsersTable({
                 <Td label={translate("devices.devices")}>{user.deviceCount.toLocaleString(getLocale())}</Td>
                 <Td label={translate("devices.role")}>{user.role}</Td>
                 <Td label={translate("devices.actions")}>
-                  <div className="flex flex-wrap gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
                     <button
                       className="relay-button-secondary"
                       disabled={busyKey === user.id || user.role === 'admin'}
@@ -992,6 +982,7 @@ function UsersTable({
                     >
                       {user.enabled ? translate("devices.disable") : translate("devices.enable")}
                     </button>
+                    <FailureMark at={`user:${user.id}`} failure={failure} />
                     <button
                       className="relay-button-secondary inline-flex items-center gap-2"
                       disabled={
@@ -1288,6 +1279,7 @@ function SharesTable({ shares }: { shares: RelaySessionShareDto[] }) {
 function SettingsPanel({
   busy,
   draft,
+  failure,
   onChange,
   onReviewRegistration,
   onSave,
@@ -1296,6 +1288,7 @@ function SettingsPanel({
 }: {
   busy: boolean;
   draft: RelayRegistrationSettingsDto;
+  failure: AdminFailure;
   onChange: (settings: RelayRegistrationSettingsDto) => void;
   onReviewRegistration: (
     requestId: string,
@@ -1342,17 +1335,22 @@ function SettingsPanel({
           <div className="space-y-3 border-t border-[var(--theme-border)] pt-4">
             <Checkbox checked={draft.googleAuthEnabled} disabled={settingsLocked || !draft.googleAuthAvailable} label={translate("devices.enableGoogleAuthentication")} onChange={(googleAuthEnabled) => onChange({ ...draft, googleAuthEnabled })} />
             <Checkbox checked={draft.githubAuthEnabled} disabled={settingsLocked || !draft.githubAuthAvailable} label={translate("devices.enableGitHubAuthentication")} onChange={(githubAuthEnabled) => onChange({ ...draft, githubAuthEnabled })} />
-            <Checkbox checked={draft.emailVerificationEnabled} disabled={settingsLocked || !draft.emailVerificationAvailable} label={translate("devices.enableEmailVerification")} onChange={(emailVerificationEnabled) => onChange({ ...draft, emailVerificationEnabled })} />
-            {!draft.emailVerificationAvailable ? <p className="text-xs text-[var(--theme-fg-muted)]">{translate("devices.configureTheEmailProviderAndVerificationSecret")}</p> : null}
+            <div className="flex items-center gap-2">
+              <Checkbox checked={draft.emailVerificationEnabled} disabled={settingsLocked || !draft.emailVerificationAvailable} label={translate("devices.enableEmailVerification")} onChange={(emailVerificationEnabled) => onChange({ ...draft, emailVerificationEnabled })} />
+              {!draft.emailVerificationAvailable ? <ErrorMark kind="unavailable" message={translate("devices.configureTheEmailProviderAndVerificationSecret")} /> : null}
+            </div>
           </div>
-          <button
-            className="relay-button-primary inline-flex items-center gap-2"
-            disabled={settingsLocked}
-            type="submit"
-          >
-            <Settings className="h-4 w-4" />
-            {busy ? translate("devices.saving") : translate("devices.saveSettings")}
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              className="relay-button-primary inline-flex items-center gap-2"
+              disabled={settingsLocked}
+              type="submit"
+            >
+              <Settings className="h-4 w-4" />
+              {busy ? translate("devices.saving") : translate("devices.saveSettings")}
+            </button>
+            <FailureMark at="settings" failure={failure} />
+          </div>
         </form>
       </Panel>
 
@@ -1375,7 +1373,7 @@ function SettingsPanel({
                     {request.email} · {formatTimestamp(request.createdAt)}
                   </p>
                 </div>
-                <div className="flex gap-2">
+                <div className="flex items-center gap-2">
                   <button
                     className="relay-button-primary inline-flex items-center gap-2"
                     disabled={reviewBusyKey !== null}
@@ -1384,6 +1382,7 @@ function SettingsPanel({
                   >
                     <Check className="h-4 w-4" />
                     {translate("devices.approve")}</button>
+                  <FailureMark at={`approve:${request.id}`} failure={failure} />
                   <button
                     className="relay-button-secondary"
                     disabled={reviewBusyKey !== null}
@@ -1391,6 +1390,7 @@ function SettingsPanel({
                     type="button"
                   >
                     {translate("devices.reject")}</button>
+                  <FailureMark at={`reject:${request.id}`} failure={failure} />
                 </div>
               </div>
             ))}
@@ -1621,7 +1621,9 @@ function PasswordResetDialog({
 }) {
   const { locale: i18nLocale } = useI18n();
   const [password, setPassword] = useState('');
+  // A too-short password is a hint of the field; a failed save is a mark after its button.
   const [localError, setLocalError] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const dialogRef = useRef<HTMLFormElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const titleId = useId();
@@ -1638,6 +1640,7 @@ function PasswordResetDialog({
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setLocalError(null);
+    setSaveError(null);
     if (password.length < 8) {
       setLocalError(translate("devices.passwordMustBeAtLeast8Characters"));
       return;
@@ -1645,7 +1648,7 @@ function PasswordResetDialog({
     try {
       await onSubmit(password);
     } catch (caught) {
-      setLocalError(errorMessage(caught));
+      setSaveError(errorMessage(caught));
     }
   }
 
@@ -1696,6 +1699,7 @@ function PasswordResetDialog({
               onChange={(event) => {
                 setPassword(event.target.value);
                 setLocalError(null);
+                setSaveError(null);
               }}
               ref={inputRef}
               required
@@ -1717,14 +1721,17 @@ function PasswordResetDialog({
               type="button"
             >
               {translate("devices.cancel")}</button>
-            <button
-              className="relay-button-primary inline-flex items-center gap-2"
-              disabled={busy || password.length < 8}
-              type="submit"
-            >
-              <KeyRound aria-hidden="true" className="h-4 w-4" />
-              {busy ? translate("devices.saving") : translate("devices.savePassword")}
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                className="relay-button-primary inline-flex flex-1 items-center justify-center gap-2 sm:flex-none"
+                disabled={busy || password.length < 8}
+                type="submit"
+              >
+                <KeyRound aria-hidden="true" className="h-4 w-4" />
+                {busy ? translate("devices.saving") : translate("devices.savePassword")}
+              </button>
+              {saveError ? <ErrorMark message={saveError} /> : null}
+            </div>
           </div>
       </form>
     </div>
@@ -1806,11 +1813,6 @@ function DangerConfirmDialog({
         <p className="mt-2 text-sm leading-6 text-[var(--theme-fg-muted)]" id={descriptionId}>
           {description}
         </p>
-        {localError ? (
-          <p className="mt-3 rounded-md bg-[var(--status-danger-bg)] px-3 py-2 text-sm text-[var(--status-danger-fg)]" role="alert">
-            {localError}
-          </p>
-        ) : null}
         <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
           <button
             className="relay-button-secondary"
@@ -1820,19 +1822,27 @@ function DangerConfirmDialog({
             type="button"
           >
             {translate("devices.cancel")}</button>
-          <button
-            className="ui-action-danger inline-flex min-h-11 items-center justify-center gap-2 rounded-md px-4 text-sm font-semibold transition disabled:cursor-not-allowed"
-            disabled={busy}
-            onClick={() => void confirm()}
-            type="button"
-          >
-            <Trash2 aria-hidden="true" className="h-4 w-4" />
-            {busy ? translate("devices.deleting") : confirmLabel}
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              className="ui-action-danger inline-flex min-h-11 flex-1 items-center justify-center gap-2 rounded-md px-4 text-sm font-semibold transition disabled:cursor-not-allowed sm:flex-none"
+              disabled={busy}
+              onClick={() => void confirm()}
+              type="button"
+            >
+              <Trash2 aria-hidden="true" className="h-4 w-4" />
+              {busy ? translate("devices.deleting") : confirmLabel}
+            </button>
+            {localError ? <ErrorMark message={localError} /> : null}
+          </div>
         </div>
       </div>
     </div>
   );
+}
+
+type AdminFailure = { at: string; message: string } | null;
+function FailureMark({ failure, at }: { failure: AdminFailure; at: string }) {
+  return failure?.at === at ? <ErrorMark message={failure.message} /> : null;
 }
 
 function normalizeSearch(value: string) {

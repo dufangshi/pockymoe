@@ -1,6 +1,7 @@
 import { translate, useI18n, type TranslationKey } from '@pockymoe/thread-ui/i18n';
 import { useEffect, useId, useState } from 'react';
 import { useLocation } from 'react-router-dom';
+import { ErrorMark } from '@pockymoe/thread-ui';
 import type { HarnessResourceSettingsDto } from '@pockymoe/shared';
 import {
   ApiError,
@@ -88,11 +89,12 @@ function DeviceResourceSettings({ deviceId }: { deviceId: string | null }) {
     return <p className="py-5 text-sm text-[var(--theme-fg-muted)]">{translate('settings.resourcesUnavailable')}</p>;
   if (!draft) {
     return error ? (
-      <div className="py-5">
-        <p className="host-error rounded-md border px-3 py-2 text-xs" role="alert">{error}</p>
-        <button type="button" className="host-secondary-button mt-2 min-h-9 rounded-md border px-3 text-xs" onClick={() => setRevision(value => value + 1)}>
+      // Nothing could be read: an obvious Retry, and the reason on its mark.
+      <div className="flex items-center gap-1 py-5">
+        <button type="button" className="host-secondary-button min-h-9 rounded-md border px-3 text-xs" onClick={() => setRevision(value => value + 1)}>
           {translate('files.retry')}
         </button>
+        <ErrorMark message={error} />
       </div>
     ) : <p className="py-5 text-sm text-[var(--theme-fg-muted)]">{translate('settings.loading')}</p>;
   }
@@ -149,10 +151,10 @@ function DeviceResourceSettings({ deviceId }: { deviceId: string | null }) {
       })}
       <div className="pm-res-footer">
         {message && <span role="status" className="pm-res-saved">{message}</span>}
-        {error && <p className="host-error pm-res-error" role="alert">{error}</p>}
         <button type="button" className="relay-button-primary pm-res-primary" disabled={invalid || busy} onClick={() => void save()}>
           {busy ? translate('settings.saving') : translate('files.save')}
         </button>
+        {error && <ErrorMark message={error} onRetry={invalid ? undefined : () => void save()} />}
       </div>
     </div>
   );

@@ -1,4 +1,5 @@
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
+import { ErrorMark } from '@pockymoe/thread-ui';
 import { useAppShellNav } from './AppShellNavContext';
 
 export function ComposerShortcutSettings() {
@@ -6,6 +7,17 @@ export function ComposerShortcutSettings() {
   const nav = useAppShellNav();
   const disabled =
     !nav?.setSendShortcut || nav.sendShortcutLoading || nav.sendShortcutSaving;
+  const status = (space: string) => (
+    <p className={`${nav?.setSendShortcut && !nav.sendShortcutSaving && !nav.sendShortcutLoading ? 'settings-hint ' : ''}${space}text-xs text-[var(--theme-fg-muted)]`}>
+      {nav?.sendShortcutSaving
+        ? translate("settings.saving")
+        : nav?.sendShortcutLoading
+          ? translate("settings.loading")
+          : !nav?.setSendShortcut
+            ? translate("settings.signInThroughRelayToChangeYour")
+            : translate("settings.steerDeliversToTheRunningTurnImmediately")}
+    </p>
+  );
   return (
     <fieldset className="settings-shortcuts py-5">
       <legend className="text-sm font-semibold">{translate("settings.messageShortcuts")}</legend>
@@ -52,30 +64,19 @@ export function ComposerShortcutSettings() {
           </label>
         ))}
       </div>
-      <p className={`${nav?.setSendShortcut && !nav.sendShortcutSaving && !nav.sendShortcutLoading ? 'settings-hint ' : ''}mt-2 text-xs text-[var(--theme-fg-muted)]`}>
-        {nav?.sendShortcutSaving
-          ? translate("settings.saving")
-          : nav?.sendShortcutLoading
-            ? translate("settings.loading")
-            : !nav?.setSendShortcut
-              ? translate("settings.signInThroughRelayToChangeYour")
-              : translate("settings.steerDeliversToTheRunningTurnImmediately")}
-      </p>
+      {/* The mark sits beside the hint, not inside it: some themes hide hints visually. */}
       {nav?.sendShortcutError ? (
-        <div className="mt-2 text-xs">
-          <p className="host-error" role="alert">
-            {nav.sendShortcutError}
-          </p>
-          <button
-            type="button"
-            className="mt-2 underline"
-            onClick={() => {
+        <div className="mt-2 flex items-center gap-1">
+          {status('')}
+          <ErrorMark
+            message={nav.sendShortcutError}
+            onRetry={() => {
               void nav.refreshSendShortcut?.();
             }}
-          >
-            {translate("settings.retry")}</button>
+            retryLabel={translate("settings.retry")}
+          />
         </div>
-      ) : null}
+      ) : status('mt-2 ')}
     </fieldset>
   );
 }

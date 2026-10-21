@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { LoaderCircle, ShieldAlert, ShieldCheck, ShieldOff, ShieldQuestion } from 'lucide-react';
+import { ErrorMark } from '@pockymoe/thread-ui';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import type { RelayDeviceDto } from '@pockymoe/shared';
 import { currentAccount } from '../lib/accountVault';
@@ -84,11 +85,11 @@ export function DeviceProtectionBadge({ device, protection }: {
         {status.key === 'otherAccount' && accountId ? (
           <p className="text-[var(--theme-fg-muted)]">{translate('devices.yourAccountId', { value1: accountId })}</p>
         ) : null}
-        {actionFailed && <p role="alert">{translate('devices.remoteProtectionFailed')}</p>}
-        {action || switchable ? (
+        {action || switchable || actionFailed ? (
           <div className="flex flex-wrap items-center gap-2">
             {action}
             {switchable && <ProtectDevicesButton devices={[device]} replaceLocal />}
+            {actionFailed && <ErrorMark message={translate('devices.remoteProtectionFailed')} />}
           </div>
         ) : null}
         <a

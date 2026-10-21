@@ -1,4 +1,5 @@
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
+import { ErrorMark } from '@pockymoe/thread-ui';
 import { FormEvent, useEffect, useRef, useState } from 'react';
 import { FolderOpen, FolderPlus, GitBranch } from 'lucide-react';
 
@@ -247,13 +248,14 @@ export function WorkspaceForm({
         <p id="workspace-target-hint" className="host-muted mt-2 break-words text-xs leading-5">
           {hintText}
         </p>
-        {fieldError ? (
+        {/* A validation hint of the field stays a short line; a failed save is a mark after the button. */}
+        {localError ? (
           <p
             id="workspace-target-error"
             role="alert"
             className="mt-2 text-sm leading-5 text-[var(--status-danger-fg)]"
           >
-            {fieldError}
+            {localError}
           </p>
         ) : null}
       </div>
@@ -293,6 +295,9 @@ export function WorkspaceForm({
         >
           {busy ? field.busyLabel : submitLabel ?? field.submitLabel}
         </button>
+        {!localError && error ? (
+          <span className="contents" id="workspace-target-error"><ErrorMark message={error} /></span>
+        ) : null}
       </div>
     </form>
   );

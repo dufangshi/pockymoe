@@ -230,7 +230,12 @@ it('reports legacy and unavailable native coverage as unknown rather than a comp
     return { automations: [legacy] };
   });
   fireEvent.click(within(dialog).getByRole('button', { name: 'Refresh' }));
-  await within(dialog).findByText('Automation data is temporarily unavailable');
+  // What was shown stays; the failed Refresh is a mark after its button.
+  expect(await within(dialog).findByRole('alert')).toHaveTextContent(
+    'Native watch history is unavailable; totals may omit native watches.',
+  );
+  expect(within(dialog).getByRole('button', { name: 'Why it failed' })).toBeVisible();
+  expect(within(dialog).getByText('Hourly prompt')).toBeVisible();
 });
 
 it.each(['en', 'zh-CN'])('labels plugin actions and treats their unmetered costs as unknown in %s', async locale => {
@@ -414,14 +419,14 @@ it('presents an unsupported endpoint as a quiet device status and keeps raw diag
   const dialog = await screen.findByRole('dialog', { name: 'Automation' });
   await within(dialog).findByText('Update this device to view automations');
   expect(within(dialog).queryByRole('alert')).not.toBeInTheDocument();
-  expect(within(dialog).getByText('Route not found')).not.toBeVisible();
+  expect(screen.queryByText('Route not found')).not.toBeInTheDocument();
   expect(
     within(dialog)
       .getByRole('group', { name: 'Triggers' })
       .querySelector('strong'),
   ).toHaveTextContent('—');
-  fireEvent.click(within(dialog).getByLabelText('Connection details'));
-  expect(within(dialog).getByText('Route not found')).toBeVisible();
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Why it is unavailable' }));
+  expect(screen.getByText('Route not found')).toBeVisible();
 });
 
 it('lists runs compactly: newest open, older failures flagged, timestamps and turn behind run details', async () => {

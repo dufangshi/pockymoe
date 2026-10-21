@@ -2,6 +2,7 @@
 // Copyright (c) 2025 Jason Young. MIT; see THIRD_PARTY_NOTICES.md.
 import { useState } from 'react';
 import { translate } from '@pockymoe/thread-ui/i18n';
+import { ErrorMark } from '@pockymoe/thread-ui';
 import { upstreamPresets } from './upstreamPresets';
 import { UpstreamModelPicker } from './UpstreamModelPicker';
 import type { Profile } from './UpstreamManagement';
@@ -373,12 +374,7 @@ export function UpstreamProviderForm({
           {translate('settings.upstreamsInvalidJSON')}
         </p>
       )}
-      {error && (
-        <p role="alert" className="text-xs text-[var(--status-danger-fg)]">
-          {error}
-        </p>
-      )}
-      <div className="sticky bottom-0 flex justify-end border-t border-[var(--theme-border)] bg-[var(--theme-panel)] pt-3">
+      <div className="sticky bottom-0 flex items-center justify-end gap-2 border-t border-[var(--theme-border)] bg-[var(--theme-panel)] pt-3">
         <button
           className="relay-button-primary min-h-10"
           type="submit"
@@ -388,6 +384,7 @@ export function UpstreamProviderForm({
             ? translate('settings.saving_56a228')
             : translate('settings.saveUpstream')}
         </button>
+        {error && !busy && <ErrorMark message={error} />}
       </div>
     </form>
   );

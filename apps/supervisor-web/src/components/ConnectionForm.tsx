@@ -1,6 +1,7 @@
 // Provider presets come from CC Switch via upstreamPresets.ts.
 // Copyright (c) 2025 Jason Young. MIT; see THIRD_PARTY_NOTICES.md.
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
+import { ErrorMark } from '@pockymoe/thread-ui';
 import { FlaskConical } from 'lucide-react';
 import { useEffect, useId, useMemo, useState } from 'react';
 import { ApiError } from '../lib/api';
@@ -245,6 +246,8 @@ export function ConnectionForm({
     form.headers,
   ]);
   const canDiscover = urlValid && (!needsKey || !!form.apiKey);
+  // A conflict's mark sits by its "Load the latest version" button instead.
+  const saveFailure = !!error && !(conflict && saved) && busy !== 'save';
   return (
     <form
       className="space-y-3"
@@ -438,37 +441,36 @@ export function ConnectionForm({
             ? translate('settings.connTesting')
             : translate('settings.connTest')}
         </button>
-        {test && (
-          <span
-            role={test.ok ? 'status' : 'alert'}
-            className={`min-w-0 break-words text-xs ${test.ok ? 'text-[var(--theme-accent-strong)]' : 'text-[var(--status-danger-fg)]'}`}
-          >
-            {test.text}
-          </span>
-        )}
-      </div>
-      {error && (
-        <div
-          role="alert"
-          className="rounded-lg border border-[var(--status-danger-border,var(--theme-border))] p-3 text-xs text-[var(--status-danger-fg)]"
-        >
-          <p className="break-words">{error}</p>
-          {conflict && saved && (
-            <button
-              type="button"
-              className="host-secondary-button mt-2 min-h-9 rounded-lg border px-3 text-xs text-[var(--theme-fg)]"
-              disabled={!!busy}
-              onClick={() => void reloadLatest()}
+        {test &&
+          (test.ok ? (
+            <span
+              role="status"
+              className="min-w-0 break-words text-xs text-[var(--theme-accent-strong)]"
             >
-              {translate('settings.connReloadLatest')}
-            </button>
-          )}
+              {test.text}
+            </span>
+          ) : (
+            <ErrorMark message={test.text} onRetry={() => void runTest()} />
+          ))}
+      </div>
+      {error && conflict && saved && (
+        // Saving again would fail again: the way out stays a visible button.
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            className="host-secondary-button min-h-9 rounded-lg border px-3 text-xs"
+            disabled={!!busy}
+            onClick={() => void reloadLatest()}
+          >
+            {translate('settings.connReloadLatest')}
+          </button>
+          <ErrorMark message={error} />
         </div>
       )}
       {/* One row on every width; the save-only hint sits under the dialog title.
           Sticky offsets start inside the dialog's 24px padding, so reach through it. */}
       <div
-        className="sticky -bottom-6 -mx-1 -mb-6 grid grid-cols-2 gap-2 border-t border-[var(--theme-border)] bg-[var(--theme-panel)] px-1 pb-6 pt-2.5 sm:flex sm:justify-end"
+        className={`sticky -bottom-6 -mx-1 -mb-6 grid ${saveFailure ? 'grid-cols-[1fr_1fr_auto]' : 'grid-cols-2'} items-center gap-2 border-t border-[var(--theme-border)] bg-[var(--theme-panel)] px-1 pb-6 pt-2.5 sm:flex sm:justify-end`}
         data-testid="connection-form-actions"
       >
         <button
@@ -489,6 +491,7 @@ export function ConnectionForm({
             ? translate('settings.connSaving')
             : translate('settings.connSaveShort')}
         </button>
+        {saveFailure && <ErrorMark message={error} />}
       </div>
     </form>
   );

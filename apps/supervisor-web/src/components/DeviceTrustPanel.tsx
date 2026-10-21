@@ -1,3 +1,4 @@
+import { ErrorMark } from '@pockymoe/thread-ui';
 import { getLocale, translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { useEffect, useState } from 'react';
 import { boundDevices, currentAccount } from '../lib/accountVault';
@@ -15,7 +16,10 @@ export function DeviceTrustPanel({ deviceId }: { deviceId: string }) {
   const [trust, setTrust] = useState<DeviceTrust>();
   const [state, setState] =
     useState<Awaited<ReturnType<typeof deviceProtectionState>>>('unknown');
+  // Each failure is a mark after what failed: the load, Protect, or Copy.
   const [error, setError] = useState<string>();
+  const [protectError, setProtectError] = useState<string>();
+  const [copyError, setCopyError] = useState<string>();
   const [command, setCommand] = useState<string>();
   const [copied, setCopied] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -25,6 +29,8 @@ export function DeviceTrustPanel({ deviceId }: { deviceId: string }) {
     const controller = new AbortController();
     setTrust(undefined);
     setError(undefined);
+    setProtectError(undefined);
+    setCopyError(undefined);
     setCommand(undefined);
     setCopied(false);
     void (async () => {
@@ -70,11 +76,11 @@ export function DeviceTrustPanel({ deviceId }: { deviceId: string }) {
   }, [deviceId, generation]);
   async function protect() {
     setBusy(true);
-    setError(undefined);
+    setProtectError(undefined);
     try {
       setCommand(deviceBindCommand(await prepareDeviceEnrollment(deviceId)));
     } catch (e) {
-      setError(
+      setProtectError(
         e instanceof Error ? e.message : translate('devices.enrollmentFailed'),
       );
     } finally {
@@ -83,7 +89,12 @@ export function DeviceTrustPanel({ deviceId }: { deviceId: string }) {
   }
   return (
     <div className="owner-trust-panel space-y-4 text-sm">
-      {error && <p role="alert">{error}</p>}
+      {error && (
+        <p className="flex items-center gap-1.5 text-[var(--theme-fg-muted)]">
+          {translate('devices.unavailable')}
+          <ErrorMark message={error} onRetry={() => setGeneration((g) => g + 1)} />
+        </p>
+      )}
       {!trust && !error && (
         <p role="status">{translate('auth.ownerPreparing')}</p>
       )}
@@ -108,13 +119,16 @@ export function DeviceTrustPanel({ deviceId }: { deviceId: string }) {
           {!trust.bound && (
             <>
               <p>{translate('devices.protectDeviceHelp')}</p>
-              <button
-                className="relay-button-secondary px-3 py-2"
-                disabled={busy}
-                onClick={() => void protect()}
-              >
-                {translate('devices.protectDevice')}
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  className="relay-button-secondary px-3 py-2"
+                  disabled={busy}
+                  onClick={() => void protect()}
+                >
+                  {translate('devices.protectDevice')}
+                </button>
+                {protectError && <ErrorMark message={protectError} />}
+              </div>
             </>
           )}
           {command && (
@@ -122,27 +136,31 @@ export function DeviceTrustPanel({ deviceId }: { deviceId: string }) {
               <pre className="whitespace-pre-wrap break-all text-xs">
                 {command}
               </pre>
-              <button
-                className="relay-button-secondary px-3 py-2"
-                onClick={() => {
-                  void navigator.clipboard
-                    .writeText(command)
-                    .then(() => setCopied(true))
-                    .catch(() =>
-                      setError(
-                        translate(
-                          'devices.clipboardAccessIsUnavailableCheckBrowserPermissions',
+              <div className="flex items-center gap-2">
+                <button
+                  className="relay-button-secondary px-3 py-2"
+                  onClick={() => {
+                    setCopyError(undefined);
+                    void navigator.clipboard
+                      .writeText(command)
+                      .then(() => setCopied(true))
+                      .catch(() =>
+                        setCopyError(
+                          translate(
+                            'devices.clipboardAccessIsUnavailableCheckBrowserPermissions',
+                          ),
                         ),
-                      ),
-                    );
-                }}
-              >
-                {translate(
-                  copied
-                    ? 'devices.setupCommandCopied'
-                    : 'devices.copyBindCommand',
-                )}
-              </button>
+                      );
+                  }}
+                >
+                  {translate(
+                    copied
+                      ? 'devices.setupCommandCopied'
+                      : 'devices.copyBindCommand',
+                  )}
+                </button>
+                {copyError && <ErrorMark message={copyError} />}
+              </div>
               <p>{translate('devices.waitingForConnection')}</p>
             </>
           )}

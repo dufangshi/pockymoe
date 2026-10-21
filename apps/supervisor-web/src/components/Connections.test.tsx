@@ -891,11 +891,19 @@ it('tells users of an older Supervisor to update instead of offering a dead Add 
   server(() => {
     throw fail(404, undefined, 'Not Found');
   });
+  // Add stays greyed; the mark after it says why.
+  const why = async () => {
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Why it is unavailable' }),
+    );
+    return screen.getByRole('dialog', { name: 'Why it is unavailable' });
+  };
   renderPage();
-  expect(await screen.findByRole('alert')).toHaveTextContent(
+  expect(await why()).toHaveTextContent(
     'Update this Supervisor to manage shared connections.',
   );
   expect(screen.getByRole('button', { name: 'Add connection' })).toBeDisabled();
+  expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
   cleanup();
   render(
     <ConnectionPicker
@@ -905,7 +913,7 @@ it('tells users of an older Supervisor to update instead of offering a dead Add 
       onChange={vi.fn()}
     />,
   );
-  expect(await screen.findByRole('alert')).toHaveTextContent(
+  expect(await why()).toHaveTextContent(
     'Update this Supervisor to manage shared connections.',
   );
   expect(screen.getByRole('button', { name: 'Add connection' })).toBeDisabled();

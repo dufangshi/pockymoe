@@ -237,8 +237,11 @@ describe('agent isolation', () => {
     await openPage();
     fireEvent.click(screen.getByRole('button', { name: `More actions for ${device.name}` }));
     fireEvent.click(screen.getByRole('menuitem', { name: 'Agent isolation…' }));
-    expect(await screen.findByText('Update this device to change this.')).toBeTruthy();
-    expect(screen.queryByRole('checkbox')).toBeNull();
+    // The toggle stays, disabled; its mark says why.
+    const dialog = await screen.findByRole('dialog', { name: `Agent isolation · ${device.name}` });
+    fireEvent.click(await within(dialog).findByRole('button', { name: 'Why it is unavailable' }));
+    expect(screen.getByText('Update this device to change this.')).toBeTruthy();
+    expect(within(dialog).getByRole('checkbox', { name: 'Isolate this device' })).toBeDisabled();
   });
 });
 

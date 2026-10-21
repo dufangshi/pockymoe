@@ -13,6 +13,7 @@ import {
   Copy,
   Trash2,
 } from 'lucide-react';
+import { ErrorMark } from '@pockymoe/thread-ui';
 import { request } from '../lib/api';
 import { FormDialog } from './FormDialog';
 import { UpstreamProviderCard } from './UpstreamProviderCard';
@@ -116,7 +117,12 @@ export function UpstreamManagement({
     backups: [],
   });
   const [loaded, setLoaded] = useState(false),
+    // Nothing was read (an older Supervisor): the greyed buttons get a mark.
+    [loadError, setLoadError] = useState(''),
     [error, setError] = useState(''),
+    // Where the last failure shows: by the buttons row, a profile or backup's
+    // own buttons, or the open dialog's action.
+    [failedAt, setFailedAt] = useState('buttons'),
     [notice, setNotice] = useState(''),
     [busy, setBusy] = useState(false);
   const [editor, setEditor] = useState<Profile | null>(null),
@@ -161,7 +167,7 @@ export function UpstreamManagement({
       })
       .catch(() => {
         if (alive)
-          setError(
+          setLoadError(
             translate('settings.updateThisSupervisorToEnableUpstreamAnd'),
           );
       });
@@ -192,9 +198,10 @@ export function UpstreamManagement({
       clearInterval(timer);
     };
   }, [job?.state, apiRoot]);
-  async function perform(action: () => Promise<void>) {
+  async function perform(action: () => Promise<void>, at = 'buttons') {
     setBusy(true);
     setError('');
+    setFailedAt(at);
     setNotice('');
     try {
       await action();
@@ -229,7 +236,7 @@ export function UpstreamManagement({
         action: 'edit',
       });
       setEditor({ ...current, apiKey: '' });
-    });
+    }, p.id);
   }
   function duplicate(p: Profile) {
     setError('');
@@ -247,6 +254,16 @@ export function UpstreamManagement({
     });
   }
   const disabled = busy || job?.state === 'running';
+  const markAt = (at: string) =>
+    error && !busy && failedAt === at ? <ErrorMark message={error} /> : null;
+  // A row of greyed buttons on an older Supervisor, or a failure of one of them.
+  const buttonsMark = loadError ? (
+    <span className="flex items-center">
+      <ErrorMark kind="unavailable" message={loadError} />
+    </span>
+  ) : !editor && !mode && !deleting && markAt('buttons') ? (
+    <span className="flex items-center">{markAt('buttons')}</span>
+  ) : null;
   function download() {
     const template = {
       schemaVersion: 1,
@@ -314,12 +331,13 @@ export function UpstreamManagement({
                           'settings.previousConfigurationRestoredTheNextTurnReloads',
                         ),
                       );
-                    })
+                    }, `restore:${b.id}`)
                   }
                 >
                   <RotateCcw size={13} />
                   {translate('settings.restorePrevious')}
                 </button>
+                {markAt(`restore:${b.id}`)}
               </div>
             )
           );
@@ -327,22 +345,13 @@ export function UpstreamManagement({
     </details>
   );
   // The result of a press shows next to the buttons that made it.
-  const status = (
-    <>
-      {notice && (
-        <p
-          role="status"
-          className="mt-3 text-xs text-[var(--theme-accent-strong)]"
-        >
-          {notice}
-        </p>
-      )}
-      {error && !editor && !mode && (
-        <p role="alert" className="mt-3 text-xs text-[var(--status-danger-fg)]">
-          {error}
-        </p>
-      )}
-    </>
+  const status = notice && (
+    <p
+      role="status"
+      className="mt-3 text-xs text-[var(--theme-accent-strong)]"
+    >
+      {notice}
+    </p>
   );
   return (
     <section
@@ -387,6 +396,7 @@ export function UpstreamManagement({
             >
               {translate('settings.upstreamsImportLive')}
             </button>
+            {buttonsMark}
           </div>
           {status}
           {backupsView}
@@ -455,6 +465,7 @@ export function UpstreamManagement({
                 {translate('settings.upstreamsImportLive')}
               </button>
             )}
+            {buttonsMark}
           </div>
           {loaded &&
             !data.profiles.some((p) => !harness || p.harness === harness) && (
@@ -500,73 +511,77 @@ export function UpstreamManagement({
           <div className="mt-3 space-y-3">
             {visibleProfiles.map((p) =>
               appearance === 'switch' ? (
-                <UpstreamProviderCard
-                  key={p.id}
-                  name={p.name}
-                  baseUrl={p.baseUrl}
-                  model={p.model}
-                  active={data.active[p.harness] === p.id}
-                  disabled={disabled}
-                  canActivate={installed}
-                  canMoveUp={
-                    data.profiles.filter((v) => v.harness === p.harness)[0]
-                      ?.id !== p.id
-                  }
-                  canMoveDown={
-                    data.profiles.filter((v) => v.harness === p.harness).at(-1)
-                      ?.id !== p.id
-                  }
-                  onMove={(direction) =>
-                    void perform(async () => {
-                      await api(`upstreams/${p.id}`, { action: direction });
-                      await load();
-                    })
-                  }
-                  onSpeed={() =>
-                    void perform(async () => {
-                      const r = await api<{
-                        latencyMs: number;
-                        status: number;
-                      }>(`upstreams/${p.id}`, { action: 'speed' });
-                      setNotice(
-                        translate('settings.upstreamsSpeedResult', {
-                          name: p.name,
-                          latency: r.latencyMs,
-                          status: r.status,
-                        }),
-                      );
-                    })
-                  }
-                  onActivate={() =>
-                    void perform(async () => {
-                      await api(`upstreams/${p.id}`, { action: 'activate' });
-                      await load();
-                      setNotice(
-                        translate(
-                          'settings.configurationAppliedIdleSessionsWereRestartedThe',
-                          { value1: labels[p.harness] },
-                        ),
-                      );
-                    })
-                  }
-                  onEdit={() => void edit(p)}
-                  onDuplicate={() => duplicate(p)}
-                  onTest={() =>
-                    void perform(async () => {
-                      const r = await api<{ latencyMs: number }>(
-                        `upstreams/${p.id}`,
-                        { action: 'test' },
-                      );
-                      setNotice(
-                        translate('settings.connectionSucceededMs', {
-                          value1: p.name,
-                          value2: r.latencyMs,
-                        }),
-                      );
-                    })
-                  }
-                  onDelete={() => setDeleting(p)}
-                />
+                <div key={p.id} className="flex items-start gap-1">
+                  <div className="min-w-0 flex-1">
+                    <UpstreamProviderCard
+                      name={p.name}
+                      baseUrl={p.baseUrl}
+                      model={p.model}
+                      active={data.active[p.harness] === p.id}
+                      disabled={disabled}
+                      canActivate={installed}
+                      canMoveUp={
+                        data.profiles.filter((v) => v.harness === p.harness)[0]
+                          ?.id !== p.id
+                      }
+                      canMoveDown={
+                        data.profiles.filter((v) => v.harness === p.harness).at(-1)
+                          ?.id !== p.id
+                      }
+                      onMove={(direction) =>
+                        void perform(async () => {
+                          await api(`upstreams/${p.id}`, { action: direction });
+                          await load();
+                        }, p.id)
+                      }
+                      onSpeed={() =>
+                        void perform(async () => {
+                          const r = await api<{
+                            latencyMs: number;
+                            status: number;
+                          }>(`upstreams/${p.id}`, { action: 'speed' });
+                          setNotice(
+                            translate('settings.upstreamsSpeedResult', {
+                              name: p.name,
+                              latency: r.latencyMs,
+                              status: r.status,
+                            }),
+                          );
+                        }, p.id)
+                      }
+                      onActivate={() =>
+                        void perform(async () => {
+                          await api(`upstreams/${p.id}`, { action: 'activate' });
+                          await load();
+                          setNotice(
+                            translate(
+                              'settings.configurationAppliedIdleSessionsWereRestartedThe',
+                              { value1: labels[p.harness] },
+                            ),
+                          );
+                        }, p.id)
+                      }
+                      onEdit={() => void edit(p)}
+                      onDuplicate={() => duplicate(p)}
+                      onTest={() =>
+                        void perform(async () => {
+                          const r = await api<{ latencyMs: number }>(
+                            `upstreams/${p.id}`,
+                            { action: 'test' },
+                          );
+                          setNotice(
+                            translate('settings.connectionSucceededMs', {
+                              value1: p.name,
+                              value2: r.latencyMs,
+                            }),
+                          );
+                        }, p.id)
+                      }
+                      onDelete={() => setDeleting(p)}
+                    />
+                  </div>
+                  {markAt(p.id) && <span className="flex min-h-10 items-center">{markAt(p.id)}</span>}
+                </div>
               ) : (
                 <article
                   key={p.id}
@@ -617,7 +632,7 @@ export function UpstreamManagement({
                               { value1: labels[p.harness] },
                             ),
                           );
-                        })
+                        }, p.id)
                       }
                     >
                       {translate('settings.useUpstream')}
@@ -640,7 +655,7 @@ export function UpstreamManagement({
                               value2: r.latencyMs,
                             }),
                           );
-                        })
+                        }, p.id)
                       }
                     >
                       <FlaskConical size={13} />
@@ -663,6 +678,7 @@ export function UpstreamManagement({
                     >
                       <Trash2 size={13} />
                     </button>
+                    {markAt(p.id) && <span className="flex items-center">{markAt(p.id)}</span>}
                   </div>
                 </article>
               ),
@@ -703,6 +719,13 @@ export function UpstreamManagement({
               <Download size={14} />
               {translate('settings.exportTemplate')}
             </button>
+            {/* The device could not finish applying the template. */}
+            {job?.error && job.state !== 'running' && (
+              <span className="flex items-center">
+                <ErrorMark message={job.error} />
+              </span>
+            )}
+            {buttonsMark}
           </div>
         </div>
       )}
@@ -724,40 +747,36 @@ export function UpstreamManagement({
               : translate('settings.removeThisSavedUpstreamFromTheDevice')}
           </p>
           <p className="my-3 text-sm font-medium">{deleting.name}</p>
-          {error && (
-            <p
-              role="alert"
-              className="mb-3 text-xs text-[var(--status-danger-fg)]"
+          <div className="flex items-center gap-2">
+            <button
+              className="relay-button-primary min-h-10 flex-1"
+              disabled={busy}
+              onClick={() =>
+                void perform(async () => {
+                  await api(`upstreams/${deleting.id}`, undefined, 'DELETE');
+                  await load();
+                  setDeleting(null);
+                  setNotice(translate('settings.upstreamRemoved'));
+                }, 'delete')
+              }
             >
-              {error}
-            </p>
-          )}
-          <button
-            className="relay-button-primary min-h-10"
-            disabled={busy}
-            onClick={() =>
-              void perform(async () => {
-                await api(`upstreams/${deleting.id}`, undefined, 'DELETE');
-                await load();
-                setDeleting(null);
-                setNotice(translate('settings.upstreamRemoved'));
-              })
-            }
-          >
-            {busy
-              ? translate('settings.removing')
-              : translate('settings.deleteUpstream')}
-          </button>
+              {busy
+                ? translate('settings.removing')
+                : translate('settings.deleteUpstream')}
+            </button>
+            {markAt('delete')}
+          </div>
         </FormDialog>
       )}
       {job && (
-        <div role={job.error ? 'alert' : 'status'} className="mt-3 text-xs">
-          <p>
-            {job.state === 'running'
-              ? translate('settings.installingAndConfiguringThisDevice')
-              : (job.error ??
-                translate('settings.templateAppliedThisDeviceIsReady'))}
-          </p>
+        <div role="status" className="mt-3 text-xs">
+          {(job.state === 'running' || !job.error) && (
+            <p>
+              {job.state === 'running'
+                ? translate('settings.installingAndConfiguringThisDevice')
+                : translate('settings.templateAppliedThisDeviceIsReady')}
+            </p>
+          )}
           {job.completed?.map((v) => (
             <p key={v}>{v}</p>
           ))}
@@ -821,7 +840,7 @@ export function UpstreamManagement({
               }
               apiRoot={apiRoot}
               busy={busy}
-              error={error}
+              error={failedAt === 'editor' ? error : ''}
               onChange={setEditor}
               onSave={(p) =>
                 void perform(async () => {
@@ -833,7 +852,7 @@ export function UpstreamManagement({
                   );
                   await load();
                   setEditor(null);
-                })
+                }, 'editor')
               }
             />
           ) : (
@@ -850,7 +869,7 @@ export function UpstreamManagement({
                   );
                   await load();
                   setEditor(null);
-                });
+                }, 'editor');
               }}
             >
               <label className="block text-sm">
@@ -982,23 +1001,18 @@ export function UpstreamManagement({
                   </label>
                 </>
               )}
-              {error && (
-                <p
-                  role="alert"
-                  className="text-xs text-[var(--status-danger-fg)]"
+              <div className="flex items-center gap-2">
+                <button
+                  className="relay-button-primary min-h-10"
+                  disabled={busy || !editor.model}
+                  type="submit"
                 >
-                  {error}
-                </p>
-              )}
-              <button
-                className="relay-button-primary min-h-10"
-                disabled={busy || !editor.model}
-                type="submit"
-              >
-                {busy
-                  ? translate('settings.saving_56a228')
-                  : translate('settings.saveUpstream')}
-              </button>
+                  {busy
+                    ? translate('settings.saving_56a228')
+                    : translate('settings.saveUpstream')}
+                </button>
+                {markAt('editor')}
+              </div>
             </form>
           )}
         </FormDialog>
@@ -1062,6 +1076,7 @@ export function UpstreamManagement({
                 const f = e.target.files?.[0];
                 if (f) {
                   if (f.size > 256000) {
+                    setFailedAt('file');
                     setError(
                       translate('settings.configurationMustBeSmallerThan256KB'),
                     );
@@ -1074,10 +1089,13 @@ export function UpstreamManagement({
                 }
               }}
             />
-            <button className={button} onClick={() => file.current?.click()}>
-              <Upload size={14} />
-              {translate('settings.chooseFile')}
-            </button>
+            <div className="flex items-center gap-1">
+              <button className={button} onClick={() => file.current?.click()}>
+                <Upload size={14} />
+                {translate('settings.chooseFile')}
+              </button>
+              {markAt('file')}
+            </div>
             <textarea
               aria-label={translate('settings.configurationJSONOrTOML')}
               className={`${field} min-h-56 font-mono text-xs`}
@@ -1106,60 +1124,55 @@ export function UpstreamManagement({
                 </p>
               </div>
             )}
-            {error && (
-              <p
-                role="alert"
-                className="text-xs text-[var(--status-danger-fg)]"
-              >
-                {error}
-              </p>
-            )}
-            <button
-              className="relay-button-primary min-h-10"
-              disabled={busy}
-              onClick={() =>
-                void perform(async () => {
-                  if (mode === 'config') {
-                    await api('upstreams/import', {
-                      harness: importHarness,
-                      name: importName,
-                      config: text,
-                      apiKey: importKey,
-                    });
-                    await load();
-                    setMode(null);
-                    setText('');
-                    setImportKey('');
-                  } else {
-                    let template: unknown;
-                    try {
-                      template = JSON.parse(text);
-                    } catch (error) {
-                      // The parser's own words stay as the detail after a plain explanation.
-                      throw new Error(translate('settings.templateNotJson', { value1: error instanceof Error ? error.message : String(error) }));
-                    }
-                    if (!preview) {
-                      setPreview(
-                        await api('templates', { template, apply: false }),
-                      );
-                    } else {
-                      await api('templates', { template, apply: true });
-                      setJob({ state: 'running' });
+            <div className="flex items-center gap-2">
+              <button
+                className="relay-button-primary min-h-10"
+                disabled={busy}
+                onClick={() =>
+                  void perform(async () => {
+                    if (mode === 'config') {
+                      await api('upstreams/import', {
+                        harness: importHarness,
+                        name: importName,
+                        config: text,
+                        apiKey: importKey,
+                      });
+                      await load();
                       setMode(null);
                       setText('');
+                      setImportKey('');
+                    } else {
+                      let template: unknown;
+                      try {
+                        template = JSON.parse(text);
+                      } catch (error) {
+                        // The parser's own words stay as the detail after a plain explanation.
+                        throw new Error(translate('settings.templateNotJson', { value1: error instanceof Error ? error.message : String(error) }));
+                      }
+                      if (!preview) {
+                        setPreview(
+                          await api('templates', { template, apply: false }),
+                        );
+                      } else {
+                        await api('templates', { template, apply: true });
+                        setJob({ state: 'running' });
+                        setMode(null);
+                        setText('');
+                      }
                     }
-                  }
-                })
-              }
-            >
-              {busy
-                ? translate('settings.working')
-                : mode === 'config'
-                  ? translate('settings.importUpstream')
-                  : preview
-                    ? translate('settings.applyTemplate')
-                    : translate('settings.previewTemplate')}
-            </button>
+                  }, 'import')
+                }
+              >
+                {busy
+                  ? translate('settings.working')
+                  : mode === 'config'
+                    ? translate('settings.importUpstream')
+                    : preview
+                      ? translate('settings.applyTemplate')
+                      : translate('settings.previewTemplate')}
+              </button>
+              {markAt('import')}
+            </div>
           </div>
         </FormDialog>
       )}

@@ -1,4 +1,5 @@
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
+import { ErrorMark } from '@pockymoe/thread-ui';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   AgentCapabilitySnapshotDto,
@@ -99,6 +100,7 @@ export function HarnessSettingsFields({
   const harnessAction = runHarnessAction
     ?? ((action: DshPanelAction) => postThreadHarnessAction<DshPanelResult>(thread.id, action));
   const [error, setError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
   const [filter, setFilter] = useState('');
   useEffect(() => {
     let cancelled = false;
@@ -121,13 +123,12 @@ export function HarnessSettingsFields({
     return () => {
       cancelled = true;
     };
-  }, [thread.id, loadCapabilities]);
+  }, [thread.id, loadCapabilities, attempt]);
   const model = models.find((model) => model.model === thread.model);
   // A running turn does not lock them: the harness takes a change mid-turn.
   const disabled = readOnly || busy;
   return (
     <div className="space-y-4 text-sm">
-      {error && <p role="alert">{error}</p>}
       <label className="block">
         {translate('settings.model')}
         <select
@@ -206,6 +207,12 @@ export function HarnessSettingsFields({
       {isDshHarness(info) ? (
         <DshHarnessPanel info={info} readOnly={readOnly || harnessReadOnly} runAction={harnessAction}
           consoleUrl={dshConsoleUrl} />
+      ) : error ? (
+        // The capabilities never arrived: a short line, the reason and Retry on its mark.
+        <p className="flex items-center gap-1 text-[var(--theme-fg-muted)]">
+          {translate('files.unavailable')}
+          <ErrorMark message={error} onRetry={() => setAttempt((value) => value + 1)} />
+        </p>
       ) : (
       <p className="text-[var(--theme-fg-muted)]">
         {info?.notice ?? translate('settings.loadingHarnessCapabilities')}

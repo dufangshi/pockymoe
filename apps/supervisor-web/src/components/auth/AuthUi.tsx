@@ -1,4 +1,5 @@
 import { appUrl } from '../../lib/webBase';
+import { ErrorMark } from '@pockymoe/thread-ui';
 import { LanguageSwitcher, translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { Check, Copy, Download, Eye, EyeOff } from 'lucide-react';
 import { useId, useState, type ReactNode } from 'react';
@@ -110,6 +111,12 @@ export function AuthField({ label, value, onChange, type = 'text', autoComplete,
 }
 
 export function AuthNotice({ tone = 'danger', children }: { tone?: 'danger' | 'info'; children: ReactNode }) {
+  // A failure reason is a quiet mark that opens the reason on a tap, not a red
+  // paragraph (ui-principles §11). Prefer `AuthSubmit`'s `error`, which puts
+  // the mark right after the button that failed.
+  if (tone === 'danger' && typeof children === 'string') {
+    return <div className="auth-notice-mark flex items-center"><ErrorMark message={children} /></div>;
+  }
   return (
     <div
       aria-live={tone === 'danger' ? 'assertive' : 'polite'}
@@ -123,11 +130,21 @@ export function AuthNotice({ tone = 'danger', children }: { tone?: 'danger' | 'i
   );
 }
 
-export function AuthSubmit({ busy, children, disabled }: { busy?: boolean; children: ReactNode; disabled?: boolean }) {
+export function AuthSubmit({ busy, children, disabled, error, onRetry }: {
+  busy?: boolean;
+  children: ReactNode;
+  disabled?: boolean;
+  /** Why the last submit failed: a mark right after the button. */
+  error?: string | null | undefined;
+  onRetry?: (() => void) | undefined;
+}) {
   return (
-    <button aria-busy={busy || undefined} className="relay-button-primary auth-submit h-11 w-full" disabled={busy || disabled} type="submit">
-      {busy ? translate('auth.ui.pleaseWait') : children}
-    </button>
+    <div className="flex items-center gap-2">
+      <button aria-busy={busy || undefined} className="relay-button-primary auth-submit h-11 w-full min-w-0" disabled={busy || disabled} type="submit">
+        {busy ? translate('auth.ui.pleaseWait') : children}
+      </button>
+      {error ? <ErrorMark message={error} onRetry={onRetry} /> : null}
+    </div>
   );
 }
 

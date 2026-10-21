@@ -1,4 +1,5 @@
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
+import { ErrorMark } from '@pockymoe/thread-ui';
 import { useEffect, useState } from 'react';
 import { request } from '../lib/api';
 
@@ -149,15 +150,11 @@ export function UpstreamModelPicker({
         >
           {translate('settings.refreshModels')}
         </button>
+        {/* Discovery failed: the reason and a Retry on the mark after Refresh. */}
+        {error && !loading && (
+          <ErrorMark message={error} onRetry={() => setRefresh((n) => n + 1)} />
+        )}
       </div>
-      {error && (
-        <p
-          role="alert"
-          className="mt-2 break-words text-xs text-[var(--status-danger-fg)]"
-        >
-          {error}
-        </p>
-      )}
     </div>
   );
 }

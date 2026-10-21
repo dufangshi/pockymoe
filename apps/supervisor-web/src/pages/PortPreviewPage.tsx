@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link, useLocation, useParams } from 'react-router-dom';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
+import { ErrorMark } from '@pockymoe/thread-ui';
 import { openDevicePortPreview } from '../lib/portPreview';
 import { previewLeaseFromQuery } from '../lib/previewLease';
 
@@ -10,6 +11,7 @@ export function PortPreviewPage() {
   const { deviceId, mappingId } = useParams();
   const location = useLocation();
   const [error, setError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     const controller = new AbortController();
     setError(null);
@@ -21,11 +23,13 @@ export function PortPreviewPage() {
       if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : String(cause));
     });
     return () => controller.abort();
-  }, [deviceId, mappingId, location.search]);
+  }, [deviceId, mappingId, location.search, attempt]);
   return <main className="flex min-h-screen items-center justify-center bg-[var(--app-bg)] p-6 text-[var(--theme-fg)]" data-page="port-preview">
     <section className="max-w-lg space-y-4">
       <h1 className="text-xl font-semibold">{translate('devices.portMappings')}</h1>
-      {error ? <p role="alert">{error}</p> : <p role="status">{translate('devices.opening')}</p>}
+      {error
+        ? <p className="flex items-center gap-1.5 text-[var(--theme-fg-muted)]">{translate('devices.unavailable')}<ErrorMark message={error} onRetry={() => setAttempt(value => value + 1)} /></p>
+        : <p role="status">{translate('devices.opening')}</p>}
       {error && <Link className="underline" to="/">{translate('workbench.pockymoeHome')}</Link>}
     </section>
   </main>;

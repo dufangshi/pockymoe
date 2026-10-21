@@ -43,7 +43,9 @@ describe('device port mappings', () => {
     vi.mocked(request).mockImplementation(async (url, init) => String(url).endsWith('/config') ? { available: false } : init?.method === 'DELETE' ? {} : { mappings: [mapping] });
     render(<PortMappingsControl deviceId="device-1" />);
     fireEvent.click(screen.getByRole('button', { name: 'Port mappings' }));
-    await screen.findByText('Port previews are not configured on this Relay yet.');
+    // The reason is a mark after the disabled Enable button; a tap shows it.
+    fireEvent.click(await screen.findByRole('button', { name: 'Why it is unavailable' }));
+    expect(screen.getByText('Port previews are not configured on this Relay yet.')).toBeVisible();
     expect(screen.getByRole('button', { name: 'Enable' })).toBeDisabled();
     fireEvent.click(screen.getByRole('button', { name: 'Stop' }));
     await waitFor(() => expect(screen.queryByText('Test website · 127.0.0.1:4013')).not.toBeInTheDocument());

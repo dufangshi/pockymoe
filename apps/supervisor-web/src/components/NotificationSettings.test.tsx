@@ -73,8 +73,22 @@ it('rolls a failed preference save back and retries the chosen scope', async () 
   await screen.findByRole('alert');
   expect(screen.getByRole('radio', { name: /仅订阅/ })).toBeChecked();
   failSave = false;
+  // The reason and its Retry open from the small mark.
+  fireEvent.click(screen.getByRole('button', { name: '查看失败原因' }));
   fireEvent.click(screen.getByRole('button', { name: '重试' }));
   await waitFor(() => expect(settings.scope).toBe('all'));
+});
+
+it('keeps the shown choices without a mark when a refresh on focus fails', async () => {
+  render(<NotificationSettings />);
+  await waitFor(() => expect(screen.getByRole('radio', { name: /仅订阅的轮次/ })).toBeEnabled());
+  const calls = vi.mocked(request).mock.calls.length;
+  vi.mocked(request).mockRejectedValue(new Error('offline'));
+  act(() => window.dispatchEvent(new Event('focus')));
+  await waitFor(() => expect(vi.mocked(request).mock.calls.length).toBeGreaterThan(calls));
+  await waitFor(() => expect(screen.getByRole('status')).toBeEmptyDOMElement());
+  expect(screen.getByRole('radio', { name: /仅订阅的轮次/ })).toBeChecked();
+  expect(screen.queryByRole('alert')).toBeNull();
 });
 
 it('restores a subscribed turn after remount, cancels it, isolates the next turn and hides the bell for all scope', async () => {
@@ -101,19 +115,23 @@ it('restores a subscribed turn after remount, cancels it, isolates the next turn
   next.unmount();
 });
 
-it('retries a failed subscription read without silently subscribing, and rolls back failed writes', async () => {
+it('keeps a failed subscription read quiet without silently subscribing, and rolls back failed writes', async () => {
   failLoad = true;
   render(<TurnNotification deviceId="two" threadId="thread" turnId="turn" />);
-  await screen.findByRole('alert');
+  // A background read that fails reports nothing and keeps the bell as it was.
+  await waitFor(() => expect(screen.getByRole('button', { name: '订阅这一轮的通知' })).toBeEnabled());
+  expect(vi.mocked(request).mock.calls.some(([path]) => String(path).includes('/turns/'))).toBe(true);
+  expect(screen.queryByRole('alert')).toBeNull();
+  expect(screen.getByRole('button', { name: '订阅这一轮的通知' })).toHaveAttribute('aria-pressed','false');
   failLoad = false;
-  fireEvent.click(screen.getByRole('button', { name: '重试' }));
-  await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
   expect(vi.mocked(request).mock.calls.filter(([,init]) => init?.method === 'PUT')).toHaveLength(0);
   failSave = true;
   fireEvent.click(screen.getByRole('button', { name: '订阅这一轮的通知' }));
   await screen.findByRole('alert');
   expect(screen.getByRole('button', { name: '订阅这一轮的通知' })).toHaveAttribute('aria-pressed','false');
   failSave = false;
+  // The reason and its Retry open from the small mark.
+  fireEvent.click(screen.getByRole('button', { name: '查看失败原因' }));
   fireEvent.click(screen.getByRole('button', { name: '重试' }));
   await waitFor(() => expect(screen.getByRole('button', { name: '结束时通知你' })).toBeEnabled());
   expect(subscriptions.get('relay/account/notifications/turns/two/thread/turn')).toBe(true);

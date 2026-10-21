@@ -3,7 +3,7 @@ import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { useEffect, useState } from 'react';
 import { Link, Navigate, useNavigate, useSearchParams } from 'react-router-dom';
 import { MessageSquarePlus, Plus, Settings } from 'lucide-react';
-import { MatterWorkbench } from '@pockymoe/thread-ui';
+import { ErrorMark, MatterWorkbench } from '@pockymoe/thread-ui';
 import type { RelayEffectiveAccessDto, ThreadDto, WorkspaceDto } from '@pockymoe/shared';
 import { fetchRelayAccess, fetchThreads, fetchWorkspace, fetchWorkspaces, fetchWorkspaceThreads, relayModeActive } from '../lib/api';
 import { newThreadScope, workspaceShare } from '../lib/shareRules';
@@ -77,7 +77,7 @@ export function ThreadsPage() {
       {/* On a phone the workbench lists the workspace's threads under this intro,
           which then shrinks to one row (`.matter-workspace-intro`). */}
       <div className="matter-workspace-intro flex h-full flex-col items-center justify-center gap-4 px-6 text-center">
-        {loading ? <p role="status" className="workspace-opening">{translate("workbench.openingWorkspace")}</p> : error ? <><p role="alert">{error}</p><button className="relay-button-secondary rounded-lg px-4 py-2" onClick={() => setRetry(value => value + 1)}>{translate("workbench.retry")}</button></> : <>
+        {loading ? <p role="status" className="workspace-opening">{translate("workbench.openingWorkspace")}</p> : error ? <><p className="flex items-center gap-1.5">{translate("workbench.unableToOpenWorkspace")}{error !== translate("workbench.unableToOpenWorkspace") && <ErrorMark message={error} />}</p><button className="relay-button-secondary rounded-lg px-4 py-2" onClick={() => setRetry(value => value + 1)}>{translate("workbench.retry")}</button></> : <>
           <MessageSquarePlus size={32} className="text-[var(--theme-fg-muted)]" />
           <h1 className="text-xl font-semibold">{workspace?.label ?? translate("workbench.workspace")}</h1>
           <p className="text-sm text-[var(--theme-fg-muted)]">{translate("workbench.yourConversationsInThisWorkspaceWillAppear")}</p>

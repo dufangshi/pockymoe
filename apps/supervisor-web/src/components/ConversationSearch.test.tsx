@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { useState } from 'react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { setLocale } from '@pockymoe/thread-ui/i18n';
@@ -189,6 +189,23 @@ it('keeps a global permission denial separate from an unavailable endpoint', asy
   expect(screen.getByRole('alert')).not.toHaveTextContent('Update the device runtime');
   expect(fetchThreadConversationPage).not.toHaveBeenCalled();
   expect(searchThreadMessages).not.toHaveBeenCalled();
+});
+it('keeps a failed search to a short line whose mark gives the reason and retries it', async () => {
+  vi.mocked(searchConversations).mockRejectedValueOnce(new Error('Device unavailable'))
+    .mockResolvedValueOnce({ matches: [globalMatch], hasMore: false, nextOffset: null, scope: 'device' });
+  render(<Harness allowGlobal turns={[]} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Search conversation' }));
+  pickScope('device');
+  fireEvent.change(screen.getByRole('combobox', { name: 'Search messages' }), { target: { value: 'cobalt' } });
+  expect(await screen.findByText('Search failed.')).toBeVisible();
+  fireEvent.click(screen.getByRole('button', { name: 'Why it failed' }));
+  const bubble = screen.getByRole('dialog', { name: 'Why it failed' });
+  expect(bubble).toHaveTextContent('Device unavailable');
+  // Tapping the bubble keeps the search open.
+  fireEvent.pointerDown(bubble);
+  fireEvent.click(within(bubble).getByRole('button', { name: 'Retry' }));
+  expect(await screen.findByRole('option', { name: /Earlier decision/ })).toBeVisible();
+  expect(searchConversations).toHaveBeenCalledTimes(2);
 });
 it('names the search glyph with data-icon for theme packs', () => {
   render(<Harness />);

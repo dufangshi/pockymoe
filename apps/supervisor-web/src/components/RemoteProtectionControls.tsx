@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { ErrorMark } from '@pockymoe/thread-ui';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import type { RelayDeviceDto } from '@pockymoe/shared';
 import {
@@ -56,30 +57,30 @@ export function ProtectDevicesButton({
               {translate('devices.replaceLocalEnrollmentHelp')}
             </p>
           )}
-          {error && (
-            <p role="alert">{translate('devices.remoteProtectionFailed')}</p>
-          )}
-          <button
-            type="button"
-            className="relay-button-primary min-h-11 px-3 py-2"
-            disabled={busy}
-            onClick={() => {
-              setBusy(true);
-              setError(false);
-              void (
-                replaceLocal
-                  ? switchLocalEnrollmentToRemote(devices[0]!)
-                  : protectDevices(devices)
-              )
-                .then(() => setOpen(false))
-                .catch(() => setError(true))
-                .finally(() => setBusy(false));
-            }}
-          >
-            {translate(
-              busy ? 'devices.starting' : 'devices.confirmRemoteProtection',
-            )}
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              className="relay-button-primary min-h-11 px-3 py-2"
+              disabled={busy}
+              onClick={() => {
+                setBusy(true);
+                setError(false);
+                void (
+                  replaceLocal
+                    ? switchLocalEnrollmentToRemote(devices[0]!)
+                    : protectDevices(devices)
+                )
+                  .then(() => setOpen(false))
+                  .catch(() => setError(true))
+                  .finally(() => setBusy(false));
+              }}
+            >
+              {translate(
+                busy ? 'devices.starting' : 'devices.confirmRemoteProtection',
+              )}
+            </button>
+            {error && <ErrorMark message={translate('devices.remoteProtectionFailed')} />}
+          </div>
         </FormDialog>
       )}
     </>

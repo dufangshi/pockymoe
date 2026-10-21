@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Folder, Laptop, X } from 'lucide-react';
 import { translate as t, useI18n } from '@pockymoe/thread-ui/i18n';
+import { ErrorMark } from '@pockymoe/thread-ui';
 import { relayModeActive } from '../lib/api';
 import { useNotificationSettings, type NotificationSettings as Settings, type NotificationScope } from '../lib/notificationSettings';
 import { WorkbenchThreadPicker, type ScopeSelection } from './WorkbenchThreadPicker';
@@ -12,6 +13,11 @@ export function NotificationSettings() {
   const [removed, setRemoved] = useState<Settings | null>(null);
   const value = state.value;
   const disabled = state.saving || !value;
+  // A failed refresh (on focus, another tab's change) keeps the choices already
+  // shown and says nothing; only a failed save, or a first read that never
+  // arrived, gets a mark.
+  const quietRefresh = value != null && state.error === t('settings.notificationsLoadFailed');
+  const error = quietRefresh ? null : state.error;
   function add(kind: 'device' | 'workspace', selection: ScopeSelection) {
     if (!value) return;
     setRemoved(null);
@@ -61,10 +67,12 @@ export function NotificationSettings() {
       </div>
       {!value.devices.length && !value.workspaces.length && <p className="notification-scope-hint text-xs text-[var(--theme-fg-muted)]">{t('settings.notificationsEmpty')}</p>}
     </div>}
-    <div className="min-h-5 text-xs" role="status" aria-live="polite">
-      {state.saving ? t('settings.saving') : state.loading ? t('settings.loading') : removed ? <>{t('settings.notificationsRemoved')} · <button type="button" className="underline" disabled={disabled} onClick={() => { const previous = removed; setRemoved(null); void state.save(previous); }}>{t('settings.notificationsUndo')}</button></> : state.saved ? t('files.saved_c0ae8f') : null}
+    <div className="flex min-h-5 items-center gap-1 text-xs">
+      <span role="status" aria-live="polite">
+        {state.saving ? t('settings.saving') : state.loading ? t('settings.loading') : removed ? <>{t('settings.notificationsRemoved')} · <button type="button" className="underline" disabled={disabled} onClick={() => { const previous = removed; setRemoved(null); void state.save(previous); }}>{t('settings.notificationsUndo')}</button></> : state.saved ? t('files.saved_c0ae8f') : null}
+      </span>
+      {error && !state.saving && !state.loading && <ErrorMark message={error} onRetry={state.retry} retryLabel={t('settings.retry')} />}
     </div>
-    {state.error && <div className="space-y-2 text-sm"><p role="alert" className="host-error">{state.error}</p><button type="button" className="min-h-10 underline" onClick={state.retry}>{t('settings.retry')}</button></div>}
     {relayModeActive() ? <RelayNotifications /> : <p className="notification-scope-hint text-xs text-[var(--theme-fg-muted)]">{t('settings.notificationsLocalBrowser')}</p>}
   </section>;
 }

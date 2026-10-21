@@ -252,12 +252,6 @@ function SignInPanel({ registrationEnabled, settings, initialError, initialNotic
           aside={<AuthLink disabled={busy} onClick={() => go('reset')}>{translate('auth.ui.forgotPassword')}</AuthLink>}
           autoComplete="current-password" disabled={busy} label={translate('auth.password')} name="password" onChange={setPassword} type="password" value={password}
         />
-        {error ? (
-          <AuthNotice>
-            <p>{error}</p>
-            {onRetry && error === initialError ? <button className="mt-2 font-medium underline" onClick={() => void onRetry()} type="button">{translate('auth.retryConnection')}</button> : null}
-          </AuthNotice>
-        ) : null}
         {legacy ? (
           <div className="auth-legacy space-y-3 rounded-xl border border-[var(--theme-border)] p-3.5 text-sm">
             <p className="font-medium text-[var(--theme-fg)]">{translate('auth.ui.legacyTitle')}</p>
@@ -273,7 +267,8 @@ function SignInPanel({ registrationEnabled, settings, initialError, initialNotic
             </button>
           </div>
         ) : null}
-        <AuthSubmit busy={busy} disabled={!identifier || !password}>{translate('auth.signIn')}</AuthSubmit>
+        <AuthSubmit busy={busy} disabled={!identifier || !password} error={error}
+          onRetry={onRetry && error === initialError ? () => void onRetry() : undefined}>{translate('auth.signIn')}</AuthSubmit>
       </form>
     </AuthCard>
   );
@@ -319,8 +314,7 @@ function RegisterCard({ settings, onBack, onRegistered }: {
         <AuthField autoComplete="new-password" disabled={busy} hint={translate('auth.ui.passwordRule')} label={translate('auth.password')} minLength={12} name="password" onChange={setPassword} type="password" value={password} />
         <AuthField autoComplete="new-password" disabled={busy} label={translate('auth.ui.confirmPassword')} name="confirm" onChange={setConfirm} type="password" value={confirm} />
         <AuthField autoComplete="one-time-code" disabled={busy} label={translate(codeRequired ? 'auth.registrationCode' : 'auth.ui.registrationCodeOptional')} name="registrationCode" onChange={setCode} required={codeRequired} value={code} />
-        {error ? <AuthNotice>{error}</AuthNotice> : null}
-        <AuthSubmit busy={busy}>{translate('auth.createAccount')}</AuthSubmit>
+        <AuthSubmit busy={busy} error={error}>{translate('auth.createAccount')}</AuthSubmit>
       </form>
     </AuthCard>
   );
@@ -382,8 +376,7 @@ function ResetPasswordCard({ onBack, onAuthenticated, onChallenge }: {
           <AuthField autoComplete="new-password" disabled={busy} hint={translate('auth.ui.passwordRule')} label={translate('auth.newPassword')} minLength={12} onChange={setPassword} type="password" value={password} />
           <AuthField autoComplete="new-password" disabled={busy} label={translate('auth.ui.confirmPassword')} onChange={setConfirm} type="password" value={confirm} />
         </> : null}
-        {error ? <AuthNotice>{error}</AuthNotice> : null}
-        <AuthSubmit busy={busy}>{translate(method === 'code' ? 'auth.ui.resetAction' : 'auth.signIn')}</AuthSubmit>
+        <AuthSubmit busy={busy} error={error}>{translate(method === 'code' ? 'auth.ui.resetAction' : 'auth.signIn')}</AuthSubmit>
       </form>
     </AuthCard>
   );

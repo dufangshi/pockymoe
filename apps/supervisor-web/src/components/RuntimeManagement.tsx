@@ -2,6 +2,7 @@ import { translate, useI18n, type TranslationKey } from '@pockymoe/thread-ui/i18
 import { useEffect, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import { Download, RefreshCw, RotateCw } from 'lucide-react';
+import { ErrorMark } from '@pockymoe/thread-ui';
 import { ApiError, relayModeActive, request } from '../lib/api';
 import { relayDeviceIdFromPath } from '../lib/relayRoutes';
 import { FormDialog } from './FormDialog';
@@ -130,6 +131,8 @@ function supervisorJobText(job: Job) {
 }
 const button =
   'host-secondary-button inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md border px-2.5 text-xs disabled:opacity-50';
+// A Supervisor job that ended without doing its work.
+const failedPhases = ['failed', 'rolled-back', 'rollback-failed'];
 /** `supervisor` is the hub maintenance block alone (a Treer Agent UI): status,
  *  Check, Update and Restart, without harnesses, jobs or device templates. */
 export function RuntimeManagement({
@@ -181,7 +184,9 @@ function DeviceRuntimeManagement({
   const [supervisor, setSupervisor] = useState<Supervisor | null>(null);
   const [harnesses, setHarnesses] = useState<Harness[]>([]);
   const [jobs, setJobs] = useState<Record<string, Job>>({});
-  const [error, setError] = useState('');
+  // Where a failure shows: by the heading (nothing read), by Check updates, by a
+  // harness's Restart, or in the open confirmation by its button.
+  const [error, setError] = useState<{ at: 'load' | 'check' | 'dialog' | `restart:${string}`; message: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [reconnectSince, setReconnectSince] = useState<number | null>(null);
   const [ownerDenied, setOwnerDenied] = useState(false);
@@ -240,9 +245,11 @@ function DeviceRuntimeManagement({
       setHarnesses([]);
     }
   }
-  useEffect(() => {
-    void load().catch((e) => setError(e.message));
-  }, []);
+  const reload = () => {
+    setError(null);
+    void load().catch((e) => setError({ at: 'load', message: e.message }));
+  };
+  useEffect(reload, []);
   const pending = Object.values(jobs).some(active) || active(supervisor?.job);
   useEffect(() => {
     if (!pending) return;
@@ -281,20 +288,23 @@ function DeviceRuntimeManagement({
   }, [pending]);
   async function act(id: string, action: string, component = 'base') {
     setBusy(true);
-    setError('');
+    setError(null);
     try {
       await api(`harnesses/${encodeURIComponent(id)}`, { action, component });
       setJobs((prev) => ({ ...prev, [id]: { state: 'running', action } }));
       setConfirm(null);
     } catch (e) {
-      setError(e instanceof Error ? e.message : translate("devices.unableToManageHarness"));
+      setError({
+        at: action === 'restart' ? `restart:${id}` : 'dialog',
+        message: e instanceof Error ? e.message : translate("devices.unableToManageHarness"),
+      });
     } finally {
       setBusy(false);
     }
   }
   async function supervisorAction(action: 'check' | 'update' | 'restart') {
     setBusy(true);
-    setError('');
+    setError(null);
     try {
       const next = await api<Supervisor>(`supervisor/${action}`, {});
       setSupervisor((previous) => ({
@@ -308,14 +318,17 @@ function DeviceRuntimeManagement({
       )
         setConfirm(null);
     } catch (e) {
-      setError(e instanceof Error ? e.message : translate("devices.unableToUpdateSupervisor"));
+      setError({
+        at: action === 'check' ? 'check' : 'dialog',
+        message: e instanceof Error ? e.message : translate("devices.unableToUpdateSupervisor"),
+      });
     } finally {
       setBusy(false);
     }
   }
   async function installLegacyAdapter(id: string) {
     setBusy(true);
-    setError('');
+    setError(null);
     try {
       await request(
         `${apiRoot}/agent-runtimes/acp/install?agentId=${encodeURIComponent(id)}`,
@@ -327,9 +340,10 @@ function DeviceRuntimeManagement({
       setConfirm(null);
       await load();
     } catch (error) {
-      setError(
-        translate("devices.olderSupervisorsInstallThroughTheSystemNpm", { value1: error instanceof Error ? error.message : translate("devices.adapterInstallationFailed") }),
-      );
+      setError({
+        at: 'dialog',
+        message: translate("devices.olderSupervisorsInstallThroughTheSystemNpm", { value1: error instanceof Error ? error.message : translate("devices.adapterInstallationFailed") }),
+      });
     } finally {
       setBusy(false);
     }
@@ -385,27 +399,31 @@ function DeviceRuntimeManagement({
               {data.path}
             </p>
           )}
-          {hint && <p className="mt-1 leading-5">{hint}</p>}
+          {/* A blocked component's reason sits on the mark after its greyed button. */}
+          {hint && !blocked && <p className="mt-1 leading-5">{hint}</p>}
         </div>
         {(data.canUpdate || data.canInstall) && (
-          <button
-            className={button}
-            disabled={busy || active(jobs[row.id]) || blocked}
-            aria-label={`${missing ? translate("devices.install") : translate("devices.update")} ${row.name}${component === 'adapter' ? ' adapter' : ''}`}
-            onClick={() =>
-              setConfirm({
-                id: row.id,
-                name: row.name,
-                component,
-                installing: missing,
-                legacyInstall: data.legacyInstall ?? false,
-                command: data.updateCommand,
-              })
-            }
-          >
-            <Download size={13} />
-            {missing ? translate("devices.install") : translate("devices.update")}
-          </button>
+          <span className="flex items-center gap-1">
+            <button
+              className={button}
+              disabled={busy || active(jobs[row.id]) || blocked}
+              aria-label={`${missing ? translate("devices.install") : translate("devices.update")} ${row.name}${component === 'adapter' ? ' adapter' : ''}`}
+              onClick={() =>
+                setConfirm({
+                  id: row.id,
+                  name: row.name,
+                  component,
+                  installing: missing,
+                  legacyInstall: data.legacyInstall ?? false,
+                  command: data.updateCommand,
+                })
+              }
+            >
+              <Download size={13} />
+              {missing ? translate("devices.install") : translate("devices.update")}
+            </button>
+            {blocked && hint && <ErrorMark kind="unavailable" message={hint} />}
+          </span>
         )}
       </li>
     );
@@ -420,7 +438,13 @@ function DeviceRuntimeManagement({
       >
         <div className="flex items-center justify-between gap-2">
           <div className="min-w-0">
-            <h4 className="text-sm font-medium">{h.name}</h4>
+            <div className="flex items-center gap-1">
+              <h4 className="text-sm font-medium">{h.name}</h4>
+              {/* The last install, update or restart on the device failed. */}
+              {job?.error && !active(job) && (
+                <ErrorMark message={translate("devices.lastOperationFailed", { value1: job.error })} />
+              )}
+            </div>
             <p className="mt-0.5 flex items-center gap-1.5 text-xs text-[var(--theme-fg-muted)]">
               <span aria-hidden className={`h-2 w-2 shrink-0 rounded-full ${statusDot[status]}`} />
               {statusText(status)}
@@ -437,6 +461,7 @@ function DeviceRuntimeManagement({
               <RotateCw size={13} />
               {translate("devices.restart_b134bd")}</button>
           )}
+          {error?.at === `restart:${h.id}` && <ErrorMark message={error.message} />}
         </div>
         <ul
           aria-label={translate("devices.harnessComponents", { value1: h.name })}
@@ -470,10 +495,10 @@ function DeviceRuntimeManagement({
               'adapter',
             )}
         </ul>
-        {job && (
+        {job && !(job.error && !active(job)) && (
           <p
-            role={job.error ? 'alert' : 'status'}
-            className={`mt-2 text-xs ${job.error ? 'text-[var(--status-danger-fg)]' : 'text-[var(--theme-fg-muted)]'}`}
+            role="status"
+            className="mt-2 text-xs text-[var(--theme-fg-muted)]"
           >
             {job.error
               ? translate("devices.lastOperationFailed", { value1: job.error })
@@ -521,7 +546,15 @@ function DeviceRuntimeManagement({
         <>
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <h3 className="text-sm font-semibold">Supervisor</h3>
+              <div className="flex items-center gap-1">
+                <h3 className="text-sm font-semibold">Supervisor</h3>
+                {error?.at === 'load' && (
+                  <ErrorMark message={error.message} onRetry={reload} />
+                )}
+                {supervisor?.job && failedPhases.includes(supervisor.job.phase ?? '') && !reconnectSince && (
+                  <ErrorMark message={supervisorJobText(supervisor.job) ?? ''} />
+                )}
+              </div>
               <p className="mt-1 text-xs text-[var(--theme-fg-muted)]">
                 {supervisor?.runningVersion
                   ? `${active(supervisor.job) ? translate("devices.version") : translate("devices.running_73989d")} ${supervisor.runningVersion}`
@@ -550,6 +583,11 @@ function DeviceRuntimeManagement({
               >
                 <RefreshCw size={13} />
                 {translate("devices.checkUpdates")}</button>
+              {error?.at === 'check' && (
+                <span className="flex items-center">
+                  <ErrorMark message={error.message} onRetry={() => void supervisorAction('check')} />
+                </span>
+              )}
               {supervisor?.latestVersion &&
                 (supervisor.latestVersion !== supervisor.runningVersion ||
                   supervisor.nativeMigration ||
@@ -586,7 +624,7 @@ function DeviceRuntimeManagement({
               {supervisorReasonText(supervisor.reason)}
             </p>
           )}
-          {supervisor?.job && (
+          {supervisor?.job && (reconnectSince || !failedPhases.includes(supervisor.job.phase ?? '')) && (
             <p role="status" className="mt-2 text-xs">
               {reconnectSince
                 ? translate("devices.waitingForTheDeviceToReconnect")
@@ -640,6 +678,11 @@ function DeviceRuntimeManagement({
                 </button>
               );
             })}
+            {view === 'harnesses' && error?.at === 'load' && (
+              <span className="flex min-h-10 items-center">
+                <ErrorMark message={error.message} onRetry={reload} />
+              </span>
+            )}
           </div>
           {harnesses.filter((h) => h.id === selectedHarness).map(row)}
         </>
@@ -652,16 +695,14 @@ function DeviceRuntimeManagement({
         />
       )}
 
-      {error && (
-        <p role="alert" className="mt-3 text-xs text-[var(--status-danger-fg)]">
-          {error}
-        </p>
-      )}
       {confirm && (
         <FormDialog
           title={`${confirm.action === 'restart' ? translate("devices.restart_b134bd") : confirm.installing ? translate("devices.install") : translate("devices.update")} ${confirm.name}`}
           busy={busy}
-          onClose={() => setConfirm(null)}
+          onClose={() => {
+            setConfirm(null);
+            if (error?.at === 'dialog') setError(null);
+          }}
           description={
             confirm.action === 'restart'
               ? translate("devices.theDeviceWillBrieflyDisconnectRunningTasks")
@@ -675,36 +716,34 @@ function DeviceRuntimeManagement({
           {confirm.command && (
             <code className="break-all text-xs">{confirm.command}</code>
           )}
-          {error && (
-            <p role="alert" className="text-sm text-[var(--status-danger-fg)]">
-              {error}
-            </p>
-          )}
-          <button
-            className="relay-button-primary min-h-11"
-            disabled={busy}
-            onClick={() =>
-              void (confirm.id
-                ? confirm.legacyInstall
-                  ? installLegacyAdapter(confirm.id)
-                  : act(
-                      confirm.id,
-                      confirm.installing && confirm.component === 'base'
-                        ? 'install'
-                        : 'update',
-                      confirm.component,
-                    )
-                : supervisorAction(confirm.action ?? 'update'))
-            }
-          >
-            {busy
-              ? translate("devices.starting")
-              : confirm.action === 'restart'
-                ? translate("devices.restart_b134bd")
-                : confirm.installing
-                  ? translate("devices.install")
-                  : translate("devices.update")}
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              className="relay-button-primary min-h-11 flex-1"
+              disabled={busy}
+              onClick={() =>
+                void (confirm.id
+                  ? confirm.legacyInstall
+                    ? installLegacyAdapter(confirm.id)
+                    : act(
+                        confirm.id,
+                        confirm.installing && confirm.component === 'base'
+                          ? 'install'
+                          : 'update',
+                        confirm.component,
+                      )
+                  : supervisorAction(confirm.action ?? 'update'))
+              }
+            >
+              {busy
+                ? translate("devices.starting")
+                : confirm.action === 'restart'
+                  ? translate("devices.restart_b134bd")
+                  : confirm.installing
+                    ? translate("devices.install")
+                    : translate("devices.update")}
+            </button>
+            {error?.at === 'dialog' && !busy && <ErrorMark message={error.message} />}
+          </div>
         </FormDialog>
       )}
     </section>

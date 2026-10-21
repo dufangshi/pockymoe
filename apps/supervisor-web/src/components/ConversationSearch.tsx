@@ -5,7 +5,7 @@ import {
   type ConversationSearchMatch, type GlobalConversationSearchMatch, searchConversations,
 } from '../lib/api';
 import type { ThreadTurnDto } from '@pockymoe/shared';
-import { ConversationSearchExcerpt, ConversationSearchScopePicker, type ConversationSearchScope } from '@pockymoe/thread-ui';
+import { ConversationSearchExcerpt, ConversationSearchScopePicker, ErrorMark, type ConversationSearchScope } from '@pockymoe/thread-ui';
 import { useSearchMessages } from './searchMessages';
 
 type SearchMatch = ConversationSearchMatch | GlobalConversationSearchMatch;
@@ -52,7 +52,9 @@ export function ConversationSearch({ threadId, workspaceId, deviceLabel, allowGl
   const [remote, setRemote] = useState<{ query: string; result: SearchResult } | null>(null);
   const [loading, setLoading] = useState(false);
   const [selecting, setSelecting] = useState(false);
-  const [error, setError] = useState('');
+  // A short neutral line, with the reason (and Retry) on its mark.
+  const [error, setError] = useState<{ label: string; message: string; retry: () => void } | null>(null);
+  const [attempt, setAttempt] = useState(0);
   const [scopeUnavailable, setScopeUnavailable] = useState(false);
   const [active, setActive] = useState(0);
   const legacy = useRef(false);
@@ -67,6 +69,8 @@ export function ConversationSearch({ threadId, workspaceId, deviceLabel, allowGl
     }
     input.current?.focus();
     const outside = (event: PointerEvent) => {
+      // A failure's bubble opens at the page root but belongs to this search.
+      if (event.target instanceof Element && event.target.closest('.error-mark-bubble')) return;
       if (event.target instanceof Node && !root.current?.contains(event.target)) closeCallback.current();
     };
     document.addEventListener('pointerdown', outside);
@@ -75,7 +79,7 @@ export function ConversationSearch({ threadId, workspaceId, deviceLabel, allowGl
 
   useEffect(() => {
     setActive(0);
-    setError('');
+    setError(null);
     setScopeUnavailable(false);
     if (!open || !normalized) { setLoading(false); return; }
     const cached = cache.current.get(searchKey);
@@ -129,12 +133,12 @@ export function ConversationSearch({ threadId, workspaceId, deviceLabel, allowGl
           // selected scope and never broaden it or scan histories on its behalf.
           if (effectiveScope !== 'thread' && e instanceof ApiError && e.statusCode === 404) {
             setScopeUnavailable(true);
-          } else setError(e instanceof Error ? e.message : labels.failed);
+          } else setError({ label: labels.failed, message: e instanceof Error && e.message ? e.message : labels.failed, retry: () => setAttempt(value => value + 1) });
         }
       } finally { if (!controller.signal.aborted) setLoading(false); }
     }, 250);
     return () => { window.clearTimeout(timer); controller.abort(); };
-  }, [open, normalized, threadId, workspaceId, effectiveScope, offset, searchKey]);
+  }, [open, normalized, threadId, workspaceId, effectiveScope, offset, searchKey, attempt]);
 
   const matches = useMemo(() => {
     if (!normalized) return [];
@@ -157,7 +161,7 @@ export function ConversationSearch({ threadId, workspaceId, deviceLabel, allowGl
     selection.current?.abort();
     const controller = new AbortController();
     selection.current = controller;
-    setSelecting(true); setError('');
+    setSelecting(true); setError(null);
     try {
       const loaded = turns.find(turn => turn.id === match.turnId && !turn.hasDeferredItems);
       const turn = loaded ?? await fetchThreadTurnDetail(threadId, match.turnId);
@@ -165,7 +169,7 @@ export function ConversationSearch({ threadId, workspaceId, deviceLabel, allowGl
       onSelect([turn], match.turnId, match.itemId, query.trim());
       close();
     } catch (e) {
-      if (!controller.signal.aborted) setError(e instanceof Error ? e.message : labels.openFailed);
+      if (!controller.signal.aborted) setError({ label: labels.openFailed, message: e instanceof Error && e.message ? e.message : labels.openFailed, retry: () => void select(match) });
     } finally { if (!controller.signal.aborted) setSelecting(false); }
   };
 
@@ -196,8 +200,8 @@ export function ConversationSearch({ threadId, workspaceId, deviceLabel, allowGl
         <p role="status">{selecting ? labels.opening : loading ? labels.searching
           : labels.count(matches.length, remote?.query === searchKey && remote.result.hasMore)}</p>
         {effectiveScope !== 'thread' && <p>{labels.localScope} · {deviceLabel}</p>}
-        {scopeUnavailable && <p role="alert">{labels.scopeUnavailable}</p>}
-        {error && <p role="alert">{error}</p>}
+        {scopeUnavailable && <p className="flex items-center gap-1">{labels.failed}<ErrorMark message={labels.scopeUnavailable} /></p>}
+        {error && <p className="flex items-center gap-1">{error.label}<ErrorMark message={error.message} onRetry={error.retry} /></p>}
         <div id={listId} className="workbench-search-results" role="listbox" aria-label={labels.matches}>
           {matches.map((match, index) => {
             return <button key={matchKey(match)} id={`${listId}-${index}`} type="button" role="option"

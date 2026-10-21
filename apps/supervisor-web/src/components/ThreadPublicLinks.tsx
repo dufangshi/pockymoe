@@ -1,5 +1,6 @@
 import { getLocale } from '@pockymoe/thread-ui/i18n';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
+import { ErrorMark } from '@pockymoe/thread-ui';
 import { useEffect, useState } from 'react';
 import type { ThreadExportTurnOptionDto } from '@pockymoe/shared';
 import { Copy, Link2, Trash2, Check } from 'lucide-react';
@@ -24,7 +25,10 @@ export function ThreadPublicLinks({
   useI18n();
   const [links, setLinks] = useState<SnapshotLink[]>([]);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
+  // A failure is a mark after what failed (`at`): loading the links or the
+  // turns, Create, or one link's Copy/Revoke.
+  const [error, setError] = useState<{ at: string; message: string } | null>(null);
+  const [attempt, setAttempt] = useState({ links: 0, turns: 0 });
   const [copied, setCopied] = useState('');
   const [turns, setTurns] = useState<ThreadExportTurnOptionDto[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -39,33 +43,41 @@ export function ThreadPublicLinks({
         if (live) setLinks((current) => [...current, ...value.filter((link) => !current.some((existing) => existing.id === link.id))]);
       })
       .catch((e) => {
-        if (live) setError(e.message);
+        if (live) setError({ at: 'links', message: e.message });
       });
     return () => {
       live = false;
     };
-  }, [path]);
+  }, [path, attempt.links]);
   useEffect(() => {
     let active = true;
     setLoaded(false);
     fetchThreadExportTurns(threadId).then(value => {
       if (active) { setTurns(value.turns); setSelected(new Set(value.turns.map(turn => turn.turnId))); setLoaded(true); }
-    }).catch(error => { if (active) setError(error.message); });
+    }).catch(error => { if (active) setError({ at: 'turns', message: error.message }); });
     return () => { active = false; };
-  }, [threadId]);
-  async function copy(link: SnapshotLink) {
+  }, [threadId, attempt.turns]);
+  const mark = (at: string) => error?.at === at
+    ? <ErrorMark
+        message={error.message}
+        onRetry={at === 'links' || at === 'turns'
+          ? () => { setError(null); setAttempt(value => ({ ...value, [at]: value[at] + 1 })); }
+          : undefined}
+      />
+    : null;
+  async function copy(link: SnapshotLink, at = `copy:${link.id}`) {
     try {
       const url = publicLinkUrl(link.id, link.version);
       if (!url) throw new Error();
       await navigator.clipboard.writeText(url);
       setCopied(link.id);
     } catch {
-      setError(translate("sharing.linkCreatedCopyItUsingTheCopy"));
+      setError({ at, message: translate("sharing.linkCreatedCopyItUsingTheCopy") });
     }
   }
   async function create() {
     setBusy(true);
-    setError('');
+    setError(null);
     let publicationToken: string | undefined;
     try {
       const turnIds = scope === 'all' ? turns.map(turn => turn.turnId) : [...selected];
@@ -102,10 +114,10 @@ export function ThreadPublicLinks({
       if (publicationToken) link.publicationToken = publicationToken;
       publicationToken = undefined;
       setLinks((current) => [link, ...current]);
-      await copy(link);
+      await copy(link, 'create');
     } catch (e) {
       if (publicationToken) await request(`api/publications/${publicationToken}`, { method: 'DELETE' }).catch(() => {});
-      setError(e instanceof Error ? e.message : translate("sharing.unableToCreateLink"));
+      setError({ at: 'create', message: e instanceof Error ? e.message : translate("sharing.unableToCreateLink") });
     } finally {
       setBusy(false);
     }
@@ -113,7 +125,7 @@ export function ThreadPublicLinks({
   async function revoke(link: SnapshotLink) {
     const id = link.id;
     setBusy(true);
-    setError('');
+    setError(null);
     try {
       await request(`relay/public-links/${id}`, { method: 'DELETE' });
       forgetPublicLinkKey(id);
@@ -121,7 +133,7 @@ export function ThreadPublicLinks({
       // A strict device needs the encrypted owner request to revoke its capability.
       if (link.publicationToken) await request(`api/publications/${link.publicationToken}`, { method: 'DELETE' });
     } catch (e) {
-      setError(e instanceof Error ? e.message : translate("sharing.unableToRevokeLink"));
+      setError({ at: `revoke:${id}`, message: e instanceof Error ? e.message : translate("sharing.unableToRevokeLink") });
     } finally {
       setBusy(false);
     }
@@ -137,7 +149,9 @@ export function ThreadPublicLinks({
           <label><input type="radio" name="public-link-scope" checked={scope === 'all'} onChange={() => setScope('all')} />{translate("sharing.allCurrentTurns")} {loaded ? `(${turns.length})` : ''}</label>
           <label><input type="radio" name="public-link-scope" checked={scope === 'selected'} onChange={() => setScope('selected')} />{translate("sharing.chooseTurns")}</label>
         </div>
-        {!loaded && <p role="status">{translate("sharing.loadingTurns")}</p>}
+        {!loaded && (error?.at === 'turns'
+          ? <p className="flex items-center gap-1.5">{translate("devices.unavailable")}{mark('turns')}</p>
+          : <p role="status">{translate("sharing.loadingTurns")}</p>)}
         {scope === 'selected' && loaded && <div className="thread-public-link-turns" aria-label={translate("sharing.turnsToShare")}>
           <div className="thread-public-link-selection"><span>{selected.size} {translate("sharing.selected")}</span><button type="button" onClick={() => setSelected(new Set())}>{translate("sharing.clearSelection")}</button></div>
           {turns.map(turn => <label key={turn.turnId}>
@@ -147,20 +161,21 @@ export function ThreadPublicLinks({
         </div>}
         <label className="thread-public-link-live"><input type="checkbox" checked={liveUpdates} onChange={event => setLiveUpdates(event.target.checked)} /><span><strong>{translate("sharing.keepUpdatedWithNewTurns")}</strong><span>{liveUpdates ? translate("sharing.alsoPublishesFutureTurnsAutomaticallyEvenAfter") : translate("sharing.saveAFixedSnapshotLaterMessagesWill")}</span></span></label>
       </fieldset>
-      <button
-        type="button"
-        disabled={busy || !loaded || !(scope === 'all' ? turns.length : selected.size)}
-        onClick={() => void create()}
-        className="thread-public-link-create matter-dialog-primary flex items-center gap-2 rounded-lg border px-4 py-2 text-sm"
-      >
-        <Link2 size={17} />
-        {busy ? translate("sharing.creatingLink") : translate("sharing.createCopyLink")}
-      </button>
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          disabled={busy || !loaded || !(scope === 'all' ? turns.length : selected.size)}
+          onClick={() => void create()}
+          className="thread-public-link-create matter-dialog-primary flex items-center gap-2 rounded-lg border px-4 py-2 text-sm"
+        >
+          <Link2 size={17} />
+          {busy ? translate("sharing.creatingLink") : translate("sharing.createCopyLink")}
+        </button>
+        {mark('create')}
+      </div>
       {copied && <p role="status" className="thread-export-dialog-subtitle flex items-center gap-2"><Check size={14} />{translate("sharing.readOnlyLinkCopied")}</p>}
-      {error && (
-        <p role="alert" className="text-sm text-red-500">
-          {error}
-        </p>
+      {!links.length && error?.at === 'links' && (
+        <p className="thread-export-dialog-subtitle flex items-center gap-1.5 text-sm">{translate("devices.unavailable")}{mark('links')}</p>
       )}
       {links.map((link) => (
         <div
@@ -172,15 +187,18 @@ export function ThreadPublicLinks({
               {link.live ? translate("sharing.live") : translate("sharing.snapshot")} · {link.turnCount != null && <>{link.turnCount} {translate("sharing.turns")} </>}{' '}
               {new Date(link.createdAt).toLocaleString(getLocale())}
             </span>
-            <button
-              className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-lg hover:bg-[var(--theme-bg)]"
-              aria-label={translate("sharing.revokeShareLink")}
-              title={translate("sharing.revokeLink")}
-              disabled={busy}
-              onClick={() => void revoke(link)}
-            >
-              <Trash2 size={16} />
-            </button>
+            <span className="flex shrink-0 items-center gap-1">
+              <button
+                className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-lg hover:bg-[var(--theme-bg)]"
+                aria-label={translate("sharing.revokeShareLink")}
+                title={translate("sharing.revokeLink")}
+                disabled={busy}
+                onClick={() => void revoke(link)}
+              >
+                <Trash2 size={16} />
+              </button>
+              {mark(`revoke:${link.id}`)}
+            </span>
           </div>
           <div className="flex items-center gap-2">
             <input
@@ -197,6 +215,7 @@ export function ThreadPublicLinks({
             >
               {copied === link.id ? <Check size={18} /> : <Copy size={18} />}
             </button>
+            {mark(`copy:${link.id}`)}
           </div>
         </div>
       ))}

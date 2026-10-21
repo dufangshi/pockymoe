@@ -52,8 +52,9 @@ test('selected-turn fork shows errors at the selected row and retries into the n
   await expect(page.getByRole('status').filter({ hasText: 'Creating fork' })).toBeInViewport();
   await expect(page.getByRole('button', { name: /^Turn 20\b/ })).toBeDisabled();
   releaseFork();
-  const alert = page.getByRole('alert').filter({ hasText: 'Codex could not fork' });
-  await expect(alert).toBeInViewport();
+  // The reason is a mark (announced to screen readers), not a paragraph in the panel.
+  await expect(page.getByRole('alert').filter({ hasText: 'Codex could not fork' })).toHaveCount(1);
+  await expect(page.getByRole('button', { name: 'Why it failed' })).toBeInViewport();
   await expect(page).toHaveURL(new RegExp(`/threads/${id}$`));
   const reply = page.waitForResponse(r => r.url().endsWith(`/api/threads/${id}/fork`) && r.request().method() === 'POST');
   await page.getByRole('button', { name: /^Turn 20\b/ }).click();

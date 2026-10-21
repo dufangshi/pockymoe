@@ -1,6 +1,7 @@
 import { getLocale } from '@pockymoe/thread-ui/i18n';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { Plus, Pencil } from 'lucide-react';
+import { ErrorMark } from '@pockymoe/thread-ui';
 import { FormDialog } from './FormDialog';
 import { useEffect, useState } from 'react';
 import {
@@ -32,8 +33,10 @@ export function ModelPricingSettings() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
+  const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     let active = true;
+    setError('');
     fetchModelPricing()
       .then((data) => {
         if (active) setModels(data.models);
@@ -44,7 +47,7 @@ export function ModelPricingSettings() {
     return () => {
       active = false;
     };
-  }, []);
+  }, [attempt]);
   async function save(reset = false) {
     if (!draft || busy) return;
     setBusy(true);
@@ -75,7 +78,13 @@ export function ModelPricingSettings() {
   return (
     <section className="py-5" aria-label={translate("settings.modelPricing")}>
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h3 className="text-sm font-semibold">{translate("settings.modelPricing")}</h3>
+        <div className="flex items-center gap-1">
+          <h3 className="text-sm font-semibold">{translate("settings.modelPricing")}</h3>
+          {/* The price list never arrived: the reason and a Retry on the mark. */}
+          {error && !draft && (
+            <ErrorMark message={error} onRetry={() => setAttempt((value) => value + 1)} />
+          )}
+        </div>
         <button
           aria-label={translate("settings.addModel")}
           title={translate("settings.addModel")}
@@ -169,7 +178,7 @@ export function ModelPricingSettings() {
           title={draft.isNew ? translate("settings.addModel") : translate("settings.editModelPrices")}
           description={translate("settings.uSDPer1MTokens")}
           busy={busy}
-          onClose={() => setDraft(null)}
+          onClose={() => { setDraft(null); setError(''); }}
         >
           <form
             className="space-y-3"
@@ -264,7 +273,7 @@ export function ModelPricingSettings() {
               <button
                 type="button"
                 disabled={busy}
-                onClick={() => setDraft(null)}
+                onClick={() => { setDraft(null); setError(''); }}
                 className="host-secondary-button min-h-10 rounded-md border px-3 text-xs"
               >
                 {translate("settings.cancel")}</button>
@@ -277,19 +286,14 @@ export function ModelPricingSettings() {
                 >
                   {translate("settings.resetRemoveCustom")}</button>
               )}
+              {error && !busy && (
+                <span className="flex min-h-10 items-center">
+                  <ErrorMark message={error} />
+                </span>
+              )}
             </div>
-            {error && (
-              <p role="alert" className="host-error mt-2 text-xs">
-                {error}
-              </p>
-            )}
           </form>
         </FormDialog>
-      )}
-      {error && !draft && (
-        <p role="alert" className="host-error mt-2 rounded border p-2 text-xs">
-          {error}
-        </p>
       )}
       {message && (
         <p role="status" className="mt-2 text-xs">

@@ -1,5 +1,5 @@
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
-import { confirmAsync } from '@pockymoe/thread-ui';
+import { confirmAsync, ErrorMark } from '@pockymoe/thread-ui';
 import { useEffect, useState } from 'react';
 
 // Adapter data is metadata only: names and descriptions render as text.
@@ -152,10 +152,13 @@ const UPLOAD_COMMANDS = new Set(['feedback']);
 function DshCommandRow({
   command,
   disabled,
+  error,
   onRun,
 }: {
   command: DshCommand;
   disabled: boolean;
+  /** Why this command's last run failed. */
+  error: string | null;
   onRun: (line: string) => void;
 }) {
   const [args, setArgs] = useState('');
@@ -201,6 +204,7 @@ function DshCommandRow({
             >
               {translate('settings.dshRun')}
             </button>
+            {error && <ErrorMark message={error} />}
           </>
         )}
       </form>
@@ -212,6 +216,15 @@ function DshCommandRow({
       )}
     </li>
   );
+}
+
+/** A failed action, shown as a mark after the control that ran it. */
+type Failure = { at: DshPanelAction['kind']; target?: string; message: string };
+function failureTarget(action: DshPanelAction) {
+  return action.kind === 'command' ? action.line.slice(1).split(/\s/)[0]
+    : action.kind === 'setPluginEnabled' ? action.id
+      : action.kind === 'setBundleEnabled' ? action.name
+        : action.kind === 'updateSetting' ? `${action.ns}.${action.key}` : undefined;
 }
 
 const SELECTS: Record<string, (info: DshHarnessInfo) => string[]> = {
@@ -239,7 +252,7 @@ export function DshHarnessPanel({
   const [restartRequired, setRestartRequired] = useState(false);
   // The live inventory reports the running process; saved toggles load after reconnect.
   const [pending, setPending] = useState<Record<string, boolean>>({});
-  const [error, setError] = useState<string | null>(null);
+  const [failure, setFailure] = useState<Failure | null>(null);
   const [commandOutput, setCommandOutput] = useState<string | null>(null);
   // Uncontrolled setting inputs remount to show the stored value after a refusal.
   const [formKey, setFormKey] = useState(0);
@@ -259,7 +272,7 @@ export function DshHarnessPanel({
     };
     if (toggle && 'enabled' in action) settle(action.enabled);
     setBusy(true);
-    if (!keepError) setError(null);
+    if (!keepError) setFailure(null);
     try {
       const response = await runAction(action);
       if (response.harness) setInfo(response.harness);
@@ -269,7 +282,12 @@ export function DshHarnessPanel({
       return response;
     } catch (failure) {
       settle(previous);
-      setError(failure instanceof Error ? failure.message : String(failure));
+      const target = failureTarget(action);
+      setFailure({
+        at: action.kind,
+        ...(target ? { target } : {}),
+        message: failure instanceof Error ? failure.message : String(failure),
+      });
       return null;
     } finally {
       setBusy(false);
@@ -331,15 +349,15 @@ export function DshHarnessPanel({
     // popup, and never hand the new page this window as its opener.
     const tab = window.open('about:blank', '_blank');
     if (!tab) {
-      setError(translate('devices.allowPopupsForThisSiteThenTry'));
+      setFailure({ at: 'console', message: translate('devices.allowPopupsForThisSiteThenTry') });
       return;
     }
     tab.opener = null;
     void (async () => {
       const target = (await run({ kind: 'console' }))?.console;
       const url = target
-        ? await resolve(target).catch((failure: unknown) => {
-            setError(failure instanceof Error ? failure.message : String(failure));
+        ? await resolve(target).catch((cause: unknown) => {
+            setFailure({ at: 'console', message: cause instanceof Error ? cause.message : String(cause) });
             return null;
           })
         : null;
@@ -357,20 +375,43 @@ export function DshHarnessPanel({
     ?? runModes.find((mode) => mode.isDefault)?.id ?? '';
   const runModeLocked = info.session?.presetLocked !== false;
   const commands = info.session?.commands ?? [];
+  const markFor = (at: Failure['at'][], target?: string) =>
+    failure && at.includes(failure.at) && (target === undefined || failure.target === target)
+      ? <ErrorMark message={failure.message} />
+      : null;
+  // Where each failure's control is on screen now; one whose control has gone
+  // (the run stopped, a filtered row) shows its mark by the title instead.
+  const anchored = !failure ? true
+    : failure.at === 'stop' ? Boolean(info.session?.running)
+      : failure.at === 'selectRunMode' ? runModes.length > 0
+        : failure.at === 'command' ? commands.some((command) => command.name === failure.target)
+          : failure.at === 'console' ? Boolean(info.features?.console && consoleUrl)
+            : failure.at === 'restart' || failure.at === 'refresh' ? restartRequired
+              : failure.at === 'setPluginEnabled'
+                ? info.plugins.some((plugin) => plugin.id === failure.target
+                  && `${plugin.name} ${plugin.module}`.toLowerCase().includes(query))
+                : failure.at === 'setBundleEnabled' ? info.bundles.some((bundle) => bundle.name === failure.target)
+                  : failure.at === 'updateSetting'
+                    ? Boolean(settings?.some((view) => view.fields.some((field) => `${view.ns}.${field.key}` === failure.target)))
+                    // Its mark replaces "Loading…" only while nothing was read.
+                    : failure.at === 'settings' ? !settings
+                      : true;
   return (
     <section aria-label={translate('settings.harnessPlugins')} className="space-y-4">
       <div>
-        <h3 className="font-semibold">
-          {translate('settings.dshTitle', {
-            value1: info.version ?? '',
-            value2: info.profile,
-          })}
-        </h3>
+        <div className="flex items-center gap-1">
+          <h3 className="font-semibold">
+            {translate('settings.dshTitle', {
+              value1: info.version ?? '',
+              value2: info.profile,
+            })}
+          </h3>
+          {failure && !anchored && <ErrorMark message={failure.message} />}
+        </div>
         <p className="text-xs text-[var(--theme-fg-muted)]">
           {translate('settings.dshBridgeNotice')}
         </p>
       </div>
-      {error && <p role="alert">{error}</p>}
       {info.session?.running && (
         <div role="status" className="flex items-center gap-2 rounded-md border p-2">
           <span className="flex-1">{translate('settings.dshAutonomous')}</span>
@@ -378,6 +419,7 @@ export function DshHarnessPanel({
             disabled={disabled} onClick={() => void run({ kind: 'stop' })}>
             {translate('settings.dshStop')}
           </button>
+          {markFor(['stop'])}
         </div>
       )}
       <section aria-label={translate('settings.dshSession')} className="space-y-1">
@@ -416,14 +458,17 @@ export function DshHarnessPanel({
         <h4 className="font-semibold">{translate('settings.dshRunMode')}</h4>
         {runModes.length > 0 ? (
           <>
-            <select className="host-input w-full rounded-md border p-1"
-              aria-label={translate('settings.dshRunMode')} value={runMode}
-              disabled={disabled || runModeLocked}
-              onChange={(event) => void run({ kind: 'selectRunMode', id: event.target.value })}>
-              {runModes.map((mode) => (
-                <option key={mode.id} value={mode.id} disabled={Boolean(mode.broken)}>{dshRunModeName(mode)}</option>
-              ))}
-            </select>
+            <div className="flex items-center gap-1">
+              <select className="host-input w-full min-w-0 flex-1 rounded-md border p-1"
+                aria-label={translate('settings.dshRunMode')} value={runMode}
+                disabled={disabled || runModeLocked}
+                onChange={(event) => void run({ kind: 'selectRunMode', id: event.target.value })}>
+                {runModes.map((mode) => (
+                  <option key={mode.id} value={mode.id} disabled={Boolean(mode.broken)}>{dshRunModeName(mode)}</option>
+                ))}
+              </select>
+              {markFor(['selectRunMode'])}
+            </div>
             <p className="text-xs text-[var(--theme-fg-muted)]">
               {runModeLocked
                 ? translate('settings.dshRunModeLocked')
@@ -433,7 +478,12 @@ export function DshHarnessPanel({
         ) : (
           <p className="text-xs text-[var(--theme-fg-muted)]">
             {translate('settings.dshRunModeUnavailable')}
-            {info.compositionError ? ` ${info.compositionError}` : ''}
+            {info.compositionError ? (
+              <>
+                {' '}
+                <ErrorMark kind="unavailable" message={info.compositionError} />
+              </>
+            ) : null}
           </p>
         )}
       </section>
@@ -446,6 +496,7 @@ export function DshHarnessPanel({
           <ul className="max-h-64 space-y-2 overflow-y-auto overscroll-contain">
             {commands.map((command) => (
               <DshCommandRow key={command.name} command={command} disabled={disabled}
+                error={failure?.at === 'command' && failure.target === command.name ? failure.message : null}
                 onRun={(line) => void runCommand(line)} />
             ))}
           </ul>
@@ -462,10 +513,13 @@ export function DshHarnessPanel({
           <p className="text-xs text-[var(--theme-fg-muted)]">
             {translate('settings.dshConsoleNotice')}
           </p>
-          <button type="button" className="host-button rounded-md border px-2 py-1"
-            disabled={disabled} onClick={() => openConsole(consoleUrl)}>
-            {translate('settings.dshOpenConsole')}
-          </button>
+          <div className="flex items-center gap-1">
+            <button type="button" className="host-button rounded-md border px-2 py-1"
+              disabled={disabled} onClick={() => openConsole(consoleUrl)}>
+              {translate('settings.dshOpenConsole')}
+            </button>
+            {markFor(['console'])}
+          </div>
         </section>
       )}
       <details
@@ -490,6 +544,7 @@ export function DshHarnessPanel({
                   <span className="font-mono text-xs">
                     {id}
                     {field.overridden && ` · ${translate('settings.dshCustomized')}`}
+                    {failure?.at === 'updateSetting' && failure.target === id ? <> {markFor(['updateSetting'], id)}</> : null}
                   </span>
                 );
                 if (field.type === 'boolean')
@@ -535,6 +590,11 @@ export function DshHarnessPanel({
               }),
             )}
           </div>
+        ) : failure?.at === 'settings' ? (
+          // The stored values never arrived: the reason and a Retry on the mark.
+          <p className="flex items-center gap-1 text-xs">
+            <ErrorMark message={failure.message} onRetry={() => void run({ kind: 'settings' })} />
+          </p>
         ) : (
           <p className="text-xs">{translate('settings.loading')}</p>
         )}
@@ -546,6 +606,7 @@ export function DshHarnessPanel({
             disabled={disabled} onClick={() => void reconnect()}>
             {translate('settings.dshReconnect')}
           </button>
+          {markFor(['restart', 'refresh'])}
         </div>
       )}
       <section aria-label={translate('settings.plugins')} className="space-y-2">
@@ -583,6 +644,7 @@ export function DshHarnessPanel({
                       ? ` · ${translate('settings.dshAfterReconnect')}`
                       : ''}
                   </span>
+                  {markFor(['setPluginEnabled'], plugin.id)}
                 </li>
               );
             })}
@@ -608,6 +670,7 @@ export function DshHarnessPanel({
                     ? ` · ${translate('settings.dshAfterReconnect')}`
                     : ''}
                 </span>
+                {markFor(['setBundleEnabled'], bundle.name)}
               </li>
             );
           })}
@@ -665,7 +728,14 @@ export function DshPluginPanel({
     );
     return () => { cancelled = true; };
   }, [loadCapabilities, readOnly, runHarnessAction]);
-  if (error) return <p role="alert" className="p-3 text-sm">{error}</p>;
+  // Nothing could be loaded: the reason on a mark, beside a short neutral line.
+  if (error)
+    return (
+      <p className="flex items-center gap-1 p-3 text-sm">
+        {translate('files.unavailable')}
+        <ErrorMark message={error} />
+      </p>
+    );
   if (info === undefined)
     return <p className="p-3 text-sm">{translate('settings.loadingHarnessCapabilities')}</p>;
   if (!info)

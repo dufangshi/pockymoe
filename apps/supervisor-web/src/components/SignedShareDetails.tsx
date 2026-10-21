@@ -1,4 +1,5 @@
 import { OWNER_UNLOCKED_EVENT } from '../lib/ownerUnlockRecovery';
+import { ErrorMark } from '@pockymoe/thread-ui';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { useEffect, useState } from 'react';
 import type { RelayPortalSummaryDto } from '@pockymoe/shared';
@@ -39,7 +40,9 @@ export function SignedShareDetails({
   const [code, setCode] = useState('');
   const [verified, setVerified] = useState(false);
   const [entry, setEntry] = useState<Reconciliation>();
-  const [error, setError] = useState<string>();
+  // Each failure is a mark after its control (`at`); an offline protected
+  // device is the reason the grant button is unavailable.
+  const [error, setError] = useState<{ at: 'load' | 'offline' | 'safety' | 'grant' | 'invite'; message: string }>();
   const [busy, setBusy] = useState(false);
   const [revision, setRevision] = useState(0);
   const [copied, setCopied] = useState(false);
@@ -70,7 +73,7 @@ export function SignedShareDetails({
       setCode(nextCode);
       setVerified(confirmed);
       if (row.deviceConnected === false) {
-        setError(translate('sharing.protectedOnline'));
+        setError({ at: 'offline', message: translate('sharing.protectedOnline') });
         return;
       }
       const grants = await deviceGrants(row.deviceId);
@@ -80,9 +83,10 @@ export function SignedShareDetails({
         );
     })().catch((e: unknown) => {
       if (active) {
-        setError(
-          e instanceof Error ? e.message : translate('sharing.deviceCertificateInvalid'),
-        );
+        setError({
+          at: 'load',
+          message: e instanceof Error ? e.message : translate('sharing.deviceCertificateInvalid'),
+        });
       }
     });
     return () => {
@@ -95,9 +99,16 @@ export function SignedShareDetails({
     clearTransportKeyCache(row.deviceId);
     void syncDeviceGrant(kind, row)
       .then(() => setRevision((r) => r + 1))
-      .catch((error: unknown) => setError(error instanceof Error ? error.message : translate('sharing.deviceCertificateInvalid')))
+      .catch((error: unknown) => setError({ at: 'grant', message: error instanceof Error ? error.message : translate('sharing.deviceCertificateInvalid') }))
       .finally(() => setBusy(false));
   }
+  const mark = (...at: NonNullable<typeof error>['at'][]) => error && at.includes(error.at)
+    ? <ErrorMark
+        kind={error.at === 'offline' ? 'unavailable' : 'error'}
+        message={error.message}
+        onRetry={error.at === 'load' ? () => setRevision((r) => r + 1) : undefined}
+      />
+    : null;
   return (
     <div className="space-y-2 py-2 text-xs">
       {account && (
@@ -108,13 +119,17 @@ export function SignedShareDetails({
           </p>
           <p className="text-[var(--theme-fg-muted)]">{translate('sharing.safetyHelp')}</p>
           {!verified && (
-            <button className={button} disabled={busy} onClick={() => {
-              setBusy(true);
-              void confirmRecipient(account, row.targetUserId)
-                .then(() => setVerified(true))
-                .catch((error: unknown) => setError(error instanceof Error ? error.message : translate('sharing.accountKeyMismatch')))
-                .finally(() => setBusy(false));
-            }}>{translate('sharing.confirmSafety')}</button>
+            <div className="flex items-center gap-2">
+              <button className={button} disabled={busy} onClick={() => {
+                setBusy(true);
+                setError(undefined);
+                void confirmRecipient(account, row.targetUserId)
+                  .then(() => setVerified(true))
+                  .catch((error: unknown) => setError({ at: 'safety', message: error instanceof Error ? error.message : translate('sharing.accountKeyMismatch') }))
+                  .finally(() => setBusy(false));
+              }}>{translate('sharing.confirmSafety')}</button>
+              {mark('safety')}
+            </div>
           )}
         </>
       )}
@@ -128,23 +143,32 @@ export function SignedShareDetails({
         <p role="status">{translate('sharing.recipientKeyChanged')}</p>
       )}
       {(entry?.state !== 'active' && account) && (
-        <button
-          className={button}
-          disabled={
-            busy ||
-            !account ||
-            row.deviceConnected === false
-          }
-          onClick={update}
-        >
-          {translate(
-            entry?.state === 'changed' || entry?.state === 'different'
-              ? 'sharing.updateGrant'
-              : 'sharing.confirmGrant',
-          )}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            className={button}
+            disabled={
+              busy ||
+              !account ||
+              row.deviceConnected === false
+            }
+            onClick={update}
+          >
+            {translate(
+              entry?.state === 'changed' || entry?.state === 'different'
+                ? 'sharing.updateGrant'
+                : 'sharing.confirmGrant',
+            )}
+          </button>
+          {mark('offline', 'grant', 'load')}
+        </div>
       )}
-      {inviteOwnerKeyId && <button
+      {!account && error?.at === 'load' && (
+        <p className="flex items-center gap-1.5 text-[var(--theme-fg-muted)]">
+          {translate('devices.unavailable')}
+          {mark('load')}
+        </p>
+      )}
+      {inviteOwnerKeyId && <div className="flex items-center gap-2"><button
         className={button}
         disabled={busy || row.deviceConnected === false}
         onClick={() => {
@@ -163,18 +187,18 @@ export function SignedShareDetails({
             )
             .then(() => setCopied(true))
             .catch((e: unknown) =>
-              setError(
-                e instanceof Error
+              setError({
+                at: 'invite',
+                message: e instanceof Error
                   ? e.message
                   : translate('sharing.deviceCertificateInvalid'),
-              ),
+              }),
             )
             .finally(() => setBusy(false));
         }}
       >
         {translate(copied ? 'sharing.inviteCopied' : 'sharing.copyInvite')}
-      </button>}
-      {error && <p role="alert">{error}</p>}
+      </button>{mark('invite')}</div>}
     </div>
   );
 }
@@ -190,7 +214,11 @@ export function OrphanDeviceGrants({
   const [orphans, setOrphans] = useState<
     { deviceId: string; grant: DeviceGrant }[]
   >([]);
+  // A refresh that fails keeps the last inventory; only one that never
+  // loaded says why. A failed revoke is a mark after its button.
+  const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string>();
+  const [revokeError, setRevokeError] = useState<{ grantId: string; message: string }>();
   const [revision, setRevision] = useState(0);
   const [busy, setBusy] = useState(false);
   useEffect(() => {
@@ -222,6 +250,7 @@ export function OrphanDeviceGrants({
       }
       if (active) {
         setOrphans(found);
+        setLoaded(true);
         setError(undefined);
       }
     })().catch((e: unknown) => {
@@ -241,30 +270,36 @@ export function OrphanDeviceGrants({
           <p>
             {grant.grantee.label} · {translate('sharing.stillActive')}
           </p>
-          <button
-            className={button}
-            disabled={busy}
-            onClick={() => {
-              setBusy(true);
-              void deleteDeviceGrant(deviceId, grant.grantId)
-                .then(() => setRevision((r) => r + 1))
-                .catch((e: unknown) =>
-                  setError(
-                    e instanceof Error
-                      ? e.message
-                      : translate('sharing.deviceCertificateInvalid'),
-                  ),
-                )
-                .finally(() => setBusy(false));
-            }}
-          >
-            {translate('sharing.revoke')}
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              className={button}
+              disabled={busy}
+              onClick={() => {
+                setBusy(true);
+                setRevokeError(undefined);
+                void deleteDeviceGrant(deviceId, grant.grantId)
+                  .then(() => setRevision((r) => r + 1))
+                  .catch((e: unknown) =>
+                    setRevokeError({
+                      grantId: grant.grantId,
+                      message: e instanceof Error
+                        ? e.message
+                        : translate('sharing.deviceCertificateInvalid'),
+                    }),
+                  )
+                  .finally(() => setBusy(false));
+              }}
+            >
+              {translate('sharing.revoke')}
+            </button>
+            {revokeError?.grantId === grant.grantId && <ErrorMark message={revokeError.message} />}
+          </div>
         </div>
       ))}
-      {error && (
-        <p className="text-sm" role="alert">
-          {error}
+      {error && !loaded && (
+        <p className="flex items-center gap-1.5 text-sm text-[var(--theme-fg-muted)]">
+          {translate('devices.unavailable')}
+          <ErrorMark message={error} onRetry={() => setRevision((r) => r + 1)} />
         </p>
       )}
     </div>
@@ -274,6 +309,7 @@ export function AccountSafetyCode({ revision }: { revision?: unknown }) {
   useI18n();
   const [code, setCode] = useState('');
   const [error, setError] = useState<string>();
+  const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     let active = true;
     void currentAccount()
@@ -293,10 +329,13 @@ export function AccountSafetyCode({ revision }: { revision?: unknown }) {
     return () => {
       active = false;
     };
-  }, [revision]);
+  }, [revision, attempt]);
   return (
     <div className="space-y-2 text-sm">
-      <h3 className="font-medium">{translate('sharing.safetyCode')}</h3>
+      <h3 className="flex items-center gap-1.5 font-medium">
+        {translate('sharing.safetyCode')}
+        {error && <ErrorMark message={error} onRetry={() => setAttempt((value) => value + 1)} />}
+      </h3>
       {code ? (
         <>
           <code className="text-base">{code}</code>
@@ -305,7 +344,6 @@ export function AccountSafetyCode({ revision }: { revision?: unknown }) {
       ) : (
         !error && <p>{translate('sharing.accountNotConfigured')}</p>
       )}
-      {error && <p role="alert">{error}</p>}
     </div>
   );
 }

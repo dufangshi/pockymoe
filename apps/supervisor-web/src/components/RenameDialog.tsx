@@ -1,3 +1,4 @@
+import { ErrorMark } from '@pockymoe/thread-ui';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { FormEvent, useId, useRef } from 'react';
 import { createPortal } from 'react-dom';
@@ -103,12 +104,6 @@ export function RenameDialog({
           />
         </div>
 
-        {error ? (
-          <p className="host-error mt-3 rounded-md border px-3 py-2 text-sm" id={inputErrorId} role="alert">
-            {error}
-          </p>
-        ) : null}
-
         <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-end">
           <button
             type="button"
@@ -117,12 +112,15 @@ export function RenameDialog({
             className="host-secondary-button min-h-11 rounded-md border px-4 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-60"
           >
             {translate("workbench.cancel")}</button>
-          <button
-            type="submit"
-            disabled={busy || !value.trim()}
-            className="ui-action-primary min-h-11 rounded-md px-4 text-sm font-semibold transition disabled:cursor-not-allowed"
-          >
-            {translate("workbench.save")}</button>
+          <div className="flex items-center gap-2">
+            <button
+              type="submit"
+              disabled={busy || !value.trim()}
+              className="ui-action-primary min-h-11 flex-1 rounded-md px-4 text-sm font-semibold transition disabled:cursor-not-allowed sm:flex-none"
+            >
+              {translate("workbench.save")}</button>
+            {error ? <span className="contents" id={inputErrorId}><ErrorMark message={error} /></span> : null}
+          </div>
         </div>
       </form>
     </div>,

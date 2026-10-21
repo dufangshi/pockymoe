@@ -1,4 +1,5 @@
 import { useHostCapabilities } from '../lib/hostCapabilities';
+import { ErrorMark } from '@pockymoe/thread-ui';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { useEffect, useLayoutEffect, useState, useRef } from 'react';
 import { createPortal } from 'react-dom';
@@ -56,7 +57,8 @@ export function DeviceEncryptionStatus({
   }, [deviceId, status]);
   const [open, setOpen] = useState(false),
     [confirm, setConfirm] = useState<TransportStatus | null>(null);
-  const [trustError, setTrustError] = useState<string | null>(null);
+  // Which identity action failed, shown as a mark after its button.
+  const [trustError, setTrustError] = useState<{ action: 'forget' | 'trust'; message: string } | null>(null);
   const trigger = useRef<HTMLButtonElement>(null);
   const popover = useRef<HTMLSpanElement>(null);
   const [position, setPosition] = useState({ top: 0, left: 12, maxWidth: 360, maxHeight: 600 });
@@ -248,25 +250,28 @@ export function DeviceEncryptionStatus({
               {protection === 'not-protected' && <span className="block">{translate('devices.protectDeviceHelp')}</span>}
               {accountBinding && status?.role !== 'grantee' && <button className="relay-button-secondary px-3 py-2" onClick={() => { setOpen(false); setManage(true); }}>{translate('auth.ownerManage')}</button>}
             </span>}
-            {deviceId && hasOwnerPin && (!status?.certificateVerified || status?.role === 'grantee') && <button className="relay-button-secondary px-3 py-2" onClick={() => {
+            {deviceId && hasOwnerPin && (!status?.certificateVerified || status?.role === 'grantee') && <span className="flex items-center gap-2"><button className="relay-button-secondary px-3 py-2" onClick={() => {
+              setTrustError(null);
               void forgetInviteOwner(deviceId).then(() => resetPinnedDevice(deviceId)).then(() => {
                 clearTransportKeyCache(deviceId);
                 navigator.serviceWorker?.controller?.postMessage({ type: 'remote-codex-reset-transport', deviceId });
                 setHasOwnerPin(false);
                 location.reload();
-              }).catch((error: unknown) => setTrustError(error instanceof Error ? error.message : translate('auth.unableToSaveDeviceIdentity')));
-            }}>{translate('sharing.forgetInviteIdentity')}</button>}
-            {trustError && <span role="alert">{trustError}</span>}
+              }).catch((error: unknown) => setTrustError({ action: 'forget', message: error instanceof Error ? error.message : translate('auth.unableToSaveDeviceIdentity') }));
+            }}>{translate('sharing.forgetInviteIdentity')}</button>{trustError?.action === 'forget' && <ErrorMark message={trustError.message} />}</span>}
             {changed && protection === 'not-protected' && status?.identityKey && (
-              <button
-                className="relay-button-secondary px-3 py-2"
-                onClick={() => {
-                  setOpen(false);
-                  setTrustError(null);
-                  setConfirm(status);
-                }}
-              >
-                {translate("auth.trustReplacementIdentity")}</button>
+              <span className="flex items-center gap-2">
+                <button
+                  className="relay-button-secondary px-3 py-2"
+                  onClick={() => {
+                    setOpen(false);
+                    setTrustError(null);
+                    setConfirm(status);
+                  }}
+                >
+                  {translate("auth.trustReplacementIdentity")}</button>
+                {trustError?.action === 'trust' && <ErrorMark message={trustError.message} />}
+              </span>
             )}
           </span>
         </>, document.body
@@ -284,7 +289,7 @@ export function DeviceEncryptionStatus({
             await trustDeviceIdentity(deviceId, confirm.identityKey, confirm.fingerprint);
             location.reload();
           } catch (error) {
-            setTrustError(error instanceof Error ? error.message : translate("auth.unableToSaveDeviceIdentity"));
+            setTrustError({ action: 'trust', message: error instanceof Error ? error.message : translate("auth.unableToSaveDeviceIdentity") });
             setConfirm(null);
             setOpen(true);
           }

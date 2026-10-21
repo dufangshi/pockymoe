@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { Link, MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { RuntimeManagement } from './RuntimeManagement';
@@ -145,8 +145,10 @@ it('explains a command missing from PATH and blocks the adapter until it is inst
   expect(components).toHaveTextContent('Command-line toolcodex');
   expect(components).toHaveTextContent('2.1.1 · Managed by Pockymoe');
   expect(screen.getByText(/cannot find codex on its PATH/)).toBeVisible();
-  expect(screen.getByText('Install the command-line tool first.')).toBeVisible();
+  // The adapter's Update stays greyed; the mark after it says why.
   expect(screen.getByRole('button',{name:'Update OpenAI Codex adapter'})).toBeDisabled();
+  fireEvent.click(within(components).getByRole('button',{name:'Why it is unavailable'}));
+  expect(screen.getByRole('dialog',{name:'Why it is unavailable'})).toHaveTextContent('Install the command-line tool first.');
   expect(screen.getByRole('button',{name:'Install OpenAI Codex'})).toBeEnabled();
   expect(screen.queryByRole('button',{name:'Restart OpenAI Codex'})).not.toBeInTheDocument();
   expect(screen.getByText('Last operation failed: Install the base agent first: codex')).toHaveAttribute('role','alert');

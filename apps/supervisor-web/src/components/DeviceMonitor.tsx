@@ -1,3 +1,4 @@
+import { ErrorMark } from '@pockymoe/thread-ui';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { type CSSProperties, type ReactNode, useEffect, useId, useRef, useState } from 'react';
 import { ArrowLeftRight, Ban, ChevronDown, ChevronRight, Container, Cpu, Gpu, Info, MemoryStick, Settings, Thermometer, TriangleAlert, Zap } from 'lucide-react';
@@ -128,7 +129,10 @@ export function DeviceMonitor() {
   const { locale: i18nLocale } = useI18n();
   const [open, setOpen] = useState(false);
   const [data, setData] = useState<DeviceMetricsDto | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // Failed polls keep the last sample (shown as stale); a reason is offered
+  // only while no sample was ever read.
+  const [error, setError] = useState<{ message: string; kind: 'error' | 'unavailable' } | null>(null);
+  const retryMetrics = useRef<() => void>(() => {});
   const [forbidden, setForbidden] = useState(false);
   const [now, setNow] = useState(Date.now);
   const [history, setHistory] = useState<CpuSample[]>([]);
@@ -143,7 +147,7 @@ export function DeviceMonitor() {
   const [processesUnsupported, setProcessesUnsupported] = useState(false);
   const [threadsOpen, setThreadsOpen] = useState<ReadonlySet<string>>(new Set());
   const [ending, setEnding] = useState<string | null>(null);
-  const [endError, setEndError] = useState<string | null>(null);
+  const [endError, setEndError] = useState<{ threadId: string; message: string } | null>(null);
   const [confirmEnd, setConfirmEnd] = useState<LoadedThreadDto | null>(null);
   const refreshProcesses = useRef<() => void>(() => {});
   const processesShown = open && memoryOpen && !processesUnsupported;
@@ -213,7 +217,7 @@ export function DeviceMonitor() {
     } catch (cause) {
       // The thread started a turn since the last sample: confirm before interrupting.
       if (!interrupt && cause instanceof ApiError && cause.statusCode === 409) setConfirmEnd(thread);
-      else setEndError(cause instanceof Error ? cause.message : String(cause));
+      else setEndError({ threadId: thread.threadId, message: cause instanceof Error ? cause.message : String(cause) });
     } finally {
       setEnding(null);
     }
@@ -228,7 +232,7 @@ export function DeviceMonitor() {
       if (disposed || busy || stopped) return;
       clearTimeout(timer);
       if (document.hidden || !navigator.onLine) {
-        if (!navigator.onLine) setError(translate("devices.deviceMonitoringIsOffline"));
+        if (!navigator.onLine) setError({ message: translate("devices.deviceMonitoringIsOffline"), kind: 'error' });
         timer = setTimeout(poll, 5000);
         return;
       }
@@ -253,10 +257,10 @@ export function DeviceMonitor() {
             setForbidden(true);
             stopped = true;
           } else if (cause instanceof ApiError && cause.statusCode === 404) {
-            setError(translate("devices.updateThisDeviceSSupervisorToEnable"));
+            setError({ message: translate("devices.updateThisDeviceSSupervisorToEnable"), kind: 'unavailable' });
             // Check occasionally after the device is updated.
           } else
-            setError(translate("devices.deviceMetricsUnavailableShowingTheLastSample"));
+            setError({ message: translate("devices.deviceMetricsUnavailableShowingTheLastSample"), kind: 'error' });
         }
       } finally {
         clearTimeout(timeout);
@@ -264,6 +268,7 @@ export function DeviceMonitor() {
         if (!disposed && !stopped) timer = setTimeout(poll, open ? OPEN_POLL_MS : CLOSED_POLL_MS);
       }
     };
+    retryMetrics.current = () => void poll();
     void poll();
     const wake = () => {
       if (!document.hidden) void poll();
@@ -280,6 +285,7 @@ export function DeviceMonitor() {
       document.removeEventListener('visibilitychange', wake);
       window.removeEventListener('online', wake);
       window.removeEventListener('offline', wake);
+      retryMetrics.current = () => {};
     };
   }, [open]);
   if (forbidden) return null;
@@ -312,7 +318,7 @@ export function DeviceMonitor() {
         aria-expanded={open}
         data-stale={stale || undefined}
         data-gpu={gpu ? true : undefined}
-        title={error ?? translate("devices.cPUMemoryAndHardwareSensors")}
+        title={error?.message ?? translate("devices.cPUMemoryAndHardwareSensors")}
         onClick={() => setOpen(true)}
       >
         <span className="dm-summary-row">
@@ -353,10 +359,14 @@ export function DeviceMonitor() {
           )}
         >
           <div className="device-monitor-details">
-            {error && (
-              <p role="status" className="dm-notice">
-                <TriangleAlert aria-hidden />
-                {error}
+            {error && !data && (
+              <p className="flex items-center gap-1.5 pb-2 text-[11.5px] text-[var(--theme-fg-muted)]">
+                {translate("devices.unavailable")}
+                <ErrorMark
+                  kind={error.kind}
+                  message={error.message}
+                  onRetry={error.kind === 'error' ? () => retryMetrics.current() : undefined}
+                />
               </p>
             )}
             {!data && !error && (
@@ -464,6 +474,10 @@ export function DeviceMonitor() {
                           <b>{translate('devices.supervisorTotal', { value1: memory(processes?.totalBytes ?? null) })}</b>
                           {processes && <span className="dm-harness-sum"> · {translate('devices.harnessTotal', { value1: memory(processes.harnessBytes) })}</span>}
                         </span>
+                        {/* A failed refresh keeps the last list; only a list that never loaded explains why. */}
+                        {!processes && processesError && (
+                          <ErrorMark message={processesError} onRetry={() => refreshProcesses.current()} />
+                        )}
                         {processes && (
                           <span className="dm-info" role="img" title={METRIC_LABEL[processes.metric]?.() ?? processes.metric} aria-label={METRIC_LABEL[processes.metric]?.() ?? processes.metric}>
                             <Info aria-hidden />
@@ -481,9 +495,6 @@ export function DeviceMonitor() {
                           <TriangleAlert aria-hidden />
                           {[processes.overThreadLimit && translate('devices.overThreadLimit'), processes.overMemoryLimit && translate('devices.overMemoryLimit')].filter(Boolean).join(' · ')}
                         </p>
-                      )}
-                      {(processesError || endError) && (
-                        <p role="alert" className="dm-notice"><TriangleAlert aria-hidden />{endError ?? processesError}</p>
                       )}
                       {processes && !processes.threads.length && <p className="dm-harness-empty">{translate('devices.harnessNone')}</p>}
                       {processes && processes.threads.length > 0 && (
@@ -515,6 +526,7 @@ export function DeviceMonitor() {
                                     onClick={() => thread.busy.length ? setConfirmEnd(thread) : void endThread(thread, false)}>
                                     {ending === thread.threadId ? translate('devices.harnessEnding') : translate('devices.harnessEnd')}
                                   </button>
+                                  {endError?.threadId === thread.threadId && !confirmEnd && <ErrorMark message={endError.message} />}
                                 </div>
                                 {expanded && <div id={listId}><ProcessList processes={thread.processes} /></div>}
                               </li>
@@ -586,7 +598,7 @@ export function DeviceMonitor() {
         confirmLabel={translate('devices.harnessEnd')}
         busyLabel={translate('devices.harnessEnding')}
         busy={ending != null}
-        error={endError}
+        error={endError?.message ?? null}
         onCancel={() => { setConfirmEnd(null); setEndError(null); }}
         onConfirm={() => confirmEnd ? endThread(confirmEnd, true) : undefined}
       />

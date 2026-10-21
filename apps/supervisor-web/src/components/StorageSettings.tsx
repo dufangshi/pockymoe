@@ -1,5 +1,5 @@
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
-import { formatFileSize, useLongPress, useMenuKeyboard } from '@pockymoe/thread-ui';
+import { ErrorMark, formatFileSize, useLongPress, useMenuKeyboard } from '@pockymoe/thread-ui';
 import { Eraser, FileDiff, HardDrive, MoreHorizontal, RefreshCw, Scissors, SquareTerminal } from 'lucide-react';
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
@@ -46,6 +46,9 @@ function describe(options: StorageCleanupDto) {
 
 type ThreadAction = 'output' | 'diffs' | 'truncate' | 'remove';
 type Pending = { kind: 'clean' } | { kind: 'compact' } | { kind: 'thread'; thread: StorageThreadDto; options: StorageCleanupDto };
+/** A failure, shown as a mark after the control that started it. */
+type Failure = { message: string; retry?: () => void };
+const reason = (cause: unknown) => cause instanceof Error ? cause.message : String(cause);
 
 /** Disk use of this device's Pockymoe database. It is measured only on request. */
 export function StorageSettings({ deviceId }: { deviceId: string | null }) {
@@ -57,7 +60,13 @@ export function StorageSettings({ deviceId }: { deviceId: string | null }) {
   const [unsupported, setUnsupported] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // Reading or measuring (mark by Scan), the next page (by Load more), saving
+  // (by Save) and a job the device ran (by the control that started it).
+  const [readError, setReadError] = useState<Failure | null>(null);
+  const [moreError, setMoreError] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [jobError, setJobError] = useState<{ message: string; job: StorageJobDto } | null>(null);
+  const [revision, setRevision] = useState(0);
   const [saved, setSaved] = useState<StorageSettingsDto | null>(null);
   const [retention, setRetention] = useState({ on: false, text: DEFAULT_DAYS });
   const [output, setOutput] = useState(true);
@@ -90,6 +99,7 @@ export function StorageSettings({ deviceId }: { deviceId: string | null }) {
 
   useEffect(() => {
     let alive = true;
+    setReadError(null);
     Promise.all([fetchStorageOverview(0, deviceId), fetchStorageSettings(deviceId)]).then(([overview, settings]) => {
       if (!alive) return;
       setDeviceName(overview.deviceName);
@@ -99,18 +109,20 @@ export function StorageSettings({ deviceId }: { deviceId: string | null }) {
     }).catch((cause: unknown) => {
       if (!alive) return;
       if (cause instanceof ApiError && cause.statusCode === 404) setUnsupported(true);
-      else setError(cause instanceof Error ? cause.message : String(cause));
+      else setReadError({ message: reason(cause), retry: () => setRevision(value => value + 1) });
     });
     return () => { alive = false; };
-  }, [deviceId, apply, showSettings]);
+  }, [deviceId, apply, showSettings, revision]);
 
-  const runScan = useCallback(async () => {
+  // `quiet`: the measurement after a job, on its own; its failure keeps the last one.
+  const runScan = useCallback(async (quiet = false) => {
     setScanning(true);
-    setError(null);
+    if (!quiet) setReadError(null);
     try {
       apply(await scanStorage(deviceId));
+      setReadError(null);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      if (!quiet) setReadError({ message: reason(cause), retry: () => void runScan() });
     } finally {
       setScanning(false);
     }
@@ -133,9 +145,9 @@ export function StorageSettings({ deviceId }: { deviceId: string | null }) {
             : next.items
               ? translate('settings.storageCleaned', { count: next.items.toLocaleString(), size: formatFileSize(next.bytes) })
               : translate('settings.storageNothingToClean'));
-          if (hadScan) void runScan();
+          if (hadScan) void runScan(true);
         } else if (next?.state === 'failed') {
-          setError(translate('settings.storageJobFailed', { reason: next.error ?? '' }));
+          setJobError({ message: translate('settings.storageJobFailed', { reason: next.error ?? '' }), job: next });
         }
       }).catch(() => { /* The device may pause during compaction; keep following. */ });
     }, 1000);
@@ -145,6 +157,7 @@ export function StorageSettings({ deviceId }: { deviceId: string | null }) {
   const loadMore = useCallback(async () => {
     if (!scan?.nextOffset || loadingMore) return;
     setLoadingMore(true);
+    setMoreError(null);
     try {
       const overview = await fetchStorageOverview(scan.nextOffset, deviceId);
       // A newer scan (or none after a cleanup) replaces the list instead of extending it.
@@ -154,7 +167,7 @@ export function StorageSettings({ deviceId }: { deviceId: string | null }) {
         setRows(current => [...current, ...overview.scan!.threads]);
       }
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setMoreError(reason(cause));
     } finally {
       setLoadingMore(false);
     }
@@ -188,7 +201,7 @@ export function StorageSettings({ deviceId }: { deviceId: string | null }) {
     if (!valid || savingRetention) return;
     setSavingRetention(true);
     setNotice(null);
-    setError(null);
+    setSaveError(null);
     try {
       const next = await updateStorageSettings({ retentionDays: days, ...draft }, deviceId);
       showSettings(next);
@@ -196,12 +209,12 @@ export function StorageSettings({ deviceId }: { deviceId: string | null }) {
       // A saved age starts a cleanup on the device.
       if (next.retentionDays != null) setJob((await fetchStorageOverview(0, deviceId)).job ?? null);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setSaveError(reason(cause));
     } finally {
       setSavingRetention(false);
     }
   };
-  const edited = () => setNotice(null);
+  const edited = () => { setNotice(null); setSaveError(null); };
 
   // The device answers at once; the job then runs there with its progress below.
   const confirmAction = async () => {
@@ -213,7 +226,7 @@ export function StorageSettings({ deviceId }: { deviceId: string | null }) {
         : confirm.kind === 'compact' ? await compactStorage(deviceId)
           : await cleanStorageThread(confirm.thread.threadId, confirm.options, deviceId));
       setNotice(null);
-      setError(null);
+      setJobError(null);
       setConfirm(null);
     } catch (cause) {
       setConfirmError(cause instanceof Error ? cause.message : String(cause));
@@ -283,10 +296,13 @@ export function StorageSettings({ deviceId }: { deviceId: string | null }) {
             <strong>{deviceName || '—'}</strong>
             <span>{scannedAt ? translate('settings.storageScannedAt', { time: scannedAt }) : translate('settings.storageScanHint')}</span>
           </span>
-          <button type="button" className="host-secondary-button pm-res-button" disabled={scanning} onClick={() => void runScan()}>
-            <RefreshCw aria-hidden="true" className={scanning ? 'is-spinning' : undefined} />
-            {scanning ? translate('settings.storageScanning') : scan ? translate('settings.storageRescan') : translate('settings.storageScan')}
-          </button>
+          <span className="inline-flex shrink-0 items-center gap-1">
+            <button type="button" className="host-secondary-button pm-res-button" disabled={scanning} onClick={() => void runScan()}>
+              <RefreshCw aria-hidden="true" className={scanning ? 'is-spinning' : undefined} />
+              {scanning ? translate('settings.storageScanning') : scan ? translate('settings.storageRescan') : translate('settings.storageScan')}
+            </button>
+            {readError && !scanning && <ErrorMark message={readError.message} onRetry={readError.retry} />}
+          </span>
         </div>
         {scan ? (
           <>
@@ -316,14 +332,16 @@ export function StorageSettings({ deviceId }: { deviceId: string | null }) {
             <ol className="pm-res-threads">
               {rows.map(thread => (
                 <ThreadRow key={thread.threadId} thread={thread} largest={largest} savedChars={savedChars}
-                  job={job?.threadId === thread.threadId && running ? job : null} disabled={running} onClean={cleanThread} />
+                  job={job?.threadId === thread.threadId && running ? job : null} disabled={running} onClean={cleanThread}
+                  error={jobError?.job.threadId === thread.threadId ? jobError.message : null} />
               ))}
             </ol>
             {scan.nextOffset != null && (
-              <div ref={sentinel} className="pm-res-more">
+              <div ref={sentinel} className="pm-res-more items-center gap-1">
                 <button type="button" className="host-secondary-button pm-res-button" disabled={loadingMore} onClick={() => void loadMore()}>
                   {loadingMore ? translate('settings.storageLoadingMore') : translate('settings.storageLoadMore')}
                 </button>
+                {moreError && !loadingMore && <ErrorMark message={moreError} onRetry={() => void loadMore()} />}
               </div>
             )}
           </>
@@ -394,9 +412,12 @@ export function StorageSettings({ deviceId }: { deviceId: string | null }) {
         <div className="pm-res-row">
           <span className="pm-res-label is-plain">{translate('settings.storageCompact')}</span>
           <span className="pm-res-value is-action">
-            <button type="button" className="ui-action-danger pm-res-button" disabled={running} onClick={() => { setConfirmError(null); setConfirm({ kind: 'compact' }); }}>
-              {translate('settings.storageCompactAction')}
-            </button>
+            <span className="inline-flex items-center gap-1">
+              <button type="button" className="ui-action-danger pm-res-button" disabled={running} onClick={() => { setConfirmError(null); setConfirm({ kind: 'compact' }); }}>
+                {translate('settings.storageCompactAction')}
+              </button>
+              {jobError?.job.action === 'compact' && <ErrorMark message={jobError.message} />}
+            </span>
           </span>
           <p className="pm-res-hint">{translate('settings.storageCompactHint')}</p>
         </div>
@@ -410,14 +431,16 @@ export function StorageSettings({ deviceId }: { deviceId: string | null }) {
         )}
         <div className="pm-res-footer">
           {notice && <span role="status" className="pm-res-saved">{notice}</span>}
-          {error && <p className="host-error pm-res-error" role="alert">{error}</p>}
           <button type="button" className="ui-action-danger pm-res-button" disabled={savedDays == null || changed || running}
             onClick={() => { setConfirmError(null); setConfirm({ kind: 'clean' }); }}>
             {translate('settings.storageCleanNow')}
           </button>
+          {/* A cleanup the device ran by age (or its dedupe pass) failed. */}
+          {jobError && jobError.job.action !== 'compact' && !jobError.job.threadId && <ErrorMark message={jobError.message} />}
           <button type="button" className="relay-button-primary pm-res-primary" disabled={!changed || savingRetention || running} onClick={() => void saveRetention()}>
             {savingRetention ? translate('settings.saving') : translate('files.save')}
           </button>
+          {saveError && !savingRetention && <ErrorMark message={saveError} onRetry={() => void saveRetention()} />}
         </div>
       </div>
 
@@ -437,13 +460,15 @@ export function StorageSettings({ deviceId }: { deviceId: string | null }) {
 }
 
 /** A scanned conversation with its cleanup menu: ⋯, right click or long press. */
-function ThreadRow({ thread, largest, savedChars, job, disabled, onClean }: {
+function ThreadRow({ thread, largest, savedChars, job, disabled, onClean, error }: {
   thread: StorageThreadDto;
   largest: number;
   savedChars: number;
   job: StorageJobDto | null;
   disabled: boolean;
   onClean: (thread: StorageThreadDto, action: ThreadAction) => void;
+  /** Why this conversation's last cleanup failed. */
+  error: string | null;
 }) {
   const [position, setPosition] = useState<{ top: number; left: number } | null>(null);
   const trigger = useRef<HTMLButtonElement>(null);
@@ -481,7 +506,13 @@ function ThreadRow({ thread, largest, savedChars, job, disabled, onClean }: {
   return (
     <li className="pm-res-thread" data-cleaning={job ? true : undefined}
       onContextMenu={event => { event.preventDefault(); openAt(event.clientX, event.clientY); }} {...longPress}>
-      <span className="pm-res-thread-title" title={thread.title}>{title}</span>
+      {error ? (
+        // The mark stays whole beside a title that shortens.
+        <span className="flex min-w-0 items-center gap-1">
+          <span className="pm-res-thread-title" title={thread.title}>{title}</span>
+          <ErrorMark message={error} />
+        </span>
+      ) : <span className="pm-res-thread-title" title={thread.title}>{title}</span>}
       <span className="pm-res-thread-size">{formatFileSize(thread.bytes)}</span>
       <button ref={trigger} type="button" className="pm-res-thread-actions" aria-label={translate('settings.storageThreadActions', { title })}
         aria-haspopup="menu" aria-expanded={Boolean(position)} onClick={() => {

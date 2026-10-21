@@ -1,6 +1,6 @@
 import type { AuthSessionDto } from '@pockymoe/shared';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
-import { confirmAsync } from '@pockymoe/thread-ui';
+import { confirmAsync, ErrorMark } from '@pockymoe/thread-ui';
 import { type FormEvent, useEffect, useState } from 'react';
 
 import { ApiError, fetchAuthSession, relayModeActive, removeLocalPasscode, setLocalPasscode } from '../lib/api';
@@ -16,6 +16,8 @@ export function LocalPasscodeSettings() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // A too-short draft is a hint of the field being typed; a refusal is a mark.
+  const [tooShort, setTooShort] = useState(false);
 
   useEffect(() => {
     if (relayModeActive()) return;
@@ -28,7 +30,7 @@ export function LocalPasscodeSettings() {
   const enabled = session.passcode === true;
 
   async function run(work: () => Promise<void>, done: string) {
-    setBusy(true); setError(null); setMessage(null);
+    setBusy(true); setError(null); setTooShort(false); setMessage(null);
     try { await work(); setDraft(''); setMessage(done); }
     catch (caught) { setError(caught instanceof ApiError ? caught.payload.message : translate('auth.unableToSignIn')); }
     finally { setBusy(false); }
@@ -36,7 +38,7 @@ export function LocalPasscodeSettings() {
 
   function save(event: FormEvent) {
     event.preventDefault();
-    if ([...draft].length < 4) { setError(translate('settings.passcodeTooShort')); return; }
+    if ([...draft].length < 4) { setError(null); setTooShort(true); return; }
     void run(async () => {
       const result = await setLocalPasscode(draft);
       setSession(result.session);
@@ -65,7 +67,7 @@ export function LocalPasscodeSettings() {
             autoComplete="new-password"
             className="host-input mt-1 h-10 w-full rounded-md border px-3 text-sm"
             disabled={busy}
-            onChange={event => { setDraft(event.target.value); setError(null); }}
+            onChange={event => { setDraft(event.target.value); setError(null); setTooShort(false); }}
             type="password"
             value={draft}
           />
@@ -78,8 +80,9 @@ export function LocalPasscodeSettings() {
             {translate('settings.passcodeDisable')}
           </button>
         )}
+        {error && <span className="flex min-h-10 items-center"><ErrorMark message={error} /></span>}
       </form>
-      {error && <p className="text-sm text-[var(--status-danger-fg)]" role="alert">{error}</p>}
+      {tooShort && <p className="text-sm text-[var(--status-danger-fg)]" role="alert">{translate('settings.passcodeTooShort')}</p>}
       {message && <p className="text-sm text-[var(--status-success-fg)]" role="status">{message}</p>}
       {enabled && <p className="text-xs text-[var(--theme-fg-muted)]">{translate('settings.passcodeForgot')}</p>}
     </section>

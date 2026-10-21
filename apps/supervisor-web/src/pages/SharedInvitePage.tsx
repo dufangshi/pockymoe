@@ -1,4 +1,5 @@
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
+import { ErrorMark } from '@pockymoe/thread-ui';
 import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { enableRelayMode, fetchRelaySession, fetchRelayPortal } from '../lib/api';
@@ -28,7 +29,12 @@ export function SharedInvitePage() {
       };
     }
   });
-  const [error, setError] = useState(input.error);
+  // The page has nothing else to show after a failure: a short label and the
+  // reason behind a mark; only a failed session read can be retried.
+  const [error, setError] = useState<{ message: string; retry?: boolean } | undefined>(
+    input.error ? { message: input.error } : undefined,
+  );
+  const [attempt, setAttempt] = useState(0);
   const [signin, setSignin] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
   const [deviceName, setDeviceName] = useState('');
@@ -56,10 +62,10 @@ export function SharedInvitePage() {
         received.find((r) => r.deviceId === id)?.deviceName ?? '');
       setReady(true);
     })().catch((error: unknown) => {
-      if (active) setError(error instanceof Error ? error.message : translate('sharing.inviteInvalid'));
+      if (active) setError({ message: error instanceof Error ? error.message : translate('sharing.inviteInvalid'), retry: true });
     });
     return () => { active = false; };
-  }, [input]);
+  }, [input, attempt]);
   useEffect(() => {
     let active = true;
     void (async () => {
@@ -83,9 +89,9 @@ export function SharedInvitePage() {
       }
     })().catch((e: unknown) => {
       if (active)
-        setError(
-          e instanceof Error ? e.message : translate('sharing.inviteInvalid'),
-        );
+        setError({
+          message: e instanceof Error ? e.message : translate('sharing.inviteInvalid'),
+        });
     });
     return () => {
       active = false;
@@ -97,7 +103,13 @@ export function SharedInvitePage() {
         {translate('sharing.inviteTitle')}
       </h1>
       {error ? (
-        <p role="alert">{error}</p>
+        <p className="flex items-center gap-1.5 text-[var(--theme-fg-muted)]">
+          {translate('devices.unavailable')}
+          <ErrorMark
+            message={error.message}
+            onRetry={error.retry ? () => { setError(undefined); setAttempt((value) => value + 1); } : undefined}
+          />
+        </p>
       ) : signin ? (
         <>
           <p>{translate('auth.ownerSignIn')}</p>

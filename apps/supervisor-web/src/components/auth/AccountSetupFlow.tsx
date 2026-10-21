@@ -1,10 +1,11 @@
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
+import { ErrorMark } from '@pockymoe/thread-ui';
 import { ShieldCheck } from 'lucide-react';
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { setupAccount } from '../../lib/accountAuth';
 import { accountStore } from '../../lib/accountStore';
 import { AccountTrustError, createVault, openVault, registerBrowser } from '../../lib/accountVaultState';
-import { AuthCard, AuthField, AuthNotice, AuthSubmit, RecoveryCodeStep } from './AuthUi';
+import { AuthCard, AuthField, AuthSubmit, RecoveryCodeStep } from './AuthUi';
 
 const longEnough = (password: string) => [...password.normalize('NFC')].length >= 12;
 
@@ -69,10 +70,12 @@ export function AccountSetupFlow({ oauth, initialPassword, footer, onDone, onRea
     return (
       <AuthCard footer={footer} icon={<ShieldCheck aria-hidden="true" className="h-8 w-8" />} title={translate(oauth ? 'auth.ui.unlockPasswordTitle' : 'auth.ui.secureTitle')}>
         {busy ? <p aria-live="polite" className="text-sm text-[var(--theme-fg-muted)]" role="status">{translate('auth.ui.securing')}</p> : null}
-        {error ? <AuthNotice>{error}</AuthNotice> : null}
-        <button className="relay-button-primary auth-submit h-11 w-full" disabled={busy} onClick={() => void secure(progress.current.secret!)} type="button">
-          {translate(busy ? 'auth.ui.pleaseWait' : 'auth.retryConnection')}
-        </button>
+        <div className="flex items-center gap-2">
+          <button className="relay-button-primary auth-submit h-11 w-full min-w-0" disabled={busy} onClick={() => void secure(progress.current.secret!)} type="button">
+            {translate(busy ? 'auth.ui.pleaseWait' : 'auth.retryConnection')}
+          </button>
+          {error ? <ErrorMark message={error} /> : null}
+        </div>
       </AuthCard>
     );
   }
@@ -94,8 +97,7 @@ export function AccountSetupFlow({ oauth, initialPassword, footer, onDone, onRea
         <AuthField autoComplete="new-password" autoFocus disabled={busy} hint={translate('auth.ui.passwordRule')}
           label={translate(oauth ? 'auth.ui.unlockPasswordLabel' : 'auth.password')} minLength={12} onChange={setPassword} type="password" value={password} />
         <AuthField autoComplete="new-password" disabled={busy} label={translate('auth.ui.confirmPassword')} onChange={setConfirm} type="password" value={confirm} />
-        {error ? <AuthNotice>{error}</AuthNotice> : null}
-        <AuthSubmit busy={busy}>{translate('auth.continue')}</AuthSubmit>
+        <AuthSubmit busy={busy} error={error}>{translate('auth.continue')}</AuthSubmit>
       </form>
     </AuthCard>
   );

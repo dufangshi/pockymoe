@@ -1,6 +1,9 @@
-import type { UpstreamConnectionPickerProps } from '@pockymoe/thread-ui';
+import {
+  ErrorMark,
+  type UpstreamConnectionPickerProps,
+} from '@pockymoe/thread-ui';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
-import { CloudDownload, Pencil, Plus, RefreshCw } from 'lucide-react';
+import { CloudDownload, Pencil, Plus } from 'lucide-react';
 import { useState } from 'react';
 import {
   connectionProtocols,
@@ -60,6 +63,10 @@ export function ConnectionPicker({
       remoteSources(c, deviceId).length > 0,
   );
   const missing = !!connectionId && !!catalog && !selected;
+  // Only a catalog that never arrived gets a mark; a later reload keeps it quietly.
+  const failed = !!error && !catalog;
+  const unsupported =
+    failed && error === translate('settings.connUpdateSupervisor');
 
   async function syncFrom(c: ConnectionSummary, source: ConnectionSource) {
     setChoosing(null);
@@ -114,6 +121,14 @@ export function ConnectionPicker({
             </option>
           ))}
         </select>
+        {missing && (
+          <span className="flex shrink-0 items-center">
+            <ErrorMark
+              kind="unavailable"
+              message={translate('settings.connPickerMissingHint')}
+            />
+          </span>
+        )}
         <button
           type="button"
           className={iconButton}
@@ -139,28 +154,20 @@ export function ConnectionPicker({
             {translate('settings.connNew')}
           </span>
         </button>
+        {failed && (
+          <span className="flex shrink-0 items-center">
+            {unsupported ? (
+              <ErrorMark kind="unavailable" message={error} />
+            ) : (
+              <ErrorMark
+                message={error}
+                onRetry={() => void reload()}
+                retryLabel={translate('settings.connRetry')}
+              />
+            )}
+          </span>
+        )}
       </div>
-      {missing && (
-        <p className="text-xs text-[var(--status-danger-fg)]">
-          {translate('settings.connPickerMissingHint')}
-        </p>
-      )}
-      {error && (
-        <p
-          role="alert"
-          className="flex flex-wrap items-center gap-2 text-xs text-[var(--status-danger-fg)]"
-        >
-          {error}
-          <button
-            type="button"
-            className="inline-flex items-center gap-1 underline underline-offset-2"
-            onClick={() => void reload()}
-          >
-            <RefreshCw size={12} />
-            {translate('settings.connRetry')}
-          </button>
-        </p>
-      )}
       {!!connectionId && (
         <ConnectionModelField
           value={model}
@@ -215,6 +222,16 @@ export function ConnectionPicker({
                         ? translate('settings.connSyncing')
                         : translate('settings.connSync')}
                     </button>
+                    {syncErrors[c.id] && syncing !== c.id && (
+                      <ErrorMark
+                        message={syncErrors[c.id]!}
+                        onRetry={
+                          sources.length === 1
+                            ? () => void syncFrom(c, sources[0]!)
+                            : undefined
+                        }
+                      />
+                    )}
                   </div>
                   {choosing === c.id && (
                     <div
@@ -240,14 +257,6 @@ export function ConnectionPicker({
                         </button>
                       ))}
                     </div>
-                  )}
-                  {syncErrors[c.id] && (
-                    <p
-                      role="alert"
-                      className="mt-1 break-words text-xs text-[var(--status-danger-fg)]"
-                    >
-                      {syncErrors[c.id]}
-                    </p>
                   )}
                 </li>
               );

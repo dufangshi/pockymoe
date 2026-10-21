@@ -1,5 +1,6 @@
 import { useHostScope } from '../../lib/hostCapabilities';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
+import { ErrorMark } from '@pockymoe/thread-ui';
 import type { FormEvent, ReactNode } from 'react';
 import { useEffect, useId, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
@@ -140,7 +141,11 @@ export function ThreadCreateForm({
   const [busy, setBusy] = useState(false);
   const [runtimeBusyProvider, setRuntimeBusyProvider] = useState<AgentBackendIdDto | null>(null);
   const [installingAgentId, setInstallingAgentId] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // Why loading or an action failed, as a mark after its control: the runtime
+  // button for 'runtime', Create for the rest ('load' and 'models' can retry).
+  const [error, setError] = useState<{ at: 'load' | 'models' | 'runtime' | 'create'; message: string } | null>(null);
+  const [loadAttempt, setLoadAttempt] = useState(0);
+  const [modelsAttempt, setModelsAttempt] = useState(0);
   const [adapterPrompt, setAdapterPrompt] = useState<{ entry: ModelOptionDto; createAfter: boolean } | null>(null);
   const [adapterError, setAdapterError] = useState<string | null>(null);
   const alive = useRef(true);
@@ -199,7 +204,7 @@ export function ThreadCreateForm({
       })
       .catch((caught) => {
         if (!cancelled) {
-          setError(errorText(caught, translate("workbench.unableToLoadCreationFormData")));
+          setError({ at: 'load', message: errorText(caught, translate("workbench.unableToLoadCreationFormData")) });
         }
       })
       .finally(() => {
@@ -210,7 +215,7 @@ export function ThreadCreateForm({
     return () => {
       cancelled = true;
     };
-  }, [defaultBackend, initialWorkspaceId, hostScope]);
+  }, [defaultBackend, initialWorkspaceId, hostScope, loadAttempt]);
 
   useEffect(() => {
     if (!provider || !workspaceId) {
@@ -234,7 +239,7 @@ export function ThreadCreateForm({
           if (!cancelled) {
             setAgentOptions([]);
             setAgentId('');
-            setError(errorText(caught, translate("workbench.unableToLoadACPAgents")));
+            setError({ at: 'models', message: errorText(caught, translate("workbench.unableToLoadACPAgents")) });
           }
         });
       return () => {
@@ -255,13 +260,13 @@ export function ThreadCreateForm({
       .catch((caught) => {
         if (!cancelled) {
           applyModels([]);
-          setError(errorText(caught, translate("workbench.unableToLoadBackendModels")));
+          setError({ at: 'models', message: errorText(caught, translate("workbench.unableToLoadBackendModels")) });
         }
       });
     return () => {
       cancelled = true;
     };
-  }, [provider, workspaceId, selectedWorkspace?.absPath]);
+  }, [provider, workspaceId, selectedWorkspace?.absPath, modelsAttempt]);
 
   useEffect(() => {
     if (provider !== 'acp' || !agentId || !selectedWorkspace) {
@@ -299,13 +304,13 @@ export function ThreadCreateForm({
       })
       .catch((caught) => {
         if (!cancelled) {
-          setError(errorText(caught, translate("workbench.unableToLoadAgentModels")));
+          setError({ at: 'models', message: errorText(caught, translate("workbench.unableToLoadAgentModels")) });
         }
       });
     return () => {
       cancelled = true;
     };
-  }, [agentId, provider, selectedWorkspace, selectedAgent?.acpAgent?.availability]);
+  }, [agentId, provider, selectedWorkspace, selectedAgent?.acpAgent?.availability, modelsAttempt]);
 
   async function reloadBackends(nextProvider: AgentBackendIdDto = provider) {
     const records = await fetchAgentBackends();
@@ -333,7 +338,7 @@ export function ThreadCreateForm({
       await installOrUpdateAgentBackend(backend.provider, action);
       await reloadBackends(backend.provider);
     } catch (caught) {
-      setError(errorText(caught, `Unable to ${action} ${backend.displayName}.`));
+      setError({ at: 'runtime', message: errorText(caught, `Unable to ${action} ${backend.displayName}.`) });
       try {
         await reloadBackends(provider);
       } catch {
@@ -405,7 +410,7 @@ export function ThreadCreateForm({
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!selectedBackend || !canStart(selectedBackend)) {
-      setError(translate("workbench.chooseAnAvailableBackendBeforeCreatingA"));
+      setError({ at: 'create', message: translate("workbench.chooseAnAvailableBackendBeforeCreatingA") });
       return;
     }
     if (hostScope && selectedAgent?.acpAgent?.availability === 'adapter_missing') return;
@@ -418,9 +423,12 @@ export function ThreadCreateForm({
     try {
       await createSelectedThread();
     } catch (caught) {
-      setError(caught instanceof RunModeNotApplied
-        ? translate("workbench.dshRunModeNotApplied", { value1: errorText(caught.cause, '') })
-        : errorText(caught, translate("workbench.unableToCreateThread")));
+      setError({
+        at: 'create',
+        message: caught instanceof RunModeNotApplied
+          ? translate("workbench.dshRunModeNotApplied", { value1: errorText(caught.cause, '') })
+          : errorText(caught, translate("workbench.unableToCreateThread")),
+      });
     } finally {
       setBusy(false);
     }
@@ -508,21 +516,28 @@ export function ThreadCreateForm({
 
         {selectedBackend && provider !== 'acp' ? (
           <div className="mt-3 flex flex-col gap-2 border-b border-[var(--theme-border)] pb-4 sm:flex-row sm:items-center sm:justify-between">
-            <p className="min-w-0 text-xs leading-5 text-[var(--theme-fg-muted)]">
+            <p className="flex min-w-0 items-center gap-1.5 text-xs leading-5 text-[var(--theme-fg-muted)]">
               {selectedBackend.installation.installed
                 ? translate("workbench.installed", { value1: selectedBackend.installation.installedVersion ? `, version ${selectedBackend.installation.installedVersion}` : '' })
-                : selectedBackend.installation.lastError ?? selectedBackend.status.lastError ?? translate("workbench.runtimeIsNotInstalled")}
+                : translate("workbench.runtimeIsNotInstalled")}
+              {/* The runtime's last failure is behind a mark, not a sentence. */}
+              {!selectedBackend.installation.installed && (selectedBackend.installation.lastError ?? selectedBackend.status.lastError)
+                ? <ErrorMark message={(selectedBackend.installation.lastError ?? selectedBackend.status.lastError)!} />
+                : null}
             </p>
             {selectedBackendActionAvailable ? (
-              <button
-                aria-label={`${selectedBackendAction} ${selectedBackend.displayName}`}
-                className="host-secondary-button min-h-10 shrink-0 rounded-md border px-3 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-50"
-                disabled={busy || selectedBackendBusy || runtimeBusyProvider !== null}
-                onClick={() => void handleRuntimeAction(selectedBackend)}
-                type="button"
-              >
-                {selectedBackendBusy ? selectedBackendBusyLabel : translate("workbench.runtime", { value1: selectedBackendAction })}
-              </button>
+              <span className="flex shrink-0 items-center gap-2">
+                <button
+                  aria-label={`${selectedBackendAction} ${selectedBackend.displayName}`}
+                  className="host-secondary-button min-h-10 shrink-0 rounded-md border px-3 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-50"
+                  disabled={busy || selectedBackendBusy || runtimeBusyProvider !== null}
+                  onClick={() => void handleRuntimeAction(selectedBackend)}
+                  type="button"
+                >
+                  {selectedBackendBusy ? selectedBackendBusyLabel : translate("workbench.runtime", { value1: selectedBackendAction })}
+                </button>
+                {error?.at === 'runtime' ? <ErrorMark message={error.message} /> : null}
+              </span>
             ) : null}
           </div>
         ) : null}
@@ -531,10 +546,6 @@ export function ThreadCreateForm({
             {translate("workbench.aCPIsNotEnabledOnThisSupervisor")}<code className="mx-1 font-mono">acp</code>
             {translate("workbench.to")} <code className="font-mono">POCKYMOE_ENABLED_AGENT_PROVIDERS</code>.
           </p>
-        ) : null}
-        {backendUnavailable ? (
-          <p className={`mt-2 ${compact ? 'text-xs text-[var(--theme-fg-muted)]' : 'text-sm opacity-75'}`}>
-            {translate("workbench.selectAnAvailableBackendBeforeCreatingA")}</p>
         ) : null}
       </fieldset>
 
@@ -714,17 +725,15 @@ export function ThreadCreateForm({
         <FormDialog title={translate('workbench.adapterInstallTitle')}
           description={translate('workbench.adapterInstallDescription', { agent: adapterPrompt.entry.displayName })}
           busy={busy} onClose={() => { setAdapterPrompt(null); setAdapterError(null); }}>
-          {adapterError ? <div role="alert" className="host-error rounded-md border px-3 py-2 text-sm">{adapterError}</div> : null}
-          <div className="mt-4 flex justify-end gap-2">
+          <div className="mt-4 flex items-center justify-end gap-2">
             <button type="button" disabled={busy} onClick={() => setAdapterPrompt(null)} className="host-secondary-button min-h-11 rounded-md border px-4 text-sm disabled:opacity-50">{translate('workbench.cancel')}</button>
             <button type="button" disabled={busy} onClick={() => void confirmAdapterInstall()} className="ui-action-primary min-h-11 rounded-md px-4 text-sm font-semibold disabled:opacity-50">
               {busy ? translate('workbench.installing') : adapterError ? translate('workbench.adapterInstallRetry') : translate('workbench.adapterInstallConfirm')}
             </button>
+            {adapterError ? <ErrorMark message={adapterError} /> : null}
           </div>
         </FormDialog>
       ) : null}
-
-      {error ? <div className="host-error rounded-md border px-4 py-3 text-sm" role="alert">{error}</div> : null}
 
       <div className="flex flex-wrap items-center gap-2 pt-1">
         <button
@@ -748,6 +757,16 @@ export function ThreadCreateForm({
             : created ? translate("workbench.retryRunMode")
             : translate("workbench.createThread_ea3fa3")}
         </button>
+        {error && error.at !== 'runtime' ? (
+          <ErrorMark
+            message={error.message}
+            onRetry={error.at === 'load' ? () => { setError(null); setLoading(true); setLoadAttempt((value) => value + 1); }
+              : error.at === 'models' ? () => { setError(null); setModelsAttempt((value) => value + 1); }
+              : undefined}
+          />
+        ) : backendUnavailable ? (
+          <ErrorMark kind="unavailable" message={translate("workbench.selectAnAvailableBackendBeforeCreatingA")} />
+        ) : null}
         {created && !busy ? (
           <button
             type="button"

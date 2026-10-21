@@ -1,4 +1,5 @@
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
+import { ErrorMark } from '@pockymoe/thread-ui';
 import {
   CloudDownload,
   FlaskConical,
@@ -94,6 +95,15 @@ export function ConnectionCatalog({
   };
   const [testing, setTesting] = useState<string | null>(null);
   const [search, setSearch] = useState('');
+  // Reloads after a save, sync or removal keep the list quietly when they fail;
+  // a Refresh the reader asked for gets a mark until a reload succeeds.
+  const [refreshAsked, setRefreshAsked] = useState(false);
+  useEffect(() => {
+    if (!loading && !error) setRefreshAsked(false);
+  }, [loading, error]);
+  // An older Supervisor has no catalog: Add stays greyed, with the reason on a mark.
+  const unsupported =
+    !catalog && error === translate('settings.connUpdateSupervisor');
   const deviceId = catalog?.deviceId ?? null;
   const all = catalog?.connections ?? [];
   // Which harnesses use each local connection, and whether they still run an
@@ -191,10 +201,18 @@ export function ConnectionCatalog({
               aria-label={translate('settings.upstreamsRefresh')}
               title={translate('settings.upstreamsRefresh')}
               disabled={loading}
-              onClick={onRefresh}
+              onClick={() => {
+                setRefreshAsked(true);
+                onRefresh();
+              }}
             >
               <RefreshCw size={14} aria-hidden />
             </button>
+          )}
+          {refreshAsked && error && catalog && !loading && (
+            <span className="flex items-center">
+              <ErrorMark message={error} onRetry={onRefresh} />
+            </span>
           )}
           <button
             type="button"
@@ -207,6 +225,11 @@ export function ConnectionCatalog({
             <Plus size={14} aria-hidden />
             {translate('settings.connAddShort')}
           </button>
+          {unsupported && (
+            <span className="flex items-center">
+              <ErrorMark kind="unavailable" message={error} />
+            </span>
+          )}
         </div>
       </div>
       {notice && (
@@ -218,22 +241,20 @@ export function ConnectionCatalog({
         </p>
       )}
       {catalog && deviceId && !catalog.catalogAvailable && (
-        <p
-          role="status"
-          className="mt-3 flex flex-wrap items-center gap-2 text-xs text-[var(--theme-fg-muted)]"
-        >
-          {catalog.catalogError
-            ? translate('settings.connCatalogError', {
-                reason: catalog.catalogError,
-              })
-            : translate('settings.connCatalogUnavailable')}
-          <button
-            type="button"
-            className="underline underline-offset-2"
-            onClick={() => void reload()}
-          >
-            {translate('settings.connRetry')}
-          </button>
+        // A short neutral line; the reason and Retry are on its mark.
+        <p className="mt-3 flex flex-wrap items-center gap-1 text-xs text-[var(--theme-fg-muted)]">
+          {translate('settings.connCatalogUnavailable')}
+          <ErrorMark
+            message={
+              catalog.catalogError
+                ? translate('settings.connCatalogError', {
+                    reason: catalog.catalogError,
+                  })
+                : translate('settings.connCatalogUnavailable')
+            }
+            onRetry={() => void reload()}
+            retryLabel={translate('settings.connRetry')}
+          />
         </p>
       )}
       {all.length > 6 && (
@@ -246,19 +267,17 @@ export function ConnectionCatalog({
           onChange={(e) => setSearch(e.target.value)}
         />
       )}
-      {error && !catalog ? (
-        <div
-          role="alert"
-          className="my-3 text-xs text-[var(--status-danger-fg)]"
-        >
-          <p>{error}</p>
+      {unsupported ? null : error && !catalog ? (
+        // Nothing could be read: an obvious Retry, with the reason on its mark.
+        <div className="my-3 flex items-center gap-1">
           <button
             type="button"
-            className={`${button} mt-2 text-[var(--theme-fg)]`}
+            className={button}
             onClick={() => void reload()}
           >
             {translate('settings.connRetry')}
           </button>
+          <ErrorMark message={error} />
         </div>
       ) : !catalog ? (
         <p role="status" className="py-4 text-xs text-[var(--theme-fg-muted)]">
@@ -285,6 +304,13 @@ export function ConnectionCatalog({
               syncing={syncing === c.id}
               testing={testing === c.id}
               error={syncErrors[c.id] ?? rowError[c.id] ?? ''}
+              onRetry={
+                syncErrors[c.id]
+                  ? () => void startSync(c)
+                  : rowError[c.id]
+                    ? () => void runTest(c)
+                    : undefined
+              }
               notice={rowNotice[c.id] ?? ''}
               onSync={() => void startSync(c)}
               onEdit={() => setEditing(c)}
@@ -293,11 +319,6 @@ export function ConnectionCatalog({
             />
           ))}
         </ul>
-      )}
-      {error && catalog && (
-        <p role="alert" className="mt-3 text-xs text-[var(--status-danger-fg)]">
-          {error}
-        </p>
       )}
       {editing && (
         <ConnectionDialog
@@ -369,6 +390,7 @@ function ConnectionRow({
   syncing,
   testing,
   error,
+  onRetry,
   notice,
   onSync,
   onEdit,
@@ -381,7 +403,9 @@ function ConnectionRow({
   usage: Usage[];
   syncing: boolean;
   testing: boolean;
+  /** Why this row's last sync or test failed; its mark sits after the name. */
   error: string;
+  onRetry: (() => void) | undefined;
   notice: string;
   onSync: () => void;
   onEdit: () => void;
@@ -423,6 +447,7 @@ function ConnectionRow({
             >
               {c.name}
             </h4>
+            {error && <ErrorMark message={error} onRetry={onRetry} />}
             {(state === 'offline' || state === 'conflict') && (
               <span
                 className={`inline-flex shrink-0 rounded-full px-1.5 text-[11px] leading-[18px] ${warnPill}`}
@@ -495,22 +520,13 @@ function ConnectionRow({
           )}
         </div>
       </div>
-      {error ? (
+      {!error && notice && (
         <p
-          role="alert"
-          className="mt-1.5 break-words text-xs text-[var(--status-danger-fg)]"
+          role="status"
+          className="mt-1.5 break-words text-xs text-[var(--theme-accent-strong)]"
         >
-          {error}
+          {notice}
         </p>
-      ) : (
-        notice && (
-          <p
-            role="status"
-            className="mt-1.5 break-words text-xs text-[var(--theme-accent-strong)]"
-          >
-            {notice}
-          </p>
-        )
       )}
     </li>
   );
@@ -663,15 +679,7 @@ function DeleteDialog({
         {translate('settings.connRemoveHint')}
       </p>
       <p className="my-3 text-sm font-medium">{name}</p>
-      {error && (
-        <p
-          role="alert"
-          className="mb-3 break-words text-xs text-[var(--status-danger-fg)]"
-        >
-          {error}
-        </p>
-      )}
-      <div className="flex justify-end gap-2">
+      <div className="flex items-center justify-end gap-2">
         <button
           type="button"
           autoFocus
@@ -704,6 +712,7 @@ function DeleteDialog({
             ? translate('settings.connRemoving')
             : translate('settings.connRemoveHere')}
         </button>
+        {error && !busy && <ErrorMark message={error} />}
       </div>
     </FormDialog>
   );

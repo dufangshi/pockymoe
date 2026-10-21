@@ -1,5 +1,6 @@
 import { getLocale } from '@pockymoe/thread-ui/i18n';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
+import { ErrorMark } from '@pockymoe/thread-ui';
 import { DeviceEncryptionStatus } from '../components/DeviceEncryptionStatus';
 import { TourLauncherButton } from '../components/onboarding/TourProvider';
 import { useAppShellNav } from '../components/AppShellNavContext';
@@ -94,7 +95,9 @@ export function WorkspacesPage() {
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [runtimeConfig, setRuntimeConfig] = useState<RuntimeConfigDto | null>(null);
   const [runtimeError, setRuntimeError] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // Why the list or an action failed, as a mark after its control (`at`):
+  // 'load', 'rename', `favorite:<id>`, `isolation:<id>`.
+  const [error, setError] = useState<{ at: string; message: string } | null>(null);
   const [deviceName, setDeviceName] = useState<{ deviceId: string | null; name: string; owned: boolean } | null>(null);
   useEffect(() => {
     let active = true;
@@ -155,7 +158,7 @@ export function WorkspacesPage() {
         setWorkspaces(workspaceResult.value);
         setError(null);
       } else {
-        setError(errorText(workspaceResult.reason, translate("files.unableToLoadWorkspaces")));
+        setError({ at: 'load', message: errorText(workspaceResult.reason, translate("files.unableToLoadWorkspaces")) });
       }
       if (runtimeResult.status === 'fulfilled') {
         setRuntimeConfig(runtimeResult.value);
@@ -189,7 +192,7 @@ export function WorkspacesPage() {
       setWorkspaces((current) => current.map((item) => (item.id === updated.id ? updated : item)));
     } catch (caught) {
       setWorkspaces((current) => current.map((item) => (item.id === workspace.id ? workspace : item)));
-      setError(errorText(caught, translate("files.unableToUpdateWorkspace")));
+      setError({ at: `favorite:${workspace.id}`, message: errorText(caught, translate("files.unableToUpdateWorkspace")) });
     } finally {
       setFavoriteWorkspaceId(null);
     }
@@ -206,7 +209,7 @@ export function WorkspacesPage() {
       setWorkspaces((current) => current.map((item) => (item.id === updated.id ? updated : item)));
     } catch (caught) {
       setWorkspaces((current) => current.map((item) => (item.id === workspace.id ? workspace : item)));
-      setError(translate('files.isolationFailed', { value1: errorText(caught, translate('files.unableToUpdateWorkspace')) }));
+      setError({ at: `isolation:${workspace.id}`, message: translate('files.isolationFailed', { value1: errorText(caught, translate('files.unableToUpdateWorkspace')) }) });
     }
   }
 
@@ -223,7 +226,7 @@ export function WorkspacesPage() {
       setEditingWorkspaceId(null);
       setDraftLabel('');
     } catch (caught) {
-      setError(errorText(caught, translate("files.unableToRenameWorkspace")));
+      setError({ at: 'rename', message: errorText(caught, translate("files.unableToRenameWorkspace")) });
     } finally {
       setSavingWorkspaceId(null);
     }
@@ -262,9 +265,11 @@ export function WorkspacesPage() {
     setDeletingWorkspace(workspace);
   }
 
+  // A failed runtime read is a short status; its reason is behind a mark.
   const runtimeSummary = runtimeConfig
     ? runtimeConfig.workspaceRoot
-    : runtimeError ?? translate("files.checkingRuntime");
+    : runtimeError ? translate("workbench.runtimeNotAvailable") : translate("files.checkingRuntime");
+  const rowMark = (at: string) => error?.at === at ? <ErrorMark message={error.message} /> : null;
 
   return (
     <div className="product-page space-y-4" data-page="workspaces">
@@ -288,8 +293,11 @@ export function WorkspacesPage() {
             }`}
           />
           <span className="shrink-0 font-medium text-[var(--theme-fg)]">Supervisor</span>
-          <span className="min-w-0 flex-1 truncate font-mono text-xs text-[var(--theme-fg-muted)]" title={runtimeSummary}>
-            {runtimeSummary}
+          <span className="flex min-w-0 flex-1 items-center gap-1.5">
+            <span className="min-w-0 truncate font-mono text-xs text-[var(--theme-fg-muted)]" title={runtimeSummary}>
+              {runtimeSummary}
+            </span>
+            {runtimeError ? <ErrorMark message={runtimeError} /> : null}
           </span>
           <span className="hidden shrink-0 text-xs tabular-nums text-[var(--theme-fg-muted)] sm:inline">
             {workspaces.length} {workspaces.length === 1 ? translate("files.workspace_a279fe") : translate("files.workspaces_e6f0a0")}
@@ -306,7 +314,7 @@ export function WorkspacesPage() {
             value={
               runtimeConfig
                 ? `${runtimeConfig.environment} | ${runtimeConfig.host}:${runtimeConfig.port}`
-                : runtimeError ?? translate("workbench.runtimeNotAvailable")
+                : translate("workbench.runtimeNotAvailable")
             }
           />
           <RuntimeFact
@@ -316,19 +324,21 @@ export function WorkspacesPage() {
         </dl>
       </details>
 
-      {error ? (
-        <div className="host-error flex min-h-11 flex-col gap-3 rounded-md border px-4 py-3 text-sm sm:flex-row sm:items-center sm:justify-between" role="alert">
-          <span>{error}</span>
+      {/* The list could not load: a short label, the reason behind a mark, and a visible Retry. */}
+      {!loading && error?.at === 'load' ? (
+        <div className="flex min-h-11 flex-wrap items-center gap-3 text-sm">
+          <span className="flex items-center gap-1.5 text-[var(--theme-fg-muted)]">
+            {translate("files.unableToLoadWorkspaces")}
+            {error.message !== translate("files.unableToLoadWorkspaces") ? <ErrorMark message={error.message} /> : null}
+          </span>
           {relayDeviceId ? <DeviceEncryptionStatus deviceId={relayDeviceId} /> : null}
-          {!editingWorkspaceId ? (
-            <button
-              className="host-secondary-button inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-md border px-3 text-xs font-semibold"
-              onClick={() => setLoadAttempt((attempt) => attempt + 1)}
-              type="button"
-            >
-              <RefreshCw data-icon="refresh" aria-hidden="true" className="h-3.5 w-3.5" />
-              {translate("files.retry")}</button>
-          ) : null}
+          <button
+            className="host-secondary-button inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-md border px-3 text-xs font-semibold"
+            onClick={() => { setError(null); setLoadAttempt((attempt) => attempt + 1); }}
+            type="button"
+          >
+            <RefreshCw data-icon="refresh" aria-hidden="true" className="h-3.5 w-3.5" />
+            {translate("files.retry")}</button>
         </div>
       ) : null}
 
@@ -346,7 +356,7 @@ export function WorkspacesPage() {
         </div>
       ) : null}
 
-      {!loading && !error && workspaces.length === 0 ? (
+      {!loading && error?.at !== 'load' && workspaces.length === 0 ? (
         <section className="product-panel">
           <div className="product-empty">
             <div>
@@ -430,6 +440,7 @@ export function WorkspacesPage() {
                         className={`h-4 w-4 ${workspace.isFavorite ? 'rotate-[18deg] fill-current' : 'rotate-[8deg]'}`}
                       />
                     </button>
+                    {rowMark(`favorite:${workspace.id}`)}
                     <WorkspaceActionsMenu
                       workspace={workspace}
                       open={menuOpen}
@@ -440,6 +451,7 @@ export function WorkspacesPage() {
                       onToggleIsolation={workspace.agentIsolated === undefined ? undefined : () => void handleIsolation(workspace)}
                       onDelete={() => beginDelete(workspace)}
                     />
+                    {rowMark(`isolation:${workspace.id}`)}
                   </div>}
                 </article>
               );
@@ -454,7 +466,7 @@ export function WorkspacesPage() {
         label={translate("files.workspaceLabel")}
         value={draftLabel}
         busy={savingWorkspaceId !== null}
-        error={editingWorkspaceId ? error : null}
+        error={editingWorkspaceId && error?.at === 'rename' ? error.message : null}
         onChange={setDraftLabel}
         onCancel={() => {
           setEditingWorkspaceId(null);
@@ -477,7 +489,8 @@ export function WorkspacesPage() {
         title={translate("files.deleteWorkspace")}
         description={
           deletingWorkspace
-            ? translate("files.removeAndItsThreadsFromThisSupervisor", { value1: deletingWorkspace.label, value2: deleteError ? translate("files.theLastAttemptFailed", { value1: deleteError }) : '' })
+            // The failure is the mark after the confirm button, not a sentence here.
+            ? translate("files.removeAndItsThreadsFromThisSupervisor", { value1: deletingWorkspace.label, value2: '' })
             : ''
         }
         confirmLabel={translate("files.deleteWorkspace_bc2cf9")}

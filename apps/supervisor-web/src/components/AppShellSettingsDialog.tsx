@@ -34,6 +34,7 @@ import {
   updateWorkspaceSettings,
 } from '../lib/api';
 import {
+  ErrorMark,
   PathChip,
   PhoneHandChoice,
   useDevicePlugins,
@@ -163,6 +164,8 @@ export function AppShellSettingsDialog({
     renameDraft: string;
     message: string | null;
     error: string | null;
+    /** Where the error belongs: the list, Create backup, or one archive's Apply or rename. */
+    failedAt: 'load' | 'create' | `apply:${string}` | `rename:${string}` | null;
   }>({
     loading: false,
     creating: false,
@@ -172,7 +175,11 @@ export function AppShellSettingsDialog({
     renameDraft: '',
     message: null,
     error: null,
+    failedAt: null,
   });
+  // Bumped by a Retry after a read that never arrived.
+  const [workspaceRevision, setWorkspaceRevision] = useState(0);
+  const [archivesRevision, setArchivesRevision] = useState(0);
   const selectedThemeMode = shellNav?.themeMode ?? 'system';
   // The applied pack may support one color mode only; the stored choice stays.
   const fixedThemeMode = useThemeRegistry().fixedMode;
@@ -342,7 +349,7 @@ export function AppShellSettingsDialog({
     return () => {
       cancelled = true;
     };
-  }, [settingsVisible, section]);
+  }, [settingsVisible, section, workspaceRevision]);
 
   useEffect(() => {
     if (
@@ -453,6 +460,7 @@ export function AppShellSettingsDialog({
         ...current,
         loading: true,
         error: null,
+        failedAt: null,
         message: null,
       }));
 
@@ -481,6 +489,7 @@ export function AppShellSettingsDialog({
             error instanceof ApiError
               ? error.message
               : translate("files.unableToLoadConfigArchives"),
+          failedAt: 'load',
         }));
       }
     }
@@ -495,6 +504,7 @@ export function AppShellSettingsDialog({
     activeManagementSchema.configArchives,
     settingsVisible,
     section,
+    archivesRevision,
   ]);
 
   async function handleSaveWorkspaceSettings() {
@@ -603,6 +613,7 @@ export function AppShellSettingsDialog({
       creating: true,
       message: null,
       error: null,
+      failedAt: null,
     }));
 
     try {
@@ -623,6 +634,7 @@ export function AppShellSettingsDialog({
           error instanceof ApiError
             ? error.message
             : translate("files.unableToCreateAConfigBackup"),
+        failedAt: 'create',
       }));
     }
   }
@@ -641,6 +653,7 @@ export function AppShellSettingsDialog({
       applyingId: archive.id,
       message: null,
       error: null,
+      failedAt: null,
     }));
 
     try {
@@ -664,6 +677,7 @@ export function AppShellSettingsDialog({
           error instanceof ApiError
             ? error.message
             : translate("files.unableToApplyTheConfigArchive"),
+        failedAt: `apply:${archive.id}`,
       }));
     }
   }
@@ -685,6 +699,7 @@ export function AppShellSettingsDialog({
       renamingBusyId: archive.id,
       message: null,
       error: null,
+      failedAt: null,
     }));
 
     try {
@@ -711,6 +726,7 @@ export function AppShellSettingsDialog({
           error instanceof ApiError
             ? error.message
             : translate("files.unableToRenameTheConfigBackup"),
+        failedAt: `rename:${archive.id}`,
       }));
     }
   }
@@ -749,11 +765,6 @@ export function AppShellSettingsDialog({
                       : translate("files.builtInModule"),
                   ].join(' · ')}
                 </span>
-                {unavailable ? (
-                  <span className="mt-1 block text-xs leading-5 text-[var(--status-warning-fg)]">
-                    {unavailable}
-                  </span>
-                ) : null}
               </label>
               <PluginSettingsButton plugin={plugin} />
               <span className="grid h-8 w-8 shrink-0 place-items-center">
@@ -772,6 +783,12 @@ export function AppShellSettingsDialog({
                   type="checkbox"
                 />
               </span>
+              {/* A plugin this device cannot run keeps its switch, greyed, with the reason on a mark. */}
+              {unavailable ? (
+                <span className="grid h-8 shrink-0 place-items-center">
+                  <ErrorMark kind="unavailable" message={unavailable} />
+                </span>
+              ) : null}
             </div>
             {/* An enabled plugin says whether conversations that follow the default have it on. */}
             {plugin.enabled && plugin.defaultEnabled !== undefined && (
@@ -824,15 +841,10 @@ export function AppShellSettingsDialog({
           >
             {pluginImportState.busy ? translate("files.importing") : translate("files.import")}
           </button>
+          {pluginImportState.error && (
+            <ErrorMark message={pluginImportState.error} onRetry={() => void handleImportPlugin()} />
+          )}
         </div>
-        {pluginImportState.error && (
-          <p
-            className="host-error mt-2 rounded-md border px-3 py-2 text-xs"
-            role="alert"
-          >
-            {pluginImportState.error}
-          </p>
-        )}
         {pluginImportState.message && (
           <p
             className="mt-2 rounded-md bg-[var(--status-success-bg)] px-3 py-2 text-xs text-[var(--status-success-fg)]"
@@ -842,14 +854,6 @@ export function AppShellSettingsDialog({
           </p>
         )}
       </div>}
-      {plugins.error && (
-        <p
-          className="host-error mt-2 rounded-md border px-3 py-2 text-xs"
-          role="alert"
-        >
-          {plugins.error}
-        </p>
-      )}
     </>
   );
 
@@ -968,7 +972,12 @@ export function AppShellSettingsDialog({
           {section === 'plugins' && (
             <section className="py-2">
               <div className="flex items-center justify-between text-xs text-[var(--theme-fg-muted)]">
-                <span>{pluginCountLabel}</span>
+                <span className="flex items-center gap-1">
+                  {pluginCountLabel}
+                  {plugins.error && !plugins.loading && (
+                    <ErrorMark message={plugins.error} onRetry={() => void plugins.refresh()} />
+                  )}
+                </span>
                 <button
                   className="host-secondary-button rounded-md border px-3 py-2"
                   onClick={() => void plugins.refresh()}
@@ -1024,10 +1033,14 @@ export function AppShellSettingsDialog({
                 <div className="min-w-0 border-y border-[var(--theme-border)] py-3">
                   <p className="text-xs font-medium text-[var(--theme-fg-muted)]">
                     {translate("files.workspaceRoot")}</p>
-                  <div className="mt-1 flex min-w-0 text-xs leading-5 text-[var(--theme-fg-soft)]">
+                  <div className="mt-1 flex min-w-0 items-center gap-1 text-xs leading-5 text-[var(--theme-fg-soft)]">
                     {workspaceSettings?.workspaceRoot
                       ? <PathChip path={workspaceSettings.workspaceRoot} />
                       : workspaceSettingsState.loading ? translate("files.loading") : translate("files.unavailable")}
+                    {/* Nothing was read: the reason and a Retry on the mark. */}
+                    {!workspaceSettings && !workspaceSettingsState.loading && workspaceSettingsState.error ? (
+                      <ErrorMark message={workspaceSettingsState.error} onRetry={() => setWorkspaceRevision((value) => value + 1)} />
+                    ) : null}
                   </div>
                 </div>
                 <div className="min-w-0">
@@ -1066,30 +1079,28 @@ export function AppShellSettingsDialog({
                       placeholder="/Users/name/dev"
                       className="relay-input min-h-11 min-w-0 flex-1 rounded-md disabled:cursor-wait disabled:opacity-60"
                     />
-                    <button
-                      type="button"
-                      aria-label={translate("files.saveWorkspaceDefaults")}
-                      onClick={() => void handleSaveWorkspaceSettings()}
-                      disabled={
-                        workspaceSettingsState.loading ||
-                        workspaceSettingsState.saving ||
-                        !workspaceSettingsState.devHomeDraft.trim()
-                      }
-                      className="relay-button-primary min-h-11 shrink-0 rounded-md px-4"
-                    >
-                      {workspaceSettingsState.saving ? translate("files.saving") : translate("files.save")}
-                    </button>
+                    <div className="flex shrink-0 items-center gap-1">
+                      <button
+                        type="button"
+                        aria-label={translate("files.saveWorkspaceDefaults")}
+                        onClick={() => void handleSaveWorkspaceSettings()}
+                        disabled={
+                          workspaceSettingsState.loading ||
+                          workspaceSettingsState.saving ||
+                          !workspaceSettingsState.devHomeDraft.trim()
+                        }
+                        className="relay-button-primary min-h-11 shrink-0 rounded-md px-4 max-sm:flex-1"
+                      >
+                        {workspaceSettingsState.saving ? translate("files.saving") : translate("files.save")}
+                      </button>
+                      {workspaceSettings && workspaceSettingsState.error ? (
+                        <ErrorMark message={workspaceSettingsState.error} onRetry={() => void handleSaveWorkspaceSettings()} />
+                      ) : null}
+                    </div>
                   </div>
                 </div>
               </div>
-              {workspaceSettingsState.error ? (
-                <p
-                  className="host-error mt-3 rounded-md border px-3 py-2 text-xs"
-                  role="alert"
-                >
-                  {workspaceSettingsState.error}
-                </p>
-              ) : workspaceSettingsState.message ? (
+              {workspaceSettingsState.message ? (
                 <p
                   className="mt-3 rounded-md bg-[var(--status-success-bg)] px-3 py-2 text-xs text-[var(--status-success-fg)]"
                   role="status"
@@ -1151,46 +1162,44 @@ export function AppShellSettingsDialog({
                     const dirty = state.draftContent !== state.originalContent;
 
                     return (
-                      <button
-                        key={file.name}
-                        type="button"
-                        onClick={() => setSelectedFileName(file.name)}
-                        className="block min-h-11 w-full px-2 py-3 text-left transition hover:bg-[var(--theme-hover)] focus-visible:outline-none focus-visible:bg-[var(--theme-hover)] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--theme-accent-ring)]"
-                      >
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="min-w-0">
-                            <p className="truncate text-sm font-medium text-[var(--theme-fg)]">
-                              {file.label}
-                            </p>
-                            <p className="settings-hint mt-1 text-xs leading-5 text-[var(--theme-fg-muted)]">
-                              {file.description}
-                            </p>
-                            {state.error ? (
-                              <p
-                                className="mt-1 text-xs text-[var(--status-danger-fg)]"
-                                role="alert"
-                              >
-                                {state.error}
+                      // The row is a button, so a failure's mark sits beside it, not in it.
+                      <div key={file.name} className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => setSelectedFileName(file.name)}
+                          className="block min-h-11 min-w-0 flex-1 px-2 py-3 text-left transition hover:bg-[var(--theme-hover)] focus-visible:outline-none focus-visible:bg-[var(--theme-hover)] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--theme-accent-ring)]"
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <p className="truncate text-sm font-medium text-[var(--theme-fg)]">
+                                {file.label}
                               </p>
-                            ) : null}
+                              <p className="settings-hint mt-1 text-xs leading-5 text-[var(--theme-fg-muted)]">
+                                {file.description}
+                              </p>
+                            </div>
+                            <div className="shrink-0">
+                              {state.loading ? (
+                                <span className="text-[11px] font-medium text-[var(--theme-fg-muted)]">
+                                  {translate("files.loading_8f26c6")}</span>
+                              ) : dirty ? (
+                                <span className="text-[11px] font-medium text-[var(--theme-accent-strong)]">
+                                  {translate("files.unsaved")}</span>
+                              ) : state.exists ? (
+                                <span className="text-[11px] font-medium text-[var(--status-success-fg)]">
+                                  {translate("files.ready")}</span>
+                              ) : (
+                                <span className="text-[11px] font-medium text-[var(--status-info-fg)]">
+                                  {translate("files.new")}</span>
+                              )}
+                            </div>
                           </div>
-                          <div className="shrink-0">
-                            {state.loading ? (
-                              <span className="text-[11px] font-medium text-[var(--theme-fg-muted)]">
-                                {translate("files.loading_8f26c6")}</span>
-                            ) : dirty ? (
-                              <span className="text-[11px] font-medium text-[var(--theme-accent-strong)]">
-                                {translate("files.unsaved")}</span>
-                            ) : state.exists ? (
-                              <span className="text-[11px] font-medium text-[var(--status-success-fg)]">
-                                {translate("files.ready")}</span>
-                            ) : (
-                              <span className="text-[11px] font-medium text-[var(--status-info-fg)]">
-                                {translate("files.new")}</span>
-                            )}
-                          </div>
-                        </div>
-                      </button>
+                        </button>
+                        {/* The open editor shows its own. */}
+                        {state.error && selectedFileName !== file.name ? (
+                          <ErrorMark message={state.error} className="mr-2" />
+                        ) : null}
+                      </div>
                     );
                   })}
                   {editableFiles.length === 0 ? (
@@ -1211,29 +1220,27 @@ export function AppShellSettingsDialog({
                         <p className="settings-hint mt-1 text-xs leading-5 text-[var(--theme-fg-muted)]">
                           {translate("files.backupTheSelectedBackendHostFilesThen")}</p>
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => void handleCreateArchive()}
-                        disabled={
-                          archivesState.creating ||
-                          archivesState.applyingId !== null ||
-                          archivesState.renamingBusyId !== null
-                        }
-                        className="host-secondary-button min-h-11 shrink-0 rounded-md border px-3 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-50"
-                      >
-                        {archivesState.creating
-                          ? translate("files.creating")
-                          : translate("files.createBackup")}
-                      </button>
+                      <div className="flex shrink-0 items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => void handleCreateArchive()}
+                          disabled={
+                            archivesState.creating ||
+                            archivesState.applyingId !== null ||
+                            archivesState.renamingBusyId !== null
+                          }
+                          className="host-secondary-button min-h-11 shrink-0 rounded-md border px-3 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {archivesState.creating
+                            ? translate("files.creating")
+                            : translate("files.createBackup")}
+                        </button>
+                        {archivesState.error && archivesState.failedAt === 'create' ? (
+                          <ErrorMark message={archivesState.error} onRetry={() => void handleCreateArchive()} />
+                        ) : null}
+                      </div>
                     </div>
-                    {archivesState.error ? (
-                      <p
-                        className="host-error mt-3 rounded-md border px-3 py-2 text-xs"
-                        role="alert"
-                      >
-                        {archivesState.error}
-                      </p>
-                    ) : archivesState.message ? (
+                    {archivesState.message ? (
                       <p
                         className="mt-3 rounded-md bg-[var(--status-success-bg)] px-3 py-2 text-xs text-[var(--status-success-fg)]"
                         role="status"
@@ -1248,6 +1255,12 @@ export function AppShellSettingsDialog({
                           role="status"
                         >
                           {translate("files.loadingBackups")}</p>
+                      ) : archivesState.error && archivesState.failedAt === 'load' && archives.length === 0 ? (
+                        // The list never arrived: not "no backups yet", but a mark with Retry.
+                        <p className="flex items-center gap-1 py-4 text-xs text-[var(--theme-fg-muted)]">
+                          {translate("files.unavailable")}
+                          <ErrorMark message={archivesState.error} onRetry={() => setArchivesRevision((value) => value + 1)} />
+                        </p>
                       ) : archives.length === 0 ? (
                         <p className="py-4 text-xs text-[var(--theme-fg-muted)]">
                           {translate("files.noConfigBackupsYet")}</p>
@@ -1273,6 +1286,7 @@ export function AppShellSettingsDialog({
                                             ...current,
                                             renameDraft: event.target.value,
                                             error: null,
+                                            failedAt: null,
                                             message: null,
                                           }))
                                         }
@@ -1296,6 +1310,11 @@ export function AppShellSettingsDialog({
                                           ? translate("files.saving")
                                           : translate("files.save")}
                                       </button>
+                                      {archivesState.error && archivesState.failedAt === `rename:${archive.id}` ? (
+                                        <span className="flex shrink-0 items-center">
+                                          <ErrorMark message={archivesState.error} onRetry={() => void handleRenameArchive(archive)} />
+                                        </span>
+                                      ) : null}
                                       <button
                                         type="button"
                                         onClick={() =>
@@ -1348,6 +1367,7 @@ export function AppShellSettingsDialog({
                                         renameDraft: archive.label,
                                         message: null,
                                         error: null,
+                                        failedAt: null,
                                       }))
                                     }
                                     disabled={
@@ -1375,6 +1395,11 @@ export function AppShellSettingsDialog({
                                       ? translate("files.applying")
                                       : translate("files.apply")}
                                   </button>
+                                  {archivesState.error && archivesState.failedAt === `apply:${archive.id}` ? (
+                                    <span className="flex min-h-11 items-center">
+                                      <ErrorMark message={archivesState.error} onRetry={() => void handleApplyArchive(archive)} />
+                                    </span>
+                                  ) : null}
                                 </div>
                               </div>
                             </div>
@@ -1425,20 +1450,23 @@ export function AppShellSettingsDialog({
                 }))
               }
             />
-            {selectedFile.error && <p role="alert">{selectedFile.error}</p>}
             {selectedFile.saveMessage && (
               <p role="status">{selectedFile.saveMessage}</p>
             )}
-            <button
-              className="relay-button-primary min-h-10"
-              disabled={
-                selectedFile.loading ||
-                selectedFile.saving ||
-                selectedFile.draftContent === selectedFile.originalContent
-              }
-              onClick={() => void handleSave(selectedFileName)}
-            >
-              {translate("files.saveFile")}</button>
+            <div className="flex items-center gap-2">
+              <button
+                className="relay-button-primary min-h-10 flex-1"
+                disabled={
+                  selectedFile.loading ||
+                  selectedFile.saving ||
+                  selectedFile.draftContent === selectedFile.originalContent
+                }
+                onClick={() => void handleSave(selectedFileName)}
+              >
+                {translate("files.saveFile")}</button>
+              {/* No Retry here: after a failed read it would write an empty file. */}
+              {selectedFile.error && <ErrorMark message={selectedFile.error} />}
+            </div>
           </FormDialog>
         )}
       </div>

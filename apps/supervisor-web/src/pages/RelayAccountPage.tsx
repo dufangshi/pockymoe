@@ -1,5 +1,6 @@
 import { AccountSecurityPanel } from '../components/AccountSecurityPanel';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
+import { ErrorMark } from '@pockymoe/thread-ui';
 import { ProductHeader } from '../components/ProductHeader';
 import {
   RelaySecurityPanel,
@@ -55,7 +56,8 @@ export function RelayAccountSettingsPanel({
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [savingProfile, setSavingProfile] = useState(false);
-  const [profileError, setProfileError] = useState<string | null>(null);
+  // Why the avatar or the save failed: a mark after that control.
+  const [profileError, setProfileError] = useState<{ at: 'avatar' | 'save'; message: string } | null>(null);
   const [profileMessage, setProfileMessage] = useState<string | null>(null);
 
   async function load() {
@@ -94,7 +96,7 @@ export function RelayAccountSettingsPanel({
       window.dispatchEvent(new Event('remote-codex-account-updated'));
       setProfileMessage(translate("auth.profileSaved"));
     } catch (caught) {
-      setProfileError(errorMessage(caught, translate("auth.profileSaveFailed")));
+      setProfileError({ at: 'save', message: errorMessage(caught, translate("auth.profileSaveFailed")) });
     } finally {
       setSavingProfile(false);
     }
@@ -125,10 +127,13 @@ export function RelayAccountSettingsPanel({
   }
 
   if (loadError) {
+    // Nothing else can show: a short label, the reason behind a mark, and a visible Retry.
     return (
-      <Notice className={className} tone="danger">
-        <p className="font-medium">{translate("auth.accountDetailsCouldNotBeLoaded")}</p>
-        <p className="mt-1 text-sm">{loadError}</p>
+      <div className={className}>
+        <p className="flex items-center gap-1.5 font-medium text-[var(--theme-fg)]">
+          {translate("auth.accountDetailsCouldNotBeLoaded")}
+          <ErrorMark message={loadError} />
+        </p>
         <button
           className="relay-button-secondary mt-3 inline-flex h-11 items-center gap-2"
           onClick={() => void load()}
@@ -136,7 +141,7 @@ export function RelayAccountSettingsPanel({
         >
           <RefreshCw aria-hidden="true" className="h-4 w-4" />
           {translate("auth.retry")}</button>
-      </Notice>
+      </div>
     );
   }
 
@@ -191,12 +196,13 @@ export function RelayAccountSettingsPanel({
                       if (!file) return;
                       setPreparingAvatar(true); setProfileError(null); setProfileMessage(null);
                       try { setAvatar(await resizeAvatar(file)); }
-                      catch { setProfileError(translate('auth.avatarInvalid')); }
+                      catch { setProfileError({ at: 'avatar', message: translate('auth.avatarInvalid') }); }
                       finally { setPreparingAvatar(false); }
                     }} />
                 </label>
                 {avatar && <button type="button" className="relay-button-secondary min-h-11 px-3 text-sm" disabled={savingProfile || preparingAvatar}
                   onClick={() => { setAvatar(null); setProfileError(null); setProfileMessage(null); }}>{translate('auth.removeAvatar')}</button>}
+                {profileError?.at === 'avatar' && <ErrorMark message={profileError.message} />}
                 <p className="w-full text-xs text-[var(--theme-fg-muted)]">{translate('auth.avatarHint')}</p>
               </div>
             </div>
@@ -215,20 +221,20 @@ export function RelayAccountSettingsPanel({
                 value={username}
               />
             </label>
-            {profileError ? (
-              <Notice tone="danger">{profileError}</Notice>
-            ) : null}
             {profileMessage ? (
-              <Notice tone="success">{profileMessage}</Notice>
+              <Notice>{profileMessage}</Notice>
             ) : null}
-            <button
-              className="relay-button-primary inline-flex h-11 items-center gap-2"
-              disabled={savingProfile || preparingAvatar || !username.trim() || !profileDirty}
-              type="submit"
-            >
-              <Save aria-hidden="true" className="h-4 w-4" />
-              {savingProfile ? translate("auth.saving") : translate("auth.saveProfile")}
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                className="relay-button-primary inline-flex h-11 items-center gap-2"
+                disabled={savingProfile || preparingAvatar || !username.trim() || !profileDirty}
+                type="submit"
+              >
+                <Save aria-hidden="true" className="h-4 w-4" />
+                {savingProfile ? translate("auth.saving") : translate("auth.saveProfile")}
+              </button>
+              {profileError?.at === 'save' && <ErrorMark message={profileError.message} />}
+            </div>
           </form>
         </div>
       </section>
@@ -253,25 +259,13 @@ export function RelayAccountPage() {
   );
 }
 
-function Notice({
-  tone,
-  children,
-  className = '',
-}: {
-  tone: 'danger' | 'success';
-  children: React.ReactNode;
-  className?: string;
-}) {
-  const { locale: i18nLocale } = useI18n();
+/** A saved profile is confirmed in place; failures are marks after their control. */
+function Notice({ children }: { children: React.ReactNode }) {
   return (
     <div
-      aria-live={tone === 'danger' ? 'assertive' : 'polite'}
-      className={`rounded-lg px-3 py-2 text-sm ${
-        tone === 'danger'
-          ? 'bg-[var(--status-danger-bg)] text-[var(--status-danger-fg)]'
-          : 'bg-[var(--status-success-bg)] text-[var(--status-success-fg)]'
-      } ${className}`.trim()}
-      role={tone === 'danger' ? 'alert' : 'status'}
+      aria-live="polite"
+      className="rounded-lg bg-[var(--status-success-bg)] px-3 py-2 text-sm text-[var(--status-success-fg)]"
+      role="status"
     >
       {children}
     </div>

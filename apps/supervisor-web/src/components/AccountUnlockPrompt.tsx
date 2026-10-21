@@ -1,4 +1,5 @@
 import { appUrl } from '../lib/webBase';
+import { ErrorMark } from '@pockymoe/thread-ui';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@pockymoe/thread-ui';
 import { LockKeyhole } from 'lucide-react';
@@ -12,7 +13,7 @@ import { clearTransportKeyCache, type TransportStatus } from '../lib/relayTransp
 import { getTransportStatus, probeDeviceEncryption } from '../lib/relayTransport';
 import { OWNER_READ_BLOCKED_EVENT, OWNER_UNLOCKED_EVENT, notifyOwnerUnlocked,
   type OwnerReadBlockedDetail, type OwnerUnlockedDetail } from '../lib/ownerUnlockRecovery';
-import { AuthField, AuthLink, AuthNotice, RecoveryCodeBody } from './auth/AuthUi';
+import { AuthField, AuthLink, RecoveryCodeBody } from './auth/AuthUi';
 import { UnlockCauseNote } from './UnlockCauseNote';
 import { unlockCause, type UnlockCause } from '../lib/unlockCause';
 
@@ -161,12 +162,12 @@ export function AccountUnlockPrompt() {
             type={recovery ? 'text' : 'password'}
             value={secret}
           />
-          {error ? <AuthNotice>{error}</AuthNotice> : null}
-          <div className="flex gap-2">
+          <div className="flex items-center gap-2">
             <button className="relay-button-secondary h-11 flex-1" disabled={busy} onClick={dismiss} type="button">{translate('auth.ui.later')}</button>
             <button aria-busy={busy || undefined} className="relay-button-primary account-key-action h-11 flex-1" disabled={busy || !secret} type="submit">
               {translate(busy ? 'auth.ui.pleaseWait' : 'auth.ui.unlock')}
             </button>
+            {error ? <ErrorMark message={error} /> : null}
           </div>
         </form>
       )}

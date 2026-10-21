@@ -110,7 +110,10 @@ it('explains offline protected sharing and missing recipient account key without
       row={{ ...row, deviceConnected: false }}
     />,
   );
-  expect(await screen.findByText(/protected device must be online/)).toBeVisible();
+  // The grant button stays, disabled; its mark explains why on a tap.
+  fireEvent.click(await screen.findByRole('button', { name: 'Why it is unavailable' }));
+  expect(screen.getByText(/protected device must be online/)).toBeVisible();
+  expect(screen.getByRole('button', { name: 'Review and confirm' })).toBeDisabled();
   expect(state.grants).not.toHaveBeenCalled();
   expect(
     screen.queryByRole('button', { name: 'Copy invite link' }),

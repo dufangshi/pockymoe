@@ -12,7 +12,7 @@ import {
   RefreshCw,
   X,
 } from 'lucide-react';
-import { TokenUsageCost } from '@pockymoe/thread-ui';
+import { ErrorMark, TokenUsageCost } from '@pockymoe/thread-ui';
 import type {
   NativeSubagentDetailDto,
   NativeSubagentDto,
@@ -97,7 +97,7 @@ function SubagentActivityRow({ item, endpoint, lazy }: { item: ThreadHistoryItem
       <span className="native-agents-status" data-status={item.status}>{statusLabel(item.status ?? 'completed')}</span>
       <time title={dateLabel(item.createdAt)}>{item.createdAt ? new Date(item.createdAt).toLocaleTimeString(getLocale(), { hour: '2-digit', minute: '2-digit' }) : '—'}</time>
     </button>
-    {expanded && (error ? <div role="alert" className="native-agents-notice">{error}<button type="button" onClick={() => setRetry(value => value + 1)}>{translate('workbench.subagentRefresh')}</button></div>
+    {expanded && (error ? <div className="native-agents-notice">{translate('workbench.unavailable')}<ErrorMark message={error} onRetry={() => setRetry(value => value + 1)} /></div>
       : body ? <pre>{body.text}</pre> : <p className="native-agents-empty">{translate('workbench.subagentLoading')}</p>)}
   </article>;
 }
@@ -166,7 +166,10 @@ function NativeSubagentsControl({ detail }: { detail: ThreadDetailDto }) {
   const [open, setOpen] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
   const [inspect, setInspect] = useState<NativeSubagentDetailDto | null>(null);
+  // The open agent refreshes every 3 s: a failed refresh keeps what is shown,
+  // and only an agent whose activity never loaded says why.
   const [error, setError] = useState<string | null>(null);
+  const [earlierError, setEarlierError] = useState<string | null>(null);
   const [refresh, setRefresh] = useState(0);
   const [now, setNow] = useState(Date.now);
   const [loadingEarlier, setLoadingEarlier] = useState(false);
@@ -362,6 +365,7 @@ function NativeSubagentsControl({ detail }: { detail: ThreadDetailDto }) {
     const controller = new AbortController();
     earlierRequest.current = controller;
     setLoadingEarlier(true);
+    setEarlierError(null);
     try {
       const result = await request<NativeSubagentDetailDto>(`${historyEndpoint}?before=${before}`, { signal: controller.signal });
       if (controller.signal.aborted) return;
@@ -370,7 +374,7 @@ function NativeSubagentsControl({ detail }: { detail: ThreadDetailDto }) {
         const items = new Map([...result.items, ...previous.items].map(item => [item.id, item]));
         return { ...previous, items: [...items.values()].sort((a, b) => (a.sequence ?? 0) - (b.sequence ?? 0)), hasEarlierItems: result.hasEarlierItems };
       });
-    } catch (cause) { if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : translate('workbench.subagentLoadFailed')); }
+    } catch (cause) { if (!controller.signal.aborted) setEarlierError(cause instanceof Error ? cause.message : translate('workbench.subagentLoadFailed')); }
     finally { if (!controller.signal.aborted) setLoadingEarlier(false); }
   }
   function back() {
@@ -378,12 +382,14 @@ function NativeSubagentsControl({ detail }: { detail: ThreadDetailDto }) {
     setSelected(null);
     setInspect(null);
     setError(null);
+    setEarlierError(null);
     requestAnimationFrame(() => id && listButtons.current.get(id)?.focus());
   }
   function select(id: string) {
     setSelected(id);
     setInspect(null);
     setError(null);
+    setEarlierError(null);
   }
   function renderAgent(agent: NativeSubagentDto) {
     return <article key={agent.id} className="native-agents-row">
@@ -504,11 +510,6 @@ function NativeSubagentsControl({ detail }: { detail: ThreadDetailDto }) {
               </button>
             </header>
             <div className="native-agents-body">
-              {error && (
-                <div role="alert" className="native-agents-notice">
-                  {error}
-                </div>
-              )}
               {!selected ? (
                 <div className="native-agents-list">
                   {rows.length === 0 && (
@@ -597,9 +598,14 @@ function NativeSubagentsControl({ detail }: { detail: ThreadDetailDto }) {
                         <p className="native-agents-empty">
                           {translate('workbench.subagentLoading')}
                         </p>
+                      ) : !current && error ? (
+                        <p className="native-agents-empty flex items-center gap-1.5">
+                          {translate('workbench.unavailable')}
+                          <ErrorMark message={error} onRetry={() => setRefresh((value) => value + 1)} />
+                        </p>
                       ) : current?.items.length ? (
                         <>
-                          {current.hasEarlierItems && <button type="button" className="native-agents-load-earlier" disabled={loadingEarlier} onClick={() => void loadEarlier()}>{translate(loadingEarlier ? 'workbench.subagentLoading' : 'workbench.subagentLoadEarlier')}</button>}
+                          {current.hasEarlierItems && <span className="mb-3 flex items-center justify-center gap-2"><button type="button" className="native-agents-load-earlier" style={{ margin: 0 }} disabled={loadingEarlier} onClick={() => void loadEarlier()}>{translate(loadingEarlier ? 'workbench.subagentLoading' : 'workbench.subagentLoadEarlier')}</button>{earlierError && <ErrorMark message={earlierError} />}</span>}
                           {groupNativeActivity(current.items).map(entry => <NativeActivityGroup key={`${selected}:${entry.key}`} items={entry.items} endpoint={historyEndpoint} lazy={current.historyMode === 'lazy-v1'} />)}
                         </>
                       ) : (
