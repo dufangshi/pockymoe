@@ -552,6 +552,9 @@ Moving around keeps the screen steady:
   load that finishes within a moment never shows the loader.
 - A thread opens at its end without first painting its top; messages on screen
   render their Markdown before the first paint.
+- Earlier turns load above what is on screen without moving it: the turn at the
+  top of the screen stays where it was, through the loading row, the insertion
+  and the new turns' rendering, until the reader scrolls.
 - A turn the reader folded or opened stays that way while the page is open, also
   after leaving the thread and coming back; a search result opens its turn once, and
   folding it again sticks while the thread keeps working.
