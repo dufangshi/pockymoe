@@ -953,3 +953,13 @@
 :theme .thread-ui-shell .matter-workbench .matter-tabs-row :is(.matter-nav-strip > :is(button, a), .matter-tabs-search .matter-search-trigger):hover { background: var(--plum-chrome-hover); color: var(--plum-chrome-fg); }
 :theme .thread-ui-shell .matter-workbench .matter-tabs-row > .matter-nav-strip { border-right-color: var(--plum-chrome-border); }
 :theme .thread-ui-shell .matter-workbench .matter-sidebar > .matter-nav-strip { border-bottom-color: color-mix(in srgb, var(--plum-chrome-border) 70%, transparent); }
+/* A workspace's own page on a phone lists its threads on the page, not on the
+   dark chrome: the rows take the page's inks. */
+:theme .thread-ui-shell .matter-workbench .matter-workspace-home-list {
+  --plum-chrome-fg: var(--theme-fg);
+  --plum-chrome-soft: var(--theme-fg-soft, var(--theme-fg));
+  --plum-chrome-muted: var(--theme-fg-muted);
+  --plum-chrome-hover: var(--theme-hover);
+  --plum-chrome-panel: var(--theme-bg);
+  --plum-chrome-border: var(--theme-border);
+}

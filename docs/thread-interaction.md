@@ -541,7 +541,10 @@ Moving around keeps the screen steady:
 - Opening a workspace from its list, navigation or map uses
   `/threads?workspaceId=…` (under `/devices/:id` in relay mode). It shows an
   unselected workspace with its conversations and their agent threads in the
-  sidebar. The main area offers a new thread and points to the sidebar.
+  sidebar. The main area offers a new thread. A phone has no sidebar, so there
+  the page itself lists the workspace's conversations (the same rows as the
+  thread sheet) under a one-row header with the workspace's name and New
+  thread, and the dock shows the workspace's name without a status mark.
   Loading, polling and refreshing never select a conversation automatically;
   the reader opens one explicitly.
 - A recently opened thread (the last twelve, per device) shows its conversation
