@@ -14,6 +14,10 @@ PLATFORMS = {
     'linux-x64-gnu': ('pockymoe', 'remote-codex-linux-x64-gnu'),
     'win32-x64-msvc': ('pockymoe.exe', 'remote-codex-win32-x64-msvc-cli.exe'),
 }
+# The install scripts ship with the release so README commands can fetch them
+# from releases/latest/download instead of a Web origin.
+SCRIPTS = pathlib.Path(__file__).resolve().parent
+SETUP_SCRIPTS = ('setup.sh', 'setup.ps1')
 
 def prepare(artifacts, web, out, version):
     if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', version):
@@ -28,6 +32,8 @@ def prepare(artifacts, web, out, version):
     for source, target in binaries:
         shutil.copyfile(source, out / target)
         (out / target).chmod(0o755)
+    for name in SETUP_SCRIPTS:
+        shutil.copyfile(SCRIPTS / name, out / name)
     with zipfile.ZipFile(out / 'remote-codex-web.zip', 'w', compression=zipfile.ZIP_DEFLATED) as archive:
         for source in sorted(web.rglob('*')):
             if source.is_symlink():

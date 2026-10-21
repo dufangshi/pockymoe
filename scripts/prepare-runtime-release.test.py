@@ -32,7 +32,8 @@ class RuntimeReleaseTest(unittest.TestCase):
             first, second = root / 'first', root / 'second'
             release.prepare(artifacts, web, first, '0.12.75')
             release.prepare(artifacts, web, second, '0.12.75')
-            self.assertEqual(len(list(first.iterdir())), 7)
+            self.assertEqual(len(list(first.iterdir())), 9)
+            self.assertEqual((first / 'setup.sh').read_bytes(), Path(release.__file__).with_name('setup.sh').read_bytes())
             for asset in first.iterdir():
                 self.assertEqual(asset.read_bytes(), (second / asset.name).read_bytes())
             for entry in (first / 'SHA256SUMS').read_text().splitlines():
