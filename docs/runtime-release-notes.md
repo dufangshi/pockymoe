@@ -1,33 +1,34 @@
-A delegate's report reaches an agent that is still working instead of waiting
-for its turn to end, and people a conversation is shared with can open the port
-previews its agent creates.
+Share a whole workspace, not only one conversation or a whole device. Shares
+never reach a terminal, conversation and workspace shares stay inside their
+workspace's files, and the model is told when a prompt comes from someone you
+shared with.
 
-- **Wakes join the running turn**: when the agent threads an agent registered a
-  wake for (`thread wait --wake`) all finish or one is blocked, their report is
-  delivered as an interjection into the agent's running turn when its harness
-  takes steers, for example while Claude waits on a native subagent. An idle
-  agent, or one whose harness cannot steer, gets it as its next turn as before.
-- **Wakes say why and where from**: the report's first line says whether the
-  agent threads finished or one is blocked, and that it adds information to the
-  delegated task rather than giving a new instruction. It no longer counts as
-  something you said. Wakes still waiting show above the composer as **Waiting
-  for wake** with each agent thread's status; a queued report reads **Delegate
-  wake** with each agent thread's state instead of its raw header.
-- **Shared previews**: a port preview an agent creates with `pockymoe preview
-  create` records its conversation. Anyone that conversation (or one of its
-  parents) is shared with, or whose share covers the whole device, can open the
-  link the agent gives them; revoking the share ends their access at their next
-  request. Previews you create yourself stay yours. Renewing a preview's access
-  stays with you or the conversation's agent (`preview create` again prints a
-  fresh link).
-- **Install from GitHub**: the README's one-line install now downloads
-  `setup.sh` from the latest GitHub release instead of the Pockymoe website.
+- **Workspace shares**: the share dialog offers This thread, This workspace and
+  Whole device. A workspace share covers every conversation in that workspace
+  (and the agent threads they start) with the same view/collaborate and file
+  access choices as the others; **Can create new threads** lets the recipient
+  start conversations there, and only there. Recipients find the workspace
+  under the device in **Devices with me**. Port previews of that workspace's
+  conversations open for them too.
+- **No terminal for shares**: whatever a share allows, its recipient never gets
+  the terminal: no shell panel or shell toggle, no terminal plugin, no one-off
+  shell commands, no script automations. This also applies to existing shares
+  that could use it before.
+- **Files stay in the workspace**: for conversation and workspace shares, the
+  file browser and attachments stay inside the shared workspace. Whole-device
+  shares keep their rules.
+- **Prompts from recipients**: a prompt, queued prompt, interjection or goal from
+  someone you shared with reaches the model with one line saying who sent it,
+  that they are not the device's owner, and that sensitive requests (private
+  files, deleting data, credentials or system settings) should be refused. The
+  conversation shows the prompt as they typed it.
 
-Validated with the runtime coordination tests (a wake steered into a running
-turn, a queued wake, a blocked wake's header), the relay preview tests (a
-recipient of the creating conversation opens it, other accounts and revoked
-shares are refused) and Supervisor port tests, the shared UI and Web tests,
-end-to-end runs of a shared preview on bound and unbound devices, and the wake
-rows in every theme, light and dark, on phone and desktop. Both the relay and
-the device must be updated for shared previews. Installing this release is a
-separate device update.
+Validated with the access-rule, relay, Supervisor grant and runtime tests (a
+workspace grant reaches only that workspace's conversations, terminal routes
+and messages are refused for every share, attachments stay in the workspace,
+the guardrail reaches the model but not the transcript), the Web and shared UI
+tests, an end-to-end workspace share on a protected device, and the share
+dialog and recipient views in every theme, light and dark, on phone and
+desktop. Workspace shares and the no-terminal rule need the relay (already
+updated) and, for protected devices and the guardrail, this device update.
+Installing this release is a separate device update.
