@@ -60,6 +60,8 @@ export interface AdminVersionCount {
   version: string | null;
   devices: number;
   online: number;
+  /** Older than the relay. */
+  outdated?: boolean;
 }
 
 export interface AdminOverview {
@@ -379,7 +381,7 @@ export interface AdminSystem {
   versions?: {
     current: AdminVersionCount[];
     /** Online devices per version per day for the top versions. */
-    history: Array<{ day: string; versions: Record<string, number> }>;
+    history: Array<{ day: string; versions: Record<string, number> | null }>;
     historyStart: string | null;
   } | null;
   metrics?: { retentionDays: number; historyStart: string | null } | null;

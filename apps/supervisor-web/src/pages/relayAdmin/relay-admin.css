@@ -262,6 +262,9 @@
 .admin-grid { display: grid; gap: 18px; grid-template-columns: minmax(0, 1fr); }
 .admin-grid.is-top { align-items: start; }
 .admin-tabpanel { display: flex; min-width: 0; flex-direction: column; gap: 18px; }
+/* Cards stacked in one grid column; the last one fills the row's height. */
+.admin-stack { display: flex; min-width: 0; flex-direction: column; gap: 18px; }
+.admin-stack > :last-child { flex: 1; }
 /* Columns only when there is a second card: a relay that records less
    leaves no empty column behind. */
 @media (min-width: 1100px) {
@@ -312,6 +315,7 @@
 .admin-mini-stats { display: grid; gap: 10px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .admin-mini-stats.is-band { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
 .admin-mini-stats.is-band { padding: 4px 0; }
+.admin-proportion + .admin-mini-stats { margin-top: 14px; }
 .admin-mini-stat { display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; border: 1px solid var(--admin-rule); border-radius: 10px; background: var(--theme-surface); }
 .admin-mini-stat b { font-size: 19px; font-weight: 700; }
 .admin-mini-stat span { font-size: 12px; color: var(--theme-fg-muted); }

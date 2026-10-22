@@ -81,7 +81,7 @@ JSON is camelCase. Lists take `page` (from 1), `pageSize` (1–100, default 25),
 
 | Route | Returns or does |
 | --- | --- |
-| `GET /relay/admin/overview?range=` | `attention`, `users` (with `dailyActive`), `activity`, `devices`, `shares`, `registrations`, `signupsWeekly`, `publicLinks`, `securityEvents`, `relay`, `onlineDevices` (series), `versions`, `tunnels`, `adminActions`. A series is `{ resolutionSeconds, points: [[ms, value or null]], historyStart }` |
+| `GET /relay/admin/overview?range=` | `attention`, `users` (with `dailyActive`), `activity`, `devices`, `shares`, `registrations`, `signupsWeekly`, `publicLinks`, `securityEvents`, `relay`, `onlineDevices` (series), `versions` (online and all devices per version, `outdated` when older than the relay), `tunnels`, `adminActions`. A series is `{ resolutionSeconds, points: [[ms, value or null]], historyStart }` |
 | `GET /relay/admin/search?q=` | Up to six users and six devices by name, email or ID |
 | `GET /relay/admin/users` · `GET /relay/admin/users/{id}` | Users list (`filter`: `active7d`, `noAccountKey`, `noTwoFactor`, `disabled`, `neverSeen`; `sort`: `lastSeen`, `name`, `created`) with `methods`; one user's devices, sessions, shares, events, approval |
 | `PATCH` · `DELETE /relay/admin/users/{id}` | Enable/disable (not the admin) · delete (not the admin) |
@@ -98,7 +98,7 @@ JSON is camelCase. Lists take `page` (from 1), `pageSize` (1–100, default 25),
 | `GET /relay/admin/security?range=` | Sign-ins, factor coverage, sessions, events per day, session environments, `loginFailures`, `rateLimited`, `retention`, `adminActions` |
 | `GET /relay/admin/security/events?type=&user=&range=` | Audit events (`type`: `login`, `challenge`, `reauth`, `credential`, `failure`, `activity`) |
 | `GET /relay/admin/sessions` · `DELETE /relay/admin/sessions/{id}` | Live sessions · end one (not the admin's) |
-| `GET /relay/admin/system` | `relay`, `connections`, `checks`, `push` (with `delivery`), `storage` (with `growth`; integrity cached for an hour, table sizes for ten minutes), `versions`, `metrics` |
+| `GET /relay/admin/system` | `relay`, `connections`, `checks`, `push` (with `delivery`), `storage` (with `growth`; integrity cached for an hour, table sizes for ten minutes), `versions` (`current`, and `history` per day: `null` on a day the relay did not sample), `metrics` |
 | `GET /relay/admin/actions?type=` | The admin action log |
 | `GET` · `PATCH /relay/admin/settings/registration` | Registration settings |
 | `GET` · `PATCH /relay/admin/settings/retention` | `metricsDays` (30, 90, 365) and `securityDays` (90, 180, 365) |

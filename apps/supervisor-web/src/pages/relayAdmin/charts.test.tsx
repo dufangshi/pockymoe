@@ -105,6 +105,24 @@ describe('admin charts', () => {
     expect(screen.getByRole('button', { name: 'Show as chart' })).toHaveAttribute('aria-pressed', 'true');
   });
 
+  it('gives each chart of a card its own named table', () => {
+    render(
+      <ChartCard
+        table={[
+          { caption: 'Versions now', columns: ['Version', 'Online'], rows: [['0.13.38', 6]] },
+          { caption: 'Versions per day', columns: ['Day', '0.13.38'], rows: [['10/21', '—'], ['10/22', 6]] },
+        ]}
+        title="Device versions"
+      >
+        <Sparkline label="Trend" values={[1, 2]} />
+      </ChartCard>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Show as table' }));
+    expect(screen.getByRole('region', { name: 'Versions now' })).toHaveTextContent('0.13.38');
+    // A day without samples reads as unknown, not zero.
+    expect(screen.getByRole('region', { name: 'Versions per day' })).toHaveTextContent('10/21—');
+  });
+
   it('names parts of a whole and tiny trends', () => {
     render(
       <>

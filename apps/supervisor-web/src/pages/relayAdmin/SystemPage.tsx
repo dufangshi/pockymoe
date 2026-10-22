@@ -24,33 +24,35 @@ export function SystemPage(props: AdminPageProps) {
   const failing = data.checks.some((check) => check.key === 'integrity' && !check.ok);
   return (
     <div aria-busy={loading || undefined} className={`admin-page${loading ? ' is-busy' : ''}`}>
-      <div className="admin-grid is-thirds">
-        <Card
-          aside={failing ? <Badge icon={<TriangleAlert aria-hidden className="h-3.5 w-3.5" />} tone="danger">{translate('admin.needsAttention')}</Badge> : <Badge icon={<CircleCheck aria-hidden className="h-3.5 w-3.5" />} tone="success">{translate('admin.healthy')}</Badge>}
-          title={translate('admin.relay')}
-        >
-          <Facts
-            items={[
-              { label: translate('admin.version'), value: <span className="admin-mono">{data.relay.version}</span> },
-              { label: translate('admin.uptimeLabel'), value: formatDuration(data.relay.uptimeSeconds) },
-              { label: translate('admin.publicAddress'), value: data.relay.publicBaseUrl ?? translate('admin.notConfigured') },
-              { label: translate('admin.webSource'), value: data.relay.webOrigin ? translate('admin.webSeparate', { origin: data.relay.webOrigin }) : data.relay.servesWeb ? translate('admin.webServedByRelay') : translate('admin.webApiOnly') },
-              data.relay.dataDir ? { label: translate('admin.dataDir'), value: <PathChip label={translate('admin.copyDataDir')} path={data.relay.dataDir} /> } : null,
-            ]}
-          />
-          <h4 className="admin-subheading">{translate('admin.currentConnections')}</h4>
-          <div className="admin-mini-stats">
-            <MiniStat label={translate('admin.deviceTunnels')} value={formatCount(data.connections.deviceTunnels)} />
-            <MiniStat label={translate('admin.browserSockets')} value={formatCount(data.connections.browserSockets)} />
-            <MiniStat label={translate('admin.pendingRequests')} value={formatCount(data.connections.pendingRequests)} />
-          </div>
-        </Card>
+      <div className="admin-grid is-halves">
+        <div className="admin-stack">
+          <Card
+            aside={failing ? <Badge icon={<TriangleAlert aria-hidden className="h-3.5 w-3.5" />} tone="danger">{translate('admin.needsAttention')}</Badge> : <Badge icon={<CircleCheck aria-hidden className="h-3.5 w-3.5" />} tone="success">{translate('admin.healthy')}</Badge>}
+            title={translate('admin.relay')}
+          >
+            <Facts
+              items={[
+                { label: translate('admin.version'), value: <span className="admin-mono">{data.relay.version}</span> },
+                { label: translate('admin.uptimeLabel'), value: formatDuration(data.relay.uptimeSeconds) },
+                { label: translate('admin.publicAddress'), value: data.relay.publicBaseUrl ?? translate('admin.notConfigured') },
+                { label: translate('admin.webSource'), value: data.relay.webOrigin ? translate('admin.webSeparate', { origin: data.relay.webOrigin }) : data.relay.servesWeb ? translate('admin.webServedByRelay') : translate('admin.webApiOnly') },
+                data.relay.dataDir ? { label: translate('admin.dataDir'), value: <PathChip label={translate('admin.copyDataDir')} path={data.relay.dataDir} /> } : null,
+              ]}
+            />
+            <h4 className="admin-subheading">{translate('admin.currentConnections')}</h4>
+            <div className="admin-mini-stats">
+              <MiniStat label={translate('admin.deviceTunnels')} value={formatCount(data.connections.deviceTunnels)} />
+              <MiniStat label={translate('admin.browserSockets')} value={formatCount(data.connections.browserSockets)} />
+              <MiniStat label={translate('admin.pendingRequests')} value={formatCount(data.connections.pendingRequests)} />
+            </div>
+          </Card>
+          <PushCard data={data} />
+        </div>
         <Card subtitle={translate('admin.checksSubtitle')} title={translate('admin.configChecks')}>
           <ul className="admin-checks">
             {data.checks.map((check) => <Check check={check} key={check.key} />)}
           </ul>
         </Card>
-        <PushCard data={data} />
       </div>
       <div className="admin-grid is-wide-left">
         <VersionsCard data={data} />
@@ -107,6 +109,7 @@ function PushCard({ data }: { data: AdminSystem }) {
           <MiniStat label={translate('admin.queued')} value={formatCount(push.queued)} />
         )}
       </div>
+      <h4 className="admin-subheading">{translate('admin.turns24h')}</h4>
       <BarList
         items={[
           { key: 'completed', label: translate('admin.turnsCompleted'), value: turns.completed ?? 0 },
@@ -143,10 +146,18 @@ function VersionsCard({ data }: { data: AdminSystem }) {
   return (
     <ChartCard
       subtitle={translate('admin.versionDistributionSubtitle', { online: formatCount(online) })}
-      table={{
-        columns: [translate('admin.version'), translate('admin.onlineDevices'), translate('admin.allDevices')],
-        rows: versions.current.map((item) => [item.version ?? translate('admin.unknown'), item.online, item.devices]),
-      }}
+      table={[
+        {
+          caption: translate('admin.versionDistribution'),
+          columns: [translate('admin.version'), translate('admin.onlineDevices'), translate('admin.allDevices')],
+          rows: versions.current.map((item) => [item.version ?? translate('admin.unknown'), item.online, item.devices]),
+        },
+        {
+          caption: translate('admin.versionsOverTime'),
+          columns: [translate('admin.day'), ...historyKeys],
+          rows: versions.history.map((day) => [formatDay(day.day), ...historyKeys.map((version) => (day.versions ? day.versions[version] ?? 0 : '—'))]),
+        },
+      ]}
       title={translate('admin.versionDistribution')}
     >
       <ProportionBar
@@ -167,7 +178,8 @@ function VersionsCard({ data }: { data: AdminSystem }) {
               key: version,
               label: version,
               slot: SLOTS[index]!,
-              points: versions.history.map((day) => ({ at: Date.parse(`${day.day}T12:00:00Z`), value: day.versions[version] ?? 0 })),
+              // A day the relay did not sample is unknown, not zero.
+              points: versions.history.map((day) => ({ at: Date.parse(`${day.day}T12:00:00Z`), value: day.versions ? day.versions[version] ?? 0 : null })),
             }))}
           />
           <Legend items={historyKeys.map((version, index) => ({ label: version, slot: SLOTS[index]! }))} />
@@ -187,7 +199,10 @@ function StorageCard({ data }: { data: AdminSystem }) {
   return (
     <ChartCard
       subtitle={translate('admin.storageSubtitle', { database: formatBytes(storage.databaseBytes), wal: formatBytes(storage.walBytes) })}
-      table={{ columns: [translate('admin.table'), bySize ? translate('admin.size') : translate('admin.rows')], rows: storage.tables.map((table) => [table.name, bySize ? formatBytes(table.bytes) : table.rows ?? 0]) }}
+      table={[
+        { caption: translate('admin.storage'), columns: [translate('admin.table'), bySize ? translate('admin.size') : translate('admin.rows')], rows: storage.tables.map((table) => [table.name, bySize ? formatBytes(table.bytes) : table.rows ?? 0]) },
+        ...(growth ? [{ caption: translate('admin.growth30d'), columns: [translate('admin.day'), translate('admin.size')], rows: seriesPoints(growth).map((point) => [formatDay(point.at), point.value === null ? '—' : formatBytes(point.value)]) }] : []),
+      ]}
       title={translate('admin.storage')}
       footer={translate('admin.measuredAt', { time: formatRelative(storage.measuredAt) })}
     >

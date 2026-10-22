@@ -7,7 +7,7 @@ import { Gauge, History, Laptop, ScrollText, ShieldCheck } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { adminApi } from './adminApi';
 import { BarList, ChartCard, ColumnChart, HistoryNote, Legend, LineChart, type SeriesSlot } from './charts';
-import { EventIcon } from './events';
+import { actionCategory, EventIcon } from './events';
 import { formatCount, formatDateTime, formatDay, formatPercent, formatRelative } from './format';
 import { actionLabel, eventCategoryLabel, eventLabel, rangeLabel } from './labels';
 import type { AdminPageProps } from './RelayAdminConsole';
@@ -66,7 +66,8 @@ export function SecurityPage(props: AdminPageProps) {
           <>
             {summary.data ? <SecurityFigures summary={summary.data} /> : !summary.error ? <Skeleton lines={3} /> : null}
             {summary.data ? <SecurityCharts range={props.range} summary={summary.data} /> : null}
-            <div className="admin-grid is-wide-left">
+            {/* The side card keeps its own height beside the long event table. */}
+            <div className="admin-grid is-wide-left is-top">
               <EventTable {...props} />
               {summary.data ? (
                 <ChartCard
@@ -345,7 +346,7 @@ function Actions(props: AdminPageProps) {
   const { data, error, loading, reload } = useAdminResource(() => adminApi.actions({ page, pageSize: 25 }), `${page}:${props.refreshKey}`, props.onUnauthorized);
   const columns: Array<Column<AdminAction>> = [
     { key: 'time', header: translate('admin.time'), render: (action) => formatDateTime(action.at) },
-    { key: 'action', header: translate('admin.action'), render: (action) => <span className="admin-event-cell"><EventIcon category="activity" event={action.action} />{actionLabel(action.action)}</span> },
+    { key: 'action', header: translate('admin.action'), render: (action) => <span className="admin-event-cell"><EventIcon category={actionCategory(action.action)} event={action.action} />{actionLabel(action.action)}</span> },
     { key: 'target', header: translate('admin.target'), render: (action) => action.targetLabel ?? '—' },
     { key: 'admin', header: translate('admin.admin'), render: (action) => action.adminUsername },
     { key: 'detail', header: translate('admin.detail'), render: (action) => actionDetail(action) },
@@ -362,7 +363,7 @@ function Actions(props: AdminPageProps) {
             label={translate('admin.adminActions')}
             phoneRow={(action) => (
               <>
-                <EventIcon category="activity" event={action.action} />
+                <EventIcon category={actionCategory(action.action)} event={action.action} />
                 <span className="admin-two-line">
                   <b>{action.targetLabel ? `${actionLabel(action.action)} · ${action.targetLabel}` : actionLabel(action.action)}</b>
                   <span>{action.adminUsername} · {formatRelative(action.at)}</span>

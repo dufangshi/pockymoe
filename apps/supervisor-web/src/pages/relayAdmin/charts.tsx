@@ -20,6 +20,8 @@ export type SeriesSlot = 1 | 2 | 3 | 4 | 5;
 export interface ChartTable {
   columns: string[];
   rows: Array<Array<string | number>>;
+  /** Names the table when a card holds more than one chart. */
+  caption?: string;
 }
 
 /** Rounds a maximum up to a clean axis and returns the ticks. */
@@ -64,7 +66,7 @@ export function ChartCard({
   title: string;
   subtitle?: ReactNode;
   aside?: ReactNode;
-  table?: ChartTable | null;
+  table?: ChartTable | ChartTable[] | null;
   children: ReactNode;
   className?: string;
   footer?: ReactNode;
@@ -95,7 +97,16 @@ export function ChartCard({
           ) : null}
         </div>
       </header>
-      {asTable && table ? <DataTableView table={table} caption={title} /> : children}
+      {asTable && table
+        ? Array.isArray(table)
+          ? table.map((part) => (
+              <div key={part.caption ?? title}>
+                {part.caption ? <h4 className="admin-subheading">{part.caption}</h4> : null}
+                <DataTableView caption={part.caption ?? title} table={part} />
+              </div>
+            ))
+          : <DataTableView caption={title} table={table} />
+        : children}
       {footer ? <footer className="admin-card-footer">{footer}</footer> : null}
     </section>
   );

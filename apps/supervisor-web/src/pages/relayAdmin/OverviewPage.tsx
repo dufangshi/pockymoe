@@ -20,7 +20,7 @@ import { formatCount, formatDateTime, formatDay, formatDuration, formatPercent, 
 import { rangeLabel } from './labels';
 import type { AdminPageProps } from './RelayAdminConsole';
 import type { AdminOverview, AdminSeries } from './types';
-import { Card, Figure, FigureBand, LoadFailure, Skeleton, useAdminResource } from './ui';
+import { Card, Figure, FigureBand, LoadFailure, MiniStat, Skeleton, useAdminResource } from './ui';
 import { ActionList, EventList } from './events';
 
 export function OverviewPage(props: AdminPageProps) {
@@ -75,7 +75,7 @@ export function OverviewPage(props: AdminPageProps) {
             series={[{ key: 'count', label: translate('admin.newAccounts'), slot: 1 }]}
           />
         </ChartCard>
-        <VersionsCard data={data} />
+        <VersionsCard data={data} go={go} />
         <TunnelsCard data={data} />
       </div>
       <div className="admin-grid is-halves">
@@ -263,10 +263,12 @@ function OnlineDevicesCard({ data }: { data: AdminOverview }) {
 
 const VERSION_SLOTS: SeriesSlot[] = [1, 2, 3, 4, 5];
 
-function VersionsCard({ data }: { data: AdminOverview }) {
+function VersionsCard({ data, go }: { data: AdminOverview; go: AdminPageProps['go'] }) {
   if (data.versions === undefined) return null;
   const versions = data.versions ?? [];
   const online = versions.reduce((sum, item) => sum + item.online, 0);
+  const onlineWhere = (test: (item: (typeof versions)[number]) => boolean) => versions.filter(test).reduce((sum, item) => sum + item.online, 0);
+  const olderDevices = versions.filter((item) => item.outdated).reduce((sum, item) => sum + item.devices, 0);
   // Five slots: the four most common versions, the rest folded into "older".
   const top = versions.filter((item) => item.version).slice(0, 4);
   const rest = versions.filter((item) => !top.includes(item)).reduce((sum, item) => sum + item.online, 0);
@@ -279,8 +281,25 @@ function VersionsCard({ data }: { data: AdminOverview }) {
       subtitle={translate('admin.versionsSubtitle', { online: formatCount(online), latest: data.relay.version })}
       table={{ columns: [translate('admin.version'), translate('admin.onlineDevices'), translate('admin.allDevices')], rows: versions.map((item) => [item.version ?? translate('admin.unknown'), item.online, item.devices]) }}
       title={translate('admin.deviceVersions')}
+      footer={
+        olderDevices ? (
+          <button className="admin-link-button" onClick={() => go('devices', { filter: 'outdated' })} type="button">
+            {translate('admin.viewOlderDevices', { count: olderDevices })}
+            <ArrowRight aria-hidden className="h-4 w-4" />
+          </button>
+        ) : null
+      }
     >
-      {online ? <ProportionBar items={items} label={translate('admin.deviceVersions')} /> : <p className="admin-empty">{translate('admin.noVersionsYet')}</p>}
+      {online ? (
+        <>
+          <ProportionBar items={items} label={translate('admin.deviceVersions')} />
+          <div className="admin-mini-stats">
+            <MiniStat label={translate('admin.onRelayVersion')} value={formatCount(onlineWhere((item) => item.version === data.relay.version))} />
+            <MiniStat label={translate('admin.onOlderVersion')} value={formatCount(onlineWhere((item) => Boolean(item.outdated)))} />
+            <MiniStat label={translate('admin.versionNotReported')} value={formatCount(onlineWhere((item) => item.version === null))} />
+          </div>
+        </>
+      ) : <p className="admin-empty">{translate('admin.noVersionsYet')}</p>}
     </ChartCard>
   );
 }

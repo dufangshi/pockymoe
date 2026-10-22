@@ -139,7 +139,12 @@ pub(super) fn version_counts(conn: &Connection, online: &[String]) -> Vec<Value>
         (None, None) => std::cmp::Ordering::Equal,
     });
     rows.into_iter()
-        .map(|(version, (devices, online))| json!({ "version": version, "devices": devices, "online": online }))
+        .map(|(version, (devices, online))| {
+            let outdated = version.as_deref().is_some_and(|version| {
+                compare_versions(version, RELAY_VERSION) == std::cmp::Ordering::Less
+            });
+            json!({ "version": version, "devices": devices, "online": online, "outdated": outdated })
+        })
         .collect()
 }
 
@@ -345,10 +350,18 @@ pub(super) fn system(conn: &Connection, online: &[String]) -> serde_json::Map<St
         .prepare("SELECT bucket,label,peak FROM relay_metrics WHERE resolution='d' AND metric='online_by_version' AND bucket>=?1")
         .and_then(|mut stmt| stmt.query_map([first_day], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?.collect())
         .unwrap_or_default();
+    // Days the relay sampled at all; on the others the versions are unknown.
+    let sampled: std::collections::HashSet<i64> = conn
+        .prepare("SELECT DISTINCT bucket-(bucket%86400000) FROM relay_metrics WHERE resolution='h' AND metric='up' AND label='' AND bucket>=?1")
+        .and_then(|mut stmt| stmt.query_map([first_day], |row| row.get(0))?.collect())
+        .unwrap_or_default();
     let history_days: Vec<Value> = (0..30)
         .map(|offset| first_day + offset * DAY_MS)
         .filter(|day| started.is_some_and(|begun| *day + DAY_MS > begun))
         .map(|day| {
+            if !sampled.contains(&day) {
+                return json!({ "day": day_of(day), "versions": Value::Null });
+            }
             let versions: serde_json::Map<String, Value> = rows
                 .iter()
                 .filter(|row| row.0 == day)

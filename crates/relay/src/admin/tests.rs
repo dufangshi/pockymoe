@@ -813,6 +813,26 @@ async fn sampler_records_tunnels_traffic_versions_and_the_overview_reads_them() 
     );
     let security = console.get("/relay/admin/security?range=24h").await;
     assert_eq!(security["rateLimited"]["byKind"]["login"], 1.0);
+    // Versions per day: known on a sampled day, unknown (not none) on a day
+    // the relay was down.
+    let begun = common::now_ms() - 2 * common::DAY_MS;
+    state
+        .store
+        .conn
+        .lock()
+        .await
+        .execute(
+            "UPDATE relay_settings SET value=?1 WHERE key='metricsStartedAt'",
+            [begun.to_string()],
+        )
+        .unwrap();
+    // The next sample counts the device under the version it reported.
+    crate::metrics::sample(&state, minute).await;
+    let system = console.get("/relay/admin/system").await;
+    let days = system["versions"]["history"].as_array().unwrap();
+    assert_eq!(days.len(), 3);
+    assert_eq!(days[0]["versions"], Value::Null);
+    assert_eq!(days[2]["versions"]["0.12.9"], 1.0);
 
     // Disconnecting records why the tunnel ended; the device reconnects later.
     let admin = console.admin.clone();

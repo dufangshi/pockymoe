@@ -67,6 +67,11 @@ export function EventList({ events, compact = false }: { events: AdminSecurityEv
   );
 }
 
+/** Actions that take something away read in the failure tone, the rest neutral. */
+export function actionCategory(action: string) {
+  return /disabled|deleted|rejected|revoked|disconnected|ended/.test(action) ? 'failure' : 'activity';
+}
+
 export function ActionList({ actions }: { actions: AdminAction[] }) {
   useI18n();
   if (!actions.length) return <p className="admin-empty">{translate('admin.noAdminActions')}</p>;
@@ -74,7 +79,7 @@ export function ActionList({ actions }: { actions: AdminAction[] }) {
     <ul className="admin-event-list">
       {actions.map((action) => (
         <li key={action.id}>
-          <EventIcon category={action.action.includes('disabled') || action.action.includes('deleted') || action.action.includes('rejected') || action.action.includes('revoked') ? 'failure' : 'activity'} event={action.action} />
+          <EventIcon category={actionCategory(action.action)} event={action.action} />
           <span className="admin-event-text">
             <b>{action.targetLabel ? `${actionLabel(action.action)} · ${action.targetLabel}` : actionLabel(action.action)}</b>
             <span>{action.adminUsername}</span>
