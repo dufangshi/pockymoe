@@ -127,6 +127,8 @@ Relay 只把每个用户的账户密钥保存在用其密码和恢复码加密�
 
 ## 备份
 
+数据库里还按期限保留管理后台的统计（只有次数、大小和时间，从不记录对话内容或 IP 地址），见[记录的统计](relay-admin.md#recorded-statistics)。
+
 备份整个数据目录，里面有 `relay-store.sqlite` 和 `session-secret`。这个 secret 还用来加密已保存的二步验证和设备凭据，丢失或替换后这些数据就无法解密。SQLite 请用一致性备份，不要直接复制正在写入的数据库。
 
 数据库里还有加密的账户 vault。数据库丢失后，用户必须重新开始，并重新绑定所有设备。恢复的备份可能包含较旧的 vault，已经见过更新 vault 的浏览器会拒绝它（「The relay served an older account vault」）。更多说明见 [Relay 安全运维](relay-security-operations.zh.md)。

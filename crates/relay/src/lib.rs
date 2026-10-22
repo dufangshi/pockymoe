@@ -6,6 +6,7 @@ mod apns;
 mod auth_api;
 mod auth_factors;
 mod device_tokens;
+mod metrics;
 mod notification_scope;
 mod notifications;
 mod oauth;
@@ -102,6 +103,7 @@ struct AppState {
     admission: security::Admission,
     preview: preview::Hub,
     admin: admin::AdminState,
+    metrics: metrics::Metrics,
 }
 
 pub async fn serve() -> Result<()> {
@@ -230,8 +232,10 @@ pub async fn serve() -> Result<()> {
         admission: security::Admission::default(),
         preview: preview::Hub::from_env()?,
         admin: admin::AdminState::default(),
+        metrics: metrics::Metrics::default(),
     });
     notifications::start(&state)?;
+    metrics::start(&state)?;
     let app = Router::new()
         .merge(auth_api::routes())
         .merge(notifications::routes())
@@ -659,10 +663,7 @@ fn authenticated_user(
         .and_then(|token| load_user_by_session(conn, session_secret, &token))
         .filter(|user| user.role != "admin");
     if let Some(user) = user.as_ref() {
-        let _ = conn.execute(
-            "UPDATE relay_users SET last_seen_at=?1 WHERE id=?2",
-            params![now_rfc3339(), user.id],
-        );
+        metrics::note_user_activity(conn, &user.id);
     }
     user
 }
@@ -683,10 +684,7 @@ fn authenticated_admin_user(
         .and_then(|token| load_user_by_session(conn, session_secret, &token))
         .filter(|user| user.role == "admin");
     if let Some(user) = user.as_ref() {
-        let _ = conn.execute(
-            "UPDATE relay_users SET last_seen_at=?1 WHERE id=?2",
-            params![now_rfc3339(), user.id],
-        );
+        metrics::note_user_activity(conn, &user.id);
     }
     user
 }
@@ -892,11 +890,19 @@ async fn register(State(state): State<Arc<AppState>>, Json(body): Json<RegisterI
             Ok(request)
         })();
         return match result {
-            Ok(request) if tx.commit().is_ok() => (
-                StatusCode::ACCEPTED,
-                Json(json!({"pendingApproval":true,"request":request})),
-            )
-                .into_response(),
+            Ok(request) if tx.commit().is_ok() => {
+                security::audit(
+                    &conn,
+                    None,
+                    "registration.submitted",
+                    request["id"].as_str(),
+                );
+                (
+                    StatusCode::ACCEPTED,
+                    Json(json!({"pendingApproval":true,"request":request})),
+                )
+                    .into_response()
+            }
             _ => (
                 StatusCode::CONFLICT,
                 Json(ApiError::new("conflict", "Registration already exists")),
@@ -1034,6 +1040,8 @@ async fn login(
     let conn = state.store.conn.lock().await;
     let row: Option<(String,String,String)> = conn.query_row(
         "SELECT id,password_salt,password_hash FROM relay_users WHERE (username=?1 OR email=?1) AND enabled=1",[ident],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().ok().flatten();
+    // Only an existing account's ID is audited on failure, never the name tried.
+    let attempted = row.as_ref().map(|(id, _, _)| id.clone());
     let row = row.and_then(|(id,salt,hash)| {
         let user = load_user_by_id(&conn,&id)?;
         if !key_login && body.upgrade && account::has_vault(&conn,&id) {return None;}
@@ -1075,6 +1083,10 @@ async fn login(
     .flatten();
     let conn = state.store.conn.lock().await;
     let Some(((id, salt, hash), upgrade_hash)) = verified else {
+        state.metrics.login_failed();
+        if let Some(id) = attempted.as_deref() {
+            security::audit(&conn, Some(id), "login.failed", None);
+        }
         return unauthorized();
     };
     // Recheck the exact credential after the slow hash; reset/disable may have raced it.
@@ -2283,6 +2295,7 @@ async fn create_device(
             )
                 .into_response();
         }
+        security::audit(&conn, Some(&user.id), "device.created", Some(&id));
     }
     Json(json!({
         "device": device_json(DeviceJsonInput {
@@ -2329,8 +2342,13 @@ async fn delete_device(
         )
             .into_response();
     }
+    security::audit(&conn, Some(&user.id), "device.deleted", Some(&device_id));
     drop(conn);
-    state.sockets.write().await.remove(&device_id);
+    if let Some(socket) = state.sockets.write().await.remove(&device_id) {
+        state
+            .metrics
+            .disconnected(socket.connection_id, metrics::EndReason::Deleted);
+    }
     Json(json!({ "id": device_id })).into_response()
 }
 
@@ -2459,6 +2477,7 @@ async fn create_share(
         )
             .into_response();
     }
+    security::audit(&conn, Some(&owner.id), "share.created", Some(&id));
     Json(json!({
         "id": id,
         "ownerUserId": owner.id,
@@ -2608,6 +2627,7 @@ async fn revoke_share(
         )
             .into_response();
     }
+    security::audit(&conn, Some(&owner.id), "share.revoked", Some(&share_id));
     Json(json!({ "id": share_id, "revokedAt": revoked_at })).into_response()
 }
 
@@ -2807,6 +2827,7 @@ async fn create_grant(
         )
             .into_response();
     }
+    security::audit(&conn, Some(&owner.id), "grant.created", Some(&id));
     Json(json!({ "id": id })).into_response()
 }
 
@@ -2965,6 +2986,7 @@ async fn revoke_grant(
         )
             .into_response();
     }
+    security::audit(&conn, Some(&owner.id), "grant.revoked", Some(&grant_id));
     Json(json!({ "id": grant_id, "revokedAt": revoked_at })).into_response()
 }
 
@@ -3419,7 +3441,56 @@ enum DeviceForwardError {
     Busy,
 }
 
+/// Forwards one request and counts it for the admin statistics: sizes,
+/// status class and latency only. The relay's own health probes are not
+/// counted.
 async fn forward_device_payload_with_timeout(
+    state: Arc<AppState>,
+    device_id: String,
+    request_payload: Value,
+    peer: Option<peer::Caller>,
+    response_timeout: Duration,
+) -> Result<Value, DeviceForwardError> {
+    let path = request_payload["path"].as_str().unwrap_or_default();
+    let metered = path.split('?').next() != Some("/healthz");
+    let request_bytes = request_payload["body"].as_str().map_or(0, str::len) as u64;
+    let started = std::time::Instant::now();
+    let result = forward_device_payload_unmetered(
+        state.clone(),
+        device_id.clone(),
+        request_payload,
+        peer,
+        response_timeout,
+    )
+    .await;
+    if metered {
+        let outcome = match &result {
+            Ok(value) => metrics::Forwarded::Answered {
+                status: value["statusCode"].as_u64().unwrap_or(200) as u16,
+                response_bytes: value["body"]
+                    .as_str()
+                    .map(|body| {
+                        if value["bodyEncoding"] == "base64" {
+                            body.len() * 3 / 4
+                        } else {
+                            body.len()
+                        }
+                    })
+                    .or_else(|| value["bodyBase64"].as_str().map(|body| body.len() * 3 / 4))
+                    .unwrap_or(0) as u64,
+            },
+            Err(DeviceForwardError::Offline) => metrics::Forwarded::Offline,
+            Err(DeviceForwardError::Timeout) => metrics::Forwarded::Timeout,
+            Err(DeviceForwardError::Busy) => metrics::Forwarded::Busy,
+        };
+        state
+            .metrics
+            .forwarded(&device_id, request_bytes, &outcome, started.elapsed());
+    }
+    result
+}
+
+async fn forward_device_payload_unmetered(
     state: Arc<AppState>,
     device_id: String,
     request_payload: Value,
@@ -3665,7 +3736,7 @@ async fn handle_supervisor_with_timeout(
     let connection_id = Uuid::new_v4();
     let connected_at = now_rfc3339();
     let (tx, mut rx) = tokio::sync::mpsc::channel(SOCKET_QUEUE);
-    state.sockets.write().await.insert(
+    let replaced = state.sockets.write().await.insert(
         device_id.clone(),
         DeviceSocket {
             tx: tx.clone(),
@@ -3674,6 +3745,12 @@ async fn handle_supervisor_with_timeout(
             last_heartbeat_at: connected_at.clone(),
         },
     );
+    if let Some(previous) = replaced {
+        state
+            .metrics
+            .disconnected(previous.connection_id, metrics::EndReason::Replaced);
+    }
+    state.metrics.connected(&device_id, connection_id);
     let device_name = peer::device_name(&state, &device_id).await;
     let (mut sink, mut stream) = socket.split();
     let greeting = Message::Text(
@@ -3692,12 +3769,18 @@ async fn handle_supervisor_with_timeout(
         tokio::time::timeout(Duration::from_secs(10), sink.send(greeting)).await,
         Ok(Ok(()))
     ) {
+        state
+            .metrics
+            .disconnected(connection_id, metrics::EndReason::SendFailed);
         remove_supervisor_connection(&state, &device_id, connection_id).await;
         return;
     }
     let revocations = match account::device_revocations(&state, &device_id).await {
         Ok(frame) => frame,
         Err(_) => {
+            state
+                .metrics
+                .disconnected(connection_id, metrics::EndReason::Error);
             remove_supervisor_connection(&state, &device_id, connection_id).await;
             return;
         }
@@ -3710,15 +3793,23 @@ async fn handle_supervisor_with_timeout(
         .await,
         Ok(Ok(()))
     ) {
+        state
+            .metrics
+            .disconnected(connection_id, metrics::EndReason::SendFailed);
         remove_supervisor_connection(&state, &device_id, connection_id).await;
         return;
     }
     let mut last_received = tokio::time::Instant::now();
+    // Why the connection ended. Removal by someone else (replaced, deleted,
+    // token changed, admin) is recorded where it happens; recording another
+    // end for an ended connection changes nothing.
+    let mut end_reason = metrics::EndReason::Closed;
     loop {
         tokio::select! {
             biased;
             _ = tokio::time::sleep_until(last_received + receive_timeout) => {
                 tracing::warn!(%device_id, "supervisor stopped responding; marking device offline");
+                end_reason = metrics::EndReason::Timeout;
                 break;
             }
             incoming = stream.next() => {
@@ -3798,9 +3889,13 @@ async fn handle_supervisor_with_timeout(
                         }
                     }
                     Some(Ok(Message::Close(_))) | None => break,
-                    Some(Err(_)) => break,
+                    Some(Err(_)) => {
+                        end_reason = metrics::EndReason::Error;
+                        break;
+                    }
                     Some(Ok(Message::Ping(payload))) => {
                         if !matches!(tokio::time::timeout(Duration::from_secs(10), sink.send(Message::Pong(payload))).await, Ok(Ok(()))) {
+                            end_reason = metrics::EndReason::SendFailed;
                             break;
                         }
                     }
@@ -3811,6 +3906,7 @@ async fn handle_supervisor_with_timeout(
                 match outgoing {
                     Some(text) => {
                         if !matches!(tokio::time::timeout(Duration::from_secs(10),sink.send(Message::Text(text.into()))).await,Ok(Ok(()))) {
+                            end_reason = metrics::EndReason::SendFailed;
                             break;
                         }
                     }
@@ -3819,6 +3915,7 @@ async fn handle_supervisor_with_timeout(
             }
         }
     }
+    state.metrics.disconnected(connection_id, end_reason);
     remove_supervisor_connection(&state, &device_id, connection_id).await;
 }
 
@@ -4112,6 +4209,7 @@ async fn handle_client_socket(
                             }
                             _ => {}
                         }
+                        state.metrics.ws_frame(text.len());
                         send_to_supervisor_connection(
                             &state,
                             &device_id,
@@ -4173,6 +4271,9 @@ async fn send_to_supervisor_connection(
         });
     if overflow {
         tracing::warn!(%device_id, "device queue full; dropping its connection");
+        state
+            .metrics
+            .disconnected(connection_id, metrics::EndReason::QueueFull);
         let mut sockets = state.sockets.write().await;
         if sockets
             .get(device_id)
@@ -4242,8 +4343,12 @@ async fn forward_server_message_to_client(
     if authorized && !owner && terminal_event(payload) {
         return;
     }
-    if !authorized || tx.try_send(payload.to_string()).is_err() {
+    let text = payload.to_string();
+    let bytes = text.len();
+    if !authorized || tx.try_send(text).is_err() {
         state.clients.write().await.remove(client_id);
+    } else {
+        state.metrics.ws_frame(bytes);
     }
 }
 
@@ -4399,6 +4504,7 @@ mod tests {
                 admission: security::Admission::default(),
                 preview: preview::Hub::default(),
                 admin: admin::AdminState::default(),
+                metrics: metrics::Metrics::default(),
             }),
             data_dir,
         )

@@ -1,0 +1,1 @@
+{"fixed":{"adminActionDays":365,"connectionDays":30,"securityMaxEvents":100000},"metricsDays":90,"options":{"metricsDays":[30,90,365],"securityDays":[90,180,365]},"securityDays":180}

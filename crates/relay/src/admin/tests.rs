@@ -449,7 +449,7 @@ async fn devices_page_joins_tunnels_and_disconnects() {
     let list = console.get("/relay/admin/devices").await;
     assert_eq!(
         list["counts"],
-        json!({ "all": 3, "online": 1, "offline": 2, "protected": 2, "unprotected": 1 })
+        json!({ "all": 3, "online": 1, "offline": 2, "protected": 2, "unprotected": 1, "unstable": 0, "outdated": 0 })
     );
     // Online first.
     assert_eq!(list["items"][0]["id"], "d-alice-1");
@@ -640,4 +640,483 @@ async fn overview_security_and_system_read_existing_records() {
 
     let search = console.get("/relay/admin/search?q=build").await;
     assert_eq!(search["devices"][0]["id"], "d-bob");
+}
+
+// ── Recorded statistics ─────────────────────────────────────────────────
+
+/// A fake device on a real tunnel: answers `/healthz` with a version.
+async fn fake_device(
+    state: Arc<AppState>,
+    device: &'static str,
+    version: &'static str,
+) -> (tokio::task::JoinHandle<()>, tokio::task::JoinHandle<()>) {
+    use tokio_tungstenite::{connect_async, tungstenite::Message as ClientMessage};
+    let app_state = state.clone();
+    let app = Router::new().route(
+        "/tunnel",
+        get(move |ws: WebSocketUpgrade| async move {
+            ws.on_upgrade(move |socket| {
+                handle_supervisor_with_timeout(
+                    socket,
+                    app_state,
+                    device.into(),
+                    Duration::from_secs(30),
+                )
+            })
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let (mut socket, _) = connect_async(format!("ws://{address}/tunnel"))
+        .await
+        .unwrap();
+    let client = tokio::spawn(async move {
+        while let Some(Ok(message)) = socket.next().await {
+            let ClientMessage::Text(text) = message else {
+                continue;
+            };
+            let frame: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+            if frame["type"] == "relay.request" {
+                let body = json!({ "status": "ok", "runningVersion": version }).to_string();
+                let reply = json!({ "type": "relay.response", "requestId": frame["requestId"], "payload": { "statusCode": 200, "headers": { "content-type": "application/json" }, "body": body } });
+                if socket
+                    .send(ClientMessage::Text(reply.to_string().into()))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        }
+    });
+    for _ in 0..100 {
+        if state.sockets.read().await.contains_key(device) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    (server, client)
+}
+
+#[tokio::test]
+async fn sampler_records_tunnels_traffic_versions_and_the_overview_reads_them() {
+    let console = Console::new("admin-console-stats").await;
+    let state = console.state.clone();
+    let (server, client) = fake_device(state.clone(), "d-bob", "0.12.9").await;
+    // Forwarded traffic and failures are counted in memory until the sample.
+    state.metrics.forwarded(
+        "d-bob",
+        100,
+        &crate::metrics::Forwarded::Answered {
+            status: 200,
+            response_bytes: 2000,
+        },
+        Duration::from_millis(40),
+    );
+    state.metrics.forwarded(
+        "d-bob",
+        50,
+        &crate::metrics::Forwarded::Timeout,
+        Duration::from_secs(30),
+    );
+    assert!(state.admission.allow("login:x".into(), 1, 60));
+    assert!(!state.admission.allow("login:x".into(), 1, 60));
+    let minute = {
+        let now = common::now_ms();
+        now - now.rem_euclid(common::MINUTE_MS)
+    };
+    crate::metrics::sample(&state, minute).await;
+    // The version probe runs on its own task.
+    for _ in 0..100 {
+        let known: Option<String> = state
+            .store
+            .conn
+            .lock()
+            .await
+            .query_row(
+                "SELECT version FROM relay_device_versions WHERE device_id='d-bob'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()
+            .unwrap()
+            .flatten();
+        if known.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    {
+        let conn = state.store.conn.lock().await;
+        let (requests, errors): (i64, i64) = conn
+            .query_row(
+                "SELECT requests,errors FROM relay_device_traffic WHERE device_id='d-bob'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((requests, errors), (2, 1));
+        let refused: f64 = conn
+            .query_row("SELECT value FROM relay_metrics WHERE resolution='m' AND metric='rate_limited' AND label='login'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(refused, 1.0);
+        let open: i64 = conn
+            .query_row("SELECT COUNT(*) FROM relay_device_connections WHERE device_id='d-bob' AND ended_at IS NULL", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(open, 1);
+        // Nothing about the request beyond counts and sizes was stored.
+        let stored: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM relay_metrics WHERE label LIKE '%/%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored, 0);
+    }
+    let overview = console.get("/relay/admin/overview?range=24h").await;
+    let online = overview["onlineDevices"]["points"].as_array().unwrap();
+    assert!(online.iter().any(|point| point[1] == 1.0));
+    // Before recording started the points are unknown, not zero.
+    assert_eq!(online[0][1], Value::Null);
+    assert!(overview["onlineDevices"]["historyStart"].is_string());
+    assert_eq!(overview["tunnels"]["requests"], 2.0);
+    assert_eq!(overview["tunnels"]["errorRate"], 0.5);
+    assert_eq!(overview["tunnels"]["p95Ms"], 50.0);
+    assert_eq!(overview["attention"]["unstableDevices"], 0);
+    assert_eq!(overview["versions"][0]["version"], "0.12.9");
+    let devices = console.get("/relay/admin/devices?filter=outdated").await;
+    assert_eq!(devices["items"][0]["id"], "d-bob");
+    assert_eq!(devices["items"][0]["outdated"], true);
+    assert_eq!(
+        devices["items"][0]["traffic7d"]
+            .as_array()
+            .unwrap()
+            .last()
+            .unwrap(),
+        2
+    );
+    let detail = console.get("/relay/admin/devices/d-bob").await;
+    assert_eq!(detail["connections"]["spans"].as_array().unwrap().len(), 1);
+    assert!(detail["connections"]["uptime"].as_f64().unwrap() > 0.0);
+    assert_eq!(
+        detail["traffic"]["hours"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|h| h["requests"].as_i64().unwrap())
+            .sum::<i64>(),
+        2
+    );
+    let security = console.get("/relay/admin/security?range=24h").await;
+    assert_eq!(security["rateLimited"]["byKind"]["login"], 1.0);
+
+    // Disconnecting records why the tunnel ended; the device reconnects later.
+    let admin = console.admin.clone();
+    let (status, _) = console
+        .call(
+            Method::POST,
+            "/relay/admin/devices/d-bob/disconnect",
+            Some(&admin),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let detail = console.get("/relay/admin/devices/d-bob").await;
+    assert_eq!(detail["connections"]["spans"][0]["reason"], "admin");
+    assert!(detail["device"]["lastSeenAt"].is_string());
+    client.abort();
+    server.abort();
+}
+
+#[tokio::test]
+async fn replaced_and_flapping_tunnels_are_recorded_and_flagged() {
+    let console = Console::new("admin-console-flapping").await;
+    let state = console.state.clone();
+    for _ in 0..crate::metrics::UNSTABLE_CONNECTS {
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let connection = Uuid::new_v4();
+        if let Some(previous) = state.sockets.write().await.insert(
+            "d-alice-1".into(),
+            DeviceSocket {
+                tx,
+                connection_id: connection,
+                connected_at: ago(0),
+                last_heartbeat_at: ago(0),
+            },
+        ) {
+            state
+                .metrics
+                .disconnected(previous.connection_id, crate::metrics::EndReason::Replaced);
+        }
+        state.metrics.connected("d-alice-1", connection);
+    }
+    {
+        let conn = state.store.conn.lock().await;
+        conn.execute(
+            "INSERT INTO relay_settings(key,value) VALUES ('metricsStartedAt','0')",
+            [],
+        )
+        .unwrap();
+    }
+    let unstable = console.get("/relay/admin/devices?filter=unstable").await;
+    assert_eq!(unstable["items"][0]["id"], "d-alice-1");
+    assert_eq!(
+        unstable["items"][0]["reconnects1h"],
+        crate::metrics::UNSTABLE_CONNECTS
+    );
+    assert_eq!(
+        console.get("/relay/admin/overview").await["attention"]["unstableDevices"],
+        1
+    );
+    let conn = state.store.conn.lock().await;
+    let replaced: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM relay_device_connections WHERE reason='replaced'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(replaced, crate::metrics::UNSTABLE_CONNECTS - 1);
+}
+
+#[tokio::test]
+async fn every_admin_change_is_logged_without_secrets() {
+    let console = Console::new("admin-console-actions").await;
+    let admin = console.admin.clone();
+    let send = |method: Method, path: &'static str, body: Value| {
+        let request = console
+            .client
+            .request(method, format!("{}{path}", console.base))
+            .bearer_auth(&admin)
+            .json(&body);
+        async move { request.send().await.unwrap().status() }
+    };
+    assert_eq!(
+        send(
+            Method::PATCH,
+            "/relay/admin/settings/registration",
+            json!({ "approvalRequired": true, "registrationPassword": "invite-code-123" })
+        )
+        .await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        send(
+            Method::PATCH,
+            "/relay/admin/users/bob",
+            json!({ "enabled": false })
+        )
+        .await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        send(
+            Method::POST,
+            "/relay/admin/users/carol/reset-password",
+            json!({ "password": "temporary-password-1" })
+        )
+        .await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        send(
+            Method::POST,
+            "/relay/admin/registrations/r1/reject",
+            json!({})
+        )
+        .await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        send(Method::DELETE, "/relay/admin/shares/grant/g2", json!({})).await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        send(
+            Method::DELETE,
+            "/relay/admin/users/dave/sessions",
+            json!({})
+        )
+        .await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        send(
+            Method::PATCH,
+            "/relay/admin/settings/retention",
+            json!({ "metricsDays": 30 })
+        )
+        .await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        send(
+            Method::PATCH,
+            "/relay/admin/settings/retention",
+            json!({ "metricsDays": 31 })
+        )
+        .await,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        send(Method::DELETE, "/relay/admin/users/erin", json!({})).await,
+        StatusCode::OK
+    );
+    let log = console.get("/relay/admin/actions?pageSize=50").await;
+    let actions: Vec<&str> = log["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["action"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        actions,
+        [
+            "user.deleted",
+            "settings.retention",
+            "user.sessions_ended",
+            "share.revoked",
+            "registration.rejected",
+            "user.password_reset",
+            "user.disabled",
+            "settings.registration"
+        ]
+    );
+    let text = log.to_string();
+    assert!(!text.contains("invite-code-123") && !text.contains("temporary-password-1"));
+    let settings = &log["items"][7]["detail"];
+    assert_eq!(settings["approvalRequired"], json!([false, true]));
+    assert_eq!(settings["inviteCode"], "set");
+    assert_eq!(log["items"][3]["targetLabel"], "bob → alice");
+    assert_eq!(log["items"][0]["targetLabel"], "erin");
+    assert_eq!(log["items"][1]["detail"]["metricsDays"], json!([90, 30]));
+    assert_eq!(
+        console.get("/relay/admin/settings/retention").await["metricsDays"],
+        30
+    );
+    assert_eq!(
+        console.get("/relay/admin/overview").await["adminActions"]
+            .as_array()
+            .unwrap()
+            .len(),
+        5
+    );
+}
+
+#[tokio::test]
+async fn retention_prunes_old_statistics_and_audit_rows() {
+    let console = Console::new("admin-console-retention").await;
+    let conn = console.state.store.conn.lock().await;
+    let now = common::now_ms();
+    let old = now - 400 * common::DAY_MS;
+    conn.execute_batch(&format!(
+        "INSERT INTO relay_metrics VALUES ('m',{minute},'up','',1,1,1),('m',{recent},'up','',1,1,1),
+           ('h',{old},'up','',1,1,1),('h',{now},'up','',1,1,1);
+         INSERT INTO relay_device_connections(device_id,connection_id,connected_at,ended_at,reason)
+           VALUES ('d-bob','old',{old},{old},'closed'),('d-bob','open',{old},NULL,NULL);
+         INSERT INTO relay_security_events(user_id,event,created_at) VALUES ('bob','login.mfa',{old});
+         INSERT INTO relay_admin_actions(admin_username,action,created_at) VALUES ('admin','user.enabled',{old});
+         INSERT INTO relay_daily_active VALUES ('2020-01-01','user','bob');",
+        minute = now - 3 * common::DAY_MS,
+        recent = now - common::HOUR_MS,
+    ))
+    .unwrap();
+    crate::metrics::prune(&conn).unwrap();
+    let count = |sql: &str| conn.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap();
+    assert_eq!(
+        count("SELECT COUNT(*) FROM relay_metrics WHERE resolution='m'"),
+        1
+    );
+    assert_eq!(
+        count("SELECT COUNT(*) FROM relay_metrics WHERE resolution='h'"),
+        1
+    );
+    // An open connection is kept however old: it is still the current one.
+    assert_eq!(count("SELECT COUNT(*) FROM relay_device_connections"), 1);
+    assert_eq!(
+        count(&format!(
+            "SELECT COUNT(*) FROM relay_security_events WHERE created_at={old}"
+        )),
+        0
+    );
+    assert_eq!(count("SELECT COUNT(*) FROM relay_admin_actions"), 0);
+    assert_eq!(count("SELECT COUNT(*) FROM relay_daily_active"), 0);
+}
+
+#[tokio::test]
+async fn account_activity_writes_at_most_once_a_minute_and_a_day_row_once() {
+    let console = Console::new("admin-console-activity").await;
+    let conn = console.state.store.conn.lock().await;
+    conn.execute(
+        "UPDATE relay_users SET last_seen_at=NULL WHERE id='dave'",
+        [],
+    )
+    .unwrap();
+    crate::metrics::note_user_activity(&conn, "dave");
+    let first: String = conn
+        .query_row(
+            "SELECT last_seen_at FROM relay_users WHERE id='dave'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    conn.execute(
+        "UPDATE relay_users SET last_seen_at='marker' WHERE id='dave'",
+        [],
+    )
+    .unwrap();
+    crate::metrics::note_user_activity(&conn, "dave");
+    let second: String = conn
+        .query_row(
+            "SELECT last_seen_at FROM relay_users WHERE id='dave'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(first.starts_with("20"));
+    assert_eq!(second, "marker");
+    let days: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM relay_daily_active WHERE kind='user' AND subject_id='dave'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(days, 1);
+}
+
+#[tokio::test]
+async fn failed_sign_ins_are_counted_and_audited_only_for_existing_accounts() {
+    let console = Console::new("admin-console-login-failed").await;
+    let state = console.state.clone();
+    for identifier in ["bob", "nobody-here"] {
+        let input: LoginInput = serde_json::from_value(
+            json!({ "identifier": identifier, "password": "wrong password!" }),
+        )
+        .unwrap();
+        let response = login(State(state.clone()), HeaderMap::new(), Json(input)).await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+    let minute = common::now_ms() - common::now_ms().rem_euclid(common::MINUTE_MS);
+    crate::metrics::sample(&state, minute).await;
+    let conn = state.store.conn.lock().await;
+    let failed: f64 = conn
+        .query_row(
+            "SELECT value FROM relay_metrics WHERE resolution='m' AND metric='login_failed'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(failed, 2.0);
+    let audited: Vec<Option<String>> = conn
+        .prepare("SELECT user_id FROM relay_security_events WHERE event='login.failed'")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .flatten()
+        .collect();
+    assert_eq!(audited, [Some("bob".to_string())]);
 }

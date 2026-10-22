@@ -42,6 +42,30 @@ describe('admin charts', () => {
     expect(screen.getByRole('img', { name: 'Online devices: 6 (4)' })).toBeInTheDocument();
   });
 
+  it('draws several lines with one readout per x and labels that do not collide', () => {
+    const { container } = render(
+      <LineChart
+        formatAt={(at) => `day ${at}`}
+        label="Versions"
+        series={[
+          { key: 'a', label: '0.13.38', slot: 1, points: [{ at: 0, value: 1 }, { at: 1, value: 6 }] },
+          { key: 'b', label: '0.13.37', slot: 2, points: [{ at: 0, value: 4 }, { at: 1, value: 6 }] },
+        ]}
+      />,
+    );
+    expect(container.querySelectorAll('path.admin-line')).toHaveLength(2);
+    expect(container.querySelectorAll('path.admin-area')).toHaveLength(0);
+    // Both lines end at 6: one label.
+    expect(container.querySelectorAll('.admin-value-label')).toHaveLength(1);
+    const chart = container.querySelector('.admin-chart') as HTMLElement;
+    act(() => chart.focus());
+    fireEvent.keyDown(chart, { key: 'Home' });
+    const tooltip = container.querySelector('.admin-tooltip')?.textContent ?? '';
+    expect(tooltip).toContain('day 0');
+    expect(tooltip).toContain('10.13.38');
+    expect(tooltip).toContain('40.13.37');
+  });
+
   it('shows the value under the pointer and keyboard focus', () => {
     const { container } = render(
       <ColumnChart

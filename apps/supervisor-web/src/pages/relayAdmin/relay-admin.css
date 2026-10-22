@@ -759,6 +759,7 @@
 .admin-legend > li { display: inline-flex; align-items: center; gap: 6px; }
 .admin-legend b { color: var(--theme-fg); font-weight: 600; font-variant-numeric: tabular-nums; }
 .admin-swatch { width: 10px; height: 10px; border-radius: 3px; background: var(--admin-series); }
+.admin-swatch.is-offline { background: var(--theme-hover); box-shadow: inset 0 0 0 1px var(--theme-border-strong); }
 .admin-barlist { display: flex; flex-direction: column; gap: 9px; margin: 0; padding: 0; list-style: none; }
 .admin-barlist > li { display: grid; align-items: center; gap: 10px; grid-template-columns: minmax(84px, 9.5rem) minmax(0, 1fr) minmax(2.5rem, auto); font-size: 13px; }
 .admin-barlist-label { overflow: hidden; color: var(--theme-fg-soft); text-overflow: ellipsis; white-space: nowrap; }

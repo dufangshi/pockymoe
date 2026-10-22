@@ -11,10 +11,15 @@ mod common;
 mod devices;
 mod overview;
 mod shares;
+mod stats;
 mod system;
 #[cfg(test)]
 mod tests;
 mod users;
+
+pub(crate) use common::{
+    compare_versions, day_of, rfc3339_from_ms, Range, DAY_MS, HOUR_MS, MINUTE_MS, RELAY_VERSION,
+};
 
 /// In-memory state of the admin console: when this process started and the
 /// slow system checks it caches.
@@ -81,6 +86,11 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
             delete(audit::end_session),
         )
         .route("/relay/admin/system", get(system::system))
+        .route("/relay/admin/actions", get(stats::actions))
+        .route(
+            "/relay/admin/settings/retention",
+            get(stats::retention).patch(stats::update_retention),
+        )
         .route(
             "/relay/admin/settings/registration",
             get(registration_settings_read).patch(update_registration_settings),
@@ -377,9 +387,12 @@ pub(crate) async fn update_registration_settings(
     Json(body): Json<Value>,
 ) -> impl IntoResponse {
     let conn = state.store.conn.lock().await;
-    if authenticated_admin_user(&conn, &state.store.session_secret, &headers, &query).is_none() {
+    let Some(admin) =
+        authenticated_admin_user(&conn, &state.store.session_secret, &headers, &query)
+    else {
         return unauthorized();
-    }
+    };
+    let before = registration_settings(&conn, &state.oauth);
     if body.get("googleAuthEnabled").and_then(Value::as_bool) == Some(true)
         && !state.oauth.available(OAuthProvider::Google)
     {
@@ -475,11 +488,73 @@ pub(crate) async fn update_registration_settings(
         }
     }
     let settings = registration_settings(&conn, &state.oauth);
+    // Which settings changed, as before → after; the invite code itself is never logged.
+    let mut changes = serde_json::Map::new();
+    for key in [
+        "enabled",
+        "approvalRequired",
+        "googleAuthEnabled",
+        "githubAuthEnabled",
+        "emailVerificationEnabled",
+    ] {
+        if before[key] != settings[key] {
+            changes.insert(key.into(), json!([before[key], settings[key]]));
+        }
+    }
+    match body.get("registrationPassword") {
+        Some(Value::Null) => {
+            changes.insert("inviteCode".into(), json!("removed"));
+        }
+        Some(Value::String(_)) => {
+            changes.insert("inviteCode".into(), json!("set"));
+        }
+        _ => {}
+    }
+    if !changes.is_empty() {
+        log_action(
+            &conn,
+            &admin,
+            "settings.registration",
+            None,
+            Value::Object(changes),
+        );
+    }
     Json(json!({
         "registrationEnabled": settings.get("enabled").cloned().unwrap_or(Value::Bool(true)),
         "settings": settings
     }))
     .into_response()
+}
+
+/// Records an admin change: who, what, on which object and when. The detail
+/// holds only setting names and values, counts and states, never secrets.
+pub(crate) fn log_action(
+    conn: &Connection,
+    admin: &UserRow,
+    action: &str,
+    target: Option<(&str, &str, &str)>,
+    detail: Value,
+) {
+    let detail = (!detail.is_null()).then(|| detail.to_string());
+    if conn
+        .execute(
+            "INSERT INTO relay_admin_actions(admin_user_id,admin_username,action,target_type,target_id,target_label,detail,created_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+            params![
+                admin.id,
+                admin.username,
+                action,
+                target.map(|t| t.0),
+                target.map(|t| t.1),
+                target.map(|t| t.2),
+                detail,
+                common::now_ms()
+            ],
+        )
+        .is_err()
+    {
+        tracing::warn!(action, "Admin action log write failed");
+    }
 }
 
 #[derive(Deserialize)]
@@ -495,9 +570,11 @@ pub(crate) async fn set_user_enabled(
     Json(body): Json<SetUserEnabledInput>,
 ) -> impl IntoResponse {
     let conn = state.store.conn.lock().await;
-    if authenticated_admin_user(&conn, &state.store.session_secret, &headers, &query).is_none() {
+    let Some(admin) =
+        authenticated_admin_user(&conn, &state.store.session_secret, &headers, &query)
+    else {
         return unauthorized();
-    }
+    };
     let Some(user) = load_user_by_id(&conn, &user_id) else {
         return (
             StatusCode::NOT_FOUND,
@@ -524,6 +601,19 @@ pub(crate) async fn set_user_enabled(
     {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
+    if (user.enabled == 1) != body.enabled {
+        log_action(
+            &conn,
+            &admin,
+            if body.enabled {
+                "user.enabled"
+            } else {
+                "user.disabled"
+            },
+            Some(("user", &user.id, &user.username)),
+            Value::Null,
+        );
+    }
     let updated = load_user_by_id(&conn, &user_id).unwrap_or(user);
     Json(user_json(&updated)).into_response()
 }
@@ -535,9 +625,11 @@ pub(crate) async fn admin_delete_user(
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
     let conn = state.store.conn.lock().await;
-    if authenticated_admin_user(&conn, &state.store.session_secret, &headers, &query).is_none() {
+    let Some(admin) =
+        authenticated_admin_user(&conn, &state.store.session_secret, &headers, &query)
+    else {
         return unauthorized();
-    }
+    };
     let Some(user) = load_user_by_id(&conn, &user_id) else {
         return (
             StatusCode::NOT_FOUND,
@@ -568,6 +660,13 @@ pub(crate) async fn admin_delete_user(
         )
             .into_response();
     }
+    log_action(
+        &conn,
+        &admin,
+        "user.deleted",
+        Some(("user", &user.id, &user.username)),
+        Value::Null,
+    );
     Json(json!({ "id": user_id })).into_response()
 }
 
@@ -584,9 +683,11 @@ pub(crate) async fn admin_reset_password(
     Json(body): Json<ResetPasswordInput>,
 ) -> impl IntoResponse {
     let conn = state.store.conn.lock().await;
-    if authenticated_admin_user(&conn, &state.store.session_secret, &headers, &query).is_none() {
+    let Some(admin) =
+        authenticated_admin_user(&conn, &state.store.session_secret, &headers, &query)
+    else {
         return unauthorized();
-    }
+    };
     let Some(user) = load_user_by_id(&conn, &user_id) else {
         return (
             StatusCode::NOT_FOUND,
@@ -624,6 +725,13 @@ pub(crate) async fn admin_reset_password(
     if result.is_err() {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
+    log_action(
+        &conn,
+        &admin,
+        "user.password_reset",
+        Some(("user", &user.id, &user.username)),
+        Value::Null,
+    );
     Json(user_json(&user)).into_response()
 }
 
@@ -753,6 +861,13 @@ pub(crate) async fn approve_registration(
     let Some(user) = load_user_by_id(&conn, &user_id) else {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
+    log_action(
+        &conn,
+        &admin,
+        "registration.approved",
+        Some(("user", &user.id, &user.username)),
+        json!({ "provider": provider }),
+    );
     Json(user_json(&user)).into_response()
 }
 
@@ -768,6 +883,15 @@ pub(crate) async fn reject_registration(
     else {
         return unauthorized();
     };
+    let username: Option<String> = conn
+        .query_row(
+            "SELECT username FROM relay_pending_registrations WHERE id=?1",
+            [&request_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .ok()
+        .flatten();
     // A rejected request keeps its row for the review history; the encrypted
     // vault it carried has no owner any more and goes.
     let result = (|| -> rusqlite::Result<usize> {
@@ -788,7 +912,20 @@ pub(crate) async fn reject_registration(
         Ok(changed)
     })();
     match result {
-        Ok(1) => Json(json!({ "id": request_id })).into_response(),
+        Ok(1) => {
+            log_action(
+                &conn,
+                &admin,
+                "registration.rejected",
+                Some((
+                    "registration",
+                    &request_id,
+                    username.as_deref().unwrap_or_default(),
+                )),
+                Value::Null,
+            );
+            Json(json!({ "id": request_id })).into_response()
+        }
         Ok(_) => (
             StatusCode::NOT_FOUND,
             Json(ApiError::new(

@@ -214,6 +214,36 @@ pub(super) fn count(conn: &Connection, sql: &str, params: impl rusqlite::Params)
     conn.query_row(sql, params, |row| row.get(0)).unwrap_or(0)
 }
 
+/// Compares dotted versions numerically (`0.13.9` < `0.13.38`); a suffix such
+/// as `-beta` sorts before the plain release.
+pub(crate) fn compare_versions(left: &str, right: &str) -> std::cmp::Ordering {
+    fn parts(value: &str) -> (Vec<u64>, bool) {
+        let value = value.trim().trim_start_matches('v');
+        let (core, pre) = match value.split_once(['-', '+']) {
+            Some((core, _)) => (core, true),
+            None => (value, false),
+        };
+        (
+            core.split('.')
+                .map(|part| part.parse().unwrap_or(0))
+                .collect(),
+            pre,
+        )
+    }
+    let (left, left_pre) = parts(left);
+    let (right, right_pre) = parts(right);
+    for index in 0..left.len().max(right.len()) {
+        let ordering = left
+            .get(index)
+            .unwrap_or(&0)
+            .cmp(right.get(index).unwrap_or(&0));
+        if ordering != std::cmp::Ordering::Equal {
+            return ordering;
+        }
+    }
+    right_pre.cmp(&left_pre)
+}
+
 /// The relay's own version: a device older than it is "outdated".
 pub(crate) const RELAY_VERSION: &str = env!("CARGO_PKG_VERSION");
 

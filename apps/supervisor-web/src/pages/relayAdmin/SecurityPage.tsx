@@ -145,7 +145,11 @@ export function limitKindLabel(kind: string) {
     case 'login': return translate('admin.limitLogin');
     case 'auth-ip': return translate('admin.limitAuthIp');
     case 'enroll': return translate('admin.limitEnroll');
-    case 'challenge': return translate('admin.limitChallenge');
+    case 'factor': return translate('admin.limitChallenge');
+    case 'reauth': return translate('admin.limitReauth');
+    case 'vault': return translate('admin.limitVault');
+    case 'passkey': return translate('admin.limitPasskey');
+    case 'recover': return translate('admin.limitRecover');
     default: return kind;
   }
 }

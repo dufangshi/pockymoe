@@ -239,7 +239,7 @@ pub(super) async fn revoke(
     headers: HeaderMap,
     State(state): State<Arc<AppState>>,
 ) -> Response {
-    let (conn, _admin) = match admin_conn(&state, &headers).await {
+    let (conn, admin) = match admin_conn(&state, &headers).await {
         Ok(value) => value,
         Err(response) => return response,
     };
@@ -249,11 +249,38 @@ pub(super) async fn revoke(
         _ => return not_found("Share not found"),
     };
     let revoked_at = now_rfc3339();
+    let label: Option<(String, String, String)> = conn
+        .query_row(
+            &format!(
+                "SELECT COALESCE(s.owner_username,''),COALESCE(s.target_username,''),{}
+                 FROM {table} s WHERE s.id=?1",
+                if kind == "share" {
+                    "'thread'"
+                } else {
+                    "s.scope"
+                }
+            ),
+            [&id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()
+        .ok()
+        .flatten();
     match conn.execute(
         &format!("UPDATE {table} SET revoked_at=?1 WHERE id=?2 AND revoked_at IS NULL"),
         params![revoked_at, id],
     ) {
-        Ok(1) => Json(json!({ "id": id, "kind": kind, "revokedAt": revoked_at })).into_response(),
+        Ok(1) => {
+            let (owner, target, scope) = label.unwrap_or_default();
+            super::log_action(
+                &conn,
+                &admin,
+                "share.revoked",
+                Some((&kind, &id, &format!("{owner} → {target}"))),
+                json!({ "scope": scope }),
+            );
+            Json(json!({ "id": id, "kind": kind, "revokedAt": revoked_at })).into_response()
+        }
         Ok(_) => not_found("Share not found"),
         Err(_) => internal_error(),
     }

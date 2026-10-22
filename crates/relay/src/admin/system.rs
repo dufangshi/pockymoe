@@ -7,7 +7,8 @@ const INTEGRITY_TTL: Duration = Duration::from_secs(60 * 60);
 const STORAGE_TTL: Duration = Duration::from_secs(10 * 60);
 
 pub(super) async fn system(headers: HeaderMap, State(state): State<Arc<AppState>>) -> Response {
-    let tunnels = state.sockets.read().await.len();
+    let online: Vec<String> = state.sockets.read().await.keys().cloned().collect();
+    let tunnels = online.len();
     let browsers = state.clients.read().await.len();
     let pending = state
         .pending
@@ -28,7 +29,11 @@ pub(super) async fn system(headers: HeaderMap, State(state): State<Arc<AppState>
     let integrity = integrity(&state, &conn);
     let storage = storage(&state, &conn, database.as_deref());
     let links = super::shares::public_link_summary(&conn);
-    let push = push_summary(&conn);
+    let mut push = push_summary(&conn);
+    let mut storage = storage;
+    let stats = super::stats::system(&conn, &online);
+    push["delivery"] = stats["delivery"].clone();
+    storage["growth"] = stats["growth"].clone();
     drop(conn);
     let started = ms_from_rfc3339(&state.admin.started_at).unwrap_or_else(now_ms);
     let checks = vec![
@@ -67,6 +72,8 @@ pub(super) async fn system(headers: HeaderMap, State(state): State<Arc<AppState>
         "checks": checks,
         "push": push,
         "storage": storage,
+        "versions": stats["versions"],
+        "metrics": stats["metrics"],
     }))
     .into_response()
 }

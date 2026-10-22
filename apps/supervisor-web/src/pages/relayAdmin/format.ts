@@ -22,13 +22,14 @@ export function formatRatio(value: number | null | undefined, digits = 2) {
   return new Intl.NumberFormat(getLocale(), { style: 'percent', maximumFractionDigits: digits }).format(value);
 }
 
+/** Decimal units (1 MB = 1,000,000 bytes), so axis ticks read as round numbers. */
 export function formatBytes(value: number | null | undefined) {
   if (value === null || value === undefined || !Number.isFinite(value)) return '—';
   const units = ['B', 'KB', 'MB', 'GB', 'TB'];
   let size = value;
   let unit = 0;
-  while (size >= 1024 && unit < units.length - 1) {
-    size /= 1024;
+  while (size >= 1000 && unit < units.length - 1) {
+    size /= 1000;
     unit += 1;
   }
   return `${new Intl.NumberFormat(getLocale(), { maximumFractionDigits: size >= 10 || unit === 0 ? 0 : 1 }).format(size)} ${units[unit]}`;

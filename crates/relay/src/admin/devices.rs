@@ -15,11 +15,29 @@ pub(super) struct DeviceRow {
     pub(super) protected_at: Option<String>,
     pub(super) threads: (i64, i64, i64),
     pub(super) port_mappings: usize,
+    pub(super) version: Option<(Option<String>, i64)>,
+    pub(super) last_seen: Option<i64>,
+    pub(super) connects_hour: Option<i64>,
+    pub(super) traffic7d: Option<Vec<Option<i64>>>,
 }
 
 impl DeviceRow {
     pub(super) fn connected(&self) -> bool {
         self.tunnel.is_some()
+    }
+    pub(super) fn unstable(&self) -> bool {
+        self.connected()
+            && self
+                .connects_hour
+                .is_some_and(|count| count >= crate::metrics::UNSTABLE_CONNECTS)
+    }
+    pub(super) fn outdated(&self) -> bool {
+        crate::metrics::outdated(self.version_text()).unwrap_or(false)
+    }
+    fn version_text(&self) -> Option<&str> {
+        self.version
+            .as_ref()
+            .and_then(|(version, _)| version.as_deref())
     }
     pub(super) fn json(&self) -> Value {
         json!({
@@ -37,6 +55,13 @@ impl DeviceRow {
             "agentThreadCount": self.threads.1,
             "workspaceCount": self.threads.2,
             "portMappings": self.port_mappings,
+            "version": self.version_text(),
+            "versionCheckedAt": self.version.as_ref().map(|(_, at)| rfc3339_from_ms(*at)),
+            "outdated": crate::metrics::outdated(self.version_text()),
+            "lastSeenAt": if self.connected() { None } else { self.last_seen.map(rfc3339_from_ms) },
+            "reconnects1h": self.connects_hour,
+            "unstable": self.connects_hour.map(|_| self.unstable()),
+            "traffic7d": self.traffic7d,
         })
     }
 }
@@ -44,6 +69,10 @@ impl DeviceRow {
 /// Every device (or one owner's), with what the database and memory know.
 pub(super) fn rows(conn: &Connection, live: &Live, owner: Option<&str>) -> Vec<DeviceRow> {
     let lineage = lineage_counts(conn);
+    let stats = super::stats::device_stats(conn);
+    // Days before recording started are unknown, not zero.
+    let started = crate::metrics::history_start(conn);
+    let today = now_ms() - now_ms().rem_euclid(DAY_MS);
     let sql = format!(
         "SELECT d.id,d.name,d.owner_user_id,u.username,d.created_at,c.device_id IS NOT NULL,
                 CASE WHEN json_valid(c.certificate_json) THEN json_extract(c.certificate_json,'$.createdAt') END
@@ -58,7 +87,29 @@ pub(super) fn rows(conn: &Connection, live: &Live, owner: Option<&str>) -> Vec<D
     );
     let map = |row: &rusqlite::Row<'_>| -> rusqlite::Result<DeviceRow> {
         let id: String = row.get(0)?;
+        let traffic7d = stats.recorded.then(|| {
+            let days = stats
+                .traffic
+                .get(&id)
+                .cloned()
+                .unwrap_or_else(|| vec![0; 7]);
+            days.into_iter()
+                .enumerate()
+                .map(|(index, requests)| {
+                    let day = today - (6 - index as i64) * DAY_MS;
+                    started
+                        .is_some_and(|begun| day + DAY_MS > begun)
+                        .then_some(requests)
+                })
+                .collect()
+        });
         Ok(DeviceRow {
+            version: stats.versions.get(&id).cloned(),
+            last_seen: stats.last_seen.get(&id).copied(),
+            connects_hour: stats
+                .recorded
+                .then(|| stats.connects_hour.get(&id).copied().unwrap_or(0)),
+            traffic7d,
             tunnel: live.tunnels.get(&id).cloned(),
             threads: lineage.get(&id).copied().unwrap_or_default(),
             port_mappings: live.previews.get(&id).copied().unwrap_or(0),
@@ -85,6 +136,8 @@ fn matches_filter(device: &DeviceRow, filter: &str) -> bool {
         "online" => device.connected(),
         "offline" => !device.connected(),
         "unprotected" => !device.protected,
+        "unstable" => device.unstable(),
+        "outdated" => device.outdated(),
         _ => true,
     }
 }
@@ -99,6 +152,7 @@ pub(super) async fn list(
         Ok(value) => value,
         Err(response) => return response,
     };
+    super_flush(&state, &conn);
     let all = rows(&conn, &live, None);
     drop(conn);
     let search = query.search();
@@ -134,6 +188,8 @@ pub(super) async fn list(
         "offline": all.iter().filter(|d| !d.connected()).count(),
         "protected": all.iter().filter(|d| d.protected).count(),
         "unprotected": all.iter().filter(|d| !d.protected).count(),
+        "unstable": all.iter().filter(|d| d.unstable()).count(),
+        "outdated": all.iter().filter(|d| d.outdated()).count(),
     });
     let mut body = paging.wrap(items, matching.len());
     body.insert("counts".into(), counts);
@@ -200,11 +256,15 @@ pub(super) async fn detail(
         })
         .unwrap_or_default();
     let (sessions, streams) = previews.get(&device_id).copied().unwrap_or_default();
+    super_flush(&state, &conn);
+    let (connections, traffic) = super::stats::device_detail(&conn, &device_id);
     Json(json!({
         "device": device.json(),
         "upstreamProtocols": protocols,
         "shares": shares,
         "previews": { "mappings": device.port_mappings, "sessions": sessions, "streams": streams },
+        "connections": connections,
+        "traffic": traffic,
     }))
     .into_response()
 }
@@ -216,26 +276,33 @@ pub(super) async fn disconnect(
     headers: HeaderMap,
     State(state): State<Arc<AppState>>,
 ) -> Response {
-    {
-        let (conn, _admin) = match admin_conn(&state, &headers).await {
+    let (admin, name) = {
+        let (conn, admin) = match admin_conn(&state, &headers).await {
             Ok(value) => value,
             Err(response) => return response,
         };
-        let exists = conn
+        let name: Option<String> = conn
             .query_row(
-                "SELECT 1 FROM relay_devices WHERE id=?1",
+                "SELECT name FROM relay_devices WHERE id=?1",
                 [&device_id],
-                |_| Ok(()),
+                |row| row.get(0),
             )
             .optional()
             .ok()
-            .flatten()
-            .is_some();
-        if !exists {
+            .flatten();
+        let Some(name) = name else {
             return not_found("Device not found");
-        }
-    }
+        };
+        (admin, name)
+    };
     let was_connected = drop_tunnel(&state, &device_id).await;
+    super::log_action(
+        &*state.store.conn.lock().await,
+        &admin,
+        "device.disconnected",
+        Some(("device", &device_id, &name)),
+        json!({ "wasConnected": was_connected }),
+    );
     Json(json!({ "id": device_id, "wasConnected": was_connected })).into_response()
 }
 
@@ -243,6 +310,9 @@ pub(super) async fn disconnect(
 pub(crate) async fn drop_tunnel(state: &AppState, device_id: &str) -> bool {
     let removed = state.sockets.write().await.remove(device_id);
     if let Some(socket) = &removed {
+        state
+            .metrics
+            .disconnected(socket.connection_id, crate::metrics::EndReason::Admin);
         state
             .clients
             .write()
@@ -257,4 +327,10 @@ pub(crate) async fn drop_tunnel(state: &AppState, device_id: &str) -> bool {
             });
     }
     removed.is_some()
+}
+
+/// Writes queued tunnel connection events first, so a list read right after a
+/// reconnect already counts it.
+pub(super) fn super_flush(state: &AppState, conn: &Connection) {
+    crate::metrics::flush_connections(state, conn);
 }

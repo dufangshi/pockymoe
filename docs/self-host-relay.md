@@ -175,6 +175,10 @@ your account**; this also works in Web builds without the security upgrade.
 
 ## Backups
 
+The database also keeps the admin console's statistics (counts, sizes and times
+only, never conversation content or IP addresses) for a bounded time; see
+[recorded statistics](relay-admin.md#recorded-statistics).
+
 Back up the whole data directory. It holds `relay-store.sqlite` and
 `session-secret`. The secret also encrypts stored two-factor and device
 credentials: if it is lost or replaced, those can no longer be decrypted. Use a

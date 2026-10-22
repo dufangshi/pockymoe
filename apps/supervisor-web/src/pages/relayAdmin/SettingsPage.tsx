@@ -3,7 +3,7 @@
 import { ErrorMark } from '@pockymoe/thread-ui';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { Check, Eye, EyeOff, Lock } from 'lucide-react';
-import { useEffect, useId, useState, type FormEvent, type ReactNode } from 'react';
+import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
 import type { RelayRegistrationSettingsDto, RelaySessionDto } from '@pockymoe/shared';
 import { RelaySecurityPanel } from '../../components/RelaySecurity';
 import { updateRelayRegistrationSettings } from '../../lib/api';
@@ -73,12 +73,12 @@ function SaveState({ saving, at }: { saving: Saving; at: string }) {
   return <span className="admin-saved is-saving" role="status">{translate('admin.saving')}</span>;
 }
 
+/** One setting: its name and help, and the control (which carries the name). */
 function SettingRow({ title, description, children }: { title: string; description?: ReactNode; children: ReactNode }) {
-  const id = useId();
   return (
-    <div className="admin-setting" role="group" aria-labelledby={id}>
+    <div className="admin-setting">
       <div className="admin-setting-text">
-        <b id={id}>{title}</b>
+        <b>{title}</b>
         {description ? <span>{description}</span> : null}
       </div>
       <div className="admin-setting-control">{children}</div>

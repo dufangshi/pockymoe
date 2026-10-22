@@ -6,7 +6,7 @@ import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { ArrowLeftRight, Cpu, Info, Network, Unplug, User } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { adminApi } from './adminApi';
-import { ColumnChart, HistoryNote, Legend, Sparkline, TimelineStrip, type TimelineSpan } from './charts';
+import { ColumnChart, HistoryNote, Sparkline, TimelineStrip, type TimelineSpan } from './charts';
 import { formatCount, formatDate, formatDateTime, formatDuration, formatRatio, formatRelative, formatTime, parseTime, since } from './format';
 import { protocolLabel, reasonLabel, scopeLabel } from './labels';
 import type { AdminPageProps } from './RelayAdminConsole';
@@ -337,12 +337,11 @@ function ConnectionHistory({ detail }: { detail: AdminDeviceDetail }) {
       <div className="admin-timeline-offline-base">
         <TimelineStrip end={end} formatAt={formatTime} label={translate('admin.tunnelHistoryLabel', { uptime: formatRatio(history.uptime, 1), reconnects: history.reconnects })} spans={spans} start={start} />
       </div>
-      <Legend
-        items={[
-          { label: translate('admin.online'), slot: 3 },
-          { label: translate('admin.unstable'), slot: 4 },
-        ]}
-      />
+      <ul className="admin-legend">
+        <li><span aria-hidden className="admin-swatch admin-series-3" /><span>{translate('admin.online')}</span></li>
+        <li><span aria-hidden className="admin-swatch admin-series-4" /><span>{translate('admin.unstable')}</span></li>
+        <li><span aria-hidden className="admin-swatch is-offline" /><span>{translate('admin.offline')}</span></li>
+      </ul>
       <p className="admin-detail-stats">
         <span>{translate('admin.uptime', { value: formatRatio(history.uptime, 1) })}</span>
         <span>{translate('admin.reconnectsCount', { count: history.reconnects })}</span>

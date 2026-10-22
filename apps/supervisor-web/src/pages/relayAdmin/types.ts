@@ -194,8 +194,8 @@ export interface AdminDevice {
   lastSeenAt?: string | null;
   reconnects1h?: number | null;
   unstable?: boolean | null;
-  /** Forwarded requests per day for the last 7 days, oldest first. */
-  traffic7d?: number[] | null;
+  /** Forwarded requests per day for the last 7 days, oldest first; null before recording started. */
+  traffic7d?: Array<number | null> | null;
 }
 
 export type AdminDeviceFilter = 'all' | 'online' | 'offline' | 'unstable' | 'unprotected' | 'outdated';

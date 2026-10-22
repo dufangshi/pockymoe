@@ -353,7 +353,7 @@ pub(super) async fn end_sessions(
     headers: HeaderMap,
     State(state): State<Arc<AppState>>,
 ) -> Response {
-    let (conn, _admin) = match admin_conn(&state, &headers).await {
+    let (conn, admin) = match admin_conn(&state, &headers).await {
         Ok(value) => value,
         Err(response) => return response,
     };
@@ -370,6 +370,13 @@ pub(super) async fn end_sessions(
         Ok(ended) => ended,
         Err(_) => return internal_error(),
     };
+    super::log_action(
+        &conn,
+        &admin,
+        "user.sessions_ended",
+        Some(("user", &user.id, &user.username)),
+        json!({ "sessions": ended }),
+    );
     Json(json!({ "id": user.id, "ended": ended })).into_response()
 }
 

@@ -80,7 +80,9 @@ Limits:
   "Chrome on macOS") and times, revocations, recipients' account public keys,
   HTTP methods and paths, thread, workspace and shell IDs, message types, sizes
   and timing, preview lease IDs, and the thread lineage and port mappings that
-  devices report in heartbeats.
+  devices report in heartbeats. It keeps per-device and per-hour totals of
+  request counts and sizes, tunnel connection times and each device's reported
+  version for its admin console ([recorded statistics](relay-admin.md#recorded-statistics)).
 - **Availability.** The relay can drop, delay or refuse requests, hide devices and
   withhold revocation frames (browsers also deliver revocations, see
   [Revocations](#revocations)).

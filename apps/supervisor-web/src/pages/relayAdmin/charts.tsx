@@ -198,12 +198,34 @@ export interface LinePoint {
   value: number | null;
 }
 
+export interface LineSeries {
+  key: string;
+  label: string;
+  slot: SeriesSlot;
+  points: LinePoint[];
+}
+
+function runsOf(points: LinePoint[]) {
+  const runs: Array<Array<{ at: number; value: number }>> = [];
+  let run: Array<{ at: number; value: number }> = [];
+  for (const point of points) {
+    if (point.value === null) {
+      if (run.length) runs.push(run);
+      run = [];
+    } else run.push(point as { at: number; value: number });
+  }
+  if (run.length) runs.push(run);
+  return runs;
+}
+
 /**
- * One line with a light area under it, over time. Gaps (null) break the
- * line: they are unknown, not zero. The last point carries its value.
+ * Lines over time: one with a light area under it, or several (each named in
+ * the tooltip and at its end). Gaps (null) break a line: they are unknown,
+ * not zero.
  */
 export function LineChart({
   points,
+  series,
   label,
   slot = 1,
   height = 200,
@@ -213,7 +235,8 @@ export function LineChart({
   end,
   minMax = 4,
 }: {
-  points: LinePoint[];
+  points?: LinePoint[];
+  series?: LineSeries[];
   label: string;
   slot?: SeriesSlot;
   height?: number;
@@ -224,37 +247,25 @@ export function LineChart({
   minMax?: number;
 }) {
   const [ref, width] = useWidth<HTMLDivElement>();
-  const known = points.filter((point) => point.value !== null) as Array<{ at: number; value: number }>;
+  const lines: LineSeries[] = series ?? [{ key: 'value', label, slot, points: points ?? [] }];
+  const single = lines.length === 1;
+  const axis = lines[0]?.points ?? [];
+  const known = lines.flatMap((line) => line.points.filter((point) => point.value !== null) as Array<{ at: number; value: number }>);
   const max = Math.max(minMax, ...known.map((point) => point.value));
   const ticks = niceTicks(max);
   const top = ticks[ticks.length - 1] ?? max;
-  const from = start ?? points[0]?.at ?? 0;
-  const to = end ?? points[points.length - 1]?.at ?? 1;
+  const from = start ?? axis[0]?.at ?? 0;
+  const to = end ?? axis[axis.length - 1]?.at ?? 1;
   const plotWidth = Math.max(10, width - PAD.left - PAD.right);
   const plotHeight = height - PAD.top - PAD.bottom;
   const x = (at: number) => PAD.left + ((at - from) / Math.max(1, to - from)) * plotWidth;
   const y = (value: number) => PAD.top + plotHeight - (value / top) * plotHeight;
-  const runs: Array<Array<{ at: number; value: number }>> = [];
-  let run: Array<{ at: number; value: number }> = [];
-  for (const point of points) {
-    if (point.value === null) {
-      if (run.length) runs.push(run);
-      run = [];
-    } else run.push(point as { at: number; value: number });
-  }
-  if (run.length) runs.push(run);
-  const line = runs.map((segment) => `M${segment.map((point) => `${x(point.at).toFixed(1)},${y(point.value).toFixed(1)}`).join('L')}`).join('');
-  const area = runs
-    .filter((segment) => segment.length > 1)
-    .map((segment) => `M${x(segment[0]!.at).toFixed(1)},${y(0)}L${segment.map((point) => `${x(point.at).toFixed(1)},${y(point.value).toFixed(1)}`).join('L')}L${x(segment[segment.length - 1]!.at).toFixed(1)},${y(0)}Z`)
-    .join('');
-  const last = known[known.length - 1];
   const xTicks = Array.from({ length: 5 }, (_, index) => from + ((to - from) * index) / 4);
-  const pointer = useChartPointer(points.length);
+  const pointer = useChartPointer(axis.length);
   const nearest = (px: number) => {
     let best = 0;
     let distance = Infinity;
-    points.forEach((point, index) => {
+    axis.forEach((point, index) => {
       const d = Math.abs(x(point.at) - px);
       if (d < distance) {
         distance = d;
@@ -263,19 +274,38 @@ export function LineChart({
     });
     return best;
   };
-  const activePoint = pointer.active ? points[pointer.active.index] : null;
-  const summary = last ? `${label}: ${formatValue(last.value)} (${formatAt(last.at)})` : label;
+  const activeIndex = pointer.active?.index ?? null;
+  const activeAt = activeIndex === null ? null : axis[activeIndex]?.at ?? null;
+  // End labels: the last value of each line, skipped where they would overlap.
+  const ends = lines
+    .map((line) => {
+      const last = [...line.points].reverse().find((point) => point.value !== null);
+      return last && last.value !== null ? { line, at: last.at, value: last.value } : null;
+    })
+    .filter((item): item is { line: LineSeries; at: number; value: number } => item !== null)
+    .sort((a, b) => y(a.value) - y(b.value));
+  let lastLabelY = -Infinity;
+  const labelled = ends.map((item) => {
+    const ly = y(item.value) + 4;
+    const show = ly - lastLabelY >= 12;
+    if (show) lastLabelY = ly;
+    return { ...item, show };
+  });
+  const summary = ends.length
+    ? `${label}: ${ends.map((item) => (single ? formatValue(item.value) : `${item.line.label} ${formatValue(item.value)}`)).join(', ')} (${formatAt(ends[0]!.at)})`
+    : label;
   return (
     <div
       className="admin-chart"
-      onKeyDown={(event) => pointer.onKeyDown(event, (index) => x(points[index]!.at))}
+      onBlur={() => pointer.setActive(null)}
+      onKeyDown={(event) => pointer.onKeyDown(event, (index) => x(axis[index]!.at))}
       onPointerLeave={() => pointer.setActive(null)}
       onPointerMove={(event) => {
+        if (!axis.length) return;
         const rect = event.currentTarget.getBoundingClientRect();
         const index = nearest(event.clientX - rect.left);
-        pointer.setActive({ index, x: x(points[index]!.at) });
+        pointer.setActive({ index, x: x(axis[index]!.at) });
       }}
-      onBlur={() => pointer.setActive(null)}
       ref={ref}
       tabIndex={0}
     >
@@ -290,28 +320,56 @@ export function LineChart({
           {xTicks.map((tick, index) => (
             <text className="admin-axis" key={index} textAnchor={index === 0 ? 'start' : index === 4 ? 'end' : 'middle'} x={x(tick)} y={height - 6}>{formatAt(tick)}</text>
           ))}
-          <path className={`admin-area admin-series-${slot}`} d={area} />
-          <path className={`admin-line admin-series-${slot}`} d={line} />
-          {last ? (
-            <>
-              <circle className={`admin-dot admin-series-${slot}`} cx={x(last.at)} cy={y(last.value)} r={4} />
-              <text className="admin-value-label" x={x(last.at) + 8} y={y(last.value) + 4}>{formatValue(last.value)}</text>
-            </>
+          {lines.map((line) => {
+            const runs = runsOf(line.points);
+            const path = runs.map((segment) => `M${segment.map((point) => `${x(point.at).toFixed(1)},${y(point.value).toFixed(1)}`).join('L')}`).join('');
+            const area = runs
+              .filter((segment) => segment.length > 1)
+              .map((segment) => `M${x(segment[0]!.at).toFixed(1)},${y(0)}L${segment.map((point) => `${x(point.at).toFixed(1)},${y(point.value).toFixed(1)}`).join('L')}L${x(segment[segment.length - 1]!.at).toFixed(1)},${y(0)}Z`)
+              .join('');
+            return (
+              <g key={line.key}>
+                {single ? <path className={`admin-area admin-series-${line.slot}`} d={area} /> : null}
+                <path className={`admin-line admin-series-${line.slot}`} d={path} />
+              </g>
+            );
+          })}
+          {labelled.map((item) => (
+            <g key={item.line.key}>
+              <circle className={`admin-dot admin-series-${item.line.slot}`} cx={x(item.at)} cy={y(item.value)} r={4} />
+              {item.show ? <text className="admin-value-label" x={x(item.at) + 8} y={y(item.value) + 4}>{formatValue(item.value)}</text> : null}
+            </g>
+          ))}
+          {activeAt !== null ? (
+            <line className="admin-crosshair" x1={x(activeAt)} x2={x(activeAt)} y1={PAD.top} y2={PAD.top + plotHeight} />
           ) : null}
-          {activePoint ? (
-            <line className="admin-crosshair" x1={x(activePoint.at)} x2={x(activePoint.at)} y1={PAD.top} y2={PAD.top + plotHeight} />
-          ) : null}
-          {activePoint?.value !== null && activePoint ? (
-            <circle className={`admin-dot admin-series-${slot}`} cx={x(activePoint.at)} cy={y(activePoint.value)} r={4} />
-          ) : null}
+          {activeIndex !== null
+            ? lines.map((line) => {
+                const point = line.points[activeIndex];
+                return point && point.value !== null ? (
+                  <circle className={`admin-dot admin-series-${line.slot}`} cx={x(point.at)} cy={y(point.value)} key={line.key} r={4} />
+                ) : null;
+              })
+            : null}
         </svg>
       ) : (
         <div style={{ height }} />
       )}
-      {activePoint && pointer.active ? (
+      {activeIndex !== null && activeAt !== null && pointer.active ? (
         <Tooltip width={width} x={pointer.active.x}>
-          <b>{activePoint.value === null ? translate('admin.noData') : formatValue(activePoint.value)}</b>
-          <span>{formatAt(activePoint.at)}</span>
+          <span>{formatAt(activeAt)}</span>
+          {lines.map((line) => {
+            const value = line.points[activeIndex]?.value ?? null;
+            return single ? (
+              <b key={line.key}>{value === null ? translate('admin.noData') : formatValue(value)}</b>
+            ) : (
+              <span className="admin-tooltip-row" key={line.key}>
+                <i className={`admin-key admin-series-${line.slot}`} />
+                <b>{value === null ? '—' : formatValue(value)}</b>
+                {line.label}
+              </span>
+            );
+          })}
         </Tooltip>
       ) : null}
     </div>

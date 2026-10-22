@@ -401,15 +401,18 @@ async fn deliver_batch(state: &AppState, http: &reqwest::Client) -> Result<()> {
         let conn = state.store.conn.lock().await;
         match result {
             Ok(status) if status == StatusCode::GONE || status == StatusCode::NOT_FOUND => {
+                state.metrics.push("expired");
                 conn.execute("DELETE FROM relay_push_subscriptions WHERE id=?1", [id])?;
             }
             Ok(status) if status.is_success() => {
+                state.metrics.push("sent");
                 conn.execute(
                     "DELETE FROM relay_push_deliveries WHERE event_id=?1 AND subscription_id=?2",
                     params![event, id],
                 )?;
             }
             _ => {
+                state.metrics.push("failed");
                 // Do not log push URLs or keys. Retry transport errors and service
                 // throttling with bounded backoff; expiration bounds total retention.
                 let delay = 15_000i64 * (1i64 << attempts.min(8));

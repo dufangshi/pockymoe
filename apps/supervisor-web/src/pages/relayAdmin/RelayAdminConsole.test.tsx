@@ -1,6 +1,6 @@
 // The console against responses captured from a real relay (__fixtures__):
 // navigation, figures, paged tables, the detail window and admin actions.
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { setLocale } from '@pockymoe/thread-ui/i18n';
@@ -19,6 +19,16 @@ import securityEvents from './__fixtures__/security-events.json';
 import sessions from './__fixtures__/sessions.json';
 import system from './__fixtures__/system.json';
 import search from './__fixtures__/search.json';
+import overviewRecorded from './__fixtures__/overview-recorded.json';
+import devicesRecorded from './__fixtures__/devices-recorded.json';
+import deviceDetailRecorded from './__fixtures__/device-detail-recorded.json';
+import securityRecorded from './__fixtures__/security-recorded.json';
+import systemRecorded from './__fixtures__/system-recorded.json';
+import actions from './__fixtures__/actions.json';
+import retention from './__fixtures__/retention.json';
+
+// Responses of a relay that records statistics (or of one that does not).
+let recorded = false;
 
 const calls: Array<{ path: string; method: string }> = [];
 
@@ -32,25 +42,27 @@ const api = vi.hoisted(() => ({
 
 function respond(path: string, method: string) {
   const route = path.replace(/^relay\/admin\/?/, '').split('?')[0] ?? '';
-  if (method !== 'GET') return { id: route.split('/').pop(), ok: true };
+  // Writes answer as the relay does: retention returns the new settings.
+  if (method !== 'GET') return route === 'settings/retention' ? { ...retention, metricsDays: 30 } : { id: route.split('/').pop(), ok: true };
   const routes: Record<string, unknown> = {
-    overview,
+    overview: recorded ? overviewRecorded : overview,
     users,
     registrations,
-    devices,
+    devices: recorded ? devicesRecorded : devices,
     shares,
     'public-links': publicLinks,
     previews,
-    security,
+    security: recorded ? securityRecorded : security,
     'security/events': securityEvents,
     sessions,
-    system,
+    system: recorded ? systemRecorded : system,
     search,
+    ...(recorded ? { actions, 'settings/retention': retention } : {}),
     'settings/registration': { registrationEnabled: true, settings: { enabled: true, approvalRequired: true, registrationPasswordConfigured: false, googleAuthEnabled: false, githubAuthEnabled: false, emailVerificationEnabled: false, googleAuthAvailable: false, githubAuthAvailable: false, emailVerificationAvailable: false } },
   };
   if (route in routes) return routes[route];
   if (route.startsWith('users/')) return userDetail;
-  if (route.startsWith('devices/')) return deviceDetail;
+  if (route.startsWith('devices/')) return recorded ? deviceDetailRecorded : deviceDetail;
   throw Object.assign(new Error('not found'), { statusCode: 404 });
 }
 
@@ -85,8 +97,13 @@ function renderConsole(path = '/relay-admin') {
   );
 }
 
-beforeAll(() => setLocale('en', false));
+beforeAll(() => {
+  setLocale('en', false);
+  // jsdom lays nothing out; charts measure their container.
+  Object.defineProperty(HTMLElement.prototype, 'clientWidth', { configurable: true, get: () => 640 });
+});
 afterEach(() => {
+  recorded = false;
   calls.length = 0;
   vi.clearAllMocks();
 });
@@ -168,4 +185,32 @@ describe('relay admin console', () => {
     expect(await screen.findByText('Database integrity')).toBeInTheDocument();
     expect(screen.getByText('Legacy plaintext public links')).toBeInTheDocument();
   });
+
+  it('draws recorded statistics: online devices, tunnels, versions, device history, admin actions', async () => {
+    recorded = true;
+    renderConsole();
+    expect(await screen.findByRole('img', { name: /^Online devices: / })).toBeInTheDocument();
+    expect(screen.getByText('devices reconnected 5 or more times in the last hour')).toBeInTheDocument();
+    expect(screen.getByText('Tunnels and forwarding')).toBeInTheDocument();
+    expect(screen.getByRole('img', { name: /^Device versions: 0\.13\.38/ })).toBeInTheDocument();
+    const actionsCard = screen.getByRole('region', { name: 'Admin actions' });
+    expect(within(actionsCard).getByText(/^Approved a registration · /)).toBeInTheDocument();
+    cleanupAndRender(`/relay-admin?tab=devices&id=${deviceDetailRecorded.device.id}`);
+    const dialog = await screen.findByRole('dialog', { name: deviceDetailRecorded.device.name });
+    expect(within(dialog).getByRole('img', { name: /^Tunnel connected .* of the last 24 hours/ })).toBeInTheDocument();
+    expect(within(dialog).getByText('Forwarded requests · 24 hours')).toBeInTheDocument();
+    cleanupAndRender('/relay-admin?tab=security&sub=actions');
+    expect(await screen.findByRole('tab', { name: 'Admin actions' })).toHaveAttribute('aria-selected', 'true');
+    expect(await screen.findByText('Changed registration settings')).toBeInTheDocument();
+    expect(screen.getByText('approvalRequired: false → true')).toBeInTheDocument();
+    cleanupAndRender('/relay-admin?tab=settings');
+    expect(await screen.findByRole('group', { name: 'Metrics history' })).toBeInTheDocument();
+    fireEvent.click(within(screen.getByRole('group', { name: 'Metrics history' })).getByRole('button', { name: '30 days' }));
+    await waitFor(() => expect(calls).toContainEqual({ path: 'relay/admin/settings/retention', method: 'PATCH' }));
+  });
 });
+
+function cleanupAndRender(path: string) {
+  cleanup();
+  renderConsole(path);
+}

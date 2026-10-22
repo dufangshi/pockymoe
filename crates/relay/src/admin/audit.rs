@@ -211,7 +211,12 @@ pub(super) async fn summary(
             |row| Ok((row.get::<_, Option<i64>>(0)?, row.get::<_, i64>(1)?)),
         )
         .unwrap_or((None, 0));
+    let stats = super::stats::security(&conn, range);
     Json(json!({
+        "loginFailures": stats["loginFailures"],
+        "rateLimited": stats["rateLimited"],
+        "retention": stats["retention"],
+        "adminActions": stats["adminActions"],
         "range": range.key(),
         "logins": logins,
         "mfaLogins": mfa_logins,
@@ -279,20 +284,20 @@ pub(super) async fn end_session(
     headers: HeaderMap,
     State(state): State<Arc<AppState>>,
 ) -> Response {
-    let (conn, _admin) = match admin_conn(&state, &headers).await {
+    let (conn, admin) = match admin_conn(&state, &headers).await {
         Ok(value) => value,
         Err(response) => return response,
     };
-    let owner: Option<(String, String)> = conn
+    let owner: Option<(String, String, String)> = conn
         .query_row(
-            "SELECT u.username,u.role FROM relay_auth_sessions s JOIN relay_users u ON u.id=s.user_id WHERE s.token_hash=?1",
+            "SELECT u.username,u.role,u.id FROM relay_auth_sessions s JOIN relay_users u ON u.id=s.user_id WHERE s.token_hash=?1",
             [&session_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .optional()
         .ok()
         .flatten();
-    let Some((_username, role)) = owner else {
+    let Some((username, role, user_id)) = owner else {
         return not_found("Session not found");
     };
     if role == "admin" {
@@ -302,7 +307,16 @@ pub(super) async fn end_session(
         "DELETE FROM relay_auth_sessions WHERE token_hash=?1",
         [&session_id],
     ) {
-        Ok(_) => Json(json!({ "id": session_id })).into_response(),
+        Ok(_) => {
+            super::log_action(
+                &conn,
+                &admin,
+                "session.ended",
+                Some(("user", &user_id, &username)),
+                Value::Null,
+            );
+            Json(json!({ "id": session_id })).into_response()
+        }
         Err(_) => internal_error(),
     }
 }

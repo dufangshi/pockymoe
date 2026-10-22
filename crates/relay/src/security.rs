@@ -457,16 +457,37 @@ pub(crate) fn consume_oauth(
 #[derive(Default)]
 pub(crate) struct Admission {
     buckets: std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, u32)>>,
+    /// Refusals by kind (the key's prefix, such as `login`) since the last
+    /// statistics sample. The key's subject (account, address) is not kept.
+    refused: std::sync::Mutex<std::collections::HashMap<String, u64>>,
 }
 impl Admission {
     pub fn allow(&self, key: String, limit: u32, seconds: u64) -> bool {
+        let allowed = self.check(&key, limit, seconds);
+        if !allowed {
+            let kind = key.split(':').next().unwrap_or("other").to_string();
+            *self
+                .refused
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .entry(kind)
+                .or_insert(0) += 1;
+        }
+        allowed
+    }
+    pub fn take_refusals(&self) -> Vec<(String, u64)> {
+        std::mem::take(&mut *self.refused.lock().unwrap_or_else(|e| e.into_inner()))
+            .into_iter()
+            .collect()
+    }
+    fn check(&self, key: &str, limit: u32, seconds: u64) -> bool {
         let mut buckets = self.buckets.lock().unwrap_or_else(|e| e.into_inner());
         let now = std::time::Instant::now();
         buckets.retain(|_, (start, _)| now.duration_since(*start).as_secs() < 600);
-        if buckets.len() >= 8192 && !buckets.contains_key(&key) {
+        if buckets.len() >= 8192 && !buckets.contains_key(key) {
             return false;
         }
-        let (start, count) = buckets.entry(key).or_insert((now, 0));
+        let (start, count) = buckets.entry(key.to_string()).or_insert((now, 0));
         if now.duration_since(*start).as_secs() >= seconds {
             *start = now;
             *count = 0;
@@ -480,10 +501,11 @@ impl Admission {
 }
 
 // Deliberately no passwords, tokens, OTPs, request bodies, or raw user agents.
+// Retention (days, with a row cap) is applied by the statistics maintenance
+// (metrics::prune), not on every write.
 pub(crate) fn audit(conn: &Connection, user: Option<&str>, event: &str, resource: Option<&str>) {
     let now = chrono::Utc::now().timestamp_millis();
     if conn.execute("INSERT INTO relay_security_events(user_id,event,resource_id,created_at) VALUES (?1,?2,?3,?4)",params![user,event,resource,now]).is_err() {tracing::warn!(event,"Security audit write failed");}
-    let _=conn.execute("DELETE FROM relay_security_events WHERE id IN (SELECT id FROM relay_security_events ORDER BY id DESC LIMIT -1 OFFSET 10000)",[]);
 }
 
 #[cfg(test)]

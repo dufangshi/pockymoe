@@ -5,7 +5,7 @@ import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { CircleCheck, CircleDashed, TriangleAlert } from 'lucide-react';
 import { useEffect } from 'react';
 import { adminApi } from './adminApi';
-import { BarList, ChartCard, HistoryNote, LineChart, ProportionBar, type SeriesSlot } from './charts';
+import { BarList, ChartCard, HistoryNote, Legend, LineChart, ProportionBar, type SeriesSlot } from './charts';
 import { formatBytes, formatCount, formatDay, formatDuration, formatRatio, formatRelative } from './format';
 import { checkLabel } from './labels';
 import { seriesPoints } from './OverviewPage';
@@ -157,20 +157,21 @@ function VersionsCard({ data }: { data: AdminSystem }) {
         label={translate('admin.versionDistribution')}
       />
       {versions.history.length > 1 ? (
-        <div className="admin-version-history">
-          {historyKeys.map((version, index) => (
-            <div key={version}>
-              <h4 className="admin-subheading">{translate('admin.versionOverTime', { version })}</h4>
-              <LineChart
-                formatAt={formatDay}
-                height={120}
-                label={translate('admin.versionOverTime', { version })}
-                points={versions.history.map((day) => ({ at: Date.parse(`${day.day}T12:00:00Z`), value: day.versions[version] ?? 0 }))}
-                slot={SLOTS[index]!}
-              />
-            </div>
-          ))}
-        </div>
+        <>
+          <h4 className="admin-subheading">{translate('admin.versionsOverTime')}</h4>
+          <LineChart
+            formatAt={formatDay}
+            height={200}
+            label={translate('admin.versionsOverTime')}
+            series={historyKeys.map((version, index) => ({
+              key: version,
+              label: version,
+              slot: SLOTS[index]!,
+              points: versions.history.map((day) => ({ at: Date.parse(`${day.day}T12:00:00Z`), value: day.versions[version] ?? 0 })),
+            }))}
+          />
+          <Legend items={historyKeys.map((version, index) => ({ label: version, slot: SLOTS[index]! }))} />
+        </>
       ) : null}
       <HistoryNote historyStart={versions.historyStart} rangeStart={start} />
     </ChartCard>

@@ -100,6 +100,9 @@ pub(super) async fn overview(
     let links = super::shares::public_link_summary(&conn);
     let legacy_links = links["legacy"].as_i64().unwrap_or(0);
     let events = super::audit::recent(&conn, 6);
+    super::devices::super_flush(&state, &conn);
+    let online_ids: Vec<String> = live.tunnels.keys().cloned().collect();
+    let stats = super::stats::overview(&conn, range, &online_ids);
     drop(conn);
 
     Json(json!({
@@ -116,7 +119,8 @@ pub(super) async fn overview(
             "oldestPendingAt": registrations["oldestPendingAt"],
             "usersWithoutAccountKey": total - with_key,
             "legacyPublicLinks": legacy_links,
-            "unstableDevices": Value::Null,
+            // Known only once the relay records tunnel connections.
+            "unstableDevices": if stats["tunnels"].is_null() { Value::Null } else { stats["unstableDevices"].clone() },
         },
         "users": {
             "total": total,
@@ -131,6 +135,7 @@ pub(super) async fn overview(
             "withAccountKey": with_key,
             "twoFactor": two_factor,
             "resetPending": reset_pending,
+            "dailyActive": stats["dailyActive"],
         },
         "activity": activity,
         "devices": {
@@ -146,6 +151,10 @@ pub(super) async fn overview(
         "signupsWeekly": weekly,
         "publicLinks": links,
         "securityEvents": events,
+        "onlineDevices": stats["onlineDevices"],
+        "versions": stats["versions"],
+        "tunnels": stats["tunnels"],
+        "adminActions": stats["adminActions"],
     }))
     .into_response()
 }

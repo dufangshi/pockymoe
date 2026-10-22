@@ -787,7 +787,12 @@ async fn rotate_device_token(
     }
     security::audit(&conn, Some(&user.id), "device.token_rotated", Some(&id));
     drop(conn);
-    state.sockets.write().await.remove(&id);
+    if let Some(socket) = state.sockets.write().await.remove(&id) {
+        state.metrics.disconnected(
+            socket.connection_id,
+            crate::metrics::EndReason::TokenRotated,
+        );
+    }
     state
         .clients
         .write()
