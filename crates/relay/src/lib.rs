@@ -263,11 +263,13 @@ pub async fn serve() -> Result<()> {
             "/relay/shares/{share_id}",
             patch(update_share).delete(revoke_share),
         )
+        .route("/relay/shares/{share_id}/leave", post(leave_share))
         .route("/relay/grants", get(list_grants).post(create_grant))
         .route(
             "/relay/grants/{grant_id}",
             patch(update_grant).delete(revoke_grant),
         )
+        .route("/relay/grants/{grant_id}/leave", post(leave_grant))
         .route("/relay/admin", get(relay_admin))
         .route(
             "/relay/admin/settings/registration",
@@ -2625,6 +2627,56 @@ async fn revoke_share(
             .into_response();
     }
     Json(json!({ "id": share_id, "revokedAt": revoked_at })).into_response()
+}
+
+async fn leave_share(
+    Path(share_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<TokenQuery>,
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    leave_access(&state, &headers, &query, "relay_shares", &share_id).await
+}
+
+async fn leave_grant(
+    Path(grant_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<TokenQuery>,
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    leave_access(&state, &headers, &query, "relay_access_grants", &grant_id).await
+}
+
+/// The recipient gives up a share or grant made to them. It ends like a revoke
+/// from the owner, at the relay; a protected device keeps the owner's signed
+/// grant until the owner removes it, but the relay no longer forwards for it.
+async fn leave_access(
+    state: &AppState,
+    headers: &HeaderMap,
+    query: &TokenQuery,
+    table: &'static str,
+    id: &str,
+) -> Response {
+    let conn = state.store.conn.lock().await;
+    let Some(user) = authenticated_user(&conn, &state.store.session_secret, headers, query) else {
+        return unauthorized();
+    };
+    let revoked_at = now_rfc3339();
+    let changed = conn
+        .execute(
+            &format!("UPDATE {table} SET revoked_at=?1 WHERE id=?2 AND target_user_id=?3 AND revoked_at IS NULL"),
+            params![revoked_at, id, user.id],
+        )
+        .unwrap_or(0);
+    if changed == 0 {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(ApiError::new("not_found", "Shared access not found")),
+        )
+            .into_response();
+    }
+    security::audit(&conn, Some(&user.id), "shared_access_left", Some(id));
+    Json(json!({ "id": id, "revokedAt": revoked_at })).into_response()
 }
 
 #[derive(Deserialize)]

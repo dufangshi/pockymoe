@@ -170,6 +170,21 @@ test('a signed workspace share reaches its threads and files but never a termina
     await create.click();
     expect((await start).status()).toBe(200);
     await expect(recipient.page).toHaveURL(new RegExp(`/devices/${d1.id}/threads/[0-9a-f-]{36}$`));
+
+    // The recipient gives the workspace back: asked first, then it is gone and
+    // the relay refuses its routes.
+    await recipient.page.goto(f.base + '/relay-devices?tab=shared');
+    const shared = recipient.page.locator('.shared-row').filter({ hasText: sharedWs.label });
+    await shared.getByRole('button', { name: new RegExp(`^Workspace ${sharedWs.label}`) }).click();
+    await shared.getByRole('button', { name: 'Leave', exact: true }).click();
+    const confirm = recipient.page.getByRole('dialog', { name: 'Leave this share?' });
+    await expect(confirm).toContainText(`${sharedWs.label}`);
+    await expect(confirm).toContainText('ws-owner has to share it again');
+    await screenshot(recipient.page, info, `workspace-share-leave-confirm-${info.project.name}`);
+    await confirm.getByRole('button', { name: 'Leave', exact: true }).click();
+    await expect(confirm).toHaveCount(0);
+    await expect(recipient.page.locator('.shared-row').filter({ hasText: sharedWs.label })).toHaveCount(0);
+    expect((await call(`/workspaces/${sharedWs.id}/threads`)).status).toBeGreaterThanOrEqual(401);
   } finally {
     await f.close();
   }

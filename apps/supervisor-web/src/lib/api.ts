@@ -793,6 +793,16 @@ export function revokeRelayShare(shareId: string) {
   ));
 }
 
+/** The recipient gives up a thread shared with them; the owner's revoke is `revokeRelayShare`. */
+export function leaveRelayShare(shareId: string) {
+  return request<{ id: string; revokedAt: string }>(`relay/shares/${encodeURIComponent(shareId)}/leave`, { method: 'POST' });
+}
+
+/** The recipient gives up a workspace or device shared with them. */
+export function leaveRelayGrant(grantId: string) {
+  return request<{ id: string; revokedAt: string }>(`relay/grants/${encodeURIComponent(grantId)}/leave`, { method: 'POST' });
+}
+
 export function createRelayGrant(input: CreateRelayAccessGrantInput) {
   return sharingMutation('grant', 'create', undefined, () => request<RelayAccessGrantDto>('relay/grants', {
     method: 'POST',

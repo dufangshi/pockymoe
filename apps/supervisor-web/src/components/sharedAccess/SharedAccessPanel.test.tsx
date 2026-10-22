@@ -22,7 +22,7 @@ const grant: RelayAccessGrantDto = {
 const portal = { user: { id: 'me' }, devices: [], sharedWithMe: [], sharedByMe: [share], sharedThreadsWithMe: [grant] } as unknown as RelayPortalSummaryDto;
 
 function renderPanel(direction: 'in' | 'out', attention = new Map()) {
-  const actions = { onOpen: vi.fn(), onEdit: vi.fn(), onRevoke: vi.fn() };
+  const actions = { onOpen: vi.fn(), onEdit: vi.fn(), onRevoke: vi.fn(), onLeave: vi.fn() };
   const onDirectionChange = vi.fn();
   render(<SharedAccessPanel portal={portal} loading={false} direction={direction} onDirectionChange={onDirectionChange}
     attention={attention} onAttentionRefresh={vi.fn()} busyKey={null} actions={actions} />);
@@ -58,6 +58,11 @@ describe('SharedAccessPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: /Shared by me/ }));
     expect(onDirectionChange).toHaveBeenCalledWith('out');
     expect(actions.onOpen).not.toHaveBeenCalled();
+    // Giving it up is in its details, next to Open.
+    fireEvent.click(screen.getByRole('button', { name: /^Workspace infra/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Leave' }));
+    expect(actions.onLeave).toHaveBeenCalledWith(expect.objectContaining({ key: 'grant:g1', direction: 'in' }));
+    expect(screen.queryByRole('button', { name: 'Revoke' })).toBeNull();
   });
 
   it('switches to by-device and by-person views and remembers the choice', () => {
@@ -79,7 +84,7 @@ describe('SharedAccessPanel', () => {
     for (const view of ['list', 'devices', 'people']) {
       localStorage.setItem('pockymoe.sharedAccess.view', view);
       const { unmount } = render(<SharedAccessPanel portal={relayPortal} loading={false} direction="in" onDirectionChange={vi.fn()}
-        attention={new Map()} onAttentionRefresh={vi.fn()} busyKey={null} actions={{ onOpen: vi.fn(), onEdit: vi.fn(), onRevoke: vi.fn() }} />);
+        attention={new Map()} onAttentionRefresh={vi.fn()} busyKey={null} actions={{ onOpen: vi.fn(), onEdit: vi.fn(), onRevoke: vi.fn(), onLeave: vi.fn() }} />);
       // A narrow screen lists the people first.
       if (view === 'people' && !screen.queryAllByText('prod bootstrap').length) fireEvent.click(screen.getByRole('button', { name: /alwyn/ }));
       expect(screen.getAllByText('prod bootstrap')).toHaveLength(1);

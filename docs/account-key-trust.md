@@ -807,6 +807,14 @@ row's signed details: a grant missing or different on the device, a changed
 recipient key, or a safety code not compared marks the row and counts as **to
 review** on the tab.
 
+**Leaving a share.** A recipient can give up a thread, workspace or device shared
+with them: **Leave** in the row's details asks first, then
+`POST /relay/shares/{id}/leave` or `POST /relay/grants/{id}/leave` ends it at the
+relay exactly like the owner's revoke (only the recipient named on the row can
+call it; the relay records `shared_access_left` in its security log). A protected
+device keeps the owner's signed grant, but the relay no longer forwards for it;
+the owner sees it as still active on the device and removes it there.
+
 **No terminal for recipients.** No share or grant, read or control, reaches a
 terminal: thread shells (`/api/threads/{id}/shell`, the relay's
 `/transport/shell-scope` probe), `/api/shells/*`, one-off commands

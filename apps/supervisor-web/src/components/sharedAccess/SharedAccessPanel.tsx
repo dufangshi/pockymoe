@@ -12,6 +12,7 @@ import {
   History,
   Inbox,
   List,
+  LogOut,
   MessageSquare,
   Monitor,
   MonitorSmartphone,
@@ -82,6 +83,8 @@ export interface SharedAccessActions {
   onOpen: (item: SharedItem) => void;
   onEdit: (item: SharedItem) => void;
   onRevoke: (item: SharedItem) => void;
+  /** Give up something shared with me (asks first). */
+  onLeave: (item: SharedItem) => void;
 }
 
 /** Shares and grants in both directions, as one list, by device or by person
@@ -296,7 +299,11 @@ function ShareDetail({ id, item, flag, busy, actions }: { id: string; item: Shar
       ) : null}
       <div className="shared-detail-actions">
         {item.direction === 'in' ? (
-          <button type="button" className="shared-action" data-tone="primary" disabled={item.deviceConnected !== true} onClick={() => actions.onOpen(item)}><ArrowUpRight size={15} aria-hidden="true" />{translate('sharing.open')}</button>
+          <>
+            <button type="button" className="shared-action" data-tone="primary" disabled={item.deviceConnected !== true} onClick={() => actions.onOpen(item)}><ArrowUpRight size={15} aria-hidden="true" />{translate('sharing.open')}</button>
+            <span className="shared-detail-spacer" />
+            <button type="button" className="shared-action" data-tone="danger" disabled={busy} onClick={() => actions.onLeave(item)}><LogOut size={15} aria-hidden="true" />{translate('sharing.leaveAccess')}</button>
+          </>
         ) : (
           <>
             <button type="button" className="shared-action" disabled={busy} onClick={() => actions.onEdit(item)}><SlidersHorizontal size={15} aria-hidden="true" />{translate('sharing.editPermissions')}</button>

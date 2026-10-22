@@ -84,6 +84,8 @@ impl Fixture {
                 "/relay/grants/{grant_id}",
                 axum::routing::patch(update_grant),
             )
+            .route("/relay/shares/{share_id}/leave", post(leave_share))
+            .route("/relay/grants/{grant_id}/leave", post(leave_grant))
             .route("/relay/devices/{device_id}", delete(delete_device))
             .route("/relay/devices/{device_id}/api/{*rest}", any(device_api))
             .route("/relay/api/{*rest}", any(relay_api_compat))
@@ -788,6 +790,89 @@ async fn revoked_expired_disabled_and_other_device_rows_cannot_register() {
             assert!(rx.try_recv().is_err());
         }
     }
+}
+
+#[tokio::test]
+async fn a_recipient_leaves_access_shared_with_them_and_only_they_can() {
+    let fixture = Fixture::new("leave-shared-access").await;
+    {
+        // Recipients hold account keys, as sharing requires.
+        let conn = fixture.state.store.conn.lock().await;
+        for user in ["share-guest", "device-guest"] {
+            account::store_vault(&conn, user, &json!({"revision":1,"accountKeyId":format!("{user}-key"),"accountPublicKey":"test-public"})).unwrap();
+        }
+    }
+    let leave = |path: &'static str, user: &'static str| {
+        let request = fixture.request(Method::POST, path, Some(user));
+        async move { request.send().await.unwrap().status() }
+    };
+    // Neither the owner nor another recipient can leave someone else's access.
+    assert_eq!(
+        leave("/relay/shares/share/leave", "owner").await,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        leave("/relay/shares/share/leave", "device-guest").await,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        leave("/relay/grants/device-guest/leave", "share-guest").await,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        leave("/relay/shares/share/leave", "share-guest").await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        leave("/relay/grants/device-guest/leave", "device-guest").await,
+        StatusCode::OK
+    );
+    // Leaving twice finds nothing left to leave.
+    assert_eq!(
+        leave("/relay/shares/share/leave", "share-guest").await,
+        StatusCode::NOT_FOUND
+    );
+    let conn = fixture.state.store.conn.lock().await;
+    for (table, id) in [
+        ("relay_shares", "share"),
+        ("relay_access_grants", "device-guest"),
+    ] {
+        let revoked: Option<String> = conn
+            .query_row(
+                &format!("SELECT revoked_at FROM {table} WHERE id=?1"),
+                params![id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(revoked.is_some(), "{table} {id}");
+    }
+    let audited: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM relay_security_events WHERE event='shared_access_left'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(audited, 2);
+    drop(conn);
+    // The recipient's next request through the relay is refused.
+    let status = fixture
+        .request(
+            Method::GET,
+            "/relay/devices/device/api/threads/shared-thread",
+            Some("share-guest"),
+        )
+        .send()
+        .await
+        .unwrap()
+        .status();
+    assert!(
+        matches!(
+            status,
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN | StatusCode::NOT_FOUND
+        ),
+        "{status}"
+    );
 }
 
 #[tokio::test]

@@ -69,6 +69,8 @@ import {
   fetchRelayPortal,
   revokeRelayGrant,
   revokeRelayShare,
+  leaveRelayShare,
+  leaveRelayGrant,
   setDeviceIsolation,
   setSelectedRelayDeviceId,
   setSelectedRelayThreadId,
@@ -305,7 +307,8 @@ export function RelayDevicesPage() {
   // Why the first load or an action failed, as a mark after its control
   // (`at`: 'load', 'create', 'remove', 'revoke', 'rotate'). A failed
   // background refresh keeps the last list silently.
-  const [error, setError] = useState<{ at: 'load' | 'create' | 'remove' | 'revoke' | 'rotate'; message: string } | null>(null);
+  const [error, setError] = useState<{ at: 'load' | 'create' | 'remove' | 'revoke' | 'rotate' | 'leave'; message: string } | null>(null);
+  const [leaveTarget, setLeaveTarget] = useState<SharedItem | null>(null);
   const [dialogError, setDialogError] = useState<string | null>(null);
   // The page's tab and the shares' direction live in the address, so a link
   // or a reload returns to them.
@@ -662,6 +665,21 @@ export function RelayDevicesPage() {
     }
   }
 
+  async function leaveSharedAccess(item: SharedItem) {
+    setBusy(item.key);
+    setError(null);
+    try {
+      if (item.source.kind === 'share') await leaveRelayShare(item.source.row.id);
+      else await leaveRelayGrant(item.source.row.id);
+      setLeaveTarget(null);
+      await load({ showLoading: false });
+    } catch (caught) {
+      setError({ at: 'leave', message: errorMessage(caught, translate('sharing.unableToLeave')) });
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function revokeSharedSession(share: RelaySessionShareDto) {
     setBusy(`share:${share.id}`);
     setError(null);
@@ -741,6 +759,10 @@ export function RelayDevicesPage() {
     onRevoke: (item: SharedItem) => {
       setError(null);
       setRevokeTarget(item.source.kind === 'share' ? { kind: 'share', share: item.source.row } : { kind: 'grant', grant: item.source.row });
+    },
+    onLeave: (item: SharedItem) => {
+      setError(null);
+      setLeaveTarget(item);
     },
   };
   const pageTabs: Array<{ id: PageTab; label: string; count: number; Icon: typeof DevicesTabIcon; review?: number }> = [
@@ -996,6 +1018,26 @@ export function RelayDevicesPage() {
             ? revokeAccessGrant(revokeTarget.grant)
             : revokeSharedSession(revokeTarget.share);
         }}
+      />
+      <ConfirmDialog
+        open={leaveTarget !== null}
+        title={translate('sharing.leaveTitle')}
+        description={leaveTarget ? translate('sharing.leaveDescription', {
+          scope: translate(leaveTarget.scope === 'device' ? 'sharing.kindDevice' : leaveTarget.scope === 'workspace' ? 'sharing.kindWorkspace' : 'sharing.kindThread'),
+          name: leaveTarget.title,
+          owner: leaveTarget.personName,
+        }) : ''}
+        confirmLabel={translate('sharing.leaveAccess')}
+        busyLabel={translate('sharing.leaving')}
+        busy={Boolean(leaveTarget && busy === leaveTarget.key)}
+        error={leaveTarget && error?.at === 'leave' ? error.message : null}
+        onCancel={() => {
+          if (!leaveTarget || busy !== leaveTarget.key) {
+            setLeaveTarget(null);
+            setError(null);
+          }
+        }}
+        onConfirm={() => (leaveTarget ? leaveSharedAccess(leaveTarget) : undefined)}
       />
     </div>
   );
