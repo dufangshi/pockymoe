@@ -3736,10 +3736,14 @@ async fn handle_supervisor_with_timeout(
     let connection_id = Uuid::new_v4();
     let connected_at = now_rfc3339();
     let (tx, mut rx) = tokio::sync::mpsc::channel(SOCKET_QUEUE);
+    // The map holds the only lasting sender, so removing this connection there
+    // (admin disconnect, deleted device, changed token, a newer connection)
+    // ends the loop below at once instead of at the device's next message.
+    let ack = tx.downgrade();
     let replaced = state.sockets.write().await.insert(
         device_id.clone(),
         DeviceSocket {
-            tx: tx.clone(),
+            tx,
             connection_id,
             connected_at: connected_at.clone(),
             last_heartbeat_at: connected_at.clone(),
@@ -3880,7 +3884,7 @@ async fn handle_supervisor_with_timeout(
                                 }
                                 Some("relay.notification") => {
                                     let result = notifications::accept(&*state.store.conn.lock().await, &device_id, &msg["payload"]);
-                                    if let Ok(turn_id) = result {
+                                    if let (Ok(turn_id), Some(tx)) = (result, ack.upgrade()) {
                                         let _ = tx.try_send(json!({"type":"relay.notification.ack","turnId":turn_id}).to_string());
                                     }
                                 }
@@ -3910,7 +3914,11 @@ async fn handle_supervisor_with_timeout(
                             break;
                         }
                     }
-                    None => break,
+                    None => {
+                        // Removed by the relay: tell the device, which reconnects.
+                        let _ = tokio::time::timeout(Duration::from_secs(2), sink.send(Message::Close(None))).await;
+                        break;
+                    }
                 }
             }
         }

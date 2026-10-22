@@ -824,10 +824,15 @@ async fn sampler_records_tunnels_traffic_versions_and_the_overview_reads_them() 
         )
         .await;
     assert_eq!(status, StatusCode::OK);
+    // The relay closes the socket at once; the device does not wait for a
+    // timeout to notice and reconnect.
+    tokio::time::timeout(Duration::from_secs(5), client)
+        .await
+        .expect("the relay closed the tunnel")
+        .unwrap();
     let detail = console.get("/relay/admin/devices/d-bob").await;
     assert_eq!(detail["connections"]["spans"][0]["reason"], "admin");
     assert!(detail["device"]["lastSeenAt"].is_string());
-    client.abort();
     server.abort();
 }
 
