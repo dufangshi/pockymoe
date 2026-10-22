@@ -36,7 +36,7 @@ export function EventIcon({ event, category }: { event: string; category: string
     if (event === 'device.token_rotated') return <RotateCcw {...icon} />;
     if (event.startsWith('device.')) return <Smartphone {...icon} />;
     if (event.startsWith('passkey.') || event.startsWith('authenticator.')) return <Fingerprint {...icon} />;
-    if (event.startsWith('share.') || event.startsWith('grant.')) return <Share2 {...icon} />;
+    if (event.startsWith('share.') || event.startsWith('grant.') || event === 'shared_access_left') return <Share2 {...icon} />;
     if (event === 'registration.approved' || event === 'registration.submitted') return <UserPlus {...icon} />;
     if (event === 'registration.rejected' || event === 'user.deleted') return <UserX {...icon} />;
     if (event === 'user.disabled') return <Ban {...icon} />;

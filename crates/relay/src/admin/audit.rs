@@ -3,22 +3,34 @@
 use super::common::*;
 use super::*;
 
+/// Events the console groups by category; anything else is a credential
+/// change. One list serves both the label and the SQL filter.
+const CATEGORIES: &[(&str, &[&str])] = &[
+    ("login", &["login.mfa", "login.password_or_oauth"]),
+    ("challenge", &["login.challenge"]),
+    ("reauth", &["security.reauthenticated"]),
+    ("failure", &["login.failed"]),
+    (
+        "activity",
+        &[
+            "registration.submitted",
+            "device.created",
+            "device.deleted",
+            "share.created",
+            "share.revoked",
+            "grant.created",
+            "grant.revoked",
+            "shared_access_left",
+        ],
+    ),
+];
+
 /// The category the console groups an event into.
 pub(crate) fn event_category(event: &str) -> &'static str {
-    match event {
-        "login.mfa" | "login.password_or_oauth" => "login",
-        "login.challenge" => "challenge",
-        "security.reauthenticated" => "reauth",
-        "login.failed" => "failure",
-        "registration.submitted"
-        | "device.created"
-        | "device.deleted"
-        | "share.created"
-        | "share.revoked"
-        | "grant.created"
-        | "grant.revoked" => "activity",
-        _ => "credential",
-    }
+    CATEGORIES
+        .iter()
+        .find(|(_, events)| events.contains(&event))
+        .map_or("credential", |(category, _)| category)
 }
 
 fn event_json(
@@ -92,16 +104,26 @@ pub(super) fn recent_for_user(conn: &Connection, user: &str, limit: i64) -> Vec<
     )
 }
 
-/// The events of a category as an SQL condition.
-fn category_condition(category: &str) -> &'static str {
+/// The events of a category as an SQL condition (event names are constants).
+fn category_condition(category: &str) -> String {
+    let list = |events: &mut dyn Iterator<Item = &&str>| {
+        events
+            .map(|event| format!("'{event}'"))
+            .collect::<Vec<_>>()
+            .join(",")
+    };
     match category {
-        "login" => "event IN ('login.mfa','login.password_or_oauth')",
-        "challenge" => "event='login.challenge'",
-        "reauth" => "event='security.reauthenticated'",
-        "failure" => "event='login.failed'",
-        "activity" => "event IN ('registration.submitted','device.created','device.deleted','share.created','share.revoked','grant.created','grant.revoked')",
-        "credential" => "event NOT IN ('login.mfa','login.password_or_oauth','login.challenge','security.reauthenticated','login.failed','registration.submitted','device.created','device.deleted','share.created','share.revoked','grant.created','grant.revoked')",
-        _ => "1",
+        "credential" => format!(
+            "event NOT IN ({})",
+            list(&mut CATEGORIES.iter().flat_map(|(_, events)| events.iter()))
+        ),
+        _ => CATEGORIES
+            .iter()
+            .find(|(name, _)| *name == category)
+            .map_or_else(
+                || "1".to_string(),
+                |(_, events)| format!("event IN ({})", list(&mut events.iter())),
+            ),
     }
 }
 

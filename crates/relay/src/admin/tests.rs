@@ -1118,12 +1118,23 @@ async fn failed_sign_ins_are_counted_and_audited_only_for_existing_accounts() {
     let console = Console::new("admin-console-login-failed").await;
     let state = console.state.clone();
     for identifier in ["bob", "nobody-here"] {
-        let input: LoginInput = serde_json::from_value(
-            json!({ "identifier": identifier, "password": "wrong password!" }),
-        )
-        .unwrap();
-        let response = login(State(state.clone()), HeaderMap::new(), Json(input)).await;
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        // Password work is shared by every test in this process: a busy
+        // pool answers 429 without counting anything, so try again.
+        let mut status = StatusCode::TOO_MANY_REQUESTS;
+        for _ in 0..20 {
+            let input: LoginInput = serde_json::from_value(
+                json!({ "identifier": identifier, "password": "wrong password!" }),
+            )
+            .unwrap();
+            status = login(State(state.clone()), HeaderMap::new(), Json(input))
+                .await
+                .status();
+            if status != StatusCode::TOO_MANY_REQUESTS {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
     let minute = common::now_ms() - common::now_ms().rem_euclid(common::MINUTE_MS);
     crate::metrics::sample(&state, minute).await;
@@ -1144,4 +1155,10 @@ async fn failed_sign_ins_are_counted_and_audited_only_for_existing_accounts() {
         .flatten()
         .collect();
     assert_eq!(audited, [Some("bob".to_string())]);
+}
+
+#[test]
+fn a_recipient_leaving_a_share_is_sharing_activity() {
+    assert_eq!(audit::event_category("shared_access_left"), "activity");
+    assert_eq!(audit::event_category("passkey.added"), "credential");
 }
