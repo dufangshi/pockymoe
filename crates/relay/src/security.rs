@@ -32,6 +32,8 @@ pub(crate) fn ensure_schema(conn: &Connection) -> Result<()> {
         callback TEXT NOT NULL, expires_at INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS relay_auth_sessions_user ON relay_auth_sessions(user_id);
+    CREATE INDEX IF NOT EXISTS relay_security_events_time ON relay_security_events(created_at);
+    CREATE INDEX IF NOT EXISTS relay_security_events_user ON relay_security_events(user_id,created_at);
     DROP TRIGGER IF EXISTS relay_password_revoke_sessions;
     CREATE TRIGGER relay_password_revoke_sessions AFTER UPDATE OF password_hash ON relay_users
     WHEN NEW.password_hash<>''

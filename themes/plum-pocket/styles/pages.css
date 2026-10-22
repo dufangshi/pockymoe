@@ -493,43 +493,24 @@
 :theme [data-page='account'] label.relay-button-secondary + button + p,
 :theme [data-page='account'] label.relay-button-secondary + p { display: none; }
 
-/* ── Admin ───────────────────────────────────────────────────────────── */
+/* ── Admin console ─────────────────────────────────────────────────── */
 
-:theme [data-page='admin'] .product-page-header { padding-top: 22px; }
-:theme [data-page='admin'] .product-page-header .product-eyebrow { display: none; }
-:theme [data-page='admin'] .product-page-header .product-title::before {
-  content: '';
-  display: inline-block;
-  width: 30px;
-  height: 30px;
-  margin-right: 10px;
-  vertical-align: -6px;
-  border-radius: 10px;
+/* The pocket mark instead of the antenna; display type for titles and figures. */
+:theme .admin-brand-mark {
   background: url("asset:assets/pockymoe-icon.png") center / cover no-repeat;
   box-shadow: 0 0 0 1.5px var(--plum-stitch);
 }
-:theme [data-page='admin'] .product-page-header .relay-button-secondary { min-height: 40px; height: 40px; border-radius: 999px; }
-:theme [data-page='admin'] .product-page-header select { height: 40px; border-radius: 999px; }
-/* Metrics: four plain numbers on the page. */
-:theme [data-page='admin'] section[aria-label] > dl > div { border-left-style: dashed !important; border-color: var(--plum-page-rule) !important; }
-:theme [data-page='admin'] section[aria-label] > dl dd > span:first-child { font-family: var(--plum-display); font-size: 26px; font-weight: 600; }
-:theme [data-page='admin'] section[aria-label] > dl dd > span:last-child { font-size: 11.5px; }
-/* Tabs: pills. */
-:theme [data-page='admin'] [role='tablist'].product-segmented { gap: 6px; padding: 0; border: 0; background: transparent; }
-:theme [data-page='admin'] [role='tablist'] > [role='tab'] { min-height: 38px; padding-inline: 16px; border-radius: 999px; background: color-mix(in srgb, var(--theme-hover) 60%, transparent); color: var(--theme-fg-soft); font-weight: 700; box-shadow: none; }
-:theme [data-page='admin'] [role='tablist'] > [role='tab'][aria-selected='true'] { background: var(--plum-page-on); color: var(--plum-page-on-fg); }
-/* Panels: headings without their explanations. */
-:theme [data-page='admin'] [role='tabpanel'] section > div:first-child h2 { font-family: var(--plum-display); font-size: 17px; font-weight: 600; }
-:theme [data-page='admin'] [role='tabpanel'] section > div:first-child h2 + p { display: none; }
-:theme [data-page='admin'] .admin-responsive-table { border: 0; border-radius: 0; }
-:theme [data-page='admin'] .admin-responsive-table th { border-bottom: 1.5px dashed var(--plum-page-rule); letter-spacing: .06em; }
-:theme [data-page='admin'] .admin-responsive-table td { border-bottom: 1px dashed var(--plum-page-rule); }
-:theme [data-page='admin'] .admin-responsive-table tr:active td { background: var(--plum-page-row-hover); }
-@media (hover: hover) {
-  :theme [data-page='admin'] .admin-responsive-table tr:hover td { background: var(--plum-page-row-hover); }
-}
-:theme [data-page='admin'] .admin-responsive-table :is(.relay-button-secondary, .relay-button-primary) { min-height: 34px; padding-inline: 12px; border-radius: 999px; white-space: nowrap; }
-:theme [data-page='admin'] .admin-responsive-table td > div.flex-wrap { flex-wrap: nowrap; }
+:theme .admin-brand-mark > svg { visibility: hidden; }
+:theme :is(.admin-topbar-title h1, .admin-brand-text b, .admin-card-heading h3, .admin-detail-titles h2) { font-family: var(--plum-display); font-weight: 600; }
+:theme :is(.admin-figure-value, .admin-attention-text > b, .admin-mini-stat b) { font-family: var(--plum-display); font-weight: 600; }
+/* Pills for the current section, filters and ranges: plum on cream, mustard on dark plum. */
+:theme .admin-nav-item[aria-current='page'] { background: var(--plum-page-on); color: var(--plum-page-on-fg); box-shadow: none; }
+:theme .admin-nav-item[aria-current='page'] > b { background: var(--plum-page-on-count); color: var(--plum-page-on-count-fg); }
+:theme :is(.admin-chip[aria-pressed='true'], .admin-range > button[aria-pressed='true']) { border-color: var(--plum-page-on); background: var(--plum-page-on); color: var(--plum-page-on-fg); }
+:theme .admin-subtab[aria-selected='true']::after { background: var(--plum-stitch); }
+/* Dashed rules, as on the other pages. */
+:theme :is(.admin-figure, .admin-attention-list > li + li) { border-left-style: dashed; border-color: var(--plum-page-rule); }
+:theme :is(.admin-table td, .admin-event-list > li, .admin-detail-list > li, .admin-check, .admin-setting, .admin-review-list > li) { border-bottom-style: dashed; border-color: var(--plum-page-rule); }
 
 /* ── Shared thread and port preview ──────────────────────────────────── */
 

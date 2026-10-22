@@ -55,7 +55,7 @@ POCKYMOE_RELAY_WEB_DIST_DIR=/home/you/pockymoe-relay/web
 | `POCKYMOE_RELAY_REGISTRATION_ENABLED=false` | 关闭公开注册。默认开放注册。 |
 | `POCKYMOE_RELAY_REGISTRATION_PASSWORD` | 注册时需要填写邀请码。 |
 
-注册、审核和登录方式之后也可以由管理员在 `https://relay.example.com/relay-admin` 修改。开启审批后，新注册在那里等待处理；拒绝时申请留在审批记录里，它带来的加密账号数据会被删除。
+注册、审核和登录方式之后也可以由管理员在 `https://relay.example.com/relay-admin`（[管理后台](relay-admin.md)）修改。开启审批后，新注册在那里等待处理；拒绝时申请留在审批记录里，它带来的加密账号数据会被删除。
 
 ## 3. 作为服务运行
 

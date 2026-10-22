@@ -62,7 +62,8 @@ Optional settings:
 | `POCKYMOE_RELAY_REGISTRATION_PASSWORD` | Require an invite code to sign up. |
 
 Registration, approval and sign-in providers can also be changed later by the
-administrator at `https://relay.example.com/relay-admin`. With approval required, a
+administrator at `https://relay.example.com/relay-admin`, the
+[admin console](relay-admin.md). With approval required, a
 sign-up waits there; rejecting it keeps the request in the review history and
 deletes the encrypted account data it carried.
 

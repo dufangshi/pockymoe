@@ -1,7 +1,159 @@
-//! Relay administration API: the admin summary, registration approval,
-//! and user enable/reset/delete.
-//! Split out of lib.rs so the privileged surface sits in one reviewable file.
+//! Relay administration API (docs/relay-admin.md). Every route requires the
+//! relay admin session. Reads cover the overview, users, devices, shares,
+//! sessions and security events, and the system; mutations are registration
+//! review and settings, user enable/reset/delete and sessions, disconnecting a
+//! device tunnel and revoking a share. Admin views never carry thread titles
+//! or conversation content.
 use super::*;
+
+mod audit;
+mod common;
+mod devices;
+mod overview;
+mod shares;
+mod system;
+#[cfg(test)]
+mod tests;
+mod users;
+
+/// In-memory state of the admin console: when this process started and the
+/// slow system checks it caches.
+pub(crate) struct AdminState {
+    pub(crate) started_at: String,
+    integrity: StdMutex<Option<(std::time::Instant, String)>>,
+    storage: StdMutex<Option<(std::time::Instant, Value)>>,
+}
+
+impl Default for AdminState {
+    fn default() -> Self {
+        Self {
+            started_at: now_rfc3339(),
+            integrity: StdMutex::new(None),
+            storage: StdMutex::new(None),
+        }
+    }
+}
+
+pub(crate) fn routes() -> Router<Arc<AppState>> {
+    Router::new()
+        .route("/relay/admin", get(relay_admin))
+        .route("/relay/admin/overview", get(overview::overview))
+        .route("/relay/admin/search", get(search))
+        .route("/relay/admin/users", get(users::list))
+        .route(
+            "/relay/admin/users/{user_id}",
+            get(users::detail)
+                .patch(set_user_enabled)
+                .delete(admin_delete_user),
+        )
+        .route(
+            "/relay/admin/users/{user_id}/sessions",
+            delete(users::end_sessions),
+        )
+        .route(
+            "/relay/admin/users/{user_id}/reset-password",
+            post(admin_reset_password),
+        )
+        .route("/relay/admin/registrations", get(users::registrations))
+        .route(
+            "/relay/admin/registrations/{request_id}/approve",
+            post(approve_registration),
+        )
+        .route(
+            "/relay/admin/registrations/{request_id}/reject",
+            post(reject_registration),
+        )
+        .route("/relay/admin/devices", get(devices::list))
+        .route("/relay/admin/devices/{device_id}", get(devices::detail))
+        .route(
+            "/relay/admin/devices/{device_id}/disconnect",
+            post(devices::disconnect),
+        )
+        .route("/relay/admin/shares", get(shares::list))
+        .route("/relay/admin/shares/{kind}/{id}", delete(shares::revoke))
+        .route("/relay/admin/public-links", get(shares::public_links))
+        .route("/relay/admin/previews", get(shares::previews))
+        .route("/relay/admin/security", get(audit::summary))
+        .route("/relay/admin/security/events", get(audit::events))
+        .route("/relay/admin/sessions", get(audit::sessions))
+        .route(
+            "/relay/admin/sessions/{session_id}",
+            delete(audit::end_session),
+        )
+        .route("/relay/admin/system", get(system::system))
+        .route(
+            "/relay/admin/settings/registration",
+            get(registration_settings_read).patch(update_registration_settings),
+        )
+}
+
+async fn registration_settings_read(
+    headers: HeaderMap,
+    State(state): State<Arc<AppState>>,
+) -> Response {
+    let (conn, _) = match common::admin_conn(&state, &headers).await {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let settings = registration_settings(&conn, &state.oauth);
+    Json(json!({
+        "registrationEnabled": settings.get("enabled").cloned().unwrap_or(Value::Bool(true)),
+        "settings": settings
+    }))
+    .into_response()
+}
+
+/// Users and devices whose name, email or ID matches, for the console's search.
+async fn search(
+    headers: HeaderMap,
+    Query(query): Query<common::ListQuery>,
+    State(state): State<Arc<AppState>>,
+) -> Response {
+    let (conn, _) = match common::admin_conn(&state, &headers).await {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let Some(search) = query.search() else {
+        return Json(json!({ "users": [], "devices": [] })).into_response();
+    };
+    let pattern = common::like_pattern(&search);
+    let users: Vec<Value> = conn
+        .prepare(
+            "SELECT id,username,email,role,enabled FROM relay_users
+             WHERE lower(username) LIKE ?1 ESCAPE '\\' OR lower(email) LIKE ?1 ESCAPE '\\' OR id=?2
+             ORDER BY username LIMIT 6",
+        )
+        .and_then(|mut stmt| {
+            stmt.query_map(params![pattern, search], |row| {
+                Ok(json!({
+                    "id": row.get::<_, String>(0)?,
+                    "username": row.get::<_, String>(1)?,
+                    "email": row.get::<_, String>(2)?,
+                    "role": row.get::<_, String>(3)?,
+                    "enabled": row.get::<_, i64>(4)? == 1,
+                }))
+            })?
+            .collect()
+        })
+        .unwrap_or_default();
+    let devices: Vec<Value> = conn
+        .prepare(
+            "SELECT d.id,d.name,u.username FROM relay_devices d JOIN relay_users u ON u.id=d.owner_user_id
+             WHERE lower(d.name) LIKE ?1 ESCAPE '\\' OR d.id=?2 ORDER BY d.name LIMIT 6",
+        )
+        .and_then(|mut stmt| {
+            stmt.query_map(params![pattern, search], |row| {
+                Ok(json!({
+                    "id": row.get::<_, String>(0)?,
+                    "name": row.get::<_, String>(1)?,
+                    "ownerUsername": row.get::<_, String>(2)?,
+                }))
+            })?
+            .collect()
+        })
+        .unwrap_or_default();
+    Json(json!({ "users": users, "devices": devices })).into_response()
+}
 
 #[derive(Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -646,135 +798,5 @@ pub(crate) async fn reject_registration(
         )
             .into_response(),
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    async fn body(response: Response) -> Value {
-        let bytes = to_bytes(response.into_body(), 1 << 20).await.unwrap();
-        serde_json::from_slice(&bytes).unwrap()
-    }
-
-    fn bearer(token: &str) -> HeaderMap {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            header::AUTHORIZATION,
-            format!("Bearer {token}").parse().unwrap(),
-        );
-        headers
-    }
-
-    #[tokio::test]
-    async fn legacy_summary_reports_tunnel_times_lineage_and_no_thread_titles() {
-        let (state, dir) = crate::tests::test_app_state("admin-legacy-summary");
-        let token = {
-            let conn = state.store.conn.lock().await;
-            conn.execute_batch(
-                "INSERT INTO relay_users VALUES ('admin','admin@x','admin','admin',1,NULL,'2026-01-01T00:00:00Z','s','h');
-                 INSERT INTO relay_users VALUES ('owner','o@x','owner','user',1,NULL,'2026-01-01T00:00:00Z','s','h');
-                 INSERT INTO relay_users VALUES ('guest','g@x','guest','user',1,NULL,'2026-01-01T00:00:00Z','s','h');
-                 INSERT INTO relay_devices VALUES ('dev','owner','Laptop',NULL,'th','rcd_x...y','2026-01-02T00:00:00Z');
-                 INSERT INTO relay_thread_lineage(device_id,thread_id,parent_thread_id,workspace_id) VALUES
-                   ('dev','t1',NULL,'w1'),('dev','t2','t1','w1'),('dev','t3',NULL,'w2');
-                 INSERT INTO relay_shares(id,owner_user_id,owner_username,target_user_id,target_username,device_id,device_name,thread_id,thread_title,thread_access,workspace_access,created_at)
-                   VALUES ('share','owner','owner','guest','guest','dev','Laptop','t1','Secret plans','read','none','2026-01-03T00:00:00Z');
-                 INSERT INTO relay_access_grants(id,owner_user_id,owner_username,target_user_id,target_username,device_id,device_name,scope,thread_access,workspace_access,created_at)
-                   VALUES ('grant','owner','owner','guest','guest','dev','Laptop','device','control','write','2026-01-03T00:00:00Z');",
-            )
-            .unwrap();
-            create_session(&conn, &state.store.session_secret, "admin").unwrap()
-        };
-        let (tx, _rx) = tokio::sync::mpsc::channel(1);
-        state.sockets.write().await.insert(
-            "dev".into(),
-            DeviceSocket {
-                tx,
-                connection_id: Uuid::new_v4(),
-                connected_at: "2026-01-04T00:00:00Z".into(),
-                last_heartbeat_at: "2026-01-04T00:01:00Z".into(),
-            },
-        );
-        let value = body(
-            relay_admin(
-                bearer(&token),
-                Query(AdminQuery::default()),
-                State(state.clone()),
-            )
-            .await
-            .into_response(),
-        )
-        .await;
-        let device = &value["devices"][0];
-        assert_eq!(device["connectedAt"], "2026-01-04T00:00:00Z");
-        assert_eq!(device["lastHeartbeatAt"], "2026-01-04T00:01:00Z");
-        assert_eq!(device["threadCount"], 3);
-        assert_eq!(device["agentThreadCount"], 1);
-        assert_eq!(device["workspaceCount"], 2);
-        assert_eq!(value["shares"][0]["threadTitle"], Value::Null);
-        assert_eq!(value["grants"][0]["scope"], "device");
-        let owner = value["users"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|user| user["id"] == "owner")
-            .unwrap();
-        assert_eq!(owner["deviceCount"], 1);
-        let unauthorized = relay_admin(
-            HeaderMap::new(),
-            Query(AdminQuery::default()),
-            State(state.clone()),
-        )
-        .await
-        .into_response();
-        assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
-        drop(state);
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[tokio::test]
-    async fn rejecting_a_registration_deletes_its_pending_vault() {
-        let (state, dir) = crate::tests::test_app_state("admin-reject-vault");
-        let token = {
-            let conn = state.store.conn.lock().await;
-            conn.execute_batch(
-                "INSERT INTO relay_users VALUES ('admin','admin@x','admin','admin',1,NULL,'2026-01-01T00:00:00Z','s','h');
-                 INSERT INTO relay_pending_registrations(id,email,username,password_salt,password_hash,created_at)
-                   VALUES ('req','n@x','newbie','s','h','2026-01-01T00:00:00Z');
-                 INSERT INTO relay_pending_account_vaults(request_id,user_id,vault_json,recovery_salt,recovery_hash)
-                   VALUES ('req','u','{}','s','h');",
-            )
-            .unwrap();
-            create_session(&conn, &state.store.session_secret, "admin").unwrap()
-        };
-        let response = reject_registration(
-            Path("req".into()),
-            bearer(&token),
-            Query(TokenQuery::default()),
-            State(state.clone()),
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::OK);
-        let conn = state.store.conn.lock().await;
-        let vaults: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM relay_pending_account_vaults",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        let status: String = conn
-            .query_row(
-                "SELECT status FROM relay_pending_registrations WHERE id='req'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!((vaults, status.as_str()), (0, "rejected"));
-        drop(conn);
-        drop(state);
-        std::fs::remove_dir_all(dir).unwrap();
     }
 }

@@ -101,6 +101,7 @@ struct AppState {
     oauth_client: reqwest::Client,
     admission: security::Admission,
     preview: preview::Hub,
+    admin: admin::AdminState,
 }
 
 pub async fn serve() -> Result<()> {
@@ -228,6 +229,7 @@ pub async fn serve() -> Result<()> {
             .build()?,
         admission: security::Admission::default(),
         preview: preview::Hub::from_env()?,
+        admin: admin::AdminState::default(),
     });
     notifications::start(&state)?;
     let app = Router::new()
@@ -237,6 +239,7 @@ pub async fn serve() -> Result<()> {
         .merge(workbench::routes())
         .merge(preferences::routes())
         .merge(preview::routes())
+        .merge(admin::routes())
         .route("/healthz", get(healthz))
         .route("/relay/auth/register", post(register))
         .route("/relay/auth/login", post(login))
@@ -270,27 +273,6 @@ pub async fn serve() -> Result<()> {
             patch(update_grant).delete(revoke_grant),
         )
         .route("/relay/grants/{grant_id}/leave", post(leave_grant))
-        .route("/relay/admin", get(relay_admin))
-        .route(
-            "/relay/admin/settings/registration",
-            patch(update_registration_settings),
-        )
-        .route(
-            "/relay/admin/users/{user_id}",
-            patch(set_user_enabled).delete(admin_delete_user),
-        )
-        .route(
-            "/relay/admin/users/{user_id}/reset-password",
-            post(admin_reset_password),
-        )
-        .route(
-            "/relay/admin/registrations/{request_id}/approve",
-            post(approve_registration),
-        )
-        .route(
-            "/relay/admin/registrations/{request_id}/reject",
-            post(reject_registration),
-        )
         .route("/relay/devices/{device_id}/api/{*rest}", any(device_api))
         .route("/relay/api/{*rest}", any(relay_api_compat))
         .route("/relay/devices/{device_id}/healthz", get(device_healthz))
@@ -4416,6 +4398,7 @@ mod tests {
                 oauth_client: reqwest::Client::new(),
                 admission: security::Admission::default(),
                 preview: preview::Hub::default(),
+                admin: admin::AdminState::default(),
             }),
             data_dir,
         )

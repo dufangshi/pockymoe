@@ -163,6 +163,12 @@ bar instead. Touch-only devices keep the platform's overlay indicator.
 - outer pages: `data-page` on the page root (`workspaces`, `devices`,
   `relay-home`, `relay-portal`, `relay-guide`, `login`, `account`, `admin`,
   `thread-import`, `port-preview`);
+- relay admin console: the series colors `--admin-chart-1` … `--admin-chart-5`
+  (set on `:root` per mode), `--admin-card`, `--admin-rule`, `--admin-radius`,
+  and `admin-sidebar`, `admin-topbar`, `admin-card`, `admin-figure-band`,
+  `admin-table`, `admin-chip`, `admin-detail` (the drawer or sheet),
+  `admin-tabbar` (phones) and `admin-device-state` with `is-online`,
+  `is-offline`, `is-unstable`;
 - settings: `settings-hint` on help text, `settings-choice-group`,
   `settings-harness-picker`, `settings-harness-switch`, `settings-harness-row`;
   the theme cards are `theme-preset-card`, `theme-preset-option`,

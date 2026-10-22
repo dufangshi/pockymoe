@@ -428,6 +428,34 @@ impl Hub {
                 .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()))
         .then(|| id.to_string())
     }
+    /// Port mappings per device, for the admin console. Counts only.
+    pub(super) fn mapping_counts(&self) -> HashMap<String, usize> {
+        let mut counts = HashMap::new();
+        for mapping in self
+            .mappings
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+        {
+            *counts.entry(mapping.device.clone()).or_insert(0) += 1;
+        }
+        counts
+    }
+    /// Open preview sessions and data streams per device, and in total.
+    pub(super) fn usage(&self) -> (HashMap<String, (usize, usize)>, usize, usize) {
+        let mut per_device: HashMap<String, (usize, usize)> = HashMap::new();
+        let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        for grant in sessions.values() {
+            per_device.entry(grant.device.clone()).or_default().0 += 1;
+        }
+        let session_total = sessions.len();
+        drop(sessions);
+        let streams = self.streams.lock().unwrap_or_else(|e| e.into_inner());
+        for stream in streams.values() {
+            per_device.entry(stream.grant.device.clone()).or_default().1 += 1;
+        }
+        (per_device, session_total, streams.len())
+    }
 }
 
 fn parse_base(value: &str) -> Result<url::Url> {

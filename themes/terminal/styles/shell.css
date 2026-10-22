@@ -132,3 +132,10 @@
 :theme .matter-thread-group[data-avatar] > .matter-group-tab[aria-current='page'] > .matter-thread-avatar + .matter-status-dot { box-shadow: 0 0 0 2px var(--theme-bg); }
 :theme .matter-thread-group[data-avatar] > .matter-group-tab > .matter-thread-avatar + .matter-status-dot[data-status='interrupted'] { width: 8px; height: 3px; }
 :theme .matter-thread-group[data-avatar] > .matter-group-tab > .matter-thread-avatar + .matter-status-dot[data-status='failed'] { rotate: 45deg; }
+
+/* Relay admin console: square cards, chips and controls on hairlines. */
+:root:root:theme { --admin-radius: 0; }
+:theme :is(.admin-card, .admin-chip, .admin-range, .admin-range > button, .admin-nav-item, .admin-mini-stat, .admin-global-search, .admin-search, .admin-badge, .admin-pill, .admin-icon-button, .admin-menu, .admin-menu > button, .admin-callout, .admin-avatar, .admin-event-icon, .admin-detail-icon, .admin-scope > svg, .admin-scope-icon, .admin-history-note, .admin-privacy-note, .admin-chart-table, .admin-tooltip, .admin-switch, .admin-switch > span, .admin-barlist-track, .admin-barlist-fill, .admin-proportion-bar, .admin-timeline-strip, .admin-swatch, .admin-brand-mark, .admin-health, .admin-nav-item > b, .admin-subtab > b, .admin-callout-action) { border-radius: 0; }
+:theme .admin-detail-layer.is-sheet .admin-detail { border-radius: 0; }
+:theme :is(.admin-menu, .admin-tooltip) { box-shadow: 4px 4px 0 rgb(0 0 0 / 35%); }
+:theme .admin-device-state.is-online .admin-device-state-mark { border-radius: 0; }

@@ -32,6 +32,7 @@ Maintained documentation for Pockymoe. For the product overview, start with the
 - [Execution state, delivery and Supervisor ownership](execution-reliability.md)
 - [Auth and connectivity modes](auth-and-connectivity-modes.md)
 - [Relay account security and encrypted transport](relay-security-operations.zh.md)
+- [Relay admin console](relay-admin.md): sections, admin actions, recorded statistics, retention and privacy, the admin API
 - [Account key trust](account-key-trust.md): device binding, strict mode, signed sharing, static Web hosting, migration
 - [Device web previews through the relay](port-previews.md)
 
