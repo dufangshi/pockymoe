@@ -13,6 +13,7 @@
 | 两台设备、两个浏览器分别验证加密 | e2e/device-encryption-status.spec.ts | device locks are verified independently |
 | 附件、WS、Origin、会话撤销 | e2e/relay-security.spec.ts | 文件内唯一场景 |
 | 离线禁止降级、真实加密、多分块、防重放、公开快照 | e2e/relay-encryption.spec.ts | 两个场景按风险选择 |
+| Relay 管理控制台：导航、分页、详情抽屉、断开隧道、管理操作日志 | e2e/relay-admin.spec.ts | 文件内唯一场景；用 `-c playwright.account-key.config.ts`，不启动本地 Supervisor/Vite |
 
 从项目根目录运行：
 
