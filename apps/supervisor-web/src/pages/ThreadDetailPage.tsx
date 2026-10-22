@@ -2284,6 +2284,18 @@ export function ThreadDetailPage() {
         event.type === 'thread.request.created' ||
         event.type === 'thread.request.resolved'
       ) {
+        // The active turn ended: the thread is idle now, not once the summary that
+        // follows arrives. A prompt sent in between starts a turn instead of
+        // steering into (or queueing behind) a turn that is over.
+        if ((event.type === 'thread.turn.completed' || event.type === 'thread.turn.failed')
+          && typeof event.payload.turnId === 'string'
+          && detailRef.current?.thread.activeTurnId === event.payload.turnId) {
+          const ended = event.payload.turnId;
+          const settle = <T extends { thread: ThreadDetailDto['thread'] }>(current: T): T =>
+            current.thread.activeTurnId === ended ? { ...current, thread: { ...current.thread, status: 'idle', activeTurnId: null } } : current;
+          detailRef.current = settle(detailRef.current);
+          setDetail(current => current ? settle(current) : current);
+        }
         if (event.type === 'thread.updated' && ['children_changed','child_deleted'].includes(String(event.payload.reason))) {
           void loadPageContext({seedThread:detailRef.current?.thread ?? null});
         }
@@ -3048,12 +3060,16 @@ export function ThreadDetailPage() {
           );
         }
       } else {
+        // A turn that was already running when this was sent is not this prompt's
+        // (the server may still have been finishing it): wait for the new one.
+        const startedTurnId = nextThread.activeTurnId && nextThread.activeTurnId !== currentEffectiveThread?.activeTurnId
+          ? nextThread.activeTurnId : null;
         setOptimisticTurn((current) =>
           current && current.id === optimisticTurnId
             ? {
                 ...current,
-                id: nextThread.activeTurnId ?? current.id,
-                serverTurnId: nextThread.activeTurnId ?? current.serverTurnId,
+                id: startedTurnId ?? current.id,
+                serverTurnId: startedTurnId ?? current.serverTurnId,
                 status: 'inProgress',
                 error: null,
                 tokenUsage: current.tokenUsage,

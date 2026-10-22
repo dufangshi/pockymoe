@@ -571,6 +571,10 @@ Moving around keeps the screen steady:
   moment it is sent. Queued lists only what the Supervisor holds
   (`thread_pending_steers`, `continuation`), so it is the same on every device
   and survives a reload; the page's own copy only bridges the request.
+  A steer takes its place in the running turn as soon as the Supervisor marks it
+  delivered, without passing through a separate bubble below the conversation;
+  the page counts the thread idle the moment its turn ends, so a prompt sent
+  right then starts a turn rather than steering into the finished one.
 - The files view's tree comes back with the folders that were open, all at
   once: a reload reads them a level at a time, each level's folders together,
   before the tree shows, instead of the tree growing (and jumping) folder by
