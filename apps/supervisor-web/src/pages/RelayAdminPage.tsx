@@ -1,6 +1,6 @@
 import { getLocale } from '@pockymoe/thread-ui/i18n';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
-import { ErrorMark } from '@pockymoe/thread-ui';
+import { confirmAsync, ErrorMark } from '@pockymoe/thread-ui';
 import { LoginVerification, RelaySecurityPanel, usePendingLogin } from '../components/RelaySecurity';
 import {
   FormEvent,
@@ -27,6 +27,7 @@ import {
 } from 'lucide-react';
 
 import type {
+  RelayAccessGrantDto,
   RelayAdminDeviceDto,
   RelayAdminSummaryDto,
   RelayRegistrationSettingsDto,
@@ -71,7 +72,6 @@ type UserSortKey =
   | 'username'
   | 'enabled'
   | 'lastSeenAt'
-  | 'conversationCount'
   | 'deviceCount'
   | 'createdAt';
 type DeviceSortKey =
@@ -125,14 +125,10 @@ export function RelayAdminPage() {
   const [tab, setTab] = useState<AdminTab>(() =>
     adminTabFromSearch(location.search),
   );
-  const [days, setDays] = useState(7);
   const [settingsDraft, setSettingsDraft] =
     useState<RelayRegistrationSettingsDto | null>(null);
 
-  async function load(
-    nextDays = days,
-    options: { showLoading?: boolean } = {},
-  ) {
+  async function load(options: { showLoading?: boolean } = {}) {
     if (options.showLoading !== false) {
       setLoading(true);
     }
@@ -140,10 +136,9 @@ export function RelayAdminPage() {
     setUnsupportedStatus(null);
     try {
       enableRelayMode();
-      const result = await fetchRelayAdmin(nextDays);
+      const result = await fetchRelayAdmin();
       setSummary(result);
       setSettingsDraft(result.settings);
-      setDays(result.conversationWindowDays);
       setLoginRequired(false);
     } catch (caught) {
       if (
@@ -191,7 +186,7 @@ export function RelayAdminPage() {
         }
         setAdminSession(session);
         setLoginRequired(false);
-        await load(days, { showLoading: false });
+        await load({ showLoading: false });
       } catch (caught) {
         if (cancelled) {
           return;
@@ -244,11 +239,8 @@ export function RelayAdminPage() {
       enabledUsers: users.filter((user) => user.enabled).length,
       devices: devices.length,
       onlineDevices: devices.filter((device) => device.connected).length,
-      conversations: users.reduce(
-        (sum, user) => sum + user.conversationCount,
-        0,
-      ),
-      shares: summary?.shares.filter((share) => !share.revokedAt).length ?? 0,
+      // Thread shares and grants (thread, workspace, whole device) are both shares.
+      shares: (summary?.shares.length ?? 0) + (summary?.grants?.length ?? 0),
     };
   }, [summary]);
 
@@ -270,7 +262,7 @@ export function RelayAdminPage() {
     setError(null);
     try {
       await deleteRelayAdminUser(userId);
-      await load(days, { showLoading: false });
+      await load({ showLoading: false });
     } finally {
       setBusyKey(null);
     }
@@ -317,6 +309,21 @@ export function RelayAdminPage() {
     requestId: string,
     action: 'approve' | 'reject',
   ) {
+    const request = summary?.pendingRegistrations.find((item) => item.id === requestId);
+    const values = { name: request?.username ?? requestId, email: request?.email ?? '' };
+    const confirmed = await confirmAsync(action === 'approve'
+      ? {
+          title: translate('devices.approveRegistrationTitle'),
+          description: translate('devices.approveRegistrationBody', values),
+          confirmLabel: translate('devices.approve'),
+          tone: 'primary',
+        }
+      : {
+          title: translate('devices.rejectRegistrationTitle'),
+          description: translate('devices.rejectRegistrationBody', values),
+          confirmLabel: translate('devices.reject'),
+        });
+    if (!confirmed) return;
     setBusyKey(`${action}:${requestId}`);
     setError(null);
     try {
@@ -325,7 +332,7 @@ export function RelayAdminPage() {
       } else {
         await rejectRelayRegistration(requestId);
       }
-      await load(days, { showLoading: false });
+      await load({ showLoading: false });
     } catch (caught) {
       setError({ at: `${action}:${requestId}`, message: errorMessage(caught) });
     } finally {
@@ -344,7 +351,7 @@ export function RelayAdminPage() {
     }
     setAdminSession(result.session);
     setLoginRequired(false);
-    await load(days);
+    await load();
   }
 
   function selectTab(nextTab: AdminTab) {
@@ -382,7 +389,7 @@ export function RelayAdminPage() {
     });
   }
 
-  if (challenge) return <main className="flex min-h-screen items-center justify-center p-4"><LoginVerification challenge={challenge} onBack={()=>setChallenge(null)} onSuccess={async()=>{setChallenge(null);setAdminSession(await fetchRelayAdminSession());await load(days);}}/></main>;
+  if (challenge) return <main className="flex min-h-screen items-center justify-center p-4"><LoginVerification challenge={challenge} onBack={()=>setChallenge(null)} onSuccess={async()=>{setChallenge(null);setAdminSession(await fetchRelayAdminSession());await load();}}/></main>;
 
   if (loginRequired) {
     return (
@@ -407,31 +414,19 @@ export function RelayAdminPage() {
               {translate("devices.manageRelayAccessConnectedDevicesAndRegistration")}</p>
           </div>
           <div className="flex w-full flex-wrap items-end gap-2 lg:w-auto lg:justify-end">
-            <label className="flex items-center gap-2 text-sm text-[var(--theme-fg-muted)]">
-              {translate("devices.usageWindow")}<select
-                className="relay-input h-11 w-24"
-                onChange={(event) => void load(Number(event.target.value))}
-                value={days}
-              >
-                <option value={1}>{translate("devices.1Day")}</option>
-                <option value={7}>{translate("devices.7Days")}</option>
-                <option value={30}>{translate("devices.30Days")}</option>
-                <option value={90}>{translate("devices.90Days")}</option>
-              </select>
-            </label>
             <Link className="relay-button-secondary" to="/">
               {translate("devices.relayHome")}</Link>
             <span className="flex items-center gap-1">
               <button
                 aria-label={translate("devices.refreshAdminData")}
                 className="product-icon-button"
-                onClick={() => void load(days)}
+                onClick={() => void load()}
                 title={translate("devices.refreshAdminData")}
                 type="button"
               >
                 <RefreshCw className="h-4 w-4" />
               </button>
-              {error?.at === 'load' && summary ? <ErrorMark message={error.message} onRetry={() => void load(days)} /> : null}
+              {error?.at === 'load' && summary ? <ErrorMark message={error.message} onRetry={() => void load()} /> : null}
             </span>
             <RelayAdminUserMenu
               session={adminSession}
@@ -456,7 +451,7 @@ export function RelayAdminPage() {
         ) : unsupportedStatus ? (
           <AdminCompatibilityState
             statusCode={unsupportedStatus}
-            onRetry={() => void load(days)}
+            onRetry={() => void load()}
           />
         ) : error && !summary ? (
           <section className="product-panel">
@@ -468,7 +463,7 @@ export function RelayAdminPage() {
               <div className="mt-4 flex flex-wrap gap-2">
                 <button
                   className="relay-button-primary"
-                  onClick={() => void load(days)}
+                  onClick={() => void load()}
                   type="button"
                 >
                   {translate("devices.retry")}</button>
@@ -492,14 +487,14 @@ export function RelayAdminPage() {
                   detail={translate("devices.online", { value1: totals.onlineDevices })}
                 />
                 <MetricStat
-                  label={translate("devices.conversationsD", { value1: summary.conversationWindowDays })}
-                  value={totals.conversations}
-                  detail={translate("devices.promptAndStartEvents")}
-                />
-                <MetricStat
                   label={translate("devices.activeShares")}
                   value={totals.shares}
-                  detail={translate("devices.registrationsPending", { value1: summary.pendingRegistrations.length })}
+                  detail=""
+                />
+                <MetricStat
+                  label={translate("devices.pendingRegistrations")}
+                  value={summary.pendingRegistrations.length}
+                  detail=""
                 />
               </dl>
             </section>
@@ -550,7 +545,7 @@ export function RelayAdminPage() {
                 <DevicesPanel devices={summary.devices} users={summary.users} />
               ) : null}
               {tab === 'security' ? <RelaySecurityPanel realm="relay-admin" /> : null}
-              {tab === 'shares' ? <SharesTable shares={summary.shares} /> : null}
+              {tab === 'shares' ? <SharesTable grants={summary.grants ?? []} shares={summary.shares} /> : null}
               {tab === 'settings' && settingsDraft ? (
                 <SettingsPanel
                   busy={busyKey === 'settings'}
@@ -785,7 +780,6 @@ function Overview({ summary }: { summary: RelayAdminSummaryDto }) {
               </div>
               <div className="text-right text-xs text-[var(--theme-fg-muted)]">
                 <p>{formatTimestamp(user.lastSeenAt)}</p>
-                <p>{user.conversationCount} {translate("devices.conversations")}</p>
               </div>
             </div>
           ))}
@@ -826,6 +820,7 @@ function UsersTable({
 }) {
   const { locale: i18nLocale } = useI18n();
   const [query, setQuery] = useState('');
+  const [userPage, setUserPage] = useState(0);
   const [sort, setSort] = useState<{
     key: UserSortKey;
     direction: SortDirection;
@@ -871,15 +866,14 @@ function UsersTable({
           <label className="relative block min-w-0 flex-1">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--theme-fg-muted)]" />
             <input
-              className="relay-input w-full pl-9"
-              onChange={(event) => setQuery(event.target.value)}
+              className="relay-input w-full !pl-9"
+              onChange={(event) => { setQuery(event.target.value); setUserPage(0); }}
               placeholder={translate("devices.searchUsernameOrEmail")}
               value={query}
             />
           </label>
           <p className="text-sm text-[var(--theme-fg-muted)]">
-            {filteredUsers.length.toLocaleString(getLocale())} {translate("devices.of")}{' '}
-            {users.length.toLocaleString(getLocale())} {translate("devices.users_5b7dcd")}</p>
+            {translate('devices.usersShown', { shown: filteredUsers.length.toLocaleString(getLocale()), total: users.length.toLocaleString(getLocale()) })}</p>
         </div>
         <div className="mb-4 grid grid-cols-2 gap-3 md:hidden">
           <label className="text-xs font-medium text-[var(--theme-fg-muted)]">
@@ -896,7 +890,6 @@ function UsersTable({
               <option value="username">{translate("devices.user_9f8a23")}</option>
               <option value="enabled">{translate("devices.status")}</option>
               <option value="lastSeenAt">{translate("devices.lastUsed")}</option>
-              <option value="conversationCount">{translate("devices.conversations_07c59b")}</option>
               <option value="deviceCount">{translate("devices.devices")}</option>
               <option value="createdAt">{translate("devices.created")}</option>
             </select>
@@ -939,12 +932,6 @@ function UsersTable({
               >
                 {translate("devices.lastUsed")}</SortableTh>
               <SortableTh
-                active={sort.key === 'conversationCount'}
-                direction={sort.direction}
-                onClick={() => updateSort('conversationCount')}
-              >
-                {translate("devices.conversations_07c59b")}</SortableTh>
-              <SortableTh
                 active={sort.key === 'deviceCount'}
                 direction={sort.direction}
                 onClick={() => updateSort('deviceCount')}
@@ -955,7 +942,7 @@ function UsersTable({
             </tr>
           </thead>
           <tbody>
-            {filteredUsers.map((user) => (
+            {pageOf(filteredUsers, userPage).map((user) => (
               <tr key={user.id}>
                 <Td label={translate("devices.user_9f8a23")} strong>
                   {user.username}
@@ -969,9 +956,8 @@ function UsersTable({
                   </StatusPill>
                 </Td>
                 <Td label={translate("devices.lastUsed")}>{formatTimestamp(user.lastSeenAt)}</Td>
-                <Td label={translate("devices.conversations_07c59b")}>{user.conversationCount.toLocaleString(getLocale())}</Td>
                 <Td label={translate("devices.devices")}>{user.deviceCount.toLocaleString(getLocale())}</Td>
-                <Td label={translate("devices.role")}>{user.role}</Td>
+                <Td label={translate("devices.role")}>{user.role === 'admin' ? translate('devices.roleAdmin') : translate('devices.roleUser')}</Td>
                 <Td label={translate("devices.actions")}>
                   <div className="flex flex-wrap items-center gap-2">
                     <button
@@ -1012,6 +998,7 @@ function UsersTable({
         {!filteredUsers.length ? (
           <EmptyState>{translate("devices.noUsersMatchTheCurrentSearch")}</EmptyState>
         ) : null}
+        <Pager onPage={setUserPage} page={userPage} total={filteredUsers.length} />
       </Panel>
       {resetTarget ? (
         <PasswordResetDialog
@@ -1054,6 +1041,7 @@ function DevicesPanel({
   const [activity, setActivity] = useState<'all' | '24h' | '7d' | '30d'>('all');
   const [sortKey, setSortKey] = useState<DeviceSortKey>('lastActivity');
   const [direction, setDirection] = useState<SortDirection>('desc');
+  const [devicePage, setDevicePage] = useState(0);
   const ownerUsers = useMemo(
     () =>
       users.filter((user) =>
@@ -1088,7 +1076,7 @@ function DevicesPanel({
         <label className="block text-sm text-[var(--theme-fg-soft)]">
           {translate("devices.owner")}<select
             className="relay-input mt-2 w-full"
-            onChange={(event) => setOwnerId(event.target.value)}
+            onChange={(event) => { setOwnerId(event.target.value); setDevicePage(0); }}
             value={ownerId}
           >
             <option value="all">{translate("devices.allUsers")}</option>
@@ -1102,7 +1090,7 @@ function DevicesPanel({
         <label className="block text-sm text-[var(--theme-fg-soft)]">
           {translate("devices.status")}<select
             className="relay-input mt-2 w-full"
-            onChange={(event) => setStatus(event.target.value as typeof status)}
+            onChange={(event) => { setStatus(event.target.value as typeof status); setDevicePage(0); }}
             value={status}
           >
             <option value="all">{translate("devices.allDevices")}</option>
@@ -1113,9 +1101,10 @@ function DevicesPanel({
         <label className="block text-sm text-[var(--theme-fg-soft)]">
           {translate("devices.lastActivity")}<select
             className="relay-input mt-2 w-full"
-            onChange={(event) =>
-              setActivity(event.target.value as typeof activity)
-            }
+            onChange={(event) => {
+              setActivity(event.target.value as typeof activity);
+              setDevicePage(0);
+            }}
             value={activity}
           >
             <option value="all">{translate("devices.anyTime")}</option>
@@ -1154,7 +1143,7 @@ function DevicesPanel({
           </select>
         </label>
       </div>
-      <ResponsiveTable minWidth="74rem">
+      <ResponsiveTable minWidth="60rem">
         <thead>
           <tr>
             <Th>{translate("devices.device")}</Th>
@@ -1162,11 +1151,10 @@ function DevicesPanel({
             <Th>{translate("devices.status")}</Th>
             <Th>{translate("devices.lastActivity")}</Th>
             <Th>{translate("devices.inventory")}</Th>
-            <Th>{translate("devices.network")}</Th>
           </tr>
         </thead>
         <tbody>
-          {filteredDevices.map((device) => (
+          {pageOf(filteredDevices, devicePage).map((device) => (
             <tr key={device.id}>
               <Td label={translate("devices.device")} strong>
                 {device.name}
@@ -1188,27 +1176,19 @@ function DevicesPanel({
                 </StatusPill>
               </Td>
               <Td label={translate("devices.lastActivity")}>
-                {formatTimestamp(deviceLastActivity(device))}
+                {/* Only the tunnel says when a device was last active; an offline
+                    device's last heartbeat is not kept, so it is not guessed. */}
+                {device.connected ? translate('devices.heartbeatAt', { time: formatTimestamp(device.lastHeartbeatAt) }) : translate('devices.noHeartbeatSinceRestart')}
                 <div className="text-xs text-[var(--theme-fg-muted)]">
                   {translate("devices.created_21c508")} {formatTimestamp(device.createdAt)}
                 </div>
               </Td>
               <Td label={translate("devices.inventory")}>
-                <span>
-                  {device.workspaces.length.toLocaleString(getLocale())} {translate("devices.workspaces_e6f0a0")}</span>
+                <span>{translate('devices.threadsCount', { count: (device.threadCount ?? 0).toLocaleString(getLocale()) })}</span>
                 <span className="mx-2 text-[var(--theme-fg-muted)]">·</span>
-                <span>{device.threads.length.toLocaleString(getLocale())} {translate("devices.threads_c91e11")}</span>
-                <div className="mt-1 truncate text-xs text-[var(--theme-fg-muted)]">
-                  {device.workspaces[0]?.label ?? translate("devices.noWorkspaceMetadata")}
-                </div>
-                <div className="truncate text-xs text-[var(--theme-fg-muted)]">
-                  {device.threads[0]?.title ?? translate("devices.noThreadMetadata")}
-                </div>
-              </Td>
-              <Td label={translate("devices.network")}>
-                {device.ipAddress ?? translate("devices.iPUnavailable")}
-                <div className="text-xs text-[var(--theme-fg-muted)]">
-                  {translate("devices.heartbeat")} {formatTimestamp(device.lastHeartbeatAt)}
+                <span>{translate('devices.workspacesCount', { count: (device.workspaceCount ?? 0).toLocaleString(getLocale()) })}</span>
+                <div className="mt-1 text-xs text-[var(--theme-fg-muted)]">
+                  {translate('devices.agentThreadsCount', { count: (device.agentThreadCount ?? 0).toLocaleString(getLocale()) })}
                 </div>
               </Td>
             </tr>
@@ -1218,23 +1198,44 @@ function DevicesPanel({
       {!filteredDevices.length ? (
         <EmptyState>{translate("devices.noDevicesMatchTheSelectedFilters")}</EmptyState>
       ) : null}
+      <Pager onPage={setDevicePage} page={devicePage} total={filteredDevices.length} />
     </Panel>
   );
 }
 
-function SharesTable({ shares }: { shares: RelaySessionShareDto[] }) {
-  const { locale: i18nLocale } = useI18n();
+type AdminShareRow = {
+  id: string;
+  scope: 'thread' | 'workspace' | 'device';
+  ownerUsername: string;
+  targetUsername: string;
+  deviceName: string;
+  workspaceLabel: string | null;
+  threadAccess: RelaySessionShareDto['threadAccess'];
+  workspaceAccess: RelaySessionShareDto['workspaceAccess'];
+  lastAccessedAt: string | null;
+  expiresAt: string | null;
+};
+
+function SharesTable({ grants, shares }: { grants: RelayAccessGrantDto[]; shares: RelaySessionShareDto[] }) {
+  useI18n();
+  const [page, setPage] = useState(0);
+  // Thread shares and grants are one list: both are active shares of something.
+  // Thread titles come from conversation content and are not shown to admins.
+  const rows: AdminShareRow[] = [
+    ...shares.map((share) => ({ ...share, scope: 'thread' as const })),
+    ...grants,
+  ].sort((left, right) => compareDateValues(right.lastAccessedAt, left.lastAccessedAt));
   return (
     <Panel
       title={translate("devices.shareRelationships")}
       detail={translate("devices.threadGrantsBetweenRelayUsersRevokedGrants")}
     >
-      <ResponsiveTable minWidth="62rem">
+      <ResponsiveTable minWidth="56rem">
         <thead>
           <tr>
+            <Th>{translate("devices.scope")}</Th>
             <Th>{translate("devices.owner")}</Th>
-            <Th>{translate("devices.target")}</Th>
-            <Th>{translate("devices.thread")}</Th>
+            <Th>{translate("devices.recipient")}</Th>
             <Th>{translate("devices.device")}</Th>
             <Th>{translate("devices.permissions")}</Th>
             <Th>{translate("devices.lastAccess")}</Th>
@@ -1242,37 +1243,64 @@ function SharesTable({ shares }: { shares: RelaySessionShareDto[] }) {
           </tr>
         </thead>
         <tbody>
-          {shares.map((share) => (
+          {pageOf(rows, page).map((share) => (
             <tr key={share.id}>
-              <Td label={translate("devices.owner")} strong>{share.ownerUsername}</Td>
-              <Td label={translate("devices.target")}>{share.targetUsername}</Td>
-              <Td label={translate("devices.thread")}>
-                <span className="font-medium text-[var(--theme-fg)]">
-                  {share.threadTitle ?? share.label ?? translate("devices.threadUnavailable")}
-                </span>
-                <div className="text-xs text-[var(--theme-fg-muted)]">
-                  {share.workspaceLabel ?? translate("devices.workspaceUnavailable")}
-                </div>
+              <Td label={translate("devices.scope")} strong>{scopeLabel(share.scope)}</Td>
+              <Td label={translate("devices.owner")}>{share.ownerUsername}</Td>
+              <Td label={translate("devices.recipient")}>{share.targetUsername}</Td>
+              <Td label={translate("devices.device")}>
+                {share.deviceName}
+                {share.workspaceLabel ? (
+                  <div className="text-xs text-[var(--theme-fg-muted)]">{share.workspaceLabel}</div>
+                ) : null}
               </Td>
-              <Td label={translate("devices.device")}>{share.deviceName}</Td>
               <Td label={translate("devices.permissions")}>
-                {share.threadAccess} /{' '}
+                {share.threadAccess === 'read' ? translate('devices.accessRead') : translate('devices.accessControl')} /{' '}
                 {workspaceAccessLabel(share.workspaceAccess)}
               </Td>
               <Td label={translate("devices.lastAccess")}>{formatTimestamp(share.lastAccessedAt)}</Td>
               <Td label={translate("devices.status")}>
-                {share.revokedAt
-                  ? translate("devices.revoked")
-                  : share.expiresAt &&
-                      share.expiresAt <= new Date().toISOString()
-                    ? translate("devices.expired")
-                    : translate("devices.active")}
+                {share.expiresAt && share.expiresAt <= new Date().toISOString()
+                  ? translate("devices.expired")
+                  : translate("devices.active")}
               </Td>
             </tr>
           ))}
         </tbody>
       </ResponsiveTable>
+      <Pager onPage={setPage} page={page} total={rows.length} />
     </Panel>
+  );
+}
+
+function scopeLabel(scope: AdminShareRow['scope']) {
+  return scope === 'device'
+    ? translate('devices.scopeDevice')
+    : scope === 'workspace'
+      ? translate('devices.scopeWorkspace')
+      : translate('devices.scopeThread');
+}
+
+const PAGE_SIZE = 50;
+
+function pageOf<T>(items: T[], page: number) {
+  return items.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+}
+
+function Pager({ onPage, page, total }: { onPage: (page: number) => void; page: number; total: number }) {
+  useI18n();
+  if (total <= PAGE_SIZE) return null;
+  const last = Math.ceil(total / PAGE_SIZE) - 1;
+  return (
+    <nav aria-label={translate('devices.pageRange', { from: page * PAGE_SIZE + 1, to: Math.min(total, (page + 1) * PAGE_SIZE), total })} className="mt-3 flex items-center justify-end gap-2 text-sm text-[var(--theme-fg-muted)]">
+      <span>{translate('devices.pageRange', { from: page * PAGE_SIZE + 1, to: Math.min(total, (page + 1) * PAGE_SIZE), total })}</span>
+      <button className="relay-button-secondary" disabled={page <= 0} onClick={() => onPage(page - 1)} type="button">
+        {translate('devices.previousPage')}
+      </button>
+      <button className="relay-button-secondary" disabled={page >= last} onClick={() => onPage(page + 1)} type="button">
+        {translate('devices.nextPage')}
+      </button>
+    </nav>
   );
 }
 
@@ -1404,18 +1432,13 @@ function SettingsPanel({
 }
 
 function DeviceSummary({ device }: { device: RelayAdminDeviceDto }) {
-  const { locale: i18nLocale } = useI18n();
+  useI18n();
   return (
     <div className="grid gap-2 text-xs text-[var(--theme-fg-muted)] sm:grid-cols-2">
+      <p className="truncate text-sm font-medium text-[var(--theme-fg)] sm:col-span-2">{device.name}</p>
       <p>
         {translate("devices.owner_719379")}{' '}
-        <span className="text-[var(--theme-fg-soft)]">{device.ownerEmail}</span>
-      </p>
-      <p>
-        {translate("devices.iP")}{' '}
-        <span className="text-[var(--theme-fg-soft)]">
-          {device.ipAddress ?? translate("devices.unavailable_1d5ee3")}
-        </span>
+        <span className="text-[var(--theme-fg-soft)]">{device.ownerUsername}</span>
       </p>
       <p>
         {translate("devices.connected")}{' '}
@@ -1641,8 +1664,9 @@ function PasswordResetDialog({
     event.preventDefault();
     setLocalError(null);
     setSaveError(null);
-    if (password.length < 8) {
-      setLocalError(translate("devices.passwordMustBeAtLeast8Characters"));
+    // The relay accepts a temporary password of 12 to 1024 characters.
+    if (password.length < 12) {
+      setLocalError(translate("devices.passwordMustBeAtLeast12Characters"));
       return;
     }
     try {
@@ -1724,7 +1748,7 @@ function PasswordResetDialog({
             <div className="flex items-center gap-2">
               <button
                 className="relay-button-primary inline-flex flex-1 items-center justify-center gap-2 sm:flex-none"
-                disabled={busy || password.length < 8}
+                disabled={busy || password.length < 12}
                 type="submit"
               >
                 <KeyRound aria-hidden="true" className="h-4 w-4" />
@@ -1862,8 +1886,6 @@ function compareUsers(
     value = Number(left.enabled) - Number(right.enabled);
   } else if (sort.key === 'lastSeenAt') {
     value = compareDateValues(left.lastSeenAt, right.lastSeenAt);
-  } else if (sort.key === 'conversationCount') {
-    value = left.conversationCount - right.conversationCount;
   } else if (sort.key === 'deviceCount') {
     value = left.deviceCount - right.deviceCount;
   } else {
@@ -1894,9 +1916,9 @@ function compareDevices(
   } else if (key === 'createdAt') {
     value = compareDateValues(left.createdAt, right.createdAt);
   } else if (key === 'workspaceCount') {
-    value = left.workspaces.length - right.workspaces.length;
+    value = (left.workspaceCount ?? 0) - (right.workspaceCount ?? 0);
   } else {
-    value = left.threads.length - right.threads.length;
+    value = (left.threadCount ?? 0) - (right.threadCount ?? 0);
   }
   return value * multiplier || left.name.localeCompare(right.name);
 }
@@ -1912,8 +1934,10 @@ function compareDateValues(
   return normalizedLeft - normalizedRight;
 }
 
+// The relay keeps no history for offline devices: never fall back to the
+// creation time, which would read as recent activity.
 function deviceLastActivity(device: RelayAdminDeviceDto) {
-  return device.lastHeartbeatAt ?? device.connectedAt ?? device.createdAt;
+  return device.lastHeartbeatAt ?? device.connectedAt ?? null;
 }
 
 function isAfterActivityWindow(
@@ -1984,7 +2008,7 @@ function compareNullableDate(field: 'lastSeenAt') {
 }
 
 function formatTimestamp(value: string | null | undefined) {
-  return value ? new Date(value).toLocaleString(getLocale()) : 'never';
+  return value ? new Date(value).toLocaleString(getLocale()) : translate('devices.never');
 }
 
 function initials(username: string | null | undefined) {

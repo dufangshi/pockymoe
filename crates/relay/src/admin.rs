@@ -21,12 +21,59 @@ impl AdminQuery {
     }
 }
 
+/// The tunnel times the relay holds in memory for each online device.
+pub(crate) async fn tunnel_times(state: &AppState) -> HashMap<String, (String, String)> {
+    state
+        .sockets
+        .read()
+        .await
+        .iter()
+        .map(|(id, socket)| {
+            (
+                id.clone(),
+                (
+                    socket.connected_at.clone(),
+                    socket.last_heartbeat_at.clone(),
+                ),
+            )
+        })
+        .collect()
+}
+
+/// Threads, agent threads (threads with a parent) and workspaces per device,
+/// from the IDs devices report in heartbeats. No titles exist in this table.
+pub(crate) fn lineage_counts(conn: &Connection) -> HashMap<String, (i64, i64, i64)> {
+    conn.prepare(
+        "SELECT device_id,COUNT(*),COUNT(parent_thread_id),COUNT(DISTINCT workspace_id)
+         FROM relay_thread_lineage GROUP BY device_id",
+    )
+    .and_then(|mut stmt| {
+        stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                (row.get(1)?, row.get(2)?, row.get(3)?),
+            ))
+        })?
+        .collect()
+    })
+    .unwrap_or_default()
+}
+
+/// Admin views never carry thread titles: they come from conversation content
+/// and only the owner and recipient see them on their own pages.
+pub(crate) fn without_thread_title(mut share: Value) -> Value {
+    if let Some(object) = share.as_object_mut() {
+        object.insert("threadTitle".into(), Value::Null);
+    }
+    share
+}
+
 pub(crate) async fn relay_admin(
     headers: HeaderMap,
     Query(query): Query<AdminQuery>,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
-    let connected: Vec<String> = state.sockets.read().await.keys().cloned().collect();
+    let tunnels = tunnel_times(&state).await;
     let conn = state.store.conn.lock().await;
     if authenticated_admin_user(
         &conn,
@@ -38,44 +85,29 @@ pub(crate) async fn relay_admin(
     {
         return unauthorized();
     }
+    // Kept in the response for older Web builds; it never filtered anything.
     let conversation_window_days = query.days.unwrap_or(7).clamp(1, 365);
-    let has_conversations = table_exists(&conn, "relay_conversation_events");
     let mut stmt = match conn.prepare(
-        "SELECT id,email,username,role,enabled,last_seen_at,created_at FROM relay_users ORDER BY created_at ASC",
+        "SELECT u.id,u.email,u.username,u.role,u.enabled,u.last_seen_at,u.created_at,
+                (SELECT COUNT(*) FROM relay_devices d WHERE d.owner_user_id=u.id)
+         FROM relay_users u ORDER BY u.created_at ASC",
     ) {
         Ok(stmt) => stmt,
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
     let users: Vec<Value> = stmt
         .query_map([], |row| {
-            let id: String = row.get(0)?;
-            let device_count = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM relay_devices WHERE owner_user_id=?1",
-                    params![id],
-                    |count| count.get::<_, i64>(0),
-                )
-                .unwrap_or(0);
-            let conversation_count = if has_conversations {
-                conn.query_row(
-                    "SELECT COUNT(*) FROM relay_conversation_events WHERE user_id=?1",
-                    params![id],
-                    |count| count.get::<_, i64>(0),
-                )
-                .unwrap_or(0)
-            } else {
-                0
-            };
             Ok(json!({
-                "id": id,
+                "id": row.get::<_, String>(0)?,
                 "email": row.get::<_, String>(1)?,
                 "username": row.get::<_, String>(2)?,
                 "role": row.get::<_, String>(3)?,
                 "enabled": row.get::<_, i64>(4)? == 1,
                 "lastSeenAt": row.get::<_, Option<String>>(5)?,
                 "createdAt": row.get::<_, String>(6)?,
-                "deviceCount": device_count,
-                "conversationCount": conversation_count
+                "deviceCount": row.get::<_, i64>(7)?,
+                // The relay records no conversations; older Web builds read this.
+                "conversationCount": 0
             }))
         })
         .ok()
@@ -83,6 +115,7 @@ pub(crate) async fn relay_admin(
         .unwrap_or_default();
     drop(stmt);
 
+    let lineage = lineage_counts(&conn);
     let mut stmt = match conn.prepare(
         "SELECT d.id,d.owner_user_id,d.name,d.token,d.token_preview,d.created_at,u.username,u.email
          FROM relay_devices d JOIN relay_users u ON u.id=d.owner_user_id ORDER BY d.created_at ASC",
@@ -93,19 +126,25 @@ pub(crate) async fn relay_admin(
     let devices: Vec<Value> = stmt
         .query_map([], |row| {
             let id: String = row.get(0)?;
+            let tunnel = tunnels.get(&id);
+            let (threads, agent_threads, workspaces) =
+                lineage.get(&id).copied().unwrap_or_default();
             Ok(json!({
                 "id": id,
                 "ownerUserId": row.get::<_, String>(1)?,
                 "name": row.get::<_, String>(2)?,
                 "token": row.get::<_, Option<String>>(3)?,
                 "tokenPreview": row.get::<_, String>(4)?,
-                "connected": connected.iter().any(|connected_id| connected_id == &id),
-                "connectedAt": Value::Null,
-                "lastHeartbeatAt": Value::Null,
+                "connected": tunnel.is_some(),
+                "connectedAt": tunnel.map(|(connected, _)| connected),
+                "lastHeartbeatAt": tunnel.map(|(_, heartbeat)| heartbeat),
                 "createdAt": row.get::<_, String>(5)?,
                 "ownerUsername": row.get::<_, String>(6)?,
                 "ownerEmail": row.get::<_, String>(7)?,
                 "ipAddress": Value::Null,
+                "threadCount": threads,
+                "agentThreadCount": agent_threads,
+                "workspaceCount": workspaces,
                 "workspaces": [],
                 "threads": []
             }))
@@ -122,10 +161,12 @@ pub(crate) async fn relay_admin(
     let shares: Vec<Value> = user_ids
         .iter()
         .flat_map(|id| relay_shares_for(&conn, "owner_user_id", id))
+        .map(without_thread_title)
         .collect();
     let grants: Vec<Value> = user_ids
         .iter()
         .flat_map(|id| relay_grants_for(&conn, "owner_user_id", id))
+        .map(without_thread_title)
         .collect();
     let pending_registrations = if table_exists(&conn, "relay_pending_registrations") {
         conn.prepare(
@@ -575,12 +616,26 @@ pub(crate) async fn reject_registration(
     else {
         return unauthorized();
     };
-    match conn.execute(
-        "UPDATE relay_pending_registrations
-         SET status='rejected',reviewed_at=?1,reviewed_by_user_id=?2
-         WHERE id=?3 AND status='pending'",
-        params![now_rfc3339(), admin.id, request_id],
-    ) {
+    // A rejected request keeps its row for the review history; the encrypted
+    // vault it carried has no owner any more and goes.
+    let result = (|| -> rusqlite::Result<usize> {
+        let tx = conn.unchecked_transaction()?;
+        let changed = tx.execute(
+            "UPDATE relay_pending_registrations
+             SET status='rejected',reviewed_at=?1,reviewed_by_user_id=?2
+             WHERE id=?3 AND status='pending'",
+            params![now_rfc3339(), admin.id, request_id],
+        )?;
+        if changed == 1 {
+            tx.execute(
+                "DELETE FROM relay_pending_account_vaults WHERE request_id=?1",
+                [&request_id],
+            )?;
+        }
+        tx.commit()?;
+        Ok(changed)
+    })();
+    match result {
         Ok(1) => Json(json!({ "id": request_id })).into_response(),
         Ok(_) => (
             StatusCode::NOT_FOUND,
@@ -591,5 +646,135 @@ pub(crate) async fn reject_registration(
         )
             .into_response(),
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn body(response: Response) -> Value {
+        let bytes = to_bytes(response.into_body(), 1 << 20).await.unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    fn bearer(token: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            format!("Bearer {token}").parse().unwrap(),
+        );
+        headers
+    }
+
+    #[tokio::test]
+    async fn legacy_summary_reports_tunnel_times_lineage_and_no_thread_titles() {
+        let (state, dir) = crate::tests::test_app_state("admin-legacy-summary");
+        let token = {
+            let conn = state.store.conn.lock().await;
+            conn.execute_batch(
+                "INSERT INTO relay_users VALUES ('admin','admin@x','admin','admin',1,NULL,'2026-01-01T00:00:00Z','s','h');
+                 INSERT INTO relay_users VALUES ('owner','o@x','owner','user',1,NULL,'2026-01-01T00:00:00Z','s','h');
+                 INSERT INTO relay_users VALUES ('guest','g@x','guest','user',1,NULL,'2026-01-01T00:00:00Z','s','h');
+                 INSERT INTO relay_devices VALUES ('dev','owner','Laptop',NULL,'th','rcd_x...y','2026-01-02T00:00:00Z');
+                 INSERT INTO relay_thread_lineage(device_id,thread_id,parent_thread_id,workspace_id) VALUES
+                   ('dev','t1',NULL,'w1'),('dev','t2','t1','w1'),('dev','t3',NULL,'w2');
+                 INSERT INTO relay_shares(id,owner_user_id,owner_username,target_user_id,target_username,device_id,device_name,thread_id,thread_title,thread_access,workspace_access,created_at)
+                   VALUES ('share','owner','owner','guest','guest','dev','Laptop','t1','Secret plans','read','none','2026-01-03T00:00:00Z');
+                 INSERT INTO relay_access_grants(id,owner_user_id,owner_username,target_user_id,target_username,device_id,device_name,scope,thread_access,workspace_access,created_at)
+                   VALUES ('grant','owner','owner','guest','guest','dev','Laptop','device','control','write','2026-01-03T00:00:00Z');",
+            )
+            .unwrap();
+            create_session(&conn, &state.store.session_secret, "admin").unwrap()
+        };
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        state.sockets.write().await.insert(
+            "dev".into(),
+            DeviceSocket {
+                tx,
+                connection_id: Uuid::new_v4(),
+                connected_at: "2026-01-04T00:00:00Z".into(),
+                last_heartbeat_at: "2026-01-04T00:01:00Z".into(),
+            },
+        );
+        let value = body(
+            relay_admin(
+                bearer(&token),
+                Query(AdminQuery::default()),
+                State(state.clone()),
+            )
+            .await
+            .into_response(),
+        )
+        .await;
+        let device = &value["devices"][0];
+        assert_eq!(device["connectedAt"], "2026-01-04T00:00:00Z");
+        assert_eq!(device["lastHeartbeatAt"], "2026-01-04T00:01:00Z");
+        assert_eq!(device["threadCount"], 3);
+        assert_eq!(device["agentThreadCount"], 1);
+        assert_eq!(device["workspaceCount"], 2);
+        assert_eq!(value["shares"][0]["threadTitle"], Value::Null);
+        assert_eq!(value["grants"][0]["scope"], "device");
+        let owner = value["users"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|user| user["id"] == "owner")
+            .unwrap();
+        assert_eq!(owner["deviceCount"], 1);
+        let unauthorized = relay_admin(
+            HeaderMap::new(),
+            Query(AdminQuery::default()),
+            State(state.clone()),
+        )
+        .await
+        .into_response();
+        assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+        drop(state);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn rejecting_a_registration_deletes_its_pending_vault() {
+        let (state, dir) = crate::tests::test_app_state("admin-reject-vault");
+        let token = {
+            let conn = state.store.conn.lock().await;
+            conn.execute_batch(
+                "INSERT INTO relay_users VALUES ('admin','admin@x','admin','admin',1,NULL,'2026-01-01T00:00:00Z','s','h');
+                 INSERT INTO relay_pending_registrations(id,email,username,password_salt,password_hash,created_at)
+                   VALUES ('req','n@x','newbie','s','h','2026-01-01T00:00:00Z');
+                 INSERT INTO relay_pending_account_vaults(request_id,user_id,vault_json,recovery_salt,recovery_hash)
+                   VALUES ('req','u','{}','s','h');",
+            )
+            .unwrap();
+            create_session(&conn, &state.store.session_secret, "admin").unwrap()
+        };
+        let response = reject_registration(
+            Path("req".into()),
+            bearer(&token),
+            Query(TokenQuery::default()),
+            State(state.clone()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let conn = state.store.conn.lock().await;
+        let vaults: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM relay_pending_account_vaults",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM relay_pending_registrations WHERE id='req'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!((vaults, status.as_str()), (0, "rejected"));
+        drop(conn);
+        drop(state);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

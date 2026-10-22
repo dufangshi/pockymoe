@@ -156,6 +156,7 @@ export interface RelayDeviceDto {
 export interface RelayAdminUserDto extends RelayUserDto {
   lastSeenAt: string | null;
   deviceCount: number;
+  /** Always 0: the relay records no conversations. */
   conversationCount: number;
 }
 
@@ -177,9 +178,15 @@ export interface RelayAdminThreadDto {
 export interface RelayAdminDeviceDto extends RelayDeviceDto {
   ownerUsername: string;
   ownerEmail: string;
+  /** Never recorded; kept for older relays. */
   ipAddress: string | null;
+  /** Always empty: admin views carry no thread titles or workspace names. */
   workspaces: RelayAdminWorkspaceDto[];
   threads: RelayAdminThreadDto[];
+  /** Counted from the thread IDs the device's heartbeats report. Absent on older relays. */
+  threadCount?: number;
+  agentThreadCount?: number;
+  workspaceCount?: number;
 }
 
 export interface RelayRegistrationSettingsDto {
