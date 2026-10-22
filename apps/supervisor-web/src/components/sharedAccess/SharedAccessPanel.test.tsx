@@ -72,6 +72,22 @@ describe('SharedAccessPanel', () => {
     expect(within(people).getByText('1 threads')).toBeTruthy();
   });
 
+  it('renders what was shared with me in the shape the relay sends it, in every view', () => {
+    // The relay repeats thread shares inside sharedThreadsWithMe, without a grant scope.
+    const incoming = { ...share, id: 's2', ownerUserId: 'u-al', ownerUsername: 'alwyn', targetUserId: 'me', targetUsername: 'du', threadTitle: 'prod bootstrap' };
+    const relayPortal = { user: { id: 'me' }, devices: [], sharedWithMe: [incoming], sharedByMe: [], sharedDevicesWithMe: [], sharedThreadsWithMe: [incoming, grant] } as unknown as RelayPortalSummaryDto;
+    for (const view of ['list', 'devices', 'people']) {
+      localStorage.setItem('pockymoe.sharedAccess.view', view);
+      const { unmount } = render(<SharedAccessPanel portal={relayPortal} loading={false} direction="in" onDirectionChange={vi.fn()}
+        attention={new Map()} onAttentionRefresh={vi.fn()} busyKey={null} actions={{ onOpen: vi.fn(), onEdit: vi.fn(), onRevoke: vi.fn() }} />);
+      // A narrow screen lists the people first.
+      if (view === 'people' && !screen.queryAllByText('prod bootstrap').length) fireEvent.click(screen.getByRole('button', { name: /alwyn/ }));
+      expect(screen.getAllByText('prod bootstrap')).toHaveLength(1);
+      expect(screen.getAllByText('infra').length).toBeGreaterThan(0);
+      unmount();
+    }
+  });
+
   it('says when nothing matches the search', () => {
     renderPanel('out');
     fireEvent.change(screen.getByRole('searchbox', { name: 'Search names, devices or people' }), { target: { value: 'nothing-like-this' } });

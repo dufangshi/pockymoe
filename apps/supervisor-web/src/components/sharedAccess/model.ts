@@ -51,7 +51,7 @@ function fromShare(row: RelaySessionShareDto, direction: ShareDirection): Shared
     deviceName: clean(row.deviceName) ?? row.deviceId.slice(0, 8),
     deviceConnected: row.deviceConnected,
     personId: direction === 'in' ? row.ownerUserId : row.targetUserId,
-    personName: direction === 'in' ? row.ownerUsername : row.targetUsername,
+    personName: (direction === 'in' ? row.ownerUsername : row.targetUsername) || (direction === 'in' ? row.ownerUserId : row.targetUserId) || '?',
     threadAccess: row.threadAccess,
     workspaceAccess: row.workspaceAccess,
     canCreateThreads: false,
@@ -81,7 +81,7 @@ function fromGrant(row: RelayAccessGrantDto, direction: ShareDirection): SharedI
     deviceName,
     deviceConnected: row.deviceConnected,
     personId: direction === 'in' ? row.ownerUserId : row.targetUserId,
-    personName: direction === 'in' ? row.ownerUsername : row.targetUsername,
+    personName: (direction === 'in' ? row.ownerUsername : row.targetUsername) || (direction === 'in' ? row.ownerUserId : row.targetUserId) || '?',
     threadAccess: row.threadAccess,
     workspaceAccess: row.workspaceAccess,
     canCreateThreads: row.canCreateThreads,
@@ -89,12 +89,17 @@ function fromGrant(row: RelayAccessGrantDto, direction: ShareDirection): SharedI
     createdAt: row.createdAt,
     expiresAt: row.expiresAt,
     lastAccessedAt: row.lastAccessedAt,
-    selectedWorkspaces: row.scope === 'device' && row.workspaceScope === 'selected' ? row.workspaceIds.length : null,
+    selectedWorkspaces: row.scope === 'device' && row.workspaceScope === 'selected' ? (row.workspaceIds ?? []).length : null,
     source: { kind: 'grant', row },
   };
 }
 
-const activity = (item: SharedItem) => item.lastAccessedAt ?? item.createdAt;
+const activity = (item: SharedItem) => item.lastAccessedAt ?? item.createdAt ?? '';
+const SCOPES: ReadonlySet<string> = new Set(['device', 'workspace', 'thread']);
+/** `sharedThreadsWithMe` also repeats the thread shares of `sharedWithMe`
+    (older Web builds read it alone); only rows with a grant scope are grants. */
+const isGrant = (row: RelayAccessGrantDto | RelaySessionShareDto): row is RelayAccessGrantDto =>
+  typeof (row as Partial<RelayAccessGrantDto>).scope === 'string' && SCOPES.has((row as RelayAccessGrantDto).scope);
 
 /** Everything shared in one direction, most recently used first. */
 export function sharedItems(portal: RelayPortalSummaryDto | null, direction: ShareDirection): SharedItem[] {
@@ -102,12 +107,12 @@ export function sharedItems(portal: RelayPortalSummaryDto | null, direction: Sha
   const items = direction === 'in'
     ? [
       ...portal.sharedWithMe.map(row => fromShare(row, 'in')),
-      ...(portal.sharedDevicesWithMe ?? []).map(row => fromGrant(row, 'in')),
-      ...(portal.sharedThreadsWithMe ?? []).map(row => fromGrant(row, 'in')),
+      ...(portal.sharedDevicesWithMe ?? []).filter(isGrant).map(row => fromGrant(row, 'in')),
+      ...(portal.sharedThreadsWithMe ?? []).filter(isGrant).map(row => fromGrant(row, 'in')),
     ]
     : [
       ...portal.sharedByMe.map(row => fromShare(row, 'out')),
-      ...(portal.grantsByMe ?? []).map(row => fromGrant(row, 'out')),
+      ...(portal.grantsByMe ?? []).filter(isGrant).map(row => fromGrant(row, 'out')),
     ];
   const unique = new Map(items.map(item => [item.key, item]));
   return [...unique.values()].sort((a, b) => activity(b).localeCompare(activity(a)) || a.title.localeCompare(b.title));

@@ -42,6 +42,16 @@ describe('shared items', () => {
     expect(incoming.map(item => [item.scope, item.personName])).toEqual([['workspace', 'alwyn'], ['device', 'qing'], ['thread', 'alwyn']]);
   });
 
+  it('reads thread shares once although the relay repeats them among the grants shared with me', () => {
+    const repeated = share('in', { ownerUsername: 'alwyn', ownerUserId: 'u-al' });
+    const items = sharedItems(portal({
+      sharedWithMe: [repeated],
+      // The relay's sharedThreadsWithMe is sharedWithMe plus workspace and thread grants.
+      sharedThreadsWithMe: [repeated as unknown as RelayAccessGrantDto, grant('ws', 'workspace', { ownerUsername: 'alwyn', ownerUserId: 'u-al' })],
+    }), 'in');
+    expect(items.map(item => [item.key, item.scope])).toEqual([['grant:ws', 'workspace'], ['share:in', 'thread']]);
+  });
+
   it('filters by kind, attention and a search over names, devices and people', () => {
     const items = sharedItems(portal({ sharedByMe: [share('a')], grantsByMe: [grant('w', 'workspace', { targetUsername: 'void111' })] }), 'out');
     expect(filterItems(items, 'workspace', '', new Map()).map(item => item.key)).toEqual(['grant:w']);

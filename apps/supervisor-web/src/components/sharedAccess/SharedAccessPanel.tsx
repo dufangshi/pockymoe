@@ -242,7 +242,7 @@ function ShareRow({ item, attention, busyKey, actions, expanded, onToggle, depth
   const showWorkspace = depth === 0;
   const open = expanded === item.key;
   const detailId = useId();
-  const Icon = SCOPE_ICON[item.scope];
+  const Icon = SCOPE_ICON[item.scope] ?? MessageSquare;
   const flag = attention.get(item.key);
   const kindLabel = translate(item.scope === 'device' ? 'sharing.kindDevice' : item.scope === 'workspace' ? 'sharing.kindWorkspace' : 'sharing.kindThread');
   return (
@@ -272,7 +272,7 @@ function ShareRow({ item, attention, busyKey, actions, expanded, onToggle, depth
 
 function ShareDetail({ id, item, flag, busy, actions }: { id: string; item: SharedItem; flag: AttentionState | undefined; busy: boolean; actions: SharedAccessActions }) {
   const [history, setHistory] = useState(false);
-  const events = item.source.row.accessEvents;
+  const events = item.source.row.accessEvents ?? [];
   return (
     <div className="shared-detail" id={id}>
       {flag ? <p className="shared-detail-flag" role="status"><ShieldAlert size={14} aria-hidden="true" />{translate(ATTENTION_TEXT[flag])}</p> : null}
