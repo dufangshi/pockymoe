@@ -609,6 +609,13 @@ enabled, stored in this browser):
 - A paste of several lines into a shell without bracketed paste asks first, since
   the shell would run the lines one by one.
 - On a Mac ⌘C and ⌘V copy and paste, and Ctrl stays with the terminal.
+- On a touch keyboard the terminal's field takes text as any field does, so input
+  methods work (pinyin and other candidates, predictions, autocorrect): the shell
+  gets what changed, a composition once it is chosen. Enter, arrows, Tab, Esc and
+  modified keys go to the terminal as keys.
+- Output replayed on attaching or redrawn from a snapshot answers no queries:
+  programs asked for the cursor position or colours when it first ran, and those
+  answers must not arrive at a prompt as typed text.
 
 The shell runs with `TERM=xterm-256color` and `COLORTERM=truecolor`, since the
 terminal is always xterm.js, and without the variables that name the Supervisor's
