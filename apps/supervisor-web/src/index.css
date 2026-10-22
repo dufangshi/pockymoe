@@ -2774,41 +2774,7 @@ main:has(.product-navigation) { padding-top: 0 !important; }
 .device-connection-button:not([data-encryption="encrypted"]) .device-connection-security { color: var(--status-warning-fg); }
 .device-connection-button[data-encryption="identity-changed"] .device-connection-security { color: var(--status-danger-fg); }
 
-.shared-access-tabs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.shared-access-tabs > button { min-width: 0; justify-content: space-between; padding-inline: 10px; font-size: 12px; }
-.shared-access-card { padding: 18px 16px; min-width: 0; color: var(--theme-fg); }
-.shared-access-card-heading, .shared-access-card-person, .shared-access-card-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.shared-access-card-person { margin-top: 18px; }
-.shared-access-card-footer { margin-top: 14px; align-items: flex-start; flex-wrap: wrap; }
-.shared-access-open { display: inline-flex; align-items: center; gap: 4px; padding: 8px 10px; min-height: 36px; border-radius: 9px; font-size: 12px; color: var(--theme-accent-strong); background: color-mix(in srgb, var(--theme-accent) 8%, transparent); }
-.shared-access-open:active { background: var(--theme-hover); }
-@media (hover: hover) {
-  .shared-access-open:hover { background: var(--theme-hover); }
-}
-.shared-profile-button { display: inline-flex; min-width: 0; align-items: center; gap: 9px; border-radius: 10px; padding: 3px; margin: -3px; }
-.shared-profile-button:active { background: var(--theme-hover); }
-@media (hover: hover) {
-  .shared-profile-button:hover { background: var(--theme-hover); }
-}
-.shared-profile-avatar { display: grid; flex-shrink: 0; width: 36px; height: 36px; place-items: center; border-radius: 50%; background: var(--theme-muted); color: var(--theme-fg-soft); font-size: 11px; font-weight: 600; }
-.shared-access-actions { display: flex; gap: 2px; flex-shrink: 0; }
-.shared-access-actions .product-icon-button { width: 36px; height: 36px; min-height: 36px; border-radius: 9px; }
-.shared-access-actions .shared-access-revoke:active { color: var(--status-danger-fg); background: var(--status-danger-bg); }
-@media (hover: hover) {
-  .shared-access-actions .shared-access-revoke:hover { color: var(--status-danger-fg); background: var(--status-danger-bg); }
-}
-.shared-access-permission { font-size: 10px; padding: 3px 7px; border-radius: 6px; color: var(--theme-fg-muted); background: var(--theme-muted); }
-.shared-access-date { font-size: 10px; color: var(--theme-fg-muted); padding-top: 3px; }
-.shared-access-history { margin-top: 16px; padding: 12px; border-radius: 10px; background: var(--theme-surface); border: 1px solid var(--theme-border); }
-@media (min-width: 640px) { .shared-access-tabs { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
 
-.shared-access-device { display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap; margin-top:12px; font-size:11px; color:var(--theme-fg-muted); }
-.shared-access-device-name { display:inline-flex; align-items:center; gap:6px; min-width:0; overflow-wrap:anywhere; }
-.shared-access-device-name > svg { flex-shrink:0; }
-.shared-supervisor-presence { display:inline-flex; align-items:center; gap:5px; white-space:nowrap; }
-.shared-supervisor-presence > span { width:6px; height:6px; border-radius:50%; background:currentColor; }
-.shared-supervisor-presence[data-online="true"] { color:var(--status-success-fg); }
-.shared-access-open:disabled { opacity:.45; cursor:not-allowed; background:var(--theme-muted); color:var(--theme-fg-muted); }
 
 /* The host form is the single outer scroll owner. A grid auto min-size must
    not push the dialog beyond its viewport cap as asynchronous agents load. */

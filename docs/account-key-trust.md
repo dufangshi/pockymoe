@@ -786,13 +786,26 @@ workspace. `GET /api/threads`, `GET /api/workspaces` and `POST /api/threads/star
 stay whole-device routes. The relay learns each thread's workspace from the
 device's heartbeat (`threadLineage[].workspaceId`) and a bound device reads its own
 database, so a thread the device has not reported is outside every workspace share.
-The recipient finds the workspace as a row on the device's card under **Devices
-with me**; the device's Workspaces page lists only the workspaces shared with them,
+The recipient finds the workspace under **Sharing → Shared with me** on the
+Devices page; the device's Workspaces page lists only the workspaces shared with them,
 without the owner's actions. Runtime metadata (`/api/agent-runtimes…`), which names
 no thread or workspace, is readable with any live share or grant on the device, so
 a workspace share can choose a harness and model for a new thread. Devices on
 0.13.36 or earlier report no workspaces and have no workspace thread routes: there
 a workspace share reaches its files only.
+
+**Sharing tab.** The Devices page has two tabs, **Devices** and **Sharing**
+(`?tab=shared`, with `dir=out` for my shares). Sharing lists both directions in
+one place as one compact row per share or grant: its scope, name, device and
+presence, the other person, permissions and last visit. A row opens in place
+with its details, the signed-share checks and its actions (open, edit, access
+history, revoke). The list can be viewed as a filtered list (all, devices,
+workspaces, threads, to review, with search), grouped by device (whole device,
+then each workspace with the threads shared in it), or by person; the browser
+remembers the view. My shares on online protected devices are checked like the
+row's signed details: a grant missing or different on the device, a changed
+recipient key, or a safety code not compared marks the row and counts as **to
+review** on the tab.
 
 **No terminal for recipients.** No share or grant, read or control, reaches a
 terminal: thread shells (`/api/threads/{id}/shell`, the relay's

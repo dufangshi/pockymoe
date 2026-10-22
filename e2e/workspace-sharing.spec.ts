@@ -106,12 +106,32 @@ test('a signed workspace share reaches its threads and files but never a termina
     await owner.page.setViewportSize({ width: 1280, height: 720 });
     await owner.page.evaluate(() => { localStorage.removeItem('pockymoe-theme-preset'); localStorage.removeItem('remote-codex-theme-mode'); });
 
-    // The recipient opens the workspace from the device's card on Devices.
+    // The owner's Sharing tab lists the grant as one row; the device holds it,
+    // and the recipient's safety code is still to compare.
+    await owner.page.goto(f.base + '/relay-devices?tab=shared&dir=out');
+    const ownerRow = owner.page.locator('.shared-row').filter({ hasText: sharedWs.label });
+    await expect(ownerRow).toBeVisible();
+    await expect(ownerRow.getByText('Safety code not compared')).toBeVisible();
+    await expect(owner.page.getByRole('tab', { name: /Sharing/ })).toContainText('1 to review');
+    await ownerRow.getByRole('button', { name: new RegExp(sharedWs.label) }).click();
+    await expect(ownerRow.getByRole('button', { name: 'Revoke', exact: true })).toBeVisible();
+    // The row's signed details: the recipient's safety code, to compare in place.
+    await expect(ownerRow.getByRole('button', { name: 'I compared the safety code' })).toBeVisible();
+    await screenshot(owner.page, info, `workspace-share-owner-sharing-${info.project.name}`);
+    for (const view of ['By device', 'By person']) {
+      await owner.page.getByRole('button', { name: view, exact: true }).click();
+      await expect(owner.page.locator('.shared-row').filter({ hasText: sharedWs.label })).toBeVisible();
+    }
+    await owner.page.getByRole('button', { name: 'List', exact: true }).click();
+
+    // The recipient opens the workspace from Sharing on the Devices page.
     await recipient.page.goto(f.base + '/relay-devices');
-    await recipient.page.getByRole('tab', { name: /Devices with me/ }).click();
-    const card = recipient.page.locator('.shared-access-card').filter({ hasText: sharedWs.label });
-    await expect(card).toBeVisible();
-    await card.getByRole('button', { name: /Open/ }).click();
+    await recipient.page.getByRole('tab', { name: /Sharing/ }).click();
+    await expect(recipient.page).toHaveURL(/tab=shared/);
+    const row = recipient.page.locator('.shared-row').filter({ hasText: sharedWs.label });
+    await expect(row).toBeVisible();
+    await expect(row).toContainText('from ws-owner');
+    await row.getByRole('button', { name: `Open ${sharedWs.label}`, exact: true }).click();
     await expect(recipient.page).toHaveURL(new RegExp(`/devices/${d1.id}/threads\\?workspaceId=${sharedWs.id}$`));
     await expect(recipient.page.getByText('Signed thread 1').first()).toBeVisible();
     await expect(recipient.page.getByText('Private notes')).toHaveCount(0);

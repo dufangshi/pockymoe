@@ -40,7 +40,6 @@ vi.mock('../lib/remoteDeviceProtection', () => ({
 }));
 vi.mock('../components/DeviceEncryptionStatus', () => ({ DeviceEncryptionStatus: () => null }));
 vi.mock('../components/SignedShareDetails', () => ({ SignedShareDetails: () => null, OrphanDeviceGrants: () => null }));
-vi.mock('../components/SharedAccessCard', () => ({ SharedAccessCard: () => null }));
 vi.mock('../components/ProductHeader', () => ({ ProductHeader: () => null }));
 vi.mock('../components/onboarding/TourProvider', () => ({ TourLauncherButton: () => null }));
 

@@ -1,5 +1,5 @@
 import { sharingEditInput } from '../lib/signedSharing';
-import { SignedShareDetails, OrphanDeviceGrants } from '../components/SignedShareDetails';
+import { OrphanDeviceGrants } from '../components/SignedShareDetails';
 import { requireUnlock } from '../lib/accountVault';
 import { removeDeviceFromAccount } from '../lib/deviceRemoval';
 import { prepareDeviceEnrollment } from '../lib/deviceEnrollment';
@@ -16,7 +16,10 @@ import { getTransportStatus } from '../lib/relayTransport';
 import { getLocale } from '@pockymoe/thread-ui/i18n';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { ErrorMark } from '@pockymoe/thread-ui';
-import { SharedAccessCard } from '../components/SharedAccessCard';
+import { SharedAccessPanel } from '../components/sharedAccess/SharedAccessPanel';
+import { sharedItems, type ShareDirection, type SharedItem } from '../components/sharedAccess/model';
+import { useShareAttention } from '../components/sharedAccess/useShareAttention';
+import { MonitorSmartphone as DevicesTabIcon, Users as SharingTabIcon } from 'lucide-react';
 import { SecurityVerification } from '../components/RelaySecurity';
 import { securityRequest, type SecurityStatus } from '../lib/relaySecurity';
 import { request } from '../lib/api';
@@ -42,6 +45,7 @@ import {
   useCallback,
   useEffect,
   useId,
+  useMemo,
   useRef,
   useState,
 } from 'react';
@@ -76,11 +80,7 @@ import { ConfirmDialog } from '../components/ConfirmDialog';
 import { useDevicePresence } from '../lib/useDevicePresence';
 
 const RELAY_PORTAL_REFRESH_INTERVAL_MS = 3000;
-type SharedView =
-  | 'incoming-threads'
-  | 'incoming-devices'
-  | 'outgoing-devices'
-  | 'outgoing-threads';
+type PageTab = 'devices' | 'shared';
 
 function errorMessage(caught: unknown, fallback: string) {
   return caught instanceof ApiError
@@ -307,10 +307,16 @@ export function RelayDevicesPage() {
   // background refresh keeps the last list silently.
   const [error, setError] = useState<{ at: 'load' | 'create' | 'remove' | 'revoke' | 'rotate'; message: string } | null>(null);
   const [dialogError, setDialogError] = useState<string | null>(null);
-  const [activeSharedView, setActiveSharedView] =
-    useState<SharedView>('incoming-threads');
-  const [expandedShareId, setExpandedShareId] = useState<string | null>(null);
-  const [expandedGrantId, setExpandedGrantId] = useState<string | null>(null);
+  // The page's tab and the shares' direction live in the address, so a link
+  // or a reload returns to them.
+  const pageTab: PageTab = searchParams.get('tab') === 'shared' ? 'shared' : 'devices';
+  const shareDirection: ShareDirection = searchParams.get('dir') === 'out' ? 'out' : 'in';
+  const setPageView = (tab: PageTab, direction: ShareDirection = shareDirection) => {
+    const next = new URLSearchParams(searchParams);
+    if (tab === 'shared') next.set('tab', 'shared'); else next.delete('tab');
+    if (tab === 'shared' && direction === 'out') next.set('dir', 'out'); else next.delete('dir');
+    setSearchParams(next, { replace: true });
+  };
   const [editingShare, setEditingShare] = useState<RelaySessionShareDto | null>(
     null,
   );
@@ -619,7 +625,6 @@ export function RelayDevicesPage() {
     setError(null);
     try {
       await revokeRelayGrant(grant.id);
-      setExpandedGrantId((current) => (current === grant.id ? null : current));
       setRevokeTarget(null);
       await load({ showLoading: false });
     } catch (caught) {
@@ -662,7 +667,6 @@ export function RelayDevicesPage() {
     setError(null);
     try {
       await revokeRelayShare(share.id);
-      setExpandedShareId((current) => (current === share.id ? null : current));
       setRevokeTarget(null);
       await load({ showLoading: false });
     } catch (caught) {
@@ -724,64 +728,31 @@ export function RelayDevicesPage() {
     }
   }
 
-  // A shared workspace belongs to its device: it is a row on that device's card.
-  const sharedDevicesWithMe = [
-    ...(portal?.sharedDevicesWithMe ?? []),
-    ...(portal?.sharedThreadsWithMe ?? []).filter((grant) => grant.scope === 'workspace'),
+  const outgoingItems = useMemo(() => sharedItems(portal, 'out'), [portal]);
+  const incomingCount = useMemo(() => sharedItems(portal, 'in').length, [portal]);
+  const { attention, refresh: refreshAttention } = useShareAttention(outgoingItems);
+  const shareActions = {
+    onOpen: (item: SharedItem) => item.source.kind === 'share' ? openSharedSession(item.source.row) : openSharedGrant(item.source.row),
+    onEdit: (item: SharedItem) => {
+      setDialogError(null);
+      if (item.source.kind === 'share') setEditingShare(item.source.row);
+      else setEditingGrant(item.source.row);
+    },
+    onRevoke: (item: SharedItem) => {
+      setError(null);
+      setRevokeTarget(item.source.kind === 'share' ? { kind: 'share', share: item.source.row } : { kind: 'grant', grant: item.source.row });
+    },
+  };
+  const pageTabs: Array<{ id: PageTab; label: string; count: number; Icon: typeof DevicesTabIcon; review?: number }> = [
+    { id: 'devices', label: translate('devices.devices'), count: portal?.devices.length ?? 0, Icon: DevicesTabIcon },
+    { id: 'shared', label: translate('sharing.tabSharing'), count: incomingCount + outgoingItems.length, Icon: SharingTabIcon, review: attention.size },
   ];
-  const outgoingGrants = portal?.grantsByMe ?? [];
-  const sharedViewTabs: Array<{
-    count: number;
-    id: SharedView;
-    label: string;
-  }> = [
-    {
-      id: 'incoming-threads',
-      label: translate("devices.threadsWithMe"),
-      count: portal?.sharedWithMe.length ?? 0,
-    },
-    {
-      id: 'incoming-devices',
-      label: translate("devices.devicesWithMe"),
-      count: groupGrantsByDevice(sharedDevicesWithMe).length,
-    },
-    {
-      id: 'outgoing-devices',
-      label: translate("devices.devicesByMe"),
-      count: groupGrantsByDevice(outgoingGrants).length,
-    },
-    {
-      id: 'outgoing-threads',
-      label: translate("devices.threadsByMe"),
-      count: portal?.sharedByMe.length ?? 0,
-    },
-  ];
-
-  function handleSharedTabKeyDown(
-    event: ReactKeyboardEvent<HTMLButtonElement>,
-    index: number,
-  ) {
-    let nextIndex: number | null = null;
-    if (event.key === 'ArrowRight') {
-      nextIndex = (index + 1) % sharedViewTabs.length;
-    } else if (event.key === 'ArrowLeft') {
-      nextIndex =
-        (index - 1 + sharedViewTabs.length) % sharedViewTabs.length;
-    } else if (event.key === 'Home') {
-      nextIndex = 0;
-    } else if (event.key === 'End') {
-      nextIndex = sharedViewTabs.length - 1;
-    }
-    if (nextIndex === null) {
-      return;
-    }
+  function handlePageTabKeyDown(event: ReactKeyboardEvent<HTMLButtonElement>) {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
     event.preventDefault();
-    const nextView = sharedViewTabs[nextIndex]?.id;
-    if (!nextView) {
-      return;
-    }
-    setActiveSharedView(nextView);
-    document.getElementById(`shared-tab-${nextView}`)?.focus();
+    const next: PageTab = event.key === 'Home' ? 'devices' : event.key === 'End' ? 'shared' : pageTab === 'devices' ? 'shared' : 'devices';
+    setPageView(next);
+    document.getElementById(`devices-page-tab-${next}`)?.focus();
   }
 
   return (
@@ -796,7 +767,29 @@ export function RelayDevicesPage() {
           </div>
         </section>
 
-        <section aria-labelledby="devices-heading">
+        <div className="devices-page-tabs" role="tablist" aria-label={translate('sharing.pageTabs')}>
+          {pageTabs.map(({ id, label, count, Icon, review }) => (
+            <button
+              key={id}
+              type="button"
+              role="tab"
+              id={`devices-page-tab-${id}`}
+              aria-selected={pageTab === id}
+              aria-controls={`devices-page-panel-${id}`}
+              tabIndex={pageTab === id ? 0 : -1}
+              onClick={() => setPageView(id)}
+              onKeyDown={handlePageTabKeyDown}
+            >
+              <Icon size={16} aria-hidden="true" />
+              <span>{label}</span>
+              <span className="devices-page-tab-count">{count}</span>
+              {review ? <span className="devices-page-tab-review">{translate('sharing.toReview', { count: review })}</span> : null}
+            </button>
+          ))}
+        </div>
+
+        {pageTab === 'devices' ? (
+        <section aria-labelledby="devices-heading" role="tabpanel" id="devices-page-panel-devices">
           <div className="flex items-start justify-between gap-4">
             <div className="min-w-0">
               <h2
@@ -896,164 +889,21 @@ export function RelayDevicesPage() {
             )}
           </div>
         </section>
-
-        <section aria-labelledby="shared-access-heading" className="pt-2">
-          <div>
-            <h2
-              className="text-lg font-semibold text-[var(--theme-fg)]"
-              id="shared-access-heading"
-            >
-              {translate("devices.sharedAccess")}</h2>
-            <p className="mt-1 text-sm text-[var(--theme-fg-muted)]">
-              {translate("devices.accessYouReceivedAndAccessYouGranted")}</p>
-          </div>
-          <div
-            aria-label={translate("devices.sharedAccessViews")}
-            className="product-segmented shared-access-tabs mt-4"
-            role="tablist"
-          >
-            {sharedViewTabs.map((tab, index) => {
-              const selected = tab.id === activeSharedView;
-              return (
-                <button
-                  aria-controls={`shared-panel-${tab.id}`}
-                  aria-selected={selected}
-                  className="product-segment inline-flex min-h-11 shrink-0 items-center gap-2 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--theme-accent-ring)]"
-                  id={`shared-tab-${tab.id}`}
-                  key={tab.id}
-                  onClick={() => setActiveSharedView(tab.id)}
-                  onKeyDown={(event) =>
-                    handleSharedTabKeyDown(event, index)
-                  }
-                  role="tab"
-                  style={{ minHeight: '2.75rem' }}
-                  tabIndex={selected ? 0 : -1}
-                  type="button"
-                >
-                  {tab.label}
-                  <span className="rounded-full bg-[var(--theme-muted)] px-2 py-0.5 text-xs text-[var(--theme-fg-muted)]">
-                    {tab.count}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-
-          <div
-            aria-labelledby={`shared-tab-${activeSharedView}`}
-            id={`shared-panel-${activeSharedView}`}
-            role="tabpanel"
-            tabIndex={0}
-          >
-            {portal && (activeSharedView === 'outgoing-threads' || activeSharedView === 'outgoing-devices') && <OrphanDeviceGrants portal={portal} kind={activeSharedView === 'outgoing-threads' ? 'share' : 'grant'} />}
-            {activeSharedView === 'incoming-threads' ? (
-            <ShareSection
-              count={portal?.sharedWithMe.length ?? 0}
-              emptyText="No sessions have been shared with this account yet."
-              loading={loading}
-              loadingText="Loading shared sessions..."
-              shares={portal?.sharedWithMe ?? []}
-              title={translate("devices.sharedWithMe")}
-              subtitle="Sessions another relay user has shared with this account."
-              renderShare={(share) => (
-                <SharedSessionRow
-                  key={share.id}
-                  mode="incoming"
-                  share={share}
-                  onOpen={() => openSharedSession(share)}
-                />
-              )}
-            />
-            ) : null}
-            {activeSharedView === 'incoming-devices' ? (
-            <GrantSection
-              emptyText="No devices have been shared with this account yet."
-              grants={sharedDevicesWithMe}
-              loading={loading}
-              loadingText="Loading shared devices..."
-              title={translate("devices.sharedDevices")}
-              subtitle="Devices another relay user has shared with this account."
-              renderDevice={(group) => (
-                <GrantDeviceCard
-                  key={group.deviceId}
-                  grants={group.grants}
-                  mode="incoming"
-                  onOpen={openSharedGrant}
-                />
-              )}
-            />
-            ) : null}
-            {activeSharedView === 'outgoing-devices' ? (
-            <GrantSection
-              emptyText="No devices have been shared by this account yet."
-              grants={outgoingGrants}
-              loading={loading}
-              loadingText="Loading shared devices..."
-              title={translate("devices.sharedDevicesByMe")}
-              subtitle="Devices this relay account has shared with other users."
-              renderDevice={(group) => (
-                <GrantDeviceCard
-                  busyGrantId={
-                    busy?.startsWith('grant:') ? busy.slice(6) : null
-                  }
-                  expandedGrantId={expandedGrantId}
-                  key={group.deviceId}
-                  grants={group.grants}
-                  mode="outgoing"
-                  onOpen={openSharedGrant}
-                  onEdit={(grant) => {
-                    setDialogError(null);
-                    setEditingGrant(grant);
-                  }}
-                  onRevoke={(grant) => {
-                    setError(null);
-                    setRevokeTarget({ kind: 'grant', grant });
-                  }}
-                  onToggleAccess={(grant) => {
-                    setExpandedGrantId((current) =>
-                      current === grant.id ? null : grant.id,
-                    );
-                  }}
-                />
-              )}
-            />
-            ) : null}
-            {activeSharedView === 'outgoing-threads' ? (
-            <ShareSection
-              count={portal?.sharedByMe.length ?? 0}
-              emptyText="No threads have been shared by this account yet."
-              loading={loading}
-              loadingText="Loading shared threads..."
-              shares={portal?.sharedByMe ?? []}
-              title={translate("devices.sharedThreadsByMe")}
-              subtitle="Threads this relay account has shared with other users."
-              renderShare={(share) => (
-                <SharedSessionRow
-                  busy={busy === `share:${share.id}`}
-                  expanded={expandedShareId === share.id}
-                  key={share.id}
-                  mode="outgoing"
-                  share={share}
-                  onOpen={() => openSharedSession(share)}
-                  onEdit={() => {
-                    setDialogError(null);
-                    setEditingShare(share);
-                  }}
-                  onRevoke={() => {
-                    setError(null);
-                    setRevokeTarget({ kind: 'share', share });
-                  }}
-                  onToggleAccess={() => {
-                    setExpandedShareId((current) =>
-                      current === share.id ? null : share.id,
-                    );
-                  }}
-                />
-              )}
-            />
-            ) : null}
-          </div>
+        ) : (
+        <section role="tabpanel" id="devices-page-panel-shared" aria-labelledby="devices-page-tab-shared">
+          <SharedAccessPanel
+            portal={portal}
+            loading={loading}
+            direction={shareDirection}
+            onDirectionChange={direction => setPageView('shared', direction)}
+            attention={attention}
+            onAttentionRefresh={refreshAttention}
+            busyKey={busy}
+            actions={shareActions}
+            outgoingNotice={portal ? <><OrphanDeviceGrants portal={portal} kind="share" /><OrphanDeviceGrants portal={portal} kind="grant" /></> : null}
+          />
         </section>
+        )}
       </div>
       {editingShare ? (
         <SharePermissionsDialog
@@ -1234,255 +1084,6 @@ function LoadingRows({ label }: { label: string }) {
   );
 }
 
-function ShareSection({
-  count,
-  emptyText,
-  loading,
-  loadingText,
-  renderShare,
-  shares,
-  subtitle,
-  title,
-}: {
-  count: number;
-  emptyText: string;
-  loading: boolean;
-  loadingText: string;
-  renderShare: (share: RelaySessionShareDto) => React.ReactNode;
-  shares: RelaySessionShareDto[];
-  subtitle: string;
-  title: string;
-}) {
-  const { locale: i18nLocale } = useI18n();
-  return (
-    <section className="pt-5">
-      <div className="mb-3 flex items-start justify-between gap-3 px-1">
-        <div>
-          <h2 className="text-base font-semibold text-[var(--theme-fg)]">
-            {title}
-          </h2>
-          <p className="mt-1 text-sm text-[var(--theme-fg-muted)]">
-            {subtitle}
-          </p>
-        </div>
-        <span className="rounded-full bg-[var(--theme-muted)] px-2 py-0.5 text-xs text-[var(--theme-fg-muted)]">
-          {count}
-        </span>
-      </div>
-      {loading ? (
-        <div className="product-list">
-          <LoadingRows label={loadingText} />
-        </div>
-      ) : shares.length ? (
-        <div className="product-list divide-y divide-[var(--theme-border)]">
-          {shares.map((share) => renderShare(share))}
-        </div>
-      ) : (
-        <div className="product-empty product-list">
-          {emptyText}
-        </div>
-      )}
-    </section>
-  );
-}
-
-interface GrantDeviceGroup {
-  deviceId: string;
-  grants: RelayAccessGrantDto[];
-}
-
-function groupGrantsByDevice(
-  grants: RelayAccessGrantDto[],
-): GrantDeviceGroup[] {
-  const grouped = new Map<string, RelayAccessGrantDto[]>();
-  for (const grant of grants) {
-    const deviceGrants = grouped.get(grant.deviceId);
-    if (deviceGrants) {
-      deviceGrants.push(grant);
-    } else {
-      grouped.set(grant.deviceId, [grant]);
-    }
-  }
-  const scopeOrder: Record<RelayAccessGrantDto['scope'], number> = {
-    device: 0,
-    workspace: 1,
-    thread: 2,
-  };
-  return [...grouped].map(([deviceId, deviceGrants]) => ({
-    deviceId,
-    grants: [...deviceGrants].sort(
-      (left, right) =>
-        scopeOrder[left.scope] - scopeOrder[right.scope] ||
-        (left.workspaceLabel ?? '').localeCompare(right.workspaceLabel ?? '') ||
-        (left.threadTitle ?? '').localeCompare(right.threadTitle ?? ''),
-    ),
-  }));
-}
-
-function GrantSection({
-  emptyText,
-  grants,
-  loading,
-  loadingText,
-  renderDevice,
-  subtitle,
-  title,
-}: {
-  emptyText: string;
-  grants: RelayAccessGrantDto[];
-  loading: boolean;
-  loadingText: string;
-  renderDevice: (group: GrantDeviceGroup) => React.ReactNode;
-  subtitle: string;
-  title: string;
-}) {
-  const { locale: i18nLocale } = useI18n();
-  const deviceGroups = groupGrantsByDevice(grants);
-  return (
-    <section className="pt-5">
-      <div className="mb-3 flex items-start justify-between gap-3 px-1">
-        <div>
-          <h2 className="text-base font-semibold text-[var(--theme-fg)]">
-            {title}
-          </h2>
-          <p className="mt-1 text-sm text-[var(--theme-fg-muted)]">
-            {subtitle}
-          </p>
-        </div>
-        <span className="rounded-full bg-[var(--theme-muted)] px-2 py-0.5 text-xs text-[var(--theme-fg-muted)]">
-          {deviceGroups.length}
-        </span>
-      </div>
-      {loading ? (
-        <div className="product-list">
-          <LoadingRows label={loadingText} />
-        </div>
-      ) : deviceGroups.length ? (
-        <div className="product-list divide-y divide-[var(--theme-border)]">
-          {deviceGroups.map((group) => renderDevice(group))}
-        </div>
-      ) : (
-        <div className="product-empty product-list">
-          {emptyText}
-        </div>
-      )}
-    </section>
-  );
-}
-
-function SharedSessionRow({
-  busy = false,
-  expanded = false,
-  mode,
-  onEdit,
-  onRevoke,
-  onToggleAccess,
-  share,
-  onOpen,
-}: {
-  busy?: boolean;
-  expanded?: boolean;
-  mode: 'incoming' | 'outgoing';
-  onEdit?: () => void;
-  onRevoke?: () => void;
-  onToggleAccess?: () => void;
-  share: RelaySessionShareDto;
-  onOpen?: () => void;
-}) {
-  const { locale: i18nLocale } = useI18n();
-  return <SharedAccessCard title={relayShareTitleText(share)}
-    subtitle={relayShareWorkspaceLabel(share)}
-    deviceName={share.deviceName} deviceConnected={share.deviceConnected}
-    username={mode === 'incoming' ? share.ownerUsername : share.targetUsername} mode={mode}
-    permissions={[share.threadAccess === 'read' ? translate("devices.viewOnly") : translate("devices.collaborator"), workspaceAccessLabel(share.workspaceAccess)]}
-    events={share.accessEvents} lastAccessedAt={share.lastAccessedAt} busy={busy} expanded={expanded}
-    onOpen={onOpen} onEdit={onEdit} onRevoke={onRevoke} onToggleAccess={onToggleAccess} details={mode === 'outgoing' ? <SignedShareDetails kind="share" row={share} /> : undefined} />;
-}
-
-function GrantDeviceCard({
-  busyGrantId = null,
-  expandedGrantId = null,
-  grants,
-  mode,
-  onEdit,
-  onOpen,
-  onRevoke,
-  onToggleAccess,
-}: {
-  busyGrantId?: string | null;
-  expandedGrantId?: string | null;
-  grants: RelayAccessGrantDto[];
-  mode: 'incoming' | 'outgoing';
-  onEdit?: (grant: RelayAccessGrantDto) => void;
-  onOpen?: (grant: RelayAccessGrantDto) => void;
-  onRevoke?: (grant: RelayAccessGrantDto) => void;
-  onToggleAccess?: (grant: RelayAccessGrantDto) => void;
-}) {
-  const { locale: i18nLocale } = useI18n();
-  const firstGrant = grants[0];
-  if (!firstGrant) {
-    return null;
-  }
-  const deviceName = grantTitleText(firstGrant);
-
-  return (
-    <article className="px-3 py-4">
-      <header className="flex items-center justify-between gap-3">
-        <p className="min-w-0 truncate text-sm font-semibold text-[var(--theme-fg)]">
-          {deviceName}
-        </p>
-        <span className="shrink-0 rounded-full bg-[var(--theme-muted)] px-2 py-0.5 text-[11px] text-[var(--theme-fg-muted)]">
-          {grants.length} {grants.length === 1 ? translate("devices.share") : translate("devices.shares")}
-        </span>
-      </header>
-      <div className="mt-3 divide-y divide-[var(--theme-border)] border-t border-[var(--theme-border)]">
-        {grants.map((grant) => (
-          <GrantScopeRow
-            busy={busyGrantId === grant.id}
-            expanded={expandedGrantId === grant.id}
-            grant={grant}
-            key={grant.id}
-            mode={mode}
-            {...(onEdit ? { onEdit: () => onEdit(grant) } : {})}
-            {...(onOpen ? { onOpen: () => onOpen(grant) } : {})}
-            {...(onRevoke ? { onRevoke: () => onRevoke(grant) } : {})}
-            {...(onToggleAccess
-              ? { onToggleAccess: () => onToggleAccess(grant) }
-              : {})}
-          />
-        ))}
-      </div>
-    </article>
-  );
-}
-
-function GrantScopeRow({
-  busy,
-  expanded,
-  grant,
-  mode,
-  onEdit,
-  onOpen,
-  onRevoke,
-  onToggleAccess,
-}: {
-  busy: boolean;
-  expanded: boolean;
-  grant: RelayAccessGrantDto;
-  mode: 'incoming' | 'outgoing';
-  onEdit?: () => void;
-  onOpen?: () => void;
-  onRevoke?: () => void;
-  onToggleAccess?: () => void;
-}) {
-  const { locale: i18nLocale } = useI18n();
-  return <SharedAccessCard deviceName={grant.deviceName} deviceConnected={grant.deviceConnected} title={grant.label?.trim() || (grant.scope === 'thread' ? stableGrantThreadTitle(grant) : grant.scope === 'workspace' ? grant.workspaceLabel : grant.deviceName) || grantScopeLabel(grant)}
-    subtitle={`${grantScopeLabel(grant)} · ${grant.scope === 'device' ? deviceGrantScopeText(grant) : grant.workspaceLabel || grant.deviceName}`}
-    username={mode === 'incoming' ? grant.ownerUsername : grant.targetUsername} mode={mode}
-    permissions={[grant.threadAccess === 'read' ? translate("devices.viewOnly") : translate("devices.collaborator"), workspaceAccessLabel(grant.workspaceAccess), ...(grant.canCreateThreads ? [translate("devices.canCreateThreads")] : [])]}
-    events={grant.accessEvents} lastAccessedAt={grant.lastAccessedAt} busy={busy} expanded={expanded}
-    onOpen={onOpen} onEdit={onEdit} onRevoke={onRevoke} onToggleAccess={onToggleAccess} details={mode === 'outgoing' ? <SignedShareDetails kind="grant" row={grant} /> : undefined} />;
-}
 
 const DIALOG_FOCUSABLE_SELECTOR = [
   'button:not([disabled])',
