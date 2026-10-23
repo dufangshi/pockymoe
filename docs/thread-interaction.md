@@ -331,6 +331,39 @@ where it is), and what can be done: view a photo full size, open a sent file in
 the files view, or remove it from a prompt being written. A prompt folded to one
 line shows each tile as a one-line chip.
 
+Selecting text inside one message of the conversation (a reply or a prompt)
+offers **Quote**: on a phone just above the composer, where the system's own
+selection menu never is (browsers give pages no way into that menu), with a mouse
+under the end of the selection. It shows only while something is selected. The
+quote joins the end of the draft as a small numbered tile (❝1), whether the
+composer is folded or focused; with a keyboard the caret follows it, a phone keeps
+its keyboard down so more passages can be picked first. The prompt's quotes also
+stand as small marks above it. A tile or mark opens the quote's card: who said it
+and in which turn, the passage, **Show where it was** and Remove. Show where it
+was opens a window over the pane with the source message between its neighbours
+and the passage marked, without moving the conversation; closing it leaves the
+reader where they were.
+
+Sent, the passages go first and the prompt keeps a reference where it quotes
+them, so order and position survive and the model cannot take a quote for the
+person's own words:
+
+```
+<pockymoe-quotes>
+<quote id="1" from="assistant" turn="12" ref="TURN_ID/ITEM_ID">
+the passage (at most 2,000 characters; a longer one keeps its start and end)
+</quote>
+</pockymoe-quotes>
+
+About [QUOTE 1]: …
+```
+
+Quotes are numbered in the order the prompt refers to them; one removed from the
+text is not sent. The text is all there is, so history read back from a harness,
+forks, exports and another agent reading the thread see the same quotes. The
+conversation shows the prompt's own words with a numbered mark where each quote
+is, opening the same card; queued prompts show ❝1 in their place.
+
 Entering a thread always shows its conversation: the files view opens only when
 asked for (the Files button or a file link), and is not restored from the last
 visit. Opened over a split, the files view keeps the split beside it and closes back
