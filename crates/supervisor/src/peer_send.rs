@@ -106,8 +106,19 @@ fn sender<'a>(caller: Option<&'a str>, input: &'a Value) -> Option<&'a str> {
     caller.or_else(|| input["fromThreadId"].as_str())
 }
 
-/// `None` leaves the operation to the local handler.
+/// `None` leaves the operation to the local handler. A refusal because this
+/// device is shared for control names the responsible shares.
 pub(crate) async fn intercept(
+    state: &Arc<Supervisor>,
+    caller: Option<&str>,
+    input: &Value,
+) -> Result<Option<Value>> {
+    intercept_remote(state, caller, input)
+        .await
+        .map_err(|error| crate::peer_shared::explain(state, sender(caller, input), error))
+}
+
+async fn intercept_remote(
     state: &Arc<Supervisor>,
     caller: Option<&str>,
     input: &Value,
@@ -541,7 +552,11 @@ async fn process_outbox(
                 record.last_error = Some(error.to_string());
                 record.save(state)?;
             }
-            Err(error) => remove_record(state, &record, Some(&error.to_string()))?,
+            Err(error) => {
+                let from = record.request["fromThreadId"].as_str().map(str::to_owned);
+                let error = crate::peer_shared::explain(state, from.as_deref(), error);
+                remove_record(state, &record, Some(&error.to_string()))?
+            }
         }
     }
     Ok(())
@@ -1117,7 +1132,10 @@ mod tests {
         let shared = |error: &anyhow::Error| {
             assert!(!retryable(error), "{error}");
             assert!(
-                matches!(error.downcast_ref(), Some(peer_link::PeerError::Remote { status: 403, code, .. }) if code == "peer_source_shared"),
+                matches!(
+                    error.downcast_ref(),
+                    Some(peer_link::PeerError::SourceShared { .. })
+                ),
                 "{error}"
             );
             assert!(error.to_string().contains("can control its agents"));
@@ -1157,6 +1175,56 @@ mod tests {
                 .contains("peer_source_shared")));
         relay.abort();
         let _ = relay.await;
+    }
+
+    #[tokio::test]
+    async fn shared_source_refusals_name_the_shares_unless_one_reaches_the_calling_thread() {
+        let (_dir, state) = test_state();
+        let from = caller_thread(&state).await;
+        let workspace = state.get_thread(&from).unwrap().workspace_id;
+        let refusal = |shares: Value| -> anyhow::Error {
+            peer_link::PeerError::SourceShared {
+                message: "generic".into(),
+                shares: serde_json::from_value(shares).unwrap(),
+            }
+            .into()
+        };
+        let elsewhere = json!([
+            {"scope":"thread","threadId":"other","threadTitle":"Fix login","workspaceId":"web","workspaceLabel":"Web app","recipient":"alice","threadAccess":"control","canCreateThreads":false}
+        ]);
+        // The owner's own agent and the command line read who has access.
+        for caller in [Some(from.as_str()), None] {
+            let text =
+                crate::peer_shared::explain(&state, caller, refusal(elsewhere.clone())).to_string();
+            assert!(
+                text.starts_with("peer_source_shared: This device is shared"),
+                "{text}"
+            );
+            assert!(text.contains("thread \"Fix login\" in workspace \"Web app\" is shared with alice (collaborator)"), "{text}");
+        }
+        // An agent whose own thread is shared does not.
+        for reaching in [
+            json!({"scope":"thread","threadId":from,"recipient":"bob","threadAccess":"control"}),
+            json!({"scope":"workspace","workspaceId":workspace,"workspaceLabel":"Mine","recipient":"bob","threadAccess":"control"}),
+            json!({"scope":"device","recipient":"bob","threadAccess":"read","canCreateThreads":true}),
+        ] {
+            let mut shares = elsewhere.clone();
+            shares.as_array_mut().unwrap().push(reaching.clone());
+            let error = crate::peer_shared::explain(&state, Some(&from), refusal(shares));
+            assert!(matches!(
+                error.downcast_ref(),
+                Some(peer_link::PeerError::SourceShared { .. })
+            ));
+            let text = error.to_string();
+            assert!(
+                !text.contains("alice") && !text.contains("bob"),
+                "{reaching}: {text}"
+            );
+            assert!(text.contains("Devices page"), "{text}");
+        }
+        // Other errors pass through unchanged.
+        let other = crate::peer_shared::explain(&state, Some(&from), anyhow::anyhow!("plain"));
+        assert_eq!(other.to_string(), "plain");
     }
 
     #[tokio::test]

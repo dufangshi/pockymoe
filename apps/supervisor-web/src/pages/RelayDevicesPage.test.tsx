@@ -246,21 +246,41 @@ describe('agent isolation', () => {
 
 describe('device shared for control', () => {
   const detail = 'Its agents cannot reach your other devices, because people you share with can control agents here.';
-  it('marks the row with a small icon that explains itself on hover and tap', async () => {
-    vi.mocked(fetchRelayPortal).mockResolvedValue({ user: { id: 'test-user' } as never, devices: [{ ...device, sharedControl: true }], sharedWithMe: [], sharedByMe: [] });
+  const share = (id: string, extra: object) => ({
+    id, ownerUserId: 'test-user', ownerUsername: 'me', targetUserId: `u-${id}`, targetUsername: id, deviceId: device.id, deviceName: device.name,
+    threadId: 't1', threadTitle: 'Fix login', workspaceId: 'web', workspaceLabel: 'Web app', label: null, threadAccess: 'control', workspaceAccess: 'none',
+    createdAt: '2026-10-01T00:00:00Z', revokedAt: null, expiresAt: null, lastAccessedAt: null, lastAccessedByUsername: null, accessEvents: [], ...extra,
+  });
+  it('marks the row with a small icon that names each share causing it on hover and tap', async () => {
+    vi.mocked(fetchRelayPortal).mockResolvedValue({
+      user: { id: 'test-user' } as never, devices: [{ ...device, sharedControl: true }], sharedWithMe: [],
+      sharedByMe: [share('alice', {}), share('waiting', { pending: true }), share('reader', { threadAccess: 'read' })] as never,
+      grantsByMe: [share('carol', { scope: 'device', threadId: null, threadTitle: null, workspaceId: null, workspaceLabel: null, workspaceScope: 'all', workspaceIds: [], threadAccess: 'read', canCreateThreads: true })] as never,
+    });
     await openPage();
     const mark = screen.getByRole('button', { name: 'Shared for control' });
     expect(mark).toHaveAttribute('title', detail);
     expect(mark).not.toHaveTextContent(/\S/);
     expect(screen.queryByRole('dialog')).toBeNull();
     fireEvent.click(mark);
-    expect(screen.getByRole('dialog', { name: 'Shared for control' })).toHaveTextContent(detail);
+    const popover = screen.getByRole('dialog', { name: 'Shared for control' });
+    expect(popover).toHaveTextContent(detail);
+    expect(popover).toHaveTextContent('Thread “Fix login” in Web app');
+    expect(popover).toHaveTextContent('with alice · Collaborator');
+    expect(popover).toHaveTextContent('The whole device');
+    expect(popover).toHaveTextContent('with carol · View only, New threads');
+    // Waiting for the safety-code check or read-only: not a reason.
+    expect(popover).not.toHaveTextContent('waiting');
+    expect(popover).not.toHaveTextContent('reader');
+    expect(within(popover).getByRole('link', { name: 'Open Sharing' })).toHaveAttribute('href', '/relay-devices?tab=shared&dir=out');
     fireEvent.keyDown(window, { key: 'Escape' });
     expect(screen.queryByRole('dialog')).toBeNull();
     // The isolation dialog names the opposite direction too.
     fireEvent.click(screen.getByRole('button', { name: `More actions for ${device.name}` }));
     fireEvent.click(screen.getByRole('menuitem', { name: 'Agent isolation…' }));
-    expect(await screen.findByRole('dialog', { name: `Agent isolation · ${device.name}` })).toHaveTextContent(detail);
+    const isolation = await screen.findByRole('dialog', { name: `Agent isolation · ${device.name}` });
+    expect(isolation).toHaveTextContent(detail);
+    expect(isolation).toHaveTextContent('with alice · Collaborator');
   });
 
   it.each([[{ sharedControl: false }], [{}]])('shows no mark for %j', async (flag) => {

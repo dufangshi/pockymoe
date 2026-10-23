@@ -82,7 +82,8 @@ device. `device list` works before opting in and reports this device's `peerAcce
 --reset` require a local machine credential. Trust reset follows independent
 verification of the peer's `relay-fingerprint`. A device shared with other
 people who can control its agents cannot reach your other devices: its requests
-fail with `peer_source_shared`, and `device list` marks it `sharedControl: true`
+fail with `peer_source_shared`, whose message lists the shares that cause it,
+and `device list` marks it `sharedControl: true`
 ([agent isolation](agent-isolation.md#devices-shared-with-other-people)).
 
 ```sh

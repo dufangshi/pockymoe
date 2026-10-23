@@ -25,6 +25,7 @@ mod peer_api;
 mod peer_files;
 mod peer_link;
 mod peer_send;
+mod peer_shared;
 mod plugins;
 mod ports;
 mod secure_transport;

@@ -24,3 +24,12 @@
   .signed-share-input { max-width: none; font-size: 16px; }
 }
 
+/* Why a device shared for control cannot reach the owner's other devices (SharedControlReasons). */
+.shared-control-reasons { display: grid; gap: 6px; font-size: 12.5px; line-height: 1.5; color: var(--theme-fg-soft, var(--theme-fg-muted)); overflow-wrap: anywhere; }
+.shared-control-reasons p { margin: 0; }
+.shared-control-heading { font-weight: 600; color: var(--theme-fg); }
+.shared-control-reasons ul { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.shared-control-reasons li { display: grid; padding: 5px 8px; border-radius: 6px; background: var(--theme-surface); }
+.shared-control-what { font-weight: 600; color: var(--theme-fg); }
+.shared-control-who { font-size: 12px; }
+.shared-control-link { justify-self: start; min-height: 32px; display: inline-flex; align-items: center; font-weight: 600; color: var(--theme-accent-strong, var(--theme-accent)); text-decoration: underline; text-underline-offset: 2px; }

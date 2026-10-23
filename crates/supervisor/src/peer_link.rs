@@ -54,9 +54,31 @@ pub(crate) enum PeerError {
         code: String,
         message: String,
     },
+    /// 403 `peer_source_shared`: this device is shared with people who can
+    /// control its agents. `shares` are the relay's reasons; `peer_shared`
+    /// turns them into the message an agent reads.
+    #[error("peer_source_shared: {message}")]
+    SourceShared { message: String, shares: Vec<Value> },
 }
 
 impl PeerError {
+    /// A non-2xx `{code, message}` answer, from the relay or the target's handler.
+    pub(crate) fn from_reply(status: u16, body: &[u8], fallback: &str) -> Self {
+        let value: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
+        let message = value["message"].as_str().unwrap_or(fallback).to_owned();
+        match value["code"].as_str().unwrap_or("peer_error") {
+            "peer_source_shared" if status == 403 => Self::SourceShared {
+                message,
+                shares: value["shares"].as_array().cloned().unwrap_or_default(),
+            },
+            code => Self::Remote {
+                status,
+                code: code.into(),
+                message,
+            },
+        }
+    }
+
     pub(crate) fn retryable(&self) -> bool {
         matches!(
             self,
@@ -328,13 +350,9 @@ pub(crate) async fn request_json(
     )
     .await?;
     if !(200..300).contains(&response.status) {
-        let value: Value = serde_json::from_slice(&response.body).unwrap_or(Value::Null);
-        return Err(PeerError::Remote {
-            status: response.status,
-            code: value["code"].as_str().unwrap_or("peer_error").into(),
-            message: value["message"].as_str().unwrap_or("request failed").into(),
-        }
-        .into());
+        return Err(
+            PeerError::from_reply(response.status, &response.body, "request failed").into(),
+        );
     }
     Ok(serde_json::from_slice(&response.body)?)
 }

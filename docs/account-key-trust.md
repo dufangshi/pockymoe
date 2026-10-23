@@ -540,7 +540,7 @@ only encrypted tunnel requests.
 | `invalid_certificate` | 400 | Any other failed verification: certificate for another device, identity or key, revoked device, more than 4096 revocations in one push, unbound device or device that has not connected to the relay yet |
 | `peer_certificate_required` | 401 | Strict target without a valid peer registration and signature |
 | `peer_target_unverified` | — | Caller-side error: a bound caller cannot verify the target's certificate |
-| `peer_source_shared` | 403 | Peer request from a device shared with other people who can control its agents; the relay refuses it, and a target refuses `sharedControl: true` in the relay's `peer` identity ([agent isolation](agent-isolation.md#devices-shared-with-other-people)) |
+| `peer_source_shared` | 403 | Peer request from a device shared with other people who can control its agents; the relay refuses it with the responsible `shares`, and a target refuses `sharedControl: true` in the relay's `peer` identity ([agent isolation](agent-isolation.md#devices-shared-with-other-people)) |
 
 Owner endpoint `GET /api/transport/trust` returns `{deviceId, bound, strict,
 accountKeyId, certificate, browsers: [{browserId, role, userId, registeredAt,

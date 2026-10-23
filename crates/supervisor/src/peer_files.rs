@@ -670,15 +670,11 @@ impl FilePeer for LinkedPeer<'_> {
 
 fn checked(response: PeerResponse) -> Result<PeerResponse> {
     if !(200..300).contains(&response.status) {
-        let value: Value = serde_json::from_slice(&response.body).unwrap_or(Value::Null);
-        return Err(PeerError::Remote {
-            status: response.status,
-            code: value["code"].as_str().unwrap_or("peer_error").to_owned(),
-            message: value["message"]
-                .as_str()
-                .unwrap_or("Peer file request failed")
-                .to_owned(),
-        }
+        return Err(PeerError::from_reply(
+            response.status,
+            &response.body,
+            "Peer file request failed",
+        )
         .into());
     }
     Ok(response)

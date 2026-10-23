@@ -40,10 +40,32 @@ People you share with control agents that run as the Supervisor's OS user, so
 they could turn the device's own peer access on; the relay and your other
 devices therefore refuse its requests (`403 peer_source_shared`) whatever that
 switch says. Your other devices can still reach the shared device, subject to
-its peer access and isolation. The Devices page marks such a device with a small
-icon; revoke the control (or make it read-only) to lift the rule. The relay
-decides whether a device is shared; see the
+its peer access and isolation. A share or grant that still waits for the
+[safety-code check](account-key-trust.md#safety-code-check) gives no control
+and does not count. The relay decides whether a device is shared; see the
 [cross-device contract](cross-device-peer.zh.md) §3 and §5.
+
+Every place the rule shows names the shares that cause it, so you know what to
+change:
+
+- The relay's refusal carries `shares`: for each responsible share or grant its
+  scope, thread title and workspace label, recipient username, conversation
+  access and whether it may start threads. Only the shared device's own
+  Supervisor receives them.
+- The Supervisor turns them into the message the agent or command line reads,
+  for example: `thread "Fix login" in workspace "Web app" is shared with alice
+  (collaborator)`, `workspace "API" is shared with bob (collaborator, can start
+  new threads)`, `this whole device is shared with carol (viewer, can start new
+  threads)`, then how to lift the rule. When one of those shares reaches the
+  calling agent's own thread (the thread or an ancestor up to three levels, its
+  workspace, or the whole device), someone it is shared with could read the
+  list, so that agent only learns that the owner can see the shares on the
+  Devices page (`crates/supervisor/src/peer_shared.rs`). The device's command
+  line (a machine credential) always gets the list.
+- On the Devices page the icon on the device row, and the device's **Agent
+  isolation** window, list the same shares from the owner's own sharing list,
+  with a link to **Sharing**. Revoke them or make them view only without new
+  threads to lift the rule.
 
 ## Who counts as inside
 

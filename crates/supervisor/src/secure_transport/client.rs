@@ -479,15 +479,7 @@ fn remote_error(device_id: &str, response: &PeerResponse) -> PeerError {
     }
 }
 fn handler_error(response: &PeerResponse) -> PeerError {
-    let value: Value = serde_json::from_slice(&response.body).unwrap_or(Value::Null);
-    PeerError::Remote {
-        status: response.status,
-        code: value["code"].as_str().unwrap_or("peer_error").into(),
-        message: value["message"]
-            .as_str()
-            .unwrap_or("Peer request failed.")
-            .into(),
-    }
+    PeerError::from_reply(response.status, &response.body, "Peer request failed.")
 }
 fn open(sealed: &Sealed, payload: &Value) -> Result<Reply> {
     let ciphertext = decode_body(payload, RESPONSE_PACKET_LIMIT)?;

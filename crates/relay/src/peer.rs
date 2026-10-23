@@ -46,6 +46,44 @@ pub(super) fn device_shared_for_control(conn: &Connection, device_id: &str) -> b
     .unwrap_or(true)
 }
 
+/// The shares and grants that make `device_shared_for_control` true, for the
+/// refusal: scope, what is shared, with whom and how. Only the device's own
+/// Supervisor receives them; it decides what its agents may read.
+pub(super) fn control_shares(conn: &Connection, device_id: &str) -> Vec<Value> {
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT 'share','thread',s.thread_id,s.thread_title,s.workspace_id,s.workspace_label,
+                s.target_username,s.thread_access,0,s.created_at
+         FROM relay_shares s JOIN relay_devices d ON d.id=s.device_id
+         WHERE s.device_id=?1 AND s.target_user_id<>d.owner_user_id
+           AND s.revoked_at IS NULL AND (s.expires_at IS NULL OR s.expires_at>?2)
+           AND s.pending=0 AND s.thread_access='control'
+         UNION ALL
+         SELECT 'grant',g.scope,g.thread_id,g.thread_title,g.workspace_id,g.workspace_label,
+                g.target_username,g.thread_access,g.can_create_threads,g.created_at
+         FROM relay_access_grants g JOIN relay_devices d ON d.id=g.device_id
+         WHERE g.device_id=?1 AND g.target_user_id<>d.owner_user_id
+           AND g.revoked_at IS NULL AND (g.expires_at IS NULL OR g.expires_at>?2)
+           AND g.pending=0 AND (g.thread_access='control' OR g.can_create_threads=1)
+         ORDER BY 10",
+    ) else {
+        return Vec::new();
+    };
+    stmt.query_map(params![device_id, now_rfc3339()], |row| {
+        Ok(json!({
+            "scope": row.get::<_, String>(1)?,
+            "threadId": row.get::<_, Option<String>>(2)?,
+            "threadTitle": row.get::<_, Option<String>>(3)?,
+            "workspaceId": row.get::<_, Option<String>>(4)?,
+            "workspaceLabel": row.get::<_, Option<String>>(5)?,
+            "recipient": row.get::<_, Option<String>>(6)?,
+            "threadAccess": row.get::<_, String>(7)?,
+            "canCreateThreads": row.get::<_, i64>(8)? == 1,
+        }))
+    })
+    .map(|rows| rows.flatten().collect())
+    .unwrap_or_default()
+}
+
 /// Requests a device shared for control may still send, because none of them lets
 /// it act: the key handshake and certificate registration carry no command, and a
 /// credential export needs a single-use authorization the owner's browser issued.
@@ -68,6 +106,8 @@ struct Failure {
     status: StatusCode,
     code: &'static str,
     message: &'static str,
+    /// For `peer_source_shared`: the shares that cause it.
+    shares: Option<Vec<Value>>,
 }
 
 impl Failure {
@@ -76,22 +116,28 @@ impl Failure {
             status: StatusCode::FORBIDDEN,
             code: "peer_forbidden",
             message: "peer request is not allowed",
+            shares: None,
         }
     }
 
-    fn source_shared() -> Self {
+    fn source_shared(shares: Vec<Value>) -> Self {
         Self {
             status: StatusCode::FORBIDDEN,
             code: "peer_source_shared",
             message: SOURCE_SHARED_MESSAGE,
+            shares: Some(shares),
         }
     }
 
     fn payload(self) -> Value {
+        let mut body = json!({"code": self.code, "message": self.message});
+        if let Some(shares) = self.shares {
+            body["shares"] = Value::Array(shares);
+        }
         json!({
             "statusCode": self.status.as_u16(),
             "headers": {"content-type": "application/json"},
-            "body": json!({"code": self.code, "message": self.message}).to_string()
+            "body": body.to_string()
         })
     }
 }
@@ -119,6 +165,7 @@ impl From<DeviceForwardError> for Failure {
             status,
             code,
             message,
+            shares: None,
         }
     }
 }
@@ -221,6 +268,7 @@ fn request_payload(payload: &Value) -> Result<Value, Failure> {
                 status: StatusCode::PAYLOAD_TOO_LARGE,
                 code: "payload_too_large",
                 message: "peer request body exceeds 8 MiB",
+                shares: None,
             });
         }
         _ => return Err(Failure::forbidden()),
@@ -280,6 +328,7 @@ async fn request_with_timeout(
                     status: StatusCode::NOT_FOUND,
                     code: "device_not_found",
                     message: "device was not found",
+                    shares: None,
                 });
             }
             caller
@@ -292,7 +341,8 @@ async fn request_with_timeout(
                 path.split('?').next().unwrap_or(path),
             )
         {
-            return Err(Failure::source_shared());
+            let shares = control_shares(&*state.store.conn.lock().await, &device_id);
+            return Err(Failure::source_shared(shares));
         }
         forward_device_payload_with_timeout(
             state.clone(),
@@ -853,6 +903,19 @@ mod tests {
         }
         grant(&conn, "creator", "device", "read", true);
         assert!(shared(&conn));
+        // A grant that waits for the owner's safety-code check gives no control yet.
+        conn.execute(
+            "UPDATE relay_access_grants SET pending=1 WHERE id='creator'",
+            [],
+        )
+        .unwrap();
+        assert!(!shared(&conn));
+        assert!(control_shares(&conn, "a").is_empty());
+        conn.execute(
+            "UPDATE relay_access_grants SET pending=0 WHERE id='creator'",
+            [],
+        )
+        .unwrap();
         conn.execute(
             "UPDATE relay_access_grants SET expires_at='2000-01-01T00:00:00Z' WHERE id='creator'",
             [],
@@ -877,6 +940,22 @@ mod tests {
             "other",
             "control",
         );
+        fixture
+            .state
+            .store
+            .conn
+            .lock()
+            .await
+            .execute_batch(
+                "UPDATE relay_shares SET target_username='alice',thread_title='Fix login',
+                   workspace_id='web',workspace_label='Web app' WHERE id='share';
+                 INSERT INTO relay_access_grants
+                   (id,owner_user_id,target_user_id,target_username,device_id,scope,workspace_id,
+                    workspace_label,thread_access,workspace_access,can_create_threads,created_at)
+                 VALUES ('reader','owner','other','bob','a','workspace','api','API','read','none',0,'now'),
+                        ('creator','owner','other','carol','a','device',NULL,NULL,'read','none',1,'now');",
+            )
+            .unwrap();
         let (a, mut a_rx) = fixture.socket("a").await;
         let (b, mut b_rx) = fixture.socket("b").await;
         let (_, mut c_rx) = fixture.socket("c").await;
@@ -906,6 +985,18 @@ mod tests {
                 .as_str()
                 .unwrap()
                 .contains("can control its agents"));
+            // Each responsible share, for the device's Supervisor to explain;
+            // read-only access without new threads is not among them.
+            assert_eq!(
+                body["shares"],
+                json!([
+                    {"scope":"thread","threadId":"thread","threadTitle":"Fix login","workspaceId":"web",
+                     "workspaceLabel":"Web app","recipient":"alice","threadAccess":"control","canCreateThreads":false},
+                    {"scope":"device","threadId":null,"threadTitle":null,"workspaceId":null,
+                     "workspaceLabel":null,"recipient":"carol","threadAccess":"read","canCreateThreads":true}
+                ]),
+                "{path}"
+            );
             assert!(b_rx.try_recv().is_err(), "{path}");
         }
         // Requests that cannot act still pass, and carry the flag to the target.
@@ -965,7 +1056,10 @@ mod tests {
             .conn
             .lock()
             .await
-            .execute("UPDATE relay_shares SET thread_access='read'", [])
+            .execute_batch(
+                "UPDATE relay_shares SET thread_access='read';
+                 UPDATE relay_access_grants SET can_create_threads=0;",
+            )
             .unwrap();
         let task = fixture.request("a", a, frame("restored", "b"), Duration::from_secs(10));
         let forwarded = receive(&mut b_rx).await;

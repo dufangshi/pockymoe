@@ -81,6 +81,7 @@ import { threadHref, threadsHref, workspacesHref } from '../lib/relayRoutes';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { useDevicePresence } from '../lib/useDevicePresence';
 import { SHARING_CHANGED_EVENT, sharePendingHref } from '../lib/sharePending';
+import { controlShares, SharedControlReasons, type ControlShare } from '../components/SharedControlReasons';
 
 const RELAY_PORTAL_REFRESH_INTERVAL_MS = 3000;
 type PageTab = 'devices' | 'shared';
@@ -892,6 +893,7 @@ export function RelayDevicesPage() {
                         : null
                     }
                     device={device}
+                    controlShares={controlShares(portal, device.id)}
                     key={device.id}
                     onRotate={() => setRotatingDevice(device)}
                     onConnect={() => connectDevice(device)}
@@ -1707,6 +1709,7 @@ function GrantPermissionsDialog({
 
 function DeviceRow({
   device,
+  controlShares,
   busy,
   copiedSetup,
   copyError,
@@ -1717,6 +1720,8 @@ function DeviceRow({
   onShare,
 }: {
   device: RelayDeviceDto;
+  /** My shares that keep this device's agents from my other devices. */
+  controlShares: ControlShare[];
   busy: boolean;
   copiedSetup: boolean;
   copyError: string | null;
@@ -1873,7 +1878,7 @@ function DeviceRow({
             {translate('devices.deviceIsolated')}
           </span>
         ) : null}
-        {device.sharedControl ? <SharedControlMark /> : null}
+        {device.sharedControl ? <SharedControlMark shares={controlShares} /> : null}
         {copiedSetup ? (
           <p
             className="basis-full text-[var(--status-success-fg)]"
@@ -1993,6 +1998,7 @@ function DeviceRow({
       {isolationOpen ? (
         <DeviceIsolationDialog
           device={device}
+          controlShares={controlShares}
           onChange={setIsolated}
           onClose={() => setIsolationOpen(false)}
         />
@@ -2001,8 +2007,9 @@ function DeviceRow({
   );
 }
 
-/** The relay refuses this device's requests to the owner's other devices; tap shows why. */
-function SharedControlMark() {
+/** The relay refuses this device's requests to the owner's other devices; tap
+    shows which of my shares cause it. */
+function SharedControlMark({ shares }: { shares: ControlShare[] }) {
   useI18n();
   const [open, setOpen] = useState(false);
   const trigger = useRef<HTMLButtonElement>(null);
@@ -2022,8 +2029,8 @@ function SharedControlMark() {
       >
         <Link2Off aria-hidden="true" className="h-3.5 w-3.5" />
       </button>
-      <AnchoredPopover anchor={trigger} label={translate('devices.sharedControl')} onClose={() => setOpen(false)} open={open} width={260}>
-        <p className="text-[var(--theme-fg-muted)]">{detail}</p>
+      <AnchoredPopover anchor={trigger} label={translate('devices.sharedControl')} onClose={() => setOpen(false)} open={open} width={320}>
+        <SharedControlReasons shares={shares} />
       </AnchoredPopover>
     </>
   );
@@ -2032,10 +2039,12 @@ function SharedControlMark() {
 /** Whether agents on other devices may reach this one; the device decides and enforces it. */
 function DeviceIsolationDialog({
   device,
+  controlShares,
   onChange,
   onClose,
 }: {
   device: RelayDeviceDto;
+  controlShares: ControlShare[];
   onChange: (isolated: boolean) => void;
   onClose: () => void;
 }) {
@@ -2110,10 +2119,10 @@ function DeviceIsolationDialog({
           </div>
         )}
         {device.sharedControl ? (
-          <p className="mt-3 flex items-start gap-2 text-[var(--theme-fg-muted)]">
-            <Link2Off aria-hidden="true" className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-            {translate('devices.sharedControlDetail')}
-          </p>
+          <div className="mt-3 flex items-start gap-2">
+            <Link2Off aria-hidden="true" className="mt-1 h-3.5 w-3.5 shrink-0 text-[var(--theme-fg-muted)]" />
+            <SharedControlReasons shares={controlShares} />
+          </div>
         ) : null}
       </div>
     </RelayDialog>
