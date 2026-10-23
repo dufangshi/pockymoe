@@ -1,20 +1,36 @@
-Share a workspace straight from its menu, see which device a Workspaces page
-belongs to, and phone menus and taps that behave.
+Sharing grows up: its own tab, safety codes the recipient shows instead of
+hunts for, leaving a share, and clear reasons when sharing blocks something.
+Agents can ask for any reasoning effort, and the conversation, tabs and menus
+are steadier.
 
-- **Share from the workspace menu**: on your own device, each workspace's menu
-  on the Workspaces page has **Share workspace**. It opens the same window as
-  the conversation's share dialog, with only this workspace: who has access,
-  view or collaborate, file access and **Can create new threads**.
-- **Device name on Workspaces**: the page's header names the device under
-  **Workspaces**, on a phone too.
-- **Phone account menu and taps**: the account menu opens and closes properly on
-  a phone, and a tapped button no longer keeps its pressed background after the
-  finger lifts, in every theme. Hover backgrounds only show for a mouse or
-  trackpad. In Safari the account menu's items work instead of letting the tap
-  through, the page no longer zooms on a phone, and the phone top bar's
-  controls sit further right.
+- **Sharing tab**: the Devices page has Devices and Sharing tabs. Sharing lists
+  what is shared with you and what you share as compact rows, viewed as a list
+  (filters, search), by device or by person; a row opens in place with its
+  details and actions. Shares that need you are marked and counted.
+- **Safety codes**: with "Require safety code check" on (Account settings,
+  default on), a new share waits until you confirm the recipient's code. The
+  recipient sees their code on a waiting page and sends it to you; you type it
+  in the share and approve. Existing shares keep working.
+- **Leave a share**: a recipient can give up a thread, workspace or device
+  shared with them, after a confirmation.
+- **Clear share states**: a share the protected device has not signed now says
+  the recipient cannot open it and offers the one fix; the details no longer
+  blink while the page refreshes.
+- **Why a shared device is blocked**: a device shared for control tells its
+  agents, and you, which shares keep it from your other devices.
+- **Reasoning effort for agents**: `thread create --reasoning-effort` and role
+  efforts are accepted when model discovery has not yet learned a model's
+  efforts; the harness applies or refuses them at session start.
+- **Conversation**: a prompt sent as a turn ends starts a new turn; a steer
+  shows in its turn at once; earlier turns load without twitching; tabs drag
+  beside the conversation to split, and a tab on another device switches
+  without blanking the page.
+- **Quieter failures**: failures and unavailable reasons show as small marks.
+- **iOS**: a tap in a menu never goes through to what is under it.
 
-Validated with the Web and shared UI tests, an end-to-end share from a
-workspace's menu on a protected device, and the Workspaces page, its menu and
-the share window in every theme, light and dark, at phone and desktop width.
-Installing this release is a separate device update.
+The relay and Web parts (Sharing tab, safety codes, leaving, the relay admin
+console) are already live; this release brings the device side: the agent
+message for blocked devices, the reasoning effort fix and the conversation
+changes. Validated with the runtime, Supervisor and relay suites, the Web and
+shared UI tests, and focused end-to-end runs against a real relay and protected
+device. Installing this release is a separate device update.
