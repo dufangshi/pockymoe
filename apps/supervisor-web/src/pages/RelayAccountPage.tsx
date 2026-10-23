@@ -1,4 +1,5 @@
 import { AccountSecurityPanel } from '../components/AccountSecurityPanel';
+import { SharingSettingsPanel } from '../components/SharingSettingsPanel';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { ErrorMark } from '@pockymoe/thread-ui';
 import { ProductHeader } from '../components/ProductHeader';
@@ -239,6 +240,7 @@ export function RelayAccountSettingsPanel({
         </div>
       </section>
 
+      <SharingSettingsPanel />
       <AccountSecurityPanel />
       <RelaySecurityPanel />
 

@@ -4,6 +4,28 @@ import { createServer } from 'node:net';
 import { join, resolve } from 'node:path';
 import { Fixture, approveGrant, browserRequest, ok, screenshot, shareDialog } from './helpers/account-key-fixture';
 
+const THEMES = ['classic', 'plum-pocket', 'terminal'] as const;
+/** Every theme, light and dark, at a desktop and a phone width: `prepare` brings
+    the page back to the state to capture after each reload. */
+async function inEveryTheme(page: import('@playwright/test').Page, info: TestInfo, name: string, prepare: () => Promise<void>) {
+  for (const width of [1280, 390]) for (const theme of THEMES) for (const mode of ['light', 'dark']) {
+    await page.setViewportSize({ width, height: width > 600 ? 900 : 844 });
+    await page.evaluate(([t, m]) => { localStorage.setItem('pockymoe-theme-preset', t!); localStorage.setItem('remote-codex-theme-mode', m!); }, [theme, mode]);
+    await page.reload();
+    await prepare();
+    await shot(page, info, `${name}-${theme}-${mode}-${width}`);
+  }
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.evaluate(() => { localStorage.removeItem('pockymoe-theme-preset'); localStorage.removeItem('remote-codex-theme-mode'); });
+  await page.reload();
+}
+
+// Screenshots for visual review go to E2E_SHOT_DIR when it is set (none otherwise).
+async function shot(page: import('@playwright/test').Page, info: TestInfo, name: string) {
+  if (process.env.E2E_SHOT_DIR) await page.screenshot({ path: join(process.env.E2E_SHOT_DIR, `${info.project.name}-${name}.png`) });
+  else await screenshot(page, info, name);
+}
+
 // No auth material enters traces, videos or automatic failure screenshots.
 test.use({ trace: 'off', video: 'off', screenshot: 'off', actionTimeout: 15_000 });
 
@@ -30,9 +52,13 @@ async function isolatedFixture(browser: Browser, info: TestInfo) {
 }
 
 // The owner shares one workspace of a protected device from a thread's dialog.
-// The recipient reaches that workspace's threads and files, starts a thread
-// there, and never another workspace or a terminal.
-test('a signed workspace share reaches its threads and files but never a terminal', async ({ browser }, info) => {
+// With the safety-code check on (the default), the share waits: the recipient
+// sees their code instead of the workspace, the owner types it to approve and
+// sign the grant, and the recipient's page opens the workspace. The recipient
+// then reaches that workspace's threads and files, starts a thread there, and
+// never another workspace or a terminal. With the check off, a share starts at
+// once.
+test('a signed workspace share waits for the safety code, then reaches its threads and files but never a terminal', async ({ browser }, info) => {
   test.setTimeout(300_000);
   const f = await isolatedFixture(browser, info);
   try {
@@ -66,15 +92,41 @@ test('a signed workspace share reaches its threads and files but never a termina
       scope: 'workspace', workspaceId: sharedWs.id, workspaceLabel: sharedWs.label, targetIdentifier: 'ws-recipient',
       threadAccess: 'control', workspaceAccess: 'read', canCreateThreads: true,
     });
-    await approveGrant(owner.page, owner.password, true);
+    // Nothing is signed yet: the share waits for the recipient's safety code.
     await expect(dialog.getByText(`Workspace ${sharedWs.label} ·`, { exact: false })).toBeVisible();
-    // The protected device holds a signed grant for exactly that workspace.
-    const grants = ok(await browserRequest(owner.page, d1.api + '/transport/grants'), 'Device grants').grants;
-    expect(grants.find((grant: { relayRef: { kind: string } }) => grant.relayRef.kind === 'grant')).toMatchObject({
-      scope: 'workspace', workspaceId: sharedWs.id, threadId: null, threadAccess: 'control', workspaceAccess: 'read',
-      canCreateThreads: true, grantee: { userId: recipient.userId },
-    });
+    await expect(dialog.getByText("Waiting for ws-recipient's safety code", { exact: true })).toBeVisible();
+    await expect(owner.page.getByRole('dialog', { name: 'Review device grant', exact: true })).toHaveCount(0);
+    await screenshot(owner.page, info, `workspace-share-waiting-dialog-${info.project.name}`);
+    const waitingGrants = ok(await browserRequest(owner.page, d1.api + '/transport/grants'), 'Device grants').grants;
+    expect(waitingGrants.some((grant: { relayRef: { kind: string } }) => grant.relayRef.kind === 'grant')).toBe(false);
     await dialog.getByRole('button', { name: 'Close dialog', exact: true }).click();
+
+    // The recipient's Sharing tab says it waits, with their code instead of Open.
+    await recipient.page.goto(f.base + '/relay-devices?tab=shared');
+    const waitingRow = recipient.page.locator('.shared-row').filter({ hasText: sharedWs.label });
+    await expect(waitingRow).toContainText('Waiting for ws-owner to confirm');
+    await expect(waitingRow.getByRole('button', { name: `Open ${sharedWs.label}`, exact: true })).toHaveCount(0);
+    await inEveryTheme(recipient.page, info, 'incoming-waiting', async () => {
+      await waitingRow.getByRole('button', { name: new RegExp(`^Workspace ${sharedWs.label}`) }).click();
+      await expect(waitingRow.locator('.signed-share-own-code')).toHaveText(recipient.code);
+    });
+    await waitingRow.getByRole('button', { name: 'Show my code', exact: true }).click();
+    await expect(recipient.page).toHaveURL(/\/shared-pending\?kind=grant&id=/);
+
+    // A link into the workspace also leads to the code.
+    await recipient.page.goto(`${f.base}/devices/${d1.id}/threads?workspaceId=${sharedWs.id}`);
+    await expect(recipient.page).toHaveURL(/\/shared-pending\?kind=grant&id=/);
+    await expect(recipient.page.getByRole('heading', { name: 'Waiting for ws-owner to confirm', exact: true })).toBeVisible();
+    await expect(recipient.page.getByText(`ws-owner shared the workspace “${sharedWs.label}”`, { exact: false })).toBeVisible();
+    await expect(recipient.page.locator('.share-pending-code')).toHaveText(recipient.code);
+    await expect(recipient.page.getByRole('button', { name: 'Copy safety code', exact: true })).toBeVisible();
+    // The relay refuses everything under the waiting share, and says why.
+    const refused = await f.api(d1.api + `/workspaces/${sharedWs.id}/threads`, 'GET', undefined, recipient.cookie);
+    expect(refused.status).toBe(403);
+    expect(refused.data.code).toBe('share_pending');
+    await inEveryTheme(recipient.page, info, 'pending-recipient', async () => {
+      await expect(recipient.page.locator('.share-pending-code')).toHaveText(recipient.code);
+    });
 
     // The same share, from the workspace's menu on the device's Workspaces page,
     // whose header names the device.
@@ -106,18 +158,56 @@ test('a signed workspace share reaches its threads and files but never a termina
     await owner.page.setViewportSize({ width: 1280, height: 720 });
     await owner.page.evaluate(() => { localStorage.removeItem('pockymoe-theme-preset'); localStorage.removeItem('remote-codex-theme-mode'); });
 
-    // The owner's Sharing tab lists the grant as one row; the device holds it,
-    // and the recipient's safety code is still to compare.
+    // The owner's Sharing tab lists the grant as one row waiting for the code.
     await owner.page.goto(f.base + '/relay-devices?tab=shared&dir=out');
     const ownerRow = owner.page.locator('.shared-row').filter({ hasText: sharedWs.label });
     await expect(ownerRow).toBeVisible();
-    await expect(ownerRow.getByText('Safety code not compared')).toBeVisible();
+    await expect(ownerRow.getByText('Waiting for safety code')).toBeVisible();
     await expect(owner.page.getByRole('tab', { name: /Sharing/ })).toContainText('1 to review');
     await ownerRow.getByRole('button', { name: new RegExp(sharedWs.label) }).click();
     await expect(ownerRow.getByRole('button', { name: 'Revoke', exact: true })).toBeVisible();
-    // The row's signed details: the recipient's safety code, to compare in place.
-    await expect(ownerRow.getByRole('button', { name: 'I compared the safety code' })).toBeVisible();
-    await screenshot(owner.page, info, `workspace-share-owner-sharing-${info.project.name}`);
+    // The state is said once, with the one action that ends it.
+    await expect(ownerRow.getByText("Waiting for ws-recipient's safety code", { exact: true })).toHaveCount(1);
+    const codeField = ownerRow.getByLabel('Safety code from ws-recipient');
+    await inEveryTheme(owner.page, info, 'pending-owner', async () => {
+      await ownerRow.getByRole('button', { name: new RegExp(sharedWs.label) }).click();
+      await codeField.scrollIntoViewIfNeeded();
+    });
+    await ownerRow.getByRole('button', { name: new RegExp(sharedWs.label) }).click();
+    // A wrong code explains the risk and approves nothing.
+    await codeField.fill('ABCD EFGH JKMN');
+    await ownerRow.getByRole('button', { name: 'Check and approve', exact: true }).click();
+    await expect(ownerRow.getByRole('alert')).toContainText("does not match ws-recipient's account key");
+    await shot(owner.page, info, 'pending-owner-mismatch');
+    // The code the recipient sent approves: review, sign, and the relay starts it.
+    await codeField.fill(recipient.code.toLowerCase().replaceAll(' ', '-'));
+    await ownerRow.getByRole('button', { name: 'Check and approve', exact: true }).click();
+    await approveGrant(owner.page, owner.password);
+    await expect(ownerRow.getByText('Safety code checked', { exact: true })).toBeVisible();
+    await expect(owner.page.getByRole('tab', { name: /Sharing/ })).not.toContainText('to review');
+    await shot(owner.page, info, 'approved-owner');
+    // The protected device holds a signed grant for exactly that workspace.
+    const grants = ok(await browserRequest(owner.page, d1.api + '/transport/grants'), 'Device grants').grants;
+    expect(grants.find((grant: { relayRef: { kind: string } }) => grant.relayRef.kind === 'grant')).toMatchObject({
+      scope: 'workspace', workspaceId: sharedWs.id, threadId: null, threadAccess: 'control', workspaceAccess: 'read',
+      canCreateThreads: true, grantee: { userId: recipient.userId, accountKeyId: recipient.accountKeyId },
+    });
+    // The recipient's waiting page opens the workspace by itself.
+    await expect(recipient.page).toHaveURL(new RegExp(`/devices/${d1.id}/threads\\?workspaceId=${sharedWs.id}$`), { timeout: 20_000 });
+    await expect(recipient.page.getByText('Signed thread 1').first()).toBeVisible();
+
+    // Controlled by someone else now, the device names that share as why its
+    // agents cannot reach the owner's other devices.
+    await owner.page.goto(f.base + '/relay-devices');
+    const controlMark = owner.page.getByRole('button', { name: 'Shared for control', exact: true });
+    await controlMark.click();
+    const reasons = owner.page.getByRole('dialog', { name: 'Shared for control' });
+    await expect(reasons).toContainText(`Workspace “${sharedWs.label}”`);
+    await expect(reasons).toContainText('with ws-recipient · Collaborator, New threads');
+    await shot(owner.page, info, 'shared-control-reasons');
+    await owner.page.keyboard.press('Escape');
+    await owner.page.goto(f.base + '/relay-devices?tab=shared&dir=out');
+    await owner.page.locator('.shared-row').filter({ hasText: sharedWs.label }).getByRole('button', { name: new RegExp(sharedWs.label) }).click();
     for (const view of ['By device', 'By person']) {
       await owner.page.getByRole('button', { name: view, exact: true }).click();
       await expect(owner.page.locator('.shared-row').filter({ hasText: sharedWs.label })).toBeVisible();
@@ -185,6 +275,45 @@ test('a signed workspace share reaches its threads and files but never a termina
     await expect(confirm).toHaveCount(0);
     await expect(recipient.page.locator('.shared-row').filter({ hasText: sharedWs.label })).toHaveCount(0);
     expect((await call(`/workspaces/${sharedWs.id}/threads`)).status).toBeGreaterThanOrEqual(401);
+
+    // With the check off, a new share starts at once: the owner signs while
+    // sharing, and the recipient opens it without a code.
+    await owner.page.goto(f.base + '/relay-account');
+    const check = owner.page.getByRole('checkbox', { name: 'Require safety code check for people I share with', exact: true });
+    await expect(check).toBeChecked();
+    await inEveryTheme(owner.page, info, 'settings-sharing', async () => {
+      await owner.page.locator('#sharing-settings-heading').scrollIntoViewIfNeeded();
+    });
+    await check.uncheck();
+    await expect(owner.page.getByText('Saved', { exact: true })).toBeVisible();
+    await expect(owner.page.getByText(/Off: new shares start at once/)).toBeVisible();
+    await shot(owner.page, info, 'settings-sharing-off');
+    const privateDialog = await shareDialog(owner.page, `${f.base}/devices/${d1.id}/threads/${privateId}`);
+    await privateDialog.getByPlaceholder('username or email').fill('ws-recipient');
+    await privateDialog.getByRole('button', { name: 'Share this thread', exact: true }).click();
+    await approveGrant(owner.page, owner.password);
+    await expect(privateDialog.getByText('Safety code checked', { exact: true })).toBeVisible();
+    expect((await call(`/threads/${privateId}`)).status).toBe(200);
+
+    // A share the protected device does not hold (as one made before the device
+    // was protected): its details say the recipient cannot open it, once, and
+    // one action signs it onto the device.
+    const threadGrant = ok(await browserRequest(owner.page, d1.api + '/transport/grants'), 'Device grants').grants
+      .find((grant: { relayRef: { kind: string }; threadId: string }) => grant.relayRef.kind === 'share' && grant.threadId === privateId);
+    ok(await browserRequest(owner.page, d1.api + `/transport/grants/${threadGrant.grantId}`, 'DELETE'), 'Remove the device grant');
+    expect((await call(`/threads/${privateId}`)).status).toBe(403);
+    await owner.page.goto(f.base + '/relay-devices?tab=shared&dir=out');
+    const missingRow = owner.page.locator('.shared-row').filter({ hasText: 'Private notes' });
+    await expect(missingRow.getByText("Can't open: not signed on device")).toBeVisible();
+    await inEveryTheme(owner.page, info, 'missing-owner', async () => {
+      await missingRow.getByRole('button', { name: /Private notes/ }).click();
+      await expect(missingRow.getByText("ws-recipient can't open this now", { exact: true })).toHaveCount(1);
+    });
+    await missingRow.getByRole('button', { name: /Private notes/ }).click();
+    await missingRow.getByRole('button', { name: 'Sign onto device', exact: true }).click();
+    await approveGrant(owner.page, owner.password);
+    await expect(missingRow.getByText('Safety code checked', { exact: true })).toBeVisible();
+    await expect.poll(async () => (await call(`/threads/${privateId}`)).status).toBe(200);
   } finally {
     await f.close();
   }

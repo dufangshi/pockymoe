@@ -1,5 +1,5 @@
 import { appUrl } from '../lib/webBase';
-import { confirmAsync, ErrorMark } from '@pockymoe/thread-ui';
+import { confirmAsync, CopyButton, ErrorMark } from '@pockymoe/thread-ui';
 import { SecurityVerification } from './RelaySecurity';
 import { securityRequest, type SecurityStatus } from '../lib/relaySecurity';
 import { getLocale, translate, useI18n } from '@pockymoe/thread-ui/i18n';
@@ -57,7 +57,8 @@ export function AccountSecurityPanel() {
       {error && (!action || verification) && <ErrorMark message={error} onRetry={loadFailed ? reload : undefined} />}
     </div>
     <p className="text-sm text-[var(--theme-fg-muted)]">{translate('auth.accountPasswordHelp')}</p>
-    <p>{translate('auth.accountSafetyCode')} <code className="font-mono">{code}</code></p>
+    {/* People who share with this account ask for this code. */}
+    <p className="flex flex-wrap items-center gap-2">{translate('auth.accountSafetyCode')} <code className="font-mono">{code}</code>{code ? <CopyButton value={code} label={translate('sharing.copyCode')} /> : null}</p>
     {/* `pockymoe bind --status` prints the same 12 characters on a bound device. */}
     <p>{translate('auth.accountKeyIdLabel')} <code className="font-mono">{accountId}</code></p>
     {message && <p role="status">{message}</p>}

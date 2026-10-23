@@ -10,7 +10,9 @@ import {
   FileText,
   Folder,
   History,
+  Hourglass,
   Inbox,
+  KeyRound,
   List,
   LogOut,
   MessageSquare,
@@ -27,7 +29,7 @@ import {
   X,
 } from 'lucide-react';
 import { useEffect, useId, useMemo, useState, type ReactNode } from 'react';
-import { SignedShareDetails } from '../SignedShareDetails';
+import { AccountSafetyCode, SignedShareDetails } from '../SignedShareDetails';
 import {
   filterItems,
   groupByDevice,
@@ -48,6 +50,7 @@ import './shared-access.css';
 const VIEW_KEY = 'pockymoe.sharedAccess.view';
 const SCOPE_ICON: Record<ShareScope, typeof Monitor> = { device: Monitor, workspace: Folder, thread: MessageSquare };
 const ATTENTION_TEXT: Record<AttentionState, Parameters<typeof translate>[0]> = {
+  pending: 'sharing.attentionPending',
   missing: 'sharing.attentionMissing',
   different: 'sharing.attentionDifferent',
   changed: 'sharing.attentionChanged',
@@ -85,6 +88,9 @@ export interface SharedAccessActions {
   onRevoke: (item: SharedItem) => void;
   /** Give up something shared with me (asks first). */
   onLeave: (item: SharedItem) => void;
+  /** Something shared with me that waits for the owner's safety-code check:
+      the page with my code. */
+  onShowCode: (item: SharedItem) => void;
 }
 
 /** Shares and grants in both directions, as one list, by device or by person
@@ -247,6 +253,8 @@ function ShareRow({ item, attention, busyKey, actions, expanded, onToggle, depth
   const detailId = useId();
   const Icon = SCOPE_ICON[item.scope] ?? MessageSquare;
   const flag = attention.get(item.key);
+  // Shared with me, waiting for the owner to confirm my safety code.
+  const waiting = item.direction === 'in' && item.source.row.pending === true;
   const kindLabel = translate(item.scope === 'device' ? 'sharing.kindDevice' : item.scope === 'workspace' ? 'sharing.kindWorkspace' : 'sharing.kindThread');
   return (
     <div className="shared-row" data-open={open || undefined} data-depth={depth || undefined}>
@@ -258,27 +266,39 @@ function ShareRow({ item, attention, busyKey, actions, expanded, onToggle, depth
             <span className="shared-row-sub">{subtitle(item, { showDevice, showPerson, showWorkspace })}</span>
           </span>
           <span className="shared-row-access"><AccessPills item={item} /></span>
-          {flag ? <span className="shared-flag" title={translate(ATTENTION_TEXT[flag])}><ShieldAlert size={13} aria-hidden="true" /><span>{translate(ATTENTION_TEXT[flag])}</span></span> : null}
+          {flag ? <span className="shared-flag" title={translate(ATTENTION_TEXT[flag])}>{flag === 'pending' ? <Hourglass size={13} aria-hidden="true" /> : <ShieldAlert size={13} aria-hidden="true" />}<span>{translate(ATTENTION_TEXT[flag])}</span></span> : null}
+          {waiting ? <span className="shared-flag" title={translate('sharing.incomingPending', { name: item.personName })}><Hourglass size={13} aria-hidden="true" /><span>{translate('sharing.incomingPending', { name: item.personName })}</span></span> : null}
           {item.direction === 'out' && showPerson ? <span className="shared-row-person" title={translate('sharing.sharedWithPerson', { name: item.personName })}><Avatar name={item.personName} /><span className="shared-row-person-name">{item.personName}</span></span> : null}
           <ChevronDown className="shared-row-chevron" size={16} aria-hidden="true" />
         </button>
-        {item.direction === 'in' ? (
+        {waiting ? (
+          <button type="button" className="shared-open" aria-label={translate('sharing.showMyCode')} title={translate('sharing.showMyCode')} onClick={() => actions.onShowCode(item)}>
+            <KeyRound size={14} aria-hidden="true" /><span>{translate('sharing.showMyCode')}</span>
+          </button>
+        ) : item.direction === 'in' ? (
           <button type="button" className="shared-open" aria-label={translate('sharing.openNamed', { name: item.title })} disabled={item.deviceConnected !== true} title={item.deviceConnected === true ? translate('sharing.open') : translate('sharing.supervisorOfflineReconnectTheDeviceToOpen')} onClick={() => actions.onOpen(item)}>
             <span>{translate('sharing.open')}</span><ArrowUpRight size={14} aria-hidden="true" />
           </button>
         ) : null}
       </div>
-      {open ? <ShareDetail id={detailId} item={item} flag={flag} busy={busyKey === item.key} actions={actions} /> : null}
+      {open ? <ShareDetail id={detailId} item={item} busy={busyKey === item.key} actions={actions} /> : null}
     </div>
   );
 }
 
-function ShareDetail({ id, item, flag, busy, actions }: { id: string; item: SharedItem; flag: AttentionState | undefined; busy: boolean; actions: SharedAccessActions }) {
+function ShareDetail({ id, item, busy, actions }: { id: string; item: SharedItem; busy: boolean; actions: SharedAccessActions }) {
   const [history, setHistory] = useState(false);
+  const waiting = item.direction === 'in' && item.source.row.pending === true;
   const events = item.source.row.accessEvents ?? [];
   return (
     <div className="shared-detail" id={id}>
-      {flag ? <p className="shared-detail-flag" role="status"><ShieldAlert size={14} aria-hidden="true" />{translate(ATTENTION_TEXT[flag])}</p> : null}
+      {/* My shares say what they need in their signed details below, once. */}
+      {waiting ? (
+        <div className="shared-detail-waiting">
+          <p className="shared-detail-flag" role="status"><Hourglass size={14} aria-hidden="true" />{translate('sharing.incomingPendingText', { name: item.personName })}</p>
+          <AccountSafetyCode />
+        </div>
+      ) : null}
       <dl className="shared-detail-grid">
         <div><dt>{translate(item.direction === 'in' ? 'sharing.sharedBy' : 'sharing.sharedWith')}</dt><dd><Avatar name={item.personName} />{item.personName}</dd></div>
         <div><dt>{translate('sharing.permissions')}</dt><dd><AccessPills item={item} /></dd></div>
@@ -300,7 +320,9 @@ function ShareDetail({ id, item, flag, busy, actions }: { id: string; item: Shar
       <div className="shared-detail-actions">
         {item.direction === 'in' ? (
           <>
-            <button type="button" className="shared-action" data-tone="primary" disabled={item.deviceConnected !== true} onClick={() => actions.onOpen(item)}><ArrowUpRight size={15} aria-hidden="true" />{translate('sharing.open')}</button>
+            {waiting
+              ? <button type="button" className="shared-action" data-tone="primary" onClick={() => actions.onShowCode(item)}><KeyRound size={15} aria-hidden="true" />{translate('sharing.showMyCode')}</button>
+              : <button type="button" className="shared-action" data-tone="primary" disabled={item.deviceConnected !== true} onClick={() => actions.onOpen(item)}><ArrowUpRight size={15} aria-hidden="true" />{translate('sharing.open')}</button>}
             <span className="shared-detail-spacer" />
             <button type="button" className="shared-action" data-tone="danger" disabled={busy} onClick={() => actions.onLeave(item)}><LogOut size={15} aria-hidden="true" />{translate('sharing.leaveAccess')}</button>
           </>

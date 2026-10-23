@@ -33,7 +33,8 @@ export type ApiErrorCode =
   | 'harness_unavailable'
   | 'goal_feature_disabled'
   | 'internal_error'
-  | 'service_unavailable';
+  | 'service_unavailable'
+  | 'share_pending';
 
 export interface ApiErrorShape {
   code: ApiErrorCode;
@@ -261,6 +262,10 @@ export interface RelaySessionShareDto {
   lastAccessedAt: string | null;
   lastAccessedByUsername: string | null;
   accessEvents: RelaySessionShareAccessDto[];
+  /** Waits for the owner to confirm the recipient's safety code; gives no access yet. */
+  pending?: boolean;
+  /** When the owner confirmed the recipient's safety code at the relay. */
+  verifiedAt?: string | null;
 }
 
 export interface RelaySessionShareAccessDto {
@@ -344,6 +349,10 @@ export interface RelayAccessGrantDto {
   lastAccessedAt: string | null;
   lastAccessedByUsername: string | null;
   accessEvents: RelayAccessGrantEventDto[];
+  /** Waits for the owner to confirm the recipient's safety code; gives no access yet. */
+  pending?: boolean;
+  /** When the owner confirmed the recipient's safety code at the relay. */
+  verifiedAt?: string | null;
 }
 
 export interface RelayEffectiveAccessDto {
@@ -2048,3 +2057,21 @@ export type {
 } from './storage';
 
 export type { AutomationTrigger, AutomationCondition, AutomationCommandSpec, AutomationAction, AutomationDefinition, AutomationDto, AutomationRunDto } from "./automation";
+
+/** The relay's `share_pending` refusal: shared access that waits for the
+    owner's safety-code check (docs/account-key-trust.md#safety-code-check). */
+export interface RelayPendingShareDto {
+  kind: 'share' | 'grant';
+  id: string;
+  scope: 'thread' | 'workspace' | 'device';
+  ownerUsername: string | null;
+  deviceId: string;
+  deviceName: string | null;
+  threadId: string | null;
+  threadTitle: string | null;
+  workspaceId: string | null;
+  workspaceLabel: string | null;
+  label: string | null;
+  threadAccess: RelayThreadAccessDto;
+  workspaceAccess: RelayWorkspaceAccessDto;
+}

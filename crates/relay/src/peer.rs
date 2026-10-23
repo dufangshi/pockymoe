@@ -33,12 +33,12 @@ pub(super) fn device_shared_for_control(conn: &Connection, device_id: &str) -> b
            SELECT 1 FROM relay_shares s JOIN relay_devices d ON d.id=s.device_id
            WHERE s.device_id=?1 AND s.target_user_id<>d.owner_user_id
              AND s.revoked_at IS NULL AND (s.expires_at IS NULL OR s.expires_at>?2)
-             AND s.thread_access='control'
+             AND s.pending=0 AND s.thread_access='control'
            UNION ALL
            SELECT 1 FROM relay_access_grants g JOIN relay_devices d ON d.id=g.device_id
            WHERE g.device_id=?1 AND g.target_user_id<>d.owner_user_id
              AND g.revoked_at IS NULL AND (g.expires_at IS NULL OR g.expires_at>?2)
-             AND (g.thread_access='control' OR g.can_create_threads=1))",
+             AND g.pending=0 AND (g.thread_access='control' OR g.can_create_threads=1))",
         params![device_id, now_rfc3339()],
         |row| row.get(0),
     )

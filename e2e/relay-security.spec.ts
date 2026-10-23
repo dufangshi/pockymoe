@@ -126,6 +126,9 @@ test('relay enforces attachment, websocket, browser-origin and revocable-session
       .toBe(200);
     let owner = await account('owner');
     const guest = await account('guest');
+    // This spec shares through the relay API and tests access, not the
+    // safety-code check (workspace-sharing.spec.ts covers it): turn it off.
+    ok(await request(`${base}/relay/account/preferences`, 'PATCH', { requireSafetyCode: false }, owner));
     const device = ok(
       await request(
         `${base}/relay/devices`,

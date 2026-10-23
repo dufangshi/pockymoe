@@ -1,4 +1,4 @@
-//! UI preferences belong to the authenticated account, independently of devices.
+//! UI and sharing preferences belong to the authenticated account, independently of devices.
 use super::*;
 
 pub(super) fn ensure_schema(conn: &Connection) -> Result<()> {
@@ -8,6 +8,16 @@ pub(super) fn ensure_schema(conn: &Connection) -> Result<()> {
             send_shortcut TEXT NOT NULL CHECK (send_shortcut IN ('ctrlEnter','enter'))
         );",
     )?;
+    // NULL keeps the default (on) for accounts that never changed it.
+    if conn
+        .prepare("SELECT require_safety_code FROM relay_account_preferences LIMIT 0")
+        .is_err()
+    {
+        conn.execute(
+            "ALTER TABLE relay_account_preferences ADD COLUMN require_safety_code INTEGER",
+            [],
+        )?;
+    }
     Ok(())
 }
 
@@ -23,10 +33,35 @@ enum SendShortcut {
     Enter,
 }
 
-#[derive(Default, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct Preferences {
     send_shortcut: SendShortcut,
+    /// New shares wait until the owner confirms the recipient's safety code
+    /// (docs/account-key-trust.md#safety-code-check).
+    require_safety_code: bool,
+}
+
+/// A change names only the preferences it sets; the others stay.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PreferencesChange {
+    send_shortcut: Option<SendShortcut>,
+    require_safety_code: Option<bool>,
+}
+
+/// Whether the owner's new shares wait for the safety-code check (default on).
+pub(super) fn require_safety_code(conn: &Connection, user_id: &str) -> bool {
+    conn.query_row(
+        "SELECT require_safety_code FROM relay_account_preferences WHERE user_id=?1",
+        [user_id],
+        |row| row.get::<_, Option<i64>>(0),
+    )
+    .optional()
+    .ok()
+    .flatten()
+    .flatten()
+    .is_none_or(|value| value != 0)
 }
 
 fn snapshot(conn: &Connection, user_id: &str) -> Result<Preferences> {
@@ -43,6 +78,7 @@ fn snapshot(conn: &Connection, user_id: &str) -> Result<Preferences> {
         } else {
             SendShortcut::CtrlEnter
         },
+        require_safety_code: require_safety_code(conn, user_id),
     })
 }
 
@@ -70,28 +106,32 @@ async fn save(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Query(query): Query<TokenQuery>,
-    Json(preferences): Json<Preferences>,
+    Json(change): Json<PreferencesChange>,
 ) -> Response {
     let conn = state.store.conn.lock().await;
     let Some(user) = authenticated_user(&conn, &state.store.session_secret, &headers, &query)
     else {
         return unauthorized();
     };
-    let shortcut = match preferences.send_shortcut {
+    let shortcut = change.send_shortcut.map(|shortcut| match shortcut {
         SendShortcut::CtrlEnter => "ctrlEnter",
         SendShortcut::Enter => "enter",
-    };
-    if conn
-        .execute(
-            "INSERT INTO relay_account_preferences(user_id,send_shortcut) VALUES (?1,?2)
-         ON CONFLICT(user_id) DO UPDATE SET send_shortcut=excluded.send_shortcut",
-            params![user.id, shortcut],
-        )
-        .is_err()
-    {
+    });
+    let saved = conn.execute(
+        "INSERT INTO relay_account_preferences(user_id,send_shortcut,require_safety_code)
+         VALUES (?1,COALESCE(?2,'ctrlEnter'),?3)
+         ON CONFLICT(user_id) DO UPDATE SET
+           send_shortcut=COALESCE(?2,send_shortcut),
+           require_safety_code=COALESCE(?3,require_safety_code)",
+        params![user.id, shortcut, change.require_safety_code],
+    );
+    if saved.is_err() {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
-    response(preferences)
+    match snapshot(&conn, &user.id) {
+        Ok(preferences) => response(preferences),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
 }
 
 #[cfg(test)]
@@ -130,7 +170,7 @@ mod tests {
         assert_eq!(
             client
                 .patch(&url)
-                .json(&json!({"sendShortcut":"enter"}))
+                .json(&json!({"sendShortcut":"enter","requireSafetyCode":true}))
                 .send()
                 .await
                 .unwrap()
@@ -156,14 +196,14 @@ mod tests {
         let saved = client
             .patch(&url)
             .bearer_auth(&owner)
-            .json(&json!({"sendShortcut":"enter"}))
+            .json(&json!({"sendShortcut":"enter","requireSafetyCode":true}))
             .send()
             .await
             .unwrap();
         assert_eq!(saved.status(), StatusCode::OK);
         assert_eq!(
             saved.json::<Value>().await.unwrap(),
-            json!({"sendShortcut":"enter"})
+            json!({"sendShortcut":"enter","requireSafetyCode":true})
         );
         let other_session = client
             .get(&url)
@@ -174,7 +214,7 @@ mod tests {
         assert_eq!(other_session.headers()[header::CACHE_CONTROL], "no-store");
         assert_eq!(
             other_session.json::<Value>().await.unwrap(),
-            json!({"sendShortcut":"enter"})
+            json!({"sendShortcut":"enter","requireSafetyCode":true})
         );
         assert_eq!(
             client
@@ -186,7 +226,7 @@ mod tests {
                 .json::<Value>()
                 .await
                 .unwrap(),
-            json!({"sendShortcut":"ctrlEnter"})
+            json!({"sendShortcut":"ctrlEnter","requireSafetyCode":true})
         );
         server.abort();
         let _ = server.await;
@@ -196,7 +236,7 @@ mod tests {
         let conn = reopened.conn.lock().await;
         assert_eq!(
             serde_json::to_value(snapshot(&conn, "owner").unwrap()).unwrap(),
-            json!({"sendShortcut":"enter"})
+            json!({"sendShortcut":"enter","requireSafetyCode":true})
         );
         conn.execute("DELETE FROM relay_users WHERE id='owner'", [])
             .unwrap();

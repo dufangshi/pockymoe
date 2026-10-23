@@ -13,6 +13,9 @@ test('signed sharing, invite pins, revocation and account-certified peers', asyn
     expect(recipient.accountKeyId).not.toBe(owner.accountKeyId);
     const d1 = await f.device(owner, 1);
     await f.bind(owner, d1);
+    // The safety-code check off: the grant is signed when the share is created
+    // (workspace-sharing.spec.ts covers the check itself).
+    ok(await f.api('/relay/account/preferences', 'PATCH', { requireSafetyCode: false }, owner.cookie), 'Safety-code check off');
     await owner.page.goto(d1.url);
     await sendPrompt(owner.page, 'SIGNED_HISTORY');
     const dialog = await shareDialog(owner.page, d1.url);
@@ -31,10 +34,12 @@ test('signed sharing, invite pins, revocation and account-certified peers', asyn
     if (!grant) throw new Error('SIGNED_SHARE_GRANT blocks recipient and revocation scenarios; no API-created grant substitutes for the real dialog');
     expect(grant).toMatchObject({ version: 1, scope: 'thread', threadId: d1.thread, threadAccess: 'read', grantee: { userId: recipient.userId } });
     expect(grant.grantee).toMatchObject({ accountKeyId: recipient.accountKeyId, accountPublicKey: recipient.publicKey });
+    // Active at once; the code can still be checked, by typing what the recipient sees.
+    await expect(dialog.getByText('Safety code not checked', { exact: true })).toBeVisible();
+    await dialog.getByLabel('Safety code from signed-recipient').fill(recipient.code);
+    await dialog.getByRole('button', { name: 'Check code', exact: true }).click();
+    await expect(dialog.getByText('Safety code checked', { exact: true })).toBeVisible();
     await expect(dialog.locator('code').filter({ hasText: recipient.code })).toHaveText(recipient.code);
-    await expect(dialog.getByText(/Unverified/)).toBeVisible();
-    await dialog.getByRole('button', { name: 'I compared the safety code', exact: true }).click();
-    await expect(dialog.getByText(/· Verified/)).toBeVisible();
     if (mobile) await screenshot(owner.page, info, 'v2-signed-share-dialog');
     await owner.context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: f.base });
     await dialog.getByRole('button', { name: 'Copy invite link', exact: true }).click();
@@ -109,9 +114,8 @@ test('signed sharing, invite pins, revocation and account-certified peers', asyn
     const deviceDenied = await browserRequest(recipient.page, d1.api + `/threads/${d1.thread}/prompt`, 'POST', { prompt: 'RELAY_WIDENED_REFUSAL' });
     expect.soft(deviceDenied.status, 'RELAY_WIDENING: bound device must refuse relay-only control').toBe(403);
     expect.soft(deviceDenied.data.code, 'RELAY_WIDENING: refusal must originate from the device grant ACL').toBe('grant_denied');
-    await owner.page.goto(f.base + '/relay-devices');
-    await owner.page.getByRole('tab', { name: /^Threads by me/ }).click();
-    await expect.soft(owner.page.getByText('Device permissions differ from this share', { exact: true }),
+    await owner.page.goto(f.base + '/relay-devices?tab=shared&dir=out');
+    await expect.soft(owner.page.getByText('Old permissions on device', { exact: true }),
       'RECONCILIATION: Shared access must flag relay/device permission mismatch').toBeVisible({ timeout: 5_000 });
     await f.relayRow(share.id, 'read');
     const editing = await shareDialog(owner.page, d1.url);

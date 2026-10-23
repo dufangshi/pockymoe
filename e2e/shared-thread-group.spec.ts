@@ -95,6 +95,9 @@ test('shared Claude families keep provider models, effort controls and consisten
           password,
         })
       ).token;
+    // This spec shares through the relay API and tests access, not the
+    // safety-code check (workspace-sharing.spec.ts covers it): turn it off.
+    await api('/relay/account/preferences', owner, { requireSafetyCode: false }, 'PATCH');
     const device = await api('/relay/devices', owner, { name: 'Group device' }),
       d = device.device.id,
       deviceApi = `/relay/devices/${d}/api`;

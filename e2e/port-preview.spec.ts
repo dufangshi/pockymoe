@@ -104,6 +104,9 @@ test('private device ports support browser links, HTTP streaming, WebSocket and 
       POCKYMOE_PUBLIC_BASE_URL: base, POCKYMOE_PORT_PREVIEW_BASE_URL: `http://preview.localhost:${rp}` });
     await expect.poll(() => api('/healthz').then(r => r.status).catch(() => 0)).toBe(200);
     const owner = await account('owner'), other = await account('other');
+    // This spec shares through the relay API and tests access, not the
+    // safety-code check (workspace-sharing.spec.ts covers it): turn it off.
+    expect((await api('/relay/account/preferences', 'PATCH', { requireSafetyCode: false }, owner)).status).toBe(200);
     const created = await api('/relay/devices', 'POST', { name: 'Port preview device' }, owner);
     expect(created.status).toBe(200);
     const deviceId = created.data.device.id;

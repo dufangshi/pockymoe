@@ -3,6 +3,7 @@ import { readAutoCollapseCompletedTurns } from './transcriptPreferences';
 import { deviceRoute, TransportError } from './relayTransportCrypto';
 import { markOwnedDevices } from './accountTransport';
 import { sharingMutation, type SharingInput } from './signedSharing';
+import { reportSharePendingBody } from './sharePending';
 import { relayOrigin, relayUrl, relaySocketUrl, relayFetchInit } from './relayOrigin';
 import { accountRequest, currentBrowser, logoutAccount } from './accountVaultState';
 import { startAccountLogin, setAccountSession, cancelAccountLogin, rememberAccountLogin, type AccountSessionState } from './accountAuth';
@@ -354,6 +355,16 @@ function normalizedApiErrorPayload(
   payload: Partial<ApiErrorShape> | null | undefined,
   fallbackMessage: string,
 ): ApiErrorShape {
+  // Shared access that waits for the owner's safety-code check: the app shows
+  // the recipient their code (lib/sharePending.ts).
+  const pending = reportSharePendingBody(payload);
+  if (pending) {
+    return {
+      code: 'share_pending',
+      message: translate('sharing.incomingPendingText', { name: pending.ownerUsername ?? translate('sharing.pendingSomeone') }),
+      details: { share: pending },
+    };
+  }
   const message =
     String(payload?.code) === 'thread_scope_forbidden' ? translate('workbench.treerScopeForbidden') :
     String(payload?.code) === 'grant_denied' ? translate('sharing.grantDenied') :

@@ -38,12 +38,19 @@ export interface DeviceGrant {
 }
 const collection = (kind: ShareKind) =>
   kind === 'share' ? 'shares' : 'grants';
+/** The recipient has not secured their account: no account key, no safety code. */
+export class RecipientAccountMissingError extends Error {
+  constructor() { super(translate('sharing.recipientNeedsAccount')); }
+}
 export const recipientAccount = (kind: ShareKind, id: string) =>
   request<PublicAccount>(
     `relay/${collection(kind)}/${encodeURIComponent(id)}/recipient-account`,
   ).then(validatePublicAccount).catch((error: unknown) => {
-    if (error && typeof error === 'object' && 'code' in error && error.code === 'recipient_account_missing')
-      throw new Error(translate('sharing.recipientNeedsAccount'));
+    const code = error && typeof error === 'object'
+      ? ('payload' in error && error.payload && typeof error.payload === 'object' && 'code' in error.payload ? error.payload.code
+        : 'code' in error ? error.code : undefined)
+      : undefined;
+    if (code === 'recipient_account_missing') throw new RecipientAccountMissingError();
     throw error;
   });
 export const deviceGrants = (deviceId: string) =>
@@ -321,7 +328,10 @@ export async function sharingMutation<T>(
         (input[key] ?? null) !== (returned[key] ?? null));
     if (!sameIntent(kind, expected, returned) || metadataChanged)
       throw new Error(translate('sharing.rowAltered'));
-    await syncDeviceGrant(kind, expected);
+    // A share that waits for the safety-code check is signed onto the device
+    // only when the owner approves it with the recipient's code.
+    if (response.pending !== true && returned.pending !== true && previous?.pending !== true)
+      await syncDeviceGrant(kind, expected);
   } catch (error) {
     try {
       await request(
@@ -338,6 +348,15 @@ export async function sharingMutation<T>(
     }));
   }
   return result;
+}
+/** The owner approves a share that waits for the safety-code check (or records
+    a later check of an active one). The relay compares the code with the
+    recipient's account key; `null` only for a recipient without one. */
+export function approveRelayShare(kind: ShareKind, id: string, safetyCode: string | null) {
+  return request<{ id: string; pending: false; verifiedAt: string | null }>(
+    `relay/${collection(kind)}/${encodeURIComponent(id)}/approve`,
+    { method: 'POST', body: JSON.stringify(safetyCode === null ? {} : { safetyCode }) },
+  );
 }
 export interface Reconciliation {
   row?: ShareRow;

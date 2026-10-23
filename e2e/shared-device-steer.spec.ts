@@ -95,6 +95,9 @@ test('shared device control can steer a running Codex turn', async () => {
         password,
       })
     ).token;
+    // This spec shares through the relay API and tests access, not the
+    // safety-code check (workspace-sharing.spec.ts covers it): turn it off.
+    await api('/relay/account/preferences', owner, { requireSafetyCode: false }, 'PATCH');
     const device = await api('/relay/devices', owner, {
       name: 'Shared steer device',
     });

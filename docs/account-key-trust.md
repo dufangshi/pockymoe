@@ -14,11 +14,13 @@ Devices that are not bound keep trusting the relay; the Web labels them
 
 Code: device `crates/supervisor/src/owner_trust.rs`, `grants.rs`, `tunnel.rs`,
 `auth.rs`, `ports.rs`, `secure_transport/client.rs`; relay
-`crates/relay/src/account.rs`, `preview.rs`, `oauth.rs` and `lib.rs` (API-only
-mode); Web `apps/supervisor-web/src/lib/account*.ts`, `deviceEnrollment.ts`,
-`pendingEnrollmentStore.ts`, `remoteDeviceProtection.ts`,
+`crates/relay/src/account.rs`, `share_verification.rs`, `preview.rs`, `oauth.rs`
+and `lib.rs` (API-only mode); Web `apps/supervisor-web/src/lib/account*.ts`,
+`deviceEnrollment.ts`, `pendingEnrollmentStore.ts`, `remoteDeviceProtection.ts`,
 `deviceSetupCommands.ts`, `relayTransportCrypto.ts`, `signedSharing.ts`,
-`sharedDeviceTrust.ts`, `portPreview.ts`, `staticWeb.ts` and
+`sharePending.ts`, `sharingPreferences.ts`, `sharedDeviceTrust.ts`,
+`portPreview.ts`, `staticWeb.ts`, `components/SignedShareDetails.tsx`,
+`pages/SharePendingPage.tsx` and
 `apps/supervisor-web/staticHosting.ts`; Pages build
 `.github/workflows/pages-deploy.yml`. Shared interop vectors:
 `crates/relay/test-fixtures/account-key-v2.json`,
@@ -94,7 +96,9 @@ Limits:
   ([Port previews](#port-previews)).
 - **Recipients** trust the owner's account key on first use unless they open an
   invite link. A relay that substitutes a recipient's account key gains only the
-  access granted to that recipient; the safety code detects it.
+  access granted to that recipient. The [safety-code check](#safety-code-check),
+  on by default, stops it before the share starts; with the check off, the owner
+  signs for an unverified key and only a later check of the code reveals it.
 - **Control access.** A recipient with control access to a thread can make its
   agent run commands on the device, including `pockymoe bind --reset`, which
   returns the device to relay trust, and `pockymoe preview create`, which creates
@@ -527,6 +531,7 @@ only encrypted tunnel requests.
 | `already_bound` | 409 | Bind request to a bound device |
 | `invalid_bind` | 400 | Bind request with an invalid key, secret, Web origin or body, or to a device that has not connected to the relay yet |
 | `grant_denied` | 403 | Recipient request outside its grants |
+| `share_pending` | 403 | Relay: the only share or grant that would allow the request waits for the owner's [safety-code check](#safety-code-check); carries `share` |
 | `invalid_grant` | 400 | Malformed grant ([sharing](#sharing)) |
 | `grantee_is_owner` | 400 | The recipient key is the device's own account key |
 | `grant_limit` | 409 | The device already has 256 grants |
@@ -656,8 +661,10 @@ working as **Not protected**.
    Web origin saved at installation matches ([new devices](#binding-devices)).
 2. Keep the browser open, or come back to it within 7 days, until the device
    shows **Protected**.
-3. Afterwards the device honors only signed grants: in each share's details,
-   **Not active on device** offers **Review and confirm**. Port mappings created
+3. Afterwards the device honors only signed grants: each share made before
+   shows **{recipient} can't open this now** in its details, fixed by typing the
+   recipient's safety code (or **Sign onto device**,
+   [existing shares](#safety-code-check)). Port mappings created
    through the relay before binding must be enabled again, and the device deletes
    live public links created before link encryption (the relay keeps their last
    snapshot, marked stale).
@@ -800,14 +807,21 @@ a workspace share reaches its files only.
 (`?tab=shared`, with `dir=out` for my shares). Sharing lists both directions in
 one place as one compact row per share or grant: its scope, name, device and
 presence, the other person, permissions and last visit. A row opens in place
-with its details, the signed-share checks and its actions (open, edit, access
+with its details, the signed-share state and its actions (open, edit, access
 history, revoke). The list can be viewed as a filtered list (all, devices,
 workspaces, threads, to review, with search), grouped by device (whole device,
 then each workspace with the threads shared in it), or by person; the browser
-remembers the view. My shares on online protected devices are checked like the
-row's signed details: a grant missing or different on the device, a changed
-recipient key, or a safety code not compared marks the row and counts as **to
-review** on the tab.
+remembers the view. My shares are checked like the row's signed details: one
+waiting for the recipient's safety code (**Waiting for safety code**), and, on
+online protected devices, a grant the device does not hold (**Can't open: not
+signed on device**) or holds with other permissions (**Old permissions on
+device**), a changed recipient key, or (while the check is on) a code nobody
+checked (**Safety code not checked**) mark the row and count as **to review** on
+the tab. The details say the state once, in one sentence about what it means for
+the recipient, with the one action that fixes it
+([safety-code check](#safety-code-check)). Something shared with me that waits
+for its owner shows **Waiting for {owner} to confirm** and **Show my code**
+instead of **Open**.
 
 **Leaving a share.** A recipient can give up a thread, workspace or device shared
 with them: **Leave** in the row's details asks first, then
@@ -836,7 +850,10 @@ resolves `..` and symbolic links inside the workspace root; prompt attachments a
 written inside it even when `.temp` links elsewhere. The Web's file tree for them
 starts at the workspace root and has no way above it.
 
-Creating or editing shared access for a protected device:
+Creating or editing shared access for a protected device (with the
+[safety-code check](#safety-code-check) on, a new row waits and steps 3 to 5 run
+when the owner approves it with the recipient's code; editing a waiting row
+signs nothing):
 
 1. The relay row is created or updated.
 2. The browser builds the grant only from the choices in the dialog, accepting
@@ -869,17 +886,103 @@ key (`grantee_is_owner`); one recipient key maps to one user and public key acro
 grants; device-scope grants need `workspaceScope: "all"`; workspace-scope grants
 need a `workspaceId`; shares are thread-scoped; at most 256 grants (`grant_limit`).
 
+### Safety-code check
+
 **Safety code.** The first 12 characters of the Crockford base32 encoding of
 `SHA256("pockymoe-acct-safety-v1\n" + accountKeyId)`, in groups of four. Each user
-sees their own in Account settings; the owner sees the recipient's per share,
-marked **Verified** after **I compared the safety code** (stored in that browser
-for that recipient user and key).
+sees their own in **Account settings** (with a copy button) and on the waiting
+page below; the browser computes it from its own cached account key, never from a
+relay answer. Typed codes are compared without case, spaces or dashes, with `O`
+read as `0` and `I`/`L` as `1`.
 
-**Reconciliation.** Share details compare relay rows with device grants: **Not
-active on device** (relay row without grant) offers **Review and confirm**;
-**Device permissions differ from this share** and **Recipient account key has
-changed** offer **Update**; grants without a relay row are listed as **Still
-active on device** with **Revoke**. Every signing action shows the review first.
+**The setting.** **Account settings → Sharing → Require safety code check for
+people I share with** (`requireSafetyCode` in `GET`/`PATCH
+/relay/account/preferences`, saved to the account like the message shortcuts;
+on by default, also for accounts that never changed it). It makes sure the
+account belongs to the person the owner meant and that the relay did not
+substitute the recipient's key.
+
+**With the check on:**
+
+1. The owner shares a thread, a workspace or the device. The relay reads the
+   owner's preference and creates the row with `pending: true` (also in the
+   create answer and the portal rows). The owner's browser signs no device grant.
+2. The recipient opens it: **Show my code** on the Sharing tab, an invite link,
+   or any link into the thread, workspace or device. The relay refuses every
+   request that only the waiting row would allow (`/relay/devices/{id}/api/*`,
+   including the transport key handshake, and `/relay/access`) with 403
+   `share_pending` and `share: {kind, id, scope, ownerUsername, deviceId,
+   deviceName, threadId, threadTitle, workspaceId, workspaceLabel, label,
+   threadAccess, workspaceAccess}`. A request that names no thread or workspace
+   points at the newest waiting row on that device when the user has no live
+   access there. The first such refusal takes the Web to **Waiting for {owner}
+   to confirm** (`/shared-pending?kind=&id=`): who shared what on which device,
+   the recipient's safety code with a copy button (and a send button where the
+   browser can share text), and that the share opens by itself once the owner
+   confirms. The page reads the portal every 4 seconds and then opens it. The
+   recipient's other access is unaffected, and presence still answers for the
+   waiting row.
+3. The owner sees the row flagged **Waiting for safety code**. Its details say
+   the recipient can't open it yet and ask for the code the recipient sends; the
+   expected code is not shown. The browser compares the typed code with the code
+   of the key the relay returns for the recipient (`GET
+   /relay/{shares|grants}/{id}/recipient-account`). A mismatch says what it may
+   mean: a typo, or, if the recipient confirms the code, a replaced key (do not
+   approve; revoke the share). A match records the recipient's key as verified
+   in this browser, on a protected device signs the grant (**Review device
+   grant**, the password if the unlock window is closed) and sends it to the
+   device, then posts `POST /relay/{shares|grants}/{id}/approve {safetyCode}`.
+   The relay compares the code with the recipient's account key again, clears
+   `pending` and stores `verifiedAt`.
+4. A recipient who has not secured their account has no account key and no
+   code. Their waiting page sends them to Account settings; the owner's details
+   say the same. On an unprotected device the owner can **Approve without a
+   code** (`approve` without `safetyCode`, which the relay accepts only for a
+   recipient without a vault and which records no `verifiedAt`); a protected
+   device cannot honor such a share at all.
+
+**With the check off,** new rows start with `pending: false` and a protected
+device's grant is signed at creation, as before: the review shows the recipient
+as not verified and needs an explicit acknowledgement. Rows created while the
+check was on keep waiting until approved.
+
+**What is enforced where.**
+
+| | Relay | Protected device |
+| --- | --- | --- |
+| Waiting row | Refuses with `share_pending`; the row gives no access, no browser registration, no preview and does not count as shared for control ([peers](#peers)) | Holds no grant for it: the owner's browser signs only at approval, so the device refuses (`grant_denied`) even a request the relay forwards |
+| The code | Compares it with the recipient's account key at `approve` | Trusts the grant the owner signed after the browser compared the code |
+
+An unprotected device relies on the relay for both. A compromised relay can mark
+a row active without the code, report the setting as off or return another
+recipient key: a protected device still has no signed grant for an unapproved
+row, the owner's typed code does not match a substituted key, and with the
+setting reported off the browser signs only with the explicit unverified
+acknowledgement. The verification that signing relies on is this browser's own
+record; the relay's `verifiedAt` only quiets the **Safety code not checked**
+reminder in other browsers.
+
+**Existing shares.** Rows from before the check have `pending = 0` and stay
+active whatever the setting. On protected devices, those whose code nobody
+checked show **Safety code not checked** while the check is on: the recipient
+finds the code in Account settings, and the owner types it in the
+details (`approve` on an active row only records `verifiedAt`). A share that a
+protected device does not hold, for example one made before the device was
+protected, shows **{recipient} can't open this now** with one action: type the
+recipient's code, or **Sign onto device** when this browser checked the code
+before or the check is off.
+
+**Reconciliation.** Share details compare relay rows with device grants and show
+one state: a relay row without a grant (**{recipient} can't open this now**,
+above); a grant with other permissions (**{device} still has the old
+permissions**: the recipient gets the signed ones until **Sign current
+permissions**); a grant for another recipient key (**{recipient}'s account key
+changed**: the device refuses them until the owner types the new code and signs,
+or with the check off signs after the review). A grant without a relay row (the
+share was revoked or left at the relay while the device was unreachable) is
+listed above my shares: "The share with {recipient} has ended, but {device}
+still holds their signed grant.", with **Revoke**. Every signing action shows the
+review first.
 
 **Revoking** deletes the grant on every device in the vault's bound list and every
 device whose certificate this browser has verified, except devices removed from
@@ -1200,6 +1303,8 @@ senders).
 | `PUT /relay/devices/{id}/certificate` | Owner | Device certificate (at most 16 KiB, matching `deviceId`), stored unverified |
 | `GET /relay/devices/{id}/owner-account` | Owner or recipient | → `{accountKeyId, accountPublicKey}`; 404 |
 | `GET /relay/shares/{id}/recipient-account`, `GET /relay/grants/{id}/recipient-account` | Owner of the live row | → `{accountKeyId, accountPublicKey}`; 404 `recipient_account_missing` (recipient without a vault) or `not_found` |
+| `POST /relay/shares/{id}/approve`, `POST /relay/grants/{id}/approve` | Owner of the live row | `{safetyCode?}` → `{id, pending: false, verifiedAt}`; 400 `safety_code_required`, 409 `safety_code_mismatch` or `recipient_account_missing` (a code for a recipient without a vault), 404 `not_found` |
+| `GET`/`PATCH /relay/account/preferences` | Signed in | `{sendShortcut, requireSafetyCode}`; a `PATCH` names only what it changes |
 | `POST /relay/devices/{id}/port-mappings/{mappingId}/open?lease=` | Owner, or a recipient of the thread that created the mapping | `{path}` → `{url}`; 403 `preview_lease_required`; 400 `invalid_lease` (not 43 characters of `[A-Za-z0-9_-]`) |
 | `POST /relay/admin/users/{id}/reset-password` | Relay admin | `{password}` (at least 12 characters, not for admin accounts) → one-time temporary password |
 

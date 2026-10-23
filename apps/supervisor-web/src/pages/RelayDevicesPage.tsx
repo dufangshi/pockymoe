@@ -80,6 +80,7 @@ import {
 import { threadHref, threadsHref, workspacesHref } from '../lib/relayRoutes';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { useDevicePresence } from '../lib/useDevicePresence';
+import { SHARING_CHANGED_EVENT, sharePendingHref } from '../lib/sharePending';
 
 const RELAY_PORTAL_REFRESH_INTERVAL_MS = 3000;
 type PageTab = 'devices' | 'shared';
@@ -377,6 +378,13 @@ export function RelayDevicesPage() {
     },
     [],
   );
+
+  // An approval or a signed grant shows at once, not at the next refresh.
+  useEffect(() => {
+    const reload = () => void load({ showLoading: false, clearError: false });
+    window.addEventListener(SHARING_CHANGED_EVENT, reload);
+    return () => window.removeEventListener(SHARING_CHANGED_EVENT, reload);
+  }, [load]);
 
   useEffect(() => {
     let cancelled = false;
@@ -764,6 +772,7 @@ export function RelayDevicesPage() {
       setError(null);
       setLeaveTarget(item);
     },
+    onShowCode: (item: SharedItem) => navigate(sharePendingHref({ kind: item.source.kind, id: item.source.row.id })),
   };
   const pageTabs: Array<{ id: PageTab; label: string; count: number; Icon: typeof DevicesTabIcon; review?: number }> = [
     { id: 'devices', label: translate('devices.devices'), count: portal?.devices.length ?? 0, Icon: DevicesTabIcon },

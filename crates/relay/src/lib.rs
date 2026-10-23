@@ -18,6 +18,7 @@ mod route_acl;
 mod security;
 mod share_activity;
 mod share_presence;
+mod share_verification;
 mod store;
 mod thread_groups;
 #[cfg(test)]
@@ -277,6 +278,7 @@ pub async fn serve() -> Result<()> {
             patch(update_grant).delete(revoke_grant),
         )
         .route("/relay/grants/{grant_id}/leave", post(leave_grant))
+        .merge(share_verification::routes())
         .route("/relay/devices/{device_id}/api/{*rest}", any(device_api))
         .route("/relay/api/{*rest}", any(relay_api_compat))
         .route("/relay/devices/{device_id}/healthz", get(device_healthz))
@@ -1793,19 +1795,43 @@ fn effective_access(
     thread_id: Option<&str>,
     workspace_id: Option<&str>,
 ) -> Option<EffectiveAccess> {
+    access_rows(conn, user_id, device_id, thread_id, workspace_id, false)
+}
+
+/// The same rules over shares and grants that wait for the owner's safety-code
+/// check; they give no access, only the reason for a refusal.
+fn pending_access(
+    conn: &Connection,
+    user_id: &str,
+    device_id: &str,
+    thread_id: Option<&str>,
+    workspace_id: Option<&str>,
+) -> Option<EffectiveAccess> {
+    access_rows(conn, user_id, device_id, thread_id, workspace_id, true)
+}
+
+fn access_rows(
+    conn: &Connection,
+    user_id: &str,
+    device_id: &str,
+    thread_id: Option<&str>,
+    workspace_id: Option<&str>,
+    pending: bool,
+) -> Option<EffectiveAccess> {
     if !load_user_by_id(conn, user_id).is_some_and(|user| user.enabled == 1) {
         return None;
     }
-    let owned = conn
-        .query_row(
-            "SELECT 1 FROM relay_devices WHERE id=?1 AND owner_user_id=?2",
-            params![device_id, user_id],
-            |_| Ok(()),
-        )
-        .optional()
-        .ok()
-        .flatten()
-        .is_some();
+    let owned = !pending
+        && conn
+            .query_row(
+                "SELECT 1 FROM relay_devices WHERE id=?1 AND owner_user_id=?2",
+                params![device_id, user_id],
+                |_| Ok(()),
+            )
+            .optional()
+            .ok()
+            .flatten()
+            .is_some();
     if owned {
         return Some(owner_access());
     }
@@ -1820,9 +1846,9 @@ fn effective_access(
                  SELECT parent_thread_id,1 FROM relay_thread_lineage WHERE device_id=?2 AND thread_id=?3
                  UNION ALL SELECT t.parent_thread_id,a.depth+1 FROM relay_thread_lineage t JOIN ancestors a ON t.thread_id=a.id AND t.device_id=?2 WHERE a.depth<3
                ) SELECT id FROM ancestors))
-               AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>?4)
+               AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>?4) AND pending=?5
              ORDER BY created_at DESC LIMIT 1",
-            params![user_id, device_id, thread_id, now],
+            params![user_id, device_id, thread_id, now, pending],
             |row| {
                 Ok(EffectiveAccess {
                     kind: "shared",
@@ -1848,9 +1874,9 @@ fn effective_access(
              FROM relay_shares
              WHERE target_user_id=?1 AND device_id=?2 AND workspace_id=?3
                AND workspace_access<>'none' AND revoked_at IS NULL
-               AND (expires_at IS NULL OR expires_at>?4)
+               AND (expires_at IS NULL OR expires_at>?4) AND pending=?5
              ORDER BY created_at DESC LIMIT 1",
-            params![user_id, device_id, workspace_id, now],
+            params![user_id, device_id, workspace_id, now, pending],
             |row| {
                 Ok(EffectiveAccess {
                     kind: "shared",
@@ -1879,13 +1905,13 @@ fn effective_access(
                     thread_access,workspace_access,can_create_threads
              FROM relay_access_grants
              WHERE target_user_id=?1 AND device_id=?2 AND revoked_at IS NULL
-               AND (expires_at IS NULL OR expires_at>?3)
+               AND (expires_at IS NULL OR expires_at>?3) AND pending=?4
              ORDER BY CASE scope WHEN 'device' THEN 3 WHEN 'workspace' THEN 2 ELSE 1 END DESC,
                       created_at DESC",
         )
         .ok()?;
     let rows = stmt
-        .query_map(params![user_id, device_id, now], |row| {
+        .query_map(params![user_id, device_id, now, pending], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
@@ -1975,11 +2001,11 @@ fn registration_access(conn: &Connection, user: &str, device: &str) -> Option<Ef
     conn.query_row(
         "SELECT id,'share', 'thread',thread_id,workspace_id,thread_access,workspace_access
          FROM relay_shares WHERE target_user_id=?1 AND device_id=?2
-           AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>?3)
+           AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>?3) AND pending=0
          UNION ALL
          SELECT id,'grant',scope,thread_id,workspace_id,thread_access,workspace_access
          FROM relay_access_grants WHERE target_user_id=?1 AND device_id=?2
-           AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>?3)
+           AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>?3) AND pending=0
          LIMIT 1",
         params![user, device, now_rfc3339()],
         |row| {
@@ -2067,6 +2093,15 @@ async fn relay_access(
         query.workspace_id.as_deref(),
     ) {
         return Json(access_json(&access)).into_response();
+    }
+    if let Some(refusal) = share_verification::refusal(
+        &conn,
+        &user.id,
+        &device_id,
+        query.thread_id.as_deref(),
+        query.workspace_id.as_deref(),
+    ) {
+        return refusal;
     }
     (
         StatusCode::FORBIDDEN,
@@ -2184,8 +2219,9 @@ async fn portal(
             relay_grants_for(&conn, "target_user_id", &user.id),
             relay_grants_for(&conn, "owner_user_id", &user.id),
         ];
-        for list in &mut lists {
+        for (index, list) in lists.iter_mut().enumerate() {
             share_presence::enrich(&conn, &connected, list);
+            share_verification::enrich(&conn, index >= 2, list);
         }
         let [incoming, outgoing, incoming_grants, outgoing_grants] = lists;
         (incoming, outgoing, incoming_grants, outgoing_grants)
@@ -2478,7 +2514,9 @@ async fn create_share(
             .into_response();
     }
     security::audit(&conn, Some(&owner.id), "share.created", Some(&id));
+    let pending = share_verification::hold_new(&conn, false, &id, &owner.id);
     Json(json!({
+        "pending": pending,
         "id": id,
         "ownerUserId": owner.id,
         "ownerUsername": owner.username,
@@ -2828,7 +2866,8 @@ async fn create_grant(
             .into_response();
     }
     security::audit(&conn, Some(&owner.id), "grant.created", Some(&id));
-    Json(json!({ "id": id })).into_response()
+    let pending = share_verification::hold_new(&conn, true, &id, &owner.id);
+    Json(json!({ "id": id, "pending": pending })).into_response()
 }
 
 async fn list_grants(
@@ -3031,15 +3070,14 @@ async fn device_presence(
 ) -> Response {
     let allowed = {
         let conn = state.store.conn.lock().await;
+        // A share that waits for the safety-code check still shows whether its
+        // device is online.
         authenticated_user(&conn, &state.store.session_secret, &headers, &query.auth)
             .and_then(|user| {
-                effective_access(
-                    &conn,
-                    &user.id,
-                    &device_id,
-                    query.thread_id.as_deref(),
-                    query.workspace_id.as_deref(),
-                )
+                let (thread, workspace) =
+                    (query.thread_id.as_deref(), query.workspace_id.as_deref());
+                effective_access(&conn, &user.id, &device_id, thread, workspace)
+                    .or_else(|| pending_access(&conn, &user.id, &device_id, thread, workspace))
             })
             .is_some()
     };
@@ -3121,15 +3159,20 @@ async fn device_api(
     body: Bytes,
 ) -> impl IntoResponse {
     let path = relay_api_target_path(&rest, &uri);
-    let resolved = {
+    let (user_id, username, access) = {
         let conn = state.store.conn.lock().await;
-        authenticated_user(&conn, &state.store.session_secret, &headers, &query).and_then(|user| {
-            device_request_access(&conn, &user.id, &device_id, &method, &path, &headers)
-                .map(|access| (user.id, user.username, access))
-        })
-    };
-    let Some((user_id, username, access)) = resolved else {
-        return unauthorized();
+        let Some(user) = authenticated_user(&conn, &state.store.session_secret, &headers, &query)
+        else {
+            return unauthorized();
+        };
+        match device_request_access(&conn, &user.id, &device_id, &method, &path, &headers) {
+            Some(access) => (user.id, user.username, access),
+            // Shared access that waits for the owner's safety-code check says so.
+            None => {
+                return share_verification::path_refusal(&conn, &user.id, &device_id, &path)
+                    .unwrap_or_else(unauthorized)
+            }
+        }
     };
     if !relay_target_allowed(&path)
         || !(access_allows(&access, &method, &path)

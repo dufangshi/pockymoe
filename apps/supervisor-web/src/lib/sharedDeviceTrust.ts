@@ -9,6 +9,7 @@ import {
   type DeviceCertificate,
 } from './accountVault';
 import { relayUrl } from './relayOrigin';
+import { reportSharePendingBody } from './sharePending';
 import { sharingTrustEntries, sharingTrustStore } from './sharingTrustStore';
 
 export type PublicAccount = Pick<AccountKeyInfo, 'accountKeyId' | 'accountPublicKey'>;
@@ -112,6 +113,11 @@ async function deviceDescriptor(deviceId: string, threadId?: string, workspaceId
   const response = await nativeFetch(relayUrl(`relay/devices/${encodeURIComponent(deviceId)}${prefix}/transport/key?challenge=${challenge}`), { credentials: 'include', cache: 'no-store' });
   if (response.status === 404) return null;
   if (response.status === 503 || response.status === 504) throw new Error(translate('sharing.protectedOnline'));
+  if (response.status === 403) {
+    // Waiting for the owner's safety-code check: the app shows the recipient's code.
+    const pending = reportSharePendingBody(await response.clone().json().catch(() => null));
+    if (pending) throw new Error(translate('sharing.incomingPendingText', { name: pending.ownerUsername ?? translate('sharing.pendingSomeone') }));
+  }
   if (!response.ok) throw new SharingTrustError('invalid_certificate');
   const descriptor = await response.json() as { challenge: string; identityKey: string; certificate: DeviceCertificate | null; trust?: { bound?: boolean } };
   if (descriptor.challenge !== challenge || typeof descriptor.identityKey !== 'string')

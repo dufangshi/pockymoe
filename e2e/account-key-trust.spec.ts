@@ -166,6 +166,8 @@ test('preview leases authorize bound Web, CLI and thread-recipient previews whil
       await navigate(page, preview.openUrl);
       await expect(page.getByRole('alert'), `${label}: without a share the recipient is refused`).toBeVisible();
       expect(requests.filter(request => request.path === '/shared-preview').length).toBe(before);
+      // Shared through the relay API to test previews, not the safety-code check.
+      ok(await f.api('/relay/account/preferences', 'PATCH', { requireSafetyCode: false }, owner.cookie), `${label}: no safety-code check`);
       const share = ok(await f.api('/relay/shares', 'POST', { targetIdentifier: 'preview-friend', deviceId: device.id, threadId: device.thread, threadAccess: 'read', workspaceAccess: 'none' }, owner.cookie), `${label}: share the thread`);
       await navigate(page, preview.openUrl);
       await expect(page.getByRole('heading', { name: 'ACCOUNT_KEY_PREVIEW', exact: true }), `${label}: the recipient opens the CLI link`).toBeVisible();

@@ -30,6 +30,9 @@ test('workbench shares images publicly and grants device access without leaving 
     await expect.poll(() => fetch(`${base}/healthz`).then(r => r.status).catch(() => 0)).toBe(200);
     for (const username of ['owner', 'reviewer']) await api('/relay/auth/register', undefined, { username, email: `${username}@example.test`, password });
     const owner = (await api('/relay/auth/login', undefined, { username: 'owner', password })).token;
+    // This spec shares through the relay API and tests access, not the
+    // safety-code check (workspace-sharing.spec.ts covers it): turn it off.
+    expect((await fetch(`${base}/relay/account/preferences`, { method: 'PATCH', headers: { authorization: `Bearer ${owner}`, 'content-type': 'application/json' }, body: JSON.stringify({ requireSafetyCode: false }) })).ok).toBe(true);
     const device = await api('/relay/devices', owner, { name: 'Isolated UI device' });
     start('relay-supervisor', { PORT: String(sp), POCKYMOE_RELAY_SUPERVISOR_PORT: String(sp), POCKYMOE_RELAY_SERVER_URL: base, POCKYMOE_RELAY_AGENT_TOKEN: device.token, POCKYMOE_DATABASE_PATH: join(root, 'supervisor.sqlite'), POCKYMOE_WORKSPACE_ROOT: join(root, 'workspaces') });
     await expect.poll(async () => (await api('/healthz')).connectedSupervisors).toBe(1);

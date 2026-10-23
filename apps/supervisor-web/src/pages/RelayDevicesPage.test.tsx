@@ -245,7 +245,7 @@ describe('agent isolation', () => {
 });
 
 describe('device shared for control', () => {
-  const detail = 'Shared with others who can control its agents, so its agents cannot reach your other devices.';
+  const detail = 'Its agents cannot reach your other devices, because people you share with can control agents here.';
   it('marks the row with a small icon that explains itself on hover and tap', async () => {
     vi.mocked(fetchRelayPortal).mockResolvedValue({ user: { id: 'test-user' } as never, devices: [{ ...device, sharedControl: true }], sharedWithMe: [], sharedByMe: [] });
     await openPage();

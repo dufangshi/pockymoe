@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RelayAccessGrantDto, RelayPortalSummaryDto, RelaySessionShareDto } from '@pockymoe/shared';
 import { SharedAccessPanel } from './SharedAccessPanel';
 
-vi.mock('../SignedShareDetails', () => ({ SignedShareDetails: () => <p>signed details</p> }));
+vi.mock('../SignedShareDetails', () => ({ SignedShareDetails: () => <p>signed details</p>, AccountSafetyCode: () => <p>my safety code</p> }));
 
 const share: RelaySessionShareDto = {
   id: 's1', ownerUserId: 'me', ownerUsername: 'du', targetUserId: 'u-joe', targetUsername: 'joe',
@@ -22,7 +22,7 @@ const grant: RelayAccessGrantDto = {
 const portal = { user: { id: 'me' }, devices: [], sharedWithMe: [], sharedByMe: [share], sharedThreadsWithMe: [grant] } as unknown as RelayPortalSummaryDto;
 
 function renderPanel(direction: 'in' | 'out', attention = new Map()) {
-  const actions = { onOpen: vi.fn(), onEdit: vi.fn(), onRevoke: vi.fn(), onLeave: vi.fn() };
+  const actions = { onOpen: vi.fn(), onEdit: vi.fn(), onRevoke: vi.fn(), onLeave: vi.fn(), onShowCode: vi.fn() };
   const onDirectionChange = vi.fn();
   render(<SharedAccessPanel portal={portal} loading={false} direction={direction} onDirectionChange={onDirectionChange}
     attention={attention} onAttentionRefresh={vi.fn()} busyKey={null} actions={actions} />);
@@ -36,10 +36,12 @@ describe('SharedAccessPanel', () => {
     const { actions } = renderPanel('out', new Map([['share:s1', 'unverified']]));
     const toggle = screen.getByRole('button', { name: /Video pipeline/ });
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
-    expect(screen.getAllByText('Safety code not compared').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Safety code not checked')).toHaveLength(1);
     fireEvent.click(toggle);
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
     expect(screen.getByText('signed details')).toBeTruthy();
+    // The state is said once, in the signed details, not again above them.
+    expect(screen.getAllByText('Safety code not checked')).toHaveLength(1);
     fireEvent.click(screen.getByRole('button', { name: 'Access history' }));
     expect(screen.getByText('open thread')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Edit permissions' }));
@@ -65,6 +67,22 @@ describe('SharedAccessPanel', () => {
     expect(screen.queryByRole('button', { name: 'Revoke' })).toBeNull();
   });
 
+  it('shows something waiting for the owner to confirm my code, with my code instead of Open', () => {
+    const waiting = { ...grant, deviceConnected: true, pending: true };
+    const relayPortal = { ...portal, sharedThreadsWithMe: [waiting] } as unknown as RelayPortalSummaryDto;
+    const actions = { onOpen: vi.fn(), onEdit: vi.fn(), onRevoke: vi.fn(), onLeave: vi.fn(), onShowCode: vi.fn() };
+    render(<SharedAccessPanel portal={relayPortal} loading={false} direction="in" onDirectionChange={vi.fn()}
+      attention={new Map()} onAttentionRefresh={vi.fn()} busyKey={null} actions={actions} />);
+    expect(screen.getByText('Waiting for alwyn to confirm')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Open infra' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Show my code' }));
+    expect(actions.onShowCode).toHaveBeenCalledWith(expect.objectContaining({ key: 'grant:g1' }));
+    fireEvent.click(screen.getByRole('button', { name: /^Workspace infra/ }));
+    expect(screen.getByText('alwyn must confirm your safety code before you can open this.')).toBeTruthy();
+    expect(screen.getByText('my safety code')).toBeTruthy();
+    expect(actions.onOpen).not.toHaveBeenCalled();
+  });
+
   it('switches to by-device and by-person views and remembers the choice', () => {
     renderPanel('out');
     fireEvent.click(screen.getByRole('button', { name: 'By device' }));
@@ -84,7 +102,7 @@ describe('SharedAccessPanel', () => {
     for (const view of ['list', 'devices', 'people']) {
       localStorage.setItem('pockymoe.sharedAccess.view', view);
       const { unmount } = render(<SharedAccessPanel portal={relayPortal} loading={false} direction="in" onDirectionChange={vi.fn()}
-        attention={new Map()} onAttentionRefresh={vi.fn()} busyKey={null} actions={{ onOpen: vi.fn(), onEdit: vi.fn(), onRevoke: vi.fn(), onLeave: vi.fn() }} />);
+        attention={new Map()} onAttentionRefresh={vi.fn()} busyKey={null} actions={{ onOpen: vi.fn(), onEdit: vi.fn(), onRevoke: vi.fn(), onLeave: vi.fn(), onShowCode: vi.fn() }} />);
       // A narrow screen lists the people first.
       if (view === 'people' && !screen.queryAllByText('prod bootstrap').length) fireEvent.click(screen.getByRole('button', { name: /alwyn/ }));
       expect(screen.getAllByText('prod bootstrap')).toHaveLength(1);

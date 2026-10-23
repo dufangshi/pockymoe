@@ -22,6 +22,7 @@ import {
   Route,
   Routes,
   useLocation,
+  useNavigate,
   useParams,
 } from 'react-router-dom';
 import { useEffect, useLayoutEffect, useMemo, useState, type ReactNode } from 'react';
@@ -50,6 +51,8 @@ import { TourProvider } from './components/onboarding/TourProvider';
 import { ThreadMapProvider } from './components/ThreadMapHost';
 import { LoginPage } from './pages/LoginPage';
 import { RelayAccountPage } from './pages/RelayAccountPage';
+import { SharePendingPage } from './pages/SharePendingPage';
+import { onSharePending, SHARE_PENDING_PATH, sharePendingHref } from './lib/sharePending';
 import { RelayAdminPage } from './pages/RelayAdminPage';
 import { RelayDevicesPage } from './pages/RelayDevicesPage';
 import { RelayGuidePage } from './pages/RelayGuidePage';
@@ -192,6 +195,9 @@ function routeDocumentTitle(pathname: string) {
   }
   if (pathname === '/relay-devices') {
     return translate("workbench.devicesAndSharedSessions");
+  }
+  if (pathname === SHARE_PENDING_PATH) {
+    return translate('sharing.tabSharing');
   }
   if (pathname === '/relay-settings') {
     return translate("workbench.settings");
@@ -643,6 +649,7 @@ function SupervisorRoutes({
         <Route path="/workspaces/new" element={<WorkspaceNewPage />} />
         <Route path="/relay-account" element={<RelayAccountPage />} />
         <Route path="/relay-devices" element={<RelayDevicesPage />} />
+        <Route path={SHARE_PENDING_PATH} element={<SharePendingPage />} />
         <Route path="/relay-settings" element={<RelaySettingsPage />} />
         <Route path="/threads" element={<ThreadsPage />} />
         <Route path="/threads/import" element={<ThreadImportPage />} />
@@ -738,6 +745,7 @@ export function App() {
         <WorkspaceDocumentNavigationGuard>
         <DocumentTitleUpdater />
         <AccountUnlockPrompt />
+        <SharePendingRedirect />
           <Routes>
             <Route path="/shared" element={<SharedInvitePage />} />
             <Route path="/devices/:deviceId/ports/:mappingId" element={<RelayGate><PortPreviewPage /></RelayGate>} />
@@ -764,6 +772,18 @@ export function App() {
       </BrowserRouter>
     </div>
   );
+}
+
+/** Shared access that waits for the owner's safety-code check refuses every
+    request under it; the first refusal takes the recipient to their code. */
+function SharePendingRedirect() {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const onPendingPage = location.pathname === SHARE_PENDING_PATH;
+  useEffect(() => onSharePending(share => {
+    if (!onPendingPage) navigate(sharePendingHref(share));
+  }), [navigate, onPendingPage]);
+  return null;
 }
 
 /** Status text for a wait that is usually too short to read: the page stays a

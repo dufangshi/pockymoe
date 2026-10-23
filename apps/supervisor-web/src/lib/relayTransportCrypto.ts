@@ -1,4 +1,5 @@
 import { appPathname, supervisorPath } from './webBase';
+import { reportSharePendingBody } from './sharePending';
 import { listPendingEnrollments } from './pendingEnrollmentStore';
 import { relayUrl, relayPathname } from './relayOrigin';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
@@ -245,6 +246,8 @@ async function keyFor(
         code?: string;
         message?: string;
       } | null;
+      if (reportSharePendingBody(failure))
+        throw new TransportError('share_pending', failure?.message ?? translate("workbench.deviceAccessLost"), response.status);
       if (
         response.status === 503 &&
         failure?.code === 'service_unavailable' &&

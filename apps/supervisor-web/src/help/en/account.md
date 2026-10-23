@@ -6,6 +6,12 @@ Your password unlocks your account key in the browser. The relay keeps only an e
 
 The Account page shows your **safety code** and **account ID** for comparing with devices or people you share with.
 
+## Safety code check {#safety-code}
+
+When someone shares with you, the share may wait until they confirm your safety code. Opening it then shows **Waiting for … to confirm** with your code: send it to them another way (a chat, an email or in person). The share opens by itself once they type it in. Your other shares keep working meanwhile.
+
+When you share, the person sends you the code they see; type it in the share's details on **Devices → Sharing**. A code that does not match means a typo, or that someone replaced their account key: do not approve, and revoke the share. You can turn this check off under **Account settings → Sharing**.
+
 ## Unlock this browser {#unlock}
 
 This browser has no browser key for you yet: you are signing in here for the first time, or the key was deleted. Enter your account password. Accounts that sign in with Google or GitHub enter the unlock password they chose.

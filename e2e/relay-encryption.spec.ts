@@ -191,6 +191,9 @@ async function encryptedRelayScenario(browser: Browser, context: BrowserContext,
       )
       .toBe(200);
     const owner = await account('owner');
+    // This spec shares through the relay API and tests access, not the
+    // safety-code check (workspace-sharing.spec.ts covers it): turn it off.
+    ok(await request(`${base}/relay/account/preferences`, 'PATCH', { requireSafetyCode: false }, owner));
     const device = ok(
       await request(
         `${base}/relay/devices`,

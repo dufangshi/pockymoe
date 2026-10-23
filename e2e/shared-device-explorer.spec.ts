@@ -56,6 +56,9 @@ test('shared device Explorer honors full, read-only and no filesystem access', a
       POCKYMOE_RELAY_WEB_DIST_DIR: resolve('apps/supervisor-web/dist') });
     await expect.poll(() => fetch(base + '/healthz').then(r => r.status).catch(() => 0)).toBe(200);
     const owner = await account('owner'), guest = await account('guest');
+    // This spec shares through the relay API and tests access, not the
+    // safety-code check (workspace-sharing.spec.ts covers it): turn it off.
+    await api('/relay/account/preferences', owner, { requireSafetyCode: false }, 'PATCH');
     const created = await api('/relay/devices', owner, { name: 'Shared Explorer device' });
     const deviceId = created.device.id;
     start('relay-supervisor', { POCKYMOE_RELAY_SUPERVISOR_PORT: String(sp),
