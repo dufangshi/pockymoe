@@ -61,7 +61,8 @@ it('confirms a copy on the item that copied, then closes', async () => {
   const item = await screen.findByRole('button',{name:'Copy Pockymoe session ID'});
   fireEvent.click(item);
   await waitFor(() => expect(item).toHaveAttribute('data-copy-state','copied'));
-  expect(writeText).toHaveBeenCalledWith('reply-1');
+  // Labelled, so an agent knows it names a Pockymoe thread.
+  expect(writeText).toHaveBeenCalledWith('pockymoe_session_id: reply-1');
   expect(item).toHaveTextContent('Copied');
   // No separate notice at the foot of the menu.
   expect(screen.queryByRole('status')).toBeNull();

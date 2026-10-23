@@ -96,7 +96,10 @@ export function RecentThreadMenu({ thread, onFavorite, onRenamed, onRemoved, onN
       <p className="recent-thread-menu-title">{thread.title}</p>
       <button disabled={busy} onClick={async () => { setBusy(true); try { await onFavorite(thread.key); setPosition(null); } finally { setBusy(false); } }}><Star data-icon="shortcut" size={15} fill={thread.favorite ? 'currentColor' : 'none'} />{thread.favorite ? translate("workbench.unstarThread") : translate("workbench.starThread")}</button>
       <button onClick={() => { setPosition(null); onNavigate(thread.href); }}><ExternalLink data-icon="open" size={15} />{translate("workbench.openThread")}</button>
-      {copyItem('pockymoe', translate("workbench.copyPockymoeSessionID"), id)}
+      {/* Labelled, so an agent it is pasted to knows what it is (the Pockymoe
+          skill says how to read that thread); another device's thread carries
+          its device, as the CLI addresses it. */}
+      {copyItem('pockymoe', translate("workbench.copyPockymoeSessionID"), `pockymoe_session_id: ${device === 'local' ? id : `${device}/${id}`}`)}
       {copyItem('harness', translate("workbench.copyHarnessSessionID"), detail?.thread.providerSessionId)}
       {detail?.thread.providerSessionId && (detail.thread.agentId === 'codex' || detail.thread.provider === 'codex') && copyItem('codex', translate("workbench.copyCodexDeeplink"), `codex://threads/${encodeURIComponent(detail.thread.providerSessionId)}`)}
       {owner && <button onClick={() => { setTitle(detail?.thread.title ?? thread.title); setNotice(''); setPosition(null); setRenaming(true); }}><Pencil data-icon="rename" size={15} />{translate("workbench.renameThread")}</button>}
