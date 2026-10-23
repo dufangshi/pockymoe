@@ -1,15 +1,20 @@
 // /relay-admin: signs the relay admin in (password, then a second factor when
-// the admin has one) and shows the admin console (pages/relayAdmin).
+// the admin has one) and shows the admin console (pages/relayAdmin). The
+// console always shows Classic, whatever theme pack the browser chose: one
+// fixed look for an operations tool. The choice itself is untouched and comes
+// back on leaving (docs/theme-packs.md, docs/ui-principles.md).
 import { ErrorMark } from '@pockymoe/thread-ui';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
-import { useCallback, useEffect, useState } from 'react';
+import { ShieldCheck } from 'lucide-react';
+import { useCallback, useEffect, useLayoutEffect, useState, type FormEvent } from 'react';
 import { Link } from 'react-router-dom';
 import type { RelaySessionDto } from '@pockymoe/shared';
+import { AuthCard, AuthField, AuthShell, AuthSubmit } from '../components/auth/AuthUi';
 import { LoginVerification, usePendingLogin } from '../components/RelaySecurity';
 import { ApiError, enableRelayMode, fetchRelayAdminSession, relayAdminLogin, relayAdminLogout } from '../lib/api';
+import { CLASSIC_THEME_ID, pinTheme } from '../lib/themePacks';
 import { adminApi } from './relayAdmin/adminApi';
 import { RelayAdminConsole } from './relayAdmin/RelayAdminConsole';
-import { LoginPage } from './LoginPage';
 
 type State =
   | { kind: 'loading' }
@@ -26,8 +31,55 @@ function errorMessage(caught: unknown) {
       : translate('admin.requestFailed');
 }
 
+/** The console's own sign-in: the administrator's name and password, with a
+    way to the user sign-in for everyone else. */
+function AdminSignIn({ onLogin }: { onLogin: (input: { username: string; password: string }) => Promise<void> }) {
+  useI18n();
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      await onLogin({ username: username.trim(), password });
+      setPassword('');
+    } catch (caught) {
+      setError(caught instanceof ApiError && caught.statusCode === 401 ? translate('admin.wrongAdminCredentials') : errorMessage(caught));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <AuthShell>
+      <AuthCard
+        footer={
+          <span>
+            {translate('admin.notAdministrator')}{' '}
+            <Link className="font-medium text-[var(--theme-accent-strong)] hover:underline" to="/relay-portal">{translate('admin.userSignIn')}</Link>
+          </span>
+        }
+        icon={<ShieldCheck aria-hidden className="h-7 w-7" />}
+        subtitle={translate('admin.signInDescription')}
+        title={translate('admin.signInTitle')}
+      >
+        <form className="space-y-4" onSubmit={(event) => void submit(event)}>
+          <AuthField autoComplete="username" autoFocus disabled={busy} label={translate('auth.username')} name="username" onChange={setUsername} spellCheck={false} value={username} />
+          <AuthField autoComplete="current-password" disabled={busy} label={translate('auth.password')} name="password" onChange={setPassword} type="password" value={password} />
+          <AuthSubmit busy={busy} disabled={!username.trim() || !password} error={error}>{translate('auth.signIn')}</AuthSubmit>
+        </form>
+      </AuthCard>
+    </AuthShell>
+  );
+}
+
 export function RelayAdminPage() {
   useI18n();
+  // Classic while the console (or its sign-in) is shown; the stored theme
+  // returns when it unmounts. A layout effect, so a pack never paints first.
+  useLayoutEffect(() => pinTheme(CLASSIC_THEME_ID), []);
   const [state, setState] = useState<State>({ kind: 'loading' });
   const [challenge, setChallenge] = usePendingLogin();
 
@@ -87,9 +139,7 @@ export function RelayAdminPage() {
 
   if (state.kind === 'login') {
     return (
-      <LoginPage
-        description={translate('admin.signInDescription')}
-        eyebrow={translate('admin.consoleTitle')}
+      <AdminSignIn
         onLogin={async (input) => {
           const result = await relayAdminLogin(input);
           if (result.challengeRequired) {

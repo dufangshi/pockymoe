@@ -12,6 +12,15 @@ it may redraw status marks, icons and small controls, but every status stays
 recognizable by shape alone, menus, windows and copy behave the same, and text
 stays aligned on the shared baseline in the pack's fonts.
 
+**The relay admin console is the one exception: it always shows Classic.** It is
+an operations tool shared by whoever runs the relay, so it keeps one fixed look
+that its charts, tables and status marks were drawn for, instead of following a
+pack chosen for the workbench. While `/relay-admin` is open, `pinTheme` in the
+registry applies Classic without touching the stored choice, other tabs or the
+Settings selection; the light or dark mode still follows the color mode setting
+(a single-mode pack does not fix it there). Leaving the console puts the chosen
+pack back at once.
+
 Packs hold no JavaScript. Their CSS is checked and rewritten so that it cannot
 reach the network, but a pack can still hide or restyle any part of the page, so
 import only packs you trust.
@@ -163,12 +172,9 @@ bar instead. Touch-only devices keep the platform's overlay indicator.
 - outer pages: `data-page` on the page root (`workspaces`, `devices`,
   `relay-home`, `relay-portal`, `relay-guide`, `login`, `account`, `admin`,
   `thread-import`, `port-preview`);
-- relay admin console: the series colors `--admin-chart-1` … `--admin-chart-5`
-  (set on `:root` per mode), `--admin-card`, `--admin-rule`, `--admin-radius`,
-  and `admin-sidebar`, `admin-topbar`, `admin-card`, `admin-figure-band`,
-  `admin-table`, `admin-chip`, `admin-detail` (the drawer or sheet),
-  `admin-tabbar` (phones) and `admin-device-state` with `is-online`,
-  `is-offline`, `is-unstable`;
+- relay admin console: none. The console and its sign-in (`/relay-admin`)
+  always show Classic, in the light or dark mode the browser chose, whatever
+  pack is selected (see below);
 - settings: `settings-hint` on help text, `settings-choice-group`,
   `settings-harness-picker`, `settings-harness-switch`, `settings-harness-row`;
   the theme cards are `theme-preset-card`, `theme-preset-option`,
@@ -267,6 +273,9 @@ when the applied pack lists the flag (`useThemeFeature(flag)`):
   creates before the app renders (after the host's stylesheets, before lazily
   loaded ones), then sets `data-theme-preset` and `data-theme-features` and the
   theme-color meta. Imported packs are validated and compiled again when applied.
+- `pinTheme(id)` shows one theme while a screen is mounted and returns a
+  function that restores the choice; applying a pin of Classic is synchronous,
+  so it lands before the first paint. Only the relay admin console uses it.
 - The registry's `fixedMode` is the applied pack's only mode (or null);
   `app.tsx` passes the setting through `effectiveColorMode` and gives the shells
   the pack's mode as `data-theme-mode` (their palettes key on it), and the registry sets

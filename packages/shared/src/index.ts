@@ -33,6 +33,7 @@ export type ApiErrorCode =
   | 'harness_unavailable'
   | 'goal_feature_disabled'
   | 'internal_error'
+  | 'invalid_invite_code'
   | 'service_unavailable'
   | 'share_pending';
 

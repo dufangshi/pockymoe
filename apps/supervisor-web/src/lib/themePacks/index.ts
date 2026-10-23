@@ -5,6 +5,7 @@ export {
   CLASSIC_THEME_ID,
   THEME_PRESET_KEY,
   applyTheme,
+  pinTheme,
   effectiveColorMode,
   exportThemePack,
   getThemeRegistryState,

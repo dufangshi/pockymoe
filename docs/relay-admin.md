@@ -2,7 +2,30 @@
 
 The relay administrator signs in at `/relay-admin` with the account from
 `POCKYMOE_ADMIN_USERNAME` and `POCKYMOE_ADMIN_PASSWORD` (it has no account key;
-it can add an authenticator or passkey under **Settings › Admin account**). The
+it can add an authenticator or passkey under **Settings › Admin account**).
+
+## Signing in
+
+- `/relay-admin` has its own sign-in card, **Relay admin sign-in**: the
+  administrator's name and password, then a second factor when it has one.
+  A wrong name or password says so and points people with a relay account to
+  **User sign-in** (`/relay-portal`), which the card links.
+- The user sign-in links **Admin console** under its form. An administrator who
+  signs in there anyway is taken to the console instead of being refused; a
+  browser that still holds an administrator session from before sees "Signed in
+  as the relay administrator" with **Open the admin console** and **Sign out**,
+  rather than being signed out silently.
+- The console session lives only in the `remote_codex_relay_admin_session`
+  cookie (sent with the `X-Remote-Codex-Auth-Realm: admin` header); the
+  administrator never gets the ordinary `remote_codex_relay_session` cookie, so
+  signing in or out as a user in the same browser does not touch it.
+- The console and its sign-in always show the Classic look, light or dark as the
+  browser's color mode says, whatever theme pack the browser chose; leaving the
+  console brings the pack back ([theme packs](theme-packs.md)).
+
+## Layout
+
+The
 console is a sidebar of sections on desktop and a bottom tab bar on phones
 (Overview, Users, Devices, Security, and **More** for Shares and access, System
 and Settings). Every section has a summary or chart band above a filtered,

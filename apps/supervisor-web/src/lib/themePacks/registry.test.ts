@@ -13,6 +13,7 @@ import {
   exportThemePack,
   getThemeRegistryState,
   importThemePack,
+  pinTheme,
   removeThemePack,
   selectTheme,
   themeChromeColor,
@@ -100,6 +101,27 @@ describe('theme registry', () => {
     expect(html.dataset.themePreset).toBe('classic');
     expect(html.dataset.themeFeatures).toBe('');
     expect(themeChromeColor('dark')).toBe('#171713');
+  });
+
+  it('pins Classic for one screen without changing the choice, and puts the choice back', async () => {
+    serve({ [builtin.css]: { body: BUILTIN_CSS, type: 'text/css; charset=utf-8' } });
+    await selectTheme('builtin-demo');
+    const release = pinTheme(CLASSIC_THEME_ID);
+    // Classic applies at once, before the next paint.
+    expect(html.dataset.themePreset).toBe('classic');
+    expect(packStyle()?.textContent).toBe('');
+    expect(html.dataset.themeFeatures).toBe('');
+    expect(getThemeRegistryState()).toMatchObject({ selected: 'builtin-demo', applied: 'classic', fixedMode: null });
+    expect(localStorage.getItem(THEME_PRESET_KEY)).toBe('builtin-demo');
+    // Another tab choosing a pack while the pin holds does not show through.
+    await applyTheme('builtin-demo');
+    expect(html.dataset.themePreset).toBe('classic');
+    release();
+    await vi.waitFor(() => expect(html.dataset.themePreset).toBe('builtin-demo'));
+    expect(packStyle()?.textContent).toBe(BUILTIN_CSS);
+    // Releasing twice changes nothing.
+    release();
+    expect(html.dataset.themePreset).toBe('builtin-demo');
   });
 
   it('falls back to Classic when a pack is unknown or its stylesheet is missing', async () => {

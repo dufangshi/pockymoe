@@ -1,10 +1,10 @@
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 
 import type { RelaySessionDto } from '@pockymoe/shared';
 import { AccountSetupFlow } from '../components/auth/AccountSetupFlow';
-import { AuthCard, AuthDivider, AuthField, AuthLink, AuthLoading, AuthNotice, AuthShell, AuthSubmit, OAuthButtons, RecoveryCodeStep, SignedInFooter } from '../components/auth/AuthUi';
+import { AuthCard, AuthDivider, AuthField, AuthLink, AuthLoading, AuthNotice, AuthShell, AuthSubmit, OAuthButtons, RecoveryCodeStep, SignedInFooter, type OAuthProviderName } from '../components/auth/AuthUi';
 import { LoginVerification, usePendingLogin } from '../components/RelaySecurity';
 import {
   cancelAccountLogin,
@@ -17,7 +17,7 @@ import {
   startTemporaryResetLogin,
 } from '../lib/accountAuth';
 import { AccountTrustError, changeAccountPassword, createVault, openVault, registerBrowser } from '../lib/accountVaultState';
-import { ApiError, enableRelayMode, fetchRelaySession, relayLogin, relayLogout } from '../lib/api';
+import { ApiError, enableRelayMode, fetchRelaySession, relayLogin, relayLogout, startOAuthSignUp } from '../lib/api';
 
 const DEFAULT_RETURN_TO = '/relay-devices';
 const RETURN_TO_STORAGE_KEY = 'remote-codex-relay-return-to';
@@ -25,6 +25,7 @@ const RETURN_TO_STORAGE_KEY = 'remote-codex-relay-return-to';
 function errorMessage(caught: unknown, fallback = translate('auth.unableToAuthenticateWithTheRelay')) {
   // A rejected password login reaches the browser as a generic 401.
   if (caught instanceof AccountTrustError && caught.code === 'unauthorized') return translate('auth.invalid_credentials');
+  if (caught instanceof ApiError && caught.payload.code === 'invalid_invite_code') return translate('auth.invalid_invite_code');
   if (caught instanceof ApiError) return caught.payload.message;
   return caught instanceof Error ? caught.message : fallback;
 }
@@ -79,6 +80,8 @@ export function RelayPortalPage() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [finished, setFinished] = useState<Finished | null>(null);
+  // An administrator session from before the console had its own cookie.
+  const [admin, setAdmin] = useState(false);
 
   function continueToRequestedPage() {
     forgetReturnTo();
@@ -90,7 +93,10 @@ export function RelayPortalPage() {
     try {
       enableRelayMode();
       const next = await fetchRelaySession();
-      if (next.authenticated && next.user?.role === 'admin') { setSession(await relayLogout()); return; }
+      // The administrator has no devices: offer the console instead of
+      // silently signing it out (which also ended its console session).
+      if (next.authenticated && next.user?.role === 'admin') { setAdmin(true); setSession(null); return; }
+      setAdmin(false);
       setSession(next);
       // The account gate in front of the app finishes setup, unlock and resets.
       if (next.authenticated) continueToRequestedPage();
@@ -109,8 +115,8 @@ export function RelayPortalPage() {
     enableRelayMode();
     const next = await fetchRelaySession();
     if (next.user?.role === 'admin') {
-      setSession(await relayLogout());
-      throw new Error(translate('auth.thisPortalAcceptsRelayUserAccountsOnly'));
+      navigate('/relay-admin', { replace: true });
+      return;
     }
     if (!next.user) throw new Error(translate('auth.accountUnlockRequired'));
     const flow = await finishAccountLogin(next.user.id, next.user);
@@ -149,6 +155,19 @@ export function RelayPortalPage() {
       </AuthShell>
     );
   }
+  if (admin) {
+    return (
+      <AuthShell>
+        <AuthCard
+          footer={<AuthLink onClick={() => void relayLogout().catch(() => undefined).finally(() => { setAdmin(false); void load(); })}>{translate('auth.ui.signOut')}</AuthLink>}
+          subtitle={translate('auth.ui.adminSessionBody')}
+          title={translate('auth.ui.adminSessionTitle')}
+        >
+          <Link className="relay-button-primary inline-flex h-11 w-full items-center justify-center" to="/relay-admin">{translate('auth.ui.openAdminConsole')}</Link>
+        </AuthCard>
+      </AuthShell>
+    );
+  }
   if (session?.authenticated) return <AuthLoading />;
 
   const params = new URLSearchParams(location.search);
@@ -179,6 +198,7 @@ function SignInPanel({ registrationEnabled, settings, initialError, initialNotic
   onRetry: (() => Promise<void>) | undefined;
 }) {
   useI18n();
+  const navigate = useNavigate();
   const [view, setView] = useState<View>('signin');
   const [challenge, setChallenge] = usePendingLogin();
   const [identifier, setIdentifier] = useState('');
@@ -201,6 +221,7 @@ function SignInPanel({ registrationEnabled, settings, initialError, initialNotic
     try {
       const result = await relayLogin({ identifier, password });
       if (result.challengeRequired) { setChallenge(pendingChallenge(result)); return; }
+      if (result.session?.user?.role === 'admin') { navigate('/relay-admin'); return; }
       setPassword('');
       await onAuthenticated();
     } catch (caught) {
@@ -216,6 +237,8 @@ function SignInPanel({ registrationEnabled, settings, initialError, initialNotic
     setBusy(true); setError(null);
     try {
       const result = await startLegacyUpgrade(identifier, password, legacy?.otherVault ?? false);
+      // The relay administrator signed in: its place is the admin console.
+      if (result.session?.user?.role === 'admin') { setPassword(''); navigate('/relay-admin'); return; }
       const typed = password;
       setUpgradePassword(typed); setPassword(''); setLegacy(null);
       if (result.challengeRequired) { setChallenge(pendingChallenge(result)); return; }
@@ -239,9 +262,17 @@ function SignInPanel({ registrationEnabled, settings, initialError, initialNotic
   const oauth = settings?.googleAuthEnabled || settings?.githubAuthEnabled;
   return (
     <AuthCard
-      footer={registrationEnabled
-        ? <span>{translate('auth.ui.newHere')} <AuthLink onClick={() => go('register')}>{translate('auth.createAccount')}</AuthLink></span>
-        : undefined}
+      footer={
+        <span className="flex flex-col items-center gap-2">
+          {registrationEnabled
+            ? <span>{translate('auth.ui.newHere')} <AuthLink onClick={() => go('register')}>{translate('auth.createAccount')}</AuthLink></span>
+            : null}
+          <span className="auth-admin-link text-xs">
+            {translate('auth.ui.adminQuestion')}{' '}
+            <Link className="font-medium text-[var(--theme-accent-strong)] hover:underline" to="/relay-admin">{translate('auth.ui.adminConsole')}</Link>
+          </span>
+        </span>
+      }
       title={translate('auth.ui.signInTitle')}
     >
       {notice ? <AuthNotice tone="info">{notice}</AuthNotice> : null}
@@ -283,10 +314,27 @@ function RegisterCard({ settings, onBack, onRegistered }: {
   const [email, setEmail] = useState(''), [username, setUsername] = useState('');
   const [password, setPassword] = useState(''), [confirm, setConfirm] = useState(''), [code, setCode] = useState('');
   const [busy, setBusy] = useState(false), [error, setError] = useState<string | null>(null);
+  const [oauthBusy, setOAuthBusy] = useState<OAuthProviderName | null>(null);
+  const [codeError, setCodeError] = useState<string | null>(null);
   const codeRequired = settings?.registrationPasswordConfigured ?? Boolean(settings?.registrationPassword);
+
+  /** Google or GitHub sign-up with the invite code: the relay keeps the code
+      with the pending sign-in and checks it when the provider returns. */
+  async function startOAuth(provider: OAuthProviderName) {
+    setCodeError(null);
+    if (!code.trim()) { setCodeError(translate('auth.ui.inviteCodeFirst')); return; }
+    setOAuthBusy(provider);
+    try {
+      window.location.assign(await startOAuthSignUp(provider, code.trim()));
+    } catch (caught) {
+      setCodeError(errorMessage(caught));
+      setOAuthBusy(null);
+    }
+  }
 
   async function submit(event: FormEvent) {
     event.preventDefault(); setError(null);
+    if (codeRequired && !code.trim()) { setCodeError(translate('auth.ui.inviteCodeFirst')); return; }
     if (username.trim().length < 3) { setError(translate('auth.usernameMustBeAtLeast3Characters')); return; }
     if (password !== confirm) { setError(translate('auth.ui.passwordMismatch')); return; }
     setBusy(true);
@@ -307,13 +355,20 @@ function RegisterCard({ settings, onBack, onRegistered }: {
       footer={<span>{translate('auth.ui.haveAccount')} <AuthLink onClick={onBack}>{translate('auth.signIn')}</AuthLink></span>}
       title={translate('auth.ui.registerTitle')}
     >
-      {oauth ? <><OAuthButtons github={settings?.githubAuthEnabled} google={settings?.googleAuthEnabled} /><AuthDivider /></> : null}
+      {codeRequired ? (
+        // Every way to create an account needs the code, so it comes first.
+        <div className="auth-invite space-y-1.5">
+          <AuthField autoComplete="one-time-code" autoFocus disabled={busy || Boolean(oauthBusy)} hint={translate('auth.ui.inviteCodeHint')} label={translate('auth.registrationCode')} name="registrationCode" onChange={(value) => { setCode(value); setCodeError(null); }} value={code} />
+          {codeError ? <p className="auth-field-error text-xs text-[var(--status-warning-fg)]" role="alert">{codeError}</p> : null}
+        </div>
+      ) : null}
+      {oauth ? <><OAuthButtons busy={oauthBusy} github={settings?.githubAuthEnabled} google={settings?.googleAuthEnabled} onStart={codeRequired ? (provider) => void startOAuth(provider) : undefined} /><AuthDivider /></> : null}
       <form className="space-y-4" onSubmit={submit}>
-        <AuthField autoComplete="email" autoFocus disabled={busy} inputMode="email" label={translate('auth.email')} name="email" onChange={setEmail} type="email" value={email} />
+        <AuthField autoComplete="email" autoFocus={!codeRequired} disabled={busy} inputMode="email" label={translate('auth.email')} name="email" onChange={setEmail} type="email" value={email} />
         <AuthField autoComplete="username" disabled={busy} label={translate('auth.username')} minLength={3} name="username" onChange={setUsername} spellCheck={false} value={username} />
         <AuthField autoComplete="new-password" disabled={busy} hint={translate('auth.ui.passwordRule')} label={translate('auth.password')} minLength={12} name="password" onChange={setPassword} type="password" value={password} />
         <AuthField autoComplete="new-password" disabled={busy} label={translate('auth.ui.confirmPassword')} name="confirm" onChange={setConfirm} type="password" value={confirm} />
-        <AuthField autoComplete="one-time-code" disabled={busy} label={translate(codeRequired ? 'auth.registrationCode' : 'auth.ui.registrationCodeOptional')} name="registrationCode" onChange={setCode} required={codeRequired} value={code} />
+        {!codeRequired ? <AuthField autoComplete="one-time-code" disabled={busy} label={translate('auth.ui.registrationCodeOptional')} name="registrationCode" onChange={setCode} required={false} value={code} /> : null}
         <AuthSubmit busy={busy} error={error}>{translate('auth.createAccount')}</AuthSubmit>
       </form>
     </AuthCard>

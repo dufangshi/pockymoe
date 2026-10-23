@@ -185,22 +185,37 @@ function GitHubMark() {
   );
 }
 
-export function OAuthButtons({ google, github }: { google?: boolean; github?: boolean }) {
+export type OAuthProviderName = 'google' | 'github';
+
+/**
+ * Continue with Google or GitHub. Plain links start sign-in; with `onStart`
+ * (sign-up on a relay with an invite code) they are buttons, so the page can
+ * send the code first.
+ */
+export function OAuthButtons({ google, github, onStart, busy }: {
+  google?: boolean | undefined;
+  github?: boolean | undefined;
+  onStart?: ((provider: OAuthProviderName) => void) | undefined;
+  busy?: OAuthProviderName | null | undefined;
+}) {
   if (!google && !github) return null;
   // Providers return to /relay-portal, which restores the remembered destination.
   const href = (provider: string) => relayUrl(`relay/auth/oauth/${provider}/start`);
+  const className = 'relay-button-secondary inline-flex h-11 items-center justify-center gap-2.5 font-medium';
+  const item = (provider: OAuthProviderName, mark: ReactNode, label: string) =>
+    onStart ? (
+      <button aria-busy={busy === provider || undefined} className={className} disabled={Boolean(busy)} onClick={() => onStart(provider)} type="button">
+        {mark}{busy === provider ? translate('auth.ui.pleaseWait') : label}
+      </button>
+    ) : (
+      <a className={className} href={href(provider)}>
+        {mark}{label}
+      </a>
+    );
   return (
     <div className="auth-oauth grid gap-2.5">
-      {google ? (
-        <a className="relay-button-secondary inline-flex h-11 items-center justify-center gap-2.5 font-medium" href={href('google')}>
-          <GoogleMark />{translate('auth.continueWithGoogle')}
-        </a>
-      ) : null}
-      {github ? (
-        <a className="relay-button-secondary inline-flex h-11 items-center justify-center gap-2.5 font-medium" href={href('github')}>
-          <GitHubMark />{translate('auth.continueWithGitHub')}
-        </a>
-      ) : null}
+      {google ? item('google', <GoogleMark />, translate('auth.continueWithGoogle')) : null}
+      {github ? item('github', <GitHubMark />, translate('auth.continueWithGitHub')) : null}
     </div>
   );
 }

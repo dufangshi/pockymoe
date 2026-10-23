@@ -201,8 +201,29 @@ async function compiledImported(info: StoredPackInfo) {
   return css;
 }
 
+/** A theme a page pins while it is shown (`pinTheme`); it wins over the choice. */
+let pinned: string | null = null;
+
+/**
+ * Shows one theme on the page while a screen needs it, without changing the
+ * stored choice, other tabs or the Settings selection; the release function
+ * puts the choice back. The relay admin console pins Classic: one fixed look
+ * for an operations tool (docs/theme-packs.md, docs/ui-principles.md). Applying
+ * Classic is synchronous, so a pin from a layout effect lands before paint.
+ */
+export function pinTheme(id: string): () => void {
+  pinned = id;
+  void applyTheme(id);
+  return () => {
+    if (pinned !== id) return;
+    pinned = null;
+    void applyTheme(state.selected);
+  };
+}
+
 /** Applies a theme; anything unknown or broken falls back to Classic. */
-export async function applyTheme(id: string): Promise<void> {
+export async function applyTheme(requested: string): Promise<void> {
+  const id = pinned ?? requested;
   const sequence = ++applySequence;
   try {
     if (id === CLASSIC_THEME_ID) {
@@ -375,6 +396,7 @@ export function configureThemeRegistryForTests(options: { storage?: ThemePackSto
   releaseImportedCache();
   imported = [];
   appliedManifest = null;
+  pinned = null;
   applySequence += 1;
   state = { entries: entriesFor([]), selected: readStoredThemeId(), applied: CLASSIC_THEME_ID, fixedMode: null };
   return refreshImported();

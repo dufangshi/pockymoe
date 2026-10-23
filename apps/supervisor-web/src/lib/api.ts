@@ -707,6 +707,21 @@ export async function relayAdminLogin(input: {
   return result;
 }
 
+/**
+ * Starts Google or GitHub sign-up with the relay's invite code. The relay keeps
+ * the code with the pending sign-in and checks it when the provider returns;
+ * the browser then goes to the provider's page.
+ */
+export async function startOAuthSignUp(provider: 'google' | 'github', inviteCode: string) {
+  enableRelayMode();
+  const result = await request<{ url: string }>(
+    `relay/auth/oauth/${provider}/start`,
+    { method: 'POST', body: JSON.stringify({ inviteCode }) },
+    { auth: 'none' },
+  );
+  return result.url;
+}
+
 export async function relayAdminLogout() {
   const result = await request<RelaySessionDto>('relay/auth/logout', { method: 'POST' }, { auth: 'relay-admin' });
   setStoredRelayAdminToken(null);

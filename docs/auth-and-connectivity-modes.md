@@ -220,6 +220,15 @@ then creates the account or the pending registration. Refusals return to
 `/relay-portal?oauthError=<message>`; a pending registration returns to
 `/relay-portal?oauthPending=1`.
 
+In the Web, **Create account** on a relay with an invite code puts the code
+field first: the password form and **Continue with Google/GitHub** both need
+it. The Google and GitHub buttons there send the code with the POST start;
+without a code they say so beside the field, and a wrong code shows "The invite
+code is not valid." there without leaving the page. Without an invite code, and
+on the sign-in card, the buttons are plain links to the GET start. The admin
+console's registration settings say that each setting applies to Google and
+GitHub sign-up as well.
+
 Resulting workflow for the three registration settings:
 
 | Open registration | Require admin approval | Invite code | Password sign-up | New Google/GitHub identity | Existing linked OAuth account |
