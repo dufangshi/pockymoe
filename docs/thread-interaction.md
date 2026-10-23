@@ -408,8 +408,9 @@ it was the last). They are kept in this browser (`pockymoe.open-tabs.v1`, up to
 conversation opens split: while it is held, both halves say what a drop there
 does (the half under the pointer deepens); on the right it opens as the split, on
 the left it becomes the conversation and the open one moves to the right. Esc
-cancels the drag. Switching tabs keeps the page in
-place and shows the conversation at once: a conversation read in this visit is
+cancels the drag. Switching tabs, to another device's conversation too, keeps
+the page in place (the app is never remounted for another device: its plugins
+and capabilities swap in, from what it answered last) and shows the conversation at once: a conversation read in this visit is
 shown as last read and refreshed quietly, and once a conversation shows, the
 other open tabs (up to 11, any workspace) are read one by one in the background.
 Each tab's agent threads are a small robot and count right after its icon, on

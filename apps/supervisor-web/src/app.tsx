@@ -115,7 +115,9 @@ function RoutePluginProvider({ children }: { children: ReactNode }) {
   );
 
   return (
-    <PluginProvider key={deviceId ?? 'default'} adapter={adapter} builtinPlugins={builtinFrontendPlugins}>
+    // The device's plugins swap in place: a key here remounted the whole app on a
+    // move to another device's conversation and blanked the page.
+    <PluginProvider scope={deviceId ?? 'default'} adapter={adapter} builtinPlugins={builtinFrontendPlugins}>
       {children}
     </PluginProvider>
   );
@@ -126,7 +128,7 @@ function RoutePluginProvider({ children }: { children: ReactNode }) {
  * its own switches. It follows the thread in place (never showing one thread's
  * answers as another's), so switching conversations keeps the workbench mounted:
  * tabs, sidebar and composer stay, drafts survive, only the conversation changes.
- * A different device has its own provider (RoutePluginProvider).
+ * A different device swaps its provider's plugins in place (RoutePluginProvider).
  */
 function ThreadRoutePluginScope({ children }: { children: ReactNode }) {
   const { id = '' } = useParams();

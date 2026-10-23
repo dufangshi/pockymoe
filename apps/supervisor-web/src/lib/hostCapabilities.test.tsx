@@ -58,3 +58,29 @@ it('still blocks a local host whose scope is unknown', async () => {
   expect(await screen.findByRole('alert')).toBeVisible();
   expect(screen.queryByRole('button', { name: 'Local threads' })).toBeNull();
 });
+
+it('keeps the app mounted when the relay moves to another device', async () => {
+  vi.mocked(relayModeActive).mockReturnValue(true);
+  let answerB: (config: RuntimeConfigDto) => void = () => {};
+  vi.mocked(fetchRuntimeConfig).mockImplementation(async (scope) => scope === 'device-b'
+    ? new Promise<RuntimeConfigDto>(resolve => { answerB = resolve; })
+    : ({ hostCapabilities: { relay: true, accountBinding: true, devicePeer: true, previews: true } } as RuntimeConfigDto));
+  const view = render(<Entries scope="device-a" />);
+  const local = await screen.findByRole('button', { name: 'Local threads' });
+  view.rerender(<Entries scope="device-b" />);
+  // Device B has not answered yet; the page stays (the same element, not a remount).
+  expect(screen.getByRole('button', { name: 'Local threads' })).toBe(local);
+  answerB({ hostCapabilities: { relay: true, accountBinding: true, devicePeer: true, previews: false } } as RuntimeConfigDto);
+  await waitFor(() => expect(screen.queryByRole('button', { name: 'Port previews' })).toBeNull());
+  // Back on A: its answer shows at once.
+  view.rerender(<Entries scope="device-a" />);
+  expect(screen.getByRole('button', { name: 'Port previews' })).toBeVisible();
+  expect(screen.getByRole('button', { name: 'Local threads' })).toBe(local);
+});
+
+it('still waits for a local host to state its scope before showing anything', async () => {
+  vi.mocked(fetchRuntimeConfig).mockImplementation(() => new Promise(() => {}));
+  render(<Entries />);
+  await new Promise(resolve => setTimeout(resolve, 20));
+  expect(screen.queryByRole('button')).toBeNull();
+});
