@@ -1163,6 +1163,7 @@ async fn failed_sign_ins_are_counted_and_audited_only_for_existing_accounts() {
 #[test]
 fn a_recipient_leaving_a_share_is_sharing_activity() {
     assert_eq!(audit::event_category("shared_access_left"), "activity");
+    assert_eq!(audit::event_category("share.approved"), "activity");
     assert_eq!(audit::event_category("passkey.added"), "credential");
 }
 

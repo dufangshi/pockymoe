@@ -21,6 +21,8 @@ const CATEGORIES: &[(&str, &[&str])] = &[
             "grant.created",
             "grant.revoked",
             "shared_access_left",
+            "share.approved",
+            "grant.approved",
         ],
     ),
 ];

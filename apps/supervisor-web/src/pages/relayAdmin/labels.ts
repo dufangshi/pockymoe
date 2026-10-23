@@ -23,6 +23,7 @@ export function eventLabel(event: string) {
     case 'share.created': return translate('admin.eventShareCreated');
     case 'share.revoked': return translate('admin.eventShareRevoked');
     case 'shared_access_left': return translate('admin.eventSharedAccessLeft');
+    case 'share.approved': case 'grant.approved': return translate('admin.eventShareApproved');
     case 'grant.created': return translate('admin.eventShareCreated');
     case 'grant.revoked': return translate('admin.eventShareRevoked');
     case 'registration.submitted': return translate('admin.eventRegistrationSubmitted');
