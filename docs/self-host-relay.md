@@ -92,6 +92,12 @@ loginctl enable-linger "$USER"   # keep it running after you log out
 curl -fsS http://127.0.0.1:8788/healthz
 ```
 
+The admin console's **Server** section shows how the relay and its host keep up
+(memory, CPU, load, disk, the database, the store lock). On Linux it reads
+`/proc` and the service's cgroup, so a `MemoryMax=` or `CPUQuota=` set on the
+unit is what memory and CPU are measured against
+([Server](relay-admin.md#server)).
+
 ## 4. Add HTTPS
 
 Any reverse proxy with WebSocket support works. With [Caddy](https://caddyserver.com),
@@ -124,7 +130,10 @@ In the container, leave out `POCKYMOE_RELAY_HOST`, `POCKYMOE_RELAY_DATA_DIR` and
 
 ## Updating
 
-Repeat step 1 with the new version and restart the service. With a separate Web
+Repeat step 1 with the new version and restart the service. The first start of a
+version that adds statistics tables or indexes builds them once from what is
+already recorded (a few seconds per million rows; tunnels connect once it is
+done). With a separate Web
 origin, also rebuild and publish the static Web UI from the same version. Devices
 update themselves from Settings; the setup scripts install the latest published
 release.

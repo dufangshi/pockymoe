@@ -36,6 +36,11 @@ qrcodegen = "1.8"
 openssl = { version = "0.10.81", features = ["vendored"] }
 web-push = { version = "0.11.0", default-features = false }
 
+[target.'cfg(unix)'.dependencies]
+# statvfs for the disk holding the data directory and the clock tick rate for
+# process CPU time (admin Server section); already in the build through tempfile.
+rustix = { version = "1", features = ["fs", "param"] }
+
 [dev-dependencies]
 ece = "2.3.1"
 tokio-tungstenite.workspace = true

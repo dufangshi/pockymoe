@@ -2425,6 +2425,7 @@ dependencies = [
  "rand 0.8.8",
  "reqwest",
  "rusqlite",
+ "rustix",
  "scrypt",
  "serde",
  "serde_json",

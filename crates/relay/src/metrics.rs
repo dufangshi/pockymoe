@@ -11,20 +11,28 @@
 //!   metrics retention (30, 90 or 365 days, default 90), per-day version rows
 //!   kept the same; `value` sums the samples, `peak` is the largest and
 //!   `samples` counts them, so a gauge's mean is `value / samples`.
-//! - `relay_device_traffic`: forwarded requests and bytes per device and hour.
+//! - `relay_metrics` also holds per-day rows (`d`) of every metric, so long
+//!   ranges read a day per row instead of 24 hour rows.
+//! - `relay_device_traffic`: forwarded requests and bytes per device and hour,
+//!   kept 30 days; `relay_device_traffic_daily` per device and day, kept the
+//!   metrics retention.
+//! - `relay_public_link_stats`: each public link's size and whether it is
+//!   encrypted, written by triggers so the console never parses snapshots.
 //! - `relay_device_connections`: each tunnel's connect and disconnect time and
 //!   why it ended, kept 30 days (at most 200,000 rows).
 //! - `relay_device_versions`: the version each device's `/healthz` reports.
 //! - `relay_daily_active`: which accounts and devices were active each day.
 //! - `relay_admin_actions` (written by `admin::log_action`): kept 365 days, at
 //!   most 50,000 rows.
-use super::admin::{compare_versions, Range, DAY_MS, HOUR_MS, MINUTE_MS, RELAY_VERSION};
+use super::admin::{compare_versions, DAY_MS, HOUR_MS, MINUTE_MS, RELAY_VERSION};
 use super::*;
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub(crate) const MINUTE_RETENTION_MS: i64 = 48 * HOUR_MS;
 pub(crate) const CONNECTION_RETENTION_DAYS: i64 = 30;
+/// Hourly device traffic is kept this long; daily rows the metrics retention.
+pub(crate) const DEVICE_TRAFFIC_HOURS_DAYS: i64 = 30;
 const CONNECTION_MAX_ROWS: i64 = 200_000;
 pub(crate) const ADMIN_ACTION_RETENTION_DAYS: i64 = 365;
 const ADMIN_ACTION_MAX_ROWS: i64 = 50_000;
@@ -76,6 +84,7 @@ pub(crate) fn ensure_schema(conn: &Connection) -> Result<()> {
          );
          CREATE INDEX IF NOT EXISTS relay_device_connections_device ON relay_device_connections(device_id,connected_at);
          CREATE INDEX IF NOT EXISTS relay_device_connections_time ON relay_device_connections(connected_at);
+         CREATE INDEX IF NOT EXISTS relay_device_connections_ended ON relay_device_connections(ended_at,connected_at);
          CREATE TABLE IF NOT EXISTS relay_device_versions (
            device_id TEXT PRIMARY KEY REFERENCES relay_devices(id) ON DELETE CASCADE,
            version TEXT, checked_at INTEGER NOT NULL
@@ -93,8 +102,66 @@ pub(crate) fn ensure_schema(conn: &Connection) -> Result<()> {
          CREATE TABLE IF NOT EXISTS relay_user_sign_ins (
            user_id TEXT PRIMARY KEY REFERENCES relay_users(id) ON DELETE CASCADE,
            at INTEGER NOT NULL, environment TEXT NOT NULL DEFAULT ''
-         ) WITHOUT ROWID;",
+         ) WITHOUT ROWID;
+         CREATE TABLE IF NOT EXISTS relay_device_traffic_daily (
+           day INTEGER NOT NULL,
+           device_id TEXT NOT NULL REFERENCES relay_devices(id) ON DELETE CASCADE,
+           requests INTEGER NOT NULL DEFAULT 0,
+           request_bytes INTEGER NOT NULL DEFAULT 0, response_bytes INTEGER NOT NULL DEFAULT 0,
+           errors INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(day,device_id)
+         ) WITHOUT ROWID;
+         CREATE INDEX IF NOT EXISTS relay_device_traffic_daily_device ON relay_device_traffic_daily(device_id,day);
+         CREATE INDEX IF NOT EXISTS relay_metrics_series ON relay_metrics(resolution,metric,bucket);
+         CREATE TABLE IF NOT EXISTS relay_public_link_stats (
+           link_id TEXT PRIMARY KEY REFERENCES relay_public_links(id) ON DELETE CASCADE,
+           bytes INTEGER NOT NULL, encrypted INTEGER NOT NULL
+         ) WITHOUT ROWID;
+         CREATE TRIGGER IF NOT EXISTS relay_public_link_stats_insert AFTER INSERT ON relay_public_links
+         BEGIN
+           INSERT OR REPLACE INTO relay_public_link_stats(link_id,bytes,encrypted)
+           VALUES (NEW.id,length(CAST(NEW.snapshot_json AS BLOB)),
+                   json_valid(NEW.snapshot_json) AND COALESCE(json_extract(NEW.snapshot_json,'$.version'),1)=2);
+         END;
+         CREATE TRIGGER IF NOT EXISTS relay_public_link_stats_update AFTER UPDATE OF snapshot_json ON relay_public_links
+         BEGIN
+           INSERT OR REPLACE INTO relay_public_link_stats(link_id,bytes,encrypted)
+           VALUES (NEW.id,length(CAST(NEW.snapshot_json AS BLOB)),
+                   json_valid(NEW.snapshot_json) AND COALESCE(json_extract(NEW.snapshot_json,'$.version'),1)=2);
+         END;
+         CREATE INDEX IF NOT EXISTS relay_share_activity_time ON relay_share_activity(accessed_at);
+         CREATE INDEX IF NOT EXISTS relay_users_created ON relay_users(created_at);",
     )?;
+    // Links stored before the triggers existed.
+    conn.execute(
+        "INSERT OR IGNORE INTO relay_public_link_stats(link_id,bytes,encrypted)
+         SELECT l.id,length(CAST(l.snapshot_json AS BLOB)),
+                json_valid(l.snapshot_json) AND COALESCE(json_extract(l.snapshot_json,'$.version'),1)=2
+         FROM relay_public_links l
+         WHERE NOT EXISTS(SELECT 1 FROM relay_public_link_stats s WHERE s.link_id=l.id)",
+        [],
+    )?;
+    // Daily rows for the history recorded before they existed, once.
+    if relay_setting(conn, "metricsDailyRollup").is_none() {
+        let tx = conn.unchecked_transaction()?;
+        tx.execute(
+            "INSERT OR IGNORE INTO relay_metrics(resolution,bucket,metric,label,value,peak,samples)
+             SELECT 'd',bucket-(bucket%86400000),metric,label,SUM(value),MAX(peak),SUM(samples)
+             FROM relay_metrics WHERE resolution='h' AND metric<>'online_by_version'
+             GROUP BY bucket-(bucket%86400000),metric,label",
+            [],
+        )?;
+        tx.execute(
+            "INSERT OR IGNORE INTO relay_device_traffic_daily(day,device_id,requests,request_bytes,response_bytes,errors)
+             SELECT hour-(hour%86400000),device_id,SUM(requests),SUM(request_bytes),SUM(response_bytes),SUM(errors)
+             FROM relay_device_traffic GROUP BY device_id,hour-(hour%86400000)",
+            [],
+        )?;
+        tx.execute(
+            "INSERT INTO relay_settings(key,value) VALUES ('metricsDailyRollup','1')",
+            [],
+        )?;
+        tx.commit()?;
+    }
     // The latest sign-in of each account and its browser label ("Chrome ·
     // macOS"), kept after the session itself ends. Every new session is a
     // sign-in; its label is written right after the row (auth_api).
@@ -210,6 +277,27 @@ pub(crate) struct Metrics {
     active_devices: StdMutex<(String, HashSet<String>)>,
     /// When each online device's version was last read, for its connection.
     probes: StdMutex<HashMap<String, (Uuid, std::time::Instant)>>,
+    /// The relay process and its host (Server section).
+    pub(crate) host: crate::host::HostProbe,
+    /// The longest the async runtime was late waking a timer since the last
+    /// sample, in microseconds: how long ready work waited for a thread.
+    loop_lag_us: AtomicU64,
+    /// The latest relay internals, for the Server section's current values.
+    latest_load: StdMutex<Option<RelayLoad>>,
+}
+
+/// What the relay itself was doing at the last sample.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct RelayLoad {
+    pub(crate) preview_streams: usize,
+    /// Messages waiting in device tunnels' send queues: all, and the fullest.
+    pub(crate) tunnel_queue: usize,
+    pub(crate) tunnel_queue_max: usize,
+    pub(crate) browser_queue: usize,
+    pub(crate) queue_capacity: usize,
+    /// The store lock over the last minute.
+    pub(crate) store: crate::store::LockSample,
+    pub(crate) loop_lag_ms: f64,
 }
 
 fn take(counter: &AtomicU64) -> u64 {
@@ -318,6 +406,10 @@ impl Metrics {
             events.push(event);
         }
     }
+
+    pub(crate) fn latest_load(&self) -> Option<RelayLoad> {
+        *self.latest_load.lock().unwrap_or_else(|e| e.into_inner())
+    }
 }
 
 fn now_ms() -> i64 {
@@ -338,16 +430,57 @@ struct Sample {
     online: Vec<String>,
 }
 
+/// Messages waiting in a socket's send queue.
+fn queued(tx: &tokio::sync::mpsc::Sender<String>) -> usize {
+    tx.max_capacity().saturating_sub(tx.capacity())
+}
+
 async fn collect(state: &AppState, minute: i64) -> Sample {
     let metrics = &state.metrics;
-    let online: Vec<String> = state.sockets.read().await.keys().cloned().collect();
-    let browsers = state.clients.read().await.len();
+    let (online, tunnel_queue, tunnel_queue_max, queue_capacity) = {
+        let sockets = state.sockets.read().await;
+        let depths: Vec<usize> = sockets.values().map(|socket| queued(&socket.tx)).collect();
+        (
+            sockets.keys().cloned().collect::<Vec<String>>(),
+            depths.iter().sum::<usize>(),
+            depths.iter().copied().max().unwrap_or(0),
+            sockets
+                .values()
+                .next()
+                .map(|socket| socket.tx.max_capacity())
+                .unwrap_or(0),
+        )
+    };
+    let (browsers, browser_queue) = {
+        let clients = state.clients.read().await;
+        (
+            clients.len(),
+            clients
+                .values()
+                .map(|client| queued(&client.tx))
+                .sum::<usize>(),
+        )
+    };
     let pending = state
         .pending
         .lock()
         .unwrap_or_else(|p| p.into_inner())
         .len();
     let (_, preview_sessions, preview_streams) = state.preview.usage();
+    let store = state.store.conn.take_sample();
+    let loop_lag_ms = metrics.loop_lag_us.swap(0, Ordering::Relaxed) as f64 / 1000.0;
+    *metrics
+        .latest_load
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = Some(RelayLoad {
+        preview_streams,
+        tunnel_queue,
+        tunnel_queue_max,
+        browser_queue,
+        queue_capacity,
+        store,
+        loop_lag_ms,
+    });
     let mut gauges = vec![
         ("up", String::new(), 1.0),
         ("online_devices", String::new(), online.len() as f64),
@@ -355,7 +488,44 @@ async fn collect(state: &AppState, minute: i64) -> Sample {
         ("pending_requests", String::new(), pending as f64),
         ("preview_sessions", String::new(), preview_sessions as f64),
         ("preview_streams", String::new(), preview_streams as f64),
+        ("tunnel_queue", String::new(), tunnel_queue as f64),
+        ("tunnel_queue_max", String::new(), tunnel_queue_max as f64),
+        ("browser_queue", String::new(), browser_queue as f64),
+        ("store_wait_max_ms", String::new(), store.max_wait_ms),
+        ("store_hold_max_ms", String::new(), store.max_hold_ms),
+        // The share of the minute the store lock was held.
+        (
+            "store_busy",
+            String::new(),
+            (store.hold_ms / MINUTE_MS as f64).min(1.0),
+        ),
+        ("loop_lag_ms", String::new(), loop_lag_ms),
     ];
+    // The host: reading a few small files, outside the store lock.
+    let host = metrics.host.sample(state.store.data_dir(), minute);
+    let mut gauge = |name: &'static str, value: Option<f64>| {
+        if let Some(value) = value {
+            gauges.push((name, String::new(), value));
+        }
+    };
+    let bytes = |value: Option<u64>| value.map(|value| value as f64);
+    gauge("proc_rss", bytes(host.rss_bytes));
+    gauge("proc_vm", bytes(host.vm_bytes));
+    gauge("proc_threads", bytes(host.threads));
+    gauge("proc_fds", bytes(host.open_files));
+    gauge("proc_cpu", host.process_cpu_cores);
+    gauge("host_cpu", host.cpu);
+    gauge("host_load1", host.load.map(|load| load[0]));
+    gauge("host_load5", host.load.map(|load| load[1]));
+    gauge("host_mem_used", bytes(host.memory_used()));
+    gauge("host_mem_total", bytes(host.memory_total));
+    gauge("host_swap_used", bytes(host.swap_used()));
+    gauge("cgroup_mem", bytes(host.cgroup_memory));
+    gauge("cgroup_mem_max", bytes(host.cgroup_memory_limit));
+    gauge("disk_used", bytes(host.disk_used));
+    gauge("disk_available", bytes(host.disk_available));
+    gauge("net_rx", host.net_rx_per_second);
+    gauge("net_tx", host.net_tx_per_second);
     let mut counters: Vec<(&'static str, String, f64)> = [
         ("requests", take(&metrics.requests)),
         ("request_bytes", take(&metrics.request_bytes)),
@@ -375,6 +545,11 @@ async fn collect(state: &AppState, minute: i64) -> Sample {
     .filter(|(_, value)| *value > 0)
     .map(|(name, value)| (name, String::new(), value as f64))
     .collect();
+    // Time callers waited for the store lock and held it this minute: held
+    // 30,000 ms of 60,000 is a store busy half the time.
+    counters.push(("store_wait_ms", String::new(), store.wait_ms));
+    counters.push(("store_hold_ms", String::new(), store.hold_ms));
+    counters.push(("store_locks", String::new(), store.acquired as f64));
     for (index, counter) in metrics.latency.iter().enumerate() {
         let value = take(counter);
         if value > 0 {
@@ -481,28 +656,35 @@ fn write_event_rows(tx: &Connection, events: &[ConnectionEvent]) -> rusqlite::Re
 
 fn write(state: &AppState, conn: &Connection, sample: &Sample) -> rusqlite::Result<()> {
     let hour = sample.minute - sample.minute.rem_euclid(HOUR_MS);
+    let day = sample.minute - sample.minute.rem_euclid(DAY_MS);
     let today = day_of(sample.minute);
     let tx = conn.unchecked_transaction()?;
     for (metric, label, value) in sample.gauges.iter().chain(sample.counters.iter()) {
         upsert(&tx, "m", sample.minute, metric, label, *value)?;
         upsert(&tx, "h", hour, metric, label, *value)?;
+        upsert(&tx, "d", day, metric, label, *value)?;
     }
-    for (device, traffic) in &sample.traffic {
-        tx.execute(
-            "INSERT INTO relay_device_traffic(device_id,hour,requests,request_bytes,response_bytes,errors)
+    for (table, column, conflict, bucket) in [
+        ("relay_device_traffic", "hour", "device_id,hour", hour),
+        ("relay_device_traffic_daily", "day", "day,device_id", day),
+    ] {
+        let mut stmt = tx.prepare_cached(&format!(
+            "INSERT INTO {table}(device_id,{column},requests,request_bytes,response_bytes,errors)
              SELECT ?1,?2,?3,?4,?5,?6 WHERE EXISTS(SELECT 1 FROM relay_devices WHERE id=?1)
-             ON CONFLICT(device_id,hour) DO UPDATE SET requests=requests+excluded.requests,
+             ON CONFLICT({conflict}) DO UPDATE SET requests=requests+excluded.requests,
                request_bytes=request_bytes+excluded.request_bytes,
-               response_bytes=response_bytes+excluded.response_bytes, errors=errors+excluded.errors",
-            params![
+               response_bytes=response_bytes+excluded.response_bytes, errors=errors+excluded.errors"
+        ))?;
+        for (device, traffic) in &sample.traffic {
+            stmt.execute(params![
                 device,
-                hour,
+                bucket,
                 traffic.requests as i64,
                 traffic.request_bytes as i64,
                 traffic.response_bytes as i64,
                 traffic.errors as i64
-            ],
-        )?;
+            ])?;
+        }
     }
     // Online devices count as active today, once per device and day.
     {
@@ -514,37 +696,50 @@ fn write(state: &AppState, conn: &Connection, sample: &Sample) -> rusqlite::Resu
         if active.0 != today {
             *active = (today.clone(), HashSet::new());
         }
-        for device in &sample.online {
-            if active.1.insert(device.clone()) {
-                tx.execute(
-                    "INSERT OR IGNORE INTO relay_daily_active(day,kind,subject_id)
-                     SELECT ?1,'device',?2 WHERE EXISTS(SELECT 1 FROM relay_devices WHERE id=?2)",
-                    params![today, device],
-                )?;
-            }
+        let new: Vec<&String> = sample
+            .online
+            .iter()
+            .filter(|device| active.1.insert((*device).clone()))
+            .collect();
+        if !new.is_empty() {
+            // One statement for every device new today (thousands at midnight).
+            tx.execute(
+                "INSERT OR IGNORE INTO relay_daily_active(day,kind,subject_id)
+                 SELECT ?1,'device',j.value FROM json_each(?2) j
+                 WHERE EXISTS(SELECT 1 FROM relay_devices WHERE id=j.value)",
+                params![
+                    today,
+                    serde_json::to_string(&new).unwrap_or_else(|_| "[]".into())
+                ],
+            )?;
         }
     }
-    // Online devices per reported version, for the version history.
-    let day = sample.minute - sample.minute.rem_euclid(DAY_MS);
-    let mut by_version: HashMap<String, i64> = HashMap::new();
-    {
-        let mut stmt =
-            tx.prepare_cached("SELECT version FROM relay_device_versions WHERE device_id=?1")?;
-        for device in &sample.online {
-            if let Some(Some(version)) = stmt
-                .query_row([device], |row| row.get::<_, Option<String>>(0))
-                .optional()?
-            {
-                *by_version.entry(version).or_insert(0) += 1;
-            }
-        }
-    }
+    // Online devices per reported version, for the version history: one
+    // statement for every online device.
+    let by_version: Vec<(String, i64)> = if sample.online.is_empty() {
+        Vec::new()
+    } else {
+        let mut stmt = tx.prepare_cached(
+            "SELECT version,COUNT(*) FROM relay_device_versions
+             WHERE device_id IN (SELECT value FROM json_each(?1)) AND version IS NOT NULL GROUP BY version",
+        )?;
+        let online = serde_json::to_string(&sample.online).unwrap_or_else(|_| "[]".into());
+        let rows = stmt.query_map([online], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
     for (version, count) in by_version {
         upsert(&tx, "d", day, "online_by_version", &version, count as f64)?;
     }
-    if let Some(size) = database_bytes(&tx) {
-        upsert(&tx, "m", sample.minute, "db_bytes", "", size)?;
-        upsert(&tx, "h", hour, "db_bytes", "", size)?;
+    if let Some((main, wal)) = database_bytes(&tx) {
+        for (metric, value) in [
+            ("db_bytes", main + wal),
+            ("db_main_bytes", main),
+            ("db_wal_bytes", wal),
+        ] {
+            upsert(&tx, "m", sample.minute, metric, "", value)?;
+            upsert(&tx, "h", hour, metric, "", value)?;
+            upsert(&tx, "d", day, metric, "", value)?;
+        }
     }
     write_event_rows(&tx, &sample.events)?;
     tx.execute(
@@ -559,7 +754,8 @@ fn write(state: &AppState, conn: &Connection, sample: &Sample) -> rusqlite::Resu
     tx.commit()
 }
 
-fn database_bytes(conn: &Connection) -> Option<f64> {
+/// The database's pages and its write-ahead log, in bytes.
+fn database_bytes(conn: &Connection) -> Option<(f64, f64)> {
     let pages: i64 = conn
         .query_row("PRAGMA page_count", [], |row| row.get(0))
         .ok()?;
@@ -571,7 +767,7 @@ fn database_bytes(conn: &Connection) -> Option<f64> {
         .and_then(|path| std::fs::metadata(format!("{path}-wal")).ok())
         .map(|meta| meta.len() as f64)
         .unwrap_or(0.0);
-    Some((pages * size) as f64 + wal)
+    Some(((pages * size) as f64, wal))
 }
 
 pub(crate) fn setting_days(conn: &Connection, key: &str, allowed: &[i64], default: i64) -> i64 {
@@ -612,8 +808,13 @@ pub(crate) fn prune(conn: &Connection) -> rusqlite::Result<()> {
         "DELETE FROM relay_metrics WHERE resolution IN ('h','d') AND bucket<?1",
         [metrics_cutoff],
     )?;
+    // Hours of device traffic serve the last month; days the whole retention.
     conn.execute(
         "DELETE FROM relay_device_traffic WHERE hour<?1",
+        [metrics_cutoff.max(now - DEVICE_TRAFFIC_HOURS_DAYS * DAY_MS)],
+    )?;
+    conn.execute(
+        "DELETE FROM relay_device_traffic_daily WHERE day<?1",
         [metrics_cutoff],
     )?;
     conn.execute(
@@ -759,6 +960,19 @@ pub(crate) fn start(state: &Arc<AppState>) -> Result<()> {
         )?;
         prune(&conn)?;
     }
+    // How late the runtime wakes a timer: ready work waiting for a thread
+    // (a blocked or saturated runtime) shows here before anywhere else.
+    let lag = Arc::downgrade(state);
+    tokio::spawn(async move {
+        const TICK: Duration = Duration::from_millis(500);
+        loop {
+            let asked = std::time::Instant::now();
+            tokio::time::sleep(TICK).await;
+            let late = asked.elapsed().saturating_sub(TICK).as_micros() as u64;
+            let Some(state) = lag.upgrade() else { break };
+            state.metrics.loop_lag_us.fetch_max(late, Ordering::Relaxed);
+        }
+    });
     let weak = Arc::downgrade(state);
     tokio::spawn(async move {
         let mut samples = 0_u64;
@@ -831,6 +1045,8 @@ pub(crate) fn note_user_activity(conn: &Connection, user_id: &str) {
 pub(crate) enum Agg {
     /// A gauge: the mean of its samples.
     Mean,
+    /// A gauge: the largest sample.
+    Peak,
     /// A counter: the sum.
     Sum,
 }
@@ -839,13 +1055,21 @@ pub(crate) fn history_start(conn: &Connection) -> Option<i64> {
     relay_setting(conn, "metricsStartedAt").and_then(|value| value.parse().ok())
 }
 
-/// Steps for a range: minutes for a day, hours up to a week, then wider.
-pub(crate) fn step_for(range: Range) -> i64 {
-    match range {
-        Range::Day => 5 * MINUTE_MS,
-        Range::Week => HOUR_MS,
-        Range::Month => 4 * HOUR_MS,
-        Range::Quarter => 12 * HOUR_MS,
+/// Metrics recorded per label (latency bucket, refusal kind, version); every
+/// other metric has the empty label.
+fn labelled(metric: &str) -> bool {
+    matches!(metric, "latency" | "rate_limited" | "online_by_version")
+}
+
+/// The rows a series of `step` buckets reads: minutes below an hour, days
+/// for whole-day steps, hours otherwise.
+fn resolution_for(step: i64) -> &'static str {
+    if step < HOUR_MS {
+        "m"
+    } else if step % DAY_MS == 0 {
+        "d"
+    } else {
+        "h"
     }
 }
 
@@ -861,20 +1085,25 @@ pub(crate) fn series(
     step: i64,
     agg: Agg,
 ) -> Vec<(i64, Option<f64>)> {
-    let resolution = if step < HOUR_MS { "m" } else { "h" };
+    let resolution = resolution_for(step);
     let start = start - start.rem_euclid(step);
     let buckets = ((end - start + step - 1) / step).max(1) as usize;
     let read = |name: &str| -> Vec<(i64, f64, f64, i64)> {
+        // Name the label whenever it is known, so the read seeks the primary
+        // key (resolution, metric, label, bucket) instead of scanning every
+        // metric of the buckets.
         let sql = format!(
             "SELECT bucket,value,peak,samples FROM relay_metrics
              WHERE resolution=?1 AND metric=?2 AND bucket>=?3 AND bucket<?4{}",
             if label.is_some() && name == metric {
                 " AND label=?5"
+            } else if !labelled(name) {
+                " AND label=''"
             } else {
                 ""
             }
         );
-        conn.prepare(&sql)
+        conn.prepare_cached(&sql)
             .and_then(|mut stmt| {
                 let map = |row: &rusqlite::Row<'_>| {
                     Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
@@ -897,26 +1126,30 @@ pub(crate) fn series(
             covered[index] = true;
         }
     }
-    let mut sums = vec![(0.0_f64, 0_i64); buckets];
-    for (bucket, value, _, samples) in read(metric) {
+    let mut sums = vec![(0.0_f64, 0_i64, f64::NEG_INFINITY); buckets];
+    for (bucket, value, peak, samples) in read(metric) {
         let index = ((bucket - start) / step) as usize;
         if index < buckets {
             sums[index].0 += value;
             sums[index].1 += samples;
+            sums[index].2 = sums[index].2.max(peak);
         }
     }
     (0..buckets)
         .map(|index| {
             let at = start + index as i64 * step;
-            let (value, samples) = sums[index];
+            let (value, samples, peak) = sums[index];
             let point = if !covered[index] && samples == 0 {
                 None
             } else {
-                Some(match agg {
-                    Agg::Sum => value,
-                    Agg::Mean if samples > 0 => value / samples as f64,
-                    Agg::Mean => 0.0,
-                })
+                match agg {
+                    Agg::Sum => Some(value),
+                    Agg::Mean if samples > 0 => Some(value / samples as f64),
+                    Agg::Peak if samples > 0 => Some(peak),
+                    // A gauge the relay did not record in a sampled bucket
+                    // (a host figure this system does not offer) is unknown.
+                    Agg::Mean | Agg::Peak => None,
+                }
             };
             (at, point)
         })
@@ -931,42 +1164,73 @@ pub(crate) fn series_json(points: &[(i64, Option<f64>)], step: i64, history: Opt
     })
 }
 
-/// The sum of a counter over a time window.
-pub(crate) fn total(conn: &Connection, metric: &str, start: i64, end: i64) -> f64 {
-    let (resolution, start) = if end - start <= MINUTE_RETENTION_MS {
-        ("m", start)
-    } else {
-        ("h", start - start.rem_euclid(HOUR_MS))
-    };
-    conn.query_row(
-        "SELECT COALESCE(SUM(value),0) FROM relay_metrics WHERE resolution=?1 AND metric=?2 AND bucket>=?3 AND bucket<?4",
-        params![resolution, metric, start, end],
-        |row| row.get(0),
-    )
-    .unwrap_or(0.0)
+/// The rows that cover `[start, end)`: minutes while they are kept, else
+/// whole days from day rows with the hours at either edge from hour rows
+/// (to the hour, as before day rows existed).
+fn segments(start: i64, end: i64) -> Vec<(&'static str, i64, i64)> {
+    if start >= now_ms() - MINUTE_RETENTION_MS {
+        return vec![("m", start, end)];
+    }
+    let start = start - start.rem_euclid(HOUR_MS);
+    let first_day = start + (DAY_MS - start.rem_euclid(DAY_MS)) % DAY_MS;
+    let last_day = end - end.rem_euclid(DAY_MS);
+    if last_day - first_day < 2 * DAY_MS {
+        return vec![("h", start, end)];
+    }
+    vec![
+        ("h", start, first_day),
+        ("d", first_day, last_day),
+        ("h", last_day, end),
+    ]
 }
 
-/// Counter totals per label over a window (rate limits by kind).
+/// The sum of a counter over a time window.
+pub(crate) fn total(conn: &Connection, metric: &str, start: i64, end: i64) -> f64 {
+    segments(start, end)
+        .into_iter()
+        .filter(|(_, from, to)| from < to)
+        .map(|(resolution, from, to)| {
+            conn.prepare_cached(if labelled(metric) {
+                "SELECT COALESCE(SUM(value),0) FROM relay_metrics WHERE resolution=?1 AND metric=?2 AND bucket>=?3 AND bucket<?4"
+            } else {
+                "SELECT COALESCE(SUM(value),0) FROM relay_metrics WHERE resolution=?1 AND metric=?2 AND label='' AND bucket>=?3 AND bucket<?4"
+            })
+            .and_then(|mut stmt| stmt.query_row(params![resolution, metric, from, to], |row| row.get::<_, f64>(0)))
+            .unwrap_or(0.0)
+        })
+        .sum()
+}
+
+/// Counter totals per label over a window (rate limits by kind), largest first.
 pub(crate) fn totals_by_label(
     conn: &Connection,
     metric: &str,
     start: i64,
     end: i64,
 ) -> Vec<(String, f64)> {
-    let resolution = if end - start <= MINUTE_RETENTION_MS {
-        "m"
-    } else {
-        "h"
-    };
-    conn.prepare(
-        "SELECT label,SUM(value) FROM relay_metrics WHERE resolution=?1 AND metric=?2 AND bucket>=?3 AND bucket<?4
-         GROUP BY label ORDER BY 2 DESC",
-    )
-    .and_then(|mut stmt| {
-        stmt.query_map(params![resolution, metric, start, end], |row| Ok((row.get(0)?, row.get(1)?)))?
-            .collect()
-    })
-    .unwrap_or_default()
+    let mut totals: Vec<(String, f64)> = Vec::new();
+    for (resolution, from, to) in segments(start, end) {
+        if from >= to {
+            continue;
+        }
+        let rows: Vec<(String, f64)> = conn
+            .prepare_cached(
+                "SELECT label,SUM(value) FROM relay_metrics WHERE resolution=?1 AND metric=?2 AND bucket>=?3 AND bucket<?4 GROUP BY label",
+            )
+            .and_then(|mut stmt| {
+                stmt.query_map(params![resolution, metric, from, to], |row| Ok((row.get(0)?, row.get(1)?)))?
+                    .collect()
+            })
+            .unwrap_or_default();
+        for (label, value) in rows {
+            match totals.iter_mut().find(|(known, _)| *known == label) {
+                Some(entry) => entry.1 += value,
+                None => totals.push((label, value)),
+            }
+        }
+    }
+    totals.sort_by(|a, b| b.1.total_cmp(&a.1));
+    totals
 }
 
 /// The 95th percentile of forwarding latency (ms) over a window, from the
@@ -1028,7 +1292,7 @@ pub(crate) fn percentile(counts: &[(String, f64)], quantile: f64) -> Option<f64>
 
 /// Latency histogram rows per series bucket.
 fn latency_rows(conn: &Connection, start: i64, end: i64, step: i64) -> Vec<Vec<(String, f64)>> {
-    let resolution = if step < HOUR_MS { "m" } else { "h" };
+    let resolution = resolution_for(step);
     let buckets = ((end - start + step - 1) / step).max(1) as usize;
     let mut per: Vec<Vec<(String, f64)>> = vec![Vec::new(); buckets];
     if let Ok(mut stmt) = conn.prepare(
@@ -1137,52 +1401,88 @@ pub(crate) fn connects_since(conn: &Connection, start: i64) -> HashMap<String, i
     .unwrap_or_default()
 }
 
-/// When each device's last tunnel ended.
-pub(crate) fn last_seen(conn: &Connection) -> HashMap<String, i64> {
-    conn.prepare("SELECT device_id,MAX(COALESCE(ended_at,connected_at)) FROM relay_device_connections GROUP BY device_id")
-        .and_then(|mut stmt| stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?.collect())
-        .unwrap_or_default()
+/// When each of these devices' last tunnel ended (or began, while open):
+/// the newest connection of each, one index lookup per device.
+pub(crate) fn last_seen_of(conn: &Connection, ids: &[String]) -> HashMap<String, i64> {
+    let mut seen = HashMap::new();
+    if let Ok(mut stmt) = conn.prepare_cached(
+        "SELECT COALESCE(ended_at,connected_at) FROM relay_device_connections WHERE device_id=?1
+         ORDER BY connected_at DESC LIMIT 1",
+    ) {
+        for id in ids {
+            if let Ok(at) = stmt.query_row([id], |row| row.get::<_, i64>(0)) {
+                seen.insert(id.clone(), at);
+            }
+        }
+    }
+    seen
 }
 
-pub(crate) fn versions(conn: &Connection) -> HashMap<String, (Option<String>, i64)> {
-    conn.prepare("SELECT device_id,version,checked_at FROM relay_device_versions")
-        .and_then(|mut stmt| {
-            stmt.query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, (row.get(1)?, row.get(2)?)))
-            })?
-            .collect()
-        })
-        .unwrap_or_default()
+/// Every reported version with its device count, and how many of the online
+/// devices report each (one pass over the versions table).
+pub(crate) fn version_totals(
+    conn: &Connection,
+    online: &std::collections::HashSet<&str>,
+) -> Vec<(Option<String>, i64, i64)> {
+    let mut counts: HashMap<Option<String>, (i64, i64)> = HashMap::new();
+    let mut known_online = 0_i64;
+    if let Ok(mut stmt) = conn.prepare("SELECT device_id,version FROM relay_device_versions") {
+        if let Ok(rows) = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+        }) {
+            for (device, version) in rows.flatten() {
+                let entry = counts.entry(version).or_default();
+                entry.0 += 1;
+                if online.contains(device.as_str()) {
+                    entry.1 += 1;
+                    known_online += 1;
+                }
+            }
+        }
+    }
+    // Online devices the relay has not read yet.
+    let unknown = online.len() as i64 - known_online;
+    if unknown > 0 {
+        let entry = counts.entry(None).or_default();
+        entry.0 += unknown;
+        entry.1 += unknown;
+    }
+    counts
+        .into_iter()
+        .map(|(version, (devices, online))| (version, devices, online))
+        .collect()
 }
 
 pub(crate) fn outdated(version: Option<&str>) -> Option<bool> {
     version.map(|version| compare_versions(version, RELAY_VERSION) == std::cmp::Ordering::Less)
 }
 
-/// Forwarded requests per device and day for the last `days` days (oldest first).
-pub(crate) fn daily_requests(conn: &Connection, days: i64) -> HashMap<String, Vec<i64>> {
+/// Forwarded requests per day for the last `days` days (oldest first) of
+/// these devices, from the daily rows.
+pub(crate) fn daily_requests_of(
+    conn: &Connection,
+    ids: &[String],
+    days: i64,
+) -> HashMap<String, Vec<i64>> {
     let now = now_ms();
     let first = now - now.rem_euclid(DAY_MS) - (days - 1) * DAY_MS;
     let mut result: HashMap<String, Vec<i64>> = HashMap::new();
-    if let Ok(mut stmt) =
-        conn.prepare("SELECT device_id,hour,requests FROM relay_device_traffic WHERE hour>=?1")
-    {
-        if let Ok(rows) = stmt.query_map([first], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, i64>(1)?,
-                row.get::<_, i64>(2)?,
-            ))
-        }) {
-            for (device, hour, requests) in rows.flatten() {
-                let index = ((hour - first) / DAY_MS) as usize;
-                let entry = result
-                    .entry(device)
-                    .or_insert_with(|| vec![0; days as usize]);
-                if index < entry.len() {
-                    entry[index] += requests;
+    if let Ok(mut stmt) = conn.prepare_cached(
+        "SELECT day,requests FROM relay_device_traffic_daily WHERE device_id=?1 AND day>=?2",
+    ) {
+        for id in ids {
+            let mut values = vec![0; days as usize];
+            if let Ok(rows) = stmt.query_map(params![id, first], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+            }) {
+                for (day, requests) in rows.flatten() {
+                    let index = ((day - first) / DAY_MS) as usize;
+                    if index < values.len() {
+                        values[index] += requests;
+                    }
                 }
             }
+            result.insert(id.clone(), values);
         }
     }
     result

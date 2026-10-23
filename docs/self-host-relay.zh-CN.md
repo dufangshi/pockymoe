@@ -82,6 +82,8 @@ loginctl enable-linger "$USER"   # 退出登录后继续运行
 curl -fsS http://127.0.0.1:8788/healthz
 ```
 
+管理后台的**服务器**分区显示中继及其主机是否跟得上（内存、CPU、负载、磁盘、数据库、存储锁）。在 Linux 上它读取 `/proc` 和服务所在的 cgroup，因此单元里设置的 `MemoryMax=` 或 `CPUQuota=` 就是衡量内存和 CPU 的上限（见[服务器](relay-admin.md#server)）。
+
 ## 4. 加上 HTTPS
 
 任何支持 WebSocket 的反向代理都可以。用会自动申请证书的 [Caddy](https://caddyserver.com)：
@@ -110,6 +112,8 @@ docker run -d --name pockymoe-relay --restart unless-stopped \
 ## 更新
 
 用新版本重复第 1 步，然后重启服务。使用独立的 Web origin 时，还要用同一版本重新构建并发布静态网页。设备在网页的设置里自行更新；安装脚本安装的是最新发布的版本。
+
+首次启动新增统计表或索引的版本时，会根据已有记录一次性建好它们（每百万行几秒；完成后隧道才会连接）。
 
 ### 尚无账户密钥的账户和未绑定的设备
 

@@ -167,17 +167,21 @@ impl UserFacts {
     }
 }
 
-fn online_devices_by_owner(conn: &Connection, live: &Live) -> HashMap<String, usize> {
+/// Online devices of these users (the page), from the tunnels in memory.
+fn online_devices_of(conn: &Connection, live: &Live, users: &[String]) -> HashMap<String, usize> {
     let mut counts = HashMap::new();
-    if let Ok(mut stmt) = conn.prepare("SELECT id,owner_user_id FROM relay_devices") {
-        if let Ok(rows) = stmt.query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        }) {
-            for (device, owner) in rows.flatten() {
-                if live.tunnels.contains_key(&device) {
-                    *counts.entry(owner).or_insert(0) += 1;
-                }
-            }
+    if let Ok(mut stmt) = conn.prepare_cached("SELECT id FROM relay_devices WHERE owner_user_id=?1")
+    {
+        for user in users {
+            let online = stmt
+                .query_map([user], |row| row.get::<_, String>(0))
+                .map(|rows| {
+                    rows.flatten()
+                        .filter(|device| live.tunnels.contains_key(device))
+                        .count()
+                })
+                .unwrap_or(0);
+            counts.insert(user.clone(), online);
         }
     }
     counts
@@ -189,124 +193,138 @@ pub(super) async fn list(
     State(state): State<Arc<AppState>>,
 ) -> Response {
     let live = live(&state).await;
-    let (conn, _) = match admin_conn(&state, &headers).await {
+    let (conn, _) = match admin_read(&state, &headers).await {
         Ok(value) => value,
         Err(response) => return response,
     };
-    let paging = query.paging();
-    let week = rfc3339_ago(7 * DAY_MS);
-    let pattern = query.search().map(|search| like_pattern(&search));
-    // Every statement names ?1–?3, so the same parameters bind whatever the
-    // filter; an empty pattern matches every user.
-    // Every statement names ?1–?9, so the same parameters bind whatever the
-    // filters; empty text leaves a condition open.
-    let condition = format!(
-        "({}) AND ?1=?1 AND ?4=?4 AND ?5=?5 AND (?2='' OR lower(u.username) LIKE ?2 ESCAPE '\\' OR lower(u.email) LIKE ?2 ESCAPE '\\' OR u.id=?3) AND {}",
-        filter_condition(query.filter()),
-        column_conditions(&query).join(" AND ")
-    );
-    let order = match query.sort_by(Dir::Asc) {
-        Some((key, dir)) => {
-            let d = dir.sql();
-            match key {
-                "name" => format!("u.username {d}"),
-                "email" => format!("u.email {d}, u.username ASC"),
-                "role" => format!("u.role {d}, u.username ASC"),
-                "status" => format!("u.enabled {d}, {RESET_PENDING} {d}, u.username ASC"),
-                "created" => format!("u.created_at {d}, u.username ASC"),
-                "lastSeen" => format!("u.last_seen_at IS NULL, u.last_seen_at {d}, u.username ASC"),
-                "lastSignIn" => format!("{SIGN_IN_AT} IS NULL, {SIGN_IN_AT} {d}, u.username ASC"),
-                "browser" => format!(
-                    "COALESCE((SELECT s.environment FROM relay_user_sign_ins s WHERE s.user_id=u.id),'')='', (SELECT s.environment FROM relay_user_sign_ins s WHERE s.user_id=u.id) {d}, u.username ASC"
-                ),
-                "devices" => format!(
-                    "(SELECT COUNT(*) FROM relay_devices d WHERE d.owner_user_id=u.id) {d}, u.username ASC"
-                ),
-                "key" => format!("u.role='admin', {HAS_KEY} {d}, u.username ASC"),
-                "factors" => format!(
-                    "{HAS_TOTP} + (SELECT COUNT(*) FROM relay_passkeys p WHERE p.user_id=u.id) {d}, u.username ASC"
-                ),
-                "method" => format!("{OAUTH_ONLY} {d}, u.username ASC"),
-                _ => "u.last_seen_at IS NULL, u.last_seen_at DESC, u.username ASC".to_string(),
+    blocking(|| {
+        let paging = query.paging();
+        let week = rfc3339_ago(7 * DAY_MS);
+        let pattern = query.search().map(|search| like_pattern(&search));
+        // Every statement names ?1–?3, so the same parameters bind whatever the
+        // filter; an empty pattern matches every user.
+        // Every statement names ?1–?9, so the same parameters bind whatever the
+        // filters; empty text leaves a condition open.
+        let condition = format!(
+            "({}) AND ?1=?1 AND ?4=?4 AND ?5=?5 AND (?2='' OR lower(u.username) LIKE ?2 ESCAPE '\\' OR lower(u.email) LIKE ?2 ESCAPE '\\' OR u.id=?3) AND {}",
+            filter_condition(query.filter()),
+            column_conditions(&query).join(" AND ")
+        );
+        let order = match query.sort_by(Dir::Asc) {
+            Some((key, dir)) => {
+                let d = dir.sql();
+                match key {
+                    "name" => format!("u.username {d}"),
+                    "email" => format!("u.email {d}, u.username ASC"),
+                    "role" => format!("u.role {d}, u.username ASC"),
+                    "status" => format!("u.enabled {d}, {RESET_PENDING} {d}, u.username ASC"),
+                    "created" => format!("u.created_at {d}, u.username ASC"),
+                    "lastSeen" => format!("u.last_seen_at IS NULL, u.last_seen_at {d}, u.username ASC"),
+                    "lastSignIn" => format!("{SIGN_IN_AT} IS NULL, {SIGN_IN_AT} {d}, u.username ASC"),
+                    "browser" => format!(
+                        "COALESCE((SELECT s.environment FROM relay_user_sign_ins s WHERE s.user_id=u.id),'')='', (SELECT s.environment FROM relay_user_sign_ins s WHERE s.user_id=u.id) {d}, u.username ASC"
+                    ),
+                    "devices" => format!(
+                        "(SELECT COUNT(*) FROM relay_devices d WHERE d.owner_user_id=u.id) {d}, u.username ASC"
+                    ),
+                    "key" => format!("u.role='admin', {HAS_KEY} {d}, u.username ASC"),
+                    "factors" => format!(
+                        "{HAS_TOTP} + (SELECT COUNT(*) FROM relay_passkeys p WHERE p.user_id=u.id) {d}, u.username ASC"
+                    ),
+                    "method" => format!("{OAUTH_ONLY} {d}, u.username ASC"),
+                    _ => "u.last_seen_at IS NULL, u.last_seen_at DESC, u.username ASC".to_string(),
+                }
             }
-        }
-        None => "u.last_seen_at IS NULL, u.last_seen_at DESC, u.username ASC".to_string(),
-    };
-    let raw = query.q.clone().unwrap_or_default();
-    let (seen_from, seen_to) = query.seen_window().text();
-    let (created_from, created_to) = query.created_window().text();
-    let search_params = (week.as_str(), pattern.as_deref().unwrap_or(""), raw.trim());
-    let bind = |limit: i64, offset: i64| {
-        [
-            search_params.0.to_string(),
-            search_params.1.to_string(),
-            search_params.2.to_string(),
-            limit.to_string(),
-            offset.to_string(),
-            seen_from.clone(),
-            seen_to.clone(),
-            created_from.clone(),
-            created_to.clone(),
-        ]
-    };
-    let total = count(
-        &conn,
-        &format!("SELECT COUNT(*) FROM relay_users u WHERE {condition}"),
-        rusqlite::params_from_iter(bind(0, 0)),
-    );
-    let users: Vec<UserFacts> = conn
-        .prepare(&format!(
-            "SELECT {USER_COLUMNS} FROM relay_users u WHERE {condition} ORDER BY {order} LIMIT CAST(?4 AS INTEGER) OFFSET CAST(?5 AS INTEGER)"
-        ))
-        .and_then(|mut stmt| {
-            stmt.query_map(
-                rusqlite::params_from_iter(bind(paging.size as i64, paging.offset() as i64)),
-                user_facts,
-            )?
-            .collect()
-        })
-        .unwrap_or_default();
-    let online = online_devices_by_owner(&conn, &live);
-    let items = users
-        .iter()
-        .map(|user| user.json(online.get(&user.id).copied().unwrap_or(0)))
-        .collect();
-    let counts = conn
-        .query_row(
-            &format!(
-                "SELECT COUNT(*),
-                  COALESCE(SUM(u.last_seen_at>=?1),0),
-                  COALESCE(SUM(u.role='user' AND NOT {HAS_KEY}),0),
-                  COALESCE(SUM(u.role='user' AND NOT {HAS_FACTOR}),0),
-                  COALESCE(SUM(u.enabled=0),0),
-                  COALESCE(SUM(u.last_seen_at IS NULL),0)
-                 FROM relay_users u"
-            ),
-            [week.as_str()],
-            |row| {
-                Ok(json!({
-                    "all": row.get::<_, i64>(0)?,
-                    "active7d": row.get::<_, i64>(1)?,
-                    "noAccountKey": row.get::<_, i64>(2)?,
-                    "noTwoFactor": row.get::<_, i64>(3)?,
-                    "disabled": row.get::<_, i64>(4)?,
-                    "neverSeen": row.get::<_, i64>(5)?,
-                }))
-            },
-        )
-        .unwrap_or(Value::Null);
-    let mut body = paging.wrap(items, total as usize);
-    body.insert("counts".into(), counts);
-    body.insert("methods".into(), login_methods(&conn));
-    body.insert(
-        "pendingRegistrations".into(),
-        json!(count(
+            None => "u.last_seen_at IS NULL, u.last_seen_at DESC, u.username ASC".to_string(),
+        };
+        let raw = query.q.clone().unwrap_or_default();
+        let (seen_from, seen_to) = query.seen_window().text();
+        let (created_from, created_to) = query.created_window().text();
+        let search_params = (week.as_str(), pattern.as_deref().unwrap_or(""), raw.trim());
+        let bind = |limit: i64, offset: i64| {
+            [
+                search_params.0.to_string(),
+                search_params.1.to_string(),
+                search_params.2.to_string(),
+                limit.to_string(),
+                offset.to_string(),
+                seen_from.clone(),
+                seen_to.clone(),
+                created_from.clone(),
+                created_to.clone(),
+            ]
+        };
+        let total = count(
             &conn,
-            "SELECT COUNT(*) FROM relay_pending_registrations WHERE status='pending'",
-            []
-        )),
-    );
-    Json(Value::Object(body)).into_response()
+            &format!("SELECT COUNT(*) FROM relay_users u WHERE {condition}"),
+            rusqlite::params_from_iter(bind(0, 0)),
+        );
+        // The page's ids first (sorting reads only what the order needs), then
+        // the facts of those users: a page costs 25 rows of subqueries, not 10,000.
+        let ids: Vec<String> = conn
+            .prepare(&format!(
+                "SELECT u.id FROM relay_users u WHERE {condition} ORDER BY {order} LIMIT CAST(?4 AS INTEGER) OFFSET CAST(?5 AS INTEGER)"
+            ))
+            .and_then(|mut stmt| {
+                stmt.query_map(
+                    rusqlite::params_from_iter(bind(paging.size as i64, paging.offset() as i64)),
+                    |row| row.get::<_, String>(0),
+                )?
+                .collect()
+            })
+            .unwrap_or_default();
+        let users: Vec<UserFacts> = conn
+            .prepare_cached(&format!(
+                "SELECT {USER_COLUMNS} FROM relay_users u WHERE u.id=?1"
+            ))
+            .map(|mut stmt| {
+                ids.iter()
+                    .filter_map(|id| stmt.query_row([id], user_facts).ok())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let online = online_devices_of(&conn, &live, &ids);
+        let items = users
+            .iter()
+            .map(|user| user.json(online.get(&user.id).copied().unwrap_or(0)))
+            .collect();
+        let counts = conn
+            .query_row(
+                &format!(
+                    "SELECT COUNT(*),
+                      COALESCE(SUM(u.last_seen_at>=?1),0),
+                      COALESCE(SUM(u.role='user' AND NOT {HAS_KEY}),0),
+                      COALESCE(SUM(u.role='user' AND NOT {HAS_FACTOR}),0),
+                      COALESCE(SUM(u.enabled=0),0),
+                      COALESCE(SUM(u.last_seen_at IS NULL),0)
+                     FROM relay_users u"
+                ),
+                [week.as_str()],
+                |row| {
+                    Ok(json!({
+                        "all": row.get::<_, i64>(0)?,
+                        "active7d": row.get::<_, i64>(1)?,
+                        "noAccountKey": row.get::<_, i64>(2)?,
+                        "noTwoFactor": row.get::<_, i64>(3)?,
+                        "disabled": row.get::<_, i64>(4)?,
+                        "neverSeen": row.get::<_, i64>(5)?,
+                    }))
+                },
+            )
+            .unwrap_or(Value::Null);
+        let mut body = paging.wrap(items, total as usize);
+        body.insert("counts".into(), counts);
+        body.insert("methods".into(), login_methods(&conn));
+        body.insert(
+            "pendingRegistrations".into(),
+            json!(count(
+                &conn,
+                "SELECT COUNT(*) FROM relay_pending_registrations WHERE status='pending'",
+                []
+            )),
+        );
+        Json(Value::Object(body)).into_response()
+    })
 }
 
 /// How non-admin users sign in and which second factors they have.
@@ -348,88 +366,98 @@ pub(super) async fn detail(
     State(state): State<Arc<AppState>>,
 ) -> Response {
     let live = live(&state).await;
-    let (conn, _) = match admin_conn(&state, &headers).await {
+    let (conn, _) = match admin_read(&state, &headers).await {
         Ok(value) => value,
         Err(response) => return response,
     };
-    let Some(user) = conn
-        .query_row(
-            &format!("SELECT {USER_COLUMNS} FROM relay_users u WHERE u.id=?1"),
-            [&user_id],
-            user_facts,
-        )
-        .optional()
-        .ok()
-        .flatten()
-    else {
-        return not_found("User not found");
-    };
-    let devices = super::devices::rows(&conn, &live, Some(&user.id));
-    let online = devices.iter().filter(|device| device.connected()).count();
-    let now = now_ms();
-    let sessions: Vec<Value> = conn
-        .prepare(
-            "SELECT token_hash,environment,created_at,expires_at,strong_auth_at,trusted_browser_id,account_mode
-             FROM relay_auth_sessions WHERE user_id=?1 AND expires_at>?2 ORDER BY created_at DESC LIMIT 50",
-        )
-        .and_then(|mut stmt| {
-            stmt.query_map(params![user.id, now], session_json)?
-                .collect()
-        })
-        .unwrap_or_default();
-    let events = super::audit::recent_for_user(&conn, &user.id, 12);
-    let outgoing = count(
-        &conn,
-        "SELECT (SELECT COUNT(*) FROM relay_shares WHERE owner_user_id=?1 AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>?2))
-              + (SELECT COUNT(*) FROM relay_access_grants WHERE owner_user_id=?1 AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>?2))",
-        params![user.id, now_rfc3339()],
-    );
-    let incoming = count(
-        &conn,
-        "SELECT (SELECT COUNT(*) FROM relay_shares WHERE target_user_id=?1 AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>?2))
-              + (SELECT COUNT(*) FROM relay_access_grants WHERE target_user_id=?1 AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>?2))",
-        params![user.id, now_rfc3339()],
-    );
-    let browsers = count(
-        &conn,
-        "SELECT COUNT(*) FROM relay_account_browsers WHERE user_id=?1",
-        [&user.id],
-    );
-    let trusted = count(
-        &conn,
-        "SELECT COUNT(*) FROM relay_trusted_browsers WHERE user_id=?1 AND expires_at>?2",
-        params![user.id, now],
-    );
-    let registration = conn
-        .query_row(
-            "SELECT r.provider,r.created_at,r.reviewed_at,(SELECT username FROM relay_users WHERE id=r.reviewed_by_user_id)
-             FROM relay_pending_registrations r
-             WHERE r.status='approved' AND (r.username=?1 OR r.email=?2) ORDER BY r.reviewed_at DESC LIMIT 1",
-            params![user.username, user.email],
-            |row| {
-                Ok(json!({
-                    "provider": row.get::<_, String>(0)?,
-                    "requestedAt": row.get::<_, String>(1)?,
-                    "approvedAt": row.get::<_, Option<String>>(2)?,
-                    "approvedBy": row.get::<_, Option<String>>(3)?,
-                }))
-            },
-        )
-        .optional()
-        .ok()
-        .flatten();
-    Json(json!({
-        "user": user.json(online),
-        "devices": devices.iter().map(|device| device.json()).collect::<Vec<_>>(),
-        "sessions": sessions,
-        "shares": { "outgoing": outgoing, "incoming": incoming },
-        "accountBrowsers": browsers,
-        "trustedBrowsers": trusted,
-        "events": events,
-        "registration": registration,
-    }))
-    .into_response()
+    blocking(|| {
+        let Some(user) = conn
+            .query_row(
+                &format!("SELECT {USER_COLUMNS} FROM relay_users u WHERE u.id=?1"),
+                [&user_id],
+                user_facts,
+            )
+            .optional()
+            .ok()
+            .flatten()
+        else {
+            return not_found("User not found");
+        };
+        // At most 50 devices here; the Devices page lists all of an owner's.
+        let (devices, devices_total) =
+            super::devices::owner_rows(&conn, &live, &user.id, USER_DEVICES);
+        let online = online_devices_of(&conn, &live, std::slice::from_ref(&user.id))
+            .remove(&user.id)
+            .unwrap_or(0);
+        let now = now_ms();
+        let sessions: Vec<Value> = conn
+            .prepare(
+                "SELECT token_hash,environment,created_at,expires_at,strong_auth_at,trusted_browser_id,account_mode
+                 FROM relay_auth_sessions WHERE user_id=?1 AND expires_at>?2 ORDER BY created_at DESC LIMIT 50",
+            )
+            .and_then(|mut stmt| {
+                stmt.query_map(params![user.id, now], session_json)?
+                    .collect()
+            })
+            .unwrap_or_default();
+        let events = super::audit::recent_for_user(&conn, &user.id, 12);
+        let outgoing = count(
+            &conn,
+            "SELECT (SELECT COUNT(*) FROM relay_shares WHERE owner_user_id=?1 AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>?2))
+                  + (SELECT COUNT(*) FROM relay_access_grants WHERE owner_user_id=?1 AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>?2))",
+            params![user.id, now_rfc3339()],
+        );
+        let incoming = count(
+            &conn,
+            "SELECT (SELECT COUNT(*) FROM relay_shares WHERE target_user_id=?1 AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>?2))
+                  + (SELECT COUNT(*) FROM relay_access_grants WHERE target_user_id=?1 AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>?2))",
+            params![user.id, now_rfc3339()],
+        );
+        let browsers = count(
+            &conn,
+            "SELECT COUNT(*) FROM relay_account_browsers WHERE user_id=?1",
+            [&user.id],
+        );
+        let trusted = count(
+            &conn,
+            "SELECT COUNT(*) FROM relay_trusted_browsers WHERE user_id=?1 AND expires_at>?2",
+            params![user.id, now],
+        );
+        let registration = conn
+            .query_row(
+                "SELECT r.provider,r.created_at,r.reviewed_at,(SELECT username FROM relay_users WHERE id=r.reviewed_by_user_id)
+                 FROM relay_pending_registrations r
+                 WHERE r.status='approved' AND (r.username=?1 OR r.email=?2) ORDER BY r.reviewed_at DESC LIMIT 1",
+                params![user.username, user.email],
+                |row| {
+                    Ok(json!({
+                        "provider": row.get::<_, String>(0)?,
+                        "requestedAt": row.get::<_, String>(1)?,
+                        "approvedAt": row.get::<_, Option<String>>(2)?,
+                        "approvedBy": row.get::<_, Option<String>>(3)?,
+                    }))
+                },
+            )
+            .optional()
+            .ok()
+            .flatten();
+        Json(json!({
+            "user": user.json(online),
+            "devices": devices.iter().map(|device| device.json()).collect::<Vec<_>>(),
+            "devicesTotal": devices_total,
+            "sessions": sessions,
+            "shares": { "outgoing": outgoing, "incoming": incoming },
+            "accountBrowsers": browsers,
+            "trustedBrowsers": trusted,
+            "events": events,
+            "registration": registration,
+        }))
+        .into_response()
+    })
 }
+
+/// Devices a user's details list; the rest are on the Devices page.
+const USER_DEVICES: usize = 50;
 
 pub(super) fn session_json(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
     let environment: String = row.get(1)?;
@@ -494,63 +522,65 @@ pub(super) async fn registrations(
     Query(query): Query<RegistrationQuery>,
     State(state): State<Arc<AppState>>,
 ) -> Response {
-    let (conn, _) = match admin_conn(&state, &headers).await {
+    let (conn, _) = match admin_read(&state, &headers).await {
         Ok(value) => value,
         Err(response) => return response,
     };
-    let paging = ListQuery {
-        page: query.page,
-        page_size: query.page_size,
-        ..Default::default()
-    }
-    .paging();
-    let pending = query.status.as_deref() != Some("reviewed");
-    let condition = if pending {
-        "r.status='pending'"
-    } else {
-        "r.status IN ('approved','rejected')"
-    };
-    let order = match (pending, query.sort.as_deref(), query.dir.as_deref()) {
-        (true, _, _) => "r.created_at ASC",
-        (false, Some("requested"), Some("asc")) => "r.created_at ASC",
-        (false, Some("requested"), _) => "r.created_at DESC",
-        (false, Some("user"), Some("desc")) => "lower(r.username) DESC",
-        (false, Some("user"), _) => "lower(r.username) ASC",
-        (false, Some("result"), Some("desc")) => "r.status DESC, r.reviewed_at DESC",
-        (false, Some("result"), _) => "r.status ASC, r.reviewed_at DESC",
-        (false, _, Some("asc")) => "r.reviewed_at ASC",
-        (false, _, _) => "r.reviewed_at DESC",
-    };
-    let total = count(
-        &conn,
-        &format!("SELECT COUNT(*) FROM relay_pending_registrations r WHERE {condition}"),
-        [],
-    );
-    let items: Vec<Value> = conn
-        .prepare(&format!(
-            "SELECT r.id,r.username,r.email,r.provider,r.created_at,r.status,r.reviewed_at,
-                    (SELECT username FROM relay_users WHERE id=r.reviewed_by_user_id)
-             FROM relay_pending_registrations r WHERE {condition} ORDER BY {order} LIMIT ?1 OFFSET ?2"
-        ))
-        .and_then(|mut stmt| {
-            stmt.query_map(params![paging.size as i64, paging.offset() as i64], |row| {
-                Ok(json!({
-                    "id": row.get::<_, String>(0)?,
-                    "username": row.get::<_, String>(1)?,
-                    "email": row.get::<_, String>(2)?,
-                    "provider": row.get::<_, String>(3)?,
-                    "createdAt": row.get::<_, String>(4)?,
-                    "status": row.get::<_, String>(5)?,
-                    "reviewedAt": row.get::<_, Option<String>>(6)?,
-                    "reviewedBy": row.get::<_, Option<String>>(7)?,
-                }))
-            })?
-            .collect()
-        })
-        .unwrap_or_default();
-    let mut body = paging.wrap(items, total as usize);
-    body.insert("summary".into(), registration_summary(&conn));
-    Json(Value::Object(body)).into_response()
+    blocking(|| {
+        let paging = ListQuery {
+            page: query.page,
+            page_size: query.page_size,
+            ..Default::default()
+        }
+        .paging();
+        let pending = query.status.as_deref() != Some("reviewed");
+        let condition = if pending {
+            "r.status='pending'"
+        } else {
+            "r.status IN ('approved','rejected')"
+        };
+        let order = match (pending, query.sort.as_deref(), query.dir.as_deref()) {
+            (true, _, _) => "r.created_at ASC",
+            (false, Some("requested"), Some("asc")) => "r.created_at ASC",
+            (false, Some("requested"), _) => "r.created_at DESC",
+            (false, Some("user"), Some("desc")) => "lower(r.username) DESC",
+            (false, Some("user"), _) => "lower(r.username) ASC",
+            (false, Some("result"), Some("desc")) => "r.status DESC, r.reviewed_at DESC",
+            (false, Some("result"), _) => "r.status ASC, r.reviewed_at DESC",
+            (false, _, Some("asc")) => "r.reviewed_at ASC",
+            (false, _, _) => "r.reviewed_at DESC",
+        };
+        let total = count(
+            &conn,
+            &format!("SELECT COUNT(*) FROM relay_pending_registrations r WHERE {condition}"),
+            [],
+        );
+        let items: Vec<Value> = conn
+            .prepare(&format!(
+                "SELECT r.id,r.username,r.email,r.provider,r.created_at,r.status,r.reviewed_at,
+                        (SELECT username FROM relay_users WHERE id=r.reviewed_by_user_id)
+                 FROM relay_pending_registrations r WHERE {condition} ORDER BY {order} LIMIT ?1 OFFSET ?2"
+            ))
+            .and_then(|mut stmt| {
+                stmt.query_map(params![paging.size as i64, paging.offset() as i64], |row| {
+                    Ok(json!({
+                        "id": row.get::<_, String>(0)?,
+                        "username": row.get::<_, String>(1)?,
+                        "email": row.get::<_, String>(2)?,
+                        "provider": row.get::<_, String>(3)?,
+                        "createdAt": row.get::<_, String>(4)?,
+                        "status": row.get::<_, String>(5)?,
+                        "reviewedAt": row.get::<_, Option<String>>(6)?,
+                        "reviewedBy": row.get::<_, Option<String>>(7)?,
+                    }))
+                })?
+                .collect()
+            })
+            .unwrap_or_default();
+        let mut body = paging.wrap(items, total as usize);
+        body.insert("summary".into(), registration_summary(&conn));
+        Json(Value::Object(body)).into_response()
+    })
 }
 
 /// Pending count and age, decisions in the last 30 days and the median time

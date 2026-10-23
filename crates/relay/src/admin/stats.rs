@@ -2,27 +2,31 @@
 //! overview, tunnels and traffic of devices, failed sign-ins and rate limits,
 //! push results, versions and storage growth, plus the admin action log and
 //! the retention settings.
+//!
+//! Every chart reads a window (a preset range or a custom one) at a step of at
+//! most about 200 points, from minute, hour or day rows as the step allows;
+//! per-device lists are grouped and paged in SQL.
 use super::common::*;
 use super::*;
 use crate::metrics::{self, Agg};
+use std::collections::HashSet;
 
 fn history(conn: &Connection) -> Option<i64> {
     metrics::history_start(conn)
 }
 
-/// Online devices over the range, tunnels and forwarding, versions, recent
+/// Online devices over the window, tunnels and forwarding, versions, recent
 /// admin actions and daily active people for the overview.
 pub(super) fn overview(
+    state: &AppState,
     conn: &Connection,
-    range: Range,
+    window: &ChartWindow,
     online_ids: &[String],
 ) -> serde_json::Map<String, Value> {
-    let now = now_ms();
-    let start = now - range.millis();
-    let step = metrics::step_for(range);
+    let (start, end, step) = (window.start, window.end, window.step);
     let started = history(conn);
     let mut out = serde_json::Map::new();
-    let online = metrics::series(conn, "online_devices", None, start, now, step, Agg::Mean);
+    let online = metrics::series(conn, "online_devices", None, start, end, step, Agg::Mean);
     out.insert(
         "onlineDevices".into(),
         started.map_or(Value::Null, |_| {
@@ -31,20 +35,20 @@ pub(super) fn overview(
     );
     // Tunnels: reconnects, forwarding errors and p95 latency per hour (or wider).
     let tunnel_step = step.max(HOUR_MS);
-    let connects = metrics::series(conn, "connects", None, start, now, tunnel_step, Agg::Sum);
-    let requests = metrics::series(conn, "requests", None, start, now, tunnel_step, Agg::Sum);
+    let connects = metrics::series(conn, "connects", None, start, end, tunnel_step, Agg::Sum);
+    let requests = metrics::series(conn, "requests", None, start, end, tunnel_step, Agg::Sum);
     let failures = sum_series(
         ERROR_METRICS
             .iter()
-            .map(|(_, name)| metrics::series(conn, name, None, start, now, tunnel_step, Agg::Sum))
+            .map(|(_, name)| metrics::series(conn, name, None, start, end, tunnel_step, Agg::Sum))
             .collect(),
     );
     let error_rate = rate_series(&failures, &requests);
-    let latency = metrics::latency_series(conn, start, now, tunnel_step);
-    let total_requests = metrics::total(conn, "requests", start, now);
+    let latency = metrics::latency_series(conn, start, end, tunnel_step);
+    let total_requests = metrics::total(conn, "requests", start, end);
     let total_failed: f64 = ERROR_METRICS
         .iter()
-        .map(|(_, name)| metrics::total(conn, name, start, now))
+        .map(|(_, name)| metrics::total(conn, name, start, end))
         .sum();
     let unstable = unstable_devices(conn, online_ids);
     out.insert(
@@ -53,11 +57,11 @@ pub(super) fn overview(
             Value::Null
         } else {
             json!({
-                "reconnects": metrics::total(conn, "connects", start, now),
+                "reconnects": metrics::total(conn, "connects", start, end),
                 "unstableDevices": unstable.len(),
                 "requests": total_requests,
                 "errorRate": (total_requests > 0.0).then(|| total_failed / total_requests),
-                "p95Ms": metrics::latency_p95(conn, start, now),
+                "p95Ms": metrics::latency_p95(conn, start, end),
                 "latencyBoundsMs": metrics::LATENCY_BOUNDS,
                 "reconnectSeries": metrics::series_json(&connects, tunnel_step, started),
                 "errorSeries": metrics::series_json(&error_rate, tunnel_step, started),
@@ -71,7 +75,13 @@ pub(super) fn overview(
     );
     out.insert("adminActions".into(), Value::Array(recent_actions(conn, 5)));
     out.insert("unstableDevices".into(), json!(unstable.len()));
-    out.insert("dailyActive".into(), Value::Array(daily_active(conn, 14)));
+    // Daily active people: the window's days (at least the last two weeks
+    // for the figure's trend line).
+    let days = window.days().max(14);
+    out.insert(
+        "dailyActive".into(),
+        Value::Array(daily_active(state, conn, end, days)),
+    );
     out
 }
 
@@ -130,62 +140,14 @@ fn rate_series(
         .collect()
 }
 
-/// A performance window: a preset range or explicit `from`/`to` times.
-pub(super) struct PerformanceWindow {
-    pub(super) key: &'static str,
-    pub(super) start: i64,
-    pub(super) end: i64,
-    pub(super) step: i64,
-}
-
-/// Picks a step that gives at most about 200 points: five-minute steps
-/// within the two days minute rows are kept, whole hours (or days) beyond.
-pub(super) fn performance_window(
-    query: &ListQuery,
-    now: i64,
-) -> Result<PerformanceWindow, &'static str> {
-    let (key, start, end) = match (query.from, query.to) {
-        (Some(from), to) => {
-            let end = to.unwrap_or(now).min(now);
-            if from >= end {
-                return Err("The window must end after it starts");
-            }
-            ("custom", from.max(end - 400 * DAY_MS), end)
-        }
-        (None, _) => {
-            let range = query.range(Range::Day);
-            (range.key(), now - range.millis(), now)
-        }
-    };
-    let span = end - start;
-    let within_minutes = now - start <= metrics::MINUTE_RETENTION_MS;
-    let raw = (span / 200).max(MINUTE_MS);
-    let step = if within_minutes && raw <= HOUR_MS {
-        // 5, 10, 15 or 30 minutes.
-        [5, 10, 15, 30, 60]
-            .into_iter()
-            .map(|minutes| minutes * MINUTE_MS)
-            .find(|step| *step >= raw)
-            .unwrap_or(HOUR_MS)
-    } else {
-        [1, 2, 3, 4, 6, 12, 24, 48, 72, 168]
-            .into_iter()
-            .map(|hours| hours * HOUR_MS)
-            .find(|step| *step >= raw)
-            .unwrap_or(7 * DAY_MS)
-    };
-    Ok(PerformanceWindow {
-        key,
-        start,
-        end,
-        step,
-    })
-}
+/// Rows of the per-device lists in the performance response itself; the rest
+/// page through `/relay/admin/performance/devices`.
+const FIRST_DEVICES: usize = 10;
 
 /// Forwarding in depth for a window (docs/relay-admin.md "Performance"):
 /// volume, errors by kind, latency percentiles and histogram, reconnects,
 /// tunnel durations and the devices behind them. Counts, sizes and times only.
-pub(super) fn performance(conn: &Connection, window: &PerformanceWindow) -> Value {
+pub(super) fn performance(conn: &Connection, window: &ChartWindow) -> Value {
     let (start, end, step) = (window.start, window.end, window.step);
     let started = history(conn);
     let series =
@@ -236,6 +198,9 @@ pub(super) fn performance(conn: &Connection, window: &PerformanceWindow) -> Valu
         .collect();
     let last_bound = *metrics::LATENCY_BOUNDS.last().unwrap_or(&30_000) as f64;
     let quantile = |q: f64| metrics::percentile(&counts, q);
+    let first = DeviceListQuery::first();
+    let top = reconnect_devices(conn, window, &first);
+    let traffic = traffic_devices(conn, window, &first);
     json!({
         "range": window.key,
         "start": rfc3339_from_ms(start),
@@ -274,27 +239,108 @@ pub(super) fn performance(conn: &Connection, window: &PerformanceWindow) -> Valu
             "responseBytes": json_series(&series("response_bytes", Agg::Sum)),
         },
         "latencyHistogram": histogram_json,
-        "connections": connection_stats(conn, start, end),
-        "deviceTraffic": device_traffic(conn, start, end),
+        "connections": connection_stats(conn, window, top),
+        "deviceTraffic": traffic,
     })
 }
 
-/// Tunnel connections that overlap the window: how long they lasted, and the
-/// devices that reconnected most.
-fn connection_stats(conn: &Connection, start: i64, end: i64) -> Value {
-    let kept_from = now_ms() - metrics::CONNECTION_RETENTION_DAYS * DAY_MS;
-    let rows: Vec<(String, i64, Option<i64>)> = conn
-        .prepare(
-            "SELECT device_id,connected_at,ended_at FROM relay_device_connections
-             WHERE connected_at<?2 AND (ended_at IS NULL OR ended_at>?1)",
-        )
+/// Paging and sorting of a per-device list on the Performance page.
+pub(super) struct DeviceListQuery {
+    offset: usize,
+    size: usize,
+    sort: Option<(String, Dir)>,
+}
+
+impl DeviceListQuery {
+    fn first() -> Self {
+        Self {
+            offset: 0,
+            size: FIRST_DEVICES,
+            sort: None,
+        }
+    }
+    fn from(query: &ListQuery) -> Self {
+        let paging = query.paging();
+        Self {
+            offset: paging.offset(),
+            size: paging.size,
+            sort: query
+                .sort_by(Dir::Desc)
+                .map(|(key, dir)| (key.to_string(), dir)),
+        }
+    }
+}
+
+/// Adds each row's device and owner (name, username, email, ids).
+fn with_devices(
+    conn: &Connection,
+    rows: Vec<(String, serde_json::Map<String, Value>)>,
+) -> Vec<Value> {
+    let ids: Vec<String> = rows.iter().map(|(id, _)| id.clone()).collect();
+    let refs = device_refs(conn, &ids);
+    rows.into_iter()
+        .filter_map(|(id, mut row)| {
+            let device = refs.get(&id)?;
+            row.insert("deviceId".into(), json!(id));
+            row.extend(device.fields());
+            Some(Value::Object(row))
+        })
+        .collect()
+}
+
+/// Devices by tunnels opened in the window, with the short ones (under ten
+/// minutes, ended in the window), busiest first; one page and the total.
+fn reconnect_devices(
+    conn: &Connection,
+    window: &ChartWindow,
+    page: &DeviceListQuery,
+) -> (Vec<Value>, i64) {
+    let order = match page.sort.as_ref() {
+        Some((key, dir)) if key == "short" => {
+            format!("short {}, connects DESC, device_id", dir.sql())
+        }
+        Some((key, dir)) if key == "connects" => format!("connects {}, device_id", dir.sql()),
+        Some((key, dir)) if key == "device" => format!(
+            "(SELECT name FROM relay_devices WHERE id=device_id) COLLATE NOCASE {}, device_id",
+            dir.sql()
+        ),
+        _ => "connects DESC, device_id".into(),
+    };
+    let rows: Vec<(String, serde_json::Map<String, Value>)> = conn
+        .prepare(&format!(
+            "SELECT device_id,COUNT(*) AS connects,
+                    COALESCE(SUM(ended_at IS NOT NULL AND ended_at<=?2 AND ended_at-connected_at<600000),0) AS short
+             FROM relay_device_connections WHERE connected_at>=?1 AND connected_at<?2
+               AND device_id IN (SELECT id FROM relay_devices)
+             GROUP BY device_id ORDER BY {order} LIMIT ?3 OFFSET ?4"
+        ))
         .and_then(|mut stmt| {
-            stmt.query_map(params![start, end], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-            })?
+            stmt.query_map(
+                params![window.start, window.end, page.size as i64, page.offset as i64],
+                |row| {
+                    let mut map = serde_json::Map::new();
+                    map.insert("connects".into(), json!(row.get::<_, i64>(1)?));
+                    map.insert("shortConnections".into(), json!(row.get::<_, i64>(2)?));
+                    Ok((row.get::<_, String>(0)?, map))
+                },
+            )?
             .collect()
         })
         .unwrap_or_default();
+    let total = count(
+        conn,
+        "SELECT COUNT(DISTINCT device_id) FROM relay_device_connections WHERE connected_at>=?1 AND connected_at<?2
+           AND device_id IN (SELECT id FROM relay_devices)",
+        params![window.start, window.end],
+    );
+    (with_devices(conn, rows), total)
+}
+
+/// Tunnel connections around the window: how long those that ended in it
+/// lasted, how many were open, and the devices that reconnected most.
+fn connection_stats(conn: &Connection, window: &ChartWindow, top: (Vec<Value>, i64)) -> Value {
+    let (start, end) = (window.start, window.end);
+    let kept_from = now_ms() - metrics::CONNECTION_RETENTION_DAYS * DAY_MS;
     // Durations of the connections that ended in the window.
     const BUCKETS: [(&str, i64); 6] = [
         ("lt1m", MINUTE_MS),
@@ -305,104 +351,110 @@ fn connection_stats(conn: &Connection, start: i64, end: i64) -> Value {
         ("gte24h", i64::MAX),
     ];
     let mut durations = [0_i64; 6];
-    let mut open = 0_i64;
-    let mut per_device: HashMap<String, (i64, i64, i64)> = HashMap::new();
-    for (device, connected, ended) in &rows {
-        let entry = per_device.entry(device.clone()).or_default();
-        if *connected >= start {
-            entry.0 += 1;
-        }
-        match ended {
-            Some(ended) if *ended <= end => {
-                let length = ended - connected;
-                if let Some(index) = BUCKETS.iter().position(|(_, limit)| length < *limit) {
-                    durations[index] += 1;
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT CASE WHEN ended_at-connected_at<60000 THEN 0 WHEN ended_at-connected_at<600000 THEN 1
+                     WHEN ended_at-connected_at<3600000 THEN 2 WHEN ended_at-connected_at<21600000 THEN 3
+                     WHEN ended_at-connected_at<86400000 THEN 4 ELSE 5 END,COUNT(*)
+         FROM relay_device_connections WHERE ended_at>?1 AND ended_at<=?2 GROUP BY 1",
+    ) {
+        if let Ok(rows) = stmt.query_map(params![start, end], |row| {
+            Ok((row.get::<_, usize>(0)?, row.get::<_, i64>(1)?))
+        }) {
+            for (bucket, count) in rows.flatten() {
+                if let Some(slot) = durations.get_mut(bucket) {
+                    *slot = count;
                 }
-                if length < 10 * MINUTE_MS {
-                    entry.1 += 1;
-                }
-                entry.2 = entry.2.max(*ended);
-            }
-            _ => {
-                open += 1;
-                entry.2 = entry.2.max(end);
             }
         }
     }
-    let mut top: Vec<(String, (i64, i64, i64))> = per_device
-        .into_iter()
-        .filter(|(_, (connects, _, _))| *connects > 0)
-        .collect();
-    top.sort_by(|a, b| b.1 .0.cmp(&a.1 .0).then_with(|| a.0.cmp(&b.0)));
-    top.truncate(15);
-    let ids: Vec<String> = top.iter().map(|(id, _)| id.clone()).collect();
-    let names = device_names(conn, &ids);
-    let owners = device_owners(conn, &ids);
+    // Open at the window's end: not ended, or ended after it.
+    let open = count(
+        conn,
+        "SELECT (SELECT COUNT(*) FROM relay_device_connections WHERE ended_at IS NULL AND connected_at<?2)
+              + (SELECT COUNT(*) FROM relay_device_connections WHERE ended_at>?2 AND connected_at<?2)",
+        params![start, end],
+    );
+    let connects = count(
+        conn,
+        "SELECT COUNT(*) FROM relay_device_connections WHERE connected_at>=?1 AND connected_at<?2",
+        params![start, end],
+    );
+    let (top, top_total) = top;
     json!({
         "historyStart": (kept_from > start).then(|| rfc3339_from_ms(kept_from)),
         "durations": BUCKETS.iter().zip(durations).map(|((key, _), count)| json!({ "key": key, "count": count })).collect::<Vec<_>>(),
         "open": open,
-        "connects": rows.iter().filter(|(_, connected, _)| *connected >= start).count(),
-        "topDevices": top.iter().filter(|(id, _)| names.contains_key(id)).map(|(id, (connects, short, _))| json!({
-            "deviceId": id,
-            "name": names.get(id),
-            "ownerUsername": owners.get(id),
-            "connects": connects,
-            "shortConnections": short,
-        })).collect::<Vec<_>>(),
+        "connects": connects,
+        "topDevices": top,
+        "topDevicesTotal": top_total,
     })
 }
 
-fn device_owners(conn: &Connection, ids: &[String]) -> HashMap<String, String> {
-    let mut owners = HashMap::new();
-    if let Ok(mut stmt) = conn.prepare(
-        "SELECT u.username FROM relay_devices d JOIN relay_users u ON u.id=d.owner_user_id WHERE d.id=?1",
-    ) {
-        for id in ids {
-            if let Ok(name) = stmt.query_row([id], |row| row.get::<_, String>(0)) {
-                owners.insert(id.clone(), name);
+/// Forwarded requests, errors and bytes per device in the window, busiest
+/// first: whole hours for two days or less, whole days beyond (hour rows are
+/// kept 30 days, day rows the metrics retention).
+fn traffic_devices(conn: &Connection, window: &ChartWindow, page: &DeviceListQuery) -> Value {
+    let (start, end) = (window.start, window.end);
+    let hourly = window.span() <= 2 * DAY_MS
+        && start >= now_ms() - metrics::DEVICE_TRAFFIC_HOURS_DAYS * DAY_MS;
+    let (table, column, unit) = if hourly {
+        ("relay_device_traffic", "hour", HOUR_MS)
+    } else {
+        ("relay_device_traffic_daily", "day", DAY_MS)
+    };
+    let first = start - start.rem_euclid(unit);
+    let order = match page.sort.as_ref() {
+        Some((key, dir)) => {
+            let d = dir.sql();
+            match key.as_str() {
+                "errors" => format!("errors {d}, requests DESC, device_id"),
+                "rate" => format!("CAST(errors AS REAL)/MAX(requests,1) {d}, requests DESC, device_id"),
+                "sent" => format!("request_bytes {d}, device_id"),
+                "received" => format!("response_bytes {d}, device_id"),
+                "device" => format!(
+                    "(SELECT name FROM relay_devices WHERE id=device_id) COLLATE NOCASE {d}, device_id"
+                ),
+                _ => format!("requests {d}, device_id"),
             }
         }
-    }
-    owners
-}
-
-/// Forwarded requests, errors and bytes per device in the window (whole
-/// hours), busiest first.
-fn device_traffic(conn: &Connection, start: i64, end: i64) -> Value {
-    let first_hour = start - start.rem_euclid(HOUR_MS);
-    let rows: Vec<(String, String, String, i64, i64, i64, i64)> = conn
-        .prepare(
-            "SELECT t.device_id,d.name,u.username,SUM(t.requests),SUM(t.errors),SUM(t.request_bytes),SUM(t.response_bytes)
-             FROM relay_device_traffic t JOIN relay_devices d ON d.id=t.device_id JOIN relay_users u ON u.id=d.owner_user_id
-             WHERE t.hour>=?1 AND t.hour<?2 GROUP BY t.device_id ORDER BY 4 DESC LIMIT 100",
-        )
+        None => "requests DESC, device_id".into(),
+    };
+    let rows: Vec<(String, serde_json::Map<String, Value>)> = conn
+        .prepare(&format!(
+            "SELECT device_id,SUM(requests) AS requests,SUM(errors) AS errors,
+                    SUM(request_bytes) AS request_bytes,SUM(response_bytes) AS response_bytes
+             FROM {table} WHERE {column}>=?1 AND {column}<?2 GROUP BY device_id
+             ORDER BY {order} LIMIT ?3 OFFSET ?4"
+        ))
         .and_then(|mut stmt| {
-            stmt.query_map(params![first_hour, end], |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                    row.get(5)?,
-                    row.get(6)?,
-                ))
-            })?
+            stmt.query_map(
+                params![first, end, page.size as i64, page.offset as i64],
+                |row| {
+                    let mut map = serde_json::Map::new();
+                    map.insert("requests".into(), json!(row.get::<_, i64>(1)?));
+                    map.insert("errors".into(), json!(row.get::<_, i64>(2)?));
+                    map.insert("requestBytes".into(), json!(row.get::<_, i64>(3)?));
+                    map.insert("responseBytes".into(), json!(row.get::<_, i64>(4)?));
+                    Ok((row.get::<_, String>(0)?, map))
+                },
+            )?
             .collect()
         })
         .unwrap_or_default();
+    let (total_devices, total_requests): (i64, i64) = conn
+        .query_row(
+            &format!(
+                "SELECT COUNT(DISTINCT device_id),COALESCE(SUM(requests),0) FROM {table} WHERE {column}>=?1 AND {column}<?2"
+            ),
+            params![first, end],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap_or((0, 0));
     json!({
-        "resolutionSeconds": 3600,
-        "devices": rows.iter().map(|(id, name, owner, requests, errors, request_bytes, response_bytes)| json!({
-            "deviceId": id,
-            "name": name,
-            "ownerUsername": owner,
-            "requests": requests,
-            "errors": errors,
-            "requestBytes": request_bytes,
-            "responseBytes": response_bytes,
-        })).collect::<Vec<_>>(),
+        "resolutionSeconds": unit / 1000,
+        "devices": with_devices(conn, rows),
+        "total": total_devices,
+        "requests": total_requests,
     })
 }
 
@@ -411,16 +463,57 @@ pub(super) async fn performance_handler(
     Query(query): Query<ListQuery>,
     State(state): State<Arc<AppState>>,
 ) -> Response {
-    let (conn, _) = match admin_conn(&state, &headers).await {
+    let (conn, _) = match admin_read(&state, &headers).await {
         Ok(value) => value,
         Err(response) => return response,
     };
-    crate::metrics::flush_connections(&state, &conn);
-    let window = match performance_window(&query, now_ms()) {
-        Ok(window) => window,
-        Err(message) => return bad_request(message),
+    blocking(|| {
+        let window = match chart_window(&query, Range::Day, now_ms()) {
+            Ok(window) => window,
+            Err(message) => return bad_request(message),
+        };
+        Json(performance(&conn, &window)).into_response()
+    })
+}
+
+/// One page of a per-device list of the Performance page: `view=reconnects`
+/// (sort `connects`, `short`, `device`) or `view=traffic` (sort `requests`,
+/// `errors`, `rate`, `sent`, `received`, `device`).
+pub(super) async fn performance_devices(
+    headers: HeaderMap,
+    Query(query): Query<ListQuery>,
+    State(state): State<Arc<AppState>>,
+) -> Response {
+    let (conn, _) = match admin_read(&state, &headers).await {
+        Ok(value) => value,
+        Err(response) => return response,
     };
-    Json(performance(&conn, &window)).into_response()
+    blocking(|| {
+        let window = match chart_window(&query, Range::Day, now_ms()) {
+            Ok(window) => window,
+            Err(message) => return bad_request(message),
+        };
+        let page = DeviceListQuery::from(&query);
+        let paging = query.paging();
+        let body = if query.view.as_deref() == Some("traffic") {
+            let traffic = traffic_devices(&conn, &window, &page);
+            let total = traffic["total"].as_u64().unwrap_or(0) as usize;
+            let items = traffic["devices"].as_array().cloned().unwrap_or_default();
+            let mut body = paging.wrap(items, total);
+            body.insert(
+                "resolutionSeconds".into(),
+                traffic["resolutionSeconds"].clone(),
+            );
+            body.insert("requests".into(), traffic["requests"].clone());
+            body
+        } else {
+            let (items, total) = reconnect_devices(&conn, &window, &page);
+            paging.wrap(items, total as usize)
+        };
+        let mut body = body;
+        body.insert("window".into(), window.json());
+        Json(Value::Object(body)).into_response()
+    })
 }
 
 /// Devices with five or more tunnel connections in the last hour.
@@ -434,26 +527,8 @@ pub(super) fn unstable_devices(conn: &Connection, _online: &[String]) -> Vec<Str
 
 /// Devices per reported version (all, and online now), newest version first.
 pub(super) fn version_counts(conn: &Connection, online: &[String]) -> Vec<Value> {
-    let mut counts: HashMap<Option<String>, (i64, i64)> = HashMap::new();
-    let versions = metrics::versions(conn);
-    for (device, (version, _)) in &versions {
-        let entry = counts.entry(version.clone()).or_default();
-        entry.0 += 1;
-        if online.contains(device) {
-            entry.1 += 1;
-        }
-    }
-    // Online devices the relay has not read yet.
-    let unknown = online
-        .iter()
-        .filter(|device| !versions.contains_key(*device))
-        .count() as i64;
-    if unknown > 0 {
-        let entry = counts.entry(None).or_default();
-        entry.0 += unknown;
-        entry.1 += unknown;
-    }
-    let mut rows: Vec<(Option<String>, (i64, i64))> = counts.into_iter().collect();
+    let online: HashSet<&str> = online.iter().map(String::as_str).collect();
+    let mut rows = metrics::version_totals(conn, &online);
     rows.sort_by(|a, b| match (&a.0, &b.0) {
         (Some(a), Some(b)) => compare_versions(b, a),
         (Some(_), None) => std::cmp::Ordering::Less,
@@ -461,7 +536,8 @@ pub(super) fn version_counts(conn: &Connection, online: &[String]) -> Vec<Value>
         (None, None) => std::cmp::Ordering::Equal,
     });
     rows.into_iter()
-        .map(|(version, (devices, online))| {
+        .take(100)
+        .map(|(version, devices, online)| {
             let outdated = version.as_deref().is_some_and(|version| {
                 compare_versions(version, RELAY_VERSION) == std::cmp::Ordering::Less
             });
@@ -470,55 +546,57 @@ pub(super) fn version_counts(conn: &Connection, online: &[String]) -> Vec<Value>
         .collect()
 }
 
-pub(super) fn daily_active(conn: &Connection, days: i64) -> Vec<Value> {
-    let now = now_ms();
-    let first = day_of(now - (days - 1) * DAY_MS);
-    let rows: Vec<(String, String, i64)> = conn
-        .prepare("SELECT day,kind,COUNT(*) FROM relay_daily_active WHERE day>=?1 GROUP BY day,kind")
-        .and_then(|mut stmt| {
-            stmt.query_map([&first], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
-                .collect()
-        })
-        .unwrap_or_default();
-    if rows.is_empty() {
-        return Vec::new();
+/// Distinct people and devices active on each of the `days` days ending with
+/// `end`. A finished day never changes, so its counts are kept in memory.
+pub(super) fn daily_active(state: &AppState, conn: &Connection, end: i64, days: i64) -> Vec<Value> {
+    let today = day_of(now_ms());
+    let mut cache = state
+        .admin
+        .active_days
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if cache.len() > 1000 {
+        cache.clear();
     }
-    (0..days)
-        .map(|offset| {
-            let day = day_of(now - (days - 1 - offset) * DAY_MS);
-            let count = |kind: &str| {
-                rows.iter()
-                    .find(|row| row.0 == day && row.1 == kind)
-                    .map_or(0, |row| row.2)
-            };
-            json!({ "day": day, "users": count("user"), "devices": count("device") })
-        })
-        .collect()
-}
-
-pub(super) struct DeviceStats {
-    pub(super) versions: HashMap<String, (Option<String>, i64)>,
-    pub(super) last_seen: HashMap<String, i64>,
-    pub(super) connects_hour: HashMap<String, i64>,
-    pub(super) traffic: HashMap<String, Vec<i64>>,
-    pub(super) recorded: bool,
-}
-
-pub(super) fn device_stats(conn: &Connection) -> DeviceStats {
-    DeviceStats {
-        versions: metrics::versions(conn),
-        last_seen: metrics::last_seen(conn),
-        connects_hour: metrics::connects_since(conn, now_ms() - HOUR_MS),
-        traffic: metrics::daily_requests(conn, 7),
-        recorded: history(conn).is_some(),
+    let mut stmt = match conn
+        .prepare_cached("SELECT COUNT(*) FROM relay_daily_active WHERE day=?1 AND kind=?2")
+    {
+        Ok(stmt) => stmt,
+        Err(_) => return Vec::new(),
+    };
+    let mut rows = Vec::new();
+    let mut any = false;
+    for offset in 0..days {
+        let day = day_of(end - (days - 1 - offset) * DAY_MS);
+        let counts = match cache.get(&day) {
+            Some(counts) if day != today => *counts,
+            _ => {
+                let mut read = |kind: &str| {
+                    stmt.query_row(params![day, kind], |row| row.get::<_, i64>(0))
+                        .unwrap_or(0)
+                };
+                let counts = (read("user"), read("device"));
+                if day != today {
+                    cache.insert(day.clone(), counts);
+                }
+                counts
+            }
+        };
+        any |= counts != (0, 0);
+        rows.push(json!({ "day": day, "users": counts.0, "devices": counts.1 }));
+    }
+    if any {
+        rows
+    } else {
+        Vec::new()
     }
 }
 
-/// The last 24 hours of one device: its tunnel connections and forwarded
-/// requests per hour.
-pub(super) fn device_detail(conn: &Connection, device: &str) -> (Value, Value) {
+/// One device over the last day, week or month: its tunnel connections and
+/// forwarded requests (per hour for a day, per day beyond).
+pub(super) fn device_detail(conn: &Connection, device: &str, range: Range) -> (Value, Value) {
     let now = now_ms();
-    let start = now - DAY_MS;
+    let start = now - range.millis();
     let started = history(conn);
     if started.is_none() {
         return (Value::Null, Value::Null);
@@ -542,7 +620,8 @@ pub(super) fn device_detail(conn: &Connection, device: &str) -> (Value, Value) {
     let connections = json!({
         "since": rfc3339_from_ms(start),
         "historyStart": started.filter(|begun| *begun > start).map(rfc3339_from_ms),
-        "spans": spans.iter().map(|span| json!({
+        // The newest 500 connections are enough to draw and list.
+        "spans": spans.iter().rev().take(500).rev().map(|span| json!({
             "from": rfc3339_from_ms(span.from),
             "to": span.to.map(rfc3339_from_ms),
             "reason": span.reason,
@@ -551,43 +630,47 @@ pub(super) fn device_detail(conn: &Connection, device: &str) -> (Value, Value) {
         "reconnects": spans.iter().filter(|span| span.from >= start).count(),
         "longestOfflineSeconds": longest_gap.max(0) / 1000,
     });
-    // The 24 hours ending with the current one.
-    let first_hour = now - now.rem_euclid(HOUR_MS) - 23 * HOUR_MS;
+    let (table, column, unit, buckets) = match range {
+        Range::Day => ("relay_device_traffic", "hour", HOUR_MS, 24),
+        Range::Week => ("relay_device_traffic_daily", "day", DAY_MS, 7),
+        _ => ("relay_device_traffic_daily", "day", DAY_MS, 30),
+    };
+    // The buckets ending with the current one.
+    let first = now - now.rem_euclid(unit) - (buckets - 1) * unit;
     let rows: HashMap<i64, (i64, i64, i64, i64)> = conn
-        .prepare(
-            "SELECT hour,requests,request_bytes,response_bytes,errors FROM relay_device_traffic WHERE device_id=?1 AND hour>=?2",
-        )
+        .prepare(&format!(
+            "SELECT {column},requests,request_bytes,response_bytes,errors FROM {table} WHERE device_id=?1 AND {column}>=?2"
+        ))
         .and_then(|mut stmt| {
-            stmt.query_map(params![device, first_hour], |row| {
+            stmt.query_map(params![device, first], |row| {
                 Ok((row.get(0)?, (row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)))
             })?
             .collect()
         })
         .unwrap_or_default();
-    let hours: Vec<Value> = (0..24)
+    let points: Vec<Value> = (0..buckets)
         .map(|index| {
-            let hour = first_hour + index * HOUR_MS;
-            let (requests, request_bytes, response_bytes, errors) = rows.get(&hour).copied().unwrap_or_default();
-            json!({ "at": rfc3339_from_ms(hour), "requests": requests, "requestBytes": request_bytes, "responseBytes": response_bytes, "errors": errors })
+            let at = first + index * unit;
+            let (requests, request_bytes, response_bytes, errors) = rows.get(&at).copied().unwrap_or_default();
+            json!({ "at": rfc3339_from_ms(at), "requests": requests, "requestBytes": request_bytes, "responseBytes": response_bytes, "errors": errors })
         })
         .collect();
     let traffic = json!({
-        "resolutionSeconds": 3600,
-        "historyStart": started.filter(|begun| *begun > start).map(rfc3339_from_ms),
-        "hours": hours,
+        "resolutionSeconds": unit / 1000,
+        "historyStart": started.filter(|begun| *begun > first).map(rfc3339_from_ms),
+        "hours": points,
     });
     (connections, traffic)
 }
 
 /// Failed sign-ins, refusals by kind and per day, retention, and admin
-/// actions in the range for the security page.
-pub(super) fn security(conn: &Connection, range: Range) -> serde_json::Map<String, Value> {
-    let now = now_ms();
-    let start = now - range.millis();
+/// actions in the window for the security page.
+pub(super) fn security(conn: &Connection, window: &ChartWindow) -> serde_json::Map<String, Value> {
+    let (start, end) = (window.start, window.end);
     let started = history(conn);
-    let first_day = now - now.rem_euclid(DAY_MS) - (range.days() - 1) * DAY_MS;
+    let first_day = window.first_day();
     let per_day = |metric: &str| -> Vec<Value> {
-        metrics::series(conn, metric, None, first_day, now + 1, DAY_MS, Agg::Sum)
+        metrics::series(conn, metric, None, first_day, end + 1, DAY_MS, Agg::Sum)
             .into_iter()
             .map(|(at, value)| json!({ "day": day_of(at), "count": value.unwrap_or(0.0) }))
             .collect()
@@ -600,14 +683,14 @@ pub(super) fn security(conn: &Connection, range: Range) -> serde_json::Map<Strin
             Value::Null
         } else {
             json!({
-                "total": metrics::total(conn, "login_failed", start, now),
+                "total": metrics::total(conn, "login_failed", start, end),
                 "daily": per_day("login_failed"),
                 "historyStart": history_start,
             })
         },
     );
     let by_kind: serde_json::Map<String, Value> =
-        metrics::totals_by_label(conn, "rate_limited", start, now)
+        metrics::totals_by_label(conn, "rate_limited", start, end)
             .into_iter()
             .map(|(kind, count)| (kind, json!(count)))
             .collect();
@@ -632,15 +715,19 @@ pub(super) fn security(conn: &Connection, range: Range) -> serde_json::Map<Strin
         "adminActions".into(),
         json!(count(
             conn,
-            "SELECT COUNT(*) FROM relay_admin_actions WHERE created_at>=?1",
-            [start]
+            "SELECT COUNT(*) FROM relay_admin_actions WHERE created_at>=?1 AND created_at<?2",
+            [start, end]
         )),
     );
     out
 }
 
 /// Push delivery results, version history and database growth for the system page.
-pub(super) fn system(conn: &Connection, online: &[String]) -> serde_json::Map<String, Value> {
+pub(super) fn system(
+    conn: &Connection,
+    online: &[String],
+    window: &ChartWindow,
+) -> serde_json::Map<String, Value> {
     let now = now_ms();
     let started = history(conn);
     let mut out = serde_json::Map::new();
@@ -658,26 +745,35 @@ pub(super) fn system(conn: &Connection, online: &[String]) -> serde_json::Map<St
             })
         },
     );
-    let month = now - 30 * DAY_MS;
-    let growth = metrics::series(conn, "db_bytes", None, month, now, DAY_MS, Agg::Mean);
+    let growth = metrics::series(
+        conn,
+        "db_bytes",
+        None,
+        window.start,
+        window.end,
+        window.step,
+        Agg::Mean,
+    );
     out.insert(
         "growth".into(),
         started.map_or(Value::Null, |_| {
-            metrics::series_json(&growth, DAY_MS, started)
+            metrics::series_json(&growth, window.step, started)
         }),
     );
-    // Online devices per version per day (the day's largest count), 30 days.
-    let first_day = now - now.rem_euclid(DAY_MS) - 29 * DAY_MS;
+    // Online devices per version per day (the day's largest count) over the
+    // window's days.
+    let days = window.days().min(400);
+    let first_day = window.end - window.end.rem_euclid(DAY_MS) - (days - 1) * DAY_MS;
     let rows: Vec<(i64, String, f64)> = conn
-        .prepare("SELECT bucket,label,peak FROM relay_metrics WHERE resolution='d' AND metric='online_by_version' AND bucket>=?1")
-        .and_then(|mut stmt| stmt.query_map([first_day], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?.collect())
+        .prepare("SELECT bucket,label,peak FROM relay_metrics WHERE resolution='d' AND metric='online_by_version' AND bucket>=?1 AND bucket<?2")
+        .and_then(|mut stmt| stmt.query_map([first_day, window.end], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?.collect())
         .unwrap_or_default();
     // Days the relay sampled at all; on the others the versions are unknown.
-    let sampled: std::collections::HashSet<i64> = conn
-        .prepare("SELECT DISTINCT bucket-(bucket%86400000) FROM relay_metrics WHERE resolution='h' AND metric='up' AND label='' AND bucket>=?1")
-        .and_then(|mut stmt| stmt.query_map([first_day], |row| row.get(0))?.collect())
+    let sampled: HashSet<i64> = conn
+        .prepare("SELECT bucket FROM relay_metrics WHERE resolution='d' AND metric='up' AND label='' AND bucket>=?1 AND bucket<?2")
+        .and_then(|mut stmt| stmt.query_map([first_day, window.end], |row| row.get(0))?.collect())
         .unwrap_or_default();
-    let history_days: Vec<Value> = (0..30)
+    let history_days: Vec<Value> = (0..days)
         .map(|offset| first_day + offset * DAY_MS)
         .filter(|day| started.is_some_and(|begun| *day + DAY_MS > begun))
         .map(|day| {
@@ -711,29 +807,75 @@ pub(super) fn system(conn: &Connection, online: &[String]) -> serde_json::Map<St
     out
 }
 
-fn action_json(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
-    let detail: Option<String> = row.get(7)?;
-    Ok(json!({
-        "id": row.get::<_, i64>(0)?,
-        "at": rfc3339_from_ms(row.get(1)?),
-        "adminUsername": row.get::<_, String>(2)?,
-        "action": row.get::<_, String>(3)?,
-        "targetType": row.get::<_, Option<String>>(4)?,
-        "targetId": row.get::<_, Option<String>>(5)?,
-        "targetLabel": row.get::<_, Option<String>>(6)?,
-        "detail": detail.and_then(|text| serde_json::from_str::<Value>(&text).ok()),
-    }))
+type ActionRow = (
+    i64,
+    i64,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
+fn action_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ActionRow> {
+    Ok((
+        row.get(0)?,
+        row.get(1)?,
+        row.get(2)?,
+        row.get(3)?,
+        row.get(4)?,
+        row.get(5)?,
+        row.get(6)?,
+        row.get(7)?,
+    ))
+}
+
+/// Actions as JSON; a device target also names its owner (when it still
+/// exists), since device names repeat across people.
+fn actions_json(conn: &Connection, rows: Vec<ActionRow>) -> Vec<Value> {
+    let devices: Vec<String> = rows
+        .iter()
+        .filter(|row| row.4.as_deref() == Some("device"))
+        .filter_map(|row| row.5.clone())
+        .collect();
+    let refs = device_refs(conn, &devices);
+    rows.into_iter()
+        .map(
+            |(id, at, admin, action, target_type, target_id, target_label, detail)| {
+                let device = target_id
+                    .as_ref()
+                    .filter(|_| target_type.as_deref() == Some("device"))
+                    .and_then(|id| refs.get(id));
+                json!({
+                    "id": id,
+                    "at": rfc3339_from_ms(at),
+                    "adminUsername": admin,
+                    "action": action,
+                    "targetType": target_type,
+                    "targetId": target_id,
+                    "targetLabel": target_label,
+                    "targetOwnerUserId": device.map(|device| &device.owner_user_id),
+                    "targetOwnerUsername": device.map(|device| &device.owner_username),
+                    "targetOwnerEmail": device.map(|device| &device.owner_email),
+                    "detail": detail.and_then(|text| serde_json::from_str::<Value>(&text).ok()),
+                })
+            },
+        )
+        .collect()
 }
 
 const ACTION_COLUMNS: &str =
     "id,created_at,admin_username,action,target_type,target_id,target_label,detail";
 
 pub(super) fn recent_actions(conn: &Connection, limit: i64) -> Vec<Value> {
-    conn.prepare(&format!(
-        "SELECT {ACTION_COLUMNS} FROM relay_admin_actions ORDER BY id DESC LIMIT ?1"
-    ))
-    .and_then(|mut stmt| stmt.query_map([limit], action_json)?.collect())
-    .unwrap_or_default()
+    let rows: Vec<ActionRow> = conn
+        .prepare(&format!(
+            "SELECT {ACTION_COLUMNS} FROM relay_admin_actions ORDER BY id DESC LIMIT ?1"
+        ))
+        .and_then(|mut stmt| stmt.query_map([limit], action_row)?.collect())
+        .unwrap_or_default();
+    actions_json(conn, rows)
 }
 
 pub(super) async fn actions(
@@ -741,40 +883,45 @@ pub(super) async fn actions(
     Query(query): Query<ListQuery>,
     State(state): State<Arc<AppState>>,
 ) -> Response {
-    let (conn, _) = match admin_conn(&state, &headers).await {
+    let (conn, _) = match admin_read(&state, &headers).await {
         Ok(value) => value,
         Err(response) => return response,
     };
-    let paging = query.paging();
-    let kind = query.kind.clone().unwrap_or_default();
-    let window = query.window();
-    let (from, to) = (window.from.unwrap_or(0), window.to.unwrap_or(i64::MAX));
-    let condition = "(?1='' OR action=?1) AND created_at>=?4 AND created_at<?5";
-    let order = match query.sort_by(Dir::Desc) {
-        Some(("action", dir)) => format!("action {}, id DESC", dir.sql()),
-        Some(("admin", dir)) => format!("lower(admin_username) {}, id DESC", dir.sql()),
-        Some(("target", dir)) => format!(
-            "target_label IS NULL, lower(target_label) {}, id DESC",
-            dir.sql()
-        ),
-        Some((_, dir)) => format!("id {}", dir.sql()),
-        None => "id DESC".to_string(),
-    };
-    let total = count(
-        &conn,
-        &format!("SELECT COUNT(*) FROM relay_admin_actions WHERE {condition} AND ?2=?2 AND ?3=?3"),
-        params![kind, 0, 0, from, to],
-    );
-    let items: Vec<Value> = conn
-        .prepare(&format!(
-            "SELECT {ACTION_COLUMNS} FROM relay_admin_actions WHERE {condition} ORDER BY {order} LIMIT ?2 OFFSET ?3"
-        ))
-        .and_then(|mut stmt| {
-            stmt.query_map(params![kind, paging.size as i64, paging.offset() as i64, from, to], action_json)?
-                .collect()
-        })
-        .unwrap_or_default();
-    Json(Value::Object(paging.wrap(items, total as usize))).into_response()
+    blocking(|| {
+        let paging = query.paging();
+        let kind = query.kind.clone().unwrap_or_default();
+        let window = query.window();
+        let (from, to) = (window.from.unwrap_or(0), window.to.unwrap_or(i64::MAX));
+        let condition = "(?1='' OR action=?1) AND created_at>=?4 AND created_at<?5";
+        let order = match query.sort_by(Dir::Desc) {
+            Some(("action", dir)) => format!("action {}, id DESC", dir.sql()),
+            Some(("admin", dir)) => format!("lower(admin_username) {}, id DESC", dir.sql()),
+            Some(("target", dir)) => format!(
+                "target_label IS NULL, lower(target_label) {}, id DESC",
+                dir.sql()
+            ),
+            Some((_, dir)) => format!("id {}", dir.sql()),
+            None => "id DESC".to_string(),
+        };
+        let total = count(
+            &conn,
+            &format!(
+                "SELECT COUNT(*) FROM relay_admin_actions WHERE {condition} AND ?2=?2 AND ?3=?3"
+            ),
+            params![kind, 0, 0, from, to],
+        );
+        let rows: Vec<ActionRow> = conn
+            .prepare(&format!(
+                "SELECT {ACTION_COLUMNS} FROM relay_admin_actions WHERE {condition} ORDER BY {order} LIMIT ?2 OFFSET ?3"
+            ))
+            .and_then(|mut stmt| {
+                stmt.query_map(params![kind, paging.size as i64, paging.offset() as i64, from, to], action_row)?
+                    .collect()
+            })
+            .unwrap_or_default();
+        let items = actions_json(&conn, rows);
+        Json(Value::Object(paging.wrap(items, total as usize))).into_response()
+    })
 }
 
 fn retention_json(conn: &Connection) -> Value {
@@ -784,6 +931,7 @@ fn retention_json(conn: &Connection) -> Value {
         "options": { "metricsDays": metrics::METRICS_DAYS, "securityDays": metrics::SECURITY_DAYS },
         "fixed": {
             "connectionDays": metrics::CONNECTION_RETENTION_DAYS,
+            "deviceTrafficHourDays": metrics::DEVICE_TRAFFIC_HOURS_DAYS,
             "adminActionDays": metrics::ADMIN_ACTION_RETENTION_DAYS,
             "securityMaxEvents": metrics::SECURITY_MAX_EVENTS,
         },
@@ -791,11 +939,11 @@ fn retention_json(conn: &Connection) -> Value {
 }
 
 pub(super) async fn retention(headers: HeaderMap, State(state): State<Arc<AppState>>) -> Response {
-    let (conn, _) = match admin_conn(&state, &headers).await {
+    let (conn, _) = match admin_read(&state, &headers).await {
         Ok(value) => value,
         Err(response) => return response,
     };
-    Json(retention_json(&conn)).into_response()
+    blocking(move || Json(retention_json(&conn)).into_response())
 }
 
 #[derive(Deserialize)]

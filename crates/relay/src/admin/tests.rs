@@ -514,7 +514,8 @@ async fn shares_list_every_scope_and_admin_revocation_stops_relay_access() {
         2
     );
     assert_eq!(console.get("/relay/admin/shares?q=dave").await["total"], 1);
-    assert_eq!(list["usage"]["days"].as_array().unwrap().len(), 14);
+    // Visits per day over the page's range (7 days unless asked).
+    assert_eq!(list["usage"]["days"].as_array().unwrap().len(), 7);
     assert!(effective_access(
         &*console.state.store.conn.lock().await,
         "bob",
@@ -857,6 +858,188 @@ async fn sampler_records_tunnels_traffic_versions_and_the_overview_reads_them() 
     assert_eq!(detail["connections"]["spans"][0]["reason"], "admin");
     assert!(detail["device"]["lastSeenAt"].is_string());
     server.abort();
+}
+
+#[tokio::test]
+async fn device_rows_name_their_owner_everywhere() {
+    let console = Console::new("admin-console-owners").await;
+    console.go_online("d-alice-1").await;
+    let devices = console.get("/relay/admin/devices?q=gpu").await;
+    assert_eq!(devices["items"][0]["ownerUsername"], "alice");
+    assert_eq!(devices["items"][0]["ownerEmail"], "alice@example.test");
+    // Searching finds a device by its owner's email too.
+    assert_eq!(
+        console.get("/relay/admin/devices?q=bob%40example").await["items"][0]["id"],
+        "d-bob"
+    );
+    let shares = console.get("/relay/admin/shares").await;
+    let share = &shares["items"][0];
+    assert!(share["deviceId"].is_string());
+    assert!(share["ownerEmail"]
+        .as_str()
+        .unwrap()
+        .ends_with("@example.test"));
+    assert!(share["targetEmail"]
+        .as_str()
+        .unwrap()
+        .ends_with("@example.test"));
+    let links = console.get("/relay/admin/public-links").await;
+    assert_eq!(links["items"][0]["ownerUserId"], "alice");
+    assert_eq!(links["items"][0]["deviceId"], "d-alice-1");
+    assert!(links["items"][0]["bytes"].as_i64().unwrap() > 0);
+    // A device event names the device and its owner.
+    let events = console.get("/relay/admin/security/events").await;
+    let rotated = events["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|event| event["event"] == "device.token_rotated")
+        .unwrap();
+    assert_eq!(rotated["resourceLabel"], "build-01");
+    assert_eq!(rotated["resourceOwnerUsername"], "bob");
+    assert_eq!(rotated["resourceOwnerEmail"], "bob@example.test");
+    // An admin action on a device names its owner.
+    let admin = console.admin.clone();
+    console
+        .call(
+            Method::POST,
+            "/relay/admin/devices/d-alice-1/disconnect",
+            Some(&admin),
+        )
+        .await;
+    let actions = console.get("/relay/admin/actions").await;
+    assert_eq!(actions["items"][0]["targetLabel"], "gpu-lab");
+    assert_eq!(actions["items"][0]["targetOwnerUsername"], "alice");
+    let search = console.get("/relay/admin/search?q=lap").await;
+    assert_eq!(search["devices"][0]["ownerEmail"], "alice@example.test");
+    // User details list at most 50 devices and say how many there are.
+    let detail = console.get("/relay/admin/users/alice").await;
+    assert_eq!(detail["devicesTotal"], 2);
+}
+
+#[tokio::test]
+async fn server_section_reports_the_process_host_disk_and_relay_load() {
+    let console = Console::new("admin-console-server").await;
+    let state = console.state.clone();
+    console.go_online("d-bob").await;
+    let minute = {
+        let now = common::now_ms();
+        now - now.rem_euclid(common::MINUTE_MS)
+    };
+    // Rates (CPU, network) need two readings.
+    crate::metrics::sample(&state, minute - common::MINUTE_MS).await;
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    crate::metrics::sample(&state, minute).await;
+    let server = console.get("/relay/admin/server?range=24h").await;
+    assert_eq!(server["platform"], std::env::consts::OS);
+    assert_eq!(server["relay"]["deviceTunnels"], 1);
+    assert!(server["disk"]["databaseBytes"].as_u64().unwrap() > 0);
+    let check = |key: &str| {
+        server["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|check| check["key"] == key)
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(check("disk")["warnAt"], 0.85);
+    assert_eq!(check("disk")["criticalAt"], 0.95);
+    if cfg!(unix) {
+        assert_ne!(check("disk")["status"], "unknown");
+        assert!(server["disk"]["totalBytes"].as_u64().unwrap() > 0);
+    }
+    if cfg!(target_os = "linux") {
+        assert!(server["process"]["rssBytes"].as_u64().unwrap() > 0);
+        assert!(server["host"]["cores"].as_u64().unwrap() > 0);
+        assert_ne!(check("memory")["status"], "unknown");
+        assert!(server["process"]["cpuCores"].is_number());
+        let rss = server["series"]["processRss"]["points"].as_array().unwrap();
+        assert!(rss.iter().any(|point| point[1].is_number()));
+    }
+    // The store lock and the runtime are measured on every system.
+    assert!(server["relay"]["storeBusy"].is_number());
+    assert!(server["relay"]["storeLocksPerMinute"].as_u64().unwrap() > 0);
+    assert!(server["series"]["storeBusy"]["points"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|point| point[1].is_number()));
+    // Host figures only: nothing about users or their content.
+    let text = server.to_string();
+    for private in ["alice", "bob", "gpu-lab", SECRET_TITLE] {
+        assert!(!text.contains(private), "{private}");
+    }
+    let user = console.user.clone();
+    assert_eq!(
+        console
+            .call(Method::GET, "/relay/admin/server", Some(&user))
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+/// The statistics reads seek their indexes: none of them scans a table that
+/// grows with devices or time.
+#[tokio::test]
+async fn statistics_reads_use_their_indexes() {
+    let console = Console::new("admin-console-plans").await;
+    let conn = console.state.store.conn.lock().await;
+    let plan = |sql: &str| -> String {
+        conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(3))
+            .unwrap()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" | ")
+    };
+    for (sql, expected) in [
+        (
+            "SELECT bucket,value FROM relay_metrics WHERE resolution='h' AND metric='up' AND label='' AND bucket>=0 AND bucket<9",
+            "USING PRIMARY KEY",
+        ),
+        (
+            "SELECT bucket,label,value FROM relay_metrics WHERE resolution='h' AND metric='latency' AND bucket>=0 AND bucket<9",
+            "relay_metrics_series",
+        ),
+        (
+            "SELECT device_id,SUM(requests) FROM relay_device_traffic_daily WHERE day>=0 AND day<9 GROUP BY device_id",
+            "USING PRIMARY KEY",
+        ),
+        (
+            "SELECT day,requests FROM relay_device_traffic_daily WHERE device_id='x' AND day>=0",
+            "relay_device_traffic_daily_device",
+        ),
+        (
+            "SELECT COUNT(*) FROM relay_device_connections WHERE ended_at>0 AND ended_at<=9",
+            "COVERING INDEX relay_device_connections_ended",
+        ),
+        (
+            "SELECT COALESCE(ended_at,connected_at) FROM relay_device_connections WHERE device_id='x' ORDER BY connected_at DESC LIMIT 1",
+            "relay_device_connections_device",
+        ),
+        (
+            "SELECT MAX(accessed_at) FROM relay_share_activity WHERE resource_type='share' AND resource_id='x'",
+            "relay_share_activity_recent",
+        ),
+        (
+            "SELECT kind,COUNT(*) FROM relay_share_activity WHERE accessed_at>='a' AND accessed_at<'b' GROUP BY kind",
+            "relay_share_activity_time",
+        ),
+        (
+            "SELECT created_at FROM relay_users WHERE role='user' AND created_at>='a' AND created_at<'b'",
+            "relay_users_created",
+        ),
+        (
+            "SELECT COUNT(*) FROM relay_security_events WHERE created_at>=0 AND created_at<9",
+            "relay_security_events_time",
+        ),
+    ] {
+        let found = plan(sql);
+        assert!(found.contains(expected), "{sql}\n  → {found}");
+    }
 }
 
 #[tokio::test]
@@ -1493,6 +1676,26 @@ async fn performance_reports_errors_by_kind_percentiles_and_devices() {
     assert_eq!(connections["topDevices"][0]["deviceId"], "d-alice-1");
     assert_eq!(connections["topDevices"][0]["shortConnections"], 1);
     assert_eq!(connections["topDevices"][0]["ownerUsername"], "alice");
+    // Every device row names its owner (device names repeat across people).
+    for row in [&connections["topDevices"][0], &devices[0]] {
+        let owner = row["ownerUsername"].as_str().unwrap();
+        assert_eq!(row["ownerEmail"], format!("{owner}@example.test"));
+        assert_eq!(row["ownerUserId"], owner);
+        assert!(row["name"].is_string());
+    }
+    // The per-device lists page on the relay, with their totals.
+    let page = console
+        .get("/relay/admin/performance/devices?view=traffic&range=24h&pageSize=1&page=2&sort=errors&dir=asc")
+        .await;
+    assert_eq!(page["total"], value["deviceTraffic"]["total"]);
+    assert_eq!(page["items"].as_array().unwrap().len(), 1);
+    assert_eq!(page["items"][0]["errors"], 4);
+    let page = console
+        .get("/relay/admin/performance/devices?view=reconnects&range=24h")
+        .await;
+    assert_eq!(page["items"][0]["deviceId"], "d-alice-1");
+    assert_eq!(page["items"][0]["ownerEmail"], "alice@example.test");
+    assert_eq!(connections["topDevicesTotal"], page["total"]);
     // A custom window, and one that ends before it starts.
     let now = common::now_ms();
     let custom = console
@@ -1520,4 +1723,72 @@ async fn performance_reports_errors_by_kind_percentiles_and_devices() {
             .0,
         StatusCode::UNAUTHORIZED
     );
+}
+
+/// Writes responses of the real admin handlers over the seeded store as the
+/// Web console's test fixtures (apps/supervisor-web/src/pages/relayAdmin/__fixtures__):
+/// `RELAY_ADMIN_FIXTURES=<dir> cargo test -p pockymoe-relay --lib capture_console_fixtures -- --ignored`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "writes fixture files"]
+async fn capture_console_fixtures() {
+    let Ok(dir) = std::env::var("RELAY_ADMIN_FIXTURES") else {
+        return;
+    };
+    let console = Console::new("admin-console-fixtures").await;
+    let state = console.state.clone();
+    console.go_online("d-alice-1").await;
+    console.go_online("d-bob").await;
+    for (device, requests, failures) in [
+        ("d-bob", 140, 2),
+        ("d-alice-1", 60, 5),
+        ("d-alice-2", 12, 0),
+    ] {
+        for index in 0..requests {
+            state.metrics.forwarded(
+                device,
+                900,
+                &crate::metrics::Forwarded::Answered {
+                    status: if index < failures { 502 } else { 200 },
+                    response_bytes: 4200,
+                },
+                Duration::from_millis(20 + index as u64 % 300),
+            );
+        }
+    }
+    for device in ["d-alice-1", "d-alice-1", "d-alice-1", "d-bob"] {
+        let connection = Uuid::new_v4();
+        state.metrics.connected(device, connection);
+        state
+            .metrics
+            .disconnected(connection, crate::metrics::EndReason::Timeout);
+    }
+    let minute = {
+        let now = common::now_ms();
+        now - now.rem_euclid(common::MINUTE_MS)
+    };
+    crate::metrics::sample(&state, minute - common::MINUTE_MS).await;
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    crate::metrics::sample(&state, minute).await;
+    for (name, path) in [
+        ("server.json", "/relay/admin/server?range=24h"),
+        (
+            "performance-traffic.json",
+            "/relay/admin/performance/devices?view=traffic&range=24h",
+        ),
+        (
+            "performance-reconnects.json",
+            "/relay/admin/performance/devices?view=reconnects&range=24h",
+        ),
+        (
+            "security-events-devices.json",
+            "/relay/admin/security/events",
+        ),
+    ] {
+        let value = console.get(path).await;
+        std::fs::write(
+            std::path::Path::new(&dir).join(name),
+            serde_json::to_string_pretty(&value).unwrap() + "\n",
+        )
+        .unwrap();
+    }
 }

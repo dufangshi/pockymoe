@@ -16,6 +16,31 @@ pub(super) fn ensure_schema(conn: &Connection) -> Result<()> {
             [],
         )?;
     }
+    // Threads, agent threads and workspaces per device, written with each
+    // snapshot so the admin console never counts the lineage table.
+    if !table_exists(conn, "relay_devices") || !table_exists(conn, "relay_settings") {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS relay_device_lineage_counts(
+           device_id TEXT PRIMARY KEY REFERENCES relay_devices(id) ON DELETE CASCADE,
+           threads INTEGER NOT NULL, agents INTEGER NOT NULL, workspaces INTEGER NOT NULL
+         ) WITHOUT ROWID;",
+    )?;
+    if relay_setting(conn, "lineageCounts").is_none() {
+        let tx = conn.unchecked_transaction()?;
+        tx.execute(
+            "INSERT OR REPLACE INTO relay_device_lineage_counts(device_id,threads,agents,workspaces)
+             SELECT device_id,COUNT(*),COUNT(parent_thread_id),COUNT(DISTINCT workspace_id)
+             FROM relay_thread_lineage WHERE device_id IN (SELECT id FROM relay_devices) GROUP BY device_id",
+            [],
+        )?;
+        tx.execute(
+            "INSERT INTO relay_settings(key,value) VALUES ('lineageCounts','1')",
+            [],
+        )?;
+        tx.commit()?;
+    }
     Ok(())
 }
 
@@ -49,6 +74,23 @@ pub(super) fn replace(conn: &Connection, device: &str, rows: &Value) -> Result<(
     )?;
     for row in rows {
         tx.execute("INSERT INTO relay_thread_lineage(device_id,thread_id,parent_thread_id,workspace_id) VALUES(?1,?2,?3,?4)",params![device,row["id"].as_str(),row["parentThreadId"].as_str(),row["workspaceId"].as_str()])?;
+    }
+    let agents = rows
+        .iter()
+        .filter(|row| row["parentThreadId"].as_str().is_some())
+        .count();
+    let workspaces = rows
+        .iter()
+        .filter_map(|row| row["workspaceId"].as_str())
+        .collect::<std::collections::HashSet<_>>()
+        .len();
+    if table_exists(&tx, "relay_device_lineage_counts") {
+        tx.execute(
+        "INSERT INTO relay_device_lineage_counts(device_id,threads,agents,workspaces)
+         SELECT ?1,?2,?3,?4 WHERE EXISTS(SELECT 1 FROM relay_devices WHERE id=?1)
+         ON CONFLICT(device_id) DO UPDATE SET threads=excluded.threads,agents=excluded.agents,workspaces=excluded.workspaces",
+        params![device, rows.len() as i64, agents as i64, workspaces as i64],
+    )?;
     }
     tx.commit()?;
     Ok(())

@@ -1,238 +1,145 @@
 //! Shares and access: thread shares and grants as one list, revoking one,
 //! public links and port previews. No thread titles or link contents.
+//!
+//! The list filters, sorts, counts and pages in SQL over both tables; the last
+//! visit of each share comes from the activity index, never a table scan.
 use super::common::*;
 use super::*;
 
-#[derive(Clone)]
-struct ShareRow {
-    id: String,
-    kind: &'static str,
-    scope: String,
-    owner_user_id: String,
-    owner_username: String,
-    target_user_id: String,
-    target_username: String,
-    device_id: String,
-    device_name: String,
-    workspace_label: Option<String>,
-    thread_access: String,
-    workspace_access: String,
-    can_create_threads: bool,
-    created_at: String,
-    expires_at: Option<String>,
-    last_access: Option<(String, String)>,
-}
+/// Every active share and grant as one relation. `?1` is now (text).
+const ACTIVE: &str = "
+    SELECT 'share' AS kind,s.id AS id,'thread' AS scope,s.owner_user_id AS owner_id,
+           COALESCE(o.username,s.owner_username) AS owner_name,o.email AS owner_email,
+           s.target_user_id AS target_id,COALESCE(t.username,s.target_username) AS target_name,t.email AS target_email,
+           s.device_id AS device_id,COALESCE(dv.name,s.device_name) AS device_name,s.workspace_label AS workspace_label,
+           s.thread_access AS thread_access,s.workspace_access AS workspace_access,0 AS create_threads,
+           s.created_at AS created_at,s.expires_at AS expires_at,
+           (SELECT MAX(a.accessed_at) FROM relay_share_activity a WHERE a.resource_type='share' AND a.resource_id=s.id) AS last_at
+    FROM relay_shares s JOIN relay_users o ON o.id=s.owner_user_id JOIN relay_users t ON t.id=s.target_user_id
+    LEFT JOIN relay_devices dv ON dv.id=s.device_id
+    WHERE s.revoked_at IS NULL AND (s.expires_at IS NULL OR s.expires_at>?1)
+    UNION ALL
+    SELECT 'grant',g.id,g.scope,g.owner_user_id,COALESCE(o.username,g.owner_username),o.email,
+           g.target_user_id,COALESCE(t.username,g.target_username),t.email,
+           g.device_id,COALESCE(dv.name,g.device_name),g.workspace_label,
+           g.thread_access,g.workspace_access,g.can_create_threads,g.created_at,g.expires_at,
+           (SELECT MAX(a.accessed_at) FROM relay_share_activity a WHERE a.resource_type='grant' AND a.resource_id=g.id)
+    FROM relay_access_grants g JOIN relay_users o ON o.id=g.owner_user_id JOIN relay_users t ON t.id=g.target_user_id
+    LEFT JOIN relay_devices dv ON dv.id=g.device_id
+    WHERE g.revoked_at IS NULL AND (g.expires_at IS NULL OR g.expires_at>?1)";
 
-impl ShareRow {
-    fn json(&self) -> Value {
-        json!({
-            "id": self.id,
-            "kind": self.kind,
-            "scope": self.scope,
-            "ownerUserId": self.owner_user_id,
-            "ownerUsername": self.owner_username,
-            "targetUserId": self.target_user_id,
-            "targetUsername": self.target_username,
-            "deviceId": self.device_id,
-            "deviceName": self.device_name,
-            "workspaceLabel": self.workspace_label,
-            "threadAccess": self.thread_access,
-            "workspaceAccess": self.workspace_access,
-            "canCreateThreads": self.can_create_threads,
-            "createdAt": self.created_at,
-            "expiresAt": self.expires_at,
-            "lastAccessedAt": self.last_access.as_ref().map(|(at, _)| at),
-            "lastAccessKind": self.last_access.as_ref().map(|(_, kind)| kind),
-        })
-    }
-}
-
-/// The latest recorded visit of every shared resource.
-fn last_visits(conn: &Connection) -> HashMap<(String, String), (String, String)> {
-    conn.prepare(
-        "SELECT a.resource_type,a.resource_id,a.accessed_at,a.kind FROM relay_share_activity a
-         WHERE a.accessed_at=(SELECT MAX(b.accessed_at) FROM relay_share_activity b
-                              WHERE b.resource_type=a.resource_type AND b.resource_id=a.resource_id)",
-    )
-    .and_then(|mut stmt| {
-        stmt.query_map([], |row| {
-            Ok((
-                (row.get::<_, String>(0)?, row.get::<_, String>(1)?),
-                (row.get::<_, String>(2)?, row.get::<_, String>(3)?),
-            ))
-        })?
-        .collect()
-    })
-    .unwrap_or_default()
-}
-
-fn active_rows(conn: &Connection) -> Vec<ShareRow> {
-    let visits = last_visits(conn);
-    let now = now_rfc3339();
-    let sql = "SELECT 'share',s.id,'thread',s.owner_user_id,COALESCE(s.owner_username,o.username),s.target_user_id,
-                      COALESCE(s.target_username,t.username),s.device_id,COALESCE(d.name,s.device_name),s.workspace_label,
-                      s.thread_access,s.workspace_access,0,s.created_at,s.expires_at
-               FROM relay_shares s JOIN relay_users o ON o.id=s.owner_user_id JOIN relay_users t ON t.id=s.target_user_id
-               LEFT JOIN relay_devices d ON d.id=s.device_id
-               WHERE s.revoked_at IS NULL AND (s.expires_at IS NULL OR s.expires_at>?1)
-               UNION ALL
-               SELECT 'grant',g.id,g.scope,g.owner_user_id,COALESCE(g.owner_username,o.username),g.target_user_id,
-                      COALESCE(g.target_username,t.username),g.device_id,COALESCE(d.name,g.device_name),g.workspace_label,
-                      g.thread_access,g.workspace_access,g.can_create_threads,g.created_at,g.expires_at
-               FROM relay_access_grants g JOIN relay_users o ON o.id=g.owner_user_id JOIN relay_users t ON t.id=g.target_user_id
-               LEFT JOIN relay_devices d ON d.id=g.device_id
-               WHERE g.revoked_at IS NULL AND (g.expires_at IS NULL OR g.expires_at>?1)
-               ORDER BY 14 DESC";
-    conn.prepare(sql)
-        .and_then(|mut stmt| {
-            stmt.query_map([&now], |row| {
-                let kind: String = row.get(0)?;
-                let id: String = row.get(1)?;
-                Ok(ShareRow {
-                    last_access: visits.get(&(kind.clone(), id.clone())).cloned(),
-                    kind: if kind == "share" { "share" } else { "grant" },
-                    id,
-                    scope: row.get(2)?,
-                    owner_user_id: row.get(3)?,
-                    owner_username: row.get(4)?,
-                    target_user_id: row.get(5)?,
-                    target_username: row.get(6)?,
-                    device_id: row.get(7)?,
-                    device_name: row
-                        .get::<_, Option<String>>(8)?
-                        .unwrap_or_else(|| "Pockymoe device".into()),
-                    workspace_label: row.get(9)?,
-                    thread_access: row.get(10)?,
-                    workspace_access: row.get(11)?,
-                    can_create_threads: row.get::<_, i64>(12)? == 1,
-                    created_at: row.get(13)?,
-                    expires_at: row.get(14)?,
-                })
-            })?
-            .collect()
-        })
-        .unwrap_or_default()
-}
+const ACCESS_RANK: &str = "((CASE WHEN thread_access='control' THEN 4 ELSE 0 END)
+    + (CASE workspace_access WHEN 'write' THEN 2 WHEN 'read' THEN 1 ELSE 0 END) + create_threads)";
 
 const EXPIRING_MS: i64 = 7 * DAY_MS;
 
-fn expiring(row: &ShareRow, horizon: &str) -> bool {
-    row.expires_at
-        .as_deref()
-        .is_some_and(|expires| expires <= horizon)
+fn share_json(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
+    let kind: String = row.get(0)?;
+    Ok(json!({
+        "kind": if kind == "share" { "share" } else { "grant" },
+        "id": row.get::<_, String>(1)?,
+        "scope": row.get::<_, String>(2)?,
+        "ownerUserId": row.get::<_, String>(3)?,
+        "ownerUsername": row.get::<_, Option<String>>(4)?,
+        "ownerEmail": row.get::<_, Option<String>>(5)?,
+        "targetUserId": row.get::<_, String>(6)?,
+        "targetUsername": row.get::<_, Option<String>>(7)?,
+        "targetEmail": row.get::<_, Option<String>>(8)?,
+        "deviceId": row.get::<_, String>(9)?,
+        "deviceName": row.get::<_, Option<String>>(10)?.unwrap_or_else(|| "Pockymoe device".into()),
+        "workspaceLabel": row.get::<_, Option<String>>(11)?,
+        "threadAccess": row.get::<_, String>(12)?,
+        "workspaceAccess": row.get::<_, String>(13)?,
+        "canCreateThreads": row.get::<_, i64>(14)? == 1,
+        "createdAt": row.get::<_, String>(15)?,
+        "expiresAt": row.get::<_, Option<String>>(16)?,
+        "lastAccessedAt": row.get::<_, Option<String>>(17)?,
+        "lastAccessKind": row.get::<_, Option<String>>(18)?,
+    }))
 }
 
-fn matches_filter(row: &ShareRow, filter: &str, horizon: &str) -> bool {
-    match filter {
-        "device" | "workspace" | "thread" => row.scope == filter,
-        "expiring" => expiring(row, horizon),
-        "unused" => row.last_access.is_none(),
-        _ => true,
+/// Conditions of the list's filters over `ACTIVE` (`?2` is the expiry horizon).
+fn conditions(query: &ListQuery, binds: &mut Binds) -> Vec<String> {
+    let mut list = Vec::new();
+    let expiring = "expires_at IS NOT NULL AND expires_at<=?2";
+    match query.filter() {
+        scope @ ("device" | "workspace" | "thread") => list.push(format!("scope='{scope}'")),
+        "expiring" => list.push(expiring.into()),
+        "unused" => list.push("last_at IS NULL".into()),
+        _ => {}
     }
-}
-
-/// Column filters: scope, owner, recipient, access, expiry, last use, created.
-fn matches_columns(row: &ShareRow, query: &ListQuery, horizon: &str) -> bool {
-    if !matches_filter(row, query.filter(), horizon) {
-        return false;
-    }
-    if let Some(scope) = ListQuery::pick(&query.scope) {
-        if row.scope != scope {
-            return false;
-        }
+    if let Some(scope @ ("device" | "workspace" | "thread")) = ListQuery::pick(&query.scope) {
+        list.push(format!("scope='{scope}'"));
     }
     if let Some(owner) = ListQuery::pick(&query.owner) {
-        if row.owner_user_id != owner {
-            return false;
-        }
+        list.push(format!("owner_id={}", binds.add(owner.to_string())));
     }
     if let Some(recipient) = ListQuery::pick(&query.recipient) {
-        if row.target_user_id != recipient {
-            return false;
-        }
+        list.push(format!("target_id={}", binds.add(recipient.to_string())));
     }
-    if let Some(access) = ListQuery::pick(&query.access) {
-        let ok = match access {
-            "control" => row.thread_access == "control",
-            "read" => row.thread_access == "read",
-            "filesWrite" => row.workspace_access == "write",
-            "filesRead" => row.workspace_access == "read",
-            "createThreads" => row.can_create_threads,
-            _ => true,
-        };
-        if !ok {
-            return false;
-        }
+    match ListQuery::pick(&query.access) {
+        Some("control") => list.push("thread_access='control'".into()),
+        Some("read") => list.push("thread_access='read'".into()),
+        Some("filesWrite") => list.push("workspace_access='write'".into()),
+        Some("filesRead") => list.push("workspace_access='read'".into()),
+        Some("createThreads") => list.push("create_threads=1".into()),
+        _ => {}
     }
-    if let Some(expiry) = ListQuery::pick(&query.expiry) {
-        let ok = match expiry {
-            "expiring" => expiring(row, horizon),
-            "set" => row.expires_at.is_some(),
-            "none" => row.expires_at.is_none(),
-            _ => true,
-        };
-        if !ok {
-            return false;
-        }
+    match ListQuery::pick(&query.expiry) {
+        Some("expiring") => list.push(expiring.into()),
+        Some("set") => list.push("expires_at IS NOT NULL".into()),
+        Some("none") => list.push("expires_at IS NULL".into()),
+        _ => {}
     }
-    let used = row
-        .last_access
-        .as_ref()
-        .and_then(|(at, _)| ms_from_rfc3339(at));
+    // Times are RFC 3339 text: compare as text in the same form.
     match ListQuery::pick(&query.seen) {
-        Some("never") => {
-            if used.is_some() {
-                return false;
-            }
-        }
+        Some("never") => list.push("last_at IS NULL".into()),
         _ => {
-            let window = query.seen_window();
-            if !window.is_open() && !window.contains(used) {
-                return false;
+            let (from, to) = query.seen_window().text();
+            if !from.is_empty() {
+                list.push(format!("last_at>={}", binds.add(from)));
+            }
+            if !to.is_empty() {
+                list.push(format!("last_at<{}", binds.add(to)));
             }
         }
     }
-    let created = query.created_window();
-    created.is_open() || created.contains(ms_from_rfc3339(&row.created_at))
+    let (from, to) = query.created_window().text();
+    if !from.is_empty() {
+        list.push(format!("created_at>={}", binds.add(from)));
+    }
+    if !to.is_empty() {
+        list.push(format!("created_at<{}", binds.add(to)));
+    }
+    if let Some(search) = query.search() {
+        let pattern = binds.add(like_pattern(&search));
+        let prefix = binds.add(format!("{}%", search.replace(['%', '_', '\\'], "")));
+        list.push(format!(
+            "(lower(owner_name) LIKE {pattern} ESCAPE '\\' OR lower(target_name) LIKE {pattern} ESCAPE '\\'
+              OR lower(device_name) LIKE {pattern} ESCAPE '\\' OR id LIKE {prefix})"
+        ));
+    }
+    list
 }
 
-fn access_rank(row: &ShareRow) -> i64 {
-    let thread = if row.thread_access == "control" { 4 } else { 0 };
-    let files = match row.workspace_access.as_str() {
-        "write" => 2,
-        "read" => 1,
-        _ => 0,
+fn order(query: &ListQuery) -> String {
+    let newest = "created_at DESC, kind, id";
+    let Some((key, dir)) = query.sort_by(Dir::Asc) else {
+        return newest.into();
     };
-    thread + files + i64::from(row.can_create_threads)
-}
-
-fn sort_shares(rows: &mut [&ShareRow], key: &str, dir: Dir) {
-    use std::cmp::Ordering;
-    let text = |value: &str| value.to_lowercase();
-    // Missing times (never used, no expiry) sort last either way.
-    let optional = |a: Option<&str>, b: Option<&str>| match (a, b) {
-        (Some(a), Some(b)) => dir.apply(a.cmp(b)),
-        (Some(_), None) => Ordering::Less,
-        (None, Some(_)) => Ordering::Greater,
-        (None, None) => Ordering::Equal,
-    };
-    rows.sort_by(|a, b| {
-        let ordering = match key {
-            "scope" => dir.apply(a.scope.cmp(&b.scope)),
-            "owner" => dir.apply(text(&a.owner_username).cmp(&text(&b.owner_username))),
-            "recipient" => dir.apply(text(&a.target_username).cmp(&text(&b.target_username))),
-            "device" => dir.apply(text(&a.device_name).cmp(&text(&b.device_name))),
-            "access" => dir.apply(access_rank(a).cmp(&access_rank(b))),
-            "lastUsed" => optional(
-                a.last_access.as_ref().map(|(at, _)| at.as_str()),
-                b.last_access.as_ref().map(|(at, _)| at.as_str()),
-            ),
-            "expires" => optional(a.expires_at.as_deref(), b.expires_at.as_deref()),
-            "created" => dir.apply(a.created_at.cmp(&b.created_at)),
-            _ => Ordering::Equal,
-        };
-        ordering.then_with(|| b.created_at.cmp(&a.created_at))
-    });
+    let d = dir.sql();
+    match key {
+        "scope" => format!("scope {d}, {newest}"),
+        "owner" => format!("owner_name COLLATE NOCASE {d}, {newest}"),
+        "recipient" => format!("target_name COLLATE NOCASE {d}, {newest}"),
+        "device" => format!("device_name COLLATE NOCASE {d}, {newest}"),
+        "access" => format!("{ACCESS_RANK} {d}, {newest}"),
+        // Never used and no expiry sort last either way.
+        "lastUsed" => format!("last_at IS NULL, last_at {d}, {newest}"),
+        "expires" => format!("expires_at IS NULL, expires_at {d}, {newest}"),
+        "created" => format!("created_at {d}, kind, id"),
+        _ => newest.into(),
+    }
 }
 
 pub(super) async fn list(
@@ -240,122 +147,197 @@ pub(super) async fn list(
     Query(query): Query<ListQuery>,
     State(state): State<Arc<AppState>>,
 ) -> Response {
-    let (conn, _) = match admin_conn(&state, &headers).await {
+    let (conn, _) = match admin_read(&state, &headers).await {
         Ok(value) => value,
         Err(response) => return response,
     };
-    let rows = active_rows(&conn);
-    let horizon = rfc3339_from_ms(now_ms() + EXPIRING_MS);
-    let week = rfc3339_ago(7 * DAY_MS);
-    let (created_week, revoked_week) = conn
-        .query_row(
-            "SELECT (SELECT COUNT(*) FROM relay_shares WHERE created_at>=?1)+(SELECT COUNT(*) FROM relay_access_grants WHERE created_at>=?1),
-                    (SELECT COUNT(*) FROM relay_shares WHERE revoked_at>=?1)+(SELECT COUNT(*) FROM relay_access_grants WHERE revoked_at>=?1)",
-            [&week],
-            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
-        )
-        .unwrap_or((0, 0));
-    let usage = usage_by_day(&conn, 14);
-    let names = usernames(
-        &conn,
-        &[
-            ListQuery::pick(&query.owner),
-            ListQuery::pick(&query.recipient),
-        ]
-        .into_iter()
-        .flatten()
-        .map(str::to_string)
-        .collect::<Vec<_>>(),
-    );
-    drop(conn);
-    let search = query.search();
-    let mut matching: Vec<&ShareRow> = rows
-        .iter()
-        .filter(|row| matches_columns(row, &query, &horizon))
-        .filter(|row| {
-            search.as_deref().is_none_or(|search| {
-                row.owner_username.to_lowercase().contains(search)
-                    || row.target_username.to_lowercase().contains(search)
-                    || row.device_name.to_lowercase().contains(search)
-                    || row.id.starts_with(search)
-            })
-        })
-        .collect();
-    if let Some((key, dir)) = query.sort_by(Dir::Asc) {
-        sort_shares(&mut matching, key, dir);
-    }
-    let paging = query.paging();
-    let items = matching
-        .iter()
-        .skip(paging.offset())
-        .take(paging.size)
-        .map(|row| row.json())
-        .collect();
-    let scope = |name: &str| rows.iter().filter(|row| row.scope == name).count();
-    let summary = json!({
-        "active": rows.len(),
-        "createdThisWeek": created_week,
-        "revokedThisWeek": revoked_week,
-        "expiringSoon": rows.iter().filter(|row| expiring(row, &horizon)).count(),
-        "byScope": { "device": scope("device"), "workspace": scope("workspace"), "thread": scope("thread") },
-        "permissions": {
-            "control": rows.iter().filter(|row| row.thread_access == "control").count(),
-            "read": rows.iter().filter(|row| row.thread_access == "read").count(),
-            "filesWrite": rows.iter().filter(|row| row.workspace_access == "write").count(),
-            "canCreateThreads": rows.iter().filter(|row| row.can_create_threads).count(),
-        },
-    });
-    let counts = json!({
-        "all": rows.len(),
-        "device": scope("device"),
-        "workspace": scope("workspace"),
-        "thread": scope("thread"),
-        "expiring": rows.iter().filter(|row| expiring(row, &horizon)).count(),
-        "unused": rows.iter().filter(|row| row.last_access.is_none()).count(),
-    });
-    let mut body = paging.wrap(items, matching.len());
-    body.insert("counts".into(), counts);
-    body.insert("summary".into(), summary);
-    body.insert("usage".into(), usage);
-    let label = |id: Option<&str>| id.and_then(|id| names.get(id).cloned());
-    body.insert(
-        "labels".into(),
-        json!({
-            "owner": label(ListQuery::pick(&query.owner)),
-            "recipient": label(ListQuery::pick(&query.recipient)),
-        }),
-    );
-    Json(Value::Object(body)).into_response()
+    blocking(|| {
+        let now = now_ms();
+        let window = match chart_window(&query, Range::Week, now) {
+            Ok(window) => window,
+            Err(message) => return bad_request(message),
+        };
+        let paging = query.paging();
+        let mut binds = Binds::default();
+        binds.add(now_rfc3339());
+        binds.add(rfc3339_from_ms(now + EXPIRING_MS));
+        let conditions = conditions(&query, &mut binds);
+        let condition = if conditions.is_empty() {
+            "1".to_string()
+        } else {
+            conditions.join(" AND ")
+        };
+        // Without filters the totals below count every active share already.
+        let filtered = !conditions.is_empty();
+        let total = if filtered {
+            count(
+                &conn,
+                &format!(
+                    "SELECT COUNT(*) FROM ({ACTIVE}) WHERE {condition} AND {}",
+                    binds.keep_all()
+                ),
+                binds.params(),
+            )
+        } else {
+            0
+        };
+        let limit = binds.add(paging.size as i64);
+        let offset = binds.add(paging.offset() as i64);
+        let items: Vec<Value> = conn
+            .prepare(&format!(
+                "SELECT kind,id,scope,owner_id,owner_name,owner_email,target_id,target_name,target_email,
+                        device_id,device_name,workspace_label,thread_access,workspace_access,create_threads,
+                        created_at,expires_at,last_at,
+                        (SELECT a.kind FROM relay_share_activity a WHERE a.resource_type=x.kind AND a.resource_id=x.id
+                         ORDER BY a.accessed_at DESC LIMIT 1)
+                 FROM ({ACTIVE}) x WHERE {condition} ORDER BY {} LIMIT {limit} OFFSET {offset}",
+                order(&query)
+            ))
+            .and_then(|mut stmt| stmt.query_map(binds.params(), share_json)?.collect())
+            .unwrap_or_else(|error| {
+                tracing::warn!(%error, "admin share list failed");
+                Vec::new()
+            });
+        // Totals over every active share, in one pass.
+        let (all, device, workspace, thread, expiring, unused, control, read, files_write, create) = conn
+            .query_row(
+                &format!(
+                    "SELECT COUNT(*),COALESCE(SUM(scope='device'),0),COALESCE(SUM(scope='workspace'),0),
+                            COALESCE(SUM(scope='thread'),0),
+                            COALESCE(SUM(expires_at IS NOT NULL AND expires_at<=?2),0),COALESCE(SUM(last_at IS NULL),0),
+                            COALESCE(SUM(thread_access='control'),0),COALESCE(SUM(thread_access='read'),0),
+                            COALESCE(SUM(workspace_access='write'),0),COALESCE(SUM(create_threads=1),0)
+                     FROM ({ACTIVE})"
+                ),
+                params![now_rfc3339(), rfc3339_from_ms(now + EXPIRING_MS)],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, i64>(5)?,
+                        row.get::<_, i64>(6)?,
+                        row.get::<_, i64>(7)?,
+                        row.get::<_, i64>(8)?,
+                        row.get::<_, i64>(9)?,
+                    ))
+                },
+            )
+            .unwrap_or_default();
+        let changed = |since: &str| -> (i64, i64) {
+            conn.query_row(
+                "SELECT (SELECT COUNT(*) FROM relay_shares WHERE created_at>=?1)+(SELECT COUNT(*) FROM relay_access_grants WHERE created_at>=?1),
+                        (SELECT COUNT(*) FROM relay_shares WHERE revoked_at>=?1)+(SELECT COUNT(*) FROM relay_access_grants WHERE revoked_at>=?1)",
+                [since],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap_or((0, 0))
+        };
+        let (created_week, revoked_week) = changed(&rfc3339_ago(7 * DAY_MS));
+        let (created_range, revoked_range) = changed(&rfc3339_from_ms(window.start));
+        let usage = usage_over(&conn, &window);
+        let names = usernames(
+            &conn,
+            &[
+                ListQuery::pick(&query.owner),
+                ListQuery::pick(&query.recipient),
+            ]
+            .into_iter()
+            .flatten()
+            .map(str::to_string)
+            .collect::<Vec<_>>(),
+        );
+        drop(conn);
+        let summary = json!({
+            "active": all,
+            "createdThisWeek": created_week,
+            "revokedThisWeek": revoked_week,
+            "createdInRange": created_range,
+            "revokedInRange": revoked_range,
+            "expiringSoon": expiring,
+            "byScope": { "device": device, "workspace": workspace, "thread": thread },
+            "permissions": {
+                "control": control,
+                "read": read,
+                "filesWrite": files_write,
+                "canCreateThreads": create,
+            },
+        });
+        let counts = json!({
+            "all": all,
+            "device": device,
+            "workspace": workspace,
+            "thread": thread,
+            "expiring": expiring,
+            "unused": unused,
+        });
+        let total = if filtered { total } else { all };
+        let mut body = paging.wrap(items, total as usize);
+        body.insert("counts".into(), counts);
+        body.insert("summary".into(), summary);
+        body.insert("usage".into(), usage);
+        body.insert("window".into(), window.json());
+        let label = |id: Option<&str>| id.and_then(|id| names.get(id).cloned());
+        body.insert(
+            "labels".into(),
+            json!({
+                "owner": label(ListQuery::pick(&query.owner)),
+                "recipient": label(ListQuery::pick(&query.recipient)),
+            }),
+        );
+        Json(Value::Object(body)).into_response()
+    })
 }
 
-/// Recipients' recorded visits per day and kind. The activity table merges
-/// repeats within five minutes and keeps 100 rows per share, so this is
-/// approximate.
-fn usage_by_day(conn: &Connection, days: i64) -> Value {
-    let start = day_of(now_ms() - (days - 1) * DAY_MS);
+/// Recipients' recorded visits per day (per hour for two days or less) and
+/// kind over the window. The activity table merges repeats within five
+/// minutes and keeps 100 rows per share, so this is approximate.
+fn usage_over(conn: &Connection, window: &ChartWindow) -> Value {
+    let hourly = window.span() <= 2 * DAY_MS;
+    let (step, width) = if hourly { (HOUR_MS, 13) } else { (DAY_MS, 10) };
+    let first = if hourly {
+        window.start - window.start.rem_euclid(step)
+    } else {
+        window.first_day()
+    };
     let rows: Vec<(String, String, i64)> = conn
-        .prepare(
-            "SELECT substr(accessed_at,1,10),kind,COUNT(*) FROM relay_share_activity
-             WHERE accessed_at>=?1 GROUP BY 1,2",
-        )
+        .prepare(&format!(
+            "SELECT substr(accessed_at,1,{width}),kind,COUNT(*) FROM relay_share_activity
+             WHERE accessed_at>=?1 AND accessed_at<?2 GROUP BY 1,2"
+        ))
         .and_then(|mut stmt| {
-            stmt.query_map([&start], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
-                .collect()
+            stmt.query_map(
+                params![rfc3339_from_ms(first), rfc3339_from_ms(window.end)],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?
+            .collect()
         })
         .unwrap_or_default();
-    let series: Vec<Value> = (0..days)
-        .map(|offset| {
-            let day = day_of(now_ms() - (days - 1 - offset) * DAY_MS);
+    let buckets = if hourly {
+        ((window.end - first + step - 1) / step).clamp(1, 400)
+    } else {
+        window.days().min(400)
+    };
+    let series: Vec<Value> = (0..buckets)
+        .map(|index| {
+            let at = first + index * step;
+            let key = rfc3339_from_ms(at)[..width].to_string();
             let mut kinds = serde_json::Map::new();
-            for (row_day, kind, count) in &rows {
-                if row_day == &day {
+            for (row_key, kind, count) in &rows {
+                if *row_key == key {
                     kinds.insert(kind.clone(), json!(count));
                 }
             }
-            json!({ "day": day, "kinds": kinds })
+            if hourly {
+                json!({ "day": day_of(at), "at": rfc3339_from_ms(at), "kinds": kinds })
+            } else {
+                json!({ "day": day_of(at), "kinds": kinds })
+            }
         })
         .collect();
-    json!({ "days": series, "approximate": true })
+    json!({ "days": series, "approximate": true, "resolutionSeconds": step / 1000 })
 }
 
 /// Revoking as admin only stops the relay from forwarding. A protected device
@@ -413,81 +395,86 @@ pub(super) async fn revoke(
 }
 
 /// Public links: owner, device, age, size and whether the stored snapshot is
-/// encrypted. Never the content or its title.
+/// encrypted (from `relay_public_link_stats`). Never the content or its title.
 pub(super) async fn public_links(
     headers: HeaderMap,
     Query(query): Query<ListQuery>,
     State(state): State<Arc<AppState>>,
 ) -> Response {
-    let (conn, _) = match admin_conn(&state, &headers).await {
+    let (conn, _) = match admin_read(&state, &headers).await {
         Ok(value) => value,
         Err(response) => return response,
     };
-    let paging = query.paging();
-    let condition = match query.filter() {
-        "legacy" => "COALESCE(json_extract(l.snapshot_json,'$.version'),1)<>2",
-        "encrypted" => "COALESCE(json_extract(l.snapshot_json,'$.version'),1)=2",
-        "live" => "s.link_id IS NOT NULL",
-        _ => "1",
-    };
-    let from = "FROM relay_public_links l JOIN relay_users u ON u.id=l.owner_user_id
-                JOIN relay_devices d ON d.id=l.device_id
-                LEFT JOIN relay_public_link_sources s ON s.link_id=l.id";
-    let total = count(
-        &conn,
-        &format!("SELECT COUNT(*) {from} WHERE {condition}"),
-        [],
-    );
-    let order = match query.sort_by(Dir::Desc) {
-        Some((key, dir)) => {
-            let d = dir.sql();
-            match key {
-                "owner" => format!("u.username {d}, l.created_at DESC"),
-                "device" => format!("d.name {d}, l.created_at DESC"),
-                "storage" => format!("COALESCE(json_extract(l.snapshot_json,'$.version'),1)=2 {d}, l.created_at DESC"),
-                "live" => format!("s.link_id IS NOT NULL {d}, l.created_at DESC"),
-                "refreshed" => format!("s.refreshed_at IS NULL, s.refreshed_at {d}"),
-                "size" => format!("length(l.snapshot_json) {d}"),
-                _ => format!("l.created_at {d}"),
+    blocking(|| {
+        let paging = query.paging();
+        let condition = match query.filter() {
+            "legacy" => "COALESCE(st.encrypted,0)=0",
+            "encrypted" => "COALESCE(st.encrypted,0)=1",
+            "live" => "s.link_id IS NOT NULL",
+            _ => "1",
+        };
+        let from = "FROM relay_public_links l JOIN relay_users u ON u.id=l.owner_user_id
+                    JOIN relay_devices d ON d.id=l.device_id
+                    LEFT JOIN relay_public_link_sources s ON s.link_id=l.id
+                    LEFT JOIN relay_public_link_stats st ON st.link_id=l.id";
+        let total = count(
+            &conn,
+            &format!("SELECT COUNT(*) {from} WHERE {condition}"),
+            [],
+        );
+        let order = match query.sort_by(Dir::Desc) {
+            Some((key, dir)) => {
+                let d = dir.sql();
+                match key {
+                    "owner" => format!("u.username {d}, l.created_at DESC"),
+                    "device" => format!("d.name {d}, l.created_at DESC"),
+                    "storage" => format!("COALESCE(st.encrypted,0) {d}, l.created_at DESC"),
+                    "live" => format!("s.link_id IS NOT NULL {d}, l.created_at DESC"),
+                    "refreshed" => format!("s.refreshed_at IS NULL, s.refreshed_at {d}"),
+                    "size" => format!("COALESCE(st.bytes,0) {d}"),
+                    _ => format!("l.created_at {d}"),
+                }
             }
-        }
-        None => "l.created_at DESC".to_string(),
-    };
-    let items: Vec<Value> = conn
-        .prepare(&format!(
-            "SELECT l.id,u.username,d.name,l.created_at,s.refreshed_at,s.link_id IS NOT NULL,
-                    COALESCE(json_extract(l.snapshot_json,'$.version'),1)=2,length(l.snapshot_json)
-             {from} WHERE {condition} ORDER BY {order} LIMIT ?1 OFFSET ?2"
-        ))
-        .and_then(|mut stmt| {
-            stmt.query_map(params![paging.size as i64, paging.offset() as i64], |row| {
-                Ok(json!({
-                    "id": row.get::<_, String>(0)?,
-                    "ownerUsername": row.get::<_, String>(1)?,
-                    "deviceName": row.get::<_, String>(2)?,
-                    "createdAt": row.get::<_, String>(3)?,
-                    "refreshedAt": row.get::<_, Option<String>>(4)?,
-                    "live": row.get::<_, bool>(5)?,
-                    "encrypted": row.get::<_, bool>(6)?,
-                    "bytes": row.get::<_, i64>(7)?,
-                }))
-            })?
-            .collect()
-        })
-        .unwrap_or_default();
-    let summary = public_link_summary(&conn);
-    let mut body = paging.wrap(items, total as usize);
-    body.insert("summary".into(), summary);
-    Json(Value::Object(body)).into_response()
+            None => "l.created_at DESC".to_string(),
+        };
+        let items: Vec<Value> = conn
+            .prepare(&format!(
+                "SELECT l.id,u.username,d.name,l.created_at,s.refreshed_at,s.link_id IS NOT NULL,
+                        COALESCE(st.encrypted,0),COALESCE(st.bytes,0),l.owner_user_id,u.email,l.device_id
+                 {from} WHERE {condition} ORDER BY {order} LIMIT ?1 OFFSET ?2"
+            ))
+            .and_then(|mut stmt| {
+                stmt.query_map(params![paging.size as i64, paging.offset() as i64], |row| {
+                    Ok(json!({
+                        "id": row.get::<_, String>(0)?,
+                        "ownerUsername": row.get::<_, String>(1)?,
+                        "deviceName": row.get::<_, String>(2)?,
+                        "createdAt": row.get::<_, String>(3)?,
+                        "refreshedAt": row.get::<_, Option<String>>(4)?,
+                        "live": row.get::<_, bool>(5)?,
+                        "encrypted": row.get::<_, bool>(6)?,
+                        "bytes": row.get::<_, i64>(7)?,
+                        "ownerUserId": row.get::<_, String>(8)?,
+                        "ownerEmail": row.get::<_, String>(9)?,
+                        "deviceId": row.get::<_, String>(10)?,
+                    }))
+                })?
+                .collect()
+            })
+            .unwrap_or_default();
+        let summary = public_link_summary(&conn);
+        let mut body = paging.wrap(items, total as usize);
+        body.insert("summary".into(), summary);
+        Json(Value::Object(body)).into_response()
+    })
 }
 
 pub(super) fn public_link_summary(conn: &Connection) -> Value {
     conn.query_row(
-        "SELECT COUNT(*),
-                COALESCE(SUM(COALESCE(json_extract(l.snapshot_json,'$.version'),1)=2),0),
+        "SELECT COUNT(*),COALESCE(SUM(st.encrypted),0),
                 COALESCE(SUM(EXISTS(SELECT 1 FROM relay_public_link_sources s WHERE s.link_id=l.id)),0),
-                COALESCE(SUM(length(l.snapshot_json)),0)
-         FROM relay_public_links l",
+                COALESCE(SUM(st.bytes),0)
+         FROM relay_public_links l LEFT JOIN relay_public_link_stats st ON st.link_id=l.id",
         [],
         |row| {
             let total: i64 = row.get(0)?;
@@ -504,51 +491,54 @@ pub(super) fn public_link_summary(conn: &Connection) -> Value {
     .unwrap_or(Value::Null)
 }
 
-/// Port previews held in memory: mappings, sessions and streams per device.
+/// Port previews held in memory: mappings, sessions and streams per device,
+/// busiest first, at most `PREVIEW_ROWS` (with the total).
+const PREVIEW_ROWS: usize = 200;
+
 pub(super) async fn previews(headers: HeaderMap, State(state): State<Arc<AppState>>) -> Response {
     let mappings = state.preview.mapping_counts();
     let (usage, sessions, streams) = state.preview.usage();
-    let (conn, _) = match admin_conn(&state, &headers).await {
+    let (conn, _) = match admin_read(&state, &headers).await {
         Ok(value) => value,
         Err(response) => return response,
     };
-    let mut ids: Vec<String> = mappings.keys().chain(usage.keys()).cloned().collect();
-    ids.sort();
-    ids.dedup();
-    let names = device_names(&conn, &ids);
-    let owners: HashMap<String, String> = ids
-        .iter()
-        .filter_map(|id| {
-            conn.query_row(
-                "SELECT u.username FROM relay_devices d JOIN relay_users u ON u.id=d.owner_user_id WHERE d.id=?1",
-                [id],
-                |row| row.get::<_, String>(0),
-            )
-            .ok()
-            .map(|name| (id.clone(), name))
-        })
-        .collect();
-    let devices: Vec<Value> = ids
-        .iter()
-        .filter(|id| names.contains_key(*id))
-        .map(|id| {
-            let (device_sessions, device_streams) = usage.get(id).copied().unwrap_or_default();
-            json!({
-                "deviceId": id,
-                "deviceName": names.get(id),
-                "ownerUsername": owners.get(id),
-                "mappings": mappings.get(id).copied().unwrap_or(0),
-                "sessions": device_sessions,
-                "streams": device_streams,
+    blocking(|| {
+        let mut ids: Vec<String> = mappings.keys().chain(usage.keys()).cloned().collect();
+        ids.sort();
+        ids.dedup();
+        let weight = |id: &String| {
+            let (s, st) = usage.get(id).copied().unwrap_or_default();
+            (mappings.get(id).copied().unwrap_or(0), s, st)
+        };
+        ids.sort_by(|a, b| weight(b).cmp(&weight(a)).then_with(|| a.cmp(b)));
+        let total = ids.len();
+        ids.truncate(PREVIEW_ROWS);
+        let refs = device_refs(&conn, &ids);
+        drop(conn);
+        let devices: Vec<Value> = ids
+            .iter()
+            .filter_map(|id| {
+                let device = refs.get(id)?;
+                let (device_sessions, device_streams) = usage.get(id).copied().unwrap_or_default();
+                let mut row = device.fields();
+                row.insert("deviceId".into(), json!(id));
+                row.insert(
+                    "mappings".into(),
+                    json!(mappings.get(id).copied().unwrap_or(0)),
+                );
+                row.insert("sessions".into(), json!(device_sessions));
+                row.insert("streams".into(), json!(device_streams));
+                Some(Value::Object(row))
             })
-        })
-        .collect();
-    Json(json!({
-        "configured": state.preview.base.is_some(),
-        "mappings": mappings.values().sum::<usize>(),
-        "sessions": sessions,
-        "streams": streams,
-        "devices": devices,
-    }))
-    .into_response()
+            .collect();
+        Json(json!({
+            "configured": state.preview.base.is_some(),
+            "mappings": mappings.values().sum::<usize>(),
+            "sessions": sessions,
+            "streams": streams,
+            "devices": devices,
+            "devicesTotal": total,
+        }))
+        .into_response()
+    })
 }

@@ -2,10 +2,156 @@
 //! legacy Node data directory. Kept separate from lib.rs so the migration
 //! and validation paths can be read without the request handlers.
 use super::*;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 pub(crate) struct RelayStore {
-    pub(crate) conn: Arc<Mutex<Connection>>,
+    /// The one writing connection. Tunnels, heartbeats, sign-ins and every
+    /// change take it, so nothing slow may hold it.
+    pub(crate) conn: Arc<StoreLock>,
+    /// A read-only connection for the admin console's reads, so a long report
+    /// never makes a tunnel or a heartbeat wait (SQLite in WAL mode lets it
+    /// read while the main connection writes). None for in-memory stores.
+    pub(crate) read: Option<Mutex<Connection>>,
     pub(crate) session_secret: String,
+    /// The database file.
+    pub(crate) path: PathBuf,
+}
+
+impl RelayStore {
+    /// The directory holding the database (for its disk), when on disk.
+    pub(crate) fn data_dir(&self) -> Option<&FsPath> {
+        self.read
+            .as_ref()
+            .and(self.path.parent())
+            .filter(|dir| !dir.as_os_str().is_empty())
+    }
+}
+
+/// The store's connection behind an async mutex that also measures how long
+/// callers wait for it and how long they hold it (the Server section's
+/// "store lock" figures).
+pub(crate) struct StoreLock {
+    inner: Mutex<Connection>,
+    stats: LockStats,
+}
+
+#[derive(Default)]
+struct LockStats {
+    acquired: AtomicU64,
+    wait_ns: AtomicU64,
+    hold_ns: AtomicU64,
+    max_wait_ns: AtomicU64,
+    max_hold_ns: AtomicU64,
+}
+
+/// What the store lock did since the last sample.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct LockSample {
+    pub(crate) acquired: u64,
+    pub(crate) wait_ms: f64,
+    pub(crate) hold_ms: f64,
+    pub(crate) max_wait_ms: f64,
+    pub(crate) max_hold_ms: f64,
+}
+
+pub(crate) struct StoreGuard<'a> {
+    guard: tokio::sync::MutexGuard<'a, Connection>,
+    since: std::time::Instant,
+    stats: &'a LockStats,
+}
+
+impl std::ops::Deref for StoreGuard<'_> {
+    type Target = Connection;
+    fn deref(&self) -> &Connection {
+        &self.guard
+    }
+}
+
+impl std::ops::DerefMut for StoreGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Connection {
+        &mut self.guard
+    }
+}
+
+impl Drop for StoreGuard<'_> {
+    fn drop(&mut self) {
+        let held = self.since.elapsed().as_nanos() as u64;
+        self.stats.hold_ns.fetch_add(held, Ordering::Relaxed);
+        self.stats.max_hold_ns.fetch_max(held, Ordering::Relaxed);
+    }
+}
+
+impl StoreLock {
+    pub(crate) fn new(conn: Connection) -> Self {
+        Self {
+            inner: Mutex::new(conn),
+            stats: LockStats::default(),
+        }
+    }
+
+    pub(crate) async fn lock(&self) -> StoreGuard<'_> {
+        let asked = std::time::Instant::now();
+        let guard = self.inner.lock().await;
+        let waited = asked.elapsed().as_nanos() as u64;
+        self.stats.acquired.fetch_add(1, Ordering::Relaxed);
+        self.stats.wait_ns.fetch_add(waited, Ordering::Relaxed);
+        self.stats.max_wait_ns.fetch_max(waited, Ordering::Relaxed);
+        StoreGuard {
+            guard,
+            since: std::time::Instant::now(),
+            stats: &self.stats,
+        }
+    }
+
+    pub(crate) fn try_lock(&self) -> Result<StoreGuard<'_>, tokio::sync::TryLockError> {
+        let guard = self.inner.try_lock()?;
+        self.stats.acquired.fetch_add(1, Ordering::Relaxed);
+        Ok(StoreGuard {
+            guard,
+            since: std::time::Instant::now(),
+            stats: &self.stats,
+        })
+    }
+
+    /// Takes the figures gathered since the last call.
+    pub(crate) fn take_sample(&self) -> LockSample {
+        let ms = |counter: &AtomicU64| counter.swap(0, Ordering::Relaxed) as f64 / 1e6;
+        LockSample {
+            acquired: self.stats.acquired.swap(0, Ordering::Relaxed),
+            wait_ms: ms(&self.stats.wait_ns),
+            hold_ms: ms(&self.stats.hold_ns),
+            max_wait_ms: ms(&self.stats.max_wait_ns),
+            max_hold_ms: ms(&self.stats.max_hold_ns),
+        }
+    }
+}
+
+/// Opens the admin console's read-only connection next to the main one.
+fn open_reader(path: &FsPath) -> Option<Connection> {
+    let name = path.to_string_lossy();
+    if name.is_empty() || name == ":memory:" || name.starts_with("file::memory:") {
+        return None;
+    }
+    let opened = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .and_then(|conn| {
+        conn.busy_timeout(Duration::from_secs(5))?;
+        conn.pragma_update(None, "query_only", "ON")?;
+        // A read must see the schema the main connection just created.
+        conn.query_row("SELECT COUNT(*) FROM sqlite_master", [], |row| {
+            row.get::<_, i64>(0)
+        })?;
+        Ok(conn)
+    });
+    match opened {
+        Ok(conn) => Some(conn),
+        Err(error) => {
+            tracing::warn!(%error, "admin reads share the main relay connection");
+            None
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -336,7 +482,7 @@ impl RelayStore {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let mut conn = Connection::open(path)?;
+        let mut conn = Connection::open(&path)?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.execute_batch(
@@ -457,9 +603,12 @@ impl RelayStore {
         thread_groups::ensure_schema(&conn)?;
         upstream_catalog::ensure_schema(&conn)?;
         crate::metrics::ensure_schema(&conn)?;
+        let read = open_reader(&path).map(Mutex::new);
         Ok(Self {
-            conn: Arc::new(Mutex::new(conn)),
+            conn: Arc::new(StoreLock::new(conn)),
+            read,
             session_secret,
+            path,
         })
     }
 }

@@ -9,7 +9,10 @@ use super::*;
 mod audit;
 mod common;
 mod devices;
+#[cfg(test)]
+mod load_tests;
 mod overview;
+mod server;
 mod shares;
 mod stats;
 mod system;
@@ -18,7 +21,7 @@ mod tests;
 mod users;
 
 pub(crate) use common::{
-    compare_versions, day_of, rfc3339_from_ms, Range, DAY_MS, HOUR_MS, MINUTE_MS, RELAY_VERSION,
+    compare_versions, day_of, rfc3339_from_ms, DAY_MS, HOUR_MS, MINUTE_MS, RELAY_VERSION,
 };
 
 /// In-memory state of the admin console: when this process started and the
@@ -27,6 +30,10 @@ pub(crate) struct AdminState {
     pub(crate) started_at: String,
     integrity: StdMutex<Option<(std::time::Instant, String)>>,
     storage: StdMutex<Option<(std::time::Instant, Value)>>,
+    /// People and devices active on each finished day (they never change).
+    active_days: StdMutex<HashMap<String, (i64, i64)>>,
+    /// The slow storage checks run one at a time, off the async threads.
+    measuring: tokio::sync::Mutex<()>,
 }
 
 impl Default for AdminState {
@@ -35,6 +42,8 @@ impl Default for AdminState {
             started_at: now_rfc3339(),
             integrity: StdMutex::new(None),
             storage: StdMutex::new(None),
+            active_days: StdMutex::new(HashMap::new()),
+            measuring: tokio::sync::Mutex::new(()),
         }
     }
 }
@@ -89,6 +98,11 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
         .route("/relay/admin/actions", get(stats::actions))
         .route("/relay/admin/performance", get(stats::performance_handler))
         .route(
+            "/relay/admin/performance/devices",
+            get(stats::performance_devices),
+        )
+        .route("/relay/admin/server", get(server::server))
+        .route(
             "/relay/admin/settings/retention",
             get(stats::retention).patch(stats::update_retention),
         )
@@ -120,68 +134,60 @@ async fn search(
     Query(query): Query<common::ListQuery>,
     State(state): State<Arc<AppState>>,
 ) -> Response {
-    let (conn, _) = match common::admin_conn(&state, &headers).await {
+    let (conn, _) = match common::admin_read(&state, &headers).await {
         Ok(value) => value,
         Err(response) => return response,
     };
-    let Some(search) = query.search() else {
-        return Json(json!({ "users": [], "devices": [] })).into_response();
-    };
-    let pattern = common::like_pattern(&search);
-    let users: Vec<Value> = conn
-        .prepare(
-            "SELECT id,username,email,role,enabled FROM relay_users
-             WHERE lower(username) LIKE ?1 ESCAPE '\\' OR lower(email) LIKE ?1 ESCAPE '\\' OR id=?2
-             ORDER BY username LIMIT 6",
-        )
-        .and_then(|mut stmt| {
-            stmt.query_map(params![pattern, search], |row| {
-                Ok(json!({
-                    "id": row.get::<_, String>(0)?,
-                    "username": row.get::<_, String>(1)?,
-                    "email": row.get::<_, String>(2)?,
-                    "role": row.get::<_, String>(3)?,
-                    "enabled": row.get::<_, i64>(4)? == 1,
-                }))
-            })?
-            .collect()
-        })
-        .unwrap_or_default();
-    let devices: Vec<Value> = conn
-        .prepare(
-            "SELECT d.id,d.name,u.username FROM relay_devices d JOIN relay_users u ON u.id=d.owner_user_id
-             WHERE lower(d.name) LIKE ?1 ESCAPE '\\' OR d.id=?2 ORDER BY d.name LIMIT 6",
-        )
-        .and_then(|mut stmt| {
-            stmt.query_map(params![pattern, search], |row| {
-                Ok(json!({
-                    "id": row.get::<_, String>(0)?,
-                    "name": row.get::<_, String>(1)?,
-                    "ownerUsername": row.get::<_, String>(2)?,
-                }))
-            })?
-            .collect()
-        })
-        .unwrap_or_default();
-    Json(json!({ "users": users, "devices": devices })).into_response()
+    common::blocking(|| {
+        let Some(search) = query.search() else {
+            return Json(json!({ "users": [], "devices": [] })).into_response();
+        };
+        let pattern = common::like_pattern(&search);
+        let users: Vec<Value> = conn
+            .prepare(
+                "SELECT id,username,email,role,enabled FROM relay_users
+                 WHERE lower(username) LIKE ?1 ESCAPE '\\' OR lower(email) LIKE ?1 ESCAPE '\\' OR id=?2
+                 ORDER BY username LIMIT 6",
+            )
+            .and_then(|mut stmt| {
+                stmt.query_map(params![pattern, search], |row| {
+                    Ok(json!({
+                        "id": row.get::<_, String>(0)?,
+                        "username": row.get::<_, String>(1)?,
+                        "email": row.get::<_, String>(2)?,
+                        "role": row.get::<_, String>(3)?,
+                        "enabled": row.get::<_, i64>(4)? == 1,
+                    }))
+                })?
+                .collect()
+            })
+            .unwrap_or_default();
+        let devices: Vec<Value> = conn
+            .prepare(
+                "SELECT d.id,d.name,u.username,u.id,u.email FROM relay_devices d JOIN relay_users u ON u.id=d.owner_user_id
+                 WHERE lower(d.name) LIKE ?1 ESCAPE '\\' OR d.id=?2 ORDER BY d.name LIMIT 6",
+            )
+            .and_then(|mut stmt| {
+                stmt.query_map(params![pattern, search], |row| {
+                    Ok(json!({
+                        "id": row.get::<_, String>(0)?,
+                        "name": row.get::<_, String>(1)?,
+                        "ownerUsername": row.get::<_, String>(2)?,
+                        "ownerUserId": row.get::<_, String>(3)?,
+                        "ownerEmail": row.get::<_, String>(4)?,
+                    }))
+                })?
+                .collect()
+            })
+            .unwrap_or_default();
+        Json(json!({ "users": users, "devices": devices })).into_response()
+    })
 }
 
 #[derive(Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AdminQuery {
-    token: Option<String>,
-    relay_session: Option<String>,
     days: Option<u32>,
-}
-
-impl AdminQuery {
-    fn token_query(&self) -> TokenQuery {
-        TokenQuery {
-            token: self.token.clone(),
-            device_token: None,
-            relay_session: self.relay_session.clone(),
-        }
-    }
 }
 
 /// The tunnel times the relay holds in memory for each online device.
@@ -203,25 +209,6 @@ pub(crate) async fn tunnel_times(state: &AppState) -> HashMap<String, (String, S
         .collect()
 }
 
-/// Threads, agent threads (threads with a parent) and workspaces per device,
-/// from the IDs devices report in heartbeats. No titles exist in this table.
-pub(crate) fn lineage_counts(conn: &Connection) -> HashMap<String, (i64, i64, i64)> {
-    conn.prepare(
-        "SELECT device_id,COUNT(*),COUNT(parent_thread_id),COUNT(DISTINCT workspace_id)
-         FROM relay_thread_lineage GROUP BY device_id",
-    )
-    .and_then(|mut stmt| {
-        stmt.query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                (row.get(1)?, row.get(2)?, row.get(3)?),
-            ))
-        })?
-        .collect()
-    })
-    .unwrap_or_default()
-}
-
 /// Admin views never carry thread titles: they come from conversation content
 /// and only the owner and recipient see them on their own pages.
 pub(crate) fn without_thread_title(mut share: Value) -> Value {
@@ -231,145 +218,166 @@ pub(crate) fn without_thread_title(mut share: Value) -> Value {
     share
 }
 
+/// Rows per list of the legacy summary.
+const LEGACY_ROWS: i64 = 500;
+
 pub(crate) async fn relay_admin(
     headers: HeaderMap,
     Query(query): Query<AdminQuery>,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
     let tunnels = tunnel_times(&state).await;
-    let conn = state.store.conn.lock().await;
-    if authenticated_admin_user(
-        &conn,
-        &state.store.session_secret,
-        &headers,
-        &query.token_query(),
-    )
-    .is_none()
-    {
-        return unauthorized();
-    }
-    // Kept in the response for older Web builds; it never filtered anything.
-    let conversation_window_days = query.days.unwrap_or(7).clamp(1, 365);
-    let mut stmt = match conn.prepare(
-        "SELECT u.id,u.email,u.username,u.role,u.enabled,u.last_seen_at,u.created_at,
-                (SELECT COUNT(*) FROM relay_devices d WHERE d.owner_user_id=u.id)
-         FROM relay_users u ORDER BY u.created_at ASC",
-    ) {
-        Ok(stmt) => stmt,
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    let (conn, _) = match common::admin_read(&state, &headers).await {
+        Ok(value) => value,
+        Err(response) => return response,
     };
-    let users: Vec<Value> = stmt
-        .query_map([], |row| {
-            Ok(json!({
-                "id": row.get::<_, String>(0)?,
-                "email": row.get::<_, String>(1)?,
-                "username": row.get::<_, String>(2)?,
-                "role": row.get::<_, String>(3)?,
-                "enabled": row.get::<_, i64>(4)? == 1,
-                "lastSeenAt": row.get::<_, Option<String>>(5)?,
-                "createdAt": row.get::<_, String>(6)?,
-                "deviceCount": row.get::<_, i64>(7)?,
-                // The relay records no conversations; older Web builds read this.
-                "conversationCount": 0
-            }))
-        })
-        .ok()
-        .map(|rows| rows.flatten().collect())
-        .unwrap_or_default();
-    drop(stmt);
-
-    let lineage = lineage_counts(&conn);
-    let mut stmt = match conn.prepare(
-        "SELECT d.id,d.owner_user_id,d.name,d.token,d.token_preview,d.created_at,u.username,u.email
-         FROM relay_devices d JOIN relay_users u ON u.id=d.owner_user_id ORDER BY d.created_at ASC",
-    ) {
-        Ok(stmt) => stmt,
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    };
-    let devices: Vec<Value> = stmt
-        .query_map([], |row| {
-            let id: String = row.get(0)?;
-            let tunnel = tunnels.get(&id);
-            let (threads, agent_threads, workspaces) =
-                lineage.get(&id).copied().unwrap_or_default();
-            Ok(json!({
-                "id": id,
-                "ownerUserId": row.get::<_, String>(1)?,
-                "name": row.get::<_, String>(2)?,
-                "token": row.get::<_, Option<String>>(3)?,
-                "tokenPreview": row.get::<_, String>(4)?,
-                "connected": tunnel.is_some(),
-                "connectedAt": tunnel.map(|(connected, _)| connected),
-                "lastHeartbeatAt": tunnel.map(|(_, heartbeat)| heartbeat),
-                "createdAt": row.get::<_, String>(5)?,
-                "ownerUsername": row.get::<_, String>(6)?,
-                "ownerEmail": row.get::<_, String>(7)?,
-                "ipAddress": Value::Null,
-                "threadCount": threads,
-                "agentThreadCount": agent_threads,
-                "workspaceCount": workspaces,
-                "workspaces": [],
-                "threads": []
-            }))
-        })
-        .ok()
-        .map(|rows| rows.flatten().collect())
-        .unwrap_or_default();
-    drop(stmt);
-
-    let user_ids: Vec<String> = users
-        .iter()
-        .filter_map(|user| user.get("id").and_then(Value::as_str).map(str::to_string))
-        .collect();
-    let shares: Vec<Value> = user_ids
-        .iter()
-        .flat_map(|id| relay_shares_for(&conn, "owner_user_id", id))
-        .map(without_thread_title)
-        .collect();
-    let grants: Vec<Value> = user_ids
-        .iter()
-        .flat_map(|id| relay_grants_for(&conn, "owner_user_id", id))
-        .map(without_thread_title)
-        .collect();
-    let pending_registrations = if table_exists(&conn, "relay_pending_registrations") {
-        conn.prepare(
-            "SELECT id,email,username,created_at,provider FROM relay_pending_registrations
-             WHERE status='pending' ORDER BY created_at ASC",
-        )
-        .ok()
-        .and_then(|mut stmt| {
-            stmt.query_map([], |row| {
+    common::blocking(|| {
+        // Kept in the response for older Web builds; it never filtered anything.
+        let conversation_window_days = query.days.unwrap_or(7).clamp(1, 365);
+        // Bounded: a relay with tens of thousands of accounts answers with the
+        // first LEGACY_ROWS of each list and says so (`truncated`); the console
+        // pages through its own routes.
+        let mut stmt = match conn.prepare(
+            "SELECT u.id,u.email,u.username,u.role,u.enabled,u.last_seen_at,u.created_at,
+                    (SELECT COUNT(*) FROM relay_devices d WHERE d.owner_user_id=u.id)
+             FROM relay_users u ORDER BY u.created_at ASC LIMIT ?1",
+        ) {
+            Ok(stmt) => stmt,
+            Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        };
+        let users: Vec<Value> = stmt
+            .query_map([LEGACY_ROWS], |row| {
                 Ok(json!({
                     "id": row.get::<_, String>(0)?,
                     "email": row.get::<_, String>(1)?,
                     "username": row.get::<_, String>(2)?,
-                    "createdAt": row.get::<_, String>(3)?,
-                    "provider": row.get::<_, String>(4)?
+                    "role": row.get::<_, String>(3)?,
+                    "enabled": row.get::<_, i64>(4)? == 1,
+                    "lastSeenAt": row.get::<_, Option<String>>(5)?,
+                    "createdAt": row.get::<_, String>(6)?,
+                    "deviceCount": row.get::<_, i64>(7)?,
+                    // The relay records no conversations; older Web builds read this.
+                    "conversationCount": 0
                 }))
             })
             .ok()
-            .map(|rows| rows.flatten().collect::<Vec<_>>())
-        })
-        .unwrap_or_default()
-    } else {
-        Vec::new()
-    };
-    let settings = registration_settings(&conn, &state.oauth);
-    let registration_enabled = settings
-        .get("enabled")
-        .and_then(Value::as_bool)
-        .unwrap_or(true);
-    Json(json!({
-        "users": users,
-        "devices": devices,
-        "shares": shares,
-        "grants": grants,
-        "pendingRegistrations": pending_registrations,
-        "settings": settings,
-        "conversationWindowDays": conversation_window_days,
-        "registrationEnabled": registration_enabled
-    }))
-    .into_response()
+            .map(|rows| rows.flatten().collect())
+            .unwrap_or_default();
+        drop(stmt);
+
+        let mut stmt = match conn.prepare(
+            "SELECT d.id,d.owner_user_id,d.name,d.token,d.token_preview,d.created_at,u.username,u.email,
+                    (SELECT COUNT(*) FROM relay_thread_lineage l WHERE l.device_id=d.id),
+                    (SELECT COUNT(parent_thread_id) FROM relay_thread_lineage l WHERE l.device_id=d.id),
+                    (SELECT COUNT(DISTINCT workspace_id) FROM relay_thread_lineage l WHERE l.device_id=d.id)
+             FROM relay_devices d JOIN relay_users u ON u.id=d.owner_user_id ORDER BY d.created_at ASC LIMIT ?1",
+        ) {
+            Ok(stmt) => stmt,
+            Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        };
+        let devices: Vec<Value> = stmt
+            .query_map([LEGACY_ROWS], |row| {
+                let id: String = row.get(0)?;
+                let tunnel = tunnels.get(&id);
+                let (threads, agent_threads, workspaces): (i64, i64, i64) =
+                    (row.get(8)?, row.get(9)?, row.get(10)?);
+                Ok(json!({
+                    "id": id,
+                    "ownerUserId": row.get::<_, String>(1)?,
+                    "name": row.get::<_, String>(2)?,
+                    "token": row.get::<_, Option<String>>(3)?,
+                    "tokenPreview": row.get::<_, String>(4)?,
+                    "connected": tunnel.is_some(),
+                    "connectedAt": tunnel.map(|(connected, _)| connected),
+                    "lastHeartbeatAt": tunnel.map(|(_, heartbeat)| heartbeat),
+                    "createdAt": row.get::<_, String>(5)?,
+                    "ownerUsername": row.get::<_, String>(6)?,
+                    "ownerEmail": row.get::<_, String>(7)?,
+                    "ipAddress": Value::Null,
+                    "threadCount": threads,
+                    "agentThreadCount": agent_threads,
+                    "workspaceCount": workspaces,
+                    "workspaces": [],
+                    "threads": []
+                }))
+            })
+            .ok()
+            .map(|rows| rows.flatten().collect())
+            .unwrap_or_default();
+        drop(stmt);
+
+        let user_ids: Vec<String> = users
+            .iter()
+            .filter_map(|user| user.get("id").and_then(Value::as_str).map(str::to_string))
+            .collect();
+        // Owners with shares or grants only, instead of two queries per account.
+        let owners_with = |table: &str| -> Vec<String> {
+            conn.prepare(&format!("SELECT DISTINCT owner_user_id FROM {table}"))
+                .and_then(|mut stmt| stmt.query_map([], |row| row.get(0))?.collect())
+                .unwrap_or_default()
+        };
+        let share_owners: std::collections::HashSet<String> =
+            owners_with("relay_shares").into_iter().collect();
+        let grant_owners: std::collections::HashSet<String> =
+            owners_with("relay_access_grants").into_iter().collect();
+        let shares: Vec<Value> = user_ids
+            .iter()
+            .filter(|id| share_owners.contains(*id))
+            .flat_map(|id| relay_shares_for(&conn, "owner_user_id", id))
+            .take(LEGACY_ROWS as usize)
+            .map(without_thread_title)
+            .collect();
+        let grants: Vec<Value> = user_ids
+            .iter()
+            .filter(|id| grant_owners.contains(*id))
+            .flat_map(|id| relay_grants_for(&conn, "owner_user_id", id))
+            .take(LEGACY_ROWS as usize)
+            .map(without_thread_title)
+            .collect();
+        let truncated = [users.len(), devices.len(), shares.len(), grants.len()]
+            .iter()
+            .any(|len| *len as i64 >= LEGACY_ROWS);
+        let pending_registrations = if table_exists(&conn, "relay_pending_registrations") {
+            conn.prepare(
+                "SELECT id,email,username,created_at,provider FROM relay_pending_registrations
+                 WHERE status='pending' ORDER BY created_at ASC",
+            )
+            .ok()
+            .and_then(|mut stmt| {
+                stmt.query_map([], |row| {
+                    Ok(json!({
+                        "id": row.get::<_, String>(0)?,
+                        "email": row.get::<_, String>(1)?,
+                        "username": row.get::<_, String>(2)?,
+                        "createdAt": row.get::<_, String>(3)?,
+                        "provider": row.get::<_, String>(4)?
+                    }))
+                })
+                .ok()
+                .map(|rows| rows.flatten().collect::<Vec<_>>())
+            })
+            .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let settings = registration_settings(&conn, &state.oauth);
+        let registration_enabled = settings
+            .get("enabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+        Json(json!({
+            "users": users,
+            "devices": devices,
+            "shares": shares,
+            "grants": grants,
+            "pendingRegistrations": pending_registrations,
+            "settings": settings,
+            "conversationWindowDays": conversation_window_days,
+            "registrationEnabled": registration_enabled,
+            "truncated": truncated
+        }))
+        .into_response()
+    })
 }
 
 pub(crate) fn set_relay_setting(conn: &Connection, key: &str, value: &str) -> rusqlite::Result<()> {

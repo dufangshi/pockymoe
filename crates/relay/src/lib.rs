@@ -6,6 +6,7 @@ mod apns;
 mod auth_api;
 mod auth_factors;
 mod device_tokens;
+mod host;
 mod metrics;
 mod notification_scope;
 mod notifications;
@@ -376,7 +377,7 @@ fn hash_password(password: &str) -> Result<(String, String)> {
 #[cfg(test)]
 struct PasswordLockProbe {
     secret: String,
-    connection: std::sync::Weak<tokio::sync::Mutex<Connection>>,
+    connection: std::sync::Weak<StoreLock>,
     result: tokio::sync::oneshot::Sender<bool>,
     resume: Option<std::sync::mpsc::Receiver<()>>,
 }
