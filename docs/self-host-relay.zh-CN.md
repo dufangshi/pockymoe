@@ -53,7 +53,7 @@ POCKYMOE_RELAY_WEB_DIST_DIR=/home/you/pockymoe-relay/web
 | `POCKYMOE_GOOGLE_OAUTH_CLIENT_ID`、`POCKYMOE_GOOGLE_OAUTH_CLIENT_SECRET` | 显示「使用 Google 继续」。在 Google Cloud 创建 OAuth 客户端，回调地址填 `https://relay.example.com/relay/auth/oauth/google/callback`。 |
 | `POCKYMOE_GITHUB_OAUTH_CLIENT_ID`、`POCKYMOE_GITHUB_OAUTH_CLIENT_SECRET` | 使用 GitHub 登录，回调地址 `…/relay/auth/oauth/github/callback`。 |
 | `POCKYMOE_RELAY_REGISTRATION_ENABLED=false` | 关闭公开注册。默认开放注册。 |
-| `POCKYMOE_RELAY_REGISTRATION_PASSWORD` | 注册时需要填写邀请码。 |
+| `POCKYMOE_RELAY_REGISTRATION_PASSWORD` | 注册时需要填写邀请码，密码注册和 Google/GitHub 注册都需要。已关联 Google/GitHub 的账号登录时不需要。 |
 
 注册、审核和登录方式之后也可以由管理员在 `https://relay.example.com/relay-admin`（[管理后台](relay-admin.md)）修改。开启审批后，新注册在那里等待处理；拒绝时申请留在审批记录里，它带来的加密账号数据会被删除。
 

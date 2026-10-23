@@ -59,7 +59,7 @@ Optional settings:
 | `POCKYMOE_GOOGLE_OAUTH_CLIENT_ID`, `POCKYMOE_GOOGLE_OAUTH_CLIENT_SECRET` | Show **Continue with Google**. Create an OAuth client in Google Cloud with the redirect URI `https://relay.example.com/relay/auth/oauth/google/callback`. |
 | `POCKYMOE_GITHUB_OAUTH_CLIENT_ID`, `POCKYMOE_GITHUB_OAUTH_CLIENT_SECRET` | Sign in with GitHub; callback `…/relay/auth/oauth/github/callback`. |
 | `POCKYMOE_RELAY_REGISTRATION_ENABLED=false` | Close public sign-up. It is open by default. |
-| `POCKYMOE_RELAY_REGISTRATION_PASSWORD` | Require an invite code to sign up. |
+| `POCKYMOE_RELAY_REGISTRATION_PASSWORD` | Require an invite code to sign up, with a password or with Google/GitHub. Accounts already linked to Google/GitHub sign in without it. |
 
 Registration, approval and sign-in providers can also be changed later by the
 administrator at `https://relay.example.com/relay-admin`, the

@@ -10,6 +10,8 @@ mod metrics;
 mod notification_scope;
 mod notifications;
 mod oauth;
+#[cfg(test)]
+mod oauth_invite_tests;
 mod peer;
 mod preferences;
 mod preview;
@@ -250,7 +252,10 @@ pub async fn serve() -> Result<()> {
         .route("/relay/auth/login", post(login))
         .route("/relay/auth/logout", post(logout))
         .route("/relay/auth/session", get(session))
-        .route("/relay/auth/oauth/{provider}/start", get(oauth_start))
+        .route(
+            "/relay/auth/oauth/{provider}/start",
+            get(oauth_start).post(oauth_start_with_invite),
+        )
         .route("/relay/auth/oauth/{provider}/callback", get(oauth_callback))
         .route("/relay/account", patch(update_account))
         .route("/relay/account/password", patch(update_account_password))
@@ -1195,12 +1200,109 @@ async fn oauth_start(
     headers: HeaderMap,
     State(state): State<Arc<AppState>>,
 ) -> Response {
-    let Some(provider) = OAuthProvider::parse(&provider) else {
-        return (
+    match begin_oauth(&state, &headers, &provider, None).await {
+        Ok((target, cookie)) => {
+            let mut response = Redirect::temporary(&target).into_response();
+            response.headers_mut().append(header::SET_COOKIE, cookie);
+            response
+        }
+        Err(response) => response,
+    }
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct OAuthStartInput {
+    invite_code: Option<String>,
+}
+
+/// The Web's "Create account with Google/GitHub": the invite code stays on the
+/// relay with the pending OAuth login (as a hash) and the callback checks it
+/// before creating an account. Returns the provider URL instead of redirecting.
+async fn oauth_start_with_invite(
+    Path(provider): Path<String>,
+    headers: HeaderMap,
+    State(state): State<Arc<AppState>>,
+    body: Bytes,
+) -> Response {
+    let input = if body.iter().all(u8::is_ascii_whitespace) {
+        OAuthStartInput::default()
+    } else {
+        match serde_json::from_slice::<OAuthStartInput>(&body) {
+            Ok(input) => input,
+            Err(_) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ApiError::new("bad_request", "Invalid OAuth start request")),
+                )
+                    .into_response()
+            }
+        }
+    };
+    let code = input
+        .invite_code
+        .as_deref()
+        .map(str::trim)
+        .filter(|code| !code.is_empty());
+    if let Some(code) = code {
+        let expected = {
+            let conn = state.store.conn.lock().await;
+            relay_setting(&conn, "registrationPassword")
+        };
+        // Quick feedback for a mistyped code; a missing code is decided by the
+        // callback, because an existing linked account needs none.
+        if expected
+            .is_some_and(|expected| !invite_code_matches(Some(&invite_hash(code)), &expected))
+        {
+            return invalid_invite_code();
+        }
+    }
+    let invite = code.map(invite_hash);
+    match begin_oauth(&state, &headers, &provider, invite.as_deref()).await {
+        Ok((url, cookie)) => {
+            let mut response = Json(json!({ "url": url })).into_response();
+            response.headers_mut().append(header::SET_COOKIE, cookie);
+            response
+        }
+        Err(response) => response,
+    }
+}
+
+fn invalid_invite_code() -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(ApiError::new("invalid_invite_code", INVITE_CODE_INVALID)),
+    )
+        .into_response()
+}
+
+fn invite_hash(code: &str) -> String {
+    security::token_hash(code.trim())
+}
+
+fn invite_code_matches(supplied_hash: Option<&str>, expected: &str) -> bool {
+    supplied_hash.is_some_and(|supplied| {
+        supplied
+            .as_bytes()
+            .ct_eq(invite_hash(expected).as_bytes())
+            .into()
+    })
+}
+
+/// Checks the provider, stores the pending login and returns the provider's
+/// authorization URL with the browser-binding cookie.
+async fn begin_oauth(
+    state: &AppState,
+    headers: &HeaderMap,
+    provider: &str,
+    invite_hash: Option<&str>,
+) -> std::result::Result<(String, header::HeaderValue), Response> {
+    let Some(provider) = OAuthProvider::parse(provider) else {
+        return Err((
             StatusCode::NOT_FOUND,
             Json(ApiError::new("not_found", "OAuth provider was not found")),
         )
-            .into_response();
+            .into_response());
     };
     let enabled = {
         let conn = state.store.conn.lock().await;
@@ -1216,20 +1318,21 @@ async fn oauth_start(
             == Some("true")
     };
     if !enabled || !state.oauth.available(provider) {
-        return (
+        return Err((
             StatusCode::FORBIDDEN,
             Json(ApiError::new(
                 "forbidden",
                 format!("{} authentication is disabled.", provider.display_name()),
             )),
         )
-            .into_response();
+            .into_response());
     }
-    let callback = state.oauth.callback_url(&headers, provider);
+    let callback = state.oauth.callback_url(headers, provider);
     let result = {
         let conn = state.store.conn.lock().await;
         oauth::sign_state(provider, &state.store.session_secret).and_then(|signed| {
-            let (browser, verifier) = security::start_oauth(&conn, &signed, &callback)?;
+            let (browser, verifier) =
+                security::start_oauth(&conn, &signed, &callback, invite_hash)?;
             let target = state
                 .oauth
                 .authorization_url(provider, &callback, &signed, &verifier)?;
@@ -1237,12 +1340,8 @@ async fn oauth_start(
         })
     };
     match result {
-        Ok((target, browser)) => {
-            let mut response = Redirect::temporary(&target).into_response();
-            response.headers_mut().append(header::SET_COOKIE, format!("remote_codex_oauth={browser}; HttpOnly; Secure; SameSite=Lax; Path=/relay/auth/oauth; Max-Age=600").parse().unwrap());
-            response
-        }
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        Ok((target, browser)) => Ok((target, format!("remote_codex_oauth={browser}; HttpOnly; Secure; SameSite=Lax; Path=/relay/auth/oauth; Max-Age=600").parse().unwrap())),
+        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR.into_response()),
     }
 }
 
@@ -1277,7 +1376,12 @@ async fn oauth_callback(
         security::cookie(&headers, "remote_codex_oauth")
             .and_then(|browser| security::consume_oauth(&conn, &query.state, &browser))
     };
-    let Some((verifier, callback)) = pending else {
+    let Some(security::OAuthChallenge {
+        verifier,
+        callback,
+        invite_hash,
+    }) = pending
+    else {
         return oauth_error_redirect(
             &state.oauth,
             "OAuth request expired or belongs to another browser.",
@@ -1302,7 +1406,12 @@ async fn oauth_callback(
     };
     let outcome = {
         let conn = state.store.conn.lock().await;
-        authenticate_external_identity(&conn, &state.store.session_secret, &identity)
+        authenticate_external_identity(
+            &conn,
+            &state.store.session_secret,
+            &identity,
+            invite_hash.as_deref(),
+        )
     };
     match outcome {
         Ok(OAuthOutcome::Pending) => {
@@ -1340,15 +1449,23 @@ async fn oauth_callback(
     }
 }
 
+const INVITE_CODE_INVALID: &str = "The invite code is not valid.";
+const OAUTH_INVITE_REQUIRED: &str =
+    "An invite code is required to create an account. Choose Create account and enter the code.";
+
 enum OAuthOutcome {
     Login(String),
     Pending,
 }
 
+/// `invite_hash` is the hash of the invite code given at the OAuth start, if
+/// any. A linked identity signs in without one; a new identity needs the
+/// relay's current code (when one is set) for both direct and approved sign-up.
 fn authenticate_external_identity(
     conn: &Connection,
     session_secret: &str,
     identity: &ExternalIdentity,
+    invite_hash: Option<&str>,
 ) -> std::result::Result<OAuthOutcome, String> {
     let linked: Option<String> = conn
         .query_row(
@@ -1381,6 +1498,14 @@ fn authenticate_external_identity(
     }
     if relay_setting(conn, "registrationEnabled").as_deref() == Some("false") {
         return Err("Registration is currently disabled.".into());
+    }
+    if let Some(expected) = relay_setting(conn, "registrationPassword") {
+        if invite_hash.is_none() {
+            return Err(OAUTH_INVITE_REQUIRED.into());
+        }
+        if !invite_code_matches(invite_hash, &expected) {
+            return Err(INVITE_CODE_INVALID.into());
+        }
     }
     let email_exists = conn
         .query_row(

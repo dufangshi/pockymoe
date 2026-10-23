@@ -399,6 +399,19 @@ impl OAuthConfig {
         })
     }
 
+    /// Google with test credentials whose token and profile endpoints live at
+    /// `provider_base` (a local mock provider).
+    #[cfg(test)]
+    pub(crate) fn enable_test_google(&mut self, provider_base: &str) {
+        self.google = Some(OAuthCredentials {
+            client_id: "test-client".into(),
+            client_secret: "test-secret".into(),
+        });
+        self.google_authorize_url = format!("{provider_base}/authorize");
+        self.google_token_url = format!("{provider_base}/token");
+        self.google_userinfo_url = format!("{provider_base}/userinfo");
+    }
+
     fn credentials(&self, provider: OAuthProvider) -> Option<&OAuthCredentials> {
         match provider {
             OAuthProvider::Google => self.google.as_ref(),

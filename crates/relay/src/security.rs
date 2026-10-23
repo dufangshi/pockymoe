@@ -49,6 +49,17 @@ pub(crate) fn ensure_schema(conn: &Connection) -> Result<()> {
             [],
         )?;
     }
+    // Hash of the invite code given when a Google/GitHub sign-up started; the
+    // callback checks it before creating an account. NULL for sign-in starts.
+    if conn
+        .prepare("SELECT invite_hash FROM relay_oauth_challenges LIMIT 0")
+        .is_err()
+    {
+        conn.execute(
+            "ALTER TABLE relay_oauth_challenges ADD COLUMN invite_hash TEXT",
+            [],
+        )?;
+    }
     Ok(())
 }
 
@@ -419,10 +430,13 @@ pub(crate) fn cookie(headers: &axum::http::HeaderMap, name: &str) -> Option<Stri
         })
 }
 
+/// `invite_hash` is the `token_hash` of an invite code the browser supplied;
+/// it stays on the relay and never travels through the provider.
 pub(crate) fn start_oauth(
     conn: &Connection,
     state: &str,
     callback: &str,
+    invite_hash: Option<&str>,
 ) -> Result<(String, String)> {
     let browser = random_token();
     let verifier = random_token();
@@ -437,19 +451,25 @@ pub(crate) fn start_oauth(
     if count >= 4096 {
         bail!("Too many pending OAuth logins");
     }
-    conn.execute("INSERT INTO relay_oauth_challenges(state_hash,browser_hash,verifier,callback,expires_at) VALUES (?1,?2,?3,?4,?5)",
-        params![token_hash(state), token_hash(&browser), verifier, callback, now + 600_000])?;
+    conn.execute("INSERT INTO relay_oauth_challenges(state_hash,browser_hash,verifier,callback,expires_at,invite_hash) VALUES (?1,?2,?3,?4,?5,?6)",
+        params![token_hash(state), token_hash(&browser), verifier, callback, now + 600_000, invite_hash])?;
     Ok((browser, verifier))
+}
+
+pub(crate) struct OAuthChallenge {
+    pub verifier: String,
+    pub callback: String,
+    pub invite_hash: Option<String>,
 }
 
 pub(crate) fn consume_oauth(
     conn: &Connection,
     state: &str,
     browser: &str,
-) -> Option<(String, String)> {
-    conn.query_row("DELETE FROM relay_oauth_challenges WHERE state_hash=?1 AND browser_hash=?2 AND expires_at>?3 RETURNING verifier,callback",
+) -> Option<OAuthChallenge> {
+    conn.query_row("DELETE FROM relay_oauth_challenges WHERE state_hash=?1 AND browser_hash=?2 AND expires_at>?3 RETURNING verifier,callback,invite_hash",
         params![token_hash(state), token_hash(browser), chrono::Utc::now().timestamp_millis()],
-        |r| Ok((r.get(0)?, r.get(1)?))).ok()
+        |r| Ok(OAuthChallenge { verifier: r.get(0)?, callback: r.get(1)?, invite_hash: r.get(2)? })).ok()
 }
 
 /// Process-local admission bounds supplement the durable per-challenge limits.
@@ -515,12 +535,31 @@ mod tests {
     fn oauth_requires_original_browser_and_is_single_use() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("CREATE TABLE relay_oauth_challenges(state_hash TEXT PRIMARY KEY,browser_hash TEXT,verifier TEXT,callback TEXT,expires_at INTEGER)").unwrap();
+        // The invite column arrives through the additive migration.
+        conn.execute_batch(
+            "CREATE TABLE relay_users(id TEXT PRIMARY KEY, password_hash TEXT, enabled INTEGER)",
+        )
+        .unwrap();
+        ensure_schema(&conn).unwrap();
+        ensure_schema(&conn).unwrap();
         let (browser, verifier) =
-            start_oauth(&conn, "state", "https://relay.example/callback").unwrap();
+            start_oauth(&conn, "state", "https://relay.example/callback", None).unwrap();
         assert!(consume_oauth(&conn, "state", "another browser").is_none());
         let result = consume_oauth(&conn, "state", &browser).unwrap();
-        assert_eq!(result, (verifier, "https://relay.example/callback".into()));
+        assert_eq!(
+            (result.verifier, result.callback, result.invite_hash),
+            (verifier, "https://relay.example/callback".into(), None)
+        );
         assert!(consume_oauth(&conn, "state", &browser).is_none());
+        let (browser, _) = start_oauth(
+            &conn,
+            "invited",
+            "https://relay.example/callback",
+            Some(&token_hash("invite code")),
+        )
+        .unwrap();
+        let result = consume_oauth(&conn, "invited", &browser).unwrap();
+        assert_eq!(result.invite_hash, Some(token_hash("invite code")));
     }
     #[test]
     fn configured_origin_is_not_overridden_by_proxy_headers() {

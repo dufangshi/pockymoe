@@ -191,6 +191,51 @@ The callback paths are `/relay/auth/oauth/google/callback` and
 identity enters `relay_pending_registrations`; approval creates the user and
 identity in one transaction.
 
+An OAuth login starts in one of two ways. Both check that the provider is
+enabled and configured, store the pending login in `relay_oauth_challenges`
+and set the `remote_codex_oauth` browser cookie (`Path=/relay/auth/oauth`,
+10 minutes):
+
+- `GET /relay/auth/oauth/{provider}/start` redirects to the provider. Sign-in
+  buttons use it; it carries no invite code.
+- `POST /relay/auth/oauth/{provider}/start` with the JSON body
+  `{ "inviteCode": "..." }` (field optional) answers
+  `200 { "url": "<provider authorization URL>" }`, and the browser then opens
+  `url`. Create account uses it. The relay keeps only a SHA-256 hash of the
+  trimmed code with the pending login (`relay_oauth_challenges.invite_hash`);
+  the code never travels in the provider round trip, logs or audit records.
+  When an invite code is configured and a non-empty code does not match, the
+  answer is `403 { "code": "invalid_invite_code", "message": "The invite code
+  is not valid." }`. An empty or missing code is accepted here and decided by
+  the callback, because an existing linked account needs none.
+
+The callback signs in an identity that is already linked, whatever the
+registration settings are. For a new identity it checks, in order: registration
+open (`Registration is currently disabled.`), then, when an invite code is
+configured, the hash stored at the start against the current code (missing:
+`An invite code is required to create an account. Choose Create account and
+enter the code.`; different, for example a code changed during the login:
+`The invite code is not valid.`), then the email is not already used, and only
+then creates the account or the pending registration. Refusals return to
+`/relay-portal?oauthError=<message>`; a pending registration returns to
+`/relay-portal?oauthPending=1`.
+
+Resulting workflow for the three registration settings:
+
+| Open registration | Require admin approval | Invite code | Password sign-up | New Google/GitHub identity | Existing linked OAuth account |
+| --- | --- | --- | --- | --- | --- |
+| Off | either | either | Refused | Refused | Signs in |
+| On | Off | None | Account created | Account created and signed in | Signs in |
+| On | Off | Set | Created with the code; refused without it or with a wrong one | Created with the code entered at Create account; refused without it or with a wrong one | Signs in, no code |
+| On | On | None | Waits for approval | Waits for approval | Signs in |
+| On | On | Set | Waits for approval with the code; refused without it | Waits for approval with the code; refused without it, and no request is queued | Signs in, no code |
+
+Older relays ignored the invite code for Google/GitHub sign-up: rows with an
+invite code set behaved like the rows without one in the new-identity column.
+Email verification does not change any row: the Rust relay refuses to enable
+`emailVerificationEnabled`, and an OAuth identity is accepted only with an
+email the provider reports as verified.
+
 On the private machine that will run Codex and access local workspaces, run the
 relay-connected supervisor backend:
 

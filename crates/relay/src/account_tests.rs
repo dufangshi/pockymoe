@@ -994,7 +994,7 @@ async fn oauth_only_accounts_have_no_password_and_can_create_and_update_vault_wi
     let (user, token) = {
         let conn = f.state.store.conn.lock().await;
         let OAuthOutcome::Login(token) =
-            authenticate_external_identity(&conn, &f.state.store.session_secret, &identity)
+            authenticate_external_identity(&conn, &f.state.store.session_secret, &identity, None)
                 .unwrap()
         else {
             panic!("Unexpected approval");
