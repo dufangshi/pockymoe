@@ -26,9 +26,10 @@ under `/api/config`, which grantees and other devices cannot reach.
 `WorkspaceDto.agentIsolated` reports a workspace's state.
 
 A device whose [peer access](thread-interaction.md#other-devices) is off is
-already closed to other devices, so it reads as isolated. Turning device
-isolation off also turns peer access on; turning it on keeps peer access, so the
-device's own agents can still reach other devices.
+closed to other devices the same way, so it reads as isolated. Neither setting
+limits the way out: an isolated device, or one with peer access off (the
+default), still sends requests and files to other devices; each target applies
+its own isolation. Turning device isolation off also turns peer access on.
 
 ## Devices shared with other people
 

@@ -201,27 +201,14 @@ impl Drop for PendingGuard {
         self.link.state.lock().unwrap().pending.remove(&self.id);
     }
 }
-fn require_access(state: &Supervisor) -> Result<()> {
-    if !state.peer_access_enabled() {
-        return Err(PeerError::Remote {
-            status: 403,
-            code: "peer_access_disabled".into(),
-            message: "Peer access is disabled on this device.".into(),
-        }
-        .into());
-    }
-    Ok(())
-}
 async fn exchange(
     state: &Supervisor,
     mut frame: Value,
     kind: ReplyKind,
     target: &str,
 ) -> Result<Value> {
-    // The directory only asks the relay, so it stays available before opting in.
-    if matches!(kind, ReplyKind::Request) {
-        require_access(state)?;
-    }
+    // Requests out of this device need no opt-in here: isolation and peer
+    // access only close the way in; the target applies its own.
     let link = link(state);
     let id = Uuid::new_v4().to_string();
     frame["requestId"] = json!(id);
@@ -318,7 +305,6 @@ pub(crate) async fn request(
         state.host_capabilities.device_peer,
         "devicePeer",
     )?;
-    require_access(state)?;
     link(state)
         .client
         .request(
@@ -484,22 +470,24 @@ pub(crate) mod tests {
         assert!(current.await.unwrap().unwrap().is_empty());
     }
     #[tokio::test]
-    async fn peer_disabled_requests_do_not_enter_the_tunnel() {
+    async fn an_isolated_device_still_sends_requests_to_other_devices() {
+        // Peer access off and isolation only close the way in.
         let (_dir, state) = state_with_relay_url("http://127.0.0.1:1");
+        state.set_peer_access(false).unwrap();
+        state.set_device_isolation(true).unwrap();
         let (_connection, mut outbound) = connected(&state, "local");
-        let error = request(&state, "remote", "POST", "/api/peer/cli", None, vec![])
-            .await
-            .unwrap_err();
+        let sent = tokio::spawn({
+            let state = state.clone();
+            async move { request(&state, "remote", "POST", "/api/peer/cli", None, vec![]).await }
+        });
+        // The request enters the tunnel; the target applies its own isolation.
         assert!(
-            matches!(error.downcast_ref(), Some(PeerError::Remote { status:403, code, .. }) if code == "peer_access_disabled")
-        );
-        assert!(link(&state).state.lock().unwrap().pending.is_empty());
-        assert!(
-            tokio::time::timeout(Duration::from_millis(10), outbound.recv())
+            tokio::time::timeout(Duration::from_secs(2), outbound.recv())
                 .await
-                .is_err()
+                .expect("the request enters the tunnel")
+                .is_some()
         );
-        // The directory only asks the relay, so it works before opting in.
+        sent.abort();
         let listing = tokio::spawn({
             let state = state.clone();
             async move { directory(&state).await }

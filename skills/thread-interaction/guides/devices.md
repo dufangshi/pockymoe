@@ -4,7 +4,9 @@ Threads, files and mail on your other devices.
 
 ## Other devices
 
-Devices must belong to the same relay owner, with peer access enabled on both. The
+Devices must belong to the same relay owner, and the target must accept requests:
+peer access on and not isolated. This device's own peer access and isolation only
+close the way in; they never stop you from reaching other devices. The
 CLI still connects to your local Supervisor; it routes encrypted requests through
 the relay. Use a relay device ID or a unique device name (case insensitive).
 `device list` works before opting in and reports this device's `peerAccess`.

@@ -79,20 +79,12 @@ fn require_peer(
         return Err(err(
             StatusCode::FORBIDDEN,
             "peer_access_disabled",
-            "Peer access is disabled on this device",
+            "The target device is isolated: it accepts no requests from other devices",
         ));
     }
     state.ensure_peer_reaches_device().map_err(map_err)?;
     caller.0.ensure_source_private()?;
     Ok(caller.0)
-}
-
-fn require_local_access(state: &Supervisor) -> Result<()> {
-    ensure!(
-        state.peer_access_enabled(),
-        "peer_access_disabled: Peer access is disabled on this device"
-    );
-    Ok(())
 }
 
 fn data_dir(state: &Supervisor) -> &Path {
@@ -710,7 +702,6 @@ pub(crate) async fn upload(
     thread_id: &str,
     paths: &[PathBuf],
 ) -> Result<Vec<Value>> {
-    require_local_access(state)?;
     upload_with(
         &LinkedPeer { state, device_id },
         device_id,
@@ -830,7 +821,6 @@ pub(crate) async fn fs_list(
     workspace_id: &str,
     path: &str,
 ) -> Result<Value> {
-    require_local_access(state)?;
     request_json(
         &LinkedPeer { state, device_id },
         "/api/peer/files/list",
@@ -887,7 +877,6 @@ pub(crate) async fn fs_get(
     out: Option<PathBuf>,
     caller_thread: Option<&str>,
 ) -> Result<Value> {
-    require_local_access(state)?;
     let device_name = if out.is_none() {
         peer_link::directory(state)
             .await?
@@ -2030,30 +2019,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn peer_files_callers_enforce_local_opt_in() {
+    async fn peer_file_callers_need_no_local_opt_in() {
+        // Isolation only closes the way in: this device still lists another's files.
         let fixture = Fixture::new().await;
         fixture.state.set_peer_access(false).unwrap();
-        assert!(upload(&fixture.state, "target", &fixture.thread, &[])
+        fixture.state.set_device_isolation(true).unwrap();
+        let error = fs_list(&fixture.state, "target", &fixture.workspace, ".")
             .await
-            .unwrap_err()
-            .to_string()
-            .contains("peer_access_disabled"));
-        assert!(fs_list(&fixture.state, "target", &fixture.workspace, ".")
-            .await
-            .unwrap_err()
-            .to_string()
-            .contains("peer_access_disabled"));
-        assert!(fs_get(
-            &fixture.state,
-            "target",
-            &fixture.workspace,
-            "a.bin",
-            None,
-            None
-        )
-        .await
-        .unwrap_err()
-        .to_string()
-        .contains("peer_access_disabled"));
+            .map(|_| String::new())
+            .unwrap_or_else(|error| error.to_string());
+        assert!(!error.contains("peer_access_disabled"), "{error}");
     }
 }

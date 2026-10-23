@@ -688,7 +688,7 @@ pub(crate) async fn forward_local(
         return relay_error_response(403, "Peer requests must use literal /api/peer/ paths");
     }
     if peer.is_some() && !state.peer_access_enabled() {
-        return json!({"statusCode":403,"headers":{"content-type":"application/json"},"body":json!({"code":"peer_access_disabled","message":"Peer access is disabled on this device."}).to_string()});
+        return json!({"statusCode":403,"headers":{"content-type":"application/json"},"body":json!({"code":"peer_access_disabled","message":"The target device is isolated: it accepts no requests from other devices."}).to_string()});
     }
     let key_path = path.ends_with("/transport/key");
     let session_path = peer.is_none() && path.ends_with("/transport/session");

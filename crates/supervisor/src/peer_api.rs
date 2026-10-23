@@ -28,7 +28,7 @@ pub(crate) async fn cli(
         return Err(err(
             StatusCode::FORBIDDEN,
             "peer_access_disabled",
-            "Peer access is disabled on this device.",
+            "The target device is isolated: it accepts no requests from other devices.",
         ));
     }
     let operation = input["operation"].as_str().unwrap_or("").to_owned();
