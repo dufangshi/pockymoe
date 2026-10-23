@@ -57,6 +57,8 @@ pub(super) fn request(
     secrets.dedup();
     for message in &mut summary.messages {
         message.text = redact(&message.text, &secrets);
+        // The rewrite model reads prose; turn ids are for CLI readers.
+        message.turn_id = None;
     }
     // A short saved credential can expand into a longer redaction marker.
     // Reapply the budget to the actual outgoing text, preserving target identity.
@@ -166,6 +168,7 @@ mod tests {
             role: ThreadSummaryRole::Assistant,
             text: text.into(),
             truncated: false,
+            turn_id: None,
         };
         // Redacting an unusually short credential expands a context message.
         // The duplicate newer text must not replace the middle target.

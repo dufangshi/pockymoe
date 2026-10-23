@@ -223,7 +223,7 @@ async fn public_chronology_preserves_commentary_steer_and_every_final() {
         .as_array()
         .unwrap()
         .iter()
-        .all(|m| m.as_object().unwrap().len() == 3));
+        .all(|m| m.as_object().unwrap().len() == 4 && m["turnId"].is_string()));
     let (context, target) = s
         .thread_summary_for_reply(&id, "one", "claude-final", 1_000_000, 10_000_000)
         .unwrap();
@@ -1018,5 +1018,293 @@ fn the_recipient_guardrail_names_the_verified_sender_and_strips_cleanly() {
     assert_eq!(
         without_recipient_guardrail("[Pockymoe task from x] keep"),
         "[Pockymoe task from x] keep"
+    );
+}
+
+fn summary_view(s: &Supervisor, id: &str, limit: Option<u32>, before: Option<&str>) -> Value {
+    s.transcript(
+        id,
+        &crate::interaction::TranscriptQuery {
+            view: Some("summary".into()),
+            limit,
+            before_turn_id: before.map(str::to_owned),
+            ..Default::default()
+        },
+    )
+    .unwrap()
+}
+
+fn turn_texts(turn: &Value) -> Vec<(&str, &str)> {
+    turn["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| (m["role"].as_str().unwrap(), m["text"].as_str().unwrap()))
+        .collect()
+}
+
+#[tokio::test]
+async fn messages_carry_their_turn_ids_including_legacy_display_prompts() {
+    let (_d, s, id) = fixture().await;
+    turn(
+        &s,
+        &id,
+        "legacy",
+        1,
+        Some("2030-01-01T00:00:00Z"),
+        Some("old question"),
+    );
+    item(
+        &s,
+        &id,
+        "legacy",
+        "a",
+        "agentMessage",
+        "old answer",
+        Some("2030-01-01T00:00:01Z"),
+        json!({}),
+    );
+    turn(&s, &id, "new", 2, Some("2030-01-02T00:00:00Z"), None);
+    item(
+        &s,
+        &id,
+        "new",
+        "new:user",
+        "userMessage",
+        "new question",
+        Some("2030-01-02T00:00:00Z"),
+        json!({}),
+    );
+    let summary = s
+        .thread_summary(&id, &ThreadSummaryQuery::default())
+        .unwrap();
+    assert_eq!(
+        summary
+            .messages
+            .iter()
+            .map(|m| (m.text.as_str(), m.turn_id.as_deref().unwrap()))
+            .collect::<Vec<_>>(),
+        [
+            ("old question", "legacy"),
+            ("old answer", "legacy"),
+            ("new question", "new")
+        ]
+    );
+    let json = serde_json::to_value(&summary.messages[0]).unwrap();
+    assert_eq!(json["turnId"], "legacy");
+    // Readers without a turn omit the field.
+    let mut bare = summary.messages[0].clone();
+    bare.turn_id = None;
+    assert!(serde_json::to_value(&bare).unwrap().get("turnId").is_none());
+}
+
+#[tokio::test]
+async fn summary_view_keeps_each_reply_groups_by_turn_and_pages_older_turns() {
+    let (_d, s, id) = fixture().await;
+    turn(&s, &id, "t1", 1, Some("2030-01-01T00:00:00Z"), None);
+    for (key, kind, text, time) in [
+        (
+            "t1:user",
+            "userMessage",
+            "first question",
+            "2030-01-01T00:00:00Z",
+        ),
+        ("p1", "agentMessage", "looking", "2030-01-01T00:00:01Z"),
+        ("f1", "agentMessage", "first answer", "2030-01-01T00:00:02Z"),
+    ] {
+        item(&s, &id, "t1", key, kind, text, Some(time), json!({}));
+    }
+    // Tools only: the turn is listed without messages.
+    turn(&s, &id, "t2", 2, Some("2030-01-02T00:00:00Z"), None);
+    item(
+        &s,
+        &id,
+        "t2",
+        "tool",
+        "commandExecution",
+        "ls",
+        Some("2030-01-02T00:00:01Z"),
+        json!({}),
+    );
+    turn(&s, &id, "t3", 3, Some("2030-01-03T00:00:00Z"), None);
+    for (key, kind, text, time) in [
+        (
+            "t3:user",
+            "userMessage",
+            "second question",
+            "2030-01-03T00:00:00Z",
+        ),
+        (
+            "a3",
+            "agentMessage",
+            "answer before steer",
+            "2030-01-03T00:00:01Z",
+        ),
+        (
+            "steer:s",
+            "userMessage",
+            "change it",
+            "2030-01-03T00:00:02Z",
+        ),
+        ("p3", "agentMessage", "changing", "2030-01-03T00:00:03Z"),
+        ("f3", "agentMessage", "changed", "2030-01-03T00:00:04Z"),
+    ] {
+        item(&s, &id, "t3", key, kind, text, Some(time), json!({}));
+    }
+    let page = summary_view(&s, &id, None, None);
+    assert_eq!(page["view"], "summary");
+    assert_eq!(page["truncated"], false);
+    assert!(page["next"].is_null());
+    let turns = page["turns"].as_array().unwrap();
+    assert_eq!(
+        turns
+            .iter()
+            .map(|t| t["id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["t1", "t2", "t3"]
+    );
+    assert_eq!(
+        turn_texts(&turns[0]),
+        [("user", "first question"), ("assistant", "first answer")]
+    );
+    assert_eq!(turn_texts(&turns[1]), []);
+    assert_eq!(
+        turn_texts(&turns[2]),
+        [
+            ("user", "second question"),
+            ("assistant", "answer before steer"),
+            ("user", "change it"),
+            ("assistant", "changed")
+        ]
+    );
+    assert_eq!(turns[2]["ordinal"], 3);
+    assert_eq!(turns[2]["status"], "inProgress");
+    assert_eq!(turns[2]["messages"][0]["time"], "2030-01-03T00:00:00Z");
+    assert!(turns[2]["messages"][0].get("turnId").is_none());
+    assert_eq!(
+        turns[2]["overview"],
+        format!("pockymoe transcript {id} --turn t3 --view overview")
+    );
+
+    let newest = summary_view(&s, &id, Some(2), None);
+    assert_eq!(newest["turns"].as_array().unwrap().len(), 2);
+    assert_eq!(newest["nextBeforeTurnId"], "t2");
+    assert_eq!(
+        newest["next"],
+        format!("pockymoe transcript {id} --view summary --before-turn t2 --limit 2")
+    );
+    let older = summary_view(&s, &id, Some(2), Some("t2"));
+    assert_eq!(older["turns"][0]["id"], "t1");
+    assert_eq!(older["turns"].as_array().unwrap().len(), 1);
+    assert!(older["next"].is_null());
+}
+
+#[tokio::test]
+async fn summary_view_caps_messages_keeping_their_start_and_stops_at_the_budget() {
+    let (_d, s, id) = fixture().await;
+    for n in 1..=12 {
+        let t = format!("t{n}");
+        let time = format!("2030-01-{n:02}T00:00:00Z");
+        turn(&s, &id, &t, n, Some(&time), None);
+        let question = format!("Q{n}{}", "q".repeat(1_598));
+        item(
+            &s,
+            &id,
+            &t,
+            &format!("{t}:user"),
+            "userMessage",
+            &question,
+            Some(&time),
+            json!({}),
+        );
+        let later = format!("2030-01-{n:02}T00:00:01Z");
+        item(
+            &s,
+            &id,
+            &t,
+            "a",
+            "agentMessage",
+            &format!("A{n}{}", "a".repeat(1_598)),
+            Some(&later),
+            json!({}),
+        );
+    }
+    let page = summary_view(&s, &id, Some(12), None);
+    assert_eq!(page["truncated"], true);
+    let turns = page["turns"].as_array().unwrap();
+    // 16,000 characters: five whole turns of 2 x 1,500, then 1,000 of turn 7's reply.
+    assert_eq!(
+        turns
+            .iter()
+            .map(|t| t["id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["t7", "t8", "t9", "t10", "t11", "t12"]
+    );
+    let last = &turns[5]["messages"];
+    assert_eq!(last[0]["text"].as_str().unwrap().chars().count(), 1_500);
+    assert!(last[0]["text"].as_str().unwrap().starts_with("Q12q"));
+    assert_eq!(last[0]["truncated"], true);
+    assert_eq!(turn_texts(&turns[0]).len(), 1);
+    let cut = turns[0]["messages"][0]["text"].as_str().unwrap();
+    assert!(cut.starts_with("A7a"));
+    assert_eq!(cut.chars().count(), 1_000);
+    assert_eq!(page["nextBeforeTurnId"], "t7");
+    let older = summary_view(&s, &id, Some(12), Some("t7"));
+    assert_eq!(older["turns"][0]["id"], "t1");
+    assert_eq!(older["turns"].as_array().unwrap().len(), 6);
+}
+
+#[tokio::test]
+async fn summary_view_rejects_turn_reads_offsets_and_large_limits() {
+    use crate::interaction::TranscriptQuery;
+    let (_d, s, id) = fixture().await;
+    turn(&s, &id, "t1", 1, None, Some("hello"));
+    let error = |q: TranscriptQuery| {
+        s.transcript(
+            &id,
+            &TranscriptQuery {
+                view: Some("summary".into()),
+                ..q
+            },
+        )
+        .unwrap_err()
+        .to_string()
+    };
+    for (query, message) in [
+        (
+            TranscriptQuery {
+                turn_id: Some("t1".into()),
+                ..Default::default()
+            },
+            "--turn TURN_ID --view overview",
+        ),
+        (
+            TranscriptQuery {
+                offset: Some(1),
+                ..Default::default()
+            },
+            "beforeTurnId",
+        ),
+        (
+            TranscriptQuery {
+                limit: Some(51),
+                ..Default::default()
+            },
+            "between 1 and 50",
+        ),
+        (
+            TranscriptQuery {
+                before_turn_id: Some("missing".into()),
+                ..Default::default()
+            },
+            "before turn not found",
+        ),
+    ] {
+        let error = error(query);
+        assert!(error.contains(message), "{error}");
+    }
+    assert_eq!(
+        summary_view(&s, &id, Some(50), None)["turns"][0]["messages"][0]["text"],
+        "hello"
     );
 }

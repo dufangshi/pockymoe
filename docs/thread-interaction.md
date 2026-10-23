@@ -14,6 +14,8 @@ pockymoe thread models --provider acp --agent grok
 pockymoe thread create --provider acp --agent grok \
   --model grok-4.6 --reasoning-effort xhigh --title helper
 pockymoe thread send THREAD_ID --delivery queue --kind task --text-file task.txt --notify-on-complete
+pockymoe transcript THREAD_ID --view summary
+pockymoe transcript THREAD_ID --view summary --before-turn TURN_ID --limit 10
 pockymoe transcript THREAD_ID
 pockymoe transcript THREAD_ID --limit 5 --before-turn TURN_ID
 pockymoe transcript THREAD_ID --turn TURN_ID
@@ -58,6 +60,44 @@ The default is the **latest 3 turns**, oldest first within the page, containing 
 
 `--turn` expands a paged item directory; `--item` reads its text/detail; `--raw` reads chunks of the exact stored JSON, including provider extensions. References lead to the existing attachment interfaces. Unknown or missing timestamps remain null. No unstored provider logs are synthesized.
 
+`--view summary` is the compact first read of a whole conversation. It uses the
+[Text Context](thread-summary.md) extraction of public prose, keeping each user
+message (initial question or steer) and the assistant's last message before the
+next one, its reply; progress commentary, tools and reasoning are left to the turn
+reads. Messages are grouped by turn, oldest first, and each turn has its `id`,
+`ordinal`, `status` and an `overview` command (`pockymoe transcript ID --turn
+TURN_ID --view overview`). A page holds the newest 10 turns (`--limit`, at most
+50), each message capped at 1,500 Unicode characters keeping its beginning, and
+16,000 characters in all. `truncated: true` marks a cut message. When the page's
+budget runs out, it starts at the oldest turn it could show, which can lack its
+earlier messages; read that turn with its `overview` command. `next` pages older
+turns with `--before-turn`. Turns with no public text (tools only, or control
+prompts) are listed with no messages. `--turn`, `--item`, `--raw` and offsets do
+not apply to this view.
+
+```json
+{
+  "threadId": "THREAD_ID", "view": "summary", "truncated": false,
+  "turns": [{
+    "id": "TURN_ID", "ordinal": 7, "status": "completed",
+    "messages": [
+      {"role": "user", "time": "2026-10-23T08:00:00Z", "text": "Why does the build fail?"},
+      {"role": "assistant", "time": "2026-10-23T08:03:10Z", "text": "The lockfile pins an old version; I updated it and the build passes."}
+    ],
+    "overview": "pockymoe transcript THREAD_ID --turn TURN_ID --view overview"
+  }],
+  "nextBeforeTurnId": "TURN_ID",
+  "next": "pockymoe transcript THREAD_ID --view summary --before-turn TURN_ID --limit 10"
+}
+```
+
+A line `pockymoe_session_id: THREAD_ID` or `pockymoe_session_id: DEVICE/THREAD_ID`
+in a prompt names a Pockymoe thread whose history the user wants the agent to
+consult. The bundled skill tells agents to read it with the summary view first,
+then only the turns that matter with `--turn TURN_ID --view overview`, expanding
+items only when needed. `DEVICE/THREAD_ID` naming the agent's own Supervisor reads
+locally (see below).
+
 Every response includes discovery/continuation commands when more content exists. The overview bounds turn count, item count and text preview size, with roughly 16,000 preview characters across a page; individual detailed reads return up to 8,192 Unicode characters. `truncated` is explicit. Follow `next`, `detail`, `expand`, `nextOffset` or `nextTextOffset` to continue. Text offsets count Unicode characters, not bytes. Active records are mutable; `observedAt`, `updatedAt` and turn status distinguish live reads from completed history. Re-read a growing item to fetch its latest tail.
 
 ## Local connection and identity
@@ -95,6 +135,7 @@ pockymoe thread models --device DEVICE --workspace WORKSPACE_ID
 pockymoe thread create --device DEVICE --workspace WORKSPACE_ID --title helper
 pockymoe thread show DEVICE/THREAD_UUID
 pockymoe transcript DEVICE/THREAD_UUID --limit 1
+pockymoe transcript DEVICE/THREAD_UUID --view summary
 pockymoe thread send DEVICE/THREAD_UUID --text 'Review this' --attach ./file
 pockymoe fs ls DEVICE --workspace WORKSPACE_ID [PATH]
 pockymoe fs get DEVICE --workspace WORKSPACE_ID PATH --out ./download
@@ -103,6 +144,11 @@ pockymoe outbox
 
 `DEVICE` is a relay ID or unique case-insensitive name. Qualified targets and Web
 URLs require a thread UUID; lineage names and self/parent/root resolve only locally.
+A `DEVICE/THREAD_UUID` or Web URL whose device ID is this Supervisor's
+`relayDeviceId` (or legacy `deviceId`) is treated as a local thread, so local-only
+commands such as `thread wait` accept it. For a thread on another device, the
+CLI rewrites the transcript's continuation commands (`next`, `overview`,
+`detail`, `expand`) to `DEVICE/THREAD_UUID`, so they can be run as printed.
 Remote creation requires a target workspace and does not inherit local lineage or
 approval mode. Remote send supports all four delivery modes; completion results
 return to the sender's local passive inbox. Incoming cross-device mail includes

@@ -8,23 +8,26 @@ default request includes the entire stored public conversation without a hidden
 turn, message, or character cap.
 
 This is separate from Treer's transcript, the interaction CLI transcript, and
-`GET /api/threads/{id}?view=summary`. Their behavior is unchanged.
+`GET /api/threads/{id}?view=summary`. Their behavior is unchanged, except that the
+CLI's `pockymoe transcript ID --view summary` reads this extraction, keeping each
+user message's reply and bounding it ([thread interaction](thread-interaction.md#progressive-reads)).
 
 ## Response
 
 ```json
 {
   "messages": [
-    {"time": "2026-10-15T10:00:00Z", "role": "user", "text": "Check the document."},
-    {"time": "2026-10-15T10:01:00Z", "role": "assistant", "text": "I found two issues."},
-    {"time": "2026-10-15T10:02:00Z", "role": "user", "text": "Keep the examples."},
-    {"time": "2026-10-15T10:03:00Z", "role": "assistant", "text": "Updated both sections."}
+    {"time": "2026-10-15T10:00:00Z", "role": "user", "text": "Check the document.", "turnId": "T1"},
+    {"time": "2026-10-15T10:01:00Z", "role": "assistant", "text": "I found two issues.", "turnId": "T1"},
+    {"time": "2026-10-15T10:02:00Z", "role": "user", "text": "Keep the examples.", "turnId": "T2"},
+    {"time": "2026-10-15T10:03:00Z", "role": "assistant", "text": "Updated both sections.", "turnId": "T2"}
   ],
   "truncated": false
 }
 ```
 
-Each complete message has only `time`, `role` (`user` or `assistant`), and `text`.
+Each complete message has only `time`, `role` (`user` or `assistant`), `text`,
+and `turnId`, the turn it belongs to (for reading that turn in detail).
 Whitespace, Markdown, and Unicode are preserved. The response uses JSON and
 `Cache-Control: no-store`. An existing empty thread returns
 `{"messages":[],"truncated":false}`; a nonexistent thread returns HTTP 404.

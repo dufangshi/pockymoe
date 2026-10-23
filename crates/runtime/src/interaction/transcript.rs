@@ -1,14 +1,24 @@
+use crate::service::thread_summary::{SummaryPageOptions, SummaryTurn};
 use crate::Supervisor;
 use anyhow::{ensure, Context, Result};
-use pockymoe_protocol::now_rfc3339;
+use pockymoe_protocol::{now_rfc3339, ThreadSummaryMessage};
 use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Value};
 
 pub use pockymoe_protocol::ThreadTranscriptQuery as TranscriptQuery;
 
+/// Summary view bounds: turns per page, and Unicode characters per page and message.
+const SUMMARY_TURNS: u32 = 10;
+const SUMMARY_MAX_TURNS: u32 = 50;
+const SUMMARY_CHARS: u64 = 16_000;
+const SUMMARY_MESSAGE_CHARS: u64 = 1_500;
+
 impl Supervisor {
     pub fn transcript(&self, id: &str, q: &TranscriptQuery) -> Result<Value> {
         self.get_thread(id)?;
+        if q.view.as_deref() == Some("summary") {
+            return self.transcript_summary(id, q);
+        }
         let limit = q.limit.unwrap_or(3);
         ensure!((1..=20).contains(&limit), "limit must be between 1 and 20");
         ensure!(
@@ -27,7 +37,7 @@ impl Supervisor {
         });
         ensure!(
             matches!(view, "overview" | "turn"),
-            "view must be overview or turn"
+            "view must be overview, turn or summary"
         );
         ensure!(
             view != "turn" || q.turn_id.is_some(),
@@ -69,5 +79,89 @@ impl Supervisor {
             let next=turns.first().filter(|_|earlier && q.turn_id.is_none()).map(|t|t.0.clone());
             Ok(json!({"threadId":id,"view":view,"turns":result,"nextBeforeTurnId":next,"next":next.as_ref().map(|turn|format!("pockymoe transcript {id} --before-turn {turn} --limit {limit}")),"observedAt":now_rfc3339()}))
         })
+    }
+
+    /// The public conversation of the newest turns: each user message and the
+    /// reply to it, grouped by turn with the command that reads that turn.
+    fn transcript_summary(&self, id: &str, q: &TranscriptQuery) -> Result<Value> {
+        ensure!(
+            q.turn_id.is_none() && q.item_id.is_none() && !q.raw,
+            "summary view reads whole turns; read one with --turn TURN_ID --view overview"
+        );
+        ensure!(
+            q.offset.unwrap_or(0) == 0 && q.text_offset.unwrap_or(0) == 0,
+            "summary view pages with beforeTurnId, not offsets"
+        );
+        let limit = q.limit.unwrap_or(SUMMARY_TURNS);
+        ensure!(
+            (1..=SUMMARY_MAX_TURNS).contains(&limit),
+            "limit must be between 1 and {SUMMARY_MAX_TURNS} for the summary view"
+        );
+        let page = self.thread_summary_page(
+            id,
+            limit,
+            SUMMARY_CHARS,
+            &SummaryPageOptions {
+                before_turn: q.before_turn_id.as_deref(),
+                final_replies: true,
+                message_chars: Some(SUMMARY_MESSAGE_CHARS),
+            },
+        )?;
+        fn of<'a>(
+            messages: &'a [ThreadSummaryMessage],
+            turn: &'a SummaryTurn,
+        ) -> impl Iterator<Item = &'a ThreadSummaryMessage> {
+            messages
+                .iter()
+                .filter(move |m| m.turn_id.as_deref() == Some(turn.id.as_str()))
+        }
+        let messages = &page.summary.messages;
+        let mut turns = page.turns;
+        turns.reverse();
+        // When the character budget ran out, the page starts at the oldest turn
+        // it shows; that turn can lack its earlier messages.
+        if page.budget_exhausted {
+            if let Some(first) = turns.iter().position(|t| of(messages, t).next().is_some()) {
+                turns.drain(..first);
+            }
+        }
+        let shown = turns
+            .iter()
+            .map(|turn| {
+                let messages = of(messages, turn)
+                    .map(|m| {
+                        let mut message = json!({"role":m.role,"text":m.text});
+                        if let Some(time) = &m.time {
+                            message["time"] = json!(time);
+                        }
+                        if m.truncated {
+                            message["truncated"] = json!(true);
+                        }
+                        message
+                    })
+                    .collect::<Vec<_>>();
+                json!({"id":turn.id,"ordinal":turn.ordinal,"status":turn.status,"messages":messages,"overview":format!("pockymoe transcript {id} --turn {} --view overview",turn.id)})
+            })
+            .collect::<Vec<_>>();
+        let earlier = match turns.first() {
+            Some(first) => self.db.with(|c| {
+                Ok(c.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM thread_turns WHERE thread_id=?1 AND ordinal<?2)",
+                    params![id, first.ordinal],
+                    |r| r.get::<_, bool>(0),
+                )?)
+            })?,
+            None => false,
+        };
+        let next = turns.first().filter(|_| earlier).map(|t| t.id.clone());
+        Ok(json!({
+            "threadId": id,
+            "view": "summary",
+            "turns": shown,
+            "truncated": page.summary.truncated,
+            "nextBeforeTurnId": next,
+            "next": next.as_ref().map(|turn| format!("pockymoe transcript {id} --view summary --before-turn {turn} --limit {limit}")),
+            "observedAt": now_rfc3339(),
+        }))
     }
 }

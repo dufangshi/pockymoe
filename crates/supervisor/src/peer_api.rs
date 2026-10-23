@@ -363,6 +363,24 @@ mod tests {
             .await;
             assert_eq!(status, StatusCode::OK, "{operation}: {body}");
         }
+        // The summary view is the same transcript operation with its own query.
+        state.db.with(|conn| {
+            conn.execute("INSERT INTO thread_turns(id,thread_id,status,ordinal,display_prompt) VALUES ('peer-turn',?1,'completed',1,'remote question')", [&target])?;
+            Ok(())
+        }).unwrap();
+        let (status, summary) = request(
+            &router,
+            json!({"operation":"transcript","threadId":target,"view":"summary","limit":null,"fromThreadId":"not-a-local-thread"}),
+            Some(caller("device-a")),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{summary}");
+        assert_eq!(summary["view"], "summary");
+        assert_eq!(summary["turns"][0]["id"], "peer-turn");
+        assert_eq!(
+            summary["turns"][0]["messages"][0]["text"],
+            "remote question"
+        );
         let (status, _) = request(
             &router,
             json!({"operation":"models","provider":"codex","workspaceId":"missing"}),

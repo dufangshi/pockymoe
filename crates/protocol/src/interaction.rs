@@ -38,7 +38,7 @@ pub const THREAD_INTERACTION_GUIDES: &[(&str, &str, &str)] = &[
     ),
     (
         "transcript",
-        "Retrying sends safely and reading peer history",
+        "Reading thread history (and pockymoe_session_id), retrying sends safely",
         include_str!("../../../skills/thread-interaction/guides/transcript.md"),
     ),
     (

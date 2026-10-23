@@ -1,6 +1,18 @@
 # pockymoe guide transcript
 
-Retrying sends safely and reading peer history progressively.
+Reading thread history progressively, and retrying sends safely.
+
+## A thread the prompt names
+
+`pockymoe_session_id: THREAD_ID` or `pockymoe_session_id: DEVICE/THREAD_ID` in a prompt names a Pockymoe thread whose history the user wants you to consult. Pass the value as given (`DEVICE/` of this device reads locally). Start with the summary, then read only the turns that matter:
+
+```bash
+pockymoe transcript THREAD_ID --view summary
+pockymoe transcript THREAD_ID --view summary --before-turn TURN_ID --limit 10
+pockymoe transcript THREAD_ID --turn TURN_ID --view overview
+```
+
+The summary lists the newest 10 turns (`--limit`, at most 50), oldest first: each user message and the reply to it, with the turn's `id`, `status` and an `overview` command. Progress messages, tools and reasoning are left out. Messages over 1,500 characters keep their beginning (`truncated: true`), and a page holds 16,000 characters; when that runs out, its oldest turn can lack earlier messages. Follow `next` for older turns. Commands in the output already carry the device; run them as printed.
 
 ## Retries and progressive transcript reads
 

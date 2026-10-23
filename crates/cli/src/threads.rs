@@ -266,18 +266,22 @@ More: pockymoe guide messaging"#)]
 }
 #[derive(Args)]
 pub struct Transcript {
+    /// Thread ID or name, DEVICE/THREAD_UUID, or a thread URL.
     pub id: String,
     #[arg(long)]
     pub device: Option<String>,
-    #[arg(long, default_value_t = 3)]
-    pub limit: u32,
+    /// Turns per page: 3 by default (at most 20); for the summary view 10 (at most 50).
+    #[arg(long)]
+    pub limit: Option<u32>,
     #[arg(long, conflicts_with = "turn")]
     pub before_turn: Option<String>,
     #[arg(long)]
     pub turn: Option<String>,
     #[arg(long, requires = "turn")]
     pub item: Option<String>,
-    #[arg(long,value_parser=["overview","turn"])]
+    /// summary: each user message and the reply to it, newest turns, with turn ids.
+    /// overview: a turn's conversation text. turn: a turn's item directory.
+    #[arg(long, value_parser=["summary","overview","turn"])]
     pub view: Option<String>,
     #[arg(long, default_value_t = 0)]
     pub offset: u32,
@@ -402,6 +406,36 @@ fn same_device(info: &Value, device: &str) -> bool {
     })
 }
 
+/// The other device writes its continuation commands with its own thread ID;
+/// run from here, they need the device too.
+fn qualify_commands(value: &mut Value, thread: &str, device: &str) {
+    match value {
+        Value::String(text) => {
+            let local = format!("pockymoe transcript {thread} ");
+            if let Some(rest) = text.strip_prefix(&local) {
+                let target = format!("{device}/{thread}");
+                let target = if target
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "/._-".contains(c))
+                {
+                    target
+                } else {
+                    format!("'{}'", target.replace('\'', r"'\''"))
+                };
+                *text = format!("pockymoe transcript {target} {rest}");
+            }
+        }
+        Value::Array(items) => items
+            .iter_mut()
+            .for_each(|v| qualify_commands(v, thread, device)),
+        Value::Object(fields) => fields
+            .iter_mut()
+            .filter(|(key, _)| key.as_str() != "text")
+            .for_each(|(_, v)| qualify_commands(v, thread, device)),
+        _ => {}
+    }
+}
+
 pub struct Client {
     url: String,
     token: String,
@@ -500,7 +534,8 @@ impl Client {
     }
     async fn target(&self, value: &str, device: Option<&str>) -> Result<ThreadTarget> {
         if let Some(mut target) = parse_target(value, device)? {
-            if thread_url(value) {
+            // A URL or DEVICE/THREAD naming this Supervisor is a local thread.
+            if target.device_id.is_some() && value.contains('/') {
                 let info = self.request(json!({"operation":"info"})).await?;
                 if target
                     .device_id
@@ -628,10 +663,13 @@ impl Client {
     }
     pub async fn transcript(&self, q: Transcript) -> Result<Value> {
         let mut input = json!({"operation":"transcript","limit":q.limit,"beforeTurnId":q.before_turn,"turnId":q.turn,"itemId":q.item,"view":q.view,"offset":q.offset,"textOffset":q.text_offset,"raw":q.raw});
-        self.target(&q.id, q.device.as_deref())
-            .await?
-            .apply(&mut input);
-        self.request(input).await
+        let target = self.target(&q.id, q.device.as_deref()).await?;
+        target.apply(&mut input);
+        let mut value = self.request(input).await?;
+        if let Some(device) = &target.device_id {
+            qualify_commands(&mut value, &target.thread_id, device);
+        }
+        Ok(value)
     }
     pub async fn preview(&self, command: PreviewCommand) -> Result<Value> {
         let input = match command {
@@ -1077,6 +1115,124 @@ mod tests {
             .await
             .unwrap();
         assert!(task.await.unwrap()[1].get("deviceId").is_none());
+    }
+
+    #[tokio::test]
+    async fn peer_cli_routes_device_qualified_ids_of_this_device_locally() {
+        for (device, expected_device) in [
+            (RELAY_DEVICE, None),
+            (RELAY_DEVICE.to_uppercase().as_str(), None),
+            (HOST, None),
+            (THREAD, Some(THREAD)),
+        ] {
+            let (client, task) = mock_client(vec![
+                json!({"deviceId":HOST,"relayDeviceId":RELAY_DEVICE}),
+                json!({"threadId":THREAD}),
+            ])
+            .await;
+            client
+                .thread(ThreadCommand::Status {
+                    id: format!("{device}/{THREAD}"),
+                    device: None,
+                })
+                .await
+                .unwrap();
+            let requests = task.await.unwrap();
+            assert_eq!(requests[0]["operation"], "info");
+            assert_eq!(requests[1]["threadId"], THREAD);
+            assert_eq!(requests[1]["deviceId"].as_str(), expected_device);
+        }
+        // An operation that only works locally accepts this device's qualified ID.
+        let (client, task) = mock_client(vec![
+            json!({"deviceId":HOST,"relayDeviceId":RELAY_DEVICE}),
+            json!({"threads":[]}),
+        ])
+        .await;
+        client
+            .thread(ThreadCommand::Wait {
+                ids: vec![format!("{RELAY_DEVICE}/{THREAD}")],
+                any: false,
+                timeout: 1,
+                wake: false,
+            })
+            .await
+            .unwrap();
+        assert_eq!(task.await.unwrap()[1]["threadIds"], json!([THREAD]));
+        // A bare UUID needs no device lookup.
+        let (client, task) = mock_client(vec![json!({"threadId":THREAD})]).await;
+        client
+            .thread(ThreadCommand::Status {
+                id: THREAD.into(),
+                device: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(task.await.unwrap()[0]["operation"], "status");
+    }
+
+    fn summary_query(id: String) -> Transcript {
+        Transcript {
+            id,
+            device: None,
+            limit: None,
+            before_turn: None,
+            turn: None,
+            item: None,
+            view: Some("summary".into()),
+            offset: 0,
+            text_offset: 0,
+            raw: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn transcript_summary_forwards_the_view_and_qualifies_remote_continuations() {
+        let turn = "turn-1";
+        let reply = json!({
+            "threadId": THREAD, "view": "summary",
+            "turns": [{"id":turn,"messages":[{"role":"user","text":format!("pockymoe transcript {THREAD} --x")}],
+                "overview": format!("pockymoe transcript {THREAD} --turn {turn} --view overview")}],
+            "next": format!("pockymoe transcript {THREAD} --view summary --before-turn {turn} --limit 10"),
+        });
+        let (client, task) = mock_client(vec![
+            json!({"deviceId":HOST,"relayDeviceId":RELAY_DEVICE}),
+            reply.clone(),
+        ])
+        .await;
+        let value = client
+            .transcript(summary_query(format!("Desk Top/{THREAD}")))
+            .await
+            .unwrap();
+        let requests = task.await.unwrap();
+        assert_eq!(requests[1]["operation"], "transcript");
+        assert_eq!(requests[1]["view"], "summary");
+        assert_eq!(requests[1]["deviceId"], "Desk Top");
+        assert!(requests[1]["limit"].is_null());
+        assert_eq!(
+            value["turns"][0]["overview"],
+            format!("pockymoe transcript 'Desk Top/{THREAD}' --turn {turn} --view overview")
+        );
+        assert_eq!(
+            value["next"],
+            format!("pockymoe transcript 'Desk Top/{THREAD}' --view summary --before-turn {turn} --limit 10")
+        );
+        // Conversation text is never rewritten.
+        assert_eq!(
+            value["turns"][0]["messages"][0]["text"],
+            format!("pockymoe transcript {THREAD} --x")
+        );
+        // On this device the commands stay as the Supervisor wrote them.
+        let (client, task) = mock_client(vec![
+            json!({"deviceId":HOST,"relayDeviceId":RELAY_DEVICE}),
+            reply.clone(),
+        ])
+        .await;
+        let value = client
+            .transcript(summary_query(format!("{RELAY_DEVICE}/{THREAD}")))
+            .await
+            .unwrap();
+        assert!(task.await.unwrap()[1].get("deviceId").is_none());
+        assert_eq!(value, reply);
     }
 
     #[tokio::test]

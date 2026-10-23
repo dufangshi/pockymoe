@@ -27,6 +27,7 @@ pockymoe thread backends --device DEVICE
 pockymoe thread models --device DEVICE --workspace WORKSPACE_ID
 pockymoe thread create --device DEVICE --workspace WORKSPACE_ID --title helper
 pockymoe thread status DEVICE/THREAD_UUID
+pockymoe transcript DEVICE/THREAD_UUID --view summary
 pockymoe transcript DEVICE/THREAD_UUID --limit 1
 pockymoe thread send DEVICE/THREAD_UUID --text 'Please inspect these files' \
   --attach ./report.txt --attach ./sources
@@ -41,7 +42,8 @@ it does not inherit your approval mode. Remote send supports inbox/direct/queue/
 and `--notify-on-complete`; results return to your local passive inbox. Reply to
 cross-device mail using its `replyTo` (`DEVICE/THREAD_UUID`). Remote wait, wake, tree,
 task, close, delete and inbox operations are unavailable; inspect status/transcript
-or wait for local inbox results instead.
+or wait for local inbox results instead. `DEVICE/THREAD_UUID` with this device's own
+ID is a local thread, and every command accepts it.
 
 Attachments copy up to 20 local paths; directories become zip files. The receipt's
 `attachments` and the delivered message both name where each file landed on the target. `fs` reads only within a target

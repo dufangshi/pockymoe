@@ -10,7 +10,7 @@ pub(crate) mod peer_work;
 mod reliability;
 mod search;
 mod storage;
-mod thread_summary;
+pub(crate) mod thread_summary;
 mod update;
 mod watches;
 

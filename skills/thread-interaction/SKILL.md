@@ -1,6 +1,6 @@
 ---
 name: thread-interaction
-description: Coordinate peer Pockymoe threads on this device or on another device of the same owner through passive result handoffs, dependency-aware waiting, explicit task dispatch, urgent corrections and file exchange. Also reserve and diagnose private web previews on this device. Use when creating, messaging or collecting work from Pockymoe peers, or preparing a local website for the user to view.
+description: Coordinate peer Pockymoe threads on this device or on another device of the same owner through passive result handoffs, dependency-aware waiting, explicit task dispatch, urgent corrections and file exchange. Also reserve and diagnose private web previews on this device. Use when creating, messaging or collecting work from Pockymoe peers, reading a thread a prompt names with `pockymoe_session_id:`, or preparing a local website for the user to view.
 ---
 
 # Pockymoe threads and web previews
@@ -23,6 +23,7 @@ delivery state.
 | Split ordered work across delegates | `task add`, `task claim --wait`, `task done` | `guide tasks` |
 | Use another device's threads or files | `device list`, `thread ... --device`, `fs` | `guide devices` |
 | Read a peer's history, or retry a send safely | `transcript ID`, `--request-id` | `guide transcript` |
+| Consult a thread the prompt names (`pockymoe_session_id: ID` or `DEVICE/ID`) | `transcript ID --view summary`, then `transcript ID --turn TURN_ID --view overview` | `guide transcript` |
 | Schedule a prompt or react to a turn ending | `automation create` | `guide automation` |
 | See where you are | `thread self`, `thread tree`, `thread status ID` | `guide delegate` |
 | Fix connection or credential problems | | `guide connection` |
@@ -62,6 +63,11 @@ Collaborating:
   not reply "received"; never ack an unanswered question to hide it.
 - Notify only the peers that depend on a change, one message per usable batch, with long
   evidence kept in files.
+- `pockymoe_session_id: ID` or `pockymoe_session_id: DEVICE/ID` in a prompt names a
+  Pockymoe thread whose history the user wants you to consult. Pass the value as given:
+  read `transcript VALUE --view summary` first (user messages and replies, with turn
+  ids), then only the turns that matter with `--turn TURN_ID --view overview`; expand
+  items only when you need them.
 
 Safety:
 

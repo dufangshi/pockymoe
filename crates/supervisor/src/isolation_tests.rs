@@ -195,6 +195,7 @@ async fn an_isolated_workspace_keeps_out_threads_from_other_workspaces_but_not_i
     for input in [
         json!({"operation":"status","threadId":inside}),
         json!({"operation":"transcript","threadId":inside}),
+        json!({"operation":"transcript","threadId":inside,"view":"summary"}),
         json!({"operation":"send","threadId":inside,"text":"hi"}),
         json!({"operation":"inbox","threadId":inside}),
         json!({"operation":"inboxRead","threadId":inside}),
@@ -319,6 +320,7 @@ async fn other_devices_cannot_reach_an_isolated_device_or_workspace() {
     for input in [
         json!({"operation":"status","threadId":private}),
         json!({"operation":"transcript","threadId":private}),
+        json!({"operation":"transcript","threadId":private,"view":"summary"}),
         json!({"operation":"send","threadId":private,"text":"hi"}),
         json!({"operation":"create","workspaceId":f.isolated,"title":"x"}),
     ] {

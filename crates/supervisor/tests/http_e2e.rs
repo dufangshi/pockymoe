@@ -65,7 +65,9 @@ async fn thread_summary_http_returns_public_chronology_and_rejects_bad_queries()
         ["question", "commentary", "steer", "中🙂final"]
     );
     assert_eq!(messages[2]["time"], "2030-01-01T00:00:02Z");
-    assert!(messages.iter().all(|m| m.as_object().unwrap().len() == 3));
+    assert!(messages
+        .iter()
+        .all(|m| m.as_object().unwrap().len() == 4 && m["turnId"] == "summary-turn"));
     let capped = json(
         &client,
         client.get(&endpoint).query(&[
@@ -77,7 +79,7 @@ async fn thread_summary_http_returns_public_chronology_and_rejects_bad_queries()
     .await;
     assert_eq!(
         capped["messages"],
-        json!([{"role":"assistant","time":"2030-01-01T00:00:03Z","text":"🙂final","truncated":true}])
+        json!([{"role":"assistant","time":"2030-01-01T00:00:03Z","text":"🙂final","truncated":true,"turnId":"summary-turn"}])
     );
     assert_eq!(capped["truncated"], true);
     for query in [

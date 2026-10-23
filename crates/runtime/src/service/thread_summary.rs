@@ -75,12 +75,22 @@ fn register_text_functions(conn: &Connection) -> Result<()> {
         let start = text.char_indices().rev().take(count).last().map(|(i, _)| i);
         Ok(start.map(|i| text[i..].to_owned()).unwrap_or_default())
     })?;
+    conn.create_scalar_function("summary_head", 2, flags, |ctx| {
+        let text = ctx.get_raw(0).as_str().unwrap_or_default();
+        let count = ctx.get::<i64>(1)? as usize;
+        let end = text
+            .char_indices()
+            .nth(count)
+            .map_or(text.len(), |(i, _)| i);
+        Ok(text[..end].to_owned())
+    })?;
     Ok(())
 }
 
 struct MessageRow {
     history_row: Option<i64>,
     turn_row: i64,
+    turn_id: String,
     ordinal: i64,
     time: Option<DateTime<Utc>>,
     order_time: Option<DateTime<Utc>>,
@@ -92,6 +102,39 @@ struct ReplyTarget {
     history_row: i64,
     turn_row: i64,
     ordinal: i64,
+}
+
+/// How the CLI's summary view narrows the public timeline.
+#[derive(Default)]
+pub(crate) struct SummaryPageOptions<'a> {
+    /// Only turns before this one.
+    pub before_turn: Option<&'a str>,
+    /// For each user message, keep only the assistant's last message before the
+    /// next user message (or the end of the turn): its reply, not its progress.
+    pub final_replies: bool,
+    /// Cap each message at this many characters, keeping its beginning.
+    pub message_chars: Option<u64>,
+}
+
+pub(crate) struct SummaryTurn {
+    pub id: String,
+    pub ordinal: i64,
+    pub status: String,
+}
+
+pub(crate) struct SummaryPage {
+    pub summary: ThreadSummaryDto,
+    /// The selected turns, newest first, including turns without public text.
+    pub turns: Vec<SummaryTurn>,
+    /// `maxChars` dropped or cut messages, beyond the per-message cap.
+    pub budget_exhausted: bool,
+}
+
+struct Extracted {
+    summary: ThreadSummaryDto,
+    target: Option<usize>,
+    turns: Vec<SummaryTurn>,
+    budget_exhausted: bool,
 }
 
 pub(super) fn prompt_sender_key(pending: &str) -> String {
@@ -181,8 +224,30 @@ impl Supervisor {
         query: &ThreadSummaryQuery,
         now: DateTime<Utc>,
     ) -> Result<ThreadSummaryDto> {
-        self.thread_summary_impl(id, query, now, None)
-            .map(|(summary, _)| summary)
+        self.thread_summary_impl(id, query, now, None, None)
+            .map(|extracted| extracted.summary)
+    }
+
+    /// The newest `turns` turns of the public timeline (before `before_turn`),
+    /// with their ids and statuses, for `pockymoe transcript --view summary`.
+    pub(crate) fn thread_summary_page(
+        &self,
+        id: &str,
+        turns: u32,
+        max_chars: u64,
+        options: &SummaryPageOptions,
+    ) -> Result<SummaryPage> {
+        let query = ThreadSummaryQuery {
+            turns: Some(turns),
+            max_chars: Some(max_chars),
+            ..Default::default()
+        };
+        let extracted = self.thread_summary_impl(id, &query, Utc::now(), None, Some(options))?;
+        Ok(SummaryPage {
+            summary: extracted.summary,
+            turns: extracted.turns,
+            budget_exhausted: extracted.budget_exhausted,
+        })
     }
 
     /// The same public timeline, bounded by execution order through this exact
@@ -204,11 +269,13 @@ impl Supervisor {
             max_chars: Some(max_chars),
             ..Default::default()
         };
-        let (summary, target) =
-            self.thread_summary_impl(id, &query, Utc::now(), Some((turn, item)))?;
+        let extracted =
+            self.thread_summary_impl(id, &query, Utc::now(), Some((turn, item)), None)?;
         Ok((
-            summary,
-            target.ok_or_else(|| anyhow!("reply target is not a public assistant message"))?,
+            extracted.summary,
+            extracted
+                .target
+                .ok_or_else(|| anyhow!("reply target is not a public assistant message"))?,
         ))
     }
 
@@ -218,8 +285,11 @@ impl Supervisor {
         query: &ThreadSummaryQuery,
         now: DateTime<Utc>,
         target: Option<(&str, &str)>,
-    ) -> Result<(ThreadSummaryDto, Option<usize>)> {
+        page: Option<&SummaryPageOptions>,
+    ) -> Result<Extracted> {
         let since = cutoff(query, now)?;
+        let default_options = SummaryPageOptions::default();
+        let options = page.unwrap_or(&default_options);
         self.get_thread(id)?;
         self.db.with(|conn| {
             register_text_functions(conn)?;
@@ -235,13 +305,37 @@ impl Supervisor {
                     |r| Ok(ReplyTarget { history_row: r.get(0)?, turn_row: r.get(1)?, ordinal: r.get(2)? }),
                 ).optional()?.ok_or_else(|| anyhow!("reply target not found"))
             }).transpose()?;
-            let mut stmt = tx.prepare(
-                "WITH selected_turns AS (
-                   SELECT rowid AS turn_row,id,ordinal,started_at,display_prompt
+            let before = options.before_turn.map(|turn| {
+                tx.query_row(
+                    "SELECT ordinal,rowid FROM thread_turns WHERE thread_id=?1 AND id=?2",
+                    params![id, turn],
+                    |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
+                ).optional()?.ok_or_else(|| anyhow!("before turn not found"))
+            }).transpose()?;
+            // ?6/?7 bound a summary page to the turns before an earlier page.
+            const SELECTED_TURNS: &str = "SELECT rowid AS turn_row,id,ordinal,started_at,display_prompt,status
                    FROM thread_turns WHERE thread_id=?1
                      AND (?3 IS NULL OR (ordinal,rowid)<=(?3,?4))
-                   ORDER BY ordinal DESC,rowid DESC LIMIT COALESCE(?2,-1)
-                 ), public AS (
+                     AND (?6 IS NULL OR (ordinal,rowid)<(?6,?7))
+                   ORDER BY ordinal DESC,rowid DESC LIMIT COALESCE(?2,-1)";
+            let bounds = params![
+                id, query.turns,
+                target.as_ref().map(|t| t.ordinal),
+                target.as_ref().map(|t| t.turn_row),
+                target.as_ref().map(|t| t.history_row),
+                before.map(|b| b.0),
+                before.map(|b| b.1),
+            ];
+            let turns = if page.is_some() {
+                // Turns without public text still belong to the page.
+                tx.prepare(&format!("SELECT id,ordinal,status FROM ({SELECTED_TURNS})"))?
+                    .query_map(bounds, |r| Ok(SummaryTurn { id: r.get(0)?, ordinal: r.get(1)?, status: r.get(2)? }))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?
+            } else {
+                Vec::new()
+            };
+            let mut stmt = tx.prepare(&format!(
+                "WITH selected_turns AS ({SELECTED_TURNS}), public AS (
                    SELECT h.rowid AS history_row,t.turn_row,t.ordinal,t.started_at,
                      CASE WHEN json_type(h.item_json,'$.createdAt')='text'
                        THEN json_extract(h.item_json,'$.createdAt') END AS emission,
@@ -252,7 +346,8 @@ impl Supervisor {
                        EXISTS(SELECT 1 FROM automation_runs a WHERE a.turn_id=t.id)
                        OR EXISTS(SELECT 1 FROM kv k WHERE k.key='cli:peer-work:turn:'||t.id)
                      ELSE 0 END AS controlled,
-                     COALESCE(json_extract(h.item_json,'$.origin'),'')='user' AS authored
+                     COALESCE(json_extract(h.item_json,'$.origin'),'')='user' AS authored,
+                     t.id AS turn_id
                    FROM selected_turns t JOIN search_documents d
                      ON d.thread_id=?1 AND d.turn_id=t.id AND d.kind IN ('userMessage','agentMessage')
                    JOIN thread_history_items h ON h.id=substr(d.document_key,6)
@@ -284,22 +379,17 @@ impl Supervisor {
                    SELECT NULL,t.turn_row,t.ordinal,t.started_at,t.started_at,'userMessage',
                      summary_chars(t.display_prompt),substr(t.display_prompt,1,256),
                      EXISTS(SELECT 1 FROM automation_runs a WHERE a.turn_id=t.id)
-                     OR EXISTS(SELECT 1 FROM kv k WHERE k.key='cli:peer-work:turn:'||t.id), 0
+                     OR EXISTS(SELECT 1 FROM kv k WHERE k.key='cli:peer-work:turn:'||t.id), 0, t.id
                    FROM selected_turns t WHERE summary_chars(t.display_prompt)>0
                      AND NOT EXISTS(SELECT 1 FROM search_documents d JOIN thread_history_items h
                        ON h.id=substr(d.document_key,6) AND h.thread_id=?1 AND h.turn_id=t.id
                        WHERE d.thread_id=?1 AND d.turn_id=t.id AND d.kind='userMessage'
                          AND (h.item_id=t.id||':user'
                            OR json_extract(h.item_json,'$.text')=t.display_prompt))
-                 ) SELECT history_row,turn_row,ordinal,started_at,emission,kind,chars,prefix,controlled,authored
+                 ) SELECT history_row,turn_row,ordinal,started_at,emission,kind,chars,prefix,controlled,authored,turn_id
                    FROM public WHERE chars>0 ORDER BY ordinal,turn_row,history_row"
-            )?;
-            let mut rows = stmt.query(params![
-                id, query.turns,
-                target.as_ref().map(|t| t.ordinal),
-                target.as_ref().map(|t| t.turn_row),
-                target.as_ref().map(|t| t.history_row),
-            ])?;
+            ))?;
+            let mut rows = stmt.query(bounds)?;
             let mut selected = Vec::new();
             let mut previous = None;
             let mut previous_turn = None;
@@ -322,12 +412,28 @@ impl Supervisor {
                     continue;
                 }
                 selected.push(MessageRow {
-                    history_row: r.get(0)?, turn_row, ordinal:r.get(2)?, time, order_time,
+                    history_row: r.get(0)?, turn_row, turn_id: r.get(10)?, ordinal:r.get(2)?, time, order_time,
                     role: if user { ThreadSummaryRole::User } else { ThreadSummaryRole::Assistant },
                     chars: r.get(6)?,
                 });
             }
             selected.sort_by_key(|r| (r.order_time, r.ordinal, r.turn_row, r.history_row));
+            if options.final_replies {
+                // Newest first: an assistant message followed, in its turn, by
+                // another one before the next user message is progress.
+                let mut answered = std::collections::HashSet::new();
+                let mut kept = Vec::with_capacity(selected.len());
+                for row in selected.into_iter().rev() {
+                    if row.role == ThreadSummaryRole::User {
+                        answered.remove(&row.turn_row);
+                    } else if !answered.insert(row.turn_row) {
+                        continue;
+                    }
+                    kept.push(row);
+                }
+                kept.reverse();
+                selected = kept;
+            }
             let mut remaining = query.max_chars.unwrap_or(u64::MAX);
             // The exact target can sort before backfilled earlier-turn text.
             // Reserve it before suffix selection so newer context cannot evict
@@ -344,11 +450,15 @@ impl Supervisor {
             }).transpose()?.unwrap_or(0);
             remaining -= target_chars;
             let mut truncated = false;
+            let mut budget_exhausted = false;
             let mut slices = Vec::new();
+            let cap = options.message_chars.unwrap_or(u64::MAX);
             for row in selected.into_iter().rev() {
                 let is_target = target.as_ref().is_some_and(|target| row.history_row == Some(target.history_row));
-                let take = if is_target { row.chars } else { row.chars.min(remaining) };
+                let wanted = row.chars.min(cap);
+                let take = if is_target { row.chars } else { wanted.min(remaining) };
                 truncated |= take < row.chars;
+                budget_exhausted |= take < wanted;
                 if take > 0 {
                     if !is_target {
                         remaining -= take;
@@ -363,8 +473,11 @@ impl Supervisor {
                         && row.role == ThreadSummaryRole::Assistant
                 }).ok_or_else(|| anyhow!("reply target is not a public assistant message"))
             }).transpose()?;
-            let mut history = tx.prepare("SELECT summary_tail(json_extract(item_json,'$.text'),?2) FROM thread_history_items WHERE rowid=?1 AND thread_id=?3")?;
-            let mut prompt = tx.prepare("SELECT summary_tail(display_prompt,?2) FROM thread_turns WHERE rowid=?1 AND thread_id=?3")?;
+            // A capped message keeps its beginning; otherwise the budget keeps the
+            // end of the oldest message, next to the newer text that follows it.
+            let cut = if options.message_chars.is_some() { "summary_head" } else { "summary_tail" };
+            let mut history = tx.prepare(&format!("SELECT {cut}(json_extract(item_json,'$.text'),?2) FROM thread_history_items WHERE rowid=?1 AND thread_id=?3"))?;
+            let mut prompt = tx.prepare(&format!("SELECT {cut}(display_prompt,?2) FROM thread_turns WHERE rowid=?1 AND thread_id=?3"))?;
             let messages = slices.into_iter().map(|(row,take)| {
                 let text = if let Some(key) = row.history_row {
                     history.query_row(params![key,take,id],|r|r.get(0))?
@@ -374,9 +487,15 @@ impl Supervisor {
                 Ok(ThreadSummaryMessage {
                     time: row.time.map(|d|d.to_rfc3339_opts(SecondsFormat::AutoSi,true)),
                     role:row.role,text,truncated:take<row.chars,
+                    turn_id: Some(row.turn_id),
                 })
             }).collect::<Result<Vec<_>>>()?;
-            Ok((ThreadSummaryDto {messages,truncated}, target_index))
+            Ok(Extracted {
+                summary: ThreadSummaryDto { messages, truncated },
+                target: target_index,
+                turns,
+                budget_exhausted,
+            })
         })
     }
 }

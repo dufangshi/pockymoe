@@ -18,6 +18,7 @@ pub enum ThreadSummaryRole {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct ThreadSummaryMessage {
     /// First public emission/acceptance, or null when the saved item lacks it.
     pub time: Option<String>,
@@ -26,6 +27,9 @@ pub struct ThreadSummaryMessage {
     /// True only when maxChars removed the beginning of this message.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub truncated: bool,
+    /// The turn this message belongs to, for reading that turn in detail.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
