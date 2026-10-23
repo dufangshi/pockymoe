@@ -117,18 +117,20 @@ for (const preset of ['classic', 'plum-pocket', 'terminal']) for (const mode of 
       { threadId: macro, name: 'xa-macro', status: 'idle' },
     ] }] } }));
   await page.goto(`/threads/${id}`);
-  const wakes = page.locator('.thread-composer-pending-wakes');
-  const head = wakes.locator('.thread-composer-pending-wake-head');
-  await expect(head).toContainText('等待唤醒');
-  await expect(head).toContainText('xa-regime');
-  await expect(head.locator('[data-status="running"]')).toHaveCount(2);
+  // The wakes are a small bell above the composer counting the agent threads.
+  const bell = page.locator('.thread-composer-wakes-bell');
+  await expect(bell).toHaveAttribute('aria-label', /^等待唤醒/);
+  await expect(bell.locator('.thread-composer-wakes-count')).toHaveText('3');
   const queued = page.locator('.thread-composer-pending-row');
   await expect(queued.locator('.thread-composer-pending-source')).toHaveText('子线程唤醒');
   await expect(queued).toContainText('xa-macro 等待答复');
   await expect(queued).not.toContainText('[Pockymoe wake');
   await page.screenshot({ path: info.outputPath(`${preset}-${mode}-pending-wake.png`), scale: 'css' });
-  await head.click();
-  await expect(wakes.locator('.thread-composer-pending-wake-body')).toContainText('插话');
+  await bell.click();
+  const panel = page.locator('.thread-composer-wakes-panel');
+  await expect(panel).toContainText('xa-regime');
+  await expect(panel.locator('[data-status="running"]')).toHaveCount(2);
+  await expect(panel).toContainText('插话');
   await page.screenshot({ path: info.outputPath(`${preset}-${mode}-pending-wake-open.png`), scale: 'css' });
   expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1);
 });

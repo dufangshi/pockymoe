@@ -135,6 +135,8 @@
 :theme .thread-ui-shell form[data-agent='opencode'] { --pc-peek-ratio: 160 / 155; --pc-peek-w: 50px; }
 :theme .thread-ui-shell form[data-composer-layout][data-agent]:has(:focus-visible, input:focus, textarea:focus, select:focus, [contenteditable="true"]:focus)::before { transform: translateY(-3px); }
 :theme .thread-ui-shell form[data-composer-layout][data-agent][data-composer-busy]::before { transform: translateY(58%); }
+/* The marks above the composer's corner (a failure, the wakes bell) stand beside her, not on her. */
+:theme .thread-ui-shell .thread-composer-error-tag:not(.flex-row-reverse):has(~ form[data-composer-layout][data-agent]) { padding-left: 88px; }
 /* Queued slips and the phone pane switch take the space above the pocket. */
 :theme .thread-ui-shell .thread-graph-composer-layer:is(:has(> .thread-composer-pending-queue), :has(.thread-pane-switch)) form[data-agent]::before { display: none; }
 
