@@ -25,13 +25,22 @@ it can add an authenticator or passkey under **Settings › Admin account**).
 
 ## Layout
 
-The
-console is a sidebar of sections on desktop and a bottom tab bar on phones
-(Overview, Users, Devices, Security, and **More** for Shares and access, System
-and Settings). Every section has a summary or chart band above a filtered,
-paged table; a row opens its details in a drawer on the right (a sheet from the
-bottom on phones). The URL holds the section (`tab`), sub-tab (`sub`), filter,
-open row (`id`) and time range (`range`: `24h`, `7d`, `30d`, `90d`).
+The console is a sidebar of sections on desktop and a bottom tab bar on phones
+(Overview, Users, Devices, Security, and **More** for Performance, Shares and
+access, System and Settings). The sidebar folds into an icon rail (the button
+beside the title; names show on hover and keyboard focus and stay the buttons'
+accessible names); the browser remembers the choice. The top bar's tools wrap
+under the title when they do not fit beside it.
+
+Every section has a summary or chart band above a filtered, paged table; a row
+opens its details in a drawer on the right (a sheet from the bottom on phones).
+Every table sorts by its headers (on the relay, before paging), filters by
+column with a row of filter pills, resizes its columns and hides or shows them
+from **Columns**; widths, shown columns and the sort are kept per table in the
+browser ([UI principles](ui-principles.md#管理后台的表格)). The URL holds the
+section (`tab`), sub-tab (`sub`), open row (`id`), time range (`range`: `24h`,
+`7d`, `30d`, `90d`, or `custom` with `from` and `to` days on Performance), the
+sort (`sort`, `dir`) and each column filter, so a view can be linked.
 
 Code: `crates/relay/src/admin/` (API), `apps/supervisor-web/src/pages/relayAdmin/`
 (console), strings in the shared UI's `admin` i18n namespace.
@@ -40,13 +49,14 @@ Code: `crates/relay/src/admin/` (API), `apps/supervisor-web/src/pages/relayAdmin
 
 | Section | Contents | Actions |
 | --- | --- | --- |
-| Overview | Needs attention (registrations waiting, devices reconnecting often, accounts without an account key, legacy plaintext public links); figures for devices, active people (with daily active people), shares, account-key and second-factor coverage, registrations; online devices over the range; when people were last active; new accounts per week; device versions; tunnels and forwarding (reconnects, error rate, p95 latency); recent security events and admin actions | Links to the lists behind each item |
-| Users | People with sign-in method, account key, second factors, devices online and last activity; filters (active in 7 days, no account key, no second factor, disabled, never signed in) and search. Details: devices, live sessions, recent security events, how the account was approved. Sub-tabs: registration requests (pending, review history, median time to approval) and sign-in methods | Enable/disable, temporary password, end all sessions or one, delete; approve/reject registrations |
-| Devices | Tunnel state (online, offline with when it was last seen, reconnecting often), protection (device certificate), version (older than the relay is marked), threads, agent threads and workspaces counted from heartbeat thread IDs, port mappings, requests per day over 7 days; filters and search. Details: the last 24 hours of tunnel connections (uptime, reconnects, longest offline, why each ended), forwarded requests per hour, upstream protocols (protocol only, never connection names), shares of the device, device ID | Disconnect the tunnel (the device reconnects by itself; no access changes) |
-| Shares and access | Every active share as one list: thread shares and grants of a workspace or the whole device, with permissions, last use and expiry; scope and permission summary; recipients' use per day (approximate: visits repeat at most every 5 minutes and 100 are kept per share). Public links (encrypted or legacy plaintext, live or snapshot, size). Port previews held in memory | Revoke a share |
+| Performance | Forwarding over a range or custom window: requests, error rate and errors by kind (timeout, busy, offline, device error), latency p50/p95/p99 over time and the latency distribution, bytes to and from devices, tunnel reconnects over time, how long tunnels last, the devices that reconnect most and traffic per device (each opens the device's details). Every chart has a legend, a tooltip and a table view; "How latency is measured" states the buckets | — |
+| Overview | Needs attention (registrations waiting, devices reconnecting often, accounts without an account key, legacy plaintext public links); figures for devices, active people (with daily active people), shares, account-key and second-factor coverage, registrations; online devices over the range; when people were last active; new accounts per week; device versions; tunnels and forwarding (reconnects, error rate, p95 latency, with **Details** for Performance); recent security events and admin actions | Links to the lists behind each item |
+| Users | People with status, account key, second factors, when they registered, their last sign-in and its browser ("Chrome · macOS"; no addresses), last activity, and as optional columns email, role, sign-in method, devices and the browser alone; filters by role, status, account key, second factor, sign-in method, registration time and last activity (including never), and search. Details: devices, live sessions, recent security events, how the account was approved. Sub-tabs: registration requests (pending, review history, median time to approval) and sign-in methods | Enable/disable, temporary password, end all sessions or one, delete; approve/reject registrations |
+| Devices | Tunnel state (online, offline with when it was last seen, reconnecting often), protection (device certificate), version (older than the relay is marked), threads, agent threads and workspaces counted from heartbeat thread IDs, port mappings, requests per day over 7 days, and as optional columns owner, last seen, reconnects in the last hour and when it was added; filters by owner (searchable), connection, protection, version (older, same or newer, not reported, or one version), last seen (including never) and added, and search. Details: the last 24 hours of tunnel connections (uptime, reconnects, longest offline, why each ended), forwarded requests per hour, upstream protocols (protocol only, never connection names), shares of the device, device ID | Disconnect the tunnel (the device reconnects by itself; no access changes) |
+| Shares and access | Every active share as one list: thread shares and grants of a workspace or the whole device, with permissions, last use and expiry, filtered by scope, owner, recipient, permission, expiry, last use and creation; scope and permission summary; recipients' use per day (approximate: visits repeat at most every 5 minutes and 100 are kept per share). Public links (encrypted or legacy plaintext, live or snapshot, size). Port previews held in memory | Revoke a share |
 | Sessions and security | The relay-wide security audit (per day by category, filterable list); failed sign-ins per day; browsers and systems of live sessions; live sessions; the admin action log; rate-limit refusals by kind | End a session |
 | System | Version, uptime, public address, Web origin, data directory; tunnels, browser sockets and requests in flight; configuration checks (database integrity, session secret, sign-in providers, port previews, APNs, legacy links); push subscriptions, delivery queue, delivery rate and turn results of the last day; device versions now and per day; database, WAL and table sizes and database size over 30 days | — |
-| Settings | Registration (open, approval, invite code), Google and GitHub sign-in, data retention and privacy, the admin's own security | Each switch saves at once |
+| Settings | Registration (open, approval, invite code; each applies to Google and GitHub sign-up too, see [OAuth and registration](auth-and-connectivity-modes.md)), Google and GitHub sign-in, data retention and privacy, the admin's own security | Each switch saves at once |
 
 Every change asks first where it signs someone out or deletes something
 (`confirmAsync`). Revoking a share as admin only stops the relay from forwarding

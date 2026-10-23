@@ -16,7 +16,7 @@ import {
   UserPlus,
   Users,
 } from 'lucide-react';
-import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { FormDialog } from '../../components/FormDialog';
 import {
   approveRelayRegistration,
@@ -32,17 +32,17 @@ import { loginMethodLabel } from './labels';
 import { EventList } from './events';
 import type { AdminPageProps } from './RelayAdminConsole';
 import type { AdminRegistration, AdminSession, AdminUser, AdminUserDetail, AdminUserFilter } from './types';
+import { FilterBar, SelectFilter, TimeFilter, windowParams } from './filters';
+import { AdminTable, useFilterValues, useTableSettings, useUrlSort, type TableColumn } from './table';
 import {
   Avatar,
   Badge,
   Card,
-  DataTable,
   DetailSection,
   DetailWindow,
   DeviceStateMark,
   EmptyState,
   errorText,
-  FilterChips,
   LoadFailure,
   MiniStat,
   Pagination,
@@ -54,12 +54,12 @@ import {
   SubTabs,
   useAdminResource,
   useDebounced,
-  type Column,
   type MenuItem,
 } from './ui';
 
 const PAGE_SIZE = 25;
-const USER_FILTERS: AdminUserFilter[] = ['all', 'active7d', 'noAccountKey', 'noTwoFactor', 'disabled', 'neverSeen'];
+const FILTER_KEYS = ['role', 'status', 'key', 'factor', 'method', 'seen', 'created'] as const;
+type FilterKey = (typeof FILTER_KEYS)[number];
 type UsersTab = 'users' | 'registrations' | 'methods';
 
 export function UsersPage(props: AdminPageProps) {
@@ -70,7 +70,7 @@ export function UsersPage(props: AdminPageProps) {
       <SubTabs
         idPrefix="admin-users"
         label={translate('admin.navUsers')}
-        onChange={(key) => props.setParams({ sub: key === 'users' ? null : key, id: null, filter: null })}
+        onChange={(key) => props.go('users', { sub: key === 'users' ? null : key })}
         tabs={[
           { key: 'users', label: translate('admin.navUsers'), icon: <Users aria-hidden className="h-4 w-4" /> },
           { key: 'registrations', label: translate('admin.registrations'), icon: <UserPlus aria-hidden className="h-4 w-4" /> },
@@ -85,41 +85,64 @@ export function UsersPage(props: AdminPageProps) {
   );
 }
 
-function filterLabel(filter: AdminUserFilter) {
-  switch (filter) {
-    case 'all': return translate('admin.filterAll');
-    case 'active7d': return translate('admin.filterActive7d');
-    case 'noAccountKey': return translate('admin.filterNoAccountKey');
-    case 'noTwoFactor': return translate('admin.filterNoTwoFactor');
-    case 'disabled': return translate('admin.filterDisabled');
-    case 'neverSeen': return translate('admin.filterNeverSeen');
+/** Links from before the column filters (`filter=noAccountKey`) still work. */
+function legacyFilter(filter: string | null): Partial<Record<FilterKey, string>> {
+  switch (filter as AdminUserFilter | null) {
+    case 'active7d': return { seen: '7d' };
+    case 'noAccountKey': return { key: 'missing' };
+    case 'noTwoFactor': return { factor: 'none' };
+    case 'disabled': return { status: 'disabled' };
+    case 'neverSeen': return { seen: 'never' };
+    default: return {};
   }
 }
 
 function UserList(props: AdminPageProps) {
   const { refreshKey, onLoaded, onUnauthorized, setParams, selectedId } = props;
-  const filter = (USER_FILTERS.includes(props.filter as AdminUserFilter) ? props.filter : 'all') as AdminUserFilter;
+  const values = useFilterValues(props, FILTER_KEYS, legacyFilter);
+  const urlSort = useUrlSort(props);
+  const settings = useTableSettings('users', { urlSort });
   const [text, setText] = useState('');
   const q = useDebounced(text.trim());
   const [page, setPage] = useState(1);
-  useEffect(() => setPage(1), [filter, q]);
+  const query = useMemo(() => ({
+    q,
+    role: values.role,
+    status: values.status,
+    key: values.key,
+    factor: values.factor,
+    method: values.method,
+    ...windowParams(values.seen, 'seen'),
+    ...windowParams(values.created, 'created'),
+    sort: settings.sort?.key,
+    dir: settings.sort?.dir,
+  }), [q, values, settings.sort?.key, settings.sort?.dir]);
+  const queryKey = JSON.stringify(query);
+  useEffect(() => setPage(1), [queryKey]);
   const { data, error, loading, reload } = useAdminResource(
-    () => adminApi.users({ filter, q, page, pageSize: PAGE_SIZE }),
-    `${filter}:${q}:${page}:${refreshKey}`,
+    () => adminApi.users({ ...query, page, pageSize: PAGE_SIZE }),
+    `${queryKey}:${page}:${refreshKey}`,
     onUnauthorized,
   );
   useEffect(() => {
     if (data) onLoaded();
   }, [data, onLoaded]);
   const open = (user: AdminUser) => setParams({ id: user.id });
+  const setFilter = (key: FilterKey, value: string | null) => setParams({ [key]: value, filter: null, id: null });
+  const active = FILTER_KEYS.filter((key) => values[key]).length;
   const actions = useUserActions(() => {
     reload();
     props.onChanged();
   });
-  const columns: Array<Column<AdminUser>> = [
+  const time = (value: string | null | undefined) => <time dateTime={value ?? undefined} title={formatDateTime(value ?? null)}>{formatRelative(value ?? null)}</time>;
+  const columns: Array<TableColumn<AdminUser>> = [
     {
-      key: 'user',
-      header: translate('admin.user'),
+      key: 'name',
+      label: translate('admin.user'),
+      sortable: true,
+      hideable: false,
+      width: 240,
+      minWidth: 160,
       render: (user) => (
         <RowOpener label={translate('admin.openUser', { name: user.username })} onOpen={() => open(user)}>
           <Avatar name={user.username} size="sm" />
@@ -130,33 +153,86 @@ function UserList(props: AdminPageProps) {
         </RowOpener>
       ),
     },
-    { key: 'status', header: translate('admin.status'), render: (user) => <UserStatus user={user} /> },
-    { key: 'method', header: translate('admin.loginMethod'), render: (user) => user.loginMethods.map(loginMethodLabel).join(' · ') || '—' },
-    { key: 'key', header: translate('admin.accountKey'), render: (user) => <AccountKeyMark user={user} /> },
-    { key: 'factors', header: translate('admin.twoFactor'), render: (user) => factorsLabel(user) },
-    { key: 'devices', header: translate('admin.devicesOnline'), className: 'is-numeric', render: (user) => `${formatCount(user.devicesOnline)} / ${formatCount(user.devices)}` },
-    { key: 'seen', header: translate('admin.lastActive'), render: (user) => <time dateTime={user.lastSeenAt ?? undefined} title={formatDateTime(user.lastSeenAt)}>{formatRelative(user.lastSeenAt)}</time> },
-    { key: 'menu', header: <span className="sr-only">{translate('admin.actions')}</span>, className: 'is-menu', render: (user) => <RowMenu items={actions.menu(user)} label={translate('admin.userActions', { name: user.username })} /> },
+    { key: 'email', label: translate('admin.email'), sortable: true, defaultHidden: true, width: 200, render: (user) => user.email },
+    { key: 'role', label: translate('admin.role'), sortable: true, defaultHidden: true, width: 120, render: (user) => (user.role === 'admin' ? translate('admin.roleAdmin') : translate('admin.roleUser')) },
+    { key: 'status', label: translate('admin.status'), sortable: true, width: 120, render: (user) => <UserStatus user={user} /> },
+    { key: 'method', label: translate('admin.loginMethod'), sortable: true, defaultHidden: true, width: 150, render: (user) => user.loginMethods.map(loginMethodLabel).join(' · ') || '—' },
+    { key: 'key', label: translate('admin.accountKey'), sortable: true, width: 130, render: (user) => <AccountKeyMark user={user} /> },
+    { key: 'factors', label: translate('admin.twoFactor'), sortable: true, firstDir: 'desc', width: 140, render: (user) => factorsLabel(user) },
+    { key: 'devices', label: translate('admin.devicesOnline'), sortable: true, firstDir: 'desc', numeric: true, defaultHidden: true, width: 120, render: (user) => `${formatCount(user.devicesOnline)} / ${formatCount(user.devices)}` },
+    { key: 'created', label: translate('admin.registered'), sortable: true, firstDir: 'desc', width: 120, render: (user) => <time dateTime={user.createdAt} title={formatDateTime(user.createdAt)}>{formatDate(user.createdAt)}</time> },
+    {
+      key: 'lastSignIn',
+      label: translate('admin.lastSignIn'),
+      sortable: true,
+      firstDir: 'desc',
+      width: 170,
+      render: (user) => (user.lastSignInAt ? (
+        <span className="admin-two-line">
+          <span className="admin-strong">{time(user.lastSignInAt)}</span>
+          <span title={user.lastSignInBrowser ?? undefined}>{user.lastSignInBrowser ?? translate('admin.unknownBrowser')}</span>
+        </span>
+      ) : <span className="admin-muted">{translate('admin.never')}</span>),
+    },
+    { key: 'browser', label: translate('admin.lastSignInBrowser'), sortable: true, defaultHidden: true, width: 160, render: (user) => user.lastSignInBrowser ?? <span className="admin-muted">—</span> },
+    { key: 'lastSeen', label: translate('admin.lastActive'), sortable: true, firstDir: 'desc', width: 130, render: (user) => time(user.lastSeenAt) },
+    { key: 'menu', label: translate('admin.actions'), header: <span className="sr-only">{translate('admin.actions')}</span>, className: 'is-menu', hideable: false, fixed: true, width: 64, render: (user) => <RowMenu items={actions.menu(user)} label={translate('admin.userActions', { name: user.username })} /> },
   ];
   const counts = data?.counts;
+  const methods = data?.methods;
   return (
     <>
       <div className="admin-toolbar">
-        <FilterChips
-          label={translate('admin.filterUsers')}
-          onChange={(key) => setParams({ filter: key === 'all' ? null : key, id: null })}
-          options={USER_FILTERS.map((key) => ({
-            key,
-            label: filterLabel(key),
-            count: counts?.[key] ?? null,
-            tone: key === 'noAccountKey' && (counts?.noAccountKey ?? 0) > 0 ? 'warning' : undefined,
-          }))}
-          value={filter}
-        />
+        <FilterBar active={active} label={translate('admin.filterUsers')} onClear={() => setParams({ ...Object.fromEntries(FILTER_KEYS.map((key) => [key, null])), filter: null, id: null })}>
+          <SelectFilter label={translate('admin.role')} onChange={(value) => setFilter('role', value)} options={[{ value: 'user', label: translate('admin.roleUser') }, { value: 'admin', label: translate('admin.roleAdmin') }]} value={values.role} />
+          <SelectFilter
+            label={translate('admin.status')}
+            onChange={(value) => setFilter('status', value)}
+            options={[
+              { value: 'active', label: translate('admin.active') },
+              { value: 'disabled', label: translate('admin.disabled'), count: counts?.disabled },
+              { value: 'resetPending', label: translate('admin.resetPending') },
+            ]}
+            value={values.status}
+          />
+          <SelectFilter
+            label={translate('admin.accountKey')}
+            onChange={(value) => setFilter('key', value)}
+            options={[
+              { value: 'set', label: translate('admin.keySet'), count: methods?.accountKey },
+              { value: 'missing', label: translate('admin.keyMissing'), count: counts?.noAccountKey },
+            ]}
+            value={values.key}
+          />
+          <SelectFilter
+            label={translate('admin.twoFactor')}
+            onChange={(value) => setFilter('factor', value)}
+            options={[
+              { value: 'any', label: translate('admin.anyTwoFactor') },
+              { value: 'authenticator', label: translate('admin.authenticator'), count: methods?.authenticator },
+              { value: 'passkey', label: translate('admin.passkey'), count: methods?.passkey },
+              { value: 'none', label: translate('admin.none'), count: counts?.noTwoFactor },
+            ]}
+            value={values.factor}
+          />
+          <SelectFilter
+            label={translate('admin.loginMethod')}
+            onChange={(value) => setFilter('method', value)}
+            options={[
+              { value: 'password', label: translate('admin.methodPassword'), count: methods?.password },
+              { value: 'google', label: 'Google', count: methods?.google },
+              { value: 'github', label: 'GitHub', count: methods?.github },
+              { value: 'oauthOnly', label: translate('admin.methodOauthOnly'), count: methods?.oauthOnly },
+            ]}
+            value={values.method}
+          />
+          <TimeFilter label={translate('admin.registered')} onChange={(value) => setFilter('created', value)} value={values.created} />
+          <TimeFilter label={translate('admin.lastActive')} never older onChange={(value) => setFilter('seen', value)} value={values.seen} />
+        </FilterBar>
         <SearchField label={translate('admin.searchUsers')} onChange={setText} placeholder={translate('admin.searchUsers')} value={text} />
       </div>
-      {data && data.pendingRegistrations > 0 && filter === 'all' ? (
-        <button className="admin-callout" onClick={() => setParams({ sub: 'registrations', filter: null, id: null })} type="button">
+      {data && data.pendingRegistrations > 0 && !active ? (
+        <button className="admin-callout" onClick={() => props.go('users', { sub: 'registrations' })} type="button">
           <UserPlus aria-hidden className="h-5 w-5" />
           <b>{translate('admin.pendingCallout', { count: formatCount(data.pendingRegistrations) })}</b>
           <span className="admin-callout-action">{translate('admin.review')}</span>
@@ -166,10 +242,11 @@ function UserList(props: AdminPageProps) {
       {!data && !error ? <Skeleton lines={8} /> : null}
       {data ? (
         <Card className="admin-table-card">
-          <DataTable
+          <AdminTable
             busy={loading}
             columns={columns}
             empty={translate('admin.noUsersMatch')}
+            id="users"
             label={translate('admin.navUsers')}
             onOpen={open}
             phoneRow={(user) => (
@@ -187,6 +264,8 @@ function UserList(props: AdminPageProps) {
             rowKey={(user) => user.id}
             rows={data.items}
             selected={selectedId}
+            settings={settings}
+            total={data.total}
           />
           <Pagination onPage={setPage} page={data.page} pageSize={data.pageSize} total={data.total} />
         </Card>
@@ -469,8 +548,12 @@ function Registrations(props: AdminPageProps) {
   useI18n();
   const { refreshKey, onUnauthorized, onLoaded } = props;
   const [page, setPage] = useState(1);
+  const urlSort = useUrlSort(props);
+  const settings = useTableSettings('registrations', { urlSort });
+  const sortKey = `${settings.sort?.key ?? ''}:${settings.sort?.dir ?? ''}`;
+  useEffect(() => setPage(1), [sortKey]);
   const pending = useAdminResource(() => adminApi.registrations({ status: 'pending', pageSize: 100 }), `pending:${refreshKey}`, onUnauthorized);
-  const reviewed = useAdminResource(() => adminApi.registrations({ status: 'reviewed', page, pageSize: 15 }), `reviewed:${page}:${refreshKey}`, onUnauthorized);
+  const reviewed = useAdminResource(() => adminApi.registrations({ status: 'reviewed', page, pageSize: 15, sort: settings.sort?.key, dir: settings.sort?.dir }), `reviewed:${page}:${sortKey}:${refreshKey}`, onUnauthorized);
   const [busy, setBusy] = useState<string | null>(null);
   const [failure, setFailure] = useState<{ id: string; message: string } | null>(null);
   useEffect(() => {
@@ -538,15 +621,18 @@ function Registrations(props: AdminPageProps) {
       <Card title={translate('admin.reviewHistory')}>
         {reviewed.data ? (
           <>
-            <DataTable
+            <AdminTable
               columns={[
-                { key: 'user', header: translate('admin.user'), render: (row) => <span className="admin-two-line"><b>{row.username}</b><span>{row.email}</span></span> },
-                { key: 'result', header: translate('admin.result'), render: (row) => row.status === 'approved' ? <Badge tone="success">{translate('admin.approved')}</Badge> : <Badge tone="danger">{translate('admin.rejected')}</Badge> },
-                { key: 'requested', header: translate('admin.requested'), render: (row) => formatDateTime(row.createdAt) },
-                { key: 'reviewed', header: translate('admin.reviewed'), render: (row) => `${formatDateTime(row.reviewedAt)} · ${row.reviewedBy ?? '—'}` },
+                { key: 'user', label: translate('admin.user'), sortable: true, hideable: false, width: 240, render: (row) => <span className="admin-two-line"><b>{row.username}</b><span>{row.email}</span></span> },
+                { key: 'result', label: translate('admin.result'), sortable: true, width: 130, render: (row) => row.status === 'approved' ? <Badge tone="success">{translate('admin.approved')}</Badge> : <Badge tone="danger">{translate('admin.rejected')}</Badge> },
+                { key: 'method', label: translate('admin.loginMethod'), width: 130, defaultHidden: true, render: (row) => loginMethodLabel(row.provider) },
+                { key: 'requested', label: translate('admin.requested'), sortable: true, firstDir: 'desc', width: 180, render: (row) => formatDateTime(row.createdAt) },
+                { key: 'reviewed', label: translate('admin.reviewed'), sortable: true, firstDir: 'desc', width: 240, render: (row) => `${formatDateTime(row.reviewedAt)} · ${row.reviewedBy ?? '—'}` },
               ]}
               empty={translate('admin.noReviews')}
+              id="registrations"
               label={translate('admin.reviewHistory')}
+              settings={settings}
               phoneRow={(row) => (
                 <>
                   <span className="admin-two-line">

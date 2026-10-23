@@ -8,6 +8,8 @@ export interface Paged<T> {
   total: number;
   page: number;
   pageSize: number;
+  /** Names of the people a filter names (`owner`, `recipient`, `user`). */
+  labels?: Record<string, string | null> | null;
 }
 
 /** A metric over time: `points` are [epoch ms, value or null for a gap]. */
@@ -119,6 +121,7 @@ export interface AdminTunnelSummary {
   requests: number;
   errorRate: number | null;
   p95Ms: number | null;
+  latencyBoundsMs?: number[];
   reconnectSeries: AdminSeries;
   errorSeries: AdminSeries;
   latencySeries: AdminSeries;
@@ -141,6 +144,9 @@ export interface AdminUser {
   passkeys: number;
   devices: number;
   devicesOnline: number;
+  /** The latest sign-in and its browser label ("Chrome · macOS"); newer relays. */
+  lastSignInAt?: string | null;
+  lastSignInBrowser?: string | null;
 }
 
 export type AdminUserFilter = 'all' | 'active7d' | 'noAccountKey' | 'noTwoFactor' | 'disabled' | 'neverSeen';
@@ -203,8 +209,10 @@ export interface AdminDevice {
 export type AdminDeviceFilter = 'all' | 'online' | 'offline' | 'unstable' | 'unprotected' | 'outdated';
 
 export interface AdminDevices extends Paged<AdminDevice> {
-  counts: Partial<Record<AdminDeviceFilter | 'protected', number>> & { all: number };
+  counts: Partial<Record<AdminDeviceFilter | 'protected' | 'unknownVersion', number>> & { all: number };
   relayVersion: string;
+  /** Each reported version with its device count, newest first. */
+  versions?: Array<{ version: string; devices: number }>;
 }
 
 export interface AdminConnectionSpan {
@@ -397,4 +405,53 @@ export interface AdminRetention {
   securityDays: number;
   options: { metricsDays: number[]; securityDays: number[] };
   fixed: { connectionDays: number; adminActionDays: number; securityMaxEvents: number };
+}
+
+export type AdminErrorKind = 'timeout' | 'busy' | 'offline' | 'other';
+
+/** GET /relay/admin/performance: forwarding over a window. */
+export interface AdminPerformance {
+  range: AdminRange | 'custom';
+  start: string;
+  end: string;
+  resolutionSeconds: number;
+  historyStart: string | null;
+  latency: { boundsMs: number[]; openAboveMs: number; method: string };
+  totals: {
+    requests: number;
+    errors: Record<AdminErrorKind, number>;
+    errorRate: number | null;
+    requestBytes: number;
+    responseBytes: number;
+    reconnects: number;
+    wsFrames: number;
+    wsBytes: number;
+    p50Ms: number | null;
+    p95Ms: number | null;
+    p99Ms: number | null;
+  };
+  series: {
+    requests: AdminSeries;
+    errors: Record<AdminErrorKind, AdminSeries>;
+    errorRate: AdminSeries;
+    p50: AdminSeries;
+    p95: AdminSeries;
+    p99: AdminSeries;
+    reconnects: AdminSeries;
+    onlineDevices: AdminSeries;
+    requestBytes: AdminSeries;
+    responseBytes: AdminSeries;
+  };
+  latencyHistogram: Array<{ fromMs: number; toMs: number | null; count: number }>;
+  connections: {
+    historyStart: string | null;
+    durations: Array<{ key: 'lt1m' | 'lt10m' | 'lt1h' | 'lt6h' | 'lt24h' | 'gte24h'; count: number }>;
+    open: number;
+    connects: number;
+    topDevices: Array<{ deviceId: string; name: string; ownerUsername: string | null; connects: number; shortConnections: number }>;
+  };
+  deviceTraffic: {
+    resolutionSeconds: number;
+    devices: Array<{ deviceId: string; name: string; ownerUsername: string; requests: number; errors: number; requestBytes: number; responseBytes: number }>;
+  };
 }

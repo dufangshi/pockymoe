@@ -245,6 +245,7 @@ export function LineChart({
   start,
   end,
   minMax = 4,
+  integer = true,
 }: {
   points?: LinePoint[];
   series?: LineSeries[];
@@ -256,6 +257,8 @@ export function LineChart({
   start?: number;
   end?: number;
   minMax?: number;
+  /** Whole-number ticks (counts); false for ratios and other fractions. */
+  integer?: boolean;
 }) {
   const [ref, width] = useWidth<HTMLDivElement>();
   const lines: LineSeries[] = series ?? [{ key: 'value', label, slot, points: points ?? [] }];
@@ -263,7 +266,7 @@ export function LineChart({
   const axis = lines[0]?.points ?? [];
   const known = lines.flatMap((line) => line.points.filter((point) => point.value !== null) as Array<{ at: number; value: number }>);
   const max = Math.max(minMax, ...known.map((point) => point.value));
-  const ticks = niceTicks(max);
+  const ticks = niceTicks(max, 4, integer);
   const top = ticks[ticks.length - 1] ?? max;
   const from = start ?? axis[0]?.at ?? 0;
   const to = end ?? axis[axis.length - 1]?.at ?? 1;

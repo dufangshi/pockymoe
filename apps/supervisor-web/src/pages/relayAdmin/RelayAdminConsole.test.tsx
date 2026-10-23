@@ -26,6 +26,7 @@ import securityRecorded from './__fixtures__/security-recorded.json';
 import systemRecorded from './__fixtures__/system-recorded.json';
 import actions from './__fixtures__/actions.json';
 import retention from './__fixtures__/retention.json';
+import performance from './__fixtures__/performance.json';
 
 // Responses of a relay that records statistics (or of one that does not).
 let recorded = false;
@@ -57,6 +58,7 @@ function respond(path: string, method: string) {
     sessions,
     system: recorded ? systemRecorded : system,
     search,
+    performance,
     ...(recorded ? { actions, 'settings/retention': retention } : {}),
     'settings/registration': { registrationEnabled: true, settings: { enabled: true, approvalRequired: true, registrationPasswordConfigured: false, googleAuthEnabled: false, githubAuthEnabled: false, emailVerificationEnabled: false, googleAuthAvailable: false, githubAuthAvailable: false, emailVerificationAvailable: false } },
   };
@@ -129,10 +131,21 @@ describe('relay admin console', () => {
     renderConsole('/relay-admin?tab=users');
     const table = await screen.findByRole('table');
     expect(within(table).getAllByRole('row')).toHaveLength(users.items.length + 1);
-    expect(screen.getByRole('button', { name: /No account key\s*3/ })).toHaveAttribute('aria-pressed', 'false');
     expect(screen.getByText(`1–${users.items.length} of ${users.total}`)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: /No account key/ }));
-    await waitFor(() => expect(calls.some((call) => call.path.startsWith('relay/admin/users?filter=noAccountKey'))).toBe(true));
+    // The last sign-in and its browser come from the relay's own record.
+    const linyue = users.items.find((user) => user.username === 'linyue')!;
+    expect(within(table).getAllByText(linyue.lastSignInBrowser!).length).toBeGreaterThan(0);
+    expect(within(table).getByRole('columnheader', { name: /Registered/ })).toBeInTheDocument();
+    // A column filter: the account key menu lists both states with counts.
+    fireEvent.click(within(screen.getByRole('group', { name: 'Filter users' })).getByRole('button', { name: /^Account key/ }));
+    const keyMenu = await screen.findByRole('menu', { name: 'Account key' });
+    fireEvent.click(within(keyMenu).getByRole('menuitemradio', { name: new RegExp(`Not set\\s*${users.counts.noAccountKey}`) }));
+    await waitFor(() => expect(calls.some((call) => call.path.startsWith('relay/admin/users?') && call.path.includes('key=missing'))).toBe(true));
+    expect(screen.getByRole('button', { name: 'Clear Account key' })).toBeInTheDocument();
+    // A legacy link (`filter=noAccountKey`) lands on the same filter.
+    cleanupAndRender('/relay-admin?tab=users&filter=noAccountKey');
+    await screen.findByRole('table');
+    await waitFor(() => expect(calls.filter((call) => call.path.includes('key=missing')).length).toBeGreaterThan(1));
     fireEvent.click(screen.getAllByRole('button', { name: 'Open linyue' })[0]!);
     const dialog = await screen.findByRole('dialog', { name: 'linyue' });
     expect(within(dialog).getByText('Sessions')).toBeInTheDocument();
@@ -141,6 +154,81 @@ describe('relay admin console', () => {
       fireEvent.keyDown(window, { key: 'Escape' });
     });
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'linyue' })).toBeNull());
+  });
+
+  it('sorts by a header (asc, desc, none) on the relay and keeps the sort in the URL and per table', async () => {
+    localStorage.clear();
+    renderConsole('/relay-admin?tab=users');
+    const table = await screen.findByRole('table');
+    const header = within(table).getByRole('columnheader', { name: /Last sign-in/ });
+    expect(header).toHaveAttribute('aria-sort', 'none');
+    fireEvent.click(within(header).getByRole('button'));
+    await waitFor(() => expect(calls.some((call) => call.path.includes('sort=lastSignIn') && call.path.includes('dir=desc'))).toBe(true));
+    expect(within(table).getByRole('columnheader', { name: /Last sign-in/ })).toHaveAttribute('aria-sort', 'descending');
+    fireEvent.click(within(within(table).getByRole('columnheader', { name: /Last sign-in/ })).getByRole('button'));
+    await waitFor(() => expect(within(table).getByRole('columnheader', { name: /Last sign-in/ })).toHaveAttribute('aria-sort', 'ascending'));
+    fireEvent.click(within(within(table).getByRole('columnheader', { name: /Last sign-in/ })).getByRole('button'));
+    await waitFor(() => expect(within(table).getByRole('columnheader', { name: /Last sign-in/ })).toHaveAttribute('aria-sort', 'none'));
+    expect(JSON.parse(localStorage.getItem('pockymoe-admin-table:users') ?? '{}').sort).toBeNull();
+  });
+
+  it('shows and hides columns from the column chooser and remembers it', async () => {
+    localStorage.clear();
+    renderConsole('/relay-admin?tab=devices');
+    const table = await screen.findByRole('table');
+    expect(within(table).queryByRole('columnheader', { name: /Owner/ })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Columns' }));
+    const menu = await screen.findByRole('menu', { name: 'Columns of Devices' });
+    fireEvent.click(within(menu).getByRole('menuitemcheckbox', { name: 'Owner' }));
+    fireEvent.click(within(menu).getByRole('menuitemcheckbox', { name: 'Protection' }));
+    expect(within(table).getByRole('columnheader', { name: /Owner/ })).toBeInTheDocument();
+    expect(within(table).queryByRole('columnheader', { name: /Protection/ })).toBeNull();
+    expect(JSON.parse(localStorage.getItem('pockymoe-admin-table:devices') ?? '{}')).toMatchObject({ shown: ['owner'], hidden: ['protection'] });
+    // A column can be widened from the keyboard; the width is kept.
+    const handle = within(table).getByRole('separator', { name: 'Resize Connection' });
+    fireEvent.keyDown(handle, { key: 'ArrowRight' });
+    expect(JSON.parse(localStorage.getItem('pockymoe-admin-table:devices') ?? '{}').widths.state).toBeGreaterThan(0);
+    // The version filter offers what devices reported.
+    fireEvent.click(within(screen.getByRole('group', { name: 'Filter devices' })).getByRole('button', { name: /^Version/ }));
+    const versions = await screen.findByRole('menu', { name: 'Version' });
+    fireEvent.click(within(versions).getByRole('menuitemradio', { name: new RegExp(`^${devices.versions![0]!.version.replace(/\./g, '\\.')}`) }));
+    await waitFor(() => expect(calls.some((call) => call.path.includes(`version=v%3A${devices.versions![0]!.version}`))).toBe(true));
+  });
+
+  it('folds the sidebar into an icon rail and remembers it', async () => {
+    localStorage.clear();
+    const { container } = renderConsole('/relay-admin?tab=users');
+    const toggle = await screen.findByRole('button', { name: 'Collapse sidebar' });
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    fireEvent.click(toggle);
+    expect(container.querySelector('.admin-console')).toHaveClass('is-collapsed');
+    expect(localStorage.getItem('pockymoe-relay-admin-sidebar')).toBe('collapsed');
+    // The names stay the buttons' accessible names.
+    const nav = screen.getByRole('navigation', { name: 'Admin sections' });
+    expect(within(nav).getByRole('button', { name: /^Users/ })).toHaveAttribute('data-tip', 'Users');
+    cleanupAndRender('/relay-admin?tab=users');
+    expect(await screen.findByRole('button', { name: 'Expand sidebar' })).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('shows forwarding in depth: errors by kind, interpolated percentiles and the devices behind them', async () => {
+    renderConsole('/relay-admin?tab=performance');
+    expect(await screen.findByRole('heading', { name: 'Errors by kind' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Latency percentiles' })).toBeInTheDocument();
+    expect(screen.getByText(/a percentile is interpolated inside the bucket/, { ignore: 'script' })).toBeInTheDocument();
+    expect(screen.getByText(/How latency is measured/)).toBeInTheDocument();
+    const traffic = screen.getAllByRole('region', { name: 'Traffic per device' })[0]!;
+    const busiest = performance.deviceTraffic.devices[0]!;
+    fireEvent.click(within(traffic).getAllByRole('button', { name: `Open ${busiest.name}` })[0]!);
+    expect(await screen.findByRole('dialog')).toBeInTheDocument();
+    await waitFor(() => expect(calls.some((call) => call.path === `relay/admin/devices/${busiest.deviceId}`)).toBe(true));
+    // Every chart has a table view.
+    const errors = () => screen.getAllByRole('region', { name: 'Errors by kind' })[0]!;
+    fireEvent.click(within(errors()).getByRole('button', { name: 'Show as table' }));
+    expect(within(errors()).getByRole('columnheader', { name: 'Timeout' })).toBeInTheDocument();
+    // A custom window asks the relay for it.
+    cleanupAndRender('/relay-admin?tab=performance&range=custom&from=2026-10-01&to=2026-10-03');
+    await screen.findByRole('heading', { name: 'Errors by kind' });
+    expect(calls.some((call) => call.path.startsWith('relay/admin/performance?from='))).toBe(true);
   });
 
   it('asks before disabling a user and then calls the relay', async () => {

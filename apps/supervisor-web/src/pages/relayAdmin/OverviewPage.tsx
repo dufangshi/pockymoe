@@ -76,7 +76,7 @@ export function OverviewPage(props: AdminPageProps) {
           />
         </ChartCard>
         <VersionsCard data={data} go={go} />
-        <TunnelsCard data={data} />
+        <TunnelsCard data={data} go={go} />
       </div>
       <div className="admin-grid is-halves">
         <Card
@@ -139,7 +139,7 @@ function Attention({ data, go }: { data: AdminOverview; go: AdminPageProps['go']
       text: translate('admin.attentionUnstable'),
       detail: null,
       action: translate('admin.viewDevices'),
-      onGo: () => go('devices', { filter: 'unstable' }),
+      onGo: () => go('devices', { params: { state: 'unstable' } }),
     },
     data.attention.usersWithoutAccountKey > 0 && {
       key: 'keys',
@@ -148,7 +148,7 @@ function Attention({ data, go }: { data: AdminOverview; go: AdminPageProps['go']
       text: translate('admin.attentionNoKey'),
       detail: null,
       action: translate('admin.viewList'),
-      onGo: () => go('users', { filter: 'noAccountKey' }),
+      onGo: () => go('users', { params: { key: 'missing' } }),
     },
     data.attention.legacyPublicLinks > 0 && {
       key: 'links',
@@ -283,7 +283,7 @@ function VersionsCard({ data, go }: { data: AdminOverview; go: AdminPageProps['g
       title={translate('admin.deviceVersions')}
       footer={
         olderDevices ? (
-          <button className="admin-link-button" onClick={() => go('devices', { filter: 'outdated' })} type="button">
+          <button className="admin-link-button" onClick={() => go('devices', { params: { version: 'outdated' } })} type="button">
             {translate('admin.viewOlderDevices', { count: olderDevices })}
             <ArrowRight aria-hidden className="h-4 w-4" />
           </button>
@@ -304,19 +304,34 @@ function VersionsCard({ data, go }: { data: AdminOverview; go: AdminPageProps['g
   );
 }
 
-function TunnelsCard({ data }: { data: AdminOverview }) {
+/** A latency in ms; at the histogram's open bucket it is a floor ("≥ 30,000 ms"). */
+export function formatLatency(value: number | null | undefined, openAboveMs?: number) {
+  if (value === null || value === undefined || !Number.isFinite(value)) return '—';
+  const rounded = value >= 100 ? Math.round(value / 5) * 5 : Math.round(value);
+  const text = translate('admin.milliseconds', { value: formatCount(rounded) });
+  return openAboveMs !== undefined && value >= openAboveMs ? `≥ ${text}` : text;
+}
+
+function TunnelsCard({ data, go }: { data: AdminOverview; go: AdminPageProps['go'] }) {
   if (data.tunnels === undefined) return null;
   const tunnels = data.tunnels;
+  const details = (
+    <button className="admin-link-button" onClick={() => go('performance')} type="button">
+      {translate('admin.details')}
+      <ArrowRight aria-hidden className="h-4 w-4" />
+    </button>
+  );
   if (!tunnels) {
     return (
-      <ChartCard title={translate('admin.tunnels')}>
+      <ChartCard aside={details} title={translate('admin.tunnels')}>
         <p className="admin-empty">{translate('admin.notRecordedYet')}</p>
       </ChartCard>
     );
   }
   const values = (series: AdminSeries) => series.points.map(([, value]) => value);
+  const open = tunnels.latencyBoundsMs?.[tunnels.latencyBoundsMs.length - 1];
   return (
-    <ChartCard subtitle={translate('admin.tunnelsSubtitle', { range: rangeLabel(data.range) })} title={translate('admin.tunnels')}>
+    <ChartCard aside={details} subtitle={translate('admin.tunnelsSubtitle', { range: rangeLabel(data.range) })} title={translate('admin.tunnels')}>
       <ul className="admin-tunnel-stats">
         <li>
           <span>{translate('admin.reconnects')}</span>
@@ -332,8 +347,8 @@ function TunnelsCard({ data }: { data: AdminOverview }) {
         </li>
         <li>
           <span>{translate('admin.forwardP95')}</span>
-          <b>{tunnels.p95Ms === null ? '—' : `${formatCount(Math.round(tunnels.p95Ms))} ms`}</b>
-          <small>{translate('admin.forwardLatencyNote')}</small>
+          <b>{formatLatency(tunnels.p95Ms, open)}</b>
+          <small>{tunnels.latencyBoundsMs ? translate('admin.forwardLatencyEstimated') : translate('admin.forwardLatencyNote')}</small>
           <Sparkline label={translate('admin.forwardP95')} slot={3} values={values(tunnels.latencySeries)} />
         </li>
       </ul>

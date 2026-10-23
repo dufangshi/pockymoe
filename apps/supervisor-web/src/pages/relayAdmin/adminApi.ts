@@ -20,10 +20,13 @@ import type {
   AdminUserDetail,
   AdminUsers,
   AdminAction,
+  AdminPerformance,
   Paged,
 } from './types';
 
 type Params = Record<string, string | number | null | undefined>;
+/** A list request: paging, search, sort and column filters. */
+type ListParams = Params;
 
 function query(params: Params) {
   const search = new URLSearchParams();
@@ -43,33 +46,35 @@ const id = encodeURIComponent;
 export const adminApi = {
   overview: (range: AdminRange) => admin<AdminOverview>(`overview${query({ range })}`),
   search: (q: string) => admin<AdminSearchResult>(`search${query({ q })}`),
-  users: (params: { filter?: string; q?: string; page?: number; pageSize?: number; sort?: string }) =>
+  users: (params: ListParams) =>
     admin<AdminUsers>(`users${query(params)}`),
   user: (userId: string) => admin<AdminUserDetail>(`users/${id(userId)}`),
   endUserSessions: (userId: string) =>
     admin<{ id: string; ended: number }>(`users/${id(userId)}/sessions`, { method: 'DELETE' }),
-  registrations: (params: { status?: 'pending' | 'reviewed'; page?: number; pageSize?: number }) =>
+  registrations: (params: { status?: 'pending' | 'reviewed'; page?: number; pageSize?: number; sort?: string | undefined; dir?: string | undefined }) =>
     admin<AdminRegistrations>(`registrations${query(params)}`),
-  devices: (params: { filter?: string; q?: string; page?: number; pageSize?: number; sort?: string }) =>
+  devices: (params: ListParams) =>
     admin<AdminDevices>(`devices${query(params)}`),
   device: (deviceId: string) => admin<AdminDeviceDetail>(`devices/${id(deviceId)}`),
   disconnectDevice: (deviceId: string) =>
     admin<{ id: string; wasConnected: boolean }>(`devices/${id(deviceId)}/disconnect`, { method: 'POST' }),
-  shares: (params: { filter?: string; q?: string; page?: number; pageSize?: number }) =>
+  shares: (params: ListParams) =>
     admin<AdminShares>(`shares${query(params)}`),
   revokeShare: (kind: 'share' | 'grant', shareId: string) =>
     admin<{ id: string; revokedAt: string }>(`shares/${id(kind)}/${id(shareId)}`, { method: 'DELETE' }),
-  publicLinks: (params: { filter?: string; page?: number; pageSize?: number }) =>
+  publicLinks: (params: ListParams) =>
     admin<AdminPublicLinks>(`public-links${query(params)}`),
   previews: () => admin<AdminPreviews>('previews'),
   security: (range: AdminRange) => admin<AdminSecuritySummary>(`security${query({ range })}`),
-  securityEvents: (params: { type?: string; user?: string; range?: AdminRange; page?: number; pageSize?: number }) =>
+  securityEvents: (params: ListParams) =>
     admin<Paged<AdminSecurityEvent>>(`security/events${query(params)}`),
-  sessions: (params: { q?: string; page?: number; pageSize?: number }) =>
+  sessions: (params: ListParams) =>
     admin<Paged<AdminSession>>(`sessions${query(params)}`),
   endSession: (sessionId: string) => admin<{ id: string }>(`sessions/${id(sessionId)}`, { method: 'DELETE' }),
-  actions: (params: { page?: number; pageSize?: number; type?: string }) =>
+  actions: (params: ListParams) =>
     admin<Paged<AdminAction>>(`actions${query(params)}`),
+  performance: (params: { range?: AdminRange; from?: number; to?: number }) =>
+    admin<AdminPerformance>(`performance${query(params)}`),
   system: () => admin<AdminSystem>('system'),
   registrationSettings: () =>
     admin<{ registrationEnabled: boolean; settings: RelayRegistrationSettingsDto }>('settings/registration'),

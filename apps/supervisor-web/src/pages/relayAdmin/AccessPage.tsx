@@ -3,17 +3,18 @@
 import { confirmAsync, ErrorMark } from '@pockymoe/thread-ui';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { ArrowRight, Ban, EyeOff, Folder, Globe, Link2, MessageSquare, Monitor, Share2, Clock } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { adminApi } from './adminApi';
 import { BarList, ChartCard, ColumnChart, ProportionBar, type SeriesSlot } from './charts';
 import { formatBytes, formatCount, formatDate, formatDateTime, formatDay, formatRelative, parseTime } from './format';
 import { accessLabel, filesLabel, scopeLabel, visitLabel } from './labels';
 import type { AdminPageProps } from './RelayAdminConsole';
-import type { AdminPublicLink, AdminShare, AdminShareFilter } from './types';
+import type { AdminPreviews, AdminPublicLink, AdminShare, AdminShareFilter } from './types';
+import { FilterBar, SelectFilter, TimeFilter, UserFilter, windowParams } from './filters';
+import { AdminTable, sortRows, useFilterValues, useTableSettings, useUrlSort, type TableColumn } from './table';
 import {
   Badge,
   Card,
-  DataTable,
   errorText,
   Figure,
   FigureBand,
@@ -27,11 +28,11 @@ import {
   SubTabs,
   useAdminResource,
   useDebounced,
-  type Column,
 } from './ui';
 
 const PAGE_SIZE = 25;
-const SHARE_FILTERS: AdminShareFilter[] = ['all', 'device', 'workspace', 'thread', 'expiring', 'unused'];
+const FILTER_KEYS = ['scope', 'owner', 'recipient', 'access', 'expiry', 'seen', 'created'] as const;
+type FilterKey = (typeof FILTER_KEYS)[number];
 type AccessTab = 'shares' | 'links' | 'previews';
 
 export function AccessPage(props: AdminPageProps) {
@@ -42,7 +43,7 @@ export function AccessPage(props: AdminPageProps) {
       <SubTabs
         idPrefix="admin-access"
         label={translate('admin.navShares')}
-        onChange={(key) => props.setParams({ sub: key === 'shares' ? null : key, filter: null, id: null })}
+        onChange={(key) => props.go('shares', { sub: key === 'shares' ? null : key })}
         tabs={[
           { key: 'shares', label: translate('admin.shares'), icon: <Share2 aria-hidden className="h-4 w-4" /> },
           { key: 'links', label: translate('admin.publicLinks'), icon: <Link2 aria-hidden className="h-4 w-4" /> },
@@ -57,14 +58,16 @@ export function AccessPage(props: AdminPageProps) {
   );
 }
 
-function shareFilterLabel(filter: AdminShareFilter) {
-  switch (filter) {
-    case 'all': return translate('admin.filterAll');
-    case 'device': return translate('admin.scopeDevice');
-    case 'workspace': return translate('admin.scopeWorkspace');
-    case 'thread': return translate('admin.scopeThread');
-    case 'expiring': return translate('admin.expiringSoon');
-    case 'unused': return translate('admin.neverUsed');
+/** Links from before the column filters (`filter=expiring`) still work. */
+function legacyFilter(filter: string | null): Partial<Record<FilterKey, string>> {
+  switch (filter as AdminShareFilter | null) {
+    case 'device':
+    case 'workspace':
+    case 'thread':
+      return { scope: filter as string };
+    case 'expiring': return { expiry: 'expiring' };
+    case 'unused': return { seen: 'never' };
+    default: return {};
   }
 }
 
@@ -91,19 +94,36 @@ function kindLabel(kind: string) {
 
 function Shares(props: AdminPageProps) {
   const { refreshKey, onLoaded, onUnauthorized, setParams } = props;
-  const filter = (SHARE_FILTERS.includes(props.filter as AdminShareFilter) ? props.filter : 'all') as AdminShareFilter;
+  const values = useFilterValues(props, FILTER_KEYS, legacyFilter);
+  const urlSort = useUrlSort(props);
+  const settings = useTableSettings('shares', { urlSort });
   const [text, setText] = useState('');
   const q = useDebounced(text.trim());
   const [page, setPage] = useState(1);
-  useEffect(() => setPage(1), [filter, q]);
+  const query = useMemo(() => ({
+    q,
+    scope: values.scope,
+    owner: values.owner,
+    recipient: values.recipient,
+    access: values.access,
+    expiry: values.expiry,
+    ...windowParams(values.seen, 'seen'),
+    ...windowParams(values.created, 'created'),
+    sort: settings.sort?.key,
+    dir: settings.sort?.dir,
+  }), [q, values, settings.sort?.key, settings.sort?.dir]);
+  const queryKey = JSON.stringify(query);
+  useEffect(() => setPage(1), [queryKey]);
   const { data, error, loading, reload } = useAdminResource(
-    () => adminApi.shares({ filter, q, page, pageSize: PAGE_SIZE }),
-    `${filter}:${q}:${page}:${refreshKey}`,
+    () => adminApi.shares({ ...query, page, pageSize: PAGE_SIZE }),
+    `${queryKey}:${page}:${refreshKey}`,
     onUnauthorized,
   );
   useEffect(() => {
     if (data) onLoaded();
   }, [data, onLoaded]);
+  const setFilter = (key: FilterKey, value: string | null) => setParams({ [key]: value, filter: null });
+  const active = FILTER_KEYS.filter((key) => values[key]).length;
   const [failure, setFailure] = useState<{ id: string; message: string } | null>(null);
   const revoke = async (share: AdminShare) => {
     const confirmed = await confirmAsync({
@@ -122,23 +142,31 @@ function Shares(props: AdminPageProps) {
     }
   };
   const now = Date.now();
-  const columns: Array<Column<AdminShare>> = [
-    { key: 'scope', header: translate('admin.scope'), render: (share) => <span className="admin-scope"><ScopeIcon scope={share.scope} />{scopeLabel(share.scope)}</span> },
+  const person = (id: string, name: string) => <button className="admin-text-link" onClick={() => props.go('users', { id })} type="button">{name}</button>;
+  const columns: Array<TableColumn<AdminShare>> = [
+    { key: 'scope', label: translate('admin.scope'), sortable: true, width: 150, render: (share) => <span className="admin-scope"><ScopeIcon scope={share.scope} />{scopeLabel(share.scope)}</span> },
     {
       key: 'people',
-      header: translate('admin.ownerToRecipient'),
+      label: translate('admin.ownerToRecipient'),
+      hideable: false,
+      width: 220,
       render: (share) => (
         <span className="admin-route">
-          <button className="admin-text-link" onClick={() => props.go('users', { id: share.ownerUserId })} type="button">{share.ownerUsername}</button>
+          {person(share.ownerUserId, share.ownerUsername)}
           <ArrowRight aria-label={translate('admin.sharedWith')} className="h-3.5 w-3.5" />
-          <button className="admin-text-link" onClick={() => props.go('users', { id: share.targetUserId })} type="button">{share.targetUsername}</button>
+          {person(share.targetUserId, share.targetUsername)}
         </span>
       ),
     },
-    { key: 'device', header: translate('admin.deviceAndPlace'), render: (share) => <span className="admin-truncate">{share.workspaceLabel ? `${share.deviceName} · ${share.workspaceLabel}` : share.deviceName}</span> },
+    { key: 'owner', label: translate('admin.owner'), sortable: true, defaultHidden: true, width: 140, render: (share) => person(share.ownerUserId, share.ownerUsername) },
+    { key: 'recipient', label: translate('admin.recipient'), sortable: true, defaultHidden: true, width: 140, render: (share) => person(share.targetUserId, share.targetUsername) },
+    { key: 'device', label: translate('admin.deviceAndPlace'), sortable: true, width: 200, render: (share) => <span className="admin-truncate" title={share.workspaceLabel ? `${share.deviceName} · ${share.workspaceLabel}` : share.deviceName}>{share.workspaceLabel ? `${share.deviceName} · ${share.workspaceLabel}` : share.deviceName}</span> },
     {
       key: 'access',
-      header: translate('admin.permissions'),
+      label: translate('admin.permissions'),
+      sortable: true,
+      firstDir: 'desc',
+      width: 220,
       render: (share) => (
         <span className="admin-pills">
           <span className="admin-pill">{accessLabel(share.threadAccess)}</span>
@@ -147,12 +175,17 @@ function Shares(props: AdminPageProps) {
         </span>
       ),
     },
-    { key: 'used', header: translate('admin.lastUsed'), render: (share) => (share.lastAccessedAt ? `${formatRelative(share.lastAccessedAt)} · ${visitLabel(share.lastAccessKind)}` : <span className="admin-muted">{translate('admin.neverUsed')}</span>) },
-    { key: 'expiry', header: translate('admin.expires'), render: (share) => <Expiry now={now} share={share} /> },
+    { key: 'lastUsed', label: translate('admin.lastUsed'), sortable: true, firstDir: 'desc', width: 180, render: (share) => (share.lastAccessedAt ? <span title={formatDateTime(share.lastAccessedAt)}>{`${formatRelative(share.lastAccessedAt)} · ${visitLabel(share.lastAccessKind)}`}</span> : <span className="admin-muted">{translate('admin.neverUsed')}</span>) },
+    { key: 'expires', label: translate('admin.expires'), sortable: true, width: 170, render: (share) => <Expiry now={now} share={share} /> },
+    { key: 'created', label: translate('admin.created'), sortable: true, firstDir: 'desc', defaultHidden: true, width: 130, render: (share) => <time dateTime={share.createdAt} title={formatDateTime(share.createdAt)}>{formatDate(share.createdAt)}</time> },
     {
       key: 'menu',
+      label: translate('admin.actions'),
       header: <span className="sr-only">{translate('admin.actions')}</span>,
       className: 'is-menu',
+      hideable: false,
+      fixed: true,
+      width: 64,
       render: (share) => (
         <span className="admin-inline">
           <RowMenu
@@ -215,28 +248,52 @@ function Shares(props: AdminPageProps) {
         </div>
       ) : null}
       <div className="admin-toolbar">
-        <FilterChips
-          label={translate('admin.filterShares')}
-          onChange={(key) => setParams({ filter: key === 'all' ? null : key })}
-          options={SHARE_FILTERS.map((key) => ({
-            key,
-            label: shareFilterLabel(key),
-            count: data?.counts[key] ?? null,
-            tone: key === 'expiring' && (data?.counts.expiring ?? 0) > 0 ? 'warning' : undefined,
-            icon: key === 'expiring' ? <Clock aria-hidden className="h-3.5 w-3.5" /> : undefined,
-          }))}
-          value={filter}
-        />
+        <FilterBar active={active} label={translate('admin.filterShares')} onClear={() => setParams({ ...Object.fromEntries(FILTER_KEYS.map((key) => [key, null])), filter: null })}>
+          <SelectFilter
+            label={translate('admin.scope')}
+            onChange={(value) => setFilter('scope', value)}
+            options={(['device', 'workspace', 'thread'] as const).map((scope) => ({ value: scope, label: scopeLabel(scope), count: data?.counts[scope] ?? null, icon: <ScopeIcon scope={scope} /> }))}
+            value={values.scope}
+          />
+          <UserFilter label={translate('admin.owner')} onChange={(value) => setFilter('owner', value)} value={values.owner} valueLabel={data?.labels?.owner} />
+          <UserFilter label={translate('admin.recipient')} onChange={(value) => setFilter('recipient', value)} value={values.recipient} valueLabel={data?.labels?.recipient} />
+          <SelectFilter
+            label={translate('admin.permissions')}
+            onChange={(value) => setFilter('access', value)}
+            options={[
+              { value: 'control', label: translate('admin.accessControl'), count: data?.summary.permissions.control },
+              { value: 'read', label: translate('admin.accessRead'), count: data?.summary.permissions.read },
+              { value: 'filesWrite', label: translate('admin.filesWrite'), count: data?.summary.permissions.filesWrite },
+              { value: 'filesRead', label: translate('admin.filesRead') },
+              { value: 'createThreads', label: translate('admin.canCreateThreads'), count: data?.summary.permissions.canCreateThreads },
+            ]}
+            value={values.access}
+          />
+          <SelectFilter
+            label={translate('admin.expires')}
+            onChange={(value) => setFilter('expiry', value)}
+            options={[
+              { value: 'expiring', label: translate('admin.expiringSoon'), count: data?.counts.expiring, icon: <Clock aria-hidden className="h-3.5 w-3.5" /> },
+              { value: 'set', label: translate('admin.hasExpiry') },
+              { value: 'none', label: translate('admin.noExpiry') },
+            ]}
+            value={values.expiry}
+          />
+          <TimeFilter label={translate('admin.lastUsed')} never older onChange={(value) => setFilter('seen', value)} value={values.seen} />
+          <TimeFilter label={translate('admin.created')} onChange={(value) => setFilter('created', value)} value={values.created} />
+        </FilterBar>
         <SearchField label={translate('admin.searchShares')} onChange={setText} placeholder={translate('admin.searchShares')} value={text} />
       </div>
       {error && !data ? <LoadFailure message={error} onRetry={reload} /> : null}
       {!data && !error ? <Skeleton lines={8} /> : null}
       {data ? (
         <Card className="admin-table-card">
-          <DataTable
+          <AdminTable
             busy={loading}
             columns={columns}
             empty={translate('admin.noSharesMatch')}
+            grow="people"
+            id="shares"
             label={translate('admin.shares')}
             phoneRow={(share) => (
               <>
@@ -254,6 +311,8 @@ function Shares(props: AdminPageProps) {
             )}
             rowKey={(share) => `${share.kind}:${share.id}`}
             rows={data.items}
+            settings={settings}
+            total={data.total}
           />
           <Pagination onPage={setPage} page={data.page} pageSize={data.pageSize} total={data.total} />
         </Card>
@@ -295,11 +354,14 @@ function Expiry({ share, now }: { share: AdminShare; now: number }) {
 function Links(props: AdminPageProps) {
   useI18n();
   const filter = ['legacy', 'encrypted', 'live'].includes(props.filter ?? '') ? (props.filter as string) : 'all';
+  const urlSort = useUrlSort(props);
+  const settings = useTableSettings('public-links', { urlSort });
   const [page, setPage] = useState(1);
-  useEffect(() => setPage(1), [filter]);
+  const sortKey = `${settings.sort?.key ?? ''}:${settings.sort?.dir ?? ''}`;
+  useEffect(() => setPage(1), [filter, sortKey]);
   const { data, error, loading, reload } = useAdminResource(
-    () => adminApi.publicLinks({ filter, page, pageSize: PAGE_SIZE }),
-    `${filter}:${page}:${props.refreshKey}`,
+    () => adminApi.publicLinks({ filter, page, pageSize: PAGE_SIZE, sort: settings.sort?.key, dir: settings.sort?.dir }),
+    `${filter}:${page}:${sortKey}:${props.refreshKey}`,
     props.onUnauthorized,
   );
   const loaded = props.onLoaded;
@@ -308,13 +370,13 @@ function Links(props: AdminPageProps) {
   }, [data, loaded]);
   if (!data) return error ? <LoadFailure message={error} onRetry={reload} /> : <Skeleton lines={6} />;
   const summary = data.summary;
-  const columns: Array<Column<AdminPublicLink>> = [
-    { key: 'owner', header: translate('admin.owner'), render: (link) => <span className="admin-two-line"><b>{link.ownerUsername}</b><span>{link.deviceName}</span></span> },
-    { key: 'kind', header: translate('admin.storage'), render: (link) => (link.encrypted ? <Badge tone="success">{translate('admin.encrypted')}</Badge> : <Badge tone="warning">{translate('admin.legacyPlaintext')}</Badge>) },
-    { key: 'live', header: translate('admin.updates'), render: (link) => (link.live ? translate('admin.liveLink') : translate('admin.staticLink')) },
-    { key: 'created', header: translate('admin.created'), render: (link) => formatDate(link.createdAt) },
-    { key: 'refreshed', header: translate('admin.refreshed'), render: (link) => (link.refreshedAt ? formatRelative(link.refreshedAt) : '—') },
-    { key: 'size', header: translate('admin.size'), className: 'is-numeric', render: (link) => formatBytes(link.bytes) },
+  const columns: Array<TableColumn<AdminPublicLink>> = [
+    { key: 'owner', label: translate('admin.ownerAndDevice'), sortable: true, hideable: false, width: 220, render: (link) => <span className="admin-two-line"><b>{link.ownerUsername}</b><span>{link.deviceName}</span></span> },
+    { key: 'storage', label: translate('admin.storage'), sortable: true, width: 170, render: (link) => (link.encrypted ? <Badge tone="success">{translate('admin.encrypted')}</Badge> : <Badge tone="warning">{translate('admin.legacyPlaintext')}</Badge>) },
+    { key: 'live', label: translate('admin.updates'), sortable: true, width: 130, render: (link) => (link.live ? translate('admin.liveLink') : translate('admin.staticLink')) },
+    { key: 'created', label: translate('admin.created'), sortable: true, firstDir: 'desc', width: 140, render: (link) => formatDate(link.createdAt) },
+    { key: 'refreshed', label: translate('admin.refreshed'), sortable: true, firstDir: 'desc', width: 140, render: (link) => (link.refreshedAt ? formatRelative(link.refreshedAt) : '—') },
+    { key: 'size', label: translate('admin.size'), sortable: true, firstDir: 'desc', numeric: true, width: 110, render: (link) => formatBytes(link.bytes) },
   ];
   return (
     <>
@@ -338,11 +400,13 @@ function Links(props: AdminPageProps) {
         />
       </div>
       <Card className="admin-table-card">
-        <DataTable
+        <AdminTable
           busy={loading}
           columns={columns}
           empty={translate('admin.noLinks')}
+          id="public-links"
           label={translate('admin.publicLinks')}
+          settings={settings}
           phoneRow={(link) => (
             <>
               <span className="admin-two-line">
@@ -365,14 +429,35 @@ function Links(props: AdminPageProps) {
   );
 }
 
+type PreviewRow = AdminPreviews['devices'][number];
+
 function Previews(props: AdminPageProps) {
   useI18n();
+  const settings = useTableSettings('previews', { defaultSort: { key: 'mappings', dir: 'desc' } });
   const { data, error, reload } = useAdminResource(() => adminApi.previews(), `previews:${props.refreshKey}`, props.onUnauthorized);
   const loaded = props.onLoaded;
   useEffect(() => {
     if (data) loaded();
   }, [data, loaded]);
   if (!data) return error ? <LoadFailure message={error} onRetry={reload} /> : <Skeleton lines={4} />;
+  const text = (value: string | null | undefined) => (value ?? '').toLowerCase();
+  const previewColumns: Array<TableColumn<PreviewRow>> = [
+    {
+      key: 'device',
+      label: translate('admin.deviceAndOwner'),
+      hideable: false,
+      width: 240,
+      compare: (a, b) => text(a.deviceName).localeCompare(text(b.deviceName)),
+      render: (row) => (
+        <RowOpener label={translate('admin.openDevice', { name: row.deviceName })} onOpen={() => props.go('devices', { id: row.deviceId })}>
+          <span className="admin-two-line"><b>{row.deviceName}</b><span>{row.ownerUsername ?? '—'}</span></span>
+        </RowOpener>
+      ),
+    },
+    { key: 'mappings', label: translate('admin.previewMappings'), numeric: true, firstDir: 'desc', width: 140, compare: (a, b) => a.mappings - b.mappings, render: (row) => formatCount(row.mappings) },
+    { key: 'sessions', label: translate('admin.previewSessions'), numeric: true, firstDir: 'desc', width: 140, compare: (a, b) => a.sessions - b.sessions, render: (row) => formatCount(row.sessions) },
+    { key: 'streams', label: translate('admin.previewStreams'), numeric: true, firstDir: 'desc', width: 140, compare: (a, b) => a.streams - b.streams, render: (row) => formatCount(row.streams) },
+  ];
   return (
     <>
       <FigureBand label={translate('admin.portPreviews')}>
@@ -381,22 +466,10 @@ function Previews(props: AdminPageProps) {
         <Figure label={translate('admin.previewStreams')} value={formatCount(data.streams)} />
       </FigureBand>
       <Card className="admin-table-card" subtitle={translate('admin.previewsSubtitle')} title={translate('admin.previewsByDevice')}>
-        <DataTable
-          columns={[
-            {
-              key: 'device',
-              header: translate('admin.deviceAndOwner'),
-              render: (row) => (
-                <RowOpener label={translate('admin.openDevice', { name: row.deviceName })} onOpen={() => props.go('devices', { id: row.deviceId })}>
-                  <span className="admin-two-line"><b>{row.deviceName}</b><span>{row.ownerUsername ?? '—'}</span></span>
-                </RowOpener>
-              ),
-            },
-            { key: 'mappings', header: translate('admin.previewMappings'), className: 'is-numeric', render: (row) => formatCount(row.mappings) },
-            { key: 'sessions', header: translate('admin.previewSessions'), className: 'is-numeric', render: (row) => formatCount(row.sessions) },
-            { key: 'streams', header: translate('admin.previewStreams'), className: 'is-numeric', render: (row) => formatCount(row.streams) },
-          ]}
+        <AdminTable
+          columns={previewColumns}
           empty={translate('admin.noPreviews')}
+          id="previews"
           label={translate('admin.previewsByDevice')}
           onOpen={(row) => props.go('devices', { id: row.deviceId })}
           phoneRow={(row) => (
@@ -405,8 +478,9 @@ function Previews(props: AdminPageProps) {
               <span>{translate('admin.previewRow', { mappings: row.mappings, sessions: row.sessions })}</span>
             </span>
           )}
+          settings={settings}
           rowKey={(row) => row.deviceId}
-          rows={data.devices}
+          rows={sortRows(data.devices, previewColumns, settings.sort)}
         />
       </Card>
     </>

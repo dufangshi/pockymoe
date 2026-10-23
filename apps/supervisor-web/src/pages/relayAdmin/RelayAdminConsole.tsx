@@ -1,16 +1,21 @@
-// The relay admin console: a sidebar of sections on desktop, a bottom tab bar
-// with a "More" sheet on phones, and one page per section. The URL holds the
-// section (`tab`), its sub-tab (`sub`), filter, the open row (`id`) and the
-// time range, so every view can be linked and survives a reload.
+// The relay admin console: a sidebar of sections on desktop (it folds into an
+// icon rail), a bottom tab bar with a "More" sheet on phones, and one page per
+// section. The URL holds the section (`tab`), its sub-tab (`sub`), the open row
+// (`id`), the time range and each table's sort and column filters, so every
+// view can be linked and survives a reload.
 import { useMenuKeyboard, useModalFocus } from '@pockymoe/thread-ui';
-import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
+import { getLocale, translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import {
+  Activity,
+  CalendarRange,
   CircleCheck,
   CircleAlert,
   LayoutGrid,
   LogOut,
   Menu,
   MonitorSmartphone,
+  PanelLeftClose,
+  PanelLeftOpen,
   RadioTower,
   RefreshCw,
   Search,
@@ -21,7 +26,7 @@ import {
   Users,
   X,
 } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useLocation, useNavigate } from 'react-router-dom';
 import type { RelaySessionDto } from '@pockymoe/shared';
@@ -30,6 +35,8 @@ import { formatCount, formatDuration, formatRelative, since } from './format';
 import type { AdminOverview, AdminRange, AdminSearchResult } from './types';
 import { Avatar, useDebounced, useIsPhone } from './ui';
 import { rangeLabel } from './labels';
+import { usePopover } from './table';
+import { PerformancePage } from './PerformancePage';
 import { OverviewPage } from './OverviewPage';
 import { UsersPage } from './UsersPage';
 import { DevicesPage } from './DevicesPage';
@@ -39,19 +46,32 @@ import { SystemPage } from './SystemPage';
 import { SettingsPage } from './SettingsPage';
 import './relay-admin.css';
 
-export type AdminSection = 'overview' | 'users' | 'devices' | 'shares' | 'security' | 'system' | 'settings';
-export const ADMIN_SECTIONS: AdminSection[] = ['overview', 'users', 'devices', 'shares', 'security', 'system', 'settings'];
+export type AdminSection = 'overview' | 'users' | 'devices' | 'performance' | 'shares' | 'security' | 'system' | 'settings';
+export const ADMIN_SECTIONS: AdminSection[] = ['overview', 'users', 'devices', 'performance', 'shares', 'security', 'system', 'settings'];
 const PHONE_TABS: AdminSection[] = ['overview', 'users', 'devices', 'security'];
+const MORE_SECTIONS: AdminSection[] = ['performance', 'shares', 'system', 'settings'];
 const RANGES: AdminRange[] = ['24h', '7d', '30d', '90d'];
+const SIDEBAR_KEY = 'pockymoe-relay-admin-sidebar';
+
+/** A custom time window (`range=custom&from=YYYY-MM-DD&to=YYYY-MM-DD`). */
+export interface CustomRange {
+  from: string;
+  to: string;
+}
 
 export interface AdminPageProps {
   range: AdminRange;
+  /** Set when the URL holds a custom window (pages that accept one). */
+  customRange: CustomRange | null;
   sub: string | null;
   filter: string | null;
   selectedId: string | null;
+  /** Every URL value, for a table's sort and column filters. */
+  params: URLSearchParams;
   refreshKey: number;
-  go: (section: AdminSection, options?: { sub?: string | null; filter?: string | null; id?: string | null }) => void;
-  setParams: (params: Partial<Record<'sub' | 'filter' | 'id' | 'range', string | null>>) => void;
+  go: (section: AdminSection, options?: { sub?: string | null; filter?: string | null; id?: string | null; params?: Record<string, string> }) => void;
+  /** Writes URL values (null removes one); only opening or closing a row replaces history. */
+  setParams: (params: Record<string, string | null>) => void;
   onLoaded: () => void;
   onUnauthorized: () => void;
   /** Reloads the counts in the navigation after an action changed them. */
@@ -63,6 +83,7 @@ export function sectionLabel(section: AdminSection) {
     case 'overview': return translate('admin.navOverview');
     case 'users': return translate('admin.navUsers');
     case 'devices': return translate('admin.navDevices');
+    case 'performance': return translate('admin.navPerformance');
     case 'shares': return translate('admin.navShares');
     case 'security': return translate('admin.navSecurity');
     case 'system': return translate('admin.navSystem');
@@ -76,6 +97,7 @@ function sectionIcon(section: AdminSection) {
     case 'overview': return <LayoutGrid {...props} />;
     case 'users': return <Users {...props} />;
     case 'devices': return <MonitorSmartphone {...props} />;
+    case 'performance': return <Activity {...props} />;
     case 'shares': return <Share2 {...props} />;
     case 'security': return <ShieldCheck {...props} />;
     case 'system': return <Server {...props} />;
@@ -100,6 +122,29 @@ export function RelayAdminConsole({ session, onLogout, onUnauthorized }: {
   const params = useMemo(() => new URLSearchParams(location.search), [location.search]);
   const section = sectionFromSearch(location.search);
   const range = (RANGES.includes(params.get('range') as AdminRange) ? params.get('range') : '24h') as AdminRange;
+  const customRange = useMemo<CustomRange | null>(() => {
+    const day = /^\d{4}-\d{2}-\d{2}$/;
+    const from = params.get('from') ?? '';
+    const to = params.get('to') ?? '';
+    return params.get('range') === 'custom' && day.test(from) && day.test(to) && from <= to ? { from, to } : null;
+  }, [params]);
+  const [collapsed, setCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem(SIDEBAR_KEY) === 'collapsed';
+    } catch {
+      return false;
+    }
+  });
+  const toggleSidebar = () => {
+    setCollapsed((value) => {
+      try {
+        localStorage.setItem(SIDEBAR_KEY, value ? 'expanded' : 'collapsed');
+      } catch {
+        /* The choice lasts this visit. */
+      }
+      return !value;
+    });
+  };
   const [refreshKey, setRefreshKey] = useState(0);
   const [updatedAt, setUpdatedAt] = useState<number | null>(null);
   const [nav, setNav] = useState<AdminOverview | null>(null);
@@ -115,10 +160,18 @@ export function RelayAdminConsole({ session, onLogout, onUnauthorized }: {
   const go: AdminPageProps['go'] = useCallback((target, options = {}) => {
     const next = new URLSearchParams();
     next.set('tab', target);
-    if (params.get('range')) next.set('range', params.get('range')!);
+    // The time range follows; a custom window only where the page takes one.
+    const keep = params.get('range');
+    if (keep && (keep !== 'custom' || target === 'performance')) {
+      next.set('range', keep);
+      if (keep === 'custom') {
+        for (const key of ['from', 'to']) if (params.get(key)) next.set(key, params.get(key)!);
+      }
+    }
     if (options.sub) next.set('sub', options.sub);
     if (options.filter) next.set('filter', options.filter);
     if (options.id) next.set('id', options.id);
+    for (const [key, value] of Object.entries(options.params ?? {})) next.set(key, value);
     setMoreOpen(false);
     write(next);
   }, [params, write]);
@@ -170,9 +223,11 @@ export function RelayAdminConsole({ session, onLogout, onUnauthorized }: {
   const onLoaded = useCallback(() => setUpdatedAt(Date.now()), []);
   const pageProps: AdminPageProps = {
     range,
+    customRange: section === 'performance' ? customRange : null,
     sub: params.get('sub'),
     filter: params.get('filter'),
     selectedId: params.get('id'),
+    params,
     refreshKey,
     go,
     setParams,
@@ -192,7 +247,9 @@ export function RelayAdminConsole({ session, onLogout, onUnauthorized }: {
   const user = session?.user ?? null;
   const healthy = !navFailed;
   const host = hostOf(nav?.relay.publicBaseUrl ?? null);
-  const showRange = section === 'overview' || section === 'security';
+  const showRange = section === 'overview' || section === 'security' || section === 'performance';
+  const allowCustom = section === 'performance';
+  const setRange = (value: AdminRange | CustomRange) => setParams(typeof value === 'string' ? { range: value, from: null, to: null } : { range: 'custom', from: value.from, to: value.to });
   const title = sectionLabel(section);
 
   const page = (() => {
@@ -200,6 +257,7 @@ export function RelayAdminConsole({ session, onLogout, onUnauthorized }: {
       case 'overview': return <OverviewPage {...pageProps} />;
       case 'users': return <UsersPage {...pageProps} />;
       case 'devices': return <DevicesPage {...pageProps} />;
+      case 'performance': return <PerformancePage {...pageProps} />;
       case 'shares': return <AccessPage {...pageProps} />;
       case 'security': return <SecurityPage {...pageProps} />;
       case 'system': return <SystemPage {...pageProps} />;
@@ -208,7 +266,7 @@ export function RelayAdminConsole({ session, onLogout, onUnauthorized }: {
   })();
 
   return (
-    <div className={`admin-console${phone ? ' is-phone' : ''}`} data-page="admin">
+    <div className={`admin-console${phone ? ' is-phone' : ''}${!phone && collapsed ? ' is-collapsed' : ''}`} data-page="admin">
       {!phone ? (
         <aside className="admin-sidebar">
           <div className="admin-sidebar-inner">
@@ -216,24 +274,41 @@ export function RelayAdminConsole({ session, onLogout, onUnauthorized }: {
             <span aria-hidden className="admin-brand-mark"><RadioTower className="h-5 w-5" /></span>
             <span className="admin-brand-text">
               <b>{translate('admin.consoleTitle')}</b>
-              <span>{host}</span>
+              <span title={host}>{host}</span>
             </span>
+            <button
+              aria-controls="admin-nav"
+              aria-expanded={!collapsed}
+              aria-label={collapsed ? translate('admin.expandSidebar') : translate('admin.collapseSidebar')}
+              className="admin-icon-button admin-sidebar-toggle"
+              data-tip={collapsed ? translate('admin.expandSidebar') : translate('admin.collapseSidebar')}
+              onClick={toggleSidebar}
+              type="button"
+            >
+              {collapsed ? <PanelLeftOpen aria-hidden className="h-[18px] w-[18px]" /> : <PanelLeftClose aria-hidden className="h-[18px] w-[18px]" />}
+            </button>
           </div>
-          <nav aria-label={translate('admin.sections')} className="admin-nav">
+          <nav aria-label={translate('admin.sections')} className="admin-nav" id="admin-nav">
             {ADMIN_SECTIONS.map((item) => {
               const count = badge(item);
               return (
                 <button
                   aria-current={section === item ? 'page' : undefined}
                   className="admin-nav-item"
+                  // The rail shows icons only: the name appears beside it on
+                  // hover and keyboard focus, and stays the accessible name.
+                  data-tip={collapsed ? sectionLabel(item) : undefined}
                   key={item}
                   onClick={() => go(item)}
                   type="button"
                 >
-                  {sectionIcon(item)}
-                  <span>{sectionLabel(item)}</span>
+                  <span className="admin-nav-icon">
+                    {sectionIcon(item)}
+                    {collapsed && count?.attention ? <i aria-hidden className="is-attention" /> : null}
+                  </span>
+                  <span className="admin-nav-label">{sectionLabel(item)}</span>
                   {count ? (
-                    <b className={count.attention ? 'is-attention' : undefined}>
+                    <b className={`admin-nav-count${count.attention ? ' is-attention' : ''}`}>
                       {formatCount(count.value)}
                       {count.attention ? <span className="sr-only"> {translate('admin.pendingRegistrationsShort')}</span> : null}
                     </b>
@@ -249,7 +324,7 @@ export function RelayAdminConsole({ session, onLogout, onUnauthorized }: {
                 <b>{user.username}</b>
                 <span>{translate('admin.roleAdmin')}</span>
               </span>
-              <button aria-label={translate('admin.logout')} className="admin-icon-button" onClick={onLogout} title={translate('admin.logout')} type="button">
+              <button aria-label={translate('admin.logout')} className="admin-icon-button" data-tip={translate('admin.logout')} onClick={onLogout} type="button">
                 <LogOut aria-hidden className="h-4 w-4" />
               </button>
             </div>
@@ -263,32 +338,34 @@ export function RelayAdminConsole({ session, onLogout, onUnauthorized }: {
             <span aria-hidden className="admin-brand-mark is-small"><RadioTower className="h-4 w-4" /></span>
           ) : null}
           <div className="admin-topbar-title">
-            <h1>{title}</h1>
+            <h1 title={title}>{title}</h1>
             {!phone ? <p>{pageSubtitle(section, nav)}</p> : null}
           </div>
-          <span className={`admin-health ${healthy ? 'is-ok' : 'is-down'}`} role="status">
-            {healthy ? <CircleCheck aria-hidden className="h-4 w-4" /> : <CircleAlert aria-hidden className="h-4 w-4" />}
-            <span className={phone ? 'sr-only' : undefined}>{healthy ? translate('admin.healthy') : translate('admin.unreachable')}</span>
-          </span>
-          {showRange && !phone ? <RangeSwitch range={range} onChange={(value) => setParams({ range: value })} /> : null}
-          <GlobalSearch compact={phone} inputRef={searchRef} onOpen={(target, id) => go(target, { id })} />
-          {!phone ? (
-            <span className="admin-updated">
-              {updatedAt ? translate('admin.updatedAgo', { time: formatRelative(updatedAt) }) : null}
-              <button
-                aria-label={translate('admin.refresh')}
-                className="admin-icon-button"
-                onClick={() => setRefreshKey((value) => value + 1)}
-                title={translate('admin.refresh')}
-                type="button"
-              >
-                <RefreshCw aria-hidden className="h-4 w-4" />
-              </button>
+          <div className="admin-topbar-tools">
+            <span className={`admin-health ${healthy ? 'is-ok' : 'is-down'}`} role="status" title={phone ? (healthy ? translate('admin.healthy') : translate('admin.unreachable')) : undefined}>
+              {healthy ? <CircleCheck aria-hidden className="h-4 w-4" /> : <CircleAlert aria-hidden className="h-4 w-4" />}
+              <span className={phone ? 'sr-only' : 'admin-health-text'}>{healthy ? translate('admin.healthy') : translate('admin.unreachable')}</span>
             </span>
-          ) : null}
+            {showRange && !phone ? <RangeSwitch custom={allowCustom ? customRange : undefined} onChange={setRange} range={customRange && allowCustom ? null : range} /> : null}
+            <GlobalSearch compact={phone} inputRef={searchRef} onOpen={(target, id) => go(target, { id })} />
+            {!phone ? (
+              <span className="admin-updated">
+                {updatedAt ? <span className="admin-updated-text">{translate('admin.updatedAgo', { time: formatRelative(updatedAt) })}</span> : null}
+                <button
+                  aria-label={translate('admin.refresh')}
+                  className="admin-icon-button"
+                  onClick={() => setRefreshKey((value) => value + 1)}
+                  title={translate('admin.refresh')}
+                  type="button"
+                >
+                  <RefreshCw aria-hidden className="h-4 w-4" />
+                </button>
+              </span>
+            ) : null}
+          </div>
         </header>
         {showRange && phone ? (
-          <div className="admin-phone-range"><RangeSwitch range={range} onChange={(value) => setParams({ range: value })} /></div>
+          <div className="admin-phone-range"><RangeSwitch custom={allowCustom ? customRange : undefined} onChange={setRange} range={customRange && allowCustom ? null : range} /></div>
         ) : null}
         <main className="admin-content" id="admin-content">
           {page}
@@ -355,6 +432,8 @@ function pageSubtitle(section: AdminSection, nav: AdminOverview | null): ReactNo
       return translate('admin.usersSubtitle', { total: formatCount(nav.users.total), enabled: formatCount(nav.users.enabled), disabled: formatCount(nav.users.disabled) });
     case 'devices':
       return translate('admin.devicesSubtitle', { total: formatCount(nav.devices.total), online: formatCount(nav.devices.online), protected: formatCount(nav.devices.protected) });
+    case 'performance':
+      return translate('admin.performanceSubtitle');
     case 'shares':
       return translate('admin.sharesSubtitle', { shares: formatCount(nav.shares.active), links: formatCount(nav.publicLinks.total) });
     case 'security':
@@ -366,7 +445,15 @@ function pageSubtitle(section: AdminSection, nav: AdminOverview | null): ReactNo
   }
 }
 
-export function RangeSwitch({ range, onChange }: { range: AdminRange; onChange: (range: AdminRange) => void }) {
+/**
+ * The time range: four presets, and on pages that take one a custom window
+ * (`custom` is the current one or null; undefined hides the button).
+ */
+export function RangeSwitch({ range, onChange, custom }: {
+  range: AdminRange | null;
+  onChange: (range: AdminRange | CustomRange) => void;
+  custom?: CustomRange | null | undefined;
+}) {
   useI18n();
   return (
     <div aria-label={translate('admin.timeRange')} className="admin-range" role="group">
@@ -375,7 +462,86 @@ export function RangeSwitch({ range, onChange }: { range: AdminRange; onChange: 
           {rangeLabel(value)}
         </button>
       ))}
+      {custom !== undefined ? <CustomRangeButton current={custom} onChange={onChange} /> : null}
     </div>
+  );
+}
+
+function shortDate(day: string) {
+  const [year, month, date] = day.split('-').map(Number);
+  return new Intl.DateTimeFormat(getLocale(), { month: 'short', day: 'numeric' }).format(new Date(year!, (month ?? 1) - 1, date ?? 1));
+}
+
+function localDay(offsetDays = 0) {
+  const now = new Date(Date.now() - offsetDays * 86_400_000);
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+}
+
+function CustomRangeButton({ current, onChange }: { current: CustomRange | null; onChange: (range: CustomRange) => void }) {
+  useI18n();
+  const popover = usePopover();
+  const [from, setFrom] = useState(current?.from ?? localDay(7));
+  const [to, setTo] = useState(current?.to ?? localDay());
+  useEffect(() => {
+    if (!popover.open) return;
+    setFrom(current?.from ?? localDay(7));
+    setTo(current?.to ?? localDay());
+  }, [popover.open, current]);
+  const invalid = !from || !to || from > to;
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    if (invalid) return;
+    onChange({ from, to });
+    popover.close(true);
+  };
+  return (
+    <>
+      <button
+        aria-expanded={popover.open}
+        aria-haspopup="dialog"
+        aria-pressed={Boolean(current)}
+        onClick={() => popover.setOpen((value) => !value)}
+        ref={popover.trigger}
+        type="button"
+      >
+        <CalendarRange aria-hidden className="h-4 w-4" />
+        <span>{current ? `${shortDate(current.from)} – ${shortDate(current.to)}` : translate('admin.customRangeShort')}</span>
+      </button>
+      {popover.open
+        ? createPortal(
+            <div
+              aria-label={translate('admin.customRange')}
+              className="admin-menu admin-filter-menu admin-range-form"
+              onKeyDown={(event) => {
+                if (event.key === 'Escape') {
+                  event.stopPropagation();
+                  popover.close(true);
+                }
+              }}
+              ref={popover.panel}
+              role="dialog"
+              style={popover.place ? { top: popover.place.top, left: popover.place.left, maxHeight: popover.place.maxHeight } : { top: -9999, left: -9999 }}
+            >
+              <form onSubmit={submit}>
+                <label>
+                  <span>{translate('admin.fromDay')}</span>
+                  <input autoFocus className="relay-input" max={to || localDay()} onChange={(event) => setFrom(event.target.value)} type="date" value={from} />
+                </label>
+                <label>
+                  <span>{translate('admin.toDay')}</span>
+                  <input className="relay-input" max={localDay()} min={from || undefined} onChange={(event) => setTo(event.target.value)} type="date" value={to} />
+                </label>
+                {from && to && from > to ? <p className="admin-field-hint">{translate('admin.rangeOrder')}</p> : null}
+                <div className="admin-form-actions">
+                  <button className="relay-button-secondary" onClick={() => popover.close(true)} type="button">{translate('admin.cancel')}</button>
+                  <button className="relay-button-primary" disabled={invalid} type="submit">{translate('admin.apply')}</button>
+                </div>
+              </form>
+            </div>,
+            document.body,
+          )
+        : null}
+    </>
   );
 }
 
@@ -524,7 +690,7 @@ function MoreSheet({ open, onClose, onGo, onLogout, onRefresh, current, badge }:
           </button>
         </header>
         <div className="admin-more-list">
-          {(['shares', 'system', 'settings'] as AdminSection[]).map((item) => {
+          {MORE_SECTIONS.map((item) => {
             const count = badge(item);
             return (
               <button aria-current={current === item ? 'page' : undefined} key={item} onClick={() => onGo(item)} type="button">

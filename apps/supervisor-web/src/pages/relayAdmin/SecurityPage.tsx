@@ -4,7 +4,7 @@
 import { confirmAsync, ErrorMark } from '@pockymoe/thread-ui';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { Gauge, History, Laptop, ScrollText, ShieldCheck } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { adminApi } from './adminApi';
 import { BarList, ChartCard, ColumnChart, HistoryNote, Legend, LineChart, type SeriesSlot } from './charts';
 import { actionCategory, EventIcon } from './events';
@@ -12,14 +12,14 @@ import { formatCount, formatDateTime, formatDay, formatPercent, formatRelative }
 import { actionLabel, eventCategoryLabel, eventLabel, rangeLabel } from './labels';
 import type { AdminPageProps } from './RelayAdminConsole';
 import type { AdminAction, AdminSecurityEvent, AdminSecuritySummary, AdminSession } from './types';
+import { FilterBar, SelectFilter, TimeFilter, UserFilter, windowParams } from './filters';
+import { AdminTable, useFilterValues, useTableSettings, useUrlSort, type TableColumn } from './table';
 import {
   Badge,
   Card,
-  DataTable,
   errorText,
   Figure,
   FigureBand,
-  FilterChips,
   LoadFailure,
   Pagination,
   SearchField,
@@ -27,7 +27,6 @@ import {
   SubTabs,
   useAdminResource,
   useDebounced,
-  type Column,
 } from './ui';
 
 type SecurityTab = 'events' | 'sessions' | 'actions' | 'limits';
@@ -51,7 +50,7 @@ export function SecurityPage(props: AdminPageProps) {
       <SubTabs
         idPrefix="admin-security"
         label={translate('admin.navSecurity')}
-        onChange={(key) => props.setParams({ sub: key === 'events' ? null : key, filter: null })}
+        onChange={(key) => props.go('security', { sub: key === 'events' ? null : key })}
         tabs={[
           { key: 'events', label: translate('admin.securityEvents'), icon: <ScrollText aria-hidden className="h-4 w-4" /> },
           { key: 'sessions', label: translate('admin.sessions'), count: summary.data?.activeSessions ?? null, icon: <Laptop aria-hidden className="h-4 w-4" /> },
@@ -199,41 +198,66 @@ function SecurityCharts({ summary, range }: { summary: AdminSecuritySummary; ran
   );
 }
 
-function eventFilterLabel(filter: (typeof EVENT_FILTERS)[number]) {
-  return filter === 'all' ? translate('admin.filterAll') : eventCategoryLabel(filter);
+const EVENT_KEYS = ['type', 'user', 'when'] as const;
+
+/** `filter=login` from before the column filters still opens that category. */
+function legacyEventFilter(filter: string | null): Partial<Record<(typeof EVENT_KEYS)[number], string>> {
+  return filter && (EVENT_FILTERS as readonly string[]).includes(filter) && filter !== 'all' ? { type: filter } : {};
 }
 
 function EventTable(props: AdminPageProps) {
   useI18n();
-  const filter = (EVENT_FILTERS as readonly string[]).includes(props.filter ?? '') ? (props.filter as (typeof EVENT_FILTERS)[number]) : 'all';
+  const values = useFilterValues(props, EVENT_KEYS, legacyEventFilter);
+  const urlSort = useUrlSort(props);
+  const settings = useTableSettings('security-events', { urlSort });
   const [page, setPage] = useState(1);
-  useEffect(() => setPage(1), [filter, props.range]);
+  // Without its own time filter the table follows the page's range.
+  const query = useMemo(() => ({
+    type: values.type,
+    user: values.user,
+    ...(values.when ? windowParams(values.when, '') : { range: props.range }),
+    sort: settings.sort?.key,
+    dir: settings.sort?.dir,
+  }), [values, props.range, settings.sort?.key, settings.sort?.dir]);
+  const queryKey = JSON.stringify(query);
+  useEffect(() => setPage(1), [queryKey]);
   const { data, error, loading, reload } = useAdminResource(
-    () => adminApi.securityEvents({ type: filter, range: props.range, page, pageSize: 15 }),
-    `${filter}:${props.range}:${page}:${props.refreshKey}`,
+    () => adminApi.securityEvents({ ...query, page, pageSize: 15 }),
+    `${queryKey}:${page}:${props.refreshKey}`,
     props.onUnauthorized,
   );
-  const columns: Array<Column<AdminSecurityEvent>> = [
-    { key: 'time', header: translate('admin.time'), render: (event) => <time dateTime={event.at} title={formatDateTime(event.at)}>{formatDateTime(event.at)}</time> },
-    { key: 'event', header: translate('admin.event'), render: (event) => <span className="admin-event-cell"><EventIcon category={event.category} event={event.event} />{eventLabel(event.event)}</span> },
-    { key: 'user', header: translate('admin.user'), render: (event) => (event.userId ? <button className="admin-text-link" onClick={() => props.go('users', { id: event.userId })} type="button">{event.username ?? event.userId}</button> : '—') },
-    { key: 'resource', header: translate('admin.resource'), render: (event) => event.resourceLabel ?? (event.resourceId ? <span className="admin-mono admin-truncate">{event.resourceId}</span> : '—') },
+  const setFilter = (key: (typeof EVENT_KEYS)[number], value: string | null) => props.setParams({ [key]: value, filter: null });
+  const active = EVENT_KEYS.filter((key) => values[key]).length;
+  const columns: Array<TableColumn<AdminSecurityEvent>> = [
+    { key: 'time', label: translate('admin.time'), sortable: true, firstDir: 'desc', hideable: false, width: 180, render: (event) => <time dateTime={event.at} title={formatDateTime(event.at)}>{formatDateTime(event.at)}</time> },
+    { key: 'event', label: translate('admin.event'), sortable: true, width: 240, render: (event) => <span className="admin-event-cell"><EventIcon category={event.category} event={event.event} />{eventLabel(event.event)}</span> },
+    { key: 'category', label: translate('admin.eventType'), defaultHidden: true, width: 150, render: (event) => eventCategoryLabel(event.category) },
+    { key: 'user', label: translate('admin.user'), sortable: true, width: 150, render: (event) => (event.userId ? <button className="admin-text-link" onClick={() => props.go('users', { id: event.userId })} type="button">{event.username ?? event.userId}</button> : '—') },
+    { key: 'resource', label: translate('admin.resource'), width: 180, render: (event) => event.resourceLabel ?? (event.resourceId ? <span className="admin-mono admin-truncate" title={event.resourceId}>{event.resourceId}</span> : '—') },
   ];
   return (
-    <Card subtitle={translate('admin.eventDetailsSubtitle')} title={translate('admin.eventDetails')}>
-      <FilterChips
-        label={translate('admin.filterEvents')}
-        onChange={(key) => props.setParams({ filter: key === 'all' ? null : key })}
-        options={EVENT_FILTERS.map((key) => ({ key, label: eventFilterLabel(key) }))}
-        value={filter}
-      />
+    <Card className="admin-table-card is-headed" subtitle={translate('admin.eventDetailsSubtitle')} title={translate('admin.eventDetails')}>
+      <div className="admin-card-toolbar">
+        <FilterBar active={active} label={translate('admin.filterEvents')} onClear={() => props.setParams({ type: null, user: null, when: null, filter: null })}>
+          <SelectFilter
+            label={translate('admin.eventType')}
+            onChange={(value) => setFilter('type', value)}
+            options={EVENT_FILTERS.filter((key) => key !== 'all').map((key) => ({ value: key, label: eventCategoryLabel(key) }))}
+            value={values.type}
+          />
+          <UserFilter label={translate('admin.user')} onChange={(value) => setFilter('user', value)} value={values.user} valueLabel={data?.labels?.user} />
+          <TimeFilter label={translate('admin.time')} onChange={(value) => setFilter('when', value)} value={values.when} />
+        </FilterBar>
+      </div>
       {error && !data ? <LoadFailure message={error} onRetry={reload} /> : null}
       {data ? (
         <>
-          <DataTable
+          <AdminTable
             busy={loading}
             columns={columns}
             empty={translate('admin.noEvents')}
+            grow="event"
+            id="security-events"
             label={translate('admin.eventDetails')}
             phoneRow={(event) => (
               <>
@@ -246,6 +270,8 @@ function EventTable(props: AdminPageProps) {
             )}
             rowKey={(event) => String(event.id)}
             rows={data.items}
+            settings={settings}
+            total={data.total}
           />
           <Pagination onPage={setPage} page={data.page} pageSize={data.pageSize} total={data.total} />
         </>
@@ -254,17 +280,32 @@ function EventTable(props: AdminPageProps) {
   );
 }
 
+const SESSION_KEYS = ['user', 'created'] as const;
+const noLegacy = () => ({});
+
 function Sessions(props: AdminPageProps) {
   useI18n();
+  const values = useFilterValues(props, SESSION_KEYS, noLegacy);
+  const urlSort = useUrlSort(props);
+  const settings = useTableSettings('sessions', { urlSort });
   const [text, setText] = useState('');
   const q = useDebounced(text.trim());
   const [page, setPage] = useState(1);
-  useEffect(() => setPage(1), [q]);
+  const query = useMemo(() => ({
+    q,
+    user: values.user,
+    ...windowParams(values.created, 'created'),
+    sort: settings.sort?.key,
+    dir: settings.sort?.dir,
+  }), [q, values, settings.sort?.key, settings.sort?.dir]);
+  const queryKey = JSON.stringify(query);
+  useEffect(() => setPage(1), [queryKey]);
   const { data, error, loading, reload } = useAdminResource(
-    () => adminApi.sessions({ q, page, pageSize: 25 }),
-    `${q}:${page}:${props.refreshKey}`,
+    () => adminApi.sessions({ ...query, page, pageSize: 25 }),
+    `${queryKey}:${page}:${props.refreshKey}`,
     props.onUnauthorized,
   );
+  const active = SESSION_KEYS.filter((key) => values[key]).length;
   const [failure, setFailure] = useState<{ id: string; message: string } | null>(null);
   const end = async (session: AdminSession) => {
     const confirmed = await confirmAsync({
@@ -281,14 +322,17 @@ function Sessions(props: AdminPageProps) {
       setFailure({ id: session.id, message: errorText(caught) });
     }
   };
-  const columns: Array<Column<AdminSession>> = [
-    { key: 'user', header: translate('admin.user'), render: (session) => <button className="admin-text-link" onClick={() => props.go('users', { id: session.userId ?? null })} type="button">{session.username}</button> },
-    { key: 'environment', header: translate('admin.browserAndSystem'), render: (session) => session.environment ?? <span className="admin-muted">{translate('admin.unknownBrowser')}</span> },
-    { key: 'created', header: translate('admin.signedIn'), render: (session) => <time title={formatDateTime(session.createdAt)}>{formatRelative(session.createdAt)}</time> },
-    { key: 'expires', header: translate('admin.expires'), render: (session) => formatRelative(session.expiresAt) },
+  const columns: Array<TableColumn<AdminSession>> = [
+    { key: 'user', label: translate('admin.user'), sortable: true, hideable: false, width: 170, render: (session) => <button className="admin-text-link" onClick={() => props.go('users', { id: session.userId ?? null })} type="button">{session.username}</button> },
+    { key: 'environment', label: translate('admin.browserAndSystem'), sortable: true, width: 200, render: (session) => session.environment ?? <span className="admin-muted">{translate('admin.unknownBrowser')}</span> },
+    { key: 'created', label: translate('admin.signedIn'), sortable: true, firstDir: 'desc', width: 150, render: (session) => <time title={formatDateTime(session.createdAt)}>{formatRelative(session.createdAt)}</time> },
+    { key: 'expires', label: translate('admin.expires'), sortable: true, width: 150, render: (session) => <span title={formatDateTime(session.expiresAt)}>{formatRelative(session.expiresAt)}</span> },
     {
-      key: 'trust',
-      header: translate('admin.verification'),
+      key: 'verified',
+      label: translate('admin.verification'),
+      sortable: true,
+      firstDir: 'desc',
+      width: 220,
       render: (session) => (
         <span className="admin-pills">
           {session.strongAuthAt ? <Badge icon={<ShieldCheck aria-hidden className="h-3.5 w-3.5" />} tone="success">{translate('admin.verified')}</Badge> : null}
@@ -298,8 +342,12 @@ function Sessions(props: AdminPageProps) {
     },
     {
       key: 'end',
+      label: translate('admin.actions'),
       header: <span className="sr-only">{translate('admin.actions')}</span>,
       className: 'is-menu',
+      hideable: false,
+      fixed: true,
+      width: 140,
       render: (session) => (
         <span className="admin-inline">
           <button className="admin-text-button is-danger" disabled={session.role === 'admin'} onClick={() => void end(session)} type="button">{translate('admin.endSession')}</button>
@@ -311,16 +359,23 @@ function Sessions(props: AdminPageProps) {
   return (
     <>
       <div className="admin-toolbar">
+        <FilterBar active={active} label={translate('admin.filterSessions')} onClear={() => props.setParams({ user: null, created: null })}>
+          <UserFilter label={translate('admin.user')} onChange={(value) => props.setParams({ user: value })} value={values.user} valueLabel={data?.labels?.user} />
+          <TimeFilter label={translate('admin.signedIn')} onChange={(value) => props.setParams({ created: value })} value={values.created} />
+        </FilterBar>
         <SearchField label={translate('admin.searchSessions')} onChange={setText} placeholder={translate('admin.searchSessions')} value={text} />
       </div>
       {error && !data ? <LoadFailure message={error} onRetry={reload} /> : null}
       {data ? (
         <Card className="admin-table-card">
-          <DataTable
+          <AdminTable
             busy={loading}
             columns={columns}
             empty={translate('admin.noSessions')}
+            grow="environment"
+            id="sessions"
             label={translate('admin.sessions')}
+            settings={settings}
             phoneRow={(session) => (
               <>
                 <span className="admin-two-line">
@@ -340,27 +395,43 @@ function Sessions(props: AdminPageProps) {
   );
 }
 
+const ACTION_KEYS = ['when'] as const;
+
 function Actions(props: AdminPageProps) {
   useI18n();
+  const values = useFilterValues(props, ACTION_KEYS, noLegacy);
+  const urlSort = useUrlSort(props);
+  const settings = useTableSettings('admin-actions', { urlSort });
   const [page, setPage] = useState(1);
-  const { data, error, loading, reload } = useAdminResource(() => adminApi.actions({ page, pageSize: 25 }), `${page}:${props.refreshKey}`, props.onUnauthorized);
-  const columns: Array<Column<AdminAction>> = [
-    { key: 'time', header: translate('admin.time'), render: (action) => formatDateTime(action.at) },
-    { key: 'action', header: translate('admin.action'), render: (action) => <span className="admin-event-cell"><EventIcon category={actionCategory(action.action)} event={action.action} />{actionLabel(action.action)}</span> },
-    { key: 'target', header: translate('admin.target'), render: (action) => action.targetLabel ?? '—' },
-    { key: 'admin', header: translate('admin.admin'), render: (action) => action.adminUsername },
-    { key: 'detail', header: translate('admin.detail'), render: (action) => actionDetail(action) },
+  const query = useMemo(() => ({ ...windowParams(values.when, ''), sort: settings.sort?.key, dir: settings.sort?.dir }), [values, settings.sort?.key, settings.sort?.dir]);
+  const queryKey = JSON.stringify(query);
+  useEffect(() => setPage(1), [queryKey]);
+  const { data, error, loading, reload } = useAdminResource(() => adminApi.actions({ ...query, page, pageSize: 25 }), `${queryKey}:${page}:${props.refreshKey}`, props.onUnauthorized);
+  const columns: Array<TableColumn<AdminAction>> = [
+    { key: 'time', label: translate('admin.time'), sortable: true, firstDir: 'desc', hideable: false, width: 180, render: (action) => formatDateTime(action.at) },
+    { key: 'action', label: translate('admin.action'), sortable: true, width: 230, render: (action) => <span className="admin-event-cell"><EventIcon category={actionCategory(action.action)} event={action.action} />{actionLabel(action.action)}</span> },
+    { key: 'target', label: translate('admin.target'), sortable: true, width: 180, render: (action) => <span className="admin-truncate" title={action.targetLabel ?? undefined}>{action.targetLabel ?? '—'}</span> },
+    { key: 'admin', label: translate('admin.admin'), sortable: true, width: 140, render: (action) => action.adminUsername },
+    { key: 'detail', label: translate('admin.detail'), width: 260, render: (action) => <span className="admin-truncate" title={actionDetail(action)}>{actionDetail(action)}</span> },
   ];
   return (
-    <Card subtitle={translate('admin.adminActionsLogSubtitle')} title={translate('admin.adminActions')}>
+    <Card className="admin-table-card is-headed" subtitle={translate('admin.adminActionsLogSubtitle')} title={translate('admin.adminActions')}>
+      <div className="admin-card-toolbar">
+        <FilterBar active={values.when ? 1 : 0} label={translate('admin.filterActions')} onClear={() => props.setParams({ when: null })}>
+          <TimeFilter label={translate('admin.time')} onChange={(value) => props.setParams({ when: value })} value={values.when} />
+        </FilterBar>
+      </div>
       {error && !data ? <LoadFailure message={error} onRetry={reload} /> : null}
       {data ? (
         <>
-          <DataTable
+          <AdminTable
             busy={loading}
             columns={columns}
             empty={translate('admin.noAdminActions')}
+            grow="detail"
+            id="admin-actions"
             label={translate('admin.adminActions')}
+            settings={settings}
             phoneRow={(action) => (
               <>
                 <EventIcon category={actionCategory(action.action)} event={action.action} />
