@@ -850,6 +850,21 @@ impl AcpRuntime {
             )
         };
         if !cached.is_empty() {
+            // The harness's own list wins; a model it lists without efforts
+            // takes the ones a session on that model reported.
+            let learned = self.inner.model_efforts.lock().unwrap();
+            let mut cached = cached;
+            if let Some(learned) = learned.get(agent_id) {
+                for model in cached
+                    .iter_mut()
+                    .filter(|m| m.supported_reasoning_efforts.is_empty())
+                {
+                    if let Some(efforts) = learned.get(&model.model) {
+                        model.default_reasoning_effort = default_effort(efforts);
+                        model.supported_reasoning_efforts = efforts.clone();
+                    }
+                }
+            }
             return Some((cached, None));
         }
         if !configured.is_empty() {

@@ -127,7 +127,7 @@ a handful of concurrent delegates (3-5) over a large burst.
   and refuses if it has uncommitted changes. Use worktrees for parallel edits that
   could touch the same files; skip them for read-only work.
 
-Model IDs and effort options come from local discovery. Preserve explicitly requested models; do not invent an ID from a display name or silently substitute another model. Availability depends on the installed harness and working directory.
+Model IDs and effort options come from local discovery. Preserve explicitly requested models; do not invent an ID from a display name or silently substitute another model. Availability depends on the installed harness and working directory. Discovery learns a model's efforts only once a session on it reports them: if `thread models` lists no efforts for a model, `--reasoning-effort` is still accepted (the receipt says `reasoningEffortUnconfirmed`) and the harness applies or refuses it when the session starts. Do not lower an effort you were asked for because discovery listed none.
 
 
 ## Create and dispatch a task

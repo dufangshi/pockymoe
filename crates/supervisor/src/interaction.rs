@@ -425,14 +425,36 @@ async fn run_as(
                 create.model == "default" || model.is_some(),
                 "model not available; use thread models for this provider/agent"
             );
+            // Discovery only knows a model's efforts once a session on it
+            // reported them. A model that lists efforts must include this one;
+            // one that lists none (unknown) takes it like the UI would, and
+            // its harness applies or refuses it when the session starts.
+            let mut effort_unconfirmed = false;
             if let Some(effort) = create.reasoning_effort.as_deref() {
                 anyhow::ensure!(
-                    model.is_some_and(|m| m
-                        .supported_reasoning_efforts
-                        .iter()
-                        .any(|e| e.reasoning_effort == effort)),
-                    "reasoning effort not available for this model"
+                    !effort.is_empty()
+                        && effort.len() <= 32
+                        && effort
+                            .chars()
+                            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
+                    "invalid reasoning effort"
                 );
+                let known = model
+                    .map(|m| m.supported_reasoning_efforts.as_slice())
+                    .unwrap_or_default();
+                if known.is_empty() {
+                    effort_unconfirmed = true;
+                } else {
+                    anyhow::ensure!(
+                        known.iter().any(|e| e.reasoning_effort == effort),
+                        "reasoning effort {effort} not available for this model; it offers {}",
+                        known
+                            .iter()
+                            .map(|e| e.reasoning_effort.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
+                }
             }
             let t = state
                 .create_thread_with(
@@ -444,9 +466,12 @@ async fn run_as(
                     },
                 )
                 .await?;
-            Ok(
-                json!({"threadId":t.id,"name":t.agent_name,"role":t.agent_role,"worktreePath":t.worktree_path,"workspaceId":t.workspace_id,"provider":t.provider,"agentId":t.agent_id,"model":t.model,"reasoningEffort":t.reasoning_effort,"status":t.status}),
-            )
+            let mut receipt = json!({"threadId":t.id,"name":t.agent_name,"role":t.agent_role,"worktreePath":t.worktree_path,"workspaceId":t.workspace_id,"provider":t.provider,"agentId":t.agent_id,"model":t.model,"reasoningEffort":t.reasoning_effort,"status":t.status});
+            if effort_unconfirmed {
+                receipt["reasoningEffortUnconfirmed"] = json!(true);
+                receipt["note"] = json!("Model discovery lists no efforts for this model yet; the harness applies the effort when the session starts.");
+            }
+            Ok(receipt)
         }
         _ => anyhow::bail!("unknown CLI operation"),
     }
@@ -485,6 +510,23 @@ mod tests {
             .collect();
         ids.sort();
         ids
+    }
+
+    #[tokio::test]
+    async fn an_agent_picks_any_effort_for_a_model_whose_efforts_discovery_does_not_list() {
+        let f = setup().await;
+        let parent = thread(&f.state, &f.open).await;
+        // Discovery has no efforts for the default model: the effort is kept.
+        let created = cli(&f, Some(&parent), json!({"operation":"create","workspaceId":f.open,"provider":"codex","model":"default","reasoningEffort":"high"})).await.unwrap();
+        assert_eq!(created["reasoningEffort"], "high");
+        assert_eq!(created["reasoningEffortUnconfirmed"], true);
+        // A model that lists its efforts must include the requested one.
+        let listed = cli(&f, Some(&parent), json!({"operation":"create","workspaceId":f.open,"provider":"codex","model":"ios-e2e-stream","reasoningEffort":"high"})).await.unwrap();
+        assert_eq!(listed["reasoningEffort"], "high");
+        assert!(listed.get("reasoningEffortUnconfirmed").is_none());
+        let refused = cli(&f, Some(&parent), json!({"operation":"create","workspaceId":f.open,"provider":"codex","model":"ios-e2e-stream","reasoningEffort":"ultra"})).await.unwrap_err().to_string();
+        assert!(refused.contains("low, medium, high"), "{refused}");
+        assert!(cli(&f, Some(&parent), json!({"operation":"create","workspaceId":f.open,"provider":"codex","model":"default","reasoningEffort":"high; rm"})).await.is_err());
     }
 
     fn sorted<const N: usize>(ids: [&String; N]) -> Vec<String> {
