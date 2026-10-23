@@ -2,15 +2,17 @@
 // details with the connection history and forwarded traffic the relay
 // records, and disconnecting a stuck tunnel.
 import { confirmAsync, CopyButton, ErrorMark, MiddleName } from '@pockymoe/thread-ui';
+import { DeviceOwnerCell, OwnerLink } from './owners';
+import { rangeLabel } from './labels';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { ArrowLeftRight, Cpu, Info, Network, Unplug, User } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { adminApi } from './adminApi';
 import { ColumnChart, HistoryNote, Sparkline, TimelineStrip, type TimelineSpan } from './charts';
-import { formatCount, formatDate, formatDateTime, formatDuration, formatRatio, formatRelative, formatTime, parseTime, since } from './format';
+import { formatCount, formatDate, formatDateTime, formatDay, formatDuration, formatRatio, formatRelative, formatTime, parseTime, since } from './format';
 import { protocolLabel, reasonLabel, scopeLabel } from './labels';
 import type { AdminPageProps } from './RelayAdminConsole';
-import type { AdminDevice, AdminDeviceDetail, AdminDeviceFilter } from './types';
+import type { AdminDevice, AdminDeviceDetail, AdminDeviceFilter, AdminRange } from './types';
 import { FilterBar, SelectFilter, TimeFilter, UserFilter, windowParams } from './filters';
 import { AdminTable, useFilterValues, useTableSettings, useUrlSort, type TableColumn } from './table';
 import {
@@ -25,7 +27,6 @@ import {
   Pagination,
   ProtectionMark,
   RowMenu,
-  RowOpener,
   SearchField,
   Skeleton,
   useAdminResource,
@@ -106,17 +107,17 @@ export function DevicesPage(props: AdminPageProps) {
       hideable: false,
       width: 240,
       minWidth: 160,
+      // Long host names keep their end (docs/ui-principles.md §14); the owner
+      // goes with the name, which repeats across people.
       render: (device) => (
-        <RowOpener label={translate('admin.openDevice', { name: device.name })} onOpen={() => setParams({ id: device.id })}>
-          <span className="admin-two-line">
-            {/* Long host names keep their end (docs/ui-principles.md §14). */}
-            <b className="admin-device-name" title={device.name}><MiddleName name={device.name} /></b>
-            <span>{device.ownerUsername}</span>
-          </span>
-        </RowOpener>
+        <DeviceOwnerCell
+          device={{ deviceId: device.id, name: device.name, ownerUserId: device.ownerUserId, ownerUsername: device.ownerUsername, ownerEmail: device.ownerEmail }}
+          onOpenDevice={(id) => setParams({ id })}
+          onOpenUser={(id) => props.go('users', { id })}
+        />
       ),
     },
-    { key: 'owner', label: translate('admin.owner'), sortable: true, defaultHidden: true, width: 150, render: (device) => device.ownerUsername },
+    { key: 'owner', label: translate('admin.owner'), sortable: true, defaultHidden: true, width: 150, render: (device) => <OwnerLink email={device.ownerEmail} onOpenUser={(id) => props.go('users', { id })} userId={device.ownerUserId} username={device.ownerUsername} /> },
     { key: 'state', label: translate('admin.connection'), sortable: true, width: 190, render: (device) => <ConnectionCell device={device} /> },
     { key: 'lastSeen', label: translate('admin.lastSeenColumn'), sortable: true, firstDir: 'desc', defaultHidden: true, width: 150, render: (device) => <time dateTime={(device.connected ? device.lastHeartbeatAt : device.lastSeenAt) ?? undefined} title={formatDateTime(device.connected ? device.lastHeartbeatAt : device.lastSeenAt)}>{device.connected ? translate('admin.now') : formatRelative(device.lastSeenAt ?? null)}</time> },
     { key: 'protection', label: translate('admin.protection'), sortable: true, width: 140, render: (device) => <ProtectionMark protectedDevice={device.protected} /> },
@@ -293,11 +294,16 @@ function VersionCell({ device }: { device: AdminDevice }) {
   );
 }
 
+const DETAIL_RANGES: AdminRange[] = ['24h', '7d', '30d'];
+
 export function DeviceDetail({ id, onClose, onDisconnect, props }: { id: string | null; onClose: () => void; onDisconnect: (device: AdminDevice) => Promise<boolean>; props: AdminPageProps }) {
   useI18n();
+  // The drawer's own range (tunnels are kept 30 days), in the URL as `drange`.
+  const requested = props.params.get('drange') as AdminRange | null;
+  const range: AdminRange = requested && DETAIL_RANGES.includes(requested) ? requested : '24h';
   const { data, error, reload } = useAdminResource<AdminDeviceDetail | null>(
-    () => (id ? adminApi.device(id) : Promise.resolve(null)),
-    `${id}:${props.refreshKey}`,
+    () => (id ? adminApi.device(id, range) : Promise.resolve(null)),
+    `${id}:${range}:${props.refreshKey}`,
     props.onUnauthorized,
   );
   const detail = data && data.device.id === id ? data : null;
@@ -325,18 +331,39 @@ export function DeviceDetail({ id, onClose, onDisconnect, props }: { id: string 
         </>
       ) : null}
       icon={<Cpu aria-hidden className="h-5 w-5" />}
-      onClose={onClose}
+      onClose={() => {
+        if (props.params.get('drange')) props.setParams({ drange: null });
+        onClose();
+      }}
       open={Boolean(id)}
-      subtitle={device ? translate('admin.deviceSubtitle', { owner: device.ownerUsername, date: formatDate(device.createdAt) }) : null}
+      subtitle={device ? translate('admin.deviceSubtitle', { owner: device.ownerEmail ? `${device.ownerUsername} (${device.ownerEmail})` : device.ownerUsername, date: formatDate(device.createdAt) }) : null}
       title={device?.name ?? translate('admin.loading')}
     >
       {!detail || !device ? (error ? <LoadFailure message={error} onRetry={reload} /> : <Skeleton lines={6} />) : (
         <>
-          {detail.connections !== undefined ? <ConnectionHistory detail={detail} /> : null}
-          {detail.traffic !== undefined ? <Traffic detail={detail} /> : null}
+          {detail.connections !== undefined || detail.traffic !== undefined ? (
+            <div aria-label={translate('admin.detailRange')} className="admin-range admin-detail-range" role="group">
+              {DETAIL_RANGES.map((value) => (
+                <button aria-pressed={range === value} key={value} onClick={() => props.setParams({ drange: value === '24h' ? null : value })} type="button">
+                  {rangeLabel(value)}
+                </button>
+              ))}
+            </div>
+          ) : null}
+          {detail.connections !== undefined ? <ConnectionHistory detail={detail} range={range} /> : null}
+          {detail.traffic !== undefined ? <Traffic detail={detail} range={range} /> : null}
           <DetailSection icon={<Info aria-hidden className="h-4 w-4" />} title={translate('admin.details')}>
             <Facts
               items={[
+                {
+                  label: translate('admin.owner'),
+                  value: (
+                    <span className="admin-inline">
+                      <OwnerLink onOpenUser={(user) => props.go('users', { id: user })} userId={device.ownerUserId} username={device.ownerUsername} />
+                      {device.ownerEmail ? <span className="admin-muted">{device.ownerEmail}</span> : null}
+                    </span>
+                  ),
+                },
                 device.version !== undefined && {
                   label: translate('admin.version'),
                   value: device.version ? (
@@ -356,7 +383,10 @@ export function DeviceDetail({ id, onClose, onDisconnect, props }: { id: string 
                   value: detail.shares.length ? (
                     <ul className="admin-plain-list">
                       {detail.shares.map((share) => (
-                        <li key={share.id}>{scopeLabel(share.scope)} → {share.targetUsername ?? '—'}</li>
+                        <li key={share.id}>
+                          {scopeLabel(share.scope)} →{' '}
+                          <OwnerLink onOpenUser={(user) => props.go('users', { id: user })} userId={share.targetUserId} username={share.targetUsername} />
+                        </li>
                       ))}
                     </ul>
                   ) : '—',
@@ -380,12 +410,12 @@ export function DeviceDetail({ id, onClose, onDisconnect, props }: { id: string 
   );
 }
 
-function ConnectionHistory({ detail }: { detail: AdminDeviceDetail }) {
+function ConnectionHistory({ detail, range }: { detail: AdminDeviceDetail; range: AdminRange }) {
   useI18n();
   const history = detail.connections;
   if (!history) {
     return (
-      <DetailSection icon={<Network aria-hidden className="h-4 w-4" />} title={translate('admin.tunnelHistory')}>
+      <DetailSection icon={<Network aria-hidden className="h-4 w-4" />} title={translate('admin.tunnelHistoryIn', { range: rangeLabel(range) })}>
         <p className="admin-empty">{translate('admin.notRecordedYet')}</p>
       </DetailSection>
     );
@@ -405,9 +435,9 @@ function ConnectionHistory({ detail }: { detail: AdminDeviceDetail }) {
     if (span.state === 'online' && span.to - span.from < 10 * 60_000 && history.reconnects >= 5) span.state = 'unstable';
   }
   return (
-    <DetailSection icon={<Network aria-hidden className="h-4 w-4" />} title={translate('admin.tunnelHistory')}>
+    <DetailSection icon={<Network aria-hidden className="h-4 w-4" />} title={translate('admin.tunnelHistoryIn', { range: rangeLabel(range) })}>
       <div className="admin-timeline-offline-base">
-        <TimelineStrip end={end} formatAt={formatTime} label={translate('admin.tunnelHistoryLabel', { uptime: formatRatio(history.uptime, 1), reconnects: history.reconnects })} spans={spans} start={start} />
+        <TimelineStrip end={end} formatAt={range === '24h' ? formatTime : formatDay} label={translate('admin.tunnelHistoryLabelIn', { uptime: formatRatio(history.uptime, 1), reconnects: history.reconnects, range: rangeLabel(range) })} spans={spans} start={start} />
       </div>
       <ul className="admin-legend">
         <li><span aria-hidden className="admin-swatch admin-series-3" /><span>{translate('admin.online')}</span></li>
@@ -434,26 +464,27 @@ function ConnectionHistory({ detail }: { detail: AdminDeviceDetail }) {
   );
 }
 
-function Traffic({ detail }: { detail: AdminDeviceDetail }) {
+function Traffic({ detail, range }: { detail: AdminDeviceDetail; range: AdminRange }) {
   useI18n();
   const traffic = detail.traffic;
+  const title = translate('admin.trafficIn', { range: rangeLabel(range) });
   if (!traffic) {
     return (
-      <DetailSection icon={<ArrowLeftRight aria-hidden className="h-4 w-4" />} title={translate('admin.traffic24h')}>
+      <DetailSection icon={<ArrowLeftRight aria-hidden className="h-4 w-4" />} title={title}>
         <p className="admin-empty">{translate('admin.notRecordedYet')}</p>
       </DetailSection>
     );
   }
   return (
-    <DetailSection icon={<ArrowLeftRight aria-hidden className="h-4 w-4" />} title={translate('admin.traffic24h')}>
+    <DetailSection icon={<ArrowLeftRight aria-hidden className="h-4 w-4" />} title={title}>
       <ColumnChart
-        data={traffic.hours.map((hour) => ({ key: hour.at, label: formatTime(hour.at), values: { requests: hour.requests } }))}
+        data={traffic.hours.map((hour) => ({ key: hour.at, label: traffic.resolutionSeconds < 86_400 ? formatTime(hour.at) : formatDay(hour.at), values: { requests: hour.requests } }))}
         height={160}
-        label={translate('admin.traffic24h')}
+        label={title}
         series={[{ key: 'requests', label: translate('admin.requests'), slot: 1 }]}
       />
-      <p className="admin-chart-note">{translate('admin.trafficNote')}</p>
-      <HistoryNote historyStart={traffic.historyStart} rangeStart={Date.now() - 24 * 3600_000} />
+      <p className="admin-chart-note">{traffic.resolutionSeconds < 86_400 ? translate('admin.trafficNote') : translate('admin.trafficNoteDaily')}</p>
+      <HistoryNote historyStart={traffic.historyStart} rangeStart={Date.parse(traffic.hours[0]?.at ?? '') || Date.now() - 24 * 3600_000} />
     </DetailSection>
   );
 }

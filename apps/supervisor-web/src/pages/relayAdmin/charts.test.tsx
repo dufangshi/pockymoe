@@ -140,4 +140,15 @@ describe('admin charts', () => {
     rerender(<HistoryNote historyStart="2026-10-10T00:00:00Z" rangeStart={Date.parse('2026-10-15T00:00:00Z')} />);
     expect(container.textContent).toBe('');
   });
+
+  it('draws a threshold as a named dashed line inside the scale', () => {
+    const { container } = render(
+      <LineChart formatAt={(at) => String(at)} integer={false} label="CPU" marks={[{ value: 0.8, label: 'High 80%', tone: 'warning' }]} minMax={0.1} points={[{ at: 0, value: 0.05 }, { at: 1, value: 0.1 }]} />,
+    );
+    const mark = container.querySelector('.admin-mark.is-warning');
+    expect(mark?.textContent).toBe('High 80%');
+    // The scale reaches the threshold, so the line is on the chart.
+    const y = Number(mark?.querySelector('line')?.getAttribute('y1'));
+    expect(y).toBeGreaterThanOrEqual(12);
+  });
 });

@@ -3,6 +3,24 @@
 
 export type AdminRange = '24h' | '7d' | '30d' | '90d';
 
+/** The window a chart endpoint answered for (a preset or `custom`). */
+export interface AdminWindow {
+  range: AdminRange | 'custom';
+  start: string;
+  end: string;
+  resolutionSeconds: number;
+}
+
+/** A device and its owner, on every row that names a device. */
+export interface AdminDeviceRef {
+  deviceId: string;
+  name: string;
+  deviceName?: string;
+  ownerUserId: string;
+  ownerUsername: string;
+  ownerEmail?: string | null;
+}
+
 export interface Paged<T> {
   items: T[];
   total: number;
@@ -29,6 +47,11 @@ export interface AdminSecurityEvent {
   username: string | null;
   resourceId: string | null;
   resourceLabel: string | null;
+  /** Set for device events: the device's owner (names repeat across people). */
+  resourceType?: 'device' | null;
+  resourceOwnerUserId?: string | null;
+  resourceOwnerUsername?: string | null;
+  resourceOwnerEmail?: string | null;
 }
 
 export interface AdminAction {
@@ -39,6 +62,10 @@ export interface AdminAction {
   targetType: string | null;
   targetId: string | null;
   targetLabel: string | null;
+  /** For a device target that still exists: its owner. */
+  targetOwnerUserId?: string | null;
+  targetOwnerUsername?: string | null;
+  targetOwnerEmail?: string | null;
   detail: Record<string, unknown> | null;
 }
 
@@ -70,6 +97,7 @@ export interface AdminOverview {
   generatedAt: string;
   range: AdminRange;
   rangeStart: string;
+  window?: AdminWindow;
   relay: { version: string; startedAt: string; publicBaseUrl: string | null };
   attention: {
     pendingRegistrations: number;
@@ -104,9 +132,11 @@ export interface AdminOverview {
     newThisWeek: number;
     newInRange: number;
   };
-  shares: { active: number; createdThisWeek: number; revokedThisWeek: number; expiringSoon: number };
+  shares: { active: number; createdThisWeek: number; revokedThisWeek: number; expiringSoon: number; createdInRange?: number; revokedInRange?: number };
   registrations: AdminRegistrationSummary;
   signupsWeekly: Array<{ weekStart: string; count: number }>;
+  /** New accounts over the window (per hour, day or week). */
+  signups?: { resolutionSeconds: number; points: Array<[number, number]>; total: number };
   publicLinks: AdminPublicLinkSummary;
   securityEvents: AdminSecurityEvent[];
   onlineDevices?: AdminSeries | null;
@@ -185,6 +215,7 @@ export interface AdminDevice {
   name: string;
   ownerUserId: string;
   ownerUsername: string;
+  ownerEmail?: string;
   createdAt: string;
   connected: boolean;
   connectedAt: string | null;
@@ -224,8 +255,10 @@ export interface AdminConnectionSpan {
 export interface AdminDeviceDetail {
   device: AdminDevice;
   upstreamProtocols: string[];
-  shares: Array<{ id: string; kind: 'share' | 'grant'; scope: 'thread' | 'workspace' | 'device'; targetUsername: string | null }>;
+  shares: Array<{ id: string; kind: 'share' | 'grant'; scope: 'thread' | 'workspace' | 'device'; targetUsername: string | null; targetUserId?: string | null }>;
   previews: { mappings: number; sessions: number; streams: number };
+  /** The drawer's range: 24h, 7d or 30d. */
+  range?: AdminRange;
   connections?: {
     since: string;
     historyStart: string | null;
@@ -244,6 +277,8 @@ export interface AdminDeviceDetail {
 export interface AdminUserDetail {
   user: AdminUser;
   devices: AdminDevice[];
+  /** All the user's devices (the list holds at most 50). */
+  devicesTotal?: number;
   sessions: AdminSession[];
   shares: { outgoing: number; incoming: number };
   accountBrowsers: number;
@@ -276,8 +311,10 @@ export interface AdminShare {
   scope: AdminShareScope;
   ownerUserId: string;
   ownerUsername: string;
+  ownerEmail?: string | null;
   targetUserId: string;
   targetUsername: string;
+  targetEmail?: string | null;
   deviceId: string;
   deviceName: string;
   workspaceLabel: string | null;
@@ -296,16 +333,22 @@ export interface AdminShares extends Paged<AdminShare> {
     active: number;
     createdThisWeek: number;
     revokedThisWeek: number;
+    createdInRange?: number;
+    revokedInRange?: number;
     expiringSoon: number;
     byScope: Record<AdminShareScope, number>;
     permissions: { control: number; read: number; filesWrite: number; canCreateThreads: number };
   };
-  usage: { days: Array<{ day: string; kinds: Record<string, number> }>; approximate: boolean };
+  usage: { days: Array<{ day: string; at?: string; kinds: Record<string, number> }>; approximate: boolean; resolutionSeconds?: number };
+  window?: AdminWindow;
 }
 
 export interface AdminPublicLink {
   id: string;
   ownerUsername: string;
+  ownerUserId?: string;
+  ownerEmail?: string;
+  deviceId?: string;
   deviceName: string;
   createdAt: string;
   refreshedAt: string | null;
@@ -323,11 +366,13 @@ export interface AdminPreviews {
   mappings: number;
   sessions: number;
   streams: number;
-  devices: Array<{ deviceId: string; deviceName: string; ownerUsername: string | null; mappings: number; sessions: number; streams: number }>;
+  devices: Array<{ deviceId: string; deviceName: string; ownerUsername: string | null; ownerUserId?: string; ownerEmail?: string | null; mappings: number; sessions: number; streams: number }>;
+  devicesTotal?: number;
 }
 
 export interface AdminSecuritySummary {
-  range: AdminRange;
+  range: AdminRange | 'custom';
+  window?: AdminWindow;
   logins: number;
   mfaLogins: number;
   activeSessions: number;
@@ -393,18 +438,19 @@ export interface AdminSystem {
     historyStart: string | null;
   } | null;
   metrics?: { retentionDays: number; historyStart: string | null } | null;
+  window?: AdminWindow;
 }
 
 export interface AdminSearchResult {
   users: Array<{ id: string; username: string; email: string; role: string; enabled: boolean }>;
-  devices: Array<{ id: string; name: string; ownerUsername: string }>;
+  devices: Array<{ id: string; name: string; ownerUsername: string; ownerUserId?: string; ownerEmail?: string }>;
 }
 
 export interface AdminRetention {
   metricsDays: number;
   securityDays: number;
   options: { metricsDays: number[]; securityDays: number[] };
-  fixed: { connectionDays: number; adminActionDays: number; securityMaxEvents: number };
+  fixed: { connectionDays: number; deviceTrafficHourDays?: number; adminActionDays: number; securityMaxEvents: number };
 }
 
 export type AdminErrorKind = 'timeout' | 'busy' | 'offline' | 'other';
@@ -448,10 +494,107 @@ export interface AdminPerformance {
     durations: Array<{ key: 'lt1m' | 'lt10m' | 'lt1h' | 'lt6h' | 'lt24h' | 'gte24h'; count: number }>;
     open: number;
     connects: number;
-    topDevices: Array<{ deviceId: string; name: string; ownerUsername: string | null; connects: number; shortConnections: number }>;
+    topDevices: AdminReconnectRow[];
+    /** Devices that reconnected in the window (the response holds the first 10). */
+    topDevicesTotal?: number;
   };
   deviceTraffic: {
     resolutionSeconds: number;
-    devices: Array<{ deviceId: string; name: string; ownerUsername: string; requests: number; errors: number; requestBytes: number; responseBytes: number }>;
+    devices: AdminTrafficRow[];
+    total?: number;
+    requests?: number;
   };
+}
+
+export interface AdminReconnectRow extends AdminDeviceRef {
+  connects: number;
+  shortConnections: number;
+}
+
+export interface AdminTrafficRow extends AdminDeviceRef {
+  requests: number;
+  errors: number;
+  requestBytes: number;
+  responseBytes: number;
+}
+
+/** GET /relay/admin/performance/devices: one page of a per-device list. */
+export interface AdminPerformanceDevices<T> extends Paged<T> {
+  window: AdminWindow;
+  resolutionSeconds?: number;
+  requests?: number;
+}
+
+export type AdminCheckStatus = 'ok' | 'warn' | 'critical' | 'unknown';
+
+export interface AdminServerCheck {
+  key: 'cpu' | 'processCpu' | 'load' | 'memory' | 'swap' | 'disk' | 'openFiles' | 'wal' | 'storeBusy' | 'storeWait' | 'loopLag' | 'tunnelQueue' | string;
+  status: AdminCheckStatus;
+  value: number | null;
+  warnAt: number;
+  criticalAt: number;
+}
+
+/** GET /relay/admin/server: the relay's host (null where the system offers nothing). */
+export interface AdminServer {
+  platform: string;
+  sampledAt: string;
+  status: AdminCheckStatus;
+  window: AdminWindow;
+  historyStart: string | null;
+  process: {
+    pid: number;
+    startedAt: string;
+    uptimeSeconds: number;
+    rssBytes: number | null;
+    vmBytes: number | null;
+    cpuCores: number | null;
+    threads: number | null;
+    openFiles: number | null;
+    openFilesLimit: number | null;
+  };
+  host: {
+    cores: number | null;
+    cpu: number | null;
+    perCore: number[];
+    load: [number, number, number] | null;
+    memoryTotal: number | null;
+    memoryAvailable: number | null;
+    memoryUsed: number | null;
+    swapTotal: number | null;
+    swapUsed: number | null;
+    netRxPerSecond: number | null;
+    netTxPerSecond: number | null;
+  };
+  cgroup: { path: string; memoryBytes: number | null; memoryLimit: number | null; cpuLimitCores: number | null } | null;
+  memoryScope: 'cgroup' | 'host';
+  cpuCapacityCores: number | null;
+  disk: {
+    path: string | null;
+    totalBytes: number | null;
+    usedBytes: number | null;
+    availableBytes: number | null;
+    databaseBytes: number | null;
+    walBytes: number | null;
+  };
+  relay: {
+    deviceTunnels: number;
+    browserSockets: number;
+    pendingRequests: number;
+    previewStreams: number | null;
+    tunnelQueue: number | null;
+    tunnelQueueMax: number | null;
+    browserQueue: number | null;
+    queueCapacity: number | null;
+    storeLocksPerMinute: number | null;
+    storeBusy: number | null;
+    storeWaitMaxMs: number | null;
+    storeHoldMaxMs: number | null;
+    loopLagMs: number | null;
+  };
+  checks: AdminServerCheck[];
+  series: Record<
+    'processCpu' | 'hostCpu' | 'hostCpuPeak' | 'load1' | 'processRss' | 'hostMemoryUsed' | 'cgroupMemory' | 'swapUsed' | 'diskUsed' | 'databaseBytes' | 'walBytes' | 'netRx' | 'netTx' | 'tunnels' | 'browsers' | 'pending' | 'tunnelQueue' | 'storeBusy' | 'storeWaitMax' | 'loopLag' | 'openFiles' | 'threads',
+    AdminSeries
+  >;
 }

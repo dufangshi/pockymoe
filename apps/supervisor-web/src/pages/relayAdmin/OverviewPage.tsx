@@ -13,20 +13,23 @@ import {
   UserPlus,
   Users,
 } from 'lucide-react';
-import { useEffect } from 'react';
+import { useEffect, useMemo } from 'react';
 import { adminApi } from './adminApi';
+import { pageWindow, windowLabel } from './ranges';
 import { BarList, ChartCard, ColumnChart, HistoryNote, LineChart, ProportionBar, Sparkline, type SeriesSlot } from './charts';
 import { formatCount, formatDateTime, formatDay, formatDuration, formatPercent, formatRatio, formatRelative, formatTime } from './format';
 import { rangeLabel } from './labels';
 import type { AdminPageProps } from './RelayAdminConsole';
 import type { AdminOverview, AdminSeries } from './types';
-import { Card, Figure, FigureBand, LoadFailure, MiniStat, Skeleton, useAdminResource } from './ui';
+import { Badge, Card, Figure, FigureBand, LoadFailure, MiniStat, Skeleton, useAdminResource } from './ui';
 import { ActionList, EventList } from './events';
 
 export function OverviewPage(props: AdminPageProps) {
   useI18n();
-  const { range, refreshKey, onLoaded, onUnauthorized, go } = props;
-  const { data, error, loading, reload } = useAdminResource(() => adminApi.overview(range), `${range}:${refreshKey}`, onUnauthorized);
+  const { range, customRange, refreshKey, onLoaded, onUnauthorized, go } = props;
+  // One range for the page: every chart over time follows it (and the URL).
+  const request = useMemo(() => pageWindow({ range, customRange }), [range, customRange]);
+  const { data, error, loading, reload } = useAdminResource(() => adminApi.overview(request), `${JSON.stringify(request)}:${refreshKey}`, onUnauthorized);
   useEffect(() => {
     if (data) onLoaded();
   }, [data, onLoaded]);
@@ -39,6 +42,7 @@ export function OverviewPage(props: AdminPageProps) {
       <div className="admin-grid is-wide-left">
         <OnlineDevicesCard data={data} />
         <ChartCard
+          aside={<NowBadge />}
           subtitle={translate('admin.recentActivitySubtitle')}
           table={{
             columns: [translate('admin.lastActive'), translate('admin.people')],
@@ -54,27 +58,7 @@ export function OverviewPage(props: AdminPageProps) {
         </ChartCard>
       </div>
       <div className="admin-grid is-thirds">
-        <ChartCard
-          subtitle={translate('admin.signupsSubtitle', { total: formatCount(data.signupsWeekly.reduce((sum, week) => sum + week.count, 0)) })}
-          table={{
-            columns: [translate('admin.weekOf'), translate('admin.newAccounts')],
-            rows: data.signupsWeekly.map((week) => [formatDay(week.weekStart), week.count]),
-          }}
-          title={translate('admin.signups')}
-          footer={
-            <>
-              <span>{translate('admin.medianApproval', { time: data.registrations.medianApprovalHours === null ? '—' : formatDuration(data.registrations.medianApprovalHours * 3600) })}</span>
-              <span>{translate('admin.approvalRate', { rate: formatPercent(data.registrations.approved30d, data.registrations.approved30d + data.registrations.rejected30d) })}</span>
-            </>
-          }
-        >
-          <ColumnChart
-            data={data.signupsWeekly.map((week) => ({ key: week.weekStart, label: formatDay(week.weekStart), values: { count: week.count } }))}
-            height={180}
-            label={translate('admin.signups')}
-            series={[{ key: 'count', label: translate('admin.newAccounts'), slot: 1 }]}
-          />
-        </ChartCard>
+        <SignupsCard data={data} />
         <VersionsCard data={data} go={go} />
         <TunnelsCard data={data} go={go} />
       </div>
@@ -89,7 +73,7 @@ export function OverviewPage(props: AdminPageProps) {
           subtitle={translate('admin.securityEventsSubtitle')}
           title={translate('admin.recentSecurityEvents')}
         >
-          <EventList events={data.securityEvents} />
+          <EventList events={data.securityEvents} links={{ onOpenDevice: (id) => go('devices', { id }), onOpenUser: (id) => go('users', { id }) }} />
         </Card>
         {data.adminActions !== undefined ? (
           <Card
@@ -102,11 +86,72 @@ export function OverviewPage(props: AdminPageProps) {
             subtitle={translate('admin.adminActionsSubtitle')}
             title={translate('admin.adminActions')}
           >
-            <ActionList actions={data.adminActions ?? []} />
+            <ActionList actions={data.adminActions ?? []} links={{ onOpenDevice: (id) => go('devices', { id }), onOpenUser: (id) => go('users', { id }) }} />
           </Card>
         ) : null}
       </div>
     </div>
+  );
+}
+
+/** Marks a card that shows the current state, not the page's range. */
+function NowBadge() {
+  useI18n();
+  return <Badge tone="neutral">{translate('admin.asOfNow')}</Badge>;
+}
+
+/** The page's window: start and end, and how to label times in it. */
+function chartSpan(data: AdminOverview) {
+  const start = Date.parse(data.window?.start ?? data.rangeStart);
+  const end = Date.parse(data.window?.end ?? data.generatedAt);
+  const short = end - start <= 2 * 86_400_000;
+  return { start, end, short, formatAt: (at: number) => (short ? formatTime(at) : formatDay(at)), label: windowLabel(data) };
+}
+
+function SignupsCard({ data }: { data: AdminOverview }) {
+  useI18n();
+  const footer = (
+    <>
+      <span>{translate('admin.medianApproval', { time: data.registrations.medianApprovalHours === null ? '—' : formatDuration(data.registrations.medianApprovalHours * 3600) })}</span>
+      <span>{translate('admin.approvalRate', { rate: formatPercent(data.registrations.approved30d, data.registrations.approved30d + data.registrations.rejected30d) })}</span>
+    </>
+  );
+  // Older relays answer with 12 weeks only.
+  if (!data.signups) {
+    return (
+      <ChartCard
+        footer={footer}
+        subtitle={translate('admin.signupsSubtitle', { total: formatCount(data.signupsWeekly.reduce((sum, week) => sum + week.count, 0)) })}
+        table={{ columns: [translate('admin.weekOf'), translate('admin.newAccounts')], rows: data.signupsWeekly.map((week) => [formatDay(week.weekStart), week.count]) }}
+        title={translate('admin.signups')}
+      >
+        <ColumnChart
+          data={data.signupsWeekly.map((week) => ({ key: week.weekStart, label: formatDay(week.weekStart), values: { count: week.count } }))}
+          height={180}
+          label={translate('admin.signups')}
+          series={[{ key: 'count', label: translate('admin.newAccounts'), slot: 1 }]}
+        />
+      </ChartCard>
+    );
+  }
+  const signups = data.signups;
+  const step = signups.resolutionSeconds;
+  const formatBucket = (at: number) => (step < 86_400 ? formatTime(at) : formatDay(at));
+  const unit = step < 86_400 ? translate('admin.perHour') : step < 7 * 86_400 ? translate('admin.perDay') : translate('admin.perWeek');
+  return (
+    <ChartCard
+      footer={footer}
+      subtitle={translate('admin.signupsInRange', { unit, total: formatCount(signups.total), range: chartSpan(data).label })}
+      table={{ columns: [translate('admin.time'), translate('admin.newAccounts')], rows: signups.points.map(([at, count]) => [step < 86_400 ? formatDateTime(at) : formatDay(at), count]) }}
+      title={translate('admin.signups')}
+    >
+      <ColumnChart
+        data={signups.points.map(([at, count]) => ({ key: String(at), label: formatBucket(at), values: { count } }))}
+        height={180}
+        label={translate('admin.signups')}
+        series={[{ key: 'count', label: translate('admin.newAccounts'), slot: 1 }]}
+      />
+    </ChartCard>
   );
 }
 
@@ -195,7 +240,9 @@ function KeyFigures({ data }: { data: AdminOverview }) {
   return (
     <FigureBand label={translate('admin.keyFigures')}>
       <Figure
-        detail={translate('admin.devicesFigureDetail', { added: formatCount(data.devices.newThisWeek), unprotected: formatCount(data.devices.unprotected) })}
+        detail={data.window
+          ? translate('admin.devicesFigureDetailIn', { added: formatCount(data.devices.newInRange), unprotected: formatCount(data.devices.unprotected), range: chartSpan(data).label })
+          : translate('admin.devicesFigureDetail', { added: formatCount(data.devices.newThisWeek), unprotected: formatCount(data.devices.unprotected) })}
         icon={<MonitorSmartphone className="h-4 w-4" />}
         label={translate('admin.onlineDevices')}
         total={formatCount(data.devices.total)}
@@ -210,7 +257,9 @@ function KeyFigures({ data }: { data: AdminOverview }) {
         value={formatCount(users.active7d)}
       />
       <Figure
-        detail={translate('admin.sharesFigureDetail', { added: formatCount(data.shares.createdThisWeek), revoked: formatCount(data.shares.revokedThisWeek), expiring: formatCount(data.shares.expiringSoon) })}
+        detail={data.shares.createdInRange !== undefined
+          ? translate('admin.sharesFigureDetailIn', { added: formatCount(data.shares.createdInRange), revoked: formatCount(data.shares.revokedInRange ?? 0), expiring: formatCount(data.shares.expiringSoon), range: chartSpan(data).label })
+          : translate('admin.sharesFigureDetail', { added: formatCount(data.shares.createdThisWeek), revoked: formatCount(data.shares.revokedThisWeek), expiring: formatCount(data.shares.expiringSoon) })}
         icon={<Share2 className="h-4 w-4" />}
         label={translate('admin.activeShares')}
         value={formatCount(data.shares.active)}
@@ -239,10 +288,7 @@ export function seriesPoints(series: AdminSeries) {
 function OnlineDevicesCard({ data }: { data: AdminOverview }) {
   if (data.onlineDevices === undefined) return null;
   const series = data.onlineDevices;
-  const rangeStart = Date.parse(data.rangeStart);
-  const end = Date.parse(data.generatedAt);
-  const dayRange = data.range === '24h';
-  const formatAt = (at: number) => (dayRange ? formatTime(at) : formatDay(at));
+  const { start: rangeStart, end, formatAt } = chartSpan(data);
   return (
     <ChartCard
       subtitle={series ? translate('admin.onlineDevicesSubtitle', { minutes: Math.round(series.resolutionSeconds / 60) }) : translate('admin.notRecordedYet')}
@@ -278,6 +324,7 @@ function VersionsCard({ data, go }: { data: AdminOverview; go: AdminPageProps['g
   ];
   return (
     <ChartCard
+      aside={<NowBadge />}
       subtitle={translate('admin.versionsSubtitle', { online: formatCount(online), latest: data.relay.version })}
       table={{ columns: [translate('admin.version'), translate('admin.onlineDevices'), translate('admin.allDevices')], rows: versions.map((item) => [item.version ?? translate('admin.unknown'), item.online, item.devices]) }}
       title={translate('admin.deviceVersions')}
@@ -331,7 +378,7 @@ function TunnelsCard({ data, go }: { data: AdminOverview; go: AdminPageProps['go
   const values = (series: AdminSeries) => series.points.map(([, value]) => value);
   const open = tunnels.latencyBoundsMs?.[tunnels.latencyBoundsMs.length - 1];
   return (
-    <ChartCard aside={details} subtitle={translate('admin.tunnelsSubtitle', { range: rangeLabel(data.range) })} title={translate('admin.tunnels')}>
+    <ChartCard aside={details} subtitle={translate('admin.tunnelsSubtitle', { range: chartSpan(data).label })} title={translate('admin.tunnels')}>
       <ul className="admin-tunnel-stats">
         <li>
           <span>{translate('admin.reconnects')}</span>

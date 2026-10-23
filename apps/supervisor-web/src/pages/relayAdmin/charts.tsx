@@ -246,6 +246,7 @@ export function LineChart({
   end,
   minMax = 4,
   integer = true,
+  marks = [],
 }: {
   points?: LinePoint[];
   series?: LineSeries[];
@@ -254,18 +255,20 @@ export function LineChart({
   height?: number;
   formatValue?: (value: number) => string;
   formatAt: (at: number) => string;
-  start?: number;
-  end?: number;
+  start?: number | undefined;
+  end?: number | undefined;
   minMax?: number;
   /** Whole-number ticks (counts); false for ratios and other fractions. */
   integer?: boolean;
+  /** Dashed reference lines (a threshold, a limit), named at their end; the scale includes them. */
+  marks?: Array<{ value: number; label: string; tone?: 'warning' | 'danger' | 'limit' }>;
 }) {
   const [ref, width] = useWidth<HTMLDivElement>();
   const lines: LineSeries[] = series ?? [{ key: 'value', label, slot, points: points ?? [] }];
   const single = lines.length === 1;
   const axis = lines[0]?.points ?? [];
   const known = lines.flatMap((line) => line.points.filter((point) => point.value !== null) as Array<{ at: number; value: number }>);
-  const max = Math.max(minMax, ...known.map((point) => point.value));
+  const max = Math.max(minMax, ...known.map((point) => point.value), ...marks.map((mark) => mark.value));
   const ticks = niceTicks(max, 4, integer);
   const top = ticks[ticks.length - 1] ?? max;
   const from = start ?? axis[0]?.at ?? 0;
@@ -274,7 +277,9 @@ export function LineChart({
   const plotHeight = height - PAD.top - PAD.bottom;
   const x = (at: number) => PAD.left + ((at - from) / Math.max(1, to - from)) * plotWidth;
   const y = (value: number) => PAD.top + plotHeight - (value / top) * plotHeight;
-  const xTicks = Array.from({ length: 5 }, (_, index) => from + ((to - from) * index) / 4);
+  // Fewer time labels on narrow charts, so they never run into each other.
+  const xCount = plotWidth < 300 ? 3 : plotWidth < 460 ? 4 : 5;
+  const xTicks = Array.from({ length: xCount }, (_, index) => from + ((to - from) * index) / (xCount - 1));
   const pointer = useChartPointer(axis.length);
   const nearest = (px: number) => {
     let best = 0;
@@ -332,7 +337,13 @@ export function LineChart({
             </g>
           ))}
           {xTicks.map((tick, index) => (
-            <text className="admin-axis" key={index} textAnchor={index === 0 ? 'start' : index === 4 ? 'end' : 'middle'} x={x(tick)} y={height - 6}>{formatAt(tick)}</text>
+            <text className="admin-axis" key={index} textAnchor={index === 0 ? 'start' : index === xCount - 1 ? 'end' : 'middle'} x={x(tick)} y={height - 6}>{formatAt(tick)}</text>
+          ))}
+          {marks.map((mark) => (
+            <g className={`admin-mark is-${mark.tone ?? 'limit'}`} key={mark.label}>
+              <line x1={PAD.left} x2={width - PAD.right} y1={y(mark.value)} y2={y(mark.value)} />
+              <text textAnchor="end" x={width - PAD.right} y={y(mark.value) - 4}>{mark.label}</text>
+            </g>
           ))}
           {lines.map((line) => {
             const runs = runsOf(line.points);

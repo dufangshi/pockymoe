@@ -21,8 +21,15 @@ import type {
   AdminUsers,
   AdminAction,
   AdminPerformance,
+  AdminPerformanceDevices,
+  AdminReconnectRow,
+  AdminServer,
+  AdminTrafficRow,
   Paged,
 } from './types';
+
+/** A chart window: a preset range or a custom `from`/`to` (epoch ms). */
+export type WindowParams = { range?: AdminRange; from?: number; to?: number };
 
 type Params = Record<string, string | number | null | undefined>;
 /** A list request: paging, search, sort and column filters. */
@@ -44,7 +51,7 @@ function admin<T>(path: string, init?: RequestInit) {
 const id = encodeURIComponent;
 
 export const adminApi = {
-  overview: (range: AdminRange) => admin<AdminOverview>(`overview${query({ range })}`),
+  overview: (window: WindowParams) => admin<AdminOverview>(`overview${query(window)}`),
   search: (q: string) => admin<AdminSearchResult>(`search${query({ q })}`),
   users: (params: ListParams) =>
     admin<AdminUsers>(`users${query(params)}`),
@@ -55,7 +62,7 @@ export const adminApi = {
     admin<AdminRegistrations>(`registrations${query(params)}`),
   devices: (params: ListParams) =>
     admin<AdminDevices>(`devices${query(params)}`),
-  device: (deviceId: string) => admin<AdminDeviceDetail>(`devices/${id(deviceId)}`),
+  device: (deviceId: string, range?: AdminRange) => admin<AdminDeviceDetail>(`devices/${id(deviceId)}${query({ range: range === '24h' ? undefined : range })}`),
   disconnectDevice: (deviceId: string) =>
     admin<{ id: string; wasConnected: boolean }>(`devices/${id(deviceId)}/disconnect`, { method: 'POST' }),
   shares: (params: ListParams) =>
@@ -65,7 +72,7 @@ export const adminApi = {
   publicLinks: (params: ListParams) =>
     admin<AdminPublicLinks>(`public-links${query(params)}`),
   previews: () => admin<AdminPreviews>('previews'),
-  security: (range: AdminRange) => admin<AdminSecuritySummary>(`security${query({ range })}`),
+  security: (window: WindowParams) => admin<AdminSecuritySummary>(`security${query(window)}`),
   securityEvents: (params: ListParams) =>
     admin<Paged<AdminSecurityEvent>>(`security/events${query(params)}`),
   sessions: (params: ListParams) =>
@@ -73,9 +80,14 @@ export const adminApi = {
   endSession: (sessionId: string) => admin<{ id: string }>(`sessions/${id(sessionId)}`, { method: 'DELETE' }),
   actions: (params: ListParams) =>
     admin<Paged<AdminAction>>(`actions${query(params)}`),
-  performance: (params: { range?: AdminRange; from?: number; to?: number }) =>
+  performance: (params: WindowParams) =>
     admin<AdminPerformance>(`performance${query(params)}`),
-  system: () => admin<AdminSystem>('system'),
+  reconnectDevices: (params: WindowParams & ListParams) =>
+    admin<AdminPerformanceDevices<AdminReconnectRow>>(`performance/devices${query({ ...params, view: 'reconnects' })}`),
+  trafficDevices: (params: WindowParams & ListParams) =>
+    admin<AdminPerformanceDevices<AdminTrafficRow>>(`performance/devices${query({ ...params, view: 'traffic' })}`),
+  system: (window: WindowParams = {}) => admin<AdminSystem>(`system${query(window)}`),
+  server: (window: WindowParams) => admin<AdminServer>(`server${query(window)}`),
   registrationSettings: () =>
     admin<{ registrationEnabled: boolean; settings: RelayRegistrationSettingsDto }>('settings/registration'),
   retention: () => admin<AdminRetention>('settings/retention'),

@@ -143,6 +143,18 @@ c.commit()
     await expect(nav.getByRole('button', { name: /^Overview/ })).toHaveAttribute('aria-current', 'page');
     await expect(page.getByText('accounts without an account key', { exact: true })).toBeVisible();
 
+    // One time range for the overview, kept in the URL: every chart over
+    // time follows it; cards of the present say "Now".
+    await page.getByRole('group', { name: 'Time range' }).getByRole('button', { name: '30 days', exact: true }).click();
+    await expect(page).toHaveURL(/range=30d/);
+    await expect(page.getByRole('region', { name: 'New accounts' }).getByText(/^Per day · \d+ in 30 days$/)).toBeVisible();
+    await expect(page.getByRole('region', { name: 'Device versions' }).getByText('Now', { exact: true })).toBeVisible();
+    await page.getByRole('group', { name: 'Time range' }).getByRole('button', { name: 'Custom', exact: true }).click();
+    await page.getByRole('dialog', { name: 'Custom range' }).getByRole('button', { name: 'Apply', exact: true }).click();
+    await expect(page).toHaveURL(/range=custom&from=\d{4}-\d{2}-\d{2}&to=\d{4}-\d{2}-\d{2}/);
+    await expect(page.getByRole('heading', { name: 'New accounts' })).toBeVisible();
+    await page.getByRole('group', { name: 'Time range' }).getByRole('button', { name: '24 hours', exact: true }).click();
+
     // Users (30 people and the admin): the first page holds 25, the second the
     // rest; a row opens its details in the drawer.
     await nav.getByRole('button', { name: /^Users/ }).click();
@@ -190,8 +202,17 @@ c.commit()
     await expect(page).toHaveURL(/state=offline/);
     await expect(page.getByText('0 matches', { exact: true })).toBeVisible();
     await page.getByRole('button', { name: 'Clear filters', exact: true }).click();
-    await page.getByRole('button', { name: 'Open console-test-device', exact: true }).first().click();
+    // The device row names its owner and links to both (names such as "mac"
+    // repeat across people); the owner's email is the link's title.
+    const owner = page.getByRole('region', { name: 'Devices' }).getByRole('button', { name: 'Open owner person-01 (person-01@example.test)', exact: true });
+    await expect(owner).toHaveAttribute('title', 'person-01@example.test');
+    await owner.click();
+    await expect(page.getByRole('dialog', { name: 'person-01' })).toBeVisible();
+    await page.keyboard.press('Escape');
+    await nav.getByRole('button', { name: /^Devices/ }).click();
+    await page.getByRole('button', { name: 'Open console-test-device of person-01', exact: true }).first().click();
     const device = page.getByRole('dialog', { name: 'console-test-device' });
+    await expect(device.getByText('person-01 (person-01@example.test)', { exact: false })).toBeVisible();
     await device.getByRole('button', { name: 'Disconnect tunnel', exact: true }).click();
     const confirm = page.getByRole('dialog', { name: 'Disconnect console-test-device?' });
     await confirm.getByRole('button', { name: 'Disconnect tunnel', exact: true }).click();
@@ -219,6 +240,19 @@ c.commit()
     await expect(page.getByRole('heading', { name: 'Request volume' })).toBeVisible();
     await page.getByRole('button', { name: 'Expand sidebar', exact: true }).click();
 
+    // Server: the relay's host, each figure with a status in words, the
+    // thresholds behind them and history charts over the page's range.
+    await nav.getByRole('button', { name: /^Server/ }).click();
+    const now = page.getByRole('region', { name: 'The server now' });
+    await expect(now).toBeVisible();
+    for (const tile of ['CPU', 'Memory', 'Disk', 'Database', 'Store lock', 'Runtime delay']) await expect(now.getByText(tile, { exact: true })).toBeVisible();
+    await expect(now.getByText(/^(Normal|High|Critical)$/).first()).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Disk and database' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Relay load' })).toBeVisible();
+    await page.getByText(/What turns amber or red/).click();
+    await expect(page.getByText('high at 85% · critical at 95%').first()).toBeVisible();
+    expect(await page.locator('main').textContent()).not.toContain('person-');
+
     // The admin action log names the action, its target and the admin.
     await nav.getByRole('button', { name: /^Sessions and security/ }).click();
     await page.getByRole('tab', { name: 'Admin actions', exact: true }).click();
@@ -226,6 +260,7 @@ c.commit()
     const entry = log.getByRole('row').filter({ hasText: 'Disconnected a tunnel' });
     await expect(entry).toHaveCount(1);
     await expect(entry).toContainText('console-test-device');
+    await expect(entry).toContainText('person-01');
     await expect(entry).toContainText('console-admin');
     expect(logs.filter((line) => line.startsWith('browser exception')), 'No uncaught browser errors').toEqual([]);
     await context.close();

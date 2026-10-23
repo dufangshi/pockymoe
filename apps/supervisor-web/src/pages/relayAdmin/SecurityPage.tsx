@@ -6,10 +6,12 @@ import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { Gauge, History, Laptop, ScrollText, ShieldCheck } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { adminApi } from './adminApi';
+import { DeviceOwnerCell } from './owners';
+import { pageWindow, windowLabel } from './ranges';
 import { BarList, ChartCard, ColumnChart, HistoryNote, Legend, LineChart, type SeriesSlot } from './charts';
 import { actionCategory, EventIcon } from './events';
 import { formatCount, formatDateTime, formatDay, formatPercent, formatRelative } from './format';
-import { actionLabel, eventCategoryLabel, eventLabel, rangeLabel } from './labels';
+import { actionLabel, eventCategoryLabel, eventLabel } from './labels';
 import type { AdminPageProps } from './RelayAdminConsole';
 import type { AdminAction, AdminSecurityEvent, AdminSecuritySummary, AdminSession } from './types';
 import { FilterBar, SelectFilter, TimeFilter, UserFilter, windowParams } from './filters';
@@ -36,7 +38,8 @@ const EVENT_FILTERS = ['all', 'login', 'challenge', 'reauth', 'credential', 'fai
 
 export function SecurityPage(props: AdminPageProps) {
   useI18n();
-  const summary = useAdminResource(() => adminApi.security(props.range), `${props.range}:${props.refreshKey}`, props.onUnauthorized);
+  const request = useMemo(() => pageWindow(props), [props.range, props.customRange]);
+  const summary = useAdminResource(() => adminApi.security(request), `${JSON.stringify(request)}:${props.refreshKey}`, props.onUnauthorized);
   const recordsActions = summary.data?.adminActions !== undefined;
   const recordsLimits = summary.data?.rateLimited !== undefined;
   const requested = (props.sub ?? 'events') as SecurityTab;
@@ -64,7 +67,7 @@ export function SecurityPage(props: AdminPageProps) {
         {tab === 'events' ? (
           <>
             {summary.data ? <SecurityFigures summary={summary.data} /> : !summary.error ? <Skeleton lines={3} /> : null}
-            {summary.data ? <SecurityCharts range={props.range} summary={summary.data} /> : null}
+            {summary.data ? <SecurityCharts summary={summary.data} /> : null}
             {/* The side card keeps its own height beside the long event table. */}
             <div className="admin-grid is-wide-left is-top">
               <EventTable {...props} />
@@ -105,7 +108,7 @@ function environmentItems(summary: AdminSecuritySummary) {
 }
 
 function SecurityFigures({ summary }: { summary: AdminSecuritySummary }) {
-  const range = rangeLabel(summary.range);
+  const range = windowLabel(summary);
   const failures = summary.loginFailures;
   const limits = summary.rateLimited;
   return (
@@ -154,11 +157,11 @@ export function limitKindLabel(kind: string) {
   }
 }
 
-function SecurityCharts({ summary, range }: { summary: AdminSecuritySummary; range: AdminPageProps['range'] }) {
+function SecurityCharts({ summary }: { summary: AdminSecuritySummary }) {
   const categories = CHART_CATEGORIES.filter((category) => summary.daily.some((day) => day.categories[category]));
   const shown = categories.length ? categories : [...CHART_CATEGORIES];
   const failures = summary.loginFailures;
-  const rangeStart = Date.now() - ({ '24h': 1, '7d': 7, '30d': 30, '90d': 90 }[range]) * 86_400_000;
+  const rangeStart = summary.window ? Date.parse(summary.window.start) : Date.now() - ({ '24h': 1, '7d': 7, '30d': 30, '90d': 90, custom: 7 }[summary.range]) * 86_400_000;
   return (
     <div className={failures !== undefined ? 'admin-grid is-wide-left' : 'admin-grid'}>
       <ChartCard
@@ -215,10 +218,10 @@ function EventTable(props: AdminPageProps) {
   const query = useMemo(() => ({
     type: values.type,
     user: values.user,
-    ...(values.when ? windowParams(values.when, '') : { range: props.range }),
+    ...(values.when ? windowParams(values.when, '') : pageWindow(props)),
     sort: settings.sort?.key,
     dir: settings.sort?.dir,
-  }), [values, props.range, settings.sort?.key, settings.sort?.dir]);
+  }), [values, props.range, props.customRange, settings.sort?.key, settings.sort?.dir]);
   const queryKey = JSON.stringify(query);
   useEffect(() => setPage(1), [queryKey]);
   const { data, error, loading, reload } = useAdminResource(
@@ -233,7 +236,15 @@ function EventTable(props: AdminPageProps) {
     { key: 'event', label: translate('admin.event'), sortable: true, width: 240, render: (event) => <span className="admin-event-cell"><EventIcon category={event.category} event={event.event} />{eventLabel(event.event)}</span> },
     { key: 'category', label: translate('admin.eventType'), defaultHidden: true, width: 150, render: (event) => eventCategoryLabel(event.category) },
     { key: 'user', label: translate('admin.user'), sortable: true, width: 150, render: (event) => (event.userId ? <button className="admin-text-link" onClick={() => props.go('users', { id: event.userId })} type="button">{event.username ?? event.userId}</button> : '—') },
-    { key: 'resource', label: translate('admin.resource'), width: 180, render: (event) => event.resourceLabel ?? (event.resourceId ? <span className="admin-mono admin-truncate" title={event.resourceId}>{event.resourceId}</span> : '—') },
+    {
+      key: 'resource',
+      label: translate('admin.resource'),
+      width: 200,
+      // A device is named with its owner; other resources stay IDs.
+      render: (event) => event.resourceType === 'device' && event.resourceId && event.resourceLabel
+        ? <DeviceOwnerCell device={{ deviceId: event.resourceId, name: event.resourceLabel, ownerUserId: event.resourceOwnerUserId, ownerUsername: event.resourceOwnerUsername, ownerEmail: event.resourceOwnerEmail }} onOpenDevice={(id) => props.go('devices', { id })} onOpenUser={(id) => props.go('users', { id })} />
+        : event.resourceLabel ?? (event.resourceId ? <span className="admin-mono admin-truncate" title={event.resourceId}>{event.resourceId}</span> : '—'),
+    },
   ];
   return (
     <Card className="admin-table-card is-headed" subtitle={translate('admin.eventDetailsSubtitle')} title={translate('admin.eventDetails')}>
@@ -264,7 +275,7 @@ function EventTable(props: AdminPageProps) {
                 <EventIcon category={event.category} event={event.event} />
                 <span className="admin-two-line">
                   <b>{event.username ? `${event.username} · ${eventLabel(event.event)}` : eventLabel(event.event)}</b>
-                  <span>{formatRelative(event.at)}{event.resourceLabel ? ` · ${event.resourceLabel}` : ''}</span>
+                  <span>{formatRelative(event.at)}{event.resourceLabel ? ` · ${event.resourceOwnerUsername ? `${event.resourceLabel} · ${event.resourceOwnerUsername}` : event.resourceLabel}` : ''}</span>
                 </span>
               </>
             )}
@@ -410,7 +421,15 @@ function Actions(props: AdminPageProps) {
   const columns: Array<TableColumn<AdminAction>> = [
     { key: 'time', label: translate('admin.time'), sortable: true, firstDir: 'desc', hideable: false, width: 180, render: (action) => formatDateTime(action.at) },
     { key: 'action', label: translate('admin.action'), sortable: true, width: 230, render: (action) => <span className="admin-event-cell"><EventIcon category={actionCategory(action.action)} event={action.action} />{actionLabel(action.action)}</span> },
-    { key: 'target', label: translate('admin.target'), sortable: true, width: 180, render: (action) => <span className="admin-truncate" title={action.targetLabel ?? undefined}>{action.targetLabel ?? '—'}</span> },
+    {
+      key: 'target',
+      label: translate('admin.target'),
+      sortable: true,
+      width: 200,
+      render: (action) => action.targetType === 'device' && action.targetId && action.targetLabel && action.targetOwnerUsername
+        ? <DeviceOwnerCell device={{ deviceId: action.targetId, name: action.targetLabel, ownerUserId: action.targetOwnerUserId, ownerUsername: action.targetOwnerUsername, ownerEmail: action.targetOwnerEmail }} onOpenDevice={(id) => props.go('devices', { id })} onOpenUser={(id) => props.go('users', { id })} />
+        : <span className="admin-truncate" title={action.targetLabel ?? undefined}>{action.targetLabel ?? '—'}</span>,
+    },
     { key: 'admin', label: translate('admin.admin'), sortable: true, width: 140, render: (action) => action.adminUsername },
     { key: 'detail', label: translate('admin.detail'), width: 260, render: (action) => <span className="admin-truncate" title={actionDetail(action)}>{actionDetail(action)}</span> },
   ];
@@ -436,7 +455,7 @@ function Actions(props: AdminPageProps) {
               <>
                 <EventIcon category={actionCategory(action.action)} event={action.action} />
                 <span className="admin-two-line">
-                  <b>{action.targetLabel ? `${actionLabel(action.action)} · ${action.targetLabel}` : actionLabel(action.action)}</b>
+                  <b>{action.targetLabel ? `${actionLabel(action.action)} · ${action.targetOwnerUsername ? `${action.targetLabel} · ${action.targetOwnerUsername}` : action.targetLabel}` : actionLabel(action.action)}</b>
                   <span>{action.adminUsername} · {formatRelative(action.at)}</span>
                 </span>
               </>

@@ -1,0 +1,33 @@
+{
+  "items": [
+    {
+      "connects": 3,
+      "deviceId": "d-alice-1",
+      "deviceName": "gpu-lab",
+      "name": "gpu-lab",
+      "ownerEmail": "alice@example.test",
+      "ownerUserId": "alice",
+      "ownerUsername": "alice",
+      "shortConnections": 3
+    },
+    {
+      "connects": 1,
+      "deviceId": "d-bob",
+      "deviceName": "build-01",
+      "name": "build-01",
+      "ownerEmail": "bob@example.test",
+      "ownerUserId": "bob",
+      "ownerUsername": "bob",
+      "shortConnections": 1
+    }
+  ],
+  "page": 1,
+  "pageSize": 25,
+  "total": 2,
+  "window": {
+    "end": "2026-10-23T16:17:18.619Z",
+    "range": "24h",
+    "resolutionSeconds": 600,
+    "start": "2026-10-22T16:17:18.619Z"
+  }
+}

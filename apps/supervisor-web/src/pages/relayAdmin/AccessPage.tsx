@@ -5,8 +5,10 @@ import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { ArrowRight, Ban, EyeOff, Folder, Globe, Link2, MessageSquare, Monitor, Share2, Clock } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { adminApi } from './adminApi';
+import { DeviceOwnerCell, deviceOwnerText } from './owners';
+import { pageWindow, windowLabel } from './ranges';
 import { BarList, ChartCard, ColumnChart, ProportionBar, type SeriesSlot } from './charts';
-import { formatBytes, formatCount, formatDate, formatDateTime, formatDay, formatRelative, parseTime } from './format';
+import { formatBytes, formatCount, formatDate, formatDateTime, formatDay, formatRelative, formatTime, parseTime } from './format';
 import { accessLabel, filesLabel, scopeLabel, visitLabel } from './labels';
 import type { AdminPageProps } from './RelayAdminConsole';
 import type { AdminPreviews, AdminPublicLink, AdminShare, AdminShareFilter } from './types';
@@ -22,7 +24,6 @@ import {
   LoadFailure,
   Pagination,
   RowMenu,
-  RowOpener,
   SearchField,
   Skeleton,
   SubTabs,
@@ -114,9 +115,11 @@ function Shares(props: AdminPageProps) {
   }), [q, values, settings.sort?.key, settings.sort?.dir]);
   const queryKey = JSON.stringify(query);
   useEffect(() => setPage(1), [queryKey]);
+  // The usage chart follows the page's range; the list does not.
+  const chartWindow = useMemo(() => pageWindow(props), [props.range, props.customRange]);
   const { data, error, loading, reload } = useAdminResource(
-    () => adminApi.shares({ ...query, page, pageSize: PAGE_SIZE }),
-    `${queryKey}:${page}:${refreshKey}`,
+    () => adminApi.shares({ ...query, ...chartWindow, page, pageSize: PAGE_SIZE }),
+    `${queryKey}:${JSON.stringify(chartWindow)}:${page}:${refreshKey}`,
     onUnauthorized,
   );
   useEffect(() => {
@@ -142,7 +145,7 @@ function Shares(props: AdminPageProps) {
     }
   };
   const now = Date.now();
-  const person = (id: string, name: string) => <button className="admin-text-link" onClick={() => props.go('users', { id })} type="button">{name}</button>;
+  const person = (id: string, name: string, email?: string | null) => <button className="admin-text-link" onClick={() => props.go('users', { id })} title={email ?? undefined} type="button">{name}</button>;
   const columns: Array<TableColumn<AdminShare>> = [
     { key: 'scope', label: translate('admin.scope'), sortable: true, width: 150, render: (share) => <span className="admin-scope"><ScopeIcon scope={share.scope} />{scopeLabel(share.scope)}</span> },
     {
@@ -152,15 +155,29 @@ function Shares(props: AdminPageProps) {
       width: 220,
       render: (share) => (
         <span className="admin-route">
-          {person(share.ownerUserId, share.ownerUsername)}
+          {person(share.ownerUserId, share.ownerUsername, share.ownerEmail)}
           <ArrowRight aria-label={translate('admin.sharedWith')} className="h-3.5 w-3.5" />
-          {person(share.targetUserId, share.targetUsername)}
+          {person(share.targetUserId, share.targetUsername, share.targetEmail)}
         </span>
       ),
     },
     { key: 'owner', label: translate('admin.owner'), sortable: true, defaultHidden: true, width: 140, render: (share) => person(share.ownerUserId, share.ownerUsername) },
     { key: 'recipient', label: translate('admin.recipient'), sortable: true, defaultHidden: true, width: 140, render: (share) => person(share.targetUserId, share.targetUsername) },
-    { key: 'device', label: translate('admin.deviceAndPlace'), sortable: true, width: 200, render: (share) => <span className="admin-truncate" title={share.workspaceLabel ? `${share.deviceName} · ${share.workspaceLabel}` : share.deviceName}>{share.workspaceLabel ? `${share.deviceName} · ${share.workspaceLabel}` : share.deviceName}</span> },
+    {
+      key: 'device',
+      label: translate('admin.deviceAndPlace'),
+      sortable: true,
+      width: 220,
+      // The shared device is the owner's: named with them, and the workspace.
+      render: (share) => (
+        <DeviceOwnerCell
+          detail={share.workspaceLabel ? <span className="admin-truncate" title={share.workspaceLabel}>{share.workspaceLabel}</span> : null}
+          device={{ deviceId: share.deviceId, name: share.deviceName, ownerUserId: share.ownerUserId, ownerUsername: share.ownerUsername, ownerEmail: share.ownerEmail }}
+          onOpenDevice={(id) => props.go('devices', { id })}
+          onOpenUser={(id) => props.go('users', { id })}
+        />
+      ),
+    },
     {
       key: 'access',
       label: translate('admin.permissions'),
@@ -199,7 +216,7 @@ function Shares(props: AdminPageProps) {
   ];
   const summary = data?.summary;
   const usage = data?.usage;
-  const days = usage?.days.map((day) => ({ day: day.day, kinds: chartKinds(day.kinds) })) ?? [];
+  const days = usage?.days.map((day) => ({ day: day.day, at: day.at, kinds: chartKinds(day.kinds) })) ?? [];
   const kinds = CHART_KINDS.filter((kind) => days.some((day) => day.kinds[kind]));
   return (
     <>
@@ -207,7 +224,9 @@ function Shares(props: AdminPageProps) {
         <div className="admin-grid is-wide-right">
           <Card className="admin-share-summary">
             <Figure
-              detail={translate('admin.sharesFigureDetail', { added: formatCount(summary.createdThisWeek), revoked: formatCount(summary.revokedThisWeek), expiring: formatCount(summary.expiringSoon) })}
+              detail={summary.createdInRange !== undefined && data?.window
+                ? translate('admin.sharesFigureDetailIn', { added: formatCount(summary.createdInRange), revoked: formatCount(summary.revokedInRange ?? 0), expiring: formatCount(summary.expiringSoon), range: windowLabel(data.window) })
+                : translate('admin.sharesFigureDetail', { added: formatCount(summary.createdThisWeek), revoked: formatCount(summary.revokedThisWeek), expiring: formatCount(summary.expiringSoon) })}
               label={translate('admin.activeShares')}
               value={formatCount(summary.active)}
             />
@@ -233,12 +252,12 @@ function Shares(props: AdminPageProps) {
           </Card>
           <ChartCard
             aside={usage.approximate ? <Badge tone="info">{translate('admin.approximate')}</Badge> : null}
-            subtitle={translate('admin.usageSubtitle')}
-            table={{ columns: [translate('admin.day'), ...kinds.map(kindLabel)], rows: days.map((day) => [formatDay(day.day), ...kinds.map((kind) => day.kinds[kind] ?? 0)]) }}
+            subtitle={data?.window ? translate('admin.usageSubtitleIn', { range: windowLabel(data.window), unit: (usage.resolutionSeconds ?? 86_400) < 86_400 ? translate('admin.perHour') : translate('admin.perDay') }) : translate('admin.usageSubtitle')}
+            table={{ columns: [translate('admin.time'), ...kinds.map(kindLabel)], rows: days.map((day) => [day.at ? formatDateTime(day.at) : formatDay(day.day), ...kinds.map((kind) => day.kinds[kind] ?? 0)]) }}
             title={translate('admin.recipientUsage')}
           >
             <ColumnChart
-              data={days.map((day) => ({ key: day.day, label: formatDay(day.day), values: day.kinds }))}
+              data={days.map((day) => ({ key: day.at ?? day.day, label: day.at ? formatTime(day.at) : formatDay(day.day), values: day.kinds }))}
               height={200}
               label={translate('admin.recipientUsage')}
               series={kinds.map((kind) => ({ key: kind, label: kindLabel(kind), slot: KIND_SLOTS[kind] ?? 1 }))}
@@ -300,7 +319,7 @@ function Shares(props: AdminPageProps) {
                 <span className="admin-scope-icon"><ScopeIcon scope={share.scope} /></span>
                 <span className="admin-two-line">
                   <b>{share.ownerUsername} → {share.targetUsername}</b>
-                  <span>{scopeLabel(share.scope)} · {share.deviceName} · {accessLabel(share.threadAccess)}</span>
+                  <span>{scopeLabel(share.scope)} · {deviceOwnerText({ name: share.deviceName, ownerUsername: share.ownerUsername })} · {accessLabel(share.threadAccess)}</span>
                   <span>{share.lastAccessedAt ? formatRelative(share.lastAccessedAt) : translate('admin.neverUsed')}</span>
                 </span>
                 <RowMenu
@@ -371,7 +390,20 @@ function Links(props: AdminPageProps) {
   if (!data) return error ? <LoadFailure message={error} onRetry={reload} /> : <Skeleton lines={6} />;
   const summary = data.summary;
   const columns: Array<TableColumn<AdminPublicLink>> = [
-    { key: 'owner', label: translate('admin.ownerAndDevice'), sortable: true, hideable: false, width: 220, render: (link) => <span className="admin-two-line"><b>{link.ownerUsername}</b><span>{link.deviceName}</span></span> },
+    {
+      key: 'owner',
+      label: translate('admin.deviceAndOwner'),
+      sortable: true,
+      hideable: false,
+      width: 240,
+      render: (link) => (
+        <DeviceOwnerCell
+          device={{ deviceId: link.deviceId ?? '', name: link.deviceName, ownerUserId: link.ownerUserId, ownerUsername: link.ownerUsername, ownerEmail: link.ownerEmail }}
+          onOpenDevice={link.deviceId ? (id) => props.go('devices', { id }) : undefined}
+          onOpenUser={(id) => props.go('users', { id })}
+        />
+      ),
+    },
     { key: 'storage', label: translate('admin.storage'), sortable: true, width: 170, render: (link) => (link.encrypted ? <Badge tone="success">{translate('admin.encrypted')}</Badge> : <Badge tone="warning">{translate('admin.legacyPlaintext')}</Badge>) },
     { key: 'live', label: translate('admin.updates'), sortable: true, width: 130, render: (link) => (link.live ? translate('admin.liveLink') : translate('admin.staticLink')) },
     { key: 'created', label: translate('admin.created'), sortable: true, firstDir: 'desc', width: 140, render: (link) => formatDate(link.createdAt) },
@@ -410,7 +442,7 @@ function Links(props: AdminPageProps) {
           phoneRow={(link) => (
             <>
               <span className="admin-two-line">
-                <b>{link.ownerUsername} · {link.deviceName}</b>
+                <b>{deviceOwnerText({ name: link.deviceName, ownerUsername: link.ownerUsername })}</b>
                 <span>{formatDate(link.createdAt)} · {formatBytes(link.bytes)}</span>
               </span>
               {link.encrypted ? <Badge tone="success">{translate('admin.encrypted')}</Badge> : <Badge tone="warning">{translate('admin.legacyPlaintext')}</Badge>}
@@ -449,9 +481,11 @@ function Previews(props: AdminPageProps) {
       width: 240,
       compare: (a, b) => text(a.deviceName).localeCompare(text(b.deviceName)),
       render: (row) => (
-        <RowOpener label={translate('admin.openDevice', { name: row.deviceName })} onOpen={() => props.go('devices', { id: row.deviceId })}>
-          <span className="admin-two-line"><b>{row.deviceName}</b><span>{row.ownerUsername ?? '—'}</span></span>
-        </RowOpener>
+        <DeviceOwnerCell
+          device={{ deviceId: row.deviceId, name: row.deviceName, ownerUserId: row.ownerUserId, ownerUsername: row.ownerUsername, ownerEmail: row.ownerEmail }}
+          onOpenDevice={(id) => props.go('devices', { id })}
+          onOpenUser={(id) => props.go('users', { id })}
+        />
       ),
     },
     { key: 'mappings', label: translate('admin.previewMappings'), numeric: true, firstDir: 'desc', width: 140, compare: (a, b) => a.mappings - b.mappings, render: (row) => formatCount(row.mappings) },
@@ -474,7 +508,7 @@ function Previews(props: AdminPageProps) {
           onOpen={(row) => props.go('devices', { id: row.deviceId })}
           phoneRow={(row) => (
             <span className="admin-two-line">
-              <b>{row.deviceName}</b>
+              <b>{deviceOwnerText({ name: row.deviceName, ownerUsername: row.ownerUsername })}</b>
               <span>{translate('admin.previewRow', { mappings: row.mappings, sessions: row.sessions })}</span>
             </span>
           )}

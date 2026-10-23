@@ -3,10 +3,11 @@
 import { PathChip } from '@pockymoe/thread-ui';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { CircleCheck, CircleDashed, TriangleAlert } from 'lucide-react';
-import { useEffect } from 'react';
+import { useEffect, useMemo } from 'react';
 import { adminApi } from './adminApi';
+import { pageWindow, windowLabel } from './ranges';
 import { BarList, ChartCard, HistoryNote, Legend, LineChart, ProportionBar, type SeriesSlot } from './charts';
-import { formatBytes, formatCount, formatDay, formatDuration, formatRatio, formatRelative } from './format';
+import { formatBytes, formatCount, formatDateTime, formatDay, formatDuration, formatRatio, formatRelative, formatTime } from './format';
 import { checkLabel } from './labels';
 import { seriesPoints } from './OverviewPage';
 import type { AdminPageProps } from './RelayAdminConsole';
@@ -15,7 +16,8 @@ import { Badge, Card, Facts, LoadFailure, MiniStat, Skeleton, useAdminResource }
 
 export function SystemPage(props: AdminPageProps) {
   useI18n();
-  const { data, error, loading, reload } = useAdminResource(() => adminApi.system(), `system:${props.refreshKey}`, props.onUnauthorized);
+  const request = useMemo(() => pageWindow(props), [props.range, props.customRange]);
+  const { data, error, loading, reload } = useAdminResource(() => adminApi.system(request), `system:${JSON.stringify(request)}:${props.refreshKey}`, props.onUnauthorized);
   const loaded = props.onLoaded;
   useEffect(() => {
     if (data) loaded();
@@ -142,6 +144,7 @@ function VersionsCard({ data }: { data: AdminSystem }) {
   const rest = versions.current.filter((item) => !top.includes(item)).reduce((sum, item) => sum + item.online, 0);
   const online = versions.current.reduce((sum, item) => sum + item.online, 0);
   const historyKeys = top.map((item) => item.version!).slice(0, 3);
+  const span = data.window ? windowLabel(data.window) : null;
   const start = versions.history[0] ? Date.parse(`${versions.history[0].day}T12:00:00Z`) : Date.now();
   return (
     <ChartCard
@@ -153,7 +156,7 @@ function VersionsCard({ data }: { data: AdminSystem }) {
           rows: versions.current.map((item) => [item.version ?? translate('admin.unknown'), item.online, item.devices]),
         },
         {
-          caption: translate('admin.versionsOverTime'),
+          caption: span ? translate('admin.versionsOverTimeIn', { range: span }) : translate('admin.versionsOverTime'),
           columns: [translate('admin.day'), ...historyKeys],
           rows: versions.history.map((day) => [formatDay(day.day), ...historyKeys.map((version) => (day.versions ? day.versions[version] ?? 0 : '—'))]),
         },
@@ -169,7 +172,7 @@ function VersionsCard({ data }: { data: AdminSystem }) {
       />
       {versions.history.length > 1 ? (
         <>
-          <h4 className="admin-subheading">{translate('admin.versionsOverTime')}</h4>
+          <h4 className="admin-subheading">{span ? translate('admin.versionsOverTimeIn', { range: span }) : translate('admin.versionsOverTime')}</h4>
           <LineChart
             formatAt={formatDay}
             height={200}
@@ -196,12 +199,16 @@ function StorageCard({ data }: { data: AdminSystem }) {
   const tables = storage.tables.slice(0, 6);
   const rest = storage.tables.slice(6).reduce((sum, table) => sum + ((bySize ? table.bytes : table.rows) ?? 0), 0);
   const growth = storage.growth;
+  const span = data.window ? windowLabel(data.window) : null;
+  const growthTitle = span ? translate('admin.growthIn', { range: span }) : translate('admin.growth30d');
+  const growthStart = data.window ? Date.parse(data.window.start) : Date.now() - 30 * 86_400_000;
+  const short = data.window ? Date.parse(data.window.end) - growthStart <= 2 * 86_400_000 : false;
   return (
     <ChartCard
       subtitle={translate('admin.storageSubtitle', { database: formatBytes(storage.databaseBytes), wal: formatBytes(storage.walBytes) })}
       table={[
         { caption: translate('admin.storage'), columns: [translate('admin.table'), bySize ? translate('admin.size') : translate('admin.rows')], rows: storage.tables.map((table) => [table.name, bySize ? formatBytes(table.bytes) : table.rows ?? 0]) },
-        ...(growth ? [{ caption: translate('admin.growth30d'), columns: [translate('admin.day'), translate('admin.size')], rows: seriesPoints(growth).map((point) => [formatDay(point.at), point.value === null ? '—' : formatBytes(point.value)]) }] : []),
+        ...(growth ? [{ caption: growthTitle, columns: [translate('admin.time'), translate('admin.size')], rows: seriesPoints(growth).filter((point) => point.value !== null).map((point) => [short ? formatDateTime(point.at) : formatDay(point.at), formatBytes(point.value)]) }] : []),
       ]}
       title={translate('admin.storage')}
       footer={translate('admin.measuredAt', { time: formatRelative(storage.measuredAt) })}
@@ -216,11 +223,11 @@ function StorageCard({ data }: { data: AdminSystem }) {
       />
       {growth !== undefined ? (
         <>
-          <h4 className="admin-subheading">{translate('admin.growth30d')}</h4>
+          <h4 className="admin-subheading">{growthTitle}</h4>
           {growth ? (
-            <LineChart formatAt={formatDay} formatValue={formatBytes} height={120} label={translate('admin.growth30d')} minMax={1024} points={seriesPoints(growth)} />
+            <LineChart end={data.window ? Date.parse(data.window.end) : undefined} formatAt={short ? formatTime : formatDay} formatValue={formatBytes} height={120} integer={false} label={growthTitle} minMax={1024} points={seriesPoints(growth)} start={data.window ? growthStart : undefined} />
           ) : <p className="admin-empty">{translate('admin.notRecordedYet')}</p>}
-          {growth ? <HistoryNote historyStart={growth.historyStart} rangeStart={Date.now() - 30 * 86_400_000} /> : null}
+          {growth ? <HistoryNote historyStart={growth.historyStart} rangeStart={growthStart} /> : null}
         </>
       ) : null}
     </ChartCard>

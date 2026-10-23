@@ -27,6 +27,10 @@ import systemRecorded from './__fixtures__/system-recorded.json';
 import actions from './__fixtures__/actions.json';
 import retention from './__fixtures__/retention.json';
 import performance from './__fixtures__/performance.json';
+import performanceTraffic from './__fixtures__/performance-traffic.json';
+import performanceReconnects from './__fixtures__/performance-reconnects.json';
+import server from './__fixtures__/server.json';
+import deviceEvents from './__fixtures__/security-events-devices.json';
 
 // Responses of a relay that records statistics (or of one that does not).
 let recorded = false;
@@ -54,11 +58,13 @@ function respond(path: string, method: string) {
     'public-links': publicLinks,
     previews,
     security: recorded ? securityRecorded : security,
-    'security/events': securityEvents,
+    'security/events': recorded ? deviceEvents : securityEvents,
     sessions,
     system: recorded ? systemRecorded : system,
     search,
     performance,
+    'performance/devices': path.includes('view=traffic') ? performanceTraffic : performanceReconnects,
+    server,
     ...(recorded ? { actions, 'settings/retention': retention } : {}),
     'settings/registration': { registrationEnabled: true, settings: { enabled: true, approvalRequired: true, registrationPasswordConfigured: false, googleAuthEnabled: false, githubAuthEnabled: false, emailVerificationEnabled: false, googleAuthAvailable: false, githubAuthAvailable: false, emailVerificationAvailable: false } },
   };
@@ -216,11 +222,20 @@ describe('relay admin console', () => {
     expect(screen.getByRole('heading', { name: 'Latency percentiles' })).toBeInTheDocument();
     expect(screen.getByText(/a percentile is interpolated inside the bucket/, { ignore: 'script' })).toBeInTheDocument();
     expect(screen.getByText(/How latency is measured/)).toBeInTheDocument();
-    const traffic = screen.getAllByRole('region', { name: 'Traffic per device' })[0]!;
-    const busiest = performance.deviceTraffic.devices[0]!;
-    fireEvent.click(within(traffic).getAllByRole('button', { name: `Open ${busiest.name}` })[0]!);
+    // The per-device lists page and sort on the relay; every row names the
+    // device's owner and links to both.
+    const traffic = (await screen.findAllByRole('region', { name: 'Traffic per device' }))[0]!;
+    const busiest = performanceTraffic.items[0]!;
+    expect(await within(traffic).findByRole('button', { name: `Open owner ${busiest.ownerUsername} (${busiest.ownerEmail})` })).toHaveAttribute('title', busiest.ownerEmail);
+    fireEvent.click(within(traffic).getAllByRole('button', { name: `Open ${busiest.name} of ${busiest.ownerUsername}` })[0]!);
     expect(await screen.findByRole('dialog')).toBeInTheDocument();
     await waitFor(() => expect(calls.some((call) => call.path === `relay/admin/devices/${busiest.deviceId}`)).toBe(true));
+    expect(calls.some((call) => call.path.startsWith('relay/admin/performance/devices?') && call.path.includes('view=traffic') && call.path.includes('pageSize=10'))).toBe(true);
+    const reconnects = screen.getAllByRole('region', { name: 'Devices that reconnect most' })[0]!;
+    const flapping = performanceReconnects.items[0]!;
+    expect(await within(reconnects).findByRole('button', { name: `Open owner ${flapping.ownerUsername} (${flapping.ownerEmail})` })).toBeInTheDocument();
+    fireEvent.click(within(within(traffic).getByRole('table')).getByRole('columnheader', { name: /Errors/ }).querySelector('button')!);
+    await waitFor(() => expect(calls.some((call) => call.path.includes('view=traffic') && call.path.includes('sort=errors') && call.path.includes('dir=desc'))).toBe(true));
     // Every chart has a table view.
     const errors = () => screen.getAllByRole('region', { name: 'Errors by kind' })[0]!;
     fireEvent.click(within(errors()).getByRole('button', { name: 'Show as table' }));
@@ -295,6 +310,68 @@ describe('relay admin console', () => {
     expect(await screen.findByRole('group', { name: 'Metrics history' })).toBeInTheDocument();
     fireEvent.click(within(screen.getByRole('group', { name: 'Metrics history' })).getByRole('button', { name: '30 days' }));
     await waitFor(() => expect(calls).toContainEqual({ path: 'relay/admin/settings/retention', method: 'PATCH' }));
+  });
+});
+
+describe('relay admin console: owners, ranges and the server', () => {
+  it('keeps one range for the page in the URL and every chart section asks the relay for it', async () => {
+    renderConsole('/relay-admin?tab=overview');
+    await screen.findByText('accounts without an account key');
+    // The cards that show the present say so.
+    expect(screen.getAllByText('Now', { selector: '.admin-badge' }).length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole('button', { name: '30 days' }));
+    await waitFor(() => expect(calls.some((call) => call.path === 'relay/admin/overview?range=30d')).toBe(true));
+    // A custom window: the overview, then other sections, keep it.
+    cleanupAndRender('/relay-admin?tab=overview&range=custom&from=2026-10-01&to=2026-10-03');
+    await screen.findByText('accounts without an account key');
+    expect(calls.some((call) => call.path.startsWith('relay/admin/overview?from='))).toBe(true);
+    expect(screen.getByRole('group', { name: 'Time range' })).toBeInTheDocument();
+    fireEvent.click(within(screen.getByRole('navigation', { name: 'Admin sections' })).getByRole('button', { name: /^Server/ }));
+    await waitFor(() => expect(calls.some((call) => call.path.startsWith('relay/admin/server?from='))).toBe(true));
+    for (const tab of ['security', 'shares', 'system']) {
+      cleanupAndRender(`/relay-admin?tab=${tab}&range=custom&from=2026-10-01&to=2026-10-03`);
+      await waitFor(() => expect(calls.some((call) => call.path.startsWith(`relay/admin/${tab}?`) && call.path.includes('from='))).toBe(true));
+    }
+  });
+
+  it('names each device with its owner on the devices list, events and the device drawer', async () => {
+    recorded = true;
+    renderConsole('/relay-admin?tab=devices');
+    const table = await screen.findByRole('table');
+    const device = devicesRecorded.items[0]!;
+    expect(within(table).getAllByRole('button', { name: new RegExp(`^Open ${device.name} of ${device.ownerUsername}$`) }).length).toBeGreaterThan(0);
+    fireEvent.click(within(table).getAllByRole('button', { name: new RegExp(`^Open owner ${device.ownerUsername}`) })[0]!);
+    await waitFor(() => expect(calls.some((call) => call.path === `relay/admin/users/${device.ownerUserId}`)).toBe(true));
+    // Security events name the device and its owner.
+    cleanupAndRender('/relay-admin?tab=security');
+    const rotated = deviceEvents.items.find((event) => event.resourceOwnerUsername)!;
+    expect(await screen.findAllByRole('button', { name: `Open ${rotated.resourceLabel} of ${rotated.resourceOwnerUsername}` })).not.toHaveLength(0);
+    // The drawer has its own range, kept in the URL.
+    cleanupAndRender(`/relay-admin?tab=devices&id=${deviceDetailRecorded.device.id}`);
+    const dialog = await screen.findByRole('dialog', { name: deviceDetailRecorded.device.name });
+    fireEvent.click(within(within(dialog).getByRole('group', { name: "Range of the device's history" })).getByRole('button', { name: '7 days' }));
+    await waitFor(() => expect(calls.some((call) => call.path === `relay/admin/devices/${deviceDetailRecorded.device.id}?range=7d`)).toBe(true));
+  });
+
+  it('shows the server: status by shape and word, thresholds, history and not-available figures', async () => {
+    renderConsole('/relay-admin?tab=server');
+    const band = await screen.findByRole('region', { name: 'The server now' });
+    for (const label of ['CPU', 'Memory', 'Disk', 'Database', 'Store lock', 'Runtime delay']) {
+      expect(within(band).getByText(label)).toBeInTheDocument();
+    }
+    // Every status has a word, not only a colour.
+    const statuses = within(band).getAllByText(/^(Normal|High|Critical|Not available)$/);
+    expect(statuses.length).toBeGreaterThanOrEqual(6);
+    const swap = server.checks.find((check) => check.key === 'swap')!;
+    // Swap in use is marked beside the memory chart, not on the memory figure.
+    if (swap.status === 'warn') expect(within(screen.getAllByRole('region', { name: 'Memory' })[0]!).getByText('High')).toBeInTheDocument();
+    expect(screen.getByText(/What turns amber or red/)).toBeInTheDocument();
+    expect(screen.getByText('Disk', { selector: '.admin-threshold-list b' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Disk and database' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Delays' })).toBeInTheDocument();
+    expect(screen.getByRole('img', { name: /^CPU: / })).toBeInTheDocument();
+    // Nothing about people on this page.
+    expect(document.body.textContent).not.toMatch(/alice|bob@/);
   });
 });
 

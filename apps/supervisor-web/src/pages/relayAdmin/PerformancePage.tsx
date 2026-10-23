@@ -6,17 +6,19 @@
 // sizes and times only.
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { Info } from 'lucide-react';
-import { useEffect, useMemo } from 'react';
-import { adminApi } from './adminApi';
+import { useEffect, useMemo, useState } from 'react';
+import { adminApi, type WindowParams } from './adminApi';
+import { DeviceOwnerCell, deviceOwnerText } from './owners';
 import { BarList, ChartCard, ColumnChart, HistoryNote, Legend, LineChart, type SeriesSlot } from './charts';
 import { DeviceDetail, useDeviceDisconnect } from './DevicesPage';
 import { formatBytes, formatCount, formatDateTime, formatDay, formatRatio, formatTime, parseTime } from './format';
 import { formatLatency } from './OverviewPage';
 import { rangeLabel } from './labels';
 import type { AdminPageProps } from './RelayAdminConsole';
-import type { AdminErrorKind, AdminPerformance, AdminSeries } from './types';
-import { Card, Figure, FigureBand, LoadFailure, RowOpener, Skeleton, useAdminResource } from './ui';
-import { AdminTable, sortRows, useTableSettings, type TableColumn } from './table';
+import { pageWindow } from './ranges';
+import type { AdminDeviceRef, AdminErrorKind, AdminPerformance, AdminPerformanceDevices, AdminReconnectRow, AdminSeries, AdminTrafficRow } from './types';
+import { Card, Figure, FigureBand, LoadFailure, Pagination, Skeleton, useAdminResource } from './ui';
+import { AdminTable, useTableSettings, type TableColumn } from './table';
 
 const ERROR_KINDS: AdminErrorKind[] = ['timeout', 'busy', 'offline', 'other'];
 const ERROR_SLOTS: Record<AdminErrorKind, SeriesSlot> = { timeout: 2, busy: 4, offline: 1, other: 5 };
@@ -29,11 +31,6 @@ export function errorKindLabel(kind: AdminErrorKind) {
     case 'offline': return translate('admin.errorOffline');
     case 'other': return translate('admin.errorOther');
   }
-}
-
-function localMidnight(day: string) {
-  const [year, month, date] = day.split('-').map(Number);
-  return new Date(year!, (month ?? 1) - 1, date ?? 1).getTime();
 }
 
 const points = (series: AdminSeries) => series.points.map(([at, value]) => ({ at, value }));
@@ -58,9 +55,7 @@ function grouped(series: AdminSeries[], max = 48) {
 export function PerformancePage(props: AdminPageProps) {
   useI18n();
   const { range, customRange, refreshKey, onLoaded, onUnauthorized, selectedId, setParams } = props;
-  const request = useMemo(() => (customRange
-    ? { from: localMidnight(customRange.from), to: localMidnight(customRange.to) + DAY }
-    : { range }), [customRange, range]);
+  const request = useMemo(() => pageWindow({ range, customRange }), [customRange, range]);
   const { data, error, loading, reload } = useAdminResource(() => adminApi.performance(request), `${JSON.stringify(request)}:${refreshKey}`, onUnauthorized);
   useEffect(() => {
     if (data) onLoaded();
@@ -74,13 +69,13 @@ export function PerformancePage(props: AdminPageProps) {
   return (
     <div aria-busy={loading || undefined} className={`admin-page admin-performance${loading ? ' is-busy' : ''}`}>
       {error ? <LoadFailure message={error} onRetry={reload} /> : null}
-      <PerformanceView data={data} openDevice={(id) => setParams({ id })} />
+      <PerformanceView data={data} openDevice={(id) => setParams({ id })} props={props} chartWindow={request} />
       {detail}
     </div>
   );
 }
 
-function PerformanceView({ data, openDevice }: { data: AdminPerformance; openDevice: (id: string) => void }) {
+function PerformanceView({ data, openDevice, props, chartWindow }: { data: AdminPerformance; openDevice: (id: string) => void; props: AdminPageProps; chartWindow: WindowParams }) {
   useI18n();
   const start = Date.parse(data.start);
   const end = Date.parse(data.end);
@@ -90,7 +85,7 @@ function PerformanceView({ data, openDevice }: { data: AdminPerformance; openDev
   const totals = data.totals;
   const open = data.latency.openAboveMs;
   const failed = ERROR_KINDS.reduce((sum, kind) => sum + (totals.errors[kind] ?? 0), 0);
-  const window = data.range === 'custom' ? `${formatDateTime(start)} – ${formatDateTime(end)}` : rangeLabel(data.range);
+  const span = data.range === 'custom' ? `${formatDateTime(start)} – ${formatDateTime(end)}` : rangeLabel(data.range);
   const step = translate('admin.everyStep', { step: stepLabel(data.resolutionSeconds) });
   const history = <HistoryNote historyStart={data.historyStart} rangeStart={start} />;
   const ms = (value: number) => formatLatency(value, open);
@@ -101,7 +96,7 @@ function PerformanceView({ data, openDevice }: { data: AdminPerformance; openDev
       <FigureBand label={translate('admin.performanceFigures')}>
         <Figure
           detail={translate('admin.bytesDetail', { sent: formatBytes(totals.requestBytes), received: formatBytes(totals.responseBytes) })}
-          label={translate('admin.requestsIn', { range: window })}
+          label={translate('admin.requestsIn', { range: span })}
           value={formatCount(totals.requests)}
         />
         <Figure
@@ -115,7 +110,7 @@ function PerformanceView({ data, openDevice }: { data: AdminPerformance; openDev
           value={totals.p95Ms === null ? '—' : ms(totals.p95Ms)}
         />
         <Figure
-          detail={translate('admin.connectionsDetail', { open: formatCount(data.connections.open), devices: formatCount(data.connections.topDevices.length) })}
+          detail={translate('admin.connectionsDetail', { open: formatCount(data.connections.open), devices: formatCount(data.connections.topDevicesTotal ?? data.connections.topDevices.length) })}
           label={translate('admin.reconnects')}
           value={formatCount(totals.reconnects)}
         />
@@ -246,8 +241,8 @@ function PerformanceView({ data, openDevice }: { data: AdminPerformance; openDev
           <HistoryNote historyStart={data.connections.historyStart} rangeStart={start} />
         </ChartCard>
       </div>
-      <UnstableDevices data={data} openDevice={openDevice} />
-      <DeviceTraffic data={data} openDevice={openDevice} />
+      <UnstableDevices openDevice={openDevice} props={props} chartWindow={chartWindow} />
+      <DeviceTraffic historyStart={parseTime(data.historyStart)} openDevice={openDevice} props={props} start={start} chartWindow={chartWindow} />
     </>
   );
 }
@@ -279,72 +274,91 @@ function durationLabel(key: AdminPerformance['connections']['durations'][number]
   }
 }
 
-type UnstableRow = AdminPerformance['connections']['topDevices'][number];
-type TrafficRow = AdminPerformance['deviceTraffic']['devices'][number];
-
 const text = (value: string | null | undefined) => (value ?? '').toLowerCase();
+const DEVICE_PAGE = 10;
 
-function deviceColumn<T extends { deviceId: string; name: string; ownerUsername: string | null }>(openDevice: (id: string) => void): TableColumn<T> {
+/** The device and its owner; the name opens the device, the owner the person. */
+function deviceColumn<T extends AdminDeviceRef>(openDevice: (id: string) => void, go: AdminPageProps['go']): TableColumn<T> {
   return {
     key: 'device',
     label: translate('admin.deviceAndOwner'),
     hideable: false,
+    sortable: true,
     width: 240,
-    compare: (a, b) => text(a.name).localeCompare(text(b.name)),
-    render: (row) => (
-      <RowOpener label={translate('admin.openDevice', { name: row.name })} onOpen={() => openDevice(row.deviceId)}>
-        <span className="admin-two-line"><b>{row.name}</b><span>{row.ownerUsername ?? '—'}</span></span>
-      </RowOpener>
-    ),
+    render: (row) => <DeviceOwnerCell device={row} onOpenDevice={openDevice} onOpenUser={(id) => go('users', { id })} />,
   };
 }
 
-function UnstableDevices({ data, openDevice }: { data: AdminPerformance; openDevice: (id: string) => void }) {
+/** One server-paged, server-sorted list of devices for the window. */
+function useDevicePage<T>(id: string, chartWindow: WindowParams, refreshKey: number, onUnauthorized: () => void, load: (params: WindowParams & Record<string, string | number | undefined>) => Promise<AdminPerformanceDevices<T>>, defaultSort: { key: string; dir: 'asc' | 'desc' }) {
+  const settings = useTableSettings(id, { defaultSort });
+  const [page, setPage] = useState(1);
+  const sortKey = `${settings.sort?.key ?? ''}:${settings.sort?.dir ?? ''}`;
+  const windowKey = JSON.stringify(chartWindow);
+  useEffect(() => setPage(1), [sortKey, windowKey]);
+  const resource = useAdminResource(
+    () => load({ ...chartWindow, page, pageSize: DEVICE_PAGE, sort: settings.sort?.key, dir: settings.sort?.dir }),
+    `${id}:${windowKey}:${page}:${sortKey}:${refreshKey}`,
+    onUnauthorized,
+  );
+  return { settings, page, setPage, ...resource };
+}
+
+function UnstableDevices({ chartWindow, openDevice, props }: { chartWindow: WindowParams; openDevice: (id: string) => void; props: AdminPageProps }) {
   useI18n();
-  const settings = useTableSettings('performance-unstable', { defaultSort: { key: 'connects', dir: 'desc' } });
-  const columns: Array<TableColumn<UnstableRow>> = [
-    deviceColumn<UnstableRow>(openDevice),
-    { key: 'connects', label: translate('admin.reconnects'), numeric: true, firstDir: 'desc', width: 180, compare: (a, b) => a.connects - b.connects, render: (row) => formatCount(row.connects) },
-    { key: 'short', label: translate('admin.shortConnections'), numeric: true, firstDir: 'desc', width: 180, compare: (a, b) => a.shortConnections - b.shortConnections, render: (row) => formatCount(row.shortConnections) },
+  const { settings, setPage, data, error, loading, reload } = useDevicePage('performance-unstable', chartWindow, props.refreshKey, props.onUnauthorized, adminApi.reconnectDevices, { key: 'connects', dir: 'desc' });
+  const columns: Array<TableColumn<AdminReconnectRow>> = [
+    deviceColumn<AdminReconnectRow>(openDevice, props.go),
+    { key: 'connects', label: translate('admin.reconnects'), sortable: true, numeric: true, firstDir: 'desc', width: 180, render: (row) => formatCount(row.connects) },
+    { key: 'short', label: translate('admin.shortConnections'), sortable: true, numeric: true, firstDir: 'desc', width: 180, render: (row) => formatCount(row.shortConnections) },
   ];
   return (
     <Card className="admin-table-card is-headed" subtitle={translate('admin.unstableDevicesSubtitle')} title={translate('admin.unstableDevicesTitle')}>
-      <AdminTable
-        columns={columns}
-        empty={translate('admin.noReconnects')}
-        id="performance-unstable"
-        label={translate('admin.unstableDevicesTitle')}
-        onOpen={(row) => openDevice(row.deviceId)}
-        phoneRow={(row) => (
-          <span className="admin-two-line">
-            <b>{row.name}</b>
-            <span>{translate('admin.reconnectsRow', { connects: formatCount(row.connects), short: formatCount(row.shortConnections) })}</span>
-          </span>
-        )}
-        rowKey={(row) => row.deviceId}
-        rows={sortRows(data.connections.topDevices, columns, settings.sort)}
-        settings={settings}
-      />
+      {error && !data ? <LoadFailure message={error} onRetry={reload} /> : null}
+      {data ? (
+        <>
+          <AdminTable
+            busy={loading}
+            columns={columns}
+            empty={translate('admin.noReconnects')}
+            id="performance-unstable"
+            label={translate('admin.unstableDevicesTitle')}
+            onOpen={(row) => openDevice(row.deviceId)}
+            phoneRow={(row) => (
+              <span className="admin-two-line">
+                <b>{deviceOwnerText(row)}</b>
+                <span>{translate('admin.reconnectsRow', { connects: formatCount(row.connects), short: formatCount(row.shortConnections) })}</span>
+              </span>
+            )}
+            rowKey={(row) => row.deviceId}
+            rows={data.items}
+            settings={settings}
+            total={data.total}
+          />
+          <Pagination onPage={setPage} page={data.page} pageSize={data.pageSize} total={data.total} />
+        </>
+      ) : !error ? <Skeleton lines={4} /> : null}
     </Card>
   );
 }
 
-function DeviceTraffic({ data, openDevice }: { data: AdminPerformance; openDevice: (id: string) => void }) {
+function DeviceTraffic({ chartWindow, openDevice, props, historyStart, start }: { chartWindow: WindowParams; openDevice: (id: string) => void; props: AdminPageProps; historyStart: number | null; start: number }) {
   useI18n();
-  const settings = useTableSettings('performance-traffic', { defaultSort: { key: 'requests', dir: 'desc' } });
-  const rows = data.deviceTraffic.devices;
+  const { settings, setPage, data, error, loading, reload } = useDevicePage('performance-traffic', chartWindow, props.refreshKey, props.onUnauthorized, adminApi.trafficDevices, { key: 'requests', dir: 'desc' });
+  const rows = data?.items ?? [];
   const busiest = Math.max(1, ...rows.map((row) => row.requests));
-  const total = rows.reduce((sum, row) => sum + row.requests, 0);
-  const rate = (row: TrafficRow) => (row.requests ? row.errors / row.requests : 0);
-  const columns: Array<TableColumn<TrafficRow>> = [
-    deviceColumn<TrafficRow>(openDevice),
+  // Shares are of all devices' requests in the window, not of this page.
+  const total = data?.requests ?? rows.reduce((sum, row) => sum + row.requests, 0);
+  const rate = (row: AdminTrafficRow) => (row.requests ? row.errors / row.requests : 0);
+  const columns: Array<TableColumn<AdminTrafficRow>> = [
+    deviceColumn<AdminTrafficRow>(openDevice, props.go),
     {
       key: 'requests',
       label: translate('admin.requests'),
+      sortable: true,
       numeric: true,
       firstDir: 'desc',
       width: 200,
-      compare: (a, b) => a.requests - b.requests,
       render: (row) => (
         <span className="admin-share-cell">
           <span aria-hidden className="admin-share-bar"><span className="admin-series-1" style={{ width: `${Math.max(2, (row.requests / busiest) * 100)}%` }} /></span>
@@ -353,31 +367,39 @@ function DeviceTraffic({ data, openDevice }: { data: AdminPerformance; openDevic
         </span>
       ),
     },
-    { key: 'errors', label: translate('admin.errors'), numeric: true, firstDir: 'desc', width: 110, compare: (a, b) => a.errors - b.errors, render: (row) => formatCount(row.errors) },
-    { key: 'rate', label: translate('admin.errorRate'), numeric: true, firstDir: 'desc', width: 120, compare: (a, b) => rate(a) - rate(b), render: (row) => formatRatio(rate(row), 1) },
-    { key: 'sent', label: translate('admin.bytesSent'), numeric: true, firstDir: 'desc', width: 130, compare: (a, b) => a.requestBytes - b.requestBytes, render: (row) => formatBytes(row.requestBytes) },
-    { key: 'received', label: translate('admin.bytesReceived'), numeric: true, firstDir: 'desc', width: 140, compare: (a, b) => a.responseBytes - b.responseBytes, render: (row) => formatBytes(row.responseBytes) },
+    { key: 'errors', label: translate('admin.errors'), sortable: true, numeric: true, firstDir: 'desc', width: 110, render: (row) => formatCount(row.errors) },
+    { key: 'rate', label: translate('admin.errorRate'), sortable: true, numeric: true, firstDir: 'desc', width: 120, render: (row) => formatRatio(rate(row), 1) },
+    { key: 'sent', label: translate('admin.bytesSent'), sortable: true, numeric: true, firstDir: 'desc', width: 130, render: (row) => formatBytes(row.requestBytes) },
+    { key: 'received', label: translate('admin.bytesReceived'), sortable: true, numeric: true, firstDir: 'desc', width: 140, render: (row) => formatBytes(row.responseBytes) },
   ];
-  const historyStart = parseTime(data.historyStart);
+  const daily = (data?.resolutionSeconds ?? 3600) >= 86_400;
   return (
-    <Card className="admin-table-card is-headed" subtitle={translate('admin.deviceTrafficSubtitle')} title={translate('admin.deviceTraffic')}>
-      <AdminTable
-        columns={columns}
-        empty={translate('admin.noTraffic')}
-        id="performance-traffic"
-        label={translate('admin.deviceTraffic')}
-        onOpen={(row) => openDevice(row.deviceId)}
-        phoneRow={(row) => (
-          <span className="admin-two-line">
-            <b>{row.name}</b>
-            <span>{translate('admin.trafficRow', { requests: formatCount(row.requests), errors: formatCount(row.errors), received: formatBytes(row.responseBytes) })}</span>
-          </span>
-        )}
-        rowKey={(row) => row.deviceId}
-        rows={sortRows(rows, columns, settings.sort)}
-        settings={settings}
-      />
-      {historyStart && historyStart > Date.parse(data.start) ? <div className="admin-card-pad"><HistoryNote historyStart={historyStart} rangeStart={Date.parse(data.start)} /></div> : null}
+    <Card className="admin-table-card is-headed" subtitle={daily ? translate('admin.deviceTrafficSubtitleDaily') : translate('admin.deviceTrafficSubtitle')} title={translate('admin.deviceTraffic')}>
+      {error && !data ? <LoadFailure message={error} onRetry={reload} /> : null}
+      {data ? (
+        <>
+          <AdminTable
+            busy={loading}
+            columns={columns}
+            empty={translate('admin.noTraffic')}
+            id="performance-traffic"
+            label={translate('admin.deviceTraffic')}
+            onOpen={(row) => openDevice(row.deviceId)}
+            phoneRow={(row) => (
+              <span className="admin-two-line">
+                <b>{deviceOwnerText(row)}</b>
+                <span>{translate('admin.trafficRow', { requests: formatCount(row.requests), errors: formatCount(row.errors), received: formatBytes(row.responseBytes) })}</span>
+              </span>
+            )}
+            rowKey={(row) => row.deviceId}
+            rows={rows}
+            settings={settings}
+            total={data.total}
+          />
+          <Pagination onPage={setPage} page={data.page} pageSize={data.pageSize} total={data.total} />
+        </>
+      ) : !error ? <Skeleton lines={4} /> : null}
+      {historyStart && historyStart > start ? <div className="admin-card-pad"><HistoryNote historyStart={historyStart} rangeStart={start} /></div> : null}
     </Card>
   );
 }

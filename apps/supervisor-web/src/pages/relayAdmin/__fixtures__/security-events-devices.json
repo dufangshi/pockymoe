@@ -1,0 +1,80 @@
+{
+  "items": [
+    {
+      "at": "2026-10-23T16:12:17.893Z",
+      "category": "login",
+      "event": "login.mfa",
+      "id": 5,
+      "resourceId": null,
+      "resourceLabel": null,
+      "resourceOwnerEmail": null,
+      "resourceOwnerUserId": null,
+      "resourceOwnerUsername": null,
+      "resourceType": null,
+      "userId": "alice",
+      "username": "alice"
+    },
+    {
+      "at": "2026-10-23T16:07:17.893Z",
+      "category": "login",
+      "event": "login.password_or_oauth",
+      "id": 4,
+      "resourceId": null,
+      "resourceLabel": null,
+      "resourceOwnerEmail": null,
+      "resourceOwnerUserId": null,
+      "resourceOwnerUsername": null,
+      "resourceType": null,
+      "userId": "bob",
+      "username": "bob"
+    },
+    {
+      "at": "2026-10-23T15:57:17.893Z",
+      "category": "credential",
+      "event": "device.token_rotated",
+      "id": 3,
+      "resourceId": "d-bob",
+      "resourceLabel": "build-01",
+      "resourceOwnerEmail": "bob@example.test",
+      "resourceOwnerUserId": "bob",
+      "resourceOwnerUsername": "bob",
+      "resourceType": "device",
+      "userId": "bob",
+      "username": "bob"
+    },
+    {
+      "at": "2026-10-23T15:47:17.893Z",
+      "category": "credential",
+      "event": "passkey.added",
+      "id": 2,
+      "resourceId": null,
+      "resourceLabel": null,
+      "resourceOwnerEmail": null,
+      "resourceOwnerUserId": null,
+      "resourceOwnerUsername": null,
+      "resourceType": null,
+      "userId": "alice",
+      "username": "alice"
+    },
+    {
+      "at": "2026-10-23T15:37:17.893Z",
+      "category": "challenge",
+      "event": "login.challenge",
+      "id": 1,
+      "resourceId": null,
+      "resourceLabel": null,
+      "resourceOwnerEmail": null,
+      "resourceOwnerUserId": null,
+      "resourceOwnerUsername": null,
+      "resourceType": null,
+      "userId": "bob",
+      "username": "bob"
+    }
+  ],
+  "labels": {
+    "user": null
+  },
+  "page": 1,
+  "pageSize": 25,
+  "total": 5
+}

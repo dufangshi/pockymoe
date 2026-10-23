@@ -1,0 +1,51 @@
+{
+  "items": [
+    {
+      "deviceId": "d-bob",
+      "deviceName": "build-01",
+      "errors": 2,
+      "name": "build-01",
+      "ownerEmail": "bob@example.test",
+      "ownerUserId": "bob",
+      "ownerUsername": "bob",
+      "requestBytes": 126000,
+      "requests": 140,
+      "responseBytes": 588000
+    },
+    {
+      "deviceId": "d-alice-1",
+      "deviceName": "gpu-lab",
+      "errors": 5,
+      "name": "gpu-lab",
+      "ownerEmail": "alice@example.test",
+      "ownerUserId": "alice",
+      "ownerUsername": "alice",
+      "requestBytes": 54000,
+      "requests": 60,
+      "responseBytes": 252000
+    },
+    {
+      "deviceId": "d-alice-2",
+      "deviceName": "laptop",
+      "errors": 0,
+      "name": "laptop",
+      "ownerEmail": "alice@example.test",
+      "ownerUserId": "alice",
+      "ownerUsername": "alice",
+      "requestBytes": 10800,
+      "requests": 12,
+      "responseBytes": 50400
+    }
+  ],
+  "page": 1,
+  "pageSize": 25,
+  "requests": 212,
+  "resolutionSeconds": 3600,
+  "total": 3,
+  "window": {
+    "end": "2026-10-23T16:17:18.618Z",
+    "range": "24h",
+    "resolutionSeconds": 600,
+    "start": "2026-10-22T16:17:18.618Z"
+  }
+}

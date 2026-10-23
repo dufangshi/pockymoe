@@ -10,6 +10,7 @@ import {
   CalendarRange,
   CircleCheck,
   CircleAlert,
+  HeartPulse,
   LayoutGrid,
   LogOut,
   Menu,
@@ -43,13 +44,16 @@ import { DevicesPage } from './DevicesPage';
 import { AccessPage } from './AccessPage';
 import { SecurityPage } from './SecurityPage';
 import { SystemPage } from './SystemPage';
+import { ServerPage } from './ServerPage';
 import { SettingsPage } from './SettingsPage';
 import './relay-admin.css';
 
-export type AdminSection = 'overview' | 'users' | 'devices' | 'performance' | 'shares' | 'security' | 'system' | 'settings';
-export const ADMIN_SECTIONS: AdminSection[] = ['overview', 'users', 'devices', 'performance', 'shares', 'security', 'system', 'settings'];
+export type AdminSection = 'overview' | 'users' | 'devices' | 'performance' | 'server' | 'shares' | 'security' | 'system' | 'settings';
+export const ADMIN_SECTIONS: AdminSection[] = ['overview', 'users', 'devices', 'performance', 'server', 'shares', 'security', 'system', 'settings'];
 const PHONE_TABS: AdminSection[] = ['overview', 'users', 'devices', 'security'];
-const MORE_SECTIONS: AdminSection[] = ['performance', 'shares', 'system', 'settings'];
+const MORE_SECTIONS: AdminSection[] = ['performance', 'server', 'shares', 'system', 'settings'];
+/** Sections whose charts follow the time range (presets or a custom window). */
+const RANGE_SECTIONS: AdminSection[] = ['overview', 'performance', 'server', 'shares', 'security', 'system'];
 const RANGES: AdminRange[] = ['24h', '7d', '30d', '90d'];
 const SIDEBAR_KEY = 'pockymoe-relay-admin-sidebar';
 
@@ -61,7 +65,7 @@ export interface CustomRange {
 
 export interface AdminPageProps {
   range: AdminRange;
-  /** Set when the URL holds a custom window (pages that accept one). */
+  /** Set when the URL holds a custom window. */
   customRange: CustomRange | null;
   sub: string | null;
   filter: string | null;
@@ -78,12 +82,15 @@ export interface AdminPageProps {
   onChanged: () => void;
 }
 
+export { pageWindow } from './ranges';
+
 export function sectionLabel(section: AdminSection) {
   switch (section) {
     case 'overview': return translate('admin.navOverview');
     case 'users': return translate('admin.navUsers');
     case 'devices': return translate('admin.navDevices');
     case 'performance': return translate('admin.navPerformance');
+    case 'server': return translate('admin.navServer');
     case 'shares': return translate('admin.navShares');
     case 'security': return translate('admin.navSecurity');
     case 'system': return translate('admin.navSystem');
@@ -98,6 +105,7 @@ function sectionIcon(section: AdminSection) {
     case 'users': return <Users {...props} />;
     case 'devices': return <MonitorSmartphone {...props} />;
     case 'performance': return <Activity {...props} />;
+    case 'server': return <HeartPulse {...props} />;
     case 'shares': return <Share2 {...props} />;
     case 'security': return <ShieldCheck {...props} />;
     case 'system': return <Server {...props} />;
@@ -160,9 +168,9 @@ export function RelayAdminConsole({ session, onLogout, onUnauthorized }: {
   const go: AdminPageProps['go'] = useCallback((target, options = {}) => {
     const next = new URLSearchParams();
     next.set('tab', target);
-    // The time range follows; a custom window only where the page takes one.
+    // The time range follows to every section that charts over time.
     const keep = params.get('range');
-    if (keep && (keep !== 'custom' || target === 'performance')) {
+    if (keep && RANGE_SECTIONS.includes(target)) {
       next.set('range', keep);
       if (keep === 'custom') {
         for (const key of ['from', 'to']) if (params.get(key)) next.set(key, params.get(key)!);
@@ -189,7 +197,7 @@ export function RelayAdminConsole({ session, onLogout, onUnauthorized }: {
   // The navigation counts and the status pill come from a light overview read.
   const loadNav = useCallback(() => {
     adminApi
-      .overview('24h')
+      .overview({ range: '24h' })
       .then((overview) => {
         setNav(overview);
         setNavFailed(false);
@@ -223,7 +231,7 @@ export function RelayAdminConsole({ session, onLogout, onUnauthorized }: {
   const onLoaded = useCallback(() => setUpdatedAt(Date.now()), []);
   const pageProps: AdminPageProps = {
     range,
-    customRange: section === 'performance' ? customRange : null,
+    customRange: RANGE_SECTIONS.includes(section) ? customRange : null,
     sub: params.get('sub'),
     filter: params.get('filter'),
     selectedId: params.get('id'),
@@ -247,8 +255,8 @@ export function RelayAdminConsole({ session, onLogout, onUnauthorized }: {
   const user = session?.user ?? null;
   const healthy = !navFailed;
   const host = hostOf(nav?.relay.publicBaseUrl ?? null);
-  const showRange = section === 'overview' || section === 'security' || section === 'performance';
-  const allowCustom = section === 'performance';
+  const showRange = RANGE_SECTIONS.includes(section);
+  const allowCustom = showRange;
   const setRange = (value: AdminRange | CustomRange) => setParams(typeof value === 'string' ? { range: value, from: null, to: null } : { range: 'custom', from: value.from, to: value.to });
   const title = sectionLabel(section);
 
@@ -258,6 +266,7 @@ export function RelayAdminConsole({ session, onLogout, onUnauthorized }: {
       case 'users': return <UsersPage {...pageProps} />;
       case 'devices': return <DevicesPage {...pageProps} />;
       case 'performance': return <PerformancePage {...pageProps} />;
+      case 'server': return <ServerPage {...pageProps} />;
       case 'shares': return <AccessPage {...pageProps} />;
       case 'security': return <SecurityPage {...pageProps} />;
       case 'system': return <SystemPage {...pageProps} />;
@@ -434,6 +443,8 @@ function pageSubtitle(section: AdminSection, nav: AdminOverview | null): ReactNo
       return translate('admin.devicesSubtitle', { total: formatCount(nav.devices.total), online: formatCount(nav.devices.online), protected: formatCount(nav.devices.protected) });
     case 'performance':
       return translate('admin.performanceSubtitle');
+    case 'server':
+      return translate('admin.serverSubtitle');
     case 'shares':
       return translate('admin.sharesSubtitle', { shares: formatCount(nav.shares.active), links: formatCount(nav.publicLinks.total) });
     case 'security':

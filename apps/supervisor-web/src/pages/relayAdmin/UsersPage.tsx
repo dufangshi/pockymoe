@@ -505,6 +505,11 @@ function UserDetail({ id, onClose, props, actions }: { id: string | null; onClos
                 ))}
               </ul>
             ) : <EmptyState>{translate('admin.noDevices')}</EmptyState>}
+            {(detail.devicesTotal ?? 0) > detail.devices.length ? (
+              <button className="admin-link-button" onClick={() => props.go('devices', { params: { owner: detail.user.id } })} type="button">
+                {translate('admin.allDevicesOf', { count: detail.devicesTotal ?? 0 })}
+              </button>
+            ) : null}
           </DetailSection>
           <DetailSection icon={<ShieldCheck aria-hidden className="h-4 w-4" />} title={translate('admin.sessions')}>
             {detail.sessions.length ? (
@@ -531,7 +536,7 @@ function UserDetail({ id, onClose, props, actions }: { id: string | null; onClos
             ) : <EmptyState>{translate('admin.noSessions')}</EmptyState>}
           </DetailSection>
           <DetailSection icon={<History aria-hidden className="h-4 w-4" />} title={translate('admin.recentEvents')}>
-            <EventList compact events={detail.events} />
+            <EventList compact events={detail.events} links={{ onOpenDevice: (device) => props.go('devices', { id: device }), onOpenUser: (user) => props.go('users', { id: user }) }} />
           </DetailSection>
           {detail.registration ? (
             <p className="admin-detail-note">

@@ -20,6 +20,7 @@ import {
   UserX,
 } from 'lucide-react';
 import { formatDateTime, formatRelative } from './format';
+import { deviceOwnerText, OwnerLink } from './owners';
 import { actionLabel, eventLabel } from './labels';
 import type { AdminAction, AdminSecurityEvent } from './types';
 
@@ -48,7 +49,26 @@ export function EventIcon({ event, category }: { event: string; category: string
   return <span className={`admin-event-icon is-${category}`}>{glyph}</span>;
 }
 
-export function EventList({ events, compact = false }: { events: AdminSecurityEvent[]; compact?: boolean }) {
+/** Opening a device or a person from a list row (when the list offers it). */
+export interface ListLinks {
+  onOpenDevice?: ((id: string) => void) | undefined;
+  onOpenUser?: ((id: string) => void) | undefined;
+}
+
+/** A device a row names, with its owner: links where the list offers them. */
+function DeviceMention({ id, name, owner, links }: { id: string; name: string; owner: { userId?: string | null | undefined; username?: string | null | undefined; email?: string | null | undefined }; links?: ListLinks | undefined }) {
+  useI18n();
+  if (!links?.onOpenDevice) return <span>{deviceOwnerText({ name, ownerUsername: owner.username })}</span>;
+  const open = links.onOpenDevice;
+  return (
+    <span className="admin-mention">
+      <button aria-label={translate('admin.openDeviceOf', { name, owner: owner.username ?? '—' })} className="admin-text-link" onClick={() => open(id)} type="button">{name}</button>
+      {owner.username ? <> · <OwnerLink email={owner.email} onOpenUser={links.onOpenUser} userId={owner.userId} username={owner.username} /></> : null}
+    </span>
+  );
+}
+
+export function EventList({ events, compact = false, links }: { events: AdminSecurityEvent[]; compact?: boolean; links?: ListLinks }) {
   useI18n();
   if (!events.length) return <p className="admin-empty">{translate('admin.noEvents')}</p>;
   return (
@@ -58,7 +78,9 @@ export function EventList({ events, compact = false }: { events: AdminSecurityEv
           <EventIcon category={event.category} event={event.event} />
           <span className="admin-event-text">
             <b>{event.username ? `${event.username} · ${eventLabel(event.event)}` : eventLabel(event.event)}</b>
-            {event.resourceLabel ? <span>{event.resourceLabel}</span> : null}
+            {event.resourceLabel && event.resourceType === 'device' && event.resourceId ? (
+              <DeviceMention id={event.resourceId} links={links} name={event.resourceLabel} owner={{ userId: event.resourceOwnerUserId, username: event.resourceOwnerUsername, email: event.resourceOwnerEmail }} />
+            ) : event.resourceLabel ? <span>{event.resourceLabel}</span> : null}
           </span>
           <time dateTime={event.at} title={formatDateTime(event.at)}>{formatRelative(event.at)}</time>
         </li>
@@ -72,7 +94,7 @@ export function actionCategory(action: string) {
   return /disabled|deleted|rejected|revoked|disconnected|ended/.test(action) ? 'failure' : 'activity';
 }
 
-export function ActionList({ actions }: { actions: AdminAction[] }) {
+export function ActionList({ actions, links }: { actions: AdminAction[]; links?: ListLinks }) {
   useI18n();
   if (!actions.length) return <p className="admin-empty">{translate('admin.noAdminActions')}</p>;
   return (
@@ -81,8 +103,14 @@ export function ActionList({ actions }: { actions: AdminAction[] }) {
         <li key={action.id}>
           <EventIcon category={actionCategory(action.action)} event={action.action} />
           <span className="admin-event-text">
-            <b>{action.targetLabel ? `${actionLabel(action.action)} · ${action.targetLabel}` : actionLabel(action.action)}</b>
-            <span>{action.adminUsername}</span>
+            <b>{action.targetLabel && !action.targetOwnerUsername ? `${actionLabel(action.action)} · ${action.targetLabel}` : actionLabel(action.action)}</b>
+            {action.targetOwnerUsername && action.targetId && action.targetLabel ? (
+              <span>
+                <DeviceMention id={action.targetId} links={links} name={action.targetLabel} owner={{ userId: action.targetOwnerUserId, username: action.targetOwnerUsername, email: action.targetOwnerEmail }} />
+                {' · '}
+                {action.adminUsername}
+              </span>
+            ) : <span>{action.adminUsername}</span>}
           </span>
           <time dateTime={action.at} title={formatDateTime(action.at)}>{formatRelative(action.at)}</time>
         </li>
