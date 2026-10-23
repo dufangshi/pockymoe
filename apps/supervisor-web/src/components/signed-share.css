@@ -1,10 +1,13 @@
 /* A share's trust state in its details and in the share window (SignedShareDetails). */
 .signed-share { display: grid; gap: 10px; min-width: 0; font-size: 12.5px; }
-.signed-share-state { display: grid; gap: 6px; min-width: 0; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--theme-border); background: var(--theme-surface); }
+.signed-share-state { display: grid; gap: 6px; min-width: 0; padding: 10px 12px; font-size: 12.5px; border-radius: 8px; border: 1px solid var(--theme-border); background: var(--theme-surface); }
 .signed-share-state[data-tone='warn'] { border-color: var(--status-warning-border, var(--theme-border)); background: var(--status-warning-bg); }
 .signed-share-state[data-tone='ok'] { padding-block: 6px; }
 .signed-share-title { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0; font-weight: 600; color: var(--theme-fg); overflow-wrap: anywhere; }
 .signed-share-title > svg { flex: none; }
+.signed-share-title > span { flex: 0 1 auto; min-width: 0; }
+.signed-share-state[data-tone='warn'] .signed-share-title { flex-wrap: nowrap; align-items: flex-start; }
+.signed-share-state[data-tone='warn'] .signed-share-title > svg { margin-top: 2px; }
 .signed-share-state[data-tone='warn'] .signed-share-title > svg { color: var(--status-warning-fg); }
 .signed-share-state[data-tone='ok'] .signed-share-title { font-weight: 500; color: var(--theme-fg-soft, var(--theme-fg-muted)); }
 .signed-share-state[data-tone='ok'] .signed-share-title > svg { color: var(--status-success-fg); }
