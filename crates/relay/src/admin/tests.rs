@@ -449,7 +449,7 @@ async fn devices_page_joins_tunnels_and_disconnects() {
     let list = console.get("/relay/admin/devices").await;
     assert_eq!(
         list["counts"],
-        json!({ "all": 3, "online": 1, "offline": 2, "protected": 2, "unprotected": 1, "unstable": 0, "outdated": 0 })
+        json!({ "all": 3, "online": 1, "offline": 2, "protected": 2, "unprotected": 1, "unstable": 0, "outdated": 0, "unknownVersion": 3 })
     );
     // Online first.
     assert_eq!(list["items"][0]["id"], "d-alice-1");
@@ -785,7 +785,10 @@ async fn sampler_records_tunnels_traffic_versions_and_the_overview_reads_them() 
     assert!(overview["onlineDevices"]["historyStart"].is_string());
     assert_eq!(overview["tunnels"]["requests"], 2.0);
     assert_eq!(overview["tunnels"]["errorRate"], 0.5);
-    assert_eq!(overview["tunnels"]["p95Ms"], 50.0);
+    // One 40 ms answer in the 30–50 ms bucket: p95 is interpolated inside it,
+    // not reported as the bucket's ceiling.
+    let p95 = overview["tunnels"]["p95Ms"].as_f64().unwrap();
+    assert!((p95 - 49.0).abs() < 1e-9, "{p95}");
     assert_eq!(overview["attention"]["unstableDevices"], 0);
     assert_eq!(overview["versions"][0]["version"], "0.12.9");
     let devices = console.get("/relay/admin/devices?filter=outdated").await;
@@ -1161,4 +1164,359 @@ async fn failed_sign_ins_are_counted_and_audited_only_for_existing_accounts() {
 fn a_recipient_leaving_a_share_is_sharing_activity() {
     assert_eq!(audit::event_category("shared_access_left"), "activity");
     assert_eq!(audit::event_category("passkey.added"), "credential");
+}
+
+#[tokio::test]
+async fn lists_filter_and_sort_by_column() {
+    let console = Console::new("admin-console-columns").await;
+    console.go_online("d-alice-1").await;
+    let names = |value: &Value, field: &str| -> Vec<String> {
+        value["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row[field].as_str().unwrap_or_default().to_string())
+            .collect()
+    };
+    // Users: role, status, key, factor, method, times, sort both ways.
+    let users = console.get("/relay/admin/users?sort=name&dir=desc").await;
+    assert_eq!(
+        names(&users, "username"),
+        ["erin", "dave", "carol", "bob", "alice", "admin"]
+    );
+    assert_eq!(
+        names(
+            &console
+                .get("/relay/admin/users?role=user&key=set&sort=name")
+                .await,
+            "username"
+        ),
+        ["alice", "bob"]
+    );
+    assert_eq!(
+        names(
+            &console.get("/relay/admin/users?status=disabled").await,
+            "username"
+        ),
+        ["carol"]
+    );
+    assert_eq!(
+        names(
+            &console.get("/relay/admin/users?factor=passkey").await,
+            "username"
+        ),
+        ["bob"]
+    );
+    assert_eq!(
+        names(
+            &console.get("/relay/admin/users?method=github").await,
+            "username"
+        ),
+        ["erin"]
+    );
+    assert_eq!(
+        names(
+            &console.get("/relay/admin/users?method=oauthOnly").await,
+            "username"
+        ),
+        ["erin"]
+    );
+    assert_eq!(
+        names(
+            &console.get("/relay/admin/users?seen=never").await,
+            "username"
+        ),
+        ["dave"]
+    );
+    let week = common::now_ms() - 7 * common::DAY_MS;
+    assert_eq!(
+        names(
+            &console
+                .get(&format!(
+                    "/relay/admin/users?createdFrom={week}&sort=created"
+                ))
+                .await,
+            "username"
+        ),
+        ["dave"]
+    );
+    let seen = console
+        .get(&format!(
+            "/relay/admin/users?seenFrom={week}&sort=lastSeen&dir=asc&role=user"
+        ))
+        .await;
+    assert_eq!(names(&seen, "username"), ["bob", "erin", "alice"]);
+    // The latest sign-in and its browser label outlive the session.
+    let bob = &console.get("/relay/admin/users?q=bob").await["items"][0];
+    assert_eq!(bob["lastSignInBrowser"], "Chrome · macOS");
+    assert!(bob["lastSignInAt"].is_string());
+    let admin = console.admin.clone();
+    let (status, _) = console
+        .call(
+            Method::DELETE,
+            "/relay/admin/users/bob/sessions",
+            Some(&admin),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let bob = &console.get("/relay/admin/users?q=bob").await["items"][0];
+    assert_eq!(bob["lastSignInBrowser"], "Chrome · macOS");
+    let signed_in = console
+        .get("/relay/admin/users?sort=lastSignIn&dir=desc")
+        .await;
+    assert!(signed_in["items"][0]["lastSignInAt"].is_string());
+    assert_eq!(signed_in["items"][5]["lastSignInAt"], Value::Null);
+
+    // Devices: owner, state, protection, version, created; sort; owner label.
+    let owned = console
+        .get("/relay/admin/devices?owner=alice&sort=name&dir=desc")
+        .await;
+    assert_eq!(names(&owned, "name"), ["laptop", "gpu-lab"]);
+    assert_eq!(owned["labels"]["owner"], "alice");
+    assert_eq!(
+        names(
+            &console
+                .get("/relay/admin/devices?state=offline&sort=name")
+                .await,
+            "name"
+        ),
+        ["build-01", "laptop"]
+    );
+    assert_eq!(
+        names(
+            &console
+                .get("/relay/admin/devices?protection=unprotected")
+                .await,
+            "name"
+        ),
+        ["laptop"]
+    );
+    assert_eq!(
+        console.get("/relay/admin/devices?version=unknown").await["total"],
+        3
+    );
+    assert_eq!(
+        console.get("/relay/admin/devices?version=outdated").await["total"],
+        0
+    );
+    assert_eq!(
+        names(
+            &console
+                .get("/relay/admin/devices?sort=threads&dir=desc")
+                .await,
+            "name"
+        )[0],
+        "gpu-lab"
+    );
+    assert_eq!(
+        names(
+            &console
+                .get("/relay/admin/devices?sort=owner&dir=desc")
+                .await,
+            "name"
+        )[0],
+        "build-01"
+    );
+    // Seen in the last hour: only the connected device.
+    let hour = common::now_ms() - common::HOUR_MS;
+    assert_eq!(
+        names(
+            &console
+                .get(&format!("/relay/admin/devices?seenFrom={hour}"))
+                .await,
+            "name"
+        ),
+        ["gpu-lab"]
+    );
+
+    // Shares: owner, recipient, scope, access, expiry; sort.
+    let shares = console
+        .get("/relay/admin/shares?owner=bob&sort=recipient")
+        .await;
+    assert_eq!(names(&shares, "targetUsername"), ["alice", "dave"]);
+    assert_eq!(shares["labels"]["owner"], "bob");
+    assert_eq!(
+        console.get("/relay/admin/shares?recipient=bob").await["labels"]["recipient"],
+        "bob"
+    );
+    assert_eq!(
+        console.get("/relay/admin/shares?recipient=bob").await["total"],
+        2
+    );
+    assert_eq!(
+        console.get("/relay/admin/shares?access=filesWrite").await["total"],
+        1
+    );
+    assert_eq!(
+        console
+            .get("/relay/admin/shares?access=createThreads")
+            .await["total"],
+        1
+    );
+    assert_eq!(
+        console.get("/relay/admin/shares?expiry=set").await["total"],
+        1
+    );
+    assert_eq!(
+        console.get("/relay/admin/shares?scope=thread").await["total"],
+        2
+    );
+    assert_eq!(
+        console.get("/relay/admin/shares?seen=never").await["total"],
+        2
+    );
+    let by_use = console
+        .get("/relay/admin/shares?sort=lastUsed&dir=desc")
+        .await;
+    assert!(by_use["items"][0]["lastAccessedAt"].is_string());
+    assert_eq!(by_use["items"][3]["lastAccessedAt"], Value::Null);
+
+    // Sessions: one person's, sorted.
+    let sessions = console.get("/relay/admin/sessions?user=admin").await;
+    assert_eq!(sessions["total"], 1);
+    assert_eq!(sessions["labels"]["user"], "admin");
+    // Events: by name, and an explicit window.
+    let by_event = console
+        .get("/relay/admin/security/events?sort=event&dir=asc")
+        .await;
+    assert_eq!(by_event["items"][0]["event"], "device.token_rotated");
+    let recent = common::now_ms() - 15 * common::MINUTE_MS;
+    let window = console
+        .get(&format!("/relay/admin/security/events?from={recent}"))
+        .await;
+    assert_eq!(window["total"], 2);
+    let until = console
+        .get(&format!(
+            "/relay/admin/security/events?to={recent}&user=bob"
+        ))
+        .await;
+    assert_eq!(until["total"], 2);
+    assert_eq!(until["labels"]["user"], "bob");
+    // Registration history and admin actions sort too.
+    let history = console
+        .get("/relay/admin/registrations?status=reviewed&sort=user&dir=desc")
+        .await;
+    assert_eq!(history["items"][0]["username"], "okay");
+    let actions = console.get("/relay/admin/actions?sort=time&dir=asc").await;
+    assert_eq!(actions["items"][0]["action"], "user.sessions_ended");
+}
+
+#[tokio::test]
+async fn performance_reports_errors_by_kind_percentiles_and_devices() {
+    let console = Console::new("admin-console-performance").await;
+    let state = console.state.clone();
+    let answered = |ms: u64, status: u16| {
+        state.metrics.forwarded(
+            "d-bob",
+            10,
+            &crate::metrics::Forwarded::Answered {
+                status,
+                response_bytes: 100,
+            },
+            Duration::from_millis(ms),
+        )
+    };
+    // 90 fast answers, 8 slow ones, one 5xx and one beyond the last bound.
+    for _ in 0..90 {
+        answered(8, 200);
+    }
+    for _ in 0..8 {
+        answered(700, 200);
+    }
+    answered(40, 502);
+    answered(45_000, 200);
+    for failure in [
+        crate::metrics::Forwarded::Timeout,
+        crate::metrics::Forwarded::Busy,
+        crate::metrics::Forwarded::Offline,
+        crate::metrics::Forwarded::Offline,
+    ] {
+        state
+            .metrics
+            .forwarded("d-alice-1", 5, &failure, Duration::from_millis(1));
+    }
+    // A short connection that ended and one still open.
+    let first = Uuid::new_v4();
+    state.metrics.connected("d-alice-1", first);
+    state
+        .metrics
+        .disconnected(first, crate::metrics::EndReason::Closed);
+    state.metrics.connected("d-alice-1", Uuid::new_v4());
+    let minute = {
+        let now = common::now_ms();
+        now - now.rem_euclid(common::MINUTE_MS)
+    };
+    crate::metrics::sample(&state, minute).await;
+    let value = console.get("/relay/admin/performance?range=24h").await;
+    assert_eq!(value["range"], "24h");
+    assert_eq!(value["resolutionSeconds"], 600);
+    let totals = &value["totals"];
+    assert_eq!(totals["requests"], 104.0);
+    assert_eq!(
+        totals["errors"],
+        json!({ "timeout": 1.0, "busy": 1.0, "offline": 2.0, "other": 1.0 })
+    );
+    assert_eq!(totals["errorRate"], 5.0 / 104.0);
+    // p50 inside the 5–10 ms bucket, p95 inside 650–800, p99 open-ended.
+    let p50 = totals["p50Ms"].as_f64().unwrap();
+    assert!(p50 > 5.0 && p50 <= 10.0, "{p50}");
+    let p95 = totals["p95Ms"].as_f64().unwrap();
+    assert!(p95 > 650.0 && p95 <= 800.0, "{p95}");
+    assert_eq!(value["latency"]["openAboveMs"], 30_000.0);
+    let histogram = value["latencyHistogram"].as_array().unwrap();
+    assert_eq!(histogram.len(), crate::metrics::LATENCY_BOUNDS.len() + 1);
+    assert_eq!(histogram.last().unwrap()["toMs"], Value::Null);
+    assert_eq!(histogram.last().unwrap()["count"], 1.0);
+    let series = &value["series"];
+    assert!(series["requests"]["points"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|point| point[1] == 104.0));
+    assert!(series["errors"]["offline"]["points"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|point| point[1] == 2.0));
+    assert!(series["p95"]["points"].is_array());
+    let devices = value["deviceTraffic"]["devices"].as_array().unwrap();
+    assert_eq!(devices[0]["deviceId"], "d-bob");
+    assert_eq!(devices[0]["requests"], 100);
+    assert_eq!(devices[0]["errors"], 1);
+    assert_eq!(devices[1]["errors"], 4);
+    let connections = &value["connections"];
+    assert_eq!(connections["connects"], 2);
+    assert_eq!(connections["open"], 1);
+    assert_eq!(connections["durations"][0]["key"], "lt1m");
+    assert_eq!(connections["durations"][0]["count"], 1);
+    assert_eq!(connections["topDevices"][0]["deviceId"], "d-alice-1");
+    assert_eq!(connections["topDevices"][0]["shortConnections"], 1);
+    assert_eq!(connections["topDevices"][0]["ownerUsername"], "alice");
+    // A custom window, and one that ends before it starts.
+    let now = common::now_ms();
+    let custom = console
+        .get(&format!(
+            "/relay/admin/performance?from={}&to={now}",
+            now - 3 * common::DAY_MS
+        ))
+        .await;
+    assert_eq!(custom["range"], "custom");
+    assert_eq!(custom["resolutionSeconds"], 3600);
+    let admin = console.admin.clone();
+    let (status, _) = console
+        .call(
+            Method::GET,
+            &format!("/relay/admin/performance?from={now}&to={}", now - 1000),
+            Some(&admin),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let user = console.user.clone();
+    assert_eq!(
+        console
+            .call(Method::GET, "/relay/admin/performance", Some(&user))
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
 }

@@ -136,10 +136,143 @@ fn matches_filter(device: &DeviceRow, filter: &str) -> bool {
         "online" => device.connected(),
         "offline" => !device.connected(),
         "unprotected" => !device.protected,
+        "protected" => device.protected,
         "unstable" => device.unstable(),
         "outdated" => device.outdated(),
         _ => true,
     }
+}
+
+/// When the device was last seen: now while connected, else when its last
+/// tunnel ended (None when the relay has no record).
+fn seen_at(device: &DeviceRow, now: i64) -> Option<i64> {
+    if device.connected() {
+        Some(now)
+    } else {
+        device.last_seen
+    }
+}
+
+/// The column filters of the list (owner, state, protection, version, last
+/// seen, created), on top of the legacy one-of `filter`.
+fn matches_columns(device: &DeviceRow, query: &ListQuery, now: i64) -> bool {
+    if !matches_filter(device, query.filter()) {
+        return false;
+    }
+    if let Some(owner) = ListQuery::pick(&query.owner) {
+        if device.owner_user_id != owner {
+            return false;
+        }
+    }
+    if let Some(state) = ListQuery::pick(&query.state) {
+        let ok = match state {
+            "online" => device.connected() && !device.unstable(),
+            "connected" => device.connected(),
+            "offline" => !device.connected(),
+            "unstable" => device.unstable(),
+            _ => true,
+        };
+        if !ok {
+            return false;
+        }
+    }
+    if let Some(protection) = ListQuery::pick(&query.protection) {
+        if (protection == "protected") != device.protected {
+            return false;
+        }
+    }
+    if let Some(version) = ListQuery::pick(&query.version) {
+        let text = device.version_text();
+        let ok = match version {
+            "outdated" => device.outdated(),
+            "current" => text.is_some() && !device.outdated(),
+            "unknown" => text.is_none(),
+            exact => exact
+                .strip_prefix("v:")
+                .is_some_and(|exact| text == Some(exact)),
+        };
+        if !ok {
+            return false;
+        }
+    }
+    match ListQuery::pick(&query.seen) {
+        Some("never") => {
+            if seen_at(device, now).is_some() {
+                return false;
+            }
+        }
+        _ => {
+            let window = query.seen_window();
+            if !window.is_open() && !window.contains(seen_at(device, now)) {
+                return false;
+            }
+        }
+    }
+    let created = query.created_window();
+    if !created.is_open() && !created.contains(ms_from_rfc3339(&device.created_at)) {
+        return false;
+    }
+    true
+}
+
+fn traffic_total(device: &DeviceRow) -> i64 {
+    device
+        .traffic7d
+        .as_ref()
+        .map_or(0, |days| days.iter().flatten().sum())
+}
+
+/// Sorts by a column; ties keep name order. Unknown values sort last in
+/// either direction.
+fn sort_devices(devices: &mut [DeviceRow], key: &str, dir: Dir, now: i64) {
+    use std::cmp::Ordering;
+    let by_name = |a: &DeviceRow, b: &DeviceRow| {
+        a.name
+            .to_lowercase()
+            .cmp(&b.name.to_lowercase())
+            .then_with(|| a.id.cmp(&b.id))
+    };
+    let state_rank = |d: &DeviceRow| -> i64 {
+        if !d.connected() {
+            0
+        } else if d.unstable() {
+            1
+        } else {
+            2
+        }
+    };
+    let optional = |a: Option<i64>, b: Option<i64>| match (a, b) {
+        (Some(a), Some(b)) => dir.apply(a.cmp(&b)),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => Ordering::Equal,
+    };
+    devices.sort_by(|a, b| {
+        let ordering = match key {
+            "name" => dir.apply(by_name(a, b)),
+            "owner" => dir.apply(
+                a.owner_username
+                    .to_lowercase()
+                    .cmp(&b.owner_username.to_lowercase()),
+            ),
+            "state" => dir.apply(state_rank(a).cmp(&state_rank(b))),
+            "protection" => dir.apply(a.protected.cmp(&b.protected)),
+            "version" => match (a.version_text(), b.version_text()) {
+                (Some(x), Some(y)) => dir.apply(compare_versions(x, y)),
+                (Some(_), None) => Ordering::Less,
+                (None, Some(_)) => Ordering::Greater,
+                (None, None) => Ordering::Equal,
+            },
+            "threads" => dir.apply(a.threads.0.cmp(&b.threads.0)),
+            "ports" => dir.apply(a.port_mappings.cmp(&b.port_mappings)),
+            "created" => dir.apply(a.created_at.cmp(&b.created_at)),
+            "lastSeen" => optional(seen_at(a, now), seen_at(b, now)),
+            "reconnects" => optional(a.connects_hour, b.connects_hour),
+            "traffic" => dir.apply(traffic_total(a).cmp(&traffic_total(b))),
+            _ => Ordering::Equal,
+        };
+        ordering.then_with(|| by_name(a, b))
+    });
 }
 
 pub(super) async fn list(
@@ -154,11 +287,14 @@ pub(super) async fn list(
     };
     super_flush(&state, &conn);
     let all = rows(&conn, &live, None);
+    let owner_label = ListQuery::pick(&query.owner)
+        .and_then(|owner| usernames(&conn, &[owner.to_string()]).remove(owner));
     drop(conn);
+    let now = now_ms();
     let search = query.search();
     let mut matching: Vec<DeviceRow> = all
         .iter()
-        .filter(|device| matches_filter(device, query.filter()))
+        .filter(|device| matches_columns(device, &query, now))
         .filter(|device| {
             search.as_deref().is_none_or(|search| {
                 device.name.to_lowercase().contains(search)
@@ -168,14 +304,22 @@ pub(super) async fn list(
         })
         .cloned()
         .collect();
-    match query.sort.as_deref() {
-        Some("name") => {}
-        Some("owner") => matching.sort_by(|a, b| a.owner_username.cmp(&b.owner_username)),
-        Some("created") => matching.sort_by(|a, b| b.created_at.cmp(&a.created_at)),
-        Some("threads") => matching.sort_by(|a, b| b.threads.0.cmp(&a.threads.0)),
+    match query.sort_by(Dir::Asc) {
+        Some((key, dir)) => sort_devices(&mut matching, key, dir, now),
         // Online first, each group by name.
-        _ => matching.sort_by_key(|device| !device.connected()),
+        None => matching.sort_by_key(|device| !device.connected()),
     }
+    // Every reported version with its device count, for the version filter.
+    let mut versions: Vec<(String, usize)> = Vec::new();
+    for device in &all {
+        if let Some(version) = device.version_text() {
+            match versions.iter_mut().find(|(v, _)| v == version) {
+                Some(entry) => entry.1 += 1,
+                None => versions.push((version.to_string(), 1)),
+            }
+        }
+    }
+    versions.sort_by(|a, b| compare_versions(&b.0, &a.0));
     let paging = query.paging();
     let items = paging
         .slice(&matching)
@@ -190,10 +334,19 @@ pub(super) async fn list(
         "unprotected": all.iter().filter(|d| !d.protected).count(),
         "unstable": all.iter().filter(|d| d.unstable()).count(),
         "outdated": all.iter().filter(|d| d.outdated()).count(),
+        "unknownVersion": all.iter().filter(|d| d.version_text().is_none()).count(),
     });
     let mut body = paging.wrap(items, matching.len());
     body.insert("counts".into(), counts);
     body.insert("relayVersion".into(), json!(RELAY_VERSION));
+    body.insert(
+        "versions".into(),
+        json!(versions
+            .iter()
+            .map(|(version, devices)| json!({ "version": version, "devices": devices }))
+            .collect::<Vec<_>>()),
+    );
+    body.insert("labels".into(), json!({ "owner": owner_label }));
     Json(Value::Object(body)).into_response()
 }
 

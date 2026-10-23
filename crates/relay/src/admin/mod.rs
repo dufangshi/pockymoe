@@ -87,6 +87,7 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
         )
         .route("/relay/admin/system", get(system::system))
         .route("/relay/admin/actions", get(stats::actions))
+        .route("/relay/admin/performance", get(stats::performance_handler))
         .route(
             "/relay/admin/settings/retention",
             get(stats::retention).patch(stats::update_retention),

@@ -46,6 +46,7 @@ change existing ones.
 | `relay_device_versions` | The version a device's `/healthz` reports, read within a minute of each connection and every 6 hours | Latest only; deleted with the device |
 | `relay_daily_active` | Which accounts made an authenticated request and which devices were online, per day | Metrics retention |
 | `relay_admin_actions` | Every console change: admin, action, target and its name at the time, changed setting values (never the invite code or a password) | 365 days, at most 50,000 rows |
+| `relay_user_sign_ins` | Each account's latest sign-in: when, and the browser label its session got ("Chrome · macOS"). Written by triggers on `relay_auth_sessions`, so it outlives the session; filled from live sessions when first created | Latest only; deleted with the account |
 | `relay_security_events` | See [security operations](relay-security-operations.zh.md#审计) | 90, 180 (default) or 365 days, at most 100,000 rows |
 
 Retention is applied when the relay starts and then hourly; a shorter period
@@ -57,6 +58,25 @@ where history begins when it is shorter than the range. Older devices answer
 A user's `last_seen_at` is written at most once a minute (it was written on every
 request). A tunnel that was open when the relay stopped is ended at the last
 sample (`relay_stopped`).
+
+### Latency
+
+Forwarding latency is the time from the relay sending a request down a device's
+tunnel to its answer, so it includes the device's own work. Each answer is
+counted in a histogram with upper bounds of 5, 10, 20, 30, 50, 75, 100, 150,
+200, 300, 400, 500, 650, 800 ms, 1, 1.25, 1.5, 2, 2.5, 3, 4, 5, 7.5, 10, 20 and
+30 s, and one open bucket above. A percentile (p50, p95, p99) is interpolated
+linearly inside the bucket that holds it, so it is off by at most that bucket's
+width; one in the open bucket is shown as "≥ 30 s". Relays before this change
+recorded fewer bounds and reported the upper bound of the bucket itself, which is
+why a p95 could read exactly 1,000 ms; their rows still read correctly. Requests
+the relay refused (device offline, busy) or that timed out have no latency and
+count as errors instead.
+
+Errors are counted by kind: `timeout` (the device did not answer in time),
+`busy` (too many requests were waiting for it), `offline` (no tunnel) and
+`other` (the device answered with a 5xx status). The error rate is all four over
+all forwarded requests.
 
 ## Privacy
 
@@ -76,30 +96,36 @@ exists; the name that was tried is not kept.
 All routes require the relay admin session (bearer token or the
 `remote_codex_relay_admin_session` cookie); a normal user's session gets `401`.
 JSON is camelCase. Lists take `page` (from 1), `pageSize` (1–100, default 25),
-`q` (search) and `filter`, and return `{ items, total, page, pageSize }` plus
-`counts` per filter.
+`q` (search), `filter`, `sort` with `dir` (`asc` or `desc`) and the column
+filters below, and return `{ items, total, page, pageSize }` plus `counts` per
+filter and, where a filter names a person, `labels` with that person's name.
+Column filters that take a time use epoch milliseconds: `seenFrom`/`seenTo`
+(last seen or last used; `seen=never` for never), `createdFrom`/`createdTo`,
+and `from`/`to` (an event's or action's time). Sorting is done by the relay on
+the whole list, before paging.
 
 | Route | Returns or does |
 | --- | --- |
 | `GET /relay/admin/overview?range=` | `attention`, `users` (with `dailyActive`), `activity`, `devices`, `shares`, `registrations`, `signupsWeekly`, `publicLinks`, `securityEvents`, `relay`, `onlineDevices` (series), `versions` (online and all devices per version, `outdated` when older than the relay), `tunnels`, `adminActions`. A series is `{ resolutionSeconds, points: [[ms, value or null]], historyStart }` |
 | `GET /relay/admin/search?q=` | Up to six users and six devices by name, email or ID |
-| `GET /relay/admin/users` · `GET /relay/admin/users/{id}` | Users list (`filter`: `active7d`, `noAccountKey`, `noTwoFactor`, `disabled`, `neverSeen`; `sort`: `lastSeen`, `name`, `created`) with `methods`; one user's devices, sessions, shares, events, approval |
+| `GET /relay/admin/users` · `GET /relay/admin/users/{id}` | Users list (`filter`: `active7d`, `noAccountKey`, `noTwoFactor`, `disabled`, `neverSeen`; `role`: `admin`, `user`; `status`: `active`, `disabled`, `resetPending`; `key`: `set`, `missing`; `factor`: `any`, `none`, `authenticator`, `passkey`; `method`: `password`, `google`, `github`, `oauthOnly`; `seen…`, `created…`; `sort`: `name`, `email`, `role`, `status`, `created`, `lastSeen`, `lastSignIn`, `browser`, `devices`, `key`, `factors`, `method`) with `methods`, each user with `lastSignInAt` and `lastSignInBrowser`; one user's devices, sessions, shares, events, approval |
 | `PATCH` · `DELETE /relay/admin/users/{id}` | Enable/disable (not the admin) · delete (not the admin) |
 | `POST /relay/admin/users/{id}/reset-password` | Temporary password of 12–1024 characters ([password resets](self-host-relay.md#password-resets)) |
 | `DELETE /relay/admin/users/{id}/sessions` | End all sessions of a non-admin user |
-| `GET /relay/admin/registrations?status=pending\|reviewed` | Requests with `summary` |
+| `GET /relay/admin/registrations?status=pending\|reviewed` | Requests with `summary`; the review history sorts by `reviewed`, `requested`, `user`, `result` |
 | `POST /relay/admin/registrations/{id}/approve` · `/reject` | Approve (creates the user) · reject (keeps the request, deletes its encrypted vault) |
-| `GET /relay/admin/devices` · `GET /relay/admin/devices/{id}` | Devices (`filter`: `online`, `offline`, `unstable`, `unprotected`, `outdated`; `sort`: `name`, `owner`, `created`, `threads`) with `version`, `outdated`, `lastSeenAt`, `reconnects1h`, `unstable`, `traffic7d` · details with `connections` and `traffic` (24 hours) |
+| `GET /relay/admin/devices` · `GET /relay/admin/devices/{id}` | Devices (`filter`: `online`, `offline`, `unstable`, `unprotected`, `outdated`; `owner` (user ID); `state`: `online`, `connected`, `offline`, `unstable`; `protection`: `protected`, `unprotected`; `version`: `outdated`, `current`, `unknown` or `v:<version>`; `seen…` (a connected device is seen now), `created…`; `sort`: `name`, `owner`, `state`, `protection`, `version`, `threads`, `ports`, `created`, `lastSeen`, `reconnects`, `traffic`) with `version`, `outdated`, `lastSeenAt`, `reconnects1h`, `unstable`, `traffic7d`, and `versions` (each reported version with its device count) · details with `connections` and `traffic` (24 hours) |
 | `POST /relay/admin/devices/{id}/disconnect` | Drop the device's tunnel and browser sockets |
-| `GET /relay/admin/shares` | Shares and grants (`filter`: `device`, `workspace`, `thread`, `expiring` within 7 days, `unused`) with `summary` and `usage` |
+| `GET /relay/admin/shares` | Shares and grants (`filter`: `device`, `workspace`, `thread`, `expiring` within 7 days, `unused`; `scope`; `owner` and `recipient` (user IDs); `access`: `control`, `read`, `filesWrite`, `filesRead`, `createThreads`; `expiry`: `expiring`, `set`, `none`; `seen…` (last use), `created…`; `sort`: `scope`, `owner`, `recipient`, `device`, `access`, `lastUsed`, `expires`, `created`) with `summary` and `usage` |
 | `DELETE /relay/admin/shares/{share\|grant}/{id}` | Revoke at the relay |
-| `GET /relay/admin/public-links?filter=legacy\|encrypted\|live` | Public links with `summary` |
+| `GET /relay/admin/public-links?filter=legacy\|encrypted\|live` | Public links with `summary` (`sort`: `created`, `owner`, `device`, `storage`, `live`, `refreshed`, `size`) |
 | `GET /relay/admin/previews` | Port mappings, sessions and streams per device |
 | `GET /relay/admin/security?range=` | Sign-ins, factor coverage, sessions, events per day, session environments, `loginFailures`, `rateLimited`, `retention`, `adminActions` |
-| `GET /relay/admin/security/events?type=&user=&range=` | Audit events (`type`: `login`, `challenge`, `reauth`, `credential`, `failure`, `activity`) |
-| `GET /relay/admin/sessions` · `DELETE /relay/admin/sessions/{id}` | Live sessions · end one (not the admin's) |
+| `GET /relay/admin/security/events?type=&user=&range=` | Audit events (`type`: `login`, `challenge`, `reauth`, `credential`, `failure`, `activity`; `from`/`to` instead of `range`; `sort`: `time`, `event`, `user`) |
+| `GET /relay/admin/sessions` · `DELETE /relay/admin/sessions/{id}` | Live sessions (`user`, `created…`; `sort`: `created`, `expires`, `user`, `environment`, `verified`) · end one (not the admin's) |
 | `GET /relay/admin/system` | `relay`, `connections`, `checks`, `push` (with `delivery`), `storage` (with `growth`; integrity cached for an hour, table sizes for ten minutes), `versions` (`current`, and `history` per day: `null` on a day the relay did not sample), `metrics` |
-| `GET /relay/admin/actions?type=` | The admin action log |
+| `GET /relay/admin/actions?type=` | The admin action log (`from`/`to`; `sort`: `time`, `action`, `admin`, `target`) |
+| `GET /relay/admin/performance?range=` (or `from=&to=`) | Forwarding over a window, in steps of 5 minutes to a day (about 200 points): `totals` (requests, `errors` by kind, `errorRate`, bytes, reconnects, WebSocket messages, `p50Ms`, `p95Ms`, `p99Ms`), `series` (`requests`, `errors.{timeout,busy,offline,other}`, `errorRate`, `p50`, `p95`, `p99`, `reconnects`, `onlineDevices`, `requestBytes`, `responseBytes`), `latency` (`boundsMs`, `openAboveMs`), `latencyHistogram` (`fromMs`, `toMs` or null for the open bucket, `count`), `connections` (tunnel `durations` of connections that ended in the window, `open`, `connects`, `topDevices` by reconnects with `shortConnections` under 10 minutes; `historyStart` when the 30-day connection log is shorter than the window) and `deviceTraffic` (up to 100 devices by requests, with errors and bytes, in whole hours) |
 | `GET` · `PATCH /relay/admin/settings/registration` | Registration settings |
 | `GET` · `PATCH /relay/admin/settings/retention` | `metricsDays` (30, 90, 365) and `securityDays` (90, 180, 365) |
 | `GET /relay/admin` | The single summary older Web builds read; it lists shares and grants without thread titles |

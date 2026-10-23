@@ -40,8 +40,17 @@ const MAX_QUEUED_EVENTS: usize = 10_000;
 pub(crate) const UNSTABLE_CONNECTS: i64 = 5;
 const VERSION_PROBE_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 const VERSION_PROBES_PER_MINUTE: usize = 10;
-/// Upper bounds (ms) of the forwarding latency histogram; the last is open.
-pub(crate) const LATENCY_BOUNDS: [u64; 12] =
+/// Upper bounds (ms) of the forwarding latency histogram; a last, open bucket
+/// holds slower answers. Percentiles are interpolated inside the bucket that
+/// holds them (`percentile`), so their error is at most that bucket's width.
+/// Older relays recorded coarser bounds (5, 10, 25, 50, 100, 250, 500, 1000,
+/// 2500, 5000, 10000, 30000); those rows still read correctly.
+pub(crate) const LATENCY_BOUNDS: [u64; 26] = [
+    5, 10, 20, 30, 50, 75, 100, 150, 200, 300, 400, 500, 650, 800, 1000, 1250, 1500, 2000, 2500,
+    3000, 4000, 5000, 7500, 10000, 20000, 30000,
+];
+/// The bounds older relays recorded.
+const LEGACY_LATENCY_BOUNDS: [u64; 12] =
     [5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 30000];
 
 pub(crate) fn ensure_schema(conn: &Connection) -> Result<()> {
@@ -80,8 +89,43 @@ pub(crate) fn ensure_schema(conn: &Connection) -> Result<()> {
            action TEXT NOT NULL, target_type TEXT, target_id TEXT, target_label TEXT,
            detail TEXT, created_at INTEGER NOT NULL
          );
-         CREATE INDEX IF NOT EXISTS relay_admin_actions_time ON relay_admin_actions(created_at);",
+         CREATE INDEX IF NOT EXISTS relay_admin_actions_time ON relay_admin_actions(created_at);
+         CREATE TABLE IF NOT EXISTS relay_user_sign_ins (
+           user_id TEXT PRIMARY KEY REFERENCES relay_users(id) ON DELETE CASCADE,
+           at INTEGER NOT NULL, environment TEXT NOT NULL DEFAULT ''
+         ) WITHOUT ROWID;",
     )?;
+    // The latest sign-in of each account and its browser label ("Chrome ·
+    // macOS"), kept after the session itself ends. Every new session is a
+    // sign-in; its label is written right after the row (auth_api).
+    let backfill = !conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='relay_sign_in_insert')",
+            [],
+            |row| row.get::<_, bool>(0),
+        )
+        .unwrap_or(false);
+    conn.execute_batch(
+        "CREATE TRIGGER IF NOT EXISTS relay_sign_in_insert AFTER INSERT ON relay_auth_sessions
+         BEGIN
+           INSERT INTO relay_user_sign_ins(user_id,at,environment) VALUES (NEW.user_id,NEW.created_at,NEW.environment)
+           ON CONFLICT(user_id) DO UPDATE SET at=excluded.at,environment=excluded.environment
+           WHERE excluded.at>=relay_user_sign_ins.at;
+         END;
+         CREATE TRIGGER IF NOT EXISTS relay_sign_in_environment AFTER UPDATE OF environment ON relay_auth_sessions
+         BEGIN
+           UPDATE relay_user_sign_ins SET environment=NEW.environment
+           WHERE user_id=NEW.user_id AND at=NEW.created_at;
+         END;",
+    )?;
+    if backfill {
+        conn.execute(
+            "INSERT OR IGNORE INTO relay_user_sign_ins(user_id,at,environment)
+             SELECT user_id,MAX(created_at),environment FROM relay_auth_sessions
+             WHERE user_id IN (SELECT id FROM relay_users) GROUP BY user_id",
+            [],
+        )?;
+    }
     Ok(())
 }
 
@@ -932,35 +976,59 @@ pub(crate) fn latency_p95(conn: &Connection, start: i64, end: i64) -> Option<f64
     percentile(&counts, 0.95)
 }
 
-fn percentile(counts: &[(String, f64)], quantile: f64) -> Option<f64> {
-    let mut buckets: Vec<(f64, f64)> = counts
-        .iter()
-        .map(|(label, count)| (label.parse::<f64>().unwrap_or(60_000.0), *count))
-        .collect();
+/// The upper bound of a histogram label; the open bucket (`inf`) is infinite.
+fn bound_of(label: &str) -> f64 {
+    label.parse::<f64>().unwrap_or(f64::INFINITY)
+}
+
+/// A quantile of a latency histogram (labels are bucket upper bounds in ms).
+/// The value is interpolated linearly inside the bucket that holds it, from
+/// the bucket below's bound to its own; in the open bucket it is the last
+/// finite bound (a floor: "at least"). None without samples.
+pub(crate) fn percentile(counts: &[(String, f64)], quantile: f64) -> Option<f64> {
+    let mut buckets: Vec<(f64, f64)> = Vec::new();
+    for (label, count) in counts {
+        let bound = bound_of(label);
+        match buckets.iter_mut().find(|(b, _)| *b == bound) {
+            Some(entry) => entry.1 += count,
+            None => buckets.push((bound, *count)),
+        }
+    }
     buckets.sort_by(|a, b| a.0.total_cmp(&b.0));
     let all: f64 = buckets.iter().map(|(_, count)| count).sum();
     if all <= 0.0 {
         return None;
     }
+    // A bucket starts at the next lower bound any relay version records, not
+    // at the previous bucket that happens to hold samples.
+    let lower_of = |bound: f64| -> f64 {
+        LATENCY_BOUNDS
+            .iter()
+            .chain(LEGACY_LATENCY_BOUNDS.iter())
+            .map(|b| *b as f64)
+            .chain(buckets.iter().map(|(b, _)| *b))
+            .filter(|b| b.is_finite() && *b < bound)
+            .fold(0.0, f64::max)
+    };
+    let rank = all * quantile;
     let mut seen = 0.0;
-    for (bound, count) in buckets {
-        seen += count;
-        if seen >= all * quantile {
-            return Some(bound);
+    for (bound, count) in &buckets {
+        if *count > 0.0 && seen + count >= rank {
+            let lower = lower_of(*bound);
+            if !bound.is_finite() {
+                return Some(lower);
+            }
+            let within = ((rank - seen) / count).clamp(0.0, 1.0);
+            return Some(lower + (bound - lower) * within);
         }
+        seen += count;
     }
-    None
+    buckets.last().map(|(bound, _)| lower_of(*bound))
 }
 
-/// p95 latency per bucket of a series.
-pub(crate) fn latency_series(
-    conn: &Connection,
-    start: i64,
-    end: i64,
-    step: i64,
-) -> Vec<(i64, Option<f64>)> {
+/// Latency histogram rows per series bucket.
+fn latency_rows(conn: &Connection, start: i64, end: i64, step: i64) -> Vec<Vec<(String, f64)>> {
     let resolution = if step < HOUR_MS { "m" } else { "h" };
-    let start = start - start.rem_euclid(step);
     let buckets = ((end - start + step - 1) / step).max(1) as usize;
     let mut per: Vec<Vec<(String, f64)>> = vec![Vec::new(); buckets];
     if let Ok(mut stmt) = conn.prepare(
@@ -977,10 +1045,59 @@ pub(crate) fn latency_series(
             }
         }
     }
-    per.iter()
-        .enumerate()
-        .map(|(index, counts)| (start + index as i64 * step, percentile(counts, 0.95)))
+    per
+}
+
+/// p95 latency per bucket of a series.
+pub(crate) fn latency_series(
+    conn: &Connection,
+    start: i64,
+    end: i64,
+    step: i64,
+) -> Vec<(i64, Option<f64>)> {
+    latency_quantile_series(conn, start, end, step, &[0.95])
+        .pop()
+        .unwrap_or_default()
+}
+
+/// Several latency quantiles per bucket of a series, one list per quantile.
+pub(crate) fn latency_quantile_series(
+    conn: &Connection,
+    start: i64,
+    end: i64,
+    step: i64,
+    quantiles: &[f64],
+) -> Vec<Vec<(i64, Option<f64>)>> {
+    let start = start - start.rem_euclid(step);
+    let rows = latency_rows(conn, start, end, step);
+    quantiles
+        .iter()
+        .map(|quantile| {
+            rows.iter()
+                .enumerate()
+                .map(|(index, counts)| (start + index as i64 * step, percentile(counts, *quantile)))
+                .collect()
+        })
         .collect()
+}
+
+/// The latency histogram over a window with every bound the relay records
+/// (zero where nothing fell), plus labels older relays recorded.
+pub(crate) fn latency_histogram(conn: &Connection, start: i64, end: i64) -> Vec<(f64, f64)> {
+    let mut buckets: Vec<(f64, f64)> = LATENCY_BOUNDS
+        .iter()
+        .map(|bound| (*bound as f64, 0.0))
+        .chain(std::iter::once((f64::INFINITY, 0.0)))
+        .collect();
+    for (label, count) in totals_by_label(conn, "latency", start, end) {
+        let bound = bound_of(&label);
+        match buckets.iter_mut().find(|(b, _)| *b == bound) {
+            Some(entry) => entry.1 += count,
+            None => buckets.push((bound, count)),
+        }
+    }
+    buckets.sort_by(|a, b| a.0.total_cmp(&b.0));
+    buckets
 }
 
 /// Tunnel connections per device over a window, newest last.
@@ -1082,8 +1199,28 @@ mod tests {
             ("250".to_string(), 8.0),
             ("inf".to_string(), 2.0),
         ];
-        assert_eq!(percentile(&counts, 0.95), Some(250.0));
-        assert_eq!(percentile(&counts, 0.5), Some(10.0));
+        // 95 of 100 falls 5/8 of the way through the 200–250 ms bucket.
+        assert_eq!(percentile(&counts, 0.95), Some(231.25));
+        let median = percentile(&counts, 0.5).unwrap();
+        assert!((median - (5.0 + 5.0 * 50.0 / 90.0)).abs() < 1e-9);
+        // In the open bucket the value is a floor: the last finite bound.
+        assert_eq!(percentile(&counts, 0.99), Some(30_000.0));
         assert_eq!(percentile(&[], 0.95), None);
+    }
+
+    #[test]
+    fn percentile_is_not_the_bucket_ceiling() {
+        // Every answer took 600–1000 ms: p95 sits inside the bucket, not at 1000.
+        let counts = vec![("1000".to_string(), 100.0)];
+        let p95 = percentile(&counts, 0.95).unwrap();
+        assert!(p95 > 800.0 && p95 < 1000.0, "{p95}");
+        // Old (coarse) and new (fine) labels merge by bound.
+        let mixed = vec![
+            ("250".to_string(), 50.0),
+            ("300".to_string(), 50.0),
+            ("250".to_string(), 0.0),
+        ];
+        assert_eq!(percentile(&mixed, 0.5), Some(250.0));
+        assert_eq!(percentile(&mixed, 1.0), Some(300.0));
     }
 }

@@ -12,10 +12,18 @@ const USER_COLUMNS: &str = "u.id,u.username,u.email,u.role,u.enabled,u.created_a
     EXISTS(SELECT 1 FROM relay_totp t WHERE t.user_id=u.id AND t.enabled=1),
     (SELECT COUNT(*) FROM relay_passkeys p WHERE p.user_id=u.id),
     (SELECT group_concat(i.provider) FROM relay_user_identities i WHERE i.user_id=u.id),
-    (SELECT COUNT(*) FROM relay_devices d WHERE d.owner_user_id=u.id)";
+    (SELECT COUNT(*) FROM relay_devices d WHERE d.owner_user_id=u.id),
+    (SELECT s.at FROM relay_user_sign_ins s WHERE s.user_id=u.id),
+    (SELECT s.environment FROM relay_user_sign_ins s WHERE s.user_id=u.id)";
 
 const HAS_KEY: &str = "EXISTS(SELECT 1 FROM relay_account_vaults v WHERE v.user_id=u.id)";
 const HAS_FACTOR: &str = "(EXISTS(SELECT 1 FROM relay_totp t WHERE t.user_id=u.id AND t.enabled=1) OR EXISTS(SELECT 1 FROM relay_passkeys p WHERE p.user_id=u.id))";
+const HAS_TOTP: &str = "EXISTS(SELECT 1 FROM relay_totp t WHERE t.user_id=u.id AND t.enabled=1)";
+const HAS_PASSKEY: &str = "EXISTS(SELECT 1 FROM relay_passkeys p WHERE p.user_id=u.id)";
+const OAUTH_ONLY: &str =
+    "COALESCE((SELECT a.oauth_only FROM relay_account_auth a WHERE a.user_id=u.id),0)=1";
+const RESET_PENDING: &str = "EXISTS(SELECT 1 FROM relay_account_auth a WHERE a.user_id=u.id AND a.reset_pending=1 AND a.reset_consumed=0)";
+const SIGN_IN_AT: &str = "(SELECT s.at FROM relay_user_sign_ins s WHERE s.user_id=u.id)";
 
 /// The SQL condition of a list filter. `?1` is the 7-day cutoff.
 fn filter_condition(filter: &str) -> String {
@@ -28,6 +36,52 @@ fn filter_condition(filter: &str) -> String {
         "admins" => "u.role='admin'".into(),
         _ => "1".into(),
     }
+}
+
+/// SQL conditions of the column filters. Values come from fixed lists, never
+/// from the request text; times are bound as parameters ?6–?9.
+fn column_conditions(query: &ListQuery) -> Vec<String> {
+    let mut conditions = Vec::new();
+    match ListQuery::pick(&query.role) {
+        Some("admin") => conditions.push("u.role='admin'".to_string()),
+        Some("user") => conditions.push("u.role='user'".to_string()),
+        _ => {}
+    }
+    match ListQuery::pick(&query.status) {
+        Some("active") => conditions.push(format!("u.enabled=1 AND NOT {RESET_PENDING}")),
+        Some("disabled") => conditions.push("u.enabled=0".to_string()),
+        Some("resetPending") => conditions.push(RESET_PENDING.to_string()),
+        _ => {}
+    }
+    match ListQuery::pick(&query.key) {
+        Some("set") => conditions.push(format!("u.role='user' AND {HAS_KEY}")),
+        Some("missing") => conditions.push(format!("u.role='user' AND NOT {HAS_KEY}")),
+        _ => {}
+    }
+    match ListQuery::pick(&query.factor) {
+        Some("any") => conditions.push(HAS_FACTOR.to_string()),
+        Some("none") => conditions.push(format!("NOT {HAS_FACTOR}")),
+        Some("authenticator") => conditions.push(HAS_TOTP.to_string()),
+        Some("passkey") => conditions.push(HAS_PASSKEY.to_string()),
+        _ => {}
+    }
+    match ListQuery::pick(&query.method) {
+        Some("password") => conditions.push(format!("NOT {OAUTH_ONLY}")),
+        Some("oauthOnly") => conditions.push(OAUTH_ONLY.to_string()),
+        Some(provider @ ("google" | "github")) => conditions.push(format!(
+            "EXISTS(SELECT 1 FROM relay_user_identities i WHERE i.user_id=u.id AND i.provider='{provider}')"
+        )),
+        _ => {}
+    }
+    if ListQuery::pick(&query.seen) == Some("never") {
+        conditions.push("u.last_seen_at IS NULL".to_string());
+    } else {
+        // Text times compare as text in the same RFC 3339 form.
+        conditions
+            .push("(?6='' OR u.last_seen_at>=?6) AND (?7='' OR u.last_seen_at<?7)".to_string());
+    }
+    conditions.push("(?8='' OR u.created_at>=?8) AND (?9='' OR u.created_at<?9)".to_string());
+    conditions
 }
 
 pub(super) struct UserFacts {
@@ -45,6 +99,8 @@ pub(super) struct UserFacts {
     pub(super) passkeys: i64,
     pub(super) providers: Vec<String>,
     pub(super) devices: i64,
+    pub(super) last_sign_in_at: Option<i64>,
+    pub(super) last_sign_in_browser: Option<String>,
 }
 
 fn user_facts(row: &rusqlite::Row<'_>) -> rusqlite::Result<UserFacts> {
@@ -66,6 +122,10 @@ fn user_facts(row: &rusqlite::Row<'_>) -> rusqlite::Result<UserFacts> {
             .map(|value| value.split(',').map(str::to_string).collect())
             .unwrap_or_default(),
         devices: row.get(13)?,
+        last_sign_in_at: row.get(14)?,
+        last_sign_in_browser: row
+            .get::<_, Option<String>>(15)?
+            .filter(|label| !label.is_empty()),
     })
 }
 
@@ -99,6 +159,10 @@ impl UserFacts {
             "passkeys": self.passkeys,
             "devices": self.devices,
             "devicesOnline": devices_online,
+            // The latest sign-in and its browser label; the relay keeps no
+            // addresses.
+            "lastSignInAt": self.last_sign_in_at.map(rfc3339_from_ms),
+            "lastSignInBrowser": self.last_sign_in_browser,
         })
     }
 }
@@ -134,35 +198,69 @@ pub(super) async fn list(
     let pattern = query.search().map(|search| like_pattern(&search));
     // Every statement names ?1–?3, so the same parameters bind whatever the
     // filter; an empty pattern matches every user.
+    // Every statement names ?1–?9, so the same parameters bind whatever the
+    // filters; empty text leaves a condition open.
     let condition = format!(
-        "({}) AND ?1=?1 AND (?2='' OR lower(u.username) LIKE ?2 ESCAPE '\\' OR lower(u.email) LIKE ?2 ESCAPE '\\' OR u.id=?3)",
-        filter_condition(query.filter())
+        "({}) AND ?1=?1 AND ?4=?4 AND ?5=?5 AND (?2='' OR lower(u.username) LIKE ?2 ESCAPE '\\' OR lower(u.email) LIKE ?2 ESCAPE '\\' OR u.id=?3) AND {}",
+        filter_condition(query.filter()),
+        column_conditions(&query).join(" AND ")
     );
-    let order = match query.sort.as_deref() {
-        Some("name") => "u.username ASC",
-        Some("created") => "u.created_at DESC, u.username ASC",
-        _ => "u.last_seen_at IS NULL, u.last_seen_at DESC, u.username ASC",
+    let order = match query.sort_by(Dir::Asc) {
+        Some((key, dir)) => {
+            let d = dir.sql();
+            match key {
+                "name" => format!("u.username {d}"),
+                "email" => format!("u.email {d}, u.username ASC"),
+                "role" => format!("u.role {d}, u.username ASC"),
+                "status" => format!("u.enabled {d}, {RESET_PENDING} {d}, u.username ASC"),
+                "created" => format!("u.created_at {d}, u.username ASC"),
+                "lastSeen" => format!("u.last_seen_at IS NULL, u.last_seen_at {d}, u.username ASC"),
+                "lastSignIn" => format!("{SIGN_IN_AT} IS NULL, {SIGN_IN_AT} {d}, u.username ASC"),
+                "browser" => format!(
+                    "COALESCE((SELECT s.environment FROM relay_user_sign_ins s WHERE s.user_id=u.id),'')='', (SELECT s.environment FROM relay_user_sign_ins s WHERE s.user_id=u.id) {d}, u.username ASC"
+                ),
+                "devices" => format!(
+                    "(SELECT COUNT(*) FROM relay_devices d WHERE d.owner_user_id=u.id) {d}, u.username ASC"
+                ),
+                "key" => format!("u.role='admin', {HAS_KEY} {d}, u.username ASC"),
+                "factors" => format!(
+                    "{HAS_TOTP} + (SELECT COUNT(*) FROM relay_passkeys p WHERE p.user_id=u.id) {d}, u.username ASC"
+                ),
+                "method" => format!("{OAUTH_ONLY} {d}, u.username ASC"),
+                _ => "u.last_seen_at IS NULL, u.last_seen_at DESC, u.username ASC".to_string(),
+            }
+        }
+        None => "u.last_seen_at IS NULL, u.last_seen_at DESC, u.username ASC".to_string(),
     };
     let raw = query.q.clone().unwrap_or_default();
+    let (seen_from, seen_to) = query.seen_window().text();
+    let (created_from, created_to) = query.created_window().text();
     let search_params = (week.as_str(), pattern.as_deref().unwrap_or(""), raw.trim());
+    let bind = |limit: i64, offset: i64| {
+        [
+            search_params.0.to_string(),
+            search_params.1.to_string(),
+            search_params.2.to_string(),
+            limit.to_string(),
+            offset.to_string(),
+            seen_from.clone(),
+            seen_to.clone(),
+            created_from.clone(),
+            created_to.clone(),
+        ]
+    };
     let total = count(
         &conn,
         &format!("SELECT COUNT(*) FROM relay_users u WHERE {condition}"),
-        params![search_params.0, search_params.1, search_params.2],
+        rusqlite::params_from_iter(bind(0, 0)),
     );
     let users: Vec<UserFacts> = conn
         .prepare(&format!(
-            "SELECT {USER_COLUMNS} FROM relay_users u WHERE {condition} ORDER BY {order} LIMIT ?4 OFFSET ?5"
+            "SELECT {USER_COLUMNS} FROM relay_users u WHERE {condition} ORDER BY {order} LIMIT CAST(?4 AS INTEGER) OFFSET CAST(?5 AS INTEGER)"
         ))
         .and_then(|mut stmt| {
             stmt.query_map(
-                params![
-                    search_params.0,
-                    search_params.1,
-                    search_params.2,
-                    paging.size as i64,
-                    paging.offset() as i64
-                ],
+                rusqlite::params_from_iter(bind(paging.size as i64, paging.offset() as i64)),
                 user_facts,
             )?
             .collect()
@@ -386,6 +484,8 @@ pub(super) struct RegistrationQuery {
     status: Option<String>,
     page: Option<usize>,
     page_size: Option<usize>,
+    sort: Option<String>,
+    dir: Option<String>,
 }
 
 /// Registration requests: the pending ones, or the reviewed history.
@@ -410,10 +510,16 @@ pub(super) async fn registrations(
     } else {
         "r.status IN ('approved','rejected')"
     };
-    let order = if pending {
-        "r.created_at ASC"
-    } else {
-        "r.reviewed_at DESC"
+    let order = match (pending, query.sort.as_deref(), query.dir.as_deref()) {
+        (true, _, _) => "r.created_at ASC",
+        (false, Some("requested"), Some("asc")) => "r.created_at ASC",
+        (false, Some("requested"), _) => "r.created_at DESC",
+        (false, Some("user"), Some("desc")) => "lower(r.username) DESC",
+        (false, Some("user"), _) => "lower(r.username) ASC",
+        (false, Some("result"), Some("desc")) => "r.status DESC, r.reviewed_at DESC",
+        (false, Some("result"), _) => "r.status ASC, r.reviewed_at DESC",
+        (false, _, Some("asc")) => "r.reviewed_at ASC",
+        (false, _, _) => "r.reviewed_at DESC",
     };
     let total = count(
         &conn,

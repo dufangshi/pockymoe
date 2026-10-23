@@ -56,9 +56,116 @@ pub(super) struct ListQuery {
     #[serde(rename = "type")]
     pub(super) kind: Option<String>,
     pub(super) user: Option<String>,
+    /// `asc` or `desc` for `sort`; each list has its own default direction.
+    pub(super) dir: Option<String>,
+    // Column filters. Times are epoch milliseconds; `seen=never` asks for
+    // rows never seen.
+    pub(super) owner: Option<String>,
+    pub(super) recipient: Option<String>,
+    pub(super) state: Option<String>,
+    pub(super) protection: Option<String>,
+    pub(super) version: Option<String>,
+    pub(super) role: Option<String>,
+    pub(super) status: Option<String>,
+    pub(super) key: Option<String>,
+    pub(super) factor: Option<String>,
+    pub(super) method: Option<String>,
+    pub(super) scope: Option<String>,
+    pub(super) access: Option<String>,
+    pub(super) expiry: Option<String>,
+    pub(super) seen: Option<String>,
+    pub(super) seen_from: Option<i64>,
+    pub(super) seen_to: Option<i64>,
+    pub(super) created_from: Option<i64>,
+    pub(super) created_to: Option<i64>,
+    pub(super) from: Option<i64>,
+    pub(super) to: Option<i64>,
+}
+
+/// A time window `[from, to)` in epoch milliseconds; either end may be open.
+#[derive(Clone, Copy, Default)]
+pub(super) struct Window {
+    pub(super) from: Option<i64>,
+    pub(super) to: Option<i64>,
+}
+
+impl Window {
+    pub(super) fn is_open(&self) -> bool {
+        self.from.is_none() && self.to.is_none()
+    }
+    pub(super) fn contains(&self, at: Option<i64>) -> bool {
+        match at {
+            Some(at) => self.from.is_none_or(|from| at >= from) && self.to.is_none_or(|to| at < to),
+            None => self.is_open(),
+        }
+    }
+    /// The bounds as RFC 3339 text, for tables that store text times ('' when open).
+    pub(super) fn text(&self) -> (String, String) {
+        (
+            self.from.map(rfc3339_from_ms).unwrap_or_default(),
+            self.to.map(rfc3339_from_ms).unwrap_or_default(),
+        )
+    }
+}
+
+/// Which way a list is sorted.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Dir {
+    Asc,
+    Desc,
+}
+
+impl Dir {
+    pub(super) fn sql(self) -> &'static str {
+        match self {
+            Self::Asc => "ASC",
+            Self::Desc => "DESC",
+        }
+    }
+    pub(super) fn apply(self, ordering: std::cmp::Ordering) -> std::cmp::Ordering {
+        match self {
+            Self::Asc => ordering,
+            Self::Desc => ordering.reverse(),
+        }
+    }
 }
 
 impl ListQuery {
+    /// The requested sort key and direction (`default` when `dir` is absent).
+    pub(super) fn sort_by(&self, default: Dir) -> Option<(&str, Dir)> {
+        let key = self.sort.as_deref().filter(|key| !key.is_empty())?;
+        let dir = match self.dir.as_deref() {
+            Some("asc") => Dir::Asc,
+            Some("desc") => Dir::Desc,
+            _ => default,
+        };
+        Some((key, dir))
+    }
+    pub(super) fn seen_window(&self) -> Window {
+        Window {
+            from: self.seen_from,
+            to: self.seen_to,
+        }
+    }
+    pub(super) fn created_window(&self) -> Window {
+        Window {
+            from: self.created_from,
+            to: self.created_to,
+        }
+    }
+    pub(super) fn window(&self) -> Window {
+        Window {
+            from: self.from,
+            to: self.to,
+        }
+    }
+    /// A filter value, or None when absent, empty or `all`.
+    pub(super) fn pick(value: &Option<String>) -> Option<&str> {
+        value
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty() && *value != "all")
+    }
     pub(super) fn paging(&self) -> Paging {
         Paging {
             page: self.page.unwrap_or(1).max(1),

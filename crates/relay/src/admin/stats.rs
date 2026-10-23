@@ -33,45 +33,18 @@ pub(super) fn overview(
     let tunnel_step = step.max(HOUR_MS);
     let connects = metrics::series(conn, "connects", None, start, now, tunnel_step, Agg::Sum);
     let requests = metrics::series(conn, "requests", None, start, now, tunnel_step, Agg::Sum);
-    let failures: Vec<(i64, Option<f64>)> = ["forward_offline", "forward_timeout", "forward_busy"]
-        .iter()
-        .map(|name| metrics::series(conn, name, None, start, now, tunnel_step, Agg::Sum))
-        .fold(Vec::new(), |sum: Vec<(i64, Option<f64>)>, series| {
-            if sum.is_empty() {
-                return series;
-            }
-            sum.into_iter()
-                .zip(series)
-                .map(|((at, a), (_, b))| {
-                    (
-                        at,
-                        match (a, b) {
-                            (None, None) => None,
-                            (a, b) => Some(a.unwrap_or(0.0) + b.unwrap_or(0.0)),
-                        },
-                    )
-                })
-                .collect()
-        });
-    let error_rate: Vec<(i64, Option<f64>)> = failures
-        .iter()
-        .zip(&requests)
-        .map(|((at, failed), (_, requested))| {
-            (
-                *at,
-                match (failed, requested) {
-                    (Some(failed), Some(requested)) if *requested > 0.0 => Some(failed / requested),
-                    (Some(_), Some(_)) => Some(0.0),
-                    _ => None,
-                },
-            )
-        })
-        .collect();
+    let failures = sum_series(
+        ERROR_METRICS
+            .iter()
+            .map(|(_, name)| metrics::series(conn, name, None, start, now, tunnel_step, Agg::Sum))
+            .collect(),
+    );
+    let error_rate = rate_series(&failures, &requests);
     let latency = metrics::latency_series(conn, start, now, tunnel_step);
     let total_requests = metrics::total(conn, "requests", start, now);
-    let total_failed: f64 = ["forward_offline", "forward_timeout", "forward_busy"]
+    let total_failed: f64 = ERROR_METRICS
         .iter()
-        .map(|name| metrics::total(conn, name, start, now))
+        .map(|(_, name)| metrics::total(conn, name, start, now))
         .sum();
     let unstable = unstable_devices(conn, online_ids);
     out.insert(
@@ -85,6 +58,7 @@ pub(super) fn overview(
                 "requests": total_requests,
                 "errorRate": (total_requests > 0.0).then(|| total_failed / total_requests),
                 "p95Ms": metrics::latency_p95(conn, start, now),
+                "latencyBoundsMs": metrics::LATENCY_BOUNDS,
                 "reconnectSeries": metrics::series_json(&connects, tunnel_step, started),
                 "errorSeries": metrics::series_json(&error_rate, tunnel_step, started),
                 "latencySeries": metrics::series_json(&latency, tunnel_step, started),
@@ -99,6 +73,354 @@ pub(super) fn overview(
     out.insert("unstableDevices".into(), json!(unstable.len()));
     out.insert("dailyActive".into(), Value::Array(daily_active(conn, 14)));
     out
+}
+
+/// The kinds of forwarding errors and their counters: the relay could not
+/// reach the device (offline), it did not answer in time (timeout), too many
+/// requests were waiting (busy), or it answered with a 5xx status (other).
+pub(super) const ERROR_METRICS: [(&str, &str); 4] = [
+    ("timeout", "forward_timeout"),
+    ("busy", "forward_busy"),
+    ("offline", "forward_offline"),
+    ("other", "device_errors"),
+];
+
+/// A series: (bucket start in ms, value or None where unknown).
+type Points = Vec<(i64, Option<f64>)>;
+
+/// Adds series point by point; a bucket is unknown only when every part is.
+fn sum_series(parts: Vec<Vec<(i64, Option<f64>)>>) -> Vec<(i64, Option<f64>)> {
+    parts.into_iter().fold(Vec::new(), |sum, series| {
+        if sum.is_empty() {
+            return series;
+        }
+        sum.into_iter()
+            .zip(series)
+            .map(|((at, a), (_, b))| {
+                (
+                    at,
+                    match (a, b) {
+                        (None, None) => None,
+                        (a, b) => Some(a.unwrap_or(0.0) + b.unwrap_or(0.0)),
+                    },
+                )
+            })
+            .collect()
+    })
+}
+
+/// failed / requested per bucket (0 without requests, unknown when not sampled).
+fn rate_series(
+    failed: &[(i64, Option<f64>)],
+    requested: &[(i64, Option<f64>)],
+) -> Vec<(i64, Option<f64>)> {
+    failed
+        .iter()
+        .zip(requested)
+        .map(|((at, failed), (_, requested))| {
+            (
+                *at,
+                match (failed, requested) {
+                    (Some(failed), Some(requested)) if *requested > 0.0 => Some(failed / requested),
+                    (Some(_), Some(_)) => Some(0.0),
+                    _ => None,
+                },
+            )
+        })
+        .collect()
+}
+
+/// A performance window: a preset range or explicit `from`/`to` times.
+pub(super) struct PerformanceWindow {
+    pub(super) key: &'static str,
+    pub(super) start: i64,
+    pub(super) end: i64,
+    pub(super) step: i64,
+}
+
+/// Picks a step that gives at most about 200 points: five-minute steps
+/// within the two days minute rows are kept, whole hours (or days) beyond.
+pub(super) fn performance_window(
+    query: &ListQuery,
+    now: i64,
+) -> Result<PerformanceWindow, &'static str> {
+    let (key, start, end) = match (query.from, query.to) {
+        (Some(from), to) => {
+            let end = to.unwrap_or(now).min(now);
+            if from >= end {
+                return Err("The window must end after it starts");
+            }
+            ("custom", from.max(end - 400 * DAY_MS), end)
+        }
+        (None, _) => {
+            let range = query.range(Range::Day);
+            (range.key(), now - range.millis(), now)
+        }
+    };
+    let span = end - start;
+    let within_minutes = now - start <= metrics::MINUTE_RETENTION_MS;
+    let raw = (span / 200).max(MINUTE_MS);
+    let step = if within_minutes && raw <= HOUR_MS {
+        // 5, 10, 15 or 30 minutes.
+        [5, 10, 15, 30, 60]
+            .into_iter()
+            .map(|minutes| minutes * MINUTE_MS)
+            .find(|step| *step >= raw)
+            .unwrap_or(HOUR_MS)
+    } else {
+        [1, 2, 3, 4, 6, 12, 24, 48, 72, 168]
+            .into_iter()
+            .map(|hours| hours * HOUR_MS)
+            .find(|step| *step >= raw)
+            .unwrap_or(7 * DAY_MS)
+    };
+    Ok(PerformanceWindow {
+        key,
+        start,
+        end,
+        step,
+    })
+}
+
+/// Forwarding in depth for a window (docs/relay-admin.md "Performance"):
+/// volume, errors by kind, latency percentiles and histogram, reconnects,
+/// tunnel durations and the devices behind them. Counts, sizes and times only.
+pub(super) fn performance(conn: &Connection, window: &PerformanceWindow) -> Value {
+    let (start, end, step) = (window.start, window.end, window.step);
+    let started = history(conn);
+    let series =
+        |metric: &str, agg: Agg| metrics::series(conn, metric, None, start, end, step, agg);
+    let json_series = |points: &[(i64, Option<f64>)]| metrics::series_json(points, step, started);
+    let requests = series("requests", Agg::Sum);
+    let errors: Vec<(&str, Points)> = ERROR_METRICS
+        .iter()
+        .map(|(kind, metric)| (*kind, series(metric, Agg::Sum)))
+        .collect();
+    let failed = sum_series(errors.iter().map(|(_, points)| points.clone()).collect());
+    let quantiles = metrics::latency_quantile_series(conn, start, end, step, &[0.5, 0.95, 0.99]);
+    let total = |metric: &str| metrics::total(conn, metric, start, end);
+    let total_requests = total("requests");
+    let error_totals: serde_json::Map<String, Value> = ERROR_METRICS
+        .iter()
+        .map(|(kind, metric)| (kind.to_string(), json!(total(metric))))
+        .collect();
+    let total_failed: f64 = error_totals.values().filter_map(Value::as_f64).sum();
+    let histogram = metrics::latency_histogram(conn, start, end);
+    let counts: Vec<(String, f64)> = histogram
+        .iter()
+        .map(|(bound, count)| {
+            (
+                if bound.is_finite() {
+                    bound.to_string()
+                } else {
+                    "inf".into()
+                },
+                *count,
+            )
+        })
+        .collect();
+    let mut lower = 0.0;
+    let histogram_json: Vec<Value> = histogram
+        .iter()
+        .map(|(bound, count)| {
+            let row = json!({
+                "fromMs": lower,
+                "toMs": bound.is_finite().then_some(*bound),
+                "count": count,
+            });
+            if bound.is_finite() {
+                lower = *bound;
+            }
+            row
+        })
+        .collect();
+    let last_bound = *metrics::LATENCY_BOUNDS.last().unwrap_or(&30_000) as f64;
+    let quantile = |q: f64| metrics::percentile(&counts, q);
+    json!({
+        "range": window.key,
+        "start": rfc3339_from_ms(start),
+        "end": rfc3339_from_ms(end),
+        "resolutionSeconds": step / 1000,
+        "historyStart": started.map(rfc3339_from_ms),
+        "latency": {
+            "boundsMs": metrics::LATENCY_BOUNDS,
+            // A percentile at the last bound means "this slow or slower".
+            "openAboveMs": last_bound,
+            "method": "interpolated",
+        },
+        "totals": {
+            "requests": total_requests,
+            "errors": error_totals,
+            "errorRate": (total_requests > 0.0).then(|| total_failed / total_requests),
+            "requestBytes": total("request_bytes"),
+            "responseBytes": total("response_bytes"),
+            "reconnects": total("connects"),
+            "wsFrames": total("ws_frames"),
+            "wsBytes": total("ws_bytes"),
+            "p50Ms": quantile(0.5),
+            "p95Ms": quantile(0.95),
+            "p99Ms": quantile(0.99),
+        },
+        "series": {
+            "requests": json_series(&requests),
+            "errors": errors.iter().map(|(kind, points)| (kind.to_string(), json_series(points))).collect::<serde_json::Map<_, _>>(),
+            "errorRate": json_series(&rate_series(&failed, &requests)),
+            "p50": json_series(&quantiles[0]),
+            "p95": json_series(&quantiles[1]),
+            "p99": json_series(&quantiles[2]),
+            "reconnects": json_series(&series("connects", Agg::Sum)),
+            "onlineDevices": json_series(&series("online_devices", Agg::Mean)),
+            "requestBytes": json_series(&series("request_bytes", Agg::Sum)),
+            "responseBytes": json_series(&series("response_bytes", Agg::Sum)),
+        },
+        "latencyHistogram": histogram_json,
+        "connections": connection_stats(conn, start, end),
+        "deviceTraffic": device_traffic(conn, start, end),
+    })
+}
+
+/// Tunnel connections that overlap the window: how long they lasted, and the
+/// devices that reconnected most.
+fn connection_stats(conn: &Connection, start: i64, end: i64) -> Value {
+    let kept_from = now_ms() - metrics::CONNECTION_RETENTION_DAYS * DAY_MS;
+    let rows: Vec<(String, i64, Option<i64>)> = conn
+        .prepare(
+            "SELECT device_id,connected_at,ended_at FROM relay_device_connections
+             WHERE connected_at<?2 AND (ended_at IS NULL OR ended_at>?1)",
+        )
+        .and_then(|mut stmt| {
+            stmt.query_map(params![start, end], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?
+            .collect()
+        })
+        .unwrap_or_default();
+    // Durations of the connections that ended in the window.
+    const BUCKETS: [(&str, i64); 6] = [
+        ("lt1m", MINUTE_MS),
+        ("lt10m", 10 * MINUTE_MS),
+        ("lt1h", HOUR_MS),
+        ("lt6h", 6 * HOUR_MS),
+        ("lt24h", DAY_MS),
+        ("gte24h", i64::MAX),
+    ];
+    let mut durations = [0_i64; 6];
+    let mut open = 0_i64;
+    let mut per_device: HashMap<String, (i64, i64, i64)> = HashMap::new();
+    for (device, connected, ended) in &rows {
+        let entry = per_device.entry(device.clone()).or_default();
+        if *connected >= start {
+            entry.0 += 1;
+        }
+        match ended {
+            Some(ended) if *ended <= end => {
+                let length = ended - connected;
+                if let Some(index) = BUCKETS.iter().position(|(_, limit)| length < *limit) {
+                    durations[index] += 1;
+                }
+                if length < 10 * MINUTE_MS {
+                    entry.1 += 1;
+                }
+                entry.2 = entry.2.max(*ended);
+            }
+            _ => {
+                open += 1;
+                entry.2 = entry.2.max(end);
+            }
+        }
+    }
+    let mut top: Vec<(String, (i64, i64, i64))> = per_device
+        .into_iter()
+        .filter(|(_, (connects, _, _))| *connects > 0)
+        .collect();
+    top.sort_by(|a, b| b.1 .0.cmp(&a.1 .0).then_with(|| a.0.cmp(&b.0)));
+    top.truncate(15);
+    let ids: Vec<String> = top.iter().map(|(id, _)| id.clone()).collect();
+    let names = device_names(conn, &ids);
+    let owners = device_owners(conn, &ids);
+    json!({
+        "historyStart": (kept_from > start).then(|| rfc3339_from_ms(kept_from)),
+        "durations": BUCKETS.iter().zip(durations).map(|((key, _), count)| json!({ "key": key, "count": count })).collect::<Vec<_>>(),
+        "open": open,
+        "connects": rows.iter().filter(|(_, connected, _)| *connected >= start).count(),
+        "topDevices": top.iter().filter(|(id, _)| names.contains_key(id)).map(|(id, (connects, short, _))| json!({
+            "deviceId": id,
+            "name": names.get(id),
+            "ownerUsername": owners.get(id),
+            "connects": connects,
+            "shortConnections": short,
+        })).collect::<Vec<_>>(),
+    })
+}
+
+fn device_owners(conn: &Connection, ids: &[String]) -> HashMap<String, String> {
+    let mut owners = HashMap::new();
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT u.username FROM relay_devices d JOIN relay_users u ON u.id=d.owner_user_id WHERE d.id=?1",
+    ) {
+        for id in ids {
+            if let Ok(name) = stmt.query_row([id], |row| row.get::<_, String>(0)) {
+                owners.insert(id.clone(), name);
+            }
+        }
+    }
+    owners
+}
+
+/// Forwarded requests, errors and bytes per device in the window (whole
+/// hours), busiest first.
+fn device_traffic(conn: &Connection, start: i64, end: i64) -> Value {
+    let first_hour = start - start.rem_euclid(HOUR_MS);
+    let rows: Vec<(String, String, String, i64, i64, i64, i64)> = conn
+        .prepare(
+            "SELECT t.device_id,d.name,u.username,SUM(t.requests),SUM(t.errors),SUM(t.request_bytes),SUM(t.response_bytes)
+             FROM relay_device_traffic t JOIN relay_devices d ON d.id=t.device_id JOIN relay_users u ON u.id=d.owner_user_id
+             WHERE t.hour>=?1 AND t.hour<?2 GROUP BY t.device_id ORDER BY 4 DESC LIMIT 100",
+        )
+        .and_then(|mut stmt| {
+            stmt.query_map(params![first_hour, end], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                ))
+            })?
+            .collect()
+        })
+        .unwrap_or_default();
+    json!({
+        "resolutionSeconds": 3600,
+        "devices": rows.iter().map(|(id, name, owner, requests, errors, request_bytes, response_bytes)| json!({
+            "deviceId": id,
+            "name": name,
+            "ownerUsername": owner,
+            "requests": requests,
+            "errors": errors,
+            "requestBytes": request_bytes,
+            "responseBytes": response_bytes,
+        })).collect::<Vec<_>>(),
+    })
+}
+
+pub(super) async fn performance_handler(
+    headers: HeaderMap,
+    Query(query): Query<ListQuery>,
+    State(state): State<Arc<AppState>>,
+) -> Response {
+    let (conn, _) = match admin_conn(&state, &headers).await {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    crate::metrics::flush_connections(&state, &conn);
+    let window = match performance_window(&query, now_ms()) {
+        Ok(window) => window,
+        Err(message) => return bad_request(message),
+    };
+    Json(performance(&conn, &window)).into_response()
 }
 
 /// Devices with five or more tunnel connections in the last hour.
@@ -425,17 +747,30 @@ pub(super) async fn actions(
     };
     let paging = query.paging();
     let kind = query.kind.clone().unwrap_or_default();
+    let window = query.window();
+    let (from, to) = (window.from.unwrap_or(0), window.to.unwrap_or(i64::MAX));
+    let condition = "(?1='' OR action=?1) AND created_at>=?4 AND created_at<?5";
+    let order = match query.sort_by(Dir::Desc) {
+        Some(("action", dir)) => format!("action {}, id DESC", dir.sql()),
+        Some(("admin", dir)) => format!("lower(admin_username) {}, id DESC", dir.sql()),
+        Some(("target", dir)) => format!(
+            "target_label IS NULL, lower(target_label) {}, id DESC",
+            dir.sql()
+        ),
+        Some((_, dir)) => format!("id {}", dir.sql()),
+        None => "id DESC".to_string(),
+    };
     let total = count(
         &conn,
-        "SELECT COUNT(*) FROM relay_admin_actions WHERE (?1='' OR action=?1)",
-        [&kind],
+        &format!("SELECT COUNT(*) FROM relay_admin_actions WHERE {condition} AND ?2=?2 AND ?3=?3"),
+        params![kind, 0, 0, from, to],
     );
     let items: Vec<Value> = conn
         .prepare(&format!(
-            "SELECT {ACTION_COLUMNS} FROM relay_admin_actions WHERE (?1='' OR action=?1) ORDER BY id DESC LIMIT ?2 OFFSET ?3"
+            "SELECT {ACTION_COLUMNS} FROM relay_admin_actions WHERE {condition} ORDER BY {order} LIMIT ?2 OFFSET ?3"
         ))
         .and_then(|mut stmt| {
-            stmt.query_map(params![kind, paging.size as i64, paging.offset() as i64], action_json)?
+            stmt.query_map(params![kind, paging.size as i64, paging.offset() as i64, from, to], action_json)?
                 .collect()
         })
         .unwrap_or_default();

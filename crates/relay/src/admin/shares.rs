@@ -131,6 +131,110 @@ fn matches_filter(row: &ShareRow, filter: &str, horizon: &str) -> bool {
     }
 }
 
+/// Column filters: scope, owner, recipient, access, expiry, last use, created.
+fn matches_columns(row: &ShareRow, query: &ListQuery, horizon: &str) -> bool {
+    if !matches_filter(row, query.filter(), horizon) {
+        return false;
+    }
+    if let Some(scope) = ListQuery::pick(&query.scope) {
+        if row.scope != scope {
+            return false;
+        }
+    }
+    if let Some(owner) = ListQuery::pick(&query.owner) {
+        if row.owner_user_id != owner {
+            return false;
+        }
+    }
+    if let Some(recipient) = ListQuery::pick(&query.recipient) {
+        if row.target_user_id != recipient {
+            return false;
+        }
+    }
+    if let Some(access) = ListQuery::pick(&query.access) {
+        let ok = match access {
+            "control" => row.thread_access == "control",
+            "read" => row.thread_access == "read",
+            "filesWrite" => row.workspace_access == "write",
+            "filesRead" => row.workspace_access == "read",
+            "createThreads" => row.can_create_threads,
+            _ => true,
+        };
+        if !ok {
+            return false;
+        }
+    }
+    if let Some(expiry) = ListQuery::pick(&query.expiry) {
+        let ok = match expiry {
+            "expiring" => expiring(row, horizon),
+            "set" => row.expires_at.is_some(),
+            "none" => row.expires_at.is_none(),
+            _ => true,
+        };
+        if !ok {
+            return false;
+        }
+    }
+    let used = row
+        .last_access
+        .as_ref()
+        .and_then(|(at, _)| ms_from_rfc3339(at));
+    match ListQuery::pick(&query.seen) {
+        Some("never") => {
+            if used.is_some() {
+                return false;
+            }
+        }
+        _ => {
+            let window = query.seen_window();
+            if !window.is_open() && !window.contains(used) {
+                return false;
+            }
+        }
+    }
+    let created = query.created_window();
+    created.is_open() || created.contains(ms_from_rfc3339(&row.created_at))
+}
+
+fn access_rank(row: &ShareRow) -> i64 {
+    let thread = if row.thread_access == "control" { 4 } else { 0 };
+    let files = match row.workspace_access.as_str() {
+        "write" => 2,
+        "read" => 1,
+        _ => 0,
+    };
+    thread + files + i64::from(row.can_create_threads)
+}
+
+fn sort_shares(rows: &mut [&ShareRow], key: &str, dir: Dir) {
+    use std::cmp::Ordering;
+    let text = |value: &str| value.to_lowercase();
+    // Missing times (never used, no expiry) sort last either way.
+    let optional = |a: Option<&str>, b: Option<&str>| match (a, b) {
+        (Some(a), Some(b)) => dir.apply(a.cmp(b)),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => Ordering::Equal,
+    };
+    rows.sort_by(|a, b| {
+        let ordering = match key {
+            "scope" => dir.apply(a.scope.cmp(&b.scope)),
+            "owner" => dir.apply(text(&a.owner_username).cmp(&text(&b.owner_username))),
+            "recipient" => dir.apply(text(&a.target_username).cmp(&text(&b.target_username))),
+            "device" => dir.apply(text(&a.device_name).cmp(&text(&b.device_name))),
+            "access" => dir.apply(access_rank(a).cmp(&access_rank(b))),
+            "lastUsed" => optional(
+                a.last_access.as_ref().map(|(at, _)| at.as_str()),
+                b.last_access.as_ref().map(|(at, _)| at.as_str()),
+            ),
+            "expires" => optional(a.expires_at.as_deref(), b.expires_at.as_deref()),
+            "created" => dir.apply(a.created_at.cmp(&b.created_at)),
+            _ => Ordering::Equal,
+        };
+        ordering.then_with(|| b.created_at.cmp(&a.created_at))
+    });
+}
+
 pub(super) async fn list(
     headers: HeaderMap,
     Query(query): Query<ListQuery>,
@@ -152,11 +256,22 @@ pub(super) async fn list(
         )
         .unwrap_or((0, 0));
     let usage = usage_by_day(&conn, 14);
+    let names = usernames(
+        &conn,
+        &[
+            ListQuery::pick(&query.owner),
+            ListQuery::pick(&query.recipient),
+        ]
+        .into_iter()
+        .flatten()
+        .map(str::to_string)
+        .collect::<Vec<_>>(),
+    );
     drop(conn);
     let search = query.search();
-    let matching: Vec<&ShareRow> = rows
+    let mut matching: Vec<&ShareRow> = rows
         .iter()
-        .filter(|row| matches_filter(row, query.filter(), &horizon))
+        .filter(|row| matches_columns(row, &query, &horizon))
         .filter(|row| {
             search.as_deref().is_none_or(|search| {
                 row.owner_username.to_lowercase().contains(search)
@@ -166,6 +281,9 @@ pub(super) async fn list(
             })
         })
         .collect();
+    if let Some((key, dir)) = query.sort_by(Dir::Asc) {
+        sort_shares(&mut matching, key, dir);
+    }
     let paging = query.paging();
     let items = matching
         .iter()
@@ -199,6 +317,14 @@ pub(super) async fn list(
     body.insert("counts".into(), counts);
     body.insert("summary".into(), summary);
     body.insert("usage".into(), usage);
+    let label = |id: Option<&str>| id.and_then(|id| names.get(id).cloned());
+    body.insert(
+        "labels".into(),
+        json!({
+            "owner": label(ListQuery::pick(&query.owner)),
+            "recipient": label(ListQuery::pick(&query.recipient)),
+        }),
+    );
     Json(Value::Object(body)).into_response()
 }
 
@@ -312,11 +438,26 @@ pub(super) async fn public_links(
         &format!("SELECT COUNT(*) {from} WHERE {condition}"),
         [],
     );
+    let order = match query.sort_by(Dir::Desc) {
+        Some((key, dir)) => {
+            let d = dir.sql();
+            match key {
+                "owner" => format!("u.username {d}, l.created_at DESC"),
+                "device" => format!("d.name {d}, l.created_at DESC"),
+                "storage" => format!("COALESCE(json_extract(l.snapshot_json,'$.version'),1)=2 {d}, l.created_at DESC"),
+                "live" => format!("s.link_id IS NOT NULL {d}, l.created_at DESC"),
+                "refreshed" => format!("s.refreshed_at IS NULL, s.refreshed_at {d}"),
+                "size" => format!("length(l.snapshot_json) {d}"),
+                _ => format!("l.created_at {d}"),
+            }
+        }
+        None => "l.created_at DESC".to_string(),
+    };
     let items: Vec<Value> = conn
         .prepare(&format!(
             "SELECT l.id,u.username,d.name,l.created_at,s.refreshed_at,s.link_id IS NOT NULL,
                     COALESCE(json_extract(l.snapshot_json,'$.version'),1)=2,length(l.snapshot_json)
-             {from} WHERE {condition} ORDER BY l.created_at DESC LIMIT ?1 OFFSET ?2"
+             {from} WHERE {condition} ORDER BY {order} LIMIT ?1 OFFSET ?2"
         ))
         .and_then(|mut stmt| {
             stmt.query_map(params![paging.size as i64, paging.offset() as i64], |row| {
