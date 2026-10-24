@@ -307,7 +307,13 @@ remain visible. When ACP does not distinguish answers from progress, an agent
 message qualifies at 600 Unicode characters, or at 300 characters with a Markdown
 heading and three paragraphs, or with a three-line Markdown table. This is a
 presentation heuristic, not a completion signal. Short progress still uses the
-latest-update preview. Lazy history summaries preserve qualifying answers;
+latest-update preview. Once a turn has finished, its answer is what shows: the
+narration before it opens on about 240 characters each (each expands), and past
+three such answers only the last two show, the earlier ones and the work between
+them folded into one "N earlier answers" line that opens in place. Wakes from
+background tasks and native sub-agents are rows of the work around them, never
+lines of their own: a run counts them (🔔N) and wakes in a row read "Woken N
+times", each listed when opened. Lazy history summaries preserve qualifying answers;
 commands and their outputs continue to load on demand.
 
 A working turn reads open and stays short: the run of operations it is in shows
@@ -542,8 +548,10 @@ prompt's send button and the thread sheet's New thread move to the left.
 Above the composer, at its right edge, one strip holds previous turn, next turn
 and the latest reply; the latest-reply button takes an accent tint (not Send's
 fill) only while the reader is away from the end. An opened message's "Show
-less" rides just above the composer, or just above the strip where the strip is
-under it (in either hand), so neither covers the other and no gap opens.
+less", a small label on a light wash, rides just above the composer's own box
+(6px), or just above whatever stands over the composer at that spot (the turn
+strip, the composer's corner marks, queued prompts). A reply longer than 1,200
+characters opens folded at that length.
 
 The compact model menu shows reported context use and capacity in thousands of
 tokens below the reasoning controls. Missing readings show a dash. Picking a model
