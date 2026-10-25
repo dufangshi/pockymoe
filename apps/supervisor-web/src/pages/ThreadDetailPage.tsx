@@ -5,8 +5,6 @@ import { SupervisorHeartbeat, SUPERVISOR_HEARTBEAT_TIMEOUT_MS } from '../lib/sup
 import { appUrl } from '../lib/webBase';
 import { workbenchUrls } from '../lib/workbenchUrls';
 import { HostFeatureGate, useHostScope, UnscopedOnly } from '../lib/hostCapabilities';
-import { sharingEditInput, type SharingInput } from '../lib/signedSharing';
-import { SignedShareDetails } from '../components/SignedShareDetails';
 import { useThreadDrafts } from './useThreadDrafts';
 import { useWorkbenchReference } from './useWorkbenchReference';
 import { WorkbenchThreadPicker } from '../components/WorkbenchThreadPicker';
@@ -29,6 +27,7 @@ import { useSubscriptionUsage } from './useSubscriptionUsage';
 import { useThreadTabStatus } from '../lib/useThreadTabStatus';
 import { DeviceEncryptionStatus } from '../components/DeviceEncryptionStatus';
 import { ThreadPublicLinks } from '../components/ThreadPublicLinks';
+import { useThreadShares, type ThreadShareTarget } from '../components/ThreadShareDialog';
 import { ThreadWatchesControl } from '../components/ThreadWatchesControl';
 import { ThreadSubagentsControl } from '../components/ThreadSubagentsControl';
 import { PortMappingsControl } from '../components/PortMappingsControl';
@@ -71,8 +70,6 @@ import {
   type ThreadShellControlState,
   type ThreadShellPanelHandle,
   type ThreadComposerProps,
-  type CreateThreadShareInput,
-  type ThreadShareSummary,
   type ThreadTimelineProps,
   type ThreadGraphWorkspaceFeatures,
 } from '@pockymoe/thread-ui';
@@ -88,10 +85,6 @@ import {
   connectSupervisorEvents,
   connectShellSocket,
   createThreadShell,
-  createRelayShare,
-  createRelayGrant,
-  updateRelayGrant,
-  revokeRelayGrant,
   disconnectThread,
   deleteThread,
   fetchAgentBackendModels,
@@ -117,14 +110,12 @@ import {
   fetchThreadDelivery,
   interruptThread,
   respondToThreadRequest,
-  revokeRelayShare,
   resumeThread,
   relayModeActive,
   sendThreadPrompt,
   type PromptAttachmentUpload,
   type SendThreadPromptRequestInput,
   updateThread,
-  updateRelayShare,
   updateShell,
   updateProviderHostFile,
   updateThreadSettings,
@@ -775,17 +766,6 @@ export function ThreadDetailPage() {
     setError,
     setThreads,
   });
-  const shareDialogContexts = useRef(new Map<string, SharingInput>());
-  const [shareBusy, setShareBusy] = useState(false);
-  const [threadShareState, setThreadShareState] = useState<{
-    status: 'idle' | 'loading' | 'ready' | 'failed';
-    shares: ThreadShareSummary[];
-    error: string | null;
-  }>({
-    status: 'idle',
-    shares: [],
-    error: null,
-  });
   const [relayAccessState, setRelayAccessState] = useState<{
     status: 'idle' | 'loading' | 'ready' | 'failed';
     access: RelayEffectiveAccessDto | null;
@@ -1043,199 +1023,24 @@ export function ThreadDetailPage() {
     [referenceDevice],
   );
   const openReferenceThread = useCallback((threadId: string) => navigate(threadHref(threadId, referenceDevice === 'local' ? null : referenceDevice)), [navigate, referenceDevice]);
-  const loadThreadShares = useCallback(async () => {
-    const currentDetail = detailRef.current;
-    const deviceId = currentRelayDeviceIdFromPath();
-    if (!relayModeActive() || !currentDetail || !deviceId) {
-      setThreadShareState({
-        status: 'ready',
-        shares: [],
-        error: null,
-      });
-      return;
-    }
-
-    setThreadShareState((current) => ({
-      ...current,
-      status: 'loading',
-      error: null,
-    }));
-    try {
-      const portal = await fetchRelayPortal();
-      const ownedShares = portal.sharedByMe.filter(
-          (share) =>
-            share.deviceId === deviceId &&
-            share.threadId === currentDetail.thread.id,
-        );
-      const threadTitle = currentDetail.thread.title;
-      const workspaceLabel = currentDetail.workspace.label;
-      await Promise.all(
-        ownedShares
-          .filter(
-            (share) =>
-              share.threadTitle !== threadTitle ||
-              (share.workspaceId && share.workspaceLabel !== workspaceLabel),
-          )
-          .map((share) =>
-            updateRelayShare(share.id, {
-              threadTitle,
-              ...(share.workspaceId ? { workspaceLabel } : {}),
-            }),
-          ),
-      );
-      // The whole device, and this thread's workspace, are shared from here too.
-      const threadWorkspaceId = currentDetail.workspace.id ?? currentDetail.thread.workspaceId ?? null;
-      const ownedGrants = (portal.grantsByMe ?? []).filter(grant => grant.deviceId === deviceId && (
-        grant.scope === 'device' || (grant.scope === 'workspace' && Boolean(threadWorkspaceId) && grant.workspaceId === threadWorkspaceId)));
-      shareDialogContexts.current = new Map([
-        ...ownedShares.map(share => [share.id, sharingEditInput('share', share)] as const),
-        ...ownedGrants.map(grant => [`grant:${grant.id}`, sharingEditInput('grant', grant)] as const),
-      ]);
-      const shares: ThreadShareSummary[] = ownedShares
-        .map((share) => ({
-          id: share.id,
-          trustContent: <SignedShareDetails kind="share" row={share} />,
-          targetUsername: share.targetUsername,
-          label: share.label,
-          threadAccess: share.threadAccess,
-          workspaceAccess: share.workspaceAccess,
-          createdAt: share.createdAt,
-        }));
-      shares.push(...ownedGrants.map(grant => ({
-        trustContent: <SignedShareDetails kind="grant" row={grant} />,
-        id: `grant:${grant.id}`, scope: grant.scope === 'workspace' ? 'workspace' as const : 'device' as const,
-        targetUsername: grant.targetUsername, label: grant.label,
-        threadAccess: grant.threadAccess, workspaceAccess: grant.workspaceAccess, canCreateThreads: grant.canCreateThreads,
-        workspaceLabel: grant.workspaceLabel ?? currentDetail.workspace.label, createdAt: grant.createdAt,
-      })));
-      setThreadShareState({
-        status: 'ready',
-        shares,
-        error: null,
-      });
-    } catch (caught) {
-      setThreadShareState((current) => ({
-        ...current,
-        status: 'failed',
-        error: actionErrorMessage(caught, translate("workbench.unableToLoadActiveShares")),
-      }));
-    }
-  }, [detailRef]);
-  const handleCreateThreadShare = useCallback(
-    async (input: CreateThreadShareInput) => {
-      const currentDetail = detailRef.current;
-      const deviceId = currentRelayDeviceIdFromPath();
-      if (!relayModeActive() || !currentDetail || !deviceId) {
-        setThreadShareState((current) => ({
-          ...current,
-          status: 'failed',
-          error: translate("workbench.relaySharingIsOnlyAvailableFromA"),
-        }));
-        return;
+  // Shared with the thread's menu (ThreadShareDialog): this thread, its workspace or the device.
+  const shareTarget: ThreadShareTarget | null = relayDeviceRouteActive && relayRouteDeviceId && detail
+    ? {
+        deviceId: relayRouteDeviceId,
+        threadId: detail.thread.id,
+        threadTitle: detail.thread.title,
+        workspaceId: detail.workspace.id ?? detail.thread.workspaceId ?? null,
+        workspaceLabel: detail.workspace.label ?? null,
       }
-
-      const threadWorkspaceId = currentDetail.workspace.id ?? currentDetail.thread.workspaceId ?? null;
-      const workspaceId = input.workspaceAccess === 'none' ? null : threadWorkspaceId;
-      if ((input.workspaceAccess !== 'none' || input.scope === 'workspace') && !threadWorkspaceId) {
-        setThreadShareState((current) => ({
-          ...current,
-          status: 'failed',
-          error: translate("workbench.thisThreadIsNotAttachedToA"),
-        }));
-        return;
-      }
-
-      setShareBusy(true);
-      setThreadShareState((current) => ({
-        ...current,
-        error: null,
-      }));
-      try {
-        if (input.scope === 'device') await createRelayGrant({
-          targetIdentifier: input.targetIdentifier, deviceId, scope: 'device', workspaceScope: 'all', workspaceIds: [],
-          label: input.label ?? null, threadAccess: input.threadAccess, workspaceAccess: input.workspaceAccess,
-          canCreateThreads: input.canCreateThreads ?? false,
-        });
-        // Every thread of this workspace; new threads only there (docs/account-key-trust.md#sharing).
-        else if (input.scope === 'workspace') await createRelayGrant({
-          targetIdentifier: input.targetIdentifier, deviceId, scope: 'workspace',
-          workspaceId: threadWorkspaceId, workspaceLabel: currentDetail.workspace.label ?? null,
-          workspaceScope: 'all', workspaceIds: [],
-          label: input.label ?? null, threadAccess: input.threadAccess, workspaceAccess: input.workspaceAccess,
-          canCreateThreads: input.canCreateThreads ?? false,
-        });
-        else await createRelayShare({
-          targetIdentifier: input.targetIdentifier,
-          deviceId,
-          threadId: currentDetail.thread.id,
-          threadTitle: currentDetail.thread.title,
-          workspaceId,
-          workspaceLabel: workspaceId ? currentDetail.workspace.label : null,
-          label: input.label ?? null,
-          threadAccess: input.threadAccess,
-          workspaceAccess: input.workspaceAccess,
-        });
-        await loadThreadShares();
-      } catch (caught) {
-        const message = actionErrorMessage(caught, translate("workbench.unableToCreateShare"));
-        setThreadShareState((current) => ({
-          ...current,
-          status: 'failed',
-          error: message,
-        }));
-        setError(message);
-        throw caught;
-      } finally {
-        setShareBusy(false);
-      }
-    },
-    [detailRef, loadThreadShares],
-  );
-  const handleUpdateThreadShare = useCallback(async (shareId: string, input: CreateThreadShareInput) => {
-    const currentDetail = detailRef.current;
-    if (!currentDetail) return;
-    setShareBusy(true);
-    try {
-      const context = shareDialogContexts.current.get(shareId);
-      if (!context) throw new Error(translate('sharing.dialogIncomplete'));
-      if (shareId.startsWith('grant:')) await updateRelayGrant(shareId.slice(6), {
-        threadAccess: input.threadAccess, workspaceAccess: input.workspaceAccess, label: input.label ?? null,
-        ...(input.canCreateThreads === undefined ? {} : { canCreateThreads: input.canCreateThreads }),
-      }, context);
-      else await updateRelayShare(shareId, {
-        threadAccess: input.threadAccess, workspaceAccess: input.workspaceAccess,
-        workspaceId: currentDetail.workspace.id,
-        workspaceLabel: currentDetail.workspace.label,
-        label: input.label ?? null,
-      }, context);
-      await loadThreadShares();
-    } catch (caught) {
-      setThreadShareState(current => ({...current, status:'failed', error:actionErrorMessage(caught, translate("workbench.unableToUpdatePermissions"))}));
-      throw caught;
-    } finally {setShareBusy(false);}
-  }, [detailRef, loadThreadShares]);
-  const handleRevokeThreadShare = useCallback(async (shareId: string) => {
-    setShareBusy(true);
-    setThreadShareState((current) => ({
-      ...current,
-      error: null,
-    }));
-    try {
-      if (shareId.startsWith('grant:')) await revokeRelayGrant(shareId.slice(6));
-      else await revokeRelayShare(shareId);
-      await loadThreadShares();
-    } catch (caught) {
-      const message = actionErrorMessage(caught, translate("workbench.unableToRevokeShare"));
-      setThreadShareState((current) => ({
-        ...current,
-        status: 'failed',
-        error: message,
-      }));
-      setError(message);
-    } finally {
-      setShareBusy(false);
-    }
-  }, [loadThreadShares]);
+    : null;
+  const {
+    state: threadShareState,
+    busy: shareBusy,
+    load: loadThreadShares,
+    create: handleCreateThreadShare,
+    update: handleUpdateThreadShare,
+    revoke: handleRevokeThreadShare,
+  } = useThreadShares(shareTarget, setError);
   useEffect(() => {
     if (detail?.thread.id && relayThreadCanShare) {
       void loadThreadShares();
