@@ -120,6 +120,7 @@ import {
   respondToThreadRequest,
   resumeThread,
   relayModeActive,
+  relaySharingActive,
   sendThreadPrompt,
   type PromptAttachmentUpload,
   type SendThreadPromptRequestInput,
@@ -793,7 +794,7 @@ export function ThreadDetailPage() {
     workspaceLabel: workbenchNavigation.workspaceLabel,
   });
   const relayDeviceRouteActive =
-    relayModeActive() && Boolean(relayRouteDeviceId);
+    relaySharingActive() && Boolean(relayRouteDeviceId);
   const relayAccess = relayAccessState.access;
   const relayThreadIsOwner =
     !hostScope && (!relayDeviceRouteActive || relayAccess?.kind === 'owner');
@@ -1045,7 +1046,7 @@ export function ThreadDetailPage() {
   useEffect(() => {
     const currentDetail = detailRef.current;
     const deviceId = currentRelayDeviceIdFromPath();
-    if (!relayModeActive() || !currentDetail || !deviceId) {
+    if (!relaySharingActive() || !currentDetail || !deviceId) {
       setRelayAccessState({
         status: 'idle',
         access: null,

@@ -12,6 +12,7 @@ import { startAccountLogin, setAccountSession, cancelAccountLogin, rememberAccou
 import { confirmWorkspaceDocumentLeave, type WorkspaceDocumentSnapshot, type WorkspaceDocumentSaveInput, type WorkspaceSaveReceipt } from "@pockymoe/thread-ui";
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { encryptedBrowserFetch, encryptedRelaySocket, ensureRelayWorker } from './relayTransport';
+import { isTourDevice, isTourRequest, onTourRoute, tourFetch, TourSocket, TOUR_DEVICE_ID } from './tourSandbox/tourDevice';
 import type {
   AgentBackendDto,
   AgentBackendIdDto,
@@ -205,6 +206,11 @@ export function relayModeActive() {
   return relayModeEnabled();
 }
 
+/** Sharing goes through the relay; the tour's sample device shares in memory, in either mode. */
+export function relaySharingActive() {
+  return relayModeEnabled() || onTourRoute();
+}
+
 export function readSelectedRelayDeviceId() {
   if (typeof window === 'undefined') {
     return null;
@@ -220,7 +226,7 @@ export function setSelectedRelayDeviceId(deviceId: string | null) {
     return;
   }
   if (deviceId !== readSelectedRelayDeviceId() && !confirmWorkspaceDocumentLeave()) throw new Error(translate('files.keepEditing'));
-  if (deviceId) {
+  if (deviceId && !isTourDevice(deviceId)) {
     window.localStorage.setItem(RELAY_DEVICE_STORAGE_KEY, deviceId);
     return;
   }
@@ -259,6 +265,10 @@ function apiPath(path: string, deviceId?: string | null) {
     return deviceId && deviceId !== 'local' && path.startsWith('/api/')
       ? `relay/devices/${encodeURIComponent(deviceId)}${path}` : path.slice(1);
   }
+  // The tour's sample device answers its own pages in either mode; signing in stays real.
+  if (onTourRoute() && path.startsWith('/api/') && !path.startsWith('auth/', 5)) {
+    return `relay/devices/${TOUR_DEVICE_ID}${path}`;
+  }
   if (relayModeEnabled() && path.startsWith('/api/')) {
     const selectedDevice = readSelectedRelayDeviceId();
     return selectedDevice
@@ -277,6 +287,8 @@ function buildBrowserMediaUrl(path: string, deviceId?: string | null) {
   if (typeof window === 'undefined') {
     return resolvedPath;
   }
+  // The sample device's files are text the tour shows through the API.
+  if (isTourRequest(resolvedPath)) return 'data:,';
 
   const url = new URL(relayUrl(resolvedPath), window.location.origin);
   const relayToken = readStoredRelayToken();
@@ -447,6 +459,7 @@ async function readApiErrorPayload(response: Response): Promise<ApiErrorShape> {
 
 function fetchApi(path: string, init: RequestInit, deviceId?: string | null, threadScope?: string) {
   const url = apiPath(path, deviceId);
+  if (isTourRequest(url)) return tourFetch(url, init);
   const target = relayUrl(url);
   const endpoint = new URL(target, window.location.origin);
   const requestInit = relayFetchInit(target, init);
@@ -755,7 +768,8 @@ export async function relayLogout() {
 export async function fetchRelayPortal() {
   // A relay that hangs must not leave the device list "refreshing" for good.
   const summary = await request<RelayPortalSummaryDto>('relay/portal', { signal: AbortSignal.timeout(15_000) });
-  await markOwnedDevices(summary.devices.filter(d => d.ownerUserId === summary.user.id).map(d => d.id));
+  // On the tour's pages the list is the sample device's: the account's own record stays.
+  if (!onTourRoute()) await markOwnedDevices(summary.devices.filter(d => d.ownerUserId === summary.user.id).map(d => d.id));
   return summary;
 }
 
@@ -2040,8 +2054,7 @@ export function connectSupervisorEvents(
   onEvent: (event: ThreadEventEnvelope) => void,
   target?: { deviceId: string | null; threadId: string | null },
 ) {
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const socket = relayModeEnabled() ? encryptedRelaySocket(buildSocketUrl(protocol, target)) : new WebSocket(buildSocketUrl(protocol, target));
+  const socket = openSocket(target);
 
   // All panes (including a reference device) recover on a fresh live connection.
   // Emit only on socket open, never on successful image requests.
@@ -2070,8 +2083,7 @@ export function connectShellSocket(
   } = {},
   target?: { deviceId: string | null; threadId: string | null },
 ) {
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const socket = relayModeEnabled() ? encryptedRelaySocket(buildSocketUrl(protocol, target)) : new WebSocket(buildSocketUrl(protocol, target));
+  const socket = openSocket(target);
 
   socket.addEventListener('message', (message) => {
     try {
@@ -2096,6 +2108,12 @@ export function connectShellSocket(
       socket.send(JSON.stringify(message));
     },
   };
+}
+
+function openSocket(target?: { deviceId: string | null; threadId: string | null }): WebSocket {
+  if (target ? isTourDevice(target.deviceId) : onTourRoute()) return new TourSocket() as unknown as WebSocket;
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return relayModeEnabled() ? encryptedRelaySocket(buildSocketUrl(protocol, target)) : new WebSocket(buildSocketUrl(protocol, target));
 }
 
 function buildSocketUrl(protocol: 'ws:' | 'wss:', target?: { deviceId: string | null; threadId: string | null }) {

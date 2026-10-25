@@ -56,6 +56,7 @@ import {
   currentThreadsHref,
   relayDeviceIdFromPath,
 } from '../lib/relayRoutes';
+import { onTourRoute } from '../lib/tourSandbox/tourDevice';
 
 function sortWorkspaces(left: WorkspaceDto, right: WorkspaceDto) {
   if (left.isFavorite !== right.isFavorite) {
@@ -105,7 +106,8 @@ export function WorkspacesPage() {
   const [deviceName, setDeviceName] = useState<{ deviceId: string | null; name: string; owned: boolean; connected?: boolean | undefined } | null>(null);
   useEffect(() => {
     let active = true;
-    const loadName = relayModeActive()
+    // The tour's sample device names itself through its own relay answers.
+    const loadName = relayModeActive() || onTourRoute()
       ? fetchRelayPortal().then(portal => {
         const owned = portal.devices.find(device => device.id === deviceId);
         return {
