@@ -20,6 +20,9 @@ struct Mapping {
     /// The conversation whose agent created the mapping, as the device reports
     /// it. People that conversation is shared with may open the mapping too.
     thread: Option<String>,
+    /// Forward the browser's own Origin instead of the loopback upstream. For
+    /// applications that check their public origin (CSRF or Origin allowlists).
+    preserve_origin: bool,
 }
 #[derive(Clone, PartialEq, Eq)]
 struct Grant {
@@ -819,6 +822,7 @@ pub(super) fn update(state: &AppState, device: &str, connection: Uuid, value: &V
                     .as_str()
                     .filter(|thread| valid_thread_id(thread))
                     .map(Into::into),
+                preserve_origin: item["preserveOrigin"].as_bool().unwrap_or(false),
             },
         );
     }
@@ -1026,16 +1030,20 @@ pub(super) async fn middleware(
             .and_then(|s| url::Url::parse(s).ok())
             .is_some_and(|o| o.origin() == origin.origin())
         {
-            return StatusCode::FORBIDDEN.into_response();
+            // Marked so a browser console shows the gateway, not the app, refused it.
+            return (
+                StatusCode::FORBIDDEN,
+                [("x-pockymoe-gateway", "origin-rejected")],
+                "The preview gateway refused a request from another origin.",
+            )
+                .into_response();
         }
     }
-    let upstream = format!("http://127.0.0.1:{}", mapping.port);
     let websocket = request
         .headers()
         .get(header::UPGRADE)
         .is_some_and(|s| s.as_bytes().eq_ignore_ascii_case(b"websocket"));
     let browser_upgrade = websocket.then(|| hyper::upgrade::on(&mut request));
-    let original_host = origin[url::Position::BeforeHost..url::Position::AfterPort].to_string();
     let query = app_query(request.uri().query().unwrap_or(""));
     let target = if query.is_empty() {
         request.uri().path().to_string()
@@ -1045,20 +1053,7 @@ pub(super) async fn middleware(
     *request.uri_mut() = target.parse().unwrap();
     strip_hop_headers(request.headers_mut(), websocket);
     let headers = request.headers_mut();
-    headers.insert(
-        header::HOST,
-        format!("127.0.0.1:{}", mapping.port).parse().unwrap(),
-    );
-    headers.insert("x-forwarded-host", original_host.parse().unwrap());
-    headers.insert("x-forwarded-proto", origin.scheme().parse().unwrap());
-    if headers.contains_key(header::ORIGIN) {
-        headers.insert(header::ORIGIN, upstream.parse().unwrap());
-    }
-    let cookies = app_cookies(headers);
-    headers.remove(header::COOKIE);
-    if !cookies.is_empty() {
-        headers.insert(header::COOKIE, cookies.parse().unwrap());
-    }
+    rewrite_request_headers(headers, &origin, mapping.port, mapping.preserve_origin);
     if websocket {
         headers.insert(header::CONNECTION, "upgrade".parse().unwrap());
     }
@@ -1120,6 +1115,51 @@ async fn valid_grant(state: &AppState, grant: &Grant) -> bool {
     })
 }
 
+/// The application sees a loopback Host and the public authority in
+/// `X-Forwarded-Host`/`-Proto`. The browser Origin, already checked against the
+/// preview origin, becomes the loopback upstream by default, with a same-origin
+/// Referer following it so the two agree; `preserve_origin` forwards both
+/// unchanged. Client-supplied forwarding headers that could contradict these are
+/// dropped, and gateway cookies never reach the application.
+fn rewrite_request_headers(
+    headers: &mut HeaderMap,
+    origin: &url::Url,
+    port: u16,
+    preserve_origin: bool,
+) {
+    let upstream = format!("http://127.0.0.1:{port}");
+    let public = origin.origin().ascii_serialization();
+    headers.insert(header::HOST, format!("127.0.0.1:{port}").parse().unwrap());
+    headers.insert(
+        "x-forwarded-host",
+        origin[url::Position::BeforeHost..url::Position::AfterPort]
+            .parse()
+            .unwrap(),
+    );
+    headers.insert("x-forwarded-proto", origin.scheme().parse().unwrap());
+    headers.remove("x-forwarded-port");
+    headers.remove(header::FORWARDED);
+    if !preserve_origin {
+        if headers.contains_key(header::ORIGIN) {
+            headers.insert(header::ORIGIN, upstream.parse().unwrap());
+        }
+        let referer = headers
+            .get(header::REFERER)
+            .and_then(|h| h.to_str().ok())
+            .and_then(|r| {
+                let rest = r.strip_prefix(public.as_str())?;
+                (rest.is_empty() || rest.starts_with('/')).then(|| format!("{upstream}{rest}"))
+            });
+        if let Some(referer) = referer.and_then(|r| r.parse().ok()) {
+            headers.insert(header::REFERER, referer);
+        }
+    }
+    let cookies = app_cookies(headers);
+    headers.remove(header::COOKIE);
+    if !cookies.is_empty() {
+        headers.insert(header::COOKIE, cookies.parse().unwrap());
+    }
+}
 fn app_cookies(headers: &HeaderMap) -> String {
     headers
         .get_all(header::COOKIE)
@@ -1499,6 +1539,66 @@ mod tests {
         );
         assert_eq!(headers.get_all(header::SET_COOKIE).iter().count(), 1);
         assert_eq!(headers[header::SET_COOKIE], "app=value; HttpOnly; Path=/");
+    }
+
+    #[test]
+    fn request_headers_use_a_loopback_origin_unless_the_mapping_preserves_it() {
+        let origin = parse_base("https://p-map.example.test").unwrap();
+        let browser = || {
+            let mut headers = HeaderMap::new();
+            headers.insert(header::HOST, "p-map.example.test".parse().unwrap());
+            headers.insert(
+                header::ORIGIN,
+                "https://p-map.example.test".parse().unwrap(),
+            );
+            headers.insert(
+                header::REFERER,
+                "https://p-map.example.test/login?next=%2F".parse().unwrap(),
+            );
+            headers.insert(header::AUTHORIZATION, "Bearer app".parse().unwrap());
+            headers.insert(
+                header::COOKIE,
+                format!("{COOKIE}=secret; app=value").parse().unwrap(),
+            );
+            headers.insert("x-forwarded-host", "spoofed.example".parse().unwrap());
+            headers.insert("x-forwarded-port", "8443".parse().unwrap());
+            headers.insert(header::FORWARDED, "host=spoofed.example".parse().unwrap());
+            headers
+        };
+        let mut loopback = browser();
+        rewrite_request_headers(&mut loopback, &origin, 4013, false);
+        assert_eq!(loopback[header::HOST], "127.0.0.1:4013");
+        assert_eq!(loopback[header::ORIGIN], "http://127.0.0.1:4013");
+        assert_eq!(
+            loopback[header::REFERER],
+            "http://127.0.0.1:4013/login?next=%2F"
+        );
+        assert_eq!(loopback["x-forwarded-host"], "p-map.example.test");
+        assert_eq!(loopback["x-forwarded-proto"], "https");
+        assert!(
+            !loopback.contains_key("x-forwarded-port") && !loopback.contains_key(header::FORWARDED)
+        );
+        assert_eq!(loopback[header::AUTHORIZATION], "Bearer app");
+        assert_eq!(loopback[header::COOKIE], "app=value");
+        let mut preserved = browser();
+        rewrite_request_headers(&mut preserved, &origin, 4013, true);
+        assert_eq!(preserved[header::HOST], "127.0.0.1:4013");
+        assert_eq!(preserved[header::ORIGIN], "https://p-map.example.test");
+        assert_eq!(
+            preserved[header::REFERER],
+            "https://p-map.example.test/login?next=%2F"
+        );
+        assert_eq!(preserved["x-forwarded-host"], "p-map.example.test");
+        assert_eq!(preserved[header::COOKIE], "app=value");
+        // A Referer from another site is never rewritten, and no Origin is invented.
+        let mut other = HeaderMap::new();
+        other.insert(
+            header::REFERER,
+            "https://p-map.example.test.evil/x".parse().unwrap(),
+        );
+        rewrite_request_headers(&mut other, &origin, 4013, false);
+        assert_eq!(other[header::REFERER], "https://p-map.example.test.evil/x");
+        assert!(!other.contains_key(header::ORIGIN));
     }
 
     #[tokio::test]
@@ -2003,6 +2103,7 @@ mod tests {
             connection: Uuid::new_v4(),
             port: 4013,
             thread: None,
+            preserve_origin: false,
         };
         let request = Request::builder()
             .uri("/work?app=a%2Fb&app=two&flag&lease=existing&leaseExpiresAt=123")

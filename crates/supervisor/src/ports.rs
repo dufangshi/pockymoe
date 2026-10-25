@@ -30,6 +30,11 @@ pub(crate) struct Mapping {
     /// with. Owner approvals (machine credential, Web, DSH console) leave it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thread_id: Option<String>,
+    /// The Relay forwards the browser's own Origin instead of the loopback
+    /// upstream, for applications that check their public origin. Set from the
+    /// CLI (`--origin preserve`); other approvals keep it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub preserve_origin: bool,
 }
 
 const KEY: &str = "devicePortMappings";
@@ -224,8 +229,26 @@ pub(crate) fn create_local_mapping(
     label: &str,
     thread: Option<&str>,
 ) -> Result<Mapping> {
+    create_local_mapping_with_origin(state, port, label, thread, None)
+}
+
+/// `preserve_origin` of `None` keeps an existing mapping's Origin mode.
+pub(crate) fn create_local_mapping_with_origin(
+    state: &Supervisor,
+    port: u16,
+    label: &str,
+    thread: Option<&str>,
+    preserve_origin: Option<bool>,
+) -> Result<Mapping> {
     pockymoe_runtime::host_mode::require_feature(state.host_capabilities.previews, "previews")?;
-    let mapping = create_authorized_mapping(state, port, label, MappingAuthority::Local, thread)?;
+    let mapping = create_mapping(
+        state,
+        port,
+        label,
+        MappingAuthority::Local,
+        thread,
+        preserve_origin,
+    )?;
     create_lease(state, &mapping.id, MappingAuthority::Local)?;
     Ok(mapping)
 }
@@ -235,6 +258,16 @@ fn create_authorized_mapping(
     label: &str,
     authority: MappingAuthority<'_>,
     thread: Option<&str>,
+) -> Result<Mapping> {
+    create_mapping(state, port, label, authority, thread, None)
+}
+fn create_mapping(
+    state: &Supervisor,
+    port: u16,
+    label: &str,
+    authority: MappingAuthority<'_>,
+    thread: Option<&str>,
+    preserve_origin: Option<bool>,
 ) -> Result<Mapping> {
     pockymoe_runtime::host_mode::require_feature(state.host_capabilities.previews, "previews")?;
     if port == 0 || port == state.config.port || label.len() > 120 {
@@ -270,6 +303,9 @@ fn create_authorized_mapping(
             if let Some(thread) = thread {
                 existing.thread_id = Some(thread.to_owned());
             }
+            if let Some(preserve) = preserve_origin {
+                existing.preserve_origin = preserve;
+            }
             existing.clone()
         } else {
             if mappings.len() >= 32 { bail!("At most 32 port mappings can be enabled on a device"); }
@@ -277,6 +313,7 @@ fn create_authorized_mapping(
                 id: Uuid::new_v4().simple().to_string(), port,
                 label: label.trim().to_string(), created_at: pockymoe_protocol::now_rfc3339(),
                 thread_id: thread.map(str::to_owned),
+                preserve_origin: preserve_origin.unwrap_or(false),
             };
             mappings.push(mapping.clone());
             mapping

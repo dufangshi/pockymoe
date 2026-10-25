@@ -190,7 +190,8 @@ its access to the mapping ([who can open a mapping](#who-can-open-a-mapping)) on
 every HTTP request and WebSocket upgrade. Main account and gateway cookies are
 filtered out of requests to the local application; the application cannot set
 gateway cookies through its HTTP responses. Cross-origin
-Origin headers are rejected. Stop, device disconnect and connection replacement
+Origin headers are rejected; that 403 carries `x-pockymoe-gateway: origin-rejected`
+so it can be told apart from the application's own. Stop, device disconnect and connection replacement
 cancel active tunnels. A copied address does not grant another user access.
 Long-lived connections recheck session validity every 15 seconds and close after
 logout, account disablement, session expiry, ownership revocation or the end of
@@ -343,7 +344,16 @@ Do not disable its host/origin checks globally. Previews open in new tabs.
 
 The gateway authenticates the preview account and validates the browser Origin
 before forwarding. It then sends `Host: 127.0.0.1:<port>` and, if an Origin was
-present, rewrites it to `http://127.0.0.1:<port>`. Ordinary Vite dev servers allow
+present, rewrites it to `http://127.0.0.1:<port>`; a Referer on the preview origin
+is rewritten to the same loopback origin so the two agree. Client-supplied
+`Forwarded` and `X-Forwarded-Port` headers are removed. Applications that check
+their own public origin (CSRF or Origin allowlists, OAuth redirects) reject that
+loopback Origin even though the same request works on localhost. For them,
+create the mapping with `pockymoe preview create --origin preserve`: the browser's
+Origin and Referer (already checked to be the preview origin) are forwarded
+unchanged, and the app should allow the returned `origin`. The mode is stored with
+the mapping and reported to the Relay; renewing without `--origin` keeps it, and
+`--origin loopback` restores the default. Ordinary Vite dev servers allow
 IP addresses by default, so a preview hostname does not normally need adding to
 `server.allowedHosts`. This is separate from listening on an accessible address:
 the service must still accept connections from the Supervisor's loopback.

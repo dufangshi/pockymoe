@@ -34,6 +34,12 @@ pockymoe preview stop 4013
   `allowedHosts: true`, disable host checks or permit a whole shared domain.
   The gateway forwards a loopback Host and original `X-Forwarded-Host`, so many
   apps need no host change. Do not edit allowlists without a framework need.
+- By default the app also receives `Origin: http://127.0.0.1:<port>` (and a
+  same-origin Referer rewritten to match), not the preview origin. An app that
+  checks its own public origin (CSRF middleware, an Origin allowlist, OAuth
+  redirect checks) then rejects POSTs or WebSockets that work on localhost:
+  create the mapping with `--origin preserve` and allow the returned `origin`.
+  A 403 the gateway itself returns carries `x-pockymoe-gateway`.
 - Diagnose before changing configuration: `serviceNotRunning` means check the
   process/port/bind address; `hostRejected` means inspect the precise rejection;
   `httpError` alone does not prove an allowlist problem. A successful HTTP check

@@ -98,6 +98,7 @@ fn describe(
         "relayConnected":state.relay_connected.load(Ordering::SeqCst),
         "access":if mapping.thread_id.is_some() { "thread" } else { "deviceOwner" },
         "threadId":mapping.thread_id,
+        "originMode":if mapping.preserve_origin { "preserve" } else { "loopback" },
         "nextSteps":["This reserves an address; it does not start the service. Bind an HTTP service to this port on loopback.",
             "If the framework requires an allowlist, add only hostname (or origin for origin-based settings); never allow all hosts.",
             open_step]}),
@@ -133,13 +134,21 @@ pub(crate) async fn run(state: &Supervisor, input: &Value, caller: Option<&str>)
                 label: String::new(),
                 created_at: String::new(),
                 thread_id: None,
+                preserve_origin: false,
+            };
+            let preserve_origin = match input["originMode"].as_str() {
+                None => None,
+                Some("loopback") => Some(false),
+                Some("preserve") => Some(true),
+                Some(_) => bail!("Origin mode must be loopback or preserve"),
             };
             describe(state, &placeholder, requested_path)?;
-            let mapping = crate::ports::create_local_mapping(
+            let mapping = crate::ports::create_local_mapping_with_origin(
                 state,
                 port,
                 input["label"].as_str().unwrap_or(""),
                 caller,
+                preserve_origin,
             )?;
             describe(state, &mapping, requested_path)
         }
@@ -440,6 +449,40 @@ mod tests {
         );
         assert_eq!(classify(403, "Forbidden: login required"), "httpError");
         assert_eq!(classify(200, "Documentation for allowedHosts"), "httpReady");
+    }
+    #[tokio::test]
+    async fn origin_mode_is_chosen_at_create_kept_when_omitted_and_reported_to_the_relay() {
+        let (_dir, state) =
+            crate::tunnel::tests::state_with_relay_url("https://remote.example.test");
+        let (connection, _outbound) = crate::peer_link::tests::connected(&state, "device");
+        connection.connected(Some(crate::peer_link::RelayIdentity {
+            device_id: "device".into(),
+            device_name: "Device".into(),
+            port_preview_base_url: Some("https://example.test".into()),
+            public_base_url: Some("https://remote.example.test".into()),
+        }));
+        state.relay_connected.store(true, Ordering::SeqCst);
+        let create =
+            |mode: Option<&str>| json!({"operation":"previewCreate","port":4019,"originMode":mode});
+        let wire = || serde_json::to_value(crate::ports::snapshot(&state)).unwrap()[0].clone();
+        let default = run(&state, &create(None), None).await.unwrap();
+        assert_eq!(default["originMode"], "loopback");
+        assert!(wire().get("preserveOrigin").is_none());
+        let preserved = run(&state, &create(Some("preserve")), None).await.unwrap();
+        assert_eq!(preserved["id"], default["id"]);
+        assert_eq!(preserved["originMode"], "preserve");
+        assert_eq!(wire()["preserveOrigin"], true);
+        // Renewing without a mode keeps it; an explicit loopback turns it off.
+        assert_eq!(
+            run(&state, &create(None), None).await.unwrap()["originMode"],
+            "preserve"
+        );
+        assert_eq!(
+            run(&state, &create(Some("loopback")), None).await.unwrap()["originMode"],
+            "loopback"
+        );
+        assert!(wire().get("preserveOrigin").is_none());
+        assert!(run(&state, &create(Some("other")), None).await.is_err());
     }
     #[tokio::test]
     async fn reserves_stable_address_before_starting_service_without_account_secrets() {

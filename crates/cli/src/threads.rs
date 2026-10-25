@@ -74,6 +74,9 @@ pub enum PreviewCommand {
   - Add only the returned hostname/origin to a framework allowlist, and only if the
     framework needs it; never `*` or disabled host checks.
   - Give the user `openUrl`. Never copy tokens or launch tickets into reports.
+  - The app receives `Origin: http://127.0.0.1:<port>` by default. If it checks its
+    public origin (CSRF, Origin allowlist), use `--origin preserve` and allow the
+    returned origin.
 
 More: pockymoe guide preview"#)]
     Create {
@@ -83,6 +86,11 @@ More: pockymoe guide preview"#)]
         label: String,
         #[arg(long, default_value = "/")]
         path: String,
+        /// Origin the app receives: `loopback` (http://127.0.0.1:<port>, the default
+        /// for a new mapping) or `preserve` (the browser's preview origin). Omitted,
+        /// an existing mapping keeps its mode.
+        #[arg(long, value_parser = ["loopback", "preserve"])]
+        origin: Option<String>,
     },
     /// Show enabled mappings, exact allowlist hostnames and browser entry URLs.
     List,
@@ -673,8 +681,13 @@ impl Client {
     }
     pub async fn preview(&self, command: PreviewCommand) -> Result<Value> {
         let input = match command {
-            PreviewCommand::Create { port, label, path } => {
-                json!({"operation":"previewCreate","port":port,"label":label,"path":path})
+            PreviewCommand::Create {
+                port,
+                label,
+                path,
+                origin,
+            } => {
+                json!({"operation":"previewCreate","port":port,"label":label,"path":path,"originMode":origin})
             }
             PreviewCommand::List => json!({"operation":"previewList"}),
             PreviewCommand::Check {
