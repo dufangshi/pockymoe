@@ -52,6 +52,7 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/relay/admin", get(relay_admin))
         .route("/relay/admin/overview", get(overview::overview))
+        .route("/relay/admin/attention", get(users::attention))
         .route("/relay/admin/search", get(search))
         .route("/relay/admin/users", get(users::list))
         .route(

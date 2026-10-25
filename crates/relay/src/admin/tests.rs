@@ -126,6 +126,39 @@ async fn rejecting_a_registration_deletes_its_pending_vault() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+#[tokio::test]
+async fn attention_counts_only_waiting_registrations_for_admins() {
+    let (state, dir) = crate::tests::test_app_state("admin-attention");
+    let token = {
+        let conn = state.store.conn.lock().await;
+        conn.execute_batch(
+            "INSERT INTO relay_users VALUES ('admin','admin@x','admin','admin',1,NULL,'2026-01-01T00:00:00Z','s','h');
+             INSERT INTO relay_pending_registrations(id,email,username,password_salt,password_hash,created_at,status)
+               VALUES ('a','a@x','a','s','h','2026-01-03T00:00:00Z','pending'),
+                      ('b','b@x','b','s','h','2026-01-02T00:00:00Z','pending'),
+                      ('c','c@x','c','s','h','2026-01-01T00:00:00Z','rejected');",
+        )
+        .unwrap();
+        create_session(&conn, &state.store.session_secret, "admin").unwrap()
+    };
+    let response = users::attention(bearer(&token), State(state.clone())).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(
+        &axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        body,
+        json!({ "pendingRegistrations": 2, "oldestPendingAt": "2026-01-02T00:00:00Z" })
+    );
+    let anonymous = users::attention(HeaderMap::new(), State(state.clone())).await;
+    assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED);
+    drop(state);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 /// A relay serving only the admin API (behind the real browser-security
 /// middleware) over a seeded store, with an admin and a user session.
 struct Console {

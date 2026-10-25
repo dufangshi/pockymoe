@@ -58,6 +58,18 @@ reaches it). Phone rows read "mac · alice". This holds for the device list,
 the performance lists, port previews, shares, public links, security events
 about a device, admin actions on a device and the overview's lists.
 
+Counts in the navigation are of two kinds. Red ones are things waiting for the
+administrator: registration requests to approve or reject show on **Users** (the
+sidebar item, the dot on the folded rail, the phone tab) and on its
+**Registrations** sub-tab, and disappear when none wait. Grey ones are plain
+totals (devices, active shares). The red count comes from
+`GET /relay/admin/attention`, one indexed count read when the console opens, every
+minute while the browser tab is visible, at once when it becomes visible again,
+after a manual refresh and after an approval or rejection; a failed read keeps
+the last count. The other "Needs attention" items on the overview (devices
+reconnecting often, accounts without an account key, legacy public links) are
+states to look at rather than a queue to work through, so they get no badge.
+
 Code: `crates/relay/src/admin/` (API), `apps/supervisor-web/src/pages/relayAdmin/`
 (console), strings in the shared UI's `admin` i18n namespace.
 
@@ -228,6 +240,7 @@ device carry `deviceId`, `name` (and `deviceName`), `ownerUserId`,
 | Route | Returns or does |
 | --- | --- |
 | `GET /relay/admin/overview?range=` | `attention`, `users` (with `dailyActive`), `activity`, `devices`, `shares`, `registrations`, `signupsWeekly`, `publicLinks`, `securityEvents`, `relay`, `onlineDevices` (series), `versions` (online and all devices per version, `outdated` when older than the relay), `tunnels`, `adminActions` (device targets with their owner), `signups` (new accounts over the window: `resolutionSeconds`, `points`, `total`), and `shares.createdInRange`/`revokedInRange`. A series is `{ resolutionSeconds, points: [[ms, value or null]], historyStart }` |
+| `GET /relay/admin/attention` | `{ pendingRegistrations, oldestPendingAt }`: what waits for the administrator, for the navigation badges (polled every minute) |
 | `GET /relay/admin/search?q=` | Up to six users and six devices by name, email or ID (devices with their owner) |
 | `GET /relay/admin/users` · `GET /relay/admin/users/{id}` | Users list (`filter`: `active7d`, `noAccountKey`, `noTwoFactor`, `disabled`, `neverSeen`; `role`: `admin`, `user`; `status`: `active`, `disabled`, `resetPending`; `key`: `set`, `missing`; `factor`: `any`, `none`, `authenticator`, `passkey`; `method`: `password`, `google`, `github`, `oauthOnly`; `seen…`, `created…`; `sort`: `name`, `email`, `role`, `status`, `created`, `lastSeen`, `lastSignIn`, `browser`, `devices`, `key`, `factors`, `method`) with `methods`, each user with `lastSignInAt` and `lastSignInBrowser`; one user's devices (at most 50, `devicesTotal`), sessions, shares, events, approval |
 | `PATCH` · `DELETE /relay/admin/users/{id}` | Enable/disable (not the admin) · delete (not the admin) |

@@ -33,7 +33,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import type { RelaySessionDto } from '@pockymoe/shared';
 import { adminApi } from './adminApi';
 import { formatCount, formatDuration, formatRelative, since } from './format';
-import type { AdminOverview, AdminRange, AdminSearchResult } from './types';
+import type { AdminAttention, AdminOverview, AdminRange, AdminSearchResult } from './types';
 import { Avatar, useDebounced, useIsPhone } from './ui';
 import { rangeLabel } from './labels';
 import { usePopover } from './table';
@@ -56,6 +56,8 @@ const MORE_SECTIONS: AdminSection[] = ['performance', 'server', 'shares', 'syste
 const RANGE_SECTIONS: AdminSection[] = ['overview', 'performance', 'server', 'shares', 'security', 'system'];
 const RANGES: AdminRange[] = ['24h', '7d', '30d', '90d'];
 const SIDEBAR_KEY = 'pockymoe-relay-admin-sidebar';
+/** How often the console asks what waits for the administrator. */
+const ATTENTION_POLL_MS = 60_000;
 
 /** A custom time window (`range=custom&from=YYYY-MM-DD&to=YYYY-MM-DD`). */
 export interface CustomRange {
@@ -73,6 +75,8 @@ export interface AdminPageProps {
   /** Every URL value, for a table's sort and column filters. */
   params: URLSearchParams;
   refreshKey: number;
+  /** What waits for the administrator, polled for the badges; null until known. */
+  attention: AdminAttention | null;
   go: (section: AdminSection, options?: { sub?: string | null; filter?: string | null; id?: string | null; params?: Record<string, string> }) => void;
   /** Writes URL values (null removes one); only opening or closing a row replaces history. */
   setParams: (params: Record<string, string | null>) => void;
@@ -157,6 +161,7 @@ export function RelayAdminConsole({ session, onLogout, onUnauthorized }: {
   const [updatedAt, setUpdatedAt] = useState<number | null>(null);
   const [nav, setNav] = useState<AdminOverview | null>(null);
   const [navFailed, setNavFailed] = useState(false);
+  const [attention, setAttention] = useState<AdminAttention | null>(null);
   const [moreOpen, setMoreOpen] = useState(false);
   const [, setTick] = useState(0);
 
@@ -208,6 +213,33 @@ export function RelayAdminConsole({ session, onLogout, onUnauthorized }: {
     loadNav();
   }, [loadNav, refreshKey]);
 
+  // The badges: one cheap count, read every minute while the console is
+  // visible and at once when it comes back. A failed read keeps the last one
+  // (a relay without the endpoint falls back to the overview's count).
+  const loadAttention = useCallback(() => {
+    adminApi.attention().then(setAttention).catch(() => undefined);
+  }, []);
+  useEffect(() => {
+    loadAttention();
+  }, [loadAttention, refreshKey]);
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') loadAttention();
+    }, ATTENTION_POLL_MS);
+    const visible = () => {
+      if (document.visibilityState === 'visible') loadAttention();
+    };
+    document.addEventListener('visibilitychange', visible);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', visible);
+    };
+  }, [loadAttention]);
+  const onChanged = useCallback(() => {
+    loadNav();
+    loadAttention();
+  }, [loadAttention, loadNav]);
+
   // "Updated 1 minute ago" stays current.
   useEffect(() => {
     const timer = window.setInterval(() => setTick((value) => value + 1), 30_000);
@@ -237,16 +269,19 @@ export function RelayAdminConsole({ session, onLogout, onUnauthorized }: {
     selectedId: params.get('id'),
     params,
     refreshKey,
+    attention,
     go,
     setParams,
     onLoaded,
     onUnauthorized,
-    onChanged: loadNav,
+    onChanged,
   };
 
+  // Red counts are things to act on; grey ones are plain totals.
+  const pending = attention?.pendingRegistrations ?? nav?.attention.pendingRegistrations ?? 0;
   const badge = (target: AdminSection): { value: number; attention?: boolean } | null => {
+    if (target === 'users') return pending ? { value: pending, attention: true } : null;
     if (!nav) return null;
-    if (target === 'users') return nav.attention.pendingRegistrations ? { value: nav.attention.pendingRegistrations, attention: true } : null;
     if (target === 'devices') return { value: nav.devices.total };
     if (target === 'shares') return { value: nav.shares.active };
     return null;
@@ -389,7 +424,12 @@ export function RelayAdminConsole({ session, onLogout, onUnauthorized }: {
                 <button aria-current={section === item ? 'page' : undefined} key={item} onClick={() => go(item)} type="button">
                   <span className="admin-tabbar-icon">
                     {sectionIcon(item)}
-                    {count?.attention ? <b>{formatCount(count.value)}</b> : null}
+                    {count?.attention ? (
+                      <b>
+                        {formatCount(count.value)}
+                        <span className="sr-only"> {translate('admin.pendingRegistrationsShort')}</span>
+                      </b>
+                    ) : null}
                   </span>
                   <span>{item === 'security' ? translate('admin.navSecurityShort') : sectionLabel(item)}</span>
                 </button>
@@ -683,7 +723,7 @@ function MoreSheet({ open, onClose, onGo, onLogout, onRefresh, current, badge }:
   onLogout: () => void;
   onRefresh: () => void;
   current: AdminSection;
-  badge: (section: AdminSection) => { value: number } | null;
+  badge: (section: AdminSection) => { value: number; attention?: boolean } | null;
 }) {
   useI18n();
   const ref = useRef<HTMLDivElement>(null);
@@ -707,7 +747,7 @@ function MoreSheet({ open, onClose, onGo, onLogout, onRefresh, current, badge }:
               <button aria-current={current === item ? 'page' : undefined} key={item} onClick={() => onGo(item)} type="button">
                 {sectionIcon(item)}
                 <span>{sectionLabel(item)}</span>
-                {count ? <b>{formatCount(count.value)}</b> : null}
+                {count ? <b className={count.attention ? 'is-attention' : undefined}>{formatCount(count.value)}</b> : null}
               </button>
             );
           })}

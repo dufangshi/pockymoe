@@ -5,6 +5,7 @@ import { Check, Copy, Download, Eye, EyeOff } from 'lucide-react';
 import { useId, useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { relayUrl } from '../../lib/relayOrigin';
+import type { OAuthProviderName } from '../../lib/signInOutcome';
 
 // Building blocks shared by every sign-in, setup and unlock screen. The page
 // keeps `data-page="relay-portal"` so theme packs can restyle it.
@@ -110,19 +111,27 @@ export function AuthField({ label, value, onChange, type = 'text', autoComplete,
   );
 }
 
-export function AuthNotice({ tone = 'danger', children }: { tone?: 'danger' | 'info'; children: ReactNode }) {
+export function AuthNotice({ tone = 'danger', children }: { tone?: 'danger' | 'info' | 'warning'; children: ReactNode }) {
   // A failure reason is a quiet mark that opens the reason on a tap, not a red
   // paragraph (ui-principles §11). Prefer `AuthSubmit`'s `error`, which puts
   // the mark right after the button that failed.
   if (tone === 'danger' && typeof children === 'string') {
     return <div className="auth-notice-mark flex items-center"><ErrorMark message={children} /></div>;
   }
+  // `warning` is the exception in ui-principles §11: why a sign-in did not
+  // happen (back from Google/GitHub, or an account that waits for approval or
+  // is disabled) is one visible line at the top of the card, because nothing
+  // else on the page shows that anything happened.
+  const toneClass = tone === 'danger'
+    ? 'bg-[var(--status-danger-bg)] text-[var(--status-danger-fg)]'
+    : tone === 'warning'
+      ? 'bg-[var(--status-warning-bg)] text-[var(--theme-fg)]'
+      : 'bg-[var(--theme-accent-soft)] text-[var(--theme-fg)]';
   return (
     <div
       aria-live={tone === 'danger' ? 'assertive' : 'polite'}
-      className={`auth-notice rounded-xl px-3.5 py-2.5 text-sm leading-6 ${tone === 'danger'
-        ? 'bg-[var(--status-danger-bg)] text-[var(--status-danger-fg)]'
-        : 'bg-[var(--theme-accent-soft)] text-[var(--theme-fg)]'}`}
+      className={`auth-notice rounded-xl px-3.5 py-2.5 text-sm leading-6 ${toneClass}`}
+      data-tone={tone}
       role={tone === 'danger' ? 'alert' : 'status'}
     >
       {children}
@@ -185,7 +194,7 @@ function GitHubMark() {
   );
 }
 
-export type OAuthProviderName = 'google' | 'github';
+export type { OAuthProviderName };
 
 /**
  * Continue with Google or GitHub. Plain links start sign-in; with `onStart`

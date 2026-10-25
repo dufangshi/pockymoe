@@ -516,6 +516,23 @@ pub(super) struct RegistrationQuery {
     dir: Option<String>,
 }
 
+/// What waits for the administrator, for the console's navigation badges. It
+/// is polled while the console is open, so it is one indexed count.
+pub(super) async fn attention(headers: HeaderMap, State(state): State<Arc<AppState>>) -> Response {
+    let (conn, _) = match admin_conn(&state, &headers).await {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let (pending, oldest) = conn
+        .query_row(
+            "SELECT COUNT(*),MIN(created_at) FROM relay_pending_registrations WHERE status='pending'",
+            [],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?)),
+        )
+        .unwrap_or((0, None));
+    Json(json!({ "pendingRegistrations": pending, "oldestPendingAt": oldest })).into_response()
+}
+
 /// Registration requests: the pending ones, or the reviewed history.
 pub(super) async fn registrations(
     headers: HeaderMap,

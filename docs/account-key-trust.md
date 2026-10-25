@@ -144,10 +144,19 @@ receives the password.
   characters (Unicode code points after NFC).
 
 `GET /relay/auth/kdf` returns the vault's real parameters for every sign-in name
-whose account has a vault (also when it is disabled or an admin reset is pending)
-and deterministic fake parameters for every other name (unknown, not yet secured,
-OAuth-only without a vault, administrator), so it reveals neither which accounts
-exist nor whether they have a vault.
+whose account has a vault (also when it is disabled or an admin reset is pending),
+the parameters of the newest password registration for a name that has no account
+but a request waiting for approval or rejected (kept in
+`relay_pending_registrations.kdf_json`, so a rejection that drops the vault keeps
+them), and deterministic fake parameters for every other name (unknown, not yet
+secured, OAuth-only without a vault, administrator), so it reveals neither which
+accounts exist nor whether they have a vault.
+
+A sign-in that cannot succeed answers the generic 401 `unauthorized`, except when
+the key (or, for an older account, the password) matches: then the owner learns why,
+as 403 `registration_pending` (the request waits for approval),
+`registration_rejected` or `account_disabled`. The relay does the same slow hash
+work either way, so the answer tells nothing to someone without the password.
 
 The vault (at most 64 KiB, [format](#vault-format)) holds the VDK twice, in a
 password slot and a recovery slot, and a body encrypted with the VDK that contains
@@ -1287,8 +1296,8 @@ senders).
 
 | Endpoint | Access | Body → response |
 | --- | --- | --- |
-| `GET /relay/auth/kdf?login=` | Public | → `{mode: "account", kdf}`: the vault's parameters, or deterministic fake parameters (salt from an HMAC of the name with the session secret) for every name without a vault |
-| `POST /relay/auth/login` | Public | `{identifier, authKey}`; `{login, password, upgrade: true}` for the security upgrade; `{identifier, password}` for the administrator and temporary-reset sign-ins → session or second-factor challenge |
+| `GET /relay/auth/kdf?login=` | Public | → `{mode: "account", kdf}`: the vault's parameters, those of a waiting or rejected password registration for a name without an account, or deterministic fake parameters (salt from an HMAC of the name with the session secret) for every other name |
+| `POST /relay/auth/login` | Public | `{identifier, authKey}`; `{login, password, upgrade: true}` for the security upgrade; `{identifier, password}` for the administrator and temporary-reset sign-ins → session or second-factor challenge; 401 `unauthorized`; with the matching key or password only, 403 `registration_pending`, `registration_rejected` or `account_disabled` |
 | `POST /relay/auth/register` | Public | `{userId, email, username, authKey, recoveryAuthKey, vault, registrationPassword?}` → session; 202 `pendingApproval`; 409 `user_id_taken` or `conflict` |
 | `POST /relay/auth/recover` | Public | `{login, recoveryAuthKey}` → recovery session (setup session for an account without a vault) or challenge |
 | `GET /relay/auth/session` | Any | Session with the `account` field |

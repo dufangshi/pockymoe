@@ -13,6 +13,9 @@
   --admin-chart-5: #e87ba4;
   --admin-card: var(--theme-panel);
   --admin-rule: var(--theme-border);
+  /* Badges of things waiting for the administrator: one solid red in light and dark. */
+  --admin-attention-bg: oklch(0.55 0.2 25);
+  --admin-attention-fg: #fff;
   --admin-radius: 14px;
   --admin-sidebar: 248px;
   --admin-rail: 68px;
@@ -80,7 +83,8 @@
 }
 .admin-nav-icon { position: relative; display: inline-flex; flex: none; }
 .admin-nav-icon > i { position: absolute; top: -3px; right: -4px; width: 7px; height: 7px; border-radius: 999px; background: var(--theme-fg-muted); box-shadow: 0 0 0 2px var(--theme-surface); }
-.admin-nav-icon > i.is-attention { background: var(--status-warning-fg); }
+/* Counts of things waiting for the administrator are red; totals stay grey. */
+.admin-nav-icon > i.is-attention { background: var(--admin-attention-bg); }
 /* Labels wrap to a second line rather than being cut. */
 .admin-nav-label { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .admin-nav-item > b {
@@ -94,7 +98,7 @@
   text-align: center;
   font-variant-numeric: tabular-nums;
 }
-.admin-nav-item > b.is-attention { background: var(--status-warning-bg); color: var(--status-warning-fg); }
+.admin-nav-item > b.is-attention { background: var(--admin-attention-bg); color: var(--admin-attention-fg); }
 .admin-nav-item[aria-current='page'] { background: var(--theme-panel); color: var(--theme-fg); box-shadow: 0 1px 0 var(--admin-rule), 0 0 0 1px var(--admin-rule); }
 .admin-nav-item:active { background: var(--theme-hover); }
 @media (hover: hover) {
@@ -495,6 +499,7 @@
   white-space: nowrap;
 }
 .admin-subtab > b { padding: 0 6px; border-radius: 999px; background: var(--theme-hover); font-size: 11.5px; }
+.admin-subtab > b.is-attention { background: var(--admin-attention-bg); color: var(--admin-attention-fg); }
 .admin-subtab[aria-selected='true'] { color: var(--theme-fg); }
 .admin-subtab[aria-selected='true']::after { content: ''; position: absolute; right: 8px; bottom: -1px; left: 8px; height: 2px; border-radius: 2px; background: var(--theme-accent-solid); }
 @media (hover: hover) {
@@ -812,6 +817,7 @@
 .admin-more-list > button { display: flex; align-items: center; gap: 12px; min-height: 52px; padding: 0 8px; border: 0; border-bottom: 1px solid var(--admin-rule); background: transparent; color: var(--theme-fg); font-size: 15px; font-weight: 600; text-align: left; }
 .admin-more-list > button > span { flex: 1; }
 .admin-more-list > button > b { padding: 1px 8px; border-radius: 999px; background: var(--theme-hover); font-size: 12px; }
+.admin-more-list > button > b.is-attention { background: var(--admin-attention-bg); color: var(--admin-attention-fg); }
 .admin-more-list > button.is-danger { border-bottom: 0; color: var(--status-danger-fg); }
 .admin-more-list > button[aria-current='page'] { color: var(--theme-accent-strong); }
 .admin-more-list > button:active { background: var(--theme-hover); }
@@ -833,7 +839,7 @@
 .admin-tabbar > button[aria-current='page'] { color: var(--theme-accent-strong); }
 .admin-tabbar > button:active { background: var(--theme-hover); }
 .admin-tabbar-icon { position: relative; display: inline-flex; }
-.admin-tabbar-icon > b { position: absolute; top: -7px; right: -12px; min-width: 18px; padding: 0 5px; border-radius: 999px; background: var(--status-warning-fg); color: var(--theme-panel); font-size: 10.5px; line-height: 18px; text-align: center; }
+.admin-tabbar-icon > b { position: absolute; top: -7px; right: -12px; min-width: 18px; padding: 0 5px; border-radius: 999px; background: var(--admin-attention-bg); color: var(--admin-attention-fg); font-size: 10.5px; line-height: 18px; text-align: center; }
 
 /* Events */
 .admin-event-list { margin: 0; padding: 0; list-style: none; }

@@ -895,6 +895,10 @@ async fn register(State(state): State<Arc<AppState>>, Json(body): Json<RegisterI
             }
             // Only a request created by this registration may receive its vault.
             tx.execute("INSERT INTO relay_pending_account_vaults(request_id,user_id,vault_json,recovery_salt,recovery_hash) VALUES (?1,?2,?3,?4,?5)",params![request_id,id,serde_json::to_string(&body.vault)?,recovery_salt,recovery_hash])?;
+            tx.execute(
+                "UPDATE relay_pending_registrations SET kdf_json=?2 WHERE id=?1",
+                params![request_id, serde_json::to_string(&body.vault["kdf"])?],
+            )?;
             Ok(request)
         })();
         return match result {
@@ -1010,6 +1014,128 @@ fn insert_pending_registration(
     }))
 }
 
+/// The newest password registration for `login` that has no account (yet):
+/// its status, password-key hash and KDF. Sign-in uses it to tell the owner
+/// that the request waits for approval or was rejected.
+fn registration_for_login(
+    conn: &Connection,
+    login: &str,
+) -> Option<(String, String, String, Option<Value>)> {
+    let (id, status, salt, hash, kdf): (String, String, String, String, Option<String>) = conn
+        .query_row(
+            "SELECT id,status,password_salt,password_hash,kdf_json
+             FROM relay_pending_registrations
+             WHERE provider='password' AND status IN ('pending','rejected')
+               AND (username=?1 OR email=?1)
+             ORDER BY created_at DESC LIMIT 1",
+            [login],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )
+        .optional()
+        .ok()
+        .flatten()?;
+    // Requests from before `kdf_json` still carry it in their waiting vault.
+    let kdf = kdf
+        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+        .or_else(|| {
+            conn.query_row(
+                "SELECT vault_json FROM relay_pending_account_vaults WHERE request_id=?1",
+                [&id],
+                |r| r.get::<_, String>(0),
+            )
+            .ok()
+            .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+            .map(|vault| vault["kdf"].clone())
+        })
+        .filter(Value::is_object);
+    Some((status, salt, hash, kdf))
+}
+
+/// The KDF `GET /relay/auth/kdf` gives a login with no account: the one of its
+/// waiting or rejected registration, so its owner derives the key that proves
+/// the request is theirs.
+pub(crate) fn registration_kdf(conn: &Connection, login: &str) -> Option<Value> {
+    registration_for_login(conn, login).and_then(|(_, _, _, kdf)| kdf)
+}
+
+/// A sign-in that cannot succeed but has a reason worth telling the owner.
+struct LoginRefusal {
+    user_id: Option<String>,
+    salt: String,
+    hash: String,
+    code: &'static str,
+}
+
+/// Finds why `login` cannot sign in (disabled, waiting for approval, not
+/// approved). The reason is told only after the secret matches this hash, so
+/// a caller without the password learns nothing beyond the generic 401.
+fn login_refusal(conn: &Connection, login: &str, key_login: bool) -> Option<LoginRefusal> {
+    let user: Option<(String, i64, String, String)> = conn
+        .query_row(
+            "SELECT id,enabled,password_salt,password_hash FROM relay_users
+             WHERE username=?1 OR email=?1 ORDER BY enabled DESC LIMIT 1",
+            [login],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()
+        .ok()
+        .flatten();
+    if let Some((id, enabled, salt, hash)) = user {
+        if enabled == 1 {
+            return None;
+        }
+        let (salt, hash) = if key_login {
+            conn.query_row(
+                "SELECT auth_salt,auth_hash FROM relay_account_auth
+                 WHERE user_id=?1 AND auth_hash IS NOT NULL",
+                [&id],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+            )
+            .optional()
+            .ok()
+            .flatten()?
+        } else {
+            (salt, hash)
+        };
+        return (!salt.is_empty() && !hash.is_empty()).then_some(LoginRefusal {
+            user_id: Some(id),
+            salt,
+            hash,
+            code: "account_disabled",
+        });
+    }
+    // Registrations store the hash of the password-derived key.
+    if !key_login {
+        return None;
+    }
+    let (status, salt, hash, _) = registration_for_login(conn, login)?;
+    (!salt.is_empty() && !hash.is_empty()).then_some(LoginRefusal {
+        user_id: None,
+        salt,
+        hash,
+        code: if status == "pending" {
+            "registration_pending"
+        } else {
+            "registration_rejected"
+        },
+    })
+}
+
+fn login_refused(code: &str) -> Response {
+    let message = match code {
+        "registration_pending" => "This account is waiting for an administrator's approval.",
+        "registration_rejected" => "This registration was not approved.",
+        _ => "This account is disabled.",
+    };
+    (StatusCode::FORBIDDEN, Json(ApiError::new(code, message))).into_response()
+}
+
+enum LoginCheck {
+    Verified((String, String, String), Option<(String, String)>),
+    Refused(LoginRefusal),
+    Failed,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct LoginInput {
@@ -1047,7 +1173,7 @@ async fn login(
     }
     let conn = state.store.conn.lock().await;
     let row: Option<(String,String,String)> = conn.query_row(
-        "SELECT id,password_salt,password_hash FROM relay_users WHERE (username=?1 OR email=?1) AND enabled=1",[ident],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().ok().flatten();
+        "SELECT id,password_salt,password_hash FROM relay_users WHERE (username=?1 OR email=?1) AND enabled=1",[&ident],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().ok().flatten();
     // Only an existing account's ID is audited on failure, never the name tried.
     let attempted = row.as_ref().map(|(id, _, _)| id.clone());
     let row = row.and_then(|(id,salt,hash)| {
@@ -1060,42 +1186,61 @@ async fn login(
             conn.query_row("SELECT auth_salt,auth_hash FROM relay_account_auth WHERE user_id=?1 AND auth_hash IS NOT NULL",[&id],|r|Ok((id.clone(),r.get::<_,String>(0)?,r.get::<_,String>(1)?))).optional().ok().flatten()
         } else if body.upgrade && account::legacy_password_allowed(&conn,&id) { Some((id,salt,hash)) } else { None }
     });
+    let refusal = if row.is_none() {
+        login_refusal(&conn, &ident, key_login)
+    } else {
+        None
+    };
     drop(conn);
-    let Ok(_permit) = credential_work_pool(row.is_some(), &LOGIN_PASSWORD_WORK).try_acquire()
+    let Ok(_permit) =
+        credential_work_pool(row.is_some() || refusal.is_some(), &LOGIN_PASSWORD_WORK)
+            .try_acquire()
     else {
         return StatusCode::TOO_MANY_REQUESTS.into_response();
     };
-    let verified = tokio::task::spawn_blocking(move || {
+    let checked = tokio::task::spawn_blocking(move || {
         let _permit = _permit;
-        let proof = row
-            .as_ref()
-            .map(|(_, salt, hash)| verify_password(&secret, salt, hash))
-            .unwrap_or_else(|| {
-                // Spend the same slow work for unknown or unavailable credentials.
-                let _ = node_scrypt_hash(&secret, "pockymoe-invalid-login");
-                false
-            });
-        let upgrade_hash = if proof
-            && row
-                .as_ref()
-                .is_some_and(|(_, salt, _)| salt == LEGACY_SHA256_SALT)
-        {
-            hash_password(&secret).ok()
-        } else {
-            None
-        };
-        row.filter(|_| proof).map(|row| (row, upgrade_hash))
+        if let Some(row) = row {
+            if !verify_password(&secret, &row.1, &row.2) {
+                return LoginCheck::Failed;
+            }
+            let upgrade_hash = if row.1 == LEGACY_SHA256_SALT {
+                hash_password(&secret).ok()
+            } else {
+                None
+            };
+            return LoginCheck::Verified(row, upgrade_hash);
+        }
+        if let Some(refusal) = refusal {
+            return if verify_password(&secret, &refusal.salt, &refusal.hash) {
+                LoginCheck::Refused(refusal)
+            } else {
+                LoginCheck::Failed
+            };
+        }
+        // Spend the same slow work for unknown or unavailable credentials.
+        let _ = node_scrypt_hash(&secret, "pockymoe-invalid-login");
+        LoginCheck::Failed
     })
     .await
-    .ok()
-    .flatten();
+    .unwrap_or(LoginCheck::Failed);
     let conn = state.store.conn.lock().await;
-    let Some(((id, salt, hash), upgrade_hash)) = verified else {
-        state.metrics.login_failed();
-        if let Some(id) = attempted.as_deref() {
-            security::audit(&conn, Some(id), "login.failed", None);
+    let ((id, salt, hash), upgrade_hash) = match checked {
+        LoginCheck::Verified(row, upgrade_hash) => (row, upgrade_hash),
+        LoginCheck::Refused(refusal) => {
+            state.metrics.login_failed();
+            if let Some(id) = refusal.user_id.as_deref() {
+                security::audit(&conn, Some(id), "login.failed", None);
+            }
+            return login_refused(refusal.code);
         }
-        return unauthorized();
+        LoginCheck::Failed => {
+            state.metrics.login_failed();
+            if let Some(id) = attempted.as_deref() {
+                security::audit(&conn, Some(id), "login.failed", None);
+            }
+            return unauthorized();
+        }
     };
     // Recheck the exact credential after the slow hash; reset/disable may have raced it.
     let table_check = if key_login {
@@ -1348,8 +1493,11 @@ async fn begin_oauth(
 
 #[derive(Deserialize)]
 struct OAuthCallbackQuery {
-    code: String,
-    state: String,
+    code: Option<String>,
+    state: Option<String>,
+    /// Set by the provider instead of `code` when the person cancelled or
+    /// the provider refused (`access_denied`).
+    error: Option<String>,
 }
 
 async fn oauth_callback(
@@ -1359,23 +1507,40 @@ async fn oauth_callback(
     State(state): State<Arc<AppState>>,
 ) -> Response {
     let Some(provider) = OAuthProvider::parse(&provider) else {
-        return Redirect::temporary(
-            &state
-                .oauth
-                .browser_url("/relay-portal?oauthError=OAuth%20provider%20is%20invalid."),
-        )
-        .into_response();
+        return oauth_error_redirect(
+            &state.oauth,
+            None,
+            OAuthRefusal::new("oauth_failed", "OAuth provider is invalid."),
+        );
     };
-    if !oauth::verify_state(&query.state, provider, &state.store.session_secret) {
-        return Redirect::temporary(&state.oauth.browser_url(
-            "/relay-portal?oauthError=OAuth%20request%20expired%20or%20was%20invalid.",
-        ))
-        .into_response();
+    let name = provider.display_name();
+    if query.error.is_some() {
+        return oauth_error_redirect(
+            &state.oauth,
+            Some(provider),
+            OAuthRefusal::new("oauth_cancelled", format!("{name} sign-in was cancelled.")),
+        );
+    }
+    let expired = || {
+        oauth_error_redirect(
+            &state.oauth,
+            Some(provider),
+            OAuthRefusal::new(
+                "oauth_expired",
+                "OAuth request expired or belongs to another browser.",
+            ),
+        )
+    };
+    let (Some(code), Some(signed)) = (query.code.as_deref(), query.state.as_deref()) else {
+        return expired();
+    };
+    if !oauth::verify_state(signed, provider, &state.store.session_secret) {
+        return expired();
     }
     let pending = {
         let conn = state.store.conn.lock().await;
         security::cookie(&headers, "remote_codex_oauth")
-            .and_then(|browser| security::consume_oauth(&conn, &query.state, &browser))
+            .and_then(|browser| security::consume_oauth(&conn, signed, &browser))
     };
     let Some(security::OAuthChallenge {
         verifier,
@@ -1383,26 +1548,24 @@ async fn oauth_callback(
         invite_hash,
     }) = pending
     else {
-        return oauth_error_redirect(
+        return expired();
+    };
+    let failed = || {
+        oauth_error_redirect(
             &state.oauth,
-            "OAuth request expired or belongs to another browser.",
-        );
+            Some(provider),
+            OAuthRefusal::new("oauth_failed", "OAuth authentication failed."),
+        )
     };
     let identity = match state
         .oauth
-        .fetch_identity(
-            &state.oauth_client,
-            provider,
-            &query.code,
-            &callback,
-            &verifier,
-        )
+        .fetch_identity(&state.oauth_client, provider, code, &callback, &verifier)
         .await
     {
         Ok(identity) => identity,
         Err(error) => {
             tracing::warn!(error = %error, provider = provider.as_str(), "OAuth identity lookup failed");
-            return oauth_error_redirect(&state.oauth, "OAuth authentication failed.");
+            return failed();
         }
     };
     let outcome = {
@@ -1423,10 +1586,10 @@ async fn oauth_callback(
             let conn = state.store.conn.lock().await;
             let Some(user) = load_user_by_session(&conn, &state.store.session_secret, &token)
             else {
-                return unauthorized();
+                return failed();
             };
             if security::revoke_session(&conn, &token).is_err() {
-                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                return failed();
             }
             let has_factors = auth_factors::has_factors(&conn, &user.id);
             let result = if has_factors && !auth_factors::trusted(&conn, &user.id, &headers) {
@@ -1434,9 +1597,8 @@ async fn oauth_callback(
             } else {
                 auth_api::login_response(&conn, &state, &user, &headers, true, false)
             };
-            let mut response = match result {
-                Ok(r) => r,
-                Err(e) => return e.into_response(),
+            let Ok(mut response) = result else {
+                return failed();
             };
             *response.status_mut() = StatusCode::SEE_OTHER;
             response.headers_mut().insert(
@@ -1446,7 +1608,7 @@ async fn oauth_callback(
             *response.body_mut() = Body::empty();
             response
         }
-        Err(message) => oauth_error_redirect(&state.oauth, &message),
+        Err(refusal) => oauth_error_redirect(&state.oauth, Some(provider), refusal),
     }
 }
 
@@ -1459,6 +1621,29 @@ enum OAuthOutcome {
     Pending,
 }
 
+/// Why a Google/GitHub sign-in came back without a session. The Web words
+/// `code` for the reader (`relay-portal?oauthCode=`); `message` is the English
+/// reason older Webs show (`oauthError`). The provider has proved the
+/// identity, so these may say that no account exists for it.
+#[derive(Debug)]
+struct OAuthRefusal {
+    code: &'static str,
+    message: String,
+}
+
+impl OAuthRefusal {
+    fn new(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+
+    fn failed(message: &str) -> Self {
+        Self::new("oauth_failed", message)
+    }
+}
+
 /// `invite_hash` is the hash of the invite code given at the OAuth start, if
 /// any. A linked identity signs in without one; a new identity needs the
 /// relay's current code (when one is set) for both direct and approved sign-up.
@@ -1467,7 +1652,7 @@ fn authenticate_external_identity(
     session_secret: &str,
     identity: &ExternalIdentity,
     invite_hash: Option<&str>,
-) -> std::result::Result<OAuthOutcome, String> {
+) -> std::result::Result<OAuthOutcome, OAuthRefusal> {
     let linked: Option<String> = conn
         .query_row(
             "SELECT user_id FROM relay_user_identities
@@ -1476,7 +1661,7 @@ fn authenticate_external_identity(
             |row| row.get(0),
         )
         .optional()
-        .map_err(|_| "OAuth identity lookup failed.".to_string())?;
+        .map_err(|_| OAuthRefusal::failed("OAuth identity lookup failed."))?;
     if let Some(user_id) = linked {
         let enabled: Option<i64> = conn
             .query_row(
@@ -1485,27 +1670,64 @@ fn authenticate_external_identity(
                 |row| row.get(0),
             )
             .optional()
-            .map_err(|_| "OAuth account lookup failed.".to_string())?;
+            .map_err(|_| OAuthRefusal::failed("OAuth account lookup failed."))?;
         if enabled != Some(1) {
-            return Err("This relay account is disabled.".into());
+            return Err(OAuthRefusal::new(
+                "account_disabled",
+                "This relay account is disabled.",
+            ));
         }
         let token = create_session(conn, session_secret, &user_id)
-            .map_err(|_| "OAuth session creation failed.".to_string())?;
+            .map_err(|_| OAuthRefusal::failed("OAuth session creation failed."))?;
         let _ = conn.execute(
             "UPDATE relay_users SET last_seen_at=?1 WHERE id=?2",
             params![now_rfc3339(), user_id],
         );
         return Ok(OAuthOutcome::Login(token));
     }
+    let approval = relay_setting(conn, "registrationApprovalRequired").as_deref() == Some("true");
+    // The newest request of this identity: a waiting one is told so whatever
+    // the settings are now; a rejected one stands while approval is required.
+    let requested: Option<String> = conn
+        .query_row(
+            "SELECT status FROM relay_pending_registrations
+             WHERE provider=?1 AND provider_subject=?2
+             ORDER BY created_at DESC LIMIT 1",
+            params![identity.provider.as_str(), identity.subject],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|_| OAuthRefusal::failed("OAuth account lookup failed."))?;
+    match requested.as_deref() {
+        Some("pending") => {
+            return Err(OAuthRefusal::new(
+                "registration_pending",
+                "This account is waiting for an administrator's approval.",
+            ))
+        }
+        Some("rejected") if approval => {
+            return Err(OAuthRefusal::new(
+                "registration_rejected",
+                "This registration was not approved.",
+            ))
+        }
+        _ => {}
+    }
     if relay_setting(conn, "registrationEnabled").as_deref() == Some("false") {
-        return Err("Registration is currently disabled.".into());
+        return Err(OAuthRefusal::new(
+            "registration_closed",
+            "Registration is currently disabled.",
+        ));
     }
     if let Some(expected) = relay_setting(conn, "registrationPassword") {
         if invite_hash.is_none() {
-            return Err(OAUTH_INVITE_REQUIRED.into());
+            return Err(OAuthRefusal::new("invite_required", OAUTH_INVITE_REQUIRED));
         }
         if !invite_code_matches(invite_hash, &expected) {
-            return Err(INVITE_CODE_INVALID.into());
+            return Err(OAuthRefusal::new(
+                "invalid_invite_code",
+                INVITE_CODE_INVALID,
+            ));
         }
     }
     let email_exists = conn
@@ -1515,18 +1737,34 @@ fn authenticate_external_identity(
             |_| Ok(()),
         )
         .optional()
-        .map_err(|_| "OAuth account lookup failed.".to_string())?
+        .map_err(|_| OAuthRefusal::failed("OAuth account lookup failed."))?
         .is_some();
     if email_exists {
-        return Err(
-            "An account with this email already exists. Sign in with its current method before linking OAuth."
-                .into(),
-        );
+        return Err(OAuthRefusal::new(
+            "email_in_use",
+            "An account with this email already exists. Sign in with its current method before linking OAuth.",
+        ));
     }
     let username = available_username(conn, &identity.username)
-        .map_err(|_| "OAuth username allocation failed.".to_string())?;
+        .map_err(|_| OAuthRefusal::failed("OAuth username allocation failed."))?;
     let (password_salt, password_hash) = (String::new(), String::new());
-    if relay_setting(conn, "registrationApprovalRequired").as_deref() == Some("true") {
+    if approval {
+        // A request for this email made another way is already waiting.
+        let waiting = conn
+            .query_row(
+                "SELECT 1 FROM relay_pending_registrations WHERE status='pending' AND email=?1",
+                params![identity.email],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(|_| OAuthRefusal::failed("OAuth account lookup failed."))?
+            .is_some();
+        if waiting {
+            return Err(OAuthRefusal::new(
+                "registration_pending",
+                "This account is waiting for an administrator's approval.",
+            ));
+        }
         insert_pending_registration(
             conn,
             &identity.email,
@@ -1537,14 +1775,13 @@ fn authenticate_external_identity(
             Some(&identity.subject),
             None,
         )
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| OAuthRefusal::failed(&error.to_string()))?;
         return Ok(OAuthOutcome::Pending);
     }
     let user_id = Uuid::new_v4().to_string();
     let now = now_rfc3339();
-    let tx = conn
-        .unchecked_transaction()
-        .map_err(|_| "OAuth account creation failed.".to_string())?;
+    let creation = || OAuthRefusal::failed("OAuth account creation failed.");
+    let tx = conn.unchecked_transaction().map_err(|_| creation())?;
     tx.execute(
         "INSERT INTO relay_users
          (id,email,username,password_hash,password_salt,role,enabled,last_seen_at,created_at)
@@ -1558,7 +1795,7 @@ fn authenticate_external_identity(
             now
         ],
     )
-    .map_err(|_| "OAuth account creation failed.".to_string())?;
+    .map_err(|_| creation())?;
     tx.execute(
         "INSERT INTO relay_user_identities
          (id,user_id,provider,provider_subject,provider_email,created_at)
@@ -1572,16 +1809,15 @@ fn authenticate_external_identity(
             now
         ],
     )
-    .map_err(|_| "OAuth identity creation failed.".to_string())?;
+    .map_err(|_| OAuthRefusal::failed("OAuth identity creation failed."))?;
     tx.execute(
         "INSERT INTO relay_account_auth(user_id,oauth_only) VALUES (?1,1)",
         [&user_id],
     )
-    .map_err(|_| "OAuth account creation failed.".to_string())?;
-    tx.commit()
-        .map_err(|_| "OAuth account creation failed.".to_string())?;
+    .map_err(|_| creation())?;
+    tx.commit().map_err(|_| creation())?;
     let token = create_session(conn, session_secret, &user_id)
-        .map_err(|_| "OAuth session creation failed.".to_string())?;
+        .map_err(|_| OAuthRefusal::failed("OAuth session creation failed."))?;
     Ok(OAuthOutcome::Login(token))
 }
 
@@ -1617,9 +1853,20 @@ fn available_username(conn: &Connection, value: &str) -> rusqlite::Result<String
     }
 }
 
-fn oauth_error_redirect(oauth: &OAuthConfig, message: &str) -> Response {
-    let encoded: String = url::form_urlencoded::byte_serialize(message.as_bytes()).collect();
-    Redirect::temporary(&oauth.browser_url(&format!("/relay-portal?oauthError={encoded}")))
+/// Back to the sign-in page with the reason: `oauthCode` and `oauthProvider`
+/// for the Web, `oauthError` with the English message for older Webs.
+fn oauth_error_redirect(
+    oauth: &OAuthConfig,
+    provider: Option<OAuthProvider>,
+    refusal: OAuthRefusal,
+) -> Response {
+    let mut query = url::form_urlencoded::Serializer::new(String::new());
+    query.append_pair("oauthCode", refusal.code);
+    if let Some(provider) = provider {
+        query.append_pair("oauthProvider", provider.as_str());
+    }
+    query.append_pair("oauthError", &refusal.message);
+    Redirect::temporary(&oauth.browser_url(&format!("/relay-portal?{}", query.finish())))
         .into_response()
 }
 

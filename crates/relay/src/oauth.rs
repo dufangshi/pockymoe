@@ -412,6 +412,19 @@ impl OAuthConfig {
         self.google_userinfo_url = format!("{provider_base}/userinfo");
     }
 
+    /// GitHub with test credentials and endpoints under `{provider_base}/github`.
+    #[cfg(test)]
+    pub(crate) fn enable_test_github(&mut self, provider_base: &str) {
+        self.github = Some(OAuthCredentials {
+            client_id: "test-client".into(),
+            client_secret: "test-secret".into(),
+        });
+        self.github_authorize_url = format!("{provider_base}/github/authorize");
+        self.github_token_url = format!("{provider_base}/token");
+        self.github_user_url = format!("{provider_base}/github/user");
+        self.github_emails_url = format!("{provider_base}/github/emails");
+    }
+
     fn credentials(&self, provider: OAuthProvider) -> Option<&OAuthCredentials> {
         match provider {
             OAuthProvider::Google => self.google.as_ref(),

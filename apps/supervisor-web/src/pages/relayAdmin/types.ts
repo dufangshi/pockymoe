@@ -93,6 +93,12 @@ export interface AdminVersionCount {
   outdated?: boolean;
 }
 
+/** What waits for the administrator (`GET /relay/admin/attention`), polled for the navigation badges. */
+export interface AdminAttention {
+  pendingRegistrations: number;
+  oldestPendingAt: string | null;
+}
+
 export interface AdminOverview {
   generatedAt: string;
   range: AdminRange;

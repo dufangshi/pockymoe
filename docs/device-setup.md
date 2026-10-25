@@ -63,9 +63,12 @@ PowerShell) and a one-time enrollment secret in the `POCKYMOE_ENROLL_SECRET`
 environment variable, never as an argument; setup binds the device before
 starting it, and the Supervisor does not inherit the secret. The Web refuses to
 build a command from a malformed device token. When the device first connects,
-the browser that copied the command finishes enrollment by itself while it stays
-open; the device then shows **Protected**. That browser keeps the enrollment for 7
-days; after that, copy the setup command again and rerun it on the device. On an
+the device's protection chip on the Devices page offers **Finish protection** in the
+browser that copied the command; pressing it completes the enrollment (it may ask
+for the password once), and the device then shows **Protected**. Nothing finishes it
+in the background ([enrollment](account-key-trust.md#enrollment)). That browser
+keeps the enrollment for 7 days; after that, copy the setup command again and rerun
+it on the device. On an
 installed device, rerunning a setup command binds the existing installation and
 keeps its registration, provided the Web origin saved at installation matches
 the command's.
