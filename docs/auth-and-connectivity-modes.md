@@ -210,24 +210,50 @@ and set the `remote_codex_oauth` browser cookie (`Path=/relay/auth/oauth`,
   the callback, because an existing linked account needs none.
 
 The callback signs in an identity that is already linked, whatever the
-registration settings are. For a new identity it checks, in order: registration
-open (`Registration is currently disabled.`), then, when an invite code is
-configured, the hash stored at the start against the current code (missing:
-`An invite code is required to create an account. Choose Create account and
-enter the code.`; different, for example a code changed during the login:
-`The invite code is not valid.`), then the email is not already used, and only
-then creates the account or the pending registration. Refusals return to
-`/relay-portal?oauthError=<message>`; a pending registration returns to
-`/relay-portal?oauthPending=1`.
+registration settings are, unless the account is disabled. For a new identity
+it checks, in order: a request of this identity waiting for approval (whatever
+the settings are now), a rejected one while approval is required (it is not
+queued again; with approval off it registers like any new identity),
+registration open, then, when an invite code is configured, the hash stored at
+the start against the current code (missing, for example from the sign-in
+card's button, or different, for example a code changed during the login), then
+the email is not already used (nor waiting in another request), and only then
+creates the account or the pending registration. A new pending registration
+returns to `/relay-portal?oauthPending=1`. Every other outcome without a session
+returns to `/relay-portal?oauthCode=<code>&oauthProvider=<google|github>&oauthError=<English message>`;
+older Webs show `oauthError`. The provider has proved the identity, so these
+may say that no account exists for it:
+
+| `oauthCode` | When | The Web says |
+| --- | --- | --- |
+| `invite_required` | New identity, an invite code is set, none came with the start | Opens **Create account** for that provider: "No account for this Google account yet. Enter an invite code and continue." |
+| `invalid_invite_code` | The code no longer matches | The same step: "The invite code is not valid. Check it and continue with Google again." |
+| `registration_closed` | New identity, registration off | "No account for this Google account, and this relay is not accepting new accounts." |
+| `registration_pending` | A request of this identity (or for its email) waits | "Your account is waiting for an administrator's approval." |
+| `registration_rejected` | Its newest request was rejected, approval still required | "Your registration was not approved. Contact the relay administrator." |
+| `account_disabled` | Linked account is disabled | "This account is disabled. Contact the relay administrator." |
+| `email_in_use` | Another account has the email | "An account with this Google email already exists. Sign in the way you did before." |
+| `oauth_cancelled` | The provider returned `error` (cancelled, denied) | "Google sign-in was cancelled." |
+| `oauth_expired` | State invalid or expired, no code, or the pending login belongs to another browser | "The Google sign-in expired or was started in another browser. Try again." |
+| `oauth_failed` | Provider exchange or profile failed, unknown provider, internal error | "Google sign-in did not finish. Try again." |
+
+A password sign-in tells the same account states (`registration_pending`,
+`registration_rejected`, `account_disabled`) only to the account's owner; see
+[account key trust](account-key-trust.md#password-vault-and-recovery-code).
 
 In the Web, **Create account** on a relay with an invite code puts the code
 field first: the password form and **Continue with Google/GitHub** both need
 it. The Google and GitHub buttons there send the code with the POST start;
 without a code they say so beside the field, and a wrong code shows "The invite
 code is not valid." there without leaving the page. Without an invite code, and
-on the sign-in card, the buttons are plain links to the GET start. The admin
-console's registration settings say that each setting applies to Google and
-GitHub sign-up as well.
+on the sign-in card, the buttons are plain links to the GET start. A Google or
+GitHub account with no account that comes back with `invite_required` lands on
+**Create account** with only that provider's button under the code field;
+Enter or the button sends the code with the POST start, and **Create an account
+another way** shows the whole form. The other outcomes are one line at the top
+of the sign-in card. The page drops the `oauth…` values from the address once
+read. The admin console's registration settings say that each setting applies
+to Google and GitHub sign-up as well.
 
 Resulting workflow for the three registration settings:
 
@@ -236,7 +262,7 @@ Resulting workflow for the three registration settings:
 | Off | either | either | Refused | Refused | Signs in |
 | On | Off | None | Account created | Account created and signed in | Signs in |
 | On | Off | Set | Created with the code; refused without it or with a wrong one | Created with the code entered at Create account; refused without it or with a wrong one | Signs in, no code |
-| On | On | None | Waits for approval | Waits for approval | Signs in |
+| On | On | None | Waits for approval | Waits for approval; signing in again says it waits | Signs in |
 | On | On | Set | Waits for approval with the code; refused without it | Waits for approval with the code; refused without it, and no request is queued | Signs in, no code |
 
 Older relays ignored the invite code for Google/GitHub sign-up: rows with an

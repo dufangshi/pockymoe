@@ -296,10 +296,11 @@ async fn api_only_redirects_all_web_assets_and_oauth_returns_to_web() {
             .unwrap();
         let location = response.headers()["location"].to_str().unwrap();
         assert!(location.starts_with(&if separate {
-            format!("{}/relay-portal?oauthError=", f.origin)
+            format!("{}/relay-portal?oauthCode=", f.origin)
         } else {
-            "/relay-portal?oauthError=".to_owned()
+            "/relay-portal?oauthCode=".to_owned()
         }));
+        assert!(location.contains("&oauthError="), "{location}");
     }
 }
 

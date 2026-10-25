@@ -3,6 +3,7 @@ import type { RelayRegistrationSettingsDto } from '@pockymoe/shared';
 // (bearer token or admin cookie), never the ordinary relay session.
 import { request } from '../../lib/api';
 import type {
+  AdminAttention,
   AdminDevices,
   AdminDeviceDetail,
   AdminOverview,
@@ -52,6 +53,7 @@ const id = encodeURIComponent;
 
 export const adminApi = {
   overview: (window: WindowParams) => admin<AdminOverview>(`overview${query(window)}`),
+  attention: () => admin<AdminAttention>('attention'),
   search: (q: string) => admin<AdminSearchResult>(`search${query({ q })}`),
   users: (params: ListParams) =>
     admin<AdminUsers>(`users${query(params)}`),

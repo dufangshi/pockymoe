@@ -172,7 +172,8 @@ export function FilterChips<K extends string>({ options, value, onChange, label 
 
 /** Tabs inside a page: ←/→/Home/End move between them. */
 export function SubTabs<K extends string>({ tabs, value, onChange, label, idPrefix }: {
-  tabs: Array<{ key: K; label: string; count?: number | null; icon?: ReactNode }>;
+  /** `attention` marks a count of things to act on (red), with its accessible name. */
+  tabs: Array<{ key: K; label: string; count?: number | null; icon?: ReactNode; attention?: string | undefined }>;
   value: K;
   onChange: (key: K) => void;
   label: string;
@@ -205,7 +206,12 @@ export function SubTabs<K extends string>({ tabs, value, onChange, label, idPref
         >
           {tab.icon}
           <span>{tab.label}</span>
-          {tab.count !== undefined && tab.count !== null ? <b>{formatCount(tab.count)}</b> : null}
+          {tab.count !== undefined && tab.count !== null ? (
+            <b className={tab.attention ? 'is-attention' : undefined}>
+              {formatCount(tab.count)}
+              {tab.attention ? <span className="sr-only"> {tab.attention}</span> : null}
+            </b>
+          ) : null}
         </button>
       ))}
     </div>

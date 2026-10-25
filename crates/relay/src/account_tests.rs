@@ -81,6 +81,10 @@ impl Fixture {
                 "/relay/admin/registrations/{request_id}/approve",
                 post(approve_registration),
             )
+            .route(
+                "/relay/admin/registrations/{request_id}/reject",
+                post(reject_registration),
+            )
             .route("/supervisor/tunnel", get(supervisor_tunnel))
             .fallback(spa_fallback)
             .layer(DefaultBodyLimit::max(32 * 1024 * 1024))
@@ -1228,6 +1232,116 @@ async fn pending_registration_keeps_vault_user_id_and_keys_through_admin_approva
         .await
         .unwrap();
     assert_eq!(v["userId"], "b45aed3e-2f46-4b9c-93c1-e6f9d80c51e4");
+}
+
+/// The owner of a waiting, rejected or disabled account learns why at sign-in,
+/// but only with the right key: anyone else still gets the generic 401.
+#[tokio::test]
+async fn sign_in_tells_the_owner_of_a_waiting_rejected_or_disabled_account_why() {
+    let f = &Fixture::new("account-refusals").await;
+    f.state
+        .store
+        .conn
+        .lock()
+        .await
+        .execute(
+            "INSERT INTO relay_settings VALUES ('registrationApprovalRequired','true')",
+            [],
+        )
+        .unwrap();
+    let user = "b45aed3e-2f46-4b9c-93c1-e6f9d80c51e4";
+    let (status, request) = f.json(Method::POST,"/relay/auth/register",None,json!({"userId":user,"username":"vector-user","email":"vector@example.test","authKey":auth_key(),"recoveryAuthKey":recovery_key(),"vault":test_vault(user,1)})).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let kdf = |login: &'static str| async move {
+        f.req(Method::GET, &format!("/relay/auth/kdf?login={login}"), None)
+            .send()
+            .await
+            .unwrap()
+            .json::<Value>()
+            .await
+            .unwrap()["kdf"]
+            .clone()
+    };
+    let login = |login: &'static str, key: String| async move {
+        f.json(
+            Method::POST,
+            "/relay/auth/login",
+            None,
+            json!({"identifier":login,"authKey":key}),
+        )
+        .await
+    };
+    // The waiting request answers with its own KDF, so the owner derives the key.
+    for name in ["vector-user", "vector@example.test"] {
+        assert_eq!(kdf(name).await, test_vault(user, 1)["kdf"], "{name}");
+        let (status, body) = login(name, auth_key()).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert_eq!(body["code"], "registration_pending");
+    }
+    let (status, body) = login("vector-user", recovery_key()).await;
+    assert_eq!(
+        (status, &body["code"]),
+        (StatusCode::UNAUTHORIZED, &json!("unauthorized"))
+    );
+    let (status, _) = login("nobody", auth_key()).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // Rejected: the vault goes, the KDF stays with the request.
+    let admin = f.token("admin", FULL).await;
+    let path = format!(
+        "/relay/admin/registrations/{}/reject",
+        request["request"]["id"].as_str().unwrap()
+    );
+    assert_eq!(
+        f.json(Method::POST, &path, Some(&admin), json!({})).await.0,
+        StatusCode::OK
+    );
+    assert_eq!(kdf("vector-user").await, test_vault(user, 1)["kdf"]);
+    let (status, body) = login("vector-user", auth_key()).await;
+    assert_eq!(
+        (status, &body["code"]),
+        (StatusCode::FORBIDDEN, &json!("registration_rejected"))
+    );
+    let (status, _) = login("vector-user", recovery_key()).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // Disabled: the account's own key gets the reason, a wrong one does not.
+    let member = "a45aed3e-2f46-4b9c-93c1-e6f9d80c51e4";
+    f.setup().await;
+    f.state
+        .store
+        .conn
+        .lock()
+        .await
+        .execute("UPDATE relay_users SET enabled=0 WHERE id=?1", [member])
+        .unwrap();
+    let (status, body) = login(member, auth_key()).await;
+    assert_eq!(
+        (status, &body["code"]),
+        (StatusCode::FORBIDDEN, &json!("account_disabled"))
+    );
+    let (status, _) = login(member, recovery_key()).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    // A disabled legacy password account is told the same.
+    {
+        let conn = f.state.store.conn.lock().await;
+        let (salt, hash) = hash_password(PASSWORD).unwrap();
+        conn.execute("INSERT INTO relay_users(id,email,username,role,enabled,created_at,password_salt,password_hash) VALUES ('legacy-off','off@example.test','legacy-off','user',0,'now',?1,?2)",params![salt,hash]).unwrap();
+    }
+    for (password, expected) in [
+        (PASSWORD, StatusCode::FORBIDDEN),
+        ("wrong password", StatusCode::UNAUTHORIZED),
+    ] {
+        let (status, _) = f
+            .json(
+                Method::POST,
+                "/relay/auth/login",
+                None,
+                json!({"identifier":"legacy-off","password":password,"upgrade":true}),
+            )
+            .await;
+        assert_eq!(status, expected);
+    }
 }
 
 #[tokio::test]

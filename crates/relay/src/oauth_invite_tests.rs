@@ -23,12 +23,26 @@ impl Drop for OAuthFixture {
     }
 }
 
-async fn mock_token(body: String) -> Json<Value> {
+async fn mock_token(body: String) -> Response {
     let code = url::form_urlencoded::parse(body.as_bytes())
         .find(|(key, _)| key == "code")
         .map(|(_, value)| value.into_owned())
         .unwrap_or_default();
-    Json(json!({ "access_token": code, "token_type": "Bearer" }))
+    // `fail` stands for a provider that refuses the code exchange.
+    if code == "fail" {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    Json(json!({ "access_token": code, "token_type": "Bearer" })).into_response()
+}
+
+async fn mock_github_user(headers: HeaderMap) -> Json<Value> {
+    let subject = bearer_token(&headers).unwrap_or_default();
+    Json(json!({ "id": subject.parse::<u64>().unwrap(), "login": format!("gh{subject}") }))
+}
+
+async fn mock_github_emails(headers: HeaderMap) -> Json<Value> {
+    let subject = bearer_token(&headers).unwrap_or_default();
+    Json(json!([{ "email": format!("{subject}@example.test"), "primary": true, "verified": true }]))
 }
 
 async fn mock_userinfo(headers: HeaderMap) -> Json<Value> {
@@ -46,7 +60,9 @@ impl OAuthFixture {
         let provider = format!("http://{}", provider_listener.local_addr().unwrap());
         let provider_app = Router::new()
             .route("/token", post(mock_token))
-            .route("/userinfo", get(mock_userinfo));
+            .route("/userinfo", get(mock_userinfo))
+            .route("/github/user", get(mock_github_user))
+            .route("/github/emails", get(mock_github_emails));
         let provider_task = tokio::spawn(async move {
             axum::serve(provider_listener, provider_app).await.unwrap();
         });
@@ -57,11 +73,13 @@ impl OAuthFixture {
             let mutable = Arc::get_mut(&mut state).unwrap();
             mutable.oauth.public_base_url = Some(base.clone());
             mutable.oauth.enable_test_google(&provider);
+            mutable.oauth.enable_test_github(&provider);
         }
         {
             let conn = state.store.conn.lock().await;
             conn.execute("INSERT INTO relay_users(id,email,username,role,enabled,created_at,password_salt,password_hash) VALUES ('admin','admin@example.test','admin','admin',1,'now','salt','hash')", []).unwrap();
             set_relay_setting(&conn, "googleAuthEnabled", "true").unwrap();
+            set_relay_setting(&conn, "githubAuthEnabled", "true").unwrap();
             for (key, value) in settings {
                 set_relay_setting(&conn, key, value).unwrap();
             }
@@ -75,6 +93,10 @@ impl OAuthFixture {
             .route(
                 "/relay/admin/registrations/{request_id}/approve",
                 post(approve_registration),
+            )
+            .route(
+                "/relay/admin/registrations/{request_id}/reject",
+                post(reject_registration),
             )
             .layer(axum::middleware::from_fn_with_state(
                 state.clone(),
@@ -119,9 +141,13 @@ impl OAuthFixture {
 
     /// `GET .../start` as the sign-in buttons use it; returns the provider URL.
     async fn get_start(&self) -> (String, String) {
+        self.get_start_with("google").await
+    }
+
+    async fn get_start_with(&self, provider: &str) -> (String, String) {
         let response = self
             .client
-            .get(format!("{}/relay/auth/oauth/google/start", self.base))
+            .get(format!("{}/relay/auth/oauth/{provider}/start", self.base))
             .send()
             .await
             .unwrap();
@@ -142,14 +168,37 @@ impl OAuthFixture {
             .find(|(key, _)| key == "state")
             .map(|(_, value)| value.into_owned())
             .unwrap();
-        let response = self
+        let provider = if url.path().starts_with("/github/") {
+            "github"
+        } else {
+            "google"
+        };
+        self.raw_callback(
+            provider,
+            &[("code", subject), ("state", &state)],
+            Some(cookie),
+        )
+        .await
+    }
+
+    /// The callback with any query and cookie; returns the redirect target.
+    async fn raw_callback(
+        &self,
+        provider: &str,
+        query: &[(&str, &str)],
+        cookie: Option<&str>,
+    ) -> String {
+        let mut request = self
             .client
-            .get(format!("{}/relay/auth/oauth/google/callback", self.base))
-            .query(&[("code", subject), ("state", &state)])
-            .header(header::COOKIE, format!("remote_codex_oauth={cookie}"))
-            .send()
-            .await
-            .unwrap();
+            .get(format!(
+                "{}/relay/auth/oauth/{provider}/callback",
+                self.base
+            ))
+            .query(query);
+        if let Some(cookie) = cookie {
+            request = request.header(header::COOKIE, format!("remote_codex_oauth={cookie}"));
+        }
+        let response = request.send().await.unwrap();
         assert!(response.status().is_redirection(), "{}", response.status());
         response.headers()[header::LOCATION]
             .to_str()
@@ -219,11 +268,27 @@ fn oauth_cookie(response: &reqwest::Response) -> Option<String> {
         })
 }
 
-fn oauth_error(location: &str) -> Option<String> {
+fn oauth_param(location: &str, name: &str) -> Option<String> {
     let query = location.split_once('?')?.1;
     url::form_urlencoded::parse(query.as_bytes())
-        .find(|(key, _)| key == "oauthError")
+        .find(|(key, _)| key == name)
         .map(|(_, value)| value.into_owned())
+}
+
+fn oauth_error(location: &str) -> Option<String> {
+    oauth_param(location, "oauthError")
+}
+
+/// `(oauthCode, oauthProvider)` of a refusal redirect.
+fn refusal(location: &str) -> (Option<String>, Option<String>) {
+    (
+        oauth_param(location, "oauthCode"),
+        oauth_param(location, "oauthProvider"),
+    )
+}
+
+fn refused(code: &str) -> (Option<String>, Option<String>) {
+    (Some(code.into()), Some("google".into()))
 }
 
 const SIGNED_IN: &str = "/relay-portal";
@@ -238,6 +303,7 @@ async fn oauth_sign_up_requires_the_invite_code_and_linked_accounts_sign_in_with
         oauth_error(&location).as_deref(),
         Some(OAUTH_INVITE_REQUIRED)
     );
+    assert_eq!(refusal(&location), refused("invite_required"));
     let location = f.sign_up(Some("   "), "nocode").await;
     assert_eq!(
         oauth_error(&location).as_deref(),
@@ -300,6 +366,7 @@ async fn oauth_sign_up_requires_the_invite_code_and_linked_accounts_sign_in_with
         oauth_error(&location).as_deref(),
         Some("The invite code is not valid.")
     );
+    assert_eq!(refusal(&location), refused("invalid_invite_code"));
     assert_eq!(f.records("late").await, (0, 0, 0));
 }
 
@@ -369,6 +436,7 @@ async fn closed_registration_refuses_new_oauth_identities_even_with_the_invite_c
         oauth_error(&location).as_deref(),
         Some("Registration is currently disabled.")
     );
+    assert_eq!(refusal(&location), refused("registration_closed"));
     assert_eq!(f.records("late").await, (0, 0, 0));
     assert_eq!(f.sign_up(None, "early").await, SIGNED_IN);
 }
@@ -402,6 +470,7 @@ async fn oauth_start_get_redirects_and_post_returns_the_provider_url() {
     assert_eq!(f.records("open").await, (1, 1, 0));
 
     // The provider checks of the GET start apply to the POST start too.
+    f.setting("githubAuthEnabled", "false").await;
     let response = f
         .client
         .post(format!("{}/relay/auth/oauth/github/start", f.base))
@@ -425,4 +494,202 @@ async fn oauth_start_get_redirects_and_post_returns_the_provider_url() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+impl OAuthFixture {
+    async fn admin_token(&self) -> String {
+        let conn = self.state.store.conn.lock().await;
+        let token = create_session(&conn, &self.state.store.session_secret, "admin").unwrap();
+        account::mark_session(&conn, &token, account::FULL).unwrap();
+        token
+    }
+
+    async fn review(&self, subject: &str, action: &str) {
+        let request_id: String = {
+            let conn = self.state.store.conn.lock().await;
+            conn.query_row(
+                "SELECT id FROM relay_pending_registrations
+                 WHERE provider_subject=?1 AND status='pending'",
+                [subject],
+                |row| row.get(0),
+            )
+            .unwrap()
+        };
+        let response = self
+            .client
+            .post(format!(
+                "{}/relay/admin/registrations/{request_id}/{action}",
+                self.base
+            ))
+            .bearer_auth(self.admin_token().await)
+            .json(&json!({}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+}
+
+#[tokio::test]
+async fn an_unregistered_identity_from_the_sign_in_button_registers_or_is_told_why_not() {
+    // Open, no invite code: the sign-in button creates the account.
+    let f = OAuthFixture::new("oauth-outcome-open", &[]).await;
+    assert_eq!(f.sign_up(None, "fresh").await, SIGNED_IN);
+    assert_eq!(f.records("fresh").await, (1, 1, 0));
+
+    // An invite code: told so (for the Web's Create account step), nothing kept;
+    // the same identity then finishes with the code through the POST start.
+    f.setting("registrationPassword", INVITE).await;
+    let location = f.sign_up(None, "invitee").await;
+    assert!(location.starts_with("/relay-portal?"), "{location}");
+    assert_eq!(refusal(&location), refused("invite_required"));
+    assert_eq!(f.records("invitee").await, (0, 0, 0));
+    assert_eq!(f.sign_up(Some(INVITE), "invitee").await, SIGNED_IN);
+    assert_eq!(f.records("invitee").await, (1, 1, 0));
+
+    // Closed: told so, with or without a code; a linked identity still signs in.
+    f.setting("registrationEnabled", "false").await;
+    for invite in [None, Some(INVITE)] {
+        let location = f.sign_up(invite, "closed").await;
+        assert_eq!(refusal(&location), refused("registration_closed"));
+    }
+    assert_eq!(f.records("closed").await, (0, 0, 0));
+    assert_eq!(f.sign_up(None, "invitee").await, SIGNED_IN);
+
+    // GitHub returns the same codes with its own provider name.
+    let (url, cookie) = f.get_start_with("github").await;
+    assert!(url.contains("/github/authorize?"), "{url}");
+    let location = f.callback(&url, &cookie, "4242").await;
+    assert_eq!(
+        refusal(&location),
+        (Some("registration_closed".into()), Some("github".into()))
+    );
+    f.setting("registrationEnabled", "true").await;
+    let (url, cookie) = f.get_start_with("github").await;
+    let location = f.callback(&url, &cookie, "4242").await;
+    assert_eq!(
+        refusal(&location),
+        (Some("invite_required".into()), Some("github".into()))
+    );
+}
+
+#[tokio::test]
+async fn a_waiting_or_rejected_oauth_request_is_told_on_every_sign_in() {
+    let f = OAuthFixture::new(
+        "oauth-outcome-approval",
+        &[("registrationApprovalRequired", "true")],
+    )
+    .await;
+    assert_eq!(
+        f.sign_up(None, "waiter").await,
+        "/relay-portal?oauthPending=1"
+    );
+    // Signing in again says it waits, queues nothing new, whatever the settings.
+    let location = f.sign_up(None, "waiter").await;
+    assert_eq!(refusal(&location), refused("registration_pending"));
+    f.setting("registrationEnabled", "false").await;
+    f.setting("registrationPassword", INVITE).await;
+    let location = f.sign_up(None, "waiter").await;
+    assert_eq!(refusal(&location), refused("registration_pending"));
+    assert_eq!(f.records("waiter").await, (0, 0, 1));
+    f.setting("registrationEnabled", "true").await;
+    {
+        let conn = f.state.store.conn.lock().await;
+        conn.execute(
+            "DELETE FROM relay_settings WHERE key='registrationPassword'",
+            [],
+        )
+        .unwrap();
+    }
+
+    // A request for the same email made another way already waits.
+    {
+        let conn = f.state.store.conn.lock().await;
+        insert_pending_registration(
+            &conn,
+            "twin@example.test",
+            "twin-password",
+            "salt",
+            "hash",
+            "password",
+            None,
+            None,
+        )
+        .unwrap();
+    }
+    let location = f.sign_up(None, "twin").await;
+    assert_eq!(refusal(&location), refused("registration_pending"));
+    assert_eq!(f.records("twin").await, (0, 0, 0));
+
+    // Rejected: told so and not queued again while approval is required.
+    f.review("waiter", "reject").await;
+    let location = f.sign_up(None, "waiter").await;
+    assert_eq!(refusal(&location), refused("registration_rejected"));
+    assert_eq!(f.records("waiter").await, (0, 0, 0));
+    // Without approval the identity may register like any new one.
+    f.setting("registrationApprovalRequired", "false").await;
+    assert_eq!(f.sign_up(None, "waiter").await, SIGNED_IN);
+    assert_eq!(f.records("waiter").await, (1, 1, 0));
+}
+
+#[tokio::test]
+async fn a_disabled_account_or_a_taken_email_is_told_so() {
+    let f = OAuthFixture::new("oauth-outcome-disabled", &[]).await;
+    assert_eq!(f.sign_up(None, "member").await, SIGNED_IN);
+    {
+        let conn = f.state.store.conn.lock().await;
+        conn.execute(
+            "UPDATE relay_users SET enabled=0 WHERE email='member@example.test'",
+            [],
+        )
+        .unwrap();
+        conn.execute("INSERT INTO relay_users(id,email,username,role,enabled,created_at,password_salt,password_hash) VALUES ('taken','taken@example.test','taken','user',1,'now','salt','hash')", []).unwrap();
+    }
+    let location = f.sign_up(None, "member").await;
+    assert_eq!(refusal(&location), refused("account_disabled"));
+    let location = f.sign_up(None, "taken").await;
+    assert_eq!(refusal(&location), refused("email_in_use"));
+    assert_eq!(f.records("taken").await, (1, 0, 0));
+}
+
+#[tokio::test]
+async fn a_cancelled_expired_or_failed_provider_round_trip_returns_with_a_reason() {
+    let f = OAuthFixture::new("oauth-outcome-errors", &[]).await;
+    // The person cancelled at the provider: no code, an `error`.
+    let (url, cookie) = f.get_start().await;
+    let state = url::Url::parse(&url)
+        .unwrap()
+        .query_pairs()
+        .find(|(key, _)| key == "state")
+        .map(|(_, value)| value.into_owned())
+        .unwrap();
+    let location = f
+        .raw_callback(
+            "google",
+            &[("error", "access_denied"), ("state", &state)],
+            Some(&cookie),
+        )
+        .await;
+    assert_eq!(refusal(&location), refused("oauth_cancelled"));
+    // A forged state, a missing code or another browser's return.
+    for (query, cookie) in [
+        (
+            vec![("code", "x"), ("state", "forged.state")],
+            Some(cookie.as_str()),
+        ),
+        (vec![("state", state.as_str())], Some(cookie.as_str())),
+        (vec![("code", "x"), ("state", state.as_str())], None),
+        (vec![], None),
+    ] {
+        let location = f.raw_callback("google", &query, cookie).await;
+        assert_eq!(refusal(&location), refused("oauth_expired"), "{query:?}");
+    }
+    // The provider refuses the code exchange.
+    assert_eq!(
+        refusal(&f.sign_up(None, "fail").await),
+        refused("oauth_failed")
+    );
+    // An unknown provider still returns to the page.
+    let location = f.raw_callback("gitlab", &[], None).await;
+    assert_eq!(refusal(&location), (Some("oauth_failed".into()), None));
 }

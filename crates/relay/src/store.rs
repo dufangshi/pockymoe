@@ -658,7 +658,8 @@ fn ensure_registration_schema(conn: &Connection) -> Result<()> {
           reviewed_at TEXT,
           reviewed_by_user_id TEXT,
           provider TEXT NOT NULL DEFAULT 'password',
-          provider_subject TEXT
+          provider_subject TEXT,
+          kdf_json TEXT
         );
         CREATE INDEX IF NOT EXISTS relay_pending_registrations_status_idx
           ON relay_pending_registrations(status,created_at DESC);
@@ -676,6 +677,9 @@ fn ensure_registration_schema(conn: &Connection) -> Result<()> {
     for (column, definition) in [
         ("provider", "TEXT NOT NULL DEFAULT 'password'"),
         ("provider_subject", "TEXT"),
+        // The password KDF of the request, kept after a rejection drops the
+        // vault so the requester's sign-in still derives the same key.
+        ("kdf_json", "TEXT"),
     ] {
         let exists = conn
             .prepare("PRAGMA table_info(relay_pending_registrations)")?

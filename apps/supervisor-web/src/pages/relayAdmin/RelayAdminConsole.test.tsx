@@ -34,6 +34,8 @@ import deviceEvents from './__fixtures__/security-events-devices.json';
 
 // Responses of a relay that records statistics (or of one that does not).
 let recorded = false;
+// Registrations waiting, as `GET relay/admin/attention` answers (the overview fixture has 3).
+let waiting = 3;
 
 const calls: Array<{ path: string; method: string }> = [];
 
@@ -51,6 +53,7 @@ function respond(path: string, method: string) {
   if (method !== 'GET') return route === 'settings/retention' ? { ...retention, metricsDays: 30 } : { id: route.split('/').pop(), ok: true };
   const routes: Record<string, unknown> = {
     overview: recorded ? overviewRecorded : overview,
+    attention: { pendingRegistrations: waiting, oldestPendingAt: waiting ? '2026-01-02T00:00:00Z' : null },
     users,
     registrations,
     devices: recorded ? devicesRecorded : devices,
@@ -112,6 +115,7 @@ beforeAll(() => {
 });
 afterEach(() => {
   recorded = false;
+  waiting = 3;
   calls.length = 0;
   vi.clearAllMocks();
 });
@@ -131,6 +135,39 @@ describe('relay admin console', () => {
     // A range applies to the overview's figures.
     fireEvent.click(screen.getByRole('button', { name: '7 days' }));
     await waitFor(() => expect(calls.some((call) => call.path === 'relay/admin/overview?range=7d')).toBe(true));
+  });
+
+  it('shows waiting registrations as red counts on Users and its registration tab, kept current by the poll', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      waiting = 2;
+      renderConsole('/relay-admin?tab=users');
+      const nav = screen.getByRole('navigation', { name: 'Admin sections' });
+      const item = await within(nav).findByRole('button', { name: 'Users 2 registrations waiting' });
+      expect(item.querySelector('b')).toHaveClass('is-attention');
+      // Plain totals stay grey.
+      expect(within(nav).getByRole('button', { name: /Devices\s*17/ }).querySelector('b')).not.toHaveClass('is-attention');
+      const tab = await screen.findByRole('tab', { name: 'Registrations 2 registrations waiting' });
+      expect(tab.querySelector('b')).toHaveClass('is-attention');
+      // The minute poll reads only the cheap count, never the overview again.
+      waiting = 5;
+      const overviews = calls.filter((call) => call.path.startsWith('relay/admin/overview')).length;
+      await act(async () => {
+        vi.advanceTimersByTime(60_000);
+      });
+      expect(await within(nav).findByRole('button', { name: 'Users 5 registrations waiting' })).toBeInTheDocument();
+      expect(screen.getByRole('tab', { name: 'Registrations 5 registrations waiting' })).toBeInTheDocument();
+      expect(calls.filter((call) => call.path.startsWith('relay/admin/overview')).length).toBe(overviews);
+      // Coming back to the page reads it at once; nothing waiting, no badge.
+      waiting = 0;
+      await act(async () => {
+        document.dispatchEvent(new Event('visibilitychange'));
+      });
+      expect(await within(nav).findByRole('button', { name: 'Users' })).toBeInTheDocument();
+      expect(screen.getByRole('tab', { name: 'Registrations' })).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('lists users with filters and pages, and opens a user in the detail window', async () => {

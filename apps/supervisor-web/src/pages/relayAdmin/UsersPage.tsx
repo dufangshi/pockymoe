@@ -73,7 +73,14 @@ export function UsersPage(props: AdminPageProps) {
         onChange={(key) => props.go('users', { sub: key === 'users' ? null : key })}
         tabs={[
           { key: 'users', label: translate('admin.navUsers'), icon: <Users aria-hidden className="h-4 w-4" /> },
-          { key: 'registrations', label: translate('admin.registrations'), icon: <UserPlus aria-hidden className="h-4 w-4" /> },
+          {
+            key: 'registrations',
+            label: translate('admin.registrations'),
+            icon: <UserPlus aria-hidden className="h-4 w-4" />,
+            ...(props.attention?.pendingRegistrations
+              ? { count: props.attention.pendingRegistrations, attention: translate('admin.pendingRegistrationsShort') }
+              : {}),
+          },
           { key: 'methods', label: translate('admin.loginMethods'), icon: <Fingerprint aria-hidden className="h-4 w-4" /> },
         ]}
         value={tab}

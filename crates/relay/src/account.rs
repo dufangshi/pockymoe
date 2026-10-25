@@ -458,17 +458,18 @@ async fn kdf(
         )
         .optional()
         .map_err(internal)?;
-    let known = user
-        .as_deref()
-        .map(|user| vault(&conn, user))
-        .transpose()?
-        .flatten();
+    let known = match user.as_deref() {
+        Some(user) => vault(&conn, user)?.map(|v| v["kdf"].clone()),
+        // A waiting or rejected registration answers with its own KDF, like an
+        // account; its owner's sign-in then learns the outcome (`login`).
+        None => crate::registration_kdf(&conn, &login),
+    };
     let mut mac =
         Hmac::<Sha256>::new_from_slice(state.store.session_secret.as_bytes()).map_err(internal)?;
     mac.update(b"pockymoe-fake-kdf-v1\n");
     mac.update(login.as_bytes());
     let salt = B64.encode(&mac.finalize().into_bytes()[..16]);
-    let value = json!({"mode":"account","kdf":known.map(|v| v["kdf"].clone()).unwrap_or_else(|| json!({"name":"argon2id","memoryKiB":65536,"iterations":3,"parallelism":1,"salt":salt}))});
+    let value = json!({"mode":"account","kdf":known.unwrap_or_else(|| json!({"name":"argon2id","memoryKiB":65536,"iterations":3,"parallelism":1,"salt":salt}))});
     Ok(([(header::CACHE_CONTROL, "no-store")], Json(value)).into_response())
 }
 async fn read_vault(State(state): State<Arc<AppState>>, headers: HeaderMap) -> ApiResult {
