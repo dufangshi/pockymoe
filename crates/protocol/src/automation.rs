@@ -152,6 +152,10 @@ pub struct CommandSpec {
     pub cwd: String,
     #[serde(default = "timeout")]
     pub timeout_seconds: u64,
+    /// Explicit extra environment. The command never inherits the Supervisor's
+    /// own environment beyond the non-secret basics (PATH, HOME, locale, ...).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub env: std::collections::BTreeMap<String, String>,
 }
 fn timeout() -> u64 {
     60

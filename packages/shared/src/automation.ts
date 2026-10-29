@@ -22,6 +22,7 @@ export interface AutomationCommandSpec {
   shell?: string | null;
   cwd: string;
   timeoutSeconds?: number;
+  env?: Record<string, string>;
 }
 export type AutomationAction =
   | { kind: 'pluginAction'; pluginId: string; action: string; input?: unknown; timeoutSeconds?: number }

@@ -908,3 +908,30 @@ async fn lifetime_statistics_exclude_ambiguous_and_missing_turns_and_unmeasured_
         assert_eq!(stats["priceEstimate"]["totalUsd"], 0.0);
     }
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn command_env_keeps_basics_and_explicit_values_but_not_supervisor_secrets() {
+    let (_d, s, t) = setup().await;
+    // SAFETY: test-only; no other test in this process reads this variable.
+    unsafe { std::env::set_var("POCKYMOE_TEST_SUPERVISOR_SECRET", "leak") };
+    let input: CommandRunInput = serde_json::from_value(json!({
+        "shell": "printf '%s|%s|%s' \"${HOME:+home}\" \"$EXTRA\" \"${POCKYMOE_TEST_SUPERVISOR_SECRET:-none}\"",
+        "cwd": ".",
+        "env": {"EXTRA": "given"},
+    }))
+    .unwrap();
+    let result = s.command_run(&t, input).await.unwrap();
+    assert_eq!(result["state"], "completed");
+    assert_eq!(result["stdout"], "home|given|none");
+
+    for bad in [
+        json!({"POCKYMOE_COMMAND_ID": "x"}),
+        json!({"1BAD": "x"}),
+        json!({"A-B": "x"}),
+    ] {
+        let input: CommandRunInput =
+            serde_json::from_value(json!({"argv": ["true"], "cwd": ".", "env": bad})).unwrap();
+        assert!(s.command_run(&t, input).await.is_err(), "{bad}");
+    }
+}

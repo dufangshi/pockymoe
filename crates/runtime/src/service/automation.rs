@@ -282,6 +282,49 @@ fn next_time(t: &Trigger, now: DateTime<Utc>, future: bool) -> Result<Option<Str
         _ => None,
     })
 }
+/// Set by the Supervisor for every command; a definition may not override them.
+const RESERVED_COMMAND_ENV: &[&str] = &["POCKYMOE_COMMAND_ID", "REMOTE_CODEX_COMMAND_ID"];
+
+/// Non-secret process basics a command inherits. Everything else in the
+/// Supervisor's environment (CLI config, managed credentials, upstream keys)
+/// stays out; a definition passes anything more through `env` explicitly.
+#[cfg(unix)]
+const INHERITED_COMMAND_ENV: &[&str] = &[
+    "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LANGUAGE", "TZ", "TMPDIR", "TERM",
+];
+#[cfg(windows)]
+const INHERITED_COMMAND_ENV: &[&str] = &[
+    "SystemRoot",
+    "WINDIR",
+    "TEMP",
+    "TMP",
+    "USERPROFILE",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "USERNAME",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "PATHEXT",
+    "ComSpec",
+];
+
+fn inherited_command_env() -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+    std::env::vars_os()
+        .filter(|(key, _)| {
+            let Some(key) = key.to_str() else {
+                return false;
+            };
+            INHERITED_COMMAND_ENV.iter().any(|k| {
+                if cfg!(windows) {
+                    k.eq_ignore_ascii_case(key)
+                } else {
+                    *k == key
+                }
+            }) || (cfg!(unix) && (key.starts_with("LC_") || key.starts_with("XDG_")))
+        })
+        .collect()
+}
+
 fn validate_command(spec: &CommandSpec, workspace: &str) -> Result<PathBuf> {
     ensure!(
         spec.shell.as_ref().is_some_and(|s| !s.trim().is_empty()) ^ !spec.argv.is_empty(),
@@ -305,6 +348,24 @@ fn validate_command(spec: &CommandSpec, workspace: &str) -> Result<PathBuf> {
         (1..=300).contains(&spec.timeout_seconds),
         "timeoutSeconds must be 1..300"
     );
+    ensure!(spec.env.len() <= 64, "at most 64 env entries");
+    for (key, value) in &spec.env {
+        ensure!(
+            !key.is_empty()
+                && key.len() <= 128
+                && !key.starts_with(|c: char| c.is_ascii_digit())
+                && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
+            "invalid env name {key:?}"
+        );
+        ensure!(
+            !RESERVED_COMMAND_ENV.contains(&key.as_str()),
+            "env {key} is set by the Supervisor"
+        );
+        ensure!(
+            value.len() <= 16384 && !value.contains('\0'),
+            "invalid env value for {key}"
+        );
+    }
     ensure!(!spec.cwd.trim().is_empty(), "cwd is required");
     let path = Path::new(&spec.cwd);
     let cwd = if path.is_absolute() {
@@ -1128,6 +1189,8 @@ impl Supervisor {
         cmd.current_dir(cwd)
             .env_clear()
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .envs(inherited_command_env())
+            .envs(&input.command.env)
             .env("POCKYMOE_COMMAND_ID", id)
             // Hook scripts written before the rename read the old name.
             .env("REMOTE_CODEX_COMMAND_ID", id)
@@ -1135,13 +1198,7 @@ impl Supervisor {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
-        // No machine/managed credentials, CLI config, HOME or upstream keys are inherited.
-        #[cfg(windows)]
-        for key in ["SystemRoot", "WINDIR", "TEMP", "TMP"] {
-            if let Some(v) = std::env::var_os(key) {
-                cmd.env(key, v);
-            }
-        }
+        // No machine/managed credentials, CLI config or upstream keys are inherited.
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt;

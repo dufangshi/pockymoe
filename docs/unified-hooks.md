@@ -125,9 +125,15 @@ absolute cwd is accepted under existing device access permissions. These are
 ordinary processes under the Supervisor's OS user, not a separate sandbox. No
 new grants, script hashes or trust approval workflow is required.
 
-Commands receive a cleared environment with PATH, command ID and (on Windows)
-standard OS/temp paths. Connection tokens, CLI config paths, HOME and upstream
-keys are not automatically copied into scripts. Stdout and stderr each retain
+Commands receive a cleared environment plus the non-secret process basics: PATH,
+the command ID, HOME, USER, LOGNAME, SHELL, LANG/LANGUAGE/LC_*, TZ, TMPDIR, TERM
+and XDG_* on Unix; SystemRoot, WINDIR, TEMP/TMP, USERPROFILE, HOMEDRIVE/HOMEPATH,
+USERNAME, APPDATA/LOCALAPPDATA, PATHEXT and ComSpec on Windows. Connection tokens,
+CLI config paths, managed credentials and upstream keys are not copied into
+scripts, because any thread's agent can create a hook. A definition can add
+variables with an explicit `env` object (at most 64 names of letters, digits and
+`_`; the command ID names are reserved). `env` is stored in the plain hook
+definition and shown with it, so pass a file path for a secret, not the secret. Stdout and stderr each retain
 at most 64 KiB while draining the pipe; excess is discarded. Timeout is 1–300
 seconds. The device allows at most four commands simultaneously. Unix timeout
 kills the owned process group; Windows uses taskkill /T /F (Windows execution is
