@@ -1,9 +1,10 @@
 # Built-in feature plugins
 
-Pockymoe feature plugins are trusted modules compiled into the Rust runtime and
-the shared Web UI. They ship with the application; manifest imports, dynamic
-code loading and independent installation are not supported. Terminal, DeepSeek
-Harness and [Content Quality](content-quality.md) use this registry.
+Built-in feature plugins are trusted modules compiled into the Rust runtime and
+the shared Web UI. They ship with the application. Terminal, DeepSeek Harness
+and [Content Quality](content-quality.md) use this registry. Third-party
+plugins installed from git share the same registry, settings and enablement;
+see [Installed plugins](external-plugins.md).
 
 ## Backend registration
 

@@ -1129,6 +1129,12 @@ mod tests {
                 "POST",
                 "/api/threads/root/plugins/pockymoe.content-quality/actions/reviewDocument",
             ),
+            // Installed plugins clone and run code: owner only, on every route.
+            ("POST", "/api/plugins/install"),
+            ("POST", "/api/plugins/owner.tool/update"),
+            ("POST", "/api/plugins/owner.tool/actions/status"),
+            ("GET", "/api/plugins/owner.tool/runs"),
+            ("DELETE", "/api/plugins/owner.tool"),
         ] {
             assert!(access_allows(&owner_access(), method, path));
             for scope in ["thread", "workspace", "device"] {

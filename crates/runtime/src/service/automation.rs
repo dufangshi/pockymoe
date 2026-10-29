@@ -308,7 +308,7 @@ const INHERITED_COMMAND_ENV: &[&str] = &[
     "ComSpec",
 ];
 
-fn inherited_command_env() -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+pub(crate) fn inherited_command_env() -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
     std::env::vars_os()
         .filter(|(key, _)| {
             let Some(key) = key.to_str() else {
@@ -1295,7 +1295,7 @@ async fn collect_output(mut job: tokio::task::JoinHandle<String>) -> String {
         }
     }
 }
-async fn kill_command_tree(pid: u32) {
+pub(crate) async fn kill_command_tree(pid: u32) {
     #[cfg(unix)]
     {
         let _ = tokio::process::Command::new("/bin/kill")

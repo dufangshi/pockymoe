@@ -304,6 +304,7 @@ pub struct Supervisor {
     pub(crate) thread_host: std::sync::OnceLock<Arc<dyn crate::host_hooks::ThreadHost>>,
     automation_gate: tokio::sync::Mutex<()>,
     pub(crate) plugins: crate::plugins::PluginHost,
+    pub(crate) external_runs: crate::plugins::external::ExternalRuns,
     upstream_homes: std::collections::BTreeMap<String, PathBuf>,
     pub upstream_gate: Arc<tokio::sync::Mutex<()>>,
     pub harness_install_gate: Arc<tokio::sync::Mutex<()>>,
@@ -424,6 +425,7 @@ impl Supervisor {
             thread_host: Default::default(),
             automation_gate: Default::default(),
             plugins: Default::default(),
+            external_runs: Default::default(),
             upstream_homes: Default::default(),
             upstream_gate: Default::default(),
             harness_install_gate: Default::default(),
@@ -462,6 +464,7 @@ impl Supervisor {
         if let Err(error) = supervisor.recover_automation_commands() {
             tracing::warn!(%error, "automation command recovery failed");
         }
+        supervisor.load_external_plugins();
         supervisor
     }
 

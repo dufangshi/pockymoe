@@ -1,4 +1,5 @@
-//! Trusted, statically linked feature plugins. No manifest code loading.
+//! Feature plugins: trusted modules linked into the runtime, plus third-party
+//! plugins installed from git and run as child processes (see `external`).
 use std::sync::Arc;
 
 use anyhow::{bail, ensure, Context, Result};
@@ -11,6 +12,7 @@ use serde_json::{json, Value};
 use crate::Supervisor;
 
 pub mod content_quality;
+pub mod external;
 
 pub const TERMINAL_PLUGIN_ID: &str = "remote-codex.terminal";
 pub const DSH_PLUGIN_ID: &str = "remote-codex.deepseek-harness";
@@ -116,6 +118,10 @@ pub struct PluginActionContext {
 #[async_trait]
 pub trait BuiltinPlugin: Send + Sync {
     fn id(&self) -> &'static str;
+    /// `builtin` for linked modules, `external` for installed ones.
+    fn source(&self) -> &'static str {
+        "builtin"
+    }
     fn descriptor(&self, supervisor: &Supervisor) -> PluginDto;
     fn enabled_by_default(&self) -> bool {
         true
@@ -149,22 +155,27 @@ pub trait BuiltinPlugin: Send + Sync {
 }
 
 pub(crate) struct PluginHost {
-    entries: Vec<Arc<dyn BuiltinPlugin>>,
+    // Installed plugins join and leave at runtime; readers take a snapshot.
+    entries: std::sync::RwLock<Vec<Arc<dyn BuiltinPlugin>>>,
 }
 
 impl Default for PluginHost {
     fn default() -> Self {
         Self {
-            entries: vec![
+            entries: std::sync::RwLock::new(vec![
                 Arc::new(TerminalPlugin),
                 Arc::new(DeepSeekPlugin),
                 Arc::new(content_quality::ContentQualityPlugin),
-            ],
+            ]),
         }
     }
 }
 
 impl PluginHost {
+    pub(crate) fn snapshot(&self) -> Vec<Arc<dyn BuiltinPlugin>> {
+        self.entries.read().unwrap().clone()
+    }
+
     pub(crate) fn sync_turn_automations(
         &self,
         conn: &rusqlite::Connection,
@@ -174,7 +185,7 @@ impl PluginHost {
         only_plugin: Option<&str>,
     ) -> Result<()> {
         for plugin in self
-            .entries
+            .snapshot()
             .iter()
             .filter(|p| only_plugin.is_none_or(|id| id == p.id()))
         {
@@ -229,7 +240,7 @@ impl PluginHost {
         &self,
         supervisor: &Supervisor,
     ) -> std::collections::HashMap<String, bool> {
-        self.entries
+        self.snapshot()
             .iter()
             .map(|p| {
                 (
@@ -307,7 +318,7 @@ impl PluginHost {
         Ok(())
     }
 
-    pub fn register(&mut self, plugin: Arc<dyn BuiltinPlugin>) -> Result<()> {
+    pub fn register(&self, plugin: Arc<dyn BuiltinPlugin>) -> Result<()> {
         let id = plugin.id();
         ensure!(
             !id.is_empty()
@@ -317,16 +328,36 @@ impl PluginHost {
                     .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_')),
             "invalid plugin id"
         );
+        plugin.validate_settings(&plugin.default_settings())?;
+        let mut entries = self.entries.write().unwrap();
         ensure!(
-            !self.entries.iter().any(|p| p.id() == id),
+            !entries.iter().any(|p| p.id() == id),
             "plugin already registered: {id}"
         );
-        plugin.validate_settings(&plugin.default_settings())?;
-        self.entries.push(plugin);
+        entries.push(plugin);
+        Ok(())
+    }
+    /// Swap an installed plugin's module after an update, or add it.
+    pub(crate) fn replace_external(&self, plugin: Arc<dyn BuiltinPlugin>) {
+        let mut entries = self.entries.write().unwrap();
+        entries.retain(|p| p.id() != plugin.id());
+        entries.push(plugin);
+    }
+    pub(crate) fn remove_external(&self, id: &str) -> Result<()> {
+        let mut entries = self.entries.write().unwrap();
+        let index = entries
+            .iter()
+            .position(|p| p.id() == id)
+            .context("plugin not found")?;
+        ensure!(
+            entries[index].source() == "external",
+            "Built-in plugins cannot be uninstalled."
+        );
+        entries.remove(index);
         Ok(())
     }
     pub fn get(&self, id: &str) -> Result<Arc<dyn BuiltinPlugin>> {
-        self.entries
+        self.snapshot()
             .iter()
             .find(|p| p.id() == id)
             .cloned()
@@ -436,7 +467,7 @@ impl Supervisor {
     }
 
     /// Register compiled modules before wrapping the Supervisor in Arc or serving it.
-    pub fn with_builtin_plugins(mut self, plugins: Vec<Arc<dyn BuiltinPlugin>>) -> Result<Self> {
+    pub fn with_builtin_plugins(self, plugins: Vec<Arc<dyn BuiltinPlugin>>) -> Result<Self> {
         for plugin in plugins {
             self.plugins.register(plugin)?;
         }
@@ -445,7 +476,7 @@ impl Supervisor {
 
     pub fn list_plugins(&self) -> Vec<PluginDto> {
         self.plugins
-            .entries
+            .snapshot()
             .iter()
             .map(|p| self.plugin_descriptor(p.as_ref()))
             .collect()
@@ -454,7 +485,7 @@ impl Supervisor {
     fn plugin_descriptor(&self, plugin: &dyn BuiltinPlugin) -> PluginDto {
         let mut dto = plugin.descriptor(self);
         dto.id = plugin.id().into();
-        dto.source = Some("builtin".into());
+        dto.source = Some(plugin.source().into());
         dto.enabled = dto.available != Some(false)
             && self.plugin_enabled(plugin.id(), plugin.enabled_by_default());
         dto.default_enabled = Some(self.plugin_default_enabled(plugin.id()));

@@ -1,6 +1,7 @@
 mod attach;
 mod automations;
 mod legacy_env;
+mod plugins;
 mod threads;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -382,6 +383,12 @@ enum Commands {
         #[command(subcommand)]
         command: automations::AutomationCommand,
     },
+    /// Install, update and run third-party plugins (owner credential only).
+    #[command(after_long_help = r#"More: docs/external-plugins.md"#)]
+    Plugin {
+        #[command(subcommand)]
+        command: plugins::PluginCommand,
+    },
     /// Controlled command execution with persistent exit/output and completion hooks.
     Command {
         #[command(subcommand)]
@@ -649,6 +656,14 @@ async fn run() -> Result<()> {
             serde_json::to_string_pretty(
                 &threads::Client::new(cli.connection)?
                     .automation(command)
+                    .await?
+            )?
+        ),
+        Commands::Plugin { command } => println!(
+            "{}",
+            serde_json::to_string_pretty(
+                &threads::Client::new(cli.connection)?
+                    .plugin(command)
                     .await?
             )?
         ),

@@ -578,6 +578,9 @@ impl Supervisor {
                 if let Err(error) = state.automation_tick(&now_rfc3339()).await {
                     tracing::warn!(%error, "automation tick failed");
                 }
+                if let Err(error) = state.external_plugin_tick() {
+                    tracing::warn!(%error, "plugin schedule tick failed");
+                }
                 if let Err(error) = state.recover_cli_notifications() {
                     tracing::warn!(%error,"CLI notification recovery failed");
                 }

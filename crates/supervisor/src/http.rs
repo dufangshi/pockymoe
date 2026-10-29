@@ -466,6 +466,13 @@ pub(crate) fn router_with_treer(state: AppState, hub: Option<Arc<crate::treer::H
         .route("/api/workspaces/{id}/files/move", patch(workspace_move))
         .route("/api/plugins", get(list_plugins))
         .route("/api/plugins/import", post(import_plugin_unsupported))
+        .route("/api/plugins/install", post(crate::plugins::install))
+        .route("/api/plugins/{id}/update", post(crate::plugins::update))
+        .route("/api/plugins/{id}/runs", get(crate::plugins::runs))
+        .route(
+            "/api/plugins/{id}/actions/{action}",
+            post(crate::plugins::device_action),
+        )
         .route(
             "/api/plugins/{id}/settings",
             get(crate::plugins::settings).put(crate::plugins::save_settings),
@@ -3212,16 +3219,30 @@ async fn import_plugin_unsupported() -> ApiErr {
     )
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DeletePluginQuery {
+    #[serde(default)]
+    purge_data: bool,
+}
+
 async fn delete_plugin(
     Path(id): Path<String>,
+    Query(query): Query<DeletePluginQuery>,
     State(state): State<AppState>,
 ) -> Result<Json<Value>, ApiErr> {
-    state.get_plugin(&id).map_err(map_err)?;
-    Err(err(
-        StatusCode::CONFLICT,
-        "unsupported",
-        "Built-in plugins cannot be uninstalled.",
-    ))
+    let plugin = state.get_plugin(&id).map_err(map_err)?;
+    if plugin.source.as_deref() != Some("external") {
+        return Err(err(
+            StatusCode::CONFLICT,
+            "unsupported",
+            "Built-in plugins cannot be uninstalled.",
+        ));
+    }
+    state
+        .remove_external_plugin(&id, query.purge_data)
+        .map_err(map_err)?;
+    Ok(Json(json!({ "removed": id })))
 }
 
 async fn update_plugin(

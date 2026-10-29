@@ -98,3 +98,131 @@ pub async fn save_thread_settings(
         ),
     ))
 }
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct InstallInput {
+    source: String,
+    #[serde(default, rename = "ref")]
+    git_ref: Option<String>,
+}
+
+/// Owner-only (see `access::access_allows`): this clones and later runs code.
+pub async fn install(
+    State(state): State<AppState>,
+    Json(input): Json<InstallInput>,
+) -> Result<Json<serde_json::Value>, ApiErr> {
+    Ok(Json(serde_json::json!(state
+        .install_external_plugin(&input.source, input.git_ref.as_deref())
+        .await
+        .map_err(map_err)?)))
+}
+
+pub async fn update(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiErr> {
+    Ok(Json(serde_json::json!(state
+        .update_external_plugin(&id)
+        .await
+        .map_err(map_err)?)))
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DeviceActionInput {
+    #[serde(default)]
+    input: serde_json::Value,
+}
+
+/// Run an installed plugin's action at device scope and return its output.
+pub async fn device_action(
+    State(state): State<AppState>,
+    Path((id, action)): Path<(String, String)>,
+    Json(input): Json<DeviceActionInput>,
+) -> Result<impl axum::response::IntoResponse, ApiErr> {
+    let output = state
+        .run_external_plugin_action(&id, &action, input.input, "manual")
+        .await
+        .map_err(map_err)?;
+    Ok((
+        [(header::CACHE_CONTROL, "no-store")],
+        Json(serde_json::json!({ "output": output })),
+    ))
+}
+
+pub async fn runs(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<impl axum::response::IntoResponse, ApiErr> {
+    Ok((
+        [(header::CACHE_CONTROL, "no-store")],
+        Json(state.external_plugin_runs(&id).map_err(map_err)?),
+    ))
+}
+
+/// Owner-credential CLI operations for installed plugins and model completions.
+pub(crate) async fn cli(
+    state: &std::sync::Arc<pockymoe_runtime::Supervisor>,
+    input: &serde_json::Value,
+) -> anyhow::Result<serde_json::Value> {
+    use anyhow::Context;
+    use serde_json::json;
+    let id = || input["pluginId"].as_str().context("pluginId required");
+    match input["operation"].as_str().unwrap_or("") {
+        "pluginList" => Ok(json!({ "plugins": state.list_plugins() })),
+        "pluginInstall" => {
+            let source = input["source"].as_str().context("source required")?;
+            Ok(json!(
+                state
+                    .install_external_plugin(source, input["ref"].as_str())
+                    .await?
+            ))
+        }
+        "pluginUpdate" => Ok(json!(state.update_external_plugin(id()?).await?)),
+        "pluginRemove" => {
+            state.remove_external_plugin(id()?, input["purgeData"] == true)?;
+            Ok(json!({ "removed": id()? }))
+        }
+        "pluginEnable" => {
+            let enabled = input["enabled"].as_bool().context("enabled required")?;
+            state.get_plugin(id()?)?;
+            state.set_plugin_enabled(id()?, enabled)?;
+            Ok(json!(state.get_plugin(id()?)?))
+        }
+        "pluginRun" => {
+            let action = input["action"].as_str().context("action required")?;
+            let output = state
+                .run_external_plugin_action(id()?, action, input["input"].clone(), "manual")
+                .await?;
+            Ok(json!({ "output": output }))
+        }
+        "pluginRuns" => state.external_plugin_runs(id()?),
+        "modelComplete" => {
+            let connection = input["connectionId"]
+                .as_str()
+                .context("connectionId required")?;
+            let user = input["user"].as_str().context("user prompt required")?;
+            let system = input["system"].as_str().unwrap_or("");
+            anyhow::ensure!(
+                system.len() + user.len() <= 262144,
+                "prompt exceeds 256 KiB"
+            );
+            let max_tokens = input["maxTokens"].as_u64().unwrap_or(1024).clamp(1, 16384) as usize;
+            let saved = pockymoe_runtime::upstreams::connections::get(
+                &pockymoe_runtime::upstreams::directory(&state.config.database_url),
+                connection,
+            )?;
+            let text = pockymoe_runtime::upstreams::connections::complete(
+                &saved,
+                input["model"].as_str().unwrap_or(""),
+                system,
+                user,
+                max_tokens,
+            )
+            .await?;
+            Ok(json!({ "text": text }))
+        }
+        _ => anyhow::bail!("unknown plugin operation"),
+    }
+}
