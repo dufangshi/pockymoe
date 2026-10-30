@@ -913,10 +913,11 @@ async fn lifetime_statistics_exclude_ambiguous_and_missing_turns_and_unmeasured_
 #[tokio::test]
 async fn command_env_keeps_basics_and_explicit_values_but_not_supervisor_secrets() {
     let (_d, s, t) = setup().await;
-    // SAFETY: test-only; no other test in this process reads this variable.
-    unsafe { std::env::set_var("POCKYMOE_TEST_SUPERVISOR_SECRET", "leak") };
+    // cargo sets CARGO_MANIFEST_DIR for the test process; like any Supervisor
+    // variable outside the basics, a script must not inherit it.
+    assert!(std::env::var_os("CARGO_MANIFEST_DIR").is_some());
     let input: CommandRunInput = serde_json::from_value(json!({
-        "shell": "printf '%s|%s|%s' \"${HOME:+home}\" \"$EXTRA\" \"${POCKYMOE_TEST_SUPERVISOR_SECRET:-none}\"",
+        "shell": "printf '%s|%s|%s' \"${HOME:+home}\" \"$EXTRA\" \"${CARGO_MANIFEST_DIR:-none}\"",
         "cwd": ".",
         "env": {"EXTRA": "given"},
     }))
