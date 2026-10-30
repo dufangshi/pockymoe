@@ -198,6 +198,19 @@ pub(crate) async fn cli(
             Ok(json!({ "output": output }))
         }
         "pluginRuns" => state.external_plugin_runs(id()?),
+        "mcpList" => Ok(json!({
+            "servers": pockymoe_runtime::acp::mcp_servers::list_redacted()?
+        })),
+        "mcpSet" => {
+            let server: pockymoe_runtime::acp::mcp_servers::McpServer =
+                serde_json::from_value(input["server"].clone()).context("invalid server")?;
+            Ok(json!(pockymoe_runtime::acp::mcp_servers::upsert(server)?))
+        }
+        "mcpRemove" => {
+            let name = input["name"].as_str().context("name required")?;
+            pockymoe_runtime::acp::mcp_servers::remove(name)?;
+            Ok(json!({ "removed": name }))
+        }
         // A plugin's own working directory for the threads it keeps.
         "workspaceEnsure" => {
             let path = input["absPath"].as_str().context("absPath required")?;

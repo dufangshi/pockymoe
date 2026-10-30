@@ -144,12 +144,13 @@ async fn run_as(
         | "automationRuns" | "automationPause" | "automationResume" | "automationCancel"
         | "commandRun" | "commandShow" => crate::automations::cli(state, &input, requester).await,
         "pluginList" | "pluginInstall" | "pluginUpdate" | "pluginRemove" | "pluginEnable"
-        | "pluginRun" | "pluginRuns" | "modelComplete" | "workspaceEnsure" => {
+        | "pluginRun" | "pluginRuns" | "modelComplete" | "workspaceEnsure" | "mcpList"
+        | "mcpSet" | "mcpRemove" => {
             // Installing runs code and completions spend the owner's upstream
             // keys: only the machine's own credential, never a thread or peer.
             anyhow::ensure!(
                 matches!(requester, AgentRequester::Owner),
-                "Only the computer's owner can manage plugins or call models"
+                "Only the computer's owner can manage plugins, MCP servers or call models"
             );
             crate::plugins::cli(state, &input).await
         }

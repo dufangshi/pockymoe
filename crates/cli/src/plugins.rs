@@ -80,3 +80,38 @@ impl crate::threads::Client {
         self.request_for(value, wait).await
     }
 }
+
+#[derive(Subcommand)]
+pub enum McpCommand {
+    /// Device MCP servers passed to ACP sessions; values of env and headers are hidden.
+    List,
+    /// Add or replace a server from a JSON definition (stdin with -).
+    Set {
+        /// JSON such as {"name":"files","command":"files-mcp","agents":["deepseek"]}
+        json: String,
+    },
+    Remove {
+        name: String,
+    },
+}
+
+impl crate::threads::Client {
+    pub async fn mcp(&self, command: McpCommand) -> Result<Value> {
+        let value = match command {
+            McpCommand::List => json!({"operation":"mcpList"}),
+            McpCommand::Set { json: text } => {
+                let text = if text == "-" {
+                    let mut s = String::new();
+                    std::io::Read::read_to_string(&mut std::io::stdin(), &mut s)?;
+                    s
+                } else {
+                    text
+                };
+                let server: Value = serde_json::from_str(&text).context("server is not JSON")?;
+                json!({"operation":"mcpSet","server":server})
+            }
+            McpCommand::Remove { name } => json!({"operation":"mcpRemove","name":name}),
+        };
+        self.request(value).await
+    }
+}

@@ -389,3 +389,47 @@ fn which_python() -> String {
     }
     panic!("python3 is required for ACP turn tests");
 }
+
+#[tokio::test]
+async fn device_mcp_servers_reach_new_sessions_of_matching_agents() {
+    let dir = tempdir().unwrap();
+    pockymoe_runtime::acp::mcp_servers::configure(&dir.path().join("mcp.sqlite"));
+    for (name, agents) in [
+        ("files", vec!["custom".to_string()]),
+        ("other", vec!["deepseek".to_string()]),
+    ] {
+        pockymoe_runtime::acp::mcp_servers::upsert(pockymoe_runtime::acp::mcp_servers::McpServer {
+            name: name.into(),
+            transport: "stdio".into(),
+            command: "files-mcp".into(),
+            agents,
+            enabled: true,
+            ..Default::default()
+        })
+        .unwrap();
+    }
+    // The fake agent advertises no HTTP MCP support, so this one is withheld.
+    pockymoe_runtime::acp::mcp_servers::upsert(pockymoe_runtime::acp::mcp_servers::McpServer {
+        name: "remote".into(),
+        transport: "http".into(),
+        url: "https://mcp.example.com/mcp".into(),
+        enabled: true,
+        ..Default::default()
+    })
+    .unwrap();
+    let (runtime, session) = start_runtime(dir.path(), &which_python()).await;
+    let items = runtime
+        .start_turn(
+            turn_input(&session, "read-mcp-servers", "mcp"),
+            EventBus::new(),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    let text = items.iter().map(|i| i.text.as_str()).collect::<String>();
+    let servers: serde_json::Value = serde_json::from_str(text.trim()).unwrap();
+    assert_eq!(
+        servers,
+        serde_json::json!([{"name":"files","command":"files-mcp","args":[],"env":[]}])
+    );
+}

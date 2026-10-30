@@ -464,6 +464,7 @@ impl Supervisor {
         if let Err(error) = supervisor.recover_automation_commands() {
             tracing::warn!(%error, "automation command recovery failed");
         }
+        crate::acp::mcp_servers::configure(&supervisor.config.database_url);
         supervisor.load_external_plugins();
         supervisor
     }

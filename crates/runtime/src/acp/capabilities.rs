@@ -25,6 +25,9 @@ pub struct NegotiatedCaps {
     /// `agentInfo.version` from initialize, for features adapters gained later.
     pub agent_version: Option<String>,
     pub available_commands: Vec<NegotiatedCommand>,
+    /// `mcpCapabilities`: stdio MCP servers are always accepted; HTTP/SSE only when advertised.
+    pub mcp_http: bool,
+    pub mcp_sse: bool,
 }
 
 fn capability_advertised(value: Option<&Value>) -> bool {
@@ -80,7 +83,10 @@ pub fn negotiate(initialize: &Value) -> NegotiatedCaps {
     let steering = meta.get("steering").cloned().unwrap_or(Value::Null);
     let goal = meta.get("goal").cloned().unwrap_or(Value::Null);
     let available_commands = parse_commands(&meta["availableCommands"]);
+    let mcp = caps.get("mcpCapabilities").cloned().unwrap_or(Value::Null);
     NegotiatedCaps {
+        mcp_http: mcp.get("http").and_then(Value::as_bool).unwrap_or(false),
+        mcp_sse: mcp.get("sse").and_then(Value::as_bool).unwrap_or(false),
         load_session: capability_advertised(caps.get("loadSession"))
             || capability_advertised(session.get("load")),
         resume: capability_advertised(session.get("resume")),

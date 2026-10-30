@@ -135,6 +135,10 @@ the plugin keeps for conversations), wait for results, register hooks and call
 connection's default. The plugin never sees the connection's key. Store the
 connection id, not a key, in the plugin's settings.
 
+`workspaceEnsure` `{"absPath": "/abs/dir", "label": "…"}` creates the directory
+if needed and returns the workspace registered there, adding it once. A plugin
+uses it for the threads it keeps, for example under `POCKYMOE_PLUGIN_DATA_DIR`.
+
 A plugin without permissions only receives its request and directories.
 
 ## Not yet supported

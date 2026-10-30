@@ -389,6 +389,12 @@ enum Commands {
         #[command(subcommand)]
         command: plugins::PluginCommand,
     },
+    /// Device MCP servers passed to ACP agents such as DeepSeek Harness (owner only).
+    #[command(after_long_help = r#"More: docs/mcp-servers.md"#)]
+    Mcp {
+        #[command(subcommand)]
+        command: plugins::McpCommand,
+    },
     /// Controlled command execution with persistent exit/output and completion hooks.
     Command {
         #[command(subcommand)]
@@ -665,6 +671,12 @@ async fn run() -> Result<()> {
                 &threads::Client::new(cli.connection)?
                     .plugin(command)
                     .await?
+            )?
+        ),
+        Commands::Mcp { command } => println!(
+            "{}",
+            serde_json::to_string_pretty(
+                &threads::Client::new(cli.connection)?.mcp(command).await?
             )?
         ),
         Commands::Command { command } => {

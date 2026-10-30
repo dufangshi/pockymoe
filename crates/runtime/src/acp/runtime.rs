@@ -529,14 +529,14 @@ impl AcpRuntime {
                 process
                     .request(
                         "session/load",
-                        json!({ "sessionId": existing, "cwd": cwd, "mcpServers": [], "_meta": adapter.session_load_meta() }),
+                        json!({ "sessionId": existing, "cwd": cwd, "mcpServers": super::mcp_servers::for_session(&def.id, &negotiated), "_meta": adapter.session_load_meta() }),
                     )
                     .await?
             } else if negotiated.resume {
                 process
                     .request(
                         "session/resume",
-                        json!({ "sessionId": existing, "cwd": cwd, "mcpServers": [], "_meta": adapter.session_load_meta() }),
+                        json!({ "sessionId": existing, "cwd": cwd, "mcpServers": super::mcp_servers::for_session(&def.id, &negotiated), "_meta": adapter.session_load_meta() }),
                     )
                     .await?
             } else {
@@ -553,7 +553,7 @@ impl AcpRuntime {
             process
                 .request(
                     "session/new",
-                    json!({ "cwd": cwd, "mcpServers": [], "_meta": meta }),
+                    json!({ "cwd": cwd, "mcpServers": super::mcp_servers::for_session(&def.id, &negotiated), "_meta": meta }),
                 )
                 .await?
         };
@@ -1072,7 +1072,7 @@ impl AcpRuntime {
                         json!({
                             "sessionId": live.session_id,
                             "cwd": live.cwd,
-                            "mcpServers": [],
+                            "mcpServers": super::mcp_servers::for_session(&live.adapter_id, &live.negotiated),
                             "_meta": meta
                         }),
                     )
@@ -3077,13 +3077,13 @@ impl AgentRuntime for AcpRuntime {
                 let mut loaded = process
                     .request(
                         "session/load",
-                        json!({"sessionId":id, "cwd":cwd, "mcpServers":[]}),
+                        json!({"sessionId":id, "cwd":cwd, "mcpServers":super::mcp_servers::for_session(&adapter_id, &negotiated)}),
                     )
                     .await?;
                 loaded["sessionId"] = json!(id);
                 loaded
             } else {
-                let mut params = json!({"sessionId":raw_session, "cwd":cwd, "mcpServers":[]});
+                let mut params = json!({"sessionId":raw_session, "cwd":cwd, "mcpServers":super::mcp_servers::for_session(&adapter_id, &negotiated)});
                 if let Some(meta) = fork_meta {
                     params["_meta"] = meta;
                 }

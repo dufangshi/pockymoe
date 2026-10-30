@@ -34,6 +34,8 @@ write_lock = threading.Lock()
 startup_config = open("fixture-config.txt").read() if os.path.exists("fixture-config.txt") else "unset"
 
 
+mcp_servers = []
+
 def config_options():
     if "--no-fast" in sys.argv:
         return []
@@ -86,7 +88,12 @@ def handle(msg):
             }
         )
         return
+    if method == "session/prompt" and prompt_text(params) == "read-mcp-servers":
+        send({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"fake-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":json.dumps(mcp_servers)}}}})
+        send({"jsonrpc":"2.0","id":req_id,"result":{"stopReason":"end_turn"}})
+        return
     if method in ("session/new", "session/load"):
+        mcp_servers[:] = params.get("mcpServers") or []
         result = {"sessionId": "fake-session", "configOptions": config_options()}
         send({"jsonrpc":"2.0", "method":"session/update", "params":{"sessionId":"fake-session", "update":{"sessionUpdate":"available_commands_update", "availableCommands":[{"name":"status", "description":"Session status"}]}}})
         send(

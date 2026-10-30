@@ -15,6 +15,7 @@ mod deepseek;
 pub(crate) mod dependencies;
 mod elicitation;
 mod grok;
+pub mod mcp_servers;
 pub(crate) use grok::billing_usage as grok_billing_usage;
 pub(crate) mod mapper;
 pub(crate) use mapper::TurnMapper;
