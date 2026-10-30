@@ -117,6 +117,10 @@ impl ShellHub {
             pixel_height: 0,
         })?;
         let mut cmd = CommandBuilder::new(default_shell());
+        // The owner's shell, but not the Supervisor's own credentials.
+        for key in pockymoe_runtime::supervisor_secret_env() {
+            cmd.env_remove(key);
+        }
         cmd.cwd(cwd);
         terminal_env(&mut cmd, |name| std::env::var_os(name));
         let child = pair.slave.spawn_command(cmd)?;
@@ -406,6 +410,9 @@ mod terminal_env_tests {
     #[test]
     fn the_shell_gets_an_xterm_and_a_utf8_locale() {
         let mut cmd = CommandBuilder::new("/bin/sh");
+        for key in pockymoe_runtime::supervisor_secret_env() {
+            cmd.env_remove(key);
+        }
         cmd.env("TERM", "dumb");
         cmd.env("TMUX", "/tmp/tmux-1000/default,1,0");
         terminal_env(&mut cmd, |_| None);
@@ -420,6 +427,9 @@ mod terminal_env_tests {
     #[test]
     fn a_locale_the_supervisor_has_is_kept() {
         let mut cmd = CommandBuilder::new("/bin/sh");
+        for key in pockymoe_runtime::supervisor_secret_env() {
+            cmd.env_remove(key);
+        }
         cmd.env("LANG", "zh_CN.UTF-8");
         terminal_env(&mut cmd, |name| {
             (name == "LANG").then(|| OsString::from("zh_CN.UTF-8"))

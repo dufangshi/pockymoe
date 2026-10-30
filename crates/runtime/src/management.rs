@@ -134,6 +134,9 @@ pub struct Installation {
 pub async fn output(program: &Path, args: &[String], timeout: u64) -> Result<String> {
     let mut command = tokio::process::Command::new(program);
     crate::child_process::hide_tokio(&mut command);
+    for key in crate::child_process::supervisor_secret_env() {
+        command.env_remove(key);
+    }
     command
         .env("PATH", crate::acp::child_path())
         .args(args)

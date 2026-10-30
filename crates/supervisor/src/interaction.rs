@@ -144,7 +144,7 @@ async fn run_as(
         | "automationRuns" | "automationPause" | "automationResume" | "automationCancel"
         | "commandRun" | "commandShow" => crate::automations::cli(state, &input, requester).await,
         "pluginList" | "pluginInstall" | "pluginUpdate" | "pluginRemove" | "pluginEnable"
-        | "pluginRun" | "pluginRuns" | "modelComplete" => {
+        | "pluginRun" | "pluginRuns" | "modelComplete" | "workspaceEnsure" => {
             // Installing runs code and completions spend the owner's upstream
             // keys: only the machine's own credential, never a thread or peer.
             anyhow::ensure!(

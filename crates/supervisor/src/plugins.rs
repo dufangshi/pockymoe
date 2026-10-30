@@ -198,6 +198,30 @@ pub(crate) async fn cli(
             Ok(json!({ "output": output }))
         }
         "pluginRuns" => state.external_plugin_runs(id()?),
+        // A plugin's own working directory for the threads it keeps.
+        "workspaceEnsure" => {
+            let path = input["absPath"].as_str().context("absPath required")?;
+            anyhow::ensure!(
+                std::path::Path::new(path).is_absolute(),
+                "absPath must be absolute"
+            );
+            std::fs::create_dir_all(path)?;
+            let canonical = std::fs::canonicalize(path)?;
+            if let Some(found) = state
+                .list_workspaces()?
+                .into_iter()
+                .find(|w| std::path::Path::new(&w.abs_path) == canonical)
+            {
+                return Ok(json!(found));
+            }
+            Ok(json!(state.create_workspace(
+                pockymoe_protocol::CreateWorkspaceInput {
+                    abs_path: Some(canonical.to_string_lossy().into_owned()),
+                    git_url: None,
+                    label: input["label"].as_str().map(str::to_owned),
+                }
+            )?))
+        }
         "modelComplete" => {
             let connection = input["connectionId"]
                 .as_str()
