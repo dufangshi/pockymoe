@@ -4284,7 +4284,7 @@ async fn handle_supervisor_with_timeout(
                                     if msg["upstreamConnections"].is_array() {
                                         if upstream_catalog::replace(&*state.store.conn.lock().await,&device_id,&msg["upstreamConnections"]).is_err() { tracing::warn!("invalid upstream catalog metadata"); }
                                     }
-                                    preview::update(&state, &device_id, connection_id, &msg["portMappings"]);
+                                    preview::update(&state, &device_id, connection_id, &msg["portMappings"], msg["previewStreamLimit"].as_u64());
                                     if msg["threadLineage"].is_array() {
                                         if let Err(error)=thread_groups::replace(&*state.store.conn.lock().await,&device_id,&msg["threadLineage"]) { tracing::warn!(%error,"invalid device lineage"); }
                                     }

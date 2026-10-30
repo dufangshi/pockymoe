@@ -23,6 +23,9 @@ struct Mapping {
     /// Forward the browser's own Origin instead of the loopback upstream. For
     /// applications that check their public origin (CSRF or Origin allowlists).
     preserve_origin: bool,
+    /// Concurrent streams the device accepts for this mapping. Supervisors
+    /// that do not report a limit accept `LEGACY_MAPPING_STREAMS`.
+    stream_limit: usize,
 }
 #[derive(Clone, PartialEq, Eq)]
 struct Grant {
@@ -60,7 +63,18 @@ pub(super) struct Hub {
     sessions: StdMutex<HashMap<String, Grant>>,
     streams: StdMutex<HashMap<String, Stream>>,
     idle: StdMutex<IdlePool>,
+    /// Signalled whenever a stream slot is freed, so requests over a limit
+    /// wait for capacity instead of failing.
+    released: tokio::sync::Notify,
 }
+
+// One browser request in flight holds one stream. Browsers send a page's
+// requests at once over HTTP/2 (JupyterLab sends about 40), so a request over
+// a limit waits up to PREVIEW_QUEUE_WAIT for a slot rather than failing.
+const PREVIEW_STREAMS_GLOBAL: usize = 1024;
+const PREVIEW_STREAMS_DEVICE: usize = 128;
+const LEGACY_MAPPING_STREAMS: usize = 32;
+const PREVIEW_QUEUE_WAIT: Duration = Duration::from_secs(15);
 
 // Reuse only fully consumed HTTP/1 responses, within the very same capability.
 // The device still watches the lease throughout the lifetime of the raw TCP stream.
@@ -292,14 +306,28 @@ fn prewarm_http(state: &Arc<AppState>, mapping: &Mapping, grant: &Grant) {
         .values()
         .filter(|c| c.mapping.device == mapping.device)
         .count();
+    let mapping_streams = streams
+        .values()
+        .filter(|c| c.mapping.device == mapping.device && c.mapping.id == mapping.id)
+        .count();
+    let mapping_warming = pool
+        .warming
+        .iter()
+        .filter(|c| c.mapping.device == mapping.device && c.mapping.id == mapping.id)
+        .count();
     let count = HTTP_PREWARM_TARGET
         .saturating_sub(same)
         .min(HTTP_PREWARM_GLOBAL.saturating_sub(pool.warming.len()))
         .min(HTTP_PREWARM_DEVICE.saturating_sub(device_warming))
         .min(64usize.saturating_sub(pool.clients.len() + pool.warming.len()))
         .min(8usize.saturating_sub(device_idle + device_warming))
-        .min(256usize.saturating_sub(streams.len() + pool.warming.len()))
-        .min(32usize.saturating_sub(device_streams + device_warming));
+        .min(PREVIEW_STREAMS_GLOBAL.saturating_sub(streams.len() + pool.warming.len()))
+        .min(PREVIEW_STREAMS_DEVICE.saturating_sub(device_streams + device_warming))
+        .min(
+            mapping
+                .stream_limit
+                .saturating_sub(mapping_streams + mapping_warming),
+        );
     for _ in 0..count {
         let id = Uuid::new_v4();
         let done = CancellationToken::new();
@@ -789,10 +817,19 @@ fn valid_thread_id(id: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
 }
 
-pub(super) fn update(state: &AppState, device: &str, connection: Uuid, value: &Value) {
+pub(super) fn update(
+    state: &AppState,
+    device: &str,
+    connection: Uuid,
+    value: &Value,
+    stream_limit: Option<u64>,
+) {
     let Some(items) = value.as_array().filter(|a| a.len() <= 32) else {
         return;
     };
+    let stream_limit = stream_limit.map_or(LEGACY_MAPPING_STREAMS, |limit| {
+        (limit as usize).clamp(1, PREVIEW_STREAMS_DEVICE)
+    });
     let mut catalog = state.preview.mappings.lock().unwrap();
     catalog.retain(|_, m| m.device != device);
     for item in items {
@@ -823,6 +860,7 @@ pub(super) fn update(state: &AppState, device: &str, connection: Uuid, value: &V
                     .filter(|thread| valid_thread_id(thread))
                     .map(Into::into),
                 preserve_origin: item["preserveOrigin"].as_bool().unwrap_or(false),
+                stream_limit,
             },
         );
     }
@@ -833,6 +871,7 @@ pub(super) fn update(state: &AppState, device: &str, connection: Uuid, value: &V
         }
         live
     });
+    state.preview.released.notify_waiters();
     state.preview.idle.lock().unwrap().clients.retain(|c| {
         catalog
             .get(&c.client.mapping.id)
@@ -850,6 +889,7 @@ pub(super) fn disconnected(state: &AppState, device: &str, connection: Uuid) {
         }
         live
     });
+    state.preview.released.notify_waiters();
     state.preview.idle.lock().unwrap().clients.retain(|c| {
         catalog
             .get(&c.client.mapping.id)
@@ -1253,6 +1293,7 @@ impl Drop for Pending<'_> {
         let mut streams = self.hub.streams.lock().unwrap();
         if streams.get(&self.ticket).is_some_and(|s| s.tx.is_some()) {
             streams.remove(&self.ticket);
+            self.hub.released.notify_waiters();
         }
     }
 }
@@ -1274,6 +1315,7 @@ impl Drop for StreamGuard {
             .remove(&self.ticket)
         {
             stream.cancel.cancel();
+            self.state.preview.released.notify_waiters();
         }
         self.closed.cancel();
     }
@@ -1292,15 +1334,36 @@ async fn open_stream(
         hub: &state.preview,
         ticket: ticket.clone(),
     };
+    let deadline = tokio::time::Instant::now() + PREVIEW_QUEUE_WAIT;
+    let mut waited = false;
     loop {
-        let released = {
+        // Register before checking, so a slot freed in between still wakes us.
+        let freed = state.preview.released.notified();
+        tokio::pin!(freed);
+        freed.as_mut().enable();
+        if waited
+            && !state
+                .preview
+                .mappings
+                .lock()
+                .unwrap()
+                .get(&mapping.id)
+                .is_some_and(|m| m == mapping)
+        {
+            bail!("Preview mapping changed");
+        }
+        let closing = {
             let mut streams = state.preview.streams.lock().unwrap();
-            let device_full = streams
+            let same_device = |s: &Mapping| s.device == mapping.device;
+            let same_mapping = |s: &Mapping| same_device(s) && s.id == mapping.id;
+            let device_full = streams.values().filter(|s| same_device(&s.mapping)).count()
+                >= PREVIEW_STREAMS_DEVICE;
+            let mapping_full = streams
                 .values()
-                .filter(|s| s.mapping.device == mapping.device)
+                .filter(|s| same_mapping(&s.mapping))
                 .count()
-                >= 32;
-            if streams.len() < 256 && !device_full {
+                >= mapping.stream_limit;
+            if streams.len() < PREVIEW_STREAMS_GLOBAL && !device_full && !mapping_full {
                 streams.insert(
                     ticket.clone(),
                     Stream {
@@ -1317,33 +1380,50 @@ async fn open_stream(
                 bail!("No spare preview connection capacity");
             }
             // Idle connections are opportunistic: reclaim the oldest eligible
-            // one before refusing live traffic, including another capability.
+            // one before waiting, including another capability's.
+            let eligible = |m: &Mapping| {
+                if mapping_full {
+                    same_mapping(m)
+                } else if device_full {
+                    same_device(m)
+                } else {
+                    true
+                }
+            };
             let mut pool = state.preview.idle.lock().unwrap();
             pool.prune();
             let oldest = pool
                 .clients
                 .iter()
                 .enumerate()
-                .filter(|(_, c)| !device_full || c.client.mapping.device == mapping.device)
+                .filter(|(_, c)| eligible(&c.client.mapping))
                 .min_by_key(|(_, c)| c.expires)
                 .map(|(i, _)| i);
             if let Some(oldest) = oldest {
                 let client = pool.clients.swap_remove(oldest).client;
                 let released = client.closed.clone();
                 pool.discard(client);
-                released
+                Some(released)
             } else {
                 pool.closing
                     .iter()
-                    .find(|c| !device_full || c.device == mapping.device)
+                    .find(|c| !(device_full || mapping_full) || c.device == mapping.device)
                     .map(|c| c.closed.clone())
-                    .ok_or_else(|| anyhow::anyhow!("Too many preview connections"))?
             }
         };
-        // Dropping the idle HTTP sender closes its TCP bridge normally. Wait for
-        // its WS close handshake/guard, so the device can also free its slot.
-        // Never remove a still-running stream just to bypass either limit.
-        tokio::time::timeout(Duration::from_secs(2), released.cancelled()).await?;
+        // Dropping an idle HTTP sender closes its TCP bridge normally; wait for
+        // its WS close handshake so the device frees its slot too. Otherwise
+        // wait for any active stream to finish. Never preempt a running stream.
+        let wake = async {
+            match &closing {
+                Some(released) => released.cancelled().await,
+                None => freed.as_mut().await,
+            }
+        };
+        if tokio::time::timeout_at(deadline, wake).await.is_err() {
+            bail!("Too many preview connections");
+        }
+        waited = true;
     }
     {
         let sockets = state.sockets.read().await;
@@ -1612,6 +1692,7 @@ mod tests {
             "device",
             connection,
             &json!([{"id":id,"port":4013}]),
+            None,
         );
         let mapping = state.preview.mappings.lock().unwrap()[&id].clone();
         let grant = Grant {
@@ -1640,6 +1721,7 @@ mod tests {
             "device",
             Uuid::new_v4(),
             &json!([{"id":id,"port":4013}]),
+            None,
         );
         assert!(token.is_cancelled());
         assert!(state.preview.streams.lock().unwrap().is_empty());
@@ -1661,7 +1743,7 @@ mod tests {
         });
         assert!(token.is_cancelled());
         assert!(state.preview.streams.lock().unwrap().is_empty());
-        update(&state, "device", connection, &json!([]));
+        update(&state, "device", connection, &json!([]), None);
         assert!(state.preview.mappings.lock().unwrap().is_empty());
         drop(state);
         std::fs::remove_dir_all(dir).unwrap();
@@ -1703,6 +1785,7 @@ mod tests {
             "device",
             connection,
             &json!([{"id":mapping,"port":4013}]),
+            None,
         );
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -2065,6 +2148,7 @@ mod tests {
                 "device",
                 connection,
                 &json!([{"id":mapping,"port":4013,"threadId":thread}]),
+                None,
             );
             let response = document("/app", &lease, &future)
                 .header(
@@ -2085,7 +2169,7 @@ mod tests {
                 .unwrap()
                 .values()
                 .any(|launch| launch.grant.session == other));
-            update(&state, "device", Uuid::new_v4(), &json!([]));
+            update(&state, "device", Uuid::new_v4(), &json!([]), None);
             relay.abort();
             drop(state);
             let _ = std::fs::remove_dir_all(dir);
@@ -2104,6 +2188,7 @@ mod tests {
             port: 4013,
             thread: None,
             preserve_origin: false,
+            stream_limit: LEGACY_MAPPING_STREAMS,
         };
         let request = Request::builder()
             .uri("/work?app=a%2Fb&app=two&flag&lease=existing&leaseExpiresAt=123")
@@ -2258,6 +2343,98 @@ mod tests {
         })
         .await
         .unwrap();
+    }
+
+    fn fill_streams(fixture: &HttpFixture, count: usize) {
+        let mapping = fixture.state.preview.mappings.lock().unwrap()[&fixture.mapping].clone();
+        let mut streams = fixture.state.preview.streams.lock().unwrap();
+        for i in 0..count {
+            streams.insert(
+                format!("busy-{i}"),
+                Stream {
+                    mapping: mapping.clone(),
+                    grant: fixture.grant(),
+                    tx: None,
+                    cancel: CancellationToken::new(),
+                    closed: CancellationToken::new(),
+                },
+            );
+        }
+    }
+
+    #[test]
+    fn device_reported_stream_limit_is_bounded_and_defaults_for_older_supervisors() {
+        let (state, dir) = crate::tests::test_app_state("preview-stream-limit");
+        let id = "e".repeat(32);
+        let mappings = json!([{"id":id,"port":4013}]);
+        for (reported, expected) in [
+            (None, LEGACY_MAPPING_STREAMS),
+            (Some(64), 64),
+            (Some(100_000), PREVIEW_STREAMS_DEVICE),
+            (Some(0), 1),
+        ] {
+            update(&state, "device", Uuid::new_v4(), &mappings, reported);
+            assert_eq!(
+                state.preview.mappings.lock().unwrap()[&id].stream_limit,
+                expected
+            );
+        }
+        drop(state);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn a_request_over_the_stream_limit_waits_for_a_free_slot_instead_of_failing() {
+        let fixture = http_fixture("preview-queue", Duration::ZERO, |_| async {
+            Ok(Response::new(Body::from("ok")))
+        })
+        .await;
+        fill_streams(&fixture, LEGACY_MAPPING_STREAMS);
+        let request = tokio::spawn(fixture.request(Method::GET, "/").send());
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(!request.is_finished(), "a full mapping queues the request");
+        assert_eq!(fixture.opens(), 0);
+        fixture
+            .state
+            .preview
+            .streams
+            .lock()
+            .unwrap()
+            .remove("busy-0");
+        fixture.state.preview.released.notify_waiters();
+        let response = tokio::time::timeout(Duration::from_secs(5), request)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.text().await.unwrap(), "ok");
+    }
+
+    #[tokio::test]
+    async fn a_device_reporting_a_higher_limit_accepts_more_concurrent_streams() {
+        let fixture = http_fixture("preview-higher-limit", Duration::ZERO, |_| async {
+            Ok(Response::new(Body::from("ok")))
+        })
+        .await;
+        fixture
+            .state
+            .preview
+            .mappings
+            .lock()
+            .unwrap()
+            .get_mut(&fixture.mapping)
+            .unwrap()
+            .stream_limit = 2 * LEGACY_MAPPING_STREAMS;
+        fill_streams(&fixture, LEGACY_MAPPING_STREAMS);
+        let response = tokio::time::timeout(
+            Duration::from_secs(2),
+            fixture.request(Method::GET, "/").send(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(response.text().await.unwrap(), "ok");
     }
 
     #[tokio::test]
@@ -2472,6 +2649,7 @@ mod tests {
                 "device",
                 connection,
                 &json!([{"id":fixture.mapping,"port":4013,"threadId":thread}]),
+                None,
             )
         };
         report(&child);
@@ -2794,6 +2972,7 @@ mod tests {
             "device",
             connection,
             &json!([{"id":fixture.mapping,"port":4013}]),
+            None,
         );
         assert!(fixture
             .state
@@ -2814,6 +2993,7 @@ mod tests {
             "device",
             connection,
             &json!([{"id":fixture.mapping,"port":4014}]),
+            None,
         );
         assert!(fixture
             .state
@@ -2941,7 +3121,7 @@ mod tests {
         );
         assert_eq!(fixture.state.preview.idle.lock().unwrap().clients.len(), 1);
         let connection = fixture.state.sockets.read().await["device"].connection_id;
-        update(&fixture.state, "device", connection, &json!([]));
+        update(&fixture.state, "device", connection, &json!([]), None);
         assert!(fixture.state.preview.streams.lock().unwrap().is_empty());
         assert!(fixture
             .state

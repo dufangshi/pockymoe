@@ -203,15 +203,20 @@ mapping, device connection, account session and lease; it is never shared across
 those authorization boundaries. Each request still checks the account session
 and its access to the mapping. Idle connections expire after 10 seconds, with at
 most six per capability, eight per device and 64 per Relay. Capacity pressure reclaims
-idle connections before refusing new traffic; it never preempts active traffic.
+idle connections before queueing new traffic; it never preempts active traffic.
 Stop/disconnect cancels both active and idle connections. This uses the existing
 raw TCP bridge and does not require a new device wire protocol.
 
 HTTP bodies stream with backpressure over binary WebSockets rather than through
 the chat control channel. Unfinished responses are not returned to the idle
 pool. WebSocket upgrades use dedicated connections; SSE remains streamed.
-There are at most 32 enabled mappings per device, 32 simultaneous preview
-connections per device and 256 per Relay.
+There are at most 32 enabled mappings per device. Simultaneous preview
+connections are limited to 128 per device and 1024 per Relay, and per mapping to
+the `previewStreamLimit` the Supervisor reports in its heartbeat (128; 32 for
+Supervisors that do not report one). Each browser request in flight holds one
+connection, and browsers send a page's requests at once over HTTP/2, so a
+request over a limit waits up to 15 seconds for a connection to finish instead
+of failing with 502.
 Connecting a data channel has a 10-second deadline; response headers have a
 30-second deadline. A successful streaming body/WebSocket can continue beyond
 the ordinary JSON API response deadline.

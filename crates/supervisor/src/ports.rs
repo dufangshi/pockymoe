@@ -37,6 +37,10 @@ pub(crate) struct Mapping {
     pub preserve_origin: bool,
 }
 
+/// Concurrent preview streams one mapping accepts. Reported to the Relay in
+/// each heartbeat as `previewStreamLimit`; a Relay assumes 32 without it.
+pub(crate) const PREVIEW_STREAMS_PER_MAPPING: usize = 128;
+
 const KEY: &str = "devicePortMappings";
 const LOCAL_KEY: &str = "deviceLocalPortMappings";
 /// Origin comes from server-side extensions, never a forwarded HTTP header.
@@ -502,7 +506,7 @@ pub(crate) fn open(state: Arc<Supervisor>, message: &Value) {
         .entry((state.config.database_url.clone(), id))
         .or_default();
     handles.retain(|h| !h.handle.is_finished());
-    if handles.len() >= 32 {
+    if handles.len() >= PREVIEW_STREAMS_PER_MAPPING {
         return;
     }
     let active_lease = lease.clone();

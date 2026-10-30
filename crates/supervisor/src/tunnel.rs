@@ -169,7 +169,7 @@ async fn run_connected_tunnel_with_deadline(
     let mut activity = state.bus.subscribe();
 
     outgoing
-        .send(json!({ "type": "relay.heartbeat", "timestamp": now_rfc3339(), "threadLineage":thread_lineage(&state), "portMappings":crate::ports::snapshot(&state), "upstreamConnections":crate::connections::snapshot(&state) }))
+        .send(json!({ "type": "relay.heartbeat", "timestamp": now_rfc3339(), "threadLineage":thread_lineage(&state), "portMappings":crate::ports::snapshot(&state), "previewStreamLimit":crate::ports::PREVIEW_STREAMS_PER_MAPPING, "upstreamConnections":crate::connections::snapshot(&state) }))
         .map_err(|_| anyhow!("relay tunnel writer closed"))?;
     // Consume the interval's immediate first tick because the initial heartbeat
     // was queued explicitly above.
@@ -263,7 +263,7 @@ async fn run_connected_tunnel_with_deadline(
                 if outgoing.send(json!({
                     "type": "relay.heartbeat",
                     "timestamp": now_rfc3339(),
-                    "threadLineage":thread_lineage(&state), "portMappings":crate::ports::snapshot(&state), "upstreamConnections":crate::connections::snapshot(&state)
+                    "threadLineage":thread_lineage(&state), "portMappings":crate::ports::snapshot(&state), "previewStreamLimit":crate::ports::PREVIEW_STREAMS_PER_MAPPING, "upstreamConnections":crate::connections::snapshot(&state)
                 })).is_err() {
                     return Err(writer_closed(&outbound));
                 }
@@ -272,7 +272,7 @@ async fn run_connected_tunnel_with_deadline(
                 match event {
                     Ok(event) => {
                         if event.payload["reason"] == "port_mappings_changed" {
-                            let _ = outgoing.send(json!({"type":"relay.heartbeat","portMappings":crate::ports::snapshot(&state), "upstreamConnections":crate::connections::snapshot(&state)}));
+                            let _ = outgoing.send(json!({"type":"relay.heartbeat","portMappings":crate::ports::snapshot(&state), "previewStreamLimit":crate::ports::PREVIEW_STREAMS_PER_MAPPING, "upstreamConnections":crate::connections::snapshot(&state)}));
                         }
                         if event.payload["reason"] == "thread_created" || event.payload["reason"] == "child_deleted" {
                             let _ = outgoing.send(json!({"type":"relay.heartbeat","timestamp":now_rfc3339(),"threadLineage":thread_lineage(&state)}));
@@ -351,7 +351,7 @@ fn handle_relay_message(
                             false
                         }
                     });
-                    let _ = outgoing.send(json!({"type":"relay.heartbeat","portMappings":crate::ports::snapshot(&state), "upstreamConnections":crate::connections::snapshot(&state)}));
+                    let _ = outgoing.send(json!({"type":"relay.heartbeat","portMappings":crate::ports::snapshot(&state), "previewStreamLimit":crate::ports::PREVIEW_STREAMS_PER_MAPPING, "upstreamConnections":crate::connections::snapshot(&state)}));
                 }
             }
         }
@@ -423,7 +423,7 @@ fn handle_relay_message(
                 if mappings_changed {
                     // Announce the committed permission before returning the API
                     // result, so the owner's immediate Open request can resolve it.
-                    let _ = outgoing.send(json!({"type":"relay.heartbeat","portMappings":crate::ports::snapshot(&state), "upstreamConnections":crate::connections::snapshot(&state)}));
+                    let _ = outgoing.send(json!({"type":"relay.heartbeat","portMappings":crate::ports::snapshot(&state), "previewStreamLimit":crate::ports::PREVIEW_STREAMS_PER_MAPPING, "upstreamConnections":crate::connections::snapshot(&state)}));
                 }
                 let _ = outgoing.send(json!({
                     "type": "relay.response",
