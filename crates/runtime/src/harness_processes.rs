@@ -805,9 +805,13 @@ mod tests {
         {
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
-        let sample = ProcessSample::collect(true);
+        // Other tests in this binary spawn children concurrently; one caught
+        // mid-exit (memory gone, not yet a zombie) degrades a single sample.
+        let sample = (0..50)
+            .map(|_| ProcessSample::collect(true))
+            .find(|sample| !sample.degraded)
+            .expect("every sample was degraded");
         assert!(sample.key(exited.id()).is_none());
-        assert!(!sample.degraded);
         assert_eq!(sample.metric, ProcessMemoryMetric::Pss);
         exited.wait().unwrap();
         let own = sample.key(std::process::id()).unwrap();
