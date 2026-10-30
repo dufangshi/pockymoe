@@ -101,3 +101,24 @@ it('localizes the gear and dialog title', async () => {
   fireEvent.click(gear);
   expect(await screen.findByRole('dialog', { name: 'Configurable设置' })).toBeVisible();
 });
+
+it('lists an installed git plugin with its own label and a read-only status panel', async () => {
+  const installed: PluginDto = {
+    ...manifest('owner.calendar', 'Calendar agent'),
+    enabled: true,
+    available: true,
+    source: 'external',
+    capabilities: { artifactTypes: [], timelineRenderers: [], threadPanels: [], actions: ['status'], permissions: ['pockymoeCli'] },
+  };
+  const runPluginAction = vi.fn(async () => ({ output: { summary: 'All good', sections: [] } }));
+  render(
+    <PluginProvider adapter={{ fetchPlugins: () => [installed], runPluginAction, fetchPluginRuns: async () => [] }} builtinPlugins={[]}>
+      <SettingsDialog open onOpenChange={() => {}} sections={appSettingsSections()} initialId="plugins" />
+    </PluginProvider>,
+  );
+  expect(await screen.findByText(/Installed from git/)).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Calendar agent settings' }));
+  const dialog = await screen.findByTestId('pluginSettingsDialog');
+  expect(await within(dialog).findByText('All good')).toBeTruthy();
+  expect(runPluginAction).toHaveBeenCalledWith('owner.calendar', 'status', {});
+});

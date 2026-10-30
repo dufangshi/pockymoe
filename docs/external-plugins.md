@@ -68,7 +68,7 @@ peer device is refused. The HTTP equivalents are owner-only routes:
 | `POST /api/plugins/{id}/update` | `git pull --ff-only`, rerun setup |
 | `DELETE /api/plugins/{id}?purgeData=true` | Uninstall; built-ins answer 409 |
 | `POST /api/plugins/{id}/actions/{action}` `{input}` | Run at device scope, returns `{output}` |
-| `GET /api/plugins/{id}/runs` | Last 20 device-scope runs |
+| `GET /api/plugins/{id}/runs` | Last 20 device-scope runs (a successful `status` is not recorded: the settings panel calls it on every open) |
 
 Installed code lives in `<database>.plugins/<id>/`. Its private data directory
 `<database>.plugin-data/<id>/` (mode 0700) survives updates and uninstall
@@ -102,8 +102,9 @@ The process writes one JSON value to stdout (empty output is `null`) and exits
 0. A nonzero exit fails the run with the last 2000 characters of stderr. Stdout
 is limited to 256 KiB and stderr to 64 KiB. A timeout kills the process group
 and records a failure; external effects may be incomplete. One device-scope run
-per plugin is active at a time; a schedule that comes due while one runs waits
-for the next tick. A schedule records its start before running, so a crash
+of each action is active at a time (different actions may overlap, so a
+long-polling schedule does not block `status`); a schedule that comes due while
+its previous run is still going waits for the next tick. A schedule records its start before running, so a crash
 skips a tick rather than repeating it. Make actions idempotent.
 
 The environment is cleared like a [hook script](unified-hooks.md) (PATH,
@@ -143,6 +144,10 @@ A plugin without permissions only receives its request and directories.
 
 ## Not yet supported
 
-- Plugin-provided Web UI. Installed plugins have no frontend module; the
-  shared UI lists them with the generic plugin entry.
+- Plugin-provided Web UI. Settings → Plugins shows an installed plugin's
+  permissions, install record and recent runs, plus the output of its `status`
+  action when it declares one: `{"summary": "…", "sections": [{"title": "…",
+  "items": [{"label", "status", "statusText", "detail"}]}]}` with `status` one of
+  `ok`, `needs_reauth`, `transient`, `notConfigured`. It is read-only; a plugin
+  manages its own connections.
 - Long-running plugin processes. Each action is a separate process.

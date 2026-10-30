@@ -162,7 +162,8 @@ async fn install_enable_run_schedule_update_and_remove_a_git_plugin() {
     assert!(failed.contains("boom"), "{failed}");
     let runs = s.external_plugin_runs("tester.echo").unwrap();
     assert_eq!(runs[0]["state"], "failed");
-    assert_eq!(runs[1]["state"], "completed");
+    // A successful status call (opened from the settings panel) is not history.
+    assert_eq!(runs.as_array().unwrap().len(), 1);
 
     s.external_plugin_tick().unwrap();
     for _ in 0..100 {

@@ -762,7 +762,9 @@ export function AppShellSettingsDialog({
                     ].join(', ') || translate("files.utility"),
                     plugin.source === 'imported'
                       ? translate("files.importedManifest")
-                      : translate("files.builtInModule"),
+                      : plugin.source === 'external'
+                        ? translate("files.installedFromGit")
+                        : translate("files.builtInModule"),
                   ].join(' · ')}
                 </span>
               </label>

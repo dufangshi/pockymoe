@@ -69,6 +69,8 @@ import { WorkspacesPage } from './pages/WorkspacesPage';
 import {
   ApiError,
   deletePlugin,
+  fetchPluginRuns,
+  runPluginAction,
   fetchAuthSession,
   fetchPlugins,
   readSelectedRelayDeviceId,
@@ -104,6 +106,8 @@ function RoutePluginProvider({ children }: { children: ReactNode }) {
       importPlugin: (input: ImportPluginInput) => importPlugin(input, deviceId),
       updatePlugin: (id: string, input: UpdatePluginInput) => updatePlugin(id, input, deviceId),
       deletePlugin: (id: string) => deletePlugin(id, deviceId),
+      runPluginAction: (id: string, action: string, input?: unknown) => runPluginAction(id, action, input, deviceId),
+      fetchPluginRuns: (id: string) => fetchPluginRuns(id, deviceId),
       threads: threadPluginAdapter(deviceId),
       connections: {
         renderPicker: (props: UpstreamConnectionPickerProps) => (

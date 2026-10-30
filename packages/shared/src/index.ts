@@ -1105,6 +1105,35 @@ export interface PluginMcpServerDto {
   env?: Record<string, string>;
 }
 
+export interface PluginInstallDto {
+  source: string;
+  ref?: string | null;
+  commit?: string;
+  installedAt?: string;
+  updatedAt?: string;
+}
+
+/** `status` output of an installed plugin, rendered read-only in its settings. */
+export interface PluginStatusItemDto {
+  label: string;
+  status: 'ok' | 'needs_reauth' | 'transient' | 'notConfigured' | string;
+  statusText?: string;
+  detail?: string;
+}
+export interface PluginStatusDto {
+  summary?: string;
+  sections?: { title: string; items: PluginStatusItemDto[] }[];
+}
+export interface PluginRunDto {
+  id: string;
+  action: string;
+  trigger: string;
+  state: 'completed' | 'failed' | string;
+  startedAt: string;
+  completedAt?: string;
+  error?: string | null;
+}
+
 export interface PluginCapabilitiesDto {
   actions?: string[];
   artifactTypes: PluginArtifactTypeDto[];
@@ -1112,6 +1141,12 @@ export interface PluginCapabilitiesDto {
   threadPanels: PluginThreadPanelDto[];
   modelHints?: PluginModelHintDto[];
   mcpServers?: PluginMcpServerDto[];
+  /** Installed plugins: what Pockymoe hands the process (see docs/external-plugins.md). */
+  permissions?: string[];
+  /** Installed plugins: where the code came from. */
+  install?: PluginInstallDto | null;
+  actionDetails?: { name: string; description?: string; timeoutSeconds?: number }[];
+  schedules?: { action: string; everySeconds: number }[];
   frontend?: {
     entry?: string;
     style?: string;
@@ -1132,7 +1167,7 @@ export interface PluginManifestDto {
 
 export interface PluginDto extends PluginManifestDto {
   enabled: boolean;
-  source?: 'builtin' | 'imported' | null;
+  source?: 'builtin' | 'imported' | 'external' | null;
   available?: boolean;
   unavailableReasonCode?: 'unsupported_platform' | 'harness_missing' | string | null;
   unavailableReason?: string | null;

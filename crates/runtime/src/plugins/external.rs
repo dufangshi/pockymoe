@@ -430,10 +430,13 @@ impl BuiltinPlugin for ExternalPlugin {
     }
 }
 
-/// Plugin runs already in flight, keyed by plugin id: one at a time per plugin.
+/// Plugin runs in flight, keyed by plugin id and action: one at a time per action,
+/// so a long-polling schedule never blocks a `status` call from the panel.
 #[derive(Default)]
 pub(crate) struct ExternalRuns {
     running: std::sync::Mutex<HashSet<String>>,
+    // Runs of different actions finish concurrently; their history update must not race.
+    history: std::sync::Mutex<()>,
     last_tick: std::sync::Mutex<Option<std::time::Instant>>,
 }
 
@@ -615,11 +618,11 @@ impl Supervisor {
         {
             let mut running = self.external_runs.running.lock().unwrap();
             ensure!(
-                running.insert(id.to_string()),
-                "plugin is already running an action"
+                running.insert(run_key(id, action)),
+                "plugin is already running {action}"
             );
         }
-        let _guard = RunGuard(&self.external_runs, id.to_string());
+        let _guard = RunGuard(&self.external_runs, run_key(id, action));
         let run_id = uuid::Uuid::new_v4().to_string();
         let started = pockymoe_protocol::now_rfc3339();
         let settings = self.plugin_settings(id)?.values;
@@ -641,7 +644,12 @@ impl Supervisor {
             "state": if result.is_ok() { "completed" } else { "failed" },
             "error": result.as_ref().err().map(|e| e.to_string()),
         });
+        // The settings panel calls `status` on every open; only its failures are history.
+        if action == "status" && result.is_ok() {
+            return result;
+        }
         let key = format!("plugin:{id}:runs");
+        let _history = self.external_runs.history.lock().unwrap();
         let mut runs: Vec<Value> = self
             .db
             .get_kv(&key)?
@@ -676,15 +684,6 @@ impl Supervisor {
             if plugin.source() != "external" || !self.plugin_enabled(plugin.id(), false) {
                 continue;
             }
-            if self
-                .external_runs
-                .running
-                .lock()
-                .unwrap()
-                .contains(plugin.id())
-            {
-                continue;
-            }
             let Ok(module) = self.external_module(plugin.id()) else {
                 continue;
             };
@@ -698,7 +697,13 @@ impl Supervisor {
                         (now - at.with_timezone(&chrono::Utc)).num_seconds()
                             >= schedule.every_seconds as i64
                     });
-                if !due {
+                let busy = self
+                    .external_runs
+                    .running
+                    .lock()
+                    .unwrap()
+                    .contains(&run_key(plugin.id(), &schedule.action));
+                if !due || busy {
                     continue;
                 }
                 // Recording the start first means a crash skips a tick instead of repeating it.
@@ -719,6 +724,10 @@ impl Supervisor {
         }
         Ok(())
     }
+}
+
+fn run_key(id: &str, action: &str) -> String {
+    format!("{id}\n{action}")
 }
 
 fn like_escape(value: &str) -> String {

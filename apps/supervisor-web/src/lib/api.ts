@@ -58,6 +58,7 @@ import type {
   InterruptTurnInput,
   ModelOptionDto,
   PluginDto,
+  PluginRunDto,
   RespondThreadActionRequestInput,
   ResumeThreadInput,
   RuntimeConfigDto,
@@ -1588,6 +1589,20 @@ export function updatePlugin(pluginId: string, input: UpdatePluginInput, deviceI
   return request<PluginDto>(`api/plugins/${encodeURIComponent(pluginId)}`, {
     method: 'PATCH',
     body: JSON.stringify(input),
+  }, { deviceId });
+}
+
+/** Installed plugins: run a device-scope action and return its output. */
+export function runPluginAction(pluginId: string, action: string, input: unknown = {}, deviceId?: string | null) {
+  return request<{ output: unknown }>(`api/plugins/${encodeURIComponent(pluginId)}/actions/${encodeURIComponent(action)}`, {
+    method: 'POST',
+    body: JSON.stringify({ input }),
+  }, { deviceId });
+}
+
+export function fetchPluginRuns(pluginId: string, deviceId?: string | null) {
+  return request<PluginRunDto[]>(`api/plugins/${encodeURIComponent(pluginId)}/runs`, {
+    cache: 'no-store',
   }, { deviceId });
 }
 
