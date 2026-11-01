@@ -90,11 +90,13 @@ const button =
   'host-secondary-button inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md border px-2.5 text-xs disabled:opacity-50';
 export function RuntimeManagement({
   view = 'all',
+  deviceId: explicitDeviceId,
 }: {
   view?: 'all' | 'device' | 'harnesses';
+  deviceId?: string;
 }) {
   const { pathname } = useLocation();
-  const deviceId = relayDeviceIdFromPath(pathname);
+  const deviceId = explicitDeviceId ?? relayDeviceIdFromPath(pathname);
   if (relayModeActive() && !deviceId) {
     return (
       <section className="py-5" aria-label="Runtime management">

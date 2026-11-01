@@ -1,4 +1,5 @@
 import type { DesktopIndex } from './types';
+import { clearMetrics } from '../devices/cache';
 
 const databaseName = 'rc-desktop-index';
 function openDatabase(): Promise<IDBDatabase> {
@@ -34,6 +35,7 @@ export async function writeIndex(index: DesktopIndex) {
   } catch { /* The in-memory index still works if browser storage is unavailable. */ }
 }
 export async function clearIndex(accountId: string) {
+  await clearMetrics(accountId);
   try {
     const db = await openDatabase();
     await new Promise<void>((resolve) => {
