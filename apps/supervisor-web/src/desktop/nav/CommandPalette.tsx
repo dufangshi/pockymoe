@@ -6,7 +6,8 @@ import { fuzzyMatch } from './model';
 import { Highlight } from './Tree';
 import { StatusGlyph } from './StatusGlyph';
 
-export interface PaletteAction { id: string; label: string; shortcut?: string; run(): void }
+export type PaletteAction = { id: string; subtitle?: string; keywords?: string; shortcut?: string; run(): void } &
+  ({ label: string; title?: string } | { title: string; label?: string });
 interface Result { id: string; group: string; label: string; path: string; icon: ReactNode; shortcut?: string; run(): void }
 export function CommandPalette({ onClose, onNavigate, actions }: { onClose(): void; onNavigate(path: string): void; actions: readonly PaletteAction[] }) {
   const index = useDesktopSelector(index => index);
@@ -27,7 +28,7 @@ export function CommandPalette({ onClose, onNavigate, actions }: { onClose(): vo
       attention.slice(0, 8).forEach(thread => addThread(thread, '需要你'));
       [...index.threads].filter(thread => thread.lastViewedAt && !attention.includes(thread)).sort((a, b) => (b.lastViewedAt ?? '').localeCompare(a.lastViewedAt ?? '')).slice(0, 8).forEach(thread => addThread(thread, '最近打开'));
     }
-    actions.filter(action => fuzzyMatch(action.label, query) !== null).forEach(action => list.push({ ...action, group: query ? '操作' : '常用操作', path: '', icon: <Command size={14} /> }));
+    actions.filter(action => fuzzyMatch(`${action.label ?? ''} ${action.title ?? ''} ${action.subtitle ?? ''} ${action.keywords ?? ''}`, query) !== null).forEach(action => list.push({ ...action, label: action.title ?? action.label ?? '', group: query ? '操作' : '常用操作', path: action.subtitle ?? '', icon: <Command size={14} /> }));
     return list;
   }, [actions, index, onNavigate, query]);
   useEffect(() => { setSelected(0); }, [query]);

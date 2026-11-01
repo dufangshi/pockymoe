@@ -57,10 +57,11 @@ const NavRow = memo(function NavRow({ row, selected, focused, onOpen, onToggle, 
   </div>;
 });
 
-export function DesktopTree({ preferences, updatePreferences, selectedKey, onOpen, onNewThread }: {
+export function DesktopTree({ preferences, updatePreferences, selectedKey, selectedDeviceId, onOpen, onNewThread }: {
   preferences: NavPreferences;
   updatePreferences(patch: Partial<NavPreferences> | ((current: NavPreferences) => Partial<NavPreferences>)): void;
   selectedKey: string | null;
+  selectedDeviceId: string | null;
   onOpen(path: string, newWindow?: boolean): void;
   onNewThread(deviceId?: string, workspaceId?: string): void;
 }) {
@@ -134,6 +135,10 @@ export function DesktopTree({ preferences, updatePreferences, selectedKey, onOpe
     window.addEventListener('remote-codex:desktop-filter', listener); return () => window.removeEventListener('remote-codex:desktop-filter', listener);
   }, [rows, virtualizer]);
   useEffect(() => {
+    if (!selectedDeviceId) return;
+    setQuery(''); setRevealId(`device:${selectedDeviceId}`);
+  }, [selectedDeviceId]);
+  useEffect(() => {
     const reveal = (event: Event) => { setQuery(''); setRevealId(`device:${(event as CustomEvent<string>).detail}`); };
     window.addEventListener('remote-codex:desktop-reveal-device', reveal);
     return () => window.removeEventListener('remote-codex:desktop-reveal-device', reveal);
@@ -191,7 +196,7 @@ export function DesktopTree({ preferences, updatePreferences, selectedKey, onOpe
       <input ref={filter} aria-label="过滤线程" placeholder="过滤线程…" value={query} onChange={event => setQuery(event.target.value)} onBlur={() => { if (!query) setFilterOpen(false); }} onKeyDown={event => { if (event.key === 'Escape') { setQuery(''); filter.current?.blur(); } if (event.key === 'ArrowDown') { container.current?.focus(); focusRow(0); } }} />
       {query ? <button aria-label="清除过滤" onClick={() => setQuery('')}><X size={12} /></button> : null}
       <select aria-label="提供方" value={preferences.provider} onChange={event => updatePreferences({ provider: event.target.value })}><option value="">所有提供方</option>{['codex', 'claude', 'acp', 'opencode'].map(provider => <option key={provider} value={provider}>{provider === 'acp' ? 'ACP' : provider[0]!.toUpperCase() + provider.slice(1)}</option>)}</select>
-    </div> : row.kind === 'scope' ? <div className="rc-scope" aria-label="线程范围">{([['all', '全部'], ['active', '活跃'], ['pinned', '置顶']] as const).map(([scope, label]) => <button key={scope} aria-pressed={preferences.scope === scope} onClick={() => updatePreferences({ scope })}>{label}{scope === 'active' ? <span>{index.threads.filter(thread => active(thread)).length}</span> : null}</button>)}</div> : <NavRow row={row} selected={Boolean(row.threadKey && row.threadKey === selectedKey)} focused={focusedId === row.id} onOpen={open} onToggle={toggle} onAction={action} onHover={hover} />}</div>; })}
+    </div> : row.kind === 'scope' ? <div className="rc-scope" aria-label="线程范围">{([['all', '全部'], ['active', '活跃'], ['pinned', '置顶']] as const).map(([scope, label]) => <button key={scope} aria-pressed={preferences.scope === scope} onClick={() => updatePreferences({ scope })}>{label}{scope === 'active' ? <span>{index.threads.filter(thread => active(thread)).length}</span> : null}</button>)}</div> : <NavRow row={row} selected={Boolean(row.threadKey && row.threadKey === selectedKey) || (row.kind === 'device' && row.deviceId === selectedDeviceId)} focused={focusedId === row.id} onOpen={open} onToggle={toggle} onAction={action} onHover={hover} />}</div>; })}
       </div>}
     </div>
     {error ? <div role="alert" className="rc-inline-error">{error}<button aria-label="关闭错误" onClick={() => setError('')}>×</button></div> : null}

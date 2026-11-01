@@ -173,3 +173,47 @@ test('normal browser keeps the web surface and never loads desktop code', async 
   await expect(page.locator('[data-desktop-surface]')).toHaveCount(0);
   expect(desktopRequests).toEqual([]);
 });
+
+test('devices footer and palette actions reveal, select and create on the explicit device', async ({ page }) => {
+  await seed(page);
+  await page.getByRole('button', { name: '设备总览', exact: true }).click();
+  await expect(page).toHaveURL(/\/desktop\/devices$/);
+  await expect(page.getByTestId('desktop-devices')).toBeVisible();
+  await page.keyboard.press('Control+\\');
+  await expect(page.getByRole('complementary', { name: '桌面侧栏' })).toHaveCount(0);
+  await page.keyboard.press('Control+k');
+  const palette = page.getByRole('dialog', { name: '命令面板' });
+  // "open" exists in the descriptor's keywords, not its visible Chinese title.
+  await palette.getByRole('combobox').fill('MacBook open');
+  const reveal = palette.getByRole('option').filter({ hasText: '在树中打开设备' });
+  await expect(reveal).toContainText('MacBook Pro');
+  await page.locator('.rc-palette').evaluate(element => Promise.all(element.getAnimations().map(animation => animation.finished)));
+  await page.screenshot({ path: `${evidence}/devices-palette-light.png` });
+  await page.keyboard.press('Enter');
+  await expect(page).toHaveURL(/\/devices\/device-0\/workspaces$/);
+  const device = page.locator('[data-row-id="device:device-0"]');
+  await expect(device).toBeVisible();
+  await expect(device).toHaveAttribute('aria-expanded', 'true');
+  await expect(device).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByRole('tree')).toHaveAttribute('aria-activedescendant', 'rc-row-device:device-0');
+  await expect(page.getByRole('tree')).toBeFocused();
+  await page.screenshot({ path: `${evidence}/devices-revealed-light.png` });
+  await page.keyboard.press('Control+k');
+  await palette.getByRole('combobox').fill('切换亮色');
+  await page.keyboard.press('Enter');
+  await expect(page.locator('html')).toHaveAttribute('data-theme-effective', 'dark');
+  await page.screenshot({ path: `${evidence}/devices-revealed-dark.png` });
+  // Start from another device's workspace to catch accidental workspace reuse.
+  await page.evaluate(() => {
+    history.pushState(null, '', '/devices/device-0/workspaces?workspaceId=workspace-0');
+    window.dispatchEvent(new PopStateEvent('popstate'));
+  });
+  await page.keyboard.press('Control+k');
+  await palette.getByRole('combobox').fill('Windows new');
+  await expect(palette.getByRole('option')).toHaveCount(1);
+  await expect(palette.getByRole('option')).toContainText('Windows Studio');
+  await page.locator('.rc-palette').evaluate(element => Promise.all(element.getAnimations().map(animation => animation.finished)));
+  await page.screenshot({ path: `${evidence}/devices-palette-dark.png` });
+  await page.keyboard.press('Enter');
+  await expect(page).toHaveURL(/\/devices\/device-1\/threads\/new$/);
+});
