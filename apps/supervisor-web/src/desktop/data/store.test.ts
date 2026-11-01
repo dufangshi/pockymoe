@@ -86,3 +86,13 @@ describe('desktop cached index', () => {
     expect(buildActivitySnapshot(store.getSnapshot(), 'a:same', false).focusedThreadKey).toBeNull(); store.stop();
   });
 });
+
+it('clears a pulse edge before another reminder on the same thread', async () => {
+  vi.useFakeTimers();
+  const { store } = setup(); await store.refresh(); store.setMapVisible(true);
+  const pulses: string[][] = []; store.subscribe(() => pulses.push([...store.getSnapshot().pulseKeys]));
+  for (const [index, timestamp] of ['2026-11-01T01:00:00Z', '2026-11-01T01:01:00Z'].entries()) store.applyEvent('a', { type: 'thread.turn.completed', threadId: 'same', timestamp, payload: { turnId: `turn${index}`, status: 'completed', error: null } });
+  expect(pulses.some(keys => keys.length === 0)).toBe(true);
+  await vi.advanceTimersByTimeAsync(20); expect(store.getSnapshot().pulseKeys).toContain('a:same');
+  store.stop(); vi.useRealTimers();
+});

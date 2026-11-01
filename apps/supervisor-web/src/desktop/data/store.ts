@@ -210,7 +210,7 @@ export class DesktopIndexStore {
       const previous = this.state.activity[deviceId];
       const [stable] = mergeRows(previous ? [previous] : [], [activity], () => deviceId);
       if (stable !== previous) this.publish({ activity: { ...this.state.activity, [deviceId]: stable! } });
-      if (this.mapVisible) void this.withSignal(signal => this.io.get<{ totals?: { costUsd?: number | null } }>(deviceId, 'api/stats/summary?range=today', { signal, cache: 'no-store' })).then(summary => {
+      if (this.mapVisible) void this.withSignal(signal => this.io.get<{ totals?: { costUsd?: number | null } }>(deviceId, `api/stats/summary?range=today&tz=${encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone)}`, { signal, cache: 'no-store' })).then(summary => {
         if (generation === this.generation && !this.stopped && typeof summary.totals?.costUsd === 'number') this.extra(deviceId, { todayCostUsd: summary.totals.costUsd });
       }).catch(() => undefined);
     } catch { /* Older Supervisors may not support activity; cached values remain. */ }
@@ -306,7 +306,10 @@ export class DesktopIndexStore {
       if (this.mapVisible && visible()) this.activityTimers.set(deviceId, setTimeout(() => { this.activityTimers.delete(deviceId); void this.refreshActivity(deviceId); }, 2000));
     }
     if (this.mapVisible && visible() && ['thread.request.created', 'thread.turn.completed', 'thread.turn.failed'].includes(event.type)) {
-      this.publish({ pulseKeys: [...new Set([...this.state.pulseKeys, key])] });
+      if (this.state.pulseKeys.includes(key)) {
+        this.publish({ pulseKeys: this.state.pulseKeys.filter(value => value !== key) });
+        requestAnimationFrame(() => { if (!this.stopped && this.mapVisible && visible()) this.publish({ pulseKeys: [...new Set([...this.state.pulseKeys, key])] }); });
+      } else this.publish({ pulseKeys: [...this.state.pulseKeys, key] });
       clearTimeout(this.pulseTimer); this.pulseTimer = setTimeout(() => this.publish({ pulseKeys: [] }), 1000);
     }
   }

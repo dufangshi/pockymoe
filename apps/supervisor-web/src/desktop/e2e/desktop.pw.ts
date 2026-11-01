@@ -42,6 +42,9 @@ async function setup(page: Page, count = 12, pack = 'classic', dark = false) {
   await page.routeWebSocket(/^ws:\/\/127\.0\.0\.1:18925\/\?token=/, socket => socket.onMessage(() => undefined));
   await page.route('**/relay/auth/session', route => route.fulfill({ json: { authenticated: true, user: account } }));
   await page.route('**/relay/portal', route => route.fulfill({ json: { user: account, devices: state.devices.map(device => ({ ...device, ownerUserId: account.id })), sharedWithMe: [], sharedByMe: [] } }));
+  await page.route('**/relay/account/notifications/preferences', route => route.fulfill({ json: { scope: 'all', devices: [], workspaces: [] } }));
+  await page.route('**/relay/api/config/runtime', route => route.fulfill({ json: { defaultBackend: 'acp', agentBackends: [], workspaceRoot: '/fixture' } }));
+  await page.route('**/relay/api/plugins*', route => route.fulfill({ json: [] }));
   await page.route('**/relay/account/workbench**', route => route.fulfill({ json: { threads: [], notifications: [] } }));
   await page.route('**/relay/devices/*/presence*', route => route.fulfill({ json: { connected: true } }));
   await page.route(/\/relay\/devices\/device-[0-2]$/, route => route.fulfill({ status: 405, headers: { allow: 'PATCH, DELETE' }, json: { code: 'method_not_allowed' } }));
@@ -115,6 +118,18 @@ for (const pack of ['classic', 'plum-pocket', 'terminal']) for (const dark of [f
         await expect(page.getByRole('dialog', { name: /详情/ })).toBeVisible();
         await page.screenshot({ path: `${evidence}/quicklook-${name}.png` });
         await page.keyboard.press('Escape');
+        if (process.env.DESKTOP_SETTINGS_SHOTS === '1') {
+          await page.getByRole('button', { name: '设置', exact: true }).first().click();
+          await expect(page.getByTestId('settingsDialog')).toBeVisible();
+          await page.getByRole('tab', { name: /通知/ }).click();
+          const native = page.getByRole('button', { name: '系统通知 · 桌宠', exact: true });
+          await expect(native).toBeEnabled();
+          await page.evaluate(() => window.addEventListener('desktopMock:preferences', event => Object.assign(window, { desktopPreferenceSection: (event as CustomEvent).detail })));
+          await native.click();
+          expect(await page.evaluate(() => (window as any).desktopPreferenceSection)).toBe('general');
+          await page.screenshot({ path: `${evidence}/notifications-${name}.png` });
+          await page.keyboard.press('Escape');
+        }
       }
     }
   });

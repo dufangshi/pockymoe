@@ -21,7 +21,7 @@ export function buildActivityItems(index: DesktopIndex, now = Date.now()): Activ
       turnId: thread.activeTurnId ?? thread.lastTurnId, unread: state === 'failed' || state === 'interrupted' ? true : unread(thread),
       request: request ? { id: request.id, kind: request.kind, summary: plainSummary(request.summary) } : null,
       resultSummary: plainSummary(thread.resultSummary) || null,
-      durationMs: thread.lastTurnStartedAt && thread.lastTurnCompletedAt ? Math.max(0, Date.parse(thread.lastTurnCompletedAt) - Date.parse(thread.lastTurnStartedAt)) : null,
+      durationMs: ['completed', 'failed', 'interrupted'].includes(state) && thread.lastTurnStartedAt && thread.lastTurnCompletedAt ? Math.max(0, Date.parse(thread.lastTurnCompletedAt) - Date.parse(thread.lastTurnStartedAt)) : null,
     }];
   }).sort((a, b) => priority[a.state] - priority[b.state] || a.since.localeCompare(b.since) || a.key.localeCompare(b.key));
 }

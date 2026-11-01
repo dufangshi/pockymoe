@@ -47,12 +47,15 @@ export async function handleHostCommand(command: HostCommand, deps: CommandDepen
     return { ok: true };
   } catch (error) { return { ok: false, error: error instanceof Error ? error.message : '操作没有完成，请重试。' }; }
 }
+let activitySession = 0;
 /** Change-only snapshots, never timer ticks, <=4/s. */
 export function syncActivity(store: DesktopIndexStore, host: PockymoeHost, focused: () => string | null, badgeEnabled: boolean) {
+  const session = ++activitySession; let logoutPending = false;
   let previous = ''; let lastSent = 0; let timer: ReturnType<typeof setTimeout> | undefined;
   const flush = () => {
     timer = undefined;
-    const snapshot = buildActivitySnapshot(store.getSnapshot(), focused(), document.hasFocus());
+    if (session !== activitySession) return;
+    const snapshot = buildActivitySnapshot(store.getSnapshot(), logoutPending ? null : focused(), logoutPending ? false : document.hasFocus());
     const signature = JSON.stringify({ ...snapshot, generatedAt: '' });
     if (signature === previous) return;
     previous = signature; lastSent = Date.now(); host.activity?.sync(snapshot);
@@ -62,7 +65,9 @@ export function syncActivity(store: DesktopIndexStore, host: PockymoeHost, focus
   };
   const schedule = () => { timer ??= setTimeout(flush, Math.max(0, 250 - (Date.now() - lastSent))); };
   const unsubscribe = store.subscribe(schedule);
+  const logout = () => { logoutPending = true; schedule(); };
+  window.addEventListener('pockymoe-account-logout', logout);
   window.addEventListener('focus', schedule); window.addEventListener('blur', schedule); window.addEventListener('pockymoe-desktop-route', schedule);
   const age = setInterval(schedule, 30_000); schedule();
-  return () => { unsubscribe(); clearTimeout(timer); clearInterval(age); window.removeEventListener('focus', schedule); window.removeEventListener('blur', schedule); window.removeEventListener('pockymoe-desktop-route', schedule); };
+  return () => { unsubscribe(); if (!logoutPending) clearTimeout(timer); clearInterval(age); window.removeEventListener('pockymoe-account-logout', logout); window.removeEventListener('focus', schedule); window.removeEventListener('blur', schedule); window.removeEventListener('pockymoe-desktop-route', schedule); };
 }

@@ -45,3 +45,19 @@ describe('desktop host bridge v2', () => {
     stop(); vi.useRealTimers();
   });
 });
+
+it('delivers the empty logout snapshot after route teardown without breaking the throttle', async () => {
+  vi.useFakeTimers();
+  let state = { accountId: 'a', devices: [], workspaces: [], threads: [{ id: 't', key: 'd:t', deviceId: 'd', title: 'Task', workspaceId: 'w', status: 'running', updatedAt: '2026-11-01T00:00:00Z', requests: [{ id: 'request', kind: 'approval', summary: 'Run checks', createdAt: '2026-11-01T00:00:00Z' }] }] } as unknown as DesktopIndex;
+  const store = { getSnapshot: () => state, subscribe: () => () => undefined } as unknown as CommandDependencies['store'];
+  const host = { activity: { sync: vi.fn() }, badge: { set: vi.fn() } } as unknown as PockymoeHost;
+  const stop = syncActivity(store, host, () => 'd:t', true);
+  await vi.advanceTimersByTimeAsync(0); expect(host.badge.set).toHaveBeenLastCalledWith(1, 'attention');
+  state = { ...state, threads: [] };
+  window.dispatchEvent(new Event('pockymoe-account-logout')); stop();
+  await vi.advanceTimersByTimeAsync(249); expect(host.activity.sync).toHaveBeenCalledTimes(1);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(host.activity.sync).toHaveBeenLastCalledWith(expect.objectContaining({ items: [], focusedThreadKey: null }));
+  expect(host.badge.set).toHaveBeenLastCalledWith(0, 'none');
+  vi.useRealTimers();
+});

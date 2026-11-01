@@ -403,12 +403,27 @@ function AppShell({
     },
   };
 
+  // The account-wide desktop map must outlive a device scope's discovery gate;
+  // only routed device content waits for that Supervisor's capabilities.
+  if (window.pockymoeHost) return (
+    <AppShellNavContext.Provider value={shellNavValue}>
+      <Suspense fallback={null}><DesktopEntry>
+        <HostCapabilitiesProvider scope={relayDeviceIdFromPath(location.pathname) ?? 'local'}>
+          <ScopedTourProvider>
+            <HostScopeRouteGate><Outlet /></HostScopeRouteGate>
+            <UnscopedOnly><AppShellSettingsDialog /></UnscopedOnly>
+          </ScopedTourProvider>
+        </HostCapabilitiesProvider>
+      </DesktopEntry></Suspense>
+    </AppShellNavContext.Provider>
+  );
+
   return (
     <HostCapabilitiesProvider scope={relayDeviceIdFromPath(location.pathname) ?? 'local'}>
     <AppShellNavContext.Provider value={shellNavValue}>
       <ThreadMapProvider>
       <ScopedTourProvider>
-      {window.pockymoeHost ? <Suspense fallback={null}><DesktopEntry><HostScopeRouteGate><Outlet /></HostScopeRouteGate></DesktopEntry></Suspense> : <div
+      <div
         className={`bg-[var(--app-bg)] text-[var(--app-fg)] ${
           isViewportLockedRoute || isSettingsRoute
             ? 'fixed inset-0 overflow-hidden overscroll-none'
@@ -450,7 +465,7 @@ function AppShell({
             <HostScopeRouteGate><Outlet /></HostScopeRouteGate>
           </section>
         </main>
-      </div>}
+      </div>
       <UnscopedOnly><AppShellSettingsDialog /></UnscopedOnly>
       </ScopedTourProvider>
       </ThreadMapProvider>

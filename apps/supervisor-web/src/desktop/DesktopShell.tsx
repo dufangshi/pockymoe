@@ -72,7 +72,9 @@ export function DesktopShell({ children, capabilities }: { children: ReactNode; 
       if (event.key === '0') { event.preventDefault(); openMap(); }
       else if (event.key.toLowerCase() === 'k') {
         event.preventDefault();
-        Array.from(document.querySelectorAll<HTMLButtonElement>('.matter-search-trigger')).find(button => button.getClientRects().length)?.click();
+        const input = Array.from(document.querySelectorAll<HTMLInputElement>('.workbench-search.is-open input')).find(field => field.getClientRects().length);
+        if (input) input.focus();
+        else Array.from(document.querySelectorAll<HTMLButtonElement>('.matter-search-trigger')).find(button => button.getClientRects().length)?.click();
       }
     };
     window.addEventListener('keydown', key); return () => window.removeEventListener('keydown', key);
@@ -85,6 +87,6 @@ export function DesktopShell({ children, capabilities }: { children: ReactNode; 
   const shellValue = useMemo(() => shell ? { ...shell, openThreadMap: openMap } : shell, [shell, openMap]);
   return <DesktopSurfaceContext.Provider value={surface}><AppShellNavContext.Provider value={shellValue}><div className="desktop-surface" data-desktop-surface style={style}>
     <DesktopMapPage visible={mapVisible || devicesPage} mapVisible={mapVisible} revealKey={revealKey} onOpen={open}>{devicesPage ? children : null}</DesktopMapPage>
-    {!mapVisible && !devicesPage ? <div className="desktop-route">{children}</div> : null}
+    {!devicesPage ? <div className="desktop-route" hidden={mapVisible} inert={mapVisible}>{children}</div> : null}
   </div></AppShellNavContext.Provider></DesktopSurfaceContext.Provider>;
 }

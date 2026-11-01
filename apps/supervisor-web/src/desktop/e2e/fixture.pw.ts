@@ -48,7 +48,9 @@ test('real certified account across separate Web/API origins keeps map mounted a
   await expect.poll(async () => (await snapshot())?.items.find(item => item.key === `${device.id}:${threadId}`)?.state).toBe('completed');
   await page.evaluate(key => (window as any).desktopRealState.command({ id: 'reveal', type: 'revealInMap', key }), `${device.id}:${threadId}`);
   const target = page.locator(`[data-map-id="thread:${device.id}:${threadId}"]`); await expect(target).toBeVisible();
-  const crumbs = await page.locator('.desktop-map-scene .thread-map-crumbs').innerText();
+  await expect.poll(() => page.locator('.desktop-map-scene .thread-map-crumbs button').count()).toBeGreaterThan(1);
+  const crumbs = await page.locator('.desktop-map-scene .thread-map-crumbs').textContent();
+  expect(crumbs).toBeTruthy();
   await page.evaluate(() => Object.assign(window, { savedDesktopMap: document.querySelector('.desktop-map-scene .thread-map') }));
   await page.screenshot({ path: '/tmp/rc-desktop/evidence/webnav/v2/real-map.png' });
   await page.evaluate(path => (window as any).desktopRealState.command({ id: 'open', type: 'navigate', path }), `/devices/${device.id}/threads/${threadId}`);
@@ -59,7 +61,7 @@ test('real certified account across separate Web/API origins keeps map mounted a
   await page.evaluate(() => (window as any).desktopRealState.command({ id: 'back', type: 'openMap' }));
   await expect(page.locator('.desktop-map-scene .thread-map')).toBeVisible();
   expect(await page.evaluate(() => (window as any).savedDesktopMap === document.querySelector('.desktop-map-scene .thread-map'))).toBe(true);
-  await expect(page.locator('.desktop-map-scene .thread-map-crumbs')).toHaveText(crumbs);
+  await expect(page.locator('.desktop-map-scene .thread-map-crumbs')).toHaveText(crumbs!);
   const evidence = { devices: sockets.size, encryptedSockets: encryptedSockets.size, encryptedReads, pendingRequests: (await snapshot())?.items.filter(item => item.state === 'needsInput').length, mapPreserved: true };
   writeFileSync('/tmp/rc-desktop/evidence/webnav/v2/real-relay.json', JSON.stringify(evidence, null, 2));
 });

@@ -50,3 +50,6 @@
 .desktop-map-persistent { height: 100%; min-height: 0; }
 .desktop-map-persistent[hidden] { display: none; }
 .desktop-map-route { height: 100%; min-height: 0; overflow: auto; background: var(--theme-bg); }
+
+.desktop-decision-buttons > button { min-width: 86px; }
+.desktop-quicklook header button:active { background: var(--theme-hover); }
