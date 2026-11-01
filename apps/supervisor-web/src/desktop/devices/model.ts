@@ -1,4 +1,5 @@
 import type { ThreadActivityResponseDto } from '@pockymoe/shared';
+import { formatNumber, translate } from '@pockymoe/thread-ui/i18n';
 import { running, type DesktopIndex } from '../data/types';
 
 export type StatsRange = 'today' | '7d' | '30d';
@@ -29,18 +30,19 @@ export interface DeviceMetrics {
   checkedAt?: string;
   activity?: ThreadActivityResponseDto;
 }
-export const compact = (value: number | null | undefined) => value == null ? '—' : new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 }).format(value);
-export const exact = (value: number) => new Intl.NumberFormat('en-US').format(value);
-export const money = (value: number | null | undefined) => value == null ? '—' : `$${value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+export const compact = (value: number | null | undefined) => value == null ? '—' : formatNumber(value, { notation: 'compact', maximumFractionDigits: 1 });
+export const exact = (value: number) => formatNumber(value);
+export const money = (value: number | null | undefined) => value == null ? '—' : `$${formatNumber(value, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+export const turns = (value: number) => translate('desktopDevices.turnCount', { count: value, value: exact(value) });
 export function duration(value: number | null | undefined) {
   if (value == null) return '—';
   const seconds = Math.round(value / 1000);
-  return seconds < 60 ? `${seconds} 秒` : seconds < 3600 ? `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒` : `${Math.floor(seconds / 3600)} 小时 ${Math.floor(seconds % 3600 / 60)} 分`;
+  return seconds < 60 ? translate('desktopDevices.durationSeconds', { seconds }) : seconds < 3600 ? translate('desktopDevices.durationMinutes', { minutes: Math.floor(seconds / 60), seconds: seconds % 60 }) : translate('desktopDevices.durationHours', { hours: Math.floor(seconds / 3600), minutes: Math.floor(seconds % 3600 / 60) });
 }
 export function age(value: string | null | undefined, now = Date.now()) {
-  if (!value || !Number.isFinite(Date.parse(value))) return '时间未知';
+  if (!value || !Number.isFinite(Date.parse(value))) return translate('desktopDevices.unknownTime');
   const minutes = Math.max(0, Math.floor((now - Date.parse(value)) / 60_000));
-  return minutes < 1 ? '刚刚' : minutes < 60 ? `${minutes} 分钟前` : minutes < 1440 ? `${Math.floor(minutes / 60)} 小时前` : `${Math.floor(minutes / 1440)} 天前`;
+  return minutes < 1 ? translate('desktopDevices.justNow') : minutes < 60 ? translate('desktopDevices.minutesAgo', { count: minutes }) : minutes < 1440 ? translate('desktopDevices.hoursAgo', { count: Math.floor(minutes / 60) }) : translate('desktopDevices.daysAgo', { count: Math.floor(minutes / 1440) });
 }
 const dateFormats = new Map<string, Intl.DateTimeFormat>();
 export function dateKey(value: Date, timeZone: string) {
@@ -81,7 +83,7 @@ export function partialSummary(index: DesktopIndex, deviceId: string, range: Sta
     if (ended && (thread.status === 'failed' || thread.status === 'system_error')) { failed++; day.failed++; }
     else if (ended && thread.status === 'interrupted') interrupted++;
     else if (ended && !running(thread)) completed++;
-    const row = workspaces.get(thread.workspaceId) ?? { workspaceId: thread.workspaceId, label: index.workspaces.find(w => w.deviceId === deviceId && w.id === thread.workspaceId)?.label ?? '工作区', turns: 0, tokens: 0, costUsd: null, lastActivityAt: thread.lastTurnStartedAt! };
+    const row = workspaces.get(thread.workspaceId) ?? { workspaceId: thread.workspaceId, label: index.workspaces.find(w => w.deviceId === deviceId && w.id === thread.workspaceId)?.label ?? translate('desktopDevices.workspace'), turns: 0, tokens: 0, costUsd: null, lastActivityAt: thread.lastTurnStartedAt! };
     row.turns++; row.lastActivityAt = row.lastActivityAt > thread.updatedAt ? row.lastActivityAt : thread.updatedAt;
     workspaces.set(row.workspaceId, row);
   }
@@ -163,7 +165,7 @@ export function lifetimeActivity(index: DesktopIndex, deviceId: string, activity
   const workspaces = new Map<string, { id: string; label: string; turns: number }>();
   rows.forEach(row => {
     const thread = known.get(row.threadId)!;
-    const old = workspaces.get(thread.workspaceId) ?? { id: thread.workspaceId, label: index.workspaces.find(w => w.deviceId === deviceId && w.id === thread.workspaceId)?.label ?? '工作区', turns: 0 };
+    const old = workspaces.get(thread.workspaceId) ?? { id: thread.workspaceId, label: index.workspaces.find(w => w.deviceId === deviceId && w.id === thread.workspaceId)?.label ?? translate('desktopDevices.workspace'), turns: 0 };
     old.turns += row.turns; workspaces.set(old.id, old);
   });
   return { turns: rows.reduce((n, row) => n + row.turns, 0),

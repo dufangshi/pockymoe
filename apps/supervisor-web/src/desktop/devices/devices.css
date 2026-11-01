@@ -162,4 +162,13 @@
 .pd-page .pd-chart-panel h3 { font-size: 13px; }
 .pd-page .pd-kpi small, .pd-page .pd-chart-caption, .pd-page .pd-legend { font-size: 11px; }
 .pd-lifetime small { overflow-wrap: anywhere; }
+.pd-page .pd-device-card { container-type: inline-size; }
+.pd-page .pd-kpis { container-type: inline-size; }
+.pd-page-header > div:first-child { min-width: 0; }
+.pd-page-header h1 { overflow-wrap: anywhere; }
+.pd-header-actions { flex-shrink: 0; }
+.pd-stats-header > div:first-child { min-width: 0; }
+.pd-stats-header p { overflow-wrap: anywhere; }
+@container (max-width: 360px) { .pd-page .pd-counts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 8px; } }
+@container (max-width: 700px) { .pd-page .pd-kpi > span { min-height: 36px; display: flex; align-items: flex-end; } }
 .pd-page .pd-hourly-note { color: var(--theme-fg-muted); font-size: 11px; margin-top: 8px; }

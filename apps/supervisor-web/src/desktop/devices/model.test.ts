@@ -1,7 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { aggregate, age, calendarDays, compact, deviceColor, deviceCounts, duration, isUnsupported, lifetimeActivity, money, newerVersion, partialSummary, supportsStats, type StatsSummary } from './model';
+import { setLocale } from '@pockymoe/thread-ui/i18n';
 import type { DesktopIndex, DesktopThread } from '../data/types';
 
+beforeEach(() => setLocale('zh-CN', false));
+afterEach(() => setLocale('en', false));
 const now = new Date('2026-11-01T18:00:00Z');
 const thread = (extra: Partial<DesktopThread>): DesktopThread => ({ providerSessionId: null, source: 'supervisor', model: 'gpt-6.1', reasoningEffort: null, collaborationMode: 'default', approvalMode: 'yolo', summaryText: null, lastError: null, isLoaded: false, lastTurnId: null, key: 'd:t', deviceId: 'd', id: 't', workspaceId: 'w', title: 'Thread', provider: 'codex', status: 'idle', isPinned: false, createdAt: now.toISOString(), updatedAt: now.toISOString(), lastTurnStartedAt: '2026-11-01T17:00:00Z', lastTurnCompletedAt: '2026-11-01T17:01:00Z', activeTurnId: null, parentThreadId: null, rootThreadId: null, agentName: null, closedAt: null, lastViewedAt: null, requests: [], resultSummary: null, ...extra });
 const index = (threads: DesktopThread[] = []): DesktopIndex => ({ accountId: 'a', devices: [], workspaces: [{ key: 'd:w', id: 'w', hostId: 'h', deviceId: 'd', absPath: '/fixture', label: 'Code', createdAt: now.toISOString(), lastOpenedAt: null, isFavorite: false }], threads, activity: {}, extras: {}, pulseKeys: [], hydrated: true, refreshing: false, error: null });
@@ -40,7 +43,7 @@ describe('desktop device statistics', () => {
     expect(isUnsupported({ statusCode: 404 })).toBe(true); expect(isUnsupported({ statusCode: 500 })).toBe(false); expect(isUnsupported(null)).toBe(false);
   });
   it('formats unknown and zero values distinctly and keeps colors stable', () => {
-    expect(money(null)).toBe('—'); expect(money(0)).toBe('$0.00'); expect(compact(1200000)).toBe('1.2M');
+    expect(money(null)).toBe('—'); expect(money(0)).toBe('$0.00'); expect(compact(1200000)).toBe('120万');
     expect(duration(72000)).toBe('1 分 12 秒'); expect(duration(null)).toBe('—');
     expect(age('2026-11-01T15:00:00Z', +now)).toBe('3 小时前'); expect(age('bad', +now)).toBe('时间未知');
     expect(deviceColor('abc')).toBe(deviceColor('abc'));
