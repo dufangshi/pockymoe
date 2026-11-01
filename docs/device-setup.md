@@ -207,3 +207,18 @@ new-model capabilities, actual request effort values, Auto, directory refresh,
 session restoration, upstream switching and exact native-config restoration.
 Run with `TEST_GROK_API_TYPE=chat_completions` as well as the default Responses
 mode. It sends requests only to its loopback fixture, not a paid model provider.
+
+## Device rename
+
+`PATCH /relay/devices/:deviceId` accepts `{ "name": "Work Laptop" }` for the
+signed-in **owning user only**. Device/thread/workspace control grants, thread
+shares and hosted membership do not confer ownership.
+Non-owners receive 403, unauthenticated requests receive 401, and missing devices
+receive 404. Names are trimmed, must contain 1–64 Unicode characters after trimming,
+and must contain no control characters (including leading/trailing tabs/newlines).
+Invalid names receive 400.
+
+The response is the updated `RelayDeviceDto` directly (no `device` wrapper), with
+the same camelCase fields and presence/hosted metadata as an entry in
+`GET /relay/devices`. It does not return device credentials. This updates the
+relay display name only and does not restart or reconnect a device.

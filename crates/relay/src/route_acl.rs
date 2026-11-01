@@ -15,6 +15,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn device_rename_requires_owner_even_for_control_grants() {
+        let route = "/relay/devices/device-1";
+        let mut access = owner_access();
+        assert!(access_allows(&access, &Method::PATCH, route));
+        access.kind = "shared".into();
+        access.thread_access = "control".into();
+        access.workspace_access = "write".into();
+        access.can_create_threads = true;
+        for scope in ["thread", "workspace", "device"] {
+            access.scope = scope.into();
+            assert!(!access_allows(&access, &Method::PATCH, route), "{scope}");
+            assert!(!access_allows(
+                &access,
+                &Method::PATCH,
+                &format!("{route}?owner=true")
+            ));
+        }
+    }
+
+    #[test]
     fn safe_file_routes_require_exact_workspace_and_write_for_operations() {
         let base = "/api/workspaces/ws";
         assert!(!shared_workspace_path_allowed(
