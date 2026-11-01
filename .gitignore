@@ -5,6 +5,7 @@ pockymoe-thread-ui
 # Checkouts that predate the rename still use the old directory name.
 remote-codex-thread-ui
 /remote-codex-app/
+/pockymoe-app/
 .DS_Store
 .local
 target/

@@ -45,9 +45,9 @@ talking to the same HTTP/WS contract from `main`. The React thread surface stays
 in `pockymoe-thread-ui`, consumed by `apps/supervisor-web` as
 `@pockymoe/thread-ui` and `@pockymoe/shared`.
 
-The native macOS/iOS/Android client apps live in a separate repository
-(`remote-codex-app`), not in this tree — `apps/ios` and `apps/android` here hold
-only built web bundles and packaging inputs. `apps/windows-device-manager` is an
+The native macOS/iOS/Android client apps live in a separate repository,
+[`dufangshi/pockymoe-app`](https://github.com/dufangshi/pockymoe-app) (formerly
+`remote-codex-app`), not in this tree. `apps/windows-device-manager` is an
 independently released bootstrap; see AGENTS.md for its release boundary.
 
 ## History payloads and compression
