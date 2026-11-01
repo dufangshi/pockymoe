@@ -17,6 +17,8 @@ vi.mock('./relayTransportCrypto', () => ({
 vi.mock('./accountVaultState', () => ({ accountRevocations: state.revocations }));
 import { probeDeviceEncryption, getTransportStatus } from './relayTransport';
 beforeEach(() => {
+  // jsdom's AbortSignal is not one Node's own Request accepts; only the URL matters here.
+  vi.stubGlobal('Request', class { url: string; constructor(input: URL | string) { this.url = String(input); } });
   state.recipient.mockReset().mockResolvedValue(true);
   state.exchange.mockReset().mockResolvedValue({ response: Response.json({}) });
 });
