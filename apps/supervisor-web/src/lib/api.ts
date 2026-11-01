@@ -288,7 +288,7 @@ function buildBrowserMediaUrl(path: string, deviceId?: string | null) {
 }
 
 // These wrappers keep every operation (including retries/downloads) on the pane's device.
-function deviceRequest<T>(deviceId: string | null | undefined, input: RequestInfo, init?: RequestInit, threadScope?: string) {
+export function deviceRequest<T>(deviceId: string | null | undefined, input: RequestInfo, init?: RequestInit, threadScope?: string) {
   return request<T>(input, init, { deviceId, threadScope });
 }
 function deviceDownload(deviceId: string | null | undefined, input: RequestInfo | URL, init?: RequestInit) {
