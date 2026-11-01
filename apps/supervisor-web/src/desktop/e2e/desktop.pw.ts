@@ -143,7 +143,8 @@ test('desktop language follows navigator and saved preference, updates live, and
   await expect(page.locator('html')).toHaveAttribute('lang', 'en');
   const activity = page.locator('.desktop-map-scene .desktop-activity');
   await expect(activity).toHaveAttribute('aria-label', 'Activity');
-  await expect(page.locator('.desktop-online-count').first()).toHaveText('3 Online');
+  await expect(page.locator('.desktop-online-count').first()).toHaveText('3 online');
+  if (process.env.DESKTOP_COUNT_SHOTS === '1') await page.screenshot({ path: `${evidence}/online-count-en.png` });
   await expect(activity.locator('[data-activity-group="attention"]')).toContainText('Needs you');
   await expect(activity.locator('[data-activity-group="running"] .desktop-activity-time').first()).toHaveText(/^1:\d{2}:\d{2}$/);
   await page.getByRole('button', { name: 'Settings', exact: true }).first().click();
@@ -152,7 +153,8 @@ test('desktop language follows navigator and saved preference, updates live, and
   await expect.poll(() => page.evaluate(() => (window as any).desktopAppearanceLocale), { timeout: 1000 }).toBe('zh-CN');
   await page.keyboard.press('Escape');
   await expect(activity).toHaveAttribute('aria-label', '活动');
-  await expect(page.locator('.desktop-online-count').first()).toHaveText('3 在线');
+  await expect(page.locator('.desktop-online-count').first()).toHaveText('3 台在线');
+  if (process.env.DESKTOP_COUNT_SHOTS === '1') await page.screenshot({ path: `${evidence}/online-count-zh-CN.png` });
   await expect(activity.locator('[data-activity-group="attention"]')).toContainText('需要你');
   await page.reload();
   await expect(page.locator('html')).toHaveAttribute('lang', 'zh-CN');
