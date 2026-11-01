@@ -21,6 +21,14 @@ for (const pack of ['classic']) for (const dark of [false]) for (const width of 
     await turns.locator('g[tabindex]').nth(1).focus();
     await expect(page.getByRole('tooltip')).toContainText('01:00–02:00');
     await expect(page.getByRole('tooltip')).toContainText('MacBook Pro');
+    // The tip sits beside the hovered column on either side of the chart, never over it.
+    for (const index of [1, 22]) {
+      const column = turns.locator('g[tabindex]').nth(index);
+      await column.focus();
+      const [tip, hovered] = await Promise.all([page.getByRole('tooltip').boundingBox(), column.locator('rect').first().boundingBox()]);
+      expect(tip!.x + tip!.width <= hovered!.x + 1 || tip!.x >= hovered!.x + hovered!.width - 1).toBe(true);
+    }
+    await turns.locator('g[tabindex]').nth(1).focus();
     await capture('today-tooltip');
     await page.getByRole('button', { name: '按费用', exact: true }).click();
     const costs = page.getByRole('group', { name: '今日每小时估算费用', exact: true });

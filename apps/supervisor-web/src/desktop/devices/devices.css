@@ -96,10 +96,11 @@
 @media (max-width: 640px) { .pd-page-header { gap: 5px; } .pd-page-header .pd-select { min-width: 0; max-width: 100px; } .pd-page-header .pd-segment button { padding-inline: 5px; } .pd-device-count { display: none; } .pd-account-models { grid-template-columns: 1fr; gap: 4px; } .pd-donut { width: 145px; margin: 0 auto; } .pd-usage-table { font-size: 10px; } .pd-usage-table th:first-child { width: 32%; } .pd-charts-grid { grid-template-columns: 1fr; gap: 6px; }  .pd-account-usage { margin-top: 2px; } .pd-usage-device-row { grid-template-columns: 12px 90px 1fr 70px; } .pd-workspace-usage a { grid-template-columns: 90px 1fr 70px; } }
 .pd-page .pd-sparkline { position: relative; flex: 1; max-width: 168px; min-width: 80px; height: 26px; }
 .pd-page .pd-sparkline svg { width: 100%; height: 26px; display: block; }
-.pd-page .pd-chart-tip { position: absolute; z-index: 20; pointer-events: none; top: 0; right: 12px; max-width: calc(100% - 24px); padding: 9px 11px; border: 1px solid var(--theme-border); border-radius: 7px; color: var(--theme-fg); background: var(--theme-bg); box-shadow: var(--theme-shadow); font-size: 11px; line-height: 18px; font-variant-numeric: tabular-nums; }
+.pd-page .pd-chart-tip { position: absolute; z-index: 20; pointer-events: none; top: 4px; right: 12px; width: max-content; max-width: min(260px, 48%); padding: 7px 10px; border: 1px solid var(--theme-border); border-radius: 7px; color: var(--theme-fg); background: var(--theme-bg); box-shadow: var(--theme-shadow); font-size: 11px; line-height: 18px; font-variant-numeric: tabular-nums; }
+.pd-page .pd-chart-tip-muted { color: var(--theme-fg-muted); }
 .pd-page .pd-chart-tip strong { display: block; margin-bottom: 3px; font-weight: 500; }
 .pd-page .pd-chart-tip > span { display: flex; align-items: center; gap: 7px; }
-.pd-page .pd-chart-tip b { font-weight: 500; margin-left: 10px; }
+.pd-page .pd-chart-tip b { font-weight: 500; margin-left: auto; padding-left: 10px; white-space: nowrap; }
 .pd-page .pd-sparkline .pd-chart-tip { white-space: nowrap; top: 28px; right: auto; left: 0; max-width: none; padding: 5px 8px; }
 .pd-page .pd-chart-tip i, .pd-page .pd-legend i { flex: none; display: inline-block; width: 6px; height: 6px; border-radius: 2px; }
 .pd-device-menu { position: absolute; top: 38px; right: 10px; z-index: 30; width: 190px; padding: 4px; border: 1px solid var(--theme-border); border-radius: 8px; background: var(--theme-bg); box-shadow: var(--theme-shadow); }
