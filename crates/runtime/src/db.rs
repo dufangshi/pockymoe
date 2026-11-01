@@ -243,6 +243,14 @@ const RUNTIME_MIGRATIONS: &[Migration] = &[
             Ok(())
         },
     },
+    Migration {
+        version: 20,
+        name: "stats_turn_start_index",
+        apply: |conn| {
+            conn.execute("CREATE INDEX IF NOT EXISTS thread_turns_started_day_idx ON thread_turns(julianday(started_at))", [])?;
+            Ok(())
+        },
+    },
 ];
 
 /// The Node Supervisor's migrations, in the order its migrator applied them

@@ -2397,3 +2397,90 @@ async fn standalone_does_not_enable_the_treer_app_page() {
     after.as_object_mut().unwrap().remove("timestamp");
     assert_eq!(after, ordinary);
 }
+
+#[tokio::test]
+async fn stats_summary_http_defaults_validation_and_health_capability() {
+    let (_dir, port, _) = spawn_supervisor(vec![Provider::Codex]).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://127.0.0.1:{port}");
+    let health: Value = client
+        .get(format!("{base}/healthz"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(health["capabilities"]["statsSummary"], true);
+    let reply = client
+        .get(format!("{base}/api/stats/summary"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(reply.status(), reqwest::StatusCode::OK);
+    let stats: Value = reply.json().await.unwrap();
+    assert_eq!(stats["range"], "today");
+    assert_eq!(stats["totals"]["turns"], 0);
+    assert_eq!(stats["daily"].as_array().unwrap().len(), 1);
+    let stats: Value = client
+        .get(format!("{base}/api/stats/summary"))
+        .query(&[("range", "30d"), ("tz", "America/Toronto")])
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(stats["daily"].as_array().unwrap().len(), 30);
+    for query in ["range=bad", "tz=Invalid/Timezone", "tz=9999"] {
+        assert_eq!(
+            client
+                .get(format!("{base}/api/stats/summary?{query}"))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            reqwest::StatusCode::BAD_REQUEST
+        );
+    }
+}
+
+#[tokio::test]
+async fn desktop_fixture_control_endpoint_drives_real_requests() {
+    let (_dir, port, root) = spawn_supervisor(vec![Provider::Codex]).await;
+    let http = reqwest::Client::new();
+    let base = format!("http://127.0.0.1:{port}");
+    let workspace = json(
+        &http,
+        http.post(format!("{base}/api/workspaces"))
+            .json(&json!({"absPath":root,"label":"Desktop fixture"})),
+    )
+    .await;
+    let thread = json(
+        &http,
+        http.post(format!("{base}/api/threads/start")).json(
+            &json!({"workspaceId":workspace["id"],"provider":"codex","model":"ios-e2e-stream"}),
+        ),
+    )
+    .await;
+    for event in ["start", "approval", "input", "complete"] {
+        let result = json(
+            &http,
+            http.post(format!("{base}/api/e2e/events"))
+                .json(&json!({"type":event,"threadId":thread["id"]})),
+        )
+        .await;
+        assert_eq!(result["type"], event);
+        assert_eq!(result["threadId"], thread["id"]);
+    }
+    let result = json(
+        &http,
+        http.get(format!(
+            "{base}/api/threads/{}",
+            thread["id"].as_str().unwrap()
+        )),
+    )
+    .await;
+    assert_eq!(result["thread"]["status"], "idle");
+    assert!(result["pendingRequests"].as_array().unwrap().is_empty());
+}

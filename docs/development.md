@@ -149,3 +149,16 @@ POCKYMOE_E2E_FAKE_RUNTIME=1 pnpm exec playwright test e2e/<spec>.spec.ts --proje
 
 Deterministic E2E uses `POCKYMOE_E2E_FAKE_RUNTIME=1`. Production uses ACP
 (`codex-acp`, `claude-agent-acp`, `grok agent stdio`, `opencode acp`, …).
+
+## Deterministic desktop activity fixture
+
+With `POCKYMOE_FAKE_RUNTIME=true` only, the owner can send
+`POST /api/e2e/events` with `{ "type": "start", "threadId": "…", "text": "optional" }`.
+Types are `start`, `complete`, `fail`, `approval` and `input`. The endpoint starts a
+held fake turn when necessary, then drives the ordinary durable turn/request event
+paths. It returns `{threadId,turnId,type}`. Approvals and questions appear in the
+normal thread detail and resolve through `/api/threads/:id/requests/:requestId/respond`.
+Completion/failure settles the turn; completion clears outstanding requests.
+The route is absent outside fake mode and never bypasses owner authentication;
+shared browser grants and Treer thread viewers cannot use it. This fixture adds
+no behavior to real ACP harnesses or the fake harness's other scenarios.
