@@ -218,7 +218,8 @@ pub async fn require_auth(
                     .into_response();
             }
         }
-        if peer && peer_path && !state.peer_access_enabled() {
+        if peer && peer_path && !state.peer_access_enabled() && !crate::peer_api::answer_path(path)
+        {
             return (
                 axum::http::StatusCode::FORBIDDEN,
                 Json(serde_json::json!({"code":"peer_access_disabled"})),

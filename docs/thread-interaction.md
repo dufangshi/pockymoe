@@ -117,7 +117,9 @@ CLI connections use a loopback HTTP URL. Managed processes receive an opaque thr
 
 Cross-device operations stay on the local CLI connection and use end-to-end encrypted
 relay requests between devices of the same owner. Access defaults to off on each
-device. `device list` works before opting in and reports this device's `peerAccess`.
+device and only governs requests into it: a device with access off still reaches
+others, and still takes inbox replies and completion notifications for its own
+threads from the devices they sent to. `device list` works before opting in and reports this device's `peerAccess`.
 `device access` views it; `device access on|off` and `device trust DEVICE
 --reset` require a local machine credential. Trust reset follows independent
 verification of the peer's `relay-fingerprint`. A device shared with other

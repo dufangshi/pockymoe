@@ -687,7 +687,8 @@ pub(crate) async fn forward_local(
     {
         return relay_error_response(403, "Peer requests must use literal /api/peer/ paths");
     }
-    if peer.is_some() && !state.peer_access_enabled() {
+    // Answers to this device's own threads still enter; their handlers decide.
+    if peer.is_some() && !state.peer_access_enabled() && !crate::peer_api::answer_path(path) {
         return json!({"statusCode":403,"headers":{"content-type":"application/json"},"body":json!({"code":"peer_access_disabled","message":"The target device is isolated: it accepts no requests from other devices."}).to_string()});
     }
     let key_path = path.ends_with("/transport/key");
@@ -1216,13 +1217,19 @@ pub(crate) mod tests {
             forward_local(&state, key.clone(), None).await["statusCode"],
             403
         );
-        let disabled = forward_local(&state, key.clone(), Some(peer())).await;
+        // With peer access off only routes that can carry answers pass; their
+        // handlers decide.
+        let disabled = forward_local(
+            &state,
+            json!({"method":"POST","path":"/api/peer/files/list"}),
+            Some(peer()),
+        )
+        .await;
         assert_eq!(disabled["statusCode"], 403);
         assert!(disabled["body"]
             .as_str()
             .unwrap()
             .contains("peer_access_disabled"));
-        state.set_peer_access(true).unwrap();
         let response = forward_local(&state, key, Some(peer())).await;
         assert_eq!(response["statusCode"], 200);
         let descriptor: Value = serde_json::from_str(response["body"].as_str().unwrap()).unwrap();

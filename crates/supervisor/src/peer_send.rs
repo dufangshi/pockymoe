@@ -201,10 +201,6 @@ async fn intercept_remote(
         REMOTE_OPERATIONS.contains(&operation) || matches!(operation, "fsList" | "fsGet"),
         "{operation} is not available across devices"
     );
-    ensure!(
-        state.peer_access_enabled(),
-        "peer_access_disabled: enable this device with pockymoe device access on"
-    );
     let from = sender(caller, input);
     match operation {
         "fsList" | "fsGet" => {
@@ -229,6 +225,7 @@ async fn intercept_remote(
         "send" | "create" => {
             if let Some(from) = from {
                 state.get_thread(from)?;
+                crate::peer_api::note_contact(state, &device.id, from)?;
             }
             request["fromThreadId"] = json!(from);
         }
@@ -541,7 +538,7 @@ async fn process_outbox(
             remove_record(state, &record, Some("message expired after 7 days"))?;
             continue;
         }
-        if record.next_attempt_at > attempt_at || !state.peer_access_enabled() {
+        if record.next_attempt_at > attempt_at {
             continue;
         }
         match deliver(state, &mut record).await {
@@ -735,14 +732,8 @@ mod tests {
         .to_string()
         .contains("local filesystem"));
         let remote = Uuid::new_v4().to_string();
-        assert!(
-            intercept(&state, None, &json!({"operation":"list","deviceId":remote}))
-                .await
-                .unwrap_err()
-                .to_string()
-                .contains("peer_access_disabled")
-        );
-        state.set_peer_access(true).unwrap();
+        // Peer access closes only the way in: with it off, requests still go out.
+        assert!(!state.peer_access_enabled());
         for operation in [
             "info",
             "workspaces",
@@ -840,7 +831,6 @@ mod tests {
     #[tokio::test]
     async fn intercept_outboxes_only_retryable_inbox_and_queue_and_binds_sender() {
         let (_dir, state) = test_state();
-        state.set_peer_access(true).unwrap();
         let from = caller_thread(&state).await;
         let remote = Uuid::new_v4().to_string();
         let thread = Uuid::new_v4().to_string();
@@ -866,6 +856,12 @@ mod tests {
             assert_eq!(record.expires_at - record.created_at, Duration::days(7));
             assert_eq!(record.attempts, 0);
         }
+        // The sender's thread can take the answer while peer access is off.
+        assert!(state
+            .db
+            .get_kv(&format!("peer:contact:{remote}:{from}"))
+            .unwrap()
+            .is_some());
         for delivery in ["direct", "steer"] {
             let error = intercept(&state, None, &json!({"operation":"send","deviceId":remote,"threadId":thread,"text":"hello","delivery":delivery})).await.unwrap_err();
             assert!(retryable(&error));
@@ -958,14 +954,8 @@ mod tests {
             assert!(record.last_error.as_deref().unwrap().contains("offline"));
         }
         assert_eq!(record.attempts, 5);
+        // This device's own peer access does not hold its outgoing mail.
         state.set_peer_access(false).unwrap();
-        process_outbox(&state, record.next_attempt_at, |_, _| {
-            panic!("access disabled")
-        })
-        .await
-        .unwrap();
-        assert_eq!(outbox_records(&state).unwrap()[0].attempts, 5);
-        state.set_peer_access(true).unwrap();
         process_outbox(&state, record.next_attempt_at, |_, _| {
             Box::pin(async { Ok(json!({"delivery":"queued"})) })
         })

@@ -64,9 +64,12 @@ pub(crate) struct ReadQuery {
     length: Option<usize>,
 }
 
+/// `reply_to` names the local thread an upload is for: attachments of an answer
+/// to that thread enter while peer access is off.
 fn require_peer(
     state: &Supervisor,
     caller: Option<Extension<PeerCaller>>,
+    reply_to: Option<&str>,
 ) -> Result<PeerCaller, ApiErr> {
     let caller = caller.ok_or_else(|| {
         err(
@@ -75,13 +78,7 @@ fn require_peer(
             "A peer device identity is required",
         )
     })?;
-    if !state.peer_access_enabled() {
-        return Err(err(
-            StatusCode::FORBIDDEN,
-            "peer_access_disabled",
-            "The target device is isolated: it accepts no requests from other devices",
-        ));
-    }
+    crate::peer_api::ensure_peer_access(state, &caller.0.device_id, reply_to)?;
     state.ensure_peer_reaches_device().map_err(map_err)?;
     caller.0.ensure_source_private()?;
     Ok(caller.0)
@@ -235,6 +232,19 @@ fn cleanup_uploads(dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// The thread an upload is for; `load_upload` still checks who owns it.
+fn upload_thread(state: &Supervisor, id: &str) -> Option<String> {
+    let bytes = fs::read(
+        data_dir(state)
+            .join("peer-uploads")
+            .join(format!("{id}.json")),
+    )
+    .ok()?;
+    serde_json::from_slice::<Upload>(&bytes)
+        .ok()
+        .map(|upload| upload.thread_id)
+}
+
 fn load_upload(state: &Supervisor, id: &str, caller: &PeerCaller) -> Result<Upload, ApiErr> {
     let dir = data_dir(state).join("peer-uploads");
     let bytes = fs::read(dir.join(format!("{id}.json"))).map_err(|error| {
@@ -298,7 +308,7 @@ pub(crate) async fn upload_begin(
     caller: Option<Extension<PeerCaller>>,
     Json(input): Json<Value>,
 ) -> Result<Json<Value>, ApiErr> {
-    let caller = require_peer(&state, caller)?;
+    let caller = require_peer(&state, caller, input["threadId"].as_str())?;
     let lock = upload_lock(&state)?;
     blocking(move || {
         let _guard = lock.lock().map_err(|_| map_err(anyhow!("upload lock failed")))?;
@@ -342,8 +352,8 @@ pub(crate) async fn upload_chunk(
     Query(query): Query<OffsetQuery>,
     request: Request,
 ) -> Result<Response, ApiErr> {
-    let caller = require_peer(&state, caller)?;
     let id = upload_id(&id)?;
+    let caller = require_peer(&state, caller, upload_thread(&state, &id).as_deref())?;
     let body = to_bytes(request.into_body(), CHUNK_SIZE)
         .await
         .map_err(|_| {
@@ -395,8 +405,8 @@ pub(crate) async fn upload_commit(
     caller: Option<Extension<PeerCaller>>,
     UrlPath(id): UrlPath<String>,
 ) -> Result<Json<Value>, ApiErr> {
-    let caller = require_peer(&state, caller)?;
     let id = upload_id(&id)?;
+    let caller = require_peer(&state, caller, upload_thread(&state, &id).as_deref())?;
     let lock = upload_lock(&state)?;
     blocking(move || {
         let _guard = lock.lock().map_err(|_| map_err(anyhow!("upload lock failed")))?;
@@ -454,7 +464,7 @@ pub(crate) async fn list(
     caller: Option<Extension<PeerCaller>>,
     Json(input): Json<Value>,
 ) -> Result<Json<Value>, ApiErr> {
-    require_peer(&state, caller)?;
+    require_peer(&state, caller, None)?;
     blocking(move || {
         let id = input["workspaceId"].as_str().context("workspaceId required").map_err(map_err)?;
         let (root, path) = workspace_path(&state, id, input["path"].as_str().unwrap_or(".")).map_err(map_err)?;
@@ -479,7 +489,7 @@ pub(crate) async fn stat(
     caller: Option<Extension<PeerCaller>>,
     Json(input): Json<Value>,
 ) -> Result<Json<Value>, ApiErr> {
-    require_peer(&state, caller)?;
+    require_peer(&state, caller, None)?;
     blocking(move || {
         let id = input["workspaceId"]
             .as_str()
@@ -503,7 +513,7 @@ pub(crate) async fn read(
     caller: Option<Extension<PeerCaller>>,
     Query(query): Query<ReadQuery>,
 ) -> Result<Response, ApiErr> {
-    require_peer(&state, caller)?;
+    require_peer(&state, caller, None)?;
     blocking(move || {
         let (_, path) =
             workspace_path(&state, &query.workspace_id, &query.path).map_err(map_err)?;
@@ -1241,6 +1251,34 @@ mod tests {
             );
         }
         assert!(!fixture.dir.path().join("peer-uploads").exists());
+    }
+
+    #[tokio::test]
+    async fn peer_files_with_access_off_take_only_answer_attachments() {
+        let fixture = Fixture::new().await;
+        fixture.state.set_peer_access(false).unwrap();
+        crate::peer_api::note_contact(&fixture.state, "source-device", &fixture.thread).unwrap();
+        let (status, begun) = post(
+            &fixture,
+            "/api/peer/files/uploads",
+            fixture.begin("answer.txt", b"done"),
+        )
+        .await;
+        assert_eq!(status, 200, "{begun}");
+        let id = begun["uploadId"].as_str().unwrap();
+        assert_eq!(chunk(&fixture, id, 0, b"done").await.0, 200);
+        let (status, receipt) = commit(&fixture, id).await;
+        assert_eq!(status, 200, "{receipt}");
+        assert_eq!(receipt["name"], "answer.txt");
+        // Workspace reads still need peer access.
+        let (status, body) = post(
+            &fixture,
+            "/api/peer/files/list",
+            json!({"workspaceId":fixture.workspace, "path":"."}),
+        )
+        .await;
+        assert_eq!(status, 403);
+        assert_eq!(body["code"], "peer_access_disabled");
     }
 
     #[tokio::test]

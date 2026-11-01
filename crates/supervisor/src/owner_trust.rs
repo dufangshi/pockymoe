@@ -935,6 +935,9 @@ pub(crate) async fn peer_certificate_endpoint(
     Extension(caller): Extension<crate::auth::PeerCaller>,
     Json(value): Json<Value>,
 ) -> Response {
+    if let Err(refused) = crate::peer_api::ensure_answering_device(&state, &caller.device_id) {
+        return refused.into_response();
+    }
     response(state.db.with(|c| {
         let tx = Transaction::new_unchecked(c, TransactionBehavior::Immediate)?;
         if pinned_in(&tx)?.is_none() { return Ok(json!({})); }

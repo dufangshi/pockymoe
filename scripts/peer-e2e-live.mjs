@@ -137,13 +137,13 @@ try {
   assert(!rows.some(d => d.deviceId === gamma.id), 'directory never lists another owner');
   step('directory', { devices: rows.length });
 
-  // Opt-in on both ends.
-  const offBoth = await rc(alpha, ['thread', 'list', '--device', 'beta'], { allowFailure: true });
-  assert(!offBoth.ok && /peer access|disabled/i.test(offBoth.stderr + offBoth.stdout), 'caller opt-in required');
-  await rc(alpha, ['device', 'access', 'on']);
+  // Only the target opts in. Alpha keeps peer access off for the whole run, so
+  // beta's replies and completion notifications below come in as answers.
   const offTarget = await rc(alpha, ['thread', 'list', '--device', 'beta'], { allowFailure: true });
   assert(!offTarget.ok && /peer_access_disabled|disabled/i.test(offTarget.stderr + offTarget.stdout), 'target opt-in required');
   await owner(beta, '/api/config/peer-access', { enabled: true }, 'PATCH');
+  const unsolicited = await rc(beta, ['thread', 'list', '--device', 'alpha'], { allowFailure: true });
+  assert(!unsolicited.ok && /peer_access_disabled|disabled/i.test(unsolicited.stderr + unsolicited.stdout), 'caller with access off takes only answers');
   const listed = (await rc(alpha, ['thread', 'list', '--device', 'beta'])).json;
   assert(JSON.stringify(listed).includes(target), 'remote list shows the target thread');
   step('opt-in');

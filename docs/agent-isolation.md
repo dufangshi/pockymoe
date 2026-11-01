@@ -29,7 +29,11 @@ A device whose [peer access](thread-interaction.md#other-devices) is off is
 closed to other devices the same way, so it reads as isolated. Neither setting
 limits the way out: an isolated device, or one with peer access off (the
 default), still sends requests and files to other devices; each target applies
-its own isolation. Turning device isolation off also turns peer access on.
+its own isolation. With peer access off, a device still takes answers: inbox
+mail (replies and completion notifications), with attachments, from a device that
+one of its threads sent to or created a thread on in the last 30 days, for that
+thread only. Isolation refuses those too. Turning device isolation off also
+turns peer access on.
 
 ## Devices shared with other people
 

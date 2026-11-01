@@ -12,6 +12,91 @@ use pockymoe_runtime::{
 use serde_json::{json, Value};
 use std::sync::Arc;
 
+const CONTACT: &str = "peer:contact:";
+const CONTACT_DAYS: i64 = 30;
+
+/// Records that a local thread sent to or created on `device`, so the answers
+/// it asked for can come back while this device's peer access is off.
+pub(crate) fn note_contact(state: &Supervisor, device: &str, thread: &str) -> anyhow::Result<()> {
+    state.db.set_kv(
+        &format!("{CONTACT}{device}:{thread}"),
+        &chrono::Utc::now().to_rfc3339(),
+    )
+}
+
+fn recent(at: &str) -> bool {
+    chrono::DateTime::parse_from_rfc3339(at).is_ok_and(|at| {
+        chrono::Utc::now() - at.with_timezone(&chrono::Utc) < chrono::Duration::days(CONTACT_DAYS)
+    })
+}
+
+/// Whether a local thread (`None`: any) recently reached `device`.
+fn contacted(state: &Supervisor, device: &str, thread: Option<&str>) -> bool {
+    if let Some(thread) = thread {
+        return state
+            .db
+            .get_kv(&format!("{CONTACT}{device}:{thread}"))
+            .ok()
+            .flatten()
+            .is_some_and(|at| recent(&at));
+    }
+    if device.contains(['*', '?', '[', ']']) {
+        return false;
+    }
+    state
+        .db
+        .with(|conn| {
+            let mut statement = conn.prepare("SELECT value FROM kv WHERE key GLOB ?1")?;
+            let rows = statement
+                .query_map([format!("{CONTACT}{device}:*")], |row| {
+                    row.get::<_, String>(0)
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(rows.iter().any(|at| recent(at)))
+        })
+        .unwrap_or(false)
+}
+
+fn refuse() -> ApiErr {
+    err(
+        StatusCode::FORBIDDEN,
+        "peer_access_disabled",
+        "The target device is isolated: it accepts no requests from other devices.",
+    )
+}
+
+/// Peer access closes only the way in, and not to answers: with it off, a
+/// device may still put mail in the inbox of a thread here that reached it.
+pub(crate) fn ensure_peer_access(
+    state: &Supervisor,
+    device: &str,
+    reply_to: Option<&str>,
+) -> Result<(), ApiErr> {
+    if state.peer_access_enabled()
+        || reply_to.is_some_and(|thread| contacted(state, device, Some(thread)))
+    {
+        return Ok(());
+    }
+    Err(refuse())
+}
+
+/// With peer access off, only a device some thread here reached may set up
+/// the transport (register its certificate) to answer.
+pub(crate) fn ensure_answering_device(state: &Supervisor, device: &str) -> Result<(), ApiErr> {
+    if state.peer_access_enabled() || contacted(state, device, None) {
+        return Ok(());
+    }
+    Err(refuse())
+}
+
+/// Peer routes that can carry an answer; their handlers apply
+/// [`ensure_peer_access`], so the transport lets them through.
+pub(crate) fn answer_path(path: &str) -> bool {
+    path == "/api/peer/cli"
+        || path.starts_with("/api/peer/files/uploads")
+        || path.starts_with("/api/peer/transport/")
+}
+
 pub(crate) async fn cli(
     State(state): State<Arc<Supervisor>>,
     caller: Option<Extension<PeerCaller>>,
@@ -24,14 +109,13 @@ pub(crate) async fn cli(
             "Peer device identity is required.",
         )
     })?;
-    if !state.peer_access_enabled() {
-        return Err(err(
-            StatusCode::FORBIDDEN,
-            "peer_access_disabled",
-            "The target device is isolated: it accepts no requests from other devices.",
-        ));
-    }
     let operation = input["operation"].as_str().unwrap_or("").to_owned();
+    let answer = operation == "send" && input["delivery"].as_str().unwrap_or("inbox") == "inbox";
+    ensure_peer_access(
+        &state,
+        &caller.device_id,
+        input["threadId"].as_str().filter(|_| answer),
+    )?;
     if ![
         "info",
         "workspaces",
@@ -333,6 +417,48 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn peer_access_off_still_takes_answers_for_threads_that_reached_the_device() {
+        let (_dir, state, router, workspace) = setup();
+        let local = thread(&state, &workspace).await;
+        let answer = json!({"operation":"send","threadId":local,"text":"done","kind":"result","fromThreadId":"remote-thread"});
+        let (status, body) = request(&router, answer.clone(), Some(caller("device-a"))).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(body["code"], "peer_access_disabled");
+        note_contact(&state, "device-a", &local).unwrap();
+        let (status, body) = request(&router, answer.clone(), Some(caller("device-a"))).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["delivery"], "inbox");
+        // Only the contacted device, only passive mail, only to that thread.
+        let (status, _) = request(&router, answer.clone(), Some(caller("device-b"))).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let mut queued = answer.clone();
+        queued["delivery"] = json!("queue");
+        queued["kind"] = json!("task");
+        let (status, _) = request(&router, queued, Some(caller("device-a"))).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let other = thread(&state, &workspace).await;
+        let mut elsewhere = answer.clone();
+        elsewhere["threadId"] = json!(other);
+        let (status, _) = request(&router, elsewhere, Some(caller("device-a"))).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        for operation in ["info", "list", "status", "transcript"] {
+            let (status, body) = request(
+                &router,
+                json!({"operation":operation,"threadId":local,"workspaceId":workspace}),
+                Some(caller("device-a")),
+            )
+            .await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{operation}");
+            assert_eq!(body["code"], "peer_access_disabled", "{operation}");
+        }
+        // Isolation is the owner's explicit choice and still refuses answers.
+        state.set_device_isolation(true).unwrap();
+        let (status, _) = request(&router, answer, Some(caller("device-a"))).await;
+        assert_ne!(status, StatusCode::OK);
+        assert!(!state.peer_access_enabled());
     }
 
     #[tokio::test]

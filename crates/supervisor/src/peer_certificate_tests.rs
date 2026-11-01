@@ -124,19 +124,18 @@ async fn registration_checks_account_device_identity_signature_and_opt_in() {
     let (_target_dir, target) = state_with_relay_url("http://127.0.0.1:1");
     let cert = bound_peer(&source, "caller");
     bound_peer(&target, "target");
-    let (request, _, _) = encrypted(
-        &target,
-        "POST",
-        "/api/peer/transport/certificate",
-        json!(cert),
-        None,
-    );
-    let response = forward_local(&target, request, Some(caller("caller"))).await;
-    assert_eq!(response["statusCode"], 403);
-    assert_eq!(
-        serde_json::from_str::<Value>(response["body"].as_str().unwrap()).unwrap()["code"],
-        "peer_access_disabled"
-    );
+    let (status, body) = register(&target, json!(cert), "caller").await;
+    assert_eq!(status, 403);
+    assert_eq!(body["code"], "peer_access_disabled");
+    assert_eq!(registrations(&target), 0);
+    // A device a thread here reached may register to answer.
+    crate::peer_api::note_contact(&target, "caller", "local-thread").unwrap();
+    assert_eq!(register(&target, json!(cert), "caller").await.0, 200);
+    assert_eq!(registrations(&target), 1);
+    target
+        .db
+        .with(|c| Ok(c.execute("DELETE FROM peer_certificates", [])?))
+        .unwrap();
     target.set_peer_access(true).unwrap();
     let (_other_dir, other) = state_with_relay_url("http://127.0.0.1:1");
     let other_cert = bound_peer_with_account(&other, "caller", &SigningKey::random(&mut OsRng));

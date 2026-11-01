@@ -26,7 +26,7 @@ A 上的 agent ── pockymoe CLI ── loopback /api/cli (A supervisor)
 
 - **relay device ID**：relay 在 `relay.connected` 中发送 `deviceId` 和（新增）`deviceName`。supervisor 记录在 `peer_link`，`relay_identity()` 返回。本地 `hosts.id` 保持不变；`/api/cli` 的 `info` 增加 `relayDeviceId`、`deviceName`。
 - **PeerCaller**（`crates/supervisor/src/auth.rs`）：`{device_id, device_name, user_id, shared_control}`，只能由隧道根据 relay 写入的 `peer` 对象构造，作为请求 extension，与 `TrustedRelayForward` 同时存在。`shared_control` 来自 `peer.sharedControl`；旧 relay 不发送时为 `None`（视为未知，行为不变），值不是布尔时整帧按无效身份拒绝。
-- **开关**：每台 device 独立，默认关闭。`Supervisor::peer_access_enabled()` / `set_peer_access(bool)`（已实现，KV `peer:settings`）。只管接收：关闭时其他 device 访问不了本机，本机仍可访问其他 device（对方按自己的开关和隔离决定是否接受）。Web/本机 owner 通过 `GET|PATCH /api/config/peer-access`（`{"enabled":bool}`）设置；CLI `pockymoe device access on|off` 只接受本机 machine credential（`CliCaller(None)`），thread 凭据只能查看。远端 device 无法修改开关（PeerCaller 只能访问 `/api/peer/*`）。
+- **开关**：每台 device 独立，默认关闭。`Supervisor::peer_access_enabled()` / `set_peer_access(bool)`（已实现，KV `peer:settings`）。只管接收：关闭时其他 device 访问不了本机，本机仍可访问其他 device（对方按自己的开关和隔离决定是否接受）。例外是**回复**：本机某个 thread 向 device B 发过消息或在 B 上建过 thread 后（KV `peer:contact:{B}:{thread}`，每次发送刷新，30 天有效），B 仍可在开关关闭时向这个 thread 投递 inbox 邮件（回复、完成通知），带附件时可上传到它的 incoming 目录，并登记设备证书（§17）。queue/direct/steer、读取、列表和 `fs` 照旧被拒；隔离仍拒绝一切。Web/本机 owner 通过 `GET|PATCH /api/config/peer-access`（`{"enabled":bool}`）设置；CLI `pockymoe device access on|off` 只接受本机 machine credential（`CliCaller(None)`），thread 凭据只能查看。远端 device 无法修改开关（PeerCaller 只能访问 `/api/peer/*`）。
 - **隔离**：owner 可在 Devices 页隔离整台 device（只剩 `info` 可用，返回 `isolated:true`），或在 Workspaces 页隔离单个 workspace（`workspaces`/`list` 不再列出，读取、发送、创建和 `fs` 均被拒绝）。只限制入站，见 [agent 隔离](agent-isolation.md)。
 - **共享给他人操控的 device**：只要 device 上有一条有效（未撤销、未过期）的 share 或 access grant，让 owner 以外的用户能操控它的 agent（thread 权限 `control`，或可以新建 thread `can_create_threads`），它就不能访问同一 owner 的其他 device。只读的 share/grant、以及还在等待[安全码核对](account-key-trust.md#safety-code-check)（`pending`）的 share/grant 都不算。原因：被共享者控制的 agent 与 supervisor 同属一个系统用户，能读取本机 machine credential 并自己打开 peer 开关，所以发起端的开关保护不了其他 device，规则必须在接收方向执行。只限制这台 device 作为**发起方**；其他 device 访问它仍只由它自己的开关和隔离决定。relay 是「是否共享操控」的唯一依据（§5 第 8 条），被攻破的 relay 可以隐瞒共享，但仍无法自己操控任何 device。Web 的 Devices 页在这样的 device 行上显示一个小图标，点开列出造成限制的每一条共享（范围、线程/工作区名、共享对象、权限）；拒绝消息同样列出它们（见 §5 第 8 条），隐私规则见 [agent 隔离](agent-isolation.md#devices-shared-with-other-people)。
 - **身份钉扎**：未绑定账户密钥的 A 首次与 B 握手时 TOFU 钉住 B 的 identity key（runtime KV `peer:pin:{relayDeviceId}` = `{"identityKey","fingerprint","pinnedAt"}`），之后变化即 `PeerError::IdentityChanged`。`pockymoe device trust DEVICE --reset`（machine credential）清除。已绑定的 A 改用设备证书核对 B，见 §17。
@@ -104,7 +104,7 @@ relay → 目标（沿用 `relay.request`，多一个只由 relay 写入的 `pee
 
 ## 9. 目标端 `/api/peer/cli`
 
-请求体与本地 `/api/cli` 相同（`{"operation", ...}`）。先检查 `PeerCaller` 存在、本机开关已开（否则 403 `peer_access_disabled`），再按白名单处理；除 `info` 外还要求本机未隔离、发起方未共享给他人操控（§6）：
+请求体与本地 `/api/cli` 相同（`{"operation", ...}`）。先检查 `PeerCaller` 存在、本机开关已开或这是对本机 thread 的回复（§3；否则 403 `peer_access_disabled`），再按白名单处理；除 `info` 外还要求本机未隔离、发起方未共享给他人操控（§6）：
 
 | operation | 行为 |
 | --- | --- |
@@ -170,7 +170,7 @@ KV `peer:outbox:{id}`：
 
 ## 13. 文件（`/api/peer/files/*`，目标 B）
 
-都要求 `PeerCaller` 和开关已开，本机未隔离，发起方未共享给他人操控。
+都要求 `PeerCaller` 和开关已开（上传另接受对本机 thread 的回复，§3），本机未隔离，发起方未共享给他人操控。
 
 - `POST /uploads` `{threadId, name, size, sha256, uploadId?}` → `{uploadId, received, chunkSize: 4194304}`。`name` 取 basename，不得为空或含分隔符，长度 ≤ 255；`size` ≤ 1 GiB；`sha256` 为 64 位十六进制。带已有 `uploadId` 时返回当前 `received`，用于续传。暂存于 `{数据目录}/peer-uploads/{uploadId}.part|.json`；超过 24 h 未提交的清理。
 - `PUT /uploads/{id}?offset=N`（原始字节，≤ chunkSize）：`offset == received` 才追加，否则 409 并返回当前 `received`。
@@ -181,7 +181,7 @@ KV `peer:outbox:{id}`：
 ## 14. 安全清单
 
 - relay：同 owner、前缀、密文、header 白名单、不信任设备提供的 `peer`、体积与并发上限、拒绝共享给他人操控的发起方。
-- supervisor：`PeerCaller` 只来自 relay 帧；`PeerCaller` ⇔ `/api/peer/*`；两端开关；拒绝 `sharedControl:true` 的发起方；操作白名单；路径限定 workspace；上传只落在 thread incoming 目录；大小与哈希校验；远程发件人由服务端填写；prompt 头标明远程来源。
+- supervisor：`PeerCaller` 只来自 relay 帧；`PeerCaller` ⇔ `/api/peer/*`；目标端开关与回复例外；拒绝 `sharedControl:true` 的发起方；操作白名单；路径限定 workspace；上传只落在 thread incoming 目录；大小与哈希校验；远程发件人由服务端填写；prompt 头标明远程来源。
 - 未绑定：钉扎 TOFU；身份变化即失败，只有 machine credential 能重置。
 - 已绑定：双方用同一账户密钥签名的设备证书互相认证（§17），relay 无法冒充任何一方。
 
@@ -195,7 +195,7 @@ KV `peer:outbox:{id}`：
 
 ## 16. 相对设计的调整
 
-- 目录不要求本机开关：它只询问 relay，不接触其他 device，便于开启前先查看。`device list` 返回 `{devices, peerAccess}`。所有发往其他 device 的请求仍要求两端开启。
+- 目录不要求本机开关：它只询问 relay，不接触其他 device，便于开启前先查看。`device list` 返回 `{devices, peerAccess}`。发往其他 device 的请求只要求目标端开启；发起方的开关只影响别人访问它，回复见 §3。
 - 远程完成通知把 transcript 提示写成 `DEVICE/THREAD`，并说明 DEVICE 即该邮件的 `fromDeviceId`（runtime 不知道本机 relay ID）。
 - relay 与 supervisor 都拒绝非字面的 peer 路径：`.`、`..` 或空段，以及 `%`、`\`。两端各自检查，不依赖对方规范化路径。
 - 附件发送的回执带 `attachments`（每个文件在目标端的路径、大小与 sha256）。
@@ -207,7 +207,7 @@ KV `peer:outbox:{id}`：
 
 - **A 核对 B（调用方）**：B 返回的 `GET /api/peer/transport/key` 描述符带 `certificate`（B 的设备证书，没有时为 `null`）。已绑定的 A 每个请求都重新取描述符，要求证书能用 **A 自己钉住的** 账户公钥验证，device ID 与 identity key 都与描述符一致，且 B 没有被撤销；通过后更新 B 的钉扎。否则请求失败：`peer_target_unverified: cannot verify device …; bind the target device to the same account key`。已绑定但还没有自己证书的 A 不能发出任何 peer 请求。
 - **B 核对 A（目标端）**：严格模式的 B 只接受同时满足以下条件的 peer 请求：`x-rcd-peer-device` 等于 relay 写入的 `PeerCaller.device_id`；B 存有该 device 在 B 钉住的账户密钥下的登记，且该 device 没有被撤销；`x-rcd-peer-signature` 能用登记的 identity key 验证。签名是 A 的 identity key 对 `pockymoe-peer-request-v1\n{A 的 device ID}\n{aad}\n{B64(SHA256(密文))}` 的 P-256 签名（raw r‖s）。不满足时返回 401 `peer_certificate_required`。已绑定的 A 收到后用加密的 `POST /api/peer/transport/certificate`（请求体为 A 的设备证书）登记一次并重试；B 用自己钉住的账户公钥验证证书。未绑定的 A 无法登记。
-- 未绑定的 B 忽略这两个 header，行为不变；它收到登记请求时直接返回 `{}`。目标端仍需开启 peer 开关（`pockymoe device access on`）。
+- 未绑定的 B 忽略这两个 header，行为不变；它收到登记请求时直接返回 `{}`。目标端仍需开启 peer 开关（`pockymoe device access on`），回复本机 thread 的 device 除外（§3）。
 - 账户的 device 撤销（在网页「Remove device」）到达 B 后，B 删除该 device 的登记并拒绝它。B 逐条验证撤销记录，只接受自己钉住的账户密钥签名的 device 撤销，其他条目忽略。`pockymoe bind --reset` 删除 B 上的全部登记，但保留撤销记录，被移除的 device 在 B 重新绑定到同一密钥后仍被拒绝。
 - 这两个错误都不可重试，不会进入 outbox。
 
