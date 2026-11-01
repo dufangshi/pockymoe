@@ -1,0 +1,83 @@
+import { translate } from '@pockymoe/thread-ui/i18n';
+import type { HostCommand, HostCommandResult, PockymoeHost } from './host';
+import { respondToThreadRequest, sendThreadPrompt } from '../lib/api';
+import { buildActivitySnapshot } from './data/activity';
+import type { DesktopIndexStore } from './data/store';
+
+export function focusedKeyFromPath(path: string): string | null {
+  const match = path.match(/^\/devices\/([^/]+)\/threads\/([^/]+)$/);
+  return match && !['new', 'import'].includes(match[2]!) ? `${decodeURIComponent(match[1]!)}:${decodeURIComponent(match[2]!)}` : null;
+}
+export interface CommandDependencies {
+  store: DesktopIndexStore; navigate(path: string): void; openMap(): void; revealInMap(key: string): void; newThread(): void;
+  respond?: typeof respondToThreadRequest; send?: typeof sendThreadPrompt;
+}
+export class NeedsThreadError extends Error { readonly code = 'needsThread'; }
+export async function resolveRequest(deviceId: string, threadId: string, requestId: string, decision: 'approve' | 'deny', deps: Pick<CommandDependencies, 'store' | 'respond'>) {
+  const detail = await deps.store.loadRequestDetail(deviceId, threadId);
+  const action = detail.pendingRequests.find(request => request.id === requestId);
+  if (!action) throw new Error(translate('desktopShell.requestResolved'));
+  if (action.kind === 'permissionRequest' && action.questions.length === 0) {
+    const updated = await (deps.respond ?? respondToThreadRequest)(threadId, requestId, { allow: decision === 'approve' }, deviceId);
+    deps.store.acceptDetail(deviceId, updated); return;
+  }
+  const needsThread = () => new NeedsThreadError(translate(action.kind === 'requestUserInput' ? 'desktopShell.inputNeedsThread' : 'desktopShell.optionsNeedThread'));
+  const question = action.questions[0];
+  if (!question || action.questions.length !== 1 || question.multiSelect || question.isOther) throw needsThread();
+  const options = question.options ?? [];
+  const approvePattern = /^(?:(?:allow|approve|accept|yes)(?:\b|\s|$)|允许|批准|同意)/i;
+  const denyPattern = /^(?:(?:deny|reject|decline|no)(?:\b|\s|$)|拒绝|不允许)/i;
+  const matches = (option: typeof options[number], pattern: RegExp) => pattern.test(option.description ?? '') || pattern.test(option.label);
+  if (action.kind === 'requestUserInput' && (options.length !== 2 || !options.some(option => matches(option, approvePattern)) || !options.some(option => matches(option, denyPattern)))) throw needsThread();
+  const pattern = action.kind === 'planDecision' ? decision === 'approve' ? /^(implement|proceed|执行|实施)(?:\b|\s|$)/i : /^(keep planning|reject|cancel|保持规划|继续规划)(?:\b|\s|$)/i : decision === 'approve' ? approvePattern : denyPattern;
+  const once = decision === 'approve' ? options.find(option => /allow.once|approve.once/i.test(option.description ?? '')) : undefined;
+  const option = once ?? options.find(option => pattern.test(option.description)) ?? options.find(option => pattern.test(option.label));
+  if (!option) throw needsThread();
+  const updated = await (deps.respond ?? respondToThreadRequest)(threadId, requestId, { answers: { [question.id]: { answers: [option.label] } } }, deviceId);
+  deps.store.acceptDetail(deviceId, updated);
+}
+export async function handleHostCommand(command: HostCommand, deps: CommandDependencies): Promise<HostCommandResult> {
+  try {
+    switch (command.type) {
+      case 'navigate':
+        if (!command.path.startsWith('/') || command.path.startsWith('//') || command.path.includes('\\')) throw new Error(translate('desktopShell.invalidPath'));
+        deps.navigate(command.path); break;
+      case 'markRead': deps.store.markRead(command.key); break;
+      case 'resolveRequest': await resolveRequest(command.deviceId, command.threadId, command.requestId, command.decision, deps); break;
+      case 'reply': {
+        if (!command.text.trim()) throw new Error(translate('desktopShell.emptyReply'));
+        const thread = await (deps.send ?? sendThreadPrompt)(command.threadId, { prompt: command.text, clientRequestId: command.id }, command.deviceId);
+        deps.store.patchThread(command.deviceId, thread); break;
+      }
+      case 'revealInMap': deps.revealInMap(command.key); break;
+      case 'openMap': deps.openMap(); break;
+      case 'newThread': deps.newThread(); break;
+      case 'openDevices': deps.navigate('/desktop/devices'); break;
+    }
+    return { ok: true };
+  } catch (error) { return { ok: false, error: error instanceof Error ? error.message : translate('desktopShell.actionFailed'), ...(error instanceof NeedsThreadError ? { code: error.code } : {}) }; }
+}
+let activitySession = 0;
+/** Change-only snapshots, never timer ticks, <=4/s. */
+export function syncActivity(store: DesktopIndexStore, host: PockymoeHost, focused: () => string | null, badgeEnabled: boolean) {
+  const session = ++activitySession; let logoutPending = false;
+  let previous = ''; let lastSent = 0; let timer: ReturnType<typeof setTimeout> | undefined;
+  const flush = () => {
+    timer = undefined;
+    if (session !== activitySession) return;
+    const snapshot = buildActivitySnapshot(store.getSnapshot(), logoutPending ? null : focused(), logoutPending ? false : document.hasFocus());
+    const signature = JSON.stringify({ ...snapshot, generatedAt: '' });
+    if (signature === previous) return;
+    previous = signature; lastSent = Date.now(); host.activity?.sync(snapshot);
+    const waiting = new Set(snapshot.items.filter(item => item.state === 'needsInput').map(item => item.rootThreadKey ?? item.key)).size;
+    const active = new Set(snapshot.items.filter(item => item.state === 'running').map(item => item.rootThreadKey ?? item.key)).size;
+    if (badgeEnabled && typeof host.badge?.set === 'function') host.badge.set(waiting || active, waiting ? 'attention' : active ? 'running' : 'none');
+  };
+  const schedule = () => { timer ??= setTimeout(flush, Math.max(0, 250 - (Date.now() - lastSent))); };
+  const unsubscribe = store.subscribe(schedule);
+  const logout = () => { logoutPending = true; schedule(); };
+  window.addEventListener('pockymoe-account-logout', logout);
+  window.addEventListener('focus', schedule); window.addEventListener('blur', schedule); window.addEventListener('pockymoe-desktop-route', schedule);
+  const age = setInterval(schedule, 30_000); schedule();
+  return () => { unsubscribe(); if (!logoutPending) clearTimeout(timer); clearInterval(age); window.removeEventListener('pockymoe-account-logout', logout); window.removeEventListener('focus', schedule); window.removeEventListener('blur', schedule); window.removeEventListener('pockymoe-desktop-route', schedule); };
+}

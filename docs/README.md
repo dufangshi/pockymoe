@@ -47,7 +47,7 @@ Maintained documentation for Pockymoe. For the product overview, start with the
 - [Automations and hooks](unified-hooks.md) and [watch summaries](watch-statistics.md)
 - [Conversation search](global-search.md)
 - [Thread notifications](thread-notifications.md)
-- [Device monitoring](device-monitor.md)
+- [Device monitoring](device-monitor.md) and [device turn statistics](device-statistics.md)
 - [Model prices and subscription usage](model-pricing-and-subscription-usage.md) and [token speed](turn-token-speed.md)
 - [Native subagents](native-subagents.md)
 - [Chat diagrams](mermaid-diagrams.md)

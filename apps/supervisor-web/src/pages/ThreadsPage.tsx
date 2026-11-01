@@ -1,3 +1,4 @@
+import { useDesktopWorkbench } from '../desktop/context';
 import { useHostScope } from '../lib/hostCapabilities';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { useEffect, useState } from 'react';
@@ -37,6 +38,7 @@ export function ThreadsPage() {
   const newThreads = hostScope ? { allowed: true, workspaceId: null } : newThreadScope(access, relayRoute);
   const canCreate = newThreads.allowed && (!newThreads.workspaceId || newThreads.workspaceId === workspaceId);
   const navigation = useWorkbenchNavigation(null, threads, deviceId, undefined, { workspace, sharesDeviceThreads: true });
+  const desktopWorkbench = useDesktopWorkbench(navigation);
   // Keep the workspace list live without selecting newly created threads.
   useThreadListPolling({ enabled: !loading && !!workspace, setThreads, intervalMs: 30_000, includeAgentThreads: true, sharedWorkspaceId });
   useEffect(() => {
@@ -67,7 +69,7 @@ export function ThreadsPage() {
   return <div className="thread-ui-shell thread-ui-viewport-constrained h-full" data-theme-effective={shell?.effectiveTheme ?? 'light'} data-theme-mode={shell?.themeMode ?? 'system'}>
     <MatterWorkbench
       title={workspace?.label ?? translate("workbench.workspace")} homeHref={hostScope ? undefined : appUrl(currentWorkspacesHref())}
-      options={workbenchUrls({ ...navigation, emptyWorkspace: true, workspacePath: workspace?.absPath ?? '', activeView: 'chat', terminalEnabled: false, onViewChange: () => {}, onSearch: () => {}, onNavigate: navigate,
+      options={workbenchUrls({ ...navigation, ...desktopWorkbench, emptyWorkspace: true, workspacePath: workspace?.absPath ?? '', activeView: 'chat', terminalEnabled: false, onViewChange: () => {}, onSearch: () => {}, onNavigate: navigate,
         renderThreadMenu: (thread, context) => <RecentThreadMenu thread={thread} context={context} currentKey={navigation.currentKey} onFavorite={navigation.onToggleThreadFavorite} onRenamed={navigation.onThreadRenamed} onRemoved={navigation.onThreadRemoved} onNavigate={navigate} /> })}
       deviceMonitor={hostScope ? null : <TourLauncherButton />}
       settings={!hostScope && <button aria-label={translate("workbench.openSettings")} onClick={shell?.openSettings}><Settings data-icon="settings" /></button>}

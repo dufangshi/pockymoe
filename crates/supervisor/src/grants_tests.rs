@@ -610,6 +610,8 @@ async fn thread_lineage_and_route_access_are_local_read_and_control() {
     ] {
         assert!(authorize_path(&state, &p, method, path).is_ok(), "{path}");
     }
+    assert!(authorize_path(&state, &p, "GET", "/api/stats/summary?range=7d").is_err());
+    assert!(authorize_path(&state, &p, "POST", "/api/e2e/events").is_err());
     // Even a whole-device grant does not see the device's activity map.
     assert!(authorize_path(&state, &p, "GET", "/api/thread-activity?hours=24").is_err());
     g.scope = "workspace".into();

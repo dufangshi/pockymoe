@@ -19,10 +19,13 @@ function matchMessages(turns: ThreadTurnDto[], query: string): ConversationSearc
     .map(item => ({ turnId: turn.id, itemId: item.id,
       role: item.kind === 'userMessage' ? 'You' : 'Assistant', text: item.text })));
 }
+const deviceArgs = (id: string | null | undefined) => id === undefined ? [] as const : [id] as const;
 const matchKey = (match: SearchMatch) => `${isGlobal(match) ? match.threadId : ''}:${match.turnId}:${match.itemId}`;
 
-export function ConversationSearch({ threadId, workspaceId, deviceLabel, allowGlobal, turns, open, onOpen, onClose, onSelect, onNavigate }: {
+export function ConversationSearch({ threadId, workspaceId, deviceLabel, deviceId, initialScope, allowGlobal, turns, open, onOpen, onClose, onSelect, onNavigate }: {
   threadId: string;
+  deviceId?: string | null | undefined;
+  initialScope?: ConversationSearchScope;
   workspaceId: string;
   deviceLabel: string;
   allowGlobal: boolean;
@@ -43,12 +46,12 @@ export function ConversationSearch({ threadId, workspaceId, deviceLabel, allowGl
   const closeCallback = useRef(onClose);
   closeCallback.current = onClose;
   const [query, setQuery] = useState('');
-  const [scope, setScope] = useState<ConversationSearchScope>('thread');
+  const [scope, setScope] = useState<ConversationSearchScope>(initialScope ?? 'thread');
   const [offset, setOffset] = useState(0);
   // Fail closed if a live permission refresh removes global access.
   const effectiveScope = allowGlobal ? scope : 'thread';
   const normalized = query.trim().toLowerCase();
-  const searchKey = `${effectiveScope}:${offset}:${normalized}`;
+  const searchKey = `${deviceId ?? 'current'}:${effectiveScope}:${offset}:${normalized}`;
   const [remote, setRemote] = useState<{ query: string; result: SearchResult } | null>(null);
   const [loading, setLoading] = useState(false);
   const [selecting, setSelecting] = useState(false);
@@ -94,10 +97,10 @@ export function ConversationSearch({ threadId, workspaceId, deviceLabel, allowGl
       try {
         let result: SearchResult | undefined;
         if (effectiveScope !== 'thread') {
-          result = await searchConversations(normalized, effectiveScope === 'workspace' ? workspaceId : undefined, offset, controller.signal);
+          result = await searchConversations(normalized, effectiveScope === 'workspace' ? workspaceId : undefined, offset, controller.signal, ...deviceArgs(deviceId));
         }
         if (effectiveScope === 'thread' && !legacy.current) {
-          try { result = await searchThreadMessages(threadId, normalized, controller.signal); }
+          try { result = await searchThreadMessages(threadId, normalized, controller.signal, ...deviceArgs(deviceId)); }
           catch (e) {
             if (controller.signal.aborted) return;
             if (e instanceof ApiError && e.statusCode === 404) legacy.current = true;
@@ -110,7 +113,7 @@ export function ConversationSearch({ threadId, workspaceId, deviceLabel, allowGl
           let before: string | undefined;
           do {
             if (controller.signal.aborted) return;
-            const page = await fetchThreadConversationPage(threadId, before, controller.signal);
+            const page = await fetchThreadConversationPage(threadId, before, controller.signal, ...deviceArgs(deviceId));
             if (controller.signal.aborted) return;
             const fresh = page.turns.filter(turn => !seen.has(turn.id));
             if (!fresh.length) break;
@@ -138,7 +141,7 @@ export function ConversationSearch({ threadId, workspaceId, deviceLabel, allowGl
       } finally { if (!controller.signal.aborted) setLoading(false); }
     }, 250);
     return () => { window.clearTimeout(timer); controller.abort(); };
-  }, [open, normalized, threadId, workspaceId, effectiveScope, offset, searchKey, attempt]);
+  }, [open, normalized, threadId, workspaceId, effectiveScope, offset, searchKey, attempt, deviceId]);
 
   const matches = useMemo(() => {
     if (!normalized) return [];
@@ -164,7 +167,7 @@ export function ConversationSearch({ threadId, workspaceId, deviceLabel, allowGl
     setSelecting(true); setError(null);
     try {
       const loaded = turns.find(turn => turn.id === match.turnId && !turn.hasDeferredItems);
-      const turn = loaded ?? await fetchThreadTurnDetail(threadId, match.turnId);
+      const turn = loaded ?? await fetchThreadTurnDetail(threadId, match.turnId, ...deviceArgs(deviceId));
       if (controller.signal.aborted) return;
       onSelect([turn], match.turnId, match.itemId, query.trim());
       close();

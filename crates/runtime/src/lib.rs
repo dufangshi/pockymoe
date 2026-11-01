@@ -56,3 +56,5 @@ mod pricing;
 
 mod relay_notifications;
 pub mod subscription;
+
+pub mod stats;

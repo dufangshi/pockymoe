@@ -137,12 +137,14 @@ const failedPhases = ['failed', 'rolled-back', 'rollback-failed'];
  *  Check, Update and Restart, without harnesses, jobs or device templates. */
 export function RuntimeManagement({
   view = 'all',
+  deviceId: explicitDeviceId,
 }: {
   view?: 'all' | 'device' | 'harnesses' | 'supervisor';
+  deviceId?: string;
 }) {
   const { locale: i18nLocale } = useI18n();
   const { pathname } = useLocation();
-  const deviceId = relayDeviceIdFromPath(pathname);
+  const deviceId = explicitDeviceId ?? relayDeviceIdFromPath(pathname);
   if (relayModeActive() && !deviceId) {
     return (
       <section className="py-5" aria-label={translate("devices.runtimeManagement")}>

@@ -13,6 +13,7 @@ rand.workspace = true
 scrypt = "0.11"
 subtle = "2"
 chrono.workspace = true
+chrono-tz = "0.10"
 futures-util.workspace = true
 hostname.workspace = true
 hex.workspace = true

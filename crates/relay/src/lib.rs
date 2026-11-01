@@ -263,7 +263,10 @@ pub async fn serve() -> Result<()> {
         .route("/relay/portal", get(portal))
         .route("/relay/access", get(relay_access))
         .route("/relay/devices", get(list_devices).post(create_device))
-        .route("/relay/devices/{device_id}", delete(delete_device))
+        .route(
+            "/relay/devices/{device_id}",
+            patch(rename_device).delete(delete_device),
+        )
         .route(
             "/relay/thread-links",
             get(public_links::list).post(public_links::create),
@@ -2724,6 +2727,95 @@ async fn create_device(
     .into_response()
 }
 
+#[derive(Deserialize)]
+struct RenameDeviceInput {
+    name: String,
+}
+
+async fn rename_device(
+    Path(device_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<TokenQuery>,
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<RenameDeviceInput>,
+) -> Response {
+    let user_id = {
+        let conn = state.store.conn.lock().await;
+        let Some(user) = authenticated_user(&conn, &state.store.session_secret, &headers, &query)
+        else {
+            return unauthorized();
+        };
+        let owner = conn
+            .query_row(
+                "SELECT owner_user_id FROM relay_devices WHERE id=?1",
+                [&device_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional();
+        match owner {
+            Ok(Some(owner)) if owner == user.id => {}
+            Ok(Some(_)) => {
+                return (
+                    StatusCode::FORBIDDEN,
+                    Json(ApiError::new(
+                        "forbidden",
+                        "Only the device owner can rename this device",
+                    )),
+                )
+                    .into_response()
+            }
+            Ok(None) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(ApiError::new("not_found", "Device not found")),
+                )
+                    .into_response()
+            }
+            Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        }
+        let name = body.name.trim();
+        if body.name.chars().any(char::is_control) || !(1..=64).contains(&name.chars().count()) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ApiError::new(
+                    "bad_request",
+                    "Device name must contain 1–64 characters and no control characters",
+                )),
+            )
+                .into_response();
+        }
+        match conn.execute(
+            "UPDATE relay_devices SET name=?1 WHERE id=?2 AND owner_user_id=?3",
+            params![name, device_id, user.id],
+        ) {
+            Ok(1) => {}
+            Ok(_) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(ApiError::new("not_found", "Device not found")),
+                )
+                    .into_response()
+            }
+            Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        }
+        security::audit(&conn, Some(&user.id), "device.renamed", Some(&device_id));
+        user.id
+    };
+    // Use the collection serializer, preserving live presence and hosted fields.
+    match list_user_devices(&state, &user_id)
+        .await
+        .into_iter()
+        .find(|device| device["id"] == device_id)
+    {
+        Some(device) => Json(device).into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(ApiError::new("not_found", "Device not found")),
+        )
+            .into_response(),
+    }
+}
+
 async fn delete_device(
     Path(device_id): Path<String>,
     headers: HeaderMap,
@@ -4842,6 +4934,158 @@ mod tests {
 
     fn temporary_test_dir(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("pockymoe-relay-{name}-{}", Uuid::new_v4().simple()))
+    }
+
+    #[tokio::test]
+    async fn device_rename_validates_names_preserves_dto_and_denies_nonowners() {
+        let (state, data_dir) = test_app_state("device-rename");
+        let (owner_token, guest_token, stranger_token) = {
+            let conn = state.store.conn.lock().await;
+            for (id, role) in [("owner", "user"), ("guest", "user"), ("stranger", "user")] {
+                conn.execute(
+                    "INSERT INTO relay_users VALUES (?1,?1,?1,?2,1,NULL,'now','salt','hash')",
+                    params![id, role],
+                )
+                .unwrap();
+            }
+            conn.execute("INSERT INTO relay_devices VALUES ('device','owner','Laptop',NULL,'hash','preview','2026-01-01T00:00:00Z')",[]).unwrap();
+            conn.execute("INSERT INTO relay_shares(id,owner_user_id,target_user_id,device_id,thread_id,thread_access,created_at) VALUES ('share','owner','guest','device','thread','control','now')",[]).unwrap();
+            (
+                create_session(&conn, "test-secret", "owner").unwrap(),
+                create_session(&conn, "test-secret", "guest").unwrap(),
+                create_session(&conn, "test-secret", "stranger").unwrap(),
+            )
+        };
+        let (socket, _rx) = device_socket(Uuid::new_v4());
+        state.sockets.write().await.insert("device".into(), socket);
+        let app = Router::new()
+            .route(
+                "/relay/devices/{device_id}",
+                patch(rename_device).delete(delete_device),
+            )
+            .route("/relay/devices", get(list_devices))
+            .with_state(state.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let http = reqwest::Client::new();
+        let target = format!("{base}/relay/devices/device");
+        let reply = http
+            .patch(&target)
+            .bearer_auth(&owner_token)
+            .json(&json!({"name":"  Work Laptop  "}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(reply.status(), StatusCode::OK);
+        let renamed: Value = reply.json().await.unwrap();
+        assert_eq!(renamed["name"], "Work Laptop");
+        assert_eq!(renamed["ownerUserId"], "owner");
+        assert_eq!(renamed["connected"], true);
+        assert_eq!(renamed["connectedAt"], "2026-01-01T00:00:00Z");
+        assert!(renamed["token"].is_null());
+        let listed: Value = http
+            .get(format!("{base}/relay/devices"))
+            .bearer_auth(&owner_token)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(renamed, listed["devices"][0]);
+        for name in [
+            "",
+            "   ",
+            "line\nbreak",
+            "\tLaptop",
+            "nul\0byte",
+            "control\u{0085}char",
+            &"x".repeat(65),
+        ] {
+            let reply = http
+                .patch(&target)
+                .bearer_auth(&owner_token)
+                .json(&json!({"name":name}))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(reply.status(), StatusCode::BAD_REQUEST);
+        }
+        // Character limit is Unicode characters, not UTF-8 byte length.
+        for name in ["x".to_string(), "机".repeat(64)] {
+            let reply = http
+                .patch(&target)
+                .bearer_auth(&owner_token)
+                .json(&json!({"name":name}))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(reply.status(), StatusCode::OK);
+            assert_eq!(reply.json::<Value>().await.unwrap()["name"], name);
+        }
+        assert_eq!(
+            http.patch(&target)
+                .json(&json!({"name":"Anonymous"}))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        for token in [&guest_token, &stranger_token] {
+            assert_eq!(
+                http.patch(&target)
+                    .bearer_auth(token)
+                    .json(&json!({"name":"Stolen"}))
+                    .send()
+                    .await
+                    .unwrap()
+                    .status(),
+                StatusCode::FORBIDDEN
+            );
+        }
+        for scope in ["thread", "workspace", "device"] {
+            {
+                let conn = state.store.conn.lock().await;
+                conn.execute("INSERT INTO relay_access_grants(id,owner_user_id,target_user_id,device_id,scope,thread_id,workspace_id,thread_access,workspace_access,can_create_threads,created_at) VALUES (?1,'owner','guest','device',?1,'thread','workspace','control','write',1,'now')",[scope]).unwrap();
+            }
+            assert_eq!(
+                http.patch(&target)
+                    .bearer_auth(&guest_token)
+                    .json(&json!({"name":"Granted"}))
+                    .send()
+                    .await
+                    .unwrap()
+                    .status(),
+                StatusCode::FORBIDDEN
+            );
+        }
+        assert_eq!(
+            http.patch(format!("{base}/relay/devices/missing"))
+                .bearer_auth(&owner_token)
+                .json(&json!({"name":"Missing"}))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::NOT_FOUND
+        );
+        let conn = state.store.conn.lock().await;
+        assert_eq!(
+            conn.query_row(
+                "SELECT name FROM relay_devices WHERE id='device'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+            "机".repeat(64)
+        );
+        drop(conn);
+        server.abort();
+        let _ = server.await;
+        drop(state);
+        std::fs::remove_dir_all(data_dir).unwrap();
     }
 
     #[tokio::test]

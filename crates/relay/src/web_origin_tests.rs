@@ -142,6 +142,7 @@ async fn cors_and_cookie_auth_work_in_both_origin_modes() {
                 expose.contains("x-rcd-encrypted")
                     && expose.contains("content-disposition")
                     && expose.contains("content-range")
+                    && expose.split(',').any(|name| name.trim() == "allow")
             );
             assert_eq!(response.json::<Value>().await.unwrap()["cookie"], true);
         }

@@ -288,7 +288,7 @@ function buildBrowserMediaUrl(path: string, deviceId?: string | null) {
 }
 
 // These wrappers keep every operation (including retries/downloads) on the pane's device.
-function deviceRequest<T>(deviceId: string | null | undefined, input: RequestInfo, init?: RequestInit, threadScope?: string) {
+export function deviceRequest<T>(deviceId: string | null | undefined, input: RequestInfo, init?: RequestInit, threadScope?: string) {
   return request<T>(input, init, { deviceId, threadScope });
 }
 function deviceDownload(deviceId: string | null | undefined, input: RequestInfo | URL, init?: RequestInit) {
@@ -1495,25 +1495,25 @@ export interface GlobalConversationSearchResult {
   nextOffset: number | null;
   scope: 'device';
 }
-export function searchConversations(query: string, workspaceId: string | undefined, offset: number, signal?: AbortSignal) {
+export function searchConversations(query: string, workspaceId: string | undefined, offset: number, signal?: AbortSignal, deviceId?: string | null) {
   const path = workspaceId ? `api/workspaces/${encodeURIComponent(workspaceId)}/search` : 'api/search';
-  return request<GlobalConversationSearchResult>(
+  return deviceRequest<GlobalConversationSearchResult>(deviceId,
     `${path}?${new URLSearchParams({ q: query, limit: '50', offset: String(offset) })}`,
     { ...(signal ? { signal } : {}), cache: 'no-store' },
   );
 }
-export function searchThreadMessages(id: string, query: string, signal?: AbortSignal) {
-  return request<ConversationSearchResult>(
+export function searchThreadMessages(id: string, query: string, signal?: AbortSignal, deviceId?: string | null) {
+  return deviceRequest<ConversationSearchResult>(deviceId,
     `api/threads/${encodeURIComponent(id)}/search?${new URLSearchParams({ q: query, limit: '50' })}`,
     { signal: signal ?? null },
   );
 }
 // Older Supervisors have no search endpoint. A full conversation page avoids
 // the old summary + one detail request per turn; fetch only after a query.
-export function fetchThreadConversationPage(id: string, beforeTurnId?: string, signal?: AbortSignal) {
+export function fetchThreadConversationPage(id: string, beforeTurnId?: string, signal?: AbortSignal, deviceId?: string | null) {
   const params = new URLSearchParams({ view: 'full', limit: '100', compact: '1' });
   if (beforeTurnId) params.set('beforeTurnId', beforeTurnId);
-  return request<ThreadDetailDto>(`api/threads/${encodeURIComponent(id)}?${params}`, { signal: signal ?? null });
+  return deviceRequest<ThreadDetailDto>(deviceId, `api/threads/${encodeURIComponent(id)}?${params}`, { signal: signal ?? null });
 }
 
 export function fetchThreadHistoryItemDetail(id: string, itemId: string,
@@ -1945,7 +1945,7 @@ export function untrustThreadHook(id: string, input: UntrustThreadHookInput) {
 export function respondToThreadRequest(
   id: string,
   requestId: string,
-  input: RespondThreadActionRequestInput,
+  input: RespondThreadActionRequestInput | { allow: boolean },
   deviceId?: string | null,
 ) {
   return deviceRequest<ThreadDetailDto>(deviceId,

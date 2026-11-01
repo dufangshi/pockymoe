@@ -353,6 +353,7 @@ pub(crate) fn router_with_treer(state: AppState, hub: Option<Arc<crate::treer::H
         )
         .route("/api/threads", get(list_threads))
         .route("/api/thread-activity", get(thread_activity))
+        .route("/api/stats/summary", get(stats_summary))
         .route("/api/threads/start", post(start_thread))
         .route("/api/threads/import", post(import_thread))
         .route("/api/threads/import-candidates", get(import_candidates))
@@ -481,7 +482,13 @@ pub(crate) fn router_with_treer(state: AppState, hub: Option<Arc<crate::treer::H
             "/api/plugins/{id}",
             get(get_plugin).patch(update_plugin).delete(delete_plugin),
         )
-        .route("/ws", get(ws_upgrade))
+        .route("/ws", get(ws_upgrade));
+    let router = if state.config.fake_runtime {
+        router.route("/api/e2e/events", post(fixture_event))
+    } else {
+        router
+    };
+    let router = router
         .fallback(spa_fallback)
         .layer(DefaultBodyLimit::max(64 * 1024 * 1024))
         .layer(middleware::from_fn_with_state(
@@ -797,7 +804,7 @@ pub(crate) fn map_err(e: anyhow::Error) -> ApiErr {
 
 async fn healthz(State(state): State<AppState>) -> Json<Value> {
     Json(
-        json!({"hostMode":state.config.host_mode,"hostCapabilities":state.host_capabilities,"relayStatus":crate::owner_trust::relay_status(&state),"status":"ok", "timestamp":now_rfc3339(), "activeTurnCount":state.active_turn_count(), "runningVersion":APP_VERSION, "processId":std::process::id(), "relayConnected":state.relay_connected.load(std::sync::atomic::Ordering::SeqCst)}),
+        json!({"hostMode":state.config.host_mode,"hostCapabilities":state.host_capabilities,"relayStatus":crate::owner_trust::relay_status(&state),"status":"ok", "timestamp":now_rfc3339(), "activeTurnCount":state.active_turn_count(), "runningVersion":APP_VERSION, "capabilities":{"statsSummary":true}, "processId":std::process::id(), "relayConnected":state.relay_connected.load(std::sync::atomic::Ordering::SeqCst)}),
     )
 }
 
@@ -3496,5 +3503,112 @@ mod public_link_tests {
         assert_eq!(snapshot["live"], true);
         assert_eq!(snapshot["theme"], "light");
         assert_eq!(snapshot["turnCount"], 1);
+    }
+}
+
+#[derive(Deserialize)]
+struct StatsQuery {
+    range: Option<String>,
+    tz: Option<String>,
+}
+
+async fn stats_summary(
+    State(state): State<AppState>,
+    Query(query): Query<StatsQuery>,
+    scope: Option<axum::Extension<crate::treer::Scope>>,
+) -> Result<Json<Value>, ApiErr> {
+    if scope.is_some() {
+        return Err(err(
+            StatusCode::FORBIDDEN,
+            "owner_required",
+            "Device statistics require owner access",
+        ));
+    }
+    let range = query.range.unwrap_or_else(|| "today".into());
+    let tz = query.tz.unwrap_or_else(|| "UTC".into());
+    pockymoe_runtime::stats::validate_query(&range, &tz).map_err(map_err)?;
+    tokio::task::spawn_blocking(move || state.stats_summary(&range, &tz))
+        .await
+        .map_err(|_| {
+            err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "stats",
+                "Unable to compute statistics",
+            )
+        })?
+        .map(Json)
+        .map_err(map_err)
+}
+
+async fn fixture_event(
+    State(state): State<AppState>,
+    scope: Option<axum::Extension<crate::treer::Scope>>,
+    Json(input): Json<pockymoe_runtime::fake::FixtureEventInput>,
+) -> Result<Json<Value>, ApiErr> {
+    if scope.is_some() {
+        return Err(err(
+            StatusCode::FORBIDDEN,
+            "owner_required",
+            "Fixture controls require owner access",
+        ));
+    }
+    state.fixture_event(input).await.map(Json).map_err(map_err)
+}
+
+#[cfg(test)]
+mod fixture_tests {
+    use super::*;
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn e2e_fixture_route_does_not_exist_outside_fake_mode() {
+        for fake_runtime in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let config = pockymoe_runtime::RuntimeConfig {
+                treer_enabled: false,
+                host_mode: Default::default(),
+                web_origin: None,
+                supervisor_restart_strategy: Default::default(),
+                mode: pockymoe_protocol::Mode::Local,
+                host: "127.0.0.1".into(),
+                port: 0,
+                workspace_root: dir.path().into(),
+                database_url: dir.path().join("test.sqlite"),
+                app_name: "test".into(),
+                app_version: "test".into(),
+                environment: "test".into(),
+                auth_required: false,
+                admin_username: None,
+                admin_password: None,
+                session_secret: None,
+                relay_server_url: None,
+                relay_agent_token: None,
+                enabled_providers: vec![],
+                acp_command: None,
+                acp_startup_timeout_ms: 1000,
+                fake_runtime,
+            };
+            let db = pockymoe_runtime::Database::open(&config.database_url).unwrap();
+            let state = Arc::new(Supervisor::new(config, db, vec![]));
+            let response = router(state)
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/api/e2e/events")
+                        .header("content-type", "application/json")
+                        .body(Body::from("{}"))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                if fake_runtime {
+                    StatusCode::UNPROCESSABLE_ENTITY
+                } else {
+                    StatusCode::NOT_FOUND
+                }
+            );
+        }
     }
 }

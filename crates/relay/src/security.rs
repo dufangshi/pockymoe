@@ -227,6 +227,7 @@ pub(crate) async fn browser_security(
         .remove(header::ACCESS_CONTROL_EXPOSE_HEADERS);
     if let Some(origin) = origin {
         let mut expose = vec![
+            "allow".to_owned(),
             "content-disposition".to_owned(),
             "content-range".to_owned(),
             "accept-ranges".to_owned(),

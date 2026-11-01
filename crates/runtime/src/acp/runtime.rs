@@ -4152,7 +4152,8 @@ async fn handle_agent_request(
                 }
                 return Ok(());
             }
-            let selected = ask_permission(inner, &active, &format!("perm-{req_id}"), &params).await;
+            let selected =
+                ask_permission(inner, &active, &format!("perm-{}", Uuid::new_v4()), &params).await;
             if let Some(option) = selected {
                 process
                     .respond(

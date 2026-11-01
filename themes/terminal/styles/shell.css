@@ -139,3 +139,20 @@
 :theme .admin-detail-layer.is-sheet .admin-detail { border-radius: 0; }
 :theme :is(.admin-menu, .admin-tooltip) { box-shadow: 4px 4px 0 rgb(0 0 0 / 35%); }
 :theme .admin-device-state.is-online .admin-device-state-mark { border-radius: 0; }
+
+/* Desktop thread map v2: waiting remains a static speech bubble in this pack. */
+:theme .matter-status-dot[data-status='waiting'] {
+  --status-waiting: #c08a3e;
+  width: 12px; height: 11px; border: 0; border-radius: 0;
+  background: var(--status-waiting); transform: none; rotate: none; animation: none;
+  clip-path: polygon(0 0, 100% 0, 100% 76%, 84% 76%, 100% 100%, 56% 76%, 0 76%);
+}
+:theme[data-theme-effective='dark'] .matter-status-dot[data-status='waiting'] { --status-waiting: #edb75d; }
+
+:theme .thread-map[data-presentation='page'] { font-family: var(--term-font); }
+:theme .thread-map :is(.thread-map-attention-card, .thread-map-compressed, .thread-map-scope, .thread-map-scope button, .thread-map-filter, .thread-map-tile, .thread-map-section) { border-radius: 0; }
+:theme .thread-map-device-state { border-radius: 50%; }
+:theme .matter-thread-group[data-avatar] > .matter-group-tab > .matter-thread-avatar + .matter-status-dot[data-status='waiting'] { width: 12px; height: 11px; border: 0; box-shadow: none; }
+/* Readability overflow and the focused workspace list keep terminal geometry. */
+:theme :is(.thread-map-overflow, .thread-map-readable-list, .thread-map-list-row, .thread-map-list-group, .thread-map-list-older, .thread-map-attention-menu, .thread-map-attention-menu [role='menuitem']) { border-radius: 0; }
+:theme .thread-map-attention[data-responsive] .thread-map-attention-more { border-radius: 0; }
