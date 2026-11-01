@@ -95,7 +95,10 @@ def handle(msg):
     if method in ("session/new", "session/load"):
         mcp_servers[:] = params.get("mcpServers") or []
         result = {"sessionId": "fake-session", "configOptions": config_options()}
-        send({"jsonrpc":"2.0", "method":"session/update", "params":{"sessionId":"fake-session", "update":{"sessionUpdate":"available_commands_update", "availableCommands":[{"name":"status", "description":"Session status"}]}}})
+        commands = [{"name":"status", "description":"Session status"}]
+        if "--compact" in sys.argv:
+            commands.append({"name":"compact", "description":"Compact this session"})
+        send({"jsonrpc":"2.0", "method":"session/update", "params":{"sessionId":"fake-session", "update":{"sessionUpdate":"available_commands_update", "availableCommands":commands}}})
         send(
             {
                 "jsonrpc": "2.0",
@@ -103,6 +106,11 @@ def handle(msg):
                 "result": result,
             }
         )
+        return
+    if method == "session/prompt" and prompt_text(params) == "/compact":
+        with open("compact-request.json", "w") as file:
+            json.dump({"sessionId":params["sessionId"],"text":prompt_text(params)}, file)
+        send({"jsonrpc":"2.0", "id":req_id,"result":{"stopReason":"end_turn"}})
         return
     if method == "session/prompt" and prompt_text(params) in {"wait-for-cancel-ack", "wait-for-fast-cancel-ack", "wait-for-stalled-cancel"}:
         cancel_delay = {"wait-for-cancel-ack": 2.4, "wait-for-fast-cancel-ack": 0.05, "wait-for-stalled-cancel": None}[prompt_text(params)]

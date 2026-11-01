@@ -155,7 +155,8 @@ for (const mode of ['light', 'dark'] as const) test(`${preset} usage meter repla
     // The context bar sits inside its own key with equal insets, beside the chip.
     expect(Math.abs((g.bar.left - g.meter.left) - (g.meter.right - g.bar.right))).toBeLessThanOrEqual(1);
     expect(g.bar.bottom).toBeLessThanOrEqual(g.meter.bottom);
-    expect(g.meter.right).toBeLessThanOrEqual(g.chip.left);
+    expect(g.meter.top).toBeGreaterThanOrEqual(g.chip.bottom - 1);
+    expect(Math.abs(g.meter.width - g.chip.width)).toBeLessThanOrEqual(1);
   }
   await editor.click();
   const focused = await composer.locator('.thread-graph-composer-shell').boundingBox();

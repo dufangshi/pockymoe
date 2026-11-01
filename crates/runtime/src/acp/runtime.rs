@@ -57,6 +57,10 @@ mod release_tests;
 #[path = "completion_tests.rs"]
 mod completion_tests;
 
+#[cfg(all(test, unix))]
+#[path = "compact_tests.rs"]
+mod compact_tests;
+
 #[cfg(test)]
 #[path = "effort_tests.rs"]
 mod effort_tests;
@@ -1944,6 +1948,7 @@ impl AgentRuntime for AcpRuntime {
                 .get(&(live.process.id.clone(), live.session_id.clone()))
             {
                 negotiated.available_commands = commands.clone();
+                negotiated.compact = commands.iter().any(|command| command.name == "compact");
             }
             let adapter = adapter_for(&live.adapter_id);
             let mut caps = AgentProviderCapabilitiesDto::conversational();
@@ -3093,13 +3098,23 @@ impl AgentRuntime for AcpRuntime {
         }
         let agent_id = session_id.split("::").next().unwrap_or("codex");
         let adapter = adapter_for(agent_id);
+        // Commands can arrive after session/new (notably Claude), and can be
+        // withdrawn. Use this session's current capabilities, never a probe's.
+        let session_caps = self
+            .session_capabilities(Some(agent_id), session_id)
+            .await?;
         let prompt = adapter
             .compact_prompt()
             .or_else(|| {
-                self.negotiated_caps(Some(agent_id))
-                    .turns
-                    .compact
-                    .then_some("/compact")
+                (session_caps
+                    .effective_capabilities
+                    .as_ref()
+                    .is_some_and(|caps| caps.turns.compact)
+                    || session_caps
+                        .toolbox_items
+                        .iter()
+                        .any(|item| item.command == "/compact"))
+                .then_some("/compact")
             })
             .ok_or_else(|| anyhow!("this harness does not implement compact"))?;
         let cancel = CancellationToken::new();

@@ -6,19 +6,26 @@ harnesses. Enabling or disabling inspection takes effect when a loaded harness
 next resumes for a prompt; an active prompt is not interrupted to rebind its
 process. The setting persists in the Supervisor database.
 
-The composer has separate model and context controls. The context panel shows
+The context strip sits below the smaller model name and reasoning effort within
+the existing fixed-height model control. Its separate button opens context
+details; the strip uses a single color and the exact occupancy ratio. The context panel shows
 occupancy, category counts, observation time and the available tool, memory and
 skill details. Deferred tool definitions are outside the occupied window and
 are listed separately. Missing provider details are not fabricated as zeroes.
 The model control no longer puts a long context report in its hover title.
+Detail expansion reserves a stable scrollbar gutter, so opening child rows
+does not change content width or wrap paths again. The footer contains only
+Compact context; it remains visible and disabled when no supported action is
+available or the thread is busy. Claude's late `/compact` advertisement is
+resolved from the current session instead of a provider-wide capability cache.
 
 ## Collection
 
 Claude uses a thin extension of the installed `claude-agent-acp` adapter and
 reads `getContextUsage()` on its existing Query. It does not create another
 conversation or submit `/context` as a prompt. Summary readings use local
-estimates; full refreshes can call the harness's token-count API. Full counting
-is requested by the panel, while prompt completion obtains a summary in the
+estimates; full readings can call the harness's token-count API. Opening the
+Claude panel requests full counting automatically; prompt completion obtains a summary in the
 background. The API bounds control requests to twenty seconds. Unsupported
 adapter layouts retain ordinary ACP behavior and report inspection unavailable.
 The wrapper currently supports the adapter's ACP v1 builder export.

@@ -785,14 +785,24 @@
 }
 
 /* ── Context entry and panel: a felt key and a stitched card ──────────────── */
-:theme .thread-ui-shell [data-composer-layout] .composer-context-meter { border: 1.5px dashed transparent; border-radius: 10px; transition: background-color 140ms ease, border-color 140ms ease; }
+:theme .thread-ui-shell [data-composer-layout] .composer-context-meter { border: 0; border-radius: 3px; }
 :theme .thread-ui-shell [data-composer-layout] .composer-context-meter:active { background: color-mix(in srgb, var(--pc-key) 70%, transparent); }
 @media (hover: hover) {
   :theme .thread-ui-shell [data-composer-layout] .composer-context-meter:hover { background: color-mix(in srgb, var(--pc-key) 70%, transparent); }
 }
 :theme .thread-ui-shell [data-composer-layout] .composer-context-meter[aria-expanded='true'] { background: var(--theme-accent-soft); border-color: var(--theme-accent-border); }
 :theme .thread-ui-shell [data-composer-layout] .composer-context-meter:focus-visible { outline: 2px solid var(--pc-focus); outline-offset: 2px; }
-:theme .composer-context-meter-value { font-family: var(--plum-display); font-weight: 700; }
+:theme .thread-ui-shell [data-composer-layout] .composer-model-control[data-with-context='true'] > .composer-model-label {
+  min-height: 0; padding-block: 0; row-gap: 0;
+}
+:theme .thread-ui-shell [data-composer-layout] .composer-model-control[data-with-context='true'] .composer-model-name { font-size: 10px; line-height: 11px; }
+:theme .thread-ui-shell [data-composer-layout] .composer-model-control[data-with-context='true'] .composer-model-effort { font-size: 9px; line-height: 10px; }
+:theme .thread-ui-shell [data-composer-layout] .composer-model-control[data-with-context='true'] .composer-model-avatar { width: 16px; height: 16px; }
+@media (pointer: coarse) {
+  :theme .thread-ui-shell [data-composer-layout] .composer-model-control[data-with-context='true'] { height: 36px; }
+  :theme .thread-ui-shell [data-composer-layout] .composer-model-control[data-with-context='true'] > .composer-model-label { min-height: 0; height: 28px; max-height: 28px; }
+  :theme .thread-ui-shell [data-composer-layout] .composer-model-control[data-with-context='true'] > .composer-model-label::after { content: none; }
+}
 :theme .thread-context-palette { --context-fill: var(--theme-accent-solid); --context-track: color-mix(in srgb, var(--theme-fg-muted) 26%, transparent); }
 :theme .thread-ui-shell .thread-context-surface.thread-composer-menu-surface { border: 2px solid var(--theme-border); border-radius: 16px; background: var(--pc-felt, var(--theme-panel)); }
 :theme .thread-context-surface.is-sheet { border: 2px solid var(--theme-border); border-bottom: 0; border-radius: 20px 20px 0 0; background: var(--pc-felt, var(--theme-panel)); }

@@ -20,6 +20,7 @@ const theme = query.get('theme') ?? 'classic';
 const mode = query.get('mode') === 'dark' ? 'dark' : 'light';
 const language = query.get('lang') ?? 'zh-CN';
 const THREAD_ID = 'preview-thread';
+const compactAvailable = query.get('compact') !== '0' && scenario.model.agent !== 'grok';
 
 localStorage.setItem(THEME_PRESET_KEY, theme);
 localStorage.setItem('remote-codex.locale', language);
@@ -111,8 +112,8 @@ function Preview() {
           modelOptions={[{ id: scenario.model.id, model: scenario.model.id, displayName: scenario.model.name, description: '', isDefault: true, hidden: false, defaultReasoningEffort: 'high', supportedReasoningEfforts: [{ reasoningEffort: 'medium', description: '' }, { reasoningEffort: 'high', description: '' }] }]}
           contextUsage={scenario.usage}
           contextInspector={inspector}
-          capabilities={{ controls: {}, turns: { compact: true }, branching: {}, management: {} } as never}
-          toolboxItems={[{ action: 'compact', command: '/compact', label: 'Compact' }]}
+          capabilities={{ controls: {}, turns: { compact: compactAvailable }, branching: {}, management: {} } as never}
+          toolboxItems={compactAvailable ? [{ action: 'compact', command: '/compact', label: 'Compact' }] : []}
           threadConnected
           shellAvailable={false}
           activeView="chat"
