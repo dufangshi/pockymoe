@@ -534,7 +534,9 @@
   color: var(--plum-chrome-soft);
   font-size: 10.5px;
   font-weight: 800;
+  --matter-agents-glow: #f2c15c;
 }
+:theme[data-theme-effective='light'] .thread-ui-shell .matter-workbench .matter-thread-group > .matter-group-toggle.is-badge { --matter-agents-glow: #c9820f; }
 :theme .thread-ui-shell .matter-workbench .matter-group-toggle:not(.is-badge) {
   position: relative;
   align-self: center;
