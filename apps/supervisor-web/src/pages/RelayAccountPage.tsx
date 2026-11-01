@@ -335,7 +335,7 @@ export function RelayAccountSettingsPanel({
           </form>
         </FormDialog>
       )}
-      <RelayNotifications />
+      {!window.remoteCodexHost ? <RelayNotifications /> : null}
       <RelaySecurityPanel />
       {verification && (
         <SecurityVerification

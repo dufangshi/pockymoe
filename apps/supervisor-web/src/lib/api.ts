@@ -1336,6 +1336,12 @@ export function fetchThreadDetail(
     params.set('beforeTurnId', options.beforeTurnId);
   }
 
+  if (typeof window !== 'undefined' && window.remoteCodexHost && !options.beforeTurnId && (options.limit ?? 3) === 3) {
+    const deviceId = readSelectedRelayDeviceId();
+    if (deviceId) return import('../desktop/detailCache').then(({ takePrefetchedDetail }) =>
+      takePrefetchedDetail(deviceId, id) ?? request<ThreadDetailDto>(`/api/threads/${id}?${params.toString()}`),
+    );
+  }
   return request<ThreadDetailDto>(
     `/api/threads/${id}?${params.toString()}`,
   );

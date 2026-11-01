@@ -16,7 +16,7 @@ export function mergeRows<T extends object>(previous: readonly T[], incoming: re
 const acceptedEvents = new Set(['thread.updated', 'thread.turn.started', 'thread.turn.completed', 'thread.turn.failed', 'thread.request.created', 'thread.request.resolved']);
 export const isIndexEvent = (type: string) => acceptedEvents.has(type);
 const summarizeRequest = (value: ThreadActionRequestDto) => ({
-  id: value.id, kind: value.kind === 'requestUserInput' ? 'input' as const : 'approval' as const,
+  id: value.id, createdAt: value.createdAt, kind: value.kind === 'requestUserInput' ? 'input' as const : 'approval' as const,
   summary: plainSummary(value.description || value.title),
 });
 export function summarizeThread(deviceId: string, row: ThreadDto, previous?: DesktopThread): DesktopThread {
@@ -26,7 +26,7 @@ export function summarizeThread(deviceId: string, row: ThreadDto, previous?: Des
     updatedAt: row.updatedAt, createdAt: row.createdAt, lastTurnStartedAt: row.lastTurnStartedAt,
     lastTurnCompletedAt: row.lastTurnCompletedAt, activeTurnId: row.activeTurnId,
     parentThreadId: row.parentThreadId ?? null, rootThreadId: row.rootThreadId ?? null, agentName: row.agentName ?? null,
-    closedAt: row.closedAt ?? null, lastViewedAt: previous?.lastViewedAt ?? null,
+    closedAt: row.closedAt ?? null, lastTurnId: row.activeTurnId ?? previous?.lastTurnId ?? null, lastViewedAt: previous?.lastViewedAt ?? null,
     requests: previous?.requests ?? [], resultSummary: plainSummary(row.lastError || row.summaryText) || null,
   };
 }
@@ -50,7 +50,9 @@ export class DesktopIndexStore {
   private retries = new Map<string, ReturnType<typeof setTimeout>>();
   private refreshes = new Map<string, Promise<void>>();
   private details = new Map<string, { at: number; detail: ThreadDetailDto }>();
+  private prefetched = new Set<string>();
   private detailRequests = new Map<string, Promise<ThreadDetailDto>>();
+  private persistence = Promise.resolve();
   private persistTimer?: ReturnType<typeof setTimeout>;
   private presenceTimer?: ReturnType<typeof setInterval>;
   private controllers = new Set<AbortController>();
@@ -67,7 +69,7 @@ export class DesktopIndexStore {
     this.state = { ...this.state, ...patch };
     this.listeners.forEach(listener => listener());
     clearTimeout(this.persistTimer);
-    this.persistTimer = setTimeout(() => { void writeIndex(this.state); }, 100);
+    this.persistTimer = setTimeout(() => { const snapshot = this.state; this.persistence = this.persistence.then(() => writeIndex(snapshot)); }, 100);
   }
   async hydrate() {
     const cached = await readIndex(this.accountId);
@@ -93,8 +95,8 @@ export class DesktopIndexStore {
   }
   logout = () => {
     this.publish({ devices: [], workspaces: [], threads: [] });
-    this.stop(); this.details.clear(); this.detailRequests.clear();
-    void clearIndex(this.accountId);
+    this.stop(); this.details.clear(); this.detailRequests.clear(); this.prefetched.clear();
+    void this.persistence.then(() => clearIndex(this.accountId));
   };
   async refresh() {
     const generation = this.generation;
@@ -130,7 +132,7 @@ export class DesktopIndexStore {
         ]);
         if (this.stopped || generation !== this.generation) return;
         const old = new Map(this.state.threads.map(row => [row.key, row]));
-        const nextThreads = threads.map(row => summarizeThread(deviceId, row, old.get(entityKey(deviceId, row.id))));
+        const nextThreads = threads.map(row => { const previous = old.get(entityKey(deviceId, row.id)); return previous && previous.updatedAt > row.updatedAt ? previous : summarizeThread(deviceId, row, previous); });
         this.publish({
           workspaces: mergeRows(this.state.workspaces, [
             ...this.state.workspaces.filter(row => row.deviceId !== deviceId),
@@ -179,16 +181,30 @@ export class DesktopIndexStore {
       this.updateThread(key, row => {
         // A response initiated before a live event cannot overwrite newer status.
         const next = detail.thread.updatedAt >= row.updatedAt ? summarizeThread(deviceId, detail.thread, row) : row;
-        return { ...next, requests: row.requests === requestState ? detail.pendingRequests.map(summarizeRequest) : row.requests };
+        return { ...next, lastTurnId: detail.turns?.at(-1)?.id ?? next.lastTurnId ?? null, requests: row.requests === requestState ? detail.pendingRequests.map(summarizeRequest) : row.requests };
       });
       return detail;
     }).finally(() => { this.controllers.delete(controller); this.detailRequests.delete(key); });
     this.detailRequests.set(key, task); return task;
   }
-  prefetchDetail = (deviceId: string, threadId: string) => { void this.loadDetail(deviceId, threadId).catch(() => undefined); };
+  prefetchDetail = (deviceId: string, threadId: string) => {
+    const key = entityKey(deviceId, threadId); this.prefetched.add(key);
+    void this.loadDetail(deviceId, threadId).catch(() => { this.prefetched.delete(key); });
+  };
+  takePrefetchedDetail(deviceId: string, threadId: string): Promise<ThreadDetailDto> | null {
+    const key = entityKey(deviceId, threadId);
+    if (!this.prefetched.delete(key)) return null;
+    return this.loadDetail(deviceId, threadId);
+  }
   applyEvent(deviceId: string, event: ThreadEventEnvelope) {
     if (!isIndexEvent(event.type)) return;
     const key = entityKey(deviceId, event.threadId);
+    if (event.type === 'thread.updated' && event.payload.reason === 'child_deleted') { void this.refreshDevice(deviceId); return; }
+    if (event.type === 'thread.updated' && event.payload.reason && event.payload.reason !== 'closed') {
+      // Metadata mutations (pin, provider settings, lineage) are not carried in
+      // the event payload; fetch only this summary rather than guessing fields.
+      void this.loadDetail(deviceId, event.threadId, true).catch(() => undefined);
+    }
     if (!this.state.threads.some(row => row.key === key)) { void this.refreshDevice(deviceId); return; }
     this.updateThread(key, row => {
       if (event.timestamp < row.updatedAt) return row;
@@ -196,11 +212,11 @@ export class DesktopIndexStore {
         case 'thread.updated': {
           const status = event.payload.status;
           const allowed = ['recovering', 'idle', 'running', 'interrupted', 'failed', 'not_loaded', 'system_error'];
-          return { ...row, title: event.payload.title ?? row.title, status: status && allowed.includes(status) ? status as DesktopThread['status'] : row.status, updatedAt: event.timestamp };
+          return { ...row, title: event.payload.title ?? row.title, status: status && allowed.includes(status) ? status as DesktopThread['status'] : row.status, closedAt: event.payload.reason === 'closed' ? event.timestamp : row.closedAt ?? null, updatedAt: event.payload.reason && event.payload.reason !== 'closed' ? row.updatedAt : event.timestamp };
         }
-        case 'thread.turn.started': return { ...row, status: 'running', activeTurnId: event.payload.turnId, lastTurnStartedAt: event.timestamp, updatedAt: event.timestamp };
-        case 'thread.turn.completed': return { ...row, status: event.payload.status === 'failed' ? 'failed' : 'idle', activeTurnId: null, lastTurnCompletedAt: event.timestamp, updatedAt: event.timestamp, resultSummary: plainSummary(event.payload.error) || row.resultSummary };
-        case 'thread.turn.failed': return { ...row, status: event.payload.willRetry ? 'recovering' : 'failed', activeTurnId: event.payload.willRetry ? row.activeTurnId : null, lastTurnCompletedAt: event.payload.willRetry ? row.lastTurnCompletedAt : event.timestamp, updatedAt: event.timestamp, resultSummary: plainSummary(event.payload.error) };
+        case 'thread.turn.started': return { ...row, status: 'running', lastTurnId: event.payload.turnId, activeTurnId: event.payload.turnId, lastTurnStartedAt: event.timestamp, updatedAt: event.timestamp };
+        case 'thread.turn.completed': return { ...row, lastTurnId: event.payload.turnId, status: event.payload.status === 'failed' ? 'failed' : 'idle', activeTurnId: null, lastTurnCompletedAt: event.timestamp, updatedAt: event.timestamp, resultSummary: plainSummary(event.payload.error) || row.resultSummary };
+        case 'thread.turn.failed': return { ...row, lastTurnId: event.payload.turnId, status: event.payload.willRetry ? 'recovering' : 'failed', activeTurnId: event.payload.willRetry ? row.activeTurnId : null, lastTurnCompletedAt: event.payload.willRetry ? row.lastTurnCompletedAt : event.timestamp, updatedAt: event.timestamp, resultSummary: plainSummary(event.payload.error) };
         case 'thread.request.created': return { ...row, updatedAt: event.timestamp, requests: [...row.requests.filter(request => request.id !== event.payload.request.id), summarizeRequest(event.payload.request)] };
         case 'thread.request.resolved': return { ...row, updatedAt: event.timestamp, requests: row.requests.filter(request => request.id !== event.payload.requestId) };
         default: return row;

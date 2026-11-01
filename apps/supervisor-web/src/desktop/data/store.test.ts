@@ -58,3 +58,32 @@ describe('desktop index', () => {
     expect(deviceApiPath('a/b', '/api/threads')).toBe('/relay/devices/a%2Fb/api/threads');
   });
 });
+
+describe('desktop live transport recovery', () => {
+  it('reconnects with 1/2/5/15s backoff, then refetches after open', async () => {
+    vi.useFakeTimers();
+    const sockets: WebSocket[] = [];
+    const io: DesktopDataAdapter = {
+      portal: async () => ({ devices: [{ id: 'd', ownerUserId: 'a', name: 'Mac', connected: true, lastHeartbeatAt: null }] }) as RelayPortalSummaryDto,
+      get: vi.fn(async (_id, path) => path === '/api/workspaces' ? [] : []) as DesktopDataAdapter['get'],
+      presence: async () => ({ connected: true }),
+      socket: () => { const socket = Object.assign(new EventTarget(), { close: vi.fn() }) as unknown as WebSocket; sockets.push(socket); return socket; },
+    };
+    const store = new DesktopIndexStore('a', io); await store.refresh();
+    for (const delay of [1000, 2000, 5000, 15000]) {
+      const count = sockets.length; sockets.at(-1)!.dispatchEvent(new Event('close'));
+      await vi.advanceTimersByTimeAsync(delay - 1); expect(sockets).toHaveLength(count);
+      await vi.advanceTimersByTimeAsync(1); expect(sockets).toHaveLength(count + 1);
+    }
+    vi.mocked(io.get).mockClear(); sockets.at(-1)!.dispatchEvent(new Event('open'));
+    await Promise.resolve(); expect(io.get).toHaveBeenCalledWith('d', '/api/threads?includeAgentThreads=true', expect.anything());
+    store.stop(); vi.useRealTimers();
+  });
+  it('does not allow a stale list refresh to revert a newer live status', async () => {
+    const { store } = setup(); await store.refresh();
+    store.applyEvent('a', { type: 'thread.turn.started', threadId: 'same', timestamp: '2026-11-01T12:00:00Z', payload: { turnId: 'current' } });
+    await store.refreshDevice('a');
+    expect(store.getSnapshot().threads.find(row => row.key === 'a:same')?.status).toBe('running');
+    store.stop();
+  });
+});

@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components -- This module exports store hooks and a context, not UI components. */
 import { createContext, useContext, useRef, useSyncExternalStore } from 'react';
 import { DesktopIndexStore } from './store';
 import type { DesktopIndex } from './types';

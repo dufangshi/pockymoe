@@ -70,6 +70,7 @@ export function useThreadWorkspaceAdapter({
           const result = isLinked(input.path)
             ? await downloadLinkedFile(input.threadId, input.path)
             : await downloadWorkspaceFile(workspaceId, { path: input.path });
+          if (window.remoteCodexHost && await (await import('../desktop/download')).nativeSave(result.blob, result.filename)) return;
           const url = URL.createObjectURL(result.blob);
           const anchor = document.createElement('a');
           anchor.href = url;

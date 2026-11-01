@@ -17,8 +17,9 @@ export interface DesktopThread extends Pick<ThreadDto,
   'parentThreadId' | 'rootThreadId' | 'agentName' | 'closedAt'> {
   key: string;
   deviceId: string;
+  lastTurnId?: string | null;
   lastViewedAt: string | null;
-  requests: ActivityRequest[];
+  requests: (ActivityRequest & { createdAt?: string })[];
   resultSummary: string | null;
 }
 export interface DesktopIndex {
@@ -38,7 +39,7 @@ export const unread = (thread: DesktopThread) =>
 export const running = (thread: DesktopThread) => thread.status === 'running' || thread.status === 'recovering';
 export const failed = (thread: DesktopThread) => thread.status === 'failed' || thread.status === 'system_error';
 export const needsAttention = (thread: DesktopThread, now = Date.now()) =>
-  thread.requests.length > 0 || (failed(thread) && unread(thread) && now - Date.parse(thread.lastTurnCompletedAt ?? thread.updatedAt) < 86_400_000);
+  thread.requests.length > 0 || (failed(thread) && (thread.lastTurnCompletedAt ?? thread.updatedAt) > (thread.lastViewedAt ?? '') && now - Date.parse(thread.lastTurnCompletedAt ?? thread.updatedAt) < 86_400_000);
 export const active = (thread: DesktopThread, now = Date.now()) => needsAttention(thread, now) || running(thread) || unread(thread);
 export function plainSummary(value: string | null | undefined) {
   return (value ?? '').split('\n')[0]!.replace(/<[^>]*>/g, '').replace(/[`*_#]/g, '').replace(/\s+/g, ' ').trim().slice(0, 140);

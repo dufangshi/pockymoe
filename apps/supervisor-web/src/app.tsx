@@ -8,7 +8,7 @@ import {
   Routes,
   useLocation,
 } from 'react-router-dom';
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { PluginProvider } from '@remote-codex/thread-ui';
 
 import type {
@@ -54,6 +54,8 @@ import {
   updatePlugin,
 } from './lib/api';
 import { builtinFrontendPlugins } from './plugins/builtin-plugin-modules';
+
+const DesktopEntry = lazy(() => import('./desktop/DesktopEntry'));
 
 const THEME_STORAGE_KEY = 'remote-codex-theme-mode';
 const BACKEND_STORAGE_KEY = 'remote-codex-default-backend';
@@ -307,7 +309,9 @@ function AppShell({
 
   return (
     <AppShellNavContext.Provider value={shellNavValue}>
-      <div
+      {window.remoteCodexHost ? (
+        <Suspense fallback={null}><DesktopEntry><section className="h-full min-h-0"><Outlet /></section></DesktopEntry></Suspense>
+      ) : <div
         className={`bg-[var(--app-bg)] text-[var(--app-fg)] ${
           isViewportLockedRoute || isSettingsRoute
             ? 'fixed inset-0 overflow-hidden overscroll-none'
@@ -373,7 +377,7 @@ function AppShell({
             <Outlet />
           </section>
         </main>
-      </div>
+      </div>}
       <AppShellSettingsDialog />
     </AppShellNavContext.Provider>
   );
@@ -571,6 +575,8 @@ function SupervisorRoutes({
         }
       >
         <Route path="/" element={<RootRoute />} />
+        <Route path="/desktop" element={window.remoteCodexHost ? <></> : <Navigate to="/" replace />} />
+        <Route path="/desktop/devices" element={window.remoteCodexHost ? <></> : <Navigate to="/relay-devices" replace />} />
         <Route path="/workspaces" element={<WorkspacesPage />} />
         <Route path="/workspaces/new" element={<WorkspaceNewPage />} />
         <Route path="/relay-account" element={<RelayAccountPage />} />

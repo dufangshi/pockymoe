@@ -8,8 +8,15 @@ import { initializeFontSize } from './lib/fontSize';
 
 initializeFontSize();
 
-ReactDOM.createRoot(document.getElementById('root')!).render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>
-);
+async function mount() {
+  if (import.meta.env.DEV && new URLSearchParams(location.search).get('desktopMockHost') === '1') {
+    const { installMockHost } = await import('./desktop/devMockHost');
+    installMockHost();
+  }
+  ReactDOM.createRoot(document.getElementById('root')!).render(
+    <React.StrictMode>
+      <App />
+    </React.StrictMode>
+  );
+}
+void mount();

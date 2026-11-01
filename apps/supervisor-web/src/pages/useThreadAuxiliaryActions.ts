@@ -149,6 +149,10 @@ export function useThreadAuxiliaryActions({
       const snapshot = await loadExportSnapshot(id, input);
       const html = await renderStandaloneTranscript(snapshot);
       const filename = `remote-codex-${snapshot.title.replace(/[^a-z0-9._-]+/gi, '-').replace(/^-|-$/g, '') || 'thread'}.html`;
+      if (window.remoteCodexHost && await (await import('../desktop/download')).nativeSave(new Blob([html], { type: 'text/html;charset=utf-8' }), filename)) {
+        setExportDialogOpen(false);
+        return;
+      }
       const href = URL.createObjectURL(
         new Blob([html], { type: 'text/html;charset=utf-8' }),
       );
