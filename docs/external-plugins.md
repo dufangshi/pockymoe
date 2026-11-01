@@ -130,6 +130,10 @@ the plugin keeps for conversations), wait for results, register hooks and call
 {"operation":"modelComplete","connectionId":"…","model":"","system":"…","user":"…","maxTokens":1024}
 ```
 
+Add `"images": [{"mediaType": "image/jpeg", "data": "<base64>"}]` (at most 4,
+JPEG/PNG/WebP/GIF up to 5 MiB each) to send pictures after the user text, for
+models that read images.
+
 `modelComplete` sends one prompt through a saved upstream connection
 (Settings → Upstreams, any `openai_chat`, `openai_responses`, `anthropic` or
 `gemini` connection) and returns `{"text": …}`; an empty model uses the
