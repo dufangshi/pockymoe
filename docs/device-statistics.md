@@ -16,6 +16,14 @@ Turns are assigned to their start date in the requested timezone. Future starts,
 missing/invalid start timestamps, and deleted threads are excluded. Imported
 turns already in SQLite count; requesting stats never scans external transcripts.
 
+For `range=today`, `hourly` contains 24 zero-filled buckets in local clock-hour
+order (`hour: 0..23`) with `turns`, `failed`, `tokens` and nullable `costUsd`.
+Both occurrences of a repeated fall-back hour are combined in that hour's bucket;
+a skipped spring-forward hour stays zero. Fractional-hour UTC offsets use the
+requested local clock hour. The same start-date, token and unknown-cost rules as
+`daily` apply. Other ranges omit `hourly`; clients can feature-detect the field
+and fall back when reading older Supervisors.
+
 Counts include running turns; completed/failed/interrupted are terminal subsets.
 Durations include terminal turns with valid start/end times only, including time
 waiting for tools/input. `totals.durationSamples` counts these turns (zero when
@@ -77,6 +85,13 @@ export interface StatsSummary {
   };
   daily: Array<{
     date: string; // YYYY-MM-DD in requested timezone
+    turns: number;
+    failed: number;
+    tokens: number;
+    costUsd: number | null;
+  }>;
+  hourly?: Array<{ // present for range=today
+    hour: number; // local clock hour, 0..23
     turns: number;
     failed: number;
     tokens: number;

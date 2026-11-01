@@ -2,7 +2,7 @@
 use std::collections::BTreeMap;
 
 use anyhow::{bail, Result};
-use chrono::{DateTime, Duration, FixedOffset, NaiveDate, Utc};
+use chrono::{DateTime, Duration, FixedOffset, NaiveDate, Timelike, Utc};
 use rusqlite::{params, Connection};
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -31,6 +31,13 @@ impl Zone {
         match self {
             Self::Iana(zone) => at.with_timezone(zone).date_naive(),
             Self::Offset(zone) => at.with_timezone(zone).date_naive(),
+        }
+    }
+
+    fn hour(&self, at: DateTime<Utc>) -> u32 {
+        match self {
+            Self::Iana(zone) => at.with_timezone(zone).hour(),
+            Self::Offset(zone) => at.with_timezone(zone).hour(),
         }
     }
 }
@@ -103,6 +110,8 @@ fn summarize(
     for day in 0..days(range)? {
         daily.insert((first + Duration::days(day)).to_string(), Bucket::empty());
     }
+    let mut hourly =
+        (range == "today").then(|| (0..24).map(|_| Bucket::empty()).collect::<Vec<_>>());
     let mut models: BTreeMap<String, Bucket> = BTreeMap::new();
     let mut workspaces: BTreeMap<String, (String, Bucket, String)> = BTreeMap::new();
     let mut threads: BTreeMap<String, (String, String, u64, u64)> = BTreeMap::new();
@@ -168,6 +177,9 @@ fn summarize(
         interrupted += u64::from(status == "interrupted");
         totals.add(failed, turn_tokens, cost);
         day.add(failed, turn_tokens, cost);
+        if let Some(hours) = &mut hourly {
+            hours[zone.hour(start.with_timezone(&Utc)) as usize].add(failed, turn_tokens, cost);
+        }
         models
             .entry(model.or(pricing_model).unwrap_or_else(|| "unknown".into()))
             .or_insert_with(Bucket::empty)
@@ -231,7 +243,7 @@ fn summarize(
         [],
         |r| r.get(0),
     )?;
-    Ok(json!({
+    let mut summary = json!({
         "range":range, "generatedAt":now.to_rfc3339(),
         "totals":{"turns":totals.turns,"completed":completed,"failed":totals.failed,"interrupted":interrupted,
             "avgDurationMs":avg,"p50DurationMs":p50,"durationSamples":durations.len(),"inputTokens":tokens.input_tokens,"outputTokens":tokens.output_tokens,
@@ -241,7 +253,13 @@ fn summarize(
         "byWorkspace":by_workspace.into_iter().map(|(id,(label,b,last))|json!({"workspaceId":id,"label":label,"turns":b.turns,"tokens":b.tokens,"costUsd":b.cost_usd,"lastActivityAt":last})).collect::<Vec<_>>(),
         "longestThreads":longest.into_iter().take(5).map(|(id,(title,workspace,ms,n))|json!({"threadId":id,"title":title,"workspaceId":workspace,"durationMs":ms as f64/n as f64})).collect::<Vec<_>>(),
         "activeThreads":active_threads,"runningTurns":running_turns
-    }))
+    });
+    if let Some(hours) = hourly {
+        summary["hourly"] = json!(hours.into_iter().enumerate().map(|(hour,b)|
+            json!({"hour":hour,"turns":b.turns,"failed":b.failed,"tokens":b.tokens,"costUsd":b.cost_usd})
+        ).collect::<Vec<_>>());
+    }
+    Ok(summary)
 }
 
 #[cfg(test)]
@@ -284,6 +302,7 @@ mod tests {
                 "2026-11-01T12:00:00Z".parse()?,
                 crate::usage::pricing(),
             )?;
+            assert!(stats.get("hourly").is_none());
             assert_eq!(stats["totals"]["turns"], 0);
             assert_eq!(stats["totals"]["costUsd"], 0.0);
             assert_eq!(stats["totals"]["durationSamples"], 0);
@@ -299,6 +318,92 @@ mod tests {
             assert!(validate_query(range, tz).is_err());
         }
         Ok(())
+    }
+
+    #[test]
+    fn stats_today_hourly_zero_fill_and_unknown_costs() -> Result<()> {
+        let (_dir, db) = db();
+        db.with(|conn| {
+            let now = "2026-11-02T04:59:00Z".parse()?;
+            let empty = summarize(
+                conn,
+                "today",
+                "America/New_York",
+                now,
+                crate::usage::pricing(),
+            )?;
+            assert_eq!(empty["hourly"].as_array().unwrap().len(), 24);
+            for hour in 0..24 {
+                assert_eq!(
+                    empty["hourly"][hour],
+                    json!({"hour":hour,"turns":0,"failed":0,"tokens":0,"costUsd":0.0})
+                );
+            }
+            add(
+                conn,
+                "before",
+                "failed",
+                "2026-11-01T03:59:00Z",
+                None,
+                "unknown",
+            )?;
+            add(
+                conn,
+                "first",
+                "completed",
+                "2026-11-01T05:30:00Z",
+                None,
+                "gpt-6.1-sol",
+            )?;
+            add(
+                conn,
+                "second",
+                "failed",
+                "2026-11-01T06:30:00Z",
+                None,
+                "unknown",
+            )?;
+            add(
+                conn,
+                "future",
+                "failed",
+                "2026-11-02T05:00:00Z",
+                None,
+                "unknown",
+            )?;
+            let stats = summarize(
+                conn,
+                "today",
+                "America/New_York",
+                now,
+                crate::usage::pricing(),
+            )?;
+            assert_eq!(stats["hourly"][1]["turns"], 2);
+            assert_eq!(stats["hourly"][1]["failed"], 1);
+            assert_eq!(stats["hourly"][1]["tokens"], 300);
+            assert!(stats["hourly"][1]["costUsd"].is_null());
+            assert_eq!(stats["hourly"][23]["costUsd"], 0.0);
+            assert_eq!(
+                stats["hourly"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|b| b["turns"].as_u64().unwrap())
+                    .sum::<u64>(),
+                stats["totals"]["turns"].as_u64().unwrap()
+            );
+            assert_eq!(stats["totals"]["turns"], 2);
+            assert!(summarize(
+                conn,
+                "30d",
+                "America/New_York",
+                now,
+                crate::usage::pricing()
+            )?
+            .get("hourly")
+            .is_none());
+            Ok(())
+        })
     }
 
     #[test]
@@ -368,6 +473,12 @@ mod tests {
                 .unwrap()
                 * 4.0;
             assert!((totals["costUsd"].as_f64().unwrap() - expected).abs() < 1e-10);
+            assert_eq!(stats["hourly"].as_array().unwrap().len(), 24);
+            assert_eq!(stats["hourly"][10]["hour"], 10);
+            assert_eq!(stats["hourly"][10]["turns"], 4);
+            assert_eq!(stats["hourly"][10]["failed"], 1);
+            assert_eq!(stats["hourly"][10]["tokens"], 600);
+            assert_eq!(stats["hourly"][10]["costUsd"], totals["costUsd"]);
             assert_eq!(stats["daily"][0]["tokens"], 600);
             assert_eq!(stats["byModel"][0]["turns"], 4);
             assert_eq!(stats["byWorkspace"][0]["label"], "Workspace");
@@ -442,11 +553,17 @@ mod tests {
             )?;
             assert_eq!(stats["daily"][0]["date"], "2026-11-01");
             assert_eq!(stats["totals"]["turns"], 3);
+            assert_eq!(stats["hourly"][1]["turns"], 2);
+            assert_eq!(stats["hourly"][23]["turns"], 1);
+            assert_eq!(stats["hourly"][0]["turns"], 0);
             let offset = summarize(conn, "today", "-300", now, crate::usage::pricing())?;
             assert_eq!(offset["totals"]["turns"], 3);
+            assert_eq!(offset["hourly"][0]["turns"], 1);
+            assert_eq!(offset["hourly"][1]["turns"], 1);
             let east = summarize(conn, "today", "330", now, crate::usage::pricing())?;
             assert_eq!(east["daily"][0]["date"], "2026-11-02");
             assert_eq!(east["totals"]["turns"], 1);
+            assert_eq!(east["hourly"][10]["turns"], 1);
             // An explicitly offset timestamp must be included by the UTC index.
             add(
                 conn,
@@ -499,6 +616,9 @@ mod tests {
                 crate::usage::pricing(),
             )?;
             assert_eq!(spring["totals"]["turns"], 2);
+            assert_eq!(spring["hourly"][0]["turns"], 1);
+            assert_eq!(spring["hourly"][2]["turns"], 0);
+            assert_eq!(spring["hourly"][23]["turns"], 1);
             Ok(())
         })
     }
