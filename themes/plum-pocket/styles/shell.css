@@ -1037,3 +1037,18 @@
   --plum-chrome-panel: var(--theme-bg);
   --plum-chrome-border: var(--theme-border);
 }
+
+/* Desktop thread map v2: waiting remains a static speech bubble in this pack. */
+:theme .matter-status-dot[data-status='waiting'] {
+  --status-waiting: var(--plum-status-interrupted);
+  width: 12px; height: 11px; border: 0; border-radius: 0;
+  background: var(--status-waiting); transform: none; rotate: none; animation: none;
+  clip-path: polygon(20% 0, 80% 0, 100% 22%, 100% 60%, 82% 80%, 94% 100%, 56% 80%, 20% 80%, 0 60%, 0 22%);
+}
+:theme[data-theme-effective='dark'] .matter-status-dot[data-status='waiting'] { --status-waiting: #edb75d; }
+
+:theme .thread-map[data-presentation='page'] { --thread-map-tile: var(--theme-surface); --thread-map-live: var(--plum-status-running); }
+:theme .thread-map-attention-card { border-radius: 12px; }
+:theme .thread-map-scope { border-radius: 10px; }
+:theme .thread-map-compressed { border-radius: 9px; }
+:theme :is(.matter-thread-row, .matter-group-tab, .matter-agent-threads-item) > .matter-thread-avatar + .matter-status-dot[data-status='waiting'] { width: 12px; height: 11px; border: 0; border-radius: 0; background: var(--status-waiting); box-shadow: none; }
