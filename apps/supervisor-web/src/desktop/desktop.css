@@ -53,3 +53,9 @@
 
 .desktop-decision-buttons > button { min-width: 86px; }
 .desktop-quicklook header button:active { background: var(--theme-hover); }
+
+@media (max-width: 639px) {
+  :root:root [data-desktop-surface] .matter-main > .matter-content { grid-column: 1 / -1; grid-row: 2; }
+  :root:root [data-desktop-surface] .matter-tabs-row { display: none; }
+  :root:root [data-desktop-surface] .matter-topbar { position: relative; z-index: 5; grid-column: 1 / -1; grid-row: 1; height: var(--desktop-title-height, 38px); box-sizing: border-box; padding-left: var(--desktop-controls-left); padding-right: var(--desktop-controls-right); -webkit-app-region: drag; }
+}

@@ -64,7 +64,8 @@ export class DesktopIndexStore {
   async hydrate() {
     const cached = await readIndex(this.accountId);
     if (this.stopped) return;
-    if (cached?.accountId === this.accountId) this.state = { ...this.state, ...cached, refreshing: false, error: null, pulseKeys: [], hydrated: true, syncedDeviceIds: [] };
+    if (cached?.accountId === this.accountId) this.state = { ...this.state, ...cached, refreshing: false, error: null, pulseKeys: [], hydrated: true, syncedDeviceIds: [],
+      recentThreadKeys: cached.recentThreadKeys ?? [...cached.threads].filter(thread => thread.lastViewedAt).sort((a, b) => b.lastViewedAt!.localeCompare(a.lastViewedAt!)).slice(0, 10).map(thread => thread.key) };
     else this.state = { ...this.state, hydrated: true };
   }
   start() {
