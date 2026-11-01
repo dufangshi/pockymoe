@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use pockymoe_protocol::{now_rfc3339, ThreadHistoryItemDto, ThreadTurnDto};
 use rusqlite::{params, Connection, OpenFlags};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::actor::ImportSessionMeta;
 use crate::import_id::session_ids_match;
@@ -338,6 +338,7 @@ fn load_codex_paginated_history(home: &Path, session_id: &str) -> Option<Vec<Thr
         turns
             .into_iter()
             .map(|(id, status, error, started)| ThreadTurnDto {
+                origin: None,
                 id: id.clone(),
                 started_at: int_to_rfc3339(started),
                 completed_at: None,
@@ -1070,6 +1071,7 @@ pub(crate) fn sanitize_codex_user_text(text: &str) -> Option<String> {
 
 fn empty_codex_turn(id: String, started_at: Option<String>) -> ThreadTurnDto {
     ThreadTurnDto {
+        origin: None,
         id,
         started_at,
         completed_at: None,
@@ -1212,6 +1214,7 @@ pub(crate) fn read_grok_usage_history(path: &Path) -> Option<Vec<ThreadTurnDto>>
                 if body["sessionUpdate"] == "user_message_chunk" {
                     let text = content_text(&body["content"]).unwrap_or_default();
                     current = Some(ThreadTurnDto {
+                        origin: None,
                         id: String::new(),
                         started_at: timestamp_to_rfc3339(&entry["timestamp"]),
                         completed_at: None,
@@ -1278,10 +1281,18 @@ fn parse_grok_history(path: &Path) -> Vec<ThreadTurnDto> {
                 if let Some(turn) = current.take() {
                     turns.push(turn);
                 }
-                let id = format!("imported-{}", turns.len() + 1);
+                let id = format!(
+                    "imported-{}-{}",
+                    path.parent()
+                        .and_then(|p| p.file_name())
+                        .unwrap_or_default()
+                        .to_string_lossy(),
+                    turns.len() + 1
+                );
                 current = Some(ThreadTurnDto {
+                    origin: None,
                     id: id.clone(),
-                    started_at: None,
+                    started_at: timestamp_to_rfc3339(&value["timestamp"]),
                     completed_at: None,
                     status: pockymoe_protocol::TurnStatus::Completed,
                     error: None,
@@ -1365,6 +1376,11 @@ fn parse_claude_jsonl(path: &Path, with_history: bool) -> Option<ImportSessionMe
         let Ok(value) = serde_json::from_str::<Value>(line) else {
             continue;
         };
+        // Sidechain records belong to native subagents, not another conversation
+        // execution. Live accounting includes their requests under the owning turn.
+        if value["isSidechain"] == true {
+            continue;
+        }
         if let Some(id) = value.get("sessionId").and_then(Value::as_str) {
             session_id = id.to_string();
         }
@@ -1378,6 +1394,52 @@ fn parse_claude_jsonl(path: &Path, with_history: bool) -> Option<ImportSessionMe
         }
         let kind = value.get("type").and_then(Value::as_str).unwrap_or("");
         let message = value.get("message").cloned().unwrap_or(value.clone());
+        if kind == "assistant" {
+            if let (Some(turn), Some(id), Some(tokens)) = (
+                current.as_mut(),
+                message["id"].as_str(),
+                crate::usage::Tokens::parse(&message["usage"]),
+            ) {
+                let usage = turn
+                    .token_usage
+                    .get_or_insert_with(|| json!({"requests":[]}));
+                let requests = usage["requests"].as_array_mut().unwrap();
+                let snapshot = json!({"messageId":id,"model":message["model"],"parent":true,"observedAt":value["timestamp"],"total":tokens,"last":tokens});
+                if let Some(previous) = requests.iter_mut().find(|r| r["messageId"] == id) {
+                    if tokens.output_tokens
+                        >= previous
+                            .pointer("/total/outputTokens")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0)
+                    {
+                        *previous = snapshot;
+                    }
+                } else {
+                    requests.push(snapshot);
+                }
+                let total = requests
+                    .iter()
+                    .filter_map(|r| crate::usage::Tokens::parse(&r["total"]))
+                    .fold(crate::usage::Tokens::default(), |a, b| a.add(&b));
+                usage["total"] = json!(total);
+                usage["last"] = json!(tokens);
+                usage["source"] = json!("claudeImport");
+                if message["model"]
+                    .as_str()
+                    .is_some_and(|m| m != "<synthetic>")
+                {
+                    turn.model = message["model"].as_str().map(str::to_owned);
+                }
+            }
+            if let Some(turn) = current.as_mut() {
+                if matches!(
+                    message["stop_reason"].as_str(),
+                    Some("end_turn" | "stop_sequence" | "max_tokens")
+                ) {
+                    turn.completed_at = value["timestamp"].as_str().map(str::to_owned);
+                }
+            }
+        }
         let text = content_text(message.get("content").unwrap_or(&message)).unwrap_or_default();
         if text.trim().is_empty() {
             continue;
@@ -1399,8 +1461,9 @@ fn parse_claude_jsonl(path: &Path, with_history: bool) -> Option<ImportSessionMe
                 if let Some(turn) = current.take() {
                     turns.push(turn);
                 }
-                let id = format!("imported-{}", turns.len() + 1);
+                let id = format!("imported-{session_id}-{}", turns.len() + 1);
                 current = Some(ThreadTurnDto {
+                    origin: None,
                     id: id.clone(),
                     started_at: value
                         .get("timestamp")
@@ -1621,4 +1684,59 @@ fn int_to_rfc3339(value: Option<i64>) -> Option<String> {
     };
     chrono::DateTime::from_timestamp(secs, 0)
         .map(|dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+}
+
+#[cfg(test)]
+mod accounting_import_tests {
+    use super::*;
+
+    #[test]
+    fn accounting_claude_import_keeps_models_requests_times_and_avoids_sidechain_turns() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session-a.jsonl");
+        let records = [
+            json!({"sessionId":"session-a","cwd":dir.path(),"type":"user","timestamp":"2026-01-01T00:00:00Z","message":{"content":"fixture"}}),
+            json!({"sessionId":"session-a","type":"assistant","timestamp":"2026-01-01T00:00:01Z","message":{"id":"request-a","model":"claude-opus-5-5","usage":{"input_tokens":100,"cache_read_input_tokens":20,"cache_creation_input_tokens":10,"output_tokens":5},"content":[{"type":"tool_use","id":"tool","name":"fixture"}]}}),
+            json!({"sessionId":"session-a","type":"user","isSidechain":true,"timestamp":"2026-01-01T00:00:02Z","message":{"content":"sidechain is not a new root execution"}}),
+            json!({"sessionId":"session-a","type":"assistant","timestamp":"2026-01-01T00:00:03Z","message":{"id":"request-a","model":"claude-opus-5-5","usage":{"input_tokens":100,"cache_read_input_tokens":20,"cache_creation_input_tokens":10,"output_tokens":10},"stop_reason":"end_turn","content":"done"}}),
+        ];
+        fs::write(
+            &path,
+            records
+                .iter()
+                .map(Value::to_string)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+        .unwrap();
+        let imported = parse_claude_jsonl(&path, true).unwrap();
+        assert_eq!(imported.turns.len(), 1);
+        let turn = &imported.turns[0];
+        assert_eq!(turn.completed_at.as_deref(), Some("2026-01-01T00:00:03Z"));
+        assert_eq!(turn.model.as_deref(), Some("claude-opus-5-5"));
+        assert_eq!(
+            turn.token_usage.as_ref().unwrap()["total"]["totalTokens"],
+            140
+        );
+        assert_eq!(
+            turn.token_usage.as_ref().unwrap()["requests"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(turn.origin.is_none());
+        let other = dir.path().join("session-b.jsonl");
+        fs::write(
+            &other,
+            fs::read_to_string(path)
+                .unwrap()
+                .replace("session-a", "session-b"),
+        )
+        .unwrap();
+        assert_ne!(
+            parse_claude_jsonl(&other, true).unwrap().turns[0].id,
+            turn.id
+        );
+    }
 }

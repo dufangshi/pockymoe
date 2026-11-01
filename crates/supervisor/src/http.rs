@@ -3508,6 +3508,7 @@ mod public_link_tests {
 
 #[derive(Deserialize)]
 struct StatsQuery {
+    origin: Option<String>,
     range: Option<String>,
     tz: Option<String>,
 }
@@ -3527,7 +3528,9 @@ async fn stats_summary(
     let range = query.range.unwrap_or_else(|| "today".into());
     let tz = query.tz.unwrap_or_else(|| "UTC".into());
     pockymoe_runtime::stats::validate_query(&range, &tz).map_err(map_err)?;
-    tokio::task::spawn_blocking(move || state.stats_summary(&range, &tz))
+    let origin = query.origin.unwrap_or_else(|| "all".into());
+    pockymoe_runtime::stats::validate_origin(&origin).map_err(map_err)?;
+    tokio::task::spawn_blocking(move || state.stats_summary_with_origin(&range, &tz, &origin))
         .await
         .map_err(|_| {
             err(

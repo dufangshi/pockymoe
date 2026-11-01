@@ -208,10 +208,20 @@ async fn counts_turns_and_running_time_inside_the_window() {
         activity[1].token_usage.take().unwrap()["totalTokens"],
         1_100
     );
+    assert_eq!(activity[0].by_origin.take().unwrap()["unknown"], 5);
+    let coverage = activity[0].usage_coverage.take().unwrap();
+    assert_eq!(coverage["missingUsageTurns"], 3);
+    assert_eq!(activity[1].by_origin.take().unwrap()["unknown"], 1);
+    assert_eq!(
+        activity[1].usage_coverage.take().unwrap()["unpricedTokens"],
+        1100
+    );
     assert_eq!(
         activity,
         vec![
             ThreadActivityDto {
+                by_origin: None,
+                usage_coverage: None,
                 thread_id: busy.id.clone(),
                 turns: 5,
                 active_ms: (10 + 30 + 60) * 60_000,
@@ -227,9 +237,11 @@ async fn counts_turns_and_running_time_inside_the_window() {
                 last_prompt: Some("Fix the login bug".into()),
                 token_usage: None,
                 price_estimate: None,
-                price_partial: false,
+                price_partial: true,
             },
             ThreadActivityDto {
+                by_origin: None,
+                usage_coverage: None,
                 thread_id: crashed.id.clone(),
                 turns: 1,
                 active_ms: 0,
@@ -243,4 +255,26 @@ async fn counts_turns_and_running_time_inside_the_window() {
         ]
     );
     assert!(activity.iter().all(|a| a.thread_id != quiet.id));
+}
+
+#[tokio::test]
+async fn accounting_recovering_turns_do_not_invent_elapsed_execution_time() {
+    let (_dir, s) = setup();
+    let ws = workspace(&s);
+    let t = spawn(&s, &ws, None).await;
+    turn(
+        &s,
+        &t.id,
+        "uncertain",
+        "recovering",
+        Some("2030-01-01T00:00:00Z"),
+        None,
+    );
+    set_status(&s, &t.id, "recovering");
+    let activity = s
+        .thread_activity("2030-01-01T00:00:00Z", "2030-01-02T00:00:00Z", 24)
+        .unwrap();
+    assert_eq!(activity[0].turns, 1);
+    assert_eq!(activity[0].total_ms, 0);
+    assert_eq!(activity[0].active_ms, 0);
 }
