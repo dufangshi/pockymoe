@@ -189,22 +189,39 @@ fn snapshot(conn: &Connection, user: &str) -> Result<Value> {
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    let notifications: Vec<Value> = events.into_iter().filter_map(|(id,device,raw,at)| {
-        let event: Value = serde_json::from_str(&raw).ok()?;
-        if !notification_scope::allowed(conn,user,&device,&event).ok()? { return None; }
-        let href = event["url"].as_str()?;
-        let thread = href.rsplit('/').next()?;
-        let reference = threads.iter().find(|r| r["deviceId"]==device && r["threadId"]==thread);
-        // Navigation workspace IDs are supplied by the browser, not proof that an
-        // event's thread belongs to that workspace. Require an independently
-        // verifiable device/thread grant before exposing server-side events.
-        if !accessible(conn,user,&device,thread) { return None; }
-        let title = reference
-            .and_then(|r|r["title"].as_str()).unwrap_or("Thread");
-        let failed = event["body"].as_str().unwrap_or("").contains("failed");
-        Some(json!({"id":id,"title":format!("{title} {}",if failed {"failed"} else {"completed"}),"href":href,
-            "occurredAt":chrono::DateTime::from_timestamp_millis(at)?.to_rfc3339()}))
-    }).take(100).collect();
+    let notifications: Vec<Value> = events
+        .into_iter()
+        .filter_map(|(id, device, raw, at)| {
+            let event: Value = serde_json::from_str(&raw).ok()?;
+            if !notification_scope::allowed(conn, user, &device, &event).ok()? {
+                return None;
+            }
+            let href = event["url"].as_str()?;
+            let thread = href.rsplit('/').next()?;
+            let reference = threads
+                .iter()
+                .find(|r| r["deviceId"] == device && r["threadId"] == thread);
+            // Navigation workspace IDs are supplied by the browser, not proof that an
+            // event's thread belongs to that workspace. Require an independently
+            // verifiable device/thread grant before exposing server-side events.
+            if !accessible(conn, user, &device, thread) {
+                return None;
+            }
+            let title = reference
+                .and_then(|r| r["title"].as_str())
+                .unwrap_or("Thread");
+            let outcome = match event["status"].as_str() {
+                Some("awaiting_input") => "needs input",
+                _ if event["body"].as_str().unwrap_or("").contains("failed") => "failed",
+                _ => "completed",
+            };
+            Some(
+                json!({"id":id,"title":format!("{title} {outcome}"),"href":href,
+            "occurredAt":chrono::DateTime::from_timestamp_millis(at)?.to_rfc3339()}),
+            )
+        })
+        .take(100)
+        .collect();
     Ok(json!({"threads":threads,"notifications":notifications}))
 }
 

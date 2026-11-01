@@ -57,7 +57,7 @@ pub fn should_notify_turn(
     subscribed: bool,
     status: &str,
 ) -> bool {
-    matches!(status, "completed" | "failed")
+    matches!(status, "completed" | "failed" | "awaiting_input")
         && match settings.scope {
             NotificationScope::Subscribed => subscribed,
             NotificationScope::All => true,
@@ -90,6 +90,20 @@ mod tests {
             Some("w"),
             true,
             "failed"
+        ));
+        assert!(should_notify_turn(
+            &settings,
+            "a",
+            Some("w"),
+            true,
+            "awaiting_input"
+        ));
+        assert!(!should_notify_turn(
+            &settings,
+            "a",
+            Some("w"),
+            false,
+            "awaiting_input"
         ));
         settings.scope = NotificationScope::All;
         assert!(should_notify_turn(&settings, "a", None, false, "completed"));

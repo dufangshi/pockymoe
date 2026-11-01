@@ -274,6 +274,11 @@ async fn run_connected_tunnel_with_deadline(
                         if event.payload["reason"] == "port_mappings_changed" {
                             let _ = outgoing.send(json!({"type":"relay.heartbeat","portMappings":crate::ports::snapshot(&state), "previewStreamLimit":crate::ports::PREVIEW_STREAMS_PER_MAPPING, "upstreamConnections":crate::connections::snapshot(&state)}));
                         }
+                        if event.event_type.as_str() == "thread.request.created" {
+                            if let Ok(notices) = state.pending_relay_notifications() {
+                                for payload in notices { let _ = outgoing.send(json!({"type":"relay.notification","payload":payload})); }
+                            }
+                        }
                         if event.payload["reason"] == "thread_created" || event.payload["reason"] == "child_deleted" {
                             let _ = outgoing.send(json!({"type":"relay.heartbeat","timestamp":now_rfc3339(),"threadLineage":thread_lineage(&state)}));
                         }

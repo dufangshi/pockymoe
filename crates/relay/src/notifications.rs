@@ -86,7 +86,7 @@ async fn settings(
             )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(
-            json!({"publicKey":key,"subscriptionIds":ids,"scope":"ownedDevices","nativePushAvailable":apns::configured()}),
+            json!({"publicKey":key,"subscriptionIds":ids,"scope":"ownedDevices","nativePushAvailable":apns::configured(),"nativePushKinds":apns::configured_kinds()}),
         )
     })();
     match result {
@@ -191,7 +191,7 @@ async fn subscribe_native(
     else {
         return unauthorized();
     };
-    if !apns::configured() {
+    if !apns::configured_for(sub.app_kind) {
         return failure(
             StatusCode::SERVICE_UNAVAILABLE,
             "APNs is not configured on this relay.",
@@ -200,14 +200,18 @@ async fn subscribe_native(
     if apns::validate(&sub).is_err() {
         return failure(StatusCode::BAD_REQUEST, "Invalid native push subscription.");
     }
-    let id = security::token_hash(&format!(
-        "apns:{}:{}",
-        sub.sandbox,
-        sub.device_token.to_ascii_lowercase()
-    ));
+    let id = apns::subscription_id(&sub);
     let session = security::token_hash(&extract_session_token(&headers, &query).unwrap());
     let result = (|| -> Result<()> {
         let tx = conn.unchecked_transaction()?;
+        if sub.app_kind == apns::AppKind::Ios {
+            let legacy = security::token_hash(&format!(
+                "apns:{}:{}",
+                sub.sandbox,
+                sub.device_token.to_ascii_lowercase()
+            ));
+            tx.execute("DELETE FROM relay_push_subscriptions WHERE id=?1", [legacy])?;
+        }
         let count: i64 = tx.query_row(
             "SELECT count(*) FROM relay_push_subscriptions WHERE user_id=?1 AND id!=?2",
             params![user.id, id],
@@ -271,15 +275,31 @@ pub(super) fn accept(conn: &Connection, device: &str, event: &Value) -> Result<S
     Uuid::parse_str(turn)?;
     let status = event["status"].as_str().unwrap_or("");
     anyhow::ensure!(
-        ["completed", "failed", "interrupted"].contains(&status),
+        ["completed", "failed", "interrupted", "awaiting_input"].contains(&status),
         "Unsupported notification event"
     );
+    let event_key = if status == "awaiting_input" {
+        let request = event["requestId"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("Missing request"))?;
+        anyhow::ensure!(
+            !request.is_empty()
+                && request.len() <= 256
+                && request
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"-_:".contains(&b)),
+            "Invalid request ID"
+        );
+        request
+    } else {
+        turn
+    };
     let at = chrono::DateTime::parse_from_rfc3339(event["occurredAt"].as_str().unwrap_or(""))?
         .timestamp_millis();
     let now = chrono::Utc::now().timestamp_millis();
     anyhow::ensure!(at <= now + 60_000, "Future notification");
     if at < now - DAY {
-        return Ok(turn.into());
+        return Ok(event_key.into());
     } // Expired events are acknowledged, not replayed.
     let tx = conn.unchecked_transaction()?;
     let owner: String = tx.query_row(
@@ -287,9 +307,11 @@ pub(super) fn accept(conn: &Connection, device: &str, event: &Value) -> Result<S
         [device],
         |r| r.get(0),
     )?;
-    let id = format!("{device}:{turn}");
-    tx.execute("UPDATE relay_turn_subscriptions SET ended_at=?4 WHERE device_id=?1 AND thread_id=?2 AND turn_id=?3 AND ended_at IS NULL",params![device,thread,turn,now])?;
-    let payload = json!({"title":"Pockymoe","body":if status=="completed" {"A thread turn completed. Click to view."} else {"A thread turn failed. Click to view."},"url":format!("/devices/{device}/threads/{thread}"),"tag":id,"userId":owner,"occurredAt":at,"threadId":thread,"turnId":turn,"status":status,"workspaceId":event["workspaceId"]});
+    let id = format!("{device}:{event_key}");
+    if status != "awaiting_input" {
+        tx.execute("UPDATE relay_turn_subscriptions SET ended_at=?4 WHERE device_id=?1 AND thread_id=?2 AND turn_id=?3 AND ended_at IS NULL",params![device,thread,turn,now])?;
+    }
+    let payload = json!({"title":"Pockymoe","body":if status=="completed" {"A thread turn completed. Click to view."} else if status=="awaiting_input" {"A thread needs your input. Click to respond."} else {"A thread turn failed. Click to view."},"url":format!("/devices/{device}/threads/{thread}"),"tag":id,"deviceId":device,"userId":owner,"occurredAt":at,"threadId":thread,"turnId":turn,"status":status,"workspaceId":event["workspaceId"]});
     if tx.execute(
         "INSERT OR IGNORE INTO relay_push_events VALUES (?1,?2,?3,?4,?5)",
         params![id, device, owner, payload.to_string(), at],
@@ -299,7 +321,7 @@ pub(super) fn accept(conn: &Connection, device: &str, event: &Value) -> Result<S
         tx.execute("INSERT INTO relay_push_deliveries(event_id,subscription_id) SELECT ?1,p.id FROM relay_push_subscriptions p JOIN relay_auth_sessions s ON s.token_hash=p.session_hash JOIN relay_users u ON u.id=p.user_id WHERE p.user_id=?2 AND p.created_at<=?3 AND s.expires_at>?4 AND u.enabled=1",params![id,owner,at,now])?;
     }
     tx.commit()?;
-    Ok(turn.into())
+    Ok(event_key.into())
 }
 
 fn encrypted_request(
@@ -369,7 +391,9 @@ async fn deliver_batch(state: &AppState, http: &reqwest::Client) -> Result<()> {
         // Recheck before sending: unsubscribe/logout may happen during a batch.
         if !state.store.conn.lock().await.query_row("SELECT EXISTS(SELECT 1 FROM relay_push_subscriptions p JOIN relay_auth_sessions s ON s.token_hash=p.session_hash JOIN relay_push_events e ON e.id=?3 JOIN relay_devices d ON d.id=e.device_id WHERE p.id=?1 AND s.expires_at>?2 AND p.subscription=?4 AND p.user_id=e.user_id AND d.owner_user_id=p.user_id)",params![id,chrono::Utc::now().timestamp_millis(),event,raw],|r|r.get::<_,bool>(0))? { continue; }
         let payload_value: Value = serde_json::from_str(&payload)?;
-        let device = event.rsplit_once(':').map(|(d, _)| d).unwrap_or("");
+        let device = payload_value["deviceId"]
+            .as_str()
+            .unwrap_or_else(|| event.rsplit_once(':').map(|(d, _)| d).unwrap_or(""));
         let user = payload_value["userId"].as_str().unwrap_or("");
         if !notification_scope::allowed(
             &*state.store.conn.lock().await,
@@ -426,6 +450,75 @@ async fn deliver_batch(state: &AppState, http: &reqwest::Client) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn awaiting_input_accepts_request_tags_and_deduplicates() -> Result<()> {
+        let dir = std::env::temp_dir().join(format!("push-input-{}", Uuid::new_v4()));
+        let store = RelayStore::open(dir.join("db"), "secret".into())?;
+        let conn = store.conn.try_lock().unwrap();
+        conn.execute("INSERT INTO relay_users VALUES ('owner','owner','owner','user',1,NULL,'now','salt','hash')", [])?;
+        let session = create_session(&conn, "secret", "owner")?;
+        conn.execute("INSERT INTO relay_devices VALUES ('device','owner','device',NULL,'device','device','now')", [])?;
+        conn.execute(
+            "INSERT INTO relay_push_subscriptions VALUES ('sub','owner',?1,'{}',?2)",
+            params![
+                security::token_hash(&session),
+                chrono::Utc::now().timestamp_millis() - 1000
+            ],
+        )?;
+        let mut event = json!({"threadId":Uuid::new_v4(),"turnId":Uuid::new_v4(),"requestId":"perm-request-1","status":"awaiting_input","occurredAt":now_rfc3339(),"body":"private text ignored","deviceId":"spoofed"});
+        // Default subscribed policy still applies; request creation does not end it.
+        conn.execute(
+            "INSERT INTO relay_turn_subscriptions VALUES ('owner','device',?1,?2,NULL)",
+            params![
+                event["threadId"].as_str().unwrap(),
+                event["turnId"].as_str().unwrap()
+            ],
+        )?;
+        assert_eq!(accept(&conn, "device", &event)?, "perm-request-1");
+        accept(&conn, "device", &event)?;
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM relay_push_deliveries", [], |r| r
+                .get::<_, i64>(0))?,
+            1
+        );
+        let payload: String =
+            conn.query_row("SELECT payload FROM relay_push_events", [], |r| r.get(0))?;
+        let payload: Value = serde_json::from_str(&payload)?;
+        assert_eq!(payload["tag"], "device:perm-request-1");
+        assert_eq!(payload["deviceId"], "device");
+        assert_eq!(
+            payload["body"],
+            "A thread needs your input. Click to respond."
+        );
+        assert!(conn.query_row(
+            "SELECT ended_at IS NULL FROM relay_turn_subscriptions",
+            [],
+            |r| r.get::<_, bool>(0)
+        )?);
+        event["status"] = json!("completed");
+        accept(&conn, "device", &event)?;
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM relay_push_events", [], |r| r
+                .get::<_, i64>(0))?,
+            2
+        );
+        assert!(!conn.query_row(
+            "SELECT ended_at IS NULL FROM relay_turn_subscriptions",
+            [],
+            |r| r.get::<_, bool>(0)
+        )?);
+        assert!(!notification_scope::allowed(
+            &conn, "owner", "device", &payload
+        )?);
+        event["status"] = json!("awaiting_input");
+        event["requestId"] = Value::Null;
+        assert!(accept(&conn, "device", &event).is_err());
+        drop(conn);
+        drop(store);
+        std::fs::remove_dir_all(dir)?;
+        Ok(())
+    }
+
     #[test]
     fn owner_fanout_deduplicates_across_devices_and_revocation_cascades() {
         let dir = std::env::temp_dir().join(format!("push-test-{}", Uuid::new_v4()));

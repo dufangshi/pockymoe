@@ -43,9 +43,13 @@ remains browser-specific. Pages may be closed after registering Web Push; local
 mode uses the workbench bell. Signing out/revoking a Relay session still disables
 that session's push subscriptions.
 
-Notifications report a **completed or failed turn**, regardless of its provider.
+Notifications report a **completed or failed turn**, or a turn **awaiting input**, regardless of its provider.
 Token streaming, tool progress, interruption and uncertain/recovering states do
 not send notifications. Interruption ends a turn subscription without notifying.
+Relay approval/question notices follow the same account scope, preserve the active
+turn subscription, and use `deviceId:requestId` for deduplication. The standalone
+local lifecycle feed continues to record terminal turns only. A terminal
+turn suppresses delayed request notices; terminal notices still use `deviceId:turnId`.
 The shared Rust `should_notify_turn` policy combines the account settings,
 authenticated device, device-reported workspace and exact turn subscription. A
 queued follow-up may already be working when the preceding turn's notice arrives.
@@ -181,3 +185,26 @@ Build `cargo build -p pockymoe` and
 `pnpm --filter @pockymoe/supervisor-web build` first. Run the spec with explicit
 isolated `E2E_API_PORT`, `E2E_WEB_PORT`, `E2E_DATABASE_URL`, `E2E_WORKSPACE_ROOT`
 and `--project=desktop-chromium`, following the focused-e2e skill.
+
+## Native Apple push
+
+`POST /relay/account/notifications/native` accepts optional
+`appKind: "ios" | "macos-desktop"`; omitted kinds and older stored rows mean iOS.
+The server selects `POCKYMOE_APNS_TOPIC` for iOS and
+`POCKYMOE_APNS_DESKTOP_TOPIC` for desktop. Clients cannot choose a topic. Both
+require `POCKYMOE_APNS_KEY_PATH`, `POCKYMOE_APNS_KEY_ID` and `POCKYMOE_APNS_TEAM_ID`.
+The CLI adopts legacy `REMOTE_CODEX_*` environment names at startup as described
+in [rename compatibility](rename-pockymoe.md). New names take precedence.
+
+Registration settings add `nativePushKinds`; desktop checks for `macos-desktop`.
+The legacy `nativePushAvailable` boolean keeps its iOS meaning. Subscription IDs
+include kind, sandbox and token; renewing iOS replaces its legacy hashed ID.
+
+APNs uses the event tag as `apns-collapse-id`, SHA-256/base64url hashed when longer
+than 64 bytes. Its payload preserves full `tag`, `url`, `deviceId`, `threadId`,
+legacy `eventId` (= tag), and `relayOrigin`. Bodies remain generic. The needs-input
+body is `A thread needs your input. Click to respond.`; no command/question text
+leaves the Supervisor. Older relays may ignore this status without affecting
+request resolution. Unsent notices are removed on resolution; pushes already
+accepted by a service cannot be recalled. Coalescing queued APNs notices does
+not guarantee replacement of already-delivered alerts by Electron local notices.

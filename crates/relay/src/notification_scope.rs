@@ -154,12 +154,26 @@ async fn subscribe(
 }
 
 pub(super) fn allowed(conn: &Connection, user: &str, device: &str, event: &Value) -> Result<bool> {
+    // A delayed request must not outlive its terminal turn or re-activate an
+    // ended exact-turn subscription. This also retracts it from workbench reads.
+    if event["status"] == "awaiting_input" {
+        if let Some(turn) = event["turnId"].as_str() {
+            let ended: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM relay_push_events WHERE id=?1)",
+                [format!("{device}:{turn}")],
+                |r| r.get(0),
+            )?;
+            if ended {
+                return Ok(false);
+            }
+        }
+    }
     let settings = settings(conn, user)?;
     let subscribed = if let (Some(thread), Some(turn)) =
         (event["threadId"].as_str(), event["turnId"].as_str())
     {
         // Ended rows are frozen eligibility evidence, not active subscriptions.
-        conn.query_row("SELECT EXISTS(SELECT 1 FROM relay_turn_subscriptions WHERE user_id=?1 AND device_id=?2 AND thread_id=?3 AND turn_id=?4)",params![user,device,thread,turn],|r|r.get(0))?
+        conn.query_row("SELECT EXISTS(SELECT 1 FROM relay_turn_subscriptions WHERE user_id=?1 AND device_id=?2 AND thread_id=?3 AND turn_id=?4 AND (?5=0 OR ended_at IS NULL))",params![user,device,thread,turn,event["status"]=="awaiting_input"],|r|r.get(0))?
     } else {
         false
     };
