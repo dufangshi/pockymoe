@@ -68,3 +68,13 @@ describe('desktop device statistics', () => {
     expect(all.turns).toBe(100); expect(all.tokens).toBe(200); expect(all.costUsd).toBeNull(); expect(all.workspaces[0]?.turns).toBe(100);
   });
 });
+it('keeps All time fallback dates beyond 30 days and ignores malformed or absent start times', () => {
+  const source = index([thread({ id: 'old', lastTurnStartedAt: '2026-01-01T12:00:00Z', lastTurnCompletedAt: '2026-01-01T12:01:00Z' }), thread({ id: 'bad', lastTurnStartedAt: 'invalid' }), thread({ id: 'missing', lastTurnStartedAt: null })]);
+  const result = partialSummary(source, 'd', 'all', 'UTC', now);
+  expect(result.totals.turns).toBe(1); expect(result.daily.map(row => row.date)).toEqual(['2026-01-01']);
+});
+it('keeps known daily price subtotals with partial flags when another device cannot price usage', () => {
+  const first = stats(), second = stats(); second.daily[0]!.costUsd = null;
+  const result = aggregate([{ deviceId: 'a', summary: first }, { deviceId: 'b', summary: second }]);
+  expect(result.daily[0]!.costUsd).toBe(.1); expect(result.daily[0]!.pricePartial).toBe(true);
+});

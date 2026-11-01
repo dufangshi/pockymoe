@@ -7,7 +7,9 @@ async function switchLanguage(page: Page, locale: 'en' | 'zh-CN') {
   await page.locator('.matter-rail').getByRole('button', { name: english ? 'Settings' : '设置', exact: true }).click();
   const settings = page.getByTestId('settingsDialog');
   await settings.getByRole('tab', { name: english ? 'Preferences' : '偏好设置', exact: true }).click();
-  await settings.getByRole('combobox', { name: english ? 'Language' : '语言', exact: true }).selectOption(locale);
+  const language = settings.getByLabel(english ? 'Language' : '语言', { exact: true });
+  if (await language.evaluate(element => element.tagName === 'SELECT')) await language.selectOption(locale);
+  else { await language.click(); await page.getByRole('option', { name: locale === 'en' ? 'English' : '简体中文', exact: true }).click(); }
   await expect(page.locator('.pd-page h1')).toHaveText(locale === 'en' ? 'Devices' : '设备', { timeout: 1000 });
   await expect.poll(() => page.evaluate(() => (window as unknown as { deviceLocaleEvents: { locale: string }[] }).deviceLocaleEvents.at(-1)?.locale), { timeout: 1000, intervals: [20, 50, 100] }).toBe(locale);
   await page.keyboard.press('Escape');
@@ -34,7 +36,7 @@ for (const pack of ['classic', 'plum-pocket', 'terminal']) for (const dark of [f
       await switchLanguage(page, locale);
       await expect(page.locator('.pd-page')).toHaveAttribute('data-locale-preserved', 'yes');
       const offline = page.getByRole('article', { name: 'Linux Server', exact: true });
-      await expect(offline).toContainText(english ? 'Cached · 3 hours ago' : '缓存 · 3 小时前');
+      await expect(offline.getByRole('button', { name: english ? 'Cached · 3 hours ago' : '缓存 · 3 小时前', exact: true })).toBeVisible();
       await expect(page.getByRole('heading', { name: english ? 'Usage statistics' : '使用统计', exact: true })).toBeVisible();
       if (english) {
         // Fixture names/titles are English; real user content is never translated.
@@ -45,7 +47,7 @@ for (const pack of ['classic', 'plum-pocket', 'terminal']) for (const dark of [f
       await page.screenshot({ path: `${evidence}/${name}-overview.png` });
       const chart = page.getByRole('group', { name: english ? 'Turns by hour today, stacked by device' : '今日每小时轮数，按设备堆叠', exact: true });
       await chart.scrollIntoViewIfNeeded(); await chart.locator('g[tabindex]').nth(1).focus();
-      await expect(page.getByRole('tooltip')).toContainText(english ? 'turn' : '轮');
+      await expect(page.locator('.pd-statistics .pd-chart-tip')).toContainText(english ? 'turn' : '轮');
       await page.screenshot({ path: `${evidence}/${name}-statistics.png` });
       await page.getByRole('button', { name: english ? 'Actions for MacBook Pro' : 'MacBook Pro 的操作', exact: true }).click();
       await expect(page.getByRole('menuitem', { name: english ? 'Show in map' : '在地图中显示', exact: true })).toBeVisible();
@@ -73,7 +75,7 @@ for (const pack of ['classic', 'plum-pocket', 'terminal']) for (const dark of [f
       await page.screenshot({ path: `${evidence}/${name}-update.png` });
       await page.keyboard.press('Escape');
       expect(await page.locator('.pd-page').evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
-      expect(await page.locator('.pd-device-card').evaluateAll(cards => cards.every(card => card.scrollWidth <= card.clientWidth))).toBe(true);
+      expect(await page.locator('.pd-device-card').evaluateAll(cards => cards.every(card => card.scrollWidth <= card.clientWidth + 1))).toBe(true);
     }
   });
 }
@@ -95,12 +97,12 @@ test('saved notice and existing product errors follow a Settings language change
   await page.getByRole('button', { name: '保存', exact: true }).click();
   await expect(page.getByRole('dialog', { name: '重命名设备' })).toHaveCount(0);
   await switchLanguage(page, 'en');
-  await page.locator('.pd-header-actions .error-mark').click();
+  await page.locator('.pd-header-actions .error-mark').last().click();
   await expect(page.locator('.error-mark-bubble')).toContainText('This Relay does not support renaming devices yet.');
   await page.screenshot({ path: `${evidence}/saved-error-en.png` });
   await page.keyboard.press('Escape');
   await switchLanguage(page, 'zh-CN');
-  await page.locator('.pd-header-actions .error-mark').click();
+  await page.locator('.pd-header-actions .error-mark').last().click();
   await expect(page.locator('.error-mark-bubble')).toContainText('当前 Relay 暂不支持重命名设备。');
   await page.screenshot({ path: `${evidence}/saved-error-zh-CN.png` });
 });

@@ -20,9 +20,9 @@ describe('hourly device charts', () => {
     const other = buckets().reverse(); other.find(row => row.hour === 6)!.costUsd = null;
     const result = aggregateHourly([{ summary: summary() }, { summary: summary(other) }]);
     expect(result).toHaveLength(24);
-    expect(result[0]).toEqual({ hour: 0, tokens: 0, costUsd: 0 });
-    expect(result[5]).toEqual({ hour: 5, tokens: 1000, costUsd: .1 });
-    expect(result[6]).toEqual({ hour: 6, tokens: 1200, costUsd: null });
+    expect(result[0]).toEqual({ hour: 0, tokens: 0, costUsd: 0, pricePartial: false });
+    expect(result[5]).toEqual({ hour: 5, tokens: 1000, costUsd: .1, pricePartial: false });
+    expect(result[6]).toEqual({ hour: 6, tokens: 1200, costUsd: .06, pricePartial: true });
     expect(result[7]?.tokens).toBe(1400); // Not a cumulative sum.
   });
   it('does not treat a device missing hourly data as zero usage', () => {

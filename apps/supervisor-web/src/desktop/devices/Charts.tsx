@@ -63,7 +63,7 @@ export function HourlyActivityChart({ sources, runtime = false }: { sources: Hou
   return <StackedChart sources={sources} labels={Array.from({ length: 24 }, (_, hour) => hourRange(hour))} ticks={Array.from({ length: 24 }, (_, hour) => hourLabel(hour))} label={runtime ? t('desktopDevices.hourlyRuntimeChart') : t('desktopDevices.hourlyTurnsChart')} hourly runtime={runtime} />;
 }
 
-export interface UsageBucket { date: string; tokens: number | null; costUsd: number | null }
+export interface UsageBucket { date: string; tokens: number | null; costUsd: number | null; pricePartial?: boolean; unpricedTokens?: number; partialUsageTurns?: number }
 export function UsageChart({ daily, mode, hourly = false }: { daily: UsageBucket[]; mode: 'tokens' | 'cost'; hourly?: boolean }) {
   const { t } = useI18n();
   const [selected, setSelected] = useState<number | null>(null);
@@ -71,7 +71,7 @@ export function UsageChart({ daily, mode, hourly = false }: { daily: UsageBucket
   const maximum = Math.max(0, ...values.map(value => value ?? 0)), scale = Math.max(maximum, Number.EPSILON);
   const known = values.some(value => value !== null);
   const left = 42, baseline = 154, step = 570 / Math.max(1, daily.length), barWidth = Math.min(44, step * .62);
-  const format = (value: number | null) => value == null ? (mode === 'tokens' ? t('desktopDevices.unknownUsage') : t('desktopDevices.unknownCost')) : mode === 'tokens' ? `${exact(value)} tokens` : `≈ $${formatNumber(value, { maximumSignificantDigits: 12 })}`;
+  const format = (value: number | null, partial = false) => value == null ? (mode === 'tokens' ? t('desktopDevices.unknownUsage') : t('desktopDevices.unknownCost')) : mode === 'tokens' ? `${exact(value)} tokens` : `${partial ? '≥ ' : ''}$${formatNumber(value, { maximumSignificantDigits: 12 })}`;
   const name = t(hourly ? mode === 'tokens' ? 'desktopDevices.hourlyTokensChart' : 'desktopDevices.hourlyCostChart' : mode === 'tokens' ? 'desktopDevices.dailyTokensChart' : 'desktopDevices.dailyCostChart');
   return <div className="pd-chart-wrap">
     <svg viewBox="0 0 620 182" role="group" aria-label={name} onMouseLeave={() => setSelected(null)}>
@@ -80,14 +80,14 @@ export function UsageChart({ daily, mode, hourly = false }: { daily: UsageBucket
       <text x={left - 8} y={baseline} textAnchor="end" className="pd-axis-label">0</text>
       {daily.map((day, i) => {
         const value = values[i]!, height = (value ?? 0) / scale * 124;
-        return <g key={day.date} tabIndex={0} aria-label={t('desktopDevices.chartValue', { period: day.date, values: format(value) })} onFocus={() => setSelected(i)} onBlur={() => setSelected(null)} onMouseEnter={() => setSelected(i)}>
+        return <g key={day.date} tabIndex={0} aria-label={t('desktopDevices.chartValue', { period: day.date, values: format(value, Boolean(day.pricePartial || day.unpricedTokens || day.partialUsageTurns)) })} onFocus={() => setSelected(i)} onBlur={() => setSelected(null)} onMouseEnter={() => setSelected(i)}>
           <rect x={left + i * step} y={16} width={step} height={146} fill={selected === i ? 'var(--theme-hover)' : 'transparent'} />
           {value !== null ? <rect data-chart-bar x={left + i * step + (step - barWidth) / 2} y={baseline - height} width={barWidth} height={height} rx={Math.min(2, height / 2)} fill="var(--theme-accent-solid)" /> : <path data-chart-unknown d={`M${left + i * step + (step - barWidth) / 2},150h${barWidth}`} className="pd-axis" strokeDasharray="2 2" />}
           {showTick(i, daily.length, hourly) ? <text x={left + (i + .5) * step} y={176} textAnchor="middle" className="pd-axis-label">{hourly ? hourLabel(i) : day.date.slice(5).replace('-', '/')}</text> : null}
         </g>;
       })}
     </svg>
-    {selected !== null && daily[selected] ? <Tip><strong>{daily[selected]!.date}</strong>{format(values[selected]!)}</Tip> : null}
+    {selected !== null && daily[selected] ? <Tip><strong>{daily[selected]!.date}</strong>{format(values[selected]!, Boolean(daily[selected]!.pricePartial || daily[selected]!.unpricedTokens || daily[selected]!.partialUsageTurns))}</Tip> : null}
     <div className="pd-chart-caption">{t(hourly ? mode === 'tokens' ? 'desktopDevices.hourlyTokenCaption' : 'desktopDevices.hourlyCostCaption' : mode === 'tokens' ? 'desktopDevices.dailyTokenCaption' : 'desktopDevices.dailyCostCaption')}</div>
   </div>;
 }
