@@ -250,11 +250,18 @@ pub(crate) async fn cli(
                 &pockymoe_runtime::upstreams::directory(&state.config.database_url),
                 connection,
             )?;
-            let text = pockymoe_runtime::upstreams::connections::complete(
+            let images: Vec<pockymoe_runtime::upstreams::connections::CompletionImage> = match input
+                .get("images")
+            {
+                None | Some(serde_json::Value::Null) => vec![],
+                Some(value) => serde_json::from_value(value.clone()).context("invalid images")?,
+            };
+            let text = pockymoe_runtime::upstreams::connections::complete_with_images(
                 &saved,
                 input["model"].as_str().unwrap_or(""),
                 system,
                 user,
+                &images,
                 max_tokens,
             )
             .await?;

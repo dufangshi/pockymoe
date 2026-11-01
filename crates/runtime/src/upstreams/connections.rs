@@ -564,6 +564,83 @@ pub fn import(dir: &Path, c: Connection, expected: Option<&str>) -> Result<Value
 }
 
 /// Transport for direct text clients such as Content Quality; no harness activation.
+/// Request body for one completion; images follow the user text.
+fn completion_body(
+    protocol: &str,
+    model: &str,
+    system: &str,
+    user: &str,
+    images: &[CompletionImage],
+    max_tokens: usize,
+) -> Result<Value> {
+    let data_url = |i: &CompletionImage| format!("data:{};base64,{}", i.media_type, i.data);
+    Ok(match protocol {
+        "openai_chat" => {
+            let content = if images.is_empty() {
+                json!(user)
+            } else {
+                let mut parts = vec![json!({"type":"text","text":user})];
+                parts.extend(
+                    images
+                        .iter()
+                        .map(|i| json!({"type":"image_url","image_url":{"url":data_url(i)}})),
+                );
+                json!(parts)
+            };
+            json!({"model":model,"stream":false,"temperature":0.2,"max_tokens":max_tokens,"messages":[{"role":"system","content":system},{"role":"user","content":content}]})
+        }
+        "openai_responses" => {
+            let input = if images.is_empty() {
+                json!(user)
+            } else {
+                let mut parts = vec![json!({"type":"input_text","text":user})];
+                parts.extend(
+                    images
+                        .iter()
+                        .map(|i| json!({"type":"input_image","image_url":data_url(i)})),
+                );
+                json!([{"role":"user","content":parts}])
+            };
+            json!({"model":model,"stream":false,"instructions":system,"input":input,"max_output_tokens":max_tokens})
+        }
+        "anthropic" => {
+            let content = if images.is_empty() {
+                json!(user)
+            } else {
+                let mut parts: Vec<Value> = images
+                    .iter()
+                    .map(|i| json!({"type":"image","source":{"type":"base64","media_type":i.media_type,"data":i.data}}))
+                    .collect();
+                parts.push(json!({"type":"text","text":user}));
+                json!(parts)
+            };
+            json!({"model":model,"max_tokens":max_tokens,"system":system,"messages":[{"role":"user","content":content}]})
+        }
+        "gemini" => {
+            let mut parts = vec![json!({"text":user})];
+            parts.extend(
+                images
+                    .iter()
+                    .map(|i| json!({"inline_data":{"mime_type":i.media_type,"data":i.data}})),
+            );
+            json!({"systemInstruction":{"parts":[{"text":system}]},"contents":[{"role":"user","parts":parts}],"generationConfig":{"maxOutputTokens":max_tokens,"temperature":0.2}})
+        }
+        _ => bail!("Unsupported connection protocol"),
+    })
+}
+
+/// An image attached to a completion: MIME type and base64 bytes.
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CompletionImage {
+    pub media_type: String,
+    pub data: String,
+}
+
+pub const MAX_COMPLETION_IMAGES: usize = 4;
+/// Base64 length of one image (about 5 MiB of bytes).
+pub const MAX_COMPLETION_IMAGE_BASE64: usize = 7 * 1024 * 1024;
+
 pub async fn complete(
     c: &Connection,
     model: &str,
@@ -571,7 +648,36 @@ pub async fn complete(
     user: &str,
     max_tokens: usize,
 ) -> Result<String> {
+    complete_with_images(c, model, system, user, &[], max_tokens).await
+}
+
+/// `complete` with images after the user text, in each protocol's own shape.
+pub async fn complete_with_images(
+    c: &Connection,
+    model: &str,
+    system: &str,
+    user: &str,
+    images: &[CompletionImage],
+    max_tokens: usize,
+) -> Result<String> {
     c.validate()?;
+    if images.len() > MAX_COMPLETION_IMAGES {
+        bail!("At most {MAX_COMPLETION_IMAGES} images");
+    }
+    for image in images {
+        if !matches!(
+            image.media_type.as_str(),
+            "image/jpeg" | "image/png" | "image/webp" | "image/gif"
+        ) || image.data.is_empty()
+            || image.data.len() > MAX_COMPLETION_IMAGE_BASE64
+            || !image
+                .data
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'='))
+        {
+            bail!("Images must be base64 JPEG, PNG, WebP or GIF up to 5 MiB");
+        }
+    }
     let model = if model.is_empty() {
         c.model.as_str()
     } else {
@@ -583,21 +689,7 @@ pub async fn complete(
     if system.contains(&c.api_key) || user.contains(&c.api_key) {
         bail!("Source contains the upstream credential");
     }
-    let body = match c.protocol.as_str() {
-        "openai_chat" => {
-            json!({"model":model,"stream":false,"temperature":0.2,"max_tokens":max_tokens,"messages":[{"role":"system","content":system},{"role":"user","content":user}]})
-        }
-        "openai_responses" => {
-            json!({"model":model,"stream":false,"instructions":system,"input":user,"max_output_tokens":max_tokens})
-        }
-        "anthropic" => {
-            json!({"model":model,"max_tokens":max_tokens,"system":system,"messages":[{"role":"user","content":user}]})
-        }
-        "gemini" => {
-            json!({"systemInstruction":{"parts":[{"text":system}]},"contents":[{"role":"user","parts":[{"text":user}]}],"generationConfig":{"maxOutputTokens":max_tokens,"temperature":0.2}})
-        }
-        _ => bail!("Unsupported connection protocol"),
-    };
+    let body = completion_body(&c.protocol, model, system, user, images, max_tokens)?;
     let client = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(10))
         .timeout(std::time::Duration::from_secs(90))
@@ -1403,5 +1495,42 @@ mod tests {
         headers.headers.insert("x-project".into(), "test".into());
         assert!(headers.validate_application("grok").is_err());
         assert!(headers.validate_application("deepseek").is_ok());
+    }
+}
+
+#[cfg(test)]
+mod completion_image_tests {
+    use super::*;
+
+    fn image() -> CompletionImage {
+        CompletionImage {
+            media_type: "image/png".into(),
+            data: "aGk=".into(),
+        }
+    }
+
+    #[test]
+    fn text_only_bodies_are_unchanged_and_images_use_each_protocol_shape() {
+        let plain = completion_body("openai_responses", "m", "s", "u", &[], 9).unwrap();
+        assert_eq!(plain["input"], "u");
+        let chat = completion_body("openai_chat", "m", "s", "u", &[image()], 9).unwrap();
+        assert_eq!(
+            chat["messages"][1]["content"][1]["image_url"]["url"],
+            "data:image/png;base64,aGk="
+        );
+        let responses = completion_body("openai_responses", "m", "s", "u", &[image()], 9).unwrap();
+        assert_eq!(responses["input"][0]["content"][0]["text"], "u");
+        assert_eq!(responses["input"][0]["content"][1]["type"], "input_image");
+        let anthropic = completion_body("anthropic", "m", "s", "u", &[image()], 9).unwrap();
+        assert_eq!(
+            anthropic["messages"][0]["content"][0]["source"]["data"],
+            "aGk="
+        );
+        assert_eq!(anthropic["messages"][0]["content"][1]["text"], "u");
+        let gemini = completion_body("gemini", "m", "s", "u", &[image()], 9).unwrap();
+        assert_eq!(
+            gemini["contents"][0]["parts"][1]["inline_data"]["mime_type"],
+            "image/png"
+        );
     }
 }
