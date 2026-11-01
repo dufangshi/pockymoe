@@ -2,6 +2,7 @@ import type { ThreadActivityResponseDto } from '@pockymoe/shared';
 import { running, type DesktopIndex } from '../data/types';
 
 export type StatsRange = 'today' | '7d' | '30d';
+export interface HourBucket { hour: number; turns: number; failed: number; tokens: number; costUsd: number | null }
 export interface StatsSummary {
   range: StatsRange;
   generatedAt: string;
@@ -11,6 +12,7 @@ export interface StatsSummary {
     inputTokens: number; outputTokens: number; cachedTokens: number; costUsd: number | null;
   };
   daily: { date: string; turns: number; failed: number; tokens: number; costUsd: number | null }[];
+  hourly?: HourBucket[];
   byModel: { model: string; turns: number; tokens: number; costUsd: number | null }[];
   byWorkspace: { workspaceId: string; label: string; turns: number; tokens: number; costUsd: number | null; lastActivityAt: string }[];
   longestThreads: { threadId: string; title: string; workspaceId: string; durationMs: number }[];
@@ -40,8 +42,11 @@ export function age(value: string | null | undefined, now = Date.now()) {
   const minutes = Math.max(0, Math.floor((now - Date.parse(value)) / 60_000));
   return minutes < 1 ? '刚刚' : minutes < 60 ? `${minutes} 分钟前` : minutes < 1440 ? `${Math.floor(minutes / 60)} 小时前` : `${Math.floor(minutes / 1440)} 天前`;
 }
+const dateFormats = new Map<string, Intl.DateTimeFormat>();
 export function dateKey(value: Date, timeZone: string) {
-  const parts = new Intl.DateTimeFormat('en-US', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(value);
+  let formatter = dateFormats.get(timeZone);
+  if (!formatter) { formatter = new Intl.DateTimeFormat('en-US', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }); dateFormats.set(timeZone, formatter); }
+  const parts = formatter.formatToParts(value);
   const part = (type: string) => parts.find(p => p.type === type)!.value;
   return `${part('year')}-${part('month')}-${part('day')}`;
 }
@@ -103,6 +108,45 @@ export function aggregate(sources: { deviceId: string; summary: StatsSummary }[]
     longest: sources.flatMap(s => s.summary.longestThreads.map(t => ({ ...t, deviceId: s.deviceId }))).sort((a, b) => b.durationMs - a.durationMs).slice(0, 5) };
 }
 export function supportsStats(health: { capabilities?: { statsSummary?: boolean } }) { return health.capabilities?.statsSummary === true; }
+export function supportsHourly(summary: StatsSummary | undefined): summary is StatsSummary & { hourly: HourBucket[] } {
+  const rows = summary?.hourly;
+  return summary?.range === 'today' && Array.isArray(rows) && rows.length === 24 && Array.from(rows).every(row => row && Number.isInteger(row.hour) && row.hour >= 0 && row.hour < 24 && [row.turns, row.failed, row.tokens].every(value => Number.isFinite(value) && value >= 0) && (row.costUsd === null || Number.isFinite(row.costUsd) && row.costUsd >= 0)) && new Set(rows.map(row => row.hour)).size === 24;
+}
+export function aggregateHourly(sources: { summary: StatsSummary }[]) {
+  return Array.from({ length: 24 }, (_, hour) => {
+    const rows = sources.map(source => supportsHourly(source.summary) ? source.summary.hourly.find(row => row.hour === hour)! : null);
+    const complete = rows.length > 0 && rows.every(row => row !== null);
+    return { hour, tokens: complete ? rows.reduce((sum, row) => sum + row!.tokens, 0) : null,
+      costUsd: complete && rows.every(row => row!.costUsd !== null) ? rows.reduce((sum, row) => sum + row!.costUsd!, 0) : null };
+  });
+}
+
+/** Activity bins roll from `since`, rather than from local clock boundaries.
+ *  Overlap weighting is an explicit estimate, never used as turn/token usage. */
+export function runtimeHours(activity: ThreadActivityResponseDto | undefined, timeZone: string, now = new Date()): (number | null)[] {
+  if (!activity || !Number.isFinite(Date.parse(activity.since)) || !Number.isInteger(activity.hours) || activity.hours < 1 || activity.hours > 168) return Array(24).fill(null);
+  const since = Date.parse(activity.since), end = Math.min(+now, since + activity.hours * 3_600_000);
+  if (end <= since || activity.threads.some(row => row.activeMs > 0 && (!row.hourlyMs || row.hourlyMs.length !== activity.hours || row.hourlyMs.some(ms => !Number.isFinite(ms) || ms < 0)))) return Array(24).fill(null);
+  const today = dateKey(now, timeZone);
+  const values: (number | null)[] = Array(24).fill(null);
+  const clock = new Intl.DateTimeFormat('en-GB', { timeZone, hour: '2-digit', hourCycle: 'h23', minute: '2-digit', second: '2-digit' });
+  for (let bin = 0; bin < activity.hours; bin++) {
+    const from = since + bin * 3_600_000, to = Math.min(end, from + 3_600_000);
+    if (to <= from) continue;
+    const total = activity.threads.reduce((sum, row) => sum + Math.max(0, row.hourlyMs?.[bin] ?? 0), 0);
+    for (let at = from; at < to;) {
+      const parts = clock.formatToParts(new Date(at));
+      const minutes = Number(parts.find(part => part.type === 'minute')!.value), seconds = Number(parts.find(part => part.type === 'second')!.value);
+      const next = Math.min(to, at + (60 - minutes) * 60_000 - seconds * 1000 - new Date(at).getUTCMilliseconds());
+      if (dateKey(new Date(at), timeZone) === today) {
+        const hour = Number(parts.find(part => part.type === 'hour')!.value);
+        values[hour] = (values[hour] ?? 0) + total * (next - at) / 3_600_000;
+      }
+      at = next;
+    }
+  }
+  return values;
+}
 export function isUnsupported(error: unknown) { return typeof error === 'object' && error !== null && 'statusCode' in error && error.statusCode === 404; }
 export function newerVersion(current: string | undefined, latest: string | undefined) {
   const parse = (value: string | undefined) => value?.replace(/^v/, '').match(/^(\d+)\.(\d+)\.(\d+)$/)?.slice(1).map(Number);

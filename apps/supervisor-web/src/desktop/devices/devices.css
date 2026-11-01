@@ -162,3 +162,4 @@
 .pd-page .pd-chart-panel h3 { font-size: 13px; }
 .pd-page .pd-kpi small, .pd-page .pd-chart-caption, .pd-page .pd-legend { font-size: 11px; }
 .pd-lifetime small { overflow-wrap: anywhere; }
+.pd-page .pd-hourly-note { color: var(--theme-fg-muted); font-size: 11px; margin-top: 8px; }

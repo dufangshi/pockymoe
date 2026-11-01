@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react';
-import { compact, deviceColor, exact, money, type StatsSummary } from './model';
+import { compact, deviceColor, duration, exact, money, type StatsSummary } from './model';
 
 export interface ChartSource { deviceId: string; name: string; summary: StatsSummary }
 function Tip({ children }: { children: ReactNode }) { return <div className="pd-chart-tip" role="tooltip">{children}</div>; }
@@ -16,51 +16,72 @@ export function Sparkline({ days, color, label }: { days: StatsSummary['daily'];
     {selected !== null && days[selected] ? <Tip>{days[selected]!.date} · {exact(days[selected]!.turns)} 轮</Tip> : null}
   </div>;
 }
-export function TurnsChart({ sources, dates }: { sources: ChartSource[]; dates: string[] }) {
-  const [selected, setSelected] = useState<string | null>(null);
-  const value = (source: ChartSource, date: string) => source.summary.daily.find(d => d.date === date)?.turns ?? 0;
-  const max = Math.max(1, ...dates.map(date => sources.reduce((n, s) => n + value(s, date), 0)));
-  const width = 620, baseline = 154, plotHeight = 124, left = 32, step = (width - left - 8) / Math.max(1, dates.length);
+
+export interface HourlyChartSource { deviceId: string; name: string; values: (number | null)[] }
+const hourLabel = (hour: number) => `${String(hour).padStart(2, '0')}:00`;
+const hourRange = (hour: number) => `${hourLabel(hour)}–${hourLabel(hour + 1)}`;
+const showTick = (index: number, length: number, hourly: boolean) => hourly ? index % 6 === 0 || index === 23 : index === 0 || index === length - 1 || length > 7 && index % 7 === 0 && index < length - 3;
+
+function StackedChart({ sources, labels, ticks, label, hourly = false, runtime = false }: {
+  sources: HourlyChartSource[]; labels: string[]; ticks: string[]; label: string; hourly?: boolean; runtime?: boolean;
+}) {
+  const [selected, setSelected] = useState<number | null>(null);
+  const value = (source: HourlyChartSource, index: number) => source.values[index] ?? null;
+  const maximum = Math.max(0, ...labels.map((_, i) => sources.reduce((sum, s) => sum + (value(s, i) ?? 0), 0)));
+  const known = sources.some(source => source.values.some(value => value !== null));
+  const scale = Math.max(1, maximum), left = 42, width = 620, baseline = 154, step = (width - left - 8) / Math.max(1, labels.length);
+  const format = (v: number | null) => v == null ? '未提供数据' : runtime ? `≈ ${duration(v)}` : `${exact(v)} 轮`;
   return <div className="pd-chart-wrap">
-    <svg viewBox={`0 0 ${width} 182`} role="group" aria-label="每日轮数，按设备堆叠" onMouseLeave={() => setSelected(null)}>
+    <svg viewBox="0 0 620 182" role="group" aria-label={label} onMouseLeave={() => setSelected(null)}>
       <line x1={left} x2={width - 8} y1={baseline} y2={baseline} className="pd-axis" />
-      <text x={left - 8} y={32} textAnchor="end" className="pd-axis-label">{compact(max)}</text>
+      <text x={left - 8} y={32} textAnchor="end" className="pd-axis-label">{!known ? '—' : runtime ? `${compact(maximum / 60_000)}分` : compact(maximum)}</text>
       <text x={left - 8} y={baseline} textAnchor="end" className="pd-axis-label">0</text>
-      {dates.map((date, i) => {
+      {labels.map((period, i) => {
         let stack = 0;
-        return <g key={date} tabIndex={0} aria-label={`${date}，${sources.map(s => `${s.name} ${exact(value(s, date))} 轮`).join('，')}`} onFocus={() => setSelected(date)} onBlur={() => setSelected(null)} onMouseEnter={() => setSelected(date)}>
-          <rect x={left + i * step} width={step} y={16} height={baseline - 8} fill={selected === date ? 'var(--theme-hover)' : 'transparent'} rx={3} />
-          {sources.map(source => { const turns = value(source, date); const height = turns / max * plotHeight; stack += height; return <rect key={source.deviceId} x={left + i * step + step * .19} y={baseline - stack} width={step * .62} height={height} rx={Math.min(2, height / 2)} fill={deviceColor(source.deviceId)} />; })}
-          {(i === 0 || i === dates.length - 1 || (dates.length > 7 && i % 7 === 0 && i < dates.length - 3)) ? <text x={left + (i + .5) * step} y={176} textAnchor="middle" className="pd-axis-label">{date.slice(5).replace('-', '/')}</text> : null}
+        const barWidth = Math.min(44, step * .62);
+        return <g key={period} tabIndex={0} aria-label={`${period}，${sources.map(s => `${s.name} ${format(value(s, i))}`).join('，')}`} onFocus={() => setSelected(i)} onBlur={() => setSelected(null)} onMouseEnter={() => setSelected(i)}>
+          <rect x={left + i * step} width={step} y={16} height={baseline - 8} fill={selected === i ? 'var(--theme-hover)' : 'transparent'} rx={3} />
+          {sources.map(source => { const height = (value(source, i) ?? 0) / scale * 124; stack += height; return <rect key={source.deviceId} data-chart-bar x={left + i * step + (step - barWidth) / 2} y={baseline - stack} width={barWidth} height={height} rx={Math.min(2, height / 2)} fill={deviceColor(source.deviceId)} />; })}
+          {showTick(i, labels.length, hourly) ? <text x={left + (i + .5) * step} y={176} textAnchor="middle" className="pd-axis-label">{ticks[i]}</text> : null}
         </g>;
       })}
     </svg>
-    {selected ? <Tip><strong>{selected}</strong>{sources.map(s => <span key={s.deviceId}><i style={{ background: deviceColor(s.deviceId) }} />{s.name}<b>{exact(value(s, selected))} 轮</b></span>)}</Tip> : null}
+    {selected !== null ? <Tip><strong>{labels[selected]}</strong>{sources.map(s => <span key={s.deviceId}><i style={{ background: deviceColor(s.deviceId) }} />{s.name}<b>{format(value(s, selected))}</b></span>)}</Tip> : null}
     <div className="pd-legend">{sources.map(s => <span key={s.deviceId}><i style={{ background: deviceColor(s.deviceId) }} />{s.name}</span>)}</div>
+    {runtime ? <div className="pd-chart-caption">活动采样估算 · 并行线程时长相加 · 未覆盖时段留空</div> : hourly ? <div className="pd-chart-caption">本地时间 · 按轮次开始时刻归组</div> : null}
   </div>;
 }
-export function UsageChart({ daily, mode }: { daily: { date: string; tokens: number; costUsd: number | null }[]; mode: 'tokens' | 'cost' }) {
+export function TurnsChart({ sources, dates }: { sources: ChartSource[]; dates: string[] }) {
+  return <StackedChart sources={sources.map(s => ({ deviceId: s.deviceId, name: s.name, values: dates.map(date => s.summary.daily.find(day => day.date === date)?.turns ?? null) }))} labels={dates} ticks={dates.map(date => date.slice(5).replace('-', '/'))} label="每日轮数，按设备堆叠" />;
+}
+export function HourlyActivityChart({ sources, runtime = false }: { sources: HourlyChartSource[]; runtime?: boolean }) {
+  return <StackedChart sources={sources} labels={Array.from({ length: 24 }, (_, hour) => hourRange(hour))} ticks={Array.from({ length: 24 }, (_, hour) => hourLabel(hour))} label={runtime ? '今日每小时运行时长，按设备堆叠' : '今日每小时轮数，按设备堆叠'} hourly runtime={runtime} />;
+}
+
+export interface UsageBucket { date: string; tokens: number | null; costUsd: number | null }
+export function UsageChart({ daily, mode, hourly = false }: { daily: UsageBucket[]; mode: 'tokens' | 'cost'; hourly?: boolean }) {
   const [selected, setSelected] = useState<number | null>(null);
-  const values = daily.map(d => mode === 'tokens' ? d.tokens : d.costUsd);
-  const max = Math.max(1, ...values.map(v => v ?? 0));
-  const x = (i: number) => 32 + (daily.length === 1 ? 280 : i * 570 / Math.max(1, daily.length - 1));
-  const y = (v: number) => 154 - v / max * 124;
-  let path = '', previousKnown = false;
-  values.forEach((v, i) => { if (v == null) { previousKnown = false; return; } path += `${previousKnown ? 'L' : 'M'}${x(i)},${y(v)} `; previousKnown = true; });
-  const format = (v: number | null) => mode === 'tokens' ? `${exact(v ?? 0)} tokens` : v == null ? '费用未知' : `≈ $${v.toLocaleString('en-US', { maximumFractionDigits: 20 })}`;
+  const values = daily.map(day => mode === 'tokens' ? day.tokens : day.costUsd);
+  const maximum = Math.max(0, ...values.map(value => value ?? 0)), scale = Math.max(maximum, Number.EPSILON);
+  const known = values.some(value => value !== null);
+  const left = 42, baseline = 154, step = 570 / Math.max(1, daily.length), barWidth = Math.min(44, step * .62);
+  const format = (value: number | null) => value == null ? (mode === 'tokens' ? '用量未知' : '费用未知') : mode === 'tokens' ? `${exact(value)} tokens` : `≈ $${value.toLocaleString('en-US', { maximumSignificantDigits: 12 })}`;
+  const name = `${hourly ? '今日每小时' : '每日'}${mode === 'tokens' ? ' tokens' : '估算费用'}`;
   return <div className="pd-chart-wrap">
-    <svg viewBox="0 0 620 182" role="group" aria-label={mode === 'tokens' ? '每日 tokens' : '每日估算费用'} onMouseLeave={() => setSelected(null)}>
-      <line x1={32} x2={608} y1={154} y2={154} className="pd-axis" />
-      <text x={24} y={32} textAnchor="end" className="pd-axis-label">{mode === 'tokens' ? compact(max) : money(max)}</text>
-      <text x={24} y={154} textAnchor="end" className="pd-axis-label">0</text>
-      <path d={path} fill="none" stroke="var(--theme-accent-solid)" strokeWidth={2.2} strokeLinejoin="round" />
-      {daily.map((day, i) => <g key={day.date} tabIndex={0} aria-label={`${day.date}：${format(values[i]!)}`} onFocus={() => setSelected(i)} onBlur={() => setSelected(null)} onMouseEnter={() => setSelected(i)}>
-        <rect x={x(i) - 570 / Math.max(2, daily.length) / 2} y={16} width={570 / Math.max(1, daily.length)} height={146} fill="transparent" />
-        {values[i] != null && (selected === i || daily.length === 1) ? <circle cx={x(i)} cy={y(values[i]!)} r={4} fill="var(--theme-accent-solid)" stroke="var(--theme-bg)" strokeWidth={2} /> : null}
-        {(i === 0 || i === daily.length - 1 || (daily.length > 7 && i % 7 === 0 && i < daily.length - 3)) ? <text x={x(i)} y={176} textAnchor={i === 0 ? 'start' : i === daily.length - 1 ? 'end' : 'middle'} className="pd-axis-label">{day.date.slice(5).replace('-', '/')}</text> : null}
-      </g>)}
+    <svg viewBox="0 0 620 182" role="group" aria-label={name} onMouseLeave={() => setSelected(null)}>
+      <line x1={left} x2={612} y1={baseline} y2={baseline} className="pd-axis" />
+      <text x={left - 8} y={32} textAnchor="end" className="pd-axis-label">{!known ? '—' : mode === 'tokens' ? compact(maximum) : money(maximum)}</text>
+      <text x={left - 8} y={baseline} textAnchor="end" className="pd-axis-label">0</text>
+      {daily.map((day, i) => {
+        const value = values[i]!, height = (value ?? 0) / scale * 124;
+        return <g key={day.date} tabIndex={0} aria-label={`${day.date}：${format(value)}`} onFocus={() => setSelected(i)} onBlur={() => setSelected(null)} onMouseEnter={() => setSelected(i)}>
+          <rect x={left + i * step} y={16} width={step} height={146} fill={selected === i ? 'var(--theme-hover)' : 'transparent'} />
+          {value !== null ? <rect data-chart-bar x={left + i * step + (step - barWidth) / 2} y={baseline - height} width={barWidth} height={height} rx={Math.min(2, height / 2)} fill="var(--theme-accent-solid)" /> : <path data-chart-unknown d={`M${left + i * step + (step - barWidth) / 2},150h${barWidth}`} className="pd-axis" strokeDasharray="2 2" />}
+          {showTick(i, daily.length, hourly) ? <text x={left + (i + .5) * step} y={176} textAnchor="middle" className="pd-axis-label">{hourly ? hourLabel(i) : day.date.slice(5).replace('-', '/')}</text> : null}
+        </g>;
+      })}
     </svg>
     {selected !== null && daily[selected] ? <Tip><strong>{daily[selected]!.date}</strong>{format(values[selected]!)}</Tip> : null}
-    <div className="pd-chart-caption">{mode === 'tokens' ? '输入 + 输出 · 缓存读取已包含在输入中' : '估算费用 · 未知费用保留为空缺'}</div>
+    <div className="pd-chart-caption">{hourly ? '每小时' : '每日'}独立用量 · {mode === 'tokens' ? '输入 + 输出，缓存读取已包含在输入中' : '估算费用，未知费用保留为空缺'}</div>
   </div>;
 }

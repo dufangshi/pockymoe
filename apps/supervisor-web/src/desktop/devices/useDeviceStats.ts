@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { request } from '../../lib/api';
 import type { DesktopDevice } from '../data/types';
 import { clearMetrics, readMetrics, warmMetrics, writeMetrics } from './cache';
-import { isUnsupported, supportsStats, type DeviceMetrics, type StatsRange, type StatsSummary } from './model';
+import { dateKey, isUnsupported, supportsHourly, supportsStats, type DeviceMetrics, type StatsRange, type StatsSummary } from './model';
 
 export function useDeviceStats(accountId: string, devices: readonly DesktopDevice[], range: StatsRange, completedAt: string, refreshActivity: (deviceId: string) => Promise<void>) {
   const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
@@ -65,16 +65,23 @@ export function useDeviceStats(accountId: string, devices: readonly DesktopDevic
         }
         if (unsupported) {
           patch(device.id, { partial: true });
-          try { await activityRef.current(device.id); }
-          catch { /* Older devices still have the index-only partial fallback. */ }
         }
         await management;
       } catch { if (!stopped) patch(device.id, { unavailable: true, latencyMs: undefined }); }
       finally { clearTimeout(timeout); controllers.delete(controller); pending.delete(key); }
     };
-    const all = () => { devices.filter(d => d.connected).forEach(d => { void probe(d, true); }); };
+    const all = async () => {
+      await Promise.allSettled(devices.filter(d => d.connected).map(d => probe(d, true)));
+      if (stopped || document.hidden) return;
+      const today = dateKey(new Date(), timeZone);
+      const runtimeFallback = range === 'today' && devices.some(d => {
+        const summary = latest.current[d.id]?.summaries.today;
+        return !supportsHourly(summary) || summary.daily[0]?.date !== today;
+      });
+      await Promise.allSettled(devices.filter(d => d.connected && (runtimeFallback || latest.current[d.id]?.partial)).map(d => activityRef.current(d.id)));
+    };
     refreshRef.current = all;
-    all();
+    void all();
     const statsTimer = setInterval(all, 60_000);
     const latencyTimer = setInterval(() => { devices.forEach(d => { void probe(d, false); }); }, 30_000);
     const visible = () => { if (!document.hidden) all(); };

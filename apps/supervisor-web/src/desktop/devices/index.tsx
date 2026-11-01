@@ -10,8 +10,8 @@ import { RuntimeManagement } from '../../components/RuntimeManagement';
 import { useDesktopSelector, useDesktopStore } from '../data';
 import { desktopHost } from '../host';
 import { DeviceCard } from './DeviceCard';
-import { TurnsChart, UsageChart, type ChartSource } from './Charts';
-import { age, aggregate, calendarDays, compact, dateKey, deviceColor, deviceCounts, duration, exact, lifetimeActivity, money, partialSummary, type StatsRange } from './model';
+import { HourlyActivityChart, TurnsChart, UsageChart, type ChartSource } from './Charts';
+import { age, aggregate, aggregateHourly, calendarDays, compact, dateKey, deviceColor, deviceCounts, duration, exact, lifetimeActivity, money, partialSummary, runtimeHours, supportsHourly, type StatsRange } from './model';
 import { useDeviceStats } from './useDeviceStats';
 import './devices.css';
 
@@ -38,7 +38,7 @@ export default function DevicesPage({ onRevealDevice, onNewThread }: DevicesPage
   const [renameSupported, setRenameSupported] = useState(true);
   const [notice, setNotice] = useState('');
   const devices = useMemo(() => [...index.devices].sort((a, b) => Number(b.connected) - Number(a.connected) || a.name.localeCompare(b.name)), [index.devices]);
-  const scoped = devices.filter(d => !selected || d.id === selected);
+  const scoped = useMemo(() => devices.filter(d => !selected || d.id === selected), [devices, selected]);
   const current = devices.find(d => d.id === selected);
   const saved = (id: string, r: StatsRange) => {
     const value = metrics[id]?.summaries[r];
@@ -47,6 +47,12 @@ export default function DevicesPage({ onRevealDevice, onNewThread }: DevicesPage
   const summary = (id: string, r: StatsRange) => saved(id, r) ?? partialSummary(index, id, r, timeZone, now);
   const sources: ChartSource[] = scoped.map(d => ({ deviceId: d.id, name: d.name, summary: summary(d.id, range) }));
   const total = aggregate(sources);
+  const hourly = range === 'today';
+  const hourlyComplete = sources.length > 0 && sources.every(source => supportsHourly(source.summary));
+  const hourlySources = useMemo(() => scoped.map(device => ({ deviceId: device.id, name: device.name, values: hourlyComplete
+    ? Array.from({ length: 24 }, (_, hour) => metrics[device.id]!.summaries.today!.hourly!.find(row => row.hour === hour)!.turns)
+    : runtimeHours(index.activity[device.id], timeZone, now) })), [hourlyComplete, index.activity, metrics, now, scoped, timeZone]);
+  const usage = hourly ? aggregateHourly(sources).map(row => ({ date: `${String(row.hour).padStart(2, '0')}:00–${String(row.hour + 1).padStart(2, '0')}:00`, tokens: row.tokens, costUsd: row.costUsd })) : total.daily;
   const partial = scoped.some(d => metrics[d.id]?.partial || !saved(d.id, range));
   const cached = scoped.filter(d => !d.connected || metrics[d.id]?.unavailable || (metrics[d.id]?.partial && saved(d.id, range)));
   const tokenUnknown = scoped.some(d => !saved(d.id, range));
@@ -97,7 +103,7 @@ export default function DevicesPage({ onRevealDevice, onNewThread }: DevicesPage
         ['总轮数', compact(total.turns), '包含进行中的轮次'], ['成功率', total.successRate == null ? '—' : `${(total.successRate * 100).toFixed(1)}%`, '完成 / 全部终态轮次'],
         ['平均轮时长', duration(total.avgDurationMs), '包含工具与等待时间'], ['总 tokens', tokenUnknown && !total.tokens ? '—' : compact(total.tokens), `缓存读取 ${tokenUnknown ? '—' : compact(total.cachedTokens)} · 已计入输入`], ['估算费用', `≈ ${money(total.costUsd)}`, '未知费用不推算'],
       ].map(([label, value, hint]) => <div className="pd-kpi" key={label}><span>{label}</span><strong title={label === '总 tokens' ? exact(total.tokens) : label === '总轮数' ? exact(total.turns) : undefined}>{value}</strong><small>{hint}</small></div>)}</div>
-      <div className="pd-charts-grid"><section className="pd-chart-panel"><header><h3>每日轮数</h3><span>按设备</span></header><TurnsChart sources={sources} dates={calendarDays(range, timeZone, now)} /></section><section className="pd-chart-panel"><header><h3>{mode === 'tokens' ? 'Token 用量' : '估算费用'}</h3><div className="pd-segment pd-segment-small" role="group" aria-label="用量指标"><button aria-pressed={mode === 'tokens'} onClick={() => setMode('tokens')}>Tokens</button><button aria-pressed={mode === 'cost'} onClick={() => setMode('cost')}>费用</button></div></header>{tokenUnknown && !total.tokens ? <div className="pd-chart-empty">暂无范围内的用量数据</div> : <UsageChart daily={total.daily} mode={mode} />}</section></div>
+      <div className="pd-charts-grid"><section className="pd-chart-panel"><header><h3>{hourly ? hourlyComplete ? '今日每小时轮数' : '今日每小时运行时长' : '每日轮数'}</h3><span>{hourly && !hourlyComplete ? '活动采样 · 部分数据' : '按设备'}</span></header>{hourly ? <HourlyActivityChart sources={hourlySources} runtime={!hourlyComplete} /> : <TurnsChart sources={sources} dates={calendarDays(range, timeZone, now)} />}</section><section className="pd-chart-panel"><header><h3>{hourly ? '每小时' : '每日'}{mode === 'tokens' ? ' Token 用量' : '估算费用'}</h3><div className="pd-segment pd-segment-small" role="group" aria-label="用量指标"><button aria-pressed={mode === 'tokens'} onClick={() => setMode('tokens')}>Tokens</button><button aria-pressed={mode === 'cost'} onClick={() => setMode('cost')}>费用</button></div></header>{!hourly && tokenUnknown && !total.tokens ? <div className="pd-chart-empty">暂无范围内的用量数据</div> : <><UsageChart daily={usage} mode={mode} hourly={hourly} />{hourly && !hourlyComplete ? <p className="pd-hourly-note">部分设备未提供小时用量；可选择其他设备查看。</p> : null}</>}</section></div>
       <div className="pd-breakdowns"><section className="pd-chart-panel"><header><h3>模型分布</h3><span>按轮数</span></header>{total.models.length ? total.models.map((m, i) => <div className="pd-model-row" key={m.model} tabIndex={0} aria-label={`${m.model}：${exact(m.turns)} 轮，${exact(m.tokens)} tokens`}><div><span>{m.model || '未知模型'}</span><b>{exact(m.turns)} <small>轮</small></b></div><div className="pd-bar-track"><span style={{ width: `${m.turns / Math.max(1, total.turns) * 100}%`, background: deviceColor(String(i)) }} /></div></div>) : <div className="pd-chart-empty">所选范围暂无模型用量</div>}</section>
       <section className="pd-chart-panel"><header><h3>最忙的工作区</h3><span>前 5 名</span></header><div className="pd-ranked-list">{total.workspaces.map((w, i) => <Link key={`${w.deviceId}:${w.workspaceId}`} to={`/devices/${encodeURIComponent(w.deviceId)}/threads?workspaceId=${encodeURIComponent(w.workspaceId)}`}><span className="pd-rank">{i + 1}</span><span className="pd-ranked-title">{w.label}<small>{devices.find(d => d.id === w.deviceId)?.name}</small></span><b>{exact(w.turns)} 轮</b></Link>)}{!total.workspaces.length ? <div className="pd-chart-empty">所选范围暂无工作区活动</div> : null}</div></section>
       <section className="pd-chart-panel"><header><h3>平均用时最长的线程</h3><span>前 5 名</span></header><div className="pd-ranked-list">{total.longest.map((t, i) => <Link key={`${t.deviceId}:${t.threadId}`} to={`/devices/${encodeURIComponent(t.deviceId)}/threads/${encodeURIComponent(t.threadId)}`}><span className="pd-rank">{i + 1}</span><span className="pd-ranked-title">{t.title}<small>{devices.find(d => d.id === t.deviceId)?.name}</small></span><b>{duration(t.durationMs)}</b></Link>)}{!total.longest.length ? <div className="pd-chart-empty">暂无终态轮次的时长数据</div> : null}</div></section></div>
