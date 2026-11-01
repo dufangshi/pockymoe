@@ -96,6 +96,14 @@ export function DesktopShell({ capabilities, children }: { capabilities: HostCap
     return () => { window.removeEventListener('focus', focus); window.removeEventListener('blur', focus); };
   }, []);
   useEffect(() => {
+    const root = content.current; if (!root) return;
+    const sync = () => setInspector(Boolean(root.querySelector('.matter-explorer')));
+    sync();
+    const observer = new MutationObserver(sync);
+    observer.observe(root, { childList: true, subtree: true });
+    return () => observer.disconnect();
+  }, [focusedKey]);
+  useEffect(() => {
     host.window.setTitle(thread?.title ?? (location.pathname === '/desktop/devices' ? '设备 — Remote Codex' : 'Remote Codex'));
   }, [host, location.pathname, thread?.title]);
   useEffect(() => syncActivity(store, host, () => focusedKeyFromPath(route.current), capabilities.features.badge), [store, host, capabilities.features.badge]);

@@ -58,6 +58,9 @@ test('real three-device relay index, cold requests, encrypted WS, thread surface
   await page.screenshot({ path: '/tmp/rc-desktop/evidence/webnav/real-thread-light.png' });
   await page.getByRole('button', { name: '切换检查器' }).click();
   await expect(page.locator('.matter-explorer')).toBeVisible();
+  await expect(page.getByRole('button', { name: '切换检查器' })).toHaveClass(/is-active/);
+  await page.getByRole('button', { name: 'Close Explorer', exact: true }).click();
+  await expect(page.getByRole('button', { name: '切换检查器' })).not.toHaveClass(/is-active/);
   await page.keyboard.press('Control+k');
   await expect(page.getByRole('dialog', { name: '命令面板' })).toBeVisible();
   await page.keyboard.press('Escape');
