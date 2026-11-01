@@ -1,8 +1,8 @@
 import { expect, test } from '@playwright/test';
 import { seed, summary } from './fixtures';
-import type { StatsRange } from './model';
+import type { StatsRange } from '../../apps/supervisor-web/src/desktop/devices/model';
 
-const evidence = '/tmp/rc-desktop/evidence/devices/v21';
+const evidence = process.env.DESKTOP_EVIDENCE_DIR ?? 'test-results/desktop';
 for (const pack of ['classic', 'plum-pocket', 'terminal']) for (const dark of [false, true]) for (const width of [1440, 900]) {
   test(`hourly statistics ${pack} ${dark ? 'dark' : 'light'} ${width}`, async ({ page }) => {
     await page.setViewportSize({ width, height: 1100 });

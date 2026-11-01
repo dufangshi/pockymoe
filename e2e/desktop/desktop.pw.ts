@@ -1,7 +1,7 @@
 import { expect, test, type Page, type WebSocketRoute } from '@playwright/test';
-import type { DesktopIndex, DesktopThread } from '../data/types';
+import type { DesktopIndex, DesktopThread } from '../../apps/supervisor-web/src/desktop/data/types';
 import type { ThreadActionRequestDto } from '@pockymoe/shared';
-const evidence = process.env.DESKTOP_EVIDENCE_DIR ?? '/tmp/rc-desktop/evidence/webnav/v2';
+const evidence = process.env.DESKTOP_EVIDENCE_DIR ?? 'test-results/desktop';
 const account = { id: 'desktop-v2-test', username: 'Alex', role: 'user', enabled: true, createdAt: '2026-10-01T00:00:00Z' };
 const now = Date.now();
 const iso = (age: number) => new Date(now - age).toISOString();

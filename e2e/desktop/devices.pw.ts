@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { seed } from './fixtures';
 
-const evidence = '/tmp/rc-desktop/evidence/devices/v2';
+const evidence = process.env.DESKTOP_EVIDENCE_DIR ?? 'test-results/desktop';
 for (const pack of ['classic', 'plum-pocket', 'terminal']) for (const dark of [false, true]) for (const width of [1440, 900]) {
   test(`device surfaces ${pack} ${dark ? 'dark' : 'light'} ${width}`, async ({ page }) => {
     await page.setViewportSize({ width, height: 1100 });

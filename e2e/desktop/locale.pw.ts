@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 import { seed } from './fixtures';
 
-const evidence = '/tmp/rc-desktop/evidence/devices/locale';
+const evidence = process.env.DESKTOP_EVIDENCE_DIR ?? 'test-results/desktop';
 async function switchLanguage(page: Page, locale: 'en' | 'zh-CN') {
   const english = await page.locator('html').getAttribute('lang') === 'en';
   await page.locator('.matter-rail').getByRole('button', { name: english ? 'Settings' : '设置', exact: true }).click();

@@ -1,15 +1,17 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { expect, test } from '@playwright/test';
-import type { ActivitySnapshot, HostCommand } from '../host';
+import type { ActivitySnapshot, HostCommand } from '../../apps/supervisor-web/src/desktop/host';
 // Credentials stay in local test memory. No auth trace, screenshot, storage-state
 // export, response body or credential value is recorded in evidence.
-const config = JSON.parse(readFileSync('/Users/mac/dev/remote-codex-app/.local/e2e-desktop-env.json', 'utf8')) as {
+// The client repo's three-device fixture; see its scripts/e2e-desktop-backend.sh.
+const appRepo = process.env.POCKYMOE_APP_REPO ?? '../pockymoe-app';
+const config = JSON.parse(readFileSync(`${appRepo}/.local/e2e-desktop-env.json`, 'utf8')) as {
   webOrigin: string; relayOrigin: string; username: string; password: string;
   devices: { index: number; id: string; scenarios: Record<string, string> }[];
 };
-const evidenceDirectory = process.env.DESKTOP_EVIDENCE_DIR ?? '/tmp/rc-desktop/evidence/webnav/v2';
-const control = (action: string, device: number, id: string) => execFileSync('/Users/mac/dev/remote-codex-app/scripts/e2e-desktop-backend.sh', [action, String(device), id], { stdio: 'ignore' });
+const evidenceDirectory = process.env.DESKTOP_EVIDENCE_DIR ?? 'test-results/desktop';
+const control = (action: string, device: number, id: string) => execFileSync(`${appRepo}/scripts/e2e-desktop-backend.sh`, [action, String(device), id], { stdio: 'ignore' });
 test('real certified account across separate Web/API origins keeps map mounted and receives encrypted events', async ({ page, context }) => {
   await context.grantPermissions(['local-network-access'], { origin: config.webOrigin });
   await page.addInitScript(() => {

@@ -1,5 +1,5 @@
 import { expect, type Page } from '@playwright/test';
-import type { StatsRange, StatsSummary } from './model';
+import type { StatsRange, StatsSummary } from '../../apps/supervisor-web/src/desktop/devices/model';
 import type { DeviceMetricsDto } from '@pockymoe/shared';
 
 const account = { id: 'devices-test', username: 'Alex', role: 'user', enabled: true, createdAt: '2026-10-01T00:00:00Z' };

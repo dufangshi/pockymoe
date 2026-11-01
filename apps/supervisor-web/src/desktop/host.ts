@@ -1,4 +1,4 @@
-// Mirrors /Users/mac/dev/remote-codex-app/desktop/src/shared/contract.ts, bridge v2.
+// Mirrors desktop/src/shared/contract.ts in dufangshi/pockymoe-app, bridge v2.
 // Single source of truth for the desktop host bridge. supervisor-web mirrors the
 // page half in apps/supervisor-web/src/desktop/host.ts; bump
 // HOST_BRIDGE_VERSION on any breaking change and feature-detect, never assume.
