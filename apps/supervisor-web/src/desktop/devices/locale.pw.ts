@@ -97,4 +97,10 @@ test('saved notice and existing product errors follow a Settings language change
   await switchLanguage(page, 'en');
   await page.locator('.pd-header-actions .error-mark').click();
   await expect(page.locator('.error-mark-bubble')).toContainText('This Relay does not support renaming devices yet.');
+  await page.screenshot({ path: `${evidence}/saved-error-en.png` });
+  await page.keyboard.press('Escape');
+  await switchLanguage(page, 'zh-CN');
+  await page.locator('.pd-header-actions .error-mark').click();
+  await expect(page.locator('.error-mark-bubble')).toContainText('当前 Relay 暂不支持重命名设备。');
+  await page.screenshot({ path: `${evidence}/saved-error-zh-CN.png` });
 });
