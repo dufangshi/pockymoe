@@ -1052,3 +1052,5 @@
 :theme .thread-map-scope { border-radius: 10px; }
 :theme .thread-map-compressed { border-radius: 9px; }
 :theme :is(.matter-thread-row, .matter-group-tab, .matter-agent-threads-item) > .matter-thread-avatar + .matter-status-dot[data-status='waiting'] { width: 12px; height: 11px; border: 0; border-radius: 0; background: var(--status-waiting); box-shadow: none; }
+/* Readability overflow is a quiet pocket, with the same names and controls. */
+:theme :is(.thread-map-overflow, .thread-map-readable-list, .thread-map-attention-menu) { border-radius: 12px; }
