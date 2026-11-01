@@ -9,6 +9,7 @@ test.afterEach(async ({ page }) => { await page.unrouteAll({ behavior: 'ignoreEr
 
 async function openPlum(page: Page, request: APIRequestContext, mode: 'light' | 'dark' = 'light', running = false, preset: 'classic' | 'plum-pocket' = 'plum-pocket') {
   // A subscription and a reported context window, so the usage meter and the bar render.
+  const reportedContext = { availability: 'available', remainingPercent: 60, tokensInContextWindow: 1000, modelContextWindow: 2500, updatedAt: new Date().toISOString() };
   let usageAvailable = true;
   await page.route('**/api/agent-runtimes/*/subscription-usage*', (route) => route.fulfill({ json: { usage: usageAvailable ? {
     provider: 'claude', authKind: 'subscription', observedAt: new Date().toISOString(), stale: false,
@@ -19,9 +20,16 @@ async function openPlum(page: Page, request: APIRequestContext, mode: 'light' | 
   await page.route(/\/api\/threads\/[0-9a-f-]+\?/, async (route) => {
     const response = await route.fetch();
     const detail = await response.json();
-    detail.thread.contextUsage = { availability: 'available', remainingPercent: 60, tokensInContextWindow: 1000, modelContextWindow: 2500, updatedAt: new Date().toISOString() };
+    detail.thread.contextUsage = reportedContext;
     if (running) Object.assign(detail.thread, { status: 'running', activeTurnId: 'turn-running' });
     await route.fulfill({ response, json: detail });
+  });
+  // Setting responses return the same persisted reading as thread GETs.
+  await page.route(/\/api\/threads\/[0-9a-f-]+\/settings$/, async route => {
+    const response = await route.fetch();
+    const thread = await response.json();
+    thread.contextUsage = reportedContext;
+    await route.fulfill({ response, json: thread });
   });
   const absPath = path.resolve(process.env.E2E_WORKSPACE_ROOT!, `plum-${randomUUID()}`);
   await mkdir(absPath, { recursive: true });
@@ -132,7 +140,7 @@ for (const mode of ['light', 'dark'] as const) test(`${preset} usage meter repla
   await expect(composer.locator('.thread-composer-usage-footer')).toHaveCount(0);
   const g = await composer.evaluate((node) => {
     const r = (s: string) => node.querySelector(s)!.getBoundingClientRect();
-    return { shell: r('.thread-graph-composer-shell'), usage: r('.thread-subscription-usage'), chip: r('.composer-model-label'), bar: r('.thread-context-progress-track'), size: getComputedStyle(node.querySelector('.thread-subscription-usage')!).fontSize };
+    return { shell: r('.thread-graph-composer-shell'), usage: r('.thread-subscription-usage'), chip: r('.composer-model-label'), meter: r('.composer-context-meter'), bar: r('.composer-context-meter .thread-context-bar'), size: getComputedStyle(node.querySelector('.thread-subscription-usage')!).fontSize };
   });
   // A legend centred on the bottom border, with no separate row or pill.
   expect(Math.abs((g.usage.top + g.usage.bottom) / 2 - g.shell.bottom)).toBeLessThanOrEqual(1.5);
@@ -144,9 +152,10 @@ for (const mode of ['light', 'dark'] as const) test(`${preset} usage meter repla
   expect(await usage.evaluate((el) => getComputedStyle(el).backgroundImage)).toContain('rgba(0, 0, 0, 0)');
   expect(parseFloat(g.size)).toBeLessThanOrEqual(9);
   if (preset === 'plum-pocket') {
-    // The context bar sits inside the chip with equal insets.
-    expect(Math.abs((g.bar.left - g.chip.left) - (g.chip.right - g.bar.right))).toBeLessThanOrEqual(1);
-    expect(g.bar.bottom).toBeLessThanOrEqual(g.chip.bottom);
+    // The context bar sits inside its own key with equal insets, beside the chip.
+    expect(Math.abs((g.bar.left - g.meter.left) - (g.meter.right - g.bar.right))).toBeLessThanOrEqual(1);
+    expect(g.bar.bottom).toBeLessThanOrEqual(g.meter.bottom);
+    expect(g.meter.right).toBeLessThanOrEqual(g.chip.left);
   }
   await editor.click();
   const focused = await composer.locator('.thread-graph-composer-shell').boundingBox();
@@ -241,7 +250,7 @@ test('plum composer shows a quiet stop ring and a labelled send-after-turn key w
   }
 });
 
-for (const preset of ['classic', 'plum-pocket'] as const) test(`${preset} compact model menu shows six models, reasoning and context together`, async ({ page, request }, info) => {
+for (const preset of ['classic', 'plum-pocket'] as const) test(`${preset} model settings and context open separately`, async ({ page, request }, info) => {
   await page.route(/\/api\/(agent-runtimes\/[^/]+|threads\/[0-9a-f-]+)\/models(?:\?|$)/, route => route.fulfill({ json:
     ['Opus 5.5', '6.1 Sol', '6 Astra', '6 Sol', '6 Luna', '5.6 Sol'].map((displayName, index) => ({
       id: index ? `model-${index}` : 'ios-e2e-stream', model: index ? `model-${index}` : 'ios-e2e-stream', displayName,
@@ -250,33 +259,43 @@ for (const preset of ['classic', 'plum-pocket'] as const) test(`${preset} compac
     }))
   }));
   const { composer } = await openPlum(page, request, 'dark', false, preset);
+  await composer.getByRole('textbox').focus();
   await composer.getByTestId('composer-model-label').click();
   const menu = page.locator('.composer-model-menu');
   await expect(menu).toBeVisible();
   await expect(menu.getByRole('menuitemradio')).toHaveCount(6);
-  await expect(menu.locator('.composer-context-value')).toHaveText('1K / 2.5K');
+  await expect(menu.locator('.composer-context-summary')).toHaveCount(0);
+  await expect(composer.getByTestId('composer-context-meter')).toBeVisible();
   await expect(menu.getByRole('slider')).toBeVisible();
   await expect(menu).toHaveCSS('opacity', '1');
   const background = await menu.evaluate(element => getComputedStyle(element).backgroundColor);
   expect(background).not.toMatch(/(?:\/|,)\s*0\.\d+\s*\)$/);
   const geometry = await menu.evaluate(element => {
     const rect = element.getBoundingClientRect();
-    const context = element.querySelector('.composer-context-summary')!.getBoundingClientRect();
-    const last = element.querySelector('[role=menuitemradio]:last-child')!.getBoundingClientRect();
+    const last = [...element.querySelectorAll('[role=menuitemradio]')].at(-1)!.getBoundingClientRect();
     return { top: rect.top, bottom: rect.bottom, height: rect.height, left: rect.left, right: rect.right,
-      contextTop: context.top, contextBottom: context.bottom, lastBottom: last.bottom,
+      lastBottom: last.bottom,
       rowHeights: [...element.querySelectorAll('[role=menuitemradio]')].map(button => button.getBoundingClientRect().height) };
   });
   expect(geometry.height, JSON.stringify(geometry)).toBeLessThanOrEqual(340);
   expect(geometry.top).toBeGreaterThanOrEqual(8);
   expect(geometry.left).toBeGreaterThanOrEqual(8);
   expect(geometry.right).toBeLessThanOrEqual(page.viewportSize()!.width - 8);
-  expect(geometry.lastBottom).toBeLessThan(geometry.contextTop);
-  expect(geometry.contextBottom).toBeLessThanOrEqual(geometry.bottom);
+  expect(geometry.lastBottom).toBeLessThanOrEqual(geometry.bottom);
   expect(Math.max(...geometry.rowHeights)).toBeLessThanOrEqual(32);
   await page.screenshot({ path: info.outputPath(`model-menu-${preset}.png`), scale: 'css' });
-  await menu.getByRole('button', { name: 'low', exact: true }).click();
+  await menu.getByRole('slider').focus();
+  await page.keyboard.press('Home');
   await expect(composer.getByTestId('composer-model-label')).toContainText('low');
+  await page.keyboard.press('Escape');
+  await expect(menu).toBeHidden();
   await composer.getByTestId('composer-model-label').click();
   await expect(menu.locator('.composer-reasoning')).toHaveAttribute('data-effort', 'low');
+  await page.keyboard.press('Escape');
+  await composer.getByTestId('composer-context-meter').click();
+  await expect(menu).toBeHidden();
+  await expect(page.getByRole('dialog', { name: 'Context', exact: true })).toBeVisible();
+  await expect(page.locator('.thread-context-amount')).toContainText('1k');
+  await page.keyboard.press('Escape');
+  await expect(composer.getByTestId('composer-context-meter')).toBeFocused();
 });

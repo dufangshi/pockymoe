@@ -304,6 +304,7 @@ pub fn shared_thread_path_allowed(
                 | "/watches"
                 | "/search"
                 | "/summary"
+                | "/context"
         ) {
             return true;
         }

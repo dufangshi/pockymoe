@@ -32,6 +32,7 @@ tokio-util.workspace = true
 toml = "0.8"
 toml_edit = "0.22"
 tracing.workspace = true
+tiktoken-rs = "0.12.1"
 url.workspace = true
 uuid.workspace = true
 walkdir.workspace = true

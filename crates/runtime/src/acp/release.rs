@@ -225,6 +225,7 @@ impl AcpRuntime {
         }
         if stop_process {
             process.terminate(TERMINATE_GRACE).await?;
+            self.inner.context_readers.lock().await.remove(&process.id);
             self.inner.terminals.release_owner(&process.id);
         }
         let mut commands = self.inner.commands.lock().await;

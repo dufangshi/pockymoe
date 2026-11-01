@@ -570,6 +570,15 @@ export function mergeTurnTokenUsage(
   return changed ? nextTurns : turns;
 }
 
+// A plain usage update says nothing about categories: the last analysis stays, and
+// the context panel says so when the total has moved on from it.
+export function mergeThreadContextUsage(
+  current: ThreadDto['contextUsage'],
+  next: NonNullable<ThreadDto['contextUsage']>,
+): NonNullable<ThreadDto['contextUsage']> {
+  return next.details || !current?.details ? next : { ...next, details: current.details };
+}
+
 // Older supervisors expose Codex's last request in turn usage but omit the
 // thread context DTO. Keep those devices useful during a rolling upgrade.
 export function resolveThreadContextUsage(detail: Pick<ThreadDetailDto, 'thread' | 'turns'>): ThreadDto['contextUsage'] {

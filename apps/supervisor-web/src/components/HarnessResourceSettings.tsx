@@ -1,12 +1,14 @@
 import { translate, useI18n, type TranslationKey } from '@pockymoe/thread-ui/i18n';
-import { useEffect, useId, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import { ErrorMark } from '@pockymoe/thread-ui';
 import type { HarnessResourceSettingsDto } from '@pockymoe/shared';
 import {
   ApiError,
+  fetchContextInspectionSettings,
   fetchHarnessResourceSettings,
   relayModeActive,
+  updateContextInspectionSettings,
   updateHarnessResourceSettings,
 } from '../lib/api';
 import { relayDeviceIdFromPath } from '../lib/relayRoutes';
@@ -57,6 +59,73 @@ export function HarnessResourceSettings() {
         <h3 id="pm-res-disk" className="pm-res-heading">{translate('settings.resourcesDisk')}</h3>
         <StorageSettings key={deviceId ?? 'local'} deviceId={deviceId} />
       </section>
+      <section className="pm-res-section" aria-labelledby="pm-res-diagnostics">
+        <h3 id="pm-res-diagnostics" className="pm-res-heading">{translate('settings.contextInspectionHeading')}</h3>
+        <ContextInspectionSetting key={deviceId ?? 'local'} deviceId={deviceId} />
+      </section>
+    </div>
+  );
+}
+
+/** A preference of this device (docs/ui-principles.md §15): it saves as it changes,
+    says so in place, and goes back to the saved value when saving fails. It stays
+    enabled while saving, so keyboard focus is not dropped from the switch. */
+export function ContextInspectionSetting({ deviceId }: { deviceId: string | null }) {
+  const [enabled, setEnabled] = useState<boolean | null>(null);
+  const [unsupported, setUnsupported] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<{ message: string; retry: () => void } | null>(null);
+  const saving = useRef(false);
+  const load = useCallback(() => {
+    let alive = true;
+    setError(null);
+    fetchContextInspectionSettings(deviceId).then(settings => {
+      if (alive) setEnabled(settings.enabled);
+    }).catch((cause: unknown) => {
+      if (!alive) return;
+      if (cause instanceof ApiError && cause.statusCode === 404) setUnsupported(true);
+      else setError({ message: cause instanceof Error ? cause.message : String(cause), retry: load });
+    });
+    return () => { alive = false; };
+  }, [deviceId]);
+  useEffect(() => load(), [load]);
+  const change = async (next: boolean) => {
+    // One save at a time, so an earlier answer cannot overwrite a later choice.
+    if (saving.current) return;
+    saving.current = true;
+    const previous = !next;
+    // The switch moves at once (§11); a save over a relay can take a while.
+    setEnabled(next);
+    setBusy(true);
+    setSaved(false);
+    setError(null);
+    try {
+      setEnabled((await updateContextInspectionSettings({ enabled: next }, deviceId)).enabled);
+      setSaved(true);
+    } catch (cause) {
+      setEnabled(previous);
+      setError({ message: cause instanceof Error ? cause.message : String(cause), retry: () => void change(next) });
+    } finally {
+      saving.current = false;
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="pm-res-card">
+      <div className="pm-res-row" data-testid="context-inspection-setting" data-off={!enabled || undefined}>
+        <label className="pm-res-label">
+          <input type="checkbox" role="switch" checked={enabled ?? false} aria-busy={busy || undefined} disabled={enabled === null || unsupported}
+            onChange={event => void change(event.target.checked)} />
+          <span>{translate('settings.contextInspection')}</span>
+        </label>
+        <span className="pm-res-value">
+          {saved && !error ? <span role="status" className="pm-res-saved">{translate('settings.resourcesSaved')}</span> : null}
+          {unsupported ? <ErrorMark kind="unavailable" announce={false} message={translate('settings.contextInspectionUnavailable')} /> : null}
+          {error ? <ErrorMark message={error.message} onRetry={error.retry} /> : null}
+        </span>
+        <p className="pm-res-hint">{translate('settings.contextInspectionHint')}</p>
+      </div>
     </div>
   );
 }

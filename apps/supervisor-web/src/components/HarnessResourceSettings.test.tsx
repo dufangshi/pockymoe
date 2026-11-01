@@ -4,8 +4,8 @@ import { MemoryRouter } from 'react-router-dom';
 import { HarnessResourceSettings } from './HarnessResourceSettings';
 import { parseResourceField } from './harnessResourceModel';
 import {
-  ApiError, cleanStorageThread, compactStorage, fetchHarnessResourceSettings, fetchStorageOverview, fetchStorageSettings, pruneStorage,
-  relayModeActive, scanStorage, updateHarnessResourceSettings, updateStorageSettings,
+  ApiError, cleanStorageThread, compactStorage, fetchContextInspectionSettings, fetchHarnessResourceSettings, fetchStorageOverview, fetchStorageSettings, pruneStorage,
+  relayModeActive, scanStorage, updateContextInspectionSettings, updateHarnessResourceSettings, updateStorageSettings,
 } from '../lib/api';
 
 vi.mock('../lib/api', () => {
@@ -18,6 +18,7 @@ vi.mock('../lib/api', () => {
     ApiError, fetchHarnessResourceSettings: vi.fn(), updateHarnessResourceSettings: vi.fn(), relayModeActive: vi.fn(),
     fetchStorageOverview: vi.fn(), fetchStorageSettings: vi.fn(), updateStorageSettings: vi.fn(), scanStorage: vi.fn(),
     pruneStorage: vi.fn(), compactStorage: vi.fn(), cleanStorageThread: vi.fn(),
+    fetchContextInspectionSettings: vi.fn(), updateContextInspectionSettings: vi.fn(),
   };
 });
 
@@ -30,11 +31,48 @@ beforeEach(() => {
   vi.mocked(fetchStorageOverview).mockReset().mockResolvedValue({ deviceName: 'ubuntu-ms', scan: null });
   vi.mocked(fetchStorageSettings).mockReset().mockResolvedValue({ retentionDays: null, ...DEFAULT_CLEANUP });
   vi.mocked(updateStorageSettings).mockReset().mockImplementation(async input => input);
+  vi.mocked(fetchContextInspectionSettings).mockReset().mockResolvedValue({ enabled: false });
+  vi.mocked(updateContextInspectionSettings).mockReset().mockImplementation(async input => input);
 });
 const memory = () => within(screen.getByRole('region', { name: 'Memory' }));
 const renderAt = (path = '/threads/t') => render(<MemoryRouter initialEntries={[path]}><HarnessResourceSettings /></MemoryRouter>);
 const field = (name: string) => screen.getByRole('spinbutton', { name }) as HTMLInputElement;
 const toggle = (name: string) => screen.getByRole('checkbox', { name }) as HTMLInputElement;
+
+it('saves detailed context analysis to the routed device as it changes, off by default', async () => {
+  renderAt('/devices/peer/threads/t');
+  const name = 'Detailed context analysis (preview)';
+  const control = await screen.findByRole('switch', { name }) as HTMLInputElement;
+  await waitFor(() => expect(control.disabled).toBe(false));
+  expect(fetchContextInspectionSettings).toHaveBeenCalledWith('peer');
+  expect(control.checked).toBe(false);
+  // It moves on the click, before the device answers; a second click waits its turn.
+  let answer!: (value: { enabled: boolean }) => void;
+  vi.mocked(updateContextInspectionSettings).mockImplementationOnce(() => new Promise(resolve => { answer = resolve; }));
+  fireEvent.click(control);
+  expect(control.checked).toBe(true);
+  fireEvent.click(control);
+  expect(updateContextInspectionSettings).toHaveBeenCalledTimes(1);
+  expect(updateContextInspectionSettings).toHaveBeenCalledWith({ enabled: true }, 'peer');
+  answer({ enabled: true });
+  await waitFor(() => expect(within(screen.getByTestId('context-inspection-setting')).getByRole('status').textContent).toBe('Saved.'));
+  expect(control.checked).toBe(true);
+
+  vi.mocked(updateContextInspectionSettings).mockRejectedValueOnce(new Error('offline'));
+  fireEvent.click(control);
+  expect(control.checked).toBe(false);
+  await waitFor(() => expect(within(screen.getByTestId('context-inspection-setting')).getByRole('button', { name: 'Why it failed' })).toBeTruthy());
+  // The saved value comes back: a failed save does not read as off.
+  expect(control.checked).toBe(true);
+});
+
+it('keeps the context analysis switch in place, disabled, on a Supervisor without it', async () => {
+  vi.mocked(fetchContextInspectionSettings).mockRejectedValue(new ApiError(404, { code: 'not_found', message: 'Not found' } as never));
+  renderAt();
+  const row = within(await screen.findByTestId('context-inspection-setting'));
+  await waitFor(() => expect(row.getByRole('button', { name: 'Why it is unavailable' })).toBeTruthy());
+  expect((row.getByRole('switch') as HTMLInputElement).disabled).toBe(true);
+});
 
 it('reads the settings and saves limits in bytes', async () => {
   renderAt();

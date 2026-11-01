@@ -19,6 +19,73 @@ async fn spawn_supervisor(
 }
 
 #[tokio::test]
+async fn context_inspection_is_opt_in_and_returns_saved_thread_snapshot() {
+    let (_dir, port, root, state) = spawn_supervisor_state(vec![Provider::Codex], |_| {}).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://127.0.0.1:{port}");
+    assert_eq!(
+        json(
+            &client,
+            client.get(format!("{base}/api/context-inspection/settings"))
+        )
+        .await,
+        json!({"enabled":false})
+    );
+    let workspace = json(
+        &client,
+        client
+            .post(format!("{base}/api/workspaces"))
+            .json(&json!({"absPath":root,"label":"Context"})),
+    )
+    .await;
+    let thread=json(&client,client.post(format!("{base}/api/threads/start")).json(&json!({"workspaceId":workspace["id"],"provider":"codex","model":"ios-e2e-stream","approvalMode":"yolo"}))).await;
+    let endpoint = format!(
+        "{base}/api/threads/{}/context",
+        thread["id"].as_str().unwrap()
+    );
+    assert_eq!(
+        json(&client, client.get(&endpoint)).await["availability"],
+        "disabled"
+    );
+    assert_eq!(
+        json(
+            &client,
+            client
+                .put(format!("{base}/api/context-inspection/settings"))
+                .json(&json!({"enabled":true}))
+        )
+        .await,
+        json!({"enabled":true})
+    );
+    let session = state
+        .get_thread(thread["id"].as_str().unwrap())
+        .unwrap()
+        .provider_session_id
+        .unwrap();
+    state.context_inspection.store(&session,json!({"provider":"codex","source":"codexTrace","precision":"estimated","usedTokens":100,"windowTokens":1000,"updatedAt":"2030-01-01T00:00:00Z","categories":[{"id":"messages","kind":"used","tokens":100}]}));
+    let details = json(&client, client.get(&endpoint)).await;
+    assert_eq!(details["snapshot"]["usedTokens"], 100);
+    assert_eq!(details["availability"], "available");
+    assert_eq!(
+        client
+            .get(format!("{endpoint}?detail=invalid"))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        reqwest::StatusCode::BAD_REQUEST
+    );
+    json(
+        &client,
+        client
+            .put(format!("{base}/api/context-inspection/settings"))
+            .json(&json!({"enabled":false})),
+    )
+    .await;
+    assert!(json(&client, client.get(&endpoint)).await["snapshot"].is_null());
+}
+
+#[tokio::test]
 async fn thread_summary_http_returns_public_chronology_and_rejects_bad_queries() {
     let (_dir, port, root, state) = spawn_supervisor_state(vec![Provider::Codex], |_| {}).await;
     let client = reqwest::Client::new();

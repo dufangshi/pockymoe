@@ -245,8 +245,7 @@
 
 /* ── Model chip: mascot, name, effort, chevron ────────────────────────────── */
 
-/* Name and effort are centred on one axis; the context bar sits inside the chip
-   with equal insets, so chip, text and bar share the same centre line. */
+/* Name and effort are centred on one axis, so chip and text share one centre line. */
 :theme .thread-ui-shell [data-composer-layout] .composer-model-control { position: relative; }
 :theme .thread-ui-shell [data-composer-layout] .composer-model-label {
   display: grid;
@@ -257,7 +256,7 @@
   justify-items: center;
   column-gap: 6px;
   min-height: 30px;
-  max-width: min(16rem, max(4rem, calc(100cqi - 13rem)));
+  max-width: min(16rem, max(4rem, calc(100cqi - 16rem)));
   padding: 2px 8px;
   border: 1.5px dashed transparent;
   border-radius: 10px;
@@ -265,7 +264,6 @@
   text-align: center;
   transition: background-color 140ms ease, border-color 140ms ease;
 }
-:theme .thread-ui-shell [data-composer-layout] .composer-model-control:has(> .thread-context-progress-track) .composer-model-label { padding-bottom: 7px; }
 :theme .thread-ui-shell [data-composer-layout] .composer-model-label:active:not(:disabled) { background: color-mix(in srgb, var(--pc-key) 70%, transparent); }
 @media (hover: hover) {
   :theme .thread-ui-shell [data-composer-layout] .composer-model-label:hover:not(:disabled) { background: color-mix(in srgb, var(--pc-key) 70%, transparent); }
@@ -307,18 +305,6 @@
   transition: transform 160ms ease;
 }
 :theme .thread-ui-shell [data-composer-layout] .composer-model-label[aria-expanded='true'] .composer-model-chevron { transform: rotate(180deg); }
-:theme .thread-ui-shell [data-composer-layout] .composer-model-control > .thread-context-progress-track {
-  position: absolute;
-  left: 10px;
-  right: 10px;
-  bottom: 3px;
-  height: 2.5px;
-  margin: 0;
-  background: color-mix(in srgb, var(--pc-key-lip) 85%, transparent);
-}
-/* The fill colour is set inline (sky, amber, rose by remaining context); keep
-   the warning colours and swap only the healthy sky for mustard. */
-:theme .thread-ui-shell .composer-model-control .thread-context-progress-fill[style*='125, 211, 252'] { background-color: var(--theme-accent-solid) !important; }
 
 /* The shared border legend replaces a short stretch of edge and stitching.
    Theme only its felt/ink; never add padding or move the composer. */
@@ -635,7 +621,7 @@
 
 @container (max-width: 480px) {
   :theme .thread-ui-shell [data-composer-layout] :is(.thread-graph-composer-icon-button, .thread-graph-composer-stop-button) { width: 28px !important; min-width: 28px !important; }
-  :theme .thread-ui-shell [data-composer-layout] .composer-model-label { max-width: min(9rem, max(4rem, calc(100cqi - 12rem))); column-gap: 4px; padding-inline: 6px; }
+  :theme .thread-ui-shell [data-composer-layout] .composer-model-label { max-width: min(9rem, max(4rem, calc(100cqi - 15rem))); column-gap: 4px; padding-inline: 6px; }
   :theme .thread-ui-shell [data-composer-layout] .composer-model-chevron { display: none; }
 }
 /* Phones and split panes: the peeking mascot carries the identity, the chip keeps the words. */
@@ -798,5 +784,20 @@
   :theme .thread-ui-shell .thread-composer-usage-tag { --composer-seam-surface: var(--pc-felt); }
 }
 
-:theme .composer-context-summary { padding: 5px 10px 2px; border-top-style: dashed; font-family: var(--plum-display); }
-:theme .composer-context-value { font-weight: 600; }
+/* ── Context entry and panel: a felt key and a stitched card ──────────────── */
+:theme .thread-ui-shell [data-composer-layout] .composer-context-meter { border: 1.5px dashed transparent; border-radius: 10px; transition: background-color 140ms ease, border-color 140ms ease; }
+:theme .thread-ui-shell [data-composer-layout] .composer-context-meter:active { background: color-mix(in srgb, var(--pc-key) 70%, transparent); }
+@media (hover: hover) {
+  :theme .thread-ui-shell [data-composer-layout] .composer-context-meter:hover { background: color-mix(in srgb, var(--pc-key) 70%, transparent); }
+}
+:theme .thread-ui-shell [data-composer-layout] .composer-context-meter[aria-expanded='true'] { background: var(--theme-accent-soft); border-color: var(--theme-accent-border); }
+:theme .thread-ui-shell [data-composer-layout] .composer-context-meter:focus-visible { outline: 2px solid var(--pc-focus); outline-offset: 2px; }
+:theme .composer-context-meter-value { font-family: var(--plum-display); font-weight: 700; }
+:theme .thread-context-palette { --context-fill: var(--theme-accent-solid); --context-track: color-mix(in srgb, var(--theme-fg-muted) 26%, transparent); }
+:theme .thread-ui-shell .thread-context-surface.thread-composer-menu-surface { border: 2px solid var(--theme-border); border-radius: 16px; background: var(--pc-felt, var(--theme-panel)); }
+:theme .thread-context-surface.is-sheet { border: 2px solid var(--theme-border); border-bottom: 0; border-radius: 20px 20px 0 0; background: var(--pc-felt, var(--theme-panel)); }
+:theme .thread-context-title, :theme .thread-context-percent { font-family: var(--plum-display); font-weight: 700; }
+:theme .thread-context-bar:not(.is-mini) { border-radius: 6px; }
+:theme .thread-context-footer { border-top-style: dashed; }
+:theme .thread-context-action { border-style: dashed; border-radius: 10px; font-family: var(--plum-display); font-weight: 600; }
+:theme .thread-context-swatch { border-radius: 50%; }

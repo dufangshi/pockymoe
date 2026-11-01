@@ -60,6 +60,8 @@ impl Drop for PendingGuard {
 /// One ACP stdio process. stdin is locked only for the write, so multiple
 /// sessions on the same process can request/notify concurrently.
 pub struct AcpProcess {
+    pub(crate) context_inspection: bool,
+    context_trace_root: Option<std::path::PathBuf>,
     pub(crate) cli_env: Vec<(String, String)>,
     pub(crate) id: String,
     pub(crate) started_at: String,
@@ -113,6 +115,7 @@ impl AcpProcess {
                 child.kill().await?;
             }
         }
+        self.cleanup_context_trace();
         Ok(())
     }
 
@@ -159,7 +162,27 @@ impl AcpProcess {
         if child.try_wait()?.is_none() {
             child.kill().await?;
         }
+        self.cleanup_context_trace();
         Ok(())
+    }
+
+    fn cleanup_context_trace(&self) {
+        if !self.context_inspection {
+            return;
+        }
+        if let Some(root) = &self.context_trace_root {
+            if root
+                .file_name()
+                .and_then(|v| v.to_str())
+                .is_some_and(|v| uuid::Uuid::parse_str(v).is_ok())
+                && root
+                    .parent()
+                    .and_then(|p| p.file_name())
+                    .is_some_and(|v| v == "traces")
+            {
+                let _ = std::fs::remove_dir_all(root);
+            }
+        }
     }
 
     pub async fn spawn(
@@ -241,6 +264,13 @@ impl AcpProcess {
         spawn_exit_monitor(child.clone(), state.clone());
         Ok((
             Self {
+                context_inspection: extra_env
+                    .iter()
+                    .any(|(k, v)| *k == "POCKYMOE_CONTEXT_INSPECTION" && v == "1"),
+                context_trace_root: extra_env
+                    .iter()
+                    .find(|(k, _)| *k == "CODEX_ROLLOUT_TRACE_ROOT")
+                    .map(|(_, v)| v.into()),
                 cli_env,
                 id: uuid::Uuid::new_v4().to_string(),
                 started_at: pockymoe_protocol::now_rfc3339(),
@@ -516,6 +546,7 @@ fn terminate_tree(child: &Child) {
 
 impl Drop for AcpProcess {
     fn drop(&mut self) {
+        self.cleanup_context_trace();
         if let Ok(mut child) = self.child.try_lock() {
             terminate_tree(&child);
             let _ = child.start_kill();

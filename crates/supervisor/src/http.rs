@@ -274,6 +274,11 @@ pub(crate) fn router_with_treer(state: AppState, hub: Option<Arc<crate::treer::H
         )
         .route("/api/config/runtime", get(runtime_config))
         .route(
+            "/api/context-inspection/settings",
+            get(context_inspection_settings).put(put_context_inspection_settings),
+        )
+        .route("/api/threads/{id}/context", get(thread_context_inspection))
+        .route(
             "/api/agent-runtimes/{provider}/subscription-usage",
             get(subscription_usage),
         )
@@ -1058,6 +1063,48 @@ async fn runtime_config(
         });
     }
     Json(config)
+}
+
+async fn context_inspection_settings(State(state): State<AppState>) -> Json<Value> {
+    Json(state.context_inspection_settings())
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ContextInspectionSettings {
+    enabled: bool,
+}
+async fn put_context_inspection_settings(
+    State(state): State<AppState>,
+    Json(input): Json<ContextInspectionSettings>,
+) -> Result<Json<Value>, ApiErr> {
+    state
+        .update_context_inspection_settings(input.enabled)
+        .map(Json)
+        .map_err(settings_storage_error)
+}
+#[derive(Deserialize)]
+struct ContextInspectionQuery {
+    detail: Option<String>,
+    refresh: Option<bool>,
+}
+async fn thread_context_inspection(
+    Path(id): Path<String>,
+    Query(query): Query<ContextInspectionQuery>,
+    State(state): State<AppState>,
+) -> Result<Json<Value>, ApiErr> {
+    let detail = query.detail.as_deref().unwrap_or("summary");
+    if !matches!(detail, "summary" | "full") {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            "invalid_detail",
+            "detail must be summary or full",
+        ));
+    }
+    state
+        .thread_context_inspection(&id, detail, query.refresh.unwrap_or(false))
+        .await
+        .map(Json)
+        .map_err(map_err)
 }
 
 fn which_tmux() -> bool {

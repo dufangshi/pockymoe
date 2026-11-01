@@ -140,6 +140,9 @@ struct PendingInput {
 }
 
 struct Inner {
+    inspection: std::sync::RwLock<Option<Arc<crate::context_inspection::InspectionState>>>,
+    context_readers:
+        Mutex<HashMap<String, Arc<std::sync::Mutex<crate::context_inspection::CodexTraceReader>>>>,
     sessions: Mutex<HashMap<String, LiveSession>>,
     health: std::sync::Mutex<HashMap<String, Option<String>>>,
     commands: Mutex<HashMap<(String, String), Vec<NegotiatedCommand>>>,
@@ -219,6 +222,8 @@ impl AcpRuntime {
             startup_timeout: Duration::from_millis(timeout_ms),
             started_at: Mutex::new(None),
             inner: Arc::new(Inner {
+                inspection: Default::default(),
+                context_readers: Default::default(),
                 sessions: Mutex::new(HashMap::new()),
                 health: Default::default(),
                 commands: Mutex::new(HashMap::new()),
@@ -432,7 +437,38 @@ impl AcpRuntime {
         } else {
             None
         };
-        let server_command = agent_server_command(def, yolo);
+        let mut server_command = agent_server_command(def, yolo);
+        let inspection = self
+            .inner
+            .inspection
+            .read()
+            .unwrap()
+            .clone()
+            .filter(|s| s.enabled());
+        if let Some(state) = &inspection {
+            if matches!(def.id.as_str(), "codex" | "claude") {
+                extra_env.push(("POCKYMOE_CONTEXT_INSPECTION", "1".into()));
+            }
+            if def.id == "codex" {
+                let root = state.root.join("traces").join(Uuid::new_v4().to_string());
+                std::fs::create_dir_all(&root)?;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))?;
+                }
+                extra_env.push((
+                    "CODEX_ROLLOUT_TRACE_ROOT",
+                    root.to_string_lossy().into_owned(),
+                ));
+            } else if def.id == "claude" {
+                if let Some(command) =
+                    super::context::claude_command(&server_command, &state.root.join("bridge"))?
+                {
+                    server_command = command;
+                }
+            }
+        }
         let dsh_env_preset =
             (def.id == "deepseek").then(|| super::deepseek::permission_preset(&policy).to_string());
         if let Some(preset) = &dsh_env_preset {
@@ -564,6 +600,20 @@ impl AcpRuntime {
             .to_string();
         if session_id.is_empty() {
             bail!("ACP session id missing");
+        }
+        if let Some((_, root)) = extra_env
+            .iter()
+            .find(|(k, _)| *k == "CODEX_ROLLOUT_TRACE_ROOT")
+        {
+            self.inner.context_readers.lock().await.insert(
+                process.id.clone(),
+                Arc::new(std::sync::Mutex::new(
+                    crate::context_inspection::CodexTraceReader::new(
+                        PathBuf::from(root),
+                        session_id.clone(),
+                    ),
+                )),
+            );
         }
         let config_options = raw_session
             .get("configOptions")
@@ -1488,6 +1538,69 @@ impl AcpRuntime {
 
 #[async_trait]
 impl AgentRuntime for AcpRuntime {
+    fn configure_context_inspection(&self, state: Arc<crate::context_inspection::InspectionState>) {
+        *self.inner.inspection.write().unwrap() = Some(state);
+    }
+    async fn inspect_context(&self, session_id: &str, detail: &str) -> Result<Option<Value>> {
+        let Some(state) = self
+            .inner
+            .inspection
+            .read()
+            .unwrap()
+            .clone()
+            .filter(|s| s.enabled())
+        else {
+            return Ok(None);
+        };
+        let (process, raw, adapter) = {
+            let sessions = self.inner.sessions.lock().await;
+            let Some(live) = sessions
+                .iter()
+                .find(|(key, _)| session_ids_match(key, session_id))
+                .map(|(_, v)| v)
+            else {
+                return Ok(None);
+            };
+            (
+                live.process.clone(),
+                live.session_id.clone(),
+                live.adapter_id.clone(),
+            )
+        };
+        if adapter == "codex" {
+            return Ok(state.cached(session_id));
+        }
+        if adapter != "claude" {
+            return Ok(None);
+        }
+        if !process.context_inspection {
+            return Ok(None);
+        }
+        let raw = tokio::time::timeout(
+            Duration::from_secs(20),
+            process.request(
+                "_pockymoe/session/context",
+                json!({"sessionId":raw,"detail":detail}),
+            ),
+        )
+        .await??;
+        if self
+            .inner
+            .sessions
+            .lock()
+            .await
+            .iter()
+            .find(|(key, _)| session_ids_match(key, session_id))
+            .is_none_or(|(_, live)| live.process.id != process.id)
+        {
+            return Ok(None);
+        }
+        let snapshot = crate::context_inspection::claude_snapshot(&raw, detail);
+        if let Some(snapshot) = &snapshot {
+            state.store(session_id, snapshot.clone());
+        }
+        Ok(snapshot)
+    }
     fn provider(&self) -> Provider {
         self.provider
     }
@@ -1968,6 +2081,16 @@ impl AgentRuntime for AcpRuntime {
             if let Some(existing) = existing {
                 let live = &sessions[&existing];
                 if cli_context_matches(&live.process.cli_env)
+                    && (live.active.is_some()
+                        || !matches!(live.adapter_id.as_str(), "codex" | "claude")
+                        || self
+                            .inner
+                            .inspection
+                            .read()
+                            .unwrap()
+                            .as_ref()
+                            .is_some_and(|s| s.enabled())
+                            == live.process.context_inspection)
                     && live.process.connection_open().await
                 {
                     return Ok(StartSessionResult {
@@ -2259,6 +2382,36 @@ impl AgentRuntime for AcpRuntime {
             reader.expect_prompt(&prompt);
         }
         let mut usage_tick = tokio::time::interval(Duration::from_secs(1));
+        let inspection = self
+            .inner
+            .inspection
+            .read()
+            .unwrap()
+            .clone()
+            .filter(|_| !input.hidden);
+        let context_reader = self
+            .inner
+            .context_readers
+            .lock()
+            .await
+            .get(&process.id)
+            .cloned();
+        let context_observer = if !input.hidden {
+            context_reader
+                .as_ref()
+                .zip(inspection.as_ref())
+                .map(|(reader, state)| {
+                    super::context::observer(
+                        reader.clone(),
+                        state.clone(),
+                        input.provider_session_id.clone(),
+                        input.thread_id.clone(),
+                        bus.clone(),
+                    )
+                })
+        } else {
+            None
+        };
         let mut dsh_events = dsh.as_ref().map(|bridge| bridge.subscribe());
         let mut dsh_running = false;
         let prompt_rpc: std::pin::Pin<
@@ -2380,7 +2533,10 @@ impl AgentRuntime for AcpRuntime {
                                 emit_usage(&bus, &input.thread_id, &input.turn_id, context, input.hidden);
                             }
                             if let Some(reader) = usage_reader.as_mut() {
-                                for usage in reader.poll_final() { emit_usage(&bus, &input.thread_id, &input.turn_id, usage, input.hidden); }
+                                for usage in reader.poll_final() {
+                                    super::context::native_usage(context_reader.as_ref(),&usage,inspection.as_ref(),&input.provider_session_id,&input.thread_id,&bus);
+                                    emit_usage(&bus, &input.thread_id, &input.turn_id, usage, input.hidden);
+                                }
                             }
                             if let Some(reader) = claude_usage_reader.as_mut() {
                                 for usage in reader.poll_final() { emit_usage(&bus, &input.thread_id, &input.turn_id, usage, input.hidden); }
@@ -2437,7 +2593,10 @@ impl AgentRuntime for AcpRuntime {
                 }
                 _ = usage_tick.tick(), if usage_reader.is_some() || claude_usage_reader.is_some() => {
                     if let Some(reader) = usage_reader.as_mut() {
-                        for usage in reader.poll() { emit_usage(&bus, &input.thread_id, &input.turn_id, usage, input.hidden); }
+                        for usage in reader.poll() {
+                            super::context::native_usage(context_reader.as_ref(),&usage,inspection.as_ref(),&input.provider_session_id,&input.thread_id,&bus);
+                            emit_usage(&bus, &input.thread_id, &input.turn_id, usage, input.hidden);
+                        }
                     }
                     if let Some(reader) = claude_usage_reader.as_mut() {
                         for usage in reader.poll() { emit_usage(&bus, &input.thread_id, &input.turn_id, usage, input.hidden); }
@@ -2571,6 +2730,9 @@ impl AgentRuntime for AcpRuntime {
                                 emit_usage(&bus, &input.thread_id, &input.turn_id, context, input.hidden);
                             }
                             let mut mapped = mapper.apply(&update);
+                            if let Some(usage)=mapped.usage.as_ref().filter(|_|adapter_id=="codex") {
+                                super::context::native_usage(context_reader.as_ref(),usage,inspection.as_ref(),&input.provider_session_id,&input.thread_id,&bus);
+                            }
                             if let Some(subagents) = mapped.active_subagents.take() {
                                 let subagents = merge_active_subagents(subagents, claude_usage_reader.as_ref());
                                 if self.update_subagents(&input, &subagents).await {
@@ -2700,8 +2862,41 @@ impl AgentRuntime for AcpRuntime {
         }
         if let Some(reader) = usage_reader.as_mut() {
             for usage in reader.poll_final() {
+                super::context::native_usage(
+                    context_reader.as_ref(),
+                    &usage,
+                    inspection.as_ref(),
+                    &input.provider_session_id,
+                    &input.thread_id,
+                    &bus,
+                );
                 emit_usage(&bus, &input.thread_id, &input.turn_id, usage, input.hidden);
             }
+        }
+        if let Some(stop) = context_observer {
+            stop.cancel();
+        }
+        if adapter_id == "claude"
+            && !input.hidden
+            && inspection.as_ref().is_some_and(|s| s.enabled())
+        {
+            let runtime = self.detached();
+            let session = input.provider_session_id.clone();
+            let thread = input.thread_id.clone();
+            let context_bus = bus.session_observation();
+            tokio::spawn(async move {
+                if let Ok(Some(snapshot)) = runtime.inspect_context(&session, "summary").await {
+                    if let Some(state) = runtime.inner.inspection.read().unwrap().as_ref() {
+                        crate::context_inspection::emit(
+                            state,
+                            &session,
+                            &thread,
+                            &context_bus,
+                            snapshot,
+                        );
+                    }
+                }
+            });
         }
         let (status, error) = match &outcome {
             TurnOutcome::Completed => ("completed", None),

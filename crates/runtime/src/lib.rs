@@ -3,6 +3,7 @@ pub mod actor;
 mod child_process;
 pub use child_process::supervisor_secret_env;
 pub mod config;
+pub mod context_inspection;
 pub mod db;
 pub mod device_metrics;
 pub mod fake;

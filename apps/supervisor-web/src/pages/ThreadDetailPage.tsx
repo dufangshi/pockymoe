@@ -71,6 +71,7 @@ import {
   type ThreadShellControlState,
   type ThreadShellPanelHandle,
   type ThreadComposerProps,
+  type ThreadContextInspector,
   type ThreadTimelineProps,
   type ThreadGraphWorkspaceFeatures,
 } from '@pockymoe/thread-ui';
@@ -83,6 +84,7 @@ import {
   isInvisibleThreadError,
   ApiError,
   compactThread,
+  fetchThreadContext,
   connectSupervisorEvents,
   connectShellSocket,
   createThreadShell,
@@ -147,6 +149,7 @@ import {
   normalizeGoalHistory,
   prependTurns,
   reconcileLiveItemsWithDetail,
+  mergeThreadContextUsage,
   resolveThreadContextUsage,
   removePendingRequestFromDetail,
   turnHasPhotoAttachment,
@@ -820,6 +823,16 @@ export function ThreadDetailPage() {
     (relayAccess?.kind === 'shared' && relayAccess.threadAccess === 'control');
   const relayThreadCanShare =
     relayDeviceRouteActive && relayAccess?.kind === 'owner';
+  // Whoever controls the thread reads its analysis, through the page's own device
+  // route. Turning it on administers the device, so that link is for its owner.
+  // A new inspector means another thread or device, and drops what was read: only
+  // those decide its identity, not the shell's handlers.
+  const openSettingsSection = useRef(shellNav?.openSettingsSection);
+  openSettingsSection.current = shellNav?.openSettingsSection;
+  const contextInspector = useMemo<ThreadContextInspector | null>(() => relayThreadCanControl && !hostScope ? {
+    load: options => fetchThreadContext(id, options),
+    ...(relayThreadIsOwner ? { openSettings: () => openSettingsSection.current?.('resources') } : {}),
+  } : null, [hostScope, id, relayRouteDeviceId, relayThreadCanControl, relayThreadIsOwner]);
   // Terminals are the owner's only; no share or grant gets one (docs/account-key-trust.md#sharing).
   const terminalAvailable = terminalPluginEnabled && canUseTerminal(relayAccess, relayDeviceRouteActive);
   const terminalRefused = relayDeviceRouteActive && relayAccess !== null && !canUseTerminal(relayAccess, true);
@@ -1982,7 +1995,7 @@ export function ThreadDetailPage() {
                   ...current,
                   thread: {
                     ...current.thread,
-                    contextUsage: normalizedContextUsage,
+                    contextUsage: mergeThreadContextUsage(current.thread.contextUsage, normalizedContextUsage),
                   },
                 }
               : current,
@@ -1992,7 +2005,7 @@ export function ThreadDetailPage() {
               entry.id === id
                 ? {
                     ...entry,
-                    contextUsage: normalizedContextUsage,
+                    contextUsage: mergeThreadContextUsage(entry.contextUsage, normalizedContextUsage),
                   }
                 : entry,
             ),
@@ -3812,6 +3825,7 @@ export function ThreadDetailPage() {
         sandboxMode: detail.thread.sandboxMode ?? null,
         modelOptions,
         contextUsage: resolveThreadContextUsage(detail),
+        contextInspector,
         subscriptionUsage,
         capabilities: hostScope && backendCapabilities ? { ...backendCapabilities, branching: { ...backendCapabilities.branching, fork: false, forkAt: false, resumeAt: false }, management: { ...backendCapabilities.management, hooks: false, hostConfigFiles: false } } : backendCapabilities,
         toolboxItems: hostScope ? [] : backendManagementSchema?.toolboxItems ?? [],

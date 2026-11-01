@@ -1,6 +1,6 @@
 import { TurnNotification } from './TurnNotification';
 import { useMemo } from 'react';
-import { GraphChatThreadChatPanel, ThreadLoadingIndicator, createWorkspacePathResolver, type ThreadComposerProps } from '@pockymoe/thread-ui';
+import { GraphChatThreadChatPanel, ThreadLoadingIndicator, createWorkspacePathResolver, type ThreadComposerProps, type ThreadContextInspector } from '@pockymoe/thread-ui';
 import { translate as t, useI18n } from '@pockymoe/thread-ui/i18n';
 import {
   buildThreadImageAssetUrl,
@@ -9,6 +9,7 @@ import {
   fetchThreadTurnDetail,
   fetchWorkspaceFileTree,
   fetchLinkedFile,
+  fetchThreadContext,
 } from '../lib/api';
 import type { useWorkbenchReference } from '../pages/useWorkbenchReference';
 import { resolveThreadContextUsage } from '../pages/threadDetailModel';
@@ -29,6 +30,10 @@ export function WorkbenchReferencePane({
   useI18n();
   const { detail, error, loadEarlier, loadingEarlier, retry } = controller;
   const threadId = detail?.thread.id;
+  // The pane's own device, and no settings link: it may be another device than the page's.
+  const contextInspector = useMemo<ThreadContextInspector | null>(() => threadId && controller.canControl ? {
+    load: options => fetchThreadContext(threadId, options, controller.deviceId),
+  } : null, [threadId, controller.canControl, controller.deviceId]);
   const adapter = useMemo(
     () => ({
       getImageAssetUrl: ({
@@ -103,6 +108,7 @@ export function WorkbenchReferencePane({
               fastMode: detail.thread.fastMode ?? false,
               modelOptions: controller.models,
               contextUsage: resolveThreadContextUsage(detail),
+              contextInspector,
               capabilities: controller.capabilities ? {
                 ...controller.capabilities,
                 turns: { ...controller.capabilities.turns, compact: false },

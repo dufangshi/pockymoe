@@ -56,3 +56,12 @@
 @media (max-width: 639px) {
   :theme .thread-ui-shell [data-composer-layout] .thread-graph-composer-shell { border-radius: 0 !important; }
 }
+
+/* Context entry and panel: square, hairlines, no shadow. */
+:theme .thread-ui-shell [data-composer-layout] .composer-context-meter { border: 1px solid var(--term-line); border-radius: 0; }
+:theme .thread-ui-shell [data-composer-layout] .composer-context-meter[aria-expanded='true'] { border-color: var(--theme-border-strong); background: var(--theme-surface); }
+:theme .thread-context-bar, :theme .thread-context-bar.is-mini, :theme .thread-context-swatch, :theme .thread-context-skeleton > span { border-radius: 0; }
+:theme .thread-ui-shell .thread-context-surface.thread-composer-menu-surface { border: 1px solid var(--term-line); border-radius: 0; box-shadow: none; }
+:theme .thread-context-surface.is-sheet { border-radius: 0; border-color: var(--term-line); }
+:theme .thread-context-action, :theme .thread-context-row, :theme .thread-context-close { border-radius: 0; }
+:theme .thread-context-palette { --context-fill: var(--theme-accent-solid); }
