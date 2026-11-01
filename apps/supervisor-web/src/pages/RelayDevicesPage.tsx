@@ -15,7 +15,7 @@ import { useDeviceProtection } from '../lib/useDeviceProtection';
 import { getTransportStatus } from '../lib/relayTransport';
 import { getLocale } from '@pockymoe/thread-ui/i18n';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
-import { ErrorMark } from '@pockymoe/thread-ui';
+import { Select, ErrorMark } from '@pockymoe/thread-ui';
 import { SharedAccessPanel } from '../components/sharedAccess/SharedAccessPanel';
 import { sharedItems, type ShareDirection, type SharedItem } from '../components/sharedAccess/model';
 import { useShareAttention } from '../components/sharedAccess/useShareAttention';
@@ -1361,24 +1361,24 @@ function SharePermissionsDialog({
             />
           </label>
           <label className="block text-sm text-[var(--theme-fg-soft)]">
-            {translate("devices.threadAccess")}<select
+            {translate("devices.threadAccess")}<Select
               className="relay-input mt-2 min-h-11 w-full"
-              onChange={(event) =>
-                setThreadAccess(event.target.value as RelayThreadAccessDto)
+              onValueChange={(selectedValue) =>
+                setThreadAccess(selectedValue as RelayThreadAccessDto)
               }
               value={threadAccess}
             >
               <option value="read">{translate("devices.viewOnly")}</option>
               <option value="control">{translate("devices.collaborator")}</option>
-            </select>
+            </Select>
           </label>
           <label className="block text-sm text-[var(--theme-fg-soft)]">
-            {translate("devices.workspaceAccess")}<select
+            {translate("devices.workspaceAccess")}<Select
               className="relay-input mt-2 min-h-11 w-full"
               disabled={workspaceAccessLocked}
-              onChange={(event) =>
+              onValueChange={(selectedValue) =>
                 setWorkspaceAccess(
-                  event.target.value as RelayWorkspaceAccessDto,
+                  selectedValue as RelayWorkspaceAccessDto,
                 )
               }
               value={workspaceAccessLocked ? 'none' : workspaceAccess}
@@ -1386,7 +1386,7 @@ function SharePermissionsDialog({
               <option value="none">{translate("devices.noWorkspace")}</option>
               <option value="read">{translate("devices.workspaceRead")}</option>
               <option value="write">{translate("devices.workspaceWrite")}</option>
-            </select>
+            </Select>
           </label>
           {workspaceAccessLocked ? (
             <p className="rounded-md border border-[var(--theme-border)] bg-[var(--theme-surface)] px-3 py-2 text-xs text-[var(--theme-fg-muted)]">
@@ -1500,23 +1500,23 @@ function ShareDeviceDialog({
           </label>
           <div className="grid gap-3 sm:grid-cols-2">
             <label className="block text-sm text-[var(--theme-fg-soft)]">
-              {translate("devices.threadAccess")}<select
+              {translate("devices.threadAccess")}<Select
                 className="relay-input mt-2 min-h-11 w-full"
-                onChange={(event) =>
-                  setThreadAccess(event.target.value as RelayThreadAccessDto)
+                onValueChange={(selectedValue) =>
+                  setThreadAccess(selectedValue as RelayThreadAccessDto)
                 }
                 value={threadAccess}
               >
                 <option value="read">{translate("devices.viewOnly")}</option>
                 <option value="control">{translate("devices.collaborator")}</option>
-              </select>
+              </Select>
             </label>
             <label className="block text-sm text-[var(--theme-fg-soft)]">
-              {translate("devices.workspaceAccess")}<select
+              {translate("devices.workspaceAccess")}<Select
                 className="relay-input mt-2 min-h-11 w-full"
-                onChange={(event) =>
+                onValueChange={(selectedValue) =>
                   setWorkspaceAccess(
-                    event.target.value as RelayWorkspaceAccessDto,
+                    selectedValue as RelayWorkspaceAccessDto,
                   )
                 }
                 value={workspaceAccess}
@@ -1524,7 +1524,7 @@ function ShareDeviceDialog({
                 <option value="none">{translate("devices.noWorkspace")}</option>
                 <option value="read">{translate("devices.workspaceRead")}</option>
                 <option value="write">{translate("devices.workspaceWrite")}</option>
-              </select>
+              </Select>
             </label>
           </div>
           <label className="flex min-h-11 items-center justify-between gap-3 text-sm text-[var(--theme-fg-soft)]">
@@ -1632,24 +1632,24 @@ function GrantPermissionsDialog({
           </label>
           <div className="grid gap-3 sm:grid-cols-2">
             <label className="block text-sm text-[var(--theme-fg-soft)]">
-              {translate("devices.threadAccess")}<select
+              {translate("devices.threadAccess")}<Select
                 className="relay-input mt-2 min-h-11 w-full"
-                onChange={(event) =>
-                  setThreadAccess(event.target.value as RelayThreadAccessDto)
+                onValueChange={(selectedValue) =>
+                  setThreadAccess(selectedValue as RelayThreadAccessDto)
                 }
                 value={threadAccess}
               >
                 <option value="read">{translate("devices.viewOnly")}</option>
                 <option value="control">{translate("devices.collaborator")}</option>
-              </select>
+              </Select>
             </label>
             <label className="block text-sm text-[var(--theme-fg-soft)]">
-              {translate("devices.workspaceAccess")}<select
+              {translate("devices.workspaceAccess")}<Select
                 className="relay-input mt-2 min-h-11 w-full"
                 disabled={workspaceAccessLocked}
-                onChange={(event) =>
+                onValueChange={(selectedValue) =>
                   setWorkspaceAccess(
-                    event.target.value as RelayWorkspaceAccessDto,
+                    selectedValue as RelayWorkspaceAccessDto,
                   )
                 }
                 value={workspaceAccessLocked ? 'none' : workspaceAccess}
@@ -1657,7 +1657,7 @@ function GrantPermissionsDialog({
                 <option value="none">{translate("devices.noWorkspace")}</option>
                 <option value="read">{translate("devices.workspaceRead")}</option>
                 <option value="write">{translate("devices.workspaceWrite")}</option>
-              </select>
+              </Select>
             </label>
           </div>
           {canCreateThreadsAvailable ? (

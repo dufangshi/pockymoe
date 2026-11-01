@@ -1,3 +1,4 @@
+import { changeControl, selectOptions } from '../test/formControls';
 import {
   fireEvent,
   render,
@@ -59,8 +60,7 @@ const inventory = [
   { id: 'gemini', name: 'Gemini CLI', base: null },
 ];
 const options = (select: HTMLElement) =>
-  within(select)
-    .getAllByRole('option')
+  selectOptions(select)
     .map((o) => o.textContent);
 
 it('lists connections on their own and applies them per installed harness below', async () => {
@@ -107,7 +107,7 @@ it('lists connections on their own and applies them per installed harness below'
   fireEvent.click(screen.getByRole('checkbox', { name: 'Show uninstalled' }));
   const dsh = within(harnesses).getByRole('listitem', { name: 'DSH' });
   expect(within(dsh).getByText('Not installed')).toBeVisible();
-  fireEvent.change(within(dsh).getByLabelText('Connection for DSH'), {
+  changeControl(within(dsh).getByLabelText('Connection for DSH'), {
     target: { value: 'claude-only' },
   });
   expect(
@@ -171,13 +171,13 @@ it('adds connections without any harness and when the harness inventory fails', 
   await waitFor(() => expect(add).toBeEnabled());
   fireEvent.click(add);
   const dialog = await screen.findByRole('dialog', { name: 'Add connection' });
-  fireEvent.change(within(dialog).getByLabelText('Name'), {
+  changeControl(within(dialog).getByLabelText('Name'), {
     target: { value: 'Lab' },
   });
-  fireEvent.change(within(dialog).getByLabelText('Base URL'), {
+  changeControl(within(dialog).getByLabelText('Base URL'), {
     target: { value: 'https://lab.test/v1' },
   });
-  fireEvent.change(within(dialog).getByLabelText('API key'), {
+  changeControl(within(dialog).getByLabelText('API key'), {
     target: { value: 'k' },
   });
   fireEvent.click(

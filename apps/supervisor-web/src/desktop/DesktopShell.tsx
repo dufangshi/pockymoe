@@ -5,12 +5,10 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { AppShellNavContext, useAppShellNav } from '../components/AppShellNavContext';
 import { appPathname, appUrl } from '../lib/webBase';
 import { threadHref } from '../lib/relayRoutes';
-import { useThemeRegistry } from '../lib/themePacks';
-import { useFontSize } from '../lib/fontSize';
 import { useDesktopSelector, useDesktopStore } from './data';
 import { buildActivityItems } from './data/activity';
 import { ActivitySection } from './ActivitySection';
-import { DesktopSurfaceContext, type NavigationActions } from './context';
+import { DesktopSurfaceContext, hasWorkspaceContext, type NavigationActions } from './context';
 import { DesktopMapPage } from './MapPage';
 import { focusedKeyFromPath, handleHostCommand, syncActivity } from './integration';
 import type { HostCapabilities } from './host';
@@ -20,7 +18,7 @@ export function DesktopShell({ children, capabilities }: { children: ReactNode; 
   const { locale } = useI18n();
   const index = useDesktopSelector(index => index); const store = useDesktopStore();
   const location = useLocation(); const navigate = useNavigate(); const shell = useAppShellNav();
-  const host = window.pockymoeHost!; const registry = useThemeRegistry(); const [fontSize] = useFontSize();
+  const host = window.pockymoeHost!;
   const mapVisible = location.pathname === '/';
   const devicesPage = location.pathname === '/desktop/devices' || location.pathname.startsWith('/desktop/devices/');
   const [revealKey, setRevealKey] = useState<string | null>(null);
@@ -45,6 +43,7 @@ export function DesktopShell({ children, capabilities }: { children: ReactNode; 
     const thread = store.getSnapshot().threads.find(thread => thread.key === key);
     host.window?.setTitle(thread?.title ?? (mapVisible ? translate('desktopShell.mapWindowTitle') : 'Pockymoe'));
     if (!key) return;
+    store.rememberThread(key);
     let timer: ReturnType<typeof setTimeout> | undefined;
     const focus = () => { clearTimeout(timer); if (document.hasFocus()) timer = setTimeout(() => store.markRead(key), 1500); };
     const scroll = (event: Event) => {
@@ -59,15 +58,6 @@ export function DesktopShell({ children, capabilities }: { children: ReactNode; 
     if (typeof host.onCommand !== 'function') return;
     return host.onCommand(command => { void handleHostCommand(command, { store, navigate, openMap, revealInMap, newThread }).then(result => host.commandResult(command.id, result)); });
   }, [host, navigate, newThread, openMap, revealInMap, store]);
-  useEffect(() => {
-    if (typeof host.appearance?.sync !== 'function') return;
-    const frame = requestAnimationFrame(() => {
-      const root = Array.from(document.querySelectorAll<HTMLElement>('.thread-ui-shell')).find(node => node.getClientRects().length) ?? document.documentElement;
-      const accent = getComputedStyle(root).getPropertyValue('--theme-accent-solid').trim();
-      host.appearance.sync({ effective: shell?.effectiveTheme ?? 'light', pack: registry.applied, accent, fontScale: fontSize / 16, locale });
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [fontSize, host, registry.applied, shell?.effectiveTheme, locale]);
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
       if (!(event.metaKey || event.ctrlKey)) return;
@@ -85,7 +75,8 @@ export function DesktopShell({ children, capabilities }: { children: ReactNode; 
   // translate reads a stable shared store; locale explicitly invalidates cached labels.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const railLeading = useMemo(() => <><button data-desktop-map-link aria-label={waitingCount ? translate('desktopShell.mapWaiting', { count: waitingCount }) : translate('desktopShell.map')} aria-pressed={mapVisible} title={translate('desktopShell.mapShortcut')} onClick={openMap}><LayoutDashboard data-icon="thread-map" />{waitingCount ? <span className="desktop-map-badge">{waitingCount}</span> : null}</button><button aria-label={translate('desktopShell.devices')} title={translate('desktopShell.devices')} onClick={() => navigate('/desktop/devices')}><Monitor data-icon="devices" /></button></>, [mapVisible, navigate, openMap, waitingCount, locale]);
-  const surface = useMemo(() => ({ multiWindow: capabilities.features.multiWindow, openMap, revealInMap, railLeading, renderActivity: (navigation: NavigationActions) => <ActivitySection navigation={navigation} onOpen={open} /> }), [capabilities.features.multiWindow, openMap, revealInMap, railLeading, open]);
+  const workspaceControlsEnabled = hasWorkspaceContext(location.pathname, location.search);
+  const surface = useMemo(() => ({ workspaceControlsEnabled, multiWindow: capabilities.features.multiWindow, openMap, revealInMap, railLeading, renderActivity: (navigation: NavigationActions) => <ActivitySection navigation={navigation} onOpen={open} /> }), [capabilities.features.multiWindow, openMap, revealInMap, railLeading, open, workspaceControlsEnabled]);
   const chrome = capabilities.windowChrome;
   const style = { '--desktop-title-height': `${chrome.toolbarHeight}px`, '--desktop-controls-left': chrome.controlsSide === 'left' ? `${chrome.trafficLightsWidth}px` : '0px', '--desktop-controls-right': chrome.controlsSide === 'right' ? `${chrome.trafficLightsWidth}px` : '0px' } as CSSProperties;
   const shellValue = useMemo(() => shell ? { ...shell, openThreadMap: openMap } : shell, [shell, openMap]);

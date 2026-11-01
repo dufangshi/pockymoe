@@ -207,6 +207,7 @@ pub(super) fn prompt_origin(conn: &Connection, pending: &str) -> Result<Option<&
         )
         .optional()?;
     Ok(match origin.as_deref() {
+        Some("automation") => Some("automation"),
         Some("peer") => Some("peer"),
         Some("system") => Some("system"),
         _ => None,

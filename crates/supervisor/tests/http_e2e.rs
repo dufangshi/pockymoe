@@ -2432,7 +2432,25 @@ async fn stats_summary_http_defaults_validation_and_health_capability() {
         .await
         .unwrap();
     assert_eq!(stats["daily"].as_array().unwrap().len(), 30);
-    for query in ["range=bad", "tz=Invalid/Timezone", "tz=9999"] {
+    let all: Value = client
+        .get(format!("{base}/api/stats/summary?range=all&origin=guest"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(all["range"], "all");
+    assert_eq!(all["origin"], "guest");
+    assert_eq!(all["totals"]["turns"], 0);
+    assert_eq!(all["byOrigin"].as_array().unwrap().len(), 5);
+    assert_eq!(all["coverage"]["source"], "persisted");
+    for query in [
+        "range=bad",
+        "tz=Invalid/Timezone",
+        "tz=9999",
+        "origin=guessed",
+    ] {
         assert_eq!(
             client
                 .get(format!("{base}/api/stats/summary?{query}"))

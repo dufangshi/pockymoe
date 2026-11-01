@@ -1,3 +1,4 @@
+import { selectControl } from './selectControl';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -33,15 +34,15 @@ test('searches device and workspace histories and opens the original message wit
   await page.goto(`/threads/${threads[0]!.id}`);
   await page.getByRole('button', { name: 'Search conversation', exact: true }).click();
   const input = page.getByRole('combobox', { name: 'Search messages' });
-  const scope = page.getByRole('combobox', { name: 'Search scope' });
+  const scope = page.getByRole('button', { name: 'Search scope' });
   await input.fill(needle);
   const results = page.getByRole('listbox', { name: 'Matching messages' });
   await expect(results.getByRole('option')).toHaveCount(2);
-  await scope.selectOption('workspace');
+  await selectControl(page, scope, 'workspace');
   await expect(results.getByRole('option')).toHaveCount(2);
   await expect(results).toContainText(workspaces[0]!.label);
   await expect(results).not.toContainText(workspaces[1]!.label);
-  await scope.selectOption('device');
+  await selectControl(page, scope, 'device');
   await expect(results.getByRole('option')).toHaveCount(4);
   await expect(results).toContainText(workspaces[1]!.label);
   await expect(page.getByText('Searches saved conversations on this device only.', { exact: false })).toBeVisible();
@@ -61,7 +62,7 @@ test('searches device and workspace histories and opens the original message wit
   await page.reload();
   await expect(page.locator(`[data-message-id="${messageId}"]`)).toBeVisible();
   await page.getByRole('button', { name: 'Search conversation', exact: true }).click();
-  await page.getByRole('combobox', { name: 'Search scope' }).selectOption('device');
+  await selectControl(page, page.getByRole('button', { name: 'Search scope' }), 'device');
   await page.getByRole('combobox', { name: 'Search messages' }).fill(`Decision 0 ${suffix}`);
   await expect(page.getByRole('listbox').getByRole('option')).toHaveCount(1);
   await page.getByRole('combobox', { name: 'Search messages' }).press('Enter');

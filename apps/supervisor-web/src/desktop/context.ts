@@ -3,6 +3,7 @@ import type { MatterWorkbenchOptions } from '@pockymoe/thread-ui';
 export interface NavigationActions { currentKey: string; threads?: readonly import('@pockymoe/thread-ui').WorkbenchThread[]; onToggleThreadFavorite(key: string): Promise<void>; onThreadRenamed(key: string, title: string): Promise<void>; onThreadRemoved(key: string): Promise<void> }
 export interface DesktopSurfaceContextValue {
   multiWindow: boolean;
+  workspaceControlsEnabled?: boolean;
   openMap(): void;
   revealInMap(key: string): void;
   renderActivity(navigation: NavigationActions): MatterWorkbenchOptions['sidebarLeading'];
@@ -12,5 +13,12 @@ export const DesktopSurfaceContext = createContext<DesktopSurfaceContextValue | 
 export const useDesktopSurface = () => useContext(DesktopSurfaceContext);
 export function useDesktopWorkbench(navigation: NavigationActions) {
   const surface = useDesktopSurface();
-  return surface ? { sidebarLeading: surface.renderActivity(navigation), railLeading: surface.railLeading } : {};
+  return surface ? { workspaceControlsEnabled: surface.workspaceControlsEnabled !== false, sidebarLeading: surface.renderActivity(navigation), railLeading: surface.railLeading } : {};
+}
+
+export function hasWorkspaceContext(path: string, search = '') {
+  path = path.replace(/\/+$/, '') || '/';
+  const thread = path.match(/^\/(?:devices\/[^/]+\/)?threads\/([^/]+)$/)?.[1];
+  if (thread) return !['new', 'import'].includes(thread);
+  return /^\/(?:devices\/[^/]+\/)?threads$/.test(path) && Boolean(new URLSearchParams(search).get('workspaceId'));
 }

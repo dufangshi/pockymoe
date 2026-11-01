@@ -2,9 +2,9 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { request } from '../../lib/api';
 import type { DesktopDevice } from '../data/types';
 import { clearMetrics, readMetrics, warmMetrics, writeMetrics } from './cache';
-import { dateKey, isUnsupported, supportsHourly, supportsStats, type DeviceMetrics, type StatsRange, type StatsSummary } from './model';
+import { dateKey, isUnsupported, supportsHourly, supportsStats, type DeviceMetrics, type StatsRange, type StatsSummary, type TurnOrigin } from './model';
 
-export function useDeviceStats(accountId: string, devices: readonly DesktopDevice[], range: StatsRange, completedAt: string, refreshActivity: (deviceId: string) => Promise<void>) {
+export function useDeviceStats(accountId: string, devices: readonly DesktopDevice[], range: StatsRange, completedAt: string, refreshActivity: (deviceId: string) => Promise<void>, origin: TurnOrigin | '' = '') {
   const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
   const [metrics, setMetrics] = useState<Record<string, DeviceMetrics>>(() => warmMetrics(accountId, timeZone));
   const latest = useRef(metrics); latest.current = metrics;
@@ -59,12 +59,24 @@ export function useDeviceStats(accountId: string, devices: readonly DesktopDevic
           await Promise.all([...new Set<StatsRange>(['today', '30d', range])].map(async selected => {
             try {
               const summary = await read<StatsSummary>(device.id, `api/stats/summary?range=${selected}&tz=${encodeURIComponent(timeZone)}`, controller.signal);
-              patch(device.id, { summaries: { ...latest.current[device.id]?.summaries, [selected]: summary }, partial: false, unavailable: false });
-            } catch (error) { if (isUnsupported(error)) unsupported = true; else throw error; }
+              patch(device.id, { summaries: { ...latest.current[device.id]?.summaries, [selected]: summary }, partial: false, unavailable: false, ...(selected === 'all' ? { allUnsupported: false } : {}) });
+            } catch (error) {
+              if (selected === 'all' && typeof error === 'object' && error !== null && 'statusCode' in error && [400, 404].includes(Number(error.statusCode))) { patch(device.id, { allUnsupported: true }); }
+              else if (isUnsupported(error)) unsupported = true; else throw error;
+            }
           }));
         }
         if (unsupported) {
           patch(device.id, { partial: true });
+        }
+        const base = latest.current[device.id]?.summaries[range];
+        if (!unsupported && origin && Array.isArray(base?.byOrigin)) {
+          try {
+            const summary = await read<StatsSummary>(device.id, `api/stats/summary?range=${range}&tz=${encodeURIComponent(timeZone)}&origin=${origin}`, controller.signal);
+            // Older endpoints can ignore unknown query parameters. Never cache
+            // their unfiltered totals as a selected origin's usage.
+            if (summary.origin === origin) patch(device.id, { originSummaries: { ...latest.current[device.id]?.originSummaries, [origin]: { ...latest.current[device.id]?.originSummaries?.[origin], [range]: summary } } });
+          } catch { /* Keep the previous selected-origin snapshot in place. */ }
         }
         await management;
       } catch { if (!stopped) patch(device.id, { unavailable: true, latencyMs: undefined }); }
@@ -78,7 +90,7 @@ export function useDeviceStats(accountId: string, devices: readonly DesktopDevic
         const summary = latest.current[d.id]?.summaries.today;
         return !supportsHourly(summary) || summary.daily[0]?.date !== today;
       });
-      await Promise.allSettled(devices.filter(d => d.connected && (runtimeFallback || latest.current[d.id]?.partial)).map(d => activityRef.current(d.id)));
+      await Promise.allSettled(devices.filter(d => d.connected && (runtimeFallback || latest.current[d.id]?.partial || range === 'all' && latest.current[d.id]?.allUnsupported)).map(d => activityRef.current(d.id)));
     };
     refreshRef.current = all;
     void all();
@@ -90,7 +102,7 @@ export function useDeviceStats(accountId: string, devices: readonly DesktopDevic
     return () => { stop(); refreshRef.current = () => {}; document.removeEventListener('visibilitychange', visible); window.removeEventListener('pockymoe-account-logout', stop); };
     // Only identity/presence changes should restart transport, never a name-only update.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [accountId, epoch, hydrated, range, signature, timeZone]);
+  }, [accountId, epoch, hydrated, origin, range, signature, timeZone]);
   useEffect(() => {
     if (previousCompletion.current === completedAt) return;
     previousCompletion.current = completedAt;

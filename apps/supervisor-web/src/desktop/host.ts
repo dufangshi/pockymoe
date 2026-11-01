@@ -74,6 +74,19 @@ export interface ActivitySnapshot {
   focusedThreadKey: string | null;
   /** needsInput, failed/interrupted (unread, last 24h), completed (unread) and running only. */
   items: ActivityItem[];
+  /** Threads opened most recently (up to 5), for surfaces with no active items to show. */
+  recent?: ActivityRecent[];
+  /** Devices whose first read finished since this page connected; older items on them are history, not news. */
+  syncedDeviceIds?: string[];
+}
+
+export interface ActivityRecent {
+  key: string;
+  deviceId: string;
+  deviceName: string;
+  workspaceLabel: string;
+  threadId: string;
+  title: string;
 }
 
 export type HostCommand =

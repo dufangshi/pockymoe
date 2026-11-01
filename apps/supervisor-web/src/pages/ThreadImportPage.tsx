@@ -1,5 +1,5 @@
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
-import { ErrorMark } from '@pockymoe/thread-ui';
+import { Select, ErrorMark } from '@pockymoe/thread-ui';
 import { ProductHeader } from '../components/ProductHeader';
 import type { FormEvent } from 'react';
 import { useEffect, useMemo, useState } from 'react';
@@ -270,11 +270,11 @@ export function ThreadImportPage() {
               />
             ) : null}
           </div>
-          <select
+          <Select
             id="backend-provider"
             value={provider}
-            onChange={(event) => {
-              setProvider(event.target.value as AgentBackendIdDto);
+            onValueChange={(selectedValue) => {
+              setProvider(selectedValue as AgentBackendIdDto);
               setSessionId('');
               setError(null);
             }}
@@ -289,17 +289,17 @@ export function ThreadImportPage() {
                 {canImportFromBackend(backend) ? '' : translate("workbench.importUnavailable")}
               </option>
             ))}
-          </select>
+          </Select>
           </div>
           {provider === 'acp' && (
             <div>
             <label htmlFor="acp-agent" className="host-form-label text-sm font-medium">
               {translate("workbench.aCPAgent")}</label>
-            <select
+            <Select
               id="acp-agent"
               value={agentId ?? ''}
-              onChange={(event) => {
-                setAgentId(event.target.value || null);
+              onValueChange={(selectedValue) => {
+                setAgentId(selectedValue || null);
                 setSessionId('');
                 setError(null);
               }}
@@ -321,7 +321,7 @@ export function ThreadImportPage() {
                     : ` (${agent.acpAgent?.availability ?? translate("workbench.unavailable_1d5ee3")})`}
                 </option>
               ))}
-            </select>
+            </Select>
             </div>
           )}
         </section>
@@ -365,11 +365,11 @@ export function ThreadImportPage() {
           ) : null}
           <label className="block" htmlFor="available-session">
             <span className="host-form-label text-sm font-medium">{translate("workbench.availableSession")}</span>
-          <select
+          <Select
             id="available-session"
             value={selectedCandidate?.sessionId ?? ''}
-            onChange={(event) => {
-              const nextSessionId = event.target.value;
+            onValueChange={(selectedValue) => {
+              const nextSessionId = selectedValue;
               const candidate = filteredCandidates.find(
                 (entry) => entry.sessionId === nextSessionId,
               );
@@ -402,7 +402,7 @@ export function ThreadImportPage() {
                 {candidate.title} · {candidate.sessionId}
               </option>
             ))}
-          </select>
+          </Select>
           </label>
           {selectedCandidate && (
             <div className="host-muted space-y-1 text-xs">

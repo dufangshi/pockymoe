@@ -1,5 +1,5 @@
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
-import { ErrorMark } from '@pockymoe/thread-ui';
+import { Select, ErrorMark } from '@pockymoe/thread-ui';
 import { Settings2 } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import {
@@ -217,14 +217,14 @@ function HarnessRow({
           </p>
         </div>
         <div className="flex min-w-0 flex-1 basis-60 items-center gap-1.5 sm:ml-auto sm:max-w-md">
-          <select
+          <Select
             className="host-input min-h-10 min-w-0 flex-1 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-panel)] px-2 py-1.5 text-xs sm:min-h-9"
             aria-label={translate('settings.connHarnessChoose', {
               harness: harness.name,
             })}
             value={nativeChosen ? NATIVE_CHOICE : chosen ? choice : ''}
             disabled={!catalog || (!compatible.length && !nativeOption)}
-            onChange={(e) => setPicked(e.target.value)}
+            onValueChange={(selectedValue) => setPicked(selectedValue)}
           >
             <option value="">
               {translate(
@@ -241,7 +241,7 @@ function HarnessRow({
                 {c.name}
               </option>
             ))}
-          </select>
+          </Select>
           <button
             type="button"
             className={

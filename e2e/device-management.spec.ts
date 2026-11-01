@@ -1,3 +1,4 @@
+import { selectControl } from './selectControl';
 import { test, expect, type Locator, type Page } from '@playwright/test';
 import { randomUUID } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
@@ -154,13 +155,12 @@ test('connections save without applying, apply apart from sync, and template pre
   });
   await expect(editor).toBeVisible();
   await editor.getByLabel('Name', { exact: true }).fill('Personal API');
-  await editor.getByLabel('API format').selectOption('openai_responses');
+  await selectControl(page, editor.getByLabel('API format'), 'openai_responses');
   await editor.getByLabel('Base URL').fill('https://api.example.test/v1');
   await editor.getByLabel('API key').fill('synthetic-key');
   await editor.getByRole('button', { name: 'Find models' }).click();
-  await editor
-    .getByLabel('Choose a discovered model')
-    .selectOption('test-model');
+  await selectControl(page, editor
+    .getByLabel('Choose a discovered model'), 'test-model');
   await expect(editor.getByLabel('Default model')).toHaveValue('test-model');
   await expectFormActionsInline(page, editor);
   await page.screenshot({ path: testInfo.outputPath('connection-form.png') });
@@ -174,9 +174,8 @@ test('connections save without applying, apply apart from sync, and template pre
   const personal = page.getByRole('listitem', { name: 'Personal API' });
   // Connection rows have no Apply: a harness picks a saved connection, then applies.
   await expect(personal.getByRole('button', { name: /apply/i })).toHaveCount(0);
-  await codexRow
-    .getByLabel('Connection for OpenAI Codex')
-    .selectOption({ label: 'Personal API' });
+  await selectControl(page, codexRow
+    .getByLabel('Connection for OpenAI Codex'), { label: 'Personal API' });
   const applyButton = codexRow.getByRole('button', {
     name: 'Apply Personal API to OpenAI Codex',
   });
@@ -268,9 +267,8 @@ test('connections save without applying, apply apart from sync, and template pre
   await removal.getByRole('button', { name: 'Cancel', exact: true }).click();
   await expect(removal).toBeHidden();
   const grokRow = harnesses.getByRole('listitem', { name: 'Grok Build' });
-  await grokRow
-    .getByLabel('Connection for Grok Build')
-    .selectOption({ label: 'Personal API' });
+  await selectControl(page, grokRow
+    .getByLabel('Connection for Grok Build'), { label: 'Personal API' });
   await expect(
     grokRow.getByRole('button', { name: 'Apply Personal API to Grok Build' }),
   ).toBeEnabled();

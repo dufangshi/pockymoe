@@ -233,6 +233,10 @@ pub struct ThreadWorkspaceFilePreviewDto {
 #[serde(rename_all = "camelCase")]
 pub struct ThreadActivityDto {
     pub thread_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by_origin: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage_coverage: Option<Value>,
     pub turns: u32,
     /// Running time inside the window.
     pub active_ms: u64,
@@ -343,6 +347,8 @@ pub struct ThreadHistoryItemDto {
 #[serde(rename_all = "camelCase")]
 pub struct ThreadTurnDto {
     pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
     pub started_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completed_at: Option<String>,

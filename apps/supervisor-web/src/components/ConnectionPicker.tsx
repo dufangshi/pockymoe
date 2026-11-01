@@ -1,4 +1,4 @@
-import {
+import { Select,
   ErrorMark,
   type UpstreamConnectionPickerProps,
 } from '@pockymoe/thread-ui';
@@ -89,12 +89,12 @@ export function ConnectionPicker({
   return (
     <div className="min-w-0 space-y-2">
       <div className="flex min-w-0 gap-2">
-        <select
+        <Select
           className={field}
           aria-label={translate('settings.connPickerLabel')}
           value={connectionId}
           disabled={disabled || !catalog}
-          onChange={(e) => choose(e.target.value)}
+          onValueChange={(selectedValue) => choose(selectedValue)}
         >
           <option value="">
             {loading && !catalog
@@ -120,7 +120,7 @@ export function ConnectionPicker({
                   })}
             </option>
           ))}
-        </select>
+        </Select>
         {missing && (
           <span className="flex shrink-0 items-center">
             <ErrorMark

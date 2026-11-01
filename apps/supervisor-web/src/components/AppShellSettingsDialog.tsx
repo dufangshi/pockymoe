@@ -33,7 +33,7 @@ import {
   updateProviderHostFile,
   updateWorkspaceSettings,
 } from '../lib/api';
-import {
+import { Select,
   ErrorMark,
   PathChip,
   PhoneHandChoice,
@@ -1122,11 +1122,11 @@ export function AppShellSettingsDialog({
           {section === 'advanced' && (
             <>
               <label className="block text-xs font-medium">
-                {translate("files.harnessConfiguration")}<select
+                {translate("files.harnessConfiguration")}<Select
                   className="host-input mt-2 w-full rounded-lg border p-3 text-sm"
                   value={selectedBackend}
-                  onChange={(event) => {
-                    setSelectedBackend(event.target.value as AgentBackendIdDto);
+                  onValueChange={(selectedValue) => {
+                    setSelectedBackend(selectedValue as AgentBackendIdDto);
                     setSelectedFileName(null);
                   }}
                 >
@@ -1137,7 +1137,7 @@ export function AppShellSettingsDialog({
                         {b.displayName}
                       </option>
                     ))}
-                </select>
+                </Select>
               </label>
 
               <section className="py-5">

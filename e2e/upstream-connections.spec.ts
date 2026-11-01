@@ -1,3 +1,4 @@
+import { selectControl } from './selectControl';
 import { randomUUID } from 'node:crypto';
 import { expect, test, type Locator, type Page } from '@playwright/test';
 
@@ -45,7 +46,7 @@ test('a real local connection saves without applying and Content Quality reuses 
     .click();
   const editor = page.getByRole('dialog', { name: 'Add connection' });
   await editor.getByLabel('Name', { exact: true }).fill(name);
-  await editor.getByLabel('API format').selectOption('openai_responses');
+  await selectControl(page, editor.getByLabel('API format'), 'openai_responses');
   // Nothing listens on the discard port: discovery and the test fail for real.
   await editor.getByLabel('Base URL').fill('http://127.0.0.1:9/v1');
   await editor.getByLabel('API key').fill('synthetic-key');
@@ -71,9 +72,8 @@ test('a real local connection saves without applying and Content Quality reuses 
   const codexRow = page
     .getByRole('region', { name: 'Use in harnesses' })
     .getByRole('listitem', { name: 'OpenAI Codex' });
-  await codexRow
-    .getByLabel('Connection for OpenAI Codex')
-    .selectOption({ label: name });
+  await selectControl(page, codexRow
+    .getByLabel('Connection for OpenAI Codex'), { label: name });
   await codexRow
     .getByRole('button', { name: `Apply ${name} to OpenAI Codex` })
     .click();
@@ -160,7 +160,7 @@ test('connections can be added when the harness inventory fails', async ({
     .click();
   const editor = page.getByRole('dialog', { name: 'Add connection' });
   await editor.getByLabel('Name', { exact: true }).fill(name);
-  await editor.getByLabel('API format').selectOption('anthropic');
+  await selectControl(page, editor.getByLabel('API format'), 'anthropic');
   await editor.getByLabel('Base URL').fill('http://127.0.0.1:9/anthropic');
   // Anthropic adds an Authentication select whose options mention the API key.
   await editor.getByLabel('API key', { exact: true }).fill('synthetic-key');

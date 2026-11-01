@@ -8,6 +8,7 @@ export function buildActivityItems(index: DesktopIndex, now = Date.now()): Activ
   const workspaces = new Map(index.workspaces.map(workspace => [workspace.key, workspace]));
   const threads = new Map(index.threads.map(thread => [thread.key, thread]));
   return index.threads.flatMap<ActivityItem>(thread => {
+    if (devices.get(thread.deviceId)?.activityStale) return [];
     const state = thread.requests.length ? 'needsInput' : recentFailure(thread, now) ? 'failed' : thread.status === 'interrupted' && unread(thread) && now - Date.parse(thread.lastTurnCompletedAt ?? thread.updatedAt) < 86_400_000 ? 'interrupted' : running(thread) ? 'running' : unread(thread) && !failed(thread) ? 'completed' : 'idle';
     if (state === 'idle') return [];
     const request = thread.requests[0];
@@ -26,7 +27,20 @@ export function buildActivityItems(index: DesktopIndex, now = Date.now()): Activ
   }).sort((a, b) => priority[a.state] - priority[b.state] || a.since.localeCompare(b.since) || a.key.localeCompare(b.key));
 }
 export function buildActivitySnapshot(index: DesktopIndex, focusedThreadKey: string | null, hasFocus: boolean, now = Date.now()): ActivitySnapshot {
-  return { version: 1, generatedAt: new Date(now).toISOString(), accountId: index.accountId, focusedThreadKey: hasFocus ? focusedThreadKey : null, items: buildActivityItems(index, now) };
+  const synced = index.syncedDeviceIds && new Set(index.syncedDeviceIds);
+  const threads = new Map(index.threads.map(thread => [thread.key, thread]));
+  const recentKeys = index.recentThreadKeys ?? [...index.threads].filter(thread => thread.lastViewedAt).sort((a, b) => b.lastViewedAt!.localeCompare(a.lastViewedAt!)).map(thread => thread.key);
+  const seen = new Set<string>();
+  const recent = recentKeys.flatMap(key => {
+    const opened = threads.get(key); if (!opened) return [];
+    const thread = threads.get(`${opened.deviceId}:${opened.rootThreadId}`) ?? opened;
+    if (seen.has(thread.key)) return []; seen.add(thread.key);
+    return [{ key: thread.key, deviceId: thread.deviceId, deviceName: index.devices.find(device => device.id === thread.deviceId)?.name ?? '',
+      workspaceLabel: index.workspaces.find(workspace => workspace.key === `${thread.deviceId}:${thread.workspaceId}`)?.label ?? '', threadId: thread.id, title: plainSummary(thread.title) }];
+  }).slice(0, 5);
+  return { version: 1, generatedAt: new Date(now).toISOString(), accountId: index.accountId, focusedThreadKey: hasFocus ? focusedThreadKey : null,
+    items: buildActivityItems(index, now).filter(item => !synced || synced.has(item.deviceId)), recent,
+    syncedDeviceIds: [...(index.syncedDeviceIds ?? [])] };
 }
 export function attentionFromActivity(items: readonly ActivityItem[]) {
   const roots = new Set<string>();

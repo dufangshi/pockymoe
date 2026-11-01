@@ -88,6 +88,7 @@ import { ConnectionPicker } from './components/ConnectionPicker';
 import { useComposerPreferences } from './lib/useComposerPreferences';
 import { effectiveColorMode, themeChromeColor, useThemeRegistry } from './lib/themePacks';
 
+const DesktopWindowFrame = lazy(() => import('./desktop/DesktopWindowFrame'));
 const DesktopEntry = lazy(() => import('./desktop/DesktopEntry'));
 const DesktopDevicesRoute = lazy(() => import('./desktop/DevicesRoute'));
 
@@ -640,6 +641,10 @@ function SupervisorAccessGate({ children }: { children: React.ReactNode }) {
   return relayModeActive() ? <RelayGate>{content}</RelayGate> : <AuthGate>{content}</AuthGate>;
 }
 
+function DesktopFrameBoundary({ children, effectiveTheme }: { children: ReactNode; effectiveTheme: 'light' | 'dark' }) {
+  return window.pockymoeHost ? <Suspense fallback={null}><DesktopWindowFrame effectiveTheme={effectiveTheme}>{children}</DesktopWindowFrame></Suspense> : children;
+}
+
 function RootRoute() {
   const { locale: i18nLocale } = useI18n();
   return window.pockymoeHost ? null : relayModeActive() ? <RelayHomePage /> : <Navigate to="/workspaces" replace />;
@@ -766,6 +771,7 @@ export function App() {
   return (
     <div className="theme-shell">
       <BrowserRouter basename={webBase}>
+        <DesktopFrameBoundary effectiveTheme={effectiveTheme}>
         <WorkspaceDocumentNavigationGuard>
         <DocumentTitleUpdater />
         <AccountUnlockPrompt />
@@ -793,6 +799,7 @@ export function App() {
             />
           </Routes>
         </WorkspaceDocumentNavigationGuard>
+        </DesktopFrameBoundary>
       </BrowserRouter>
     </div>
   );

@@ -1,5 +1,5 @@
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
-import { ErrorMark } from '@pockymoe/thread-ui';
+import { Select, ErrorMark } from '@pockymoe/thread-ui';
 import { useEffect, useState } from 'react';
 import { request } from '../lib/api';
 
@@ -101,12 +101,12 @@ export function UpstreamModelPicker({
     <div>
       <label className="block text-sm">
         {translate('settings.model')}
-        <select
+        <Select
           className="host-input mt-1 w-full min-w-0 rounded-md border border-[var(--theme-border)] bg-[var(--theme-panel)] p-2 text-sm"
           required={required}
           value={value}
           disabled={!ready || loading}
-          onChange={(e) => onChange(e.target.value)}
+          onValueChange={(selectedValue) => onChange(selectedValue)}
         >
           <option value="">
             {loading
@@ -123,7 +123,7 @@ export function UpstreamModelPicker({
               {m.name === m.id ? m.id : `${m.name} · ${m.id}`}
             </option>
           ))}
-        </select>
+        </Select>
       </label>
       <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-[var(--theme-fg-muted)]">
         <span>

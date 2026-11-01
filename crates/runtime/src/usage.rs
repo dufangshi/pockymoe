@@ -282,15 +282,22 @@ pub(crate) fn estimate_price_with_catalog(
         let mut total = json!({"currency":"USD","inputUsd":0.0,"cachedInputUsd":0.0,
             "cacheWriteInputUsd":0.0,"outputUsd":0.0,"totalUsd":0.0});
         let mut signatures = std::collections::BTreeSet::new();
+        let (mut priced, mut unpriced) = (false, 0u64);
         let mut models = std::collections::BTreeSet::new();
-        for request in requests {
+        for request in crate::usage_accounting::request_snapshots(requests) {
             let price = estimate_price_with_catalog(
                 request,
                 request["model"].as_str().or(model),
                 tier,
                 catalog,
                 request["observedAt"].as_str().or(at),
-            )?;
+            );
+            let Some(price) = price else {
+                unpriced = unpriced
+                    .saturating_add(Tokens::parse(&request["total"]).map_or(0, |t| t.total_tokens));
+                continue;
+            };
+            priced = true;
             for field in [
                 "inputUsd",
                 "cachedInputUsd",
@@ -310,6 +317,11 @@ pub(crate) fn estimate_price_with_catalog(
                 .to_string(),
             );
         }
+        if !priced {
+            return None;
+        }
+        total["unpricedTokens"] = json!(unpriced);
+        total["pricePartial"] = json!(unpriced > 0);
         total["ratesSignature"] = json!(serde_json::to_string(&signatures).ok()?);
         total["pricingModelKey"] = json!(if models.len() == 1 {
             models.first()?.as_str()
@@ -318,6 +330,10 @@ pub(crate) fn estimate_price_with_catalog(
         });
         total["pricingTierKey"] = json!(tier.unwrap_or("standard"));
         return Some(total);
+    }
+    if !usage["total"].is_object() {
+        let normalized = normalize_usage(usage)?;
+        return estimate_price_with_catalog(&normalized, model, tier, catalog, at);
     }
     let model = crate::pricing::match_model(catalog, model?)?;
     let rates = &catalog["models"][&model];
@@ -435,7 +451,31 @@ pub(crate) fn estimate_price_with_catalog(
 }
 
 pub(crate) fn public_usage(value: &Value) -> Option<Value> {
-    let mut usage = json!({"total": Tokens::parse(value.get("total")?)?, "last": Tokens::parse(value.get("last")?)?, "modelContextWindow": value.get("modelContextWindow").filter(|v| v.is_number())});
+    let mut normalized = normalize_usage(value)?;
+    if let Some(requests) = value["requests"].as_array().filter(|r| !r.is_empty()) {
+        let total = crate::usage_accounting::request_snapshots(requests)
+            .into_iter()
+            .filter_map(|r| Tokens::parse(&r["total"]))
+            .fold(Tokens::default(), |a, b| a.add(&b));
+        normalized["total"] = json!(total);
+    }
+    let mut usage = json!({"total": Tokens::parse(&normalized["total"])?, "last": Tokens::parse(&normalized["last"])?, "modelContextWindow": value.get("modelContextWindow").filter(|v| v.is_number())});
+    // Keep legacy flat camelCase token keys while adding the canonical total/last
+    // view, so older readers of imported Node rows remain compatible.
+    if !value["total"].is_object() {
+        for key in [
+            "inputTokens",
+            "outputTokens",
+            "cachedInputTokens",
+            "cacheWriteInputTokens",
+            "reasoningOutputTokens",
+            "totalTokens",
+        ] {
+            if let Some(number) = value.get(key).filter(|v| v.is_number()) {
+                usage[key] = number.clone();
+            }
+        }
+    }
     if let Some(speed) = value.get("generationSpeed") {
         usage["generationSpeed"] = speed.clone();
     }
@@ -541,7 +581,10 @@ mod tests {
         assert!(repriced["totalUsd"].as_f64().unwrap() > expected);
         assert_ne!(repriced["ratesSignature"], price["ratesSignature"]);
         saved["requests"][1]["model"] = json!("unknown-model");
-        assert!(estimate_price(&saved, Some("claude-opus-5-5"), None).is_none());
+        let partial = estimate_price(&saved, Some("claude-opus-5-5"), None).unwrap();
+        assert!(partial["totalUsd"].as_f64().unwrap() > 0.0);
+        assert_eq!(partial["pricePartial"], true);
+        assert!(partial["unpricedTokens"].as_u64().unwrap() > 0);
     }
 
     #[test]

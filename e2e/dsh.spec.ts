@@ -1,3 +1,4 @@
+import { selectControl } from './selectControl';
 import { expect, test } from '@playwright/test';
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
@@ -29,12 +30,12 @@ test('DSH New Chat, native catalog, toolbox, tools and resume', async ({page, re
   await page.goto(`/threads/${seed.id}`);
   await page.getByRole('button',{name:'New Chat',exact:true}).first().click();
   const dialog = page.getByTestId('create-thread-dialog');
-  await dialog.locator('select[id$="thread-backend"]').selectOption('acp');
+  await selectControl(page, dialog.locator('[role=combobox][id$="thread-backend"]'), 'acp');
   await dialog.locator('label').filter({hasText:'DeepSeek Harness'}).click();
   const picker = dialog.getByLabel('Model',{exact:true});
   await expect(picker.locator('option')).toHaveCount(models.length);
-  await picker.selectOption(modelId);
-  await dialog.getByLabel('Reasoning effort',{exact:true}).selectOption('xhigh');
+  await selectControl(page, picker, modelId);
+  await selectControl(page, dialog.getByLabel('Reasoning effort',{exact:true}), 'xhigh');
   await dialog.getByLabel('Title',{exact:true}).fill('DSH verified creation');
   const submit = dialog.getByRole('button',{name:'Create Thread',exact:true});
   await expect(submit).toBeInViewport();
@@ -58,7 +59,7 @@ test('DSH New Chat, native catalog, toolbox, tools and resume', async ({page, re
   const settings = page.getByRole('dialog',{name:'Harness settings'});
   await settings.getByLabel('Filter plugins').fill('dsh-acp');
   await expect(settings.getByRole('region',{name:'Harness plugins'})).toContainText('@deepseek-ai/dsh-acp');
-  await settings.getByLabel('Harness reasoning effort').selectOption('high');
+  await selectControl(page, settings.getByLabel('Harness reasoning effort'), 'high');
   await expect.poll(async()=>(await detail()).thread.reasoningEffort).toBe('high');
   await page.screenshot({path:testInfo.outputPath('harness-settings.png')});
   await settings.getByRole('button',{name:'Close',exact:true}).click();

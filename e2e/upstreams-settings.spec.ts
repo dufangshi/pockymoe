@@ -1,3 +1,4 @@
+import { selectControl } from './selectControl';
 import { test, expect } from '@playwright/test';
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
@@ -283,12 +284,12 @@ test('Upstreams tab filters installations and manages existing profiles without 
   await chooser.getByRole('button', { name: 'DeepSeek Harness' }).click();
   await settings.getByRole('button', { name: 'Add upstream' }).click();
   const dsh = page.getByRole('dialog', { name: 'Add upstream', exact: true });
-  await dsh.getByLabel('Provider preset').selectOption('dsh-official');
+  await selectControl(page, dsh.getByLabel('Provider preset'), 'dsh-official');
   await expect(dsh.getByLabel('Base URL')).toHaveValue(
     'https://api.deepseek.com/anthropic',
   );
   await expect(dsh.getByLabel('API format')).toHaveValue('anthropic');
-  await dsh.getByLabel('Provider preset').selectOption('dsh-compatible');
+  await selectControl(page, dsh.getByLabel('Provider preset'), 'dsh-compatible');
   await expect(dsh.getByLabel('API format')).toHaveValue('chat_completions');
   await page.keyboard.press('Escape');
   await settings.getByRole('checkbox', { name: 'Show uninstalled' }).uncheck();

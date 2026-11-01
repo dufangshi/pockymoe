@@ -338,6 +338,19 @@ async fn automation_thread_ended_prompt_waits_for_whole_target_turn() {
     s.drain_steers(&a).await.unwrap();
     assert_eq!(pending(&s, &a), 0);
     assert!(runs(&s, &a, id)[0]["turnId"].is_string());
+    let executed = runs(&s, &a, id)[0]["turnId"].as_str().unwrap().to_owned();
+    s.db.with(|c| {
+        assert_eq!(
+            c.query_row(
+                "SELECT origin FROM thread_turns WHERE id=?1",
+                [executed],
+                |r| r.get::<_, String>(0)
+            )?,
+            "automation"
+        );
+        Ok(())
+    })
+    .unwrap();
 }
 
 #[tokio::test]

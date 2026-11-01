@@ -1,6 +1,6 @@
 import { useHostScope } from '../../lib/hostCapabilities';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
-import { ErrorMark } from '@pockymoe/thread-ui';
+import { Select, ErrorMark } from '@pockymoe/thread-ui';
 import type { FormEvent, ReactNode } from 'react';
 import { useEffect, useId, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
@@ -471,11 +471,11 @@ export function ThreadCreateForm({
       <fieldset>
         <legend className="host-form-label text-xs font-medium">{translate("workbench.backend")}</legend>
         {compact ? (
-          <select
+          <Select
             id={`${formId}-thread-backend`}
             disabled={busy || runtimeBusyProvider !== null}
             value={provider}
-            onChange={(event) => setProvider(event.target.value as AgentBackendIdDto)}
+            onValueChange={(selectedValue) => setProvider(selectedValue as AgentBackendIdDto)}
             className={controlClass}
           >
             {backends.map((backend) => (
@@ -488,7 +488,7 @@ export function ThreadCreateForm({
               <option value="acp" disabled>
                 {translate("workbench.aCPAgentEnableOnDevice")}</option>
             ) : null}
-          </select>
+          </Select>
         ) : (
           <div aria-label={translate("workbench.backend")} className="product-segmented mt-2 !grid w-full grid-cols-2 sm:!flex" role="radiogroup">
             {backends.map((backend) => {
@@ -550,11 +550,11 @@ export function ThreadCreateForm({
       </fieldset>
 
       <Field id={`${formId}-thread-workspace`} label={translate("workbench.workspace")}>
-        <select
+        <Select
           id={`${formId}-thread-workspace`}
           disabled={busy}
           value={workspaceId}
-          onChange={(event) => setWorkspaceId(event.target.value)}
+          onValueChange={(selectedValue) => setWorkspaceId(selectedValue)}
           className={controlClass}
         >
           {!workspaceId ? <option value="">{translate("workbench.chooseAWorkspace")}</option> : null}
@@ -563,7 +563,7 @@ export function ThreadCreateForm({
               {workspace.label} · {workspace.absPath}
             </option>
           ))}
-        </select>
+        </Select>
         {!hostScope && workspaces.length === 0 ? (
           <p className="mt-2 text-xs leading-5 text-[var(--theme-fg-muted)]">
             {translate("workbench.addAWorkspaceBeforeCreatingAThread")}{' '}
@@ -646,13 +646,13 @@ export function ThreadCreateForm({
 
       <div className={selectedModel?.supportedReasoningEfforts.length ? 'grid gap-5 sm:grid-cols-2' : ''}>
         <Field id={`${formId}-thread-model`} label={translate("workbench.model")}>
-          <select
+          <Select
             id={`${formId}-thread-model`}
             value={model}
             disabled={busy || models.length === 0}
-            onChange={(event) => {
-              const next = models.find((entry) => entry.model === event.target.value) ?? null;
-              setModel(event.target.value);
+            onValueChange={(selectedValue) => {
+              const next = models.find((entry) => entry.model === selectedValue) ?? null;
+              setModel(selectedValue);
               setReasoningEffort((current) =>
                 current && next?.supportedReasoningEfforts.some((entry) => entry.reasoningEffort === current)
                   ? current
@@ -667,17 +667,17 @@ export function ThreadCreateForm({
                 {entry.displayName}
               </option>
             ))}
-          </select>
+          </Select>
         </Field>
 
         {selectedModel && selectedModel.supportedReasoningEfforts.length > 0 ? (
           <Field id={`${formId}-thread-effort`} label={translate("workbench.reasoningEffort")}>
-            <select
+            <Select
               id={`${formId}-thread-effort`}
               disabled={busy}
               value={reasoningEffort ?? ''}
-              onChange={(event) =>
-                setReasoningEffort((event.target.value || null) as ReasoningEffortDto | null)
+              onValueChange={(selectedValue) =>
+                setReasoningEffort((selectedValue || null) as ReasoningEffortDto | null)
               }
               className={controlClass}
             >
@@ -686,23 +686,23 @@ export function ThreadCreateForm({
                   {entry.reasoningEffort || translate("workbench.providerDefault")}
                 </option>
               ))}
-            </select>
+            </Select>
           </Field>
         ) : null}
 
         {provider === 'acp' && agentId === 'deepseek' && runModes.length > 0 ? (
           <Field id={`${formId}-thread-run-mode`} label={translate("settings.dshRunMode")}>
-            <select
+            <Select
               id={`${formId}-thread-run-mode`}
               disabled={busy || Boolean(created)}
               value={runMode}
-              onChange={(event) => setRunMode(event.target.value)}
+              onValueChange={(selectedValue) => setRunMode(selectedValue)}
               className={controlClass}
             >
               {runModes.map((mode) => (
                 <option key={mode.id} value={mode.id} disabled={Boolean(mode.broken)}>{dshRunModeName(mode)}</option>
               ))}
-            </select>
+            </Select>
             <p className="host-muted mt-1 text-xs">
               {dshRunModeHint(runModes.find((mode) => mode.id === runMode))}
             </p>

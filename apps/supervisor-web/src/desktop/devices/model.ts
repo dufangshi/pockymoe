@@ -2,28 +2,38 @@ import type { ThreadActivityResponseDto } from '@pockymoe/shared';
 import { formatNumber, translate } from '@pockymoe/thread-ui/i18n';
 import { running, type DesktopIndex } from '../data/types';
 
-export type StatsRange = 'today' | '7d' | '30d';
-export interface HourBucket { hour: number; turns: number; failed: number; tokens: number; costUsd: number | null }
+export type StatsRange = 'today' | '7d' | '30d' | 'all';
+export type TurnOrigin = 'owner' | 'guest' | 'agent' | 'automation' | 'unknown';
+export interface UsageValues {
+  turns: number; tokens: number; costUsd: number | null; unpricedTokens?: number; usageTurns?: number; partialUsageTurns?: number; requests?: number | null; knownRequests?: number;
+  inputTokens?: number; cachedTokens?: number; cacheWriteTokens?: number; outputTokens?: number; reasoningTokens?: number;
+}
+export interface HourBucket extends UsageValues { hour: number; failed: number }
 export interface StatsSummary {
   range: StatsRange;
   generatedAt: string;
+  origin?: TurnOrigin | 'all';
+  coverage?: { missingUsageTurns?: number; partialUsageTurns?: number; undatedTurns?: number; unknownOriginTurns?: number; excludedUndatedTurns?: number; excludedHistoryCopies?: number };
   totals: {
     turns: number; completed: number; failed: number; interrupted: number;
     avgDurationMs: number | null; p50DurationMs: number | null; durationSamples?: number | undefined;
-    inputTokens: number; outputTokens: number; cachedTokens: number; costUsd: number | null;
+    inputTokens: number; outputTokens: number; cachedTokens: number; costUsd: number | null; unpricedTokens?: number; tokens?: number; usageTurns?: number; partialUsageTurns?: number; cacheWriteTokens?: number; reasoningTokens?: number; knownRequests?: number; requests?: number | null;
   };
-  daily: { date: string; turns: number; failed: number; tokens: number; costUsd: number | null }[];
+  daily: ({ date: string; failed: number } & UsageValues)[];
   hourly?: HourBucket[];
-  byModel: { model: string; turns: number; tokens: number; costUsd: number | null }[];
-  byWorkspace: { workspaceId: string; label: string; turns: number; tokens: number; costUsd: number | null; lastActivityAt: string }[];
+  byModel: ({ model: string } & UsageValues)[];
+  byWorkspace: ({ workspaceId: string; label: string; lastActivityAt: string | null } & UsageValues)[];
   longestThreads: { threadId: string; title: string; workspaceId: string; durationMs: number }[];
+  byOrigin?: ({ origin: TurnOrigin } & UsageValues)[];
   activeThreads: number;
   runningTurns: number;
 }
 export interface DeviceMetrics {
   summaries: Partial<Record<StatsRange, StatsSummary>>;
+  originSummaries?: Partial<Record<TurnOrigin, Partial<Record<StatsRange, StatsSummary>>>>;
   partial?: boolean;
   unavailable?: boolean;
+  allUnsupported?: boolean;
   version?: string | undefined;
   latestVersion?: string | undefined;
   latencyMs?: number | undefined;
@@ -32,7 +42,7 @@ export interface DeviceMetrics {
 }
 export const compact = (value: number | null | undefined) => value == null ? '—' : formatNumber(value, { notation: 'compact', maximumFractionDigits: 1 });
 export const exact = (value: number) => formatNumber(value);
-export const money = (value: number | null | undefined) => value == null ? '—' : `$${formatNumber(value, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+export const money = (value: number | null | undefined) => value == null ? '—' : `$${formatNumber(value, { ...(Math.abs(value) >= 1000 ? { notation: 'compact' as const } : {}), minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 export const turns = (value: number) => translate('desktopDevices.turnCount', { count: value, value: exact(value) });
 export function duration(value: number | null | undefined) {
   if (value == null) return '—';
@@ -69,7 +79,8 @@ export function deviceCounts(index: DesktopIndex, deviceId: string) {
 }
 /** The index only knows the latest turn per thread. Never present it as full history. */
 export function partialSummary(index: DesktopIndex, deviceId: string, range: StatsRange, timeZone: string, now = new Date()): StatsSummary {
-  const daily = calendarDays(range, timeZone, now).map(date => ({ date, turns: 0, failed: 0, tokens: 0, costUsd: null as number | null }));
+  const dates = range === 'all' ? [...new Set(index.threads.filter(t => t.deviceId === deviceId && t.lastTurnStartedAt && Number.isFinite(Date.parse(t.lastTurnStartedAt))).map(t => dateKey(new Date(t.lastTurnStartedAt!), timeZone)))].sort() : calendarDays(range, timeZone, now);
+  const daily = dates.map(date => ({ date, turns: 0, failed: 0, tokens: 0, costUsd: null as number | null }));
   const threads = index.threads.filter(t => t.deviceId === deviceId);
   let completed = 0, failed = 0, interrupted = 0;
   const workspaces = new Map<string, StatsSummary['byWorkspace'][number]>();
@@ -84,12 +95,18 @@ export function partialSummary(index: DesktopIndex, deviceId: string, range: Sta
     else if (ended && thread.status === 'interrupted') interrupted++;
     else if (ended && !running(thread)) completed++;
     const row = workspaces.get(thread.workspaceId) ?? { workspaceId: thread.workspaceId, label: index.workspaces.find(w => w.deviceId === deviceId && w.id === thread.workspaceId)?.label ?? translate('desktopDevices.workspace'), turns: 0, tokens: 0, costUsd: null, lastActivityAt: thread.lastTurnStartedAt! };
-    row.turns++; row.lastActivityAt = row.lastActivityAt > thread.updatedAt ? row.lastActivityAt : thread.updatedAt;
+    row.turns++; row.lastActivityAt = (row.lastActivityAt ?? '') > thread.updatedAt ? row.lastActivityAt : thread.updatedAt;
     workspaces.set(row.workspaceId, row);
   }
   return { range, generatedAt: now.toISOString(), daily, totals: { turns: daily.reduce((n, d) => n + d.turns, 0), completed, failed, interrupted, avgDurationMs: null, p50DurationMs: null, inputTokens: 0, outputTokens: 0, cachedTokens: 0, costUsd: null }, byModel: [], byWorkspace: [...workspaces.values()].sort((a, b) => b.turns - a.turns), longestThreads: [], activeThreads: threads.filter(running).length, runningTurns: threads.filter(t => running(t) && t.activeTurnId).length };
 }
 const sumCost = (values: (number | null)[]) => values.some(v => v == null) ? null : values.reduce<number>((n, v) => n + v!, 0);
+const pricePartial = (rows: UsageValues[]) => rows.some(row => row.costUsd == null || row.unpricedTokens || row.partialUsageTurns || row.usageTurns !== undefined && row.usageTurns < row.turns);
+function bucketCost(rows: UsageValues[]) {
+  const known = rows.filter(row => row.costUsd != null);
+  const evidence = known.some(row => row.turns > 0 || row.tokens > 0 || row.costUsd! > 0);
+  return known.length && (evidence || known.length === rows.length) ? known.reduce((sum, row) => sum + row.costUsd!, 0) : null;
+}
 export function aggregate(sources: { deviceId: string; summary: StatsSummary }[]) {
   const summaries = sources.map(s => s.summary);
   const sum = (key: 'turns' | 'completed' | 'failed' | 'interrupted' | 'inputTokens' | 'outputTokens' | 'cachedTokens') => summaries.reduce((n, s) => n + s.totals[key], 0);
@@ -99,7 +116,7 @@ export function aggregate(sources: { deviceId: string; summary: StatsSummary }[]
   const mean = nonempty.length === 1 ? nonempty[0]!.totals.avgDurationMs : nonempty.every(s => s.totals.durationSamples !== undefined) && samples > 0 ? summaries.reduce((n, s) => n + (s.totals.avgDurationMs ?? 0) * (s.totals.durationSamples ?? 0), 0) / samples : null;
   const daily = [...new Set(summaries.flatMap(s => s.daily.map(d => d.date)))].sort().map(date => {
     const rows = summaries.flatMap(s => s.daily.filter(d => d.date === date));
-    return { date, turns: rows.reduce((n, d) => n + d.turns, 0), tokens: rows.reduce((n, d) => n + d.tokens, 0), costUsd: sumCost(rows.map(d => d.costUsd)) };
+    return { date, turns: rows.reduce((n, d) => n + d.turns, 0), tokens: rows.reduce((n, d) => n + d.tokens, 0), costUsd: bucketCost(rows), pricePartial: pricePartial(rows) };
   });
   const models = new Map<string, { model: string; turns: number; tokens: number }>();
   summaries.flatMap(s => s.byModel).forEach(row => { const old = models.get(row.model); models.set(row.model, { model: row.model, turns: (old?.turns ?? 0) + row.turns, tokens: (old?.tokens ?? 0) + row.tokens }); });
@@ -119,7 +136,7 @@ export function aggregateHourly(sources: { summary: StatsSummary }[]) {
     const rows = sources.map(source => supportsHourly(source.summary) ? source.summary.hourly.find(row => row.hour === hour)! : null);
     const complete = rows.length > 0 && rows.every(row => row !== null);
     return { hour, tokens: complete ? rows.reduce((sum, row) => sum + row!.tokens, 0) : null,
-      costUsd: complete && rows.every(row => row!.costUsd !== null) ? rows.reduce((sum, row) => sum + row!.costUsd!, 0) : null };
+      costUsd: complete ? bucketCost(rows as HourBucket[]) : null, pricePartial: complete && pricePartial(rows as HourBucket[]) };
   });
 }
 
