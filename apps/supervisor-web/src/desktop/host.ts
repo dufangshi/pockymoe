@@ -48,6 +48,13 @@ export interface ActivityItem {
   threadId: string;
   title: string;
   agentName?: string | null;
+  /**
+   * For an agent thread: `${deviceId}:${rootThreadId}` of its conversation, and that
+   * root's title. Counts and lists group by `rootThreadKey ?? key` (ui-principles §7:
+   * an agent thread never appears on its own); approvals and replies still target `key`.
+   */
+  rootThreadKey?: string | null;
+  rootThreadTitle?: string | null;
   state: ActivityState;
   /** ISO time the item entered its current state. */
   since: string;

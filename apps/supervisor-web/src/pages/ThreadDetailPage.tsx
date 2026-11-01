@@ -1,3 +1,4 @@
+import { useDesktopWorkbench } from '../desktop/context';
 import { TurnNotification } from '../components/TurnNotification';
 import { useBrowserStateKey } from '../lib/browserStateScope';
 import { TRANSCRIPT_PREFERENCE_EVENT } from '../lib/transcriptPreferences';
@@ -776,6 +777,7 @@ export function ThreadDetailPage() {
     error: null,
   });
   const workbenchNavigation = useWorkbenchNavigation(detail, threads, relayRouteDeviceId, id, { sharesDeviceThreads: true });
+  const desktopWorkbench = useDesktopWorkbench(workbenchNavigation);
   // Once this thread shows, the other open tabs are read one by one in the
   // background, so switching to any of them (any workspace, not only a pointed-at
   // one) paints its conversation at once instead of waiting for the device.
@@ -4110,7 +4112,7 @@ export function ThreadDetailPage() {
       restrictedNavigation={Boolean(hostScope)}
       scopedSettings={Boolean(hostScope)}
       deviceMonitor={hostScope ? <OpenFullPageButton /> : <><DeviceMonitor key={relayRouteDeviceId ?? 'local'} /><TourLauncherButton /></>}
-      workbench={workbenchUrls({ ...workbenchNavigation, panels: {
+      workbench={workbenchUrls({ ...workbenchNavigation, ...desktopWorkbench, panels: {
         deviceLabel: presentationDeviceName ?? (relayRouteDeviceId ? relayRouteDeviceId.slice(0, 8) : translate('workbench.localDeviceName')),
         workspaceLabel: detail?.workspace.label ?? workbenchNavigation.workspacePath,
         primaryTitle: detail?.thread.title ?? translate('workbench.loadingThreadDetail'),

@@ -28,10 +28,13 @@ export class DesktopIndexStore {
   private sockets = new Map<string, { socket: WebSocket; heartbeat: SupervisorHeartbeat }>();
   private retries = new Map<string, ReturnType<typeof setTimeout>>();
   private pendingLists = new Map<string, ReturnType<typeof setTimeout>>();
+  private detailTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private dirtyDetails = new Set<string>();
   private activityTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private requests = new Map<string, Promise<void>>();
   private lastList = new Map<string, number>();
   private lastActivity = new Map<string, number>();
+  private lastRuntime = new Map<string, number>();
   private lastExtra = new Map<string, number>();
   private requestHydrated = new Set<string>();
   private dirtyActivity = new Set<string>();
@@ -93,6 +96,7 @@ export class DesktopIndexStore {
     this.retries.forEach(clearTimeout); this.retries.clear();
     this.pendingLists.forEach(clearTimeout); this.pendingLists.clear();
     this.activityTimers.forEach(clearTimeout); this.activityTimers.clear();
+    this.detailTimers.forEach(clearTimeout); this.detailTimers.clear();
     clearTimeout(this.persistTimer); clearTimeout(this.pulseTimer);
     this.sockets.forEach(({ socket }) => socket.close()); this.sockets.clear();
     this.controllers.forEach(controller => controller.abort()); this.controllers.clear();
@@ -109,6 +113,7 @@ export class DesktopIndexStore {
     this.sockets.forEach(({ heartbeat }) => heartbeat.probe(Date.now()));
     void this.refresh(false);
     if (this.mapVisible) this.refreshVisibleActivity();
+    for (const key of this.dirtyDetails) { const row = this.state.threads.find(thread => thread.key === key); if (row) this.scheduleDetail(row.deviceId, row.id); }
   };
   setMapVisible = (value: boolean) => {
     if (this.mapVisible === value) return;
@@ -205,6 +210,9 @@ export class DesktopIndexStore {
       const previous = this.state.activity[deviceId];
       const [stable] = mergeRows(previous ? [previous] : [], [activity], () => deviceId);
       if (stable !== previous) this.publish({ activity: { ...this.state.activity, [deviceId]: stable! } });
+      if (this.mapVisible) void this.withSignal(signal => this.io.get<{ totals?: { costUsd?: number | null } }>(deviceId, 'api/stats/summary?range=today', { signal, cache: 'no-store' })).then(summary => {
+        if (generation === this.generation && !this.stopped && typeof summary.totals?.costUsd === 'number') this.extra(deviceId, { todayCostUsd: summary.totals.costUsd });
+      }).catch(() => undefined);
     } catch { /* Older Supervisors may not support activity; cached values remain. */ }
     finally { if (generation === this.generation) this.extra(deviceId, { syncing: false }); }
   });
@@ -213,8 +221,9 @@ export class DesktopIndexStore {
     const generation = this.generation; const started = performance.now(); this.lastExtra.set(deviceId, Date.now());
     await Promise.allSettled([
       this.withSignal(signal => this.io.get<DeviceMetricsDto>(deviceId, 'api/device/metrics', { signal, cache: 'no-store' })).then(metrics => { if (generation === this.generation && !this.stopped) this.extra(deviceId, { metrics, latencyMs: Math.round(performance.now() - started) }); }),
-      ...(this.state.extras[deviceId]?.runtimeVersion ? [] : [this.io.get<{ runningVersion?: string; latestVersion?: string }>(deviceId, 'api/management/supervisor', { cache: 'no-store' }).then(runtime => {
+      ...(Date.now() - (this.lastRuntime.get(deviceId) ?? 0) < 60_000 ? [] : [this.io.get<{ runningVersion?: string; latestVersion?: string }>(deviceId, 'api/management/supervisor', { cache: 'no-store' }).then(runtime => {
         if (generation !== this.generation || this.stopped) return;
+        this.lastRuntime.set(deviceId, Date.now());
         this.extra(deviceId, { ...(runtime.runningVersion ? { runtimeVersion: runtime.runningVersion } : {}), ...(runtime.latestVersion ? { latestVersion: runtime.latestVersion, updateAvailable: runtime.latestVersion !== runtime.runningVersion } : {}) });
       })]),
     ]);
@@ -258,6 +267,15 @@ export class DesktopIndexStore {
     const delay = Math.max(0, 2000 - (Date.now() - (this.lastList.get(deviceId) ?? 0)));
     this.pendingLists.set(deviceId, setTimeout(() => { this.pendingLists.delete(deviceId); void this.refreshDevice(deviceId); }, delay));
   }
+  private scheduleDetail(deviceId: string, threadId: string) {
+    const key = entityKey(deviceId, threadId); this.dirtyDetails.add(key);
+    clearTimeout(this.detailTimers.get(key));
+    if (!visible()) return;
+    this.detailTimers.set(key, setTimeout(() => {
+      this.detailTimers.delete(key); if (!visible() || this.stopped) return;
+      this.dirtyDetails.delete(key); void this.loadDetail(deviceId, threadId, true).catch(() => undefined);
+    }, 2000));
+  }
   applyEvent(deviceId: string, event: ThreadEventEnvelope) {
     if (!isIndexEvent(event.type) || this.stopped) return;
     const key = entityKey(deviceId, event.threadId);
@@ -272,7 +290,7 @@ export class DesktopIndexStore {
             closedAt: event.payload.reason === 'closed' ? event.timestamp : row.closedAt ?? null,
             updatedAt: event.payload.reason ? row.updatedAt : event.timestamp };
         }
-        case 'thread.turn.started': return { ...row, status: 'running', activeTurnId: event.payload.turnId, lastTurnId: event.payload.turnId, lastTurnStartedAt: event.timestamp, closedAt: null, updatedAt: event.timestamp };
+        case 'thread.turn.started': return { ...row, resultSummary: null, status: 'running', activeTurnId: event.payload.turnId, lastTurnId: event.payload.turnId, lastTurnStartedAt: event.timestamp, closedAt: null, updatedAt: event.timestamp };
         case 'thread.turn.completed': return { ...row, status: event.payload.status === 'failed' ? 'failed' : event.payload.status === 'interrupted' ? 'interrupted' : 'idle', activeTurnId: null, lastTurnId: event.payload.turnId, lastTurnCompletedAt: event.timestamp, updatedAt: event.timestamp };
         case 'thread.turn.failed': return { ...row, status: event.payload.willRetry ? 'recovering' : 'failed', activeTurnId: event.payload.willRetry ? row.activeTurnId : null, lastTurnId: event.payload.turnId, lastTurnCompletedAt: event.payload.willRetry ? row.lastTurnCompletedAt : event.timestamp, resultSummary: plainSummary(event.payload.error), updatedAt: event.timestamp };
         case 'thread.request.created': return { ...row, requests: [...row.requests.filter(request => request.id !== event.payload.request.id), summarizeRequest(event.payload.request)], updatedAt: event.timestamp };
@@ -283,6 +301,7 @@ export class DesktopIndexStore {
     if (event.type === 'thread.updated' && event.payload.reason) this.scheduleList(deviceId);
     if (event.type === 'thread.turn.completed' || event.type === 'thread.turn.failed') {
       this.dirtyActivity.add(deviceId);
+      this.scheduleDetail(deviceId, event.threadId);
       clearTimeout(this.activityTimers.get(deviceId));
       if (this.mapVisible && visible()) this.activityTimers.set(deviceId, setTimeout(() => { this.activityTimers.delete(deviceId); void this.refreshActivity(deviceId); }, 2000));
     }

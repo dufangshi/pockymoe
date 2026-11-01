@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { RelayPortalSummaryDto, ThreadDetailDto, ThreadDto, ThreadEventEnvelope, WorkspaceDto } from '@pockymoe/shared';
 import { mergeRows } from './merge';
 import { DesktopIndexStore, type DesktopDataAdapter } from './store';
-import { unread } from './types';
+import { plainSummary, summarizeThread, unread } from './types';
 import { attentionFromActivity, buildActivityItems, buildActivitySnapshot } from './activity';
 vi.mock('../../lib/api', () => ({ connectSupervisorEvents: vi.fn(), deviceRequest: vi.fn(), fetchRelayPortal: vi.fn(), request: vi.fn() }));
 const thread = (id: string, patch: Partial<ThreadDto> = {}): ThreadDto => ({ id, workspaceId: 'w', title: id, provider: 'codex', model: 'gpt', status: 'idle', isPinned: false, createdAt: '2026-10-01T00:00:00Z', updatedAt: '2026-10-30T00:00:00Z', lastTurnStartedAt: null, lastTurnCompletedAt: null, activeTurnId: null, summaryText: null, lastError: null, ...patch } as ThreadDto);
@@ -23,6 +23,17 @@ function setup() {
 }
 afterEach(() => vi.useRealTimers());
 describe('desktop cached index', () => {
+  it('keeps native summaries plain, bounded and free of recognizable credentials', () => {
+    expect(plainSummary('<b>Done</b>\nnext line')).toBe('Done');
+    expect(plainSummary('Bearer ' + 'x'.repeat(32))).toBe('Bearer [redacted]');
+    expect(plainSummary('api_key=' + 'x'.repeat(32))).toBe('api_key=[redacted]');
+    expect(plainSummary('x'.repeat(200))).toHaveLength(140);
+  });
+  it('does not mark imported history unread on first observation, but observes a later completion', () => {
+    const row = summarizeThread('a', thread('history', { lastTurnCompletedAt: '2026-10-01T00:00:00Z' }));
+    expect(row.lastViewedAt).toBeNull(); expect(unread(row)).toBe(false);
+    expect(unread({ ...row, lastTurnCompletedAt: '2026-11-01T00:00:00Z' })).toBe(true);
+  });
   it('retains unchanged identities even when response property order differs', () => {
     const previous = [{ id: 'a', value: { x: 1, y: 2 } }];
     expect(mergeRows(previous, [{ value: { y: 2, x: 1 }, id: 'a' }], row => row.id)).toBe(previous);

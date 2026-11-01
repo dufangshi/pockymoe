@@ -1495,25 +1495,25 @@ export interface GlobalConversationSearchResult {
   nextOffset: number | null;
   scope: 'device';
 }
-export function searchConversations(query: string, workspaceId: string | undefined, offset: number, signal?: AbortSignal) {
+export function searchConversations(query: string, workspaceId: string | undefined, offset: number, signal?: AbortSignal, deviceId?: string | null) {
   const path = workspaceId ? `api/workspaces/${encodeURIComponent(workspaceId)}/search` : 'api/search';
-  return request<GlobalConversationSearchResult>(
+  return deviceRequest<GlobalConversationSearchResult>(deviceId,
     `${path}?${new URLSearchParams({ q: query, limit: '50', offset: String(offset) })}`,
     { ...(signal ? { signal } : {}), cache: 'no-store' },
   );
 }
-export function searchThreadMessages(id: string, query: string, signal?: AbortSignal) {
-  return request<ConversationSearchResult>(
+export function searchThreadMessages(id: string, query: string, signal?: AbortSignal, deviceId?: string | null) {
+  return deviceRequest<ConversationSearchResult>(deviceId,
     `api/threads/${encodeURIComponent(id)}/search?${new URLSearchParams({ q: query, limit: '50' })}`,
     { signal: signal ?? null },
   );
 }
 // Older Supervisors have no search endpoint. A full conversation page avoids
 // the old summary + one detail request per turn; fetch only after a query.
-export function fetchThreadConversationPage(id: string, beforeTurnId?: string, signal?: AbortSignal) {
+export function fetchThreadConversationPage(id: string, beforeTurnId?: string, signal?: AbortSignal, deviceId?: string | null) {
   const params = new URLSearchParams({ view: 'full', limit: '100', compact: '1' });
   if (beforeTurnId) params.set('beforeTurnId', beforeTurnId);
-  return request<ThreadDetailDto>(`api/threads/${encodeURIComponent(id)}?${params}`, { signal: signal ?? null });
+  return deviceRequest<ThreadDetailDto>(deviceId, `api/threads/${encodeURIComponent(id)}?${params}`, { signal: signal ?? null });
 }
 
 export function fetchThreadHistoryItemDetail(id: string, itemId: string,

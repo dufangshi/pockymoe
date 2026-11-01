@@ -1,0 +1,52 @@
+/* Layout only: every color, font, status mark and control comes from the applied
+   theme pack. The upstream tabs row is the native window title bar. */
+.desktop-surface { position: fixed; inset: 0; overflow: hidden; background: var(--app-bg); color: var(--theme-fg); }
+.desktop-route, .desktop-map-scene { position: absolute; inset: 0; min-width: 0; min-height: 0; }
+.desktop-map-scene[hidden] { display: none; }
+.desktop-route > .thread-ui-shell, .desktop-map-scene.thread-ui-shell { height: 100%; max-height: 100%; min-height: 0; padding: 0; }
+:root:root [data-desktop-surface] .thread-ui-shell .matter-workbench { position: relative; grid-template-rows: var(--desktop-title-height, 38px) minmax(0, 1fr); }
+:root:root [data-desktop-surface] .thread-ui-shell .matter-main { display: contents; }
+:root:root [data-desktop-surface] .thread-ui-shell .matter-tabs-row { grid-column: 1 / -1; grid-row: 1; padding-left: var(--desktop-controls-left); padding-right: var(--desktop-controls-right); -webkit-app-region: drag; align-items: center; }
+:root:root [data-desktop-surface] .matter-tabs-row :is(button, a, input, select, textarea, [role=menu]) { -webkit-app-region: no-drag; }
+:root:root [data-desktop-surface] .matter-rail { grid-column: 1; grid-row: 2; }
+:root:root [data-desktop-surface] .matter-sidebar { grid-column: 2; grid-row: 2; }
+:root:root [data-desktop-surface] .matter-main > .matter-content { grid-column: 3; grid-row: 2; min-height: 0; }
+:root:root [data-desktop-surface] .matter-sidebar-resize { left: calc(49px + var(--matter-sidebar-width, 236px) - 4px); top: var(--desktop-title-height, 38px); }
+/* The desktop slot is the same map action with the native-alert waiting count;
+   keep a single visible entry rather than duplicating the browser rail button. */
+[data-desktop-surface] .matter-rail > button:has([data-icon=thread-map]):not([data-desktop-map-link]) { display: none; }
+[data-desktop-surface] .matter-rail > button[data-desktop-map-link] { position: relative; }
+.desktop-map-badge { position: absolute; top: 0; right: 0; min-width: 15px; height: 15px; padding: 0 3px; border-radius: 9px; font-size: 9px; line-height: 15px; background: var(--status-warning-bg); color: var(--status-warning-fg); font-variant-numeric: tabular-nums; }
+.desktop-online-count { padding: 0 8px; white-space: nowrap; color: var(--theme-fg-muted); font-size: 11px; }
+.desktop-activity { margin-bottom: 12px; }
+.desktop-activity-heading { display: flex; justify-content: space-between; padding: 5px 12px 3px; font-size: 10px; color: var(--theme-fg-muted); }
+.desktop-activity-row > a { min-width: 0; flex: 1; display: flex; align-items: center; gap: 8px; text-decoration: none; color: inherit; padding: 5px 8px; }
+.desktop-activity-row .matter-thread-copy { flex: 1; }
+.desktop-activity-time { font-variant-numeric: tabular-nums; white-space: nowrap; font-size: 10px; color: var(--theme-fg-muted); }
+.desktop-activity-request { font-size: 10px; white-space: nowrap; color: var(--status-warning-fg); }
+.desktop-activity-family > summary { display: flex; align-items: center; gap: 7px; min-width: 0; padding: 5px 8px; font-size: 12px; cursor: pointer; list-style: none; }
+.desktop-activity-family > summary > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.desktop-activity-family[open] > summary > svg { transform: rotate(90deg); }
+.desktop-activity-family .desktop-activity-row { margin-left: 12px; }
+.desktop-quicklook-layer { position: fixed; inset: 0; z-index: 90; }
+.desktop-quicklook.thread-ui-shell { position: fixed; width: 420px; max-width: calc(100vw - 24px); max-height: calc(100svh - 24px); height: auto; min-height: 0; padding: 0; display: flex; flex-direction: column; border: 1px solid var(--theme-border-strong); border-radius: 12px; background: var(--theme-panel); color: var(--theme-fg); box-shadow: var(--theme-shadow); overflow: hidden; font-size: 13px; }
+.desktop-quicklook header { display: flex; align-items: center; gap: 10px; padding: 12px 12px 8px 16px; }
+.desktop-quicklook h2 { flex: 1; min-width: 0; font-size: 15px; line-height: 21px; font-weight: 600; margin: 0; overflow-wrap: anywhere; }
+.desktop-quicklook header button { width: 40px; height: 40px; display: grid; place-items: center; border: 0; background: transparent; border-radius: 8px; color: var(--theme-fg-muted); flex-shrink: 0; }
+.desktop-quicklook-body { overflow: auto; min-height: 0; padding: 0 16px 12px; }
+.desktop-quicklook section { margin: 0 0 14px; }
+.desktop-quicklook h3 { font-size: 11px; font-weight: 500; color: var(--theme-fg-muted); margin: 0 0 5px; }
+.desktop-quicklook p { line-height: 20px; margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.desktop-quicklook-request { padding: 10px; background: var(--theme-accent-soft); border-radius: 8px; }
+.desktop-decision-buttons { display: flex; gap: 8px; margin-top: 10px; }
+.desktop-quicklook dl { margin: 0 0 14px; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.desktop-quicklook dt { color: var(--theme-fg-muted); font-size: 11px; }.desktop-quicklook dd { margin: 3px 0 0; font-variant-numeric: tabular-nums; }
+.desktop-quicklook-bars { width: 100%; height: 48px; fill: var(--thread-map-spark, var(--theme-accent-solid)); }
+.desktop-quicklook footer { display: flex; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--theme-border); }
+.desktop-quicklook :is(button, a):focus-visible { outline: 2px solid var(--theme-accent-solid); outline-offset: 2px; }
+@media (hover: hover) { .desktop-quicklook header button:hover { background: var(--theme-hover); } }
+@media (prefers-reduced-motion: reduce) { .desktop-surface * { scroll-behavior: auto; } }
+
+.desktop-map-persistent { height: 100%; min-height: 0; }
+.desktop-map-persistent[hidden] { display: none; }
+.desktop-map-route { height: 100%; min-height: 0; overflow: auto; background: var(--theme-bg); }

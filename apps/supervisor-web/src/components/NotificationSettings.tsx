@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { lazy, Suspense, useState } from 'react';
 import { Folder, Laptop, X } from 'lucide-react';
 import { translate as t, useI18n } from '@pockymoe/thread-ui/i18n';
 import { ErrorMark } from '@pockymoe/thread-ui';
@@ -6,6 +6,8 @@ import { relayModeActive } from '../lib/api';
 import { useNotificationSettings, type NotificationSettings as Settings, type NotificationScope } from '../lib/notificationSettings';
 import { WorkbenchThreadPicker, type ScopeSelection } from './WorkbenchThreadPicker';
 import { RelayNotifications } from './RelayNotifications';
+
+const DesktopNotificationSettings = lazy(() => import('../desktop/NotificationSettings'));
 
 export function NotificationSettings() {
   useI18n();
@@ -73,6 +75,6 @@ export function NotificationSettings() {
       </span>
       {error && !state.saving && !state.loading && <ErrorMark message={error} onRetry={state.retry} retryLabel={t('settings.retry')} />}
     </div>
-    {relayModeActive() ? <RelayNotifications /> : <p className="notification-scope-hint text-xs text-[var(--theme-fg-muted)]">{t('settings.notificationsLocalBrowser')}</p>}
+    {window.pockymoeHost ? <Suspense fallback={null}><DesktopNotificationSettings /></Suspense> : relayModeActive() ? <RelayNotifications /> : <p className="notification-scope-hint text-xs text-[var(--theme-fg-muted)]">{t('settings.notificationsLocalBrowser')}</p>}
   </section>;
 }

@@ -116,18 +116,21 @@ export function useWorkbenchNavigation(
      * (including agent threads), so navigation does not fetch it again.
      */
     sharesDeviceThreads?: boolean;
+    /** A kept-mounted surface may suspend its reads while another page is shown. */
+    enabled?: boolean;
     /** A workspace shell with no selected thread, including while it loads. */
     workspace?: WorkspaceDto | null;
   } = {},
 ) {
   const hostScope = useHostScope();
+  const enabled = options.enabled !== false;
   const storageKey = useBrowserStateKey(LOCAL_KEY);
   // The order the reader dragged each workspace's conversations into, kept in
   // this browser: `device:workspace` -> root thread keys, first to last.
   const orderKey = useBrowserStateKey(WORKSPACE_ORDER_KEY);
   const openTabsKey = useBrowserStateKey(OPEN_TABS_KEY);
   const [openTabs, setOpenTabs] = useState<OpenTab[]>(() => loadOpenTabs(openTabsKey));
-  useEffect(() => { setOpenTabs(loadOpenTabs(openTabsKey)); }, [openTabsKey]);
+  useEffect(() => { if (enabled) setOpenTabs(loadOpenTabs(openTabsKey)); }, [openTabsKey, enabled]);
   const [workspaceOrders, setWorkspaceOrders] = useState<Record<string, string[]>>(() => loadWorkspaceOrders(orderKey));
   useEffect(() => { setWorkspaceOrders(loadWorkspaceOrders(orderKey)); }, [orderKey]);
   const sharesDeviceThreads = options.sharesDeviceThreads === true;
@@ -175,6 +178,7 @@ export function useWorkbenchNavigation(
   const threadId = detail?.thread.id;
 
   useEffect(() => {
+    if (!enabled) return;
     let alive = true;
     let inFlight = false;
     const controller = new AbortController();
@@ -335,7 +339,7 @@ export function useWorkbenchNavigation(
       window.removeEventListener('storage', onVisible);
       window.removeEventListener(NOTIFICATION_CHANGE, onVisible);
     };
-  }, [relay, deviceId, sharesDeviceThreads, storageKey, hostScope]);
+  }, [relay, deviceId, sharesDeviceThreads, storageKey, hostScope, enabled]);
 
   const save = useCallback(
     async (favorite?: boolean, markRead = false, target?: ThreadReference) => {
@@ -566,7 +570,7 @@ export function useWorkbenchNavigation(
     .filter(id => id && !workspaceLabels.has(id) && !(readLabels.device === tabDevice && readLabels.tried.includes(id)))
     .sort().join(',');
   useEffect(() => {
-    if (!unlabelled) return;
+    if (!enabled || !unlabelled) return;
     const device = tabDevice;
     setReadLabels(previous => previous.device === device
       ? { ...previous, tried: [...previous.tried, ...unlabelled.split(',')] }
@@ -579,7 +583,7 @@ export function useWorkbenchNavigation(
           : { ...previous, labels: { ...previous.labels, ...Object.fromEntries(list.map(workspace => [workspace.id, workspace.label])) } });
       })
       .catch(() => undefined);
-  }, [unlabelled, tabDevice]);
+  }, [unlabelled, tabDevice, enabled]);
   const orderScope = workspaceId ? `${tabDevice}:${workspaceId}` : '';
   const rank = new Map((workspaceOrders[orderScope] ?? []).map((key, index) => [key, index]));
   // Dragged conversations first in their order, the rest after them by age; an

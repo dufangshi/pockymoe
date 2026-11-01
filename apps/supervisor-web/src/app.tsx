@@ -25,7 +25,7 @@ import {
   useNavigate,
   useParams,
 } from 'react-router-dom';
-import { useEffect, useLayoutEffect, useMemo, useState, type ReactNode } from 'react';
+import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useState, type ReactNode } from 'react';
 import { PluginProvider, ThreadPluginScope, type PluginSettingsSnapshot, type UpstreamConnectionPickerProps } from '@pockymoe/thread-ui';
 
 import type {
@@ -87,6 +87,9 @@ import { builtinFrontendPlugins } from './plugins/builtin-plugin-modules';
 import { ConnectionPicker } from './components/ConnectionPicker';
 import { useComposerPreferences } from './lib/useComposerPreferences';
 import { effectiveColorMode, themeChromeColor, useThemeRegistry } from './lib/themePacks';
+
+const DesktopEntry = lazy(() => import('./desktop/DesktopEntry'));
+const DesktopDevicesRoute = lazy(() => import('./desktop/DevicesRoute'));
 
 const PHONE_DOCK_STORAGE_KEY = 'pockymoe.phoneDock';
 const PHONE_HAND_STORAGE_KEY = 'pockymoe.phoneHand';
@@ -405,7 +408,7 @@ function AppShell({
     <AppShellNavContext.Provider value={shellNavValue}>
       <ThreadMapProvider>
       <ScopedTourProvider>
-      <div
+      {window.pockymoeHost ? <Suspense fallback={null}><DesktopEntry><HostScopeRouteGate><Outlet /></HostScopeRouteGate></DesktopEntry></Suspense> : <div
         className={`bg-[var(--app-bg)] text-[var(--app-fg)] ${
           isViewportLockedRoute || isSettingsRoute
             ? 'fixed inset-0 overflow-hidden overscroll-none'
@@ -447,7 +450,7 @@ function AppShell({
             <HostScopeRouteGate><Outlet /></HostScopeRouteGate>
           </section>
         </main>
-      </div>
+      </div>}
       <UnscopedOnly><AppShellSettingsDialog /></UnscopedOnly>
       </ScopedTourProvider>
       </ThreadMapProvider>
@@ -624,7 +627,7 @@ function SupervisorAccessGate({ children }: { children: React.ReactNode }) {
 
 function RootRoute() {
   const { locale: i18nLocale } = useI18n();
-  return relayModeActive() ? <RelayHomePage /> : <Navigate to="/workspaces" replace />;
+  return window.pockymoeHost ? null : relayModeActive() ? <RelayHomePage /> : <Navigate to="/workspaces" replace />;
 }
 
 function SupervisorRoutes({
@@ -649,6 +652,8 @@ function SupervisorRoutes({
         }
       >
         <Route path="/" element={<RootRoute />} />
+        <Route path="/desktop/devices" element={window.pockymoeHost ? <Suspense fallback={null}><DesktopDevicesRoute /></Suspense> : <Navigate to="/relay-devices" replace />} />
+        <Route path="/desktop/devices/:id" element={window.pockymoeHost ? <Suspense fallback={null}><DesktopDevicesRoute /></Suspense> : <Navigate to="/relay-devices" replace />} />
         <Route path="/workspaces" element={<WorkspacesPage />} />
         <Route path="/workspaces/new" element={<WorkspaceNewPage />} />
         <Route path="/relay-account" element={<RelayAccountPage />} />

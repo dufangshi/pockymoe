@@ -1,3 +1,4 @@
+import { clearMetrics } from '../devices/cache';
 import { relayOrigin } from '../../lib/relayOrigin';
 import type { DesktopIndex } from './types';
 const name = 'pockymoe-desktop-index';
@@ -30,6 +31,7 @@ export async function writeIndex(index: DesktopIndex) {
   } catch { /* Memory remains usable when IndexedDB is unavailable. */ }
 }
 export async function clearIndex(accountId: string) {
+  await clearMetrics(accountId);
   try {
     const db = await database();
     await new Promise<void>(resolve => {
