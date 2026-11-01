@@ -152,7 +152,7 @@ Deterministic E2E uses `POCKYMOE_E2E_FAKE_RUNTIME=1`. Production uses ACP
 
 ## Deterministic desktop activity fixture
 
-With `POCKYMOE_FAKE_RUNTIME=true` only, the owner can send
+With `POCKYMOE_E2E_FAKE_RUNTIME=1` only, the owner can send
 `POST /api/e2e/events` with `{ "type": "start", "threadId": "…", "text": "optional" }`.
 Types are `start`, `complete`, `fail`, `approval` and `input`. The endpoint starts a
 held fake turn when necessary, then drives the ordinary durable turn/request event
