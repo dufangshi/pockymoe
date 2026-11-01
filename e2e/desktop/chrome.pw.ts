@@ -13,6 +13,8 @@ test('signed-out desktop login and guide have a draggable 38px title bar', async
     });
     await expect.poll(region).toBe('drag');
     await expect(page.locator('[data-desktop-titlebar]')).toHaveCSS('height', '38px');
+    await expect(page.locator('.desktop-window-page')).toHaveCSS('scrollbar-width', 'none');
+    if (path === '/relay-portal') expect(await page.locator('.desktop-window-page').evaluate(element => element.scrollHeight <= element.clientHeight)).toBe(true);
     if (process.env.DESKTOP_EVIDENCE_DIR) await page.screenshot({ path: `${process.env.DESKTOP_EVIDENCE_DIR}/signed-out-${path.slice(1)}.png` });
   }
 });

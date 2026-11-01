@@ -10,3 +10,11 @@
 .desktop-window-frame :is(header, nav, .matter-tabs-row, .matter-sidebar, .matter-sidebar-title, .matter-section-heading) { user-select: none; }
 .desktop-window-frame :is(button, a, input, textarea, [contenteditable], [role=button], [role=combobox]) { -webkit-app-region: no-drag; }
 .desktop-window-frame :is(input, textarea, [contenteditable]) { user-select: text; }
+
+.desktop-window-page { scrollbar-width: none; }
+.desktop-window-page::-webkit-scrollbar { display: none; }
+.desktop-window-page .auth-shell { min-height: 100%; }
+.desktop-window-scroll-track { position: absolute; z-index: 1001; top: 38px; bottom: 0; right: 0; width: var(--scrollbar-size, 8px); pointer-events: none; background: var(--scrollbar-rail-y, transparent); }
+.desktop-window-scroll-thumb { position: absolute; top: 0; left: 2px; right: 2px; border-radius: var(--scrollbar-radius, 999px); background: var(--scrollbar-thumb-idle, color-mix(in oklab, var(--theme-fg) 16%, transparent)); pointer-events: auto; touch-action: none; }
+.desktop-window-scroll-thumb:active { background: var(--scrollbar-thumb-active, var(--theme-accent-solid)); }
+@media (hover: hover) { .desktop-window-frame:hover .desktop-window-scroll-thumb { background: var(--scrollbar-thumb, color-mix(in oklab, var(--theme-fg) 32%, transparent)); } }

@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useI18n } from '@pockymoe/thread-ui/i18n';
 import { useThemeRegistry } from '../lib/themePacks';
 import { useFontSize } from '../lib/fontSize';
@@ -8,7 +8,25 @@ import './window-frame.css';
 /** Account-independent window chrome: authentication pages need the same drag
  * region and appearance channel as the signed-in workbench. */
 export default function DesktopWindowFrame({ children, effectiveTheme }: { children: ReactNode; effectiveTheme: 'light' | 'dark' }) {
-  const root = useRef<HTMLDivElement>(null), host = desktopHost();
+  const root = useRef<HTMLDivElement>(null), page = useRef<HTMLDivElement>(null), host = desktopHost();
+  const [thumb, setThumb] = useState({ height: 0, top: 0 });
+  const measureFrame = useRef<number | null>(null);
+  const measure = () => {
+    if (measureFrame.current !== null) return;
+    measureFrame.current = requestAnimationFrame(() => {
+      measureFrame.current = null; const el = page.current; if (!el) return;
+      const height = el.scrollHeight > el.clientHeight ? Math.max(28, el.clientHeight ** 2 / el.scrollHeight) : 0;
+      const top = height ? el.scrollTop / Math.max(1, el.scrollHeight - el.clientHeight) * (el.clientHeight - height) : 0;
+      setThumb(previous => previous.height === height && previous.top === top ? previous : { height, top });
+    });
+  };
+  useEffect(() => {
+    const el = page.current; if (!el) return;
+    const resize = new ResizeObserver(measure); resize.observe(el);
+    const changes = new MutationObserver(measure); changes.observe(el, { childList: true, subtree: true });
+    measure(); window.addEventListener('resize', measure);
+    return () => { resize.disconnect(); changes.disconnect(); window.removeEventListener('resize', measure); if (measureFrame.current !== null) cancelAnimationFrame(measureFrame.current); };
+  }, []);
   const { locale } = useI18n(); const registry = useThemeRegistry(); const [fontSize] = useFontSize();
   useEffect(() => {
     let current = true;
@@ -32,6 +50,13 @@ export default function DesktopWindowFrame({ children, effectiveTheme }: { child
   }, [host, effectiveTheme, registry.applied, fontSize, locale]);
   return <div ref={root} className="desktop-window-frame">
     <div className="desktop-window-titlebar" data-desktop-titlebar aria-hidden="true" />
-    <div className="desktop-window-page">{children}</div>
+    <div ref={page} className="desktop-window-page" onScroll={measure}>{children}</div>
+    {thumb.height > 0 && <div className="desktop-window-scroll-track" aria-hidden="true"><div className="desktop-window-scroll-thumb" style={{ height: thumb.height, transform: `translateY(${thumb.top}px)` }} onPointerDown={event => {
+      event.preventDefault(); const el = page.current!; const start = event.clientY, at = el.scrollTop;
+      const target = event.currentTarget; target.setPointerCapture(event.pointerId);
+      const move = (next: PointerEvent) => { el.scrollTop = at + (next.clientY - start) * (el.scrollHeight - el.clientHeight) / Math.max(1, el.clientHeight - thumb.height); };
+      const end = () => { target.removeEventListener('pointermove', move); target.removeEventListener('pointerup', end); target.removeEventListener('pointercancel', end); };
+      target.addEventListener('pointermove', move); target.addEventListener('pointerup', end); target.addEventListener('pointercancel', end);
+    }} /></div>}
   </div>;
 }
