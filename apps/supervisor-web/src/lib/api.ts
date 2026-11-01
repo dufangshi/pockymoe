@@ -258,6 +258,16 @@ function apiPath(path: string) {
   return path;
 }
 
+/** Explicit routing never mutates the URL or selected device in localStorage. */
+export function deviceApiPath(deviceId: string, path: string) {
+  if (!path.startsWith('/api/')) throw new Error('Expected a device API path.');
+  return `/relay/devices/${encodeURIComponent(deviceId)}${path}`;
+}
+
+export function deviceRequest<T>(deviceId: string, path: string, init?: RequestInit) {
+  return request<T>(deviceApiPath(deviceId, path), init);
+}
+
 export function buildApiUrl(path: string) {
   return apiPath(path);
 }
@@ -670,6 +680,7 @@ export async function relayLogout() {
   const result = await request<RelaySessionDto>('/relay/auth/logout', {
     method: 'POST',
   });
+  window.dispatchEvent(new Event('remote-codex:logout'));
   setStoredRelayToken(null);
   setSelectedRelayDeviceId(null);
   setSelectedRelayThreadId(null);

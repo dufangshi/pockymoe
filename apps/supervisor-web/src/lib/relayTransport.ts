@@ -3,6 +3,7 @@ import {
   exchange,
   trustPinnedDevice,
   scopeFromPage,
+  deviceRoute,
   setTransportReporter,
   SocketCipher,
   type TransportStatus,
@@ -112,7 +113,9 @@ export async function encryptedBrowserFetch(url: string, init: RequestInit) {
   return (
     await exchange(
       new Request(new URL(url, window.location.href), init),
-      scopeFromPage(window.location.href),
+      deviceRoute(new URL(url, window.location.href))?.deviceId ===
+        decodeURIComponent(window.location.pathname.match(/\/devices\/([^/]+)/)?.[1] ?? '')
+        ? scopeFromPage(window.location.href) : undefined,
       async () => { await ensureRelayWorker(); },
     )
   ).response;

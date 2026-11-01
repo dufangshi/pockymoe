@@ -48,7 +48,9 @@ worker.addEventListener('fetch', (event) => {
         return (
           await exchange(
             request,
-            client ? scopeFromPage(client.url) : undefined,
+            client && deviceRoute(url)?.deviceId ===
+              decodeURIComponent(new URL(client.url).pathname.match(/\/devices\/([^/]+)/)?.[1] ?? '')
+              ? scopeFromPage(client.url) : undefined,
           )
         ).response;
       } catch (error) {
