@@ -95,7 +95,10 @@ export type HostCommand =
 
 export interface HostCommandResult {
   ok: boolean;
+  /** Localized, user-facing reason. */
   error?: string;
+  /** Machine-readable reason; 'needsThread' means the request must be answered inside the thread. */
+  code?: 'needsThread';
 }
 
 export interface DesktopSettings {
@@ -122,6 +125,8 @@ export interface Appearance {
   /** Resolved accent color (any CSS color) so local windows can match the page. */
   accent: string;
   fontScale?: number;
+  /** The page's UI language (BCP 47, e.g. 'zh-CN', 'en'); local windows, tray, menus and notifications use it. */
+  locale?: string;
 }
 
 /** Exposed as window.pockymoeHost to the configured webOrigin's top frame only. */

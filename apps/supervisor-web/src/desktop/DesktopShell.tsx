@@ -1,3 +1,4 @@
+import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { LayoutDashboard, Monitor } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
@@ -16,6 +17,7 @@ import type { HostCapabilities } from './host';
 import './desktop.css';
 
 export function DesktopShell({ children, capabilities }: { children: ReactNode; capabilities: HostCapabilities }) {
+  const { locale } = useI18n();
   const index = useDesktopSelector(index => index); const store = useDesktopStore();
   const location = useLocation(); const navigate = useNavigate(); const shell = useAppShellNav();
   const host = window.pockymoeHost!; const registry = useThemeRegistry(); const [fontSize] = useFontSize();
@@ -41,7 +43,7 @@ export function DesktopShell({ children, capabilities }: { children: ReactNode; 
     window.dispatchEvent(new Event('pockymoe-desktop-route'));
     const key = focusedKeyFromPath(location.pathname);
     const thread = store.getSnapshot().threads.find(thread => thread.key === key);
-    host.window?.setTitle(thread?.title ?? (mapVisible ? '地图 · Pockymoe' : 'Pockymoe'));
+    host.window?.setTitle(thread?.title ?? (mapVisible ? translate('desktopShell.mapWindowTitle') : 'Pockymoe'));
     if (!key) return;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const focus = () => { clearTimeout(timer); if (document.hasFocus()) timer = setTimeout(() => store.markRead(key), 1500); };
@@ -51,7 +53,7 @@ export function DesktopShell({ children, capabilities }: { children: ReactNode; 
     };
     focus(); window.addEventListener('focus', focus); window.addEventListener('blur', focus); document.addEventListener('scroll', scroll, true);
     return () => { clearTimeout(timer); window.removeEventListener('focus', focus); window.removeEventListener('blur', focus); document.removeEventListener('scroll', scroll, true); };
-  }, [host, location.pathname, mapVisible, store]);
+  }, [host, location.pathname, mapVisible, store, locale]);
   useEffect(() => syncActivity(store, host, () => focusedKeyFromPath(route.current), capabilities.features.badge), [capabilities.features.badge, host, store]);
   useEffect(() => {
     if (typeof host.onCommand !== 'function') return;
@@ -62,10 +64,10 @@ export function DesktopShell({ children, capabilities }: { children: ReactNode; 
     const frame = requestAnimationFrame(() => {
       const root = Array.from(document.querySelectorAll<HTMLElement>('.thread-ui-shell')).find(node => node.getClientRects().length) ?? document.documentElement;
       const accent = getComputedStyle(root).getPropertyValue('--theme-accent-solid').trim();
-      host.appearance.sync({ effective: shell?.effectiveTheme ?? 'light', pack: registry.applied, accent, fontScale: fontSize / 16 });
+      host.appearance.sync({ effective: shell?.effectiveTheme ?? 'light', pack: registry.applied, accent, fontScale: fontSize / 16, locale });
     });
     return () => cancelAnimationFrame(frame);
-  }, [fontSize, host, registry.applied, shell?.effectiveTheme]);
+  }, [fontSize, host, registry.applied, shell?.effectiveTheme, locale]);
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
       if (!(event.metaKey || event.ctrlKey)) return;
@@ -80,7 +82,9 @@ export function DesktopShell({ children, capabilities }: { children: ReactNode; 
     window.addEventListener('keydown', key); return () => window.removeEventListener('keydown', key);
   }, [openMap]);
   const waitingCount = useMemo(() => new Set(buildActivityItems(index).filter(item => item.state === 'needsInput').map(item => item.rootThreadKey ?? item.key)).size, [index]);
-  const railLeading = useMemo(() => <><button data-desktop-map-link aria-label={`地图${waitingCount ? `，${waitingCount} 个需要你` : ''}`} aria-pressed={mapVisible} title="地图 (⌘0)" onClick={openMap}><LayoutDashboard data-icon="thread-map" />{waitingCount ? <span className="desktop-map-badge">{waitingCount}</span> : null}</button><button aria-label="设备" title="设备" onClick={() => navigate('/desktop/devices')}><Monitor data-icon="devices" /></button></>, [mapVisible, navigate, openMap, waitingCount]);
+  // translate reads a stable shared store; locale explicitly invalidates cached labels.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const railLeading = useMemo(() => <><button data-desktop-map-link aria-label={waitingCount ? translate('desktopShell.mapWaiting', { count: waitingCount }) : translate('desktopShell.map')} aria-pressed={mapVisible} title={translate('desktopShell.mapShortcut')} onClick={openMap}><LayoutDashboard data-icon="thread-map" />{waitingCount ? <span className="desktop-map-badge">{waitingCount}</span> : null}</button><button aria-label={translate('desktopShell.devices')} title={translate('desktopShell.devices')} onClick={() => navigate('/desktop/devices')}><Monitor data-icon="devices" /></button></>, [mapVisible, navigate, openMap, waitingCount, locale]);
   const surface = useMemo(() => ({ multiWindow: capabilities.features.multiWindow, openMap, revealInMap, railLeading, renderActivity: (navigation: NavigationActions) => <ActivitySection navigation={navigation} onOpen={open} /> }), [capabilities.features.multiWindow, openMap, revealInMap, railLeading, open]);
   const chrome = capabilities.windowChrome;
   const style = { '--desktop-title-height': `${chrome.toolbarHeight}px`, '--desktop-controls-left': chrome.controlsSide === 'left' ? `${chrome.trafficLightsWidth}px` : '0px', '--desktop-controls-right': chrome.controlsSide === 'right' ? `${chrome.trafficLightsWidth}px` : '0px' } as CSSProperties;

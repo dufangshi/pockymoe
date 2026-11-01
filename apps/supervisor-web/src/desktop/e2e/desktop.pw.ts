@@ -1,7 +1,7 @@
 import { expect, test, type Page, type WebSocketRoute } from '@playwright/test';
 import type { DesktopIndex, DesktopThread } from '../data/types';
 import type { ThreadActionRequestDto } from '@pockymoe/shared';
-const evidence = '/tmp/rc-desktop/evidence/webnav/v2';
+const evidence = process.env.DESKTOP_EVIDENCE_DIR ?? '/tmp/rc-desktop/evidence/webnav/v2';
 const account = { id: 'desktop-v2-test', username: 'Alex', role: 'user', enabled: true, createdAt: '2026-10-01T00:00:00Z' };
 const now = Date.now();
 const iso = (age: number) => new Date(now - age).toISOString();
@@ -16,7 +16,7 @@ function seeded(count: number): DesktopIndex {
     return { key: `${deviceId}:${id}`, deviceId, id, workspaceId: `w-${Math.floor(ordinal / Math.max(1, Math.ceil(count / 9))) % 3}`,
       provider: ['acp', 'claude', 'codex'][ordinal % 3], agentId: ['grok', 'claude', 'codex'][ordinal % 3], providerSessionId: null, source: 'supervisor', title: ['完善桌面地图与活动索引', 'Review security boundaries', '跨设备布局与主题验证', 'Reduce cold start latency'][ordinal % 4] + (ordinal > 3 ? ` · ${ordinal}` : ''), model: ordinal % 2 ? 'claude-sonnet-4-6' : 'gpt-6.1', reasoningEffort: 'high', collaborationMode: 'default', approvalMode: 'guarded', isLoaded: true, isPinned: false,
       status: ordinal === 0 || ordinal === 3 ? 'running' : ordinal === 1 ? 'failed' : 'idle', summaryText: '更新已完成，所有定向检查通过。', lastError: ordinal === 1 ? '连接意外中断，请检查后重试。' : null,
-      createdAt: iso(86400000 * 60), updatedAt: at, lastTurnStartedAt: ordinal === 0 || ordinal === 3 ? iso(180000) : iso(480000), lastTurnCompletedAt: ordinal === 0 || ordinal === 3 ? null : at, activeTurnId: ordinal === 0 || ordinal === 3 ? 'live' : null,
+      createdAt: iso(86400000 * 60), updatedAt: at, lastTurnStartedAt: ordinal === 0 || ordinal === 3 ? iso(5_170_000) : iso(480000), lastTurnCompletedAt: ordinal === 0 || ordinal === 3 ? null : at, activeTurnId: ordinal === 0 || ordinal === 3 ? 'live' : null,
       lastTurnId: 'last-turn', lastViewedAt: ordinal === 1 || ordinal === 2 ? null : iso(1000),
       requests: ordinal === 0 ? [{ id: `${deviceId}-approval`, kind: 'approval', summary: '运行定向测试并检查结果', createdAt: iso(60000) }] : [], resultSummary: ordinal === 1 ? '连接意外中断，请检查后重试。' : '更新已完成，所有定向检查通过。',
     } as DesktopThread;
@@ -24,18 +24,19 @@ function seeded(count: number): DesktopIndex {
   const activity = Object.fromEntries(devices.map(device => [device.id, { since: iso(86400000), hours: 24, threads: threads.filter(thread => thread.deviceId === device.id).map((thread, i) => ({ threadId: thread.id, turns: 4 + i * 2, activeMs: i < 4 ? 1200000 - i * 180000 : 0, totalMs: 3600000 + i * 60000, hourlyMs: Array.from({ length: 24 }, (_, hour) => hour % 4 === i % 4 ? 900000 : 0), lastPrompt: '检查线程地图的加载、导航与交互，确保所有主题下都清晰稳定。', tokenUsage: { totalTokens: 12000, inputTokens: 8000, cachedInputTokens: 2000, outputTokens: 4000, reasoningOutputTokens: 1000 }, priceEstimate: { currency: 'USD' as const, totalUsd: .36, inputUsd: .12, cachedInputUsd: .02, cacheWriteInputUsd: 0, outputUsd: .22 } })) }]));
   return { accountId: account.id, devices, workspaces, threads, activity, extras: {}, hydrated: true, refreshing: false, error: null, pulseKeys: [] };
 }
-async function setup(page: Page, count = 12, pack = 'classic', dark = false) {
+async function setup(page: Page, count = 12, pack = 'classic', dark = false, locale = 'zh-CN') {
   const state = seeded(count), sockets = new Map<string, WebSocketRoute>();
   const pending = new Set(state.devices.map(device => device.id));
-  await page.addInitScript(({ pack, dark }) => {
-    localStorage.setItem('remote-codex-theme-mode', dark ? 'dark' : 'light'); localStorage.setItem('pockymoe-theme-preset', pack); localStorage.setItem('remote-codex.locale', 'zh-CN');
+  await page.addInitScript(({ pack, dark, locale }) => {
+    localStorage.setItem('remote-codex-theme-mode', dark ? 'dark' : 'light'); localStorage.setItem('pockymoe-theme-preset', pack); if (!localStorage.getItem('remote-codex.locale') && locale !== 'auto') localStorage.setItem('remote-codex.locale', locale);
+    window.addEventListener('desktopMock:appearance', event => Object.assign(window, { desktopAppearanceLocale: (event as CustomEvent).detail.locale }));
     const seen = { badFrame: false, mapSeen: false }; Object.assign(window, { desktopWarmEvidence: seen });
     new MutationObserver(() => {
       const map = document.querySelector('.desktop-map-scene:not([hidden]) .thread-map'); if (!map) return;
       seen.mapSeen = true;
       if (map.querySelector('.thread-map-empty, .thread-map-loading')) seen.badFrame = true;
     }).observe(document, { childList: true, subtree: true });
-  }, { pack, dark });
+  }, { pack, dark, locale });
   // Scope: UI/data integration. Account cryptography has dedicated upstream
   // regressions; this test-only module boundary provisions no credentials.
   await page.route('**/src/components/AccountSessionGate.tsx*', route => route.fulfill({ contentType: 'application/javascript', body: 'export function AccountSessionGate({children}) { return children; }' }));
@@ -108,21 +109,21 @@ for (const pack of ['classic', 'plum-pocket', 'terminal']) for (const dark of [f
   test(`map screenshots ${pack} ${dark ? 'dark' : 'light'} ${width}`, async ({ page }) => {
     await page.setViewportSize({ width, height: 1000 });
     for (const count of process.env.DESKTOP_SCREEN_COUNT === '12' ? [12] : [12, 150, 600]) {
-      await setup(page, count, pack, dark);
+      await setup(page, count, pack, dark, process.env.DESKTOP_LOCALE ?? 'zh-CN');
       const name = `${pack}-${dark ? 'dark' : 'light'}-${width}-${count}`;
       await page.screenshot({ path: `${evidence}/map-${name}.png` });
       if (count === 12) {
         await page.evaluate(() => window.dispatchEvent(new CustomEvent('desktopMock:command', { detail: { id: 'look', type: 'revealInMap', key: 'device-0:t-0' } })));
         const tile = page.locator('[data-map-id="thread:device-0:t-0"]'); await expect(tile).toBeVisible();
         await tile.locator('.thread-map-quick-look').click();
-        await expect(page.getByRole('dialog', { name: /详情/ })).toBeVisible();
+        await expect(page.getByRole('dialog', { name: /详情|Details/ })).toBeVisible();
         await page.screenshot({ path: `${evidence}/quicklook-${name}.png` });
         await page.keyboard.press('Escape');
         if (process.env.DESKTOP_SETTINGS_SHOTS === '1') {
-          await page.getByRole('button', { name: '设置', exact: true }).first().click();
+          await page.getByRole('button', { name: process.env.DESKTOP_LOCALE === 'en' ? 'Settings' : '设置', exact: true }).first().click();
           await expect(page.getByTestId('settingsDialog')).toBeVisible();
-          await page.getByRole('tab', { name: /通知/ }).click();
-          const native = page.getByRole('button', { name: '系统通知 · 桌宠', exact: true });
+          await page.getByRole('tab', { name: /通知|Notifications/ }).click();
+          const native = page.getByRole('button', { name: process.env.DESKTOP_LOCALE === 'en' ? 'System notifications · Pet' : '系统通知 · 桌宠', exact: true });
           await expect(native).toBeEnabled();
           await page.evaluate(() => window.addEventListener('desktopMock:preferences', event => Object.assign(window, { desktopPreferenceSection: (event as CustomEvent).detail })));
           await native.click();
@@ -134,3 +135,33 @@ for (const pack of ['classic', 'plum-pocket', 'terminal']) for (const dark of [f
     }
   });
 }
+
+
+test('desktop language follows navigator and saved preference, updates live, and formats long clocks', async ({ page }) => {
+  await setup(page, 12, 'classic', false, 'auto');
+  expect(await page.evaluate(() => navigator.language)).toMatch(/^en/);
+  await expect(page.locator('html')).toHaveAttribute('lang', 'en');
+  const activity = page.locator('.desktop-map-scene .desktop-activity');
+  await expect(activity).toHaveAttribute('aria-label', 'Activity');
+  await expect(activity.locator('[data-activity-group="attention"]')).toContainText('Needs you');
+  await expect(activity.locator('[data-activity-group="running"] .desktop-activity-time').first()).toHaveText(/^1:\d{2}:\d{2}$/);
+  await page.getByRole('button', { name: 'Settings', exact: true }).first().click();
+  await page.getByRole('tab', { name: 'Preferences', exact: true }).click();
+  await page.getByRole('combobox', { name: 'Language', exact: true }).selectOption('zh-CN');
+  await expect.poll(() => page.evaluate(() => (window as any).desktopAppearanceLocale), { timeout: 1000 }).toBe('zh-CN');
+  await page.keyboard.press('Escape');
+  await expect(activity).toHaveAttribute('aria-label', '活动');
+  await expect(activity.locator('[data-activity-group="attention"]')).toContainText('需要你');
+  await page.reload();
+  await expect(page.locator('html')).toHaveAttribute('lang', 'zh-CN');
+  await page.getByRole('button', { name: '设置', exact: true }).first().click();
+  await page.getByRole('tab', { name: '偏好设置', exact: true }).click();
+  await page.getByRole('combobox', { name: '语言', exact: true }).selectOption('en');
+  await expect.poll(() => page.evaluate(() => (window as any).desktopAppearanceLocale), { timeout: 1000 }).toBe('en');
+  await page.keyboard.press('Escape');
+  await expect(activity).toHaveAttribute('aria-label', 'Activity');
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent('desktopMock:command', { detail: { id: 'look', type: 'revealInMap', key: 'device-0:t-0' } })));
+  await page.locator('[data-map-id="thread:device-0:t-0"] .thread-map-quick-look').click();
+  await expect(page.getByRole('dialog', { name: /Details/ })).toContainText('Waiting for approval');
+  await expect(page.getByRole('dialog', { name: /Details/ }).getByRole('button', { name: 'Open thread', exact: true })).toBeVisible();
+});

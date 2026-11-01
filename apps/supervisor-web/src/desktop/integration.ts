@@ -1,3 +1,4 @@
+import { translate } from '@pockymoe/thread-ui/i18n';
 import type { HostCommand, HostCommandResult, PockymoeHost } from './host';
 import { respondToThreadRequest, sendThreadPrompt } from '../lib/api';
 import { buildActivitySnapshot } from './data/activity';
@@ -11,18 +12,27 @@ export interface CommandDependencies {
   store: DesktopIndexStore; navigate(path: string): void; openMap(): void; revealInMap(key: string): void; newThread(): void;
   respond?: typeof respondToThreadRequest; send?: typeof sendThreadPrompt;
 }
+export class NeedsThreadError extends Error { readonly code = 'needsThread'; }
 export async function resolveRequest(deviceId: string, threadId: string, requestId: string, decision: 'approve' | 'deny', deps: Pick<CommandDependencies, 'store' | 'respond'>) {
-  const detail = await deps.store.loadDetail(deviceId, threadId, true);
+  const detail = await deps.store.loadRequestDetail(deviceId, threadId);
   const action = detail.pendingRequests.find(request => request.id === requestId);
-  if (!action) throw new Error('请求已处理。');
-  if (action.kind === 'requestUserInput') throw new Error('请打开线程，回答这个输入请求。');
+  if (!action) throw new Error(translate('desktopShell.requestResolved'));
+  if (action.kind === 'permissionRequest' && action.questions.length === 0) {
+    const updated = await (deps.respond ?? respondToThreadRequest)(threadId, requestId, { allow: decision === 'approve' }, deviceId);
+    deps.store.acceptDetail(deviceId, updated); return;
+  }
+  const needsThread = () => new NeedsThreadError(translate(action.kind === 'requestUserInput' ? 'desktopShell.inputNeedsThread' : 'desktopShell.optionsNeedThread'));
   const question = action.questions[0];
-  if (!question || action.questions.length !== 1) throw new Error('请在线程中检查这个请求。');
+  if (!question || action.questions.length !== 1 || question.multiSelect || question.isOther) throw needsThread();
   const options = question.options ?? [];
-  const pattern = decision === 'approve' ? /^(allow|approve|accept|yes|允许|批准|同意)(?:\b|\s|$)/i : /^(deny|reject|decline|no|拒绝|不允许)(?:\b|\s|$)/i;
+  const approvePattern = /^(?:(?:allow|approve|accept|yes)(?:\b|\s|$)|允许|批准|同意)/i;
+  const denyPattern = /^(?:(?:deny|reject|decline|no)(?:\b|\s|$)|拒绝|不允许)/i;
+  const matches = (option: typeof options[number], pattern: RegExp) => pattern.test(option.description ?? '') || pattern.test(option.label);
+  if (action.kind === 'requestUserInput' && (options.length !== 2 || !options.some(option => matches(option, approvePattern)) || !options.some(option => matches(option, denyPattern)))) throw needsThread();
+  const pattern = action.kind === 'planDecision' ? decision === 'approve' ? /^(implement|proceed|执行|实施)(?:\b|\s|$)/i : /^(keep planning|reject|cancel|保持规划|继续规划)(?:\b|\s|$)/i : decision === 'approve' ? approvePattern : denyPattern;
   const once = decision === 'approve' ? options.find(option => /allow.once|approve.once/i.test(option.description ?? '')) : undefined;
   const option = once ?? options.find(option => pattern.test(option.description)) ?? options.find(option => pattern.test(option.label));
-  if (!option) throw new Error('请在线程中检查可用的审批选项。');
+  if (!option) throw needsThread();
   const updated = await (deps.respond ?? respondToThreadRequest)(threadId, requestId, { answers: { [question.id]: { answers: [option.label] } } }, deviceId);
   deps.store.acceptDetail(deviceId, updated);
 }
@@ -30,12 +40,12 @@ export async function handleHostCommand(command: HostCommand, deps: CommandDepen
   try {
     switch (command.type) {
       case 'navigate':
-        if (!command.path.startsWith('/') || command.path.startsWith('//') || command.path.includes('\\')) throw new Error('无法打开这个应用路径。');
+        if (!command.path.startsWith('/') || command.path.startsWith('//') || command.path.includes('\\')) throw new Error(translate('desktopShell.invalidPath'));
         deps.navigate(command.path); break;
       case 'markRead': deps.store.markRead(command.key); break;
       case 'resolveRequest': await resolveRequest(command.deviceId, command.threadId, command.requestId, command.decision, deps); break;
       case 'reply': {
-        if (!command.text.trim()) throw new Error('回复不能为空。');
+        if (!command.text.trim()) throw new Error(translate('desktopShell.emptyReply'));
         const thread = await (deps.send ?? sendThreadPrompt)(command.threadId, { prompt: command.text, clientRequestId: command.id }, command.deviceId);
         deps.store.patchThread(command.deviceId, thread); break;
       }
@@ -45,7 +55,7 @@ export async function handleHostCommand(command: HostCommand, deps: CommandDepen
       case 'openDevices': deps.navigate('/desktop/devices'); break;
     }
     return { ok: true };
-  } catch (error) { return { ok: false, error: error instanceof Error ? error.message : '操作没有完成，请重试。' }; }
+  } catch (error) { return { ok: false, error: error instanceof Error ? error.message : translate('desktopShell.actionFailed'), ...(error instanceof NeedsThreadError ? { code: error.code } : {}) }; }
 }
 let activitySession = 0;
 /** Change-only snapshots, never timer ticks, <=4/s. */

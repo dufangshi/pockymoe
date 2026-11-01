@@ -1945,7 +1945,7 @@ export function untrustThreadHook(id: string, input: UntrustThreadHookInput) {
 export function respondToThreadRequest(
   id: string,
   requestId: string,
-  input: RespondThreadActionRequestInput,
+  input: RespondThreadActionRequestInput | { allow: boolean },
   deviceId?: string | null,
 ) {
   return deviceRequest<ThreadDetailDto>(deviceId,

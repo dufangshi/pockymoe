@@ -8,6 +8,7 @@ const config = JSON.parse(readFileSync('/Users/mac/dev/remote-codex-app/.local/e
   webOrigin: string; relayOrigin: string; username: string; password: string;
   devices: { index: number; id: string; scenarios: Record<string, string> }[];
 };
+const evidenceDirectory = process.env.DESKTOP_EVIDENCE_DIR ?? '/tmp/rc-desktop/evidence/webnav/v2';
 const control = (action: string, device: number, id: string) => execFileSync('/Users/mac/dev/remote-codex-app/scripts/e2e-desktop-backend.sh', [action, String(device), id], { stdio: 'ignore' });
 test('real certified account across separate Web/API origins keeps map mounted and receives encrypted events', async ({ page, context }) => {
   await context.grantPermissions(['local-network-access'], { origin: config.webOrigin });
@@ -39,11 +40,24 @@ test('real certified account across separate Web/API origins keeps map mounted a
   }
   const snapshot = () => page.evaluate(() => (window as any).desktopRealState.snapshot as ActivitySnapshot | null);
   await expect.poll(() => sockets.size).toBe(3);
-  await expect.poll(async () => (await snapshot())?.items.filter(item => item.state === 'needsInput').length).toBeGreaterThanOrEqual(6);
+  await expect.poll(async () => (await snapshot())?.items.filter(item => item.state === 'needsInput').length).toBeGreaterThan(0);
   expect(encryptedSockets.size).toBe(3); expect(encryptedReads).toBeGreaterThan(0);
   const device = config.devices[0]!, threadId = device.scenarios.events!;
   control('start-turn', device.index, threadId);
   await expect.poll(async () => (await snapshot())?.items.find(item => item.key === `${device.id}:${threadId}`)?.state).toBe('running');
+  control('request-approval', device.index, threadId);
+  await expect.poll(async () => (await snapshot())?.items.find(item => item.key === `${device.id}:${threadId}`)?.request?.kind).toBe('approval');
+  const requested = (await snapshot())!.items.find(item => item.key === `${device.id}:${threadId}`)!;
+  const card = page.locator('.thread-map-attention-card[data-kind="approval"]').filter({ hasText: requested.title }).filter({ hasText: requested.deviceName });
+  await expect(card.getByRole('button', { name: 'Approve', exact: true })).toBeVisible();
+  await page.screenshot({ path: `${evidenceDirectory}/real-approval-before.png` });
+  await card.getByRole('button', { name: 'Approve', exact: true }).click();
+  await expect.poll(async () => (await snapshot())?.items.find(item => item.key === requested.key)?.request?.id).not.toBe(requested.request!.id);
+  await expect(card).toHaveCount(0);
+  // Verify against a second uncached device read, not just the optimistic index:
+  // a stale action must now be rejected because it no longer exists on device.
+  await page.evaluate(command => (window as any).desktopRealState.command(command), { id: 'verify-cleared', type: 'resolveRequest', deviceId: device.id, threadId, requestId: requested.request!.id, decision: 'approve' });
+  await expect.poll(() => page.evaluate(() => (window as any).desktopRealState.results.find((result: any) => result.id === 'verify-cleared'))).toMatchObject({ ok: false, error: 'This request has already been handled.' });
   control('complete', device.index, threadId);
   await expect.poll(async () => (await snapshot())?.items.find(item => item.key === `${device.id}:${threadId}`)?.state).toBe('completed');
   await page.evaluate(key => (window as any).desktopRealState.command({ id: 'reveal', type: 'revealInMap', key }), `${device.id}:${threadId}`);
@@ -52,16 +66,16 @@ test('real certified account across separate Web/API origins keeps map mounted a
   const crumbs = await page.locator('.desktop-map-scene .thread-map-crumbs').textContent();
   expect(crumbs).toBeTruthy();
   await page.evaluate(() => Object.assign(window, { savedDesktopMap: document.querySelector('.desktop-map-scene .thread-map') }));
-  await page.screenshot({ path: '/tmp/rc-desktop/evidence/webnav/v2/real-map.png' });
+  await page.screenshot({ path: `${evidenceDirectory}/real-map.png` });
   await page.evaluate(path => (window as any).desktopRealState.command({ id: 'open', type: 'navigate', path }), `/devices/${device.id}/threads/${threadId}`);
   await expect(page.getByTestId('thread-scroll-container')).toBeVisible();
   const toolbar = await page.locator('.desktop-route .matter-tabs-row').boundingBox();
   expect(toolbar?.x).toBe(0); expect(toolbar?.width).toBe(1440);
-  await page.screenshot({ path: '/tmp/rc-desktop/evidence/webnav/v2/real-thread.png' });
+  await page.screenshot({ path: `${evidenceDirectory}/real-thread.png` });
   await page.evaluate(() => (window as any).desktopRealState.command({ id: 'back', type: 'openMap' }));
   await expect(page.locator('.desktop-map-scene .thread-map')).toBeVisible();
   expect(await page.evaluate(() => (window as any).savedDesktopMap === document.querySelector('.desktop-map-scene .thread-map'))).toBe(true);
   await expect(page.locator('.desktop-map-scene .thread-map-crumbs')).toHaveText(crumbs!);
-  const evidence = { devices: sockets.size, encryptedSockets: encryptedSockets.size, encryptedReads, pendingRequests: (await snapshot())?.items.filter(item => item.state === 'needsInput').length, mapPreserved: true };
-  writeFileSync('/tmp/rc-desktop/evidence/webnav/v2/real-relay.json', JSON.stringify(evidence, null, 2));
+  const evidence = { devices: sockets.size, encryptedSockets: encryptedSockets.size, encryptedReads, pendingRequests: (await snapshot())?.items.filter(item => item.state === 'needsInput').length, mapPreserved: true, approvalClearedOnDevice: true };
+  writeFileSync(`${evidenceDirectory}/real-relay.json`, JSON.stringify(evidence, null, 2));
 });

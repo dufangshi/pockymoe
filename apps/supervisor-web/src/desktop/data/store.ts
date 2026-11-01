@@ -262,6 +262,14 @@ export class DesktopIndexStore {
     }).finally(() => this.detailRequests.delete(key));
     this.detailRequests.set(key, task); return task;
   }
+  /** Decisions bypass the index's compact/in-flight summary cache so the action
+   * is validated against this device's current, complete request definition. */
+  async loadRequestDetail(deviceId: string, threadId: string): Promise<ThreadDetailDto> {
+    const generation = this.generation;
+    const detail = await this.withSignal(signal => this.io.get<ThreadDetailDto>(deviceId, `api/threads/${encodeURIComponent(threadId)}?view=full&limit=1`, { signal, cache: 'no-store' }));
+    if (generation === this.generation && !this.stopped) this.acceptDetail(deviceId, detail);
+    return detail;
+  }
   private scheduleList(deviceId: string) {
     if (this.pendingLists.has(deviceId)) return;
     const delay = Math.max(0, 2000 - (Date.now() - (this.lastList.get(deviceId) ?? 0)));

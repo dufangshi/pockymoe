@@ -96,3 +96,19 @@ it('clears a pulse edge before another reminder on the same thread', async () =>
   await vi.advanceTimersByTimeAsync(20); expect(store.getSnapshot().pulseKeys).toContain('a:same');
   store.stop(); vi.useRealTimers();
 });
+
+it('loads current full action definitions from the addressed device on every decision', async () => {
+  const { store, get } = setup(); await store.refresh(); get.mockClear();
+  await store.loadRequestDetail('b', 'same'); await store.loadRequestDetail('b', 'same');
+  expect(get.mock.calls.map(([device, path]) => [device, path])).toEqual([
+    ['b', 'api/threads/same?view=full&limit=1'], ['b', 'api/threads/same?view=full&limit=1'],
+  ]);
+  store.stop();
+});
+
+it('keeps snapshot durations in milliseconds even beyond an hour', () => {
+  const started = '2026-11-01T00:00:00Z', completed = '2026-11-01T01:26:10Z';
+  const row = summarizeThread('a', thread('long', { status: 'idle', lastTurnStartedAt: started, lastTurnCompletedAt: completed }));
+  const index = { accountId: 'account', devices: [], workspaces: [], threads: [{ ...row, firstIndexedCompletedAt: null }] } as unknown as import('./types').DesktopIndex;
+  expect(buildActivitySnapshot(index, null, false).items[0]?.durationMs).toBe(5_170_000);
+});

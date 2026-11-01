@@ -4,7 +4,7 @@ import type { DesktopIndex } from './data/types';
 import type { PockymoeHost } from './host';
 vi.mock('../lib/api', () => ({ respondToThreadRequest: vi.fn(), sendThreadPrompt: vi.fn() }));
 function dependencies() {
-  return { store: { markRead: vi.fn(), loadDetail: vi.fn(), acceptDetail: vi.fn(), patchThread: vi.fn() }, navigate: vi.fn(), openMap: vi.fn(), revealInMap: vi.fn(), newThread: vi.fn(), respond: vi.fn(async () => ({})), send: vi.fn(async () => ({})) } as unknown as CommandDependencies;
+  return { store: { markRead: vi.fn(), loadRequestDetail: vi.fn(), acceptDetail: vi.fn(), patchThread: vi.fn() }, navigate: vi.fn(), openMap: vi.fn(), revealInMap: vi.fn(), newThread: vi.fn(), respond: vi.fn(async () => ({})), send: vi.fn(async () => ({})) } as unknown as CommandDependencies;
 }
 describe('desktop host bridge v2', () => {
   it('dispatches every navigation command and acknowledges read marks', async () => {
@@ -22,13 +22,32 @@ describe('desktop host bridge v2', () => {
   });
   it('answers the advertised approval question and prefers allow-once', async () => {
     const deps = dependencies();
-    vi.mocked(deps.store.loadDetail).mockResolvedValue({ pendingRequests: [{ id: 'request', kind: 'permissionRequest', questions: [{ id: 'permission', options: [{ label: 'Always allow', description: 'allow always' }, { label: 'Allow this time', description: 'allow once' }, { label: 'Reject', description: 'reject once' }] }] }] } as never);
+    vi.mocked(deps.store.loadRequestDetail).mockResolvedValue({ pendingRequests: [{ id: 'request', kind: 'permissionRequest', questions: [{ id: 'permission', options: [{ label: 'Always allow', description: 'allow always' }, { label: 'Allow this time', description: 'allow once' }, { label: 'Reject', description: 'reject once' }] }] }] } as never);
     expect(await handleHostCommand({ id: 'approve', type: 'resolveRequest', deviceId: 'b', threadId: 't', requestId: 'request', decision: 'approve' }, deps)).toEqual({ ok: true });
     expect(deps.respond).toHaveBeenCalledWith('t', 'request', { answers: { permission: { answers: ['Allow this time'] } } }, 'b');
   });
   it('does not fabricate a binary answer for an input question', async () => {
-    const deps = dependencies(); vi.mocked(deps.store.loadDetail).mockResolvedValue({ pendingRequests: [{ id: 'input', kind: 'requestUserInput', questions: [] }] } as never);
-    await expect(resolveRequest('b', 't', 'input', 'approve', deps)).rejects.toThrow('打开线程'); expect(deps.respond).not.toHaveBeenCalled();
+    const deps = dependencies(); vi.mocked(deps.store.loadRequestDetail).mockResolvedValue({ pendingRequests: [{ id: 'input', kind: 'requestUserInput', questions: [] }] } as never);
+    await expect(resolveRequest('b', 't', 'input', 'approve', deps)).rejects.toMatchObject({ code: 'needsThread' }); expect(deps.respond).not.toHaveBeenCalled();
+  });
+  it.each([['approve', true], ['deny', false]] as const)('submits %s for generic permission requests without questions', async (decision, allow) => {
+    const deps = dependencies();
+    vi.mocked(deps.store.loadRequestDetail).mockResolvedValue({ pendingRequests: [{ id: 'request', kind: 'permissionRequest', questions: [] }] } as never);
+    expect(await handleHostCommand({ id: 'decision', type: 'resolveRequest', deviceId: 'b', threadId: 't', requestId: 'request', decision }, deps)).toEqual({ ok: true });
+    expect(deps.store.loadRequestDetail).toHaveBeenCalledWith('b', 't');
+    expect(deps.respond).toHaveBeenCalledWith('t', 'request', { allow }, 'b');
+    expect(deps.store.acceptDetail).toHaveBeenCalledWith('b', {});
+  });
+  it('returns a machine-readable needsThread reason for nonbinary questions', async () => {
+    const deps = dependencies();
+    vi.mocked(deps.store.loadRequestDetail).mockResolvedValue({ pendingRequests: [{ id: 'input', kind: 'requestUserInput', questions: [{ id: 'environment', options: [{ label: 'Preview' }, { label: 'Staging' }] }] }] } as never);
+    expect(await handleHostCommand({ id: 'decision', type: 'resolveRequest', deviceId: 'b', threadId: 't', requestId: 'input', decision: 'approve' }, deps)).toMatchObject({ ok: false, code: 'needsThread' });
+    expect(deps.respond).not.toHaveBeenCalled();
+  });
+  it('rejects stale request IDs instead of answering a different current request', async () => {
+    const deps = dependencies(); vi.mocked(deps.store.loadRequestDetail).mockResolvedValue({ pendingRequests: [] } as never);
+    expect(await handleHostCommand({ id: 'stale', type: 'resolveRequest', deviceId: 'b', threadId: 't', requestId: 'old', decision: 'deny' }, deps)).toMatchObject({ ok: false });
+    expect(deps.respond).not.toHaveBeenCalled();
   });
   it('syncs only changes and throttles native activity to <=4/s', async () => {
     vi.useFakeTimers();
@@ -60,4 +79,18 @@ it('delivers the empty logout snapshot after route teardown without breaking the
   expect(host.activity.sync).toHaveBeenLastCalledWith(expect.objectContaining({ items: [], focusedThreadKey: null }));
   expect(host.badge.set).toHaveBeenLastCalledWith(0, 'none');
   vi.useRealTimers();
+});
+
+it('allows a genuinely binary input request but preserves its advertised answer value', async () => {
+  const deps = dependencies();
+  vi.mocked(deps.store.loadRequestDetail).mockResolvedValue({ pendingRequests: [{ id: 'binary', kind: 'requestUserInput', questions: [{ id: 'confirm', options: [{ label: 'Yes', description: 'Proceed' }, { label: 'No', description: 'Stop' }] }] }] } as never);
+  expect(await handleHostCommand({ id: 'binary', type: 'resolveRequest', deviceId: 'b', threadId: 't', requestId: 'binary', decision: 'deny' }, deps)).toEqual({ ok: true });
+  expect(deps.respond).toHaveBeenCalledWith('t', 'binary', { answers: { confirm: { answers: ['No'] } } }, 'b');
+});
+
+it.each([['approve', 'Implement'], ['deny', 'Keep planning']] as const)('handles the binary plan %s action', async (decision, answer) => {
+  const deps = dependencies();
+  vi.mocked(deps.store.loadRequestDetail).mockResolvedValue({ pendingRequests: [{ id: 'plan', kind: 'planDecision', questions: [{ id: 'decision', options: [{ label: 'Implement', description: 'Implement this plan' }, { label: 'Keep planning', description: 'Keep planning' }] }] }] } as never);
+  expect(await handleHostCommand({ id: 'plan', type: 'resolveRequest', deviceId: 'b', threadId: 't', requestId: 'plan', decision }, deps)).toEqual({ ok: true });
+  expect(deps.respond).toHaveBeenCalledWith('t', 'plan', { answers: { decision: { answers: [answer] } } }, 'b');
 });

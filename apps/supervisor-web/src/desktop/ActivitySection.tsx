@@ -1,3 +1,4 @@
+import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { memo, useCallback, useMemo, useRef, useState } from 'react';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 import { StatusMark, type WorkbenchThread } from '@pockymoe/thread-ui';
@@ -10,25 +11,27 @@ import { threadHref } from '../lib/relayRoutes';
 import { appUrl } from '../lib/webBase';
 import type { NavigationActions } from './context';
 import { useEffect } from 'react';
+import { formatRunTime } from './duration';
 
 function RunningTime({ since }: { since: string }) {
   const [now, setNow] = useState(Date.now);
   useEffect(() => { const timer = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(timer); }, []);
-  const seconds = Math.max(0, Math.floor((now - Date.parse(since)) / 1000));
-  return <span className="desktop-activity-time">{Math.floor(seconds / 60)}:{String(seconds % 60).padStart(2, '0')}</span>;
+  return <span className="desktop-activity-time">{formatRunTime(now - Date.parse(since))}</span>;
 }
 const ActivityRow = memo(function ActivityRow({ item, favorite, onOpen, menu }: { item: ActivityItem; favorite: boolean; onOpen(key: string): void; menu(key: string, favorite: boolean): React.ReactNode }) {
+  useI18n();
   const state = item.state === 'needsInput' ? 'waiting' : item.state === 'completed' ? 'unread' : item.state;
   return <div className="matter-thread-row desktop-activity-row" data-activity-key={item.key}>
     <a href={appUrl(threadHref(item.threadId, item.deviceId))} onClick={event => { if (!event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey && event.button === 0) { event.preventDefault(); onOpen(item.key); } }} title={item.title}>
       <StatusMark status={state} /><span className="matter-thread-copy"><span>{item.title}</span><small>{item.deviceName} · {item.workspaceLabel}</small></span>
-      {item.state === 'running' ? <RunningTime since={item.since} /> : item.request ? <span className="desktop-activity-request">{item.request.kind === 'approval' ? '审批' : '输入'}</span> : null}
+      {item.state === 'running' ? <RunningTime since={item.since} /> : item.request ? <span className="desktop-activity-request">{item.request.kind === 'approval' ? translate('desktopShell.approval') : translate('desktopShell.input')}</span> : null}
     </a>{menu(item.key, favorite)}
   </div>;
 });
 /** Desktop-only: the persistent account index also drives native alerts. Ordinary
  * browsers keep their existing sidebar (docs/ui-principles.md, desktop exception). */
 export function ActivitySection({ navigation, onOpen }: { navigation: NavigationActions; onOpen(key: string): void }) {
+  useI18n();
   const store = useDesktopStore();
   const index = useDesktopSelector(index => index);
   const previous = useRef<readonly ActivityItem[]>([]);
@@ -49,16 +52,16 @@ export function ActivitySection({ navigation, onOpen }: { navigation: Navigation
   }, [onOpen, store]);
   const favorites = new Set(navigation.threads?.filter(thread => thread.favorite).map(thread => thread.key));
   const groups = [
-    { id: 'attention', label: '需要你', items: items.filter(item => ['needsInput', 'failed', 'interrupted'].includes(item.state)) },
-    { id: 'running', label: '进行中', items: items.filter(item => item.state === 'running') },
-    { id: 'completed', label: '刚完成', items: items.filter(item => item.state === 'completed') },
+    { id: 'attention', label: translate('desktopShell.needsYou'), items: items.filter(item => ['needsInput', 'failed', 'interrupted'].includes(item.state)) },
+    { id: 'running', label: translate('desktopShell.running'), items: items.filter(item => item.state === 'running') },
+    { id: 'completed', label: translate('desktopShell.justCompleted'), items: items.filter(item => item.state === 'completed') },
   ];
-  return <section className="desktop-activity" aria-label="活动">
+  return <section className="desktop-activity" aria-label={translate('desktopShell.activity')}>
     <button className="matter-section-heading" aria-expanded={open} onClick={() => setOpen(current => {
       const next = !current;
       try { localStorage.setItem('pockymoe.sidebar-sections.v1', JSON.stringify({ ...JSON.parse(localStorage.getItem('pockymoe.sidebar-sections.v1') ?? '{}'), activity: next })); } catch { /* The fold still holds in this visit. */ }
       return next;
-    })}>{open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}<span>活动</span><span className="matter-section-count">{new Set(items.map(item => item.rootThreadKey ?? item.key)).size}</span></button>
+    })}>{open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}<span>{translate('desktopShell.activity')}</span><span className="matter-section-count">{new Set(items.map(item => item.rootThreadKey ?? item.key)).size}</span></button>
     {open && groups.map(group => {
       const families = new Map<string, ActivityItem[]>();
       for (const item of group.items) { const key = item.rootThreadKey ?? item.key; families.set(key, [...(families.get(key) ?? []), item]); }
