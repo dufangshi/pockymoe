@@ -1,5 +1,8 @@
 import type { DeviceMetricsDto, ThreadActionRequestDto, ThreadActivityResponseDto, ThreadDto, WorkspaceDto } from '@pockymoe/shared';
-export interface DesktopDevice { id: string; name: string; connected: boolean; lastHeartbeatAt: string | null; cachedAt?: string }
+export interface DesktopDevice {
+  id: string; name: string; connected: boolean; lastHeartbeatAt: string | null; cachedAt?: string;
+  unavailableSince?: string; activityStale?: boolean; missingFromPortal?: boolean;
+}
 export interface DesktopWorkspace extends WorkspaceDto { key: string; deviceId: string }
 export interface DesktopRequest { id: string; kind: 'approval' | 'input'; summary: string; createdAt: string }
 export interface DesktopThread extends ThreadDto {
@@ -19,6 +22,9 @@ export interface DesktopIndex {
   extras: Readonly<Record<string, DesktopExtra>>;
   hydrated: boolean; refreshing: boolean; error: string | null;
   pulseKeys: readonly string[];
+  /** Session-only: cached data is not proof that this connection read a device. */
+  syncedDeviceIds?: readonly string[];
+  recentThreadKeys?: readonly string[];
 }
 export const entityKey = (deviceId: string, id: string) => `${deviceId}:${id}`;
 export const unread = (thread: DesktopThread) => Boolean(thread.lastTurnCompletedAt && thread.lastTurnCompletedAt > (thread.lastViewedAt ?? thread.firstIndexedCompletedAt ?? ''));

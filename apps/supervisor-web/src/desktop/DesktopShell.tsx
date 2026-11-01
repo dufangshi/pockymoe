@@ -45,6 +45,7 @@ export function DesktopShell({ children, capabilities }: { children: ReactNode; 
     const thread = store.getSnapshot().threads.find(thread => thread.key === key);
     host.window?.setTitle(thread?.title ?? (mapVisible ? translate('desktopShell.mapWindowTitle') : 'Pockymoe'));
     if (!key) return;
+    store.rememberThread(key);
     let timer: ReturnType<typeof setTimeout> | undefined;
     const focus = () => { clearTimeout(timer); if (document.hasFocus()) timer = setTimeout(() => store.markRead(key), 1500); };
     const scroll = (event: Event) => {
