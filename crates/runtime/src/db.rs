@@ -136,6 +136,14 @@ const RUNTIME_MIGRATIONS: &[Migration] = &[
             Ok(())
         },
     },
+    Migration {
+        version: 11,
+        name: "stats_turn_start_index",
+        apply: |conn| {
+            conn.execute("CREATE INDEX IF NOT EXISTS thread_turns_started_day_idx ON thread_turns(julianday(started_at))", [])?;
+            Ok(())
+        },
+    },
 ];
 
 const NODE_0030_MIGRATIONS: &[&str] = &[

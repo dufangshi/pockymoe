@@ -1000,3 +1000,50 @@ async fn coordination_operations_work_over_the_cli_api() {
     .await;
     assert!(closed["closedAt"].is_string(), "{closed}");
 }
+
+#[tokio::test]
+async fn stats_summary_http_defaults_validation_and_health_capability() {
+    let (_dir, port, _) = spawn_supervisor(vec![Provider::Codex]).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://127.0.0.1:{port}");
+    let health: Value = client
+        .get(format!("{base}/healthz"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(health["capabilities"]["statsSummary"], true);
+    let reply = client
+        .get(format!("{base}/api/stats/summary"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(reply.status(), reqwest::StatusCode::OK);
+    let stats: Value = reply.json().await.unwrap();
+    assert_eq!(stats["range"], "today");
+    assert_eq!(stats["totals"]["turns"], 0);
+    assert_eq!(stats["daily"].as_array().unwrap().len(), 1);
+    let stats: Value = client
+        .get(format!("{base}/api/stats/summary"))
+        .query(&[("range", "30d"), ("tz", "America/Toronto")])
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(stats["daily"].as_array().unwrap().len(), 30);
+    for query in ["range=bad", "tz=Invalid/Timezone", "tz=9999"] {
+        assert_eq!(
+            client
+                .get(format!("{base}/api/stats/summary?{query}"))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            reqwest::StatusCode::BAD_REQUEST
+        );
+    }
+}

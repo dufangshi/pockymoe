@@ -211,6 +211,13 @@ async fn run_connected_tunnel_with_deadline(
             event = activity.recv() => {
                 match event {
                     Ok(event) => {
+                        if event.event_type == "thread.request.created" {
+                            // Notification failures/rejections are deliberately independent
+                            // of the encrypted request flow, including with older relays.
+                            if let Ok(notices) = state.pending_relay_notifications() {
+                                for payload in notices { let _ = outgoing.send(json!({"type":"relay.notification","payload":payload})); }
+                            }
+                        }
                         if event.payload["reason"] == "thread_created" || event.payload["reason"] == "child_deleted" {
                             let _ = outgoing.send(json!({"type":"relay.heartbeat","timestamp":now_rfc3339(),"threadLineage":thread_lineage(&state)}));
                         }
@@ -862,6 +869,21 @@ mod tests {
         let forwarded =
             forward_local(&state, json!({"method":"GET","path":"/api/workspaces"})).await;
         assert_eq!(forwarded["statusCode"], 200);
+    }
+
+    #[tokio::test]
+    async fn stats_summary_routes_through_authenticated_device_tunnel() {
+        let (_dir, state) = state_with_relay_url("http://localhost:8788");
+        let forwarded = forward_local(
+            &state,
+            json!({"method":"GET","path":"/api/stats/summary?range=7d&tz=America%2FToronto"}),
+        )
+        .await;
+        assert_eq!(forwarded["statusCode"], 200);
+        let body: Value = serde_json::from_str(forwarded["body"].as_str().unwrap()).unwrap();
+        assert_eq!(body["range"], "7d");
+        assert_eq!(body["totals"]["turns"], 0);
+        assert_eq!(body["daily"].as_array().unwrap().len(), 7);
     }
 
     #[tokio::test]

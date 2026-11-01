@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use anyhow::{bail, Result};
@@ -7,8 +7,8 @@ use async_trait::async_trait;
 use remote_codex_protocol::{
     now_rfc3339, toolbox_from_capabilities, AgentBackendDto, AgentBackendInstallationDto,
     AgentBackendManagementSchemaDto, AgentCapabilitySnapshotDto, AgentProviderCapabilitiesDto,
-    AgentRuntimeStatusDto, ModelOptionDto, Provider, ReasoningEffortOptionDto, ThreadEventEnvelope,
-    ThreadHistoryItemDto,
+    AgentRuntimeStatusDto, ModelOptionDto, Provider, ReasoningEffortOptionDto,
+    ThreadActionRequestDto, ThreadEventEnvelope, ThreadHistoryItemDto,
 };
 use serde_json::json;
 use tokio::time::sleep;
@@ -22,6 +22,136 @@ use crate::actor::{
 };
 use crate::import_id::session_ids_match;
 
+const HOLD_PROMPT: &str = "[remote-codex fixture: hold until controlled]";
+
+#[derive(Clone)]
+struct FixtureController {
+    turn_id: String,
+    tx: tokio::sync::mpsc::UnboundedSender<FixtureCommand>,
+}
+
+enum FixtureCommand {
+    Complete(String),
+    Fail(String),
+    Request(String, String, tokio::sync::oneshot::Sender<()>),
+}
+
+fn fixture_controllers() -> &'static Mutex<HashMap<String, FixtureController>> {
+    static CONTROLLERS: OnceLock<Mutex<HashMap<String, FixtureController>>> = OnceLock::new();
+    CONTROLLERS.get_or_init(Default::default)
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FixtureEventInput {
+    pub r#type: String,
+    pub thread_id: String,
+    pub text: Option<String>,
+}
+
+impl crate::Supervisor {
+    /// Only the fake-mode HTTP router exposes this control. Turn admission and
+    /// settlement still use the ordinary durable prompt/runtime paths.
+    pub async fn fixture_event(
+        self: &Arc<Self>,
+        input: FixtureEventInput,
+    ) -> Result<serde_json::Value> {
+        anyhow::ensure!(
+            self.config.fake_runtime,
+            "fixture controls require fake runtime"
+        );
+        anyhow::ensure!(
+            matches!(
+                input.r#type.as_str(),
+                "start" | "complete" | "fail" | "approval" | "input"
+            ),
+            "invalid fixture event type"
+        );
+        self.get_thread(&input.thread_id)?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        if !fixture_controllers()
+            .lock()
+            .unwrap()
+            .contains_key(&input.thread_id)
+        {
+            anyhow::ensure!(
+                self.get_thread(&input.thread_id)?.active_turn_id.is_none(),
+                "conflict: thread is running a non-controlled turn"
+            );
+            let prompt = serde_json::from_value(serde_json::json!({"prompt": HOLD_PROMPT}))?;
+            self.accept_prompt(&input.thread_id, &prompt).await?;
+            self.dispatch_inbox(input.thread_id.clone());
+        }
+        let controller = loop {
+            let controller = fixture_controllers()
+                .lock()
+                .unwrap()
+                .get(&input.thread_id)
+                .cloned();
+            if let Some(controller) = controller {
+                break controller;
+            }
+            anyhow::ensure!(
+                tokio::time::Instant::now() < deadline,
+                "fixture turn did not start"
+            );
+            sleep(Duration::from_millis(2)).await;
+        };
+        let text = input.text.unwrap_or_else(|| match input.r#type.as_str() {
+            "fail" => "Fixture: dependency registry unavailable; retry after reconnect.".into(),
+            "approval" => "Run the focused regression checks?".into(),
+            "input" => "Which rollout environment should be used?".into(),
+            _ => "Implemented the change and verified the focused regression checks.".into(),
+        });
+        match input.r#type.as_str() {
+            "start" => {}
+            "approval" | "input" => {
+                let (ack, ready) = tokio::sync::oneshot::channel();
+                controller
+                    .tx
+                    .send(FixtureCommand::Request(input.r#type.clone(), text, ack))?;
+                tokio::time::timeout_at(deadline, ready).await??;
+            }
+            _ => {
+                let command = if input.r#type == "fail" {
+                    FixtureCommand::Fail(text.clone())
+                } else {
+                    FixtureCommand::Complete(text.clone())
+                };
+                controller.tx.send(command)?;
+                loop {
+                    let thread = self.get_thread(&input.thread_id)?;
+                    if thread.active_turn_id.is_none()
+                        && thread.status != "running"
+                        && !fixture_controllers()
+                            .lock()
+                            .unwrap()
+                            .contains_key(&input.thread_id)
+                    {
+                        break;
+                    }
+                    anyhow::ensure!(
+                        tokio::time::Instant::now() < deadline,
+                        "fixture turn did not settle"
+                    );
+                    sleep(Duration::from_millis(2)).await;
+                }
+                if input.r#type == "fail" {
+                    emit(
+                        &self.bus,
+                        &input.thread_id,
+                        "thread.turn.failed",
+                        json!({
+                            "turnId": controller.turn_id, "status": "failed", "error": text
+                        }),
+                    );
+                }
+            }
+        }
+        Ok(json!({"threadId":input.thread_id,"turnId":controller.turn_id,"type":input.r#type}))
+    }
+}
+
 pub struct FakeRuntime {
     provider: Provider,
     active: Mutex<HashMap<String, String>>,
@@ -29,6 +159,7 @@ pub struct FakeRuntime {
     started_at: Mutex<Option<String>>,
     goal: Mutex<Option<GoalState>>,
     import_sessions: Mutex<Vec<ImportSessionMeta>>,
+    pending: Mutex<HashMap<String, Vec<ThreadActionRequestDto>>>,
 }
 
 impl FakeRuntime {
@@ -40,11 +171,108 @@ impl FakeRuntime {
             started_at: Mutex::new(None),
             goal: Mutex::new(None),
             import_sessions: Mutex::new(Vec::new()),
+            pending: Mutex::new(HashMap::new()),
         }
     }
 
     pub fn seed_import_session(&self, session: ImportSessionMeta) {
         self.import_sessions.lock().unwrap().push(session);
+    }
+
+    async fn controlled_turn(
+        &self,
+        input: &StartTurnInput,
+        bus: &EventBus,
+        cancel: CancellationToken,
+    ) -> Result<Vec<ThreadHistoryItemDto>> {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        fixture_controllers().lock().unwrap().insert(
+            input.thread_id.clone(),
+            FixtureController {
+                turn_id: input.turn_id.clone(),
+                tx,
+            },
+        );
+        struct Cleanup<'a>(&'a FakeRuntime, String);
+        impl Drop for Cleanup<'_> {
+            fn drop(&mut self) {
+                fixture_controllers().lock().unwrap().remove(&self.1);
+                self.0.pending.lock().unwrap().remove(&self.1);
+            }
+        }
+        let _cleanup = Cleanup(self, input.thread_id.clone());
+        emit(
+            bus,
+            &input.thread_id,
+            "thread.turn.started",
+            json!({"turnId":input.turn_id}),
+        );
+        let outcome = loop {
+            tokio::select! {
+                _ = cancel.cancelled() => break ("interrupted", String::new()),
+                command = rx.recv() => match command {
+                    Some(FixtureCommand::Complete(text)) => break ("completed", text),
+                    Some(FixtureCommand::Fail(text)) => break ("failed", text),
+                    Some(FixtureCommand::Request(kind, text, ack)) => {
+                        let request = ThreadActionRequestDto {
+                            id: format!("fixture-request-{}", Uuid::new_v4()),
+                            kind: if kind == "input" { "requestUserInput" } else { "permissionRequest" }.into(),
+                            title: text.clone(), description: Some(text),
+                            turn_id: Some(input.turn_id.clone()), item_id: None,
+                            created_at: now_rfc3339(),
+                            questions: if kind == "input" { vec![json!({
+                                "id":"environment", "header":"Environment", "question":"Which rollout environment?",
+                                "options":[{"label":"Staging","description":"Validate before production."},
+                                    {"label":"Preview","description":"Use an isolated preview."}]
+                            })] } else { vec![] },
+                        };
+                        self.pending.lock().unwrap().entry(input.thread_id.clone()).or_default().push(request.clone());
+                        emit(bus, &input.thread_id, "thread.request.created", json!({"request":request}));
+                        let _ = ack.send(());
+                    }
+                    None => break ("interrupted", String::new()),
+                }
+            }
+        };
+        let requests = self
+            .pending
+            .lock()
+            .unwrap()
+            .remove(&input.thread_id)
+            .unwrap_or_default();
+        for request in requests {
+            emit(
+                bus,
+                &input.thread_id,
+                "thread.request.resolved",
+                json!({"requestId":request.id}),
+            );
+        }
+        let (status, text) = outcome;
+        let items = if status == "completed" {
+            let result = item(&format!("{}:assistant", input.turn_id), &text, Some(status));
+            emit(
+                bus,
+                &input.thread_id,
+                "thread.item.completed",
+                json!({"turnId":input.turn_id,"item":result}),
+            );
+            vec![result]
+        } else {
+            vec![]
+        };
+        emit(
+            bus,
+            &input.thread_id,
+            "thread.turn.completed",
+            json!({
+                "turnId":input.turn_id,"status":status,"error":if status == "failed" {Some(text.clone())} else {None}
+            }),
+        );
+        if status == "failed" {
+            bail!("{text}");
+        }
+        Ok(items)
     }
 
     fn agent_id(&self) -> &'static str {
@@ -271,6 +499,9 @@ impl AgentRuntime for FakeRuntime {
             }
         }
         let _active = ActiveGuard(&self.active, input.provider_session_id.clone());
+        if input.prompt.ends_with(HOLD_PROMPT) {
+            return self.controlled_turn(&input, &bus, cancel).await;
+        }
         if let Some(argument) = input.prompt.strip_prefix("/goal ") {
             self.set_goal(
                 &input.provider_session_id,
@@ -363,11 +594,23 @@ impl AgentRuntime for FakeRuntime {
 
     async fn respond_permission(
         &self,
-        _request_id: &str,
+        request_id: &str,
         _allow: bool,
         _answer: Option<&str>,
     ) -> Result<()> {
+        for requests in self.pending.lock().unwrap().values_mut() {
+            requests.retain(|request| request.id != request_id);
+        }
         Ok(())
+    }
+
+    async fn pending_requests(&self, thread_id: &str) -> Vec<ThreadActionRequestDto> {
+        self.pending
+            .lock()
+            .unwrap()
+            .get(thread_id)
+            .cloned()
+            .unwrap_or_default()
     }
 
     async fn compact_session(
@@ -498,5 +741,125 @@ fn item(id: &str, text: &str, status: Option<&str>) -> ThreadHistoryItemDto {
         source_turn_id: None,
         artifact: None,
         extra: Default::default(),
+    }
+}
+
+#[cfg(test)]
+mod fixture_tests {
+    use super::*;
+    use crate::{Database, RuntimeConfig, Supervisor};
+
+    #[tokio::test]
+    async fn e2e_fixture_controls_hold_settle_and_resolve_real_requests() {
+        let directory = tempfile::tempdir().unwrap();
+        let config = RuntimeConfig {
+            mode: remote_codex_protocol::Mode::Local,
+            host: "127.0.0.1".into(),
+            port: 0,
+            workspace_root: directory.path().into(),
+            database_url: directory.path().join("fixture.sqlite"),
+            app_name: "test".into(),
+            app_version: "test".into(),
+            environment: "test".into(),
+            auth_required: false,
+            admin_username: None,
+            admin_password: None,
+            session_secret: None,
+            relay_server_url: None,
+            relay_agent_token: None,
+            enabled_providers: vec![Provider::Codex],
+            acp_command: None,
+            acp_startup_timeout_ms: 1000,
+            fake_runtime: true,
+        };
+        let db = Database::open(&config.database_url).unwrap();
+        let state = Arc::new(Supervisor::new(
+            config,
+            db,
+            vec![Arc::new(FakeRuntime::new(Provider::Codex))],
+        ));
+        state.spawn_live_item_persister();
+        let workspace = state
+            .create_workspace(
+                serde_json::from_value(json!({
+                    "absPath":directory.path(),"label":"fixture"
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        let thread = state
+            .create_thread(
+                serde_json::from_value(json!({
+                    "workspaceId":workspace.id,"model":"ios-e2e-stream"
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mut events = state.bus.subscribe();
+        for kind in ["start", "approval", "input"] {
+            state
+                .fixture_event(FixtureEventInput {
+                    r#type: kind.into(),
+                    thread_id: thread.id.clone(),
+                    text: None,
+                })
+                .await
+                .unwrap();
+        }
+        assert_eq!(state.get_thread(&thread.id).unwrap().status, "running");
+        let requests = state
+            .runtime(Provider::Codex)
+            .unwrap()
+            .pending_requests(&thread.id)
+            .await;
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].kind, "permissionRequest");
+        assert_eq!(requests[1].kind, "requestUserInput");
+        for request in requests {
+            state
+                .respond_request(&thread.id, &request.id, true, Some("staging"))
+                .await
+                .unwrap();
+        }
+        assert!(state
+            .runtime(Provider::Codex)
+            .unwrap()
+            .pending_requests(&thread.id)
+            .await
+            .is_empty());
+        state
+            .fixture_event(FixtureEventInput {
+                r#type: "complete".into(),
+                thread_id: thread.id.clone(),
+                text: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(state.get_thread(&thread.id).unwrap().status, "idle");
+        state
+            .fixture_event(FixtureEventInput {
+                r#type: "fail".into(),
+                thread_id: thread.id.clone(),
+                text: Some("test failure".into()),
+            })
+            .await
+            .unwrap();
+        let failed = state.get_thread(&thread.id).unwrap();
+        assert_eq!(failed.status, "failed");
+        assert_eq!(failed.last_error.as_deref(), Some("test failure"));
+        let mut types = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            types.push(event.event_type);
+        }
+        for kind in [
+            "thread.turn.started",
+            "thread.turn.completed",
+            "thread.turn.failed",
+            "thread.request.created",
+            "thread.request.resolved",
+        ] {
+            assert!(types.iter().any(|event| event == kind), "missing {kind}");
+        }
     }
 }

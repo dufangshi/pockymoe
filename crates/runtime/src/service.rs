@@ -400,6 +400,15 @@ impl Supervisor {
                         &event.timestamp,
                     )
                 }
+                "thread.request.created" => supervisor
+                    .db
+                    .with(|conn| crate::relay_notifications::record_request(conn, event)),
+                "thread.request.resolved" => {
+                    if let Some(id) = event.payload["requestId"].as_str() {
+                        supervisor.acknowledge_relay_notification(id)?;
+                    }
+                    Ok(())
+                }
                 "runtime.usage.updated" => supervisor.persist_usage_event(event),
                 "thread.harness.ready" => supervisor.db.with(|conn| {
                     if let (Some(turn), Some(instance)) = (

@@ -498,7 +498,7 @@ async fn migrates_node_0030_history_and_policies_idempotently() {
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )?;
-            assert_eq!(runtime_migration_count, 10);
+            assert_eq!(runtime_migration_count, 11);
             assert_eq!(legacy_metadata_count, 2);
             assert_eq!(
                 migrated_metadata.0,
@@ -523,7 +523,7 @@ async fn migrates_node_0030_history_and_policies_idempotently() {
                 |row| row.get(0),
             )?;
             assert_eq!(turns, 3);
-            assert_eq!(migrations, 10);
+            assert_eq!(migrations, 11);
             Ok(())
         })
         .unwrap();
@@ -697,7 +697,7 @@ fn migration_10_reapplies_over_columns_left_by_a_downgrade() {
     drop(Database::open(&path).unwrap());
     let conn = Connection::open(&path).unwrap();
     conn.execute(
-        "DELETE FROM __remote_codex_runtime_migrations WHERE version=10",
+        "DELETE FROM __remote_codex_runtime_migrations WHERE version>=10",
         [],
     )
     .unwrap();

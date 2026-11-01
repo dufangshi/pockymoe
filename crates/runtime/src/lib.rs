@@ -40,4 +40,5 @@ mod usage_history;
 mod pricing;
 
 mod relay_notifications;
+pub mod stats;
 pub mod subscription;

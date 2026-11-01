@@ -2649,7 +2649,7 @@ async fn handle_agent_request(
                 }
                 return Ok(());
             }
-            let request_id = format!("perm-{req_id}");
+            let request_id = format!("perm-{}", uuid::Uuid::new_v4());
             let (tx, rx) = tokio::sync::oneshot::channel();
             inner.pending_permissions.lock().await.insert(
                 request_id.clone(),

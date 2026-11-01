@@ -62,6 +62,7 @@ pub fn router(state: AppState) -> Router {
         .route("/healthz", get(healthz))
         .route("/readyz", get(healthz))
         .route("/api/version", get(version))
+        .route("/api/stats/summary", get(stats_summary))
         .route(
             "/api/management/harnesses",
             get(crate::management::harnesses),
@@ -237,7 +238,13 @@ pub fn router(state: AppState) -> Router {
             "/api/plugins/{id}",
             get(get_plugin).patch(update_plugin).delete(delete_plugin),
         )
-        .route("/ws", get(ws_upgrade))
+        .route("/ws", get(ws_upgrade));
+    let router = if state.config.fake_runtime {
+        router.route("/api/e2e/events", post(fixture_event))
+    } else {
+        router
+    };
+    let router = router
         .fallback(spa_fallback)
         .layer(DefaultBodyLimit::max(64 * 1024 * 1024))
         .layer(middleware::from_fn_with_state(
@@ -248,6 +255,67 @@ pub fn router(state: AppState) -> Router {
     match webview_cors_layer() {
         Some(layer) => router.layer(layer),
         None => router,
+    }
+}
+
+async fn fixture_event(
+    State(state): State<AppState>,
+    Json(input): Json<remote_codex_runtime::fake::FixtureEventInput>,
+) -> Result<Json<Value>, ApiErr> {
+    state.fixture_event(input).await.map(Json).map_err(map_err)
+}
+
+#[cfg(test)]
+mod fixture_tests {
+    use super::*;
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn e2e_fixture_route_does_not_exist_outside_fake_mode() {
+        for fake_runtime in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let config = remote_codex_runtime::RuntimeConfig {
+                mode: remote_codex_protocol::Mode::Local,
+                host: "127.0.0.1".into(),
+                port: 0,
+                workspace_root: dir.path().into(),
+                database_url: dir.path().join("test.sqlite"),
+                app_name: "test".into(),
+                app_version: "test".into(),
+                environment: "test".into(),
+                auth_required: false,
+                admin_username: None,
+                admin_password: None,
+                session_secret: None,
+                relay_server_url: None,
+                relay_agent_token: None,
+                enabled_providers: vec![],
+                acp_command: None,
+                acp_startup_timeout_ms: 1000,
+                fake_runtime,
+            };
+            let db = remote_codex_runtime::Database::open(&config.database_url).unwrap();
+            let state = Arc::new(Supervisor::new(config, db, vec![]));
+            let response = router(state)
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/api/e2e/events")
+                        .header("content-type", "application/json")
+                        .body(Body::from("{}"))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                if fake_runtime {
+                    StatusCode::UNPROCESSABLE_ENTITY
+                } else {
+                    StatusCode::NOT_FOUND
+                }
+            );
+        }
     }
 }
 
@@ -454,7 +522,7 @@ pub(crate) fn map_err(e: anyhow::Error) -> ApiErr {
 
 async fn healthz(State(state): State<AppState>) -> Json<Value> {
     Json(
-        json!({"status":"ok", "timestamp":now_rfc3339(), "activeTurnCount":state.active_turn_count(), "runningVersion":APP_VERSION, "processId":std::process::id(), "relayConnected":state.relay_connected.load(std::sync::atomic::Ordering::SeqCst)}),
+        json!({"status":"ok", "timestamp":now_rfc3339(), "activeTurnCount":state.active_turn_count(), "runningVersion":APP_VERSION, "capabilities":{"statsSummary":true}, "processId":std::process::id(), "relayConnected":state.relay_connected.load(std::sync::atomic::Ordering::SeqCst)}),
     )
 }
 
@@ -2163,4 +2231,30 @@ async fn subscription_usage(
         &provider
     });
     Json(json!(state.subscription_usage.read(agent).await))
+}
+
+#[derive(Deserialize)]
+struct StatsQuery {
+    range: Option<String>,
+    tz: Option<String>,
+}
+
+async fn stats_summary(
+    State(state): State<AppState>,
+    Query(query): Query<StatsQuery>,
+) -> Result<Json<Value>, ApiErr> {
+    let range = query.range.unwrap_or_else(|| "today".into());
+    let tz = query.tz.unwrap_or_else(|| "UTC".into());
+    remote_codex_runtime::stats::validate_query(&range, &tz).map_err(map_err)?;
+    tokio::task::spawn_blocking(move || state.stats_summary(&range, &tz))
+        .await
+        .map_err(|_| {
+            err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "stats",
+                "Unable to compute statistics",
+            )
+        })?
+        .map(Json)
+        .map_err(map_err)
 }
