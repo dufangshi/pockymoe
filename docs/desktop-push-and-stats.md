@@ -99,6 +99,21 @@ The focused production latency benchmark runs with
 it is intentionally ignored in debug test runs because unoptimized code is not
 a production latency measurement.
 
+## Device rename
+
+`PATCH /relay/devices/:deviceId` accepts `{ "name": "Work Laptop" }` for the
+signed-in **owning user only**. Device/thread/workspace control grants, thread
+shares and hosted membership do not confer ownership.
+Non-owners receive 403, unauthenticated requests receive 401, and missing devices
+receive 404. Names are trimmed, must contain 1–64 Unicode characters after trimming,
+and must contain no control characters (including leading/trailing tabs/newlines).
+Invalid names receive 400.
+
+The response is the updated `RelayDeviceDto` directly (no `device` wrapper), with
+the same camelCase fields and presence/hosted metadata as an entry in
+`GET /relay/devices`. It does not return device credentials. This updates the
+relay display name only and does not restart or reconnect a device.
+
 ## TypeScript DTOs for consumers
 
 No changes to `packages/shared` or the frozen desktop bridge are required here.
