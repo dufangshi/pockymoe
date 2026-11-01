@@ -125,7 +125,7 @@ function Sensors({ reading }: { reading: TemperatureReadingDto | undefined }) {
   );
 }
 
-export function DeviceMonitor() {
+export function DeviceMonitor({ deviceId }: { deviceId?: string }) {
   const { locale: i18nLocale } = useI18n();
   const [open, setOpen] = useState(false);
   const [data, setData] = useState<DeviceMetricsDto | null>(null);
@@ -173,7 +173,8 @@ export function DeviceMonitor() {
       controller = new AbortController();
       const timeout = setTimeout(() => controller?.abort(), 10_000);
       try {
-        const sample = await fetchHarnessProcesses(controller.signal);
+        const sample = deviceId === undefined ? await fetchHarnessProcesses(controller.signal)
+          : await request<HarnessProcessesDto>('api/device/processes', { cache: 'no-store', signal: controller.signal }, { deviceId });
         if (!disposed) {
           setProcesses(sample);
           setProcessesError(null);
@@ -206,12 +207,13 @@ export function DeviceMonitor() {
       stopListening();
       refreshProcesses.current = () => {};
     };
-  }, [processesShown]);
+  }, [deviceId, processesShown]);
   const endThread = async (thread: LoadedThreadDto, interrupt: boolean) => {
     setEnding(thread.threadId);
     setEndError(null);
     try {
-      await releaseThread(thread.threadId, interrupt ? { interrupt: true } : {});
+      if (deviceId === undefined) await releaseThread(thread.threadId, interrupt ? { interrupt: true } : {});
+      else await releaseThread(thread.threadId, interrupt ? { interrupt: true } : {}, deviceId);
       setConfirmEnd(null);
       refreshProcesses.current();
     } catch (cause) {
@@ -242,7 +244,7 @@ export function DeviceMonitor() {
       try {
         const sample = await request<DeviceMetricsDto>('api/device/metrics', {
           signal: controller.signal,
-        });
+        }, { deviceId });
         if (!disposed) {
           setData(sample);
           setError(null);
@@ -287,7 +289,7 @@ export function DeviceMonitor() {
       window.removeEventListener('offline', wake);
       retryMetrics.current = () => {};
     };
-  }, [open]);
+  }, [deviceId, open]);
   if (forbidden) return null;
   const age = data
     ? Math.max(0, Math.floor((now - Date.parse(data.sampledAt)) / 1000))
