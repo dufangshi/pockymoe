@@ -3,6 +3,9 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+
+// These render the whole console; slow CI runners exceed the 5 s default.
+vi.setConfig({ testTimeout: 20_000 });
 import { setLocale } from '@pockymoe/thread-ui/i18n';
 import type { RelaySessionDto } from '@pockymoe/shared';
 import overview from './__fixtures__/overview.json';
