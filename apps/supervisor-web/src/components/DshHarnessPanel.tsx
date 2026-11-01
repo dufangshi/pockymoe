@@ -1,5 +1,5 @@
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
-import { confirmAsync, ErrorMark } from '@pockymoe/thread-ui';
+import { Select, confirmAsync, ErrorMark } from '@pockymoe/thread-ui';
 import { useEffect, useState } from 'react';
 
 // Adapter data is metadata only: names and descriptions render as text.
@@ -459,14 +459,14 @@ export function DshHarnessPanel({
         {runModes.length > 0 ? (
           <>
             <div className="flex items-center gap-1">
-              <select className="host-input w-full min-w-0 flex-1 rounded-md border p-1"
+              <Select className="host-input w-full min-w-0 flex-1 rounded-md border p-1"
                 aria-label={translate('settings.dshRunMode')} value={runMode}
                 disabled={disabled || runModeLocked}
-                onChange={(event) => void run({ kind: 'selectRunMode', id: event.target.value })}>
+                onValueChange={(selectedValue) => void run({ kind: 'selectRunMode', id: selectedValue })}>
                 {runModes.map((mode) => (
                   <option key={mode.id} value={mode.id} disabled={Boolean(mode.broken)}>{dshRunModeName(mode)}</option>
                 ))}
-              </select>
+              </Select>
               {markFor(['selectRunMode'])}
             </div>
             <p className="text-xs text-[var(--theme-fg-muted)]">
@@ -560,16 +560,16 @@ export function DshHarnessPanel({
                   return (
                     <label key={id} className="block">
                       {label}
-                      <select className="host-input mt-1 w-full rounded-md border p-1" aria-label={id}
+                      <Select className="host-input mt-1 w-full rounded-md border p-1" aria-label={id}
                         value={field.value === null ? '' : String(field.value)} disabled={disabled}
-                        onChange={(event) =>
-                          void updateSetting(view, field.key, event.target.value || null)
+                        onValueChange={(selectedValue) =>
+                          void updateSetting(view, field.key, selectedValue || null)
                         }>
                         <option value="">{translate('settings.dshDefault')}</option>
                         {choices.map((choice) => (
                           <option key={choice} value={choice}>{choice}</option>
                         ))}
-                      </select>
+                      </Select>
                     </label>
                   );
                 return (

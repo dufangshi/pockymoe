@@ -2,7 +2,7 @@
 // Copyright (c) 2025 Jason Young. MIT; see THIRD_PARTY_NOTICES.md.
 import { useState } from 'react';
 import { translate } from '@pockymoe/thread-ui/i18n';
-import { ErrorMark } from '@pockymoe/thread-ui';
+import { Select, ErrorMark } from '@pockymoe/thread-ui';
 import { upstreamPresets } from './upstreamPresets';
 import { UpstreamModelPicker } from './UpstreamModelPicker';
 import type { Profile } from './UpstreamManagement';
@@ -102,16 +102,16 @@ export function UpstreamProviderForm({
       <div className="grid gap-3 sm:grid-cols-2">
         <label className="block text-sm">
           {translate('settings.upstreamsPreset')}
-          <select
+          <Select
             className={field}
             value={preset}
-            onChange={(e) => {
-              setPreset(e.target.value);
+            onValueChange={(selectedValue) => {
+              setPreset(selectedValue);
               setRaw(null);
               setHeaderRaw(null);
               setInvalid(false);
               setHeaderInvalid(false);
-              if (e.target.value === 'dsh-official') {
+              if (selectedValue === 'dsh-official') {
                 onChange({
                   ...p,
                   name: 'DeepSeek',
@@ -124,7 +124,7 @@ export function UpstreamProviderForm({
                 });
                 return;
               }
-              if (e.target.value === 'dsh-compatible') {
+              if (selectedValue === 'dsh-compatible') {
                 onChange({
                   ...p,
                   name: '',
@@ -137,8 +137,8 @@ export function UpstreamProviderForm({
                 });
                 return;
               }
-              const selected = presets[Number(e.target.value)];
-              if (e.target.value !== '' && selected)
+              const selected = presets[Number(selectedValue)];
+              if (selectedValue !== '' && selected)
                 onChange({
                   ...p,
                   ...selected,
@@ -165,13 +165,13 @@ export function UpstreamProviderForm({
                 </option>
               ))
             )}
-          </select>
+          </Select>
         </label>
         <label className="block text-sm">
           {translate('settings.upstreamsHarness')}
-          <select className={field} value={p.harness} disabled>
+          <Select className={field} value={p.harness} disabled>
             <option value={p.harness}>{harnessName}</option>
-          </select>
+          </Select>
         </label>
       </div>
       <label className="block text-sm">
@@ -212,16 +212,16 @@ export function UpstreamProviderForm({
       {p.harness === 'claude' && (
         <label className="block text-sm">
           {translate('settings.authentication')}
-          <select
+          <Select
             className={field}
             value={p.authType ?? 'api_key'}
-            onChange={(e) => onChange({ ...p, authType: e.target.value })}
+            onValueChange={(selectedValue) => onChange({ ...p, authType: selectedValue })}
           >
             <option value="api_key">
               {translate('settings.aPIKeyXApiKey')}
             </option>
             <option value="bearer">{translate('settings.bearerToken')}</option>
-          </select>
+          </Select>
         </label>
       )}
       <label className="block text-sm">
@@ -280,10 +280,10 @@ export function UpstreamProviderForm({
         <div className="grid gap-3 sm:grid-cols-2">
           <label className="block text-sm">
             {translate('settings.aPIFormat')}
-            <select
+            <Select
               className={field}
               value={p.apiType}
-              onChange={(e) => onChange({ ...p, apiType: e.target.value })}
+              onValueChange={(selectedValue) => onChange({ ...p, apiType: selectedValue })}
             >
               {p.harness === 'deepseek' && (
                 <option value="anthropic">
@@ -296,7 +296,7 @@ export function UpstreamProviderForm({
               <option value="chat_completions">
                 {translate('settings.chatCompletions')}
               </option>
-            </select>
+            </Select>
           </label>
           <label className="block text-sm">
             {translate('settings.contextWindow')}

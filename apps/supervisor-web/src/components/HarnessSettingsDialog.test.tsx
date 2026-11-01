@@ -1,3 +1,4 @@
+import { changeControl, selectOptions } from '../test/formControls';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type {
@@ -62,9 +63,9 @@ describe('session settings fields', () => {
     });
     expect(permissions).toHaveValue('read-only');
     expect(onChange).not.toHaveBeenCalled();
-    fireEvent.change(permissions, { target: { value: 'workspace-write' } });
+    changeControl(permissions, { target: { value: 'workspace-write' } });
     expect(onChange).toHaveBeenCalledWith({ sandboxMode: 'workspace-write' });
-    fireEvent.change(
+    changeControl(
       screen.getByRole('combobox', { name: 'Harness reasoning effort' }),
       { target: { value: 'medium' } },
     );
@@ -117,7 +118,7 @@ describe('session settings fields', () => {
       expect(select).toBeEnabled();
     // The harness takes the change mid-turn and the fields say when.
     expect(screen.getByText(/applies from its next model call/)).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText('Harness reasoning effort'), { target: { value: 'medium' } });
+    changeControl(screen.getByLabelText('Harness reasoning effort'), { target: { value: 'medium' } });
     expect(onChange).toHaveBeenCalledWith({ reasoningEffort: 'medium' });
     expect(
       screen
@@ -238,7 +239,7 @@ describe('DeepSeek Harness settings', () => {
     fireEvent.click(screen.getByText('Profile settings'));
     fireEvent(screen.getByText('Profile settings').closest('details')!, new Event('toggle'));
     const input = await screen.findByRole('spinbutton', { name: 'agent-loop.maxParallelToolCalls' });
-    fireEvent.change(input, { target: { value: '4' } });
+    changeControl(input, { target: { value: '4' } });
     fireEvent.blur(input);
     await waitFor(() => expect(runHarnessAction).toHaveBeenCalledWith({
       kind: 'updateSetting', ns: 'agent-loop', key: 'maxParallelToolCalls', value: 4, revision: 2,
@@ -279,9 +280,9 @@ describe('DeepSeek Harness plugin controls', () => {
     const view = panel(live({}), runHarnessAction);
     const select = await screen.findByRole('combobox', { name: 'Run mode' });
     expect(select).toHaveValue('standard');
-    expect(Array.from(select.querySelectorAll("option"), (option) => option.textContent))
+    expect(selectOptions(select).map(option => option.textContent))
       .toEqual(['Standard (default)', 'PTC', 'Minimal', 'My mode']);
-    fireEvent.change(select, { target: { value: 'minimal' } });
+    changeControl(select, { target: { value: 'minimal' } });
     await waitFor(() => expect(runHarnessAction).toHaveBeenCalledWith({ kind: 'selectRunMode', id: 'minimal' }));
     await waitFor(() => expect(screen.getByRole('combobox', { name: 'Run mode' })).toHaveValue('minimal'));
     expect(screen.getByText(/Only a persistent terminal/)).toBeInTheDocument();
@@ -296,7 +297,7 @@ describe('DeepSeek Harness plugin controls', () => {
     const broken = runModes.map((mode) => mode.id === 'ptc' ? { ...mode, broken: 'needs Node.js with TypeScript support' } : mode);
     panel({ ...live({}), runModes: broken }, vi.fn());
     const select = await screen.findByRole('combobox', { name: 'Run mode' });
-    const ptc = Array.from(select.querySelectorAll('option')).find((option) => option.value === 'ptc')!;
+    const ptc = selectOptions(select).find(option => option.getAttribute('data-value') === 'ptc')!;
     expect(ptc).toBeDisabled();
     expect(ptc.textContent).toBe('PTC (unavailable: needs Node.js with TypeScript support)');
   });
@@ -318,7 +319,7 @@ describe('DeepSeek Harness plugin controls', () => {
     expect(section).toHaveTextContent('/compactThread control');
     expect(section).toHaveTextContent('/exportIn the native console');
     expect(screen.queryByRole('button', { name: 'Run /plan' })).toBeNull();
-    fireEvent.change(screen.getByRole('textbox', { name: 'Arguments for /review' }), { target: { value: ' src ' } });
+    changeControl(screen.getByRole('textbox', { name: 'Arguments for /review' }), { target: { value: ' src ' } });
     fireEvent.click(screen.getByRole('button', { name: 'Run /review' }));
     await waitFor(() => expect(runHarnessAction).toHaveBeenCalledWith({ kind: 'command', line: '/review src' }));
     expect(await screen.findByText('Reviewed 3 files')).toBeInTheDocument();
@@ -329,7 +330,7 @@ describe('DeepSeek Harness plugin controls', () => {
     const runHarnessAction = vi.fn(async () => ({ result: { result: { kind: 'success', text: 'Feedback recorded' } }, harness: live({ commands }) }));
     panel(live({ commands }), runHarnessAction);
     expect(await screen.findByText(/history to DeepSeek, unless DSH telemetry is turned off/)).toBeInTheDocument();
-    fireEvent.change(screen.getByRole('textbox', { name: 'Arguments for /feedback' }), { target: { value: 'great' } });
+    changeControl(screen.getByRole('textbox', { name: 'Arguments for /feedback' }), { target: { value: 'great' } });
     fireEvent.click(screen.getByRole('button', { name: 'Run /feedback' }));
     // The app's own confirmation, not window.confirm.
     const dialog = await screen.findByRole('dialog', { name: '/feedback' });

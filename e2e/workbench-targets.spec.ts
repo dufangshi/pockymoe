@@ -1,3 +1,4 @@
+import { selectControl } from './selectControl';
 import { test, expect, type Page } from '@playwright/test';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createServer } from 'node:net';
@@ -372,7 +373,7 @@ test('cross-device split keeps both chats writable and tools follow the last foc
       exact: true,
     });
     await expect(permissions).toHaveValue('danger-full-access');
-    await permissions.selectOption('workspace-write');
+    await selectControl(page, permissions, 'workspace-write');
     await expect
       .poll(
         async () =>

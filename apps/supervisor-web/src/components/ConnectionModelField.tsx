@@ -1,5 +1,5 @@
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
-import { ErrorMark } from '@pockymoe/thread-ui';
+import { Select, ErrorMark } from '@pockymoe/thread-ui';
 import { RefreshCw } from 'lucide-react';
 import { useEffect, useId, useRef, useState } from 'react';
 import type { DiscoveredModel } from '../lib/connections';
@@ -140,12 +140,12 @@ export function ConnectionModelField({
         )}
       </div>
       {!!models?.length && (
-        <select
+        <Select
           className="host-input mt-1.5 min-h-10 w-full sm:min-h-9 min-w-0 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-panel)] px-2.5 py-1.5 text-sm"
           aria-label={translate('settings.connChooseModel')}
           disabled={disabled}
           value={listed ? value : ''}
-          onChange={(e) => e.target.value && onChange(e.target.value)}
+          onValueChange={(selectedValue) => selectedValue && onChange(selectedValue)}
         >
           <option value="">
             {translate('settings.connModelsFound', {
@@ -158,7 +158,7 @@ export function ConnectionModelField({
               {m.name && m.name !== m.id ? `${m.name} · ${m.id}` : m.id}
             </option>
           ))}
-        </select>
+        </Select>
       )}
       {status && (
         <p

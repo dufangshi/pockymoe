@@ -1,5 +1,5 @@
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
-import { ErrorMark } from '@pockymoe/thread-ui';
+import { Select, ErrorMark } from '@pockymoe/thread-ui';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   AgentCapabilitySnapshotDto,
@@ -131,17 +131,17 @@ export function HarnessSettingsFields({
     <div className="space-y-4 text-sm">
       <label className="block">
         {translate('settings.model')}
-        <select
+        <Select
           className="host-input mt-1 w-full rounded-md border p-2"
           aria-label={translate('settings.harnessModel')}
           value={thread.model ?? ''}
           disabled={disabled}
-          onChange={(event) => {
+          onValueChange={(selectedValue) => {
             const selected = models.find(
-              (model) => model.model === event.target.value,
+              (model) => model.model === selectedValue,
             );
             void onChange({
-              model: event.target.value,
+              model: selectedValue,
               reasoningEffort: selected?.defaultReasoningEffort ?? null,
             });
           }}
@@ -151,18 +151,18 @@ export function HarnessSettingsFields({
               {model.displayName}
             </option>
           ))}
-        </select>
+        </Select>
       </label>
       {!!model?.supportedReasoningEfforts.length && (
         <label className="block">
           {translate('settings.reasoningEffort')}
-          <select
+          <Select
             className="host-input mt-1 w-full rounded-md border p-2"
             aria-label={translate('settings.harnessReasoningEffort')}
             value={thread.reasoningEffort ?? ''}
             disabled={disabled}
-            onChange={(event) =>
-              void onChange({ reasoningEffort: event.target.value })
+            onValueChange={(selectedValue) =>
+              void onChange({ reasoningEffort: selectedValue })
             }
           >
             {model.supportedReasoningEfforts.map((effort) => (
@@ -174,19 +174,19 @@ export function HarnessSettingsFields({
                   translate('settings.providerDefault')}
               </option>
             ))}
-          </select>
+          </Select>
         </label>
       )}
       <label className="block">
         {translate('settings.workspacePermissions')}
-        <select
+        <Select
           className="host-input mt-1 w-full rounded-md border p-2"
           aria-label={translate('settings.workspacePermissions')}
           value={thread.sandboxMode ?? 'danger-full-access'}
           disabled={disabled}
-          onChange={(event) =>
+          onValueChange={(selectedValue) =>
             void onChange({
-              sandboxMode: event.target.value as Exclude<ThreadDto['sandboxMode'], undefined>,
+              sandboxMode: selectedValue as Exclude<ThreadDto['sandboxMode'], undefined>,
             })
           }
         >
@@ -197,7 +197,7 @@ export function HarnessSettingsFields({
             {translate('chat.workspaceWrite')}
           </option>
           <option value="read-only">{translate('chat.readOnly')}</option>
-        </select>
+        </Select>
       </label>
       {thread.activeTurnId && !readOnly && (
         <p className="settings-hint text-[var(--theme-fg-muted)]">

@@ -1,5 +1,5 @@
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
-import { ErrorMark, formatFileSize, useLongPress, useMenuKeyboard } from '@pockymoe/thread-ui';
+import { Select, ErrorMark, formatFileSize, useLongPress, useMenuKeyboard } from '@pockymoe/thread-ui';
 import { Eraser, FileDiff, HardDrive, MoreHorizontal, RefreshCw, Scissors, SquareTerminal } from 'lucide-react';
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
@@ -380,12 +380,12 @@ export function StorageSettings({ deviceId }: { deviceId: string | null }) {
           <div className="pm-res-row">
             <label className="pm-res-label is-plain" htmlFor={`${scope}-text`}>{translate('settings.storageCleanText')}</label>
             <span className="pm-res-value is-action">
-              <select id={`${scope}-text`} className="relay-input pm-res-select" value={textMode} disabled={savingRetention}
-                onChange={event => { setTextMode(event.target.value as CommandTextCleanup); edited(); }}>
+              <Select id={`${scope}-text`} className="relay-input pm-res-select" value={textMode} disabled={savingRetention}
+                onValueChange={selectedValue => { setTextMode(selectedValue as CommandTextCleanup); edited(); }}>
                 <option value="keep">{translate('settings.storageCleanTextKeep')}</option>
                 <option value="truncate">{translate('settings.storageCleanTextTruncate')}</option>
                 <option value="remove">{translate('settings.storageCleanTextRemove')}</option>
-              </select>
+              </Select>
             </span>
             <p className="pm-res-hint">{translate('settings.storageCleanTextHint')}</p>
           </div>

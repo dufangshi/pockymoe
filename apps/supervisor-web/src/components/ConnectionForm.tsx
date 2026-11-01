@@ -1,7 +1,7 @@
 // Provider presets come from CC Switch via upstreamPresets.ts.
 // Copyright (c) 2025 Jason Young. MIT; see THIRD_PARTY_NOTICES.md.
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
-import { ErrorMark } from '@pockymoe/thread-ui';
+import { Select, ErrorMark } from '@pockymoe/thread-ui';
 import { FlaskConical } from 'lucide-react';
 import { useEffect, useId, useMemo, useState } from 'react';
 import { ApiError } from '../lib/api';
@@ -262,13 +262,13 @@ export function ConnectionForm({
       {!saved && (
         <label className={label}>
           {translate('settings.connPreset')}
-          <select
+          <Select
             className={field}
             value={preset}
-            onChange={(e) => {
-              setPreset(e.target.value);
-              const p = connectionPresets[Number(e.target.value)];
-              if (e.target.value === '' || !p) return;
+            onValueChange={(selectedValue) => {
+              setPreset(selectedValue);
+              const p = connectionPresets[Number(selectedValue)];
+              if (selectedValue === '' || !p) return;
               update({
                 name: p.name,
                 protocol: p.protocol,
@@ -286,7 +286,7 @@ export function ConnectionForm({
                 </option>
               ) : null,
             )}
-          </select>
+          </Select>
         </label>
       )}
       <div className="grid gap-3 sm:grid-cols-2">
@@ -302,12 +302,12 @@ export function ConnectionForm({
         </label>
         <label className={label}>
           {translate('settings.connProtocol')}
-          <select
+          <Select
             className={field}
             value={form.protocol}
             aria-describedby={`${id}-protocol`}
-            onChange={(e) =>
-              update({ protocol: e.target.value as ConnectionProtocol })
+            onValueChange={(selectedValue) =>
+              update({ protocol: selectedValue as ConnectionProtocol })
             }
           >
             {connectionProtocols
@@ -317,7 +317,7 @@ export function ConnectionForm({
                   {protocolLabel(p)}
                 </option>
               ))}
-          </select>
+          </Select>
         </label>
       </div>
       <p
@@ -375,11 +375,11 @@ export function ConnectionForm({
         {form.protocol === 'anthropic' && (
           <label className={label}>
             {translate('settings.connAuth')}
-            <select
+            <Select
               className={field}
               value={form.authType}
-              onChange={(e) =>
-                update({ authType: e.target.value as Form['authType'] })
+              onValueChange={(selectedValue) =>
+                update({ authType: selectedValue as Form['authType'] })
               }
             >
               <option value="api_key">
@@ -388,7 +388,7 @@ export function ConnectionForm({
               <option value="bearer">
                 {translate('settings.connAuthBearer')}
               </option>
-            </select>
+            </Select>
           </label>
         )}
       </div>

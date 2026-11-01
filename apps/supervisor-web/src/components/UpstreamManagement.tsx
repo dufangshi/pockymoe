@@ -13,7 +13,7 @@ import {
   Copy,
   Trash2,
 } from 'lucide-react';
-import { ErrorMark } from '@pockymoe/thread-ui';
+import { Select, ErrorMark } from '@pockymoe/thread-ui';
 import { request } from '../lib/api';
 import { FormDialog } from './FormDialog';
 import { UpstreamProviderCard } from './UpstreamProviderCard';
@@ -486,7 +486,7 @@ export function UpstreamManagement({
               <div className="mb-4 flex flex-wrap items-center gap-3 text-xs text-[var(--theme-fg-muted)]">
                 <label className="flex items-center gap-2">
                   {translate('settings.upstreamsMode')}
-                  <select
+                  <Select
                     className="host-input rounded-lg border border-[var(--theme-border)] p-2"
                     aria-label={translate('settings.upstreamsMode')}
                     value="direct"
@@ -495,7 +495,7 @@ export function UpstreamManagement({
                     <option value="direct">
                       {translate('settings.upstreamsDirect')}
                     </option>
-                  </select>
+                  </Select>
                 </label>
                 <span className="settings-hint hidden sm:inline">
                   {translate('settings.upstreamsDirectHint')}
@@ -885,11 +885,11 @@ export function UpstreamManagement({
               </label>
               <label className="block text-sm">
                 {translate('settings.upstreamsHarness')}
-                <select
+                <Select
                   className={field}
                   value={editor.harness}
-                  onChange={(e) =>
-                    setEditor({ ...editor, harness: e.target.value, model: '' })
+                  onValueChange={(selectedValue) =>
+                    setEditor({ ...editor, harness: selectedValue, model: '' })
                   }
                 >
                   {harnessOptions.map(([id, label]) => (
@@ -897,7 +897,7 @@ export function UpstreamManagement({
                       {label}
                     </option>
                   ))}
-                </select>
+                </Select>
               </label>
               <label className="block text-sm">
                 {translate('settings.baseURL')}
@@ -947,13 +947,13 @@ export function UpstreamManagement({
               {editor.harness === 'claude' && (
                 <label className="block text-sm">
                   {translate('settings.authentication')}
-                  <select
+                  <Select
                     className={field}
                     value={editor.authType ?? 'api_key'}
-                    onChange={(e) =>
+                    onValueChange={(selectedValue) =>
                       setEditor({
                         ...editor,
-                        authType: e.target.value,
+                        authType: selectedValue,
                         model: '',
                       })
                     }
@@ -964,25 +964,25 @@ export function UpstreamManagement({
                     <option value="bearer">
                       {translate('settings.bearerToken')}
                     </option>
-                  </select>
+                  </Select>
                 </label>
               )}
               {editor.harness === 'grok' && (
                 <>
                   <label className="block text-sm">
                     {translate('settings.aPIFormat')}
-                    <select
+                    <Select
                       className={field}
                       value={editor.apiType}
-                      onChange={(e) =>
-                        setEditor({ ...editor, apiType: e.target.value })
+                      onValueChange={(selectedValue) =>
+                        setEditor({ ...editor, apiType: selectedValue })
                       }
                     >
                       <option value="responses">Responses</option>
                       <option value="chat_completions">
                         {translate('settings.chatCompletions')}
                       </option>
-                    </select>
+                    </Select>
                   </label>
                   <label className="block text-sm">
                     {translate('settings.contextWindow')}
@@ -1032,17 +1032,17 @@ export function UpstreamManagement({
               <>
                 <label className="block text-sm">
                   {translate('settings.upstreamsHarness')}
-                  <select
+                  <Select
                     className={field}
                     value={importHarness}
-                    onChange={(e) => setImportHarness(e.target.value)}
+                    onValueChange={(selectedValue) => setImportHarness(selectedValue)}
                   >
                     {harnessOptions.map(([id, label]) => (
                       <option key={id} value={id}>
                         {label}
                       </option>
                     ))}
-                  </select>
+                  </Select>
                 </label>
                 <label className="block text-sm">
                   {translate('settings.name')}
