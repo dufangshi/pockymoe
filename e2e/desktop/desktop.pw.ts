@@ -25,8 +25,15 @@ function seeded(count: number): DesktopIndex {
   const activity = Object.fromEntries(devices.map(device => [device.id, { since: iso(86400000), hours: 24, threads: threads.filter(thread => thread.deviceId === device.id).map((thread, i) => ({ threadId: thread.id, turns: 4 + i * 2, activeMs: i < 4 ? 1200000 - i * 180000 : 0, totalMs: 3600000 + i * 60000, hourlyMs: Array.from({ length: 24 }, (_, hour) => hour % 4 === i % 4 ? 900000 : 0), lastPrompt: '检查线程地图的加载、导航与交互，确保所有主题下都清晰稳定。', tokenUsage: { totalTokens: 12000, inputTokens: 8000, cachedInputTokens: 2000, outputTokens: 4000, reasoningOutputTokens: 1000 }, priceEstimate: { currency: 'USD' as const, totalUsd: .36, inputUsd: .12, cachedInputUsd: .02, cacheWriteInputUsd: 0, outputUsd: .22 } })) }]));
   return { accountId: account.id, devices, workspaces, threads, activity, extras: {}, hydrated: true, refreshing: false, error: null, pulseKeys: [] };
 }
-async function setup(page: Page, count = 12, pack = 'classic', dark = false, locale = 'zh-CN') {
+async function setup(page: Page, count = 12, pack = 'classic', dark = false, locale = 'zh-CN', family = false) {
   const state = seeded(count), sockets = new Map<string, WebSocketRoute>();
+  if (family) {
+    const root = state.threads.find(thread => thread.key === 'device-0:t-3')!;
+    root.title = 'Running conversation with a long title that must not move its chevron';
+    for (const id of ['t-4', 't-5']) Object.assign(state.threads.find(thread => thread.key === `device-0:${id}`)!, {
+      rootThreadId: root.id, parentThreadId: root.id, status: 'running', activeTurnId: 'live', lastTurnCompletedAt: null, lastTurnStartedAt: iso(120000), title: `Agent ${id}`, requests: [],
+    });
+  }
   const pending = new Set(state.devices.map(device => device.id));
   await page.addInitScript(({ pack, dark, locale }) => {
     localStorage.setItem('remote-codex-theme-mode', dark ? 'dark' : 'light'); localStorage.setItem('pockymoe-theme-preset', pack); if (!localStorage.getItem('remote-codex.locale') && locale !== 'auto') localStorage.setItem('remote-codex.locale', locale);
@@ -170,3 +177,51 @@ test('desktop language follows navigator and saved preference, updates live, and
   await expect(page.getByRole('dialog', { name: /Details/ })).toContainText('Waiting for approval');
   await expect(page.getByRole('dialog', { name: /Details/ }).getByRole('button', { name: 'Open thread', exact: true })).toBeVisible();
 });
+
+
+test('running activity family opens the root, expands independently and keeps its root menu and chevron stable', async ({ page }) => {
+  const backend = await setup(page, 24, 'classic', false, 'zh-CN', true);
+  const running = page.locator('.desktop-map-scene [data-activity-group="running"]');
+  const row = running.locator('.desktop-activity-family-row[data-activity-key="device-0:t-3"]');
+  const toggle = row.locator('.desktop-activity-family-toggle'), link = row.locator('a');
+  await expect(row).toBeVisible();
+  await expect(link).toHaveAttribute('href', '/devices/device-0/threads/t-3');
+  const startUrl = page.url(), before = await toggle.boundingBox();
+  await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  const family = running.locator('.desktop-activity-family').filter({ has: page.locator('[data-activity-key="device-0:t-3"]') });
+  await expect(family.locator('.desktop-activity-row')).toHaveCount(4);
+  expect(page.url()).toBe(startUrl);
+  await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await link.hover();
+  const rootRequest = page.waitForRequest(request => /\/api\/threads\/t-3\?/.test(request.url()));
+  await row.locator('.recent-thread-actions').click();
+  await rootRequest;
+  await expect(page.locator('.recent-thread-menu-title')).toHaveText(backend.state.threads.find(thread => thread.key === 'device-0:t-3')!.title);
+  await page.keyboard.press('Escape');
+  // A live title update must not let the copy's intrinsic width squeeze the fold control.
+  backend.send('device-0', { type: 'thread.updated', threadId: 't-3', timestamp: new Date().toISOString(), payload: { title: 'Short' } });
+  await expect(link).toContainText('Short');
+  const after = await toggle.boundingBox();
+  expect(after!.x).toBeCloseTo(before!.x, 1); expect(after!.width).toBeCloseTo(before!.width, 1);
+  await link.click();
+  await expect(page).toHaveURL(/\/devices\/device-0\/threads\/t-3/);
+});
+
+for (const pack of ['classic', 'plum-pocket', 'terminal']) for (const dark of [false, true]) {
+  test(`activity family appearance ${pack} ${dark ? 'dark' : 'light'}`, async ({ page }) => {
+    await setup(page, 24, pack, dark, 'zh-CN', true);
+    const activity = page.locator('.desktop-map-scene .desktop-activity');
+    const row = activity.locator('.desktop-activity-family-row[data-activity-key="device-0:t-3"]');
+    const toggle = row.locator('.desktop-activity-family-toggle');
+    await expect(row).toBeVisible();
+    // Hover the title while keyboard focus remains on the independent fold control.
+    await toggle.focus(); await page.keyboard.press('Tab'); await page.keyboard.press('Shift+Tab');
+    await row.locator('a').hover();
+    await activity.locator('[data-activity-group="running"]').screenshot({ path: `${evidence}/activity-family-${pack}-${dark ? 'dark' : 'light'}-collapsed.png`, animations: 'disabled' });
+    await page.keyboard.press('Enter');
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    await activity.locator('[data-activity-group="running"]').screenshot({ path: `${evidence}/activity-family-${pack}-${dark ? 'dark' : 'light'}-expanded.png`, animations: 'disabled' });
+  });
+}
