@@ -309,7 +309,7 @@ function ShareDetail({ id, item, busy, actions }: { id: string; item: SharedItem
         <div><dt>{translate('sharing.createdAt')}</dt><dd>{formatDate(item.createdAt)}</dd></div>
         {item.expiresAt ? <div><dt>{translate('sharing.expiresAt')}</dt><dd>{formatDate(item.expiresAt)}</dd></div> : null}
       </dl>
-      {item.direction === 'out' ? <SignedShareDetails kind={item.source.kind} row={item.source.row} /> : null}
+      {item.direction === 'out' ? <SignedShareDetails kind={item.source.kind} row={item.source.row} onStopSharing={() => actions.onRevoke(item)} /> : null}
       {history ? (
         <section className="shared-history" aria-label={translate('sharing.recentAccess')}>
           {events.length ? (

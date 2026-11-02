@@ -62,6 +62,3 @@ export function announceSharingChanged() {
 
 /** What people type: case, spaces and dashes do not matter; O reads as 0 and
     I/L as 1 (as the relay compares). */
-export function normalizeSafetyCode(code: string) {
-  return code.toUpperCase().replace(/[\s-]/g, '').replace(/O/g, '0').replace(/[IL]/g, '1');
-}

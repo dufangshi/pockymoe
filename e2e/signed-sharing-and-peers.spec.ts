@@ -34,10 +34,10 @@ test('signed sharing, invite pins, revocation and account-certified peers', asyn
     if (!grant) throw new Error('SIGNED_SHARE_GRANT blocks recipient and revocation scenarios; no API-created grant substitutes for the real dialog');
     expect(grant).toMatchObject({ version: 1, scope: 'thread', threadId: d1.thread, threadAccess: 'read', grantee: { userId: recipient.userId } });
     expect(grant.grantee).toMatchObject({ accountKeyId: recipient.accountKeyId, accountPublicKey: recipient.publicKey });
-    // Active at once; the code can still be checked, by typing what the recipient sees.
+    // Active at once; the code can still be checked, by comparing with the recipient’s independent display.
     await expect(dialog.getByText('Safety code not checked', { exact: true })).toBeVisible();
-    await dialog.getByLabel('Safety code from signed-recipient').fill(recipient.code);
-    await dialog.getByRole('button', { name: 'Check code', exact: true }).click();
+    await expect(dialog.locator('.signed-share-code-confirmation code')).toHaveText(recipient.code);
+    await dialog.getByRole('button', { name: 'They match, confirm', exact: true }).click();
     await expect(dialog.getByText('Safety code checked', { exact: true })).toBeVisible();
     await expect(dialog.locator('code').filter({ hasText: recipient.code })).toHaveText(recipient.code);
     if (mobile) await screenshot(owner.page, info, 'v2-signed-share-dialog');
