@@ -139,6 +139,100 @@ pub fn claude_snapshot(raw: &Value, detail: &str) -> Option<Value> {
     Some(snapshot)
 }
 
+/// DSH's occupancy is a provider-anchored projection; composition is a separate
+/// native heuristic. Preserve their signed difference instead of rescaling it.
+pub fn dsh_snapshot(raw: &Value) -> Option<Value> {
+    let size = raw
+        .pointer("/pressure/contextWindow")?
+        .as_u64()
+        .filter(|v| *v > 0)?;
+    let used = raw.pointer("/pressure/projectedTokens")?.as_u64()?;
+    let breakdown = &raw["breakdown"];
+    let system = breakdown["systemTokens"].as_u64()?;
+    let tools = breakdown["toolsTokens"].as_u64()?;
+    let messages = breakdown["messageTokens"].as_u64()?;
+    let composition = system.checked_add(tools)?.checked_add(messages)?;
+    let mut totals = BTreeMap::from([
+        ("system_prompt", system),
+        ("tools", tools),
+        ("messages", messages),
+    ]);
+    let mut groups: BTreeMap<&str, Vec<Value>> = BTreeMap::new();
+    let nodes: Vec<_> = raw["nodes"].as_array().into_iter().flatten().collect();
+    let current_system = nodes
+        .iter()
+        .rev()
+        .find(|n| n["system"] == true && n["tokens"].as_u64().unwrap_or(0) > 0);
+    let nodes_total = nodes
+        .iter()
+        .try_fold(0u64, |sum, n| sum.checked_add(n["tokens"].as_u64()?));
+    // Refine only when these node prices match the native composition fold.
+    // A future DSH change otherwise still exposes its authoritative 3 buckets.
+    if nodes_total == system.checked_add(messages)
+        && current_system.map_or(0, |n| n["tokens"].as_u64().unwrap_or(0)) == system
+    {
+        for node in &nodes {
+            if current_system.is_some_and(|n| std::ptr::eq(*node, *n)) {
+                continue;
+            }
+            let id = match node["kind"].as_str() {
+                Some("agent-instructions") => "memory_files",
+                Some("skill-catalog" | "skill-invocation") => "skills",
+                Some("plugin")
+                    if node["plugin"] == "@deepseek-ai/dsh-system-prompt"
+                        && node["form"] == "snapshot" =>
+                {
+                    "runtime_context"
+                }
+                _ => continue,
+            };
+            let tokens = node["tokens"].as_u64().unwrap_or(0);
+            if tokens == 0 {
+                continue;
+            }
+            *totals.entry(id).or_default() += tokens;
+            *totals.get_mut("messages").unwrap() -= tokens;
+            let mut item = json!({"name":node["name"].as_str().unwrap_or(id),"tokens":tokens});
+            if let Some(path) = node["path"].as_str() {
+                item["path"] = json!(path);
+            }
+            groups.entry(id).or_default().push(item);
+        }
+    }
+    for tool in raw["tools"].as_array().into_iter().flatten() {
+        if let (Some(name), Some(tokens)) = (tool["name"].as_str(), tool["tokens"].as_u64()) {
+            let mut item = json!({"name":name,"tokens":tokens});
+            if let Some(server) = name
+                .strip_prefix("mcp__")
+                .and_then(|s| s.split_once("__").map(|p| p.0))
+            {
+                item["source"] = json!(format!("MCP · {server}"));
+            }
+            groups.entry("tools").or_default().push(item);
+        }
+    }
+    let mut categories: Vec<_> = totals
+        .into_iter()
+        .map(|(id, tokens)| json!({"id":id,"kind":"used","tokens":tokens,"precision":"estimated"}))
+        .collect();
+    categories.push(json!({"id":"free_space","kind":"free","tokens":size.saturating_sub(used)}));
+    let mut snapshot = json!({"provider":"deepseek","model":raw["model"],"source":"dshProjection","precision":"estimated",
+        "usedTokens":used,"windowTokens":size,"updatedAt":now_rfc3339(),"stale":raw["stale"] == true,
+        "compositionTokens":composition,"attributionDeltaTokens":i128::from(used)-i128::from(composition),
+        "asOfSeq":raw["asOfSeq"],"route":raw["route"],"categories":categories,
+        "groups":groups.into_iter().map(|(id,items)|json!({"id":id,"items":items})).collect::<Vec<_>>()});
+    if let Some(enabled) = raw["autoCompactEnabled"].as_bool() {
+        snapshot["autoCompactEnabled"] = json!(enabled);
+    }
+    if let Some(ratio) = raw["autoCompactRatio"]
+        .as_f64()
+        .filter(|v| *v > 0.0 && *v <= 1.0)
+    {
+        snapshot["autoCompactThreshold"] = json!((size as f64 * ratio).floor() as u64);
+    }
+    Some(snapshot)
+}
+
 fn tokenizer() -> &'static tiktoken_rs::CoreBPE {
     static BPE: OnceLock<tiktoken_rs::CoreBPE> = OnceLock::new();
     BPE.get_or_init(|| tiktoken_rs::o200k_base().expect("bundled tokenizer is valid"))
@@ -498,6 +592,50 @@ impl CodexTraceReader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn dsh_preserves_native_occupancy_and_signed_composition_difference() {
+        let mut raw = json!({"pressure":{"projectedTokens":200,"contextWindow":1000},
+            "breakdown":{"systemTokens":10,"toolsTokens":40,"messageTokens":50},
+            "asOfSeq":8,"model":"m","stale":false,"autoCompactEnabled":true,"autoCompactRatio":0.75,
+            "nodes":[{"seq":1,"system":true,"tokens":10},{"seq":2,"kind":"agent-instructions","tokens":20,"name":"AGENTS.md","path":"/repo/AGENTS.md"},{"seq":3,"kind":"skill-catalog","tokens":5,"name":"skill-catalog"},{"seq":4,"kind":"plugin","plugin":"@deepseek-ai/dsh-system-prompt","form":"snapshot","tokens":5,"name":"sandbox:policy"},{"seq":7,"tokens":20}],
+            "tools":[{"name":"mcp__docs__read","tokens":41}]});
+        let s = dsh_snapshot(&raw).unwrap();
+        assert_eq!(s["usedTokens"], 200);
+        assert_eq!(s["compositionTokens"], 100);
+        assert_eq!(s["attributionDeltaTokens"], 100);
+        assert_eq!(s["autoCompactThreshold"], 750);
+        let categories = s["categories"].as_array().unwrap();
+        assert_eq!(
+            categories
+                .iter()
+                .filter(|v| v["kind"] == "used")
+                .map(|v| v["tokens"].as_u64().unwrap())
+                .sum::<u64>(),
+            100
+        );
+        assert!(categories
+            .iter()
+            .any(|v| v["id"] == "messages" && v["tokens"] == 20));
+        assert!(categories
+            .iter()
+            .any(|v| v["id"] == "memory_files" && v["tokens"] == 20));
+        raw["pressure"]["projectedTokens"] = json!(80);
+        raw["stale"] = json!(true);
+        let s = dsh_snapshot(&raw).unwrap();
+        assert_eq!(s["usedTokens"], 80);
+        assert_eq!(s["attributionDeltaTokens"], -20);
+        assert_eq!(s["stale"], true);
+        assert!(!s["categories"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v["id"] == "unattributed"));
+        raw["nodes"] = json!([]);
+        let s = dsh_snapshot(&raw).unwrap();
+        assert_eq!(s["categories"].as_array().unwrap().len(), 4);
+        raw["pressure"] = json!({"pressureTokens":200,"contextWindow":1000});
+        assert!(dsh_snapshot(&raw).is_none());
+    }
     #[test]
     fn claude_deferred_is_not_occupancy_and_absent_diagnostics_stay_absent() {
         let s=claude_snapshot(&json!({"rawMaxTokens":1000,"totalTokens":100,"categories":[{"id":"messages","kind":"used","tokens":100},{"id":"system_tools_deferred","kind":"deferred","tokens":300}],"systemTools":null}),"full").unwrap();

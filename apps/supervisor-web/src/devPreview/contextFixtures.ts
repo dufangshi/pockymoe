@@ -111,6 +111,68 @@ const high: ContextInspectionSnapshotDto = {
     { id: 'system_tools_deferred', label: 'System tools (deferred)', kind: 'deferred', tokens: 15579, precision: 'reported' },
   ],
 };
+// Recorded from the isolated native DSH scripted-provider integration.
+const dsh: ContextInspectionSnapshotDto = {
+  provider: "deepseek",
+  model: "research",
+  source: "dshProjection",
+  precision: "estimated",
+  usedTokens: 15442,
+  windowTokens: 128000,
+  stale: false,
+  autoCompactEnabled: true,
+  autoCompactThreshold: 102400,
+  compositionTokens: 12937,
+  attributionDeltaTokens: 2505,
+  updatedAt: ago(2),
+  categories: [
+    {"id": "memory_files", "kind": "used", "precision": "estimated", "tokens": 966},
+    {"id": "messages", "kind": "used", "precision": "estimated", "tokens": 4307},
+    {"id": "runtime_context", "kind": "used", "precision": "estimated", "tokens": 106},
+    {"id": "skills", "kind": "used", "precision": "estimated", "tokens": 231},
+    {"id": "system_prompt", "kind": "used", "precision": "estimated", "tokens": 1140},
+    {"id": "tools", "kind": "used", "precision": "estimated", "tokens": 6187},
+    {"id": "free_space", "kind": "free", "tokens": 112558},
+  ],
+  groups: [
+    { id: "memory_files", items: [
+      {"name": "AGENTS.md", "path": "AGENTS.md", "tokens": 966},
+    ] },
+    { id: "runtime_context", items: [
+      {"name": "sandbox:policy, approval:policy", "tokens": 106},
+    ] },
+    { id: "skills", items: [
+      {"name": "skill-catalog", "tokens": 231},
+    ] },
+    { id: "tools", items: [
+      {"name": "bash", "tokens": 811},
+      {"name": "create_goal", "tokens": 175},
+      {"name": "edit", "tokens": 268},
+      {"name": "exit_plan_mode", "tokens": 138},
+      {"name": "get_goal", "tokens": 80},
+      {"name": "glob", "tokens": 231},
+      {"name": "grep", "tokens": 192},
+      {"name": "interrupt_agent", "tokens": 178},
+      {"name": "job_kill", "tokens": 115},
+      {"name": "job_list", "tokens": 42},
+      {"name": "job_output", "tokens": 208},
+      {"name": "list_agents", "tokens": 338},
+      {"name": "ralph", "tokens": 207},
+      {"name": "read", "tokens": 110},
+      {"name": "read_image", "tokens": 190},
+      {"name": "send_message", "tokens": 189},
+      {"name": "skill", "tokens": 94},
+      {"name": "subagent", "tokens": 364},
+      {"name": "subagent_fork", "tokens": 282},
+      {"name": "todo_write", "tokens": 336},
+      {"name": "update_goal", "tokens": 286},
+      {"name": "web_fetch", "tokens": 61},
+      {"name": "web_search", "tokens": 100},
+      {"name": "workflow", "tokens": 997},
+      {"name": "write", "tokens": 194},
+    ] },
+  ],
+};
 const usage = (used: number, window: number, seconds = 14, details?: ContextInspectionSnapshotDto): ThreadContextUsageDto => ({
   availability: 'available', tokensInContextWindow: used, modelContextWindow: window,
   remainingPercent: Math.round(100 * Math.max(0, window - used) / window), updatedAt: ago(seconds), ...(details ? { details } : {}),
@@ -132,6 +194,7 @@ export interface ContextPreviewScenario {
 const claudeModel = { id: 'claude-opus-5-5', name: 'Opus 5.5', agent: 'claude' };
 const codexModel = { id: 'gpt-6.1-sol', name: 'GPT-6.1 Sol', agent: 'codex' };
 export const contextPreviewScenarios: ContextPreviewScenario[] = [
+  { id: 'dsh', title: 'Recorded · DSH native composition and projected occupancy (scripted provider)', model: { id: '["context-research","research"]', name: 'DSH · Research', agent: 'deepseek' }, usage: usage(dsh.usedTokens, dsh.windowTokens, 2, dsh), summary: answer(dsh), settingsEnabled: true },
   { id: 'claude-summary', title: 'Recorded · Claude summary, Full count available', model: claudeModel, usage: usage(32898, 1_000_000, 14, claude('claudeSummary')), summary: answer(claude('claudeSummary')), full: answer({ ...claude('claudeFull'), updatedAt: ago(0) }), settingsEnabled: true },
   { id: 'claude-full', title: 'Recorded · Claude full count', model: claudeModel, usage: usage(32898, 1_000_000, 14, claude('claudeFull')), summary: answer(claude('claudeFull')), full: answer({ ...claude('claudeFull'), updatedAt: ago(0) }), settingsEnabled: true },
   { id: 'codex', title: 'Recorded · Codex local estimate with unattributed', model: codexModel, usage: usage(57159, 828_400, 3, codex), summary: answer(codex), settingsEnabled: true },

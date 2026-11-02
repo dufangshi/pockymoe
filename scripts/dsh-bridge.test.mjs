@@ -536,3 +536,85 @@ test('tool approvals reach Pockymoe for the root session and fail closed', async
   } finally { await stop(server, dsh); }
 });
 
+
+function contextFixture() {
+  let notify;
+  const events = [
+    { seq: 0, type: 'request/context', data: { provider: 'route', model: 'm1', contextWindow: 1000 } },
+    { seq: 1, type: 'system/message', data: { content: [{ text: 'private-system-text' }] } },
+    { seq: 2, type: 'user/message', data: { source: { kind: 'agent-instructions', changes: [{ action: 'add', path: '/repo/AGENTS.md' }] }, content: [{ text: 'private-instructions' }] } },
+    { seq: 3, type: 'assistant/message', data: { usage: { inputTokens: 200 }, content: [{ text: 'private-response' }] } },
+  ];
+  const values = { contextBreakdown: { systemTokens: 10, toolsTokens: 40, messageTokens: 50 }, contextPressure: { projectedTokens: 210, pressureTokens: 200, contextWindow: 1000 } };
+  const measurement = { nodes: [{ seq: 1, heuristicTokens: 10 }, { seq: 2, heuristicTokens: 30 }, { seq: 3, heuristicTokens: 20 }] };
+  const dsh = fakeDsh({
+    tokenMeter: { measure: () => measurement },
+    compaction: { config: { auto: true, thresholdRatio: 0.75, modelPolicies: [{ provider: 'route', model: 'm2', thresholdRatio: 0.6 }] } },
+    sessionProjections: {
+      onChanged: fn => { notify = fn; },
+      snapshot: () => ({ asOfSeq: events.length - 1, values }),
+    },
+  });
+  Object.assign(dsh.agent.session, {
+    snapshotEvents: from => events.slice(from), eventAt: seq => events[seq],
+    requestHeader: () => ({ config: { model: 'm1' }, tools: [{ name: 'mcp__docs__lookup', description: 'private-schema' }] }),
+  });
+  return { dsh, events, values, measurement, notify: (...args) => notify(...args) };
+}
+
+test('context is opt-in, root-only, coalesced, and exports counts and provenance only', async () => {
+  for (const enabled of [false, true]) {
+    const { server, port, connection } = await supervisor();
+    const { dsh, notify } = contextFixture();
+    try {
+      apply(dsh.ctx, { port, token: 't', contextInspection: enabled });
+      dsh.ready();
+      const socket = await connection, next = lines(socket);
+      assert.equal((await next()).hello.features.contextInspection, true);
+      notify({ id: 'child' }, 'contextPressure');
+      notify(dsh.agent.session, 'contextBreakdown');
+      notify(dsh.agent.session, 'contextPressure');
+      // The command reply fences the queued microtask, so disabled mode must
+      // produce no context notification and enabled mode exactly one.
+      socket.write(JSON.stringify({ id: 1, method: 'context', params: { sessionId: 'session-1' } }) + '\n');
+      if (enabled) {
+        const event = await next();
+        assert.equal(event.event, 'context');
+        assert.equal(event.sessionId, 'session-1');
+        assert.equal(event.value.pressure.projectedTokens, 210);
+      }
+      const reply = await next();
+      assert.equal(reply.id, 1);
+      if (!enabled) assert.equal(reply.result, null);
+      else {
+        assert.equal(reply.result.nodes[1].path, '/repo/AGENTS.md');
+        assert.equal(reply.result.stale, false);
+        assert.equal(reply.result.autoCompactRatio, 0.75);
+        assert.equal(JSON.stringify(reply).includes('private-'), false);
+      }
+    } finally { await stop(server, dsh); }
+  }
+});
+
+test('context follows native replacement and waits for usage on a changed route', async () => {
+  const { createContextReader } = await import('../crates/runtime/src/acp/deepseek-bridge.mjs');
+  const { dsh, events, values, measurement } = contextFixture();
+  const read = createContextReader(dsh.ctx);
+  assert.equal(read(dsh.agent).stale, false);
+  events.push({ seq: 4, type: 'request/context', data: { provider: 'route', model: 'm2', contextWindow: 2000 } });
+  values.contextPressure.contextWindow = 2000;
+  assert.equal(read(dsh.agent).stale, true);
+  assert.equal(read(dsh.agent).model, 'm2');
+  assert.equal(read(dsh.agent).autoCompactRatio, 0.6);
+  events.push({ seq: 5, type: 'assistant/attempt', data: { stream: [{ type: 'usage', usage: { inputTokens: 50 } }] } });
+  assert.equal(read(dsh.agent).stale, false);
+  // The native meter chooses retained nodes after replacement. The bridge
+  // must not resurrect the instruction file from the historical event log.
+  measurement.nodes = [{ seq: 1, heuristicTokens: 10 }, { seq: 5, heuristicTokens: 5 }];
+  values.contextBreakdown.messageTokens = 5;
+  values.contextPressure.projectedTokens = 55;
+  const compacted = read(dsh.agent);
+  assert.equal(compacted.pressure.projectedTokens, 55);
+  assert.equal(compacted.nodes.some(n => n.path), false);
+  assert.deepEqual(compacted.nodes.map(n => n.seq), [1, 5]);
+});

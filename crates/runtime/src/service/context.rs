@@ -20,7 +20,7 @@ impl Supervisor {
             .agent_id
             .as_deref()
             .unwrap_or(thread.provider.as_str());
-        let supported = matches!(provider, "claude" | "codex");
+        let supported = matches!(provider, "claude" | "codex" | "deepseek");
         let enabled = self.context_inspection.enabled();
         if !enabled || !supported {
             return Ok(

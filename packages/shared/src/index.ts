@@ -907,14 +907,19 @@ export interface ContextInspectionGroupDto {
 /** What a thread's context window holds, by category. Deferred categories are
     outside the window and never part of `usedTokens`. */
 export interface ContextInspectionSnapshotDto {
-  provider: 'codex' | 'claude';
+  provider: 'codex' | 'claude' | 'deepseek';
   model?: string | null;
-  source: 'claudeSummary' | 'claudeFull' | 'codexTrace';
+  source: 'claudeSummary' | 'claudeFull' | 'codexTrace' | 'dshProjection';
   precision: ContextInspectionPrecisionDto;
   usedTokens: number;
   windowTokens: number;
   updatedAt: string;
   stale?: boolean | null;
+  /** Native heuristic composition can differ from projected occupancy (DSH). */
+  compositionTokens?: number | null;
+  attributionDeltaTokens?: number | null;
+  asOfSeq?: number | null;
+  route?: { provider: string; model: string } | null;
   autoCompactThreshold?: number | null;
   autoCompactEnabled?: boolean | null;
   categories: ContextInspectionCategoryDto[];

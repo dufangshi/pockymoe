@@ -66,6 +66,22 @@ async fn context_inspection_is_opt_in_and_returns_saved_thread_snapshot() {
     let details = json(&client, client.get(&endpoint)).await;
     assert_eq!(details["snapshot"]["usedTokens"], 100);
     assert_eq!(details["availability"], "available");
+    // DSH is an ACP harness identified by agentId, not a top-level provider.
+    state
+        .db
+        .with(|c| {
+            c.execute(
+                "UPDATE threads SET agent_id='deepseek' WHERE id=?1",
+                [thread["id"].as_str().unwrap()],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    state.context_inspection.store(&session, json!({"provider":"deepseek","source":"dshProjection","precision":"estimated","usedTokens":100,"windowTokens":1000,"updatedAt":"2030-01-01T00:00:00Z","compositionTokens":120,"attributionDeltaTokens":-20,"categories":[{"id":"messages","kind":"used","tokens":120}]}));
+    let dsh = json(&client, client.get(format!("{endpoint}?detail=full"))).await;
+    assert_eq!(dsh["supported"], true);
+    assert_eq!(dsh["snapshot"]["source"], "dshProjection");
+    assert_eq!(dsh["snapshot"]["attributionDeltaTokens"], -20);
     assert_eq!(
         client
             .get(format!("{endpoint}?detail=invalid"))

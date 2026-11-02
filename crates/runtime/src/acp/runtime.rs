@@ -450,7 +450,7 @@ impl AcpRuntime {
             .clone()
             .filter(|s| s.enabled());
         if let Some(state) = &inspection {
-            if matches!(def.id.as_str(), "codex" | "claude") {
+            if matches!(def.id.as_str(), "codex" | "claude" | "deepseek") {
                 extra_env.push(("POCKYMOE_CONTEXT_INSPECTION", "1".into()));
             }
             if def.id == "codex" {
@@ -733,8 +733,14 @@ impl AcpRuntime {
         // Without a native composition the first (plain) attempt returns or fails.
         for composition in [native, None] {
             let mut server_command = command.to_string();
-            let launch =
-                super::deepseek::Launch::prepare(&mut server_command, composition.as_ref()).await?;
+            let launch = super::deepseek::Launch::prepare(
+                &mut server_command,
+                composition.as_ref(),
+                extra_env
+                    .iter()
+                    .any(|(key, value)| *key == "POCKYMOE_CONTEXT_INSPECTION" && value == "1"),
+            )
+            .await?;
             let (process, updates, requests) = tokio::time::timeout(
                 self.startup_timeout,
                 AcpProcess::spawn(&server_command, cwd, extra_env),
@@ -1574,10 +1580,36 @@ impl AgentRuntime for AcpRuntime {
         if adapter == "codex" {
             return Ok(state.cached(session_id));
         }
-        if adapter != "claude" {
+        if !process.context_inspection {
             return Ok(None);
         }
-        if !process.context_inspection {
+        if adapter == "deepseek" {
+            let bridge = self
+                .inner
+                .sessions
+                .lock()
+                .await
+                .values()
+                .find(|live| live.process.id == process.id && live.session_id == raw)
+                .and_then(|live| live.dsh.clone());
+            let Some(bridge) = bridge else {
+                return Ok(None);
+            };
+            let value = bridge.call("context", json!({"sessionId":raw})).await?;
+            let sessions = self.inner.sessions.lock().await;
+            if !sessions
+                .values()
+                .any(|live| live.process.id == process.id && live.session_id == raw)
+            {
+                return Ok(None);
+            }
+            let snapshot = crate::context_inspection::dsh_snapshot(&value);
+            if let Some(snapshot) = &snapshot {
+                state.store(session_id, snapshot.clone());
+            }
+            return Ok(snapshot);
+        }
+        if adapter != "claude" {
             return Ok(None);
         }
         let raw = tokio::time::timeout(
@@ -2087,7 +2119,7 @@ impl AgentRuntime for AcpRuntime {
                 let live = &sessions[&existing];
                 if cli_context_matches(&live.process.cli_env)
                     && (live.active.is_some()
-                        || !matches!(live.adapter_id.as_str(), "codex" | "claude")
+                        || !matches!(live.adapter_id.as_str(), "codex" | "claude" | "deepseek")
                         || self
                             .inner
                             .inspection
@@ -2735,6 +2767,17 @@ impl AgentRuntime for AcpRuntime {
                                 emit_usage(&bus, &input.thread_id, &input.turn_id, context, input.hidden);
                             }
                             let mut mapped = mapper.apply(&update);
+                            // DSH ACP's meter.totalTokens uses a different basis.
+                            // While detailed inspection is available, keep both the
+                            // strip and panel on the native next-prompt projection.
+                            if adapter_id == "deepseek" && mapped.usage.is_some() && !input.hidden {
+                                if let Ok(Some(snapshot)) = self.inspect_context(&input.provider_session_id, "summary").await {
+                                    if let Some(state) = &inspection {
+                                        crate::context_inspection::emit(state, &input.provider_session_id, &input.thread_id, &bus, snapshot);
+                                        mapped.usage = None;
+                                    }
+                                }
+                            }
                             if let Some(usage)=mapped.usage.as_ref().filter(|_|adapter_id=="codex") {
                                 super::context::native_usage(context_reader.as_ref(),usage,inspection.as_ref(),&input.provider_session_id,&input.thread_id,&bus);
                             }
@@ -2881,7 +2924,7 @@ impl AgentRuntime for AcpRuntime {
         if let Some(stop) = context_observer {
             stop.cancel();
         }
-        if adapter_id == "claude"
+        if matches!(adapter_id.as_str(), "claude" | "deepseek")
             && !input.hidden
             && inspection.as_ref().is_some_and(|s| s.enabled())
         {
@@ -3091,6 +3134,11 @@ impl AgentRuntime for AcpRuntime {
                 .try_lock()
                 .map_err(|_| anyhow!("conflict: The session is busy."))?;
             bridge.command(&raw_session, "/compact").await?;
+            if let Ok(Some(snapshot)) = self.inspect_context(session_id, "summary").await {
+                if let Some(state) = self.inner.inspection.read().unwrap().as_ref() {
+                    crate::context_inspection::emit(state, session_id, thread_id, &bus, snapshot);
+                }
+            }
             if let Some(live) = self.inner.sessions.lock().await.get_mut(session_id) {
                 live.context_thread_id = None;
             }
@@ -4016,6 +4064,33 @@ fn spawn_dsh_mux(inner: Arc<Inner>, process_id: String, bridge: Arc<super::deeps
                 Err(broadcast::error::RecvError::Closed) => break,
             };
             match event {
+                BridgeEvent::Context { session_id, value } => {
+                    let state = inner
+                        .inspection
+                        .read()
+                        .unwrap()
+                        .clone()
+                        .filter(|s| s.enabled());
+                    if let (Some(state), Some(snapshot)) =
+                        (state, crate::context_inspection::dsh_snapshot(&value))
+                    {
+                        let sessions = inner.sessions.lock().await;
+                        if let Some((scoped, live)) = sessions.iter().find(|(_, live)| {
+                            live.process.id == process_id && live.session_id == session_id
+                        }) {
+                            state.store(scoped, snapshot.clone());
+                            if let Some(active) = &live.active {
+                                crate::context_inspection::emit(
+                                    &state,
+                                    scoped,
+                                    &active.thread_id,
+                                    &active.bus.session_observation(),
+                                    snapshot,
+                                );
+                            }
+                        }
+                    }
+                }
                 BridgeEvent::Projection {
                     session_id,
                     key,

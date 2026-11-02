@@ -17,6 +17,7 @@ const PROTOCOL = 1;
 const MAX_LINE = 1 << 20;
 const STREAM_FLUSH_MS = 40;
 const PROJECTIONS = ['plan', 'goal', 'todos', 'permissions', 'agentPreset'];
+const CONTEXT_PROJECTIONS = ['contextBreakdown', 'contextPressure'];
 const COMMAND = /^\/([a-z][a-z0-9_-]*)(?=$|\s)/;
 // The native console proxy answers loopback authorities only; Relay port
 // previews already present 127.0.0.1:<port> (DNS-rebound names get 403).
@@ -42,6 +43,8 @@ const SETTINGS = {
 };
 
 export function apply(ctx, config) {
+  const inspectContext = config.contextInspection === true;
+  const contextReader = createContextReader(ctx);
   let socket = null;
   let questionId = 0;
   const questions = new Map();
@@ -150,7 +153,7 @@ export function apply(ctx, config) {
   });
   ctx.inject(['sessionProjections'], projectionCtx => {
     projectionCtx.sessionProjections.onChanged((session, key) => {
-      if (!PROJECTIONS.includes(key)) return;
+      if (!PROJECTIONS.includes(key) && !(inspectContext && CONTEXT_PROJECTIONS.includes(key))) return;
       // Coalesce one committed event's units; send validated client views.
       if (!changed.has(session)) queueMicrotask(() => {
         const keys = [...(changed.get(session) ?? [])];
@@ -159,7 +162,15 @@ export function apply(ctx, config) {
         if (!agent) return;
         const { values } = projectionCtx.sessionProjections.snapshot(session, keys);
         for (const [key, value] of Object.entries(values)) {
+          if (CONTEXT_PROJECTIONS.includes(key)) continue;
           send({ event: 'projection', sessionId: String(agent.id), key, value: value ?? null });
+        }
+        if (inspectContext && keys.some(key => CONTEXT_PROJECTIONS.includes(key))) {
+          // Diagnostic failures never fail a model call or suppress other projections.
+          try {
+            const value = contextReader(agent);
+            if (value) send({ event: 'context', sessionId: String(agent.id), value });
+          } catch { /* unsupported token-meter versions keep ordinary ACP usage */ }
         }
       });
       changed.set(session, (changed.get(session) ?? new Set()).add(key));
@@ -262,6 +273,7 @@ export function apply(ctx, config) {
     switch (method) {
       case 'snapshot': return snapshot(ctx);
       case 'session': return session(params.sessionId);
+      case 'context': return inspectContext ? contextReader(liveRoot(params.sessionId)) : null;
       case 'invoke': {
         const endpoint = `${params.namespace}/${params.method}`;
         if (!REMOTES.has(endpoint)) throw new Error(`Remote ${endpoint} is not available through Pockymoe`);
@@ -339,6 +351,63 @@ export function apply(ctx, config) {
     const url = new URL(connection.authenticatedUrl(`http://127.0.0.1:${port}/`));
     return { port, path: `${url.pathname}${url.search}` };
   }
+}
+
+// Read the native retained surface, never historical text or the family billing
+// accumulator. eventAt/requestHeader avoid rescanning the whole log per update.
+export function createContextReader(ctx) {
+  const cursors = new WeakMap();
+  return agent => {
+    const session = agent.session;
+    const meter = ctx.get('tokenMeter');
+    const projector = ctx.get('sessionProjections');
+    if (typeof meter?.measure !== 'function' || typeof projector?.snapshot !== 'function'
+      || typeof session.eventAt !== 'function' || typeof session.snapshotEvents !== 'function') return null;
+    const { asOfSeq, values } = projector.snapshot(session, CONTEXT_PROJECTIONS);
+    const pressure = values.contextPressure;
+    const breakdown = values.contextBreakdown;
+    if (!pressure || !breakdown) return null;
+    const measured = meter.measure(session);
+    const state = cursors.get(session) ?? { cursor: 0, route: null, usageRoute: null };
+    for (const event of session.snapshotEvents(state.cursor)) {
+      state.cursor = event.seq + 1;
+      if (event.type === 'request/context') state.route = event.data;
+      if ((event.type === 'assistant/message' || event.type === 'assistant/attempt')
+        && (event.data.usage || event.data.stream?.some(chunk => chunk.type === 'usage'))) {
+        state.usageRoute = state.route;
+      }
+    }
+    cursors.set(session, state);
+    const header = session.requestHeader?.();
+    const nodes = (measured.nodes ?? []).map(node => {
+      const event = session.eventAt(node.seq);
+      const message = event?.data?.message ?? event?.data;
+      const source = message?.source;
+      const paths = source?.kind === 'agent-instructions'
+        ? (source.changes ?? []).filter(change => change.action !== 'remove').map(change => change.path).filter(Boolean) : [];
+      return {
+        seq: node.seq, tokens: node.heuristicTokens, system: event?.type === 'system/message',
+        kind: source?.kind ?? null, plugin: source?.plugin ?? null, form: source?.form ?? null,
+        name: paths.length ? paths.join(', ') : source?.name ?? source?.sections?.map(section => section.name).join(', ') ?? source?.kind ?? null,
+        ...(paths.length === 1 ? { path: paths[0] } : {}),
+      };
+    });
+    const compaction = ctx.get('compaction')?.config;
+    const policy = compaction?.modelPolicies?.find(policy => policy.provider === state.route?.provider && policy.model === state.route?.model);
+    const compactRatio = policy?.thresholdRatio ?? compaction?.thresholdRatio;
+    const routeKey = route => route ? JSON.stringify([route.provider, route.model, route.contextWindow]) : null;
+    return {
+      asOfSeq, breakdown, pressure, nodes,
+      model: state.route?.model ?? header?.config?.model ?? null,
+      route: state.route ? { provider: state.route.provider, model: state.route.model } : null,
+      stale: routeKey(state.route) !== routeKey(state.usageRoute),
+      // Individual schemas use the native four-character heuristic. Framing
+      // and rounding mean their sum need not equal the native tools total.
+      tools: (header?.tools ?? []).map(tool => ({ name: tool.name, tokens: Math.ceil(JSON.stringify(tool).length / 4) })),
+      autoCompactEnabled: typeof compaction?.auto === 'boolean' ? compaction.auto : null,
+      autoCompactRatio: typeof compactRatio === 'number' ? compactRatio : null,
+    };
+  };
 }
 
 function turnStarted(projections, agent) {
@@ -554,6 +623,8 @@ async function snapshot(ctx) {
       runModes: Boolean(registry),
       console: Boolean(ctx.get('webServer') && ctx.get('connection')),
       fork: typeof ctx.get('agents')?.create === 'function' && Boolean(ctx.get('sessionQuery')),
+      contextInspection: typeof ctx.get('tokenMeter')?.measure === 'function'
+        && typeof ctx.get('sessionProjections')?.snapshot === 'function',
     },
   };
 }
