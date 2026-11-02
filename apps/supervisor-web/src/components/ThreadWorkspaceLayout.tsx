@@ -1,3 +1,5 @@
+import { RelayUserMenu } from './RelayUserMenu';
+import { relayModeActive } from '../lib/api';
 import { useHostScope } from '../lib/hostCapabilities';
 import {
   ThreadCards,
@@ -52,6 +54,7 @@ export function ThreadWorkspaceLayout({
     <SharedThreadWorkspaceLayout
       {...props}
       {...(props.workbench ? { workbench: workbenchUrls(props.workbench) } : {})}
+      {...(relayModeActive() && !hostScope ? { renderRailSettings: (open: () => void) => <RelayUserMenu rail onSettings={open} /> } : {})}
       restrictedNavigation={Boolean(hostScope)}
       deviceMonitor={hostScope ? null : <><DeviceMonitor key={deviceId} /><TourLauncherButton /></>}
       workspaceReturnHref={appUrl(props.workspaceReturnHref ?? currentWorkspacesHref())}

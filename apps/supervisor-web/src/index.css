@@ -2967,3 +2967,11 @@ main:has(.product-navigation) { padding-top: 0 !important; }
 @media (prefers-reduced-motion: reduce) { .workspace-opening { animation-duration: 1ms; } }
 .product-page-link { font-size: 13px; color: var(--theme-accent-solid); text-decoration: none; white-space: nowrap; }
 @media (hover: hover) { .product-page-link:hover { text-decoration: underline; } }
+
+/* Relay accounts replace the wide rail gear; local mode and phone navigation
+   retain it because local mode has no account (§1, docs/ui-principles.md). */
+.thread-ui-shell .matter-workbench button.relay-rail-avatar {
+  width: 40px; height: 40px; padding: 4px; border: 0; background: transparent;
+}
+.relay-rail-avatar-image { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; flex-shrink: 0; border-radius: 50%; overflow: hidden; background: var(--theme-surface-strong); border: 1px solid var(--theme-border); }
+.relay-account-attention { position: absolute; right: 3px; top: 3px; width: 7px; height: 7px; border-radius: 50%; background: var(--status-warning-fg); box-shadow: 0 0 0 2px var(--theme-panel); }
