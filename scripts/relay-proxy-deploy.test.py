@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
 import importlib.util
+import contextlib
+import io
+import json
+import socket
+from types import SimpleNamespace
 import ipaddress
 from pathlib import Path
 import stat
@@ -16,6 +21,7 @@ def load(name):
 
 
 configure = load('configure-relay-proxy')
+configure_env = lambda env, backup: configure.configure(env, backup, ['127.0.0.1'])
 audit = load('check-relay-forwarding')
 NETWORKS = [ipaddress.ip_network('192.0.2.0/24'), ipaddress.ip_network('2001:db8::/32')]
 
@@ -32,14 +38,14 @@ class ConfigureProxyTests(unittest.TestCase):
             original = b'HOST=127.0.0.1\nPRIVATE_VALUE=synthetic'
             env.write_bytes(original)
             env.chmod(0o640)
-            self.assertTrue(configure.configure(env, backup))
+            self.assertTrue(configure_env(env, backup))
             expected = original + b'\nPOCKYMOE_TRUSTED_PROXY_IPS=127.0.0.1\nPOCKYMOE_CLIENT_IP_HEADER=CF-Connecting-IP\n'
             self.assertEqual(env.read_bytes(), expected)
             self.assertEqual(backup.read_bytes(), original)
             self.assertEqual(stat.S_IMODE(backup.stat().st_mode), 0o600)
             self.assertEqual(stat.S_IMODE(backup.parent.stat().st_mode), 0o700)
             self.assertEqual(stat.S_IMODE(env.stat().st_mode), 0o640)
-            self.assertFalse(configure.configure(env, backup))
+            self.assertFalse(configure_env(env, backup))
             self.assertEqual(env.read_bytes(), expected)
             self.assertEqual(backup.read_bytes(), original)
 
@@ -49,13 +55,16 @@ class ConfigureProxyTests(unittest.TestCase):
                 with self.subTest(proxy=proxy, header=header), tempfile.TemporaryDirectory() as tmp:
                     root=Path(tmp); env,backup=root/'relay.env',root/'backup/relay.env'
                     original=(proxy+'\n'+header+'\n').encode();env.write_bytes(original)
-                    self.assertFalse(configure.configure(env,backup))
+                    if proxy.endswith('=') or header.endswith('='):
+                        with self.assertRaises(configure.ConfigError): configure_env(env,backup)
+                    else:
+                        self.assertFalse(configure_env(env,backup))
                     self.assertEqual(env.read_bytes(),original);self.assertEqual(backup.read_bytes(),original)
         for existing,missing in [('POCKYMOE_TRUSTED_PROXY_IPS=127.0.0.1','POCKYMOE_CLIENT_IP_HEADER=CF-Connecting-IP'),('POCKYMOE_CLIENT_IP_HEADER=CF-Connecting-IP','POCKYMOE_TRUSTED_PROXY_IPS=127.0.0.1')]:
             with tempfile.TemporaryDirectory() as tmp:
                 root=Path(tmp);env,backup=root/'relay.env',root/'backup/relay.env';env.write_text(existing+'\n')
-                self.assertTrue(configure.configure(env,backup));self.assertEqual(env.read_text(),existing+'\n'+missing+'\n')
-                self.assertFalse(configure.configure(env,backup));self.assertEqual(backup.read_text(),existing+'\n')
+                self.assertTrue(configure_env(env,backup));self.assertEqual(env.read_text(),existing+'\n'+missing+'\n')
+                self.assertFalse(configure_env(env,backup));self.assertEqual(backup.read_text(),existing+'\n')
 
     def test_refuses_symlink_and_insecure_existing_backup(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -65,13 +74,101 @@ class ConfigureProxyTests(unittest.TestCase):
             link = root / 'link'
             link.symlink_to(env)
             with self.assertRaises(ValueError):
-                configure.configure(link, root / 'backup')
+                configure_env(link, root / 'backup')
             backup = root / 'backup'
             backup.write_text('original')
             backup.chmod(0o644)
             with self.assertRaises(ValueError):
-                configure.configure(env, backup)
+                configure_env(env, backup)
             self.assertNotIn('TRUSTED_PROXY', env.read_text())
+
+
+class DockerPeerTests(unittest.TestCase):
+    def metadata(self, mode, source='172.22.0.5', gateway='172.22.0.1'):
+        return {'State': {'Running': True}, 'HostConfig': {'NetworkMode': mode},
+                'NetworkSettings': {'Networks': {'bridge': {'IPAddress': source, 'Gateway': gateway}}}}
+
+    def test_host_bridge_and_default_modes_and_gateway_are_not_guessed(self):
+        self.assertEqual(configure.metadata_peers(self.metadata('host'))[0], 'host')
+        for mode in ['bridge', 'default', 'private-network']:
+            _, peers = configure.metadata_peers(self.metadata(mode))
+            self.assertIn(ipaddress.ip_address('172.22.0.5'), peers)
+            self.assertIn(ipaddress.ip_address('172.22.0.1'), peers)
+        with patch.object(configure, 'container_metadata', return_value=configure.metadata_peers(self.metadata('bridge'))), patch.object(configure, 'observe_peer', return_value='172.22.0.5'):
+            self.assertEqual(configure.derive_peers('test-container', [{'host': 'host.docker.internal', 'port': 18791}]), ['172.22.0.5'])
+        with patch.object(configure, 'container_metadata', return_value=configure.metadata_peers(self.metadata('bridge'))), patch.object(configure, 'observe_peer', return_value='172.22.0.1'):
+            self.assertEqual(configure.derive_peers('test-container', [{'host': 'host.docker.internal', 'port': 18791}]), ['172.22.0.1'])
+
+    def test_kernel_socket_table_proves_actual_peer_including_mapped_ipv6(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            root.joinpath('tcp').write_text('header\n 0: 0100007F:4967 050016AC:9C40 01 rest\n')
+            self.assertEqual(configure.observed_peers(40000, 18791, root), {ipaddress.ip_address('172.22.0.5')})
+            self.assertEqual(configure.observed_peers(40001, 18791, root), set())
+            root.joinpath('tcp').write_text('header\n')
+            address = socket.inet_pton(socket.AF_INET6, '::ffff:172.22.0.5')
+            encoded = b''.join(address[i:i+4][::-1] for i in range(0, 16, 4)).hex().upper()
+            root.joinpath('tcp6').write_text(f'header\n 0: {"0"*32}:4967 {encoded}:9C40 01 rest\n')
+            self.assertEqual(configure.observed_peers(40000, 18791, root), {ipaddress.ip_address('172.22.0.5')})
+
+    def test_existing_wrong_peer_fails_before_edit_and_bridge_defaults_use_observed_peer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); env, backup = root/'relay.env', root/'backup/relay.env'
+            env.write_text('POCKYMOE_TRUSTED_PROXY_IPS=127.0.0.1\n')
+            with self.assertRaisesRegex(configure.ConfigError, '^peer-not-trusted$'):
+                configure.configure(env, backup, ['172.22.0.5'])
+            self.assertEqual(env.read_text(), backup.read_text())
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp); env, backup=root/'relay.env',root/'backup/relay.env'; env.write_text('HOST=127.0.0.1\n')
+            self.assertTrue(configure.configure(env,backup,['172.22.0.5']))
+            self.assertIn('POCKYMOE_TRUSTED_PROXY_IPS=172.22.0.5',env.read_text())
+            self.assertEqual(backup.read_text(),'HOST=127.0.0.1\n')
+
+    def test_observed_bridge_peer_and_host_source_are_checked_not_inferred(self):
+        class Child:
+            stdout = io.StringIO()
+            def terminate(self): pass
+            def wait(self, timeout): pass
+        class Ready:
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def register(self, *args): pass
+            def select(self, *args): return [True]
+        for mode, observed, source, allowed in [
+            ('bridge', '172.22.0.5', '172.22.0.5', True),
+            ('bridge', '172.22.0.1', '172.22.0.5', True),
+            ('bridge', '198.51.100.25', '172.22.0.5', False),
+            ('host', '127.0.0.1', '127.0.0.1', True),
+            ('host', '198.51.100.25', '198.51.100.25', True),
+            ('host', '198.51.100.26', '198.51.100.25', False),
+        ]:
+            child=Child();child.stdout=io.StringIO(json.dumps({'port':40000,'source':source})+'\n')
+            with patch.object(configure.subprocess,'Popen',return_value=child), patch.object(configure.selectors,'DefaultSelector',return_value=Ready()), patch.object(configure,'observed_peers',return_value={ipaddress.ip_address(observed)}):
+                if allowed:
+                    self.assertEqual(configure.observe_peer('test',{'host':'host.docker.internal','port':18791},mode,{ipaddress.ip_address('172.22.0.5'),ipaddress.ip_address('172.22.0.1')}),observed)
+                else:
+                    with self.assertRaisesRegex(configure.ConfigError,'^peer-not-container$'):
+                        configure.observe_peer('test',{'host':'host.docker.internal','port':18791},mode,{ipaddress.ip_address('172.22.0.5'),ipaddress.ip_address('172.22.0.1')})
+
+    def test_docker_inspection_reads_network_metadata_only(self):
+        result=SimpleNamespace(stdout=json.dumps(self.metadata('bridge')))
+        with patch.object(configure.subprocess,'run',return_value=result) as command:
+            mode,_=configure.container_metadata('test')
+        self.assertEqual(mode,'bridge')
+        args=command.call_args.args[0]
+        self.assertIn('--format',args)
+        self.assertNotIn('.Config.Env',args[args.index('--format')+1])
+        self.assertIn('.NetworkSettings.Networks',args[args.index('--format')+1])
+
+    def test_public_cli_errors_are_fixed_codes_even_if_exception_contains_private_details(self):
+        output=io.StringIO()
+        with patch.object(configure, 'derive_peers', side_effect=RuntimeError('private-host.example /private/path 172.22.0.5')), contextlib.redirect_stdout(output):
+            with tempfile.TemporaryDirectory() as tmp:
+                root=Path(tmp); plan=root/'plan';plan.write_text('[{"host":"private-host.example","port":18791}]')
+                self.assertEqual(configure.main(['--env',str(root/'env'),'--backup',str(root/'backup'),'--container','test','--upstreams',str(plan)]),1)
+        self.assertEqual(output.getvalue(),'FAIL: environment-configure-failed\n')
+        self.assertEqual(str(configure.ConfigError('private-host.example')), 'environment-configure-failed')
+
 
 
 class ForwardingTests(unittest.TestCase):
@@ -87,7 +184,7 @@ class ForwardingTests(unittest.TestCase):
                 self.check(value)
 
     def test_cdn_requires_edge_only_normalization_and_all_edge_ranges(self):
-        with self.assertRaisesRegex(audit.AuditError, 'Cloudflare detected without'):
+        with self.assertRaisesRegex(audit.AuditError, '^cdn-real-ip-missing$'):
             self.check(cf=True)
         policy = 'real_ip_header CF-Connecting-IP; set_real_ip_from 192.0.2.0/24; set_real_ip_from 2001:db8::/32;'
         self.assertEqual(self.check(http=policy, cf=True), 1)
@@ -115,6 +212,7 @@ proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
 proxy_pass $forward_scheme://$server:$port$request_uri;
 '''
         self.assertEqual(audit.audit(text, 'relay.example.com', False, NETWORKS), 1)
+        self.assertEqual(audit.audit('nginx: configuration test diagnostics\n'+text+'\nnginx: test successful\n', 'relay.example.com', False, NETWORKS), 1)
         with self.assertRaises(audit.AuditError):
             audit.audit(text.replace('proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;', ''), 'relay.example.com', False, NETWORKS)
 
@@ -148,6 +246,23 @@ proxy_pass $forward_scheme://$server:$port$request_uri;
         with patch.object(audit.urllib.request, 'build_opener', return_value=opener), self.assertRaises(audit.AuditError):
             audit.probe('https://relay.example.com', NETWORKS)
 
+    def test_explicit_header_cli_does_not_depend_on_unverifiable_public_probe(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp); conf=root/'nginx';plan=root/'plan'
+            conf.write_text(dump('set $server host.docker.internal; set $port 18791; set $forward_scheme http; location / { proxy_pass $forward_scheme://${server}:$port$request_uri; }'))
+            output=io.StringIO()
+            with patch.object(audit,'probe',side_effect=AssertionError('must not probe')), patch.object(audit,'official_networks',side_effect=AssertionError('must not fetch')), contextlib.redirect_stdout(output):
+                result=audit.main(['--nginx-dump',str(conf),'--origin','https://relay.example.com','--client-ip-header','CF-Connecting-IP','--upstreams-out',str(plan)])
+            self.assertEqual(result,0)
+            self.assertIn('WARN: origin-isolation-unverified',output.getvalue())
+            self.assertEqual(json.loads(plan.read_text()),[{'host':'host.docker.internal','port':18791}])
+            self.assertEqual(stat.S_IMODE(plan.stat().st_mode),0o600)
+            conf.write_text(dump('include /missing/private-host.example;'))
+            output=io.StringIO()
+            with contextlib.redirect_stdout(output):
+                self.assertEqual(audit.main(['--nginx-dump',str(conf),'--origin','https://relay.example.com','--client-ip-header','CF-Connecting-IP']),1)
+            self.assertEqual(output.getvalue(),'FAIL: include-unresolved\n')
+
     def test_workflow_orders_audit_backup_append_validation_and_service_stop(self):
         root = Path(__file__).resolve().parent.parent
         workflow = (root / '.github/workflows/relay-deploy.yml').read_text()
@@ -158,6 +273,9 @@ proxy_pass $forward_scheme://$server:$port$request_uri;
         self.assertIn('test -f "${backup}/relay-data/relay.env"', workflow)
         self.assertIn('restore the original pre-change environment', workflow)
         self.assertIn('--client-ip-header CF-Connecting-IP', workflow)
+        self.assertIn('--upstreams-out', workflow)
+        self.assertIn('--container', workflow)
+        self.assertNotIn("if ipaddress.ip_address('127.0.0.1') not in proxies", workflow)
         self.assertIn('POCKYMOE_CLIENT_IP_HEADER', workflow)
 
 

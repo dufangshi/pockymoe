@@ -119,14 +119,17 @@ proxy peer, so this corrects a pre-existing shared-proxy limit too. Login/recove
 MFA and other account limits remain keyed to account/identifier, not the proxy.
 
 The owner has confirmed this deployment path: client → Cloudflare → host reverse
-proxy or tunnel → Relay on loopback. Deployment uses the explicit visitor-header
-mode and checks that NPM preserves that header. It no longer requires Nginx to
-rewrite `$remote_addr` to the visitor first. In a single private pre-change backup
-step, it appends missing `POCKYMOE_TRUSTED_PROXY_IPS=127.0.0.1` and
-`POCKYMOE_CLIENT_IP_HEADER=CF-Connecting-IP` settings independently, preserving
-existing canonical or legacy values. Explicit incompatible values stop the
-preflight rather than being silently overwritten. Rollback restores the original
-environment.
+proxy or tunnel → Relay. Deployment preserves the visitor header; Nginx does not
+need to rewrite `$remote_addr` first. NPM may use host or Docker bridge networking,
+so the configure helper observes a short-lived container-to-Relay socket on the
+host instead of assuming loopback or blindly trusting the gateway. It privately
+backs up the environment before filling the missing trust setting with the exact
+observed peers and the missing `CF-Connecting-IP` mode. Existing canonical/legacy
+values and the original backup remain unchanged. Unobserved/mismatched peers stop
+with fixed failure codes; rollback restores the old environment. The outside
+CDN/origin-isolation property is a fixed warning, not an unverifiable deployment
+gate. Header preservation and peer verification remain strict. See
+[runtime deployment](github-runtime.md#portable-release-addresses) for details.
 
 **Origin bypass is outside this preflight's proof.** The origin must be restricted
 to Cloudflare or its authenticated tunnel, and the host proxy must preserve the
