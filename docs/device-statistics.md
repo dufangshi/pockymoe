@@ -238,3 +238,31 @@ export interface ThreadActivityAdditions {
 The statistics page is at `/desktop/devices`, in the desktop client and in a browser signed in to the relay. The devices page links to it.
 
 The account usage list shows only devices with usage for the chosen metric, highest first, eight per page. A device without statistics for the range, because it is offline or its Supervisor is older than 0.13.42, is counted below the list and not shown as zero.
+
+The hourly charts sum devices with valid hourly summaries independently. A legacy
+summary cannot blank capable siblings. Only when none have hourly summaries does
+the turns chart use the labelled runtime estimate; token/cost buckets remain
+unknown. Both captions name excluded older devices through an Info mark; a known
+empty range is not excluded. Offline/missing responses alone do not prove an old
+version.
+
+Device usage rows expand in place to model totals, then workspace totals. Models
+use the same metric ordering, token coverage and lower-bound/unknown pricing as
+the account table. Activity-only fallback devices explicitly have no model
+breakdown; current thread models never supply historical attribution. The Web no
+longer presents longest-thread rankings; the runtime summary API remains compatible.
+
+Display labels unwrap serialized JSON array IDs to their last string element and
+merge equal labels in both model tables. `<synthetic>` remains in totals as muted
+“System generated”. Full model labels are available through Info, with
+`MiddleName` retaining both ends of long labels. New turn admissions and usage-event ledger writes normalize
+these labels without changing opaque ACP session settings or rewriting old rows.
+
+Usage charts and rows share twelve `--usage-category-1` through
+`--usage-category-12` CSS tokens, with light/dark defaults that theme packs may
+override. Categories follow sorted IDs from the full account inventory, including
+cached and all-time model summaries, independently of range, metric and filters.
+Additional cycles mix the hue with foreground at different strengths. Tooltips
+and row labels keep the data readable without relying on colour. A newly learned
+or removed inventory ID can change its sorted position; unavailable historical
+models cannot be discovered from an activity-only runtime.

@@ -769,9 +769,9 @@ impl Supervisor {
             ).optional()?;
             let Some((model, effort, previous, pricing_model, tier)) = row else { return Ok(None); };
             let reported_model = raw.get("model").and_then(Value::as_str).filter(|model| !model.is_empty());
-            let model = reported_model.map(str::to_string).or(model);
+            let model = reported_model.map(crate::usage::model_name).or(model);
             let effort = raw.get("reasoningEffort").and_then(Value::as_str).map(str::to_string).or(effort);
-            let pricing_model = reported_model.map(str::to_string).or(pricing_model);
+            let pricing_model = reported_model.map(crate::usage::model_name).or(pricing_model);
             let tier = raw.get("pricingTierKey").and_then(Value::as_str).filter(|tier| matches!(*tier,"standard" | "fast")).map(str::to_string).or(tier);
             let previous = previous.and_then(|raw| serde_json::from_str::<Value>(&raw).ok());
             if let Some(speed) = previous.as_ref().and_then(|v| v.get("generationSpeed")) {
@@ -2952,7 +2952,7 @@ impl Supervisor {
                 params![
                     turn_id,
                     thread.id,
-                    turn_model,
+                    turn_model.as_deref().map(crate::usage::model_name),
                     turn_reasoning_effort,
                     prompt,
                     now,

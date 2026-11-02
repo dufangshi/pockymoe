@@ -25,15 +25,15 @@ export function summary(range: StatsRange, device = 0): StatsSummary {
     longestThreads: ['Build device overview and statistics', 'Polish desktop navigation', 'Review transport security'].map((title, i) => ({ threadId: `t-${i}`, workspaceId: 'w-0', title, durationMs: 240000 - i * 60000 })), activeThreads: 3, runningTurns: 3 };
 }
 
-export async function seed(page: Page, pack = 'classic', dark = false, unsupported = false, realShape = false, host = true) {
-  const devices = (realShape ? ['MacBook Pro', 'Windows Studio', 'Linux Server', 'wsl', 'LuisMini2', 'Build Box', 'Studio Linux', 'Mac mini', 'Office Windows', 'Archive', 'Empty device'] : ['MacBook Pro', 'Windows Studio', 'Linux Server']).map((name, i) => ({ id: `device-${i}`, ownerUserId: account.id, name, connected: i !== 2 && i !== 9, lastHeartbeatAt: new Date(Date.now() - (i === 2 ? 3 * 3600000 : 0)).toISOString() }));
+export async function seed(page: Page, pack = 'classic', dark = false, unsupported = false, realShape = false, host = true, usageShape = false) {
+  const devices = (usageShape ? ['MacBook Pro', 'Windows Studio', 'Linux Server', ...Array.from({ length: 9 }, (_, i) => `Usage device ${i + 3}`)] : realShape ? ['MacBook Pro', 'Windows Studio', 'Linux Server', 'wsl', 'LuisMini2', 'Build Box', 'Studio Linux', 'Mac mini', 'Office Windows', 'Archive', 'Empty device'] : ['MacBook Pro', 'Windows Studio', 'Linux Server']).map((name, i) => ({ id: `device-${i}`, ownerUserId: account.id, name, connected: i !== 2 && i !== 9, lastHeartbeatAt: new Date(Date.now() - (i === 2 ? 3 * 3600000 : 0)).toISOString() }));
   await page.addInitScript(({ pack, dark, host }) => {
     localStorage.setItem('remote-codex-theme-mode', dark ? 'dark' : 'light'); localStorage.setItem('pockymoe-theme-preset', pack); localStorage.setItem('remote-codex.locale', 'zh-CN');
     if (host) { const url = new URL(location.href); url.searchParams.set('desktopMockHost', '1'); history.replaceState(null, '', url); }
   }, { pack, dark, host });
   // Other delegates edit the shared tree during QA. Freeze HMR for each page;
   // a fresh case still loads the current source, without reloading mid-dialog.
-  await page.routeWebSocket(/^ws:\/\/127\.0\.0\.1:18924\/\?token=/, socket => socket.onMessage(() => undefined));
+  await page.routeWebSocket(/^ws:\/\/127\.0\.0\.1:\d+\/\?token=/, socket => socket.onMessage(() => undefined));
   // UI-only tests bypass the account-vault gate in the dev module graph. No
   // credentials are provisioned; authentication has its own upstream regressions.
   await page.route('**/src/components/AccountSessionGate.tsx*', route => route.fulfill({ contentType: 'application/javascript', body: 'export function AccountSessionGate({children}) { return children; }' }));
@@ -52,17 +52,17 @@ export async function seed(page: Page, pack = 'classic', dark = false, unsupport
     const url = new URL(route.request().url()); const deviceId = url.pathname.split('/')[3]!;
     const number = Number(deviceId.split('-').at(-1));
     if (url.pathname.endsWith('/transport/key')) { await route.fulfill({ status: 404, json: { code: 'not_found' } }); return; }
-    if (url.pathname.endsWith('/stats/summary')) { const data = realShape ? accountSummary(url.searchParams.get('range') as StatsRange, number) : summary(url.searchParams.get('range') as StatsRange, number); const origin = url.searchParams.get('origin'); if (origin && data.byOrigin) { const row = data.byOrigin.find(row => row.origin === origin)!; data.origin = row.origin; data.byModel = data.byModel.map(model => ({ ...model, turns: Math.round(model.turns * .1), tokens: model.tokens * .1, costUsd: model.costUsd! * .1 })); data.byWorkspace = data.byWorkspace.map(workspace => ({ ...workspace, tokens: workspace.tokens * .1, costUsd: workspace.costUsd! * .1 })); data.totals = { ...data.totals, turns: row.turns, inputTokens: row.tokens * .8, outputTokens: row.tokens * .2, costUsd: row.costUsd }; } await route.fulfill(unsupported || realShape && number >= 3 && number <= 9 ? { status: 404, json: { code: 'not_found', message: 'Unsupported' } } : { json: data }); return; }
+    if (url.pathname.endsWith('/stats/summary')) { const data = realShape ? accountSummary(url.searchParams.get('range') as StatsRange, number) : summary(url.searchParams.get('range') as StatsRange, number); if (usageShape) usageStatsShape(data, number); const origin = url.searchParams.get('origin'); if (origin && data.byOrigin) { const row = data.byOrigin.find(row => row.origin === origin)!; data.origin = row.origin; data.byModel = data.byModel.map(model => ({ ...model, turns: Math.round(model.turns * .1), tokens: model.tokens * .1, costUsd: model.costUsd! * .1 })); data.byWorkspace = data.byWorkspace.map(workspace => ({ ...workspace, tokens: workspace.tokens * .1, costUsd: workspace.costUsd! * .1 })); data.totals = { ...data.totals, turns: row.turns, inputTokens: row.tokens * .8, outputTokens: row.tokens * .2, costUsd: row.costUsd }; } await route.fulfill(unsupported || realShape && number >= 3 && number <= 9 ? { status: 404, json: { code: 'not_found', message: 'Unsupported' } } : { json: data }); return; }
     if (url.pathname.endsWith('/management/supervisor')) { await route.fulfill({ json: { runningVersion: realShape && number >= 3 && number <= 9 ? '0.12.73' : '0.13.41', installedVersion: '0.13.41', latestVersion: number === 1 || realShape && number >= 3 && number <= 9 ? '0.13.42' : '0.13.41', canUpdate: true } }); return; }
     if (url.pathname.endsWith('/management/harnesses')) { await route.fulfill({ json: [] }); return; }
     if (url.pathname.endsWith('/management/templates')) { await route.fulfill({ json: { harnesses: [], profiles: [] } }); return; }
     if (url.pathname.endsWith('/api/workspaces')) { await route.fulfill({ json: Array.from({ length: realShape && number === 3 ? 21 : 1 }, (_, i) => ({ id: `w-${i}`, hostId: 'host', absPath: '/fixture', label: 'Pockymoe', isFavorite: true, createdAt: new Date().toISOString(), lastOpenedAt: null })) }); return; }
     if (url.pathname.endsWith('/device/metrics')) { await route.fulfill({ json: hardware(number) }); return; }
     if (url.pathname.endsWith('/thread-activity')) { await route.fulfill({ json: { since: new Date(Date.now() - 86400000).toISOString(), hours: 24, threads: Array.from({ length: 6 }, (_, i) => ({ threadId: `t-${i}`, turns: 50 + i, activeMs: 3_600_000, totalMs: 7_200_000, hourlyMs: Array.from({ length: 24 }, (_, h) => (h % 4 + 1) * 60000), tokenUsage: { totalTokens: 300, inputTokens: 200, cachedInputTokens: 50, outputTokens: 100, reasoningOutputTokens: 0 }, pricePartial: true })) } }); return; }
-    const threads = Array.from({ length: realShape && number === 10 ? 0 : 6 }, (_, i) => ({ id: `t-${i}`, workspaceId: 'w-0', title: `Device statistics task ${i}`, provider: 'acp', agentId: 'codex', providerSessionId: null, source: 'supervisor', model: 'gpt-6.1', reasoningEffort: 'high', collaborationMode: 'default', approvalMode: 'yolo', isLoaded: true, summaryText: '', lastError: null, status: i < 3 ? 'running' : 'idle', isPinned: false, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), lastTurnStartedAt: new Date(Date.now() - 192000).toISOString(), lastTurnCompletedAt: i >= 3 ? new Date().toISOString() : null, activeTurnId: i < 3 ? `turn-${i}` : null }));
+    const threads = Array.from({ length: usageShape || realShape && number === 10 ? 0 : 6 }, (_, i) => ({ id: `t-${i}`, workspaceId: 'w-0', title: `Device statistics task ${i}`, provider: 'acp', agentId: 'codex', providerSessionId: null, source: 'supervisor', model: 'gpt-6.1', reasoningEffort: 'high', collaborationMode: 'default', approvalMode: 'yolo', isLoaded: true, summaryText: '', lastError: null, status: i < 3 ? 'running' : 'idle', isPinned: false, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), lastTurnStartedAt: new Date(Date.now() - 192000).toISOString(), lastTurnCompletedAt: i >= 3 ? new Date().toISOString() : null, activeTurnId: i < 3 ? `turn-${i}` : null }));
     if (url.pathname.endsWith('/api/threads')) { await route.fulfill({ json: threads }); return; }
     const id = url.pathname.match(/\/threads\/(t-\d+)/)?.[1];
-    if (id) { await route.fulfill({ json: { thread: threads.find(t => t.id === id), turns: [], pendingRequests: id === 't-3' ? [{ id: 'req', kind: 'requestUserInput', title: 'Choose an option', description: 'Choose how to proceed' }] : [], pendingSteers: [] } }); return; }
+    if (id) { await route.fulfill({ json: { thread: threads.find(t => t.id === id), turns: [], pendingRequests: !usageShape && id === 't-3' ? [{ id: 'req', kind: 'requestUserInput', title: 'Choose an option', description: 'Choose how to proceed' }] : [], pendingSteers: [] } }); return; }
     await route.fulfill({ json: {} });
   });
   await page.route('**/api/plugins*', route => route.fulfill({ json: [] }));
@@ -74,10 +74,10 @@ export async function seed(page: Page, pack = 'classic', dark = false, unsupport
     const tx = db.transaction('accounts', 'readwrite');
     tx.objectStore('accounts').put({ 'device-2': { version: '0.13.40', summaries: snapshot } }, `${location.origin}:${location.origin}:devices-test:${Intl.DateTimeFormat().resolvedOptions().timeZone}`);
     tx.oncomplete = () => db.close();
-  }, { snapshot: Object.fromEntries((['today', '7d', '30d', 'all'] as const).map(range => { const s = realShape ? accountSummary(range, 2) : summary(range, 2); s.generatedAt = new Date(Date.now() - 3 * 3600000).toISOString(); return [range, s]; })) });
+  }, { snapshot: Object.fromEntries((['today', '7d', '30d', 'all'] as const).map(range => { const s = realShape ? accountSummary(range, 2) : summary(range, 2); if (usageShape) usageStatsShape(s, 2); s.generatedAt = new Date(Date.now() - 3 * 3600000).toISOString(); return [range, s]; })) });
   await page.goto(host ? '/desktop/devices?desktopMockHost=1' : '/desktop/devices');
   await expect(page.getByTestId('desktop-devices')).toBeVisible();
-  await expect(page.getByRole('article', { name: 'Windows Studio', exact: true }).getByRole('button', { name: '有更新 0.13.42', exact: true })).toBeVisible();
+  if (!usageShape) await expect(page.getByRole('article', { name: 'Windows Studio', exact: true }).getByRole('button', { name: '有更新 0.13.42', exact: true })).toBeVisible();
 }
 
 
@@ -96,4 +96,39 @@ function accountSummary(range: StatsRange, device: number): StatsSummary {
   result.byOrigin = (['owner', 'guest', 'agent', 'automation'] as const).map((origin, i) => ({ origin, turns: Math.round(result.totals.turns * [ .5, .1, .3, .1 ][i]!), tokens: tokens * [ .5, .1, .3, .1 ][i]!, costUsd: cost * [ .5, .1, .3, .1 ][i]! }));
   if (device === 10) { result.totals.turns = 0; result.totals.completed = 0; result.totals.failed = 0; result.byModel = []; result.byWorkspace = []; result.daily = result.daily.map(row => ({ ...row, turns: 0, failed: 0, tokens: 0, costUsd: 0 })); if (result.hourly) result.hourly = result.hourly.map(row => ({ ...row, turns: 0, failed: 0, tokens: 0, costUsd: 0 })); }
   return result;
+}
+
+function usageStatsShape(data: StatsSummary, device: number) {
+  const names = ['["remote-codex","grok-4.7"]', 'grok-4.7', '<synthetic>', 'gpt-6.1-sol',
+    'provider-a-very-long-model-name-with-specialized-reasoning-and-version-2026-11-02',
+    ...Array.from({ length: 8 }, (_, i) => `Model ${i + 5}`)];
+  const selected = device === 0 ? names.slice(0, 5) : [names[device % names.length]!, names[(device + 2) % names.length]!];
+  const scale = data.daily.length;
+  data.byModel = selected.map((model, i) => ({ model, turns: (i + 1) * scale, tokens: (120000 + i * 2000) * scale, inputTokens: 100000 * scale, outputTokens: (20000 + i * 2000) * scale, costUsd: i === 1 ? null : (.2 + i) * scale, unpricedTokens: i === 1 ? 122000 * scale : 0 }));
+  const empty = device === 11;
+  const tokens = empty ? 0 : data.byModel.reduce((sum, row) => sum + row.tokens, 0);
+  const cost = empty ? 0 : data.byModel.reduce((sum, row) => sum + (row.costUsd ?? 0), 0);
+  const unpriced = empty ? 0 : data.byModel.reduce((sum, row) => sum + (row.unpricedTokens ?? 0), 0);
+  data.totals.tokens = tokens; data.totals.costUsd = cost; data.totals.unpricedTokens = unpriced;
+  data.totals.inputTokens = empty ? 0 : data.byModel.reduce((sum, row) => sum + (row.inputTokens ?? 0), 0);
+  data.totals.outputTokens = tokens - data.totals.inputTokens;
+  const distribute = (rows: Array<{ tokens: number; costUsd: number | null; unpricedTokens?: number }>) => {
+    const weight = rows.reduce((sum, row) => sum + row.tokens, 0);
+    const last = rows.findLastIndex(row => row.tokens > 0);
+    let assigned = 0;
+    rows.forEach((row, i) => {
+      const share = weight ? row.tokens / weight : 0;
+      row.tokens = i === last ? tokens - assigned : Math.floor(tokens * share); assigned += row.tokens;
+      row.costUsd = cost * share; row.unpricedTokens = Math.round(unpriced * share);
+    });
+  };
+  distribute(data.daily);
+  if (data.hourly) distribute(data.hourly);
+  data.byWorkspace = data.byWorkspace.map((row, i) => ({ ...row, tokens: Math.round(tokens * (5 - i) / 15), costUsd: cost * (5 - i) / 15, unpricedTokens: Math.round(unpriced * (5 - i) / 15) }));
+  if (device === 1 || empty) delete data.hourly;
+  if (empty) {
+    Object.assign(data.totals, { turns: 0, completed: 0, failed: 0, interrupted: 0, cachedTokens: 0, durationSamples: 0, avgDurationMs: null, p50DurationMs: null });
+    data.daily.forEach(row => { row.turns = 0; row.failed = 0; });
+    data.byModel = []; data.byWorkspace = []; data.activeThreads = 0; data.runningTurns = 0;
+  }
 }

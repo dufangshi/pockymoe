@@ -56,7 +56,7 @@ export function useDeviceStats(accountId: string, devices: readonly DesktopDevic
         }).catch(() => undefined);
         let unsupported = !supportsStats(capability!);
         if (!unsupported) {
-          await Promise.all([...new Set<StatsRange>(['today', '30d', range])].map(async selected => {
+          await Promise.all([...new Set<StatsRange>(['today', '30d', 'all', range])].map(async selected => {
             try {
               const summary = await read<StatsSummary>(device.id, `api/stats/summary?range=${selected}&tz=${encodeURIComponent(timeZone)}`, controller.signal);
               patch(device.id, { summaries: { ...latest.current[device.id]?.summaries, [selected]: summary }, partial: false, unavailable: false, ...(selected === 'all' ? { allUnsupported: false } : {}) });

@@ -18,6 +18,16 @@ pub(crate) struct Tokens {
     pub reasoning_output_tokens: u64,
 }
 
+/// Reporting labels can arrive as an opaque ACP provider/model tuple. Keep the
+/// protocol ID unchanged in session settings; persist only its model label in
+/// billing rows. Existing rows remain readable through the standalone Web fix.
+pub(crate) fn model_name(raw: &str) -> String {
+    serde_json::from_str::<Value>(raw)
+        .ok()
+        .and_then(|value| value.as_array()?.last()?.as_str().map(str::to_owned))
+        .unwrap_or_else(|| raw.to_owned())
+}
+
 fn is_zero(value: &u64) -> bool {
     *value == 0
 }
@@ -519,6 +529,14 @@ fn turn_models(value: &Value) -> Vec<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn model_name_unwraps_acp_tuple_without_changing_plain_or_invalid_ids() {
+        assert_eq!(model_name(r#"["remote-codex","grok-4.7"]"#), "grok-4.7");
+        for raw in ["grok-4.7", "<synthetic>", "[]", "[1,2]", "[bad"] {
+            assert_eq!(model_name(raw), raw);
+        }
+    }
 
     #[test]
     fn public_usage_lists_the_models_the_turn_switched_between() {

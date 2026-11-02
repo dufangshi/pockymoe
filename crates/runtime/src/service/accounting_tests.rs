@@ -187,3 +187,34 @@ async fn accounting_codex_resume_counter_reset_and_late_acp_fallback_do_not_rebi
     assert_eq!(tokens(), 600);
     assert_eq!(s.stats_summary("all", "UTC").unwrap()["totals"]["turns"], 1);
 }
+
+#[tokio::test]
+async fn accounting_persists_normalized_turn_and_usage_model_labels() {
+    let (_dir, s, id) = setup().await;
+    let raw_model = r#"["remote-codex","gpt-6.1-sol"]"#;
+    let mut thread = s.get_thread(&id).unwrap();
+    thread.model = Some(raw_model.into());
+    s.run_turn(
+        thread,
+        "model label fixture".into(),
+        None,
+        None,
+        vec![],
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let turn = s.load_turns_meta(&id).unwrap()[0].clone();
+    assert_eq!(turn.model.as_deref(), Some("gpt-6.1-sol"));
+    s.persist_usage_event(&pockymoe_protocol::ThreadEventEnvelope {
+        event_type: pockymoe_protocol::ThreadEventType::RuntimeUsageUpdated,
+        thread_id: id.clone(),
+        timestamp: now_rfc3339(),
+        payload: json!({"turnId":turn.id,"usage":{"model":raw_model,"total":{"inputTokens":100,"outputTokens":10}}}),
+    })
+    .unwrap();
+    let summary = s.stats_summary("all", "UTC").unwrap();
+    assert_eq!(summary["byModel"][0]["model"], "gpt-6.1-sol");
+    assert_eq!(summary["totals"]["tokens"], 110);
+}

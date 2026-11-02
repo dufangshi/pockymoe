@@ -36,9 +36,8 @@
 .pd-card-bottom .pd-sparkline { height: 22px; max-width: 140px; }
 .pd-card-bottom .pd-sparkline svg { height: 22px; }
 .pd-page .pd-info { color: var(--theme-fg-muted); display: inline-flex; vertical-align: middle; flex: none; }
-.pd-info button svg { display: none; }
-.pd-info button::before { content: 'ⓘ'; font: 12px/14px sans-serif; }
-.pd-page .pd-info button { width: 18px; height: 18px; padding: 0; }
+.pd-info svg { display: none; }
+.pd-info::before { content: 'ⓘ'; font: 12px/14px sans-serif; }
 .pd-select { display: flex; gap: 6px; align-items: center; justify-content: space-between; min-width: 90px; max-width: 180px; height: 26px; padding: 0 7px; background: transparent; border: 1px solid var(--theme-border); border-radius: var(--pd-radius); font-size: 11px !important; }
 .pd-select > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pd-select > svg { flex: none; }
@@ -65,7 +64,7 @@
 .pd-usage-table thead th { color: var(--theme-fg-muted); font-size: 10px; }
 .pd-usage-table tbody tr[data-active] { background: var(--theme-hover); }
 .pd-usage-table tfoot th, .pd-usage-table tfoot td { border-bottom: 0; font-weight: 600; }
-.pd-model-name { display: flex; align-items: center; gap: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pd-model-name { display: flex; align-items: center; gap: 6px; min-width: 0; white-space: nowrap; }
 .pd-model-name i { flex: none; width: 6px; height: 6px; border-radius: 1px; }
 .pd-table-empty { text-align: center !important; color: var(--theme-fg-muted); padding: 24px 0 !important; }
 .pd-device-usage { padding-top: 10px; }
@@ -76,7 +75,7 @@
 .pd-usage-device-row b, .pd-workspace-usage b { text-align: right; font-size: 11px; font-weight: 500; }
 .pd-horizontal-track { display: block; height: 8px; background: var(--theme-hover); border-radius: 1px; overflow: hidden; }
 .pd-horizontal-track i { display: block; height: 100%; opacity: .65; border-radius: inherit; }
-.pd-workspace-usage { margin-left: 23px; }
+.pd-workspace-usage { margin-left: 0; }
 .pd-workspace-usage a { display: grid; grid-template-columns: minmax(90px, 150px) 1fr 85px; align-items: center; gap: 7px; height: 26px; padding: 0 4px; color: var(--theme-fg-muted); text-decoration: none; font-size: 11px; }
 .pd-workspace-usage a > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pd-workspace-usage .pd-horizontal-track { height: 5px; }
@@ -127,15 +126,6 @@
 
 .pd-stat-summary { display: flex; gap: 14px; margin-left: auto; color: var(--theme-fg-muted); font-size: 10px; }
 .pd-stat-summary > span { display: inline-flex; align-items: center; gap: 4px; }
-.pd-longest { border-top: 1px solid var(--theme-border); margin-top: 10px; font-size: 11px; }
-.pd-longest summary { display: flex; gap: 5px; align-items: center; height: 28px; list-style: none; cursor: pointer; user-select: none; }
-.pd-longest summary::-webkit-details-marker { display: none; }
-.pd-longest[open] summary > svg { transform: rotate(90deg); }
-.pd-longest small { font-size: 10px; color: var(--theme-fg-muted); margin-left: auto; }
-.pd-longest a { display: flex; align-items: center; gap: 8px; color: inherit; text-decoration: none; min-height: 28px; padding-left: 17px; }
-.pd-longest a > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
-.pd-longest a b { font-size: 10px; font-weight: 500; }
-@media (hover: hover) { .pd-longest a:hover { background: var(--theme-hover); } }
 
 @container (max-width: 700px) { .pd-charts-grid { grid-template-columns: 1fr; gap: 6px; } }
 
@@ -166,3 +156,39 @@
   .pd-page-header { height: auto; min-height: 44px; flex-wrap: wrap; padding-block: 6px; row-gap: 8px; }
   .pd-header-actions .pd-add-device { min-height: 44px; }
 }
+
+.pd-device-details { box-sizing: border-box; margin-left: 23px; padding: 4px 4px 10px 0; overflow-anchor: none; }
+.pd-device-details h4 { margin: 8px 0 3px; font-size: 10px; font-weight: 500; color: var(--theme-fg-muted); }
+.pd-device-models th:first-child { width: 45%; }
+.pd-device-models th:last-child { width: auto; }
+.pd-model-name .middle-name { min-width: 0; flex: 1; }
+.pd-model-name[data-muted] { color: var(--theme-fg-muted); }
+.pd-chart-excluded { display: flex; align-items: center; gap: 4px; }
+@media (max-width: 639px) {
+  .pd-device-models thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .pd-device-models, .pd-device-models tbody { display: block; width: 100%; }
+  .pd-device-models tr { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border-bottom: 1px solid var(--theme-border); padding-block: 6px; }
+  .pd-device-models th:first-child { grid-column: 1 / -1; width: auto; padding-bottom: 6px; }
+  .pd-device-models td, .pd-device-models th { border: 0; min-width: 0; }
+  .pd-device-models td::before { content: attr(data-label); display: block; color: var(--theme-fg-muted); font-size: 9px; }
+  .pd-usage-device-row, .pd-workspace-usage a { min-height: 44px; height: auto; }
+  .pd-pager button { width: 40px; height: 40px; }
+}
+
+.pd-device-details :is(table, section, a) { box-sizing: border-box; }
+
+@media (max-width: 639px) {
+  .pd-account-models .pd-usage-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .pd-account-models .pd-usage-table, .pd-account-models .pd-usage-table :is(tbody, tfoot) { display: block; width: 100%; }
+  .pd-account-models .pd-usage-table tr { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-bottom: 1px solid var(--theme-border); padding-block: 4px; }
+  .pd-account-models .pd-usage-table th:first-child { grid-column: 1 / -1; width: auto; }
+  .pd-account-models .pd-usage-table :is(th, td) { border: 0; min-width: 0; }
+  .pd-account-models .pd-usage-table td::before { content: attr(data-label); display: block; color: var(--theme-fg-muted); font-size: 9px; }
+  .pd-usage-table td .pd-info { margin-left: 2px; }
+}
+.pd-page .pd-usage-table button.pd-info.error-mark { margin-right: 11px; }
+
+/* Reserve the Info slot even on fully priced rows, so digits share a right edge. */
+.pd-usage-number { display: inline-grid; grid-template-columns: minmax(0, 1fr) 31px; align-items: center; gap: 2px; width: 100%; }
+.pd-usage-number > span:first-child { text-align: right; }
+.pd-usage-number > span:last-child { text-align: left; min-height: 20px; }

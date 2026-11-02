@@ -1,6 +1,8 @@
+import { useUsageColors } from './UsageColors';
+import { Info } from './UsagePanel';
 import { useState, type ReactNode } from 'react';
 import { formatNumber, useI18n } from '@pockymoe/thread-ui/i18n';
-import { compact, deviceColor, duration, exact, money, turns, type StatsSummary } from './model';
+import { compact, duration, exact, money, turns, type StatsSummary } from './model';
 
 export interface ChartSource { deviceId: string; name: string; summary: StatsSummary }
 function Tip({ children, beside }: { children: ReactNode; beside?: { from: number; to: number } | undefined }) {
@@ -28,11 +30,12 @@ const hourLabel = (hour: number) => `${String(hour).padStart(2, '0')}:00`;
 const hourRange = (hour: number) => `${hourLabel(hour)}–${hourLabel(hour + 1)}`;
 const showTick = (index: number, length: number, hourly: boolean) => hourly ? index % 6 === 0 || index === 23 : index === 0 || index === length - 1 || length > 7 && index % 7 === 0 && index < length - 3;
 
-function StackedChart({ sources, labels, ticks, label, hourly = false, runtime = false }: {
-  sources: HourlyChartSource[]; labels: string[]; ticks: string[]; label: string; hourly?: boolean; runtime?: boolean;
+function StackedChart({ sources, labels, ticks, label, hourly = false, runtime = false, excluded = [] }: {
+  sources: HourlyChartSource[]; labels: string[]; ticks: string[]; label: string; hourly?: boolean; runtime?: boolean; excluded?: string[];
 }) {
   const { t } = useI18n();
   const [selected, setSelected] = useState<number | null>(null);
+  const { deviceColor } = useUsageColors(sources.map(source => source.deviceId));
   const value = (source: HourlyChartSource, index: number) => source.values[index] ?? null;
   const maximum = Math.max(0, ...labels.map((_, i) => sources.reduce((sum, s) => sum + (value(s, i) ?? 0), 0)));
   const known = sources.some(source => source.values.some(value => value !== null));
@@ -48,7 +51,7 @@ function StackedChart({ sources, labels, ticks, label, hourly = false, runtime =
         const barWidth = Math.min(44, step * .62);
         return <g key={period} tabIndex={0} aria-label={t('desktopDevices.chartValue', { period, values: sources.map(s => `${s.name} ${format(value(s, i))}`).join(t('desktopDevices.listSeparator')) })} onFocus={() => setSelected(i)} onBlur={() => setSelected(null)} onMouseEnter={() => setSelected(i)}>
           <rect x={left + i * step} width={step} y={16} height={baseline - 8} fill={selected === i ? 'var(--theme-hover)' : 'transparent'} rx={3} />
-          {sources.map(source => { const height = (value(source, i) ?? 0) / scale * 124; stack += height; return <rect key={source.deviceId} data-chart-bar x={left + i * step + (step - barWidth) / 2} y={baseline - stack} width={barWidth} height={height} rx={Math.min(2, height / 2)} fill={deviceColor(source.deviceId)} />; })}
+          {sources.map(source => { const height = (value(source, i) ?? 0) / scale * 124; stack += height; return <rect key={source.deviceId} data-chart-bar x={left + i * step + (step - barWidth) / 2} y={baseline - stack} width={barWidth} height={height} rx={Math.min(2, height / 2)} fill={deviceColor(source.deviceId)} stroke="var(--theme-panel)" strokeWidth="0.6" />; })}
           {showTick(i, labels.length, hourly) ? <text x={left + (i + .5) * step} y={176} textAnchor="middle" className="pd-axis-label">{ticks[i]}</text> : null}
         </g>;
       })}
@@ -63,6 +66,7 @@ function StackedChart({ sources, labels, ticks, label, hourly = false, runtime =
       </Tip>;
     })() : null}
     <div className="pd-legend">{sources.map(s => <span key={s.deviceId}><i style={{ background: deviceColor(s.deviceId) }} />{s.name}</span>)}</div>
+    <ExcludedDevices names={excluded} />
     {runtime ? <div className="pd-chart-caption">{t('desktopDevices.runtimeCaption')}</div> : hourly ? <div className="pd-chart-caption">{t('desktopDevices.hourlyCaption')}</div> : null}
   </div>;
 }
@@ -70,13 +74,13 @@ export function TurnsChart({ sources, dates }: { sources: ChartSource[]; dates: 
   const { t } = useI18n();
   return <StackedChart sources={sources.map(s => ({ deviceId: s.deviceId, name: s.name, values: dates.map(date => s.summary.daily.find(day => day.date === date)?.turns ?? null) }))} labels={dates} ticks={dates.map(date => date.slice(5).replace('-', '/'))} label={t('desktopDevices.dailyTurnsChart')} />;
 }
-export function HourlyActivityChart({ sources, runtime = false }: { sources: HourlyChartSource[]; runtime?: boolean }) {
+export function HourlyActivityChart({ sources, runtime = false, excluded = [] }: { sources: HourlyChartSource[]; runtime?: boolean; excluded?: string[] }) {
   const { t } = useI18n();
-  return <StackedChart sources={sources} labels={Array.from({ length: 24 }, (_, hour) => hourRange(hour))} ticks={Array.from({ length: 24 }, (_, hour) => hourLabel(hour))} label={runtime ? t('desktopDevices.hourlyRuntimeChart') : t('desktopDevices.hourlyTurnsChart')} hourly runtime={runtime} />;
+  return <StackedChart sources={sources} labels={Array.from({ length: 24 }, (_, hour) => hourRange(hour))} ticks={Array.from({ length: 24 }, (_, hour) => hourLabel(hour))} label={runtime ? t('desktopDevices.hourlyRuntimeChart') : t('desktopDevices.hourlyTurnsChart')} hourly runtime={runtime} excluded={excluded} />;
 }
 
 export interface UsageBucket { date: string; tokens: number | null; costUsd: number | null; pricePartial?: boolean; unpricedTokens?: number; partialUsageTurns?: number }
-export function UsageChart({ daily, mode, hourly = false }: { daily: UsageBucket[]; mode: 'tokens' | 'cost'; hourly?: boolean }) {
+export function UsageChart({ daily, mode, hourly = false, excluded = [] }: { daily: UsageBucket[]; mode: 'tokens' | 'cost'; hourly?: boolean; excluded?: string[] }) {
   const { t } = useI18n();
   const [selected, setSelected] = useState<number | null>(null);
   const values = daily.map(day => mode === 'tokens' ? day.tokens : day.costUsd);
@@ -100,6 +104,12 @@ export function UsageChart({ daily, mode, hourly = false }: { daily: UsageBucket
       })}
     </svg>
     {selected !== null && daily[selected] ? <Tip beside={{ from: (left + selected * step) / 620, to: (left + (selected + 1) * step) / 620 }}><strong>{daily[selected]!.date}</strong>{format(values[selected]!, Boolean(daily[selected]!.pricePartial || daily[selected]!.unpricedTokens || daily[selected]!.partialUsageTurns))}</Tip> : null}
+    <ExcludedDevices names={excluded} />
     <div className="pd-chart-caption">{t(hourly ? mode === 'tokens' ? 'desktopDevices.hourlyTokenCaption' : 'desktopDevices.hourlyCostCaption' : mode === 'tokens' ? 'desktopDevices.dailyTokenCaption' : 'desktopDevices.dailyCostCaption')}</div>
   </div>;
+}
+
+export function ExcludedDevices({ names }: { names: string[] }) {
+  const { t } = useI18n();
+  return names.length ? <div className="pd-chart-caption pd-chart-excluded">{t('desktopDevices.hourlyExcluded', { count: names.length })}<Info message={names.join(t('desktopDevices.listSeparator'))} /></div> : null;
 }
