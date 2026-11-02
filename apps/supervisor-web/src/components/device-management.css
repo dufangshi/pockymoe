@@ -1,0 +1,16 @@
+.device-management-dialog [data-slot='dialog-close'] { display: grid; place-items: center; min-width: 40px; min-height: 40px; top: 8px; right: 8px; }
+.device-management-dialog [data-slot='dialog-header'] { padding-right: 32px; text-align: left; }
+[data-slot='dialog-overlay']:has(+ .device-management-dialog) { backdrop-filter: blur(4px); }
+@media (max-width: 639px) {
+  .device-management-dialog[data-slot='dialog-content'] {
+    top: auto !important; bottom: 0 !important; left: 0 !important; right: 0 !important;
+    translate: none !important; transform: none !important;
+    width: 100% !important; max-width: 100% !important;
+    max-height: min(88dvh, calc(100dvh - var(--desktop-title-height, 0px))) !important;
+    border-bottom: 0; border-radius: 16px 16px 0 0;
+    padding-bottom: calc(1.5rem + env(safe-area-inset-bottom));
+  }
+  .device-management-dialog[data-state='open'] { animation: management-sheet-in 160ms ease-out both; }
+}
+@keyframes management-sheet-in { from { margin-bottom: -24px; opacity: 0; } to { margin-bottom: 0; opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .device-management-dialog[data-state='open'] { animation: none; } }

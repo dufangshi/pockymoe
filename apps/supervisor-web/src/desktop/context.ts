@@ -3,6 +3,7 @@ import type { MatterWorkbenchOptions } from '@pockymoe/thread-ui';
 export interface NavigationActions { currentKey: string; threads?: readonly import('@pockymoe/thread-ui').WorkbenchThread[]; onToggleThreadFavorite(key: string): Promise<void>; onThreadRenamed(key: string, title: string): Promise<void>; onThreadRemoved(key: string): Promise<void> }
 export interface DesktopSurfaceContextValue {
   multiWindow: boolean;
+  routeReady(path: string): void;
   workspaceControlsEnabled?: boolean;
   openMap(): void;
   revealInMap(key: string): void;
@@ -22,3 +23,7 @@ export function hasWorkspaceContext(path: string, search = '') {
   if (thread) return !['new', 'import'].includes(thread);
   return /^\/(?:devices\/[^/]+\/)?threads$/.test(path) && Boolean(new URLSearchParams(search).get('workspaceId'));
 }
+
+/** Default true for ordinary Web/mobile routes; only a retained desktop outlet pauses. */
+export const RetainedRouteActiveContext = createContext(true);
+export const useRetainedRouteActive = () => useContext(RetainedRouteActiveContext);

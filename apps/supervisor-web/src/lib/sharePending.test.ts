@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { request } from './api';
-import { normalizeSafetyCode, onSharePending, pendingShare, sharePendingHref } from './sharePending';
+import { onSharePending, pendingShare, sharePendingHref } from './sharePending';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -40,9 +40,4 @@ it('ignores other refusals and malformed shares', async () => {
   expect(listener).not.toHaveBeenCalled();
   expect(pendingShare({ ...refusal.share, kind: 'other' })).toBeNull();
   expect(pendingShare({ ...refusal.share, id: 7 })).toBeNull();
-});
-
-it('reads a typed code the way the relay compares it', () => {
-  expect(normalizeSafetyCode(' vdnz-db8z 3hkc ')).toBe('VDNZDB8Z3HKC');
-  expect(normalizeSafetyCode('O1 il')).toBe('0111');
 });

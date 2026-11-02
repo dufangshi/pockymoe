@@ -195,6 +195,12 @@ window; otherwise the browser asks for the password with the reason.
 
 ## Browsers
 
+Signing out or changing accounts also clears decrypted thread-detail, pending
+prefetch, relay-access and thread-list caches. In-flight responses from the old
+session cannot refill them; account changes rebuild the routed UI, including
+retained desktop threads. Other windows receive the identity boundary through a
+same-origin storage notification.
+
 At sign-in, a browser without a browser key creates one and has the account key
 sign a browser certificate for it. The browser registers the certificate with the
 relay at every sign-in (`POST /relay/account/browsers`, labelled with the browser
@@ -933,18 +939,19 @@ substitute the recipient's key.
    confirms. The page reads the portal every 4 seconds and then opens it. The
    recipient's other access is unaffected, and presence still answers for the
    waiting row.
-3. The owner sees the row flagged **Waiting for safety code**. Its details say
-   the recipient can't open it yet and ask for the code the recipient sends; the
-   expected code is not shown. The browser compares the typed code with the code
-   of the key the relay returns for the recipient (`GET
-   /relay/{shares|grants}/{id}/recipient-account`). A mismatch says what it may
-   mean: a typo, or, if the recipient confirms the code, a replaced key (do not
-   approve; revoke the share). A match records the recipient's key as verified
-   in this browser, on a protected device signs the grant (**Review device
-   grant**, the password if the unlock window is closed) and sends it to the
-   device, then posts `POST /relay/{shares|grants}/{id}/approve {safetyCode}`.
-   The relay compares the code with the recipient's account key again, clears
-   `pending` and stores `verifiedAt`.
+3. The owner sees the row flagged **Waiting for safety code**. Its details show
+   the recipient's code as Pockymoe holds it, large and monospaced in groups of
+   four, with a copy button and **Confirm with {name} that the safety code they
+   see matches this one.** (**请和 {name} 确认，对方看到的安全码与这里一致**).
+   **They match, confirm** (**一致，确认**) records the same browser-local
+   verified recipient key as before, signs and sends the protected device grant
+   after the existing review/unlock, and posts the displayed code to
+   `POST /relay/{shares|grants}/{id}/approve {safetyCode}`. The relay still compares
+   it with the recipient account key, clears `pending` and stores `verifiedAt`.
+   **They do not match** (**不一致**) records no verification, signature or
+   approval; it warns that the recipient key may have been replaced and offers
+   **Stop sharing** (**停止共享**) through the existing cancel-focused danger confirmation, including inside
+   a share dialog, and revocation path. There is no input field or local typed-code comparison.
 4. A recipient who has not secured their account has no account key and no
    code. Their waiting page sends them to Account settings; the owner's details
    say the same. On an unprotected device the owner can **Approve without a
@@ -962,25 +969,46 @@ check was on keep waiting until approved.
 | | Relay | Protected device |
 | --- | --- | --- |
 | Waiting row | Refuses with `share_pending`; the row gives no access, no browser registration, no preview and does not count as shared for control ([peers](#peers)) | Holds no grant for it: the owner's browser signs only at approval, so the device refuses (`grant_denied`) even a request the relay forwards |
-| The code | Compares it with the recipient's account key at `approve` | Trusts the grant the owner signed after the browser compared the code |
+| The code | Compares it with the recipient's account key at `approve` | Trusts the grant the owner signed after the owner confirmed the codes match |
 
 An unprotected device relies on the relay for both. A compromised relay can mark
 a row active without the code, report the setting as off or return another
 recipient key: a protected device still has no signed grant for an unapproved
-row, the owner's typed code does not match a substituted key, and with the
+row. With the check on, an owner who compares the displayed code against the
+recipient's independent display can detect a substituted key. With the
 setting reported off the browser signs only with the explicit unverified
 acknowledgement. The verification that signing relies on is this browser's own
-record; the relay's `verifiedAt` only quiets the **Safety code not checked**
-reminder in other browsers.
+record; the relay's `verifiedAt` is informational only and never marks a check made
+by this browser or client. Status and reminders use only the local record.
+
+The confirmed recipient account is snapshotted and passed to grant signing. A
+fresh relay recipient response must match both its key ID and public key; any
+mismatch aborts before review/signing/device PUT and is shown as an error. The
+device grant always contains the confirmed snapshot, never a replacement key.
+
+**Security property changed.** Previously, the browser required knowledge of a
+code supplied independently by the recipient and checked the typed value. Now it
+shows its candidate code and trusts the owner's explicit assertion of an
+out-of-band comparison. A user can confirm without learning any independent
+code; relay code equality alone no longer demonstrates that comparison. Key
+substitution is still detectable if the owner actually compares both displays
+through a trusted channel. A blind confirmation can pin and authorize a
+substituted key. Pending-access enforcement, key-change reconciliation,
+cryptographic signatures, pinning and device/relay enforcement are unchanged.
+
+**安全属性变化。** 过去必须输入从对方独立取得的代码并由软件比较；现在显示候选代码，
+信任主人明确确认已通过可信渠道核对双方屏幕。直接点击不再证明掌握了独立代码，盲目确认
+可能 pin 并授权被替换的密钥。实际核对仍能发现替换；等待确认、密钥变化重新核对、签名、
+pinning、设备与 Relay 的强制检查保持不变。
 
 **Existing shares.** Rows from before the check have `pending = 0` and stay
 active whatever the setting. On protected devices, those whose code nobody
 checked show **Safety code not checked** while the check is on: the recipient
-finds the code in Account settings, and the owner types it in the
-details (`approve` on an active row only records `verifiedAt`). A share that a
+finds the code in Account settings, and the owner confirms that it matches
+the code displayed in the details (`approve` on an active row only records `verifiedAt`). A share that a
 protected device does not hold, for example one made before the device was
-protected, shows **{recipient} can't open this now** with one action: type the
-recipient's code, or **Sign onto device** when this browser checked the code
+protected, shows **{recipient} can't open this now** with one action: confirm
+the displayed recipient code, or **Sign onto device** when this browser checked the code
 before or the check is off.
 
 **Reconciliation.** Share details compare relay rows with device grants and show
@@ -988,7 +1016,7 @@ one state: a relay row without a grant (**{recipient} can't open this now**,
 above); a grant with other permissions (**{device} still has the old
 permissions**: the recipient gets the signed ones until **Sign current
 permissions**); a grant for another recipient key (**{recipient}'s account key
-changed**: the device refuses them until the owner types the new code and signs,
+changed**: the device refuses them until the owner compares and confirms the new code and signs,
 or with the check off signs after the review). A grant without a relay row (the
 share was revoked or left at the relay while the device was unreachable) is
 listed above my shares: "The share with {recipient} has ended, but {device}

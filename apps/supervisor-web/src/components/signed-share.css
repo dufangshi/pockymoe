@@ -17,15 +17,8 @@
 .signed-share-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
 .signed-share-entry { display: grid; gap: 6px; margin-top: 2px; min-width: 0; }
 .signed-share-entry-label { font-size: 11.5px; font-weight: 600; color: var(--theme-fg-soft, var(--theme-fg-muted)); }
-.signed-share-input { flex: 1 1 10rem; min-width: 0; max-width: 16rem; min-height: 2.5rem; padding: 0 10px; border-radius: 6px; border: 1px solid var(--theme-border); background: var(--theme-panel); color: var(--theme-fg); font-family: var(--font-mono, ui-monospace, monospace); font-size: 14px; letter-spacing: .08em; text-transform: uppercase; }
-.signed-share-input::placeholder { color: var(--theme-fg-muted); opacity: .6; }
-.signed-share-input:focus-visible { outline: 2px solid var(--theme-accent-ring, var(--theme-accent)); outline-offset: 1px; }
-.signed-share-input[aria-invalid='true'] { border-color: var(--status-danger-fg); }
 .signed-share-problem { margin: 0; color: var(--status-danger-fg); line-height: 1.5; overflow-wrap: anywhere; }
 .signed-share-own-code { font-family: var(--font-mono, ui-monospace, monospace); font-size: 16px; font-weight: 600; letter-spacing: .08em; }
-@media (max-width: 639px) {
-  .signed-share-input { max-width: none; font-size: 16px; }
-}
 
 /* Why a device shared for control cannot reach the owner's other devices (SharedControlReasons). */
 .shared-control-reasons { display: grid; gap: 6px; font-size: 12.5px; line-height: 1.5; color: var(--theme-fg-soft, var(--theme-fg-muted)); overflow-wrap: anywhere; }
@@ -36,3 +29,7 @@
 .shared-control-what { font-weight: 600; color: var(--theme-fg); }
 .shared-control-who { font-size: 12px; }
 .shared-control-link { justify-self: start; min-height: 32px; display: inline-flex; align-items: center; font-weight: 600; color: var(--theme-accent-strong, var(--theme-accent)); text-decoration: underline; text-underline-offset: 2px; }
+
+.signed-share-code-confirmation { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+.signed-share-code-confirmation code { font-family: var(--font-mono, monospace); font-size: 24px; line-height: 1.5; letter-spacing: .06em; white-space: pre-wrap; overflow-wrap: anywhere; }
+.signed-share-stop { color: var(--status-danger-fg); background: transparent; border: 0; min-height: 40px; padding: 8px 0; text-decoration: underline; }

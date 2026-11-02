@@ -236,10 +236,15 @@ async function approveDeviceGrant(
   })))
     throw new Error(translate('sharing.signCancelled'));
 }
-export async function syncDeviceGrant(kind: ShareKind, source: ShareRow) {
+export async function syncDeviceGrant(kind: ShareKind, source: ShareRow, confirmedAccount?: PublicAccount) {
   const row = structuredClone(source);
+  // Capture the exact key whose safety code the owner saw before awaiting relay IO.
+  const expected = confirmedAccount ? await validatePublicAccount(structuredClone(confirmedAccount)) : undefined;
   if (!(await protectedForSharing(row))) return;
-  const account = await recipientAccount(kind, row.id);
+  const returned = await recipientAccount(kind, row.id);
+  if (expected && (returned.accountKeyId !== expected.accountKeyId || returned.accountPublicKey !== expected.accountPublicKey))
+    throw new Error(translate('sharing.stateChangedText', { name: row.targetUsername, device: row.deviceName }));
+  const account = expected ?? returned;
   const grants = await deviceGrants(row.deviceId);
   const existing = grants.find(
     (g) => g.relayRef.kind === kind && g.relayRef.id === row.id,
