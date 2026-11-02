@@ -32,3 +32,11 @@ it('shows a failed connection rather than attempting sign-in against the Web ori
   vi.mocked(initializeMobileConnection).mockRejectedValueOnce(new Error('Unable to connect'));
   await expect(openOAuth('google')).rejects.toThrow('Unable to connect'); expect(request).not.toHaveBeenCalled();
 });
+
+it.each(['/relay/auth/oauth/github/start?mobileId=public-id', 'https://other.example.com/relay/auth/oauth/google/start?mobileId=public-id'])('rejects an unexpected system-auth start target: %s', async path => {
+  const external = vi.fn();
+  vi.mocked(connectedMobileHost).mockReturnValue({ auth: { openExternal: external } } as never);
+  vi.mocked(request).mockResolvedValue({ path, callbackUrl: 'remotecodex://auth/callback' });
+  await expect(openOAuth('google')).rejects.toThrow();
+  expect(external).not.toHaveBeenCalled();
+});

@@ -24,7 +24,8 @@ export async function openOAuth(provider: OAuthProviderName, inviteCode?: string
   const prepared = await request<{ path: string; callbackUrl: string }>('relay/auth/mobile/prepare', { method: 'POST', body: JSON.stringify({ provider, proofHash, inviteCode }) }, { auth: 'none' });
   const start = new URL(relayUrl(prepared.path), location.origin);
   const id = start.searchParams.get('mobileId');
-  if (!id || start.origin !== new URL(relayUrl('relay/auth/session'), location.origin).origin || start.pathname !== `/relay/auth/oauth/${provider}/start`) throw new Error(translate('auth.ui.oauthExpired', { provider: label }));
+  const expectedStart = new URL(relayUrl(`relay/auth/oauth/${provider}/start`), location.origin);
+  if (!id || start.origin !== expectedStart.origin || start.pathname !== expectedStart.pathname) throw new Error(translate('auth.ui.oauthExpired', { provider: label }));
   const result = await auth.openExternal(start.toString());
   if (!result) throw new Error(translate('auth.ui.oauthCancelled', { provider: label }));
   const callback = new URL(result.callbackUrl);
