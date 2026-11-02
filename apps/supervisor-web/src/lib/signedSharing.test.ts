@@ -27,6 +27,7 @@ import {
   safetyCode,
   grantForRow,
   recipientVerified,
+  recipientAccount,
   confirmRecipient,
   reconcileGrants,
   sharingMutation,
@@ -407,4 +408,19 @@ it('reviews the current account key again instead of reusing a stale verified st
   expect(state.approve.mock.calls[0]![0]).toMatchObject({ recipientVerified: false });
   expect(state.approve.mock.calls[0]![0].description).toContain(await safetyCode(changed.accountKeyId));
   expect(state.request.mock.calls.some(c => c[1]?.method === 'PUT')).toBe(false);
+});
+
+it('refuses a recipient key changed by the relay after the displayed key was confirmed', async () => {
+  const displayed = await recipientAccount('share', row.id);
+  await confirmRecipient(displayed, row.targetUserId);
+  const original = state.request.getMockImplementation()!;
+  state.request.mockImplementation((path, ...args) => path.endsWith('/recipient-account') ? Promise.resolve(otherAccount) : original(path, ...args));
+  await expect(syncDeviceGrant('share', row, displayed)).rejects.toThrow(/key/);
+  expect(state.approve).not.toHaveBeenCalled();
+  expect(state.request.mock.calls.some(call => call[1]?.method === 'PUT')).toBe(false);
+  expect(await recipientVerified(otherAccount, row.targetUserId)).toBe(false);
+});
+it('signs the confirmed snapshot when the relay returns the same account key', async () => {
+  const saved = await syncDeviceGrant('share', row, account);
+  expect(saved?.grantee).toMatchObject(account);
 });

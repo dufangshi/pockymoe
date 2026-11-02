@@ -88,7 +88,7 @@ export function shareState(row: ShareRow, check: ShareCheck | undefined): ShareS
   const state = check.entry?.state;
   if (state === 'missing' || state === 'different' || state === 'changed') return state;
   if (!check.account) return null;
-  return check.verifiedHere || row.verifiedAt ? 'verified' : 'unverified';
+  return check.verifiedHere ? 'verified' : 'unverified';
 }
 
 const STATE_ICON = { pending: Hourglass, missing: ShieldAlert, different: ShieldAlert, changed: ShieldAlert, noAccount: ShieldAlert, unverified: ShieldQuestion, verified: ShieldCheck };
@@ -175,12 +175,12 @@ export function SignedShareDetails({
     const signs = Boolean(check?.protectedDevice) && state !== 'unverified';
     run(async () => {
       await confirmRecipient(account, row.targetUserId);
-      if (signs) await syncDeviceGrant(kind, row);
+      if (signs) await syncDeviceGrant(kind, row, account);
       await approveRelayShare(kind, row.id, confirmedCode);
       if (row.pending === true) setApproved(true);
     });
   }
-  const sign = () => run(() => syncDeviceGrant(kind, row));
+  const sign = () => run(() => syncDeviceGrant(kind, row, check?.account ?? undefined));
   const approveWithoutCode = () => run(async () => {
     await approveRelayShare(kind, row.id, null);
     setApproved(true);

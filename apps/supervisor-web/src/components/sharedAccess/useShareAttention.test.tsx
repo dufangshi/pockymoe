@@ -30,6 +30,7 @@ beforeEach(() => {
 });
 
 it('flags a share waiting for the code, an unchecked one, and rechecks only when a share changes', async () => {
+  state.verified.mockImplementation(async (_account, userId) => userId === 'u-checked');
   const rows = [share('waiting', { pending: true, deviceConnected: false }), share('unchecked'), share('checked', { verifiedAt: 'then' })];
   const { result, rerender } = renderHook(({ list }) => useShareAttention(list), { initialProps: { list: items(rows) } });
   await waitFor(() => expect(result.current.attention.size).toBe(2));
@@ -47,4 +48,9 @@ it('flags a share waiting for the code, an unchecked one, and rechecks only when
   // Approved at the relay: the flag goes.
   rerender({ list: items([share('waiting', { deviceConnected: false, verifiedAt: 'now' }), rows[1]!, rows[2]!]) });
   await waitFor(() => expect(result.current.attention.has('share:waiting')).toBe(false));
+});
+
+it('does not let a relay timestamp suppress the local verification reminder', async () => {
+  const { result } = renderHook(() => useShareAttention(items([share('claimed', { verifiedAt: 'relay-claim' })])));
+  await waitFor(() => expect(result.current.attention.get('share:claimed')).toBe('unverified'));
 });

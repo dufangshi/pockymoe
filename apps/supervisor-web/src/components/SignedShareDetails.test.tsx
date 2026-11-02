@@ -158,7 +158,7 @@ it('says once why the recipient cannot open a share the device has not signed, a
   expect(screen.getByText(/Laptop is protected and only accepts shares you signed for it/)).toBeVisible();
   // Not checked in this browser and the check is on: the code signs it.
   confirmCode();
-  await waitFor(() => expect(state.sync).toHaveBeenCalledWith('share', row));
+  await waitFor(() => expect(state.sync).toHaveBeenCalledWith('share', row, account));
   expect(state.approve).toHaveBeenCalledWith('share', 'share', CODE);
 });
 
@@ -175,7 +175,7 @@ it.each([
   const button = await screen.findByRole('button', { name: action });
   expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
   fireEvent.click(button);
-  await waitFor(() => expect(state.sync).toHaveBeenCalledWith('share', row));
+  await waitFor(() => expect(state.sync).toHaveBeenCalledWith('share', row, account));
   expect(state.approve).not.toHaveBeenCalled();
 });
 
@@ -187,8 +187,9 @@ it('asks for the new code when the recipient’s key changed', async () => {
   expect(await screen.findByText(CODE)).toBeVisible();
 });
 
-it('shows a checked share as one quiet line with its code', async () => {
+it('shows a locally checked share as one quiet line with its code', async () => {
   state.reconciliation = 'active';
+  state.verified.mockResolvedValue(true);
   render(<SignedShareDetails kind="share" row={{ ...row, verifiedAt: '2026-10-20T00:00:00Z' }} />);
   expect(await screen.findByText('Safety code checked')).toBeVisible();
   expect(screen.getByText(CODE)).toBeVisible();
@@ -301,4 +302,21 @@ it('refreshes reconciliation and orphan inventory after account browser unlock c
   await waitFor(() => expect(screen.queryByText('Recipient can\'t open this now')).not.toBeInTheDocument());
   expect(screen.getByText('Safety code checked')).toBeVisible();
   await waitFor(() => expect(state.grants.mock.calls.length).toBeGreaterThanOrEqual(loaded + 2));
+});
+
+it('does not accept a relay verifiedAt timestamp as this client checking the code', async () => {
+  state.reconciliation = 'active';
+  render(<SignedShareDetails kind="share" row={{ ...row, verifiedAt: '2026-10-20T00:00:00Z' }} />);
+  expect(await screen.findByText('Safety code not checked')).toBeVisible();
+  expect(screen.getByRole('button', { name: 'They match, confirm' })).toBeVisible();
+});
+it('shows a changed-key signing failure and never approves the relay row', async () => {
+  state.sync.mockRejectedValue(new Error('Recipient key changed'));
+  render(<SignedShareDetails kind="share" row={{ ...row, pending: true }} />);
+  await screen.findByText(CODE);
+  confirmCode();
+  await waitFor(() => expect(state.sync).toHaveBeenCalledWith('share', expect.objectContaining({ id: 'share' }), account));
+  expect(state.approve).not.toHaveBeenCalled();
+  fireEvent.click(await screen.findByRole('button', { name: 'Why it failed' }));
+  expect(within(screen.getByRole('dialog', { name: 'Why it failed' })).getByText('Recipient key changed')).toBeVisible();
 });

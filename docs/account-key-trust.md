@@ -972,8 +972,13 @@ row. With the check on, an owner who compares the displayed code against the
 recipient's independent display can detect a substituted key. With the
 setting reported off the browser signs only with the explicit unverified
 acknowledgement. The verification that signing relies on is this browser's own
-record; the relay's `verifiedAt` only quiets the **Safety code not checked**
-reminder in other browsers.
+record; the relay's `verifiedAt` is informational only and never marks a check made
+by this browser or client. Status and reminders use only the local record.
+
+The confirmed recipient account is snapshotted and passed to grant signing. A
+fresh relay recipient response must match both its key ID and public key; any
+mismatch aborts before review/signing/device PUT and is shown as an error. The
+device grant always contains the confirmed snapshot, never a replacement key.
 
 **Security property changed.** Previously, the browser required knowledge of a
 code supplied independently by the recipient and checked the typed value. Now it
