@@ -50,6 +50,17 @@ describe('spoken summary commands', () => {
     expect(await handleHostCommand({ id: 'y', type: 'openUpstreams' }, { ...dependencies(), openUpstreams } as never)).toEqual({ ok: true });
     expect(openUpstreams).toHaveBeenCalled();
   });
+  it('lists what can be silenced, conversations only and newest first', async () => {
+    const store = { ...dependencies().store, getSnapshot: () => ({
+      devices: [{ id: 'd', name: 'Mac' }], workspaces: [{ key: 'd:w', deviceId: 'd', label: 'Repo' }],
+      threads: [
+        { key: 'd:old', id: 'old', deviceId: 'd', workspaceId: 'w', title: 'Old', lastTurnStartedAt: '2026-10-01T00:00:00Z' },
+        { key: 'd:new', id: 'new', deviceId: 'd', workspaceId: 'w', title: 'New', lastTurnStartedAt: '2026-11-01T00:00:00Z' },
+        { key: 'd:agent', id: 'agent', rootThreadId: 'new', deviceId: 'd', workspaceId: 'w', title: 'Agent', lastTurnStartedAt: '2026-11-02T00:00:00Z' },
+      ] }) };
+    const result = await handleHostCommand({ id: 'x', type: 'listMuteTargets' }, { ...dependencies(), store } as never);
+    expect(result.data).toEqual({ devices: [{ id: 'd', label: 'Mac' }], workspaces: [{ id: 'd:w', label: 'Repo · Mac' }], threads: [{ id: 'd:new', label: 'New · Repo' }, { id: 'd:old', label: 'Old · Repo' }] });
+  });
   it('explains a device that cannot complete yet', async () => {
     const request = vi.fn().mockRejectedValue(Object.assign(new Error('Not found'), { statusCode: 404 }));
     expect(await handleHostCommand({ id: 'x', type: 'completeWithConnection', deviceId: 'a', connectionId: 'k', model: '', system: 's', user: 'u' }, { ...dependencies(), request } as never)).toEqual({ ok: false, code: 'supervisorTooOld', error: translate('settings.connUpdateSupervisor') });
