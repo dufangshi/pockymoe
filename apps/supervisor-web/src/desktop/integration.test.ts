@@ -37,6 +37,15 @@ describe('spoken summary commands', () => {
     expect(request).toHaveBeenCalledWith('a', 'api/management/connections/k/complete', { method: 'POST', body: JSON.stringify({ model: 'm', system: 's', user: 'u' }) });
     expect(result).toEqual({ ok: true, data: { text: 'Done.' } });
   });
+  it('reads a connection\'s models with the Settings probe and opens the upstreams page', async () => {
+    const request = vi.fn().mockResolvedValue({ models: [{ id: 'a', name: 'Model A' }, { id: 'b' }] });
+    const result = await handleHostCommand({ id: 'x', type: 'connectionModels', deviceId: 'd', connectionId: 'k' }, { ...dependencies(), request } as never);
+    expect(request).toHaveBeenCalledWith('d', 'api/management/connections/k/models', { method: 'POST' });
+    expect(result.data).toEqual([{ id: 'a', name: 'Model A' }, { id: 'b', name: 'b' }]);
+    const openUpstreams = vi.fn();
+    expect(await handleHostCommand({ id: 'y', type: 'openUpstreams' }, { ...dependencies(), openUpstreams } as never)).toEqual({ ok: true });
+    expect(openUpstreams).toHaveBeenCalled();
+  });
   it('explains a device that cannot complete yet', async () => {
     const request = vi.fn().mockRejectedValue(Object.assign(new Error('Not found'), { statusCode: 404 }));
     expect(await handleHostCommand({ id: 'x', type: 'completeWithConnection', deviceId: 'a', connectionId: 'k', model: '', system: 's', user: 'u' }, { ...dependencies(), request } as never)).toEqual({ ok: false, error: translate('settings.connUpdateSupervisor') });
