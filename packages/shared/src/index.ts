@@ -879,12 +879,77 @@ export type ThreadStatusDto =
   | 'not_loaded'
   | 'system_error';
 
+export type ContextInspectionKindDto = 'used' | 'free' | 'buffer' | 'deferred';
+export type ContextInspectionPrecisionDto = 'reported' | 'estimated';
+
+export interface ContextInspectionCategoryDto {
+  id: string;
+  label?: string | null;
+  kind: ContextInspectionKindDto;
+  tokens: number;
+  precision?: ContextInspectionPrecisionDto | null;
+}
+
+export interface ContextInspectionGroupItemDto {
+  name: string;
+  tokens: number;
+  path?: string | null;
+  source?: string | null;
+  loaded?: boolean | null;
+}
+
+export interface ContextInspectionGroupDto {
+  id: string;
+  label?: string | null;
+  items: ContextInspectionGroupItemDto[];
+}
+
+/** What a thread's context window holds, by category. Deferred categories are
+    outside the window and never part of `usedTokens`. */
+export interface ContextInspectionSnapshotDto {
+  provider: 'codex' | 'claude' | 'deepseek';
+  model?: string | null;
+  source: 'claudeSummary' | 'claudeFull' | 'codexTrace' | 'dshProjection';
+  precision: ContextInspectionPrecisionDto;
+  usedTokens: number;
+  windowTokens: number;
+  updatedAt: string;
+  stale?: boolean | null;
+  /** Native heuristic composition can differ from projected occupancy (DSH). */
+  compositionTokens?: number | null;
+  attributionDeltaTokens?: number | null;
+  asOfSeq?: number | null;
+  route?: { provider: string; model: string } | null;
+  autoCompactThreshold?: number | null;
+  autoCompactEnabled?: boolean | null;
+  categories: ContextInspectionCategoryDto[];
+  groups?: ContextInspectionGroupDto[] | null;
+  turnId?: string | null;
+  requestId?: string | null;
+}
+
+export type ContextInspectionDetailDto = 'summary' | 'full';
+
+export interface ThreadContextInspectionDto {
+  enabled: boolean;
+  supported: boolean;
+  availability: 'available' | 'disabled' | 'unavailable';
+  snapshot: ContextInspectionSnapshotDto | null;
+  reason?: string | null;
+}
+
+export interface ContextInspectionSettingsDto {
+  enabled: boolean;
+}
+
 export interface ThreadContextUsageDto {
   availability: 'available' | 'unavailable';
   remainingPercent: number | null;
   tokensInContextWindow: number | null;
   modelContextWindow: number | null;
   updatedAt: string | null;
+  /** Present while detailed context analysis is on and a request was analyzed. */
+  details?: ContextInspectionSnapshotDto | null;
 }
 
 export interface ThreadDto {

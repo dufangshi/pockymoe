@@ -1129,21 +1129,6 @@ fieldset {
     0 6px 18px color-mix(in srgb, var(--theme-accent) 13%, transparent);
 }
 
-.thread-context-progress-track {
-  height: 3px;
-  border-radius: 9999px;
-  overflow: hidden;
-  background: color-mix(in srgb, var(--theme-border-contrast) 50%, transparent);
-}
-
-.thread-context-progress-fill {
-  height: 100%;
-  border-radius: 9999px;
-  transition:
-    width 0.45s ease,
-    background-color 0.3s ease;
-}
-
 .thread-composer-input {
   border-color: var(--theme-border-strong);
   background: var(--theme-surface-strong);

@@ -99,6 +99,9 @@ import type {
   UpdateWorkspaceFavoriteInput,
   WorkspaceDto,
   WorkspaceSettingsDto,
+  ContextInspectionDetailDto,
+  ContextInspectionSettingsDto,
+  ThreadContextInspectionDto,
 } from '@pockymoe/shared';
 export type { PromptAttachmentUpload } from '@pockymoe/thread-ui';
 import type { PromptAttachmentUpload } from '@pockymoe/thread-ui';
@@ -1859,6 +1862,28 @@ export function compactThread(id: string) {
   return request<ThreadDto>(`api/threads/${id}/compact`, {
     method: 'POST',
   });
+}
+
+/** A device whose Supervisor predates the analysis answers 404: only the total exists there. */
+export const CONTEXT_INSPECTION_UNSUPPORTED: ThreadContextInspectionDto = { enabled: false, supported: false, availability: 'unavailable', snapshot: null };
+
+export async function fetchThreadContext(id: string, options: { detail?: ContextInspectionDetailDto; refresh?: boolean } = {}, deviceId?: string | null) {
+  const params = new URLSearchParams({ detail: options.detail ?? 'summary' });
+  if (options.refresh) params.set('refresh', 'true');
+  try {
+    return await deviceRequest<ThreadContextInspectionDto>(deviceId, `api/threads/${encodeURIComponent(id)}/context?${params}`, { cache: 'no-store' });
+  } catch (cause) {
+    if (cause instanceof ApiError && cause.statusCode === 404) return CONTEXT_INSPECTION_UNSUPPORTED;
+    throw cause;
+  }
+}
+
+export function fetchContextInspectionSettings(deviceId?: string | null) {
+  return deviceRequest<ContextInspectionSettingsDto>(deviceId, 'api/context-inspection/settings', { cache: 'no-store' });
+}
+
+export function updateContextInspectionSettings(input: ContextInspectionSettingsDto, deviceId?: string | null) {
+  return deviceRequest<ContextInspectionSettingsDto>(deviceId, 'api/context-inspection/settings', { method: 'PUT', body: JSON.stringify(input) });
 }
 
 export function fetchThreadGoal(id: string) {

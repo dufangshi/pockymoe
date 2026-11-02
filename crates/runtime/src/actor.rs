@@ -152,6 +152,12 @@ impl EventBus {
             scope.open.store(false, std::sync::atomic::Ordering::SeqCst);
         }
     }
+    /// Diagnostics describe the session and may finish after the prompt's output lease.
+    pub(crate) fn session_observation(&self) -> Self {
+        let mut bus = self.clone();
+        bus.scope = None;
+        bus
+    }
 
     pub fn emit(&self, mut event: ThreadEventEnvelope) {
         if let Some(scope) = &self.scope {
@@ -317,6 +323,18 @@ pub struct ExecutionUncertain(pub String);
 #[async_trait]
 pub trait AgentRuntime: Send + Sync {
     fn provider(&self) -> Provider;
+    fn configure_context_inspection(
+        &self,
+        _state: Arc<crate::context_inspection::InspectionState>,
+    ) {
+    }
+    async fn inspect_context(
+        &self,
+        _session_id: &str,
+        _detail: &str,
+    ) -> Result<Option<serde_json::Value>> {
+        Ok(None)
+    }
     async fn execution_state(&self, _session_id: &str) -> ExecutionState {
         ExecutionState::Unknown
     }

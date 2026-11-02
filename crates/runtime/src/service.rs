@@ -3,6 +3,7 @@ mod automation_statistics;
 mod child_delete;
 mod claude_history;
 mod claude_reply_phases;
+mod context;
 mod generation;
 mod harness_release;
 mod inbox_reminder;
@@ -301,6 +302,7 @@ pub struct UploadedPromptAttachment {
 }
 
 pub struct Supervisor {
+    pub context_inspection: Arc<crate::context_inspection::InspectionState>,
     pub(crate) thread_host: std::sync::OnceLock<Arc<dyn crate::host_hooks::ThreadHost>>,
     automation_gate: tokio::sync::Mutex<()>,
     pub(crate) plugins: crate::plugins::PluginHost,
@@ -421,6 +423,10 @@ impl Supervisor {
             None
         });
         let supervisor = Self {
+            context_inspection: Arc::new(crate::context_inspection::InspectionState::new(
+                &db,
+                &config.database_url,
+            )),
             local_access: std::sync::RwLock::new(local_access),
             thread_host: Default::default(),
             automation_gate: Default::default(),
@@ -458,6 +464,9 @@ impl Supervisor {
             device_monitor: Default::default(),
             harness: Default::default(),
         };
+        for runtime in supervisor.runtimes.values() {
+            runtime.configure_context_inspection(supervisor.context_inspection.clone());
+        }
         if let Err(error) = supervisor.reconcile_stale_turns(None, false) {
             tracing::warn!(%error, "failed to reconcile stale turns at startup");
         }
@@ -560,6 +569,27 @@ impl Supervisor {
                         .get("contextUsage")
                         .filter(|v| v["availability"] == "available")
                     {
+                        let mut context = context.clone();
+                        if context.get("details").is_none() {
+                            let previous: Option<String> = conn
+                                .query_row(
+                                    "SELECT context_usage_json FROM threads WHERE id=?1",
+                                    [&event.thread_id],
+                                    |r| r.get(0),
+                                )
+                                .optional()?
+                                .flatten();
+                            if let Some(mut details) = previous
+                                .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+                                .and_then(|v| v.get("details").cloned())
+                            {
+                                if details["usedTokens"] != context["tokensInContextWindow"] {
+                                    details["stale"] = json!(true);
+                                }
+                                context["details"] = details;
+                            }
+                        }
+                        event.payload["contextUsage"] = context.clone();
                         conn.execute(
                             "UPDATE threads SET context_usage_json=?1 WHERE id=?2",
                             params![context.to_string(), event.thread_id],

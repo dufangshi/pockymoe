@@ -99,7 +99,11 @@ fn same_release(dsh: &Path, web_app: &Path) -> bool {
 }
 
 impl Launch {
-    pub async fn prepare(command: &mut String, composition: Option<&Composition>) -> Result<Self> {
+    pub async fn prepare(
+        command: &mut String,
+        composition: Option<&Composition>,
+        inspection: bool,
+    ) -> Result<Self> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let token = uuid::Uuid::new_v4().to_string();
         let directory = tempfile::tempdir()?;
@@ -128,7 +132,7 @@ impl Launch {
             &patch,
             serde_json::to_vec(&json!([{"insert":[{
                 "id":"remote-codex-bridge", "name":plugin,
-                "config":{"port":listener.local_addr()?.port(),"token":token}
+                "config":{"port":listener.local_addr()?.port(),"token":token,"contextInspection":inspection}
             }]}]))?,
         )?;
         patches.push(patch);
@@ -215,6 +219,10 @@ pub(super) enum BridgeEvent {
         key: String,
         value: Value,
     },
+    Context {
+        session_id: String,
+        value: Value,
+    },
     Question {
         id: u64,
         session_id: String,
@@ -260,6 +268,10 @@ impl BridgeEvent {
             "projection" => Self::Projection {
                 session_id: session_id()?,
                 key: text("key")?,
+                value: message["value"].clone(),
+            },
+            "context" => Self::Context {
+                session_id: session_id()?,
                 value: message["value"].clone(),
             },
             "question" => Self::Question {

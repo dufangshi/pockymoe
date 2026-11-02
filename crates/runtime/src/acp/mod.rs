@@ -10,6 +10,7 @@ pub(crate) use claude_usage::legacy_background_reply_phases;
 mod codex_bridge;
 mod codex_models;
 mod codex_permissions;
+mod context;
 pub use codex_bridge::run as run_codex_app_server_bridge;
 mod deepseek;
 pub(crate) mod dependencies;
