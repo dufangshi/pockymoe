@@ -109,6 +109,39 @@ describe('useThreadMapDevices', () => {
     expect(vi.mocked(request).mock.calls.some(([path]) => String(path).includes('/server/'))).toBe(false);
   });
 
+  it('lands answers together, so the map does not rearrange once per device', async () => {
+    let finishSlow = () => {};
+    const slow = new Promise<void>(resolve => { finishSlow = resolve; });
+    vi.mocked(request).mockImplementation(async (path) => {
+      const url = String(path);
+      if (url === 'relay/portal') return { devices: ['a', 'b', 'c'].map(id => ({ id, name: id, connected: true })) };
+      if (url.includes('/c/')) await slow;
+      if (url.includes('thread-activity')) return { threads: [] };
+      return [];
+    });
+    const seen: string[] = [];
+    const { result } = renderHook(() => { const value = useThreadMapDevices(true); seen.push(value.devices.map(device => device.state).join()); return value; });
+    await waitFor(() => expect(result.current.devices).toHaveLength(3));
+    finishSlow();
+    await waitFor(() => expect(result.current.devices.every(device => device.state === 'ready')).toBe(true));
+    expect(new Set(seen.filter(Boolean))).toEqual(new Set(['loading,loading,loading', 'ready,ready,ready']));
+  });
+  it('shows what has answered when one device is slow', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      vi.mocked(request).mockImplementation(async (path) => {
+        const url = String(path);
+        if (url === 'relay/portal') return { devices: ['a', 'b'].map(id => ({ id, name: id, connected: true })) };
+        if (url.includes('/b/')) return new Promise(() => {});
+        if (url.includes('thread-activity')) return { threads: [] };
+        return [];
+      });
+      const { result } = renderHook(() => useThreadMapDevices(true));
+      await waitFor(() => expect(result.current.devices).toHaveLength(2));
+      await vi.advanceTimersByTimeAsync(1300);
+      await waitFor(() => expect(result.current.devices.map(device => device.state)).toEqual(['ready', 'loading']));
+    } finally { vi.useRealTimers(); }
+  });
   it('removes a previously loaded device when the portal says it disconnected', async () => {
     let connected = true;
     vi.mocked(request).mockImplementation(async path => {
