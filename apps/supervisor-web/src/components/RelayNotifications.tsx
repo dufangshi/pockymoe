@@ -1,3 +1,6 @@
+import { fetchRelaySession } from '../lib/api';
+import { mobileHost, useHostSurface } from '../desktop/surface';
+import { registerMobilePush, disableMobilePush, mobilePushEnabled, restoreMobilePush } from '../mobile/push';
 import { ErrorMark } from '@pockymoe/thread-ui';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { useEffect, useState } from 'react';
@@ -14,6 +17,7 @@ import {
 
 export function RelayNotifications() {
   useI18n();
+  const mobile = useHostSurface() === 'mobile';
   const [settings, setSettings] = useState<PushSettings | null>(null);
   const [enabled, setEnabled] = useState(false);
   const [busy, setBusy] = useState(true);
@@ -27,9 +31,10 @@ export function RelayNotifications() {
     try {
       const next = await loadPushSettings();
       setSettings(next);
-      const sub = supported && !native ? await currentPushSubscription() : null;
+      if (mobile) { const session = await fetchRelaySession(); if (session.user) restoreMobilePush(session.user.id, next); }
+      const sub = supported && !native && !mobile ? await currentPushSubscription() : null;
       setEnabled(
-        !!sub &&
+        mobile ? mobilePushEnabled(next) : !!sub &&
           Notification.permission === 'granted' &&
           next.subscriptionIds.includes(await subscriptionId(sub.endpoint)),
       );
@@ -46,13 +51,13 @@ export function RelayNotifications() {
   }
   useEffect(() => {
     void refresh();
-  }, []);
+  }, [mobile]);
   function toggle() {
     if (!settings) return;
     setBusy(true);
     setError('');
     // Request permission immediately in the click handler, before other awaits.
-    const operation = enabled
+    const operation = mobile ? enabled ? disableMobilePush() : registerMobilePush() : enabled
       ? disablePush()
       : enablePush(settings.publicKey, Notification.requestPermission());
     void operation.then(refresh).catch((e) => {
@@ -67,7 +72,15 @@ export function RelayNotifications() {
     setError('');
     void refresh();
   };
+  const [nativePush, setNativePush] = useState(false);
+  const [platform, setPlatform] = useState('');
+  useEffect(() => { let current = true; void mobileHost()?.capabilities().then(caps => { if (current && caps.surface === 'mobile') { setNativePush(caps.nativePush); setPlatform(caps.platform); } }); return () => { current = false; }; }, [mobile]);
   const mark = error ? <ErrorMark message={error} onRetry={loadFailed ? retry : undefined} /> : null;
+  if (mobile) return <section className="grid gap-4 py-6">
+    <h2 className="text-base font-semibold">{translate('settings.notificationsTab')}</h2>
+    <p className="text-sm text-[var(--theme-fg-muted)]">{translate('workbench.tapASystemNotificationToOpenIts')}</p>
+    {platform === 'android' ? <p className="text-sm">{translate('workbench.allowNotificationsAndKeepTheMonitoringService')} {mark}</p> : <div className="flex items-center gap-2"><button type="button" className="relay-button-primary min-h-11" disabled={busy || !settings?.nativePushAvailable || !nativePush} onClick={toggle}>{translate(enabled ? 'workbench.disableNotifications' : 'workbench.enableNotifications')}</button>{mark}{!busy && (!settings?.nativePushAvailable || !nativePush) && <ErrorMark kind="unavailable" message={translate('workbench.thisRelayHasNotConfiguredApplePush')} />}</div>}
+  </section>;
   if (native) return (
     <section className="grid gap-4 py-6">
       <h2 className="text-base font-semibold">{translate("settings.notificationsBrowser")}</h2>

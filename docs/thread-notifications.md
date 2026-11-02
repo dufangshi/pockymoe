@@ -208,3 +208,48 @@ leaves the Supervisor. Older relays may ignore this status without affecting
 request resolution. Unsent notices are removed on resolution; pushes already
 accepted by a service cannot be recalled. Coalescing queued APNs notices does
 not guarantee replacement of already-delivered alerts by Electron local notices.
+
+## Live Activity updates
+
+An iOS native registration may include `liveActivityToken`, or rotate it with
+`PUT /relay/account/notifications/native/live-activity` (`{ id, token }`). The
+registration must belong to the authenticated account **and current login
+session**, and must be iOS. A token does not grant permission or create an activity;
+the foreground shell starts one account activity and supplies its ActivityKit
+push token. Registration renewal preserves that token; rebinding an APNs device
+registration to another account/session drops its old activity and queued updates.
+Logout, revocation and deletion cascade through both outboxes.
+
+Supervisor heartbeats carry an explicit allowlist `threadActivity`: root
+conversation IDs, state and state-entry timestamps. Agent threads are grouped with
+their root; waiting wins over failure, running, interrupted and completed.
+An optional `runningSince` records the earliest still-running member even when
+a waiting/failed member takes display priority; that conversation also counts
+as running, so priority cannot end an active conversation. The
+Relay resolves ownership from the authenticated tunnel, never from these rows.
+It persists no titles, device/workspace names, requests, commands or message text
+in this channel. Updating state also sends a heartbeat, so requests and completed
+turns need not wait for the periodic heartbeat. Older devices can omit the field.
+
+Delivery uses `apns-push-type: liveactivity`, topic
+`<POCKYMOE_APNS_TOPIC>.push-type.liveactivity`, the registration's sandbox setting,
+and collapse ID `account-activity`. The ActivityKit payload is:
+
+```json
+{"aps":{"timestamp":1793606400,"event":"update","content-state":{"counts":{"running":1,"needsInput":0,"failed":0,"completed":0,"interrupted":0},"threads":[{"threadId":"00000000-0000-4000-8000-000000000000","state":"running","since":"2026-11-02T08:00:00Z"}],"updatedAt":"2026-11-02T08:00:00Z"}}}
+```
+
+Counts include all conversations; at most 20 prioritized thread rows fit the APNs
+4 KiB payload limit. These rows contain only IDs, state and times. Titles remain
+in the phone cache supplied by `activity.sync`; absent titles use generic text.
+No `alert`, push-to-start attributes or remote approval controls are sent. With no
+running/waiting conversations, `event` is `end` and `dismissal-date` is 15 minutes
+after the update. Terminal rows older than 15 minutes are excluded; device snapshots
+expire after 24 hours. A disconnected device retains its last snapshot until then.
+
+The additive `relay_live_activity_tokens`, `relay_live_activity_devices` and
+`relay_live_activity_outbox` tables preserve existing registrations and data.
+The outbox coalesces to the newest account snapshot, retries with backoff, and
+removes invalid activity tokens without disabling normal native notifications.
+APNs acceptance is not a guarantee of system display. Local payload simulation
+and mocked HTTP/bridge tests do not establish real-device APNs delivery.

@@ -169,7 +169,7 @@ async fn run_connected_tunnel_with_deadline(
     let mut activity = state.bus.subscribe();
 
     outgoing
-        .send(json!({ "type": "relay.heartbeat", "timestamp": now_rfc3339(), "threadLineage":thread_lineage(&state), "portMappings":crate::ports::snapshot(&state), "previewStreamLimit":crate::ports::PREVIEW_STREAMS_PER_MAPPING, "upstreamConnections":crate::connections::snapshot(&state) }))
+        .send(json!({ "type": "relay.heartbeat", "timestamp": now_rfc3339(), "threadActivity":thread_activity(&state).await, "threadLineage":thread_lineage(&state), "portMappings":crate::ports::snapshot(&state), "previewStreamLimit":crate::ports::PREVIEW_STREAMS_PER_MAPPING, "upstreamConnections":crate::connections::snapshot(&state) }))
         .map_err(|_| anyhow!("relay tunnel writer closed"))?;
     // Consume the interval's immediate first tick because the initial heartbeat
     // was queued explicitly above.
@@ -263,7 +263,7 @@ async fn run_connected_tunnel_with_deadline(
                 if outgoing.send(json!({
                     "type": "relay.heartbeat",
                     "timestamp": now_rfc3339(),
-                    "threadLineage":thread_lineage(&state), "portMappings":crate::ports::snapshot(&state), "previewStreamLimit":crate::ports::PREVIEW_STREAMS_PER_MAPPING, "upstreamConnections":crate::connections::snapshot(&state)
+                    "threadActivity":thread_activity(&state).await, "threadLineage":thread_lineage(&state), "portMappings":crate::ports::snapshot(&state), "previewStreamLimit":crate::ports::PREVIEW_STREAMS_PER_MAPPING, "upstreamConnections":crate::connections::snapshot(&state)
                 })).is_err() {
                     return Err(writer_closed(&outbound));
                 }
@@ -280,10 +280,10 @@ async fn run_connected_tunnel_with_deadline(
                             }
                         }
                         if event.payload["reason"] == "thread_created" || event.payload["reason"] == "child_deleted" {
-                            let _ = outgoing.send(json!({"type":"relay.heartbeat","timestamp":now_rfc3339(),"threadLineage":thread_lineage(&state)}));
+                            let _ = outgoing.send(json!({"type":"relay.heartbeat","timestamp":now_rfc3339(),"threadActivity":thread_activity(&state).await, "threadLineage":thread_lineage(&state)}));
                         }
-                        if matches!(event.event_type.as_str(), "thread.turn.started" | "thread.turn.completed") {
-                            let _ = outgoing.send(json!({"type":"relay.heartbeat","timestamp":now_rfc3339(),"threadLineage":thread_lineage(&state)}));
+                        if matches!(event.event_type.as_str(), "thread.turn.started" | "thread.turn.completed" | "thread.turn.failed" | "thread.request.created" | "thread.request.resolved") {
+                            let _ = outgoing.send(json!({"type":"relay.heartbeat","timestamp":now_rfc3339(),"threadActivity":thread_activity(&state).await, "threadLineage":thread_lineage(&state)}));
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
@@ -310,6 +310,70 @@ fn writer_closed(outbound: &mpsc::Receiver<Value>) -> anyhow::Error {
     } else {
         anyhow!("relay tunnel writer closed")
     }
+}
+
+/// Explicitly allowlisted metadata; never serialize ThreadDto onto this channel.
+async fn thread_activity(state: &Supervisor) -> Value {
+    let Ok(threads) = state.list_threads(None, true) else {
+        return Value::Null;
+    };
+    let mut conversations =
+        std::collections::BTreeMap::<String, (u8, &'static str, String, Option<String>)>::new();
+    for thread in threads {
+        let status = serde_json::to_value(thread.status).unwrap_or(Value::Null);
+        let requests = if let Ok(runtime) = state.runtime(thread.provider) {
+            runtime.pending_requests(&thread.id).await
+        } else {
+            Vec::new()
+        };
+        let (priority, activity_state) = if !requests.is_empty() {
+            (0, "needsInput")
+        } else {
+            match status.as_str().unwrap_or("") {
+                "running" | "recovering" => (2, "running"),
+                "failed" | "system_error" => (1, "failed"),
+                "interrupted" => (3, "interrupted"),
+                _ if thread.last_turn_completed_at.is_some() => (4, "completed"),
+                _ => continue,
+            }
+        };
+        let since = if activity_state == "needsInput" {
+            requests.first().map(|r| r.created_at.as_str())
+        } else if activity_state == "running" {
+            thread.last_turn_started_at.as_deref()
+        } else {
+            thread.last_turn_completed_at.as_deref()
+        }
+        .unwrap_or(&thread.updated_at)
+        .to_owned();
+        let key = thread.root_thread_id.unwrap_or(thread.id);
+        let running_since = (activity_state == "running").then(|| since.clone());
+        let value = (priority, activity_state, since, running_since);
+        conversations
+            .entry(key)
+            .and_modify(|old| {
+                let running_since = match (&old.3, &value.3) {
+                    (Some(a), Some(b)) => Some(a.min(b).clone()),
+                    (a, b) => a.clone().or_else(|| b.clone()),
+                };
+                if value.0 < old.0 || (value.0 == old.0 && value.2 < old.2) {
+                    *old = value.clone();
+                }
+                old.3 = running_since;
+            })
+            .or_insert(value);
+    }
+    let rows = conversations
+        .into_iter()
+        .map(|(id, (_, state, since, running_since))| {
+            let mut row = json!({"threadId":id,"state":state,"since":since});
+            if let Some(since) = running_since {
+                row["runningSince"] = json!(since);
+            }
+            row
+        })
+        .collect::<Vec<_>>();
+    json!(rows)
 }
 
 fn thread_lineage(state: &Supervisor) -> Value {
@@ -1182,6 +1246,47 @@ pub(crate) mod tests {
             directory,
             Arc::new(Supervisor::new(config, database, vec![runtime])),
         )
+    }
+
+    #[tokio::test]
+    async fn thread_activity_groups_agents_and_exposes_only_content_free_metadata() {
+        let (_dir, state) = state_with_relay_url("http://localhost:8788");
+        let workspace = state
+            .create_workspace(pockymoe_protocol::CreateWorkspaceInput {
+                abs_path: Some(state.config.workspace_root.to_string_lossy().into()),
+                git_url: None,
+                label: Some("PRIVATE workspace".into()),
+            })
+            .unwrap();
+        let root = uuid::Uuid::new_v4().to_string();
+        let child = uuid::Uuid::new_v4().to_string();
+        let failed = uuid::Uuid::new_v4().to_string();
+        let since = now_rfc3339();
+        state.db.with(|conn| {
+            conn.execute("INSERT INTO threads(id,workspace_id,provider,title,source,status,created_at,updated_at) VALUES (?1,?2,'codex','PRIVATE root','web','idle',?3,?3)",rusqlite::params![root,workspace.id,since])?;
+            for (id,status) in [(&child,"running"),(&failed,"failed")] {
+                conn.execute("INSERT INTO threads(id,workspace_id,provider,title,source,status,created_at,updated_at,parent_thread_id,root_thread_id,lineage_depth,last_turn_started_at) VALUES (?1,?2,'codex','PRIVATE agent','web',?3,?4,?4,?5,?5,1,?4)",rusqlite::params![id,workspace.id,status,since,root])?;
+            }
+            Ok(())
+        }).unwrap();
+        let rows = thread_activity(&state).await;
+        assert_eq!(rows.as_array().unwrap().len(), 1);
+        assert_eq!(
+            rows[0],
+            json!({"threadId":root,"state":"failed","since":since,"runningSince":since})
+        );
+        assert!(!rows.to_string().contains("PRIVATE"));
+        state
+            .db
+            .with(|conn| {
+                conn.execute("UPDATE threads SET status='idle' WHERE id=?1", [failed])?;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            thread_activity(&state).await,
+            json!([{"threadId":root,"state":"running","since":since,"runningSince":since}])
+        );
     }
 
     fn peer() -> PeerCaller {

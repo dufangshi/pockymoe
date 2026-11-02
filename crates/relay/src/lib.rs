@@ -7,7 +7,9 @@ mod auth_api;
 mod auth_factors;
 mod device_tokens;
 mod host;
+mod live_activity;
 mod metrics;
+mod mobile_auth;
 mod notification_scope;
 mod notifications;
 mod oauth;
@@ -241,6 +243,7 @@ pub async fn serve() -> Result<()> {
     notifications::start(&state)?;
     metrics::start(&state)?;
     let app = Router::new()
+        .merge(mobile_auth::routes())
         .merge(auth_api::routes())
         .merge(notifications::routes())
         .merge(notification_scope::routes())
@@ -1344,13 +1347,34 @@ async fn session(
     })
 }
 
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct OAuthStartQuery {
+    mobile_id: Option<String>,
+}
+
 async fn oauth_start(
+    Query(query): Query<OAuthStartQuery>,
     Path(provider): Path<String>,
     headers: HeaderMap,
     State(state): State<Arc<AppState>>,
 ) -> Response {
-    match begin_oauth(&state, &headers, &provider, None).await {
+    let invite = if let Some(id) = &query.mobile_id {
+        let conn = state.store.conn.lock().await;
+        match mobile_auth::invite(&conn, id, &provider) {
+            Ok(invite) => invite,
+            Err(_) => return StatusCode::BAD_REQUEST.into_response(),
+        }
+    } else {
+        None
+    };
+    match begin_oauth(&state, &headers, &provider, invite.as_deref()).await {
         Ok((target, cookie)) => {
+            if let Some(id) = &query.mobile_id {
+                if mobile_auth::bind(&*state.store.conn.lock().await, id, &target).is_err() {
+                    return StatusCode::BAD_REQUEST.into_response();
+                }
+            }
             let mut response = Redirect::temporary(&target).into_response();
             response.headers_mut().append(header::SET_COOKIE, cookie);
             response
@@ -1509,6 +1533,22 @@ async fn oauth_callback(
     Query(query): Query<OAuthCallbackQuery>,
     State(state): State<Arc<AppState>>,
 ) -> Response {
+    let signed = query.state.clone();
+    let response =
+        oauth_callback_inner(Path(provider), headers, Query(query), State(state.clone())).await;
+    if let Some(signed) = signed {
+        mobile_auth::redirect(&*state.store.conn.lock().await, &signed, response)
+    } else {
+        response
+    }
+}
+
+async fn oauth_callback_inner(
+    Path(provider): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<OAuthCallbackQuery>,
+    State(state): State<Arc<AppState>>,
+) -> Response {
     let Some(provider) = OAuthProvider::parse(&provider) else {
         return oauth_error_redirect(
             &state.oauth,
@@ -1593,6 +1633,11 @@ async fn oauth_callback(
             };
             if security::revoke_session(&conn, &token).is_err() {
                 return failed();
+            }
+            match mobile_auth::complete(&conn, signed, &user.id) {
+                Ok(Some(response)) => return response,
+                Ok(None) => {}
+                Err(_) => return failed(),
             }
             let has_factors = auth_factors::has_factors(&conn, &user.id);
             let result = if has_factors && !auth_factors::trusted(&conn, &user.id, &headers) {
@@ -4373,6 +4418,9 @@ async fn handle_supervisor_with_timeout(
                                     upstream_catalog::directory(&state,&device_id,connection_id,msg).await;
                                 }
                                 Some("relay.heartbeat") => {
+                                    if msg["threadActivity"].is_array() {
+                                        if live_activity::replace(&*state.store.conn.lock().await, &device_id, &msg["threadActivity"]).is_err() { tracing::warn!("invalid device activity snapshot"); }
+                                    }
                                     if msg["upstreamConnections"].is_array() {
                                         if upstream_catalog::replace(&*state.store.conn.lock().await,&device_id,&msg["upstreamConnections"]).is_err() { tracing::warn!("invalid upstream catalog metadata"); }
                                     }

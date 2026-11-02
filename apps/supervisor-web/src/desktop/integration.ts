@@ -1,3 +1,4 @@
+import { playHaptic } from './surface';
 import { translate } from '@pockymoe/thread-ui/i18n';
 import type { HostCommand, HostCommandResult, PockymoeHost } from './host';
 import { deviceRequest, respondToThreadRequest, sendThreadPrompt } from '../lib/api';
@@ -125,6 +126,7 @@ let activitySession = 0;
 /** Change-only snapshots, never timer ticks, <=4/s. */
 export function syncActivity(store: DesktopIndexStore, host: PockymoeHost, focused: () => string | null, badgeEnabled: boolean) {
   const session = ++activitySession; let logoutPending = false;
+  const connectedAt = Date.now(); const seenRequests = new Set<string>();
   let previous = ''; let lastSent = 0; let timer: ReturnType<typeof setTimeout> | undefined;
   const flush = () => {
     timer = undefined;
@@ -132,6 +134,11 @@ export function syncActivity(store: DesktopIndexStore, host: PockymoeHost, focus
     const snapshot = buildActivitySnapshot(store.getSnapshot(), logoutPending ? null : focused(), logoutPending ? false : document.hasFocus());
     const signature = JSON.stringify({ ...snapshot, generatedAt: '' });
     if (signature === previous) return;
+    for (const item of snapshot.items) {
+      if (!item.request || seenRequests.has(`${item.deviceId}:${item.request.id}`)) continue;
+      seenRequests.add(`${item.deviceId}:${item.request.id}`);
+      if (Date.parse(item.since) >= connectedAt && document.visibilityState === 'visible') playHaptic('attention');
+    }
     previous = signature; lastSent = Date.now(); host.activity?.sync(snapshot);
     const waiting = new Set(snapshot.items.filter(item => item.state === 'needsInput').map(item => item.rootThreadKey ?? item.key)).size;
     const active = new Set(snapshot.items.filter(item => item.state === 'running').map(item => item.rootThreadKey ?? item.key)).size;

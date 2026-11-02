@@ -11,10 +11,10 @@ import { ActivitySection } from './ActivitySection';
 import { DesktopSurfaceContext, hasWorkspaceContext, type NavigationActions } from './context';
 import { DesktopMapPage } from './MapPage';
 import { focusedKeyFromPath, handleHostCommand, syncActivity } from './integration';
-import type { HostCapabilities } from './host';
+import type { DesktopCapabilities } from './host';
 import './desktop.css';
 
-export function DesktopShell({ children, capabilities }: { children: ReactNode; capabilities: HostCapabilities }) {
+export function DesktopShell({ children, capabilities }: { children: ReactNode; capabilities: DesktopCapabilities }) {
   const { locale } = useI18n();
   const index = useDesktopSelector(index => index); const store = useDesktopStore();
   const location = useLocation(); const navigate = useNavigate(); const shell = useAppShellNav();

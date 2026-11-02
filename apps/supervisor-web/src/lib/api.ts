@@ -1,3 +1,4 @@
+import { playHaptic } from '../desktop/surface';
 import { appPathname, appUrl } from './webBase';
 import { readAutoCollapseCompletedTurns } from './transcriptPreferences';
 import { deviceRoute, TransportError } from './relayTransportCrypto';
@@ -1716,7 +1717,7 @@ export function sendThreadPrompt(
     return deviceRequest<ThreadDto>(deviceId, `api/threads/${id}/prompt`, {
       method: 'POST',
       body: JSON.stringify(input),
-    });
+    }).then(thread => { playHaptic('sent'); return thread; });
   }
 
   const formData = new FormData();
@@ -1757,7 +1758,7 @@ export function sendThreadPrompt(
   return deviceRequest<ThreadDto>(deviceId, `api/threads/${id}/prompt`, {
     method: 'POST',
     body: formData,
-  });
+  }).then(thread => { playHaptic('sent'); return thread; });
 }
 
 export function interruptThread(id: string, input: InterruptTurnInput = {},

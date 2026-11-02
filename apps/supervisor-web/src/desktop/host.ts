@@ -6,7 +6,7 @@
 
 export const HOST_BRIDGE_VERSION = 2;
 
-export interface HostCapabilities {
+export interface DesktopCapabilities {
   surface: 'desktop';
   bridgeVersion: number;
   platform: 'darwin' | 'win32' | 'linux';
@@ -28,6 +28,15 @@ export interface HostCapabilities {
     badge: boolean;
   };
 }
+
+export interface MobileCapabilities {
+  surface: 'mobile';
+  platform: 'ios' | 'android';
+  liveActivity: boolean;
+  nativePush: boolean;
+  haptics: boolean;
+}
+export type HostCapabilities = DesktopCapabilities | MobileCapabilities;
 
 export type ActivityState = 'needsInput' | 'failed' | 'interrupted' | 'completed' | 'running' | 'idle';
 
@@ -90,6 +99,8 @@ export interface ActivityRecent {
 }
 
 export type HostCommand =
+  | { id: string; type: 'back' }
+  | { id: string; type: 'liveActivityToken'; token: string }
   | { id: string; type: 'navigate'; path: string }
   | { id: string; type: 'markRead'; key: string }
   | {
@@ -151,6 +162,7 @@ export interface Appearance {
   pack: string;
   /** Resolved accent color (any CSS color) so local windows can match the page. */
   accent: string;
+  background?: string;
   fontScale?: number;
   /** The page's UI language (BCP 47, e.g. 'zh-CN', 'en'); local windows, tray, menus and notifications use it. */
   locale?: string;
@@ -159,6 +171,9 @@ export interface Appearance {
 /** Exposed as window.pockymoeHost to the configured webOrigin's top frame only. */
 export interface PockymoeHost {
   capabilities(): Promise<HostCapabilities>;
+  push?: { register(): Promise<{ token: string; sandbox: boolean; kind: 'ios' } | null> };
+  auth?: { openExternal(url: string): Promise<{ callbackUrl: string } | null> };
+  haptics?: { play(kind: 'sent' | 'attention' | 'warning'): void };
   activity: { sync(snapshot: ActivitySnapshot): void };
   onCommand(listener: (command: HostCommand) => void): () => void;
   commandResult(id: string, result: HostCommandResult): void;

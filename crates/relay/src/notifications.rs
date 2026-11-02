@@ -21,6 +21,7 @@ pub(super) fn ensure_schema(conn: &Connection) -> Result<()> {
       attempts INTEGER NOT NULL DEFAULT 0, next_at INTEGER NOT NULL DEFAULT 0,
       PRIMARY KEY(event_id,subscription_id));",
     )?;
+    live_activity::ensure_schema(conn)?;
     let existing: bool = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM relay_settings WHERE key='webPushVapidPem')",
         [],
@@ -49,6 +50,10 @@ pub(super) fn ensure_schema(conn: &Connection) -> Result<()> {
 
 pub(super) fn routes() -> Router<Arc<AppState>> {
     Router::new()
+        .route(
+            "/relay/account/notifications/native/live-activity",
+            axum::routing::put(register_live_activity),
+        )
         .route("/relay/account/notifications", get(settings))
         .route(
             "/relay/account/notifications/subscription",
@@ -58,6 +63,44 @@ pub(super) fn routes() -> Router<Arc<AppState>> {
             "/relay/account/notifications/native",
             post(subscribe_native).delete(unsubscribe),
         )
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LiveActivityRegistration {
+    id: String,
+    token: String,
+}
+async fn register_live_activity(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<TokenQuery>,
+    Json(body): Json<LiveActivityRegistration>,
+) -> Response {
+    let conn = state.store.conn.lock().await;
+    let Some(user) = authenticated_user(&conn, &state.store.session_secret, &headers, &query)
+    else {
+        return unauthorized();
+    };
+    let session = security::token_hash(&extract_session_token(&headers, &query).unwrap());
+    let raw: Option<String> = conn.query_row("SELECT subscription FROM relay_push_subscriptions WHERE id=?1 AND user_id=?2 AND session_hash=?3",params![body.id,user.id,session],|r|r.get(0)).optional().ok().flatten();
+    let ios = raw
+        .and_then(|raw| serde_json::from_str::<apns::Subscription>(&raw).ok())
+        .is_some_and(|sub| sub.native_platform == "apns" && sub.app_kind == apns::AppKind::Ios);
+    let saved = ios
+        && (|| -> Result<()> {
+            let tx = conn.unchecked_transaction()?;
+            live_activity::register(&tx, &body.id, &body.token)?;
+            tx.commit()?;
+            Ok(())
+        })()
+        .is_ok();
+    if !saved {
+        return failure(
+            StatusCode::BAD_REQUEST,
+            "Invalid Live Activity registration.",
+        );
+    }
+    Json(json!({"ok":true})).into_response()
 }
 fn failure(status: StatusCode, message: &str) -> Response {
     (status, Json(ApiError::new("notifications", message))).into_response()
@@ -184,13 +227,22 @@ async fn subscribe_native(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Query(query): Query<TokenQuery>,
-    Json(sub): Json<apns::Subscription>,
+    Json(input): Json<Value>,
 ) -> Response {
     let conn = state.store.conn.lock().await;
     let Some(user) = authenticated_user(&conn, &state.store.session_secret, &headers, &query)
     else {
         return unauthorized();
     };
+    let Ok(sub) = serde_json::from_value::<apns::Subscription>(input.clone()) else {
+        return failure(StatusCode::BAD_REQUEST, "Invalid native push subscription.");
+    };
+    let live_token = input["liveActivityToken"].as_str();
+    if live_token
+        .is_some_and(|token| sub.app_kind != apns::AppKind::Ios || !apns::valid_token(token))
+    {
+        return failure(StatusCode::BAD_REQUEST, "Invalid Live Activity token.");
+    }
     if !apns::configured_for(sub.app_kind) {
         return failure(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -218,9 +270,9 @@ async fn subscribe_native(
             |r| r.get(0),
         )?;
         anyhow::ensure!(count < 20, "Too many subscriptions");
-        tx.execute("DELETE FROM relay_push_subscriptions WHERE id=?1", [&id])?;
+        tx.execute("DELETE FROM relay_push_subscriptions WHERE id=?1 AND (user_id!=?2 OR session_hash!=?3)", params![id,user.id,session])?;
         tx.execute(
-            "INSERT INTO relay_push_subscriptions VALUES (?1,?2,?3,?4,?5)",
+            "INSERT INTO relay_push_subscriptions VALUES (?1,?2,?3,?4,?5) ON CONFLICT(id) DO UPDATE SET subscription=excluded.subscription",
             params![
                 id,
                 user.id,
@@ -229,6 +281,9 @@ async fn subscribe_native(
                 chrono::Utc::now().timestamp_millis()
             ],
         )?;
+        if let Some(token) = live_token {
+            live_activity::register(&tx, &id, token)?;
+        }
         tx.commit()?;
         Ok(())
     })();
@@ -348,6 +403,9 @@ pub(super) fn start(state: &Arc<AppState>) -> Result<()> {
         loop {
             tokio::time::sleep(Duration::from_secs(2)).await;
             let Some(state) = weak.upgrade() else { break };
+            if live_activity::deliver_batch(&state, &http).await.is_err() {
+                tracing::warn!("Live Activity delivery deferred");
+            }
             if let Err(error) = deliver_batch(&state, &http).await {
                 tracing::warn!(%error,"Push delivery batch deferred");
             }
@@ -620,5 +678,59 @@ mod tests {
         drop(conn);
         drop(store);
         let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(test)]
+mod mobile_tests {
+    use super::*;
+    #[tokio::test]
+    async fn live_activity_registration_requires_matching_owner_session_and_ios() -> Result<()> {
+        let (state, dir) = crate::tests::test_app_state("live-registration");
+        let owner;
+        let other;
+        let second_session;
+        {
+            let conn = state.store.conn.lock().await;
+            for user in ["owner", "other"] {
+                conn.execute(
+                    "INSERT INTO relay_users VALUES (?1,?1,?1,'user',1,NULL,'now','salt','hash')",
+                    [user],
+                )?;
+            }
+            owner = create_session(&conn, &state.store.session_secret, "owner")?;
+            other = create_session(&conn, &state.store.session_secret, "other")?;
+            second_session = create_session(&conn, &state.store.session_secret, "owner")?;
+            for (id, kind) in [("ios", "ios"), ("desktop", "macos-desktop")] {
+                conn.execute("INSERT INTO relay_push_subscriptions VALUES (?1,'owner',?2,?3,?4)",params![id,security::token_hash(&owner),json!({"nativePlatform":"apns","appKind":kind,"deviceToken":"ab".repeat(32),"relayOrigin":"https://relay.test"}).to_string(),chrono::Utc::now().timestamp_millis()])?;
+            }
+        }
+        for (session, id, expected) in [
+            (&owner, "ios", StatusCode::OK),
+            (&other, "ios", StatusCode::BAD_REQUEST),
+            (&second_session, "ios", StatusCode::BAD_REQUEST),
+            (&owner, "desktop", StatusCode::BAD_REQUEST),
+        ] {
+            let mut headers = HeaderMap::new();
+            headers.insert(header::AUTHORIZATION, format!("Bearer {session}").parse()?);
+            let response = register_live_activity(
+                State(state.clone()),
+                headers,
+                Query(TokenQuery {
+                    token: None,
+                    device_token: None,
+                    relay_session: None,
+                }),
+                Json(LiveActivityRegistration {
+                    id: id.into(),
+                    token: "cd".repeat(32),
+                }),
+            )
+            .await;
+            assert_eq!(response.status(), expected);
+        }
+        drop(state);
+        std::fs::remove_dir_all(dir)?;
+        Ok(())
     }
 }

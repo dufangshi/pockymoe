@@ -1,3 +1,4 @@
+import { useHostSurface } from '../desktop/surface';
 import { lazy, Suspense, useState } from 'react';
 import { Folder, Laptop, X } from 'lucide-react';
 import { translate as t, useI18n } from '@pockymoe/thread-ui/i18n';
@@ -11,6 +12,7 @@ const DesktopNotificationSettings = lazy(() => import('../desktop/NotificationSe
 
 export function NotificationSettings() {
   useI18n();
+  const surface = useHostSurface();
   const state = useNotificationSettings();
   const [removed, setRemoved] = useState<Settings | null>(null);
   const value = state.value;
@@ -75,6 +77,6 @@ export function NotificationSettings() {
       </span>
       {error && !state.saving && !state.loading && <ErrorMark message={error} onRetry={state.retry} retryLabel={t('settings.retry')} />}
     </div>
-    {window.pockymoeHost ? <Suspense fallback={null}><DesktopNotificationSettings /></Suspense> : relayModeActive() ? <RelayNotifications /> : <p className="notification-scope-hint text-xs text-[var(--theme-fg-muted)]">{t('settings.notificationsLocalBrowser')}</p>}
+    {surface === 'desktop' ? <Suspense fallback={null}><DesktopNotificationSettings /></Suspense> : relayModeActive() ? <RelayNotifications /> : <p className="notification-scope-hint text-xs text-[var(--theme-fg-muted)]">{t('settings.notificationsLocalBrowser')}</p>}
   </section>;
 }

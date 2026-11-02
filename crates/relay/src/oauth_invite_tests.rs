@@ -85,6 +85,9 @@ impl OAuthFixture {
             }
         }
         let app = Router::new()
+            .merge(mobile_auth::routes())
+            .route("/relay/auth/session", get(session))
+            .merge(auth_api::routes())
             .route(
                 "/relay/auth/oauth/{provider}/start",
                 get(oauth_start).post(oauth_start_with_invite),
@@ -692,4 +695,136 @@ async fn a_cancelled_expired_or_failed_provider_round_trip_returns_with_a_reason
     // An unknown provider still returns to the page.
     let location = f.raw_callback("gitlab", &[], None).await;
     assert_eq!(refusal(&location), (Some("oauth_failed".into()), None));
+}
+
+#[tokio::test]
+async fn mobile_oauth_handoff_requires_proof_is_single_use_and_sets_webview_cookie() {
+    let f = OAuthFixture::new(
+        "mobile-oauth",
+        &[
+            ("registrationEnabled", "true"),
+            ("registrationApprovalRequired", "false"),
+        ],
+    )
+    .await;
+    {
+        let conn = f.state.store.conn.lock().await;
+        conn.execute(
+            "DELETE FROM relay_settings WHERE key='registrationPassword'",
+            [],
+        )
+        .unwrap();
+    }
+    for provider in ["google", "github"] {
+        let proof = "ab".repeat(32);
+        let prepared = f
+            .client
+            .post(format!("{}/relay/auth/mobile/prepare", f.base))
+            .header("origin", &f.base)
+            .json(&json!({"provider":provider,"proofHash":security::token_hash(&proof)}))
+            .send()
+            .await
+            .unwrap();
+        assert!(prepared.status().is_success());
+        let prepared: Value = prepared.json().await.unwrap();
+        let start = f
+            .client
+            .get(format!("{}{}", f.base, prepared["path"].as_str().unwrap()))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(start.status(), StatusCode::TEMPORARY_REDIRECT);
+        let cookie = oauth_cookie(&start).unwrap();
+        let target = url::Url::parse(start.headers()[header::LOCATION].to_str().unwrap()).unwrap();
+        let signed = target
+            .query_pairs()
+            .find(|(k, _)| k == "state")
+            .unwrap()
+            .1
+            .to_string();
+        let code = if provider == "google" {
+            "mobile-google"
+        } else {
+            "987654321"
+        };
+        let reply = f
+            .client
+            .get(format!("{}/relay/auth/oauth/{provider}/callback", f.base))
+            .header("cookie", format!("remote_codex_oauth={cookie}"))
+            .query(&[("state", signed.as_str()), ("code", code)])
+            .send()
+            .await
+            .unwrap();
+        let callback =
+            url::Url::parse(reply.headers()[header::LOCATION].to_str().unwrap()).unwrap();
+        assert_eq!(
+            format!(
+                "{}://{}{}",
+                callback.scheme(),
+                callback.host_str().unwrap(),
+                callback.path()
+            ),
+            mobile_auth::CALLBACK
+        );
+        assert!(!callback.as_str().contains("token"));
+        let id = callback
+            .query_pairs()
+            .find(|(k, _)| k == "id")
+            .unwrap()
+            .1
+            .to_string();
+        if provider == "github" {
+            let conn = f.state.store.conn.lock().await;
+            let user: String = conn
+                .query_row(
+                    "SELECT user_id FROM relay_mobile_oauth WHERE id=?1",
+                    [&id],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            conn.execute("INSERT INTO relay_totp(user_id,secret,enabled,expires_at) VALUES (?1,'unused',1,0)",[user]).unwrap();
+        }
+        let exchange = |proof: String| {
+            f.client
+                .post(format!("{}/relay/auth/mobile/exchange", f.base))
+                .header("origin", &f.base)
+                .json(&json!({"id":id,"proof":proof}))
+        };
+        assert_eq!(
+            exchange("00".repeat(32)).send().await.unwrap().status(),
+            StatusCode::UNAUTHORIZED
+        );
+        {
+            let conn = f.state.store.conn.lock().await;
+            let (user, path): (Option<String>, Option<String>) = conn
+                .query_row(
+                    "SELECT user_id,return_path FROM relay_mobile_oauth WHERE id=?1",
+                    [&id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap();
+            assert!(user.is_some(), "OAuth failed to log in: {path:?}");
+        }
+        let reply = exchange(proof.clone()).send().await.unwrap();
+        assert_eq!(reply.status(), StatusCode::OK);
+        assert!(reply
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .any(|v| v.to_str().unwrap().contains("HttpOnly")));
+        let result: Value = reply.json().await.unwrap();
+        if provider == "github" {
+            assert_eq!(result["challengeRequired"], true);
+            assert_eq!(result["session"]["authenticated"], false);
+        } else {
+            assert!(
+                result["authenticated"] == true || result["session"]["authenticated"] == true,
+                "{result}"
+            );
+        }
+        assert_eq!(
+            exchange(proof).send().await.unwrap().status(),
+            StatusCode::UNAUTHORIZED
+        );
+    }
 }
