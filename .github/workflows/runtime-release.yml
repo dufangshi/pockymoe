@@ -53,6 +53,9 @@ jobs:
             exit 1
           fi
 
+      - name: Guard tracked source addresses
+        run: python3 scripts/check-production-address.py --tracked
+
       - name: Install pinned Rust toolchain
         shell: bash
         run: rustup toolchain install "${RUST_VERSION}" --profile minimal
@@ -219,6 +222,10 @@ jobs:
 
       - name: Build pinned Web assets for the native runtime
         shell: bash
+        env:
+          POCKYMOE_RUNTIME_RELEASE: '1'
+          VITE_POCKYMOE_RELAY_ORIGIN: ''
+          POCKYMOE_WEB_DOMAIN: ''
         run: |
           set -euo pipefail
           pnpm --dir ./pockymoe-thread-ui install --frozen-lockfile
@@ -250,6 +257,8 @@ jobs:
           path: artifacts/native
       - name: Assemble versioned binaries, Web and checksums
         run: python3 scripts/prepare-runtime-release.py --artifacts-dir artifacts/native --web-dir artifacts/web --out release-assets
+      - name: Scan all release artifacts, including unpacked Web
+        run: python3 scripts/check-production-address.py release-assets
       - name: Verify native bootstrap regressions
         run: |
           sh -n scripts/setup.sh

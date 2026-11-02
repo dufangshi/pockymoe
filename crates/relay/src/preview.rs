@@ -499,7 +499,7 @@ fn parse_base(value: &str) -> Result<url::Url> {
         || url.query().is_some()
         || url.fragment().is_some()
     {
-        bail!("POCKYMOE_PORT_PREVIEW_BASE_URL must be an HTTP(S) domain origin, for example https://lnz-study.com");
+        bail!("POCKYMOE_PORT_PREVIEW_BASE_URL must be an HTTP(S) domain origin, for example https://example.com");
     }
     Ok(url)
 }

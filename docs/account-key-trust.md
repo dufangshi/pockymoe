@@ -694,8 +694,8 @@ signs in until the new vault exists.
 This is the procedure for a relay that serves the Web UI today and moves it to a
 static origin with an API-only relay
 ([self-hosting](self-host-relay.md#separate-web-origin)). The public service
-moved this way: the Web UI from `https://remote.lnz-study.com` to GitHub Pages at
-`https://app.lnz-study.com`, while the relay kept `https://remote.lnz-study.com`.
+moved this way: the Web UI from `https://relay.example.com` to GitHub Pages at
+`https://app.example.com`, while the relay kept `https://relay.example.com`.
 
 **Choosing hostnames.** Keeping the relay's hostname and giving the Web UI a new
 host on the same site (registrable domain) leaves everything that points at the
@@ -1199,7 +1199,7 @@ scripts, `thread-ui.sha` or the workflow itself, and on manual dispatch from
 checks out `dufangshi/pockymoe-thread-ui-rust` at exactly that commit and refuses
 one that is not on that repository's `main`, builds with
 `VITE_POCKYMOE_RELAY_ORIGIN` from the repository variable `POCKYMOE_RELAY_ORIGIN`
-and `POCKYMOE_WEB_DOMAIN=app.lnz-study.com`, runs the check script and deploys
+and `POCKYMOE_WEB_DOMAIN` from the repository variable of the same name, runs the check script and deploys
 with `actions/deploy-pages`. Before deploying, `scripts/carry-web-assets.mjs` copies the
 hashed assets the live site serves (and those it carried itself) into the new build
 for 72 hours after they stopped being current, up to 300 MB, and records them in
@@ -1209,8 +1209,8 @@ chunks (Files, the editor) instead of reloading; past that window it reloads onc
 earlier deployments. Whoever can push to `main`, change that variable or
 publish to the shared UI's `main` decides the code that receives users' passwords.
 
-The relay at `https://remote.lnz-study.com` runs API-only: its environment file
-sets `POCKYMOE_WEB_ORIGIN=https://app.lnz-study.com` (the runtime also reads the
+The relay at `https://relay.example.com` runs API-only: its environment file
+sets `POCKYMOE_WEB_ORIGIN=https://app.example.com` (the runtime also reads the
 old name `REMOTE_CODEX_WEB_ORIGIN`, but the deploy preflight checks the new one).
 `relay-deploy.yml`, dispatched from `main`, builds and replaces only the relay and
 then checks that `/` redirects to the Web origin.

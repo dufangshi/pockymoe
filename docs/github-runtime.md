@@ -109,3 +109,59 @@ native stderr during execution and propagate the native exit code. Windows
 PowerShell 5.1 otherwise treats ordinary tracing output as a terminating error.
 Maintenance stops the already-drained headless Supervisor by its validated PID
 with `taskkill /F`; a console-close request cannot stop a windowless process.
+
+## Portable release addresses
+
+The runtime release contains no built-in production Relay or Web address.
+`setup.sh` and `setup.ps1` fetch assets from GitHub; without connection arguments
+an install is local, and relay mode requires an explicit Relay address and setup
+code/device token. The Rust runtime reads connection settings at runtime.
+
+`runtime-release.yml` builds Web assets with `POCKYMOE_RUNTIME_RELEASE=1` and an
+empty `VITE_POCKYMOE_RELAY_ORIGIN`. The Vite release flag also overrides local
+`.env` values, so the portable bundle uses its own origin instead of inheriting
+a hosted deployment. A self-hosted separate-origin Web build may explicitly set
+`VITE_POCKYMOE_RELAY_ORIGIN=https://relay.example.com`; this is deployment
+configuration, not a default in published runtime assets.
+
+Our Pages deployment deliberately keeps its own configured origin. Repository
+variables used by the deployment workflows are:
+
+| Variable | Purpose | Example |
+| --- | --- | --- |
+| `POCKYMOE_RELAY_ORIGIN` | Existing Relay HTTPS origin, also fed into the Pages Web build | `https://relay.example.com` |
+| `POCKYMOE_WEB_DOMAIN` | Pages CNAME, asset carry-forward host, and Relay redirect/preflight target | `app.example.com` |
+| `POCKYMOE_LEGACY_RELAY_ORIGIN` | Former Relay origin whose isolation the deployment checks | `https://legacy-relay.example.com` |
+
+Origins must have no trailing slash, path, query, credentials or port; the Web
+hostname is lowercase. Set the two new variables to the corresponding current
+hosts before using `pages-deploy.yml` or `relay-deploy.yml`. The preflight refuses
+missing or malformed settings. The Relay workflow passes its variables into the
+SSH steps and checks the same systemd service, environment origins, redirect and
+legacy boundary as before. No server configuration is rewritten by this change.
+`POCKYMOE_DEV_ALLOWED_HOSTS` is an optional comma-separated environment variable
+for local Vite development hosts; no deployment host is hard-coded in Vite.
+
+Every PR runs `python3 scripts/check-production-address.py --tracked`, including
+changes limited to docs. The guard compares candidate domains against a SHA-256
+hash and never includes the forbidden spelling in its implementation or errors.
+It checks ASCII, UTF-16, escaped dots/Unicode, and decompressed ZIP members.
+The only tracked-source exception is the exact pre-existing Windows Device
+Manager manifest, frozen by file hash because that product has an independent
+release contract. Artifact scans have **no** exception. The runtime release
+package job scans every platform binary, both setup scripts, checksums/version
+files and the decompressed `remote-codex-web.zip` before uploading release assets.
+Run it locally with `python3 scripts/check-production-address.py release-assets`.
+
+The Windows Device Manager remains unchanged: its manifest supplies the initial
+Relay URL for missing/invalid settings and a separate fixed destination for both
+Open Web buttons. Removing the default without a replacement onboarding flow
+would leave fresh/recovered installs without a usable Relay; clearing the portal
+URI would also break Open Web. Existing saved Relay settings are independent of
+that initial default. This exception must be handled in that product's release.
+
+This removes the address from the current runtime release inputs, not from Git
+history, existing tags/source archives, old release assets, old CI logs/artifacts,
+installed copies or the configured hosted Pages output. Automatic source archives
+also retain the independent Windows manifest, including for new tags. Those remain unchanged;
+no history rewrite or retroactive release replacement is performed.

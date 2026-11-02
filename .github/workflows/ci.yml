@@ -15,6 +15,18 @@ env:
   RUST_VERSION: 1.89.0
 
 jobs:
+  production_address:
+    name: Production address guard
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - name: Scan tracked files and verify guard regressions
+        run: |
+          python3 scripts/check-production-address.py --tracked
+          python3 scripts/check-production-address.test.py
+          python3 scripts/check-deployment-addresses.test.py
+
   changes:
     name: Select relevant checks
     runs-on: ubuntu-24.04
@@ -201,7 +213,7 @@ jobs:
 
   result:
     name: PR checks complete
-    needs: [changes, workflows, rust, node, npm, windows_harness, thread_contract, treer_packaging]
+    needs: [production_address, changes, workflows, rust, node, npm, windows_harness, thread_contract, treer_packaging]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5

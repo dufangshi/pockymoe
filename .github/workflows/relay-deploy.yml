@@ -49,14 +49,22 @@ jobs:
   deploy-rust-rewrite:
     if: github.ref == 'refs/heads/main'
     needs: [native]
-    name: Deploy Rust relay to remote.lnz-study.com
+    name: Deploy Rust relay
     runs-on: ubuntu-24.04
     environment: relay-rust-canary
     timeout-minutes: 60
+    env:
+      POCKYMOE_RELAY_ORIGIN: ${{ vars.POCKYMOE_RELAY_ORIGIN }}
+      POCKYMOE_WEB_DOMAIN: ${{ vars.POCKYMOE_WEB_DOMAIN }}
+      POCKYMOE_LEGACY_RELAY_ORIGIN: ${{ vars.POCKYMOE_LEGACY_RELAY_ORIGIN }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
+      - name: Validate deployment addresses
+        if: inputs.deploy
+        run: python3 scripts/check-deployment-addresses.py
 
       - name: Capture deployment boundaries
         if: inputs.deploy
@@ -64,9 +72,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          legacy_html="$(curl -fsS --max-time 20 https://remote-codex.lnz-study.com/)"
+          legacy_html="$(curl -fsS --max-time 20 "${POCKYMOE_LEGACY_RELAY_ORIGIN}/")"
           legacy_asset="$(printf '%s' "${legacy_html}" | sed -n 's#.*src="\(/assets/index-[^"]*\.js\)".*#\1#p' | head -n 1)"
-          legacy_health_code="$(curl -sS --max-time 20 -o legacy-health.json -w '%{http_code}' https://remote-codex.lnz-study.com/healthz)"
+          legacy_health_code="$(curl -sS --max-time 20 -o legacy-health.json -w '%{http_code}' "${POCKYMOE_LEGACY_RELAY_ORIGIN}/healthz")"
           if [ -n "${legacy_asset}" ]; then
             test "${legacy_health_code}" = '200'
             jq -e '.status == "ok"' legacy-health.json >/dev/null
@@ -95,10 +103,11 @@ jobs:
           fingerprint: SHA256:XCQeaNxZRFdwDbMHDnIviKL6oST7O9st0OhBj734WLw
           timeout: 60s
           command_timeout: 60s
+          envs: POCKYMOE_RELAY_ORIGIN,POCKYMOE_WEB_DOMAIN
           script: |
             set -euo pipefail
             test "$(hostname)" = 'vps-0e6cee34'
-            sudo systemctl cat remote-codex-rust-relay.service | grep -Fq 'remote.lnz-study.com'
+            sudo systemctl cat remote-codex-rust-relay.service | grep -Fq "${POCKYMOE_RELAY_ORIGIN#https://}"
             sudo systemctl cat remote-codex-rust-relay.service | grep -Fq 'ExecStart=/opt/remote-codex-rust-relay/remote-codex relay'
 
       - uses: actions/download-artifact@v4
@@ -148,6 +157,7 @@ jobs:
           fingerprint: SHA256:XCQeaNxZRFdwDbMHDnIviKL6oST7O9st0OhBj734WLw
           timeout: 60m
           command_timeout: 20m
+          envs: POCKYMOE_RELAY_ORIGIN,POCKYMOE_WEB_DOMAIN
           script: |
             set -euo pipefail
 
@@ -163,13 +173,13 @@ jobs:
             next_binary="${base}/.remote-codex-${release_id}.next"
 
             unit="$(sudo systemctl cat "${service}")"
-            printf '%s' "${unit}" | grep -Fq 'remote.lnz-study.com'
+            printf '%s' "${unit}" | grep -Fq "${POCKYMOE_RELAY_ORIGIN#https://}"
             printf '%s' "${unit}" | grep -Fq 'ExecStart=/opt/remote-codex-rust-relay/remote-codex relay'
             sudo grep -Fxq 'HOST=127.0.0.1' "${base}/relay.env"
             sudo grep -Fxq 'PORT=18791' "${base}/relay.env"
             sudo grep -Fxq 'REMOTE_CODEX_RELAY_DATA_DIR=/var/lib/remote-codex-rust-relay' "${base}/relay.env"
             # Fail before stopping the old service if the auth migration is misconfigured.
-            sudo python3 - "${base}/relay.env" <<'PYPREFLIGHT'
+            sudo python3 - "${base}/relay.env" "${POCKYMOE_RELAY_ORIGIN}" "https://${POCKYMOE_WEB_DOMAIN}" <<'PYPREFLIGHT'
             import pathlib, shlex, sys
             values = {}
             for line in pathlib.Path(sys.argv[1]).read_text().splitlines():
@@ -181,10 +191,10 @@ jobs:
             secret = values.get('REMOTE_CODEX_RELAY_SESSION_SECRET')
             if secret is not None and len(secret) < 32:
                 raise SystemExit('Relay auth preflight: session secret must be at least 32 characters')
-            if values.get('REMOTE_CODEX_PUBLIC_BASE_URL', '').rstrip('/') != 'https://remote.lnz-study.com':
+            if values.get('REMOTE_CODEX_PUBLIC_BASE_URL', '').rstrip('/') != sys.argv[2]:
                 raise SystemExit('Relay auth preflight: configure the public HTTPS relay origin')
             web_origin = values.get('POCKYMOE_WEB_ORIGIN', values.get('REMOTE_CODEX_WEB_ORIGIN', ''))
-            if web_origin.rstrip('/') != 'https://app.lnz-study.com':
+            if web_origin.rstrip('/') != sys.argv[3]:
                 raise SystemExit('Relay auth preflight: configure the separate HTTPS Web origin for API-only mode')
             PYPREFLIGHT
             test -f "${archive}"
@@ -298,9 +308,9 @@ jobs:
 
             public_ready='false'
             for _ in $(seq 1 30); do
-              public_redirect="$(curl -sS --max-time 20 -o /dev/null -w '%{http_code} %{redirect_url}' https://remote.lnz-study.com/ || true)"
-              public_health="$(curl -fsS --max-time 20 https://remote.lnz-study.com/healthz || true)"
-              if [ "${public_redirect}" = '307 https://app.lnz-study.com/' ] \
+              public_redirect="$(curl -sS --max-time 20 -o /dev/null -w '%{http_code} %{redirect_url}' "${POCKYMOE_RELAY_ORIGIN}/" || true)"
+              public_health="$(curl -fsS --max-time 20 "${POCKYMOE_RELAY_ORIGIN}/healthz" || true)"
+              if [ "${public_redirect}" = "307 https://${POCKYMOE_WEB_DOMAIN}/" ] \
                 && printf '%s' "${public_health}" | grep -Fq '"status":"ok"'; then
                 public_ready='true'
                 break
@@ -329,24 +339,24 @@ jobs:
           target_redirect=''
           target_health=''
           for _ in $(seq 1 45); do
-            target_redirect="$(curl -sS --max-time 20 -o /dev/null -w '%{http_code} %{redirect_url}' https://remote.lnz-study.com/ || true)"
-            target_health="$(curl -fsS --max-time 20 https://remote.lnz-study.com/healthz || true)"
-            if [ "${target_redirect}" = '307 https://app.lnz-study.com/' ] \
+            target_redirect="$(curl -sS --max-time 20 -o /dev/null -w '%{http_code} %{redirect_url}' "${POCKYMOE_RELAY_ORIGIN}/" || true)"
+            target_health="$(curl -fsS --max-time 20 "${POCKYMOE_RELAY_ORIGIN}/healthz" || true)"
+            if [ "${target_redirect}" = "307 https://${POCKYMOE_WEB_DOMAIN}/" ] \
               && printf '%s' "${target_health}" | jq -e '.status == "ok"' >/dev/null 2>&1; then
               break
             fi
             sleep 2
           done
 
-          test "${target_redirect}" = '307 https://app.lnz-study.com/'
+          test "${target_redirect}" = "307 https://${POCKYMOE_WEB_DOMAIN}/"
           printf '%s' "${target_health}" | jq -e '.status == "ok"' >/dev/null
 
           legacy_ready='false'
           legacy_asset=''
           for _ in $(seq 1 15); do
-            legacy_html="$(curl -fsS --max-time 20 https://remote-codex.lnz-study.com/ || true)"
+            legacy_html="$(curl -fsS --max-time 20 "${POCKYMOE_LEGACY_RELAY_ORIGIN}/" || true)"
             legacy_asset="$(printf '%s' "${legacy_html}" | sed -n 's#.*src="\(/assets/index-[^"]*\.js\)".*#\1#p' | head -n 1)"
-            legacy_health_code="$(curl -sS --max-time 20 -o legacy-health.json -w '%{http_code}' https://remote-codex.lnz-study.com/healthz || true)"
+            legacy_health_code="$(curl -sS --max-time 20 -o legacy-health.json -w '%{http_code}' "${POCKYMOE_LEGACY_RELAY_ORIGIN}/healthz" || true)"
             legacy_html_sha="$(printf '%s' "${legacy_html}" | sha256sum | awk '{print $1}')"
             if [ "${LEGACY_MODE}" = 'active' ] \
               && [ "${legacy_asset}" = "${LEGACY_ASSET}" ] \

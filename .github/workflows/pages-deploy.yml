@@ -34,7 +34,7 @@ jobs:
     env:
       VITE_POCKYMOE_RELAY_ORIGIN: ${{ vars.POCKYMOE_RELAY_ORIGIN }}
       VITE_POCKYMOE_LEGACY_UPGRADE: ${{ vars.POCKYMOE_LEGACY_UPGRADE || '1' }}
-      POCKYMOE_WEB_DOMAIN: app.lnz-study.com
+      POCKYMOE_WEB_DOMAIN: ${{ vars.POCKYMOE_WEB_DOMAIN }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -47,6 +47,7 @@ jobs:
           ui_sha="$(cat thread-ui.sha)"
           [[ "${ui_sha}" =~ ^[0-9a-f]{40}$ ]]
           test -n "${VITE_POCKYMOE_RELAY_ORIGIN}"
+          test -n "${POCKYMOE_WEB_DOMAIN}"
           echo "sha=${ui_sha}" >> "${GITHUB_OUTPUT}"
       - name: Check out pinned shared UI
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
