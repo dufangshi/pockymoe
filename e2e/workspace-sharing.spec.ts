@@ -171,7 +171,8 @@ test('a signed workspace share waits for the safety code, then reaches its threa
     const codeDisplay = ownerRow.locator('.signed-share-code-confirmation code');
     await inEveryTheme(owner.page, info, 'pending-owner', async () => {
       await ownerRow.getByRole('button', { name: new RegExp(sharedWs.label) }).click();
-      await codeDisplay.scrollIntoViewIfNeeded();
+      await expect(codeDisplay).toHaveText(recipient.code);
+      await ownerRow.locator('.signed-share-entry').scrollIntoViewIfNeeded();
     });
     await ownerRow.getByRole('button', { name: new RegExp(sharedWs.label) }).click();
     await expect(codeDisplay).toHaveText(recipient.code);

@@ -41,4 +41,3 @@ it('ignores other refusals and malformed shares', async () => {
   expect(pendingShare({ ...refusal.share, kind: 'other' })).toBeNull();
   expect(pendingShare({ ...refusal.share, id: 7 })).toBeNull();
 });
-

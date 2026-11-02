@@ -944,8 +944,8 @@ substitute the recipient's key.
    it with the recipient account key, clears `pending` and stores `verifiedAt`.
    **They do not match** (**不一致**) records no verification, signature or
    approval; it warns that the recipient key may have been replaced and offers
-   **Stop sharing** (**停止共享**) through the existing danger confirmation and
-   revocation path. There is no input field or local typed-code comparison.
+   **Stop sharing** (**停止共享**) through the existing cancel-focused danger confirmation, including inside
+   a share dialog, and revocation path. There is no input field or local typed-code comparison.
 4. A recipient who has not secured their account has no account key and no
    code. Their waiting page sends them to Account settings; the owner's details
    say the same. On an unprotected device the owner can **Approve without a

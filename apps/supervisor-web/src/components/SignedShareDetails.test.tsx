@@ -1,5 +1,6 @@
+import { revokeRelayShare } from '../lib/api';
 vi.mock('../lib/api', () => ({ revokeRelayShare: vi.fn(), revokeRelayGrant: vi.fn() }));
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, expect, it, vi } from 'vitest';
 import vectors from '../lib/fixtures/accountKeyVectors.json';
 import type {
@@ -97,7 +98,7 @@ beforeEach(() => {
   });
 });
 
-function confirmCode(_value: string, _action: string) {
+function confirmCode() {
   fireEvent.click(screen.getByRole('button', { name: 'They match, confirm' }));
 }
 
@@ -116,7 +117,7 @@ it('shows the candidate code, never verifies a mismatch, and confirms the exact 
   expect(state.approve).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole('button', { name: 'Stop sharing' }));
   expect(stop).toHaveBeenCalledOnce();
-  confirmCode(CODE, '');
+  confirmCode();
   await waitFor(() => expect(state.approve).toHaveBeenCalledWith('share', 'share', CODE));
   expect(state.confirm).toHaveBeenCalledWith(account, 'recipient');
   expect(state.confirm.mock.invocationCallOrder[0]).toBeLessThan(state.sync.mock.invocationCallOrder[0]!);
@@ -124,11 +125,28 @@ it('shows the candidate code, never verifies a mismatch, and confirms the exact 
   await waitFor(() => expect(state.announce).toHaveBeenCalled());
 });
 
+it('offers a cancel-focused stop-sharing confirmation after a mismatch outside the shared-access panel', async () => {
+  vi.mocked(revokeRelayShare).mockReset();
+  render(<SignedShareDetails kind="share" row={{ ...row, pending: true }} />);
+  await screen.findByText(CODE);
+  fireEvent.click(screen.getByRole('button', { name: 'They do not match' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Stop sharing' }));
+  const dialog = await screen.findByRole('dialog', { name: 'Stop sharing' });
+  expect(dialog).toHaveTextContent('Recipient');
+  await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Cancel', exact: true })).toHaveFocus());
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel', exact: true }));
+  expect(revokeRelayShare).not.toHaveBeenCalled();
+  expect(state.confirm).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'Stop sharing' }));
+  fireEvent.click(within(await screen.findByRole('dialog', { name: 'Stop sharing' })).getByRole('button', { name: 'Stop sharing', exact: true }));
+  await waitFor(() => expect(revokeRelayShare).toHaveBeenCalledWith('share'));
+});
+
 it('approves a pending share on an unprotected device at the relay alone', async () => {
   state.paired.mockResolvedValue(false);
   render(<SignedShareDetails kind="grant" row={{ ...row, pending: true }} />);
   await screen.findByText(CODE);
-  confirmCode(CODE, 'Check and approve');
+  confirmCode();
   await waitFor(() => expect(state.approve).toHaveBeenCalledWith('grant', 'share', CODE));
   expect(state.sync).not.toHaveBeenCalled();
   expect(state.grants).not.toHaveBeenCalled();
@@ -139,7 +157,7 @@ it('says once why the recipient cannot open a share the device has not signed, a
   expect(await screen.findByText('Recipient can\'t open this now')).toBeVisible();
   expect(screen.getByText(/Laptop is protected and only accepts shares you signed for it/)).toBeVisible();
   // Not checked in this browser and the check is on: the code signs it.
-  confirmCode(CODE, 'Sign onto device');
+  confirmCode();
   await waitFor(() => expect(state.sync).toHaveBeenCalledWith('share', row));
   expect(state.approve).toHaveBeenCalledWith('share', 'share', CODE);
 });
@@ -155,7 +173,7 @@ it.each([
   state.requireCode = requireCode;
   render(<SignedShareDetails kind="share" row={row} />);
   const button = await screen.findByRole('button', { name: action });
-  expect(screen.queryByLabelText('Safety code from Recipient')).not.toBeInTheDocument();
+  expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
   fireEvent.click(button);
   await waitFor(() => expect(state.sync).toHaveBeenCalledWith('share', row));
   expect(state.approve).not.toHaveBeenCalled();

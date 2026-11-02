@@ -1,5 +1,5 @@
 import { OWNER_UNLOCKED_EVENT } from '../lib/ownerUnlockRecovery';
-import { CopyButton, ErrorMark, confirmAsync } from '@pockymoe/thread-ui';
+import { CopyButton, ErrorMark } from '@pockymoe/thread-ui';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { Hourglass, ShieldAlert, ShieldCheck, ShieldQuestion } from 'lucide-react';
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
@@ -31,6 +31,7 @@ import {
   type Reconciliation,
   type DeviceGrant,
 } from '../lib/signedSharing';
+import { ConfirmDialog } from './ConfirmDialog';
 import { revokeRelayShare, revokeRelayGrant } from '../lib/api';
 import './signed-share.css';
 
@@ -114,6 +115,7 @@ export function SignedShareDetails({
   const [actionError, setActionError] = useState<string>();
   const [inviteError, setInviteError] = useState<string>();
   const [busy, setBusy] = useState(false);
+  const [stopConfirmation, setStopConfirmation] = useState(false);
   const [revision, setRevision] = useState(0);
   const [copied, setCopied] = useState(false);
   const [inviteOwnerKeyId, setInviteOwnerKeyId] = useState<string>();
@@ -186,9 +188,7 @@ export function SignedShareDetails({
 
   const stopSharing = () => {
     if (onStopSharing) { onStopSharing(); return; }
-    void confirmAsync({ title: translate('sharing.stopSharing'), description: translate('sharing.stopSharingConfirm', { name, device }), confirmLabel: translate('sharing.stopSharing') }).then(confirmed => {
-      if (confirmed) run(() => kind === 'share' ? revokeRelayShare(row.id) : revokeRelayGrant(row.id));
-    });
+    setStopConfirmation(true);
   };
   // Confirmation stays disabled until the recipient key has loaded.
   const codeAction = () => check?.account || !check
@@ -245,6 +245,7 @@ export function SignedShareDetails({
   const Icon = state ? STATE_ICON[state] : null;
   return (
     <div className="signed-share">
+      <ConfirmDialog open={stopConfirmation} title={translate('sharing.stopSharing')} description={translate('sharing.stopSharingConfirm', { name, device })} confirmLabel={translate('sharing.stopSharing')} busy={busy} error={actionError ?? null} onCancel={() => { if (!busy) setStopConfirmation(false); }} onConfirm={() => run(async () => { if (kind === 'share') await revokeRelayShare(row.id); else await revokeRelayGrant(row.id); setStopConfirmation(false); })} />
       {body && Icon ? (
         <section className="signed-share-state" data-tone={body.tone} data-state={state} aria-label={body.title}>
           <p className="signed-share-title">
