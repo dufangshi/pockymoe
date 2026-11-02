@@ -44,8 +44,14 @@ capability discovery gate and clear on logout.
 Google and GitHub use `auth.openExternal(url)`, never embedded provider login.
 The Web creates a random proof and sends its SHA-256/base64url hash to
 `POST /relay/auth/mobile/prepare` with the provider and optional invite code.
-The returned Relay start path binds the normal OAuth state, PKCE verifier and
-system-browser HttpOnly cookie. The invite code is stored only as a hash.
+The Relay start path first renders a plain consent page: 「Pockymoe 手机 App
+正在请求登录」 and 「如果不是你刚刚发起的，请关闭此页」, with explicit 「继续」 and
+「取消」 buttons. GET/query parameters cannot approve it. A one-use form nonce,
+bound to an HttpOnly browser cookie and the Relay origin, is required for POST.
+Continuing creates the normal OAuth state, PKCE verifier and provider-binding
+cookie; cancelling returns a protected cancellation callback without signing in.
+Both Google and GitHub receive `prompt=select_account` so a remembered browser
+account does not silently choose the identity. The invite is stored only as a hash.
 
 The preparation ID is public and cannot be redeemed. Once the provider returns,
 the Relay generates a **fresh random 256-bit code**, stores only its hash, and
@@ -60,18 +66,50 @@ code by polling. A stolen callback code alone also lacks the page's proof.
 Login cookies are issued into the WebView, preserving MFA, trusted-browser,
 account setup/unlock and the remembered destination. Refusal and pending
 registration use the same secret-code handoff before showing the localized portal
-notice. There is no custom authorization/start page: the start endpoint redirects
-directly to the provider's configured application authorization UI. Browser and
-desktop OAuth keep their existing redirects. No login session is put in the deep
+notice. Mobile starts require this consent step; browser and desktop OAuth keep
+their existing direct provider redirects. No login session is put in the deep
 link. Cancellation, an unsupported auth bridge or a failed connection shows the
 existing visible sign-in warning; it never silently succeeds or falls back to
 embedded provider sign-in.
 
+**What this does and does not protect.** The proof binds redemption to whichever
+client prepared the flow. It prevents a preparer from polling a public start ID
+to steal a victim's session, and prevents someone with only an intercepted
+callback code from redeeming a flow initiated by the victim's WebView. It does
+**not** establish that the initiating client is the genuine Pockymoe app: a
+malicious app can prepare its own proof and claim the `remotecodex://` scheme.
+The consent warning, explicit button and account picker reduce this risk; they
+do not eliminate it. A verified/claimed HTTPS callback (Universal Links/App Links)
+would bind the callback more strongly to the app and is **not implemented yet**.
+Do not approve this page unless you just requested the sign-in yourself.
+
 `prepare` uses the existing admission limiter before proof/invite validation:
-five attempts per transport-peer IP per ten minutes and 200 globally per ten
-minutes. Invalid invites/proofs consume the same budget. Raw peer IPs are used;
-unauthenticated forwarding headers cannot choose a new bucket. Requests without
-peer metadata share an `unknown` bucket. Existing browser auth limits also apply.
+five attempts per resolved client IP per ten minutes. Anonymous attempts also
+have separate **2,000-per-provider** ten-minute buckets. Correct configured
+invites or an authenticated account session bypass the anonymous bucket, so an
+anonymous provider flood cannot consume their admission. Per-client limits and
+the 10,000 pending-row storage cap still apply. Missing an invite is permitted
+for existing-account provider login; a new user without an invite may be refused
+after provider identity verification as before. Anonymous preparation can occupy
+at most 4,000 new rows per ten-minute window across the two providers, leaving
+capacity for protected attempts. Invalid invites/proofs consume the client budget.
+
+Relay has an explicit `POCKYMOE_TRUSTED_PROXY_IPS` comma-separated IP setting.
+With no configured proxies, forwarding headers are ignored. If the transport
+peer is configured, `X-Forwarded-For` is read from right to left through configured
+trusted hops, stopping at the first untrusted IP; attacker-prepended entries
+cannot select a bucket. Malformed/missing headers fall back to the peer, and
+missing peer metadata shares an `unknown` bucket. Both the general auth middleware
+and mobile preparation use this resolver. Configure only actual proxy IPs and
+ensure the ingress appends or overwrites the forwarding chain; do not accept
+arbitrary client-supplied headers as authoritative.
+
+For the loopback Relay deployment, set `POCKYMOE_TRUSTED_PROXY_IPS=127.0.0.1`
+in the Relay environment file (add other real proxy hops only when required).
+Deployment preflight stops if the loopback proxy is not configured. This is
+server runtime configuration, not a repository secret. Other clients behind a
+configured proxy receive independent limits, while users sharing a real public
+NAT IP intentionally share that client budget.
 
 ## Web and Relay connection origins
 

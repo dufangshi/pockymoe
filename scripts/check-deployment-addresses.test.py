@@ -26,6 +26,26 @@ class DeploymentAddressTest(unittest.TestCase):
             self.assertIn('scripts/check-deployment-addresses.py --mask', text)
             self.assertLess(text.index('scripts/check-deployment-addresses.py --mask'), text.index('curl ' if workflow.startswith('relay') else 'Read shared UI pin'))
 
+    def test_relay_host_secrets_are_required_validated_and_masked(self):
+        env = dict(self.env, POCKYMOE_RELAY_SSH_FINGERPRINT='SHA256:' + 'a' * 43,
+                   POCKYMOE_RELAY_HOSTNAME='relay-host.example', REMOTE_CODEX_RELAY_DEPLOY_HOST='192.0.2.10',
+                   REMOTE_CODEX_RELAY_DEPLOY_USER='deploy', REMOTE_CODEX_RELAY_DEPLOY_PASSWORD='synthetic-password',
+                   REMOTE_CODEX_RELAY_DEPLOY_PORT='22')
+        deployment.validate(env, relay_host=True)
+        for name in set(env) - set(self.env):
+            missing = dict(env)
+            missing.pop(name)
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                deployment.validate(missing, relay_host=True)
+        for name in ['POCKYMOE_RELAY_SSH_FINGERPRINT', 'POCKYMOE_RELAY_HOSTNAME']:
+            self.assertIn(env[name], deployment.mask_values(env))
+        root = Path(__file__).resolve().parent.parent
+        workflow = (root / '.github/workflows/relay-deploy.yml').read_text()
+        self.assertIn('--mask --relay-host', workflow)
+        self.assertEqual(workflow.count('fingerprint: ${{ secrets.POCKYMOE_RELAY_SSH_FINGERPRINT }}'), 3)
+        self.assertIn('test "$(hostname)" = "${POCKYMOE_RELAY_HOSTNAME}"', workflow)
+        self.assertIn('POCKYMOE_TRUSTED_PROXY_IPS', workflow)
+
     def test_expected_configuration(self):
         deployment.validate(self.env)
 

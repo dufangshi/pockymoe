@@ -130,6 +130,71 @@ pub(crate) fn origin_allowed(headers: &axum::http::HeaderMap, public_base: Optio
         .is_ok_and(|base| base.origin() == origin.origin())
 }
 
+/// Only configured transport peers may supply a forwarding chain. Walk from the
+/// server side and stop at the first untrusted hop; attacker-prepended values
+/// cannot choose a different bucket. An empty configuration trusts no headers.
+#[derive(Default)]
+pub(crate) struct TrustedProxies(Vec<std::net::IpAddr>);
+impl TrustedProxies {
+    pub fn parse(value: &str) -> Result<Self> {
+        value
+            .split(',')
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+            .map(|part| {
+                part.parse().map(normalize_ip).map_err(|_| {
+                    anyhow::anyhow!(
+                        "POCKYMOE_TRUSTED_PROXY_IPS must contain comma-separated IP addresses"
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>>>()
+            .map(Self)
+    }
+    pub fn from_env() -> Result<Self> {
+        Self::parse(&std::env::var("POCKYMOE_TRUSTED_PROXY_IPS").unwrap_or_default())
+    }
+    pub fn client_ip(
+        &self,
+        peer: Option<std::net::IpAddr>,
+        headers: &axum::http::HeaderMap,
+    ) -> String {
+        let Some(peer) = peer.map(normalize_ip) else {
+            return "unknown".into();
+        };
+        if !self.0.contains(&peer) {
+            return peer.to_string();
+        }
+        let values = headers
+            .get_all("x-forwarded-for")
+            .iter()
+            .map(|value| value.to_str())
+            .collect::<std::result::Result<Vec<_>, _>>();
+        let Ok(values) = values else {
+            return peer.to_string();
+        };
+        for raw in values.iter().rev().flat_map(|value| value.rsplit(',')) {
+            let Ok(ip) = raw.trim().parse::<std::net::IpAddr>() else {
+                return peer.to_string();
+            };
+            let ip = normalize_ip(ip);
+            if !self.0.contains(&ip) {
+                return ip.to_string();
+            }
+        }
+        peer.to_string()
+    }
+}
+fn normalize_ip(ip: std::net::IpAddr) -> std::net::IpAddr {
+    match ip {
+        std::net::IpAddr::V6(ip) => ip
+            .to_ipv4_mapped()
+            .map(std::net::IpAddr::V4)
+            .unwrap_or(std::net::IpAddr::V6(ip)),
+        ip => ip,
+    }
+}
+
 // CORS wraps all API responses, including authentication and CSRF errors.
 pub(crate) async fn browser_security(
     axum::extract::State(state): axum::extract::State<std::sync::Arc<super::AppState>>,
@@ -287,8 +352,8 @@ async fn browser_security_response(
         let peer = request
             .extensions()
             .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
-            .map(|p| p.0.ip().to_string())
-            .unwrap_or_else(|| "unknown".into());
+            .map(|p| p.0.ip());
+        let peer = state.trusted_proxies.client_ip(peer, headers);
         if !state.admission.allow(format!("auth-ip:{peer}"), 120, 60) {
             return StatusCode::TOO_MANY_REQUESTS.into_response();
         }
@@ -308,8 +373,15 @@ async fn browser_security_response(
     let cross_site = headers
         .get("sec-fetch-site")
         .is_some_and(|v| v == "cross-site");
+    // The server-rendered consent form posts from the Relay origin, not the
+    // separately hosted Web origin. This exception is restricted to this route.
+    let mutation_origin = if request.uri().path() == "/relay/auth/mobile/consent" {
+        state.oauth.public_base_url.clone()
+    } else {
+        state.oauth.browser_origin()
+    };
     if (mutation || websocket)
-        && ((has_origin && !origin_allowed(headers, state.oauth.browser_origin().as_deref()))
+        && ((has_origin && !origin_allowed(headers, mutation_origin.as_deref()))
             || cross_site
             || (websocket && !has_origin && !authenticated_native && !native_device_tunnel))
     {
@@ -384,6 +456,9 @@ async fn browser_security_response(
     let retired_worker = api_only
         && matches!(*request.method(), Method::GET | Method::HEAD)
         && super::retired_worker_asset_path(request.uri().path());
+    let consent_document = request.uri().path() == "/relay/auth/mobile/consent"
+        || (request.uri().path().starts_with("/relay/auth/oauth/")
+            && request.uri().path().ends_with("/start"));
     let mut response = next.run(request).await;
     let retirement_response = retired_worker && response.status() == StatusCode::OK;
     let h = response.headers_mut();
@@ -394,7 +469,25 @@ async fn browser_security_response(
         h.insert("service-worker-allowed", "/".parse().unwrap());
     }
     h.insert(header::X_CONTENT_TYPE_OPTIONS, "nosniff".parse().unwrap());
-    h.insert(header::REFERRER_POLICY, "no-referrer".parse().unwrap());
+    // Only the Relay-owned HTML consent form needs a same-origin referrer
+    // policy to retain the browser's POST Origin. All other responses keep the
+    // existing no-referrer clamp, regardless of upstream response headers.
+    let consent_html = consent_document
+        && h.get(header::CONTENT_TYPE).is_some_and(|value| {
+            value
+                .to_str()
+                .is_ok_and(|value| value.starts_with("text/html"))
+        });
+    h.insert(
+        header::REFERRER_POLICY,
+        if consent_html {
+            "same-origin"
+        } else {
+            "no-referrer"
+        }
+        .parse()
+        .unwrap(),
+    );
     h.insert(header::X_FRAME_OPTIONS, "DENY".parse().unwrap());
     let bootstrap = super::RELAY_BOOTSTRAP
         .trim_start_matches("<script>")
@@ -573,5 +666,87 @@ mod tests {
         assert!(origin_allowed(&headers, Some("https://relay.example")));
         headers.insert("origin", "null".parse().unwrap());
         assert!(!origin_allowed(&headers, Some("https://relay.example")));
+    }
+}
+
+#[cfg(test)]
+mod proxy_tests {
+    use super::*;
+    #[test]
+    fn trusted_proxy_chain_ignores_untrusted_prefixes_and_rejects_invalid_configuration() {
+        let policy = TrustedProxies::parse("127.0.0.1,::1,10.0.0.1").unwrap();
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            "x-forwarded-for",
+            "203.0.113.66, 198.51.100.20, 10.0.0.1".parse().unwrap(),
+        );
+        assert_eq!(
+            policy.client_ip(Some("127.0.0.1".parse().unwrap()), &headers),
+            "198.51.100.20"
+        );
+        assert_eq!(
+            policy.client_ip(Some("::ffff:127.0.0.1".parse().unwrap()), &headers),
+            "198.51.100.20"
+        );
+        assert_eq!(
+            policy.client_ip(Some("192.0.2.1".parse().unwrap()), &headers),
+            "192.0.2.1"
+        );
+        assert_eq!(
+            TrustedProxies::default().client_ip(Some("127.0.0.1".parse().unwrap()), &headers),
+            "127.0.0.1"
+        );
+        headers.insert("x-forwarded-for", "198.51.100.20, invalid".parse().unwrap());
+        assert_eq!(
+            policy.client_ip(Some("127.0.0.1".parse().unwrap()), &headers),
+            "127.0.0.1"
+        );
+        assert!(TrustedProxies::parse("https://proxy.example.com").is_err());
+    }
+    #[tokio::test]
+    async fn auth_middleware_uses_proxied_client_buckets_too() {
+        let (mut state, dir) = crate::tests::test_app_state("auth-proxy-limit");
+        std::sync::Arc::get_mut(&mut state).unwrap().trusted_proxies =
+            TrustedProxies::parse("127.0.0.1").unwrap();
+        let app = axum::Router::new()
+            .route(
+                "/relay/auth/proxy-test",
+                axum::routing::post(|| async { axum::http::StatusCode::OK }),
+            )
+            .layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                browser_security,
+            ));
+        use tower::ServiceExt;
+        for index in 0..121 {
+            let mut request = axum::http::Request::post("/relay/auth/proxy-test")
+                .header("x-forwarded-for", "198.51.100.30")
+                .body(axum::body::Body::empty())
+                .unwrap();
+            request.extensions_mut().insert(axum::extract::ConnectInfo(
+                "127.0.0.1:40000".parse::<std::net::SocketAddr>().unwrap(),
+            ));
+            assert_eq!(
+                app.clone().oneshot(request).await.unwrap().status(),
+                if index < 120 {
+                    axum::http::StatusCode::OK
+                } else {
+                    axum::http::StatusCode::TOO_MANY_REQUESTS
+                }
+            );
+        }
+        let mut request = axum::http::Request::post("/relay/auth/proxy-test")
+            .header("x-forwarded-for", "198.51.100.31")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        request.extensions_mut().insert(axum::extract::ConnectInfo(
+            "127.0.0.1:40000".parse::<std::net::SocketAddr>().unwrap(),
+        ));
+        assert_eq!(
+            app.oneshot(request).await.unwrap().status(),
+            axum::http::StatusCode::OK
+        );
+        drop(state);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

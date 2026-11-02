@@ -42,3 +42,5 @@ verify、四平台 native、固定 UI 的 Web 构建并行，package 依赖全�
 发布前运行 `python3 scripts/check-production-address.py --tracked`，打包后扫描整个 release-assets（含 ZIP 解包内容）。runtime Web 使用 `POCKYMOE_RUNTIME_RELEASE=1` 且不内置 Relay；自有 Pages/Relay 的地址只读仓库 secrets `POCKYMOE_RELAY_ORIGIN`、`POCKYMOE_WEB_DOMAIN`、`POCKYMOE_LEGACY_RELAY_ORIGIN`，见 `docs/github-runtime.md`。Windows Device Manager 的既有 manifest 是独立发布的固定例外，不纳入 runtime 资产。
 
 部署前先运行地址 preflight（`--mask`）：三个地址 secrets 必须齐全，且派生的主机名也要注册 `::add-mask::`，不能用未遮罩的仓库 variables。Relay 的 `relay-rust-canary` 环境可继承仓库 secrets；同名环境 secret 会覆盖仓库值。
+
+Relay 部署还需 `POCKYMOE_RELAY_SSH_FINGERPRINT`、`POCKYMOE_RELAY_HOSTNAME` 和既有 `REMOTE_CODEX_RELAY_DEPLOY_HOST/USER/PASSWORD/PORT` secrets，先运行 `--mask --relay-host`。loopback 反向代理的 Relay env 必须显式设置 `POCKYMOE_TRUSTED_PROXY_IPS=127.0.0.1`；不信任未配置来源的转发头。

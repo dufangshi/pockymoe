@@ -107,6 +107,7 @@ struct AppState {
     oauth: OAuthConfig,
     oauth_client: reqwest::Client,
     admission: security::Admission,
+    trusted_proxies: security::TrustedProxies,
     preview: preview::Hub,
     admin: admin::AdminState,
     metrics: metrics::Metrics,
@@ -236,6 +237,7 @@ pub async fn serve() -> Result<()> {
             .timeout(Duration::from_secs(20))
             .build()?,
         admission: security::Admission::default(),
+        trusted_proxies: security::TrustedProxies::from_env()?,
         preview: preview::Hub::from_env()?,
         admin: admin::AdminState::default(),
         metrics: metrics::Metrics::default(),
@@ -1359,22 +1361,11 @@ async fn oauth_start(
     headers: HeaderMap,
     State(state): State<Arc<AppState>>,
 ) -> Response {
-    let invite = if let Some(id) = &query.mobile_id {
-        let conn = state.store.conn.lock().await;
-        match mobile_auth::invite(&conn, id, &provider) {
-            Ok(invite) => invite,
-            Err(_) => return StatusCode::BAD_REQUEST.into_response(),
-        }
-    } else {
-        None
-    };
-    match begin_oauth(&state, &headers, &provider, invite.as_deref()).await {
+    if let Some(id) = &query.mobile_id {
+        return mobile_auth::consent_page(&state, id, &provider).await;
+    }
+    match begin_oauth(&state, &headers, &provider, None).await {
         Ok((target, cookie)) => {
-            if let Some(id) = &query.mobile_id {
-                if mobile_auth::bind(&*state.store.conn.lock().await, id, &target).is_err() {
-                    return StatusCode::BAD_REQUEST.into_response();
-                }
-            }
             let mut response = Redirect::temporary(&target).into_response();
             response.headers_mut().append(header::SET_COOKIE, cookie);
             response
@@ -5218,6 +5209,7 @@ mod tests {
                 oauth: OAuthConfig::default(),
                 oauth_client: reqwest::Client::new(),
                 admission: security::Admission::default(),
+                trusted_proxies: security::TrustedProxies::default(),
                 preview: preview::Hub::default(),
                 admin: admin::AdminState::default(),
                 metrics: metrics::Metrics::default(),

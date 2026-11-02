@@ -133,6 +133,30 @@ secrets used by the deployment workflows are:
 | `POCKYMOE_WEB_DOMAIN` | Pages CNAME, asset carry-forward host, and Relay redirect/preflight target | `app.example.com` |
 | `POCKYMOE_LEGACY_RELAY_ORIGIN` | Former Relay origin whose isolation the deployment checks | `https://legacy-relay.example.com` |
 
+Relay deployment also requires the following repository secrets (available to
+its `relay-rust-canary` job):
+
+| Secret | Purpose |
+| --- | --- |
+| `POCKYMOE_RELAY_SSH_FINGERPRINT` | Expected SSH server `SHA256:…` fingerprint for all SSH/SCP actions |
+| `POCKYMOE_RELAY_HOSTNAME` | Expected remote `hostname` checked before modifying the service |
+| `REMOTE_CODEX_RELAY_DEPLOY_HOST` | SSH transport host |
+| `REMOTE_CODEX_RELAY_DEPLOY_USER` | SSH login user |
+| `REMOTE_CODEX_RELAY_DEPLOY_PASSWORD` | SSH authentication password |
+| `REMOTE_CODEX_RELAY_DEPLOY_PORT` | SSH transport port |
+
+`--mask --relay-host` validates these as well as the three origins before the
+first network boundary check; missing values stop deployment. The fingerprint
+and host identity are not stored in workflow source. Raw and derived fingerprint
+values and hostnames are masked. Existing secret names keep their compatibility
+spelling. Pages requires only the three address secrets, not the six SSH secrets.
+
+Configure `POCKYMOE_TRUSTED_PROXY_IPS=127.0.0.1` in the Relay environment file for
+this loopback reverse proxy, and make the ingress append/overwrite
+`X-Forwarded-For`. The deployment preflight checks this runtime configuration
+before stopping the old service. See [mobile sign-in](mobile-host.md) for client
+IP resolution, anonymous/provider limits, consent and remaining scheme risks.
+
 Origins must have no trailing slash, path, query, credentials or port; the Web
 hostname is lowercase. Set all three secrets to the corresponding current
 hosts before using `pages-deploy.yml` or `relay-deploy.yml`. The preflight refuses

@@ -57,6 +57,12 @@ jobs:
       POCKYMOE_RELAY_ORIGIN: ${{ secrets.POCKYMOE_RELAY_ORIGIN }}
       POCKYMOE_WEB_DOMAIN: ${{ secrets.POCKYMOE_WEB_DOMAIN }}
       POCKYMOE_LEGACY_RELAY_ORIGIN: ${{ secrets.POCKYMOE_LEGACY_RELAY_ORIGIN }}
+      POCKYMOE_RELAY_SSH_FINGERPRINT: ${{ secrets.POCKYMOE_RELAY_SSH_FINGERPRINT }}
+      POCKYMOE_RELAY_HOSTNAME: ${{ secrets.POCKYMOE_RELAY_HOSTNAME }}
+      REMOTE_CODEX_RELAY_DEPLOY_HOST: ${{ secrets.REMOTE_CODEX_RELAY_DEPLOY_HOST }}
+      REMOTE_CODEX_RELAY_DEPLOY_USER: ${{ secrets.REMOTE_CODEX_RELAY_DEPLOY_USER }}
+      REMOTE_CODEX_RELAY_DEPLOY_PASSWORD: ${{ secrets.REMOTE_CODEX_RELAY_DEPLOY_PASSWORD }}
+      REMOTE_CODEX_RELAY_DEPLOY_PORT: ${{ secrets.REMOTE_CODEX_RELAY_DEPLOY_PORT }}
 
     steps:
       - name: Checkout
@@ -64,7 +70,7 @@ jobs:
 
       - name: Mask and validate deployment addresses
         if: inputs.deploy
-        run: python3 scripts/check-deployment-addresses.py --mask
+        run: python3 scripts/check-deployment-addresses.py --mask --relay-host
 
       - name: Capture deployment boundaries
         if: inputs.deploy
@@ -100,13 +106,13 @@ jobs:
           username: ${{ secrets.REMOTE_CODEX_RELAY_DEPLOY_USER }}
           password: ${{ secrets.REMOTE_CODEX_RELAY_DEPLOY_PASSWORD }}
           port: ${{ secrets.REMOTE_CODEX_RELAY_DEPLOY_PORT }}
-          fingerprint: SHA256:XCQeaNxZRFdwDbMHDnIviKL6oST7O9st0OhBj734WLw
+          fingerprint: ${{ secrets.POCKYMOE_RELAY_SSH_FINGERPRINT }}
           timeout: 60s
           command_timeout: 60s
-          envs: POCKYMOE_RELAY_ORIGIN,POCKYMOE_WEB_DOMAIN
+          envs: POCKYMOE_RELAY_ORIGIN,POCKYMOE_WEB_DOMAIN,POCKYMOE_RELAY_HOSTNAME
           script: |
             set -euo pipefail
-            test "$(hostname)" = 'vps-0e6cee34'
+            test "$(hostname)" = "${POCKYMOE_RELAY_HOSTNAME}"
             sudo systemctl cat remote-codex-rust-relay.service | grep -Fq "${POCKYMOE_RELAY_ORIGIN#https://}"
             sudo systemctl cat remote-codex-rust-relay.service | grep -Fq 'ExecStart=/opt/remote-codex-rust-relay/remote-codex relay'
 
@@ -142,7 +148,7 @@ jobs:
           username: ${{ secrets.REMOTE_CODEX_RELAY_DEPLOY_USER }}
           password: ${{ secrets.REMOTE_CODEX_RELAY_DEPLOY_PASSWORD }}
           port: ${{ secrets.REMOTE_CODEX_RELAY_DEPLOY_PORT }}
-          fingerprint: SHA256:XCQeaNxZRFdwDbMHDnIviKL6oST7O9st0OhBj734WLw
+          fingerprint: ${{ secrets.POCKYMOE_RELAY_SSH_FINGERPRINT }}
           source: remote-codex-rust-relay-${{ github.sha }}.tgz
           target: /tmp
 
@@ -154,10 +160,10 @@ jobs:
           username: ${{ secrets.REMOTE_CODEX_RELAY_DEPLOY_USER }}
           password: ${{ secrets.REMOTE_CODEX_RELAY_DEPLOY_PASSWORD }}
           port: ${{ secrets.REMOTE_CODEX_RELAY_DEPLOY_PORT }}
-          fingerprint: SHA256:XCQeaNxZRFdwDbMHDnIviKL6oST7O9st0OhBj734WLw
+          fingerprint: ${{ secrets.POCKYMOE_RELAY_SSH_FINGERPRINT }}
           timeout: 60m
           command_timeout: 20m
-          envs: POCKYMOE_RELAY_ORIGIN,POCKYMOE_WEB_DOMAIN
+          envs: POCKYMOE_RELAY_ORIGIN,POCKYMOE_WEB_DOMAIN,POCKYMOE_RELAY_HOSTNAME
           script: |
             set -euo pipefail
 
@@ -180,7 +186,7 @@ jobs:
             sudo grep -Fxq 'REMOTE_CODEX_RELAY_DATA_DIR=/var/lib/remote-codex-rust-relay' "${base}/relay.env"
             # Fail before stopping the old service if the auth migration is misconfigured.
             sudo python3 - "${base}/relay.env" "${POCKYMOE_RELAY_ORIGIN}" "https://${POCKYMOE_WEB_DOMAIN}" <<'PYPREFLIGHT'
-            import pathlib, shlex, sys
+            import ipaddress, pathlib, shlex, sys
             values = {}
             for line in pathlib.Path(sys.argv[1]).read_text().splitlines():
                 if '=' not in line or line.lstrip().startswith('#'):
@@ -188,6 +194,13 @@ jobs:
                 key, raw = line.split('=', 1)
                 parts = shlex.split(raw, comments=True)
                 values[key.strip()] = parts[0] if parts else ''
+            try:
+                proxies = values.get('POCKYMOE_TRUSTED_PROXY_IPS', values.get('REMOTE_CODEX_TRUSTED_PROXY_IPS', ''))
+                proxies = [ipaddress.ip_address(value.strip()) for value in proxies.split(',') if value.strip()]
+            except ValueError:
+                raise SystemExit('Relay auth preflight: configure valid POCKYMOE_TRUSTED_PROXY_IPS')
+            if ipaddress.ip_address('127.0.0.1') not in proxies:
+                raise SystemExit('Relay auth preflight: configure POCKYMOE_TRUSTED_PROXY_IPS for the loopback reverse proxy')
             secret = values.get('REMOTE_CODEX_RELAY_SESSION_SECRET')
             if secret is not None and len(secret) < 32:
                 raise SystemExit('Relay auth preflight: session secret must be at least 32 characters')
