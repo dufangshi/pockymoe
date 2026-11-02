@@ -232,6 +232,18 @@ function rememberThreadDetail(routeKey: string, detail: ThreadDetailDto) {
   recentThreadDetails.set(routeKey, detail);
   while (recentThreadDetails.size > 12) recentThreadDetails.delete(recentThreadDetails.keys().next().value!);
 }
+/** Prime the existing bounded detail cache before revealing an unseen desktop
+ * thread. The previous page stays painted; no second decryption path is added. */
+export function prepareDesktopThread(threadId: string, deviceId: string | null) {
+  const key = `${deviceId ?? 'local'}:${threadId}`;
+  if (recentThreadDetails.has(key)) return Promise.resolve();
+  let pending = pendingThreadDetails.get(key);
+  if (!pending) {
+    pending = fetchThreadDetail(threadId, { limit: INITIAL_DETAIL_TURN_PAGE_SIZE }, deviceId);
+    pendingThreadDetails.set(key, pending);
+  }
+  return pending.then(detail => { rememberThreadDetail(key, detail); }).finally(() => { pendingThreadDetails.delete(key); });
+}
 const UNAVAILABLE_AGENT_CAPABILITIES: AgentProviderCapabilitiesDto = {
   sessions: {
     list: false,

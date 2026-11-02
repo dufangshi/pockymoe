@@ -1,5 +1,5 @@
 import { formatNumber, translate, useI18n } from '@pockymoe/thread-ui/i18n';
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Plus, Settings } from 'lucide-react';
 import { ErrorMark, MatterWorkbench, ThreadMap, type MapDeviceExtras, type MapScope, type ThreadMapDevice } from '@pockymoe/thread-ui';
 import { useNavigate } from 'react-router-dom';
@@ -19,9 +19,10 @@ import { useDesktopWorkbench } from './context';
 import { resolveRequest } from './integration';
 import { QuickLook } from './QuickLook';
 import { deviceActions } from './devices/deviceActions';
+import DevicesPage from './devices';
 import { deviceCounts } from './devices/model';
 
-export function DesktopMapPage({ visible, mapVisible, revealKey, onOpen, children }: { visible: boolean; mapVisible: boolean; revealKey: string | null; onOpen(key: string, newWindow?: boolean): void; children?: ReactNode }) {
+export function DesktopMapPage({ visible, mapVisible, revealKey, onOpen }: { visible: boolean; mapVisible: boolean; revealKey: string | null; onOpen(key: string, newWindow?: boolean): void }) {
   const { locale } = useI18n();
   const index = useDesktopSelector(index => index); const store = useDesktopStore();
   const shell = useAppShellNav(); const navigate = useNavigate();
@@ -89,7 +90,7 @@ export function DesktopMapPage({ visible, mapVisible, revealKey, onOpen, childre
       renderThreadMenu: (thread, context) => <RecentThreadMenu thread={thread} context={context} currentKey={navigation.currentKey} onFavorite={navigation.onToggleThreadFavorite} onRenamed={navigation.onThreadRenamed} onRemoved={navigation.onThreadRemoved} onNavigate={navigate} />,
     })} settings={<button aria-label={translate('desktopShell.settings')} onClick={shell?.openSettings}><Settings data-icon="settings" /></button>} newThread={<button aria-label={translate('desktopShell.newThread')} onClick={() => first && navigate(`/devices/${encodeURIComponent(first.id)}/threads/new`)}><Plus data-icon="new-thread" /></button>} actions={null} threadMenu={null} connection={<span className="desktop-online-count">{translate('desktopShell.onlineCount', { count: formatNumber(index.devices.filter(device => device.connected).length) })}</span>} explorer={null} revealExplorer={0}>
       <div className="desktop-map-persistent" hidden={!mapVisible} inert={!mapVisible}><ThreadMap devices={devices} presentation="page" stableLayout scope={scope} onScopeChange={setScope} filterText={filter} onFilterChange={setFilter} attention={attention} deviceExtras={extras} revealKey={revealKey} pulseKeys={index.pulseKeys} onQuickLook={setQuickLook} onRequestDecision={decide} onOpen={thread => onOpen(thread.key)} onNavigate={href => navigate(appPathname(href))} onRetry={id => { void store.refreshDevice(id); }} actions={error ? <ErrorMark message={error} retryLabel={translate('desktopShell.dismissNotice')} onRetry={() => setError('')} /> : index.error ? <ErrorMark message={index.error} onRetry={() => { void store.refresh(); }} /> : undefined} /></div>
-      {!mapVisible ? <div className="desktop-map-route">{children}</div> : null}
+      {visible && !mapVisible ? <div className="desktop-map-route"><DevicesPage onRevealDevice={id => { navigate('/'); setFilter(''); }} onNewThread={id => navigate(`/devices/${encodeURIComponent(id)}/threads/new`)} /></div> : null}
       {quickLook && mapVisible ? <QuickLook threadKey={quickLook} onClose={() => setQuickLook(null)} onOpen={(key, newWindow) => { setQuickLook(null); onOpen(key, newWindow); }} /> : null}
     </MatterWorkbench>
   </div>;

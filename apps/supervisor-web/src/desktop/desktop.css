@@ -75,3 +75,7 @@
 :root:root [data-desktop-surface] .desktop-workspaces-shell .matter-content { padding: 0; }
 
 :root:root [data-desktop-surface] .desktop-workspaces-shell :is(.matter-sidebar, .matter-content) { margin: 0; }
+/* Keep the retained transcript's viewport geometry while Devices/Map cover it.
+   display:none reports a zero-height scroller to tail-follow observers and can
+   move a reader's saved position. hidden + inert still suppress paint and input. */
+.desktop-route[hidden] { display: block; visibility: hidden; pointer-events: none; }

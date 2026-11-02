@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { CheckCircle2, ChevronRight, Monitor, RefreshCw, Timer } from 'lucide-react';
 import { useI18n, type TranslationKey } from '@pockymoe/thread-ui/i18n';
 import { ConfirmDialog, ErrorMark, Select } from '@pockymoe/thread-ui';
@@ -27,7 +27,8 @@ export default function DevicesPage({ onRevealDevice, onNewThread }: DevicesPage
   const navigate = useNavigate();
   const route = useParams<{ id: string; deviceId: string }>();
   const [params, setParams] = useSearchParams();
-  const selected = route.id ?? route.deviceId ?? params.get('device') ?? '';
+  const location = useLocation();
+  const selected = route.id ?? route.deviceId ?? location.pathname.match(/^\/desktop\/devices\/([^/]+)/)?.[1] ?? params.get('device') ?? ''; 
   const range: StatsRange = params.get('range') === 'all' ? 'all' : params.get('range') === '7d' ? '7d' : params.get('range') === '30d' ? '30d' : 'today';
   const origin = (['owner', 'guest', 'agent', 'automation', 'unknown'].includes(params.get('origin') ?? '') ? params.get('origin') : '') as TurnOrigin | '';
   const targets = selected ? index.devices.filter(device => device.id === selected) : index.devices;
