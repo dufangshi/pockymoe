@@ -9,12 +9,13 @@ export interface DesktopSurfaceContextValue {
   revealInMap(key: string): void;
   renderActivity(navigation: NavigationActions): MatterWorkbenchOptions['sidebarLeading'];
   railLeading: MatterWorkbenchOptions['railLeading'];
+  railBottomLeading?: MatterWorkbenchOptions['railBottomLeading'];
 }
 export const DesktopSurfaceContext = createContext<DesktopSurfaceContextValue | null>(null);
 export const useDesktopSurface = () => useContext(DesktopSurfaceContext);
 export function useDesktopWorkbench(navigation: NavigationActions) {
   const surface = useDesktopSurface();
-  return surface ? { workspaceControlsEnabled: surface.workspaceControlsEnabled !== false, sidebarLeading: surface.renderActivity(navigation), railLeading: surface.railLeading } : {};
+  return surface ? { workspaceControlsEnabled: surface.workspaceControlsEnabled !== false, sidebarLeading: surface.renderActivity(navigation), railLeading: surface.railLeading, railBottomLeading: surface.railBottomLeading } : {};
 }
 
 export function hasWorkspaceContext(path: string, search = '') {

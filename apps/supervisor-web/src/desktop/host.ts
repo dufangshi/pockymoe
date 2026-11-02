@@ -26,6 +26,8 @@ export interface DesktopCapabilities {
     multiWindow: boolean;
     nativeSave: boolean;
     badge: boolean;
+    /** Optional on older shells; verified in-app updates only. */
+    updates?: boolean;
   };
 }
 
@@ -168,9 +170,23 @@ export interface Appearance {
   locale?: string;
 }
 
+/** Download progress is intentionally private to the host; only verified files become ready. */
+export interface UpdateState {
+  status: 'idle' | 'downloading' | 'ready' | 'installing' | 'error';
+  version?: string;
+  error?: string;
+  releaseUrl?: string;
+}
+
 /** Exposed as window.pockymoeHost to the configured webOrigin's top frame only. */
 export interface PockymoeHost {
   capabilities(): Promise<HostCapabilities>;
+  updates?: {
+    state(): Promise<UpdateState>;
+    onChange(listener: (state: UpdateState) => void): () => void;
+    /** No URL, path or version input: only the host's already-verified release. */
+    install(): void;
+  };
   push?: { register(): Promise<{ token: string; sandbox: boolean; kind: 'ios' } | null> };
   auth?: { openExternal(url: string): Promise<{ callbackUrl: string } | null> };
   haptics?: { play(kind: 'sent' | 'attention' | 'warning'): void };

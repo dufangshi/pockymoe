@@ -9,6 +9,7 @@ import { threadHref } from '../lib/relayRoutes';
 import { useDesktopSelector, useDesktopStore } from './data';
 import { buildActivityItems } from './data/activity';
 import { ActivitySection } from './ActivitySection';
+import { ClientUpdateButton } from './ClientUpdateButton';
 import { DesktopSurfaceContext, hasWorkspaceContext, type NavigationActions } from './context';
 import { DesktopMapPage } from './MapPage';
 import { focusedKeyFromPath, handleHostCommand, syncActivity } from './integration';
@@ -85,8 +86,9 @@ export function DesktopShell({ children, capabilities }: { children: ReactNode; 
   // translate reads a stable shared store; locale explicitly invalidates cached labels.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const railLeading = useMemo(() => <><button data-desktop-map-link aria-label={waitingCount ? translate('desktopShell.mapWaiting', { count: waitingCount }) : translate('desktopShell.map')} aria-pressed={mapVisible} title={translate('desktopShell.mapShortcut', { shortcut: capabilities.platform === 'darwin' ? '⌘0' : 'Ctrl+0' })} onClick={openMap}><LayoutDashboard data-icon="thread-map" />{waitingCount ? <span className="desktop-map-badge">{waitingCount}</span> : null}</button><button aria-label={translate('desktopShell.devices')} title={translate('desktopShell.devices')} onClick={() => navigate('/desktop/devices')}><Monitor data-icon="devices" /></button><RelayUserMenu /></>, [mapVisible, navigate, openMap, waitingCount, locale]);
+  const railBottomLeading = useMemo(() => <ClientUpdateButton host={host} enabled={capabilities.features.updates === true} />, [host, capabilities.features.updates]);
   const workspaceControlsEnabled = hasWorkspaceContext(location.pathname, location.search);
-  const surface = useMemo(() => ({ routeReady, workspaceControlsEnabled, multiWindow: capabilities.features.multiWindow, openMap, revealInMap, railLeading, renderActivity: (navigation: NavigationActions) => <ActivitySection navigation={navigation} onOpen={open} /> }), [routeReady, capabilities.features.multiWindow, openMap, revealInMap, railLeading, open, workspaceControlsEnabled]);
+  const surface = useMemo(() => ({ routeReady, workspaceControlsEnabled, multiWindow: capabilities.features.multiWindow, openMap, revealInMap, railLeading, railBottomLeading, renderActivity: (navigation: NavigationActions) => <ActivitySection navigation={navigation} onOpen={open} /> }), [routeReady, capabilities.features.multiWindow, openMap, revealInMap, railLeading, railBottomLeading, open, workspaceControlsEnabled]);
   const chrome = capabilities.windowChrome;
   const style = { '--desktop-title-height': `${chrome.toolbarHeight}px`, '--desktop-controls-left': chrome.controlsSide === 'left' ? `${chrome.trafficLightsWidth}px` : '0px', '--desktop-controls-right': chrome.controlsSide === 'right' ? `${chrome.trafficLightsWidth}px` : '0px' } as CSSProperties;
   const shellValue = useMemo(() => shell ? { ...shell, openThreadMap: openMap } : shell, [shell, openMap]);

@@ -1,12 +1,18 @@
-import type { DesktopSettings, HostCommand, PockymoeHost } from './host';
+import type { DesktopSettings, HostCommand, PockymoeHost, UpdateState } from './host';
 /** Dev-only entry, removed entirely from the production import graph. */
 export function installMockHost() {
   if (window.pockymoeHost) return;
   window.__POCKYMOE_BOOTSTRAP__ = { mode: 'relay' };
   let settings: DesktopSettings = { webOrigin: location.origin, relayOrigin: location.origin, alertMode: 'petFirst', petVisible: false, petId: 'default', petSize: 'M', petMini: false, petSound: false, launchAtLogin: false, quickWindowShortcut: 'Alt+Space', snoozeUntil: null };
+  const updatesEnabled = new URLSearchParams(location.search).get('desktopMockUpdates') === '1';
+  let updateState: UpdateState = { status: 'idle' };
+  const updateListeners = new Set<(state: UpdateState) => void>();
+  const setUpdate = (next: UpdateState) => { updateState = next; updateListeners.forEach(listener => listener(next)); };
+  window.addEventListener('desktopMock:update', event => setUpdate((event as CustomEvent<UpdateState>).detail));
   const listeners = new Set<(command: HostCommand) => void>();
   window.pockymoeHost = {
-    capabilities: async () => ({ surface: 'desktop', bridgeVersion: 2, platform: new URLSearchParams(location.search).get('desktopMockPlatform') === 'win32' ? 'win32' : 'darwin', shellVersion: 'development', notifications: 'local', windowChrome: { kind: 'hiddenInset', trafficLightsWidth: 78, toolbarHeight: 38, controlsSide: 'left' }, features: { pet: true, quickWindow: true, multiWindow: true, nativeSave: true, badge: true } }),
+    capabilities: async () => ({ surface: 'desktop', bridgeVersion: 2, platform: new URLSearchParams(location.search).get('desktopMockPlatform') === 'win32' ? 'win32' : 'darwin', shellVersion: 'development', notifications: 'local', windowChrome: { kind: 'hiddenInset', trafficLightsWidth: 78, toolbarHeight: 38, controlsSide: 'left' }, features: { pet: true, quickWindow: true, multiWindow: true, nativeSave: true, badge: true, updates: updatesEnabled } }),
+    updates: { state: async () => updateState, onChange: listener => { updateListeners.add(listener); return () => { updateListeners.delete(listener); }; }, install: () => { setUpdate({ ...updateState, status: 'installing' }); window.dispatchEvent(new CustomEvent('desktopMock:updateInstall')); } },
     activity: { sync: snapshot => window.dispatchEvent(new CustomEvent('desktopMock:snapshot', { detail: snapshot })) },
     appearance: { sync: appearance => window.dispatchEvent(new CustomEvent('desktopMock:appearance', { detail: appearance })) },
     onCommand: listener => { listeners.add(listener); return () => { listeners.delete(listener); }; },

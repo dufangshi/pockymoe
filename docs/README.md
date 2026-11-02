@@ -46,6 +46,7 @@ Maintained documentation for Pockymoe. For the product overview, start with the
 - [Device MCP servers](mcp-servers.md)
 - [Automations and hooks](unified-hooks.md) and [watch summaries](watch-statistics.md)
 - [Conversation search](global-search.md)
+- [Desktop Web host](desktop-host.md): optional native services, verified client-update controls and draft lifetime
 - [Mobile Web host](mobile-host.md): phone bridge, system-browser sign-in and activity surfaces
 - [Thread notifications](thread-notifications.md)
 - [Device monitoring](device-monitor.md) and [device turn statistics](device-statistics.md)

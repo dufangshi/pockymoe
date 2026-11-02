@@ -79,3 +79,15 @@
    display:none reports a zero-height scroller to tail-follow observers and can
    move a reader's saved position. hidden + inert still suppress paint and input. */
 .desktop-route[hidden] { display: block; visibility: hidden; pointer-events: none; }
+
+
+/* A ready update is a host action, not a thread status. Keep its 32px circle
+   and 40px target across packs; only the existing busy spinner animates.
+   The rail pack's generic SVG size must not resize this 16px action glyph. */
+:root:root [data-desktop-surface] .desktop-client-update { position: relative; display: flex; flex-direction: column; align-items: center; flex-shrink: 0; }
+:root:root [data-desktop-surface] .desktop-client-update-button { width: 40px; height: 40px; padding: 4px; display: grid; place-items: center; border: 0; background: transparent; border-radius: 50%; box-shadow: none; color: var(--theme-accent-solid-fg); }
+:root:root [data-desktop-surface] .desktop-client-update-circle { width: 32px; height: 32px; display: grid; place-items: center; border-radius: 50%; background: var(--theme-accent-solid); color: var(--theme-accent-solid-fg); }
+:root:root [data-desktop-surface] .desktop-client-update-circle > svg { width: 16px !important; height: 16px !important; }
+:root:root [data-desktop-surface] .desktop-client-update-button:disabled { opacity: 1; cursor: progress; }
+:root:root [data-desktop-surface] .desktop-client-update-button:focus-visible { outline: 2px solid var(--theme-accent-solid); outline-offset: 1px; }
+:root:root [data-desktop-surface] .desktop-client-update-failure { width: 40px; height: 40px; display: grid; place-items: center; }
