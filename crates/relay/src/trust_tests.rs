@@ -1,5 +1,76 @@
 use super::*;
 
+#[tokio::test]
+async fn shared_encrypted_socket_events_keep_thread_terminal_and_revocation_boundaries() {
+    let f = Fixture::new("shared-encrypted-events").await;
+    let connection_id = Uuid::new_v4();
+    let (tx, mut received) = tokio::sync::mpsc::channel(8);
+    f.state.clients.write().await.insert(
+        "viewer".into(),
+        ClientSocket {
+            tx,
+            device_id: "device".into(),
+            supervisor_connection_id: connection_id,
+            user_id: "share-guest".into(),
+            thread_id: Some("shared-thread".into()),
+            attached_shell_id: None,
+            session_token: f.tokens["share-guest"].clone(),
+        },
+    );
+    // Session::seal emits both routing keys even when their value is null.
+    let sealed = |kind: &str, thread: Value, shell: Value| {
+        json!({"type":kind,"threadId":thread,"shellId":shell,
+            "encrypted":{"version":1,"channelId":"channel","sequence":1,"body":"opaque"}})
+    };
+    for event in [
+        sealed("supervisor.connected", Value::Null, Value::Null),
+        sealed("supervisor.pong", Value::Null, Value::Null),
+        sealed("thread.turn.updated", json!("shared-thread"), Value::Null),
+    ] {
+        forward_server_message_to_client(&f.state, "device", connection_id, "viewer", &event).await;
+        assert_eq!(received.try_recv().unwrap(), event.to_string());
+    }
+    for event in [
+        sealed("thread.turn.updated", json!("private-thread"), Value::Null),
+        sealed(
+            "thread.turn.updated",
+            json!("shared-thread"),
+            json!("terminal"),
+        ),
+        sealed("shell.output", json!("shared-thread"), Value::Null),
+    ] {
+        forward_server_message_to_client(&f.state, "device", connection_id, "viewer", &event).await;
+        assert!(
+            received.try_recv().is_err(),
+            "out-of-scope/terminal event forwarded"
+        );
+    }
+    let event = sealed("thread.turn.updated", json!("shared-thread"), Value::Null);
+    for (device, connection) in [("other-device", connection_id), ("device", Uuid::new_v4())] {
+        forward_server_message_to_client(&f.state, device, connection, "viewer", &event).await;
+        assert!(
+            received.try_recv().is_err(),
+            "wrong device/connection forwarded"
+        );
+    }
+    f.state
+        .store
+        .conn
+        .lock()
+        .await
+        .execute(
+            "UPDATE relay_shares SET revoked_at='now' WHERE id='share'",
+            [],
+        )
+        .unwrap();
+    forward_server_message_to_client(&f.state, "device", connection_id, "viewer", &event).await;
+    assert!(
+        received.try_recv().is_err(),
+        "revoked share received an event"
+    );
+    assert!(!f.state.clients.read().await.contains_key("viewer"));
+}
+
 pub(super) struct Fixture {
     pub state: Arc<AppState>,
     pub base: String,

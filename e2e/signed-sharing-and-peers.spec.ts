@@ -59,6 +59,17 @@ test('signed sharing, invite pins, revocation and account-certified peers', asyn
     if (!(await recipient.page.getByText('SIGNED_HISTORY', { exact: true }).isVisible())) await recipient.page.reload();
     await expect(recipient.page.getByText('SIGNED_HISTORY', { exact: true })).toBeVisible();
     await expect.poll(() => recipientChannels.some(c => c.frames.some(frame => frame.includes('"encrypted"')))).toBe(true);
+    // A read-only recipient must see new content over the already-open channel,
+    // without navigating/reloading to fetch a fresh history snapshot.
+    await recipient.page.evaluate(() => { (window as any).__sharedLiveDocument = true; });
+    const readChannel = recipientChannels.filter(c => !c.closed).at(-1)!;
+    const beforeLive = readChannel.frames.length;
+    await sendPrompt(owner.page, 'SHARED_LIVE_REPLY');
+    await expect(recipient.page.getByText('SHARED_LIVE_REPLY', { exact: true })).toBeVisible();
+    expect(await recipient.page.evaluate(() => (window as any).__sharedLiveDocument)).toBe(true);
+    expect(readChannel.frames.slice(beforeLive).some(frame => {
+      const wire = JSON.parse(frame); return wire.type.startsWith('thread.') && !!wire.encrypted;
+    }), 'Read-only live reply has encrypted thread events').toBe(true);
     await expect(recipient.page.getByRole('button', { name: /Encrypted shared connection · owner account trusted on first use$/ }).first()).toBeVisible();
     const read = await browserRequest(recipient.page, d1.api + `/threads/${d1.thread}`);
     expect(read.status, `Recipient signed read (code ${read.data?.code}: ${read.data?.message})`).toBe(200); expect(read.data.thread.id).toBe(d1.thread);
@@ -126,13 +137,17 @@ test('signed sharing, invite pins, revocation and account-certified peers', asyn
     await expect.poll(async () => ok(await browserRequest(owner.page, d1.api + '/transport/grants'), 'Updated grants').grants.find((g: any) => g.grantId === grant.grantId)?.threadAccess).toBe('control');
     await editing.getByRole('button', { name: 'Close dialog', exact: true }).click();
     await recipient.page.reload();
+    // Empty prompts are intentionally disabled; prepare content before checking
+    // that the newly granted control permission allows sending.
+    await recipient.page.getByRole('textbox', { name: 'Prompt', exact: true }).fill('Reply with exactly RECIPIENT_CONTROL_REPLY');
     await expect(recipient.page.getByRole('button', { name: 'Send Prompt', exact: true })).toBeEnabled();
     await expect.poll(() => recipientChannels.filter(c => !c.closed).some(c => c.frames.some(frame => frame.includes('"encrypted"')))).toBe(true);
     const active = recipientChannels.filter(c => !c.closed).at(-1)!;
     const beforeReply = active.frames.length;
     await sendPrompt(recipient.page, 'RECIPIENT_CONTROL_REPLY');
     expect(active.frames.slice(beforeReply).some(frame => frame.includes('"encrypted"')), 'Recipient control reply arrives over encrypted WebSocket').toBe(true);
-    expect(recipientChannels.some(c => c.frames.some(frame => /SIGNED_HISTORY|RECIPIENT_CONTROL_REPLY/.test(frame))), 'Relay cannot read history or control replies').toBe(false);
+    expect(recipientChannels.some(c => [...c.frames, ...c.sent].some(frame => /SIGNED_HISTORY|SHARED_LIVE_REPLY|RECIPIENT_CONTROL_REPLY/.test(frame))), 'Relay cannot read history or control replies in either direction').toBe(false);
+    expect(recipientChannels.every(c => [...c.frames, ...c.sent].every(frame => !!JSON.parse(frame).encrypted)), 'All relay data frames use encrypted envelopes').toBe(true);
 
     const revoking = await shareDialog(owner.page, d1.url);
     const revokedAt = Date.now();
@@ -156,6 +171,9 @@ test('signed sharing, invite pins, revocation and account-certified peers', asyn
     await sendPrompt(owner.page, 'AFTER_REVOKE_PRIVATE');
     expect.soft(active.frames.slice(afterRevoke).some(frame => frame.includes('"encrypted"')), 'REVOCATION_EVENTS: revoked open channel must not receive owner events').toBe(false);
     expect(await recipient.page.getByText('AFTER_REVOKE_PRIVATE', { exact: true }).count()).toBe(0);
+    // End the malicious controlling-ACL restoration before the independent peer
+    // case: controlling shares intentionally isolate devices from peer agents.
+    await f.relayRow(share.id, 'read');
 
     // Peer CLI uses only each disposable Supervisor's generated machine config,
     // with --from tying the send to a real local thread (same as live peer E2E).

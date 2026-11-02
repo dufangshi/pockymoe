@@ -4869,7 +4869,9 @@ async fn forward_server_message_to_client(
 }
 
 fn terminal_event(payload: &Value) -> bool {
-    payload.get("shellId").is_some()
+    // Encrypted envelopes retain shellId:null for non-terminal events. Only a
+    // non-null shell target (or shell event type) makes this terminal output.
+    payload.get("shellId").is_some_and(|id| !id.is_null())
         || payload
             .get("type")
             .and_then(Value::as_str)
