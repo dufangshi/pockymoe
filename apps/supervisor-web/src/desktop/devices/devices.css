@@ -156,7 +156,7 @@
 .pd-device-menu > div > button { flex: 1; }
 .pd-device-menu .pd-menu-separated { border-top: 1px solid var(--theme-border); margin-top: 8px; padding-top: 8px; }
 .pd-device-menu button[data-tone="danger"] { color: var(--status-danger-fg); }
-.pd-header-actions .pd-add-device { min-height: 30px; padding: 0 10px; }
+.pd-header-actions .pd-add-device { min-height: 30px; padding: 0 10px; color: var(--theme-accent-solid-fg); }
 
 .pd-workspaces-arrow { position: relative; margin-inline: 9px; }
 .pd-workspaces-arrow::after { content: ''; position: absolute; width: 40px; height: 40px; left: 50%; top: 50%; transform: translate(-50%, -50%); }
