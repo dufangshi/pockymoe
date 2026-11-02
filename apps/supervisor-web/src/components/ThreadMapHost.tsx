@@ -29,6 +29,11 @@ export const THREAD_MAP_HOURS = 24;
 /** While the map is open its devices are read again this often. */
 const REFRESH_MS = 30_000;
 const LOCAL = 'local';
+/**
+ * How long the first answers wait for the rest. Each answer changes every block's
+ * share of the map, so showing them one by one makes the whole map jump.
+ */
+const SETTLE_MS = 1200;
 
 /**
  * One device on the map: its workspaces and their root threads, each with its
@@ -156,11 +161,13 @@ export function useThreadMapDevices(open: boolean) {
   const [devices, setDevices] = useState<ThreadMapDevice[]>([]);
   const entries = useRef<DeviceEntry[]>([]);
   const generation = useRef(0);
-  const settle = useCallback((run: number, next: ThreadMapDevice) => {
-    if (run !== generation.current) return;
+  const settle = useCallback((run: number, answers: readonly ThreadMapDevice[]) => {
+    if (run !== generation.current || !answers.length) return;
     // A refresh that fails keeps what was already on the map.
-    setDevices(list => list.map(device => device.id !== next.id ? device
-      : next.state === 'error' && device.state === 'ready' ? device : next));
+    setDevices(list => list.map(device => {
+      const next = answers.find(answer => answer.id === device.id);
+      return !next ? device : next.state === 'error' && device.state === 'ready' ? device : next;
+    }));
   }, []);
   const refresh = useCallback(async () => {
     const run = ++generation.current;
@@ -182,14 +189,24 @@ export function useThreadMapDevices(open: boolean) {
       const known = previous.find(device => device.id === id);
       return known && known.state !== 'offline' ? { ...known, name: entry.name } : { id, name: entry.name, state: 'loading', workspaces: [] };
     }));
-    await Promise.all(list.filter(entry => entry.connected).map(async entry => settle(run, await readDevice(entry.id, entry.name))));
+    // Answers land together. One slow device must not hold back the rest for long, so after
+    // the wait they appear, and whatever is still out lands in the same way when it can.
+    const waiting: ThreadMapDevice[] = [];
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const flush = () => { timer = undefined; settle(run, waiting.splice(0)); };
+    await Promise.all(list.filter(entry => entry.connected).map(async entry => {
+      waiting.push(await readDevice(entry.id, entry.name));
+      timer ??= setTimeout(flush, SETTLE_MS);
+    }));
+    clearTimeout(timer);
+    flush();
   }, [settle]);
   const retry = useCallback((id: string) => {
     const entry = entries.current.find(item => (item.id ?? LOCAL) === id);
     if (!entry) return;
     const run = generation.current;
     setDevices(list => list.map(device => device.id === id ? { ...device, state: 'loading', error: null } : device));
-    void readDevice(entry.id, entry.name).then(next => settle(run, next));
+    void readDevice(entry.id, entry.name).then(next => settle(run, [next]));
   }, [settle]);
   useEffect(() => {
     if (!open) return;
