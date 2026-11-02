@@ -45,8 +45,10 @@ test('route content frame sampling', async ({ page }) => {
   // Let the initial tail-follow frames finish, then model the reader moving
   // upward into history rather than racing the thread's initial layout.
   await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
-  await page.locator('[data-retained-probe]').hover();
-  await page.mouse.wheel(0, -1);
+  // Playwright's mouse.wheel resolves before Chromium dispatches the wheel.
+  // Deliver this intent synchronously so the expansion anchor is released
+  // before setting the reader's position, even with concurrent test workers.
+  await page.locator('[data-retained-probe]').evaluate(el => el.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: -1 })));
   await page.locator('[data-retained-probe]').evaluate(el => { el.scrollTop = 400; el.dispatchEvent(new Event('scroll')); });
   const scrollTop = await page.locator('[data-retained-probe]').evaluate(el => el.scrollTop);
   await go('/desktop/devices'); await expect(page.getByTestId('desktop-devices')).toBeVisible();
