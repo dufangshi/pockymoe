@@ -26,10 +26,14 @@ describe('spoken summary commands', () => {
   });
   it('lists local connections of connected devices and skips one that fails', async () => {
     const store = { ...dependencies().store, getSnapshot: () => ({ devices: [{ id: 'a', name: 'Mac', connected: true }, { id: 'b', name: 'Old', connected: true }, { id: 'c', name: 'Off', connected: false }] }) };
-    const request = vi.fn(async (device: string) => { if (device === 'b') throw new Error('404'); return { connections: [{ id: 'k', name: 'Main', protocol: 'openai_chat', model: 'm', local: true }, { id: 'r', name: 'Elsewhere', protocol: 'openai_chat', local: false }] }; });
+    const request = vi.fn(async (device: string, path: string) => {
+      if (device === 'b') throw new Error('404');
+      if (path.endsWith('/supervisor')) return { runningVersion: '0.13.41' };
+      return { connections: [{ id: 'k', name: 'Main', protocol: 'openai_chat', model: 'm', local: true }, { id: 'r', name: 'Elsewhere', protocol: 'openai_chat', local: false }] };
+    });
     const result = await handleHostCommand({ id: 'x', type: 'listConnections' }, { ...dependencies(), store, request } as never);
-    expect(result.data).toEqual([{ deviceId: 'a', deviceName: 'Mac', id: 'k', name: 'Main', protocol: 'openai_chat', model: 'm' }]);
-    expect(request).toHaveBeenCalledTimes(2);
+    expect(result.data).toEqual([{ deviceId: 'a', deviceName: 'Mac', id: 'k', name: 'Main', protocol: 'openai_chat', model: 'm', supervisorVersion: '0.13.41', needsUpdate: true }]);
+    expect(request).not.toHaveBeenCalledWith('c', expect.anything());
   });
   it('completes through the saved connection on its own device', async () => {
     const request = vi.fn().mockResolvedValue({ text: 'Done.', model: 'm' });
@@ -40,7 +44,7 @@ describe('spoken summary commands', () => {
   it('reads a connection\'s models with the Settings probe and opens the upstreams page', async () => {
     const request = vi.fn().mockResolvedValue({ models: [{ id: 'a', name: 'Model A' }, { id: 'b' }] });
     const result = await handleHostCommand({ id: 'x', type: 'connectionModels', deviceId: 'd', connectionId: 'k' }, { ...dependencies(), request } as never);
-    expect(request).toHaveBeenCalledWith('d', 'api/management/connections/k/models', { method: 'POST' });
+    expect(request).toHaveBeenCalledWith('d', 'api/management/connections/k/models', { method: 'POST', body: '{}' });
     expect(result.data).toEqual([{ id: 'a', name: 'Model A' }, { id: 'b', name: 'b' }]);
     const openUpstreams = vi.fn();
     expect(await handleHostCommand({ id: 'y', type: 'openUpstreams' }, { ...dependencies(), openUpstreams } as never)).toEqual({ ok: true });
@@ -48,7 +52,7 @@ describe('spoken summary commands', () => {
   });
   it('explains a device that cannot complete yet', async () => {
     const request = vi.fn().mockRejectedValue(Object.assign(new Error('Not found'), { statusCode: 404 }));
-    expect(await handleHostCommand({ id: 'x', type: 'completeWithConnection', deviceId: 'a', connectionId: 'k', model: '', system: 's', user: 'u' }, { ...dependencies(), request } as never)).toEqual({ ok: false, error: translate('settings.connUpdateSupervisor') });
+    expect(await handleHostCommand({ id: 'x', type: 'completeWithConnection', deviceId: 'a', connectionId: 'k', model: '', system: 's', user: 'u' }, { ...dependencies(), request } as never)).toEqual({ ok: false, code: 'supervisorTooOld', error: translate('settings.connUpdateSupervisor') });
   });
 });
 describe('desktop host bridge v2', () => {

@@ -121,7 +121,7 @@ export interface HostCommandResult {
   /** Localized, user-facing reason. */
   error?: string;
   /** Machine-readable reason; 'needsThread' means the request must be answered inside the thread. */
-  code?: 'needsThread';
+  code?: 'needsThread' | 'supervisorTooOld';
   /** Result of a command that asks for data rather than performing an action. */
   data?: unknown;
 }
