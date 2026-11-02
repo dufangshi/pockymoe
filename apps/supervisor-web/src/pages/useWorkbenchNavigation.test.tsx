@@ -355,10 +355,10 @@ describe('account thread navigation', () => {
   it('passes device-scoped lineage to tabs and preserves it while selecting a child', async () => {
     vi.mocked(request).mockResolvedValue({threads: [], notifications: []});
     const parent = {id:'root',workspaceId:'app',title:'Root',status:'idle',createdAt:'2026-09-01'} as ThreadDto;
-    const child = {...parent,id:'child',title:'Child',parentThreadId:'root',rootThreadId:'root',createdAt:'2026-09-02'};
+    const child = {...parent,id:'child',title:'Child',closedAt:'2026-11-01T00:00:00Z',parentThreadId:'root',rootThreadId:'root',createdAt:'2026-09-02'};
     const detail = {thread:child, workspace:{label:'App'}} as ThreadDetailDto;
     const {result,unmount} = renderHook(() => useWorkbenchNavigation(detail,[parent,child],'wsl'));
-    expect(result.current.workspaceThreads.find(t=>t.key==='wsl:child')).toMatchObject({parentKey:'wsl:root',rootKey:'wsl:root'});
+    expect(result.current.workspaceThreads.find(t=>t.key==='wsl:child')).toMatchObject({parentKey:'wsl:root',rootKey:'wsl:root',closedAt:'2026-11-01T00:00:00Z'});
     unmount();
   });
   it('distinguishes running, unread completion, read idle, failure and unavailable states', () => {
