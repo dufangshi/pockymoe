@@ -19,9 +19,10 @@ test('real dev Electron retains thread frames and clears A history before B navi
     await f.bind(owner, device);
     await owner.page.goto(device.url); await sendPrompt(owner.page, 'ELECTRON_RETAINED_HISTORY');
     const requireApp = createRequire(resolve(appRoot, 'package.json'));
-    const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(POCKYMOE|REMOTE_CODEX|ELECTRON)_/.test(key))) as Record<string, string>;
+    const env: Record<string, string> = {};
+    for (const key of ['PATH', 'HOME', 'TMPDIR', 'USER', 'LOGNAME', 'DISPLAY', 'SystemRoot', 'WINDIR', 'TEMP', 'TMP', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'ComSpec', 'PATHEXT']) if (process.env[key]) env[key] = process.env[key]!;
     Object.assign(env, { POCKYMOE_DESKTOP_E2E: '1', POCKYMOE_DESKTOP_USER_DATA: join(f.root, 'electron-profile'), POCKYMOE_DESKTOP_WEB_ORIGIN: f.base, POCKYMOE_DESKTOP_RELAY_ORIGIN: f.base, POCKYMOE_DESKTOP_THEME: 'dark' });
-    app = await electron.launch({ executablePath: requireApp('electron'), args: [resolve(appRoot, 'out/main/index.js')], env });
+    app = await electron.launch({ executablePath: requireApp('electron'), args: ['--use-mock-keychain', resolve(appRoot, 'out/main/index.js')], env });
     await app.context().addInitScript(({ users }) => {
       localStorage.setItem('remote-codex.locale', 'en'); localStorage.setItem('remote-codex-theme-mode', 'dark');
       for (const id of users) localStorage.setItem(`pockymoe.onboarding.v1:${JSON.stringify([location.origin, `relay:${id}`])}`, JSON.stringify({ welcomeDismissed: true, completed: [], resume: {} }));
