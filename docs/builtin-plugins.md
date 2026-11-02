@@ -161,7 +161,8 @@ remains on the device, not in the component or browser local storage.
 `browserSettingsSections` are the exception for per-browser preferences: they
 render their own content, appear only while the plugin is enabled and available,
 and keep nothing on the device. The Terminal settings button under Settings >
-Plugins uses one for its clipboard behaviour (see
+Plugins uses one for its clipboard behaviour, including the default-on permission
+for live programs to write through OSC 52 (never read it; never replay it; see
 [thread interaction](thread-interaction.md#terminal-clipboard)).
 
 Frontend modules and Rust modules release with their respective applications.
