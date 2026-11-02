@@ -119,8 +119,10 @@ it('keeps a failed subscription read quiet without silently subscribing, and rol
   failLoad = true;
   render(<TurnNotification deviceId="two" threadId="thread" turnId="turn" />);
   // A background read that fails reports nothing and keeps the bell as it was.
+  // Preferences can finish before the subscription effect starts; wait for the
+  // actual read attempt rather than a transient enabled render of the bell.
+  await waitFor(() => expect(vi.mocked(request).mock.calls.some(([path]) => String(path).includes('/turns/'))).toBe(true));
   await waitFor(() => expect(screen.getByRole('button', { name: '订阅这一轮的通知' })).toBeEnabled());
-  expect(vi.mocked(request).mock.calls.some(([path]) => String(path).includes('/turns/'))).toBe(true);
   expect(screen.queryByRole('alert')).toBeNull();
   expect(screen.getByRole('button', { name: '订阅这一轮的通知' })).toHaveAttribute('aria-pressed','false');
   failLoad = false;

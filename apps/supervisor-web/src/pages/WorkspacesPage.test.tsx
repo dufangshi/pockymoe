@@ -1,3 +1,4 @@
+vi.mock('../desktop/WorkspacesFrame', () => ({ useDesktopWorkspaceLayout: () => false, WorkspacesFrame: ({ children }: any) => children }));
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter } from 'react-router-dom';

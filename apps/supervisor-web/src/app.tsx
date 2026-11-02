@@ -1,5 +1,7 @@
 import { useHostSurface } from './desktop/surface';
 import { MobileHostBoundary, MobileActivity } from './mobile/MobileHost';
+import { useSessionRevision } from './lib/useSessionRevision';
+import { RetainedDesktopRoute } from './desktop/RetainedRoute';
 import { HostScopeRouteGate } from './components/HostScopeRouteGate';
 import {
   AUTO_COLLAPSE_COMPLETED_TURNS_STORAGE_KEY,
@@ -412,13 +414,8 @@ function AppShell({
   // only routed device content waits for that Supervisor's capabilities.
   if (surface === 'desktop') return (
     <AppShellNavContext.Provider value={shellNavValue}>
-      <Suspense fallback={null}><DesktopEntry>
-        <HostCapabilitiesProvider scope={relayDeviceIdFromPath(location.pathname) ?? 'local'}>
-          <ScopedTourProvider>
-            <HostScopeRouteGate><Outlet /></HostScopeRouteGate>
-            <UnscopedOnly><AppShellSettingsDialog /></UnscopedOnly>
-          </ScopedTourProvider>
-        </HostCapabilitiesProvider>
+      <Suspense fallback={<DesktopOpening />}><DesktopEntry>
+        <RetainedDesktopRoute />
       </DesktopEntry></Suspense>
     </AppShellNavContext.Provider>
   );
@@ -647,11 +644,15 @@ function SupervisorAccessGate({ children }: { children: React.ReactNode }) {
   return relayModeActive() ? <RelayGate>{content}</RelayGate> : <AuthGate>{content}</AuthGate>;
 }
 
+function DesktopOpening() {
+  return <div className="product-page space-y-4" role="status" aria-busy="true"><span className="sr-only">{translate('workbench.loadingThreadDetail')}</span><div className="product-skeleton h-6 w-40" /><div className="product-skeleton h-24 w-full" /></div>;
+}
+
 function DesktopFrameBoundary({ children, effectiveTheme }: { children: ReactNode; effectiveTheme: 'light' | 'dark' }) {
   const surface = useHostSurface();
   if (surface === 'pending') return null;
   if (surface === 'mobile') return <MobileHostBoundary effectiveTheme={effectiveTheme}>{children}</MobileHostBoundary>;
-  return surface === 'desktop' ? <Suspense fallback={null}><DesktopWindowFrame effectiveTheme={effectiveTheme}>{children}</DesktopWindowFrame></Suspense> : children;
+  return surface === 'desktop' ? <Suspense fallback={<DesktopOpening />}><DesktopWindowFrame effectiveTheme={effectiveTheme}>{children}</DesktopWindowFrame></Suspense> : children;
 }
 
 function RootRoute() {
@@ -671,11 +672,12 @@ function SupervisorRoutes({
 }) {
   const surface = useHostSurface();
   const { locale: i18nLocale } = useI18n();
+  const accountRevision = useSessionRevision();
   return (
     <Routes>
       <Route
         element={
-          <AppShell
+          <AppShell key={accountRevision}
             themeMode={themeMode}
             setThemeMode={setThemeMode}
             effectiveTheme={effectiveTheme}
@@ -683,8 +685,8 @@ function SupervisorRoutes({
         }
       >
         <Route path="/" element={<RootRoute />} />
-        <Route path="/desktop/devices" element={<Suspense fallback={null}>{surface === 'desktop' ? <DesktopDevicesRoute /> : <WebDevicesRoute />}</Suspense>} />
-        <Route path="/desktop/devices/:id" element={<Suspense fallback={null}>{surface === 'desktop' ? <DesktopDevicesRoute /> : <WebDevicesRoute />}</Suspense>} />
+        <Route path="/desktop/devices" element={<Suspense fallback={<DesktopOpening />}>{surface === 'desktop' ? <DesktopDevicesRoute /> : <WebDevicesRoute />}</Suspense>} />
+        <Route path="/desktop/devices/:id" element={<Suspense fallback={<DesktopOpening />}>{surface === 'desktop' ? <DesktopDevicesRoute /> : <WebDevicesRoute />}</Suspense>} />
         <Route path="/workspaces" element={<WorkspacesPage />} />
         <Route path="/workspaces/new" element={<WorkspaceNewPage />} />
         <Route path="/relay-account" element={<RelayAccountPage />} />
@@ -716,6 +718,7 @@ function SupervisorRoutes({
 }
 
 export function App() {
+  const surface = useHostSurface();
   const { locale: i18nLocale } = useI18n();
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => readInitialThemeMode());
   const [systemTheme, setSystemTheme] = useState<'light' | 'dark'>(() =>
@@ -781,7 +784,9 @@ export function App() {
 
   return (
     <div className="theme-shell">
-      <BrowserRouter basename={webBase}>
+      {/* Desktop owns preparation transitions; cached returns must commit before
+          paint instead of being deferred by BrowserRouter's default transition. */}
+      <BrowserRouter basename={webBase} {...(surface === 'desktop' ? { useTransitions: false } : {})}>
         <DesktopFrameBoundary effectiveTheme={effectiveTheme}>
         <WorkspaceDocumentNavigationGuard>
         <DocumentTitleUpdater />

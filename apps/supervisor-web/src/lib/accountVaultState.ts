@@ -1,3 +1,4 @@
+import { observeSessionActor } from './sessionActor';
 import { translate } from '@pockymoe/thread-ui/i18n';
 import { unlockCause, type UnlockCause } from './unlockCause';
 import type { AccountKeyInfo, BoundDevice, BrowserIdentity, DeviceCertificate, Revocation, UnlockedAccount, UnlockReason } from './accountVault';
@@ -37,7 +38,7 @@ export async function accountRequest<T>(path: string, method = 'GET', body?: unk
 }
 export async function setActiveAccount(userId: string | null) {
   const previous = await accountStore<string>('active');
-  if (previous !== userId) closeUnlockWindow();
+  if (previous !== userId) { observeSessionActor(userId ? `relay:${userId}` : null); closeUnlockWindow(); }
   await accountStore('active', userId);
 }
 export async function currentAccount(): Promise<AccountKeyInfo | null> {

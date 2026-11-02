@@ -59,7 +59,7 @@ export function useShareAttention(items: SharedItem[]) {
             const account = await recipientAccount(kind, row.id);
             const state = reconcileGrants([{ kind, row, account }], grants)[0]?.state;
             if (state === 'missing' || state === 'different' || state === 'changed') found.set(item.key, state);
-            else if (requireCode && !row.verifiedAt && !(await recipientVerified(account, row.targetUserId))) found.set(item.key, 'unverified');
+            else if (requireCode && !(await recipientVerified(account, row.targetUserId))) found.set(item.key, 'unverified');
           } catch {
             // A row the relay cannot describe (or a recipient without an
             // account key) is shown without a flag.

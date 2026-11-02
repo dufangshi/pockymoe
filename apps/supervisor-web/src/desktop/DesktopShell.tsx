@@ -1,7 +1,8 @@
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { LayoutDashboard, Monitor } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
+import { RelayUserMenu } from '../components/RelayUserMenu';
 import { AppShellNavContext, useAppShellNav } from '../components/AppShellNavContext';
 import { appPathname, appUrl } from '../lib/webBase';
 import { threadHref } from '../lib/relayRoutes';
@@ -19,8 +20,16 @@ export function DesktopShell({ children, capabilities }: { children: ReactNode; 
   const index = useDesktopSelector(index => index); const store = useDesktopStore();
   const location = useLocation(); const navigate = useNavigate(); const shell = useAppShellNav();
   const host = window.pockymoeHost!;
-  const mapVisible = location.pathname === '/';
-  const devicesPage = location.pathname === '/desktop/devices' || location.pathname.startsWith('/desktop/devices/');
+  const [paintedPath, setPaintedPath] = useState(location.pathname);
+  const mapVisible = paintedPath === '/';
+  const devicesPage = paintedPath === '/desktop/devices' || paintedPath.startsWith('/desktop/devices/');
+  const readyRoutePath = useRef<string | null>(null);
+  const routeReady = useCallback((path: string) => { if (route.current === path) { readyRoutePath.current = path; setPaintedPath(path); } }, []);
+  useLayoutEffect(() => {
+    // Returning to the route already mounted underneath the overlay needs no
+    // asynchronous preparation: reveal it before this frame is painted.
+    if (location.pathname === '/' || location.pathname.startsWith('/desktop/devices') || readyRoutePath.current === location.pathname) setPaintedPath(location.pathname);
+  }, [location.pathname]);
   const [revealKey, setRevealKey] = useState<string | null>(null);
   const route = useRef(location.pathname); route.current = location.pathname;
   const openMap = useCallback(() => navigate('/'), [navigate]);
@@ -29,7 +38,8 @@ export function DesktopShell({ children, capabilities }: { children: ReactNode; 
     const thread = store.getSnapshot().threads.find(thread => thread.key === target);
     const path = thread ? threadHref(thread.id, thread.deviceId) : appPathname(target);
     if (newWindow && capabilities.features.multiWindow && typeof host.window?.openThread === 'function') host.window.openThread(appUrl(path), { newWindow: true });
-    else navigate(path);
+    else if (readyRoutePath.current === path) navigate(path);
+    else startTransition(() => navigate(path));
   }, [capabilities.features.multiWindow, host, navigate, store]);
   const newThread = useCallback(() => {
     const currentDevice = route.current.match(/^\/devices\/([^/]+)/)?.[1];
@@ -74,14 +84,14 @@ export function DesktopShell({ children, capabilities }: { children: ReactNode; 
   const waitingCount = useMemo(() => new Set(buildActivityItems(index).filter(item => item.state === 'needsInput').map(item => item.rootThreadKey ?? item.key)).size, [index]);
   // translate reads a stable shared store; locale explicitly invalidates cached labels.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const railLeading = useMemo(() => <><button data-desktop-map-link aria-label={waitingCount ? translate('desktopShell.mapWaiting', { count: waitingCount }) : translate('desktopShell.map')} aria-pressed={mapVisible} title={translate('desktopShell.mapShortcut', { shortcut: capabilities.platform === 'darwin' ? '⌘0' : 'Ctrl+0' })} onClick={openMap}><LayoutDashboard data-icon="thread-map" />{waitingCount ? <span className="desktop-map-badge">{waitingCount}</span> : null}</button><button aria-label={translate('desktopShell.devices')} title={translate('desktopShell.devices')} onClick={() => navigate('/desktop/devices')}><Monitor data-icon="devices" /></button></>, [mapVisible, navigate, openMap, waitingCount, locale]);
+  const railLeading = useMemo(() => <><button data-desktop-map-link aria-label={waitingCount ? translate('desktopShell.mapWaiting', { count: waitingCount }) : translate('desktopShell.map')} aria-pressed={mapVisible} title={translate('desktopShell.mapShortcut', { shortcut: capabilities.platform === 'darwin' ? '⌘0' : 'Ctrl+0' })} onClick={openMap}><LayoutDashboard data-icon="thread-map" />{waitingCount ? <span className="desktop-map-badge">{waitingCount}</span> : null}</button><button aria-label={translate('desktopShell.devices')} title={translate('desktopShell.devices')} onClick={() => navigate('/desktop/devices')}><Monitor data-icon="devices" /></button><RelayUserMenu /></>, [mapVisible, navigate, openMap, waitingCount, locale]);
   const workspaceControlsEnabled = hasWorkspaceContext(location.pathname, location.search);
-  const surface = useMemo(() => ({ workspaceControlsEnabled, multiWindow: capabilities.features.multiWindow, openMap, revealInMap, railLeading, renderActivity: (navigation: NavigationActions) => <ActivitySection navigation={navigation} onOpen={open} /> }), [capabilities.features.multiWindow, openMap, revealInMap, railLeading, open, workspaceControlsEnabled]);
+  const surface = useMemo(() => ({ routeReady, workspaceControlsEnabled, multiWindow: capabilities.features.multiWindow, openMap, revealInMap, railLeading, renderActivity: (navigation: NavigationActions) => <ActivitySection navigation={navigation} onOpen={open} /> }), [routeReady, capabilities.features.multiWindow, openMap, revealInMap, railLeading, open, workspaceControlsEnabled]);
   const chrome = capabilities.windowChrome;
   const style = { '--desktop-title-height': `${chrome.toolbarHeight}px`, '--desktop-controls-left': chrome.controlsSide === 'left' ? `${chrome.trafficLightsWidth}px` : '0px', '--desktop-controls-right': chrome.controlsSide === 'right' ? `${chrome.trafficLightsWidth}px` : '0px' } as CSSProperties;
   const shellValue = useMemo(() => shell ? { ...shell, openThreadMap: openMap } : shell, [shell, openMap]);
   return <DesktopSurfaceContext.Provider value={surface}><AppShellNavContext.Provider value={shellValue}><div className="desktop-surface" data-desktop-surface style={style}>
-    <DesktopMapPage visible={mapVisible || devicesPage} mapVisible={mapVisible} revealKey={revealKey} onOpen={open}>{devicesPage ? children : null}</DesktopMapPage>
-    {!devicesPage ? <div className="desktop-route" hidden={mapVisible} inert={mapVisible}>{children}</div> : null}
+    <DesktopMapPage visible={mapVisible || devicesPage} mapVisible={mapVisible} revealKey={revealKey} onOpen={open} />
+    <div className="desktop-route" hidden={mapVisible || devicesPage} inert={mapVisible || devicesPage}>{children}</div>
   </div></AppShellNavContext.Provider></DesktopSurfaceContext.Provider>;
 }

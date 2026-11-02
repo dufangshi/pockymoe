@@ -1,4 +1,6 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { revokeRelayShare } from '../lib/api';
+vi.mock('../lib/api', () => ({ revokeRelayShare: vi.fn(), revokeRelayGrant: vi.fn() }));
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, expect, it, vi } from 'vitest';
 import vectors from '../lib/fixtures/accountKeyVectors.json';
 import type {
@@ -96,39 +98,55 @@ beforeEach(() => {
   });
 });
 
-function typeCode(value: string, action: string) {
-  fireEvent.change(screen.getByLabelText('Safety code from Recipient'), { target: { value } });
-  fireEvent.click(screen.getByRole('button', { name: action }));
+function confirmCode() {
+  fireEvent.click(screen.getByRole('button', { name: 'They match, confirm' }));
 }
 
-it('waits for the recipient’s code, explains a mismatch, and approves only a match', async () => {
-  render(<SignedShareDetails kind="share" row={{ ...row, pending: true }} />);
-  expect(screen.getByText('Waiting for Recipient\'s safety code')).toBeVisible();
-  expect(screen.getByText(/Recipient can't open this yet/)).toBeVisible();
-  // The expected code is never shown: the owner types what the recipient sent.
-  await screen.findByLabelText('Safety code from Recipient');
-  expect(screen.queryByText(CODE)).not.toBeInTheDocument();
-  typeCode('VDNZ DB8Z', 'Check and approve');
-  expect(await screen.findByRole('alert')).toHaveTextContent('A safety code has 12 letters and digits.');
-  typeCode('VDNZ DB8Z 3HKD', 'Check and approve');
-  expect(await screen.findByRole('alert')).toHaveTextContent(/does not match Recipient's account key.*revoke the share/);
+it('shows the candidate code, never verifies a mismatch, and confirms the exact key before signing and approval', async () => {
+  const stop = vi.fn();
+  render(<SignedShareDetails kind="share" row={{ ...row, pending: true }} onStopSharing={stop} />);
+  await screen.findByText(CODE);
+  expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
+  expect(screen.getByText('Confirm with Recipient that the safety code they see matches this one.')).toBeVisible();
+  fireEvent.click(screen.getByRole('button', { name: 'Copy safety code' }));
+  await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith(CODE));
+  fireEvent.click(screen.getByRole('button', { name: 'They do not match' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent(/key may have been replaced/);
   expect(state.confirm).not.toHaveBeenCalled();
+  expect(state.sync).not.toHaveBeenCalled();
   expect(state.approve).not.toHaveBeenCalled();
-  // Case, dashes and look-alike letters do not matter.
-  typeCode('vdnz-db8z-3hkc', 'Check and approve');
-  await waitFor(() => expect(state.approve).toHaveBeenCalledWith('share', 'share', 'vdnz-db8z-3hkc'));
+  fireEvent.click(screen.getByRole('button', { name: 'Stop sharing' }));
+  expect(stop).toHaveBeenCalledOnce();
+  confirmCode();
+  await waitFor(() => expect(state.approve).toHaveBeenCalledWith('share', 'share', CODE));
   expect(state.confirm).toHaveBeenCalledWith(account, 'recipient');
-  // A protected device gets its signed grant before the relay starts the share.
-  expect(state.sync).toHaveBeenCalledWith('share', expect.objectContaining({ id: 'share' }));
+  expect(state.confirm.mock.invocationCallOrder[0]).toBeLessThan(state.sync.mock.invocationCallOrder[0]!);
   expect(state.sync.mock.invocationCallOrder[0]).toBeLessThan(state.approve.mock.invocationCallOrder[0]!);
   await waitFor(() => expect(state.announce).toHaveBeenCalled());
+});
+
+it('offers a cancel-focused stop-sharing confirmation after a mismatch outside the shared-access panel', async () => {
+  vi.mocked(revokeRelayShare).mockReset();
+  render(<SignedShareDetails kind="share" row={{ ...row, pending: true }} />);
+  await screen.findByText(CODE);
+  fireEvent.click(screen.getByRole('button', { name: 'They do not match' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Stop sharing' }));
+  const dialog = await screen.findByRole('dialog', { name: 'Stop sharing' });
+  expect(dialog).toHaveTextContent('Recipient');
+  await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Cancel' })).toHaveFocus());
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+  expect(revokeRelayShare).not.toHaveBeenCalled();
+  expect(state.confirm).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'Stop sharing' }));
+  fireEvent.click(within(await screen.findByRole('dialog', { name: 'Stop sharing' })).getByRole('button', { name: 'Stop sharing' }));
+  await waitFor(() => expect(revokeRelayShare).toHaveBeenCalledWith('share'));
 });
 
 it('approves a pending share on an unprotected device at the relay alone', async () => {
   state.paired.mockResolvedValue(false);
   render(<SignedShareDetails kind="grant" row={{ ...row, pending: true }} />);
-  await screen.findByLabelText('Safety code from Recipient');
-  typeCode(CODE, 'Check and approve');
+  await screen.findByText(CODE);
+  confirmCode();
   await waitFor(() => expect(state.approve).toHaveBeenCalledWith('grant', 'share', CODE));
   expect(state.sync).not.toHaveBeenCalled();
   expect(state.grants).not.toHaveBeenCalled();
@@ -139,8 +157,8 @@ it('says once why the recipient cannot open a share the device has not signed, a
   expect(await screen.findByText('Recipient can\'t open this now')).toBeVisible();
   expect(screen.getByText(/Laptop is protected and only accepts shares you signed for it/)).toBeVisible();
   // Not checked in this browser and the check is on: the code signs it.
-  typeCode(CODE, 'Sign onto device');
-  await waitFor(() => expect(state.sync).toHaveBeenCalledWith('share', row));
+  confirmCode();
+  await waitFor(() => expect(state.sync).toHaveBeenCalledWith('share', row, account));
   expect(state.approve).toHaveBeenCalledWith('share', 'share', CODE);
 });
 
@@ -155,9 +173,9 @@ it.each([
   state.requireCode = requireCode;
   render(<SignedShareDetails kind="share" row={row} />);
   const button = await screen.findByRole('button', { name: action });
-  expect(screen.queryByLabelText('Safety code from Recipient')).not.toBeInTheDocument();
+  expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
   fireEvent.click(button);
-  await waitFor(() => expect(state.sync).toHaveBeenCalledWith('share', row));
+  await waitFor(() => expect(state.sync).toHaveBeenCalledWith('share', row, account));
   expect(state.approve).not.toHaveBeenCalled();
 });
 
@@ -166,11 +184,12 @@ it('asks for the new code when the recipient’s key changed', async () => {
   state.verified.mockResolvedValue(true);
   render(<SignedShareDetails kind="share" row={row} />);
   expect(await screen.findByText('Recipient\'s account key changed')).toBeVisible();
-  expect(await screen.findByLabelText('Safety code from Recipient')).toBeVisible();
+  expect(await screen.findByText(CODE)).toBeVisible();
 });
 
-it('shows a checked share as one quiet line with its code', async () => {
+it('shows a locally checked share as one quiet line with its code', async () => {
   state.reconciliation = 'active';
+  state.verified.mockResolvedValue(true);
   render(<SignedShareDetails kind="share" row={{ ...row, verifiedAt: '2026-10-20T00:00:00Z' }} />);
   expect(await screen.findByText('Safety code checked')).toBeVisible();
   expect(screen.getByText(CODE)).toBeVisible();
@@ -183,9 +202,8 @@ it('keeps the grant action on an offline protected device, disabled, with the re
       row={{ ...row, deviceConnected: false, pending: true }}
     />,
   );
-  await screen.findByLabelText('Safety code from Recipient');
-  fireEvent.change(screen.getByLabelText('Safety code from Recipient'), { target: { value: CODE } });
-  expect(screen.getByRole('button', { name: 'Check and approve' })).toBeDisabled();
+  await screen.findByText(CODE);
+  expect(screen.getByRole('button', { name: 'They match, confirm' })).toBeDisabled();
   fireEvent.click(await screen.findByRole('button', { name: 'Why it is unavailable' }));
   expect(screen.getByText(/protected device must be online/)).toBeVisible();
   expect(state.grants).not.toHaveBeenCalled();
@@ -203,7 +221,7 @@ it('does not clear or reload the details when a refresh brings an equal share', 
   for (let poll = 0; poll < 3; poll += 1) {
     rendered.rerender(<SignedShareDetails kind="share" row={{ ...row, lastAccessedAt: `2026-10-2${poll}T00:00:00Z` } as RelaySessionShareDto} />);
     expect(screen.getByText('Recipient can\'t open this now')).toBeVisible();
-    expect(screen.getByLabelText('Safety code from Recipient')).toBeVisible();
+    expect(screen.getByText(CODE)).toBeVisible();
     expect(screen.getByRole('button', { name: 'Copy invite link' })).toBeVisible();
   }
   await act(async () => { await new Promise((done) => setTimeout(done, 20)); });
@@ -284,4 +302,21 @@ it('refreshes reconciliation and orphan inventory after account browser unlock c
   await waitFor(() => expect(screen.queryByText('Recipient can\'t open this now')).not.toBeInTheDocument());
   expect(screen.getByText('Safety code checked')).toBeVisible();
   await waitFor(() => expect(state.grants.mock.calls.length).toBeGreaterThanOrEqual(loaded + 2));
+});
+
+it('does not accept a relay verifiedAt timestamp as this client checking the code', async () => {
+  state.reconciliation = 'active';
+  render(<SignedShareDetails kind="share" row={{ ...row, verifiedAt: '2026-10-20T00:00:00Z' }} />);
+  expect(await screen.findByText('Safety code not checked')).toBeVisible();
+  expect(screen.getByRole('button', { name: 'They match, confirm' })).toBeVisible();
+});
+it('shows a changed-key signing failure and never approves the relay row', async () => {
+  state.sync.mockRejectedValue(new Error('Recipient key changed'));
+  render(<SignedShareDetails kind="share" row={{ ...row, pending: true }} />);
+  await screen.findByText(CODE);
+  confirmCode();
+  await waitFor(() => expect(state.sync).toHaveBeenCalledWith('share', expect.objectContaining({ id: 'share' }), account));
+  expect(state.approve).not.toHaveBeenCalled();
+  fireEvent.click(await screen.findByRole('button', { name: 'Why it failed' }));
+  expect(within(screen.getByRole('dialog', { name: 'Why it failed' })).getByText('Recipient key changed')).toBeVisible();
 });

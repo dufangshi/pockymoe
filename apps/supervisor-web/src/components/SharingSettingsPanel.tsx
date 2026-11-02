@@ -4,7 +4,8 @@ import { useEffect, useId, useState } from 'react';
 import { fetchSharingPreferences, saveRequireSafetyCode } from '../lib/sharingPreferences';
 
 /** Account settings → Sharing: whether people I share with must have their
-    safety code confirmed before access starts (saved to the account,
+    displayed safety code compared with the recipient over a trusted channel
+    and explicitly confirmed before access starts (saved to the account,
     docs/account-key-trust.md#safety-code-check). My own code is in the account
     key section below. */
 export function SharingSettingsPanel() {

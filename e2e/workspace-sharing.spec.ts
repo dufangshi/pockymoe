@@ -53,7 +53,7 @@ async function isolatedFixture(browser: Browser, info: TestInfo) {
 
 // The owner shares one workspace of a protected device from a thread's dialog.
 // With the safety-code check on (the default), the share waits: the recipient
-// sees their code instead of the workspace, the owner types it to approve and
+// sees their code instead of the workspace, the owner compares and confirms it to approve and
 // sign the grant, and the recipient's page opens the workspace. The recipient
 // then reaches that workspace's threads and files, starts a thread there, and
 // never another workspace or a terminal. With the check off, a share starts at
@@ -168,20 +168,22 @@ test('a signed workspace share waits for the safety code, then reaches its threa
     await expect(ownerRow.getByRole('button', { name: 'Revoke', exact: true })).toBeVisible();
     // The state is said once, with the one action that ends it.
     await expect(ownerRow.getByText("Waiting for ws-recipient's safety code", { exact: true })).toHaveCount(1);
-    const codeField = ownerRow.getByLabel('Safety code from ws-recipient');
+    const codeDisplay = ownerRow.locator('.signed-share-code-confirmation code');
     await inEveryTheme(owner.page, info, 'pending-owner', async () => {
       await ownerRow.getByRole('button', { name: new RegExp(sharedWs.label) }).click();
-      await codeField.scrollIntoViewIfNeeded();
+      await expect(codeDisplay).toHaveText(recipient.code);
+      await ownerRow.locator('.signed-share-entry').scrollIntoViewIfNeeded();
     });
     await ownerRow.getByRole('button', { name: new RegExp(sharedWs.label) }).click();
-    // A wrong code explains the risk and approves nothing.
-    await codeField.fill('ABCD EFGH JKMN');
-    await ownerRow.getByRole('button', { name: 'Check and approve', exact: true }).click();
-    await expect(ownerRow.getByRole('alert')).toContainText("does not match ws-recipient's account key");
+    await expect(codeDisplay).toHaveText(recipient.code);
+    await expect(ownerRow.getByRole('textbox')).toHaveCount(0);
+    // Explicit mismatch leaves the relay row pending and signs no grant.
+    await ownerRow.getByRole('button', { name: 'They do not match', exact: true }).click();
+    await expect(ownerRow.getByRole('alert')).toContainText('key may have been replaced');
+    expect(ok(await f.api('/relay/portal', 'GET', undefined, owner.cookie), 'Still pending').grantsByMe.find((grant: any) => grant.workspaceId === sharedWs.id)?.pending).toBe(true);
     await shot(owner.page, info, 'pending-owner-mismatch');
-    // The code the recipient sent approves: review, sign, and the relay starts it.
-    await codeField.fill(recipient.code.toLowerCase().replaceAll(' ', '-'));
-    await ownerRow.getByRole('button', { name: 'Check and approve', exact: true }).click();
+    // The recipient's independent display matches: review, sign and start access.
+    await ownerRow.getByRole('button', { name: 'They match, confirm', exact: true }).click();
     await approveGrant(owner.page, owner.password);
     await expect(ownerRow.getByText('Safety code checked', { exact: true })).toBeVisible();
     await expect(owner.page.getByRole('tab', { name: /Sharing/ })).not.toContainText('to review');

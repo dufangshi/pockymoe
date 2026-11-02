@@ -13,7 +13,7 @@ import {
 import { currentAccount } from '../lib/accountVault';
 import { clearTransportKeyCache } from '../lib/relayTransportCrypto';
 import { sharedInviteUrl } from '../lib/sharedInvite';
-import { announceSharingChanged, normalizeSafetyCode } from '../lib/sharePending';
+import { announceSharingChanged } from '../lib/sharePending';
 import { useRequireSafetyCode } from '../lib/sharingPreferences';
 import {
   approveRelayShare,
@@ -31,6 +31,8 @@ import {
   type Reconciliation,
   type DeviceGrant,
 } from '../lib/signedSharing';
+import { ConfirmDialog } from './ConfirmDialog';
+import { revokeRelayShare, revokeRelayGrant } from '../lib/api';
 import './signed-share.css';
 
 const button = 'relay-button-secondary min-h-10 px-3 py-2 text-xs';
@@ -86,7 +88,7 @@ export function shareState(row: ShareRow, check: ShareCheck | undefined): ShareS
   const state = check.entry?.state;
   if (state === 'missing' || state === 'different' || state === 'changed') return state;
   if (!check.account) return null;
-  return check.verifiedHere || row.verifiedAt ? 'verified' : 'unverified';
+  return check.verifiedHere ? 'verified' : 'unverified';
 }
 
 const STATE_ICON = { pending: Hourglass, missing: ShieldAlert, different: ShieldAlert, changed: ShieldAlert, noAccount: ShieldAlert, unverified: ShieldQuestion, verified: ShieldCheck };
@@ -96,9 +98,11 @@ const STATE_ICON = { pending: Hourglass, missing: ShieldAlert, different: Shield
 export function SignedShareDetails({
   kind,
   row,
+  onStopSharing,
 }: {
   kind: ShareKind;
   row: ShareRow;
+  onStopSharing?: (() => void) | undefined;
 }) {
   useI18n();
   const requireCode = useRequireSafetyCode();
@@ -111,6 +115,7 @@ export function SignedShareDetails({
   const [actionError, setActionError] = useState<string>();
   const [inviteError, setInviteError] = useState<string>();
   const [busy, setBusy] = useState(false);
+  const [stopConfirmation, setStopConfirmation] = useState(false);
   const [revision, setRevision] = useState(0);
   const [copied, setCopied] = useState(false);
   const [inviteOwnerKeyId, setInviteOwnerKeyId] = useState<string>();
@@ -162,28 +167,32 @@ export function SignedShareDetails({
       .catch((error: unknown) => setActionError(error instanceof Error ? error.message : translate('sharing.approveFailed')))
       .finally(() => setBusy(false));
   }
-  /** The code matched: remember the recipient's key, sign the device grant when
+  /** The owner confirmed the displayed code: remember the recipient's key, sign the device grant when
       the device needs one, then let the relay start (or record) the share. */
-  function approveWithCode(typed: string) {
+  function approveWithCode(confirmedCode: string) {
     const account = check?.account;
     if (!account) return;
     const signs = Boolean(check?.protectedDevice) && state !== 'unverified';
     run(async () => {
       await confirmRecipient(account, row.targetUserId);
-      if (signs) await syncDeviceGrant(kind, row);
-      await approveRelayShare(kind, row.id, typed);
+      if (signs) await syncDeviceGrant(kind, row, account);
+      await approveRelayShare(kind, row.id, confirmedCode);
       if (row.pending === true) setApproved(true);
     });
   }
-  const sign = () => run(() => syncDeviceGrant(kind, row));
+  const sign = () => run(() => syncDeviceGrant(kind, row, check?.account ?? undefined));
   const approveWithoutCode = () => run(async () => {
     await approveRelayShare(kind, row.id, null);
     setApproved(true);
   });
 
-  // Until the check loads, the field is there but disabled, so nothing moves.
-  const codeAction = (label: string) => check?.account || !check
-    ? <SafetyCodeEntry name={name} expected={check?.code ?? ''} label={label} busy={busy || !check} unavailable={unavailable} error={actionError} onApprove={approveWithCode} />
+  const stopSharing = () => {
+    if (onStopSharing) { onStopSharing(); return; }
+    setStopConfirmation(true);
+  };
+  // Confirmation stays disabled until the recipient key has loaded.
+  const codeAction = () => check?.account || !check
+    ? <SafetyCodeEntry key={check?.account?.accountKeyId ?? "loading"} onStopSharing={stopSharing} name={name} expected={check?.code ?? ''} busy={busy || !check} unavailable={unavailable} error={actionError} onApprove={approveWithCode} />
     : null;
   const buttonAction = (label: string, onClick: () => void) => (
     <div className="signed-share-actions">
@@ -195,7 +204,7 @@ export function SignedShareDetails({
   // for the code when the owner keeps the check on.
   const signAction = (label: string) => check?.verifiedHere || !requireCode
     ? buttonAction(label, sign)
-    : codeAction(label);
+    : codeAction();
 
   let body: { title: string; text?: string; action?: React.ReactNode; tone: 'warn' | 'ok' | 'muted' } | null = null;
   switch (state) {
@@ -205,7 +214,7 @@ export function SignedShareDetails({
           tone: 'warn',
           title: translate('sharing.statePendingTitle', { name }),
           text: translate('sharing.statePendingText', { name }),
-          action: codeAction(translate('sharing.approveWithCode')),
+          action: codeAction(),
         }
         : {
           tone: 'warn',
@@ -218,7 +227,7 @@ export function SignedShareDetails({
       body = { tone: 'warn', title: translate('sharing.stateMissingTitle', { name }), text: translate('sharing.stateMissingText', { device }), action: signAction(translate('sharing.signOntoDevice')) };
       break;
     case 'changed':
-      body = { tone: 'warn', title: translate('sharing.stateChangedTitle', { name }), text: translate('sharing.stateChangedText', { name, device }), action: requireCode ? codeAction(translate('sharing.signOntoDevice')) : buttonAction(translate('sharing.signOntoDevice'), sign) };
+      body = { tone: 'warn', title: translate('sharing.stateChangedTitle', { name }), text: translate('sharing.stateChangedText', { name, device }), action: requireCode ? codeAction() : buttonAction(translate('sharing.signOntoDevice'), sign) };
       break;
     case 'different':
       body = { tone: 'warn', title: translate('sharing.stateDifferentTitle', { device }), text: translate('sharing.stateDifferentText', { name }), action: buttonAction(translate('sharing.signCurrentPermissions'), sign) };
@@ -227,7 +236,7 @@ export function SignedShareDetails({
       body = { tone: 'warn', title: translate('sharing.stateMissingTitle', { name }), text: translate('sharing.stateNoAccount', { name }) };
       break;
     case 'unverified':
-      body = { tone: 'muted', title: translate('sharing.stateUnverifiedTitle'), text: translate('sharing.stateUnverifiedText', { name }), action: codeAction(translate('sharing.checkCode')) };
+      body = { tone: 'muted', title: translate('sharing.stateUnverifiedTitle'), text: translate('sharing.stateUnverifiedText', { name }), action: codeAction() };
       break;
     case 'verified':
       body = { tone: 'ok', title: translate('sharing.stateVerified') };
@@ -236,6 +245,7 @@ export function SignedShareDetails({
   const Icon = state ? STATE_ICON[state] : null;
   return (
     <div className="signed-share">
+      <ConfirmDialog open={stopConfirmation} title={translate('sharing.stopSharing')} description={translate('sharing.stopSharingConfirm', { name, device })} confirmLabel={translate('sharing.stopSharing')} busy={busy} error={actionError ?? null} onCancel={() => { if (!busy) setStopConfirmation(false); }} onConfirm={() => run(async () => { if (kind === 'share') await revokeRelayShare(row.id); else await revokeRelayGrant(row.id); setStopConfirmation(false); })} />
       {body && Icon ? (
         <section className="signed-share-state" data-tone={body.tone} data-state={state} aria-label={body.title}>
           <p className="signed-share-title">
@@ -283,72 +293,30 @@ export function SignedShareDetails({
   );
 }
 
-/** The owner types the code the recipient sent. A match runs the approval; a
-    mismatch says what it may mean. The expected code is never shown: typing
-    it from the recipient's message is the check. */
-export function SafetyCodeEntry({
-  name,
-  expected,
-  label,
-  busy,
-  unavailable,
-  error,
-  onApprove,
-}: {
+/** The owner compares both displays through a trusted channel and explicitly
+    confirms. No software comparison can establish that human check. */
+export function SafetyCodeEntry({ name, expected, busy, unavailable, error, onApprove, onStopSharing }: {
   name: string;
   expected: string;
-  label: string;
   busy: boolean;
   unavailable?: string | undefined;
   error?: string | undefined;
-  onApprove: (typed: string) => void;
+  onApprove: (confirmedCode: string) => void;
+  onStopSharing?: (() => void) | undefined;
 }) {
   useI18n();
-  const id = useId();
-  const [value, setValue] = useState('');
-  const [problem, setProblem] = useState<'incomplete' | 'mismatch' | null>(null);
-  // Not a <form>: the share window that shows these details is one already.
-  function submit() {
-    const typed = normalizeSafetyCode(value);
-    if (typed.length !== 12) return setProblem('incomplete');
-    if (typed !== normalizeSafetyCode(expected)) return setProblem('mismatch');
-    setProblem(null);
-    onApprove(value.trim());
-  }
-  return (
-    <div className="signed-share-entry">
-      <label htmlFor={id} className="signed-share-entry-label">{translate('sharing.codeInputLabel', { name })}</label>
-      <div className="signed-share-actions">
-        <input
-          id={id}
-          className="signed-share-input"
-          value={value}
-          onChange={(event) => { setValue(event.target.value); setProblem(null); }}
-          onKeyDown={(event) => {
-            if (event.key !== 'Enter' || event.nativeEvent.isComposing) return;
-            event.preventDefault();
-            if (!busy && !unavailable && value.trim()) submit();
-          }}
-          placeholder={translate('sharing.codePlaceholder')}
-          autoComplete="off"
-          autoCapitalize="characters"
-          spellCheck={false}
-          maxLength={24}
-          aria-invalid={problem ? true : undefined}
-          aria-describedby={problem ? `${id}-problem` : undefined}
-          disabled={busy}
-        />
-        <button className="relay-button-primary min-h-10 px-3 py-2 text-xs" type="button" onClick={submit} disabled={busy || Boolean(unavailable) || !value.trim()}>{label}</button>
-        {unavailable ? <ErrorMark kind="unavailable" message={unavailable} /> : error ? <ErrorMark message={error} /> : null}
-      </div>
-      {/* A check of what is being typed is one line under the field (docs/ui-principles.md §11). */}
-      {problem ? (
-        <p id={`${id}-problem`} role="alert" className="signed-share-problem" data-problem={problem}>
-          {problem === 'mismatch' ? translate('sharing.codeMismatch', { name }) : translate('sharing.codeIncomplete')}
-        </p>
-      ) : null}
+  const [mismatch, setMismatch] = useState(false);
+  useEffect(() => setMismatch(false), [expected]);
+  return <div className="signed-share-entry">
+    <div className="signed-share-code-confirmation"><code>{expected}</code>{expected ? <CopyButton value={expected} label={translate('sharing.copyCode')} /> : null}</div>
+    <p className="signed-share-entry-label">{translate('sharing.confirmCodeWith', { name })}</p>
+    <div className="signed-share-actions">
+      <button className="relay-button-primary min-h-10 px-3 py-2 text-xs" type="button" disabled={busy || Boolean(unavailable) || !expected} onClick={() => { setMismatch(false); onApprove(expected); }}>{translate('sharing.codeAgrees')}</button>
+      <button className={button} type="button" disabled={busy || !expected} onClick={() => setMismatch(true)}>{translate('sharing.codeDisagrees')}</button>
+      {unavailable ? <ErrorMark kind="unavailable" message={unavailable} /> : error ? <ErrorMark message={error} /> : null}
     </div>
-  );
+    {mismatch ? <div role="alert" className="signed-share-problem"><p>{translate('sharing.codeMismatch', { name })}</p>{onStopSharing ? <button className="signed-share-stop" type="button" disabled={busy} onClick={onStopSharing}>{translate('sharing.stopSharing')}</button> : null}</div> : null}
+  </div>;
 }
 
 /** Device grants without a relay row: listed for revocation. Reloads only when
