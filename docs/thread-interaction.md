@@ -699,6 +699,15 @@ enabled, stored in this browser):
   the alternate screen (vim, less, htop); it can be set to always paste.
   Ctrl+Shift+V always pastes.
 - Copy on select is on by default: releasing a mouse selection copies it.
+- “Allow terminal programs to write to the clipboard” is also on by default and
+  stored in the same browser preferences. Mouse-tracking programs (such as tmux
+  or vim) can own selection and send OSC 52 instead of selecting xterm text.
+  Only attached, interactive terminals accept live writes, targeting `c`, `p`
+  or the default clipboard, with valid base64 UTF-8 up to 1 MiB. Queries never
+  return clipboard contents; clears, invalid/oversized payloads and recorded
+  replay/snapshots are ignored. A denied write keeps only the latest text for
+  the next pointer/key gesture in that terminal; a failed retry shows Copy
+  failed. Disabling the preference or detaching drops pending text.
 - Right-click opens Copy, Paste, Select all, Copy last output and Clear, or can be
   set to copy a selection and otherwise paste.
 - A paste of several lines into a shell without bracketed paste asks first, since
@@ -722,6 +731,8 @@ left, so Delete looked like it typed spaces.
 On a phone, xterm cannot be drag-selected, so a long press on the terminal (or
 Select in the key bar) shows its lines as plain text in the same place, with the
 word under the finger selected; the phone's own handles and copy menu work there,
-next to Select all, Copy and Done. Paste in the key bar reads the clipboard; where
-the browser does not allow that (plain http, permission denied) it opens a field
+next to Select all, Copy and Done. Tapping a terminal HTTP/HTTPS link opens
+the shared confirmation; native touch scrolling remains on the viewport. Paste in
+the key bar reads the clipboard; where the browser does not allow that (plain
+http, permission denied) it opens a field
 to paste into and edit before sending.

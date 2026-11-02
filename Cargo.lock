@@ -2500,6 +2500,7 @@ dependencies = [
  "tokio-tungstenite 0.26.2",
  "tokio-util",
  "totp-rs",
+ "tower",
  "tracing",
  "url",
  "uuid",

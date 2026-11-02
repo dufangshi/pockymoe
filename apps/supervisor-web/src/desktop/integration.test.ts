@@ -1,8 +1,10 @@
+import { playHaptic } from './surface';
 import { describe, expect, it, vi } from 'vitest';
 import { translate } from '@pockymoe/thread-ui/i18n';
 import { handleHostCommand, resolveRequest, syncActivity, type CommandDependencies } from './integration';
 import type { DesktopIndex } from './data/types';
 import type { PockymoeHost } from './host';
+vi.mock('./surface', () => ({ playHaptic: vi.fn() }));
 vi.mock('../lib/api', () => ({ deviceRequest: vi.fn(), respondToThreadRequest: vi.fn(), sendThreadPrompt: vi.fn() }));
 function dependencies() {
   return { store: { markRead: vi.fn(), loadRequestDetail: vi.fn(), acceptDetail: vi.fn(), patchThread: vi.fn() }, navigate: vi.fn(), openMap: vi.fn(), revealInMap: vi.fn(), newThread: vi.fn(), respond: vi.fn(async () => ({})), send: vi.fn(async () => ({})) } as unknown as CommandDependencies;
@@ -153,4 +155,23 @@ it.each([['approve', 'Implement'], ['deny', 'Keep planning']] as const)('handles
   vi.mocked(deps.store.loadRequestDetail).mockResolvedValue({ pendingRequests: [{ id: 'plan', kind: 'planDecision', questions: [{ id: 'decision', options: [{ label: 'Implement', description: 'Implement this plan' }, { label: 'Keep planning', description: 'Keep planning' }] }] }] } as never);
   expect(await handleHostCommand({ id: 'plan', type: 'resolveRequest', deviceId: 'b', threadId: 't', requestId: 'plan', decision }, deps)).toEqual({ ok: true });
   expect(deps.respond).toHaveBeenCalledWith('t', 'plan', { answers: { decision: { answers: [answer] } } }, 'b');
+});
+
+it('signals only newly arriving foreground requests, once per request', async () => {
+  vi.useFakeTimers(); vi.mocked(playHaptic).mockClear();
+  const since = new Date(Date.now() - 60_000).toISOString();
+  const thread = { key: 'd:t', id: 't', deviceId: 'd', workspaceId: 'w', title: 'Task', status: 'running', updatedAt: since, requests: [{ id: 'old', kind: 'approval', summary: '', createdAt: since }] };
+  let state = { accountId: 'a', devices: [{ id: 'd' }], workspaces: [], threads: [thread] } as unknown as DesktopIndex;
+  let notify = () => {};
+  const store = { getSnapshot: () => state, subscribe: (fn: () => void) => { notify = fn; return () => {}; } } as unknown as CommandDependencies['store'];
+  const host = { activity: { sync: vi.fn() }, badge: { set: vi.fn() } } as unknown as PockymoeHost;
+  const stop = syncActivity(store, host, () => null, false);
+  await vi.advanceTimersByTimeAsync(0); expect(playHaptic).not.toHaveBeenCalled();
+  state = { ...state, threads: [{ ...thread, requests: [{ id: 'new', kind: 'approval', summary: '', createdAt: new Date().toISOString() }] }] } as unknown as DesktopIndex;
+  notify(); await vi.advanceTimersByTimeAsync(250); expect(playHaptic).toHaveBeenCalledExactlyOnceWith('attention');
+  notify(); await vi.advanceTimersByTimeAsync(250); expect(playHaptic).toHaveBeenCalledTimes(1);
+  const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+  state = { ...state, threads: [{ ...thread, requests: [{ id: 'hidden', kind: 'input', summary: '', createdAt: new Date().toISOString() }] }] } as unknown as DesktopIndex;
+  notify(); await vi.advanceTimersByTimeAsync(250); expect(playHaptic).toHaveBeenCalledTimes(1);
+  stop(); visibility.mockRestore(); vi.useRealTimers();
 });

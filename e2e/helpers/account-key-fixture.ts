@@ -91,12 +91,13 @@ export function ok(result: Result, label: string) {
   return result.data;
 }
 export function sockets(page: Page) {
-  const channels: { closed: boolean; frames: string[]; opened: boolean; closedAt?: number }[] = [];
+  const channels: { closed: boolean; frames: string[]; sent: string[]; opened: boolean; closedAt?: number }[] = [];
   page.on('websocket', ws => {
     if (!new URL(ws.url()).pathname.endsWith('/ws')) return;
-    const channel = { closed: false, frames: [] as string[], opened: true, closedAt: undefined as number | undefined };
+    const channel = { closed: false, frames: [] as string[], sent: [] as string[], opened: true, closedAt: undefined as number | undefined };
     channels.push(channel);
     ws.on('framereceived', frame => channel.frames.push(String(frame.payload)));
+    ws.on('framesent', frame => channel.sent.push(String(frame.payload)));
     ws.on('close', () => { channel.closed = true; channel.closedAt = Date.now(); });
   });
   return channels;

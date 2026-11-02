@@ -1,3 +1,5 @@
+import { useHostSurface } from '../../desktop/surface';
+import { openOAuth } from '../../mobile/auth';
 import { appUrl } from '../../lib/webBase';
 import { ErrorMark } from '@pockymoe/thread-ui';
 import { LanguageSwitcher, translate, useI18n } from '@pockymoe/thread-ui/i18n';
@@ -207,14 +209,22 @@ export function OAuthButtons({ google, github, onStart, busy }: {
   onStart?: ((provider: OAuthProviderName) => void) | undefined;
   busy?: OAuthProviderName | null | undefined;
 }) {
+  const mobile = useHostSurface() === 'mobile';
+  const [pending, setPending] = useState<OAuthProviderName | null>(null);
+  const [error, setError] = useState('');
+  const start = async (provider: OAuthProviderName) => {
+    setPending(provider); setError('');
+    try { await openOAuth(provider); } catch (caught) { setError(caught instanceof Error ? caught.message : String(caught)); }
+    finally { setPending(null); }
+  };
   if (!google && !github) return null;
   // Providers return to /relay-portal, which restores the remembered destination.
   const href = (provider: string) => relayUrl(`relay/auth/oauth/${provider}/start`);
   const className = 'relay-button-secondary inline-flex h-11 items-center justify-center gap-2.5 font-medium';
   const item = (provider: OAuthProviderName, mark: ReactNode, label: string) =>
-    onStart ? (
-      <button aria-busy={busy === provider || undefined} className={className} disabled={Boolean(busy)} onClick={() => onStart(provider)} type="button">
-        {mark}{busy === provider ? translate('auth.ui.pleaseWait') : label}
+    onStart || mobile ? (
+      <button aria-busy={(busy ?? pending) === provider || undefined} className={className} disabled={Boolean(busy ?? pending)} onClick={() => onStart ? onStart(provider) : void start(provider)} type="button">
+        {mark}{(busy ?? pending) === provider ? translate('auth.ui.pleaseWait') : label}
       </button>
     ) : (
       <a className={className} href={href(provider)}>
@@ -225,6 +235,7 @@ export function OAuthButtons({ google, github, onStart, busy }: {
     <div className="auth-oauth grid gap-2.5">
       {google ? item('google', <GoogleMark />, translate('auth.continueWithGoogle')) : null}
       {github ? item('github', <GitHubMark />, translate('auth.continueWithGitHub')) : null}
+      {error && <AuthNotice tone="warning">{error}</AuthNotice>}
     </div>
   );
 }

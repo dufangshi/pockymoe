@@ -77,6 +77,7 @@ export default defineConfig(({ mode }) => {
 
   const env = loadEnv(mode, __dirname, 'VITE_');
   const staticWeb = mode === 'static';
+  const runtimeRelease = process.env.POCKYMOE_RUNTIME_RELEASE === '1';
   const apiProxyTarget = process.env.VITE_API_PROXY_TARGET ?? 'http://127.0.0.1:8787';
   const wsProxyTarget = process.env.VITE_WS_PROXY_TARGET ?? 'ws://127.0.0.1:8787';
   const threadUiRoot = path.resolve(__dirname, '../../pockymoe-thread-ui');
@@ -101,7 +102,11 @@ export default defineConfig(({ mode }) => {
           ? 'relayServiceWorker.js' : 'assets/[name]-[hash].js',
       } },
     },
-    define: staticWeb ? { 'import.meta.env.VITE_POCKYMOE_STATIC_WEB': JSON.stringify('true') } : {},
+    // Portable release assets must not inherit a hosted deployment's .env or CI origin.
+    define: {
+      ...(staticWeb ? { 'import.meta.env.VITE_POCKYMOE_STATIC_WEB': JSON.stringify('true') } : {}),
+      ...(runtimeRelease ? { 'import.meta.env.VITE_POCKYMOE_RELAY_ORIGIN': JSON.stringify('') } : {}),
+    },
     plugins: [
       {
         name: 'runtime-web-base',
@@ -157,7 +162,7 @@ export default defineConfig(({ mode }) => {
       host: '0.0.0.0',
       allowedHosts: [
         'fonshs-macbook-pro.tailaf4fa.ts.net',
-        'debug.lnz-study.com',
+        ...(process.env.POCKYMOE_DEV_ALLOWED_HOSTS ?? '').split(',').map(host => host.trim()).filter(Boolean),
       ],
       fs: {
         allow: [

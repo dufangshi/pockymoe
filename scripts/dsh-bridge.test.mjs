@@ -366,7 +366,7 @@ test('the native console proxy forwards loopback pages only, with DSH as the aut
     assert.equal(seen.at(-1).origin, 'http://evil.example');
     // DNS-rebound or public names never reach DSH.
     const count = seen.length;
-    for (const host of ['evil.example', `p-${'a'.repeat(32)}.lnz-study.com`, `127.0.0.1.evil.example:${proxy}`]) {
+    for (const host of ['evil.example', `p-${'a'.repeat(32)}.example.com`, `127.0.0.1.evil.example:${proxy}`]) {
       assert.equal((await get(proxy, { host })).status, 403);
     }
     assert.equal(seen.length, count);

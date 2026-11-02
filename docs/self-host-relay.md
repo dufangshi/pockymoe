@@ -210,8 +210,8 @@ A relay runs in one of two modes:
   ([threat model](account-key-trust.md#threat-model)).
 - **Separate Web origin**: the Web UI is a static site on its own origin and the
   relay serves only its API. The public Pockymoe service runs this way, with the
-  Web UI on GitHub Pages at `https://app.lnz-study.com` and the relay at
-  `https://remote.lnz-study.com`.
+  Web UI on GitHub Pages at `https://app.example.com` and the relay at
+  `https://relay.example.com`.
 
 For the second mode, set both origins on the relay:
 

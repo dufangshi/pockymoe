@@ -506,6 +506,7 @@ fn app_state(path: PathBuf) -> Arc<AppState> {
         oauth: OAuthConfig::default(),
         oauth_client: reqwest::Client::new(),
         admission: security::Admission::default(),
+        trusted_proxies: security::TrustedProxies::default(),
         preview: preview::Hub::default(),
         admin: AdminState::default(),
         metrics: metrics::Metrics::default(),

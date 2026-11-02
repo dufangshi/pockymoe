@@ -208,3 +208,71 @@ leaves the Supervisor. Older relays may ignore this status without affecting
 request resolution. Unsent notices are removed on resolution; pushes already
 accepted by a service cannot be recalled. Coalescing queued APNs notices does
 not guarantee replacement of already-delivered alerts by Electron local notices.
+
+## Live Activity updates
+
+An iOS native registration may include `liveActivityToken`, or rotate it with
+`PUT /relay/account/notifications/native/live-activity` (`{ id, token }`). The
+registration must belong to the authenticated account **and current login
+session**, and must be iOS. A token does not grant permission or create an activity;
+the foreground shell starts one account activity and supplies its ActivityKit
+push token. Registration renewal preserves that token; rebinding an APNs device
+registration to another account/session drops its old activity and queued updates.
+Logout, revocation and deletion cascade through both outboxes.
+
+Supervisor heartbeats carry an explicit allowlist `threadActivity`: root
+conversation IDs, state and state-entry timestamps. Agent threads are grouped with
+their root; waiting wins over failure, running, interrupted and completed.
+An optional `runningSince` records the earliest still-running member even when
+a waiting/failed member takes display priority; that conversation also counts
+as running, so priority cannot end an active conversation. The
+Relay resolves ownership from the authenticated tunnel, never from these rows.
+It persists no titles, device/workspace names, requests, commands or message text
+in this channel. Updating state also sends a heartbeat, so requests and completed
+turns need not wait for the periodic heartbeat. Older devices can omit the field.
+
+Delivery uses `apns-push-type: liveactivity`, topic
+`<POCKYMOE_APNS_TOPIC>.push-type.liveactivity`, the registration's sandbox setting,
+and collapse ID `account-activity`. `content-state` matches the iOS
+`ActivityContentState` exactly:
+
+- `rows`: up to three prioritized `{ key, state, startedAt }` entries. `key` is
+  the same `deviceId:rootThreadId` conversation key as the local activity cache.
+- `totalCount`, `waitingCount`, `failedCount`, `runningCount`, `completedCount`:
+  account counts across all conversations, including rows beyond the first three.
+- `endedAt`: null while running/waiting, otherwise the end time.
+- `earliestStart`: the earliest still-running member's start, or the leading row's
+  timestamp when there are no running members.
+
+The rows contain only IDs, state and timestamps, never titles or device names.
+No `alert`, push-to-start attributes or remote approval controls are sent. A
+failed/waiting conversation can also count as running if another member runs;
+display priority does not prematurely end the activity. With no running/waiting
+conversations, `event` is `end` and `completedCount` counts all finished rows;
+`dismissal-date` is 15 minutes after the update. Terminal rows older than 15
+minutes are excluded; device snapshots expire after 24 hours. A disconnected
+device retains its last snapshot until then.
+
+**Date encoding:** ActivityKit requires default Codable encoding strategies for
+`content-state`. Swift Foundation `Date` defaults to seconds since **2001-01-01
+00:00:00 UTC**, including `rows[].startedAt`, `earliestStart` and non-null `endedAt`.
+The outer APNs `timestamp` and `dismissal-date` instead use Unix seconds since
+**1970-01-01**. Converting between them subtracts/adds 978307200 seconds. Do not
+configure a custom Date decoder in the iOS ActivityKit model. Apple's
+[ActivityKit push guidance](https://developer.apple.com/documentation/activitykit/starting-and-updating-live-activities-with-activitykit-push-notifications)
+requires the default strategies and separately defines the envelope Unix timestamp.
+
+Shared fixtures are `crates/relay/test-fixtures/live-activity-update.json` and
+`live-activity-end.json`; Relay tests compare its output to those bytes. To verify
+against the client model without duplicating it, compile the actual client's
+`ios/Shared/ActivityPolicy.swift` alongside `scripts/check-live-activity-fixture.swift`,
+then run that executable with both JSON fixture paths. This checks default Date
+decoding against fixed Unix times, counts, keys and the dismissal interval. It is
+a payload compatibility check, not an APNs delivery test.
+
+The additive `relay_live_activity_tokens`, `relay_live_activity_devices` and
+`relay_live_activity_outbox` tables preserve existing registrations and data.
+The outbox coalesces to the newest account snapshot, retries with backoff, and
+removes invalid activity tokens without disabling normal native notifications.
+APNs acceptance is not a guarantee of system display. Local payload simulation
+and mocked HTTP/bridge tests do not establish real-device APNs delivery.

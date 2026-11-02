@@ -1,10 +1,11 @@
+import { playHaptic } from '../desktop/surface';
 import { appPathname, appUrl } from './webBase';
 import { readAutoCollapseCompletedTurns } from './transcriptPreferences';
 import { deviceRoute, TransportError } from './relayTransportCrypto';
 import { markOwnedDevices } from './accountTransport';
 import { sharingMutation, type SharingInput } from './signedSharing';
 import { reportSharePendingBody } from './sharePending';
-import { relayOrigin, relayUrl, relaySocketUrl, relayFetchInit } from './relayOrigin';
+import { configuredRelayOrigin, relayOrigin, relayUrl, relaySocketUrl, relayFetchInit } from './relayOrigin';
 import { accountRequest, currentBrowser, logoutAccount } from './accountVaultState';
 import { startAccountLogin, setAccountSession, cancelAccountLogin, rememberAccountLogin, type AccountSessionState } from './accountAuth';
 import { confirmWorkspaceDocumentLeave, type WorkspaceDocumentSnapshot, type WorkspaceDocumentSaveInput, type WorkspaceSaveReceipt } from "@pockymoe/thread-ui";
@@ -184,7 +185,7 @@ function relayModeEnabled() {
   return (
     window.__POCKYMOE_BOOTSTRAP__?.mode === 'relay' ||
     import.meta.env.VITE_POCKYMOE_STATIC_WEB === 'true' ||
-    !!import.meta.env.VITE_POCKYMOE_RELAY_ORIGIN ||
+    !!configuredRelayOrigin() ||
     appPathname(window.location.pathname).startsWith('/relay-portal') ||
     appPathname(window.location.pathname).startsWith('/relay-admin') ||
     appPathname(window.location.pathname).startsWith('/relay-account') ||
@@ -1716,7 +1717,7 @@ export function sendThreadPrompt(
     return deviceRequest<ThreadDto>(deviceId, `api/threads/${id}/prompt`, {
       method: 'POST',
       body: JSON.stringify(input),
-    });
+    }).then(thread => { playHaptic('sent'); return thread; });
   }
 
   const formData = new FormData();
@@ -1757,7 +1758,7 @@ export function sendThreadPrompt(
   return deviceRequest<ThreadDto>(deviceId, `api/threads/${id}/prompt`, {
     method: 'POST',
     body: formData,
-  });
+  }).then(thread => { playHaptic('sent'); return thread; });
 }
 
 export function interruptThread(id: string, input: InterruptTurnInput = {},

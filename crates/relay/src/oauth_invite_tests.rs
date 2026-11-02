@@ -56,6 +56,13 @@ async fn mock_userinfo(headers: HeaderMap) -> Json<Value> {
 
 impl OAuthFixture {
     async fn new(name: &str, settings: &[(&str, &str)]) -> Self {
+        Self::with_web_origin(name, settings, None).await
+    }
+    async fn with_web_origin(
+        name: &str,
+        settings: &[(&str, &str)],
+        web_origin: Option<&str>,
+    ) -> Self {
         let provider_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let provider = format!("http://{}", provider_listener.local_addr().unwrap());
         let provider_app = Router::new()
@@ -72,6 +79,7 @@ impl OAuthFixture {
         {
             let mutable = Arc::get_mut(&mut state).unwrap();
             mutable.oauth.public_base_url = Some(base.clone());
+            mutable.oauth.web_origin = web_origin.map(str::to_owned);
             mutable.oauth.enable_test_google(&provider);
             mutable.oauth.enable_test_github(&provider);
         }
@@ -85,6 +93,9 @@ impl OAuthFixture {
             }
         }
         let app = Router::new()
+            .merge(mobile_auth::routes())
+            .route("/relay/auth/session", get(session))
+            .merge(auth_api::routes())
             .route(
                 "/relay/auth/oauth/{provider}/start",
                 get(oauth_start).post(oauth_start_with_invite),
@@ -119,6 +130,64 @@ impl OAuthFixture {
         }
     }
 
+    async fn mobile_consent_page(&self, path: &str) -> (String, String) {
+        let page = self
+            .client
+            .get(format!("{}{}", self.base, path))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(page.status(), StatusCode::OK);
+        assert!(page.headers()[header::CONTENT_SECURITY_POLICY]
+            .to_str()
+            .unwrap()
+            .contains("frame-ancestors 'none'"));
+        assert_eq!(page.headers()[header::CACHE_CONTROL], "no-store");
+        assert_eq!(page.headers()[header::REFERRER_POLICY], "same-origin");
+        assert!(page.headers().get(header::LOCATION).is_none());
+        let cookie = page.headers()[header::SET_COOKIE]
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_owned();
+        let html = page.text().await.unwrap();
+        assert!(html.contains("Pockymoe 手机 App 正在请求登录"));
+        assert!(html.contains("如果不是你刚刚发起的，请关闭此页"));
+        assert!(html.contains(">继续</button>") && html.contains(">取消</button>"));
+        let nonce = html
+            .split("name=\"csrf\" value=\"")
+            .nth(1)
+            .unwrap()
+            .split('"')
+            .next()
+            .unwrap()
+            .to_owned();
+        (cookie, nonce)
+    }
+    async fn mobile_consent(&self, path: &str, decision: &str) -> reqwest::Response {
+        let (cookie, nonce) = self.mobile_consent_page(path).await;
+        let id = url::Url::parse(&format!("{}{}", self.base, path))
+            .unwrap()
+            .query_pairs()
+            .find(|(k, _)| k == "mobileId")
+            .unwrap()
+            .1
+            .into_owned();
+        self.client
+            .post(format!("{}/relay/auth/mobile/consent", self.base))
+            .header("origin", &self.base)
+            .header("cookie", cookie)
+            .form(&[
+                ("id", id.as_str()),
+                ("csrf", nonce.as_str()),
+                ("decision", decision),
+            ])
+            .send()
+            .await
+            .unwrap()
+    }
     async fn setting(&self, key: &str, value: &str) {
         let conn = self.state.store.conn.lock().await;
         set_relay_setting(&conn, key, value).unwrap();
@@ -692,4 +761,314 @@ async fn a_cancelled_expired_or_failed_provider_round_trip_returns_with_a_reason
     // An unknown provider still returns to the page.
     let location = f.raw_callback("gitlab", &[], None).await;
     assert_eq!(refusal(&location), (Some("oauth_failed".into()), None));
+}
+
+#[tokio::test]
+async fn mobile_oauth_handoff_requires_proof_is_single_use_and_sets_webview_cookie() {
+    let f = OAuthFixture::new(
+        "mobile-oauth",
+        &[
+            ("registrationEnabled", "true"),
+            ("registrationApprovalRequired", "false"),
+        ],
+    )
+    .await;
+    {
+        let conn = f.state.store.conn.lock().await;
+        conn.execute(
+            "DELETE FROM relay_settings WHERE key='registrationPassword'",
+            [],
+        )
+        .unwrap();
+    }
+    for provider in ["google", "github"] {
+        let proof = "ab".repeat(32);
+        let prepared = f
+            .client
+            .post(format!("{}/relay/auth/mobile/prepare", f.base))
+            .header("origin", &f.base)
+            .json(&json!({"provider":provider,"proofHash":security::token_hash(&proof)}))
+            .send()
+            .await
+            .unwrap();
+        assert!(prepared.status().is_success());
+        let prepared: Value = prepared.json().await.unwrap();
+        let public_id =
+            url::Url::parse(&format!("{}{}", f.base, prepared["path"].as_str().unwrap()))
+                .unwrap()
+                .query_pairs()
+                .find(|(k, _)| k == "mobileId")
+                .unwrap()
+                .1
+                .into_owned();
+        // Attacker prepares with its own proof and sends this public start URL
+        // to a victim. Polling before and after victim approval is indistinguishable.
+        let polls = [
+            json!({"id":public_id,"proof":proof}),
+            json!({"id":public_id,"code":public_id,"proof":proof}),
+            json!({"id":public_id,"code":"z".repeat(43),"proof":proof}),
+        ];
+        let mut before = Vec::new();
+        for body in &polls {
+            let reply = f
+                .client
+                .post(format!("{}/relay/auth/mobile/exchange", f.base))
+                .header("origin", &f.base)
+                .json(body)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(reply.status(), StatusCode::UNAUTHORIZED);
+            assert!(reply
+                .headers()
+                .get_all(header::SET_COOKIE)
+                .iter()
+                .next()
+                .is_none());
+            before.push(reply.bytes().await.unwrap());
+        }
+        let start = f
+            .mobile_consent(prepared["path"].as_str().unwrap(), "continue")
+            .await;
+        assert_eq!(start.status(), StatusCode::SEE_OTHER);
+        let cookie = oauth_cookie(&start).unwrap();
+        let target = url::Url::parse(start.headers()[header::LOCATION].to_str().unwrap()).unwrap();
+        assert!(target
+            .query_pairs()
+            .any(|(key, value)| key == "prompt" && value == "select_account"));
+        let signed = target
+            .query_pairs()
+            .find(|(k, _)| k == "state")
+            .unwrap()
+            .1
+            .to_string();
+        let code = if provider == "google" {
+            "mobile-google"
+        } else {
+            "987654321"
+        };
+        let reply = f
+            .client
+            .get(format!("{}/relay/auth/oauth/{provider}/callback", f.base))
+            .header("cookie", format!("remote_codex_oauth={cookie}"))
+            .query(&[("state", signed.as_str()), ("code", code)])
+            .send()
+            .await
+            .unwrap();
+        let callback =
+            url::Url::parse(reply.headers()[header::LOCATION].to_str().unwrap()).unwrap();
+        assert_eq!(
+            format!(
+                "{}://{}{}",
+                callback.scheme(),
+                callback.host_str().unwrap(),
+                callback.path()
+            ),
+            mobile_auth::CALLBACK
+        );
+        assert!(!callback.as_str().contains("token"));
+        assert!(!callback.query_pairs().any(|(k, _)| k == "id"));
+        let callback_code = callback
+            .query_pairs()
+            .find(|(k, _)| k == "code")
+            .unwrap()
+            .1
+            .to_string();
+        assert_eq!(callback_code.len(), 43);
+        for (index, body) in polls.iter().enumerate() {
+            let reply = f
+                .client
+                .post(format!("{}/relay/auth/mobile/exchange", f.base))
+                .header("origin", &f.base)
+                .json(body)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(reply.status(), StatusCode::UNAUTHORIZED);
+            assert!(reply
+                .headers()
+                .get_all(header::SET_COOKIE)
+                .iter()
+                .next()
+                .is_none());
+            assert_eq!(reply.bytes().await.unwrap(), before[index]);
+        }
+        if provider == "github" {
+            let conn = f.state.store.conn.lock().await;
+            let user: String = conn
+                .query_row(
+                    "SELECT user_id FROM relay_mobile_oauth WHERE id=?1",
+                    [&public_id],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            conn.execute("INSERT INTO relay_totp(user_id,secret,enabled,expires_at) VALUES (?1,'unused',1,0)",[user]).unwrap();
+        }
+        let exchange = |proof: String| {
+            f.client
+                .post(format!("{}/relay/auth/mobile/exchange", f.base))
+                .header("origin", &f.base)
+                .json(&json!({"code":callback_code,"proof":proof}))
+        };
+        assert_eq!(
+            exchange("00".repeat(32)).send().await.unwrap().status(),
+            StatusCode::UNAUTHORIZED
+        );
+        {
+            let conn = f.state.store.conn.lock().await;
+            let (user, path): (Option<String>, Option<String>) = conn
+                .query_row(
+                    "SELECT user_id,return_path FROM relay_mobile_oauth WHERE id=?1",
+                    [&public_id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap();
+            assert!(user.is_some(), "OAuth failed to log in: {path:?}");
+            let stored: String = conn
+                .query_row(
+                    "SELECT code_hash FROM relay_mobile_oauth WHERE id=?1",
+                    [&public_id],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(stored, security::token_hash(&callback_code));
+            assert_ne!(stored, callback_code);
+            mobile_auth::ensure_schema(&conn).unwrap();
+        }
+        let reply = exchange(proof.clone()).send().await.unwrap();
+        assert_eq!(reply.status(), StatusCode::OK);
+        assert!(reply
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .any(|v| v.to_str().unwrap().contains("HttpOnly")));
+        let result: Value = reply.json().await.unwrap();
+        if provider == "github" {
+            assert_eq!(result["challengeRequired"], true);
+            assert_eq!(result["session"]["authenticated"], false);
+        } else {
+            assert!(
+                result["authenticated"] == true || result["session"]["authenticated"] == true,
+                "{result}"
+            );
+        }
+        assert_eq!(
+            exchange(proof).send().await.unwrap().status(),
+            StatusCode::UNAUTHORIZED
+        );
+    }
+}
+
+#[tokio::test]
+async fn mobile_consent_is_required_browser_bound_single_use_and_cancellable() {
+    let f =
+        OAuthFixture::with_web_origin("mobile-consent", &[], Some("https://app.example.com")).await;
+    let proof = "ab".repeat(32);
+    let response = f
+        .client
+        .post(format!("{}/relay/auth/mobile/prepare", f.base))
+        .header("origin", "https://app.example.com")
+        .json(&json!({"provider":"google","proofHash":security::token_hash(&proof)}))
+        .send()
+        .await
+        .unwrap();
+    let prepared: Value = response.json().await.unwrap();
+    let path = prepared["path"].as_str().unwrap();
+    let id = url::Url::parse(&format!("{}{}", f.base, path))
+        .unwrap()
+        .query_pairs()
+        .find(|(k, _)| k == "mobileId")
+        .unwrap()
+        .1
+        .into_owned();
+    f.mobile_consent_page(&format!("{path}&decision=continue"))
+        .await;
+    assert_eq!(f.challenges().await, 0);
+    let (cookie, nonce) = f.mobile_consent_page(path).await;
+    let post = |csrf: String, cookie: String, origin: String, decision: &str| {
+        f.client
+            .post(format!("{}/relay/auth/mobile/consent", f.base))
+            .header("origin", origin)
+            .header("cookie", cookie)
+            .form(&[
+                ("id", id.clone()),
+                ("csrf", csrf),
+                ("decision", decision.into()),
+            ])
+    };
+    let no_cookie = post(nonce.clone(), String::new(), f.base.clone(), "continue")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(no_cookie.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        post("bad".into(), cookie.clone(), f.base.clone(), "continue")
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        post(
+            nonce.clone(),
+            cookie.clone(),
+            "https://evil.example.com".into(),
+            "continue"
+        )
+        .send()
+        .await
+        .unwrap()
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        post(
+            nonce.clone(),
+            cookie.clone(),
+            "https://app.example.com".into(),
+            "continue"
+        )
+        .send()
+        .await
+        .unwrap()
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(f.challenges().await, 0);
+    let cancel = post(nonce.clone(), cookie.clone(), f.base.clone(), "cancel")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(cancel.status(), StatusCode::SEE_OTHER);
+    assert_eq!(f.challenges().await, 0);
+    let callback = url::Url::parse(cancel.headers()[header::LOCATION].to_str().unwrap()).unwrap();
+    assert_eq!(callback.scheme(), "remotecodex");
+    let code = callback
+        .query_pairs()
+        .find(|(k, _)| k == "code")
+        .unwrap()
+        .1
+        .into_owned();
+    let exchanged = f
+        .client
+        .post(format!("{}/relay/auth/mobile/exchange", f.base))
+        .header("origin", "https://app.example.com")
+        .json(&json!({"code":code,"proof":proof}))
+        .send()
+        .await
+        .unwrap();
+    assert!(exchanged.headers().get(header::SET_COOKIE).is_none());
+    assert!(exchanged.json::<Value>().await.unwrap()["path"]
+        .as_str()
+        .unwrap()
+        .contains("oauth_cancelled"));
+    assert_eq!(
+        post(nonce, cookie, f.base.clone(), "continue")
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
 }

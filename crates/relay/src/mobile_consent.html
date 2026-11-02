@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="referrer" content="same-origin">
+<title>Pockymoe 手机 App 登录</title>
+<!-- API-origin consent cannot load the other Web origin's theme registry or
+     React controls. Plain server HTML follows Classic sign-in and system mode;
+     this exception is documented in docs/ui-principles.md §1. -->
+<style>
+:root{color-scheme:light dark;--bg:#fafaf8;--panel:#fff;--fg:#252528;--muted:#69696f;--border:#dededb;--accent:#187655;--accent-fg:#fff}
+@media(prefers-color-scheme:dark){:root{--bg:#17171a;--panel:#202024;--fg:#efeff0;--muted:#b4b4ba;--border:#3b3b40;--accent:#9ad2b7;--accent-fg:#13291e}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 system-ui,-apple-system,sans-serif;min-height:100dvh;display:grid;place-items:center;padding:24px;padding-top:max(24px,env(safe-area-inset-top));padding-bottom:max(24px,env(safe-area-inset-bottom))}main{width:100%;max-width:400px;padding:28px;border:1px solid var(--border);border-radius:16px;background:var(--panel)}.brand{margin:0 0 20px;font-size:15px;font-weight:600;user-select:none}h1{font-size:22px;line-height:1.35;margin:0 0 14px;overflow-wrap:anywhere}p{margin:0 0 22px;color:var(--muted)}.actions{display:flex;gap:12px}button{font:inherit;font-weight:600;flex:1;min-height:44px;border-radius:10px;border:1px solid var(--border);padding:9px 16px;background:var(--panel);color:var(--fg);cursor:pointer;user-select:none}button[value=continue]{background:var(--accent);color:var(--accent-fg);border-color:var(--accent)}button:focus-visible{outline:2px solid var(--accent);outline-offset:3px}button:active{opacity:.75}@media(hover:hover){button:hover{filter:brightness(.94)}}
+</style>
+</head>
+<body><main><div class="brand">Pockymoe</div>
+<h1>Pockymoe 手机 App 正在请求登录</h1>
+<p>{{MESSAGE}}</p>
+{{FORM}}
+</main></body></html>

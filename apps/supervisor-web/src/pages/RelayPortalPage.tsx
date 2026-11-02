@@ -1,3 +1,4 @@
+import { openOAuth } from '../mobile/auth';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
@@ -17,7 +18,7 @@ import {
   startTemporaryResetLogin,
 } from '../lib/accountAuth';
 import { AccountTrustError, changeAccountPassword, createVault, openVault, registerBrowser } from '../lib/accountVaultState';
-import { ApiError, enableRelayMode, fetchRelaySession, relayLogin, relayLogout, startOAuthSignUp } from '../lib/api';
+import { ApiError, enableRelayMode, fetchRelaySession, relayLogin, relayLogout } from '../lib/api';
 import { accountRefusal, providerLabel, readOAuthReturn, withoutOAuthReturn, type OAuthReturn, type SignInNotice } from '../lib/signInOutcome';
 
 const DEFAULT_RETURN_TO = '/relay-devices';
@@ -357,7 +358,8 @@ function RegisterCard({ settings, onBack, onRegistered, oauth: pending, onOtherW
     if (codeRequired && !code.trim()) { setCodeError(translate('auth.ui.inviteCodeFirst')); return; }
     setOAuthBusy(provider);
     try {
-      window.location.assign(await startOAuthSignUp(provider, code.trim()));
+      await openOAuth(provider, code.trim());
+      setOAuthBusy(null);
     } catch (caught) {
       setCodeError(errorMessage(caught));
       setOAuthBusy(null);

@@ -57,27 +57,27 @@ the lease and prints a fresh `openUrl`.
 Example configuration for the existing site:
 
 ```ini
-POCKYMOE_PORT_PREVIEW_BASE_URL=https://lnz-study.com
+POCKYMOE_PORT_PREVIEW_BASE_URL=https://example.com
 ```
 
-This produces `https://p-<32-hex-mapping-id>.lnz-study.com`. Each mapping has its
+This produces `https://p-<32-hex-mapping-id>.example.com`. Each mapping has its
 own origin, so root-relative assets, client routing, application cookies and
 WebSocket paths do not need a device/path prefix. The random ID is a route,
 not an access credential; the Relay authenticates the account separately.
 
 Before setting that environment variable on the Relay:
 
-1. Add a wildcard DNS record, `*.lnz-study.com`, pointing to the same ingress as
-   the Relay. An existing exact record such as `remote.lnz-study.com` takes
+1. Add a wildcard DNS record, `*.example.com`, pointing to the same ingress as
+   the Relay. An existing exact record such as `relay.example.com` takes
    precedence. Cloudflare can proxy the wildcard. Do not add records per port.
-2. Configure the ingress/reverse proxy to route `p-*.lnz-study.com` to the
-   **same Rust Relay HTTP listener** as `remote.lnz-study.com`. Preserve the
+2. Configure the ingress/reverse proxy to route `p-*.example.com` to the
+   **same Rust Relay HTTP listener** as `relay.example.com`. Preserve the
    original Host, allow WebSocket upgrades, disable response buffering for
    streaming, and choose long-lived connection timeouts. DNS alone does not
    install this proxy route. The preview Host must not be rewritten to `remote`.
 3. Provide TLS for these first-level subdomains on the public edge and, when
    using Full (strict), on the origin. Cloudflare Universal SSL ordinarily covers
-   the root and first-level wildcard; `p-id.preview.lnz-study.com` is deeper and
+   the root and first-level wildcard; `p-id.preview.example.com` is deeper and
    needs a different certificate arrangement. A dedicated preview domain is also
    supported by choosing it as the base URL.
 4. Add the variable to the Relay service environment (on the current server,
@@ -95,8 +95,8 @@ resolves its subdomains to loopback. Plain HTTP is for local development only.
 
 ### Current production ingress
 
-For the `lnz-study.com` preview ingress, Cloudflare proxies
-`*.lnz-study.com` to the existing `remote.lnz-study.com` ingress; its active
+For the `example.com` preview ingress, Cloudflare proxies
+`*.example.com` to the existing `relay.example.com` ingress; its active
 Universal SSL certificate covers these first-level preview hosts. The origin
 keeps the existing main-site HTTP ingress path. This setup does not install a
 wildcard origin certificate or change the zone's SSL mode.
@@ -104,7 +104,7 @@ wildcard origin certificate or change the zone's SSL mode.
 On the Relay host, Nginx Proxy Manager runs with host networking. Its mounted
 `/opt/nginx-proxy-manager/data/nginx/custom/http.conf` includes
 `/data/nginx/custom/remote-codex-preview.conf`. That separate file only matches
-`p-<32 lowercase hex digits>.lnz-study.com`, preserving unrelated wildcard
+`p-<32 lowercase hex digits>.example.com`, preserving unrelated wildcard
 domains and existing NPM-managed services:
 
 ```nginx
@@ -115,7 +115,7 @@ map $http_upgrade $rc_preview_upgrade {
 server {
     listen 80;
     listen [::]:80;
-    server_name "~^p-[a-f0-9]{32}\.lnz-study\.com$";
+    server_name "~^p-[a-f0-9]{32}\.example\.com$";
     access_log off;
     error_log /data/logs/pockymoe-preview-error.log warn;
     client_max_body_size 64m;
@@ -150,7 +150,7 @@ out of shared caches. Any Cloudflare cache rules must also respect this policy.
 Validate and gracefully reload with
 `docker exec nginx-proxy-manager-app-1 nginx -t` followed by
 `docker exec nginx-proxy-manager-app-1 nginx -s reload`. The Relay environment
-file contains `POCKYMOE_PORT_PREVIEW_BASE_URL=https://lnz-study.com`; Relay
+file contains `POCKYMOE_PORT_PREVIEW_BASE_URL=https://example.com`; Relay
 deployments preserve that file. Only `remote-codex-rust-relay.service` needs a
 restart when changing this variable. Existing device Supervisors reconnect.
 

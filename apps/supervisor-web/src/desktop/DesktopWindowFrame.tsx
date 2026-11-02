@@ -31,7 +31,7 @@ export default function DesktopWindowFrame({ children, effectiveTheme }: { child
   useEffect(() => {
     let current = true;
     void host?.capabilities().then(capabilities => {
-      if (!current || !root.current || capabilities.bridgeVersion !== HOST_BRIDGE_VERSION) return;
+      if (!current || !root.current || capabilities.surface !== 'desktop' || capabilities.bridgeVersion !== HOST_BRIDGE_VERSION) return;
       const chrome = capabilities.windowChrome;
       root.current.style.setProperty('--desktop-controls-left', chrome.controlsSide === 'left' ? `${chrome.trafficLightsWidth}px` : '0px');
       root.current.style.setProperty('--desktop-controls-right', chrome.controlsSide === 'right' ? `${chrome.trafficLightsWidth}px` : '0px');
@@ -44,7 +44,7 @@ export default function DesktopWindowFrame({ children, effectiveTheme }: { child
       const surface = Array.from(document.querySelectorAll<HTMLElement>('.thread-ui-shell')).find(node => node.getClientRects().length) ?? root.current;
       if (!surface) return;
       const accent = getComputedStyle(surface).getPropertyValue('--theme-accent-solid').trim();
-      host.appearance.sync({ effective: effectiveTheme, pack: registry.applied, accent, fontScale: fontSize / 16, locale });
+      host.appearance.sync({ effective: effectiveTheme, pack: registry.applied, accent, background: getComputedStyle(surface).backgroundColor, fontScale: fontSize / 16, locale });
     });
     return () => cancelAnimationFrame(frame);
   }, [host, effectiveTheme, registry.applied, fontSize, locale]);

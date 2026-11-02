@@ -142,7 +142,7 @@ Relay 只把每个用户的账户密钥保存在用其密码和恢复码加密�
 Relay 有两种运行方式：
 
 - **单一 origin**（默认）：Relay 从 `POCKYMOE_RELAY_WEB_DIST_DIR` 提供网页，并和 API 一起放在 `POCKYMOE_PUBLIC_BASE_URL` 上。这种方式最简单，但 Relay 因此也能修改网页代码，而这段代码会处理你的密码和账户密钥（见[威胁模型](account-key-trust.md#threat-model)）。
-- **独立的 Web origin**：网页是另一个 origin 上的静态站点，Relay 只提供 API。公共 Pockymoe 服务就是这样运行的：网页在 GitHub Pages 上（`https://app.lnz-study.com`），Relay 在 `https://remote.lnz-study.com`。
+- **独立的 Web origin**：网页是另一个 origin 上的静态站点，Relay 只提供 API。公共 Pockymoe 服务就是这样运行的：网页在 GitHub Pages 上（`https://app.example.com`），Relay 在 `https://relay.example.com`。
 
 第二种方式要在 Relay 上同时设置两个 origin：
 

@@ -7,7 +7,9 @@ mod auth_api;
 mod auth_factors;
 mod device_tokens;
 mod host;
+mod live_activity;
 mod metrics;
+mod mobile_auth;
 mod notification_scope;
 mod notifications;
 mod oauth;
@@ -105,6 +107,7 @@ struct AppState {
     oauth: OAuthConfig,
     oauth_client: reqwest::Client,
     admission: security::Admission,
+    trusted_proxies: security::TrustedProxies,
     preview: preview::Hub,
     admin: admin::AdminState,
     metrics: metrics::Metrics,
@@ -234,6 +237,7 @@ pub async fn serve() -> Result<()> {
             .timeout(Duration::from_secs(20))
             .build()?,
         admission: security::Admission::default(),
+        trusted_proxies: security::TrustedProxies::from_env()?,
         preview: preview::Hub::from_env()?,
         admin: admin::AdminState::default(),
         metrics: metrics::Metrics::default(),
@@ -241,6 +245,7 @@ pub async fn serve() -> Result<()> {
     notifications::start(&state)?;
     metrics::start(&state)?;
     let app = Router::new()
+        .merge(mobile_auth::routes())
         .merge(auth_api::routes())
         .merge(notifications::routes())
         .merge(notification_scope::routes())
@@ -1344,11 +1349,21 @@ async fn session(
     })
 }
 
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct OAuthStartQuery {
+    mobile_id: Option<String>,
+}
+
 async fn oauth_start(
+    Query(query): Query<OAuthStartQuery>,
     Path(provider): Path<String>,
     headers: HeaderMap,
     State(state): State<Arc<AppState>>,
 ) -> Response {
+    if let Some(id) = &query.mobile_id {
+        return mobile_auth::consent_page(&state, id, &provider).await;
+    }
     match begin_oauth(&state, &headers, &provider, None).await {
         Ok((target, cookie)) => {
             let mut response = Redirect::temporary(&target).into_response();
@@ -1509,6 +1524,22 @@ async fn oauth_callback(
     Query(query): Query<OAuthCallbackQuery>,
     State(state): State<Arc<AppState>>,
 ) -> Response {
+    let signed = query.state.clone();
+    let response =
+        oauth_callback_inner(Path(provider), headers, Query(query), State(state.clone())).await;
+    if let Some(signed) = signed {
+        mobile_auth::redirect(&*state.store.conn.lock().await, &signed, response)
+    } else {
+        response
+    }
+}
+
+async fn oauth_callback_inner(
+    Path(provider): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<OAuthCallbackQuery>,
+    State(state): State<Arc<AppState>>,
+) -> Response {
     let Some(provider) = OAuthProvider::parse(&provider) else {
         return oauth_error_redirect(
             &state.oauth,
@@ -1593,6 +1624,11 @@ async fn oauth_callback(
             };
             if security::revoke_session(&conn, &token).is_err() {
                 return failed();
+            }
+            match mobile_auth::complete(&conn, signed, &user.id) {
+                Ok(Some(response)) => return response,
+                Ok(None) => {}
+                Err(_) => return failed(),
             }
             let has_factors = auth_factors::has_factors(&conn, &user.id);
             let result = if has_factors && !auth_factors::trusted(&conn, &user.id, &headers) {
@@ -4373,6 +4409,9 @@ async fn handle_supervisor_with_timeout(
                                     upstream_catalog::directory(&state,&device_id,connection_id,msg).await;
                                 }
                                 Some("relay.heartbeat") => {
+                                    if msg["threadActivity"].is_array() {
+                                        if live_activity::replace(&*state.store.conn.lock().await, &device_id, &msg["threadActivity"]).is_err() { tracing::warn!("invalid device activity snapshot"); }
+                                    }
                                     if msg["upstreamConnections"].is_array() {
                                         if upstream_catalog::replace(&*state.store.conn.lock().await,&device_id,&msg["upstreamConnections"]).is_err() { tracing::warn!("invalid upstream catalog metadata"); }
                                     }
@@ -4869,7 +4908,9 @@ async fn forward_server_message_to_client(
 }
 
 fn terminal_event(payload: &Value) -> bool {
-    payload.get("shellId").is_some()
+    // Encrypted envelopes retain shellId:null for non-terminal events. Only a
+    // non-null shell target (or shell event type) makes this terminal output.
+    payload.get("shellId").is_some_and(|id| !id.is_null())
         || payload
             .get("type")
             .and_then(Value::as_str)
@@ -5170,6 +5211,7 @@ mod tests {
                 oauth: OAuthConfig::default(),
                 oauth_client: reqwest::Client::new(),
                 admission: security::Admission::default(),
+                trusted_proxies: security::TrustedProxies::default(),
                 preview: preview::Hub::default(),
                 admin: admin::AdminState::default(),
                 metrics: metrics::Metrics::default(),

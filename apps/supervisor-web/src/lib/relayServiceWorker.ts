@@ -1,3 +1,4 @@
+import { relayOrigin } from './relayOrigin';
 import { matchesRelayWorkerRequest } from './relayWorkerMatching';
 import { setLocale } from '@pockymoe/thread-ui/i18n';
 /// <reference lib="webworker" />
@@ -23,7 +24,16 @@ setTransportReporter((status) => {
       client.postMessage({ type: 'remote-codex-transport', status });
   });
 });
+const pageRelays = new Map<string, string>();
 worker.addEventListener('message', (event) => {
+  if (event.data?.type === 'pockymoe-page-relay' && event.source && 'id' in event.source && typeof event.data.origin === 'string') {
+    const page = event.source as Client;
+    // Only a controlled page on this Web origin configures its own routing;
+    // another window's Relay must never overwrite that page's encrypted channel.
+    if (new URL(page.url).origin === worker.location.origin) {
+      try { pageRelays.set(page.id, relayOrigin(worker.location.origin, event.data.origin)); event.ports[0]?.postMessage({ ok: true }); } catch { /* Invalid origins are not acknowledged. */ }
+    }
+  }
   if (event.data?.type === 'pockymoe-account-reset') clearAllTransportKeys();
   if (event.data?.type === 'remote-codex-locale' && typeof event.data.locale === 'string')
     setLocale(event.data.locale, false);
@@ -55,11 +65,16 @@ function fetchThroughPage(client: Client, request: Request): Promise<Response> {
 }
 worker.addEventListener('fetch', (event) => {
   const request = event.request;
-  if (!matchesRelayWorkerRequest(request, worker.location.origin)) return;
+  const pageRelay = pageRelays.get(event.clientId);
+  if (!matchesRelayWorkerRequest(request, worker.location.origin, pageRelay)) return;
   event.respondWith(
     (async () => {
       const client = (event.clientId ? await worker.clients.get(event.clientId) : undefined)
-        ?? (await worker.clients.matchAll({ type: 'window' }))[0];
+        ?? (pageRelay ? undefined : (await worker.clients.matchAll({ type: 'window' }))[0]);
+      if (pageRelay && pageRelay !== relayOrigin(worker.location.origin)) {
+        if (!client) return new Response('Relay page unavailable', { status: 503 });
+        return fetchThroughPage(client, request);
+      }
       return relayWorkerFetch(request, client?.url, client ? (retry) => fetchThroughPage(client, retry) : undefined);
     })(),
   );
