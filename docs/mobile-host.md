@@ -85,8 +85,10 @@ Do not approve this page unless you just requested the sign-in yourself.
 
 `prepare` uses the existing admission limiter before proof/invite validation:
 five attempts per resolved client IP per ten minutes. Anonymous attempts also
-have separate **2,000-per-provider** ten-minute buckets. Correct configured
-invites or an authenticated account session bypass the anonymous bucket, so an
+have separate **2,000-per-provider** ten-minute buckets and an aggregate
+**4,000 anonymous attempts per ten minutes** cap, including invalid proofs and
+incorrect invites. Correct configured invites or an authenticated account
+session bypass the anonymous buckets, so an
 anonymous provider flood cannot consume their admission. Per-client limits and
 the 10,000 pending-row storage cap still apply. Missing an invite is permitted
 for existing-account provider login; a new user without an invite may be refused
@@ -104,19 +106,45 @@ and mobile preparation use this resolver. Configure only actual proxy IPs and
 ensure the ingress appends or overwrites the forwarding chain; do not accept
 arbitrary client-supplied headers as authoritative.
 
-For the loopback deployment, the workflow backs up `relay.env` privately before
-appending `POCKYMOE_TRUSTED_PROXY_IPS=127.0.0.1` if neither canonical nor legacy
-key exists. It preserves existing values and validates them rather than silently
-replacing them. The pre-change backup is retained for rollback. Before changing
-the environment/service, deployment audits active NPM forwarding and checks for
-Cloudflare: a detected CDN requires edge-only `CF-Connecting-IP` normalization
-in Nginx so the appended address is the visitor, not the shared CDN edge.
-See [runtime deployment](github-runtime.md#portable-release-addresses) for the
-exact checks and their limits. A forged header test against a health endpoint
-alone cannot observe Relay's chosen client IP; the workflow does not claim that
-it can, nor can fixtures prove the currently deployed infrastructure state.
-Clients behind a correctly configured proxy receive independent limits; clients
-sharing a real public NAT IP intentionally share that client budget.
+### Explicit CDN visitor-header mode
+
+With `POCKYMOE_CLIENT_IP_HEADER=CF-Connecting-IP`, a request from a configured
+trusted **direct peer** uses that header's single valid IP. It does not walk XFF.
+An untrusted peer ignores it; a missing, malformed or duplicated value falls back
+to the transport peer rather than consulting a potentially forged XFF. The setting
+is empty/unset by default, preserving the self-hoster XFF-chain policy above.
+Both the existing general auth IP limiter (120/minute) and mobile prepare use the
+same resolver. Before trusted-proxy support those auth buckets were keyed on the
+proxy peer, so this corrects a pre-existing shared-proxy limit too. Login/recovery,
+MFA and other account limits remain keyed to account/identifier, not the proxy.
+
+The owner has confirmed this deployment path: client → Cloudflare → host reverse
+proxy or tunnel → Relay on loopback. Deployment uses the explicit visitor-header
+mode and checks that NPM preserves that header. It no longer requires Nginx to
+rewrite `$remote_addr` to the visitor first. In a single private pre-change backup
+step, it appends missing `POCKYMOE_TRUSTED_PROXY_IPS=127.0.0.1` and
+`POCKYMOE_CLIENT_IP_HEADER=CF-Connecting-IP` settings independently, preserving
+existing canonical or legacy values. Explicit incompatible values stop the
+preflight rather than being silently overwritten. Rollback restores the original
+environment.
+
+**Origin bypass is outside this preflight's proof.** The origin must be restricted
+to Cloudflare or its authenticated tunnel, and the host proxy must preserve the
+CDN's visitor header. A probe from inside the host cannot establish that restriction.
+If someone bypasses Cloudflare through that trusted host proxy, they may supply
+an arbitrary `CF-Connecting-IP`. This only changes the apparent rate-limit key;
+it does not authenticate them, change authorization, skip consent, prove an OAuth
+identity, or provide the callback code/page proof. But IP fairness is lost: they
+can evade their own client quota or exhaust a chosen apparent IP's quota. The
+per-provider/aggregate anonymous budgets, pending-row bound, account/identifier
+limits, password-work limits, MFA and login handoff protections remain in force.
+Valid-invite/account-session bypass of anonymous budgets is unchanged and still
+requires that invite/session; it is not granted by an IP header. This mitigation
+is not a substitute for restricting direct access to the origin.
+
+See [runtime deployment](github-runtime.md#portable-release-addresses) for audit
+boundaries. No production ingress/firewall restriction was queried or verified
+by local fixture tests; the confirmed CDN topology comes from the owner.
 
 ## Web and Relay connection origins
 

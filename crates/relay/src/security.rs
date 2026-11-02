@@ -130,11 +130,15 @@ pub(crate) fn origin_allowed(headers: &axum::http::HeaderMap, public_base: Optio
         .is_ok_and(|base| base.origin() == origin.origin())
 }
 
-/// Only configured transport peers may supply a forwarding chain. Walk from the
-/// server side and stop at the first untrusted hop; attacker-prepended values
-/// cannot choose a different bucket. An empty configuration trusts no headers.
+/// Only configured transport peers may supply a visitor header/forwarding chain.
+/// Default chain mode stops at the rightmost untrusted hop. Explicit CDN-header
+/// mode relies on ingress access restrictions; the header is not authentication.
+/// An empty peer configuration trusts neither header.
 #[derive(Default)]
-pub(crate) struct TrustedProxies(Vec<std::net::IpAddr>);
+pub(crate) struct TrustedProxies {
+    peers: Vec<std::net::IpAddr>,
+    client_ip_header: Option<axum::http::HeaderName>,
+}
 impl TrustedProxies {
     pub fn parse(value: &str) -> Result<Self> {
         value
@@ -149,10 +153,24 @@ impl TrustedProxies {
                 })
             })
             .collect::<Result<Vec<_>>>()
-            .map(Self)
+            .map(|peers| Self {
+                peers,
+                client_ip_header: None,
+            })
+    }
+    pub fn with_client_ip_header(mut self, value: &str) -> Result<Self> {
+        self.client_ip_header = match value.trim() {
+            "" => None,
+            value if value.eq_ignore_ascii_case("CF-Connecting-IP") => {
+                Some(axum::http::HeaderName::from_static("cf-connecting-ip"))
+            }
+            _ => bail!("POCKYMOE_CLIENT_IP_HEADER must be empty or CF-Connecting-IP"),
+        };
+        Ok(self)
     }
     pub fn from_env() -> Result<Self> {
-        Self::parse(&std::env::var("POCKYMOE_TRUSTED_PROXY_IPS").unwrap_or_default())
+        Self::parse(&std::env::var("POCKYMOE_TRUSTED_PROXY_IPS").unwrap_or_default())?
+            .with_client_ip_header(&std::env::var("POCKYMOE_CLIENT_IP_HEADER").unwrap_or_default())
     }
     pub fn client_ip(
         &self,
@@ -162,8 +180,24 @@ impl TrustedProxies {
         let Some(peer) = peer.map(normalize_ip) else {
             return "unknown".into();
         };
-        if !self.0.contains(&peer) {
+        if !self.peers.contains(&peer) {
             return peer.to_string();
+        }
+        if let Some(name) = &self.client_ip_header {
+            // This deployment-specific header is authoritative only inside the
+            // configured proxy boundary. Never fall back to attacker XFF when
+            // it is missing/malformed; origin access must be restricted at ingress.
+            let mut values = headers.get_all(name).iter();
+            let value = values.next();
+            if values.next().is_some() {
+                return peer.to_string();
+            }
+            return value
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.trim().parse().ok())
+                .map(normalize_ip)
+                .unwrap_or(peer)
+                .to_string();
         }
         let values = headers
             .get_all("x-forwarded-for")
@@ -178,7 +212,7 @@ impl TrustedProxies {
                 return peer.to_string();
             };
             let ip = normalize_ip(ip);
-            if !self.0.contains(&ip) {
+            if !self.peers.contains(&ip) {
                 return ip.to_string();
             }
         }
@@ -676,6 +710,7 @@ mod proxy_tests {
     fn trusted_proxy_chain_ignores_untrusted_prefixes_and_rejects_invalid_configuration() {
         let policy = TrustedProxies::parse("127.0.0.1,::1,10.0.0.1").unwrap();
         let mut headers = axum::http::HeaderMap::new();
+        headers.insert("cf-connecting-ip", "203.0.113.250".parse().unwrap());
         headers.insert(
             "x-forwarded-for",
             "203.0.113.66, 198.51.100.20, 10.0.0.1".parse().unwrap(),
@@ -703,11 +738,59 @@ mod proxy_tests {
         );
         assert!(TrustedProxies::parse("https://proxy.example.com").is_err());
     }
+    #[test]
+    fn configured_cloudflare_header_is_trusted_only_from_explicit_peers_and_ignores_xff() {
+        let policy = TrustedProxies::parse("127.0.0.1")
+            .unwrap()
+            .with_client_ip_header("CF-Connecting-IP")
+            .unwrap();
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("cf-connecting-ip", "198.51.100.41".parse().unwrap());
+        headers.insert(
+            "x-forwarded-for",
+            "203.0.113.234, 192.0.2.1".parse().unwrap(),
+        );
+        assert_eq!(
+            policy.client_ip(Some("127.0.0.1".parse().unwrap()), &headers),
+            "198.51.100.41"
+        );
+        assert_eq!(
+            policy.client_ip(Some("192.0.2.2".parse().unwrap()), &headers),
+            "192.0.2.2"
+        );
+        headers.insert("x-forwarded-for", "203.0.113.235".parse().unwrap());
+        assert_eq!(
+            policy.client_ip(Some("127.0.0.1".parse().unwrap()), &headers),
+            "198.51.100.41"
+        );
+        headers.remove("cf-connecting-ip");
+        assert_eq!(
+            policy.client_ip(Some("127.0.0.1".parse().unwrap()), &headers),
+            "127.0.0.1"
+        );
+        headers.insert("cf-connecting-ip", "invalid".parse().unwrap());
+        assert_eq!(
+            policy.client_ip(Some("127.0.0.1".parse().unwrap()), &headers),
+            "127.0.0.1"
+        );
+        headers.insert("cf-connecting-ip", "198.51.100.41".parse().unwrap());
+        headers.append("cf-connecting-ip", "198.51.100.42".parse().unwrap());
+        assert_eq!(
+            policy.client_ip(Some("127.0.0.1".parse().unwrap()), &headers),
+            "127.0.0.1"
+        );
+        assert!(TrustedProxies::default()
+            .with_client_ip_header("X-Anything")
+            .is_err());
+    }
     #[tokio::test]
     async fn auth_middleware_uses_proxied_client_buckets_too() {
         let (mut state, dir) = crate::tests::test_app_state("auth-proxy-limit");
         std::sync::Arc::get_mut(&mut state).unwrap().trusted_proxies =
-            TrustedProxies::parse("127.0.0.1").unwrap();
+            TrustedProxies::parse("127.0.0.1")
+                .unwrap()
+                .with_client_ip_header("CF-Connecting-IP")
+                .unwrap();
         let app = axum::Router::new()
             .route(
                 "/relay/auth/proxy-test",
@@ -720,7 +803,7 @@ mod proxy_tests {
         use tower::ServiceExt;
         for index in 0..121 {
             let mut request = axum::http::Request::post("/relay/auth/proxy-test")
-                .header("x-forwarded-for", "198.51.100.30")
+                .header("cf-connecting-ip", "198.51.100.30")
                 .body(axum::body::Body::empty())
                 .unwrap();
             request.extensions_mut().insert(axum::extract::ConnectInfo(
@@ -736,7 +819,7 @@ mod proxy_tests {
             );
         }
         let mut request = axum::http::Request::post("/relay/auth/proxy-test")
-            .header("x-forwarded-for", "198.51.100.31")
+            .header("cf-connecting-ip", "198.51.100.31")
             .body(axum::body::Body::empty())
             .unwrap();
         request.extensions_mut().insert(axum::extract::ConnectInfo(

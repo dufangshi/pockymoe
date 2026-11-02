@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
-"""Back up relay.env privately and append the loopback trust default only if absent."""
+"""Back up relay.env privately and append missing deployment proxy/header defaults."""
 import argparse
 import os
 from pathlib import Path
 import re
 import stat
 
-KEYS = {'POCKYMOE_TRUSTED_PROXY_IPS', 'REMOTE_CODEX_TRUSTED_PROXY_IPS'}
+DEFAULTS = [
+    ('POCKYMOE_TRUSTED_PROXY_IPS', 'REMOTE_CODEX_TRUSTED_PROXY_IPS', '127.0.0.1'),
+    ('POCKYMOE_CLIENT_IP_HEADER', 'REMOTE_CODEX_CLIENT_IP_HEADER', 'CF-Connecting-IP'),
+]
 
 
 def configure(path, backup):
@@ -32,9 +35,10 @@ def configure(path, backup):
         match = re.match(r'^\s*([A-Za-z_][A-Za-z_0-9]*)\s*=', line)
         if match:
             keys.add(match[1])
-    if keys & KEYS:
-        return False  # Includes explicit empty/invalid settings: preserve, then preflight validates.
-    addition = (b'' if original.endswith(b'\n') else b'\n') + b'POCKYMOE_TRUSTED_PROXY_IPS=127.0.0.1\n'
+    missing = [(key, value) for key, legacy, value in DEFAULTS if key not in keys and legacy not in keys]
+    if not missing:
+        return False  # Preserve explicit empty/invalid values; preflight validates.
+    addition = (b'' if original.endswith(b'\n') else b'\n') + ''.join(f'{key}={value}\n' for key, value in missing).encode()
     # Open the existing inode to retain its owner, mode and service-manager path.
     with path.open('ab') as out:
         out.write(addition)

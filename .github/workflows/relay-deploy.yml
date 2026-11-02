@@ -194,9 +194,9 @@ jobs:
             # Inspect active NPM configuration privately, never in Actions logs.
             sudo install -d -m 0700 "${backup}/relay-data"
             sudo sh -c 'umask 077; docker exec nginx-proxy-manager-app-1 nginx -T > "$1" 2>/dev/null' sh "${backup}/relay-data/nginx-config.txt"
-            sudo python3 "${stage}/check-relay-forwarding.py" --nginx-dump "${backup}/relay-data/nginx-config.txt" --origin "${POCKYMOE_RELAY_ORIGIN}"
-            # Preserve relay.env before any change. Existing values (including
-            # the legacy alias) are untouched; later validation rejects bad ones.
+            sudo python3 "${stage}/check-relay-forwarding.py" --nginx-dump "${backup}/relay-data/nginx-config.txt" --origin "${POCKYMOE_RELAY_ORIGIN}" --client-ip-header CF-Connecting-IP
+            # Back up relay.env before adding missing proxy/header defaults.
+            # Preserve existing canonical/legacy values; validate them afterward.
             sudo python3 "${stage}/configure-relay-proxy.py" --env "${base}/relay.env" --backup "${backup}/relay-data/relay.env"
             # Fail before stopping the old service if the auth migration is misconfigured.
             sudo python3 - "${base}/relay.env" "${POCKYMOE_RELAY_ORIGIN}" "https://${POCKYMOE_WEB_DOMAIN}" <<'PYPREFLIGHT'
@@ -215,6 +215,9 @@ jobs:
                 raise SystemExit('Relay auth preflight: configure valid POCKYMOE_TRUSTED_PROXY_IPS')
             if ipaddress.ip_address('127.0.0.1') not in proxies:
                 raise SystemExit('Relay auth preflight: configure POCKYMOE_TRUSTED_PROXY_IPS for the loopback reverse proxy')
+            visitor_header = values.get('POCKYMOE_CLIENT_IP_HEADER', values.get('REMOTE_CODEX_CLIENT_IP_HEADER', ''))
+            if visitor_header.strip().lower() != 'cf-connecting-ip':
+                raise SystemExit('Relay auth preflight: this Cloudflare deployment requires POCKYMOE_CLIENT_IP_HEADER=CF-Connecting-IP')
             secret = values.get('REMOTE_CODEX_RELAY_SESSION_SECRET')
             if secret is not None and len(secret) < 32:
                 raise SystemExit('Relay auth preflight: session secret must be at least 32 characters')

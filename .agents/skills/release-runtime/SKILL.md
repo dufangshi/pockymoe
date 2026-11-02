@@ -43,4 +43,4 @@ verify、四平台 native、固定 UI 的 Web 构建并行，package 依赖全�
 
 部署前先运行地址 preflight（`--mask`）：三个地址 secrets 必须齐全，且派生的主机名也要注册 `::add-mask::`，不能用未遮罩的仓库 variables。Relay 的 `relay-rust-canary` 环境可继承仓库 secrets；同名环境 secret 会覆盖仓库值。
 
-Relay 部署还需 `POCKYMOE_RELAY_SSH_FINGERPRINT`、`POCKYMOE_RELAY_HOSTNAME` 和既有 `REMOTE_CODEX_RELAY_DEPLOY_HOST/USER/PASSWORD/PORT` secrets，先运行 `--mask --relay-host`。部署先私下审计实际 NPM 转发/CDN real-IP 配置，再备份 Relay env；仅在新旧代理配置键均缺失时追加 `POCKYMOE_TRUSTED_PROXY_IPS=127.0.0.1`，保留已有值与原始备份。不信任未配置来源的转发头，检测到 CDN 而未验证 visitor IP 还原时停止。
+Relay 部署还需 `POCKYMOE_RELAY_SSH_FINGERPRINT`、`POCKYMOE_RELAY_HOSTNAME` 和既有 `REMOTE_CODEX_RELAY_DEPLOY_HOST/USER/PASSWORD/PORT` secrets，先运行 `--mask --relay-host`。此部署已确认在 Cloudflare 后：先审计 NPM 是否原样保留 `CF-Connecting-IP`，再用同一原始备份独立补齐缺失的 `POCKYMOE_TRUSTED_PROXY_IPS=127.0.0.1` 和 `POCKYMOE_CLIENT_IP_HEADER=CF-Connecting-IP`，保留已有新旧键及备份。该头仅在直连 peer 受信任时生效，默认 self-host XFF 行为不变。内部预检不能证明源站不可绕过；必须限制源站/CDN 或隧道访问，不能把头本身当认证。

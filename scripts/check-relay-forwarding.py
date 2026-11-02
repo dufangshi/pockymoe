@@ -91,7 +91,7 @@ def effective(contexts, name):
     return []
 
 
-def audit(dump, hostname, cloudflare, networks):
+def audit(dump, hostname, cloudflare, networks, client_ip_header=""):
     tree = configuration(dump)
     http = [children for key, _, children in tree if key == 'http']
     if len(http) != 1:
@@ -119,6 +119,13 @@ def audit(dump, hostname, cloudflare, networks):
                 # proxy_set_header inherits as one group, only if this context
                 # declares none. A location's Host override can discard parent XFF.
                 headers = effective(contexts, 'proxy_set_header')
+                if client_ip_header.lower() == 'cf-connecting-ip':
+                    explicit = [args[1] for args in headers if len(args)==2 and args[0].lower()=='cf-connecting-ip']
+                    passes = effective(contexts, 'proxy_pass_request_headers')
+                    if explicit not in [[], ['$http_cf_connecting_ip']] or (not explicit and passes == [['off']]):
+                        raise AuditError('Configured CF-Connecting-IP must pass unchanged to the Relay')
+                    checked += 1
+                    continue  # Dedicated visitor header mode does not use XFF/remote_addr.
                 forwarded = [args[1] for args in headers if len(args) == 2 and args[0].lower() == 'x-forwarded-for']
                 if forwarded not in [['$proxy_add_x_forwarded_for'], ['$remote_addr']]:
                     raise AuditError('Relay ingress must append/overwrite X-Forwarded-For using remote_addr')
@@ -188,19 +195,25 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--nginx-dump', type=Path, required=True)
     parser.add_argument('--origin', required=True)
+    parser.add_argument('--client-ip-header', choices=['CF-Connecting-IP'], default='')
     args = parser.parse_args()
     try:
         parsed = urlsplit(args.origin)
         if parsed.scheme != 'https' or not parsed.hostname or parsed.path or parsed.username or parsed.password or parsed.query or parsed.fragment:
             raise AuditError('Invalid Relay origin')
-        networks = official_networks()
+        networks = [] if args.client_ip_header else official_networks()
         cf = probe(args.origin, networks)
-        count = audit(args.nginx_dump.read_text(), parsed.hostname, cf, networks)
+        count = audit(args.nginx_dump.read_text(), parsed.hostname, cf, networks, args.client_ip_header)
     except AuditError as error:
         raise SystemExit(str(error))
     except Exception:
         raise SystemExit('Ingress preflight failed; network/configuration details withheld')
-    print(f'PASS: {count} Relay upstream contexts append/overwrite the resolved remote address')
-    print('Cloudflare observed; verified edge-only CF-Connecting-IP normalization' if cf else
-          'No Cloudflare observed by health headers/DNS; other hidden CDNs are not excluded')
+    if args.client_ip_header:
+        print(f'PASS: {count} Relay upstream contexts preserve the configured visitor header')
+        print('Cloudflare visitor-header mode is explicitly configured for this deployment; XFF is not used for attribution')
+        print('Origin bypass prevention cannot be established by this inside-host preflight; restrict origin access to the CDN/tunnel')
+    else:
+        print(f'PASS: {count} Relay upstream contexts append/overwrite the resolved remote address')
+        print('Cloudflare observed; verified edge-only CF-Connecting-IP normalization' if cf else
+              'No Cloudflare observed by health headers/DNS; other hidden CDNs are not excluded')
     print('Configuration audit only: health responses do not disclose the Relay-resolved IP; no end-to-end attribution claim')

@@ -151,46 +151,51 @@ and host identity are not stored in workflow source. Raw and derived fingerprint
 values and hostnames are masked. Existing secret names keep their compatibility
 spelling. Pages requires only the three address secrets, not the six SSH secrets.
 
-The deploy archive includes checksum-verified proxy configuration/audit helpers.
-Before modifying the service, deployment privately captures the active NPM
-`nginx -T` dump and audits the exact Relay virtual host and its loaded includes.
-The audit requires that every Relay upstream appends `$remote_addr` through
-`$proxy_add_x_forwarded_for`, or overwrites X-Forwarded-For with `$remote_addr`.
-It rejects forwarding a client-supplied header by itself and accounts for Nginx's
-all-or-none `proxy_set_header` inheritance. Dynamic/unrecognized upstream or
-real-IP policies stop deployment rather than being assumed safe.
+The owner-confirmed deployment path is client → Cloudflare → host proxy/tunnel
+→ loopback Relay. The deploy archive includes checksum-verified audit and
+environment helpers. Before modifying the service it privately captures active
+NPM `nginx -T` and resolves the Relay virtual host and loaded includes. In this
+deployment's explicit `CF-Connecting-IP` mode it checks that request headers pass
+through or that `CF-Connecting-IP` is explicitly forwarded unchanged. Dropping it
+or substituting `$remote_addr` stops deployment. Nginx visitor-IP rewriting is
+not required, and a Cloudflare edge in XFF is not used as the visitor identity.
+The audit still rejects unverified upstreams, includes and conditional forwarding.
+Its generic self-hoster XFF audit remains separate from this explicit mode.
 
-A public health read with forged forwarding headers and DNS inspection detects
-Cloudflare when its edge headers or current published IP ranges are observed.
-If detected, Nginx must restore `$remote_addr` from `CF-Connecting-IP` and trust
-only the current official Cloudflare ranges (complete IPv4/IPv6 coverage).
-Otherwise the audit stops before service replacement: trusting only loopback
-would leave a CDN edge as every person's client IP. Deployment does **not**
-automatically trust CDN headers/ranges in the Relay or rewrite Nginx. Official
-ranges come from Cloudflare's HTTPS endpoints during preflight. A missing or
-unverifiable NPM dump, failed public probe, unidentified `Via` intermediary or
-unavailable trust reference also stops the workflow.
+The health probe sends forged forwarding headers but does not expose Relay's
+selected IP; its result cannot establish end-to-end attribution or that direct
+origin access is blocked. This inside-host preflight cannot prove firewall or
+tunnel access restrictions. Restrict the origin to the CDN/tunnel; preserving a
+visitor header alone does not authenticate its source. If the origin is reachable
+through the trusted host proxy without Cloudflare, an attacker can choose a
+forged apparent IP, evading a client bucket or exhausting another apparent-IP
+bucket. Anonymous per-provider/global caps, the storage cap and account/login
+protections still hold; it grants no authentication. See the explicit threat
+model in [mobile sign-in](mobile-host.md#explicit-cdn-visitor-header-mode).
 
-After that audit, `configure-relay-proxy.py` makes a private pre-change
-`relay.env` backup (0700 parent, 0600 file) and appends
-`POCKYMOE_TRUSTED_PROXY_IPS=127.0.0.1` **only when both the canonical and legacy
-keys are absent**. Existing values, including empty/invalid ones, remain untouched;
-the auth preflight validates them and refuses unsafe/missing loopback trust.
-Repeated deployment steps do not duplicate the setting or overwrite the original
-backup. Later database backup preserves this pre-change environment snapshot;
-rollback restores it before restarting the original binary. No manual server
-environment edit is needed to adopt the missing default.
+After auditing, `configure-relay-proxy.py` makes a private pre-change `relay.env`
+backup (0700 parent, 0600 file) and independently appends each missing default:
 
-**Verification boundary:** tracked docs establish Cloudflare for the preview
-wildcard and show its append-style Nginx location. The generated NPM Relay
-virtual-host configuration is not tracked. A health response does not expose
-Relay's resolved client IP, so the forged-header probe detects CDN presence but
-does **not** independently confirm end-to-end attribution. The audit combines
-active configuration with the tested rightmost-untrusted resolver. Absence of
-Cloudflare headers/DNS does not exclude another hidden CDN. Such a CDN needs an
-explicit reviewed real-IP policy; it must not be treated as individual visitors.
-The actual deployed chain is verified only when this preflight runs on that host;
-local/CI fixture tests do not establish the live infrastructure state.
+```dotenv
+POCKYMOE_TRUSTED_PROXY_IPS=127.0.0.1
+POCKYMOE_CLIENT_IP_HEADER=CF-Connecting-IP
+```
+
+A default is appended only when neither its canonical nor legacy key exists.
+Existing values, including empty/incompatible values, remain untouched; preflight
+then requires loopback trust and this deployment's visitor-header mode. Repeated
+steps neither duplicate entries nor overwrite the original backup. The later
+database backup preserves the pre-change environment snapshot, and rollback
+restores it before restarting the old binary. Both settings are runtime server
+environment, not new repository secrets. Self-hosted runtime defaults remain no
+trusted peers and no dedicated header, with the existing explicit XFF-chain mode
+available when peers are configured.
+
+Tracked preview docs alone did not establish the Relay main-host CDN path; the
+owner has now confirmed Cloudflare from public edge headers and DNS. No live
+origin/firewall/tunnel access restriction was queried or verified in this work.
+The deployment audit can establish the loaded forwarding configuration but must
+not be reported as proof that the origin cannot be bypassed.
 
 See [mobile sign-in](mobile-host.md) for client IP resolution, anonymous/provider
 limits, consent and remaining scheme risks.
@@ -200,7 +205,7 @@ hostname is lowercase. Set all three secrets to the corresponding current
 hosts before using `pages-deploy.yml` or `relay-deploy.yml`. The preflight refuses
 missing or malformed settings (both workflows require all three). The Relay
 workflow passes its secrets into the SSH steps and checks the same systemd service, environment origins, redirect and
-legacy boundary as before. No server configuration is rewritten by this change.
+legacy boundary as before. Only missing deployment proxy/header defaults are provisioned after backup; existing values remain unchanged.
 Repository secrets are available to the Pages build and the Relay job in the
 `relay-rust-canary` environment; separate environment copies are not required.
 An environment secret with the same name overrides the repository secret and

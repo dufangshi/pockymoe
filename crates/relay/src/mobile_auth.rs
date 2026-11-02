@@ -56,25 +56,21 @@ async fn prepare(
     {
         return StatusCode::TOO_MANY_REQUESTS.into_response();
     }
-    if OAuthProvider::parse(&input.provider).is_none()
-        || input.proof_hash.len() != 43
-        || !input
+    let provider = OAuthProvider::parse(&input.provider);
+    let valid_proof = input.proof_hash.len() == 43
+        && input
             .proof_hash
             .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-    {
-        return StatusCode::BAD_REQUEST.into_response();
-    }
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
     let conn = state.store.conn.lock().await;
     let now = chrono::Utc::now().timestamp_millis();
     let id = Uuid::new_v4().to_string();
     let invite = input.invite_code.as_deref().map(invite_hash);
     let configured_invite = relay_setting(&conn, "registrationPassword");
-    if let (Some(supplied), Some(expected)) = (invite.as_deref(), configured_invite.as_deref()) {
-        if !invite_code_matches(Some(supplied), expected) {
-            return StatusCode::BAD_REQUEST.into_response();
-        }
-    }
+    let invalid_invite = match (invite.as_deref(), configured_invite.as_deref()) {
+        (Some(supplied), Some(expected)) => !invite_code_matches(Some(supplied), expected),
+        _ => false,
+    };
     let protected = configured_invite
         .as_deref()
         .is_some_and(|expected| invite_code_matches(invite.as_deref(), expected))
@@ -90,12 +86,27 @@ async fn prepare(
     // generous budgets; this is not a global five-request proxy bucket.
     if !protected
         && !state.admission.allow(
-            format!("mobile-prepare-anonymous:{}", input.provider),
+            format!(
+                "mobile-prepare-anonymous:{}",
+                provider.map_or("invalid", OAuthProvider::as_str)
+            ),
             2_000,
             600,
         )
     {
         return StatusCode::TOO_MANY_REQUESTS.into_response();
+    }
+    if !protected
+        && !state
+            .admission
+            .allow("mobile-prepare-anonymous-global".into(), 4_000, 600)
+    {
+        return StatusCode::TOO_MANY_REQUESTS.into_response();
+    }
+    // Invalid proofs/invites also consume anonymous budgets. Header spoofing at
+    // an exposed origin must not turn IP-bucket rotation into an unbounded oracle.
+    if provider.is_none() || !valid_proof || invalid_invite {
+        return StatusCode::BAD_REQUEST.into_response();
     }
     let result = (|| -> Result<()> {
         conn.execute("DELETE FROM relay_mobile_oauth WHERE expires_at<=?1", [now])?;
@@ -345,10 +356,13 @@ mod tests {
     async fn prepare_proxied_clients_have_independent_buckets_and_untrusted_peers_cannot_spoof() {
         let (mut state, dir) = crate::tests::test_app_state("mobile-proxy-rate");
         Arc::get_mut(&mut state).unwrap().trusted_proxies =
-            security::TrustedProxies::parse("127.0.0.1").unwrap();
+            security::TrustedProxies::parse("127.0.0.1")
+                .unwrap()
+                .with_client_ip_header("CF-Connecting-IP")
+                .unwrap();
         for index in 0..6 {
             let mut headers = HeaderMap::new();
-            headers.insert("x-forwarded-for", "198.51.100.10".parse().unwrap());
+            headers.insert("cf-connecting-ip", "198.51.100.10".parse().unwrap());
             assert_eq!(
                 prepare(
                     State(state.clone()),
@@ -366,7 +380,7 @@ mod tests {
             );
         }
         let mut headers = HeaderMap::new();
-        headers.insert("x-forwarded-for", "198.51.100.11".parse().unwrap());
+        headers.insert("cf-connecting-ip", "198.51.100.11".parse().unwrap());
         assert_eq!(
             prepare(
                 State(state.clone()),
@@ -381,7 +395,7 @@ mod tests {
         for index in 0..6 {
             let mut headers = HeaderMap::new();
             headers.insert(
-                "x-forwarded-for",
+                "cf-connecting-ip",
                 format!("198.51.100.{}", 50 + index).parse().unwrap(),
             );
             assert_eq!(
@@ -434,6 +448,24 @@ mod tests {
             .await
             .status(),
             StatusCode::OK
+        );
+        for _ in 0..3999 {
+            assert!(state
+                .admission
+                .allow("mobile-prepare-anonymous-global".into(), 4000, 600));
+        }
+        let mut other_provider = input();
+        other_provider.provider = "github".into();
+        assert_eq!(
+            prepare(
+                State(state.clone()),
+                peer("192.0.2.5:40000".parse().unwrap()),
+                HeaderMap::new(),
+                Json(other_provider)
+            )
+            .await
+            .status(),
+            StatusCode::TOO_MANY_REQUESTS
         );
         let token = {
             let conn = state.store.conn.lock().await;
@@ -509,6 +541,15 @@ mod tests {
                 .unwrap(),
             0
         );
+        // The five malformed/incorrect attempts above count globally as well.
+        for _ in 0..3995 {
+            assert!(state
+                .admission
+                .allow("mobile-prepare-anonymous-global".into(), 4000, 600));
+        }
+        assert!(!state
+            .admission
+            .allow("mobile-prepare-anonymous-global".into(), 4000, 600));
         drop(state);
         std::fs::remove_dir_all(dir).unwrap();
     }

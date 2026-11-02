@@ -33,7 +33,7 @@ class ConfigureProxyTests(unittest.TestCase):
             env.write_bytes(original)
             env.chmod(0o640)
             self.assertTrue(configure.configure(env, backup))
-            expected = original + b'\nPOCKYMOE_TRUSTED_PROXY_IPS=127.0.0.1\n'
+            expected = original + b'\nPOCKYMOE_TRUSTED_PROXY_IPS=127.0.0.1\nPOCKYMOE_CLIENT_IP_HEADER=CF-Connecting-IP\n'
             self.assertEqual(env.read_bytes(), expected)
             self.assertEqual(backup.read_bytes(), original)
             self.assertEqual(stat.S_IMODE(backup.stat().st_mode), 0o600)
@@ -43,17 +43,19 @@ class ConfigureProxyTests(unittest.TestCase):
             self.assertEqual(env.read_bytes(), expected)
             self.assertEqual(backup.read_bytes(), original)
 
-    def test_preserves_all_existing_values_including_legacy_and_explicit_empty(self):
-        for line in ['POCKYMOE_TRUSTED_PROXY_IPS=127.0.0.1,10.0.0.1', 'POCKYMOE_TRUSTED_PROXY_IPS=', 'REMOTE_CODEX_TRUSTED_PROXY_IPS=127.0.0.1', '# POCKYMOE_TRUSTED_PROXY_IPS=ignored']:
-            with self.subTest(line=line), tempfile.TemporaryDirectory() as tmp:
-                root = Path(tmp)
-                env, backup = root / 'relay.env', root / 'backup/relay.env'
-                env.write_text(line + '\n')
-                changed = configure.configure(env, backup)
-                self.assertEqual(changed, line.startswith('#'))
-                self.assertEqual(backup.read_text(), line + '\n')
-                if not changed:
-                    self.assertEqual(env.read_text(), line + '\n')
+    def test_preserves_each_existing_canonical_legacy_or_empty_setting_independently(self):
+        for proxy in ['POCKYMOE_TRUSTED_PROXY_IPS=127.0.0.1,10.0.0.1', 'POCKYMOE_TRUSTED_PROXY_IPS=', 'REMOTE_CODEX_TRUSTED_PROXY_IPS=127.0.0.1']:
+            for header in ['POCKYMOE_CLIENT_IP_HEADER=CF-Connecting-IP', 'POCKYMOE_CLIENT_IP_HEADER=', 'REMOTE_CODEX_CLIENT_IP_HEADER=CF-Connecting-IP']:
+                with self.subTest(proxy=proxy, header=header), tempfile.TemporaryDirectory() as tmp:
+                    root=Path(tmp); env,backup=root/'relay.env',root/'backup/relay.env'
+                    original=(proxy+'\n'+header+'\n').encode();env.write_bytes(original)
+                    self.assertFalse(configure.configure(env,backup))
+                    self.assertEqual(env.read_bytes(),original);self.assertEqual(backup.read_bytes(),original)
+        for existing,missing in [('POCKYMOE_TRUSTED_PROXY_IPS=127.0.0.1','POCKYMOE_CLIENT_IP_HEADER=CF-Connecting-IP'),('POCKYMOE_CLIENT_IP_HEADER=CF-Connecting-IP','POCKYMOE_TRUSTED_PROXY_IPS=127.0.0.1')]:
+            with tempfile.TemporaryDirectory() as tmp:
+                root=Path(tmp);env,backup=root/'relay.env',root/'backup/relay.env';env.write_text(existing+'\n')
+                self.assertTrue(configure.configure(env,backup));self.assertEqual(env.read_text(),existing+'\n'+missing+'\n')
+                self.assertFalse(configure.configure(env,backup));self.assertEqual(backup.read_text(),existing+'\n')
 
     def test_refuses_symlink_and_insecure_existing_backup(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -92,6 +94,14 @@ class ForwardingTests(unittest.TestCase):
         for invalid in [policy.replace('192.0.2.0/24', '0.0.0.0/0'), policy.replace('set_real_ip_from 2001:db8::/32;', ''), policy.replace('CF-Connecting-IP', 'X-Forwarded-For')]:
             with self.subTest(policy=invalid), self.assertRaises(audit.AuditError):
                 self.check(http=invalid, cf=True)
+
+    def test_dedicated_cf_header_does_not_require_nginx_remote_addr_rewriting(self):
+        direct=dump('location / { proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for; proxy_pass http://127.0.0.1:18791; }')
+        self.assertEqual(audit.audit(direct,'relay.example.com',True,NETWORKS,'CF-Connecting-IP'),1)
+        explicit=dump('location / { proxy_pass_request_headers off; proxy_set_header CF-Connecting-IP $http_cf_connecting_ip; proxy_pass http://127.0.0.1:18791; }')
+        self.assertEqual(audit.audit(explicit,'relay.example.com',True,NETWORKS,'CF-Connecting-IP'),1)
+        for bad in [explicit.replace('$http_cf_connecting_ip','$remote_addr'),explicit.replace('proxy_set_header CF-Connecting-IP $http_cf_connecting_ip;','')]:
+            with self.assertRaises(audit.AuditError):audit.audit(bad,'relay.example.com',True,NETWORKS,'CF-Connecting-IP')
 
     def test_resolves_actual_loaded_includes_and_npm_upstream_variables(self):
         text = '''# configuration file /etc/nginx/nginx.conf:
@@ -147,6 +157,8 @@ proxy_pass $forward_scheme://$server:$port$request_uri;
         self.assertEqual(positions, sorted(positions))
         self.assertIn('test -f "${backup}/relay-data/relay.env"', workflow)
         self.assertIn('restore the original pre-change environment', workflow)
+        self.assertIn('--client-ip-header CF-Connecting-IP', workflow)
+        self.assertIn('POCKYMOE_CLIENT_IP_HEADER', workflow)
 
 
 if __name__ == '__main__':
