@@ -17,6 +17,7 @@ test('workspace visual evidence and route frames', async ({ page }) => {
     await page.addInitScript(({ pack, dark }) => { localStorage.setItem('pockymoe-theme-preset', pack); localStorage.setItem('remote-codex-theme-mode', dark ? 'dark' : 'light'); }, { pack, dark });
     await page.reload();
     await expect(page.locator('[data-page="workspaces"]')).toBeVisible();
+    await expect(page.locator('[data-page="workspaces"] .product-list a').filter({ hasText: 'Pockymoe' }).first()).toBeVisible();
     await expect(page.locator('html')).toHaveAttribute('data-theme-preset', pack);
     if (phase !== 'before' && width >= 640) {
       const content = page.locator('.desktop-workspaces-content');
