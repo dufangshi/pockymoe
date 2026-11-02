@@ -26,6 +26,7 @@ jobs:
           python3 scripts/check-production-address.py --tracked
           python3 scripts/check-production-address.test.py
           python3 scripts/check-deployment-addresses.test.py
+          python3 scripts/relay-proxy-deploy.test.py
 
   changes:
     name: Select relevant checks

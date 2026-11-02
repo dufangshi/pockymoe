@@ -104,12 +104,19 @@ and mobile preparation use this resolver. Configure only actual proxy IPs and
 ensure the ingress appends or overwrites the forwarding chain; do not accept
 arbitrary client-supplied headers as authoritative.
 
-For the loopback Relay deployment, set `POCKYMOE_TRUSTED_PROXY_IPS=127.0.0.1`
-in the Relay environment file (add other real proxy hops only when required).
-Deployment preflight stops if the loopback proxy is not configured. This is
-server runtime configuration, not a repository secret. Other clients behind a
-configured proxy receive independent limits, while users sharing a real public
-NAT IP intentionally share that client budget.
+For the loopback deployment, the workflow backs up `relay.env` privately before
+appending `POCKYMOE_TRUSTED_PROXY_IPS=127.0.0.1` if neither canonical nor legacy
+key exists. It preserves existing values and validates them rather than silently
+replacing them. The pre-change backup is retained for rollback. Before changing
+the environment/service, deployment audits active NPM forwarding and checks for
+Cloudflare: a detected CDN requires edge-only `CF-Connecting-IP` normalization
+in Nginx so the appended address is the visitor, not the shared CDN edge.
+See [runtime deployment](github-runtime.md#portable-release-addresses) for the
+exact checks and their limits. A forged header test against a health endpoint
+alone cannot observe Relay's chosen client IP; the workflow does not claim that
+it can, nor can fixtures prove the currently deployed infrastructure state.
+Clients behind a correctly configured proxy receive independent limits; clients
+sharing a real public NAT IP intentionally share that client budget.
 
 ## Web and Relay connection origins
 

@@ -129,7 +129,8 @@ jobs:
           echo "Runtime: ${GITHUB_SHA}" >> "${GITHUB_STEP_SUMMARY}"
 
           chmod 0755 "${artifact_dir}/remote-codex"
-          (cd "${artifact_dir}" && sha256sum remote-codex > SHA256SUMS)
+          cp scripts/configure-relay-proxy.py scripts/check-relay-forwarding.py "${artifact_dir}/"
+          (cd "${artifact_dir}" && sha256sum remote-codex configure-relay-proxy.py check-relay-forwarding.py > SHA256SUMS)
           tar -czf "${archive}" -C "${artifact_dir}" .
 
       - name: Preserve build-only package
@@ -184,6 +185,19 @@ jobs:
             sudo grep -Fxq 'HOST=127.0.0.1' "${base}/relay.env"
             sudo grep -Fxq 'PORT=18791' "${base}/relay.env"
             sudo grep -Fxq 'REMOTE_CODEX_RELAY_DATA_DIR=/var/lib/remote-codex-rust-relay' "${base}/relay.env"
+            test -f "${archive}"
+            test -x "${base}/remote-codex"
+            mkdir -p "${stage}" "${backup}"
+            tar -xzf "${archive}" -C "${stage}"
+            (cd "${stage}" && sha256sum --check SHA256SUMS)
+            file "${stage}/remote-codex" | grep -Eq 'x86-64|x86_64'
+            # Inspect active NPM configuration privately, never in Actions logs.
+            sudo install -d -m 0700 "${backup}/relay-data"
+            sudo sh -c 'umask 077; docker exec nginx-proxy-manager-app-1 nginx -T > "$1" 2>/dev/null' sh "${backup}/relay-data/nginx-config.txt"
+            sudo python3 "${stage}/check-relay-forwarding.py" --nginx-dump "${backup}/relay-data/nginx-config.txt" --origin "${POCKYMOE_RELAY_ORIGIN}"
+            # Preserve relay.env before any change. Existing values (including
+            # the legacy alias) are untouched; later validation rejects bad ones.
+            sudo python3 "${stage}/configure-relay-proxy.py" --env "${base}/relay.env" --backup "${backup}/relay-data/relay.env"
             # Fail before stopping the old service if the auth migration is misconfigured.
             sudo python3 - "${base}/relay.env" "${POCKYMOE_RELAY_ORIGIN}" "https://${POCKYMOE_WEB_DOMAIN}" <<'PYPREFLIGHT'
             import ipaddress, pathlib, shlex, sys
@@ -210,15 +224,8 @@ jobs:
             if web_origin.rstrip('/') != sys.argv[3]:
                 raise SystemExit('Relay auth preflight: configure the separate HTTPS Web origin for API-only mode')
             PYPREFLIGHT
-            test -f "${archive}"
-            test -x "${base}/remote-codex"
-
             node_container_before="$(sudo docker ps --all --no-trunc --filter 'name=^/remote-codex-relay$' --format '{{.ID}}')"
             old_binary_sha="$(sha256sum "${base}/remote-codex" | awk '{print $1}')"
-            mkdir -p "${stage}" "${backup}"
-            tar -xzf "${archive}" -C "${stage}"
-            (cd "${stage}" && sha256sum --check SHA256SUMS)
-            file "${stage}/remote-codex" | grep -Eq 'x86-64|x86_64'
 
             rollback() {
               deployment_active='false'
@@ -241,6 +248,8 @@ jobs:
                 mv "${backup}/remote-codex" "${base}/remote-codex" || rollback_status=1
               fi
               test -x "${base}/remote-codex" || rollback_status=1
+              # Also restore the original pre-change environment before restart.
+              sudo install -m 0600 "${backup}/relay-data/relay.env" "${base}/relay.env" || rollback_status=1
               sudo systemctl start "${service}" || rollback_status=1
 
               restored='false'
@@ -280,7 +289,7 @@ jobs:
             # Preserve authentication state and its encryption key before schema migration.
             # Keep these files root-only: old snapshots may contain legacy device tokens.
             sudo install -d -m 0700 "${backup}/relay-data"
-            sudo install -m 0600 "${base}/relay.env" "${backup}/relay-data/relay.env"
+            sudo test -f "${backup}/relay-data/relay.env" || sudo install -m 0600 "${base}/relay.env" "${backup}/relay-data/relay.env"
             sudo python3 - "${backup}/relay-data" <<'PYBACKUP'
             import os, pathlib, shutil, sqlite3, sys
             source = pathlib.Path('/var/lib/remote-codex-rust-relay')

@@ -43,4 +43,4 @@ verify、四平台 native、固定 UI 的 Web 构建并行，package 依赖全�
 
 部署前先运行地址 preflight（`--mask`）：三个地址 secrets 必须齐全，且派生的主机名也要注册 `::add-mask::`，不能用未遮罩的仓库 variables。Relay 的 `relay-rust-canary` 环境可继承仓库 secrets；同名环境 secret 会覆盖仓库值。
 
-Relay 部署还需 `POCKYMOE_RELAY_SSH_FINGERPRINT`、`POCKYMOE_RELAY_HOSTNAME` 和既有 `REMOTE_CODEX_RELAY_DEPLOY_HOST/USER/PASSWORD/PORT` secrets，先运行 `--mask --relay-host`。loopback 反向代理的 Relay env 必须显式设置 `POCKYMOE_TRUSTED_PROXY_IPS=127.0.0.1`；不信任未配置来源的转发头。
+Relay 部署还需 `POCKYMOE_RELAY_SSH_FINGERPRINT`、`POCKYMOE_RELAY_HOSTNAME` 和既有 `REMOTE_CODEX_RELAY_DEPLOY_HOST/USER/PASSWORD/PORT` secrets，先运行 `--mask --relay-host`。部署先私下审计实际 NPM 转发/CDN real-IP 配置，再备份 Relay env；仅在新旧代理配置键均缺失时追加 `POCKYMOE_TRUSTED_PROXY_IPS=127.0.0.1`，保留已有值与原始备份。不信任未配置来源的转发头，检测到 CDN 而未验证 visitor IP 还原时停止。
