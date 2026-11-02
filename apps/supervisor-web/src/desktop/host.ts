@@ -114,7 +114,9 @@ export type HostCommand =
   /** Models a saved connection serves, using the same probe as Settings. Answers in `data`. */
   | { id: string; type: 'connectionModels'; deviceId: string; connectionId: string }
   /** Opens Settings at the page for adding and testing upstreams. */
-  | { id: string; type: 'openUpstreams' };
+  | { id: string; type: 'openUpstreams' }
+  /** Devices, workspaces and conversations a person may silence on the pet. Answers in `data`. */
+  | { id: string; type: 'listMuteTargets' };
 
 export interface HostCommandResult {
   ok: boolean;

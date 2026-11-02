@@ -67,6 +67,20 @@ export async function listConnections(deps: Pick<CommandDependencies, 'store' | 
   }));
   return lists.flat();
 }
+/** What can be silenced, newest conversation first. An agent thread belongs to its conversation, so only roots are listed. */
+export function muteTargets(store: Pick<DesktopIndexStore, 'getSnapshot'>) {
+  const index = store.getSnapshot();
+  const devices = new Map(index.devices.map(device => [device.id, device.name]));
+  const workspaces = new Map(index.workspaces.map(workspace => [workspace.key, workspace.label]));
+  const recent = (thread: typeof index.threads[number]) => thread.lastTurnStartedAt ?? thread.updatedAt ?? '';
+  return {
+    devices: index.devices.map(device => ({ id: device.id, label: device.name })),
+    workspaces: index.workspaces.map(workspace => ({ id: workspace.key, label: `${workspace.label} · ${devices.get(workspace.deviceId) ?? ''}` })),
+    threads: index.threads.filter(thread => !thread.rootThreadId || thread.rootThreadId === thread.id)
+      .sort((a, b) => recent(b).localeCompare(recent(a))).slice(0, 500)
+      .map(thread => ({ id: thread.key, label: `${thread.title} · ${workspaces.get(`${thread.deviceId}:${thread.workspaceId}`) ?? devices.get(thread.deviceId) ?? ''}` })),
+  };
+}
 export async function handleHostCommand(command: HostCommand, deps: CommandDependencies): Promise<HostCommandResult> {
   try {
     switch (command.type) {
@@ -87,6 +101,7 @@ export async function handleHostCommand(command: HostCommand, deps: CommandDepen
       case 'turnText': return { ok: true, data: await turnText(command.deviceId, command.threadId, command.turnId, deps) };
       case 'listConnections': return { ok: true, data: await listConnections(deps) };
       case 'openUpstreams': deps.openUpstreams?.(); break;
+      case 'listMuteTargets': return { ok: true, data: muteTargets(deps.store) };
       case 'connectionModels': {
         const { models } = await (deps.request ?? deviceRequest)<{ models: { id: string; name?: string }[] }>(command.deviceId, `api/management/connections/${encodeURIComponent(command.connectionId)}/models`, { method: 'POST', body: '{}' });
         return { ok: true, data: models.map(model => ({ id: model.id, name: model.name ?? model.id })) };
