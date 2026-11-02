@@ -133,12 +133,12 @@ it('offers a cancel-focused stop-sharing confirmation after a mismatch outside t
   fireEvent.click(screen.getByRole('button', { name: 'Stop sharing' }));
   const dialog = await screen.findByRole('dialog', { name: 'Stop sharing' });
   expect(dialog).toHaveTextContent('Recipient');
-  await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Cancel', exact: true })).toHaveFocus());
-  fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel', exact: true }));
+  await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Cancel' })).toHaveFocus());
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
   expect(revokeRelayShare).not.toHaveBeenCalled();
   expect(state.confirm).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole('button', { name: 'Stop sharing' }));
-  fireEvent.click(within(await screen.findByRole('dialog', { name: 'Stop sharing' })).getByRole('button', { name: 'Stop sharing', exact: true }));
+  fireEvent.click(within(await screen.findByRole('dialog', { name: 'Stop sharing' })).getByRole('button', { name: 'Stop sharing' }));
   await waitFor(() => expect(revokeRelayShare).toHaveBeenCalledWith('share'));
 });
 
