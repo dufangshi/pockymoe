@@ -186,3 +186,10 @@ describe('useThreadMapDevices', () => {
     expect(vi.mocked(request).mock.calls.map(([path]) => path)).toEqual(expect.arrayContaining(['api/workspaces', 'api/threads?includeAgentThreads=true', 'api/thread-activity?hours=24']));
   });
 });
+
+it('map agent counts exclude closed threads without losing their history or usage', () => {
+  const device = mapDevice(null, 'Mac', workspaces, [thread('root'), thread('open', { rootThreadId: 'root' }), thread('closed', { rootThreadId: 'root', closedAt: '2026-11-01' })], null);
+  const root = device.workspaces[0]!.threads[0]!;
+  expect(root.agentThreads).toBe(1);
+  expect(root.children!.map(child => child.key)).toEqual(['local:open', 'local:closed']);
+});

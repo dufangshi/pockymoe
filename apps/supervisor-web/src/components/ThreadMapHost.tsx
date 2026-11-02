@@ -106,7 +106,7 @@ export function mapDevice(
       tokenUsage: usages.length ? Object.fromEntries(TOKENS.map(field => [field, usages.reduce((total, usage) => total + (usage[field] ?? 0), 0)])) as unknown as ThreadTurnTokenBreakdownDto : undefined,
       priceEstimate: prices.length ? Object.fromEntries(USD.map(field => [field, prices.reduce((total, price) => total + (price[field] ?? 0), 0)])) as unknown as ThreadMapPrice : undefined,
       pricePartial: memberStats.some(item => item.pricePartial) || undefined,
-      agentThreads: members.length - 1 || undefined,
+      agentThreads: members.filter(member => member.id !== thread.id && !member.closedAt).length || undefined,
     };
   };
   const byWorkspace = new Map<string, ThreadMapThread[]>();

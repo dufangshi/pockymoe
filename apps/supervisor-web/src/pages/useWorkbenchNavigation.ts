@@ -32,7 +32,7 @@ interface ThreadReference {
   visitedAt: string;
   readCompletedAt?: string | null;
 }
-type ThreadActivity = { status: string; lastTurnCompletedAt?: string | null; parentThreadId?: string | null; rootThreadId?: string | null };
+type ThreadActivity = { closedAt?: string | null; status: string; lastTurnCompletedAt?: string | null; parentThreadId?: string | null; rootThreadId?: string | null };
 export function workbenchThreadStatus(activity: ThreadActivity | undefined, readCompletedAt?: string | null) {
   if (!activity) return 'unknown';
   if (['running', 'inProgress', 'recovering'].includes(activity.status)) return 'running';
@@ -481,6 +481,7 @@ export function useWorkbenchNavigation(
       ...(r.favorite && typeof r.favoriteOrder === 'number' ? { shortcutOrder: r.favoriteOrder } : {}),
       ...(activity?.parentThreadId ? {parentKey: `${r.deviceId ?? 'local'}:${activity.parentThreadId}`} : {}),
       ...(activity?.rootThreadId ? {rootKey: `${r.deviceId ?? 'local'}:${activity.rootThreadId}`} : {}),
+      closedAt: activity?.closedAt ?? null,
       status: workbenchThreadStatus(activity, r.readCompletedAt),
       ...(local ? threadAgentField(local) : {}),
     };
@@ -603,6 +604,7 @@ export function useWorkbenchNavigation(
           ...(thread.parentThreadId ? {parentKey: `${tabContext.deviceId ?? 'local'}:${thread.parentThreadId}`} : {}),
           ...(thread.rootThreadId ? {rootKey: `${tabContext.deviceId ?? 'local'}:${thread.rootThreadId}`} : {}),
           status: workbenchThreadStatus(thread.id === tabContext.detail?.thread.id ? tabContext.detail.thread : thread, reference?.readCompletedAt),
+          closedAt: thread.closedAt ?? null,
           ...threadAgentField(thread),
         };
       });
@@ -632,6 +634,7 @@ export function useWorkbenchNavigation(
       ...(thread.rootThreadId ? { rootKey: `${familyDevice}:${thread.rootThreadId}` } : {}),
       status: workbenchThreadStatus(statuses[key]?.status === 'unknown' && familyDevice !== (deviceId ?? 'local')
         ? { ...activity, status: 'unknown' } : activity, reference?.readCompletedAt),
+      closedAt: thread.closedAt ?? null,
       ...threadAgentField(thread),
     } satisfies WorkbenchThread] as const;
   }));
@@ -669,6 +672,7 @@ export function useWorkbenchNavigation(
       ...(thread.parentThreadId ? { parentKey: `${device}:${thread.parentThreadId}` } : {}),
       ...(thread.rootThreadId ? { rootKey: `${device}:${thread.rootThreadId}` } : {}),
       status: 'running',
+      closedAt: thread.closedAt ?? null,
       ...threadAgentField(thread),
     } satisfies WorkbenchThread];
   }));
