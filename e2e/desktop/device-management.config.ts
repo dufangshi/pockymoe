@@ -9,7 +9,7 @@ export default defineConfig({
   testDir: '.', testMatch: ['device-management.pw.ts', 'route-frames.pw.ts', 'device-management-actions.pw.ts'], fullyParallel: false,
   timeout: 180000, expect: { timeout: 10000 }, reporter: 'list',
   use: { baseURL: `http://127.0.0.1:${port}`, trace: 'retain-on-failure' },
-  // All API/WebSocket traffic is mocked by the specs; no Supervisor is started.
+  // Specs use deterministic API/WebSocket fixtures; no Supervisor is started.
   webServer: { command: `DESKTOP_E2E_CACHE_DIR=node_modules/.vite-device-management-${sharedRevision}-${sharedBuild} pnpm --filter @pockymoe/supervisor-web exec vite --config src/desktop/testing/vite.config.ts --host 127.0.0.1 --port ${port} --strictPort`, url: `http://127.0.0.1:${port}`, reuseExistingServer: false, cwd: '../..' },
   projects: [{ name: 'desktop-chromium', use: { ...devices['Desktop Chrome'], viewport: { width: 1440, height: 1000 } } }],
 });

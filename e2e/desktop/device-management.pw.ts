@@ -68,3 +68,24 @@ test('workspace states keep their gaps below 900px and a plain browser keeps its
   await expect(ordinary.locator('.desktop-workspaces-shell')).toHaveCount(0);
   await ordinary.close();
 });
+
+test('desktop workspace content clears Windows controls on the right', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.addInitScript(() => {
+    let value: typeof window.pockymoeHost;
+    Object.defineProperty(window, 'pockymoeHost', {
+      configurable: true, get: () => value,
+      set(host: NonNullable<typeof window.pockymoeHost>) {
+        value = host; const original = host.capabilities;
+        host.capabilities = async () => ({ ...await original(), platform: 'win32', windowChrome: { kind: 'hiddenInset', controlsSide: 'right', trafficLightsWidth: 150, toolbarHeight: 38 } });
+      },
+    });
+  });
+  await seed(page);
+  await page.getByRole('link', { name: '打开 MacBook Pro 的工作区', exact: true }).click();
+  const title = page.locator('.desktop-workspaces-title');
+  await expect(title).toBeVisible();
+  expect((await title.boundingBox())!.y).toBe(70);
+  await expect(page.locator('.desktop-workspaces-shell .matter-tabs-row')).toHaveCSS('padding-right', '150px');
+  await expect(page.locator('.desktop-workspaces-shell .matter-tabs-row')).toHaveCSS('padding-left', '0px');
+});
