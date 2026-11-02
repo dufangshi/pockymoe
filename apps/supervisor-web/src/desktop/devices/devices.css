@@ -149,3 +149,5 @@
 @media (hover: hover) { .pd-pager button:hover:not(:disabled) { background: var(--theme-hover); } }
 .pd-table-empty .pd-link { margin-left: 8px; }
 .pd-link { padding: 0; border: 0; background: none; color: var(--theme-accent-solid); font: inherit; }
+.pd-web-page { height: 100%; min-height: 0; overflow: auto; background: var(--theme-bg); }
+.pd-web-back { display: inline-flex; align-items: center; gap: 2px; padding: 12px 16px 0; font-size: 12px; color: var(--theme-fg-muted); text-decoration: none; }

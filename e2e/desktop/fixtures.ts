@@ -25,12 +25,12 @@ export function summary(range: StatsRange, device = 0): StatsSummary {
     longestThreads: ['Build device overview and statistics', 'Polish desktop navigation', 'Review transport security'].map((title, i) => ({ threadId: `t-${i}`, workspaceId: 'w-0', title, durationMs: 240000 - i * 60000 })), activeThreads: 3, runningTurns: 3 };
 }
 
-export async function seed(page: Page, pack = 'classic', dark = false, unsupported = false, realShape = false) {
+export async function seed(page: Page, pack = 'classic', dark = false, unsupported = false, realShape = false, host = true) {
   const devices = (realShape ? ['MacBook Pro', 'Windows Studio', 'Linux Server', 'wsl', 'LuisMini2', 'Build Box', 'Studio Linux', 'Mac mini', 'Office Windows', 'Archive', 'Empty device'] : ['MacBook Pro', 'Windows Studio', 'Linux Server']).map((name, i) => ({ id: `device-${i}`, ownerUserId: account.id, name, connected: i !== 2 && i !== 9, lastHeartbeatAt: new Date(Date.now() - (i === 2 ? 3 * 3600000 : 0)).toISOString() }));
-  await page.addInitScript(({ pack, dark }) => {
+  await page.addInitScript(({ pack, dark, host }) => {
     localStorage.setItem('remote-codex-theme-mode', dark ? 'dark' : 'light'); localStorage.setItem('pockymoe-theme-preset', pack); localStorage.setItem('remote-codex.locale', 'zh-CN');
-    const url = new URL(location.href); url.searchParams.set('desktopMockHost', '1'); history.replaceState(null, '', url);
-  }, { pack, dark });
+    if (host) { const url = new URL(location.href); url.searchParams.set('desktopMockHost', '1'); history.replaceState(null, '', url); }
+  }, { pack, dark, host });
   // Other delegates edit the shared tree during QA. Freeze HMR for each page;
   // a fresh case still loads the current source, without reloading mid-dialog.
   await page.routeWebSocket(/^ws:\/\/127\.0\.0\.1:18924\/\?token=/, socket => socket.onMessage(() => undefined));
@@ -75,7 +75,7 @@ export async function seed(page: Page, pack = 'classic', dark = false, unsupport
     tx.objectStore('accounts').put({ 'device-2': { version: '0.13.40', summaries: snapshot } }, `${location.origin}:${location.origin}:devices-test:${Intl.DateTimeFormat().resolvedOptions().timeZone}`);
     tx.oncomplete = () => db.close();
   }, { snapshot: Object.fromEntries((['today', '7d', '30d', 'all'] as const).map(range => { const s = realShape ? accountSummary(range, 2) : summary(range, 2); s.generatedAt = new Date(Date.now() - 3 * 3600000).toISOString(); return [range, s]; })) });
-  await page.goto('/desktop/devices?desktopMockHost=1');
+  await page.goto(host ? '/desktop/devices?desktopMockHost=1' : '/desktop/devices');
   await expect(page.getByTestId('desktop-devices')).toBeVisible();
   await expect(page.getByRole('article', { name: 'Windows Studio', exact: true }).getByRole('button', { name: '有更新 0.13.42', exact: true })).toBeVisible();
 }

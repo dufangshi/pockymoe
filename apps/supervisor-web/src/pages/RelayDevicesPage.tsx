@@ -797,6 +797,7 @@ export function RelayDevicesPage() {
             <h1 className="product-title">
               {translate("devices.devicesAndSharedSessions")}</h1>
           </div>
+          <Link className="product-page-link" to="/desktop/devices">{translate('desktopDevices.statistics')}</Link>
         </section>
 
         <div className="devices-page-tabs" role="tablist" aria-label={translate('sharing.pageTabs')}>

@@ -91,6 +91,7 @@ import { effectiveColorMode, themeChromeColor, useThemeRegistry } from './lib/th
 const DesktopWindowFrame = lazy(() => import('./desktop/DesktopWindowFrame'));
 const DesktopEntry = lazy(() => import('./desktop/DesktopEntry'));
 const DesktopDevicesRoute = lazy(() => import('./desktop/DevicesRoute'));
+const WebDevicesRoute = lazy(() => import('./desktop/WebDevicesRoute'));
 
 const PHONE_DOCK_STORAGE_KEY = 'pockymoe.phoneDock';
 const PHONE_HAND_STORAGE_KEY = 'pockymoe.phoneHand';
@@ -672,8 +673,8 @@ function SupervisorRoutes({
         }
       >
         <Route path="/" element={<RootRoute />} />
-        <Route path="/desktop/devices" element={window.pockymoeHost ? <Suspense fallback={null}><DesktopDevicesRoute /></Suspense> : <Navigate to="/relay-devices" replace />} />
-        <Route path="/desktop/devices/:id" element={window.pockymoeHost ? <Suspense fallback={null}><DesktopDevicesRoute /></Suspense> : <Navigate to="/relay-devices" replace />} />
+        <Route path="/desktop/devices" element={<Suspense fallback={null}>{window.pockymoeHost ? <DesktopDevicesRoute /> : <WebDevicesRoute />}</Suspense>} />
+        <Route path="/desktop/devices/:id" element={<Suspense fallback={null}>{window.pockymoeHost ? <DesktopDevicesRoute /> : <WebDevicesRoute />}</Suspense>} />
         <Route path="/workspaces" element={<WorkspacesPage />} />
         <Route path="/workspaces/new" element={<WorkspaceNewPage />} />
         <Route path="/relay-account" element={<RelayAccountPage />} />

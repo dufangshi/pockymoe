@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { defineConfig, devices } from '@playwright/test';
 
 export default defineConfig({
-  testDir: '.', testMatch: ['devices.pw.ts', 'hourly.pw.ts', 'locale.pw.ts', 'compact.pw.ts'], fullyParallel: false,
+  testDir: '.', testMatch: ['devices.pw.ts', 'hourly.pw.ts', 'locale.pw.ts', 'compact.pw.ts', 'webDevices.pw.ts'], fullyParallel: false,
   timeout: 45_000, expect: { timeout: 8000 }, reporter: 'list',
   outputDir: join(process.env.DESKTOP_EVIDENCE_DIR ?? join(tmpdir(), 'pockymoe-desktop-devices'), 'playwright'),
   use: { baseURL: 'http://127.0.0.1:18924', trace: 'retain-on-failure', timezoneId: 'America/Toronto' },
