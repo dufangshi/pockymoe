@@ -150,7 +150,6 @@
 .pd-table-empty .pd-link { margin-left: 8px; }
 .pd-link { padding: 0; border: 0; background: none; color: var(--theme-accent-solid); font: inherit; }
 .pd-web-page { height: 100%; min-height: 0; overflow: auto; background: var(--theme-bg); }
-.pd-web-back { display: inline-flex; align-items: center; gap: 2px; padding: 12px 16px 0; font-size: 12px; color: var(--theme-fg-muted); text-decoration: none; }
 
 .pd-device-menu > div { display: flex; align-items: center; }
 .pd-device-menu > div > button { flex: 1; }
@@ -166,3 +165,8 @@
   .pd-page-header { height: auto; min-height: 44px; flex-wrap: wrap; padding-block: 6px; row-gap: 8px; }
   .pd-header-actions .pd-add-device { min-height: 44px; }
 }
+/* Same segmented navigation as the range selector, with semantic tab selection. */
+.pd-page > .devices-page-tabs { width: max-content; margin-block: 12px; }
+.pd-page > .devices-page-tabs button { min-height: 40px; display: flex; align-items: center; gap: 8px; }
+.pd-page > .devices-page-tabs button[aria-selected="true"] { background: var(--theme-hover); color: var(--theme-fg); }
+.pd-page-header { min-height: 44px; height: auto; flex-wrap: wrap; padding-bottom: 10px; }

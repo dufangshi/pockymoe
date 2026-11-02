@@ -1,3 +1,4 @@
+import { devicesHref } from '../lib/devicesRoute';
 import { HostFeatureGate, useHostScope } from '../lib/hostCapabilities';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { useEffect, useRef } from 'react';
@@ -130,10 +131,10 @@ export function AppShellNavigationMenu({
             type="button"
             onClick={() => {
               shellNav.closeNav();
-              navigate('/relay-devices');
+              navigate(devicesHref());
             }}
             className={menuItemClassName(
-              location.pathname === '/relay-devices',
+              location.pathname === devicesHref(),
             )}
           >
             <MonitorSmartphone data-icon="devices" aria-hidden="true" className="h-4 w-4" />

@@ -127,7 +127,7 @@ export async function confirmRecoveryCode(page: Page, code: string) {
 export async function unlock(page: Page, password: string) {
   const dialog = page.getByRole('dialog', { name: UNLOCK_DIALOG });
   await expect(dialog).toBeVisible();
-  await dialog.getByLabel('Password', { exact: true }).fill(password);
+  await dialog.getByLabel(/^(Password|Unlock password)$/, { exact: true }).fill(password);
   const button = dialog.getByRole('button', { name: 'Unlock', exact: true });
   const blocked = !await button.isEnabled() || await button.evaluate(button => {
     const rect = button.getBoundingClientRect();
@@ -290,7 +290,7 @@ export class Fixture {
   }
   async bind(owner: Account, device: Device, capture = false) {
     const page = owner.page;
-    await page.goto(this.base + '/relay-devices');
+    await page.goto(this.base + '/desktop/devices/' + device.id);
     const row = page.locator('article').filter({ has: page.getByText(`Signed device ${device.db.match(/device-(\d+)/)![1]}`, { exact: true }) });
     const status = row.getByRole('button', { name: 'Not protected', exact: true });
     await expect(status).toBeVisible();

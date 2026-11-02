@@ -1,3 +1,4 @@
+import { devicesHref } from '../lib/devicesRoute';
 import { useAccountShareAttention } from './sharedAccess/useAccountShareAttention';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { ErrorMark, useMenuKeyboard } from '@pockymoe/thread-ui';
@@ -259,7 +260,7 @@ export function RelayUserMenu({
             onClick={() => { closeMenu(); (onSettings ?? shellNav?.openSettings)?.(); }}>
             <Settings aria-hidden="true" className="h-4 w-4" />{translate('files.settings')}
           </button>}
-          <Link to="/relay-devices" role="menuitem" onClick={() => closeMenu()}
+          <Link to={devicesHref()} role="menuitem" onClick={() => closeMenu()}
             className="flex h-11 items-center gap-2 rounded-md px-3 text-sm text-[var(--theme-fg)] hover:bg-[var(--theme-hover)] focus-visible:bg-[var(--theme-hover)]">
             <MonitorSmartphone aria-hidden="true" className="h-4 w-4" />{translate('files.deviceManagement')}{attention.size ? <span className="ml-auto devices-page-tab-review">{attention.size}</span> : null}
           </Link>

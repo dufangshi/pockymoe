@@ -20,6 +20,7 @@ function state() {
 export function useHostSurface(): Surface {
   return useSyncExternalStore(listener => { const entry = state(); entry?.listeners.add(listener); return () => { entry?.listeners.delete(listener); }; }, () => state()?.surface ?? 'browser');
 }
+export function hostSurface(): Surface { return state()?.surface ?? 'browser'; }
 export function mobileHost() {
   return state()?.surface === 'mobile' ? window.pockymoeHost : undefined;
 }

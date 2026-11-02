@@ -1,3 +1,4 @@
+import { devicesHref } from '../lib/devicesRoute';
 import { AccountSecurityPanel } from '../components/AccountSecurityPanel';
 import { SharingSettingsPanel } from '../components/SharingSettingsPanel';
 import { useDesktopWorkspaceLayout, WorkspacesFrame } from '../desktop/WorkspacesFrame';
@@ -255,7 +256,7 @@ export function RelayAccountPage() {
   useI18n();
   const desktop = useDesktopWorkspaceLayout();
   if (desktop) return <DesktopAccountPage />;
-  return <div className="product-page !max-w-5xl" data-page="account"><ProductHeader title={translate('auth.accountSettings')} backHref="/relay-devices" backLabel={translate('auth.devices')} /><p className="my-5 text-sm text-[var(--theme-fg-muted)]">{translate('auth.manageTheIdentityAndPasswordUsedTo')}</p><RelayAccountSettingsPanel /></div>;
+  return <div className="product-page !max-w-5xl" data-page="account"><ProductHeader title={translate('auth.accountSettings')} backHref={devicesHref()} backLabel={translate('auth.devices')} /><p className="my-5 text-sm text-[var(--theme-fg-muted)]">{translate('auth.manageTheIdentityAndPasswordUsedTo')}</p><RelayAccountSettingsPanel /></div>;
 }
 
 /** A saved profile is confirmed in place; failures are marks after their control. */
