@@ -1,5 +1,5 @@
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
-import { startTransition, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { LayoutDashboard, Monitor } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { RelayUserMenu } from '../components/RelayUserMenu';
@@ -23,9 +23,12 @@ export function DesktopShell({ children, capabilities }: { children: ReactNode; 
   const [paintedPath, setPaintedPath] = useState(location.pathname);
   const mapVisible = paintedPath === '/';
   const devicesPage = paintedPath === '/desktop/devices' || paintedPath.startsWith('/desktop/devices/');
-  const routeReady = useCallback((path: string) => { if (route.current === path) setPaintedPath(path); }, []);
-  useEffect(() => {
-    if (location.pathname === '/' || location.pathname.startsWith('/desktop/devices')) setPaintedPath(location.pathname);
+  const readyRoutePath = useRef<string | null>(null);
+  const routeReady = useCallback((path: string) => { if (route.current === path) { readyRoutePath.current = path; setPaintedPath(path); } }, []);
+  useLayoutEffect(() => {
+    // Returning to the route already mounted underneath the overlay needs no
+    // asynchronous preparation: reveal it before this frame is painted.
+    if (location.pathname === '/' || location.pathname.startsWith('/desktop/devices') || readyRoutePath.current === location.pathname) setPaintedPath(location.pathname);
   }, [location.pathname]);
   const [revealKey, setRevealKey] = useState<string | null>(null);
   const route = useRef(location.pathname); route.current = location.pathname;
@@ -35,6 +38,7 @@ export function DesktopShell({ children, capabilities }: { children: ReactNode; 
     const thread = store.getSnapshot().threads.find(thread => thread.key === target);
     const path = thread ? threadHref(thread.id, thread.deviceId) : appPathname(target);
     if (newWindow && capabilities.features.multiWindow && typeof host.window?.openThread === 'function') host.window.openThread(appUrl(path), { newWindow: true });
+    else if (readyRoutePath.current === path) navigate(path);
     else startTransition(() => navigate(path));
   }, [capabilities.features.multiWindow, host, navigate, store]);
   const newThread = useCallback(() => {

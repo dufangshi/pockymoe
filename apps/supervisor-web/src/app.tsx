@@ -781,7 +781,9 @@ export function App() {
 
   return (
     <div className="theme-shell">
-      <BrowserRouter basename={webBase}>
+      {/* Desktop owns preparation transitions; cached returns must commit before
+          paint instead of being deferred by BrowserRouter's default transition. */}
+      <BrowserRouter basename={webBase} {...(window.pockymoeHost ? { useTransitions: false } : {})}>
         <DesktopFrameBoundary effectiveTheme={effectiveTheme}>
         <WorkspaceDocumentNavigationGuard>
         <DocumentTitleUpdater />
