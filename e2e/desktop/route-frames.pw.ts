@@ -7,7 +7,7 @@ test('route content frame sampling', async ({ page }) => {
   mkdirSync(`${evidence}/${phase}/frames`, { recursive: true });
   await page.routeWebSocket(/^ws:\/\/127\.0\.0\.1:\d+\/\?token=/, socket => socket.onMessage(() => undefined));
   await page.addInitScript(() => localStorage.setItem(`pockymoe.onboarding.v1:${JSON.stringify([location.origin, 'relay:devices-test'])}`, JSON.stringify({ welcomeDismissed: true, completed: [], resume: {} })));
-  await seed(page);
+  await seed(page, 'classic', true);
   // Keep the real thread renderer and provide a deterministic idle conversation.
   await page.route(/\/relay\/devices\/device-0\/api\/threads\/t-[01](\?.*)?$/, async route => {
     const id = new URL(route.request().url()).pathname.split('/').at(-1)!;
