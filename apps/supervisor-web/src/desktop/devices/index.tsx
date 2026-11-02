@@ -9,7 +9,8 @@ import { FormDialog } from '../../components/FormDialog';
 import { RenameDialog } from '../../components/RenameDialog';
 import { RuntimeManagement } from '../../components/RuntimeManagement';
 import { useDesktopSelector, useDesktopStore } from '../data';
-import { desktopHost } from '../host';
+import { DeviceManagement, type DeviceManagementAction } from '../../components/DeviceManagement';
+import { deviceActions } from './deviceActions';
 import { DeviceCard } from './DeviceCard';
 import { HourlyActivityChart, TurnsChart, UsageChart, type ChartSource } from './Charts';
 import { Info, UsagePanel } from './UsagePanel';
@@ -37,6 +38,7 @@ export default function DevicesPage({ onRevealDevice, onNewThread }: DevicesPage
   const [mode, setMode] = useState<'tokens' | 'cost'>('tokens');
   const [renaming, setRenaming] = useState<string | null>(null);
   const [discarding, setDiscarding] = useState(false);
+  const [management, setManagement] = useState<{ deviceId?: string; action: DeviceManagementAction } | null>(null);
   const [updating, setUpdating] = useState<string | null>(null);
   const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
@@ -67,7 +69,7 @@ export default function DevicesPage({ onRevealDevice, onNewThread }: DevicesPage
   useEffect(() => { const timer = setInterval(() => setNow(new Date()), 60_000); return () => clearInterval(timer); }, []);
   useEffect(() => {
     const action = params.get('action');
-    if (!current || !action) return;
+    if (!current || !['rename', 'update'].includes(action ?? '')) return;
     if (action === 'rename' && renameSupported) { setName(current.name); setRenaming(current.id); }
     if (action === 'update' && current.connected) setUpdating(current.id);
     setParams(value => { const next = new URLSearchParams(value); next.delete('action'); return next; }, { replace: true });
@@ -94,14 +96,21 @@ export default function DevicesPage({ onRevealDevice, onNewThread }: DevicesPage
     if (name !== original) { setDiscarding(true); return; }
     setError(null); setRenaming(null);
   }
+  useEffect(() => {
+    const action = params.get('action');
+    if (selected && ['share', 'isolate', 'remove'].includes(action ?? '')) {
+      setManagement({ deviceId: selected, action: action as DeviceManagementAction });
+      setParams(value => { const next = new URLSearchParams(value); next.delete('action'); return next; }, { replace: true });
+    }
+  }, [params, selected, setParams]);
   const rangeControls = <div className="pd-segment" role="group" aria-label={t('desktopDevices.timeRange')}>{(['today', '7d', '30d', 'all'] as const).map(r => <button key={r} aria-pressed={range === r} onClick={() => setParams(value => { const next = new URLSearchParams(value); next.set('range', r); return next; })}>{r === 'today' ? t('desktopDevices.today') : r === '7d' ? t('desktopDevices.sevenDays') : r === '30d' ? t('desktopDevices.thirtyDays') : t('desktopDevices.allTime')}</button>)}</div>;
   return <div className="pd-page" data-page="devices" data-testid="desktop-devices">
-    <header className="pd-page-header"><h1>{t('desktopDevices.devices')}</h1><span className="pd-device-count" title={t('desktopDevices.deviceCount', { online: devices.filter(d => d.connected).length, total: devices.length })}>{devices.filter(d => d.connected).length}/{devices.length}</span><Select className="pd-select" aria-label={t('desktopDevices.statsDevice')} value={selected} options={[{ value: '', label: t('desktopDevices.allDevices') }, ...devices.map(device => ({ value: device.id, label: device.name }))]} onValueChange={value => navigate(value ? `/desktop/devices/${encodeURIComponent(value)}?range=${range}${origin ? `&origin=${origin}` : ''}` : `/desktop/devices?range=${range}${origin ? `&origin=${origin}` : ''}`)} />{rangeControls}<div className="pd-header-actions">{nameSaved ? <span role="status">{t('desktopDevices.nameSaved')}</span> : null}{partial || cached.length ? <Info label={t('desktopDevices.partialRecent')} message={`${partial ? t('desktopDevices.partialNote') : ''} ${cached.map(d => t('desktopDevices.deviceCachedAge', { device: d.name, age: age(saved(d.id, range)?.generatedAt ?? d.lastHeartbeatAt, +now) })).join(t('desktopDevices.listSeparator'))}`} /> : null}<button className="pd-icon-button" disabled={index.refreshing} onClick={refresh} aria-label={t('desktopDevices.refresh')} title={t('desktopDevices.refresh')}><RefreshCw size={14} data-icon="refresh" className={index.refreshing ? 'pd-spin' : ''} /></button>{error && !renaming ? <ErrorMark message={errorText!} onRetry={refresh} /> : null}</div></header>
+    <header className="pd-page-header"><h1>{t('desktopDevices.devices')}</h1><span className="pd-device-count" title={t('desktopDevices.deviceCount', { online: devices.filter(d => d.connected).length, total: devices.length })}>{devices.filter(d => d.connected).length}/{devices.length}</span><Select className="pd-select" aria-label={t('desktopDevices.statsDevice')} value={selected} options={[{ value: '', label: t('desktopDevices.allDevices') }, ...devices.map(device => ({ value: device.id, label: device.name }))]} onValueChange={value => navigate(value ? `/desktop/devices/${encodeURIComponent(value)}?range=${range}${origin ? `&origin=${origin}` : ''}` : `/desktop/devices?range=${range}${origin ? `&origin=${origin}` : ''}`)} />{rangeControls}<div className="pd-header-actions"><button className="relay-button-primary pd-add-device" onClick={() => setManagement({ action: 'add' })}>{t('devices.addDevice')}</button>{nameSaved ? <span role="status">{t('desktopDevices.nameSaved')}</span> : null}{partial || cached.length ? <Info label={t('desktopDevices.partialRecent')} message={`${partial ? t('desktopDevices.partialNote') : ''} ${cached.map(d => t('desktopDevices.deviceCachedAge', { device: d.name, age: age(saved(d.id, range)?.generatedAt ?? d.lastHeartbeatAt, +now) })).join(t('desktopDevices.listSeparator'))}`} /> : null}<button className="pd-icon-button" disabled={index.refreshing} onClick={refresh} aria-label={t('desktopDevices.refresh')} title={t('desktopDevices.refresh')}><RefreshCw size={14} data-icon="refresh" className={index.refreshing ? 'pd-spin' : ''} /></button>{error && !renaming ? <ErrorMark message={errorText!} onRetry={refresh} /> : null}</div></header>
     {selected && !current && index.hydrated && !index.refreshing ? <div className="pd-empty"><Monitor size={28} /><h2>{t('desktopDevices.deviceMissing')}</h2><Link to="/desktop/devices">{t('desktopDevices.backToDevices')}</Link></div> : null}
     <section className={`pd-device-grid ${selected ? 'is-detail' : ''}`} aria-label={t('desktopDevices.overview')}>{scoped.map(d => {
       const metric = metrics[d.id];
       const cacheLabel = !d.connected || metric?.unavailable || (metric?.partial && saved(d.id, 'today')) ? t('desktopDevices.cachedAge', { age: age(saved(d.id, 'today')?.generatedAt ?? metric?.checkedAt ?? d.lastHeartbeatAt, +now) }) : '';
-      return <DeviceCard key={d.id} device={d} metric={metric} today={summary(d.id, 'today')} history={(metric?.summaries['30d'] ?? partialSummary(index, d.id, '30d', timeZone, now)).daily.slice(-14)} counts={deviceCounts(index, d.id)} cacheLabel={cacheLabel} partial={!saved(d.id, 'today')} loading={Boolean(d.connected && !metric?.summaries.today && !metric?.partial && !metric?.unavailable)} skeleton={stats.skeleton} renameSupported={renameSupported} onReveal={() => reveal(d.id)} onNewThread={() => newThread(d.id)} onRename={() => { setError(null); setName(d.name); setRenaming(d.id); }} onUpdate={() => setUpdating(d.id)} onBrowser={() => desktopHost()?.shell.openExternal(new URL(appUrl(`/devices/${encodeURIComponent(d.id)}/workspaces`), location.origin).href)} />;
+      return <DeviceCard key={d.id} device={d} metric={metric} today={summary(d.id, 'today')} history={(metric?.summaries['30d'] ?? partialSummary(index, d.id, '30d', timeZone, now)).daily.slice(-14)} counts={deviceCounts(index, d.id)} cacheLabel={cacheLabel} partial={!saved(d.id, 'today')} loading={Boolean(d.connected && !metric?.summaries.today && !metric?.partial && !metric?.unavailable)} skeleton={stats.skeleton} renameSupported={renameSupported} onReveal={() => reveal(d.id)} onNewThread={() => newThread(d.id)} onRename={() => { setError(null); setName(d.name); setRenaming(d.id); }} onUpdate={() => setUpdating(d.id)} menuItems={deviceActions(d, renameSupported, navigate, () => reveal(d.id))} />;
     })}{!selected && !devices.length && index.hydrated && !index.refreshing ? <div className="pd-empty"><Monitor size={28} /><h2>{t('desktopDevices.noDevices')}</h2><p>{t('desktopDevices.noDevicesHint')}</p></div> : null}</section>
     {scoped.length > 0 ? <>
       <UsagePanel sources={usageSources} index={index} range={range} metric={mode} onMetric={setMode} origin={origin} onShowAll={() => setParams(value => { const next = new URLSearchParams(value); next.set('range', 'all'); return next; }, { replace: true })} filters={<div className="pd-origin-filter"><Select className="pd-select" aria-label={t('desktopDevices.origin')} value={origin} options={[{ value: '', label: t('desktopDevices.allOrigins') }, ...(['owner', 'guest', 'agent', 'automation', 'unknown'] as const).map(value => ({ value, label: t(`desktopDevices.${value}Origin`) }))]} onValueChange={value => setParams(previous => { const next = new URLSearchParams(previous); if (value) next.set('origin', value); else next.delete('origin'); return next; })} />{!usageSources.every(source => source.summary?.byOrigin) ? <Info message={t('desktopDevices.originUnavailable')} /> : null}</div>} />
@@ -110,6 +119,8 @@ export default function DevicesPage({ onRevealDevice, onNewThread }: DevicesPage
       {total.longest.length ? <details className="pd-longest"><summary><ChevronRight size={12} aria-hidden />{t('desktopDevices.longestThreads')}<small>{t('desktopDevices.topFive')}</small></summary><div>{total.longest.map(thread => <Link key={`${thread.deviceId}:${thread.threadId}`} to={`/devices/${encodeURIComponent(thread.deviceId)}/threads/${encodeURIComponent(thread.threadId)}`}><span title={thread.title}>{thread.title}</span><small>{devices.find(device => device.id === thread.deviceId)?.name}</small><b>{duration(thread.durationMs)}</b></Link>)}</div></details> : null}
       </section>
     </> : null}
+    {selected && current ? <DeviceManagement key={selected} embedded deviceId={selected} /> : null}
+    {management ? <FormDialog title={t(management.action === 'add' ? 'devices.addDevice' : 'desktopDevices.deviceDetails')} onClose={() => { setManagement(null); void store.refresh(); }}><DeviceManagement embedded deviceId={management.deviceId} action={management.action} /></FormDialog> : null}
     <RenameDialog open={Boolean(renaming)} title={t('desktopDevices.renameDevice')} label={t('desktopDevices.deviceName')} value={name} busy={busy} error={errorText} onChange={value => { setName(value); setError(null); }} onCancel={() => { void cancelRename(); }} onSubmit={rename} />
     <ConfirmDialog open={discarding} title={t('desktopDevices.discardTitle')} description={t('desktopDevices.discardDescription')} confirmLabel={t('desktopDevices.discard')} tone="primary" onCancel={() => setDiscarding(false)} onConfirm={() => { setDiscarding(false); setError(null); setRenaming(null); }} />
     {updating ? <FormDialog title={`${devices.find(d => d.id === updating)?.name ?? t('desktopDevices.device')} · Pockymoe`} description={t('desktopDevices.runtimeDescription')} onClose={() => setUpdating(null)}><RuntimeManagement deviceId={updating} view="supervisor" /></FormDialog> : null}

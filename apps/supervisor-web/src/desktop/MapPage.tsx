@@ -18,6 +18,7 @@ import { attentionFromActivity, buildActivityItems } from './data/activity';
 import { useDesktopWorkbench } from './context';
 import { resolveRequest } from './integration';
 import { QuickLook } from './QuickLook';
+import { deviceActions } from './devices/deviceActions';
 import { deviceCounts } from './devices/model';
 
 export function DesktopMapPage({ visible, mapVisible, revealKey, onOpen, children }: { visible: boolean; mapVisible: boolean; revealKey: string | null; onOpen(key: string, newWindow?: boolean): void; children?: ReactNode }) {
@@ -72,12 +73,7 @@ export function DesktopMapPage({ visible, mapVisible, revealKey, onOpen, childre
     const { metrics, ...extra } = index.extras[device.id] ?? {}; const counts = deviceCounts(index, device.id);
     const compactMetrics = metrics ? [`CPU ${metrics.cpu.usagePercent?.toFixed(0) ?? '—'}%`, `${translate('desktopShell.memory')} ${metrics.memory.usagePercent?.toFixed(0) ?? '—'}%`, ...(metrics.gpus.length ? [`GPU ${metrics.gpus[0]?.usagePercent?.toFixed(0) ?? '—'}%`] : [])].join(' · ') : undefined;
     const value: MapDeviceExtras = { ...extra, ...(compactMetrics ? { metrics: compactMetrics } : {}), runningCount: counts.running, waitingCount: counts.attention,
-      menuItems: [
-        { id: 'details', label: translate('desktopShell.deviceDetails'), onSelect: () => navigate(`/desktop/devices/${encodeURIComponent(device.id)}`) },
-        { id: 'check', label: translate('desktopShell.checkUpdates'), disabled: !device.connected, onSelect: () => { void deviceRequest(device.id, 'api/management/supervisor', { method: 'POST', body: JSON.stringify({ action: 'check' }) }).then(() => navigate(`/desktop/devices/${encodeURIComponent(device.id)}?action=update`)).catch(error => setError(error instanceof Error ? error.message : String(error))); } },
-        ...(renameSupported.has(device.id) ? [{ id: 'rename', label: translate('desktopShell.rename'), onSelect: () => navigate(`/desktop/devices/${encodeURIComponent(device.id)}?action=rename`) }] : []),
-        { id: 'browser', label: translate('desktopShell.manageInBrowser'), onSelect: () => window.pockymoeHost?.shell.openExternal(new URL(appUrl(workspacesHref(device.id)), location.origin).toString()) },
-      ],
+      menuItems: deviceActions(device, renameSupported.has(device.id), navigate, () => { setScope('all'); setFilter(''); navigate('/'); }),
     };
     return [device.id, value];
   // translate reads the shared locale store; menu labels must refresh with it.
