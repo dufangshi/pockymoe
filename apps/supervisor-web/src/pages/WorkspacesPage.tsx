@@ -98,7 +98,7 @@ export function WorkspacesPage() {
   // Why the list or an action failed, as a mark after its control (`at`):
   // 'load', 'rename', `favorite:<id>`, `isolation:<id>`.
   const [error, setError] = useState<{ at: string; message: string } | null>(null);
-  const [deviceName, setDeviceName] = useState<{ deviceId: string | null; name: string; owned: boolean } | null>(null);
+  const [deviceName, setDeviceName] = useState<{ deviceId: string | null; name: string; owned: boolean; connected?: boolean | undefined } | null>(null);
   useEffect(() => {
     let active = true;
     const loadName = relayModeActive()
@@ -106,13 +106,13 @@ export function WorkspacesPage() {
         const owned = portal.devices.find(device => device.id === deviceId);
         return {
           name: owned?.name ?? portal.sharedDevicesWithMe?.find(grant => grant.deviceId === deviceId)?.deviceName ?? '',
-          owned: Boolean(owned),
+          owned: Boolean(owned), connected: owned?.connected,
         };
       })
       // This reads the saved hostname and cached scan, without starting a disk scan.
       : fetchStorageOverview().then(overview => ({ name: overview.deviceName, owned: false }));
-    void loadName.then(({ name, owned }) => {
-      if (active) setDeviceName({ deviceId, name, owned });
+    void loadName.then(({ name, owned, ...presence }) => {
+      if (active) setDeviceName({ deviceId, name, owned, ...presence });
     }).catch(() => { /* An unavailable name must not block the workspace list. */ });
     return () => { active = false; };
   }, [deviceId]);
@@ -280,6 +280,7 @@ export function WorkspacesPage() {
         {!sharedOnly && <Link to={currentRelayScopedPath('/workspaces/new')} aria-label={translate("files.addWorkspace")} title={translate("files.addWorkspace")} className="product-icon-button"><Plus data-icon="add" size={20} /></Link>}
       </>} />
 
+      {deviceName?.deviceId === deviceId && deviceName.connected === false ? <p className="flex items-center gap-2 text-sm text-[var(--theme-fg-muted)]">{translate('desktopDevices.offline')}<ErrorMark kind="unavailable" message={translate('devices.deviceIsolationOffline')} /></p> : null}
       <details className="group border-y border-[var(--theme-border)]">
         <summary className="flex min-h-11 cursor-pointer list-none items-center gap-3 py-2.5 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--theme-accent-ring)] [&::-webkit-details-marker]:hidden">
           <span
