@@ -4,7 +4,6 @@ import { CheckCircle2, ChevronRight, Monitor, RefreshCw, Timer } from 'lucide-re
 import { useI18n, type TranslationKey } from '@pockymoe/thread-ui/i18n';
 import { ConfirmDialog, ErrorMark, Select } from '@pockymoe/thread-ui';
 import { ApiError, request } from '../../lib/api';
-import { appUrl } from '../../lib/webBase';
 import { FormDialog } from '../../components/FormDialog';
 import { RenameDialog } from '../../components/RenameDialog';
 import { RuntimeManagement } from '../../components/RuntimeManagement';
@@ -19,8 +18,8 @@ import { useDeviceStats } from './useDeviceStats';
 import './devices.css';
 
 type DeviceError = { key: TranslationKey } | { message: string };
-export interface DevicesPageProps { onRevealDevice?(deviceId: string): void; onNewThread?(deviceId: string): void }
-export default function DevicesPage({ onRevealDevice, onNewThread }: DevicesPageProps) {
+export interface DevicesPageProps { onRevealDevice?(deviceId: string): void }
+export default function DevicesPage({ onRevealDevice }: DevicesPageProps) {
   const { t } = useI18n();
   const index = useDesktopSelector(index => index);
   const store = useDesktopStore();
@@ -28,7 +27,7 @@ export default function DevicesPage({ onRevealDevice, onNewThread }: DevicesPage
   const route = useParams<{ id: string; deviceId: string }>();
   const [params, setParams] = useSearchParams();
   const location = useLocation();
-  const selected = route.id ?? route.deviceId ?? location.pathname.match(/^\/desktop\/devices\/([^/]+)/)?.[1] ?? params.get('device') ?? ''; 
+  const selected = route.id ?? route.deviceId ?? location.pathname.match(/^\/desktop\/devices\/([^/]+)/)?.[1] ?? params.get('device') ?? '';
   const range: StatsRange = params.get('range') === 'all' ? 'all' : params.get('range') === '7d' ? '7d' : params.get('range') === '30d' ? '30d' : 'today';
   const origin = (['owner', 'guest', 'agent', 'automation', 'unknown'].includes(params.get('origin') ?? '') ? params.get('origin') : '') as TurnOrigin | '';
   const targets = selected ? index.devices.filter(device => device.id === selected) : index.devices;
@@ -77,7 +76,6 @@ export default function DevicesPage({ onRevealDevice, onNewThread }: DevicesPage
   }, [current, params, renameSupported, setParams]);
   const refresh = () => { void store.refresh(); stats.refresh(); };
   const reveal = (id: string) => onRevealDevice ? onRevealDevice(id) : navigate(`/?revealDevice=${encodeURIComponent(id)}`);
-  const newThread = (id: string) => onNewThread ? onNewThread(id) : navigate(`/devices/${encodeURIComponent(id)}/threads/new`);
   async function rename() {
     if (!renaming || !name.trim() || busy) return;
     const hasControl = [...name].some(character => { const code = character.codePointAt(0)!; return code < 32 || (code >= 127 && code <= 159); });
@@ -111,7 +109,7 @@ export default function DevicesPage({ onRevealDevice, onNewThread }: DevicesPage
     <section className={`pd-device-grid ${selected ? 'is-detail' : ''}`} aria-label={t('desktopDevices.overview')}>{scoped.map(d => {
       const metric = metrics[d.id];
       const cacheLabel = !d.connected || metric?.unavailable || (metric?.partial && saved(d.id, 'today')) ? t('desktopDevices.cachedAge', { age: age(saved(d.id, 'today')?.generatedAt ?? metric?.checkedAt ?? d.lastHeartbeatAt, +now) }) : '';
-      return <DeviceCard key={d.id} device={d} metric={metric} today={summary(d.id, 'today')} history={(metric?.summaries['30d'] ?? partialSummary(index, d.id, '30d', timeZone, now)).daily.slice(-14)} counts={deviceCounts(index, d.id)} cacheLabel={cacheLabel} partial={!saved(d.id, 'today')} loading={Boolean(d.connected && !metric?.summaries.today && !metric?.partial && !metric?.unavailable)} skeleton={stats.skeleton} renameSupported={renameSupported} onReveal={() => reveal(d.id)} onNewThread={() => newThread(d.id)} onRename={() => { setError(null); setName(d.name); setRenaming(d.id); }} onUpdate={() => setUpdating(d.id)} menuItems={deviceActions(d, renameSupported, navigate, () => reveal(d.id))} />;
+      return <DeviceCard key={d.id} device={d} metric={metric} today={summary(d.id, 'today')} history={(metric?.summaries['30d'] ?? partialSummary(index, d.id, '30d', timeZone, now)).daily.slice(-14)} counts={deviceCounts(index, d.id)} cacheLabel={cacheLabel} partial={!saved(d.id, 'today')} loading={Boolean(d.connected && !metric?.summaries.today && !metric?.partial && !metric?.unavailable)} skeleton={stats.skeleton} onUpdate={() => setUpdating(d.id)} menuItems={deviceActions(d, renameSupported, navigate, () => reveal(d.id))} />;
     })}{!selected && !devices.length && index.hydrated && !index.refreshing ? <div className="pd-empty"><Monitor size={28} /><h2>{t('desktopDevices.noDevices')}</h2><p>{t('desktopDevices.noDevicesHint')}</p></div> : null}</section>
     {scoped.length > 0 ? <>
       <UsagePanel sources={usageSources} index={index} range={range} metric={mode} onMetric={setMode} origin={origin} onShowAll={() => setParams(value => { const next = new URLSearchParams(value); next.set('range', 'all'); return next; }, { replace: true })} filters={<div className="pd-origin-filter"><Select className="pd-select" aria-label={t('desktopDevices.origin')} value={origin} options={[{ value: '', label: t('desktopDevices.allOrigins') }, ...(['owner', 'guest', 'agent', 'automation', 'unknown'] as const).map(value => ({ value, label: t(`desktopDevices.${value}Origin`) }))]} onValueChange={value => setParams(previous => { const next = new URLSearchParams(previous); if (value) next.set('origin', value); else next.delete('origin'); return next; })} />{!usageSources.every(source => source.summary?.byOrigin) ? <Info message={t('desktopDevices.originUnavailable')} /> : null}</div>} />
@@ -121,7 +119,7 @@ export default function DevicesPage({ onRevealDevice, onNewThread }: DevicesPage
       </section>
     </> : null}
     {selected && current ? <DeviceManagement key={selected} embedded deviceId={selected} /> : null}
-    {management ? <FormDialog title={t(management.action === 'add' ? 'devices.addDevice' : 'desktopDevices.deviceDetails')} onClose={() => { setManagement(null); void store.refresh(); }}><DeviceManagement embedded deviceId={management.deviceId} action={management.action} /></FormDialog> : null}
+    {management ? <DeviceManagement embedded deviceId={management.deviceId} action={management.action} onClose={() => { setManagement(null); void store.refresh(); }} /> : null}
     <RenameDialog open={Boolean(renaming)} title={t('desktopDevices.renameDevice')} label={t('desktopDevices.deviceName')} value={name} busy={busy} error={errorText} onChange={value => { setName(value); setError(null); }} onCancel={() => { void cancelRename(); }} onSubmit={rename} />
     <ConfirmDialog open={discarding} title={t('desktopDevices.discardTitle')} description={t('desktopDevices.discardDescription')} confirmLabel={t('desktopDevices.discard')} tone="primary" onCancel={() => setDiscarding(false)} onConfirm={() => { setDiscarding(false); setError(null); setRenaming(null); }} />
     {updating ? <FormDialog title={`${devices.find(d => d.id === updating)?.name ?? t('desktopDevices.device')} · Pockymoe`} description={t('desktopDevices.runtimeDescription')} onClose={() => setUpdating(null)}><RuntimeManagement deviceId={updating} view="supervisor" /></FormDialog> : null}

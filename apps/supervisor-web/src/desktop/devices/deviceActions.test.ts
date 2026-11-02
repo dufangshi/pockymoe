@@ -1,7 +1,13 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import { deviceActions } from './deviceActions';
 
 describe('device management stays in the client', () => {
+  it('management components cannot call an external browser', () => {
+    for (const file of ['./DeviceCard.tsx', './index.tsx', '../MapPage.tsx', '../../components/DeviceManagement.tsx', '../../pages/RelayAccountPage.tsx', '../../components/AccountSecurityPanel.tsx', '../../components/SharingSettingsPanel.tsx', '../../components/RelaySecurity.tsx']) {
+      expect(readFileSync(new URL(file, import.meta.url), 'utf8'), file).not.toMatch(/\b(?:openExternal|window\.open)\s*\(/);
+    }
+  });
   it('card and map actions navigate locally and keep unavailable actions in order', () => {
     const navigate = vi.fn(), reveal = vi.fn(), external = vi.fn();
     window.pockymoeHost = { shell: { openExternal: external } } as never;

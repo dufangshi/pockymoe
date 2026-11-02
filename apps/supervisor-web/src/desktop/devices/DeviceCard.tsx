@@ -21,14 +21,10 @@ export interface DeviceCardProps {
   partial: boolean;
   loading: boolean;
   skeleton: boolean;
-  renameSupported: boolean;
-  onReveal(): void;
-  onNewThread(): void;
-  onRename(): void;
   onUpdate(): void;
   menuItems: MapDeviceMenuItem[];
 }
-export function DeviceCard({ device, metric, today, history, counts, cacheLabel, partial, loading, skeleton, renameSupported, onReveal, onNewThread, onRename, onUpdate, menuItems }: DeviceCardProps) {
+export function DeviceCard({ device, metric, today, history, counts, cacheLabel, partial, loading, skeleton, onUpdate, menuItems }: DeviceCardProps) {
   const { t } = useI18n();
   const trigger = useRef<HTMLButtonElement>(null);
   const menu = useRef<HTMLDivElement>(null);
@@ -79,6 +75,7 @@ export function DeviceCard({ device, metric, today, history, counts, cacheLabel,
     <div className="pd-card-bottom"><Sparkline days={history} color={deviceColor(device.id)} label={t('desktopDevices.deviceActivity14d', { device: device.name })} />{loading ? <span className={`pd-today ${skeleton ? 'pd-skeleton' : ''}`} aria-label={t('desktopDevices.loadingToday')} /> : <span className="pd-today" title={t('desktopDevices.today')}><b>{compact(today.totals.turns)}</b>{t('desktopDevices.turnUnit', { count: today.totals.turns })}</span>}{metric?.partial ? <button className="pd-icon-button pd-update-required" aria-label={t('desktopDevices.updateRequired')} title={t('desktopDevices.updateRequired')} disabled={!device.connected} onClick={onUpdate}><ArrowUpCircle size={13} aria-hidden /></button> : null}{cacheLabel || partial ? <Info label={cacheLabel || t('desktopDevices.partialRecent')} message={cacheLabel || t('desktopDevices.partialNote')} /> : null}</div>
     {position && createPortal(<div ref={menu} className="pd-device-menu" role="menu" aria-label={t('desktopDevices.actionsMenuFor', { device: device.name })} style={position}>
       {menuItems.map(item => <div key={item.id} className={item.separator ? 'pd-menu-separated' : undefined}>
+        {item.separator ? <span role="separator" className="sr-only" /> : null}
         <button role="menuitem" disabled={item.disabled} data-tone={item.tone} onClick={() => choose(item.onSelect)}>{item.label}</button>
         {item.disabledReason ? <ErrorMark kind="unavailable" message={item.disabledReason} /> : null}
       </div>)}

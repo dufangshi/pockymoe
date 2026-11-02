@@ -22,8 +22,8 @@ it('formats durations, relative time, plural counts and numbers in the current s
 });
 it('updates open card menus and accessible labels without remounting user/device content', async () => {
   setLocale('en', false);
-  const props: DeviceCardProps = { device: { id: 'd', name: '用户设备', connected: true, lastHeartbeatAt: null }, metric: { summaries: { today: summary }, version: '0.13.41', latestVersion: '0.13.42' }, today: summary, history: summary.daily, counts: { running: 0, attention: 0, workspaces: 1, threads: 1 }, cacheLabel: '', partial: false, loading: false, skeleton: false, renameSupported: true, onReveal: vi.fn(), onNewThread: vi.fn(), onRename: vi.fn(), onUpdate: vi.fn(), menuItems: [] };
-  function Card() { useI18n(); return <DeviceCard {...props} menuItems={deviceActions(props.device, true, vi.fn(), props.onReveal)} />; }
+  const props: DeviceCardProps = { device: { id: 'd', name: '用户设备', connected: true, lastHeartbeatAt: null }, metric: { summaries: { today: summary }, version: '0.13.41', latestVersion: '0.13.42' }, today: summary, history: summary.daily, counts: { running: 0, attention: 0, workspaces: 1, threads: 1 }, cacheLabel: '', partial: false, loading: false, skeleton: false, onUpdate: vi.fn(), menuItems: [] };
+  function Card() { useI18n(); return <DeviceCard {...props} menuItems={deviceActions(props.device, true, vi.fn(), vi.fn())} />; }
   render(<MemoryRouter><Card /></MemoryRouter>);
   const card = screen.getByRole('article', { name: '用户设备' });
   expect(screen.getByRole('img', { name: 'No running threads' })).toBeVisible();

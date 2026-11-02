@@ -161,3 +161,8 @@
 .pd-workspaces-arrow { position: relative; margin-inline: 9px; }
 .pd-workspaces-arrow::after { content: ''; position: absolute; width: 40px; height: 40px; left: 50%; top: 50%; transform: translate(-50%, -50%); }
 @media (hover: hover) { .pd-page .pd-workspaces-arrow:hover { color: var(--theme-fg); background: var(--theme-hover); } }
+
+@media (max-width: 639px) {
+  .pd-page-header { height: auto; min-height: 44px; flex-wrap: wrap; padding-block: 6px; row-gap: 8px; }
+  .pd-header-actions .pd-add-device { min-height: 44px; }
+}

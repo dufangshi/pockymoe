@@ -1,3 +1,4 @@
+import './device-management.css';
 import { sharingEditInput } from '../lib/signedSharing';
 import { OrphanDeviceGrants } from '../components/SignedShareDetails';
 import { requireUnlock } from '../lib/accountVault';
@@ -15,7 +16,7 @@ import { useDeviceProtection } from '../lib/useDeviceProtection';
 import { getTransportStatus } from '../lib/relayTransport';
 import { getLocale } from '@pockymoe/thread-ui/i18n';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
-import { Select, ErrorMark, useModalFocus } from '@pockymoe/thread-ui';
+import { Select, ErrorMark } from '@pockymoe/thread-ui';
 import { SharedAccessPanel } from '../components/sharedAccess/SharedAccessPanel';
 import { sharedItems, type ShareDirection, type SharedItem } from '../components/sharedAccess/model';
 import { useShareAttention } from '../components/sharedAccess/useShareAttention';
@@ -49,7 +50,7 @@ import {
   useRef,
   useState,
 } from 'react';
-import { createPortal } from 'react-dom';
+import { FormDialog } from './FormDialog';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 
 import type {
@@ -208,7 +209,7 @@ function sanitizeGrantMetadata(
 
 export type DeviceManagementAction = 'add' | 'share' | 'isolate' | 'remove';
 /** One capability implementation for the Web, desktop dialogs and device access section. */
-export function DeviceManagement({ deviceId, action, embedded = false }: { deviceId?: string | undefined; action?: DeviceManagementAction | undefined; embedded?: boolean }) {
+export function DeviceManagement({ deviceId, action, embedded = false, onClose }: { onClose?: (() => void) | undefined; deviceId?: string | undefined; action?: DeviceManagementAction | undefined; embedded?: boolean }) {
   const { locale: i18nLocale } = useI18n();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -352,7 +353,7 @@ export function DeviceManagement({ deviceId, action, embedded = false }: { devic
   );
   const [addDeviceOpen, setAddDeviceOpen] = useState(action === 'add');
   const [isolatingDevice, setIsolatingDevice] = useState<RelayDeviceDto | null>(null);
-  const useCallbackIsolation = useCallback(() => {}, []);
+  const onIsolationChange = useCallback(() => {}, []);
   const openedAction = useRef(false);
   useEffect(() => {
     const device = portal?.devices.find(device => device.id === deviceId);
@@ -798,6 +799,8 @@ export function DeviceManagement({ deviceId, action, embedded = false }: { devic
     },
     onShowCode: (item: SharedItem) => navigate(sharePendingHref({ kind: item.source.kind, id: item.source.row.id })),
   };
+  const closeAdd = useManagementClose(Boolean(deviceName), () => setAddDeviceOpen(false));
+  const closeManagement = useManagementClose(action === 'add' && Boolean(deviceName), () => onClose?.());
   const pageTabs: Array<{ id: PageTab; label: string; count: number; Icon: typeof DevicesTabIcon; review?: number }> = [
     { id: 'devices', label: translate('devices.devices'), count: portal?.devices.length ?? 0, Icon: DevicesTabIcon },
     { id: 'shared', label: translate('sharing.tabSharing'), count: incomingCount + outgoingItems.length, Icon: SharingTabIcon, review: attention.size },
@@ -810,7 +813,7 @@ export function DeviceManagement({ deviceId, action, embedded = false }: { devic
     document.getElementById(`devices-page-tab-${next}`)?.focus();
   }
 
-  return (
+  const content = (
     <div>
       <div className={embedded ? "space-y-6 device-management-embedded" : "product-page space-y-6"} data-page="devices">
         {!embedded && <>
@@ -861,24 +864,24 @@ export function DeviceManagement({ deviceId, action, embedded = false }: { devic
             </div>
             <div className="flex flex-wrap justify-end gap-2">
             <ProtectDevicesButton devices={portal?.devices ?? []} all />
-            <button
+            {!embedded || !deviceId ? <button
               aria-controls="add-device-form"
               aria-expanded={addDeviceOpen}
               className="relay-button-primary inline-flex min-h-11 shrink-0 items-center gap-2 px-3 sm:min-h-10"
               onClick={() => {
                 setError(null);
-                setAddDeviceOpen((current) => !current);
+                if (addDeviceOpen) closeAdd.requestClose(); else setAddDeviceOpen(true);
               }}
               ref={addDeviceButtonRef}
               type="button"
             >
-              {addDeviceOpen ? (
+              {addDeviceOpen && (!embedded || !deviceId) ? (
                 <X className="h-4 w-4" />
               ) : (
                 <Plus className="h-4 w-4" />
               )}
               {addDeviceOpen ? translate("devices.close") : translate("devices.addDevice")}
-            </button>
+            </button> : null}
             </div>
           </div>
           {addDeviceOpen ? (
@@ -887,12 +890,7 @@ export function DeviceManagement({ deviceId, action, embedded = false }: { devic
               deviceName={deviceName}
               onChangeDeviceName={setDeviceName}
               error={error?.at === 'create' ? error.message : null}
-              onClose={() => {
-                setAddDeviceOpen(false);
-                window.requestAnimationFrame(() =>
-                  addDeviceButtonRef.current?.focus(),
-                );
-              }}
+              onClose={closeAdd.requestClose}
               onSubmit={addDevice}
             />
           ) : null}
@@ -965,7 +963,7 @@ export function DeviceManagement({ deviceId, action, embedded = false }: { devic
         )}
         {embedded && deviceId ? <section aria-label={translate('desktopDevices.access')}><h2 className="text-lg font-semibold mb-4">{translate('desktopDevices.access')}</h2><SharedAccessPanel portal={portal} loading={loading} direction={shareDirection} onDirectionChange={direction => setPageView('shared', direction)} attention={attention} onAttentionRefresh={refreshAttention} busyKey={busy} actions={shareActions} outgoingNotice={portal ? <><OrphanDeviceGrants portal={portal} kind="share" /><OrphanDeviceGrants portal={portal} kind="grant" /></> : null} /></section> : null}
       </div>
-      {isolatingDevice ? <DeviceIsolationDialog device={isolatingDevice} controlShares={controlShares(portal, isolatingDevice.id)} onChange={useCallbackIsolation} onClose={() => setIsolatingDevice(null)} /> : null}
+      {isolatingDevice ? <DeviceIsolationDialog device={isolatingDevice} controlShares={controlShares(portal, isolatingDevice.id)} onChange={onIsolationChange} onClose={() => setIsolatingDevice(null)} /> : null}
       {editingShare ? (
         <SharePermissionsDialog
           busy={busy === `share:${editingShare.id}`}
@@ -1080,6 +1078,7 @@ export function DeviceManagement({ deviceId, action, embedded = false }: { devic
       />
     </div>
   );
+  return action && onClose ? <FormDialog className="device-management-dialog" title={translate(action === 'add' ? 'devices.addDevice' : 'desktopDevices.deviceDetails')} busy={Boolean(busy)} onClose={closeManagement.requestClose}>{content}{closeAdd.confirmation}{closeManagement.confirmation}</FormDialog> : <>{content}{closeAdd.confirmation}</>;
 }
 
 export function AddDeviceForm({
@@ -1166,87 +1165,30 @@ function LoadingRows({ label }: { label: string }) {
 }
 
 
-const DIALOG_FOCUSABLE_SELECTOR = [
-  'button:not([disabled])',
-  'input:not([disabled])',
-  'select:not([disabled])',
-  'textarea:not([disabled])',
-  'a[href]',
-  '[tabindex]:not([tabindex="-1"])',
-].join(',');
+function useManagementClose(dirty: boolean, close: () => void) {
+  const [discarding, setDiscarding] = useState(false);
+  return {
+    requestClose: () => { if (dirty) setDiscarding(true); else close(); },
+    confirmation: <ConfirmDialog open={discarding} title={translate('devices.discardChangesTitle')} description={translate('devices.discardChangesDescription')} confirmLabel={translate('devices.discardChanges')} onCancel={() => setDiscarding(false)} onConfirm={() => { setDiscarding(false); close(); }} />,
+  };
+}
 
-function RelayDialog({
-  busy,
-  children,
-  description,
-  onClose,
-  title,
-}: {
+function RelayDialog({ busy, children, description, onClose, title }: {
   busy: boolean;
   children: React.ReactNode;
   description: string;
   onClose: () => void;
   title: string;
 }) {
-  const { locale: i18nLocale } = useI18n();
-  const titleId = useId();
-  const descriptionId = useId();
-  const dialogRef = useRef<HTMLDivElement>(null);
-  useModalFocus(dialogRef, true, () => { if (!busy) onClose(); });
-
-  return createPortal(
-    <div
-      className="fixed inset-0 z-[90] flex items-center justify-center bg-[color-mix(in_oklch,var(--app-bg)_82%,transparent)] p-3 sm:p-6"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget && !busy) {
-          onClose();
-        }
-      }}
-    >
-      <div
-        aria-describedby={descriptionId}
-        aria-labelledby={titleId}
-        aria-modal="true"
-        className="product-dialog max-h-[calc(100dvh-1.5rem)] w-full max-w-lg overflow-y-auto rounded-lg border border-[var(--theme-border)] bg-[var(--theme-panel)] p-4 shadow-2xl sm:max-h-[min(42rem,calc(100dvh-3rem))] sm:p-5"
-        ref={dialogRef}
-        role="dialog"
-        tabIndex={-1}
-      >
-        <div className="flex items-start justify-between gap-4">
-          <div className="min-w-0">
-            <h2
-              className="text-base font-semibold text-[var(--theme-fg)]"
-              id={titleId}
-            >
-              {title}
-            </h2>
-            <p
-              className="mt-1 text-sm text-[var(--theme-fg-muted)]"
-              id={descriptionId}
-            >
-              {description}
-            </p>
-          </div>
-          <button
-            aria-label={translate("devices.close_069e97", { value1: title })}
-            className="product-icon-button"
-            disabled={busy}
-            onClick={onClose}
-            type="button"
-          >
-            <X className="h-4 w-4" />
-          </button>
-        </div>
-        {children}
-      </div>
-    </div>, document.body
-  );
+  // The shared dialog registers nested modal layers, so desktop management
+  // windows keep pointer input and focus inside the topmost share/isolation form.
+  return <FormDialog className="device-management-dialog" busy={busy} title={title} description={description} onClose={onClose}>{children}</FormDialog>;
 }
 
 export function SharePermissionsDialog({
   busy,
   error,
-  onClose,
+  onClose: close,
   onSave,
   share,
 }: {
@@ -1272,6 +1214,8 @@ export function SharePermissionsDialog({
     toDatetimeLocalValue(share.expiresAt),
   );
   const workspaceAccessLocked = !share.workspaceId;
+
+  const { requestClose: onClose, confirmation } = useManagementClose(label !== (share.label ?? '') || threadAccess !== share.threadAccess || workspaceAccess !== share.workspaceAccess || expiresAt !== toDatetimeLocalValue(share.expiresAt), close);
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1370,6 +1314,7 @@ export function SharePermissionsDialog({
         </div>
         </fieldset>
       </form>
+      {confirmation}
     </RelayDialog>
   );
 }
@@ -1378,7 +1323,7 @@ export function ShareDeviceDialog({
   busy,
   device,
   error,
-  onClose,
+  onClose: close,
   onShare,
 }: {
   busy: boolean;
@@ -1401,6 +1346,8 @@ export function ShareDeviceDialog({
   const [workspaceAccess, setWorkspaceAccess] =
     useState<RelayWorkspaceAccessDto>('read');
   const [canCreateThreads, setCanCreateThreads] = useState(false);
+
+  const { requestClose: onClose, confirmation } = useManagementClose(Boolean(targetIdentifier || label || threadAccess !== 'read' || workspaceAccess !== 'read' || canCreateThreads), close);
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1503,6 +1450,7 @@ export function ShareDeviceDialog({
         </div>
         </fieldset>
       </form>
+      {confirmation}
     </RelayDialog>
   );
 }
@@ -1511,7 +1459,7 @@ export function GrantPermissionsDialog({
   busy,
   error,
   grant,
-  onClose,
+  onClose: close,
   onSave,
 }: {
   busy: boolean;
@@ -1541,6 +1489,8 @@ export function GrantPermissionsDialog({
   );
   const canCreateThreadsAvailable = grant.scope !== 'thread';
   const workspaceAccessLocked = grant.scope === 'thread' && !grant.workspaceId;
+
+  const { requestClose: onClose, confirmation } = useManagementClose(label !== (grant.label ?? '') || threadAccess !== grant.threadAccess || workspaceAccess !== grant.workspaceAccess || canCreateThreads !== grant.canCreateThreads || expiresAt !== toDatetimeLocalValue(grant.expiresAt), close);
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1648,6 +1598,7 @@ export function GrantPermissionsDialog({
         </div>
         </fieldset>
       </form>
+      {confirmation}
     </RelayDialog>
   );
 }

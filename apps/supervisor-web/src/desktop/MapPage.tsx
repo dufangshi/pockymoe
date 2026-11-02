@@ -11,11 +11,10 @@ import { useWorkbenchNavigation } from '../pages/useWorkbenchNavigation';
 import { workbenchUrls } from '../lib/workbenchUrls';
 import { appPathname, appUrl } from '../lib/webBase';
 import { relayFetchInit, relayUrl } from '../lib/relayOrigin';
-import { threadHref, workspacesHref } from '../lib/relayRoutes';
-import { deviceRequest } from '../lib/api';
+import { threadHref } from '../lib/relayRoutes';
 import { useDesktopSelector, useDesktopStore, failed, unread } from './data';
 import { attentionFromActivity, buildActivityItems } from './data/activity';
-import { useDesktopWorkbench } from './context';
+import { useDesktopSurface, useDesktopWorkbench } from './context';
 import { resolveRequest } from './integration';
 import { QuickLook } from './QuickLook';
 import { deviceActions } from './devices/deviceActions';
@@ -34,6 +33,8 @@ export function DesktopMapPage({ visible, mapVisible, revealKey, onOpen }: { vis
   const firstThreads = useMemo(() => index.threads.filter(thread => thread.deviceId === first?.id), [first?.id, index.threads]);
   const navigation = useWorkbenchNavigation(null, firstThreads, first?.id ?? null, undefined, { sharesDeviceThreads: true, enabled: visible });
   const desktopWorkbench = useDesktopWorkbench(navigation);
+  const surface = useDesktopSurface();
+  const revealDevice = useCallback((id: string) => { setScope('all'); setFilter(''); surface?.revealInMap(`device:${id}`); }, [surface?.revealInMap]);
   const previous = useRef(new Map<string, ThreadMapDevice>());
   const devices = useMemo(() => index.devices.map(device => {
     const workspaces = index.workspaces.filter(workspace => workspace.deviceId === device.id), threads = index.threads.filter(thread => thread.deviceId === device.id);
@@ -74,12 +75,12 @@ export function DesktopMapPage({ visible, mapVisible, revealKey, onOpen }: { vis
     const { metrics, ...extra } = index.extras[device.id] ?? {}; const counts = deviceCounts(index, device.id);
     const compactMetrics = metrics ? [`CPU ${metrics.cpu.usagePercent?.toFixed(0) ?? '—'}%`, `${translate('desktopShell.memory')} ${metrics.memory.usagePercent?.toFixed(0) ?? '—'}%`, ...(metrics.gpus.length ? [`GPU ${metrics.gpus[0]?.usagePercent?.toFixed(0) ?? '—'}%`] : [])].join(' · ') : undefined;
     const value: MapDeviceExtras = { ...extra, ...(compactMetrics ? { metrics: compactMetrics } : {}), runningCount: counts.running, waitingCount: counts.attention,
-      menuItems: deviceActions(device, renameSupported.has(device.id), navigate, () => { setScope('all'); setFilter(''); navigate('/'); }),
+      menuItems: deviceActions(device, renameSupported.has(device.id), navigate, () => revealDevice(device.id)),
     };
     return [device.id, value];
   // translate reads the shared locale store; menu labels must refresh with it.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  })), [index, navigate, renameSupported, locale]);
+  })), [index, navigate, renameSupported, revealDevice, locale]);
   const decide = useCallback((key: string, requestId: string, decision: 'approve' | 'deny') => {
     const thread = store.getSnapshot().threads.find(thread => thread.key === key); if (!thread) return;
     void resolveRequest(thread.deviceId, thread.id, requestId, decision, { store }).catch(error => setError(error instanceof Error ? error.message : String(error)));
@@ -90,7 +91,7 @@ export function DesktopMapPage({ visible, mapVisible, revealKey, onOpen }: { vis
       renderThreadMenu: (thread, context) => <RecentThreadMenu thread={thread} context={context} currentKey={navigation.currentKey} onFavorite={navigation.onToggleThreadFavorite} onRenamed={navigation.onThreadRenamed} onRemoved={navigation.onThreadRemoved} onNavigate={navigate} />,
     })} settings={<button aria-label={translate('desktopShell.settings')} onClick={shell?.openSettings}><Settings data-icon="settings" /></button>} newThread={<button aria-label={translate('desktopShell.newThread')} onClick={() => first && navigate(`/devices/${encodeURIComponent(first.id)}/threads/new`)}><Plus data-icon="new-thread" /></button>} actions={null} threadMenu={null} connection={<span className="desktop-online-count">{translate('desktopShell.onlineCount', { count: formatNumber(index.devices.filter(device => device.connected).length) })}</span>} explorer={null} revealExplorer={0}>
       <div className="desktop-map-persistent" hidden={!mapVisible} inert={!mapVisible}><ThreadMap devices={devices} presentation="page" stableLayout scope={scope} onScopeChange={setScope} filterText={filter} onFilterChange={setFilter} attention={attention} deviceExtras={extras} revealKey={revealKey} pulseKeys={index.pulseKeys} onQuickLook={setQuickLook} onRequestDecision={decide} onOpen={thread => onOpen(thread.key)} onNavigate={href => navigate(appPathname(href))} onRetry={id => { void store.refreshDevice(id); }} actions={error ? <ErrorMark message={error} retryLabel={translate('desktopShell.dismissNotice')} onRetry={() => setError('')} /> : index.error ? <ErrorMark message={index.error} onRetry={() => { void store.refresh(); }} /> : undefined} /></div>
-      {visible && !mapVisible ? <div className="desktop-map-route"><DevicesPage onRevealDevice={id => { navigate('/'); setFilter(''); }} onNewThread={id => navigate(`/devices/${encodeURIComponent(id)}/threads/new`)} /></div> : null}
+      {visible && !mapVisible ? <div className="desktop-map-route"><DevicesPage onRevealDevice={revealDevice} /></div> : null}
       {quickLook && mapVisible ? <QuickLook threadKey={quickLook} onClose={() => setQuickLook(null)} onOpen={(key, newWindow) => { setQuickLook(null); onOpen(key, newWindow); }} /> : null}
     </MatterWorkbench>
   </div>;

@@ -2,6 +2,7 @@ import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { LayoutDashboard, Monitor } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
+import { RelayUserMenu } from '../components/RelayUserMenu';
 import { AppShellNavContext, useAppShellNav } from '../components/AppShellNavContext';
 import { appPathname, appUrl } from '../lib/webBase';
 import { threadHref } from '../lib/relayRoutes';
@@ -79,7 +80,7 @@ export function DesktopShell({ children, capabilities }: { children: ReactNode; 
   const waitingCount = useMemo(() => new Set(buildActivityItems(index).filter(item => item.state === 'needsInput').map(item => item.rootThreadKey ?? item.key)).size, [index]);
   // translate reads a stable shared store; locale explicitly invalidates cached labels.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const railLeading = useMemo(() => <><button data-desktop-map-link aria-label={waitingCount ? translate('desktopShell.mapWaiting', { count: waitingCount }) : translate('desktopShell.map')} aria-pressed={mapVisible} title={translate('desktopShell.mapShortcut', { shortcut: capabilities.platform === 'darwin' ? '⌘0' : 'Ctrl+0' })} onClick={openMap}><LayoutDashboard data-icon="thread-map" />{waitingCount ? <span className="desktop-map-badge">{waitingCount}</span> : null}</button><button aria-label={translate('desktopShell.devices')} title={translate('desktopShell.devices')} onClick={() => navigate('/desktop/devices')}><Monitor data-icon="devices" /></button></>, [mapVisible, navigate, openMap, waitingCount, locale]);
+  const railLeading = useMemo(() => <><button data-desktop-map-link aria-label={waitingCount ? translate('desktopShell.mapWaiting', { count: waitingCount }) : translate('desktopShell.map')} aria-pressed={mapVisible} title={translate('desktopShell.mapShortcut', { shortcut: capabilities.platform === 'darwin' ? '⌘0' : 'Ctrl+0' })} onClick={openMap}><LayoutDashboard data-icon="thread-map" />{waitingCount ? <span className="desktop-map-badge">{waitingCount}</span> : null}</button><button aria-label={translate('desktopShell.devices')} title={translate('desktopShell.devices')} onClick={() => navigate('/desktop/devices')}><Monitor data-icon="devices" /></button><RelayUserMenu /></>, [mapVisible, navigate, openMap, waitingCount, locale]);
   const workspaceControlsEnabled = hasWorkspaceContext(location.pathname, location.search);
   const surface = useMemo(() => ({ routeReady, workspaceControlsEnabled, multiWindow: capabilities.features.multiWindow, openMap, revealInMap, railLeading, renderActivity: (navigation: NavigationActions) => <ActivitySection navigation={navigation} onOpen={open} /> }), [routeReady, capabilities.features.multiWindow, openMap, revealInMap, railLeading, open, workspaceControlsEnabled]);
   const chrome = capabilities.windowChrome;
