@@ -3,6 +3,10 @@ import type { HostCommand, HostCommandResult, PockymoeHost } from './host';
 import { deviceRequest, respondToThreadRequest, sendThreadPrompt } from '../lib/api';
 import { buildActivitySnapshot } from './data/activity';
 import type { DesktopIndexStore } from './data/store';
+import { newerVersion } from './devices/model';
+
+/** The first Supervisor with the one-off completion route that spoken summaries run through. */
+const COMPLETION_VERSION = '0.13.43';
 
 export function focusedKeyFromPath(path: string): string | null {
   const match = path.match(/^\/devices\/([^/]+)\/threads\/([^/]+)$/);
@@ -52,8 +56,13 @@ export async function listConnections(deps: Pick<CommandDependencies, 'store' | 
   const devices = deps.store.getSnapshot().devices.filter(device => device.connected);
   const lists = await Promise.all(devices.map(async device => {
     try {
-      const { connections } = await request<{ connections: SavedConnection[] }>(device.id, 'api/management/connections');
-      return connections.filter(connection => connection.local !== false).map(connection => ({ deviceId: device.id, deviceName: device.name, id: connection.id, name: connection.name, protocol: connection.protocol, model: connection.model ?? '' }));
+      const [{ connections }, status] = await Promise.all([
+        request<{ connections: SavedConnection[] }>(device.id, 'api/management/connections'),
+        request<{ runningVersion?: string }>(device.id, 'api/management/supervisor').catch(() => null),
+      ]);
+      // A summary runs on the device holding the upstream, so its version decides whether this one can be used.
+      const version = status?.runningVersion;
+      return connections.filter(connection => connection.local !== false).map(connection => ({ deviceId: device.id, deviceName: device.name, id: connection.id, name: connection.name, protocol: connection.protocol, model: connection.model ?? '', ...(version ? { supervisorVersion: version, needsUpdate: newerVersion(version, COMPLETION_VERSION) } : {}) }));
     } catch { return []; }
   }));
   return lists.flat();
@@ -79,7 +88,7 @@ export async function handleHostCommand(command: HostCommand, deps: CommandDepen
       case 'listConnections': return { ok: true, data: await listConnections(deps) };
       case 'openUpstreams': deps.openUpstreams?.(); break;
       case 'connectionModels': {
-        const { models } = await (deps.request ?? deviceRequest)<{ models: { id: string; name?: string }[] }>(command.deviceId, `api/management/connections/${encodeURIComponent(command.connectionId)}/models`, { method: 'POST' });
+        const { models } = await (deps.request ?? deviceRequest)<{ models: { id: string; name?: string }[] }>(command.deviceId, `api/management/connections/${encodeURIComponent(command.connectionId)}/models`, { method: 'POST', body: '{}' });
         return { ok: true, data: models.map(model => ({ id: model.id, name: model.name ?? model.id })) };
       }
       case 'completeWithConnection': {
@@ -89,7 +98,7 @@ export async function handleHostCommand(command: HostCommand, deps: CommandDepen
           return { ok: true, data: { text } };
         } catch (error) {
           // An older Supervisor does not have this route yet.
-          if ([404, 405].includes((error as { statusCode?: number }).statusCode ?? 0)) throw new Error(translate('settings.connUpdateSupervisor'));
+          if ([404, 405].includes((error as { statusCode?: number }).statusCode ?? 0)) return { ok: false, code: 'supervisorTooOld', error: translate('settings.connUpdateSupervisor') };
           throw error;
         }
       }
