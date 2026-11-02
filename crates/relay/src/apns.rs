@@ -85,6 +85,12 @@ fn native_payload(event: &Value, sub: &Subscription) -> Result<Value> {
     }))
 }
 
+pub(super) fn valid_token(token: &str) -> bool {
+    (64..=200).contains(&token.len())
+        && token.len() % 2 == 0
+        && token.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 pub(super) fn validate(sub: &Subscription) -> Result<()> {
     anyhow::ensure!(sub.native_platform == "apns", "Unsupported native platform");
     let origin = reqwest::Url::parse(&sub.relay_origin)?;
@@ -98,12 +104,7 @@ pub(super) fn validate(sub: &Subscription) -> Result<()> {
             && origin.fragment().is_none(),
         "Invalid relay origin"
     );
-    anyhow::ensure!(
-        (64..=200).contains(&sub.device_token.len())
-            && sub.device_token.len() % 2 == 0
-            && sub.device_token.bytes().all(|b| b.is_ascii_hexdigit()),
-        "Invalid APNs token"
-    );
+    anyhow::ensure!(valid_token(&sub.device_token), "Invalid APNs token");
     Ok(())
 }
 
@@ -126,6 +127,24 @@ pub(super) async fn deliver(
     sub: &Subscription,
     payload: &str,
 ) -> Result<StatusCode> {
+    deliver_inner(http, sub, payload, false).await
+}
+
+pub(super) async fn deliver_live_activity(
+    http: &reqwest::Client,
+    sub: &Subscription,
+    payload: &str,
+) -> Result<StatusCode> {
+    anyhow::ensure!(sub.app_kind == AppKind::Ios, "Live Activity requires iOS");
+    deliver_inner(http, sub, payload, true).await
+}
+
+async fn deliver_inner(
+    http: &reqwest::Client,
+    sub: &Subscription,
+    payload: &str,
+    live: bool,
+) -> Result<StatusCode> {
     validate(sub)?;
     let pem = std::fs::read(std::env::var("POCKYMOE_APNS_KEY_PATH")?)?;
     let token = jwt(
@@ -135,10 +154,18 @@ pub(super) async fn deliver(
         chrono::Utc::now().timestamp(),
     )?;
     let event: Value = serde_json::from_str(payload)?;
-    let body = native_payload(&event, sub)?;
-    let tag = event["tag"]
-        .as_str()
-        .ok_or_else(|| anyhow::anyhow!("Missing event tag"))?;
+    let body = if live {
+        event.clone()
+    } else {
+        native_payload(&event, sub)?
+    };
+    let tag = if live {
+        Some("account-activity")
+    } else {
+        event["tag"].as_str()
+    }
+    .ok_or_else(|| anyhow::anyhow!("Missing event tag"))?;
+
     let host = if sub.sandbox {
         "api.sandbox.push.apple.com"
     } else {
@@ -148,9 +175,22 @@ pub(super) async fn deliver(
         .post(format!("https://{host}/3/device/{}", sub.device_token))
         .version(reqwest::Version::HTTP_2)
         .bearer_auth(token)
-        .header("apns-topic", std::env::var(sub.app_kind.topic_env())?)
+        .header(
+            "apns-topic",
+            if live {
+                format!(
+                    "{}.push-type.liveactivity",
+                    std::env::var("POCKYMOE_APNS_TOPIC")?
+                )
+            } else {
+                std::env::var(sub.app_kind.topic_env())?
+            },
+        )
         .header("apns-collapse-id", collapse_id(tag))
-        .header("apns-push-type", "alert")
+        .header(
+            "apns-push-type",
+            if live { "liveactivity" } else { "alert" },
+        )
         .header("apns-priority", "10")
         .header(
             "apns-expiration",

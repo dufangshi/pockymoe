@@ -1,3 +1,5 @@
+import { useHostSurface } from './desktop/surface';
+import { MobileHostBoundary, MobileActivity } from './mobile/MobileHost';
 import { HostScopeRouteGate } from './components/HostScopeRouteGate';
 import {
   AUTO_COLLAPSE_COMPLETED_TURNS_STORAGE_KEY,
@@ -295,6 +297,7 @@ function AppShell({
   setThemeMode: (mode: ThemeMode) => void;
   effectiveTheme: 'light' | 'dark';
 }) {
+  const surface = useHostSurface();
   const { locale: i18nLocale } = useI18n();
   const [navOpen, setNavOpen] = useState(false);
   const composerPreferences = useComposerPreferences();
@@ -407,7 +410,7 @@ function AppShell({
 
   // The account-wide desktop map must outlive a device scope's discovery gate;
   // only routed device content waits for that Supervisor's capabilities.
-  if (window.pockymoeHost) return (
+  if (surface === 'desktop') return (
     <AppShellNavContext.Provider value={shellNavValue}>
       <Suspense fallback={null}><DesktopEntry>
         <HostCapabilitiesProvider scope={relayDeviceIdFromPath(location.pathname) ?? 'local'}>
@@ -421,6 +424,7 @@ function AppShell({
   );
 
   return (
+    <MobileActivity>
     <HostCapabilitiesProvider scope={relayDeviceIdFromPath(location.pathname) ?? 'local'}>
     <AppShellNavContext.Provider value={shellNavValue}>
       <ThreadMapProvider>
@@ -473,6 +477,7 @@ function AppShell({
       </ThreadMapProvider>
     </AppShellNavContext.Provider>
     </HostCapabilitiesProvider>
+    </MobileActivity>
   );
 }
 
@@ -643,12 +648,16 @@ function SupervisorAccessGate({ children }: { children: React.ReactNode }) {
 }
 
 function DesktopFrameBoundary({ children, effectiveTheme }: { children: ReactNode; effectiveTheme: 'light' | 'dark' }) {
-  return window.pockymoeHost ? <Suspense fallback={null}><DesktopWindowFrame effectiveTheme={effectiveTheme}>{children}</DesktopWindowFrame></Suspense> : children;
+  const surface = useHostSurface();
+  if (surface === 'pending') return null;
+  if (surface === 'mobile') return <MobileHostBoundary effectiveTheme={effectiveTheme}>{children}</MobileHostBoundary>;
+  return surface === 'desktop' ? <Suspense fallback={null}><DesktopWindowFrame effectiveTheme={effectiveTheme}>{children}</DesktopWindowFrame></Suspense> : children;
 }
 
 function RootRoute() {
+  const surface = useHostSurface();
   const { locale: i18nLocale } = useI18n();
-  return window.pockymoeHost ? null : relayModeActive() ? <RelayHomePage /> : <Navigate to="/workspaces" replace />;
+  return surface === 'desktop' ? null : relayModeActive() ? <RelayHomePage /> : <Navigate to="/workspaces" replace />;
 }
 
 function SupervisorRoutes({
@@ -660,6 +669,7 @@ function SupervisorRoutes({
   setThemeMode: (mode: ThemeMode) => void;
   effectiveTheme: 'light' | 'dark';
 }) {
+  const surface = useHostSurface();
   const { locale: i18nLocale } = useI18n();
   return (
     <Routes>
@@ -673,8 +683,8 @@ function SupervisorRoutes({
         }
       >
         <Route path="/" element={<RootRoute />} />
-        <Route path="/desktop/devices" element={<Suspense fallback={null}>{window.pockymoeHost ? <DesktopDevicesRoute /> : <WebDevicesRoute />}</Suspense>} />
-        <Route path="/desktop/devices/:id" element={<Suspense fallback={null}>{window.pockymoeHost ? <DesktopDevicesRoute /> : <WebDevicesRoute />}</Suspense>} />
+        <Route path="/desktop/devices" element={<Suspense fallback={null}>{surface === 'desktop' ? <DesktopDevicesRoute /> : <WebDevicesRoute />}</Suspense>} />
+        <Route path="/desktop/devices/:id" element={<Suspense fallback={null}>{surface === 'desktop' ? <DesktopDevicesRoute /> : <WebDevicesRoute />}</Suspense>} />
         <Route path="/workspaces" element={<WorkspacesPage />} />
         <Route path="/workspaces/new" element={<WorkspaceNewPage />} />
         <Route path="/relay-account" element={<RelayAccountPage />} />

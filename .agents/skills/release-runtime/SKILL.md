@@ -35,6 +35,12 @@ gh run watch RUN_ID --interval 30 --exit-status
 
 verify、四平台 native、固定 UI 的 Web 构建并行，package 依赖全部成功后才能 release。核对 GitHub 版本、四平台资产、Web ZIP、setup.sh/setup.ps1、runtime-version.txt 和 SHA256SUMS，下载代表平台验证真实版本。GitHub 查询失败不等于尚未发布。没有 npm publish job。
 
-公开网页及 setup 脚本是 GitHub Pages 静态站点（https://app.lnz-study.com）：main 上 Web 路径、setup 脚本或 `thread-ui.sha` 的推送（或手动 dispatch）触发 `pages-deploy.yml`，用 `thread-ui.sha` 中的共享 UI 完整 SHA 构建并部署。共享 UI 提交须先推送到其 main；Release 资产可用后，确认主仓 main 的 `thread-ui.sha` 是同一完整 SHA，不是则提交并推送。Relay（https://remote.lnz-study.com）只提供 API；Relay 代码有变更时从 main dispatch `relay-deploy.yml`，它只部署 Relay，没有 `thread_ui_sha` 输入。重启设备 Supervisor 不会更新公开网页。按用户已有授权执行发布/部署，技能不额外扩大授权。
+公开网页及 setup 脚本是 GitHub Pages 静态站点（https://app.example.com）：main 上 Web 路径、setup 脚本或 `thread-ui.sha` 的推送（或手动 dispatch）触发 `pages-deploy.yml`，用 `thread-ui.sha` 中的共享 UI 完整 SHA 构建并部署。共享 UI 提交须先推送到其 main；Release 资产可用后，确认主仓 main 的 `thread-ui.sha` 是同一完整 SHA，不是则提交并推送。Relay（https://relay.example.com）只提供 API；Relay 代码有变更时从 main dispatch `relay-deploy.yml`，它只部署 Relay，没有 `thread_ui_sha` 输入。重启设备 Supervisor 不会更新公开网页。按用户已有授权执行发布/部署，技能不额外扩大授权。
 
 需要当前设备更新时通过设备管理 API，或旧版迁移所需的 setup 兼容桥。核对 job completed、运行版本/PID/Relay 重连和受维护线程恢复。交付提交、版本、run 链接、相关验证及真实限制；不要把安装成功等同于后台已更新。
+
+发布前运行 `python3 scripts/check-production-address.py --tracked`，打包后扫描整个 release-assets（含 ZIP 解包内容）。runtime Web 使用 `POCKYMOE_RUNTIME_RELEASE=1` 且不内置 Relay；自有 Pages/Relay 的地址只读仓库 secrets `POCKYMOE_RELAY_ORIGIN`、`POCKYMOE_WEB_DOMAIN`、`POCKYMOE_LEGACY_RELAY_ORIGIN`，见 `docs/github-runtime.md`。Windows Device Manager 的既有 manifest 是独立发布的固定例外，不纳入 runtime 资产。
+
+部署前先运行地址 preflight（`--mask`）：三个地址 secrets 必须齐全，且派生的主机名也要注册 `::add-mask::`，不能用未遮罩的仓库 variables。Relay 的 `relay-rust-canary` 环境可继承仓库 secrets；同名环境 secret 会覆盖仓库值。
+
+Relay 部署还需 `POCKYMOE_RELAY_SSH_FINGERPRINT`、`POCKYMOE_RELAY_HOSTNAME` 和既有 `REMOTE_CODEX_RELAY_DEPLOY_HOST/USER/PASSWORD/PORT` secrets，先运行 `--mask --relay-host`。此部署已确认在 Cloudflare 后：先审计 NPM 是否原样保留 `CF-Connecting-IP`，再用同一原始备份独立补齐缺失的 `POCKYMOE_TRUSTED_PROXY_IPS=127.0.0.1` 和 `POCKYMOE_CLIENT_IP_HEADER=CF-Connecting-IP`，保留已有新旧键及备份。该头仅在直连 peer 受信任时生效，默认 self-host XFF 行为不变。内部预检不能证明源站不可绕过；必须限制源站/CDN 或隧道访问，不能把头本身当认证。

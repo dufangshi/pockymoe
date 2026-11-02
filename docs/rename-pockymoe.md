@@ -52,7 +52,7 @@ Kept unchanged, with the reason:
 | Device Manager internals | Assembly and executable names, mutex, control pipe, Run entry, `%LOCALAPPDATA%\RemoteCodex`, runtime-state keys, the npm package it installs |
 | Relay host paths, units and env file; `REMOTE_CODEX_RELAY_DEPLOY_*` secrets | Live infrastructure, renamed only in a coordinated rollout |
 | `/var/lib/remote-codex-relay` in `Dockerfile.relay` | Data volume of deployed images |
-| `remote.lnz-study.com`, `remote-codex.lnz-study.com` | Deployed domains; renamed separately |
+| `relay.example.com`, `legacy-relay.example.com` | Deployed domains; renamed separately |
 | Old repository URLs in installed runtimes, the retired npm launcher and historical docs | GitHub redirects them; see "Repository rename" below |
 
 ## Regenerating the rename

@@ -3,18 +3,19 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { ErrorMark } from '@pockymoe/thread-ui';
 import { fetchRelaySession } from '../lib/api';
 import { DesktopIndexStore, DesktopStoreContext } from './data';
-import { desktopHost, type HostCapabilities } from './host';
+import { desktopHost, type DesktopCapabilities } from './host';
 import { DesktopShell } from './DesktopShell';
 
 export default function DesktopEntry({ children }: { children: ReactNode }) {
   useI18n();
-  const [ready, setReady] = useState<{ store: DesktopIndexStore; capabilities: HostCapabilities } | null>(null);
+  const [ready, setReady] = useState<{ store: DesktopIndexStore; capabilities: DesktopCapabilities } | null>(null);
   const [error, setError] = useState('');
   useEffect(() => {
     let cancelled = false; let store: DesktopIndexStore | undefined;
     void (async () => {
       const host = desktopHost(); if (!host) return;
       const [session, capabilities] = await Promise.all([fetchRelaySession(), host.capabilities()]);
+      if (capabilities.surface !== 'desktop') return;
       if (!session.authenticated || !session.user) throw new Error(translate('desktopShell.signInRequired'));
       store = new DesktopIndexStore(session.user.id); await store.hydrate();
       if (cancelled) return;

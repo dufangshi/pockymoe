@@ -60,8 +60,8 @@ const KEEP = [
   'dufangshi/remote-codex-thread-ui',
   'remote-codex-thread-ui-rust',
   'remote-codex-app',
-  'remote.lnz-study.com',
-  'remote-codex.lnz-study.com',
+  'relay.example.com',
+  'legacy-relay.example.com',
   // Local checkout paths used in docs and scripts.
   '/home/ubuntu/dev/remoteCodex',
   'remoteCodex.worktrees',

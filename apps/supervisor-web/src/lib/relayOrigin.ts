@@ -1,22 +1,36 @@
 import { appPathname, appUrl, webBase } from './webBase';
-// Network addressing only. Passkey validation, pins and storage use the Web origin.
-export function relayOrigin(
-  webOrigin = globalThis.location?.origin ?? 'http://localhost',
-  configured = import.meta.env.VITE_POCKYMOE_RELAY_ORIGIN ?? '',
-): string {
-  if (!configured.trim()) return webOrigin;
+let hostOrigin: string | undefined;
+let hostError: Error | undefined;
+export function setHostRelayOrigin(value: string) {
+  if (!value.trim()) throw new Error('The mobile shell did not report a Relay origin');
+  hostOrigin = validateRelayOrigin(value); hostError = undefined;
+}
+export function failHostRelayOrigin(error: Error) { hostError = error; }
+export function configuredRelayOrigin() {
+  if (hostError) throw hostError;
+  return hostOrigin ?? import.meta.env.VITE_POCKYMOE_RELAY_ORIGIN ?? '';
+}
+function validateRelayOrigin(configured: string): string {
   const url = new URL(configured);
   const local = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
   if (!(url.protocol === 'https:' || (url.protocol === 'http:' && local)) ||
       url.username || url.password || url.pathname !== '/' || url.search || url.hash)
-    throw new Error('VITE_POCKYMOE_RELAY_ORIGIN must be an HTTPS origin (HTTP is allowed for localhost)');
+    throw new Error('Relay must be an HTTPS origin (HTTP is allowed for localhost)');
   return url.origin;
+}
+// Network addressing only. Passkey validation, pins and storage use the Web origin.
+export function relayOrigin(
+  webOrigin = globalThis.location?.origin ?? 'http://localhost',
+  configured = configuredRelayOrigin(),
+): string {
+  if (!configured.trim()) return webOrigin;
+  return validateRelayOrigin(configured);
 }
 
 export function relayUrl(
   path: string,
   webOrigin = globalThis.location?.origin ?? 'http://localhost',
-  configured = import.meta.env.VITE_POCKYMOE_RELAY_ORIGIN ?? '',
+  configured = configuredRelayOrigin(),
 ): string {
   const target = new URL(path, webOrigin);
   // Relative inputs are logical application paths, even when the mount is
@@ -31,7 +45,7 @@ export function relayUrl(
   return origin === webOrigin ? local : `${origin}${logicalPath}${target.search}${target.hash}`;
 }
 
-export function relaySocketUrl(path: string, webOrigin = globalThis.location?.origin ?? 'http://localhost', configured = import.meta.env.VITE_POCKYMOE_RELAY_ORIGIN ?? '') {
+export function relaySocketUrl(path: string, webOrigin = globalThis.location?.origin ?? 'http://localhost', configured = configuredRelayOrigin()) {
   const url = new URL(relayUrl(path, webOrigin, configured), webOrigin);
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
   return url.toString();

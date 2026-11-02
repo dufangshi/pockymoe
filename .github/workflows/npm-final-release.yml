@@ -64,7 +64,7 @@ jobs:
           else
             npm publish "./dist/remote-codex-${VERSION}.tgz" --tag latest --access public
           fi
-          for attempt in $(seq 1 30); do
+          for _ in $(seq 1 30); do
             [ "$(npm view remote-codex dist-tags.latest)" = "${VERSION}" ] && exit 0
             sleep 10
           done

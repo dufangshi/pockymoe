@@ -197,6 +197,14 @@ impl OAuthConfig {
         format!("{base}/relay/auth/oauth/{}/callback", provider.as_str())
     }
 
+    pub(super) fn authorization_origin(&self, provider: OAuthProvider) -> Result<String> {
+        let base = match provider {
+            OAuthProvider::Google => &self.google_authorize_url,
+            OAuthProvider::Github => &self.github_authorize_url,
+        };
+        Ok(Url::parse(base)?.origin().ascii_serialization())
+    }
+
     pub fn authorization_url(
         &self,
         provider: OAuthProvider,
@@ -230,9 +238,8 @@ impl OAuthConfig {
                     OAuthProvider::Github => "read:user user:email",
                 },
             );
-            if provider == OAuthProvider::Google {
-                query.append_pair("prompt", "select_account");
-            }
+            // Both Google and GitHub support explicit account selection.
+            query.append_pair("prompt", "select_account");
         }
         Ok(url.to_string())
     }

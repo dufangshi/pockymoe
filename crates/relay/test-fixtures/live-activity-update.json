@@ -1,0 +1,32 @@
+{
+  "aps": {
+    "timestamp": 1793620800,
+    "event": "update",
+    "content-state": {
+      "rows": [
+        {
+          "key": "00000000-0000-4000-8000-000000000001:00000000-0000-4000-8000-000000000002",
+          "state": "needsInput",
+          "startedAt": 815313540.0
+        },
+        {
+          "key": "00000000-0000-4000-8000-000000000001:00000000-0000-4000-8000-000000000003",
+          "state": "failed",
+          "startedAt": 815313480.0
+        },
+        {
+          "key": "00000000-0000-4000-8000-000000000001:00000000-0000-4000-8000-000000000004",
+          "state": "running",
+          "startedAt": 815313300.0
+        }
+      ],
+      "totalCount": 3,
+      "waitingCount": 1,
+      "failedCount": 1,
+      "runningCount": 1,
+      "completedCount": 0,
+      "endedAt": null,
+      "earliestStart": 815313300.0
+    }
+  }
+}
