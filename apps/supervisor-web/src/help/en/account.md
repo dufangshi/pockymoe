@@ -8,9 +8,9 @@ The Account page shows your **safety code** and **account ID** for comparing wit
 
 ## Safety code check {#safety-code}
 
-When someone shares with you, the share may wait until they confirm your safety code. Opening it then shows **Waiting for … to confirm** with your code: send it to them another way (a chat, an email or in person). The share opens by itself once they type it in. Your other shares keep working meanwhile.
+When someone shares with you, the share may wait until they confirm your safety code. Opening it then shows **Waiting for … to confirm** with your code: send it to them another way (a chat, an email or in person). Compare it with the code they see in the share details over a trusted channel. The share opens by itself once they choose **They match, confirm**. Your other shares keep working meanwhile.
 
-When you share, the person sends you the code they see; type it in the share's details on **Devices → Sharing**. A code that does not match means a typo, or that someone replaced their account key: do not approve, and revoke the share. You can turn this check off under **Account settings → Sharing**.
+When you share, the recipient's code is displayed in the share's details on **Devices → Sharing**, with a copy button. Compare it with the code the recipient sees over a trusted channel, then choose **They match, confirm**. If they differ, choose **They do not match**: their account key may have been replaced. Do not confirm; you can stop sharing. You can turn this check off under **Account settings → Sharing**.
 
 ## Unlock this browser {#unlock}
 
