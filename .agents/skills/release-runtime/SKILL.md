@@ -43,4 +43,4 @@ verify、四平台 native、固定 UI 的 Web 构建并行，package 依赖全�
 
 部署前先运行地址 preflight（`--mask`）：三个地址 secrets 必须齐全，且派生的主机名也要注册 `::add-mask::`，不能用未遮罩的仓库 variables。Relay 的 `relay-rust-canary` 环境可继承仓库 secrets；同名环境 secret 会覆盖仓库值。
 
-Relay 部署还需 `POCKYMOE_RELAY_SSH_FINGERPRINT`、`POCKYMOE_RELAY_HOSTNAME` 和既有 `REMOTE_CODEX_RELAY_DEPLOY_HOST/USER/PASSWORD/PORT` secrets，先运行 `--mask --relay-host`。此部署已确认在 Cloudflare 后：先审计 NPM 是否原样保留 `CF-Connecting-IP`，再用同一原始备份独立补齐缺失的 `POCKYMOE_TRUSTED_PROXY_IPS=127.0.0.1` 和 `POCKYMOE_CLIENT_IP_HEADER=CF-Connecting-IP`，保留已有新旧键及备份。该头仅在直连 peer 受信任时生效，默认 self-host XFF 行为不变。内部预检不能证明源站不可绕过；必须限制源站/CDN 或隧道访问，不能把头本身当认证。
+Relay 部署还需 `POCKYMOE_RELAY_SSH_FINGERPRINT`、`POCKYMOE_RELAY_HOSTNAME` 和既有 `REMOTE_CODEX_RELAY_DEPLOY_HOST/USER/PASSWORD/PORT` secrets，先运行 `--mask --relay-host`。此部署已确认在 Cloudflare 后：审计 NPM 是否原样保留 visitor header，再通过运行容器到 Relay 的短暂 TCP 连接和宿主机 socket 表观察实际 peer（不能假设 loopback 或 bridge gateway）。同一原始备份下，仅补齐缺失的 peer 信任/visitor-header 配置，保留已有值与备份。失败只输出固定类别；源站不可绕过这一无法从内部证明的属性只输出 `origin-isolation-unverified` 警告，不能冒充认证或现场验证。转发配置与实际 peer 验证仍然是部署门禁。

@@ -193,11 +193,14 @@ jobs:
             file "${stage}/remote-codex" | grep -Eq 'x86-64|x86_64'
             # Inspect active NPM configuration privately, never in Actions logs.
             sudo install -d -m 0700 "${backup}/relay-data"
-            sudo sh -c 'umask 077; docker exec nginx-proxy-manager-app-1 nginx -T > "$1" 2>/dev/null' sh "${backup}/relay-data/nginx-config.txt"
-            sudo python3 "${stage}/check-relay-forwarding.py" --nginx-dump "${backup}/relay-data/nginx-config.txt" --origin "${POCKYMOE_RELAY_ORIGIN}" --client-ip-header CF-Connecting-IP
+            if ! sudo sh -c 'umask 077; docker exec nginx-proxy-manager-app-1 nginx -T > "$1" 2>&1' sh "${backup}/relay-data/nginx-config.txt"; then
+              echo 'FAIL: nginx-dump-failed' >&2
+              exit 1
+            fi
+            sudo python3 "${stage}/check-relay-forwarding.py" --nginx-dump "${backup}/relay-data/nginx-config.txt" --origin "${POCKYMOE_RELAY_ORIGIN}" --client-ip-header CF-Connecting-IP --upstreams-out "${backup}/relay-data/upstreams.json"
             # Back up relay.env before adding missing proxy/header defaults.
             # Preserve existing canonical/legacy values; validate them afterward.
-            sudo python3 "${stage}/configure-relay-proxy.py" --env "${base}/relay.env" --backup "${backup}/relay-data/relay.env"
+            sudo python3 "${stage}/configure-relay-proxy.py" --env "${base}/relay.env" --backup "${backup}/relay-data/relay.env" --container nginx-proxy-manager-app-1 --upstreams "${backup}/relay-data/upstreams.json" --observed-peers-out "${backup}/relay-data/observed-peers.json"
             # Fail before stopping the old service if the auth migration is misconfigured.
             sudo python3 - "${base}/relay.env" "${POCKYMOE_RELAY_ORIGIN}" "https://${POCKYMOE_WEB_DOMAIN}" <<'PYPREFLIGHT'
             import ipaddress, pathlib, shlex, sys
@@ -212,9 +215,9 @@ jobs:
                 proxies = values.get('POCKYMOE_TRUSTED_PROXY_IPS', values.get('REMOTE_CODEX_TRUSTED_PROXY_IPS', ''))
                 proxies = [ipaddress.ip_address(value.strip()) for value in proxies.split(',') if value.strip()]
             except ValueError:
-                raise SystemExit('Relay auth preflight: configure valid POCKYMOE_TRUSTED_PROXY_IPS')
-            if ipaddress.ip_address('127.0.0.1') not in proxies:
-                raise SystemExit('Relay auth preflight: configure POCKYMOE_TRUSTED_PROXY_IPS for the loopback reverse proxy')
+                raise SystemExit('FAIL: peer-trust-invalid')
+            if not proxies:
+                raise SystemExit('FAIL: peer-not-trusted')
             visitor_header = values.get('POCKYMOE_CLIENT_IP_HEADER', values.get('REMOTE_CODEX_CLIENT_IP_HEADER', ''))
             if visitor_header.strip().lower() != 'cf-connecting-ip':
                 raise SystemExit('Relay auth preflight: this Cloudflare deployment requires POCKYMOE_CLIENT_IP_HEADER=CF-Connecting-IP')

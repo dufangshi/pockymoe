@@ -7,6 +7,7 @@ Cloudflare detection is an observation, not proof that no other CDN exists.
 import argparse
 import fnmatch
 import ipaddress
+import json
 from pathlib import Path
 import posixpath
 import re
@@ -17,11 +18,23 @@ from urllib.parse import urlsplit
 
 
 class AuditError(ValueError):
-    pass
+    CODES = {
+        'nginx-syntax-unsupported', 'nginx-dump-incomplete', 'nginx-dump-invalid',
+        'include-unresolved', 'include-dynamic', 'http-context-not-found',
+        'relay-vhost-not-found', 'upstream-unresolved', 'upstream-invalid',
+        'upstream-unverified', 'proxy-header-not-forwarded', 'real-ip-policy-unsupported',
+        'real-ip-trust-invalid', 'real-ip-trust-incomplete', 'cdn-real-ip-missing',
+        'forwarding-conditional', 'relay-upstream-not-found', 'public-health-failed',
+        'cdn-policy-unidentified', 'cdn-reference-unavailable', 'origin-invalid',
+        'audit-arguments-invalid', 'nginx-dump-unreadable', 'cdn-observation-unavailable',
+    }
+
+    def __init__(self, code):
+        super().__init__(code if code in self.CODES else 'audit-internal-error')
 
 
 def parse(text):
-    tokens = re.findall(r'"(?:\\.|[^"\\])*"|\x27(?:\\.|[^\x27\\])*\x27|#[^\n]*|[{};]|[^\s{};]+', text)
+    tokens = re.findall(r'"(?:\\.|[^"\\])*"|\x27(?:\\.|[^\x27\\])*\x27|#[^\n]*|[{};]|(?:\$\{[^}]+\}|[^\s{};])+', text)
     tokens = [token for token in tokens if not token.startswith('#')]
     index = 0
 
@@ -34,42 +47,45 @@ def parse(text):
             index += 1
             if token == '}':
                 if words or not nested:
-                    raise AuditError('Unsupported Nginx syntax')
+                    raise AuditError('nginx-syntax-unsupported')
                 return result
             if token in [';', '{']:
                 if not words:
-                    raise AuditError('Unsupported Nginx directive')
+                    raise AuditError('nginx-syntax-unsupported')
                 result.append((words[0], words[1:], block(True) if token == '{' else []))
                 words = []
             else:
                 words.append(shlex.split(token)[0] if token[:1] in ['"', "'"] else token)
         if words or nested:
-            raise AuditError('Incomplete Nginx dump')
+            raise AuditError('nginx-dump-incomplete')
         return result
     return block()
 
 
 def configuration(dump):
+    # NPM/OpenResty can write the test diagnostics to stderr. Capture both
+    # streams privately and ignore diagnostic lines, never their raw values.
+    dump = re.sub(r'^nginx:.*$', '', dump, flags=re.M)
     parts = re.split(r'^# configuration file ([^\n]+):\n', dump, flags=re.M)
     if len(parts) < 3:
-        raise AuditError('Expected nginx -T output with loaded file markers')
+        raise AuditError('nginx-dump-invalid')
     files = {posixpath.normpath(parts[i]): parts[i + 1] for i in range(1, len(parts), 2)}
     root = posixpath.normpath(parts[1])
     prefix = posixpath.dirname(root)
 
     def load(name, stack=()):
         if name in stack or name not in files:
-            raise AuditError('Unresolved or recursive Nginx include')
+            raise AuditError('include-unresolved')
         def expand(nodes):
             result = []
             for key, args, children in nodes:
                 if key == 'include':
                     if len(args) != 1 or '$' in args[0]:
-                        raise AuditError('Dynamic Nginx include cannot be verified')
+                        raise AuditError('include-dynamic')
                     pattern = posixpath.normpath(args[0] if args[0].startswith('/') else posixpath.join(prefix, args[0]))
                     matches = sorted(path for path in files if fnmatch.fnmatchcase(path, pattern))
                     if not matches and not any(char in pattern for char in '*?['):
-                        raise AuditError('Loaded Nginx include missing from dump')
+                        raise AuditError('include-unresolved')
                     for match in matches:
                         result.extend(load(match, (*stack, name)))
                 else:
@@ -91,31 +107,43 @@ def effective(contexts, name):
     return []
 
 
-def audit(dump, hostname, cloudflare, networks, client_ip_header=""):
+def audit(dump, hostname, cloudflare, networks, client_ip_header="", upstreams=None):
     tree = configuration(dump)
     http = [children for key, _, children in tree if key == 'http']
     if len(http) != 1:
-        raise AuditError('Cannot identify Nginx http context')
+        raise AuditError('http-context-not-found')
     servers = [children for key, _, children in http[0] if key == 'server' and
                any(hostname in args for args in values(children, 'server_name'))]
     if not servers:
-        raise AuditError('Cannot identify exact Relay virtual host; review ingress before deploy')
+        raise AuditError('relay-vhost-not-found')
     checked = 0
     for server in servers:
         contexts = [http[0], server]
-        variables = {args[0]: args[1] for nodes in contexts for args in values(nodes, 'set') if len(args) == 2}
 
         def inspect(nodes, parents):
             nonlocal checked
             contexts = [*parents, nodes]
+            variables = {args[0].lstrip('$'): args[1] for context in contexts for args in values(context, 'set') if len(args) == 2}
             for upstream in values(nodes, 'proxy_pass'):
                 target = upstream[0]
-                for name, value in variables.items():
-                    target = target.replace(name, value)
-                target = target.replace('$request_uri', '')
-                parsed = urlsplit(target)
-                if parsed.hostname not in ['127.0.0.1', 'localhost'] or parsed.port != 18791:
-                    raise AuditError('Relay virtual host has an unverified upstream')
+                def substitute(match):
+                    name = match[1] or match[2]
+                    return '' if name in ['request_uri', 'uri', 'is_args', 'args'] else variables.get(name, match[0])
+                target = re.sub(r'\$\{([A-Za-z_][A-Za-z_0-9]*)\}|\$([A-Za-z_][A-Za-z_0-9]*)', substitute, target)
+                if '$' in target:
+                    raise AuditError('upstream-unresolved')
+                try:
+                    parsed = urlsplit(target)
+                    host, port = parsed.hostname, parsed.port
+                except ValueError:
+                    raise AuditError('upstream-invalid')
+                # NPM bridge mode legitimately uses a host/gateway alias here.
+                # The configuration alone does not prove it reaches this host's
+                # Relay: configure-relay-proxy observes that socket before trust.
+                if parsed.scheme != 'http' or not host or port != 18791 or parsed.username or parsed.password:
+                    raise AuditError('upstream-unverified')
+                if upstreams is not None:
+                    upstreams.append({'host': host, 'port': port})
                 # proxy_set_header inherits as one group, only if this context
                 # declares none. A location's Host override can discard parent XFF.
                 headers = effective(contexts, 'proxy_set_header')
@@ -123,39 +151,39 @@ def audit(dump, hostname, cloudflare, networks, client_ip_header=""):
                     explicit = [args[1] for args in headers if len(args)==2 and args[0].lower()=='cf-connecting-ip']
                     passes = effective(contexts, 'proxy_pass_request_headers')
                     if explicit not in [[], ['$http_cf_connecting_ip']] or (not explicit and passes == [['off']]):
-                        raise AuditError('Configured CF-Connecting-IP must pass unchanged to the Relay')
+                        raise AuditError('proxy-header-not-forwarded')
                     checked += 1
                     continue  # Dedicated visitor header mode does not use XFF/remote_addr.
                 forwarded = [args[1] for args in headers if len(args) == 2 and args[0].lower() == 'x-forwarded-for']
                 if forwarded not in [['$proxy_add_x_forwarded_for'], ['$remote_addr']]:
-                    raise AuditError('Relay ingress must append/overwrite X-Forwarded-For using remote_addr')
+                    raise AuditError('proxy-header-not-forwarded')
                 header = effective(contexts, 'real_ip_header')
                 trusted = effective(contexts, 'set_real_ip_from')
                 if header or trusted:
                     if len(header) != 1 or [value.lower() for value in header[0]] != ['cf-connecting-ip'] or not trusted:
-                        raise AuditError('Real-IP policy is not the audited Cloudflare normalization policy')
+                        raise AuditError('real-ip-policy-unsupported')
                     try:
                         trust = [ipaddress.ip_network(args[0]) for args in trusted if len(args) == 1]
                     except ValueError:
-                        raise AuditError('Unverifiable real-IP trust range')
+                        raise AuditError('real-ip-trust-invalid')
                     if len(trust) != len(trusted) or not networks or any(
                         not any(net.version == official.version and net.subnet_of(official) for official in networks)
                         for net in trust
                     ):
-                        raise AuditError('Real-IP must trust only current official Cloudflare ranges')
+                        raise AuditError('real-ip-trust-invalid')
                     if cloudflare and any(not any(net.version == configured.version and net.subnet_of(configured) for configured in trust) for net in networks):
-                        raise AuditError('Cloudflare detected but real-IP trust does not cover all current edge ranges')
+                        raise AuditError('real-ip-trust-incomplete')
                 elif cloudflare:
-                    raise AuditError('Cloudflare detected without CF-Connecting-IP normalization; shared-CDN lockout would remain')
+                    raise AuditError('cdn-real-ip-missing')
                 checked += 1
             for key, _, children in nodes:
                 if children:
                     if key == 'if' and any(child[0] in ['proxy_pass', 'proxy_set_header', 'set_real_ip_from', 'real_ip_header'] for child in children):
-                        raise AuditError('Conditional forwarding cannot be verified automatically')
+                        raise AuditError('forwarding-conditional')
                     inspect(children, contexts)
         inspect(server, [http[0]])
     if not checked:
-        raise AuditError('Relay upstream forwarding not found in active configuration')
+        raise AuditError('relay-upstream-not-found')
     return checked
 
 
@@ -172,11 +200,11 @@ def probe(origin, networks):
         'CF-Connecting-IP': '203.0.113.235', 'Cache-Control': 'no-cache'})
     with urllib.request.build_opener(NoRedirect()).open(request, timeout=20) as response:
         if response.status != 200 or b'"status"' not in response.read(65536):
-            raise AuditError('Public Relay health probe failed')
+            raise AuditError('public-health-failed')
         via = response.headers.get('via', '')
         cf = bool(response.headers.get('cf-ray')) or 'cloudflare' in response.headers.get('server', '').lower()
         if via and not cf:
-            raise AuditError('Unidentified intermediary detected; review its client-IP policy before deployment')
+            raise AuditError('cdn-policy-unidentified')
     addresses = [ipaddress.ip_address(row[4][0]) for row in socket.getaddrinfo(urlsplit(origin).hostname, 443, type=socket.SOCK_STREAM)]
     return cf or any(any(ip.version == net.version and ip in net for net in networks) for ip in addresses)
 
@@ -187,33 +215,62 @@ def official_networks():
         with urllib.request.urlopen(f'https://www.cloudflare.com/ips-v{family}', timeout=20) as response:
             result.extend(ipaddress.ip_network(line) for line in response.read(65536).decode().splitlines() if line.strip())
     if not result or not any(net.version == 4 for net in result) or not any(net.version == 6 for net in result):
-        raise AuditError('Cloudflare trust reference unavailable')
+        raise AuditError('cdn-reference-unavailable')
     return result
 
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description=__doc__)
+class SafeParser(argparse.ArgumentParser):
+    def error(self, message):
+        raise AuditError('audit-arguments-invalid')
+
+
+def main(argv=None):
+    parser = SafeParser(description=__doc__)
     parser.add_argument('--nginx-dump', type=Path, required=True)
     parser.add_argument('--origin', required=True)
     parser.add_argument('--client-ip-header', choices=['CF-Connecting-IP'], default='')
-    args = parser.parse_args()
+    parser.add_argument('--upstreams-out', type=Path)
     try:
+        args = parser.parse_args(argv)
         parsed = urlsplit(args.origin)
         if parsed.scheme != 'https' or not parsed.hostname or parsed.path or parsed.username or parsed.password or parsed.query or parsed.fragment:
-            raise AuditError('Invalid Relay origin')
-        networks = [] if args.client_ip_header else official_networks()
-        cf = probe(args.origin, networks)
-        count = audit(args.nginx_dump.read_text(), parsed.hostname, cf, networks, args.client_ip_header)
+            raise AuditError('origin-invalid')
+        try:
+            dump = args.nginx_dump.read_text()
+        except (OSError, UnicodeError):
+            raise AuditError('nginx-dump-unreadable')
+        # Explicit CDN header mode does not need a public health/DNS call to
+        # establish the operator-confirmed topology. Such a call cannot prove
+        # origin isolation and must not indefinitely block a sound local audit.
+        networks, cf = [], False
+        if not args.client_ip_header:
+            try:
+                networks = official_networks()
+                cf = probe(args.origin, networks)
+            except Exception:
+                raise AuditError('cdn-observation-unavailable')
+        upstreams = []
+        count = audit(dump, parsed.hostname, cf, networks, args.client_ip_header, upstreams)
+        if args.upstreams_out:
+            import os
+            fd = os.open(args.upstreams_out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, 'w') as output:
+                os.fchmod(output.fileno(), 0o600)
+                json.dump(upstreams, output)
     except AuditError as error:
-        raise SystemExit(str(error))
+        print(f'FAIL: {error}')
+        return 1
+    except (ValueError, IndexError):
+        print('FAIL: nginx-syntax-unsupported')
+        return 1
     except Exception:
-        raise SystemExit('Ingress preflight failed; network/configuration details withheld')
+        print('FAIL: audit-internal-error')
+        return 1
+    print(f'PASS: forwarding-config-audited ({count} contexts)')
     if args.client_ip_header:
-        print(f'PASS: {count} Relay upstream contexts preserve the configured visitor header')
-        print('Cloudflare visitor-header mode is explicitly configured for this deployment; XFF is not used for attribution')
-        print('Origin bypass prevention cannot be established by this inside-host preflight; restrict origin access to the CDN/tunnel')
-    else:
-        print(f'PASS: {count} Relay upstream contexts append/overwrite the resolved remote address')
-        print('Cloudflare observed; verified edge-only CF-Connecting-IP normalization' if cf else
-              'No Cloudflare observed by health headers/DNS; other hidden CDNs are not excluded')
-    print('Configuration audit only: health responses do not disclose the Relay-resolved IP; no end-to-end attribution claim')
+        print('WARN: origin-isolation-unverified')
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

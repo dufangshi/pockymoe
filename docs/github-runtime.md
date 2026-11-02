@@ -152,50 +152,59 @@ values and hostnames are masked. Existing secret names keep their compatibility
 spelling. Pages requires only the three address secrets, not the six SSH secrets.
 
 The owner-confirmed deployment path is client → Cloudflare → host proxy/tunnel
-→ loopback Relay. The deploy archive includes checksum-verified audit and
-environment helpers. Before modifying the service it privately captures active
-NPM `nginx -T` and resolves the Relay virtual host and loaded includes. In this
-deployment's explicit `CF-Connecting-IP` mode it checks that request headers pass
-through or that `CF-Connecting-IP` is explicitly forwarded unchanged. Dropping it
-or substituting `$remote_addr` stops deployment. Nginx visitor-IP rewriting is
-not required, and a Cloudflare edge in XFF is not used as the visitor identity.
-The audit still rejects unverified upstreams, includes and conditional forwarding.
-Its generic self-hoster XFF audit remains separate from this explicit mode.
+→ Relay. The deploy archive includes checksum-verified audit and environment
+helpers. Before replacing the service it captures NPM's active `nginx -T` output
+privately, resolves generated includes and NPM upstream variables, and checks
+that `CF-Connecting-IP` is passed unchanged. A dropped/substituted header, an
+unresolved include, an invalid upstream or conditional forwarding fails with a
+fixed category, such as `proxy-header-not-forwarded` or `include-unresolved`.
+Public logs never include configuration, socket values, hosts or raw exception
+messages. Unsupported syntax has its own fixed category instead of a blanket
+network/configuration failure. Both scripts have fixed-code fallback errors.
 
-The health probe sends forged forwarding headers but does not expose Relay's
-selected IP; its result cannot establish end-to-end attribution or that direct
-origin access is blocked. This inside-host preflight cannot prove firewall or
-tunnel access restrictions. Restrict the origin to the CDN/tunnel; preserving a
-visitor header alone does not authenticate its source. If the origin is reachable
-through the trusted host proxy without Cloudflare, an attacker can choose a
-forged apparent IP, evading a client bucket or exhausting another apparent-IP
-bucket. Anonymous per-provider/global caps, the storage cap and account/login
-protections still hold; it grants no authentication. See the explicit threat
-model in [mobile sign-in](mobile-host.md#explicit-cdn-visitor-header-mode).
+**NPM Docker networking is measured, not guessed.** Configuration audit may
+resolve a Docker host/gateway alias rather than a loopback literal. Its private
+upstream plan feeds `configure-relay-proxy.py`, which reads only container running
+state/network metadata (not container environment). It opens a short-lived TCP
+connection from the running NPM container to each resolved Relay upstream without
+sending HTTP data. The host's established socket table must show that connection
+at the Relay listener. That observed source is the peer the Relay actually sees;
+a bridge gateway is not assumed to be the source. Host-network observations are
+checked against the client's reported source; bridge observations must belong to
+that container's exact network addresses/gateways. Only those exact observed peers
+are used, never a whole subnet. A private 0600 evidence file retains the observed
+peers for the operator even if existing trust is rejected; public logs show only
+the failure category. An unobserved connection or an existing trust
+setting that excludes the observed peer fails closed (`peer-not-observed` or
+`peer-not-trusted`). A failed container inspect/connect has its own category.
 
-After auditing, `configure-relay-proxy.py` makes a private pre-change `relay.env`
-backup (0700 parent, 0600 file) and independently appends each missing default:
+After successful observation, the helper privately backs up the original
+environment (0700 parent, 0600 file), then independently appends a missing trust
+setting containing the observed peers and the missing explicit visitor-header
+setting. Existing canonical or legacy values remain untouched and are validated.
+Repeated calls neither duplicate entries nor overwrite the original backup.
+The later database backup preserves it; rollback restores it before restarting
+the old binary. No manual edit is needed when these settings are absent. Trust
+that became stale after a container network change is deliberately not silently
+widened: the operator gets `peer-not-trusted` and must review it.
 
-```dotenv
-POCKYMOE_TRUSTED_PROXY_IPS=127.0.0.1
-POCKYMOE_CLIENT_IP_HEADER=CF-Connecting-IP
-```
+The explicit CDN mode does **not** depend on a public health/DNS probe or a
+Cloudflare range download. Cloudflare topology is already an operator-confirmed
+input, and those network calls cannot prove origin isolation. They no longer
+block a deploy merely because an inside-host request is denied or unavailable.
+The audit emits `WARN: origin-isolation-unverified` instead. Direct-origin access
+restrictions/firewalls/tunnel authenticity must be maintained outside this
+preflight. This warning downgrades only that unverifiable property: actual header
+forwarding, loaded includes, upstream connectivity and peer trust remain gates.
 
-A default is appended only when neither its canonical nor legacy key exists.
-Existing values, including empty/incompatible values, remain untouched; preflight
-then requires loopback trust and this deployment's visitor-header mode. Repeated
-steps neither duplicate entries nor overwrite the original backup. The later
-database backup preserves the pre-change environment snapshot, and rollback
-restores it before restarting the old binary. Both settings are runtime server
-environment, not new repository secrets. Self-hosted runtime defaults remain no
-trusted peers and no dedicated header, with the existing explicit XFF-chain mode
-available when peers are configured.
-
-Tracked preview docs alone did not establish the Relay main-host CDN path; the
-owner has now confirmed Cloudflare from public edge headers and DNS. No live
-origin/firewall/tunnel access restriction was queried or verified in this work.
-The deployment audit can establish the loaded forwarding configuration but must
-not be reported as proof that the origin cannot be bypassed.
+The TCP peer observation establishes the container-to-Relay path, not the entire
+public request path. It does not prove a public bypass is impossible or that the
+CDN's visitor value is authentic. If bypassing Cloudflare through a trusted inner
+proxy is possible, an attacker can forge the apparent IP and evade or exhaust an
+IP bucket. Anonymous per-provider/global quotas, the pending-row cap and account/
+login protections still hold. No live origin/firewall/tunnel restriction was
+queried or verified while developing this change. Self-hosted runtime header/
+forwarding defaults are unchanged.
 
 See [mobile sign-in](mobile-host.md) for client IP resolution, anonymous/provider
 limits, consent and remaining scheme risks.
