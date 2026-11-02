@@ -1,3 +1,4 @@
+import { selectControl } from '../selectControl';
 import { expect, test, type Page, type WebSocketRoute } from '@playwright/test';
 import type { DesktopIndex, DesktopThread } from '../../apps/supervisor-web/src/desktop/data/types';
 import type { ThreadActionRequestDto } from '@pockymoe/shared';
@@ -149,7 +150,7 @@ test('desktop language follows navigator and saved preference, updates live, and
   await expect(activity.locator('[data-activity-group="running"] .desktop-activity-time').first()).toHaveText(/^1:\d{2}:\d{2}$/);
   await page.getByRole('button', { name: 'Settings', exact: true }).first().click();
   await page.getByRole('tab', { name: 'Preferences', exact: true }).click();
-  await page.getByRole('combobox', { name: 'Language', exact: true }).selectOption('zh-CN');
+  await selectControl(page, page.getByRole('combobox', { name: 'Language', exact: true }), 'zh-CN');
   await expect.poll(() => page.evaluate(() => (window as any).desktopAppearanceLocale), { timeout: 1000 }).toBe('zh-CN');
   await page.keyboard.press('Escape');
   await expect(activity).toHaveAttribute('aria-label', '活动');
@@ -160,7 +161,7 @@ test('desktop language follows navigator and saved preference, updates live, and
   await expect(page.locator('html')).toHaveAttribute('lang', 'zh-CN');
   await page.getByRole('button', { name: '设置', exact: true }).first().click();
   await page.getByRole('tab', { name: '偏好设置', exact: true }).click();
-  await page.getByRole('combobox', { name: '语言', exact: true }).selectOption('en');
+  await selectControl(page, page.getByRole('combobox', { name: '语言', exact: true }), 'en');
   await expect.poll(() => page.evaluate(() => (window as any).desktopAppearanceLocale), { timeout: 1000 }).toBe('en');
   await page.keyboard.press('Escape');
   await expect(activity).toHaveAttribute('aria-label', 'Activity');

@@ -1,0 +1,20 @@
+.desktop-window-frame { position: fixed; inset: 0; min-width: 0; min-height: 0; background: var(--theme-bg); color: var(--theme-fg); }
+.desktop-window-titlebar { position: absolute; inset: 0 0 auto; z-index: 1000; height: 38px; box-sizing: border-box; border-bottom: 1px solid var(--theme-border); background: var(--matter-chrome, var(--theme-bg)); -webkit-app-region: drag; user-select: none; }
+/* The transform gives full-screen auth/guide pages a containing block below the
+   native title bar; their existing fixed layouts stay inside that viewport. */
+.desktop-window-page { position: absolute; inset: 38px 0 0; min-width: 0; min-height: 0; overflow: auto; transform: translateZ(0); }
+/* The existing workbench tabs are its title bar. Never add a second row. Hidden
+   kept-alive maps cannot suppress chrome on account and signed-out pages. */
+.desktop-window-frame:has(.desktop-map-scene:not([hidden]) :is(.matter-tabs-row, .matter-topbar), .desktop-route:not([hidden]) :is(.matter-tabs-row, .matter-topbar)) > .desktop-window-titlebar { display: none; }
+.desktop-window-frame:has(.desktop-map-scene:not([hidden]) :is(.matter-tabs-row, .matter-topbar), .desktop-route:not([hidden]) :is(.matter-tabs-row, .matter-topbar)) > .desktop-window-page { inset: 0; transform: none; }
+.desktop-window-frame :is(header, nav, .matter-tabs-row, .matter-sidebar, .matter-sidebar-title, .matter-section-heading) { user-select: none; }
+.desktop-window-frame :is(button, a, input, textarea, [contenteditable], [role=button], [role=combobox]) { -webkit-app-region: no-drag; }
+.desktop-window-frame :is(input, textarea, [contenteditable]) { user-select: text; }
+
+.desktop-window-page { scrollbar-width: none; }
+.desktop-window-page::-webkit-scrollbar { display: none; }
+.desktop-window-page .auth-shell { min-height: 100%; }
+.desktop-window-scroll-track { position: absolute; z-index: 1001; top: 38px; bottom: 0; right: 0; width: var(--scrollbar-size, 8px); pointer-events: none; background: var(--scrollbar-rail-y, transparent); }
+.desktop-window-scroll-thumb { position: absolute; top: 0; left: 2px; right: 2px; border-radius: var(--scrollbar-radius, 999px); background: var(--scrollbar-thumb-idle, color-mix(in oklab, var(--theme-fg) 16%, transparent)); pointer-events: auto; touch-action: none; }
+.desktop-window-scroll-thumb:active { background: var(--scrollbar-thumb-active, var(--theme-accent-solid)); }
+@media (hover: hover) { .desktop-window-frame:hover .desktop-window-scroll-thumb { background: var(--scrollbar-thumb, color-mix(in oklab, var(--theme-fg) 32%, transparent)); } }

@@ -1,3 +1,4 @@
+import { changeControl } from '../test/formControls';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, expect, it, vi } from 'vitest';
 import { MemoryRouter } from 'react-router-dom';
@@ -81,9 +82,9 @@ it('reads the settings and saves limits in bytes', async () => {
   expect(toggle('Limit loaded threads')).not.toBeChecked();
   expect(field('Limit loaded threads')).toBeDisabled();
   fireEvent.click(toggle('Limit loaded threads'));
-  fireEvent.change(field('Limit loaded threads'), { target: { value: '6' } });
+  changeControl(field('Limit loaded threads'), { target: { value: '6' } });
   fireEvent.click(toggle('Limit harness memory'));
-  fireEvent.change(field('Limit harness memory'), { target: { value: '2.5' } });
+  changeControl(field('Limit harness memory'), { target: { value: '2.5' } });
   fireEvent.click(toggle('Release idle threads'));
   fireEvent.click(memory().getByRole('button', { name: 'Save' }));
   await waitFor(() => expect(updateHarnessResourceSettings).toHaveBeenCalledWith({
@@ -96,13 +97,13 @@ it('rejects values the Supervisor would reject', async () => {
   renderAt();
   await waitFor(() => expect(field('Release idle threads')).toHaveValue(10));
   const save = memory().getByRole('button', { name: 'Save' });
-  fireEvent.change(field('Release idle threads'), { target: { value: '1441' } });
+  changeControl(field('Release idle threads'), { target: { value: '1441' } });
   expect(screen.getByText('Enter 1–1440 minutes.')).toBeVisible();
   expect(save).toBeDisabled();
-  fireEvent.change(field('Release idle threads'), { target: { value: '1440' } });
+  changeControl(field('Release idle threads'), { target: { value: '1440' } });
   expect(save).toBeEnabled();
   fireEvent.click(toggle('Limit harness memory'));
-  fireEvent.change(field('Limit harness memory'), { target: { value: '0.2' } });
+  changeControl(field('Limit harness memory'), { target: { value: '0.2' } });
   expect(screen.getByText('Enter at least 0.25 GiB.')).toBeVisible();
   expect(save).toBeDisabled();
   fireEvent.click(save);
@@ -182,14 +183,14 @@ it('saves one age with what to clean up, then cleans up in the background with p
   const clean = await disk.findByRole('button', { name: 'Clean up now' });
   expect(clean).toBeDisabled();
   fireEvent.click(disk.getByRole('checkbox', { name: 'Clean up automatically' }));
-  fireEvent.change(disk.getByRole('spinbutton', { name: 'Clean up automatically' }), { target: { value: '14' } });
+  changeControl(disk.getByRole('spinbutton', { name: 'Clean up automatically' }), { target: { value: '14' } });
   // Nothing chosen cannot be saved.
   fireEvent.click(disk.getByRole('checkbox', { name: 'Command output' }));
   expect(disk.getByText('Choose something to clean up.')).toBeVisible();
   expect(disk.getByRole('button', { name: 'Save' })).toBeDisabled();
   fireEvent.click(disk.getByRole('checkbox', { name: 'Command output' }));
-  fireEvent.change(disk.getByRole('combobox', { name: 'Command text' }), { target: { value: 'truncate' } });
-  fireEvent.change(disk.getByRole('spinbutton', { name: 'Keep the first' }), { target: { value: '200' } });
+  changeControl(disk.getByRole('combobox', { name: 'Command text' }), { target: { value: 'truncate' } });
+  changeControl(disk.getByRole('spinbutton', { name: 'Keep the first' }), { target: { value: '200' } });
   fireEvent.click(disk.getByRole('checkbox', { name: 'File-change diffs' }));
   fireEvent.click(disk.getByRole('button', { name: 'Save' }));
   await waitFor(() => expect(updateStorageSettings).toHaveBeenCalledWith(

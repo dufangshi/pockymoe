@@ -7,7 +7,7 @@ use rusqlite::{params, Connection};
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use crate::{usage::Tokens, Supervisor};
+use crate::Supervisor;
 
 enum Zone {
     Iana(chrono_tz::Tz),
@@ -42,173 +42,204 @@ impl Zone {
     }
 }
 
+const ORIGINS: [&str; 5] = ["owner", "guest", "agent", "automation", "unknown"];
+
 fn days(range: &str) -> Result<i64> {
     match range {
         "today" => Ok(1),
         "7d" => Ok(7),
         "30d" => Ok(30),
-        _ => bail!("range must be today, 7d or 30d"),
+        "all" => Ok(0),
+        _ => bail!("range must be today, 7d, 30d or all"),
     }
 }
-
-/// Validate before starting database work in the HTTP blocking pool.
 pub fn validate_query(range: &str, tz: &str) -> Result<()> {
     days(range)?;
     Zone::parse(tz)?;
     Ok(())
 }
-
-#[derive(Default, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct Bucket {
-    turns: u64,
-    failed: u64,
-    tokens: u64,
-    // None propagates through aggregates; unknown usage/prices are never free.
-    cost_usd: Option<f64>,
+pub fn validate_origin(origin: &str) -> Result<()> {
+    anyhow::ensure!(
+        origin == "all" || ORIGINS.contains(&origin),
+        "origin must be all, owner, guest, agent, automation or unknown"
+    );
+    Ok(())
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Bucket {
+    #[serde(flatten)]
+    usage: crate::usage_accounting::UsageSum,
+    failed: u64,
+}
 impl Bucket {
     fn empty() -> Self {
         Self {
-            cost_usd: Some(0.0),
-            ..Self::default()
+            usage: crate::usage_accounting::UsageSum::empty(),
+            failed: 0,
         }
     }
-
-    fn add(&mut self, failed: bool, tokens: u64, cost: Option<f64>) {
-        self.turns += 1;
+    fn add(&mut self, failed: bool, rows: &[crate::usage_accounting::ModelUsage]) {
         self.failed += u64::from(failed);
-        self.tokens = self.tokens.saturating_add(tokens);
-        self.cost_usd = self.cost_usd.zip(cost).map(|(a, b)| a + b);
+        self.usage.add_turn(rows);
     }
 }
 
 impl Supervisor {
     pub fn stats_summary(&self, range: &str, tz: &str) -> Result<Value> {
+        self.stats_summary_with_origin(range, tz, "all")
+    }
+    pub fn stats_summary_with_origin(&self, range: &str, tz: &str, origin: &str) -> Result<Value> {
         validate_query(range, tz)?;
+        validate_origin(origin)?;
         let catalog = self.model_pricing();
         self.db
-            .with(|conn| summarize(conn, range, tz, Utc::now(), &catalog))
+            .with(|c| summarize_origin(c, range, tz, origin, Utc::now(), &catalog))
     }
 }
-
+#[cfg(test)]
 fn summarize(
-    conn: &Connection,
+    c: &Connection,
     range: &str,
     tz: &str,
     now: DateTime<Utc>,
     catalog: &Value,
 ) -> Result<Value> {
+    summarize_origin(c, range, tz, "all", now, catalog)
+}
+fn summarize_origin(
+    c: &Connection,
+    range: &str,
+    tz: &str,
+    origin: &str,
+    now: DateTime<Utc>,
+    catalog: &Value,
+) -> Result<Value> {
+    validate_origin(origin)?;
     let zone = Zone::parse(tz)?;
     let today = zone.date(now);
-    let first = today - Duration::days(days(range)? - 1);
-    // Use a generous UTC bound and filter by local date below. This also handles
-    // zones where DST changes at midnight without guessing a nonexistent time.
-    let lower = (first.and_hms_opt(0, 0, 0).unwrap().and_utc() - Duration::days(1)).to_rfc3339();
-    let mut daily = BTreeMap::new();
-    for day in 0..days(range)? {
-        daily.insert((first + Duration::days(day)).to_string(), Bucket::empty());
+    let count = days(range)?;
+    let first = (count > 0).then(|| today - Duration::days(count - 1));
+    let lower =
+        first.map(|d| (d.and_hms_opt(0, 0, 0).unwrap().and_utc() - Duration::days(1)).to_rfc3339());
+    let mut daily: BTreeMap<String, Bucket> = BTreeMap::new();
+    if let Some(first) = first {
+        for day in 0..count {
+            daily.insert((first + Duration::days(day)).to_string(), Bucket::empty());
+        }
     }
     let mut hourly =
         (range == "today").then(|| (0..24).map(|_| Bucket::empty()).collect::<Vec<_>>());
-    let mut models: BTreeMap<String, Bucket> = BTreeMap::new();
-    let mut workspaces: BTreeMap<String, (String, Bucket, String)> = BTreeMap::new();
+    let mut models: BTreeMap<String, crate::usage_accounting::UsageSum> = BTreeMap::new();
+    let mut origins: BTreeMap<&str, crate::usage_accounting::UsageSum> = ORIGINS
+        .into_iter()
+        .map(|o| (o, crate::usage_accounting::UsageSum::empty()))
+        .collect();
+    let mut workspaces: BTreeMap<String, (String, Bucket, Option<String>)> = BTreeMap::new();
     let mut threads: BTreeMap<String, (String, String, u64, u64)> = BTreeMap::new();
     let mut totals = Bucket::empty();
-    let (mut completed, mut interrupted) = (0u64, 0u64);
-    let mut tokens = Tokens::default();
+    let (mut completed, mut interrupted, mut undated) = (0u64, 0u64, 0u64);
     let mut durations = Vec::new();
-    let mut stmt = conn.prepare_cached(
-        "SELECT tt.status, tt.started_at, tt.completed_at, tt.model, tt.token_usage_json,
-                tt.pricing_model_key, tt.pricing_tier_key, t.id, t.title, t.workspace_id, w.label
-         FROM thread_turns tt JOIN threads t ON t.id=tt.thread_id
-         LEFT JOIN workspaces w ON w.id=t.workspace_id
-         WHERE julianday(tt.started_at)>=julianday(?1) AND julianday(tt.started_at)<=julianday(?2)",
-    )?;
-    let mut rows = stmt.query(params![lower, now.to_rfc3339()])?;
-    while let Some(row) = rows.next()? {
-        let started: String = row.get(1)?;
-        let Ok(start) = DateTime::parse_from_rfc3339(&started) else {
+    // Keep a bounded range scan on the expression index for finite ranges.
+    let bounds = if count > 0 {
+        "julianday(tt.started_at)>=julianday(?1) AND julianday(tt.started_at)<=julianday(?2)"
+    } else {
+        "(julianday(tt.started_at) IS NULL OR julianday(tt.started_at)<=julianday(?2)) AND ?1 IS NULL"
+    };
+    let sql=format!("SELECT tt.status,tt.started_at,tt.completed_at,tt.model,tt.token_usage_json,
+        tt.pricing_model_key,tt.pricing_tier_key,t.id,t.title,t.workspace_id,w.label,tt.origin
+        FROM thread_turns tt JOIN threads t ON t.id=tt.thread_id LEFT JOIN workspaces w ON w.id=t.workspace_id
+        WHERE tt.history_copy_of IS NULL AND (?3='all' OR tt.origin=?3) AND {bounds}");
+    let mut stmt = c.prepare_cached(&sql)?;
+    let mut query = stmt.query(params![lower, now.to_rfc3339(), origin])?;
+    while let Some(row) = query.next()? {
+        let started: Option<String> = row.get(1)?;
+        let start = started
+            .as_deref()
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            .map(|d| d.with_timezone(&Utc));
+        let local = start.map(|s| zone.date(s));
+        if count > 0 && local.is_none_or(|d| d < first.unwrap() || d > today) {
             continue;
-        };
-        let date = zone.date(start.with_timezone(&Utc)).to_string();
-        let Some(day) = daily.get_mut(&date) else {
-            continue;
-        };
+        }
+        if local.is_none() {
+            undated += 1;
+        }
         let status: String = row.get(0)?;
         let end: Option<String> = row.get(2)?;
         let model: Option<String> = row.get(3)?;
-        let usage: Option<String> = row.get(4)?;
-        let pricing_model: Option<String> = row.get(5)?;
+        let raw: Option<String> = row.get(4)?;
+        let usage: Option<Value> = raw.and_then(|s| serde_json::from_str(&s).ok());
+        let price_model: Option<String> = row.get(5)?;
         let tier: Option<String> = row.get(6)?;
-        let thread: String = row.get(7)?;
+        let id: String = row.get(7)?;
         let title: String = row.get(8)?;
         let workspace: String = row.get(9)?;
         let label: Option<String> = row.get(10)?;
-        let stored: Option<Value> = usage.and_then(|raw| serde_json::from_str(&raw).ok());
-        let normalized = stored.as_ref().and_then(crate::usage::normalize_usage);
-        let parsed = normalized
-            .as_ref()
-            .and_then(|usage| Tokens::parse(&usage["total"]));
-        // Keep accumulated per-request prices when the pricing helper accepts
-        // their signature; legacy flat token JSON is normalized only as needed.
-        let price_usage = stored
-            .as_ref()
-            .filter(|v| v.get("total").is_some())
-            .or(normalized.as_ref());
-        let cost = price_usage
-            .and_then(|usage| {
-                crate::usage::estimate_price_with_catalog(
-                    usage,
-                    pricing_model.as_deref().or(model.as_deref()),
-                    tier.as_deref(),
-                    catalog,
-                    Some(&started),
-                )
-            })
-            .and_then(|price| price["totalUsd"].as_f64());
-        let turn_tokens = parsed.as_ref().map_or(0, |t| t.total_tokens);
-        if let Some(parsed) = parsed {
-            tokens = tokens.add(&parsed);
-        }
+        let turn_origin: String = row.get(11)?;
+        let parts = crate::usage_accounting::components(
+            usage.as_ref(),
+            price_model.as_deref().or(model.as_deref()),
+            tier.as_deref(),
+            catalog,
+            started.as_deref(),
+        );
         let failed = status == "failed";
         completed += u64::from(status == "completed");
         interrupted += u64::from(status == "interrupted");
-        totals.add(failed, turn_tokens, cost);
-        day.add(failed, turn_tokens, cost);
-        if let Some(hours) = &mut hourly {
-            hours[zone.hour(start.with_timezone(&Utc)) as usize].add(failed, turn_tokens, cost);
+        totals.add(failed, &parts);
+        if let Some(local) = local {
+            daily
+                .entry(local.to_string())
+                .or_insert_with(Bucket::empty)
+                .add(failed, &parts);
+            if let Some(hours) = &mut hourly {
+                hours[zone.hour(start.unwrap()) as usize].add(failed, &parts);
+            }
         }
-        models
-            .entry(model.or(pricing_model).unwrap_or_else(|| "unknown".into()))
-            .or_insert_with(Bucket::empty)
-            .add(failed, turn_tokens, cost);
-        let last = end
+        origins
+            .get_mut(turn_origin.as_str())
+            .unwrap()
+            .add_turn(&parts);
+        let mut per_model: BTreeMap<&str, Vec<crate::usage_accounting::ModelUsage>> =
+            BTreeMap::new();
+        for part in &parts {
+            per_model.entry(&part.model).or_default().push(part.clone());
+        }
+        for (model, parts) in per_model {
+            models
+                .entry(model.to_owned())
+                .or_insert_with(crate::usage_accounting::UsageSum::empty)
+                .add_turn(&parts);
+        }
+        let finish = end
             .as_deref()
             .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-            .filter(|end| *end >= start)
-            .unwrap_or(start);
+            .map(|d| d.with_timezone(&Utc));
+        let last = finish
+            .filter(|end| start.is_some_and(|s| *end >= s))
+            .or(start)
+            .map(|d| d.to_rfc3339());
         let ws = workspaces.entry(workspace.clone()).or_insert_with(|| {
             (
                 label.unwrap_or_else(|| workspace.clone()),
                 Bucket::empty(),
-                last.with_timezone(&Utc).to_rfc3339(),
+                None,
             )
         });
-        ws.1.add(failed, turn_tokens, cost);
-        let activity = last.with_timezone(&Utc).to_rfc3339();
-        if activity > ws.2 {
-            ws.2 = activity;
+        ws.1.add(failed, &parts);
+        if last > ws.2 {
+            ws.2 = last;
         }
         if matches!(status.as_str(), "completed" | "failed" | "interrupted") {
-            if let Some(end) = end
-                .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
-                .filter(|end| *end >= start)
+            if let Some(ms) = start
+                .zip(finish)
+                .filter(|(s, e)| e >= s)
+                .map(|(s, e)| (e - s).num_milliseconds() as u64)
             {
-                let ms = (end - start).num_milliseconds() as u64;
                 durations.push(ms);
-                let entry = threads.entry(thread).or_insert((title, workspace, 0, 0));
+                let entry = threads.entry(id).or_insert((title, workspace, 0, 0));
                 entry.2 = entry.2.saturating_add(ms);
                 entry.3 += 1;
             }
@@ -220,11 +251,11 @@ fn summarize(
     let p50 = if durations.is_empty() {
         None
     } else {
-        let mid = durations.len() / 2;
+        let m = durations.len() / 2;
         Some(if durations.len() % 2 == 0 {
-            (durations[mid - 1] as f64 + durations[mid] as f64) / 2.0
+            (durations[m - 1] as f64 + durations[m] as f64) / 2.0
         } else {
-            durations[mid] as f64
+            durations[m] as f64
         })
     };
     let mut longest: Vec<_> = threads.into_iter().collect();
@@ -233,31 +264,61 @@ fn summarize(
             .total_cmp(&(a.1 .2 as f64 / a.1 .3 as f64))
             .then_with(|| a.0.cmp(&b.0))
     });
-    let mut by_workspace: Vec<_> = workspaces.into_iter().collect();
-    by_workspace.sort_by(|a, b| b.1 .1.turns.cmp(&a.1 .1.turns).then_with(|| a.0.cmp(&b.0)));
     let mut by_model: Vec<_> = models.into_iter().collect();
-    by_model.sort_by(|a, b| b.1.turns.cmp(&a.1.turns).then_with(|| a.0.cmp(&b.0)));
-    let active_threads: u64 = conn.query_row("SELECT count(*) FROM threads WHERE status IN ('running','recovering') AND closed_at IS NULL", [], |r|r.get(0))?;
-    let running_turns: u64 = conn.query_row(
-        "SELECT count(*) FROM thread_turns WHERE status IN ('inProgress','recovering')",
-        [],
-        |r| r.get(0),
-    )?;
-    let mut summary = json!({
-        "range":range, "generatedAt":now.to_rfc3339(),
-        "totals":{"turns":totals.turns,"completed":completed,"failed":totals.failed,"interrupted":interrupted,
-            "avgDurationMs":avg,"p50DurationMs":p50,"durationSamples":durations.len(),"inputTokens":tokens.input_tokens,"outputTokens":tokens.output_tokens,
-            "cachedTokens":tokens.cached_input_tokens,"costUsd":totals.cost_usd},
-        "daily":daily.into_iter().map(|(date,b)| json!({"date":date,"turns":b.turns,"failed":b.failed,"tokens":b.tokens,"costUsd":b.cost_usd})).collect::<Vec<_>>(),
-        "byModel":by_model.into_iter().map(|(model,b)|json!({"model":model,"turns":b.turns,"tokens":b.tokens,"costUsd":b.cost_usd})).collect::<Vec<_>>(),
-        "byWorkspace":by_workspace.into_iter().map(|(id,(label,b,last))|json!({"workspaceId":id,"label":label,"turns":b.turns,"tokens":b.tokens,"costUsd":b.cost_usd,"lastActivityAt":last})).collect::<Vec<_>>(),
-        "longestThreads":longest.into_iter().take(5).map(|(id,(title,workspace,ms,n))|json!({"threadId":id,"title":title,"workspaceId":workspace,"durationMs":ms as f64/n as f64})).collect::<Vec<_>>(),
-        "activeThreads":active_threads,"runningTurns":running_turns
+    by_model.sort_by(|a, b| b.1.tokens.cmp(&a.1.tokens).then_with(|| a.0.cmp(&b.0)));
+    let mut by_workspace: Vec<_> = workspaces.into_iter().collect();
+    by_workspace.sort_by(|a, b| {
+        b.1 .1
+            .usage
+            .turns
+            .cmp(&a.1 .1.usage.turns)
+            .then_with(|| a.0.cmp(&b.0))
+    });
+    let active:u64=c.query_row("SELECT count(*) FROM threads WHERE status IN ('running','recovering') AND closed_at IS NULL",[],|r|r.get(0))?;
+    let running:u64=c.query_row("SELECT count(*) FROM thread_turns tt JOIN threads t ON t.id=tt.thread_id WHERE tt.history_copy_of IS NULL AND tt.status IN ('inProgress','recovering') AND t.status IN ('running','recovering')",[],|r|r.get(0))?;
+    let (mut excluded_undated, mut excluded_copies) = (0u64, 0u64);
+    let mut coverage_stmt=c.prepare_cached("SELECT tt.started_at,tt.history_copy_of FROM thread_turns tt JOIN threads t ON t.id=tt.thread_id WHERE ?1='all' OR tt.origin=?1")?;
+    let mut coverage_rows = coverage_stmt.query([origin])?;
+    while let Some(row) = coverage_rows.next()? {
+        let copied: Option<String> = row.get(1)?;
+        if copied.is_some() {
+            excluded_copies += 1;
+            continue;
+        }
+        let started: Option<String> = row.get(0)?;
+        if started
+            .as_deref()
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            .is_none()
+        {
+            excluded_undated += 1;
+        }
+    }
+    let mut total = serde_json::to_value(&totals)?;
+    total["completed"] = json!(completed);
+    total["interrupted"] = json!(interrupted);
+    total["avgDurationMs"] = json!(avg);
+    total["p50DurationMs"] = json!(p50);
+    total["durationSamples"] = json!(durations.len());
+    let mut summary = json!({"range":range,"origin":origin,"generatedAt":now.to_rfc3339(),"totals":total,
+        "daily":daily.into_iter().map(|(date,b)|{let mut v=json!(b);v["date"]=json!(date);v}).collect::<Vec<_>>(),
+        "byModel":by_model.into_iter().map(|(model,b)|{let mut v=json!(b);v["model"]=json!(model);v}).collect::<Vec<_>>(),
+        "byOrigin":origins.iter().map(|(origin,b)|{let mut v=json!(b);v["origin"]=json!(origin);v}).collect::<Vec<_>>(),
+        "byWorkspace":by_workspace.into_iter().map(|(id,(label,b,last))|{let mut v=json!(b);v["workspaceId"]=json!(id);v["label"]=json!(label);v["lastActivityAt"]=json!(last);v}).collect::<Vec<_>>(),
+        "longestThreads":longest.into_iter().take(5).map(|(id,(title,ws,ms,n))|json!({"threadId":id,"title":title,"workspaceId":ws,"durationMs":ms as f64/n as f64})).collect::<Vec<_>>(),
+        "activeThreads":active,"runningTurns":running,
+        "coverage":{"source":"persisted","partialUsageTurns":totals.usage.partial_usage_turns,"missingUsageTurns":totals.usage.turns-totals.usage.usage_turns,"unknownOriginTurns":origins["unknown"].turns,"undatedTurns":undated,"excludedUndatedTurns":if count>0 {excluded_undated}else{0},"excludedHistoryCopies":excluded_copies}
     });
     if let Some(hours) = hourly {
-        summary["hourly"] = json!(hours.into_iter().enumerate().map(|(hour,b)|
-            json!({"hour":hour,"turns":b.turns,"failed":b.failed,"tokens":b.tokens,"costUsd":b.cost_usd})
-        ).collect::<Vec<_>>());
+        summary["hourly"] = json!(hours
+            .into_iter()
+            .enumerate()
+            .map(|(hour, b)| {
+                let mut v = json!(b);
+                v["hour"] = json!(hour);
+                v
+            })
+            .collect::<Vec<_>>());
     }
     Ok(summary)
 }
@@ -321,6 +382,124 @@ mod tests {
     }
 
     #[test]
+    fn stats_audit_origins_statuses_unknown_dates_and_copied_context_reconcile() -> Result<()> {
+        let (_dir, db) = db();
+        db.with(|c| {
+            for (id, origin, status) in [
+                ("o", "owner", "completed"),
+                ("g", "guest", "failed"),
+                ("a", "agent", "interrupted"),
+                ("auto", "automation", "recovering"),
+                ("u", "unknown", "completed"),
+            ] {
+                add(c, id, status, "2026-11-01T10:00:00Z", None, "gpt-6.1-sol")?;
+                c.execute(
+                    "UPDATE thread_turns SET origin=?1 WHERE id=?2",
+                    params![origin, id],
+                )?;
+            }
+            c.execute("UPDATE thread_turns SET started_at=NULL WHERE id='g'", [])?;
+            c.execute(
+                "UPDATE thread_turns SET started_at='2026-11-01' WHERE id='u'",
+                [],
+            )?;
+            add(
+                c,
+                "copy",
+                "completed",
+                "2026-11-01T10:00:00Z",
+                None,
+                "gpt-6.1-sol",
+            )?;
+            c.execute(
+                "UPDATE thread_turns SET history_copy_of='o' WHERE id='copy'",
+                [],
+            )?;
+            let now = "2026-11-01T12:00:00Z".parse()?;
+            let all = summarize(c, "all", "UTC", now, crate::usage::pricing())?;
+            assert_eq!(all["totals"]["turns"], 5);
+            assert_eq!(all["totals"]["completed"], 2);
+            assert_eq!(all["totals"]["failed"], 1);
+            assert_eq!(all["totals"]["interrupted"], 1);
+            assert_eq!(all["coverage"]["undatedTurns"], 2);
+            assert_eq!(all["coverage"]["excludedHistoryCopies"], 1);
+            for origin in ORIGINS {
+                let filtered =
+                    summarize_origin(c, "all", "UTC", origin, now, crate::usage::pricing())?;
+                assert_eq!(filtered["totals"]["turns"], 1);
+            }
+            let today = summarize(c, "today", "UTC", now, crate::usage::pricing())?;
+            assert_eq!(today["totals"]["turns"], 3);
+            assert_eq!(today["coverage"]["excludedUndatedTurns"], 2);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn stats_audit_all_includes_undated_and_keeps_known_price_subtotal() -> Result<()> {
+        let (_dir, db) = db();
+        db.with(|c| {
+            add(
+                c,
+                "dated",
+                "completed",
+                "2026-11-01T10:00:00Z",
+                Some("2026-11-01T10:00:01Z"),
+                "gpt-6.1-sol",
+            )?;
+            add(
+                c,
+                "undated",
+                "failed",
+                "2026-11-01T10:00:00Z",
+                None,
+                "unpriced-model",
+            )?;
+            c.execute(
+                "UPDATE thread_turns SET started_at=NULL WHERE id='undated'",
+                [],
+            )?;
+            let stats = summarize(
+                c,
+                "all",
+                "UTC",
+                "2026-11-02T12:00:00Z".parse()?,
+                crate::usage::pricing(),
+            )?;
+            assert_eq!(stats["totals"]["turns"], 2);
+            assert_eq!(stats["coverage"]["undatedTurns"], 1);
+            assert!(stats["totals"]["costUsd"].as_f64().unwrap() > 0.0);
+            assert_eq!(stats["totals"]["unpricedTokens"], 150);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn stats_audit_native_requests_use_actual_models_and_canonical_aliases() -> Result<()> {
+        let (_dir, db) = db();
+        db.with(|c| {
+            add(c,"native","completed","2026-11-01T10:00:00Z",None,"opus")?;
+            let requests=json!([
+                {"messageId":"parent","parent":true,"model":"claude-opus-5-5","total":{"inputTokens":100,"cachedInputTokens":40,"outputTokens":10}},
+                {"messageId":"child","parent":false,"model":"gpt-6.1-sol","total":{"inputTokens":200,"cacheWriteInputTokens":20,"outputTokens":30,"reasoningOutputTokens":5}}
+            ]);
+            c.execute("UPDATE thread_turns SET token_usage_json=?1 WHERE id='native'",[json!({"total":{"inputTokens":300,"cachedInputTokens":40,"cacheWriteInputTokens":20,"outputTokens":40},"last":{"inputTokens":200,"outputTokens":30},"requests":requests}).to_string()])?;
+            add(c,"alias","completed","2026-11-01T10:01:00Z",None,"6.1 Sol")?;
+            let stats=summarize(c,"today","UTC","2026-11-01T12:00:00Z".parse()?,crate::usage::pricing())?;
+            assert_eq!(stats["totals"]["tokens"],490);
+            assert_eq!(stats["byModel"].as_array().unwrap().len(),2);
+            let sol=stats["byModel"].as_array().unwrap().iter().find(|m|m["model"]=="gpt-6.1-sol").unwrap();
+            assert_eq!(sol["turns"],2);
+            assert_eq!(sol["tokens"],380);
+            assert_eq!(sol["cacheWriteTokens"],20);
+            assert_eq!(sol["reasoningTokens"],5);
+            assert_eq!(sol["knownRequests"],1);
+            assert!(sol["requests"].is_null());
+            Ok(())
+        })
+    }
+
+    #[test]
     fn stats_today_hourly_zero_fill_and_unknown_costs() -> Result<()> {
         let (_dir, db) = db();
         db.with(|conn| {
@@ -334,10 +513,13 @@ mod tests {
             )?;
             assert_eq!(empty["hourly"].as_array().unwrap().len(), 24);
             for hour in 0..24 {
-                assert_eq!(
-                    empty["hourly"][hour],
+                for (key, value) in
                     json!({"hour":hour,"turns":0,"failed":0,"tokens":0,"costUsd":0.0})
-                );
+                        .as_object()
+                        .unwrap()
+                {
+                    assert_eq!(&empty["hourly"][hour][key], value);
+                }
             }
             add(
                 conn,
@@ -381,7 +563,8 @@ mod tests {
             assert_eq!(stats["hourly"][1]["turns"], 2);
             assert_eq!(stats["hourly"][1]["failed"], 1);
             assert_eq!(stats["hourly"][1]["tokens"], 300);
-            assert!(stats["hourly"][1]["costUsd"].is_null());
+            assert!(stats["hourly"][1]["costUsd"].as_f64().unwrap() > 0.0);
+            assert_eq!(stats["hourly"][1]["unpricedTokens"], 150);
             assert_eq!(stats["hourly"][23]["costUsd"], 0.0);
             assert_eq!(
                 stats["hourly"]
@@ -490,8 +673,9 @@ mod tests {
             assert_eq!(stats["activeThreads"], 1);
             assert_eq!(stats["runningTurns"], 1);
             let seven = summarize(conn, "7d", "UTC", now, crate::usage::pricing())?;
-            assert!(seven["totals"]["costUsd"].is_null());
-            assert!(seven["byWorkspace"][0]["costUsd"].is_null());
+            assert_eq!(seven["totals"]["costUsd"], totals["costUsd"]);
+            assert_eq!(seven["totals"]["unpricedTokens"], 150);
+            assert_eq!(seven["byWorkspace"][0]["costUsd"], totals["costUsd"]);
             assert!(seven["byModel"]
                 .as_array()
                 .unwrap()

@@ -1,3 +1,4 @@
+import { selectControl } from './selectControl';
 import { randomUUID } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
@@ -368,7 +369,7 @@ test('composer image preview portal retains expansion and settings keeps model, 
     exact: true,
   });
   await expect(permissions).toHaveValue('danger-full-access');
-  await permissions.selectOption('workspace-write');
+  await selectControl(page, permissions, 'workspace-write');
   await expect(composer).toHaveAttribute('data-composer-layout', 'expanded');
   await expect
     .poll(

@@ -3,7 +3,11 @@ import { formatNumber, useI18n } from '@pockymoe/thread-ui/i18n';
 import { compact, deviceColor, duration, exact, money, turns, type StatsSummary } from './model';
 
 export interface ChartSource { deviceId: string; name: string; summary: StatsSummary }
-function Tip({ children }: { children: ReactNode }) { return <div className="pd-chart-tip" role="tooltip">{children}</div>; }
+function Tip({ children, beside }: { children: ReactNode; beside?: { from: number; to: number } | undefined }) {
+  // Beside the hovered column, on whichever side has room, so the tip never covers what it describes.
+  const style = beside && (beside.from + beside.to < 1 ? { left: `calc(${beside.to * 100}% + 6px)`, right: 'auto' } : { right: `calc(${(1 - beside.from) * 100}% + 6px)`, left: 'auto' });
+  return <div className="pd-chart-tip" role="tooltip" {...(style ? { style } : {})}>{children}</div>;
+}
 export function Sparkline({ days, color, label }: { days: StatsSummary['daily']; color: string; label: string }) {
   const { t } = useI18n();
   const [selected, setSelected] = useState<number | null>(null);
@@ -49,7 +53,15 @@ function StackedChart({ sources, labels, ticks, label, hourly = false, runtime =
         </g>;
       })}
     </svg>
-    {selected !== null ? <Tip><strong>{labels[selected]}</strong>{sources.map(s => <span key={s.deviceId}><i style={{ background: deviceColor(s.deviceId) }} />{s.name}<b>{format(value(s, selected))}</b></span>)}</Tip> : null}
+    {selected !== null ? (() => {
+      const rows = sources.filter(s => (value(s, selected) ?? 0) > 0).sort((a, b) => value(b, selected)! - value(a, selected)!);
+      const unknown = sources.filter(s => value(s, selected) === null).length;
+      return <Tip beside={{ from: (left + selected * step) / 620, to: (left + (selected + 1) * step) / 620 }}><strong>{labels[selected]}</strong>
+        {rows.map(s => <span key={s.deviceId}><i style={{ background: deviceColor(s.deviceId) }} />{s.name}<b>{format(value(s, selected))}</b></span>)}
+        {!rows.length && !unknown ? <span>{format(0)}</span> : null}
+        {unknown ? <span className="pd-chart-tip-muted" title={sources.filter(s => value(s, selected) === null).map(s => s.name).join(t('desktopDevices.listSeparator'))}>{unknown} · {t('desktopDevices.noData')}</span> : null}
+      </Tip>;
+    })() : null}
     <div className="pd-legend">{sources.map(s => <span key={s.deviceId}><i style={{ background: deviceColor(s.deviceId) }} />{s.name}</span>)}</div>
     {runtime ? <div className="pd-chart-caption">{t('desktopDevices.runtimeCaption')}</div> : hourly ? <div className="pd-chart-caption">{t('desktopDevices.hourlyCaption')}</div> : null}
   </div>;
@@ -63,7 +75,7 @@ export function HourlyActivityChart({ sources, runtime = false }: { sources: Hou
   return <StackedChart sources={sources} labels={Array.from({ length: 24 }, (_, hour) => hourRange(hour))} ticks={Array.from({ length: 24 }, (_, hour) => hourLabel(hour))} label={runtime ? t('desktopDevices.hourlyRuntimeChart') : t('desktopDevices.hourlyTurnsChart')} hourly runtime={runtime} />;
 }
 
-export interface UsageBucket { date: string; tokens: number | null; costUsd: number | null }
+export interface UsageBucket { date: string; tokens: number | null; costUsd: number | null; pricePartial?: boolean; unpricedTokens?: number; partialUsageTurns?: number }
 export function UsageChart({ daily, mode, hourly = false }: { daily: UsageBucket[]; mode: 'tokens' | 'cost'; hourly?: boolean }) {
   const { t } = useI18n();
   const [selected, setSelected] = useState<number | null>(null);
@@ -71,7 +83,7 @@ export function UsageChart({ daily, mode, hourly = false }: { daily: UsageBucket
   const maximum = Math.max(0, ...values.map(value => value ?? 0)), scale = Math.max(maximum, Number.EPSILON);
   const known = values.some(value => value !== null);
   const left = 42, baseline = 154, step = 570 / Math.max(1, daily.length), barWidth = Math.min(44, step * .62);
-  const format = (value: number | null) => value == null ? (mode === 'tokens' ? t('desktopDevices.unknownUsage') : t('desktopDevices.unknownCost')) : mode === 'tokens' ? `${exact(value)} tokens` : `≈ $${formatNumber(value, { maximumSignificantDigits: 12 })}`;
+  const format = (value: number | null, partial = false) => value == null ? (mode === 'tokens' ? t('desktopDevices.unknownUsage') : t('desktopDevices.unknownCost')) : mode === 'tokens' ? `${exact(value)} tokens` : `${partial ? '≥ ' : ''}$${formatNumber(value, { maximumSignificantDigits: 12 })}`;
   const name = t(hourly ? mode === 'tokens' ? 'desktopDevices.hourlyTokensChart' : 'desktopDevices.hourlyCostChart' : mode === 'tokens' ? 'desktopDevices.dailyTokensChart' : 'desktopDevices.dailyCostChart');
   return <div className="pd-chart-wrap">
     <svg viewBox="0 0 620 182" role="group" aria-label={name} onMouseLeave={() => setSelected(null)}>
@@ -80,14 +92,14 @@ export function UsageChart({ daily, mode, hourly = false }: { daily: UsageBucket
       <text x={left - 8} y={baseline} textAnchor="end" className="pd-axis-label">0</text>
       {daily.map((day, i) => {
         const value = values[i]!, height = (value ?? 0) / scale * 124;
-        return <g key={day.date} tabIndex={0} aria-label={t('desktopDevices.chartValue', { period: day.date, values: format(value) })} onFocus={() => setSelected(i)} onBlur={() => setSelected(null)} onMouseEnter={() => setSelected(i)}>
+        return <g key={day.date} tabIndex={0} aria-label={t('desktopDevices.chartValue', { period: day.date, values: format(value, Boolean(day.pricePartial || day.unpricedTokens || day.partialUsageTurns)) })} onFocus={() => setSelected(i)} onBlur={() => setSelected(null)} onMouseEnter={() => setSelected(i)}>
           <rect x={left + i * step} y={16} width={step} height={146} fill={selected === i ? 'var(--theme-hover)' : 'transparent'} />
           {value !== null ? <rect data-chart-bar x={left + i * step + (step - barWidth) / 2} y={baseline - height} width={barWidth} height={height} rx={Math.min(2, height / 2)} fill="var(--theme-accent-solid)" /> : <path data-chart-unknown d={`M${left + i * step + (step - barWidth) / 2},150h${barWidth}`} className="pd-axis" strokeDasharray="2 2" />}
           {showTick(i, daily.length, hourly) ? <text x={left + (i + .5) * step} y={176} textAnchor="middle" className="pd-axis-label">{hourly ? hourLabel(i) : day.date.slice(5).replace('-', '/')}</text> : null}
         </g>;
       })}
     </svg>
-    {selected !== null && daily[selected] ? <Tip><strong>{daily[selected]!.date}</strong>{format(values[selected]!)}</Tip> : null}
+    {selected !== null && daily[selected] ? <Tip beside={{ from: (left + selected * step) / 620, to: (left + (selected + 1) * step) / 620 }}><strong>{daily[selected]!.date}</strong>{format(values[selected]!, Boolean(daily[selected]!.pricePartial || daily[selected]!.unpricedTokens || daily[selected]!.partialUsageTurns))}</Tip> : null}
     <div className="pd-chart-caption">{t(hourly ? mode === 'tokens' ? 'desktopDevices.hourlyTokenCaption' : 'desktopDevices.hourlyCostCaption' : mode === 'tokens' ? 'desktopDevices.dailyTokenCaption' : 'desktopDevices.dailyCostCaption')}</div>
   </div>;
 }

@@ -15,7 +15,7 @@ pub(crate) mod thread_summary;
 mod update;
 mod watches;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -1308,6 +1308,8 @@ impl Supervisor {
             tokens: [u64; 6],
             usd: [f64; 5],
             priced: bool,
+            usage_sum: crate::usage_accounting::UsageSum,
+            by_origin: BTreeMap<String, u64>,
         }
         // Read before the database lock: custom rates live in the database too.
         let catalog = self.model_pricing();
@@ -1317,12 +1319,13 @@ impl Supervisor {
                 "SELECT tt.thread_id,
                         (julianday(tt.started_at) - julianday(?1)) * 86400000,
                         (julianday(MIN(COALESCE(tt.completed_at,
-                              CASE WHEN tt.status IN ('inProgress','recovering')
-                                   AND t.status IN ('running','recovering') THEN ?2 END), ?2))
+                              CASE WHEN tt.status='inProgress'
+                                   AND t.status='running' THEN ?2 END), ?2))
                          - julianday(?1)) * 86400000,
                         tt.token_usage_json, COALESCE(tt.pricing_model_key, tt.model),
-                        tt.pricing_tier_key, tt.started_at
+                        tt.pricing_tier_key, tt.started_at, tt.origin
                  FROM thread_turns tt JOIN threads t ON t.id = tt.thread_id
+                 WHERE tt.history_copy_of IS NULL
                  ORDER BY tt.thread_id",
             )?;
             let mut rows = stmt.query(params![since, now])?;
@@ -1337,6 +1340,8 @@ impl Supervisor {
                     sums.push(Sum {
                         entry: ThreadActivityDto {
                             thread_id,
+                            by_origin: None,
+                            usage_coverage: None,
                             turns: 0,
                             active_ms: 0,
                             total_ms: 0,
@@ -1352,43 +1357,31 @@ impl Supervisor {
                         tokens: [0; 6],
                         usd: [0.0; 5],
                         priced: false,
+                        usage_sum: crate::usage_accounting::UsageSum::empty(),
+                        by_origin: BTreeMap::new(),
                     });
                 }
                 let sum = sums.last_mut().expect("pushed above");
                 sum.entry.turns += 1;
-                if let Some(usage) = row
-                    .get::<_, Option<String>>(3)?
-                    .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
-                {
-                    let public = crate::usage::public_usage(&usage);
-                    let total = public.as_ref().map(|public| &public["total"]);
-                    for (slot, key) in sum.tokens.iter_mut().zip(TOKENS) {
-                        *slot += total.and_then(|total| total[key].as_u64()).unwrap_or(0);
-                    }
-                    let model = row.get::<_, Option<String>>(4)?;
-                    let tier = row.get::<_, Option<String>>(5)?;
-                    let at = row.get::<_, Option<String>>(6)?;
-                    match crate::usage::estimate_price_with_catalog(
-                        &usage,
-                        model.as_deref(),
-                        tier.as_deref(),
-                        &catalog,
-                        at.as_deref(),
-                    ) {
-                        Some(price) => {
-                            sum.priced = true;
-                            for (slot, key) in sum.usd.iter_mut().zip(USD) {
-                                *slot += price[key].as_f64().unwrap_or(0.0);
-                            }
-                        }
-                        None if total
-                            .is_some_and(|total| total["totalTokens"].as_u64() > Some(0)) =>
-                        {
-                            sum.entry.price_partial = true;
-                        }
-                        None => {}
+                let usage=row.get::<_,Option<String>>(3)?.and_then(|raw|serde_json::from_str::<Value>(&raw).ok());
+                let model=row.get::<_,Option<String>>(4)?;
+                let tier=row.get::<_,Option<String>>(5)?;
+                let at=row.get::<_,Option<String>>(6)?;
+                let origin:String=row.get(7)?;
+                *sum.by_origin.entry(origin).or_default()+=1;
+                let parts=crate::usage_accounting::components(usage.as_ref(),model.as_deref(),tier.as_deref(),&catalog,at.as_deref());
+                sum.usage_sum.add_turn(&parts);
+                for part in &parts {
+                    if let Some(t)=&part.tokens {
+                        for (slot,n) in sum.tokens.iter_mut().zip([t.total_tokens,t.input_tokens,t.cached_input_tokens,t.cache_write_input_tokens,t.output_tokens,t.reasoning_output_tokens]) { *slot=slot.saturating_add(n); }
                     }
                 }
+                let price=usage.as_ref().and_then(|usage|crate::usage::estimate_price_with_catalog(usage,model.as_deref(),tier.as_deref(),&catalog,at.as_deref()));
+                if let Some(price)=price {
+                    sum.priced=true;
+                    for (slot,key) in sum.usd.iter_mut().zip(USD) { *slot+=price[key].as_f64().unwrap_or(0.0); }
+                }
+                sum.entry.price_partial=sum.usage_sum.unpriced_tokens>0 || sum.usage_sum.partial_usage_turns>0;
                 let (Some(start), Some(end)) =
                     (row.get::<_, Option<f64>>(1)?, row.get::<_, Option<f64>>(2)?)
                 else {
@@ -1426,6 +1419,8 @@ impl Supervisor {
                 .into_iter()
                 .map(|sum| {
                     let mut entry = sum.entry;
+                    entry.by_origin=Some(json!(sum.by_origin));
+                    entry.usage_coverage=Some(json!({"source":"persisted","partialUsageTurns":sum.usage_sum.partial_usage_turns,"usageTurns":sum.usage_sum.usage_turns,"missingUsageTurns":sum.usage_sum.turns-sum.usage_sum.usage_turns,"knownRequests":sum.usage_sum.known_requests,"requests":sum.usage_sum.requests,"unpricedTokens":sum.usage_sum.unpriced_tokens}));
                     entry.total_ms = sum.total.round() as u64;
                     entry.active_ms = sum.active.round() as u64;
                     if sum.active > 0.0 {
@@ -2021,8 +2016,8 @@ impl Supervisor {
                 transaction.execute(
                     "INSERT INTO thread_turns(
                        id, thread_id, status, error, model, reasoning_effort,
-                       token_usage_json, display_prompt, started_at, ordinal
-                     ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+                       token_usage_json, display_prompt, started_at, ordinal, completed_at
+                     ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
                     params![
                         turn_id,
                         thread_id,
@@ -2037,7 +2032,8 @@ impl Supervisor {
                         token_usage_json,
                         display_prompt,
                         turn.started_at.clone(),
-                        (index as i64) + 1
+                        (index as i64) + 1,
+                        turn.completed_at
                     ],
                 )?;
                 upsert_legacy_turn_metadata(
@@ -2660,7 +2656,7 @@ impl Supervisor {
                 .or_else(|| before_turn_id.map(|_| 10))
                 .unwrap_or(i64::MAX);
             let mut stmt = conn.prepare(
-                "SELECT id, status, error, model, reasoning_effort, token_usage_json, started_at, completed_at, pricing_model_key, pricing_tier_key
+                "SELECT id, status, error, model, reasoning_effort, token_usage_json, started_at, completed_at, pricing_model_key, pricing_tier_key, origin
                  FROM thread_turns
                  WHERE thread_id=?1 AND (?2 IS NULL OR ordinal < ?2)
                  ORDER BY ordinal DESC, rowid DESC LIMIT ?3",
@@ -2673,6 +2669,7 @@ impl Supervisor {
                     let tier = row.get::<_, Option<String>>(9)?;
                     let price_estimate = stored_usage.as_ref().and_then(|usage| crate::usage::estimate_price_with_catalog(usage, pricing_model.as_deref(), tier.as_deref(), &catalog, row.get::<_, String>(6).ok().as_deref()));
                     Ok(ThreadTurnDto {
+                        origin: Some(row.get(10)?),
                         id: row.get(0)?,
                         started_at: row.get(6)?,
                         completed_at: row.get(7)?,
@@ -2928,6 +2925,12 @@ impl Supervisor {
         self.db.with(|conn| {
             let tx = conn.unchecked_transaction()?;
             let conn = &tx;
+            let provenance = pending_steer_id.map(|id| thread_summary::prompt_origin(conn,id)).transpose()?.flatten();
+            let prompt_sender = pending_steer_id.map(|id| thread_summary::prompt_sender(conn,id)).transpose()?.flatten();
+            let turn_origin = if provenance == Some("automation") { "automation" }
+                else if matches!(provenance,Some("peer" | "system")) { "agent" }
+                else if prompt_sender.is_some() || goal_submission.as_ref().is_some_and(|g|g.sender.is_some()) { "guest" }
+                else { "owner" };
             if let Some(id) = pending_steer_id {
                 crate::interaction::bind_notification(conn, id, &turn_id)?;
                 automation::bind_prompt(conn, id, &turn_id, &now)?;
@@ -2944,8 +2947,8 @@ impl Supervisor {
             conn.execute(
                 "INSERT INTO thread_turns(
                    id, thread_id, status, model, reasoning_effort,
-                   display_prompt, started_at, ordinal, pricing_model_key, pricing_tier_key
-                 ) VALUES (?1,?2,'inProgress',?3,?4,?5,?6,?7,?3,?8)",
+                   display_prompt, started_at, ordinal, pricing_model_key, pricing_tier_key, origin
+                 ) VALUES (?1,?2,'inProgress',?3,?4,?5,?6,?7,?3,?8,?9)",
                 params![
                     turn_id,
                     thread.id,
@@ -2954,7 +2957,8 @@ impl Supervisor {
                     prompt,
                     now,
                     ordinal,
-                    if thread.fast_mode { "fast" } else { "standard" }
+                    if thread.fast_mode { "fast" } else { "standard" },
+                    turn_origin
                 ],
             )?;
             let mut user_item = ThreadHistoryItemDto {
@@ -3955,8 +3959,8 @@ impl Supervisor {
                 conn.execute(
                     "INSERT INTO thread_turns(
                        id, thread_id, status, error, model, reasoning_effort,
-                       token_usage_json, display_prompt, started_at, ordinal
-                     ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+                       token_usage_json, display_prompt, started_at, ordinal, completed_at, history_copy_of
+                     ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
                     params![
                         new_turn_id,
                         new_id,
@@ -3967,7 +3971,9 @@ impl Supervisor {
                         token_usage_json,
                         display_prompt,
                         turn.started_at,
-                        ordinal as i64 + 1
+                        ordinal as i64 + 1,
+                        turn.completed_at,
+                        turn.id
                     ],
                 )?;
                 upsert_legacy_turn_metadata(
@@ -4853,3 +4859,6 @@ mod fork_reply_tests {
         assert!(fork_reply(&turns, "missing").is_none());
     }
 }
+
+#[cfg(test)]
+mod accounting_tests;

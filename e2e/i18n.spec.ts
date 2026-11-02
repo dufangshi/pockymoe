@@ -1,3 +1,4 @@
+import { selectControl } from './selectControl';
 import { test, expect } from '@playwright/test';
 import { mkdir, writeFile, readFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
@@ -26,7 +27,7 @@ test('language switch synchronizes host and shared workbench, preserves draft, f
   await composer.fill('Keep my English draft');
   await page.getByRole('button', { name: 'Open settings', exact: true }).click();
   await page.getByRole('tab', { name: 'Preferences', exact: true }).click();
-  await page.getByRole('combobox', { name: 'Language', exact: true }).selectOption('zh-CN');
+  await selectControl(page, page.getByRole('combobox', { name: 'Language', exact: true }), 'zh-CN');
   await expect(page.locator('html')).toHaveAttribute('lang', 'zh-CN');
   await expect(page.getByRole('tab', { name: '偏好设置', exact: true })).toBeVisible();
   await expect(page.getByRole('group', { name: '外观', exact: true })).toBeVisible();
@@ -55,7 +56,7 @@ test('language switch synchronizes host and shared workbench, preserves draft, f
   await expect(page.getByRole('navigation', { name: '工作区线程', exact: true }).getByRole('link', { name: /English user title/ })).toBeVisible();
   // Exercise the combined search + i18n build, including cached result labels.
   await page.getByRole('button', { name: '搜索对话', exact: true }).click();
-  await page.getByRole('combobox', { name: '搜索范围', exact: true }).selectOption('workspace');
+  await selectControl(page, page.getByRole('button', { name: '搜索范围' }), 'workspace');
   await page.getByRole('combobox', { name: '搜索消息', exact: true }).fill('English user title');
   const localizedResults = page.getByRole('listbox', { name: '匹配消息', exact: true });
   await expect(localizedResults.getByRole('option')).toHaveCount(1);
@@ -64,11 +65,11 @@ test('language switch synchronizes host and shared workbench, preserves draft, f
   await page.getByRole('button', { name: '打开设置', exact: true }).click();
   await page.getByRole('tab', { name: '偏好设置', exact: true }).click();
   await expect(page.getByRole('combobox', { name: '语言', exact: true })).toHaveValue('zh-CN');
-  await page.getByRole('combobox', { name: '语言', exact: true }).selectOption('en');
+  await selectControl(page, page.getByRole('combobox', { name: '语言', exact: true }), 'en');
   await expect(page.getByRole('tab', { name: 'Preferences', exact: true })).toBeVisible();
   await page.keyboard.press('Escape');
   await page.getByRole('button', { name: 'Search conversation', exact: true }).click();
-  await expect(page.getByRole('combobox', { name: 'Search scope', exact: true })).toHaveValue('workspace');
+  await expect(page.getByRole('button', { name: 'Search scope' })).toHaveValue('workspace');
   await expect(page.getByRole('listbox', { name: 'Matching messages', exact: true })).toContainText('Title');
   await page.getByRole('button', { name: 'Close search', exact: true }).click();
   await page.reload();
@@ -88,7 +89,7 @@ test('browser locale aliases initialize Chinese and unsupported saved locales fa
     await page.getByRole('button', { name: '设置', exact: true }).click();
     await page.getByRole('tab', { name: '偏好设置', exact: true }).click();
     await expect(page.getByRole('combobox', { name: '语言', exact: true })).toBeVisible();
-    await page.getByRole('combobox', { name: '语言', exact: true }).selectOption('en');
+    await selectControl(page, page.getByRole('combobox', { name: '语言', exact: true }), 'en');
     await page.keyboard.press('Escape');
     await page.reload();
     await expect(page.locator('html')).toHaveAttribute('lang', 'en');

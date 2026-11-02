@@ -1,3 +1,4 @@
+import { selectControl } from './selectControl';
 import { expect, test } from '@playwright/test';
 
 // Filesystem restoration is covered by Rust fixtures. Route both mutation paths
@@ -56,14 +57,14 @@ test('a phone can explicitly switch API → account sign-in and keep that select
   await expect(pick.locator('option:checked')).toHaveText('Account sign-in');
   await expect(page.getByRole('listitem', { name: 'Account sign-in', exact: true })).toHaveCount(0);
   await expect(region.getByRole('listitem', { name: 'OpenAI Codex' }).getByRole('option', { name: 'Account sign-in' })).toHaveCount(0);
-  await pick.selectOption({ label: 'Temporary API' });
+  await selectControl(page, pick, { label: 'Temporary API' });
   expect(calls).toEqual([]);
   await row.getByRole('button', { name: 'Apply Temporary API to Claude Agent' }).click();
   const apiDialog = page.getByRole('dialog', { name: 'Apply Temporary API to Claude Agent' });
   await apiDialog.getByRole('button', { name: 'Apply', exact: true }).click();
   await expect(apiDialog).toBeHidden();
   await expect(row.getByTestId('harness-current')).toHaveText('Temporary API · fixture-model');
-  await pick.selectOption({ label: 'Account sign-in' });
+  await selectControl(page, pick, { label: 'Account sign-in' });
   expect(calls).toHaveLength(1);
   await row.getByRole('button', { name: 'Apply Account sign-in to Claude Agent' }).click();
   const nativeDialog = page.getByRole('dialog', { name: 'Apply Account sign-in to Claude Agent' });

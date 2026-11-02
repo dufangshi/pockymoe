@@ -1,3 +1,4 @@
+import { selectControl } from './selectControl';
 import { randomUUID } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
@@ -76,7 +77,7 @@ test('compact layout follows actual focus and rendered width in both conversatio
   const reference = page.getByTestId('reference-pane');
   const left = editor(primary), right = editor(reference);
   await expect(left).toBeVisible();
-  await page.getByRole('combobox', { name: '对照此设备的会话' }).selectOption(b.id);
+  await selectControl(page, page.getByRole('combobox', { name: '对照此设备的会话' }), b.id);
   await expect(right).toBeVisible();
   await expect(reference.locator('.workbench-composer-target')).toHaveCount(0);
   const views = page.getByRole('navigation', { name: '工作台视图' });

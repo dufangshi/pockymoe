@@ -74,6 +74,19 @@ export interface ActivitySnapshot {
   focusedThreadKey: string | null;
   /** needsInput, failed/interrupted (unread, last 24h), completed (unread) and running only. */
   items: ActivityItem[];
+  /** Threads opened most recently (up to 5), for surfaces with no active items to show. */
+  recent?: ActivityRecent[];
+  /** Devices whose first read finished since this page connected; older items on them are history, not news. */
+  syncedDeviceIds?: string[];
+}
+
+export interface ActivityRecent {
+  key: string;
+  deviceId: string;
+  deviceName: string;
+  workspaceLabel: string;
+  threadId: string;
+  title: string;
 }
 
 export type HostCommand =
@@ -91,14 +104,28 @@ export type HostCommand =
   | { id: string; type: 'revealInMap'; key: string }
   | { id: string; type: 'openMap' }
   | { id: string; type: 'newThread' }
-  | { id: string; type: 'openDevices' };
+  | { id: string; type: 'openDevices' }
+  /** Text of a finished turn, for spoken summaries. Answers in `data`. */
+  | { id: string; type: 'turnText'; deviceId: string; threadId: string; turnId?: string | null }
+  /** Saved upstream connections on every connected device. Answers in `data`. */
+  | { id: string; type: 'listConnections' }
+  /** One completion through a saved connection; the key stays on that device. Answers in `data`. */
+  | { id: string; type: 'completeWithConnection'; deviceId: string; connectionId: string; model: string; system: string; user: string }
+  /** Models a saved connection serves, using the same probe as Settings. Answers in `data`. */
+  | { id: string; type: 'connectionModels'; deviceId: string; connectionId: string }
+  /** Opens Settings at the page for adding and testing upstreams. */
+  | { id: string; type: 'openUpstreams' }
+  /** Devices, workspaces and conversations a person may silence on the pet. Answers in `data`. */
+  | { id: string; type: 'listMuteTargets' };
 
 export interface HostCommandResult {
   ok: boolean;
   /** Localized, user-facing reason. */
   error?: string;
   /** Machine-readable reason; 'needsThread' means the request must be answered inside the thread. */
-  code?: 'needsThread';
+  code?: 'needsThread' | 'supervisorTooOld';
+  /** Result of a command that asks for data rather than performing an action. */
+  data?: unknown;
 }
 
 export interface DesktopSettings {

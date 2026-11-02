@@ -31,6 +31,7 @@ export class DesktopIndexStore {
   private detailTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private dirtyDetails = new Set<string>();
   private activityTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private unavailableTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private requests = new Map<string, Promise<void>>();
   private lastList = new Map<string, number>();
   private lastActivity = new Map<string, number>();
@@ -49,7 +50,7 @@ export class DesktopIndexStore {
   private stopped = false;
   private mapVisible = false;
   constructor(readonly accountId: string, private io: DesktopDataAdapter = adapter) {
-    this.state = { accountId, devices: [], workspaces: [], threads: [], activity: {}, extras: {}, hydrated: false, refreshing: false, error: null, pulseKeys: [] };
+    this.state = { accountId, devices: [], workspaces: [], threads: [], activity: {}, extras: {}, hydrated: false, refreshing: false, error: null, pulseKeys: [], syncedDeviceIds: [], recentThreadKeys: [] };
   }
   getSnapshot = () => this.state;
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
@@ -63,7 +64,8 @@ export class DesktopIndexStore {
   async hydrate() {
     const cached = await readIndex(this.accountId);
     if (this.stopped) return;
-    if (cached?.accountId === this.accountId) this.state = { ...this.state, ...cached, refreshing: false, error: null, pulseKeys: [], hydrated: true };
+    if (cached?.accountId === this.accountId) this.state = { ...this.state, ...cached, refreshing: false, error: null, pulseKeys: [], hydrated: true, syncedDeviceIds: [],
+      recentThreadKeys: cached.recentThreadKeys ?? [...cached.threads].filter(thread => thread.lastViewedAt).sort((a, b) => b.lastViewedAt!.localeCompare(a.lastViewedAt!)).slice(0, 10).map(thread => thread.key) };
     else this.state = { ...this.state, hydrated: true };
   }
   start() {
@@ -96,6 +98,7 @@ export class DesktopIndexStore {
     this.retries.forEach(clearTimeout); this.retries.clear();
     this.pendingLists.forEach(clearTimeout); this.pendingLists.clear();
     this.activityTimers.forEach(clearTimeout); this.activityTimers.clear();
+    this.unavailableTimers.forEach(clearTimeout); this.unavailableTimers.clear();
     this.detailTimers.forEach(clearTimeout); this.detailTimers.clear();
     clearTimeout(this.persistTimer); clearTimeout(this.pulseTimer);
     this.sockets.forEach(({ socket }) => socket.close()); this.sockets.clear();
@@ -104,7 +107,7 @@ export class DesktopIndexStore {
     window.removeEventListener('pockymoe-account-logout', this.logout);
   }
   logout = () => {
-    this.publish({ devices: [], workspaces: [], threads: [], activity: {}, extras: {}, pulseKeys: [] });
+    this.publish({ devices: [], workspaces: [], threads: [], activity: {}, extras: {}, pulseKeys: [], syncedDeviceIds: [], recentThreadKeys: [] });
     this.stop(); this.details.clear(); this.detailRequests.clear();
     void this.persistence.then(() => clearIndex(this.accountId));
   };
@@ -142,12 +145,17 @@ export class DesktopIndexStore {
     const portal = await this.io.portal();
     if (this.stopped || generation !== this.generation) return;
     const old = new Map(this.state.devices.map(device => [device.id, device]));
-    const devices = portal.devices.filter(device => device.ownerUserId === this.accountId).map(({ id, name, connected, lastHeartbeatAt }) => ({ id, name, connected, lastHeartbeatAt, ...(old.get(id)?.cachedAt ? { cachedAt: old.get(id)!.cachedAt! } : {}) }));
+    const devices = portal.devices.filter(device => device.ownerUserId === this.accountId).map(({ id, name, connected, lastHeartbeatAt }) => ({ ...old.get(id), id, name, connected, lastHeartbeatAt, missingFromPortal: false }));
+    const present = new Set(devices.map(device => device.id));
+    // A successful portal poll can still omit a lease during reconnect. Keep
+    // cached membership until the same 60s grace used for failed device reads.
+    for (const device of old.values()) if (!present.has(device.id)) devices.push({ ...device, connected: false, missingFromPortal: true });
     const ids = new Set(devices.map(device => device.id));
     this.publish({ devices: mergeRows(this.state.devices, devices, row => row.id),
       workspaces: this.state.workspaces.filter(row => ids.has(row.deviceId)), threads: this.state.threads.filter(row => ids.has(row.deviceId)) });
     for (const [id, { socket }] of this.sockets) if (!this.online(id)) { this.sockets.delete(id); socket.close(); }
     for (const device of devices) {
+      if (!device.connected) this.markUnavailable(device.id);
       if (device.connected) {
         this.connect(device.id);
         if (!old.has(device.id) || !old.get(device.id)?.connected) void this.refreshDevice(device.id);
@@ -161,7 +169,7 @@ export class DesktopIndexStore {
         const wasOnline = this.online(device.id);
         this.publish({ devices: mergeRows(this.state.devices, this.state.devices.map(row => row.id === device.id ? { ...row, connected: result.connected } : row), row => row.id) });
         if (result.connected && !wasOnline) { this.connect(device.id); void this.refreshDevice(device.id); }
-        if (!result.connected) { const entry = this.sockets.get(device.id); this.sockets.delete(device.id); entry?.socket.close(); }
+        if (!result.connected) { this.markUnavailable(device.id); const entry = this.sockets.get(device.id); this.sockets.delete(device.id); entry?.socket.close(); }
       }).catch(() => undefined).finally(() => { clearTimeout(timeout); this.controllers.delete(controller); });
     }
     if (this.mapVisible) this.refreshVisibleActivity();
@@ -171,24 +179,51 @@ export class DesktopIndexStore {
     const timeout = setTimeout(() => controller.abort(), 15_000);
     return read(controller.signal).finally(() => { clearTimeout(timeout); this.controllers.delete(controller); });
   }
+  private markUnavailable(deviceId: string) {
+    const device = this.state.devices.find(row => row.id === deviceId);
+    if (!device || this.stopped) return;
+    const unavailableSince = device.unavailableSince ?? new Date().toISOString();
+    if (!device.unavailableSince) this.publish({ devices: mergeRows(this.state.devices, this.state.devices.map(row => row.id === deviceId ? { ...row, unavailableSince } : row), row => row.id) });
+    if (this.unavailableTimers.has(deviceId) || device.activityStale) return;
+    const delay = Math.max(0, 60_001 - (Date.now() - Date.parse(unavailableSince)));
+    this.unavailableTimers.set(deviceId, setTimeout(() => {
+      this.unavailableTimers.delete(deviceId);
+      const current = this.state.devices.find(row => row.id === deviceId);
+      if (this.stopped || !current?.unavailableSince) return;
+      if (current.missingFromPortal) this.publish({ devices: this.state.devices.filter(row => row.id !== deviceId), threads: this.state.threads.filter(row => row.deviceId !== deviceId), workspaces: this.state.workspaces.filter(row => row.deviceId !== deviceId) });
+      else this.publish({ devices: mergeRows(this.state.devices, this.state.devices.map(row => row.id === deviceId ? { ...row, activityStale: true } : row), row => row.id) });
+    }, delay));
+  }
   refreshDevice = (deviceId: string): Promise<void> => this.single(`list:${deviceId}`, async () => {
     if (this.stopped || !visible() || !this.online(deviceId)) return;
     const generation = this.generation; this.lastList.set(deviceId, Date.now());
-    const [workspaces, threads] = await this.withSignal(signal => Promise.all([
+    const [workspaceResult, threadResult] = await this.withSignal(signal => Promise.allSettled([
       this.io.get<WorkspaceDto[]>(deviceId, 'api/workspaces', { signal, cache: 'no-store' }),
-      this.io.get<ThreadDto[]>(deviceId, 'api/threads?includeAgentThreads=true', { signal, cache: 'no-store' }),
+      this.io.get<ThreadDto[]>(deviceId, 'api/threads?includeAgentThreads=true', { signal, cache: 'no-store' }).catch(error => {
+        const status = (error as { statusCode?: number } | null)?.statusCode;
+        if (status !== 400 && status !== 404) throw error;
+        return this.io.get<ThreadDto[]>(deviceId, 'api/threads', { signal, cache: 'no-store' });
+      }),
     ]));
-    if (this.stopped || generation !== this.generation || !Array.isArray(workspaces) || !Array.isArray(threads)) return;
+    if (this.stopped || generation !== this.generation) return;
+    if (threadResult.status !== 'fulfilled' || !Array.isArray(threadResult.value)) { this.markUnavailable(deviceId); return; }
+    const threads = threadResult.value;
+    const workspaces = workspaceResult.status === 'fulfilled' && Array.isArray(workspaceResult.value) ? workspaceResult.value : null;
     const previous = new Map(this.state.threads.map(row => [row.key, row]));
     const next = threads.map(row => {
       const old = previous.get(entityKey(deviceId, row.id));
       return old && old.updatedAt > row.updatedAt ? old : summarizeThread(deviceId, row, old);
     });
     this.publish({
-      workspaces: mergeRows(this.state.workspaces, [...this.state.workspaces.filter(row => row.deviceId !== deviceId), ...workspaces.map(row => ({ ...row, key: entityKey(deviceId, row.id), deviceId }))], row => row.key),
+      ...(workspaces ? { workspaces: mergeRows(this.state.workspaces, [...this.state.workspaces.filter(row => row.deviceId !== deviceId), ...workspaces.map(row => ({ ...row, key: entityKey(deviceId, row.id), deviceId }))], row => row.key) } : {}),
       threads: mergeRows(this.state.threads, [...this.state.threads.filter(row => row.deviceId !== deviceId), ...next], row => row.key),
-      devices: mergeRows(this.state.devices, this.state.devices.map(row => row.id === deviceId ? { ...row, cachedAt: new Date().toISOString() } : row), row => row.id),
+      devices: mergeRows(this.state.devices, this.state.devices.map(row => {
+        if (row.id !== deviceId) return row;
+        const available = { ...row }; delete available.unavailableSince; delete available.activityStale;
+        return { ...available, cachedAt: new Date().toISOString() };
+      }), row => row.id),
     });
+    clearTimeout(this.unavailableTimers.get(deviceId)); this.unavailableTimers.delete(deviceId);
     const pending = next.filter(row => !row.closedAt && (!this.requestHydrated.has(row.key) || previous.get(row.key)?.updatedAt !== row.updatedAt));
     let cursor = 0;
     // Initial request recovery is bounded and runs once per known revision; it
@@ -199,6 +234,7 @@ export class DesktopIndexStore {
         try { await this.loadDetail(row.deviceId, row.id, true); this.requestHydrated.add(row.key); } catch { /* Preserve the cached request on a lost read. */ }
       }
     }));
+    if (!this.stopped && generation === this.generation && !(this.state.syncedDeviceIds ?? []).includes(deviceId)) this.publish({ syncedDeviceIds: [...(this.state.syncedDeviceIds ?? []), deviceId].sort() });
   });
   refreshActivity = (deviceId: string, allowOffMap = false): Promise<void> => this.single(`activity:${deviceId}`, async () => {
     if ((!this.mapVisible && !allowOffMap) || !visible() || !this.online(deviceId) || this.stopped) return;
@@ -241,7 +277,12 @@ export class DesktopIndexStore {
   private updateThread(key: string, update: (thread: DesktopThread) => DesktopThread) {
     this.publish({ threads: mergeRows(this.state.threads, this.state.threads.map(row => row.key === key ? update(row) : row), row => row.key) });
   }
-  markRead = (key: string) => this.updateThread(key, row => ({ ...row, lastViewedAt: new Date().toISOString() }));
+  rememberThread = (key: string) => {
+    const keys = [key, ...(this.state.recentThreadKeys ?? []).filter(value => value !== key)].slice(0, 10);
+    const previous = this.state.recentThreadKeys ?? [];
+    if (keys.length !== previous.length || keys.some((value, i) => value !== previous[i])) this.publish({ recentThreadKeys: keys });
+  };
+  markRead = (key: string) => { this.rememberThread(key); this.updateThread(key, row => ({ ...row, lastViewedAt: new Date().toISOString() })); };
   patchThread = (deviceId: string, thread: ThreadDto) => this.updateThread(entityKey(deviceId, thread.id), row => summarizeThread(deviceId, thread, row));
   acceptDetail(deviceId: string, detail: ThreadDetailDto, requestsAtStart?: DesktopThread['requests']) {
     const key = entityKey(deviceId, detail.thread.id);

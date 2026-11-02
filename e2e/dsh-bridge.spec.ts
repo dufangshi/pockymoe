@@ -1,3 +1,4 @@
+import { selectControl } from './selectControl';
 import { expect, test, type APIRequestContext } from '@playwright/test';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -185,13 +186,13 @@ test('New Chat starts a DSH thread in the chosen run mode', async ({ page, reque
   await page.goto(`/threads/${threadId}`);
   await page.getByRole('button', { name: 'New Chat', exact: true }).first().click();
   const dialog = page.getByTestId('create-thread-dialog');
-  await dialog.locator('select[id$="thread-backend"]').selectOption('acp');
+  await selectControl(page, dialog.locator('[role=combobox][id$="thread-backend"]'), 'acp');
   await dialog.locator('label').filter({ hasText: 'DeepSeek Harness' }).click();
-  await dialog.getByLabel('Model', { exact: true }).selectOption(model);
+  await selectControl(page, dialog.getByLabel('Model', { exact: true }), model);
   const runMode = dialog.getByLabel('Run mode', { exact: true });
   // PTC needs a Node.js build with TypeScript support; without it the mode is shown disabled.
   await expect(runMode.locator('option')).toHaveText(['Standard (default)', /^PTC( \(unavailable: .+\))?$/, 'Minimal', 'Creator']);
-  await runMode.selectOption('minimal');
+  await selectControl(page, runMode, 'minimal');
   await expect(dialog.getByText(/Only a persistent terminal/)).toBeVisible();
   await dialog.getByLabel('Title', { exact: true }).fill('DSH minimal mode');
   await page.screenshot({ path: testInfo.outputPath('new-chat-run-mode.png') });
@@ -216,7 +217,7 @@ test('the DeepSeek Harness plugin panel switches modes, runs plugin commands and
   const runMode = panel.getByRole('combobox', { name: 'Run mode' });
   await expect(runMode).toBeEnabled();
   // Creator mode works on any Node.js; PTC needs one with TypeScript support.
-  await runMode.selectOption('cordis');
+  await selectControl(page, runMode, 'cordis');
   await expect.poll(async () => (await harness(request, id)).session.projections.agentPreset).toBe('cordis');
   const commands = panel.getByRole('region', { name: 'Commands' });
   await expect(commands).toContainText('/planThread control');

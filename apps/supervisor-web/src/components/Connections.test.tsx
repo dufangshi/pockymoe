@@ -1,3 +1,4 @@
+import { changeControl, selectOptions, selectOption } from '../test/formControls';
 import {
   act,
   cleanup,
@@ -126,16 +127,16 @@ it('saves a new connection without applying it and keeps a manual model when dis
   expect(await screen.findByText(/No connections yet/)).toBeVisible();
   fireEvent.click(screen.getByRole('button', { name: 'Add connection' }));
   const dialog = await screen.findByRole('dialog', { name: 'Add connection' });
-  fireEvent.change(within(dialog).getByLabelText('Name'), {
+  changeControl(within(dialog).getByLabelText('Name'), {
     target: { value: 'Lab' },
   });
-  fireEvent.change(within(dialog).getByLabelText('API format'), {
+  changeControl(within(dialog).getByLabelText('API format'), {
     target: { value: 'openai_chat' },
   });
-  fireEvent.change(within(dialog).getByLabelText('Base URL'), {
+  changeControl(within(dialog).getByLabelText('Base URL'), {
     target: { value: 'https://lab.test/v1' },
   });
-  fireEvent.change(within(dialog).getByLabelText('API key'), {
+  changeControl(within(dialog).getByLabelText('API key'), {
     target: { value: 'test-key' },
   });
   fireEvent.click(within(dialog).getByRole('button', { name: 'Find models' }));
@@ -144,7 +145,7 @@ it('saves a new connection without applying it and keeps a manual model when dis
       "Couldn't list models (upstream refused). Type the model ID instead.",
     ),
   ).toBeVisible();
-  fireEvent.change(within(dialog).getByLabelText('Default model'), {
+  changeControl(within(dialog).getByLabelText('Default model'), {
     target: { value: 'manual-model' },
   });
   fireEvent.click(
@@ -211,14 +212,13 @@ it('applies a local connection only through the explicit Apply dialog and surviv
   const pick = within(codexRow).getByLabelText('Connection for Codex');
   // The Supervisor's adapter map wins over the built-in fallback.
   expect(
-    within(pick)
-      .getAllByRole('option')
+    selectOptions(pick)
       .map((o) => o.textContent),
   ).toEqual(['Choose a connection', 'Work API', 'Gemini Direct']);
   expect(
     within(codexRow).getByRole('button', { name: 'Apply' }),
   ).toBeDisabled();
-  fireEvent.change(pick, { target: { value: 'work' } });
+  changeControl(pick, { target: { value: 'work' } });
   const apply = within(codexRow).getByRole('button', {
     name: 'Apply Work API to Codex',
   });
@@ -231,7 +231,7 @@ it('applies a local connection only through the explicit Apply dialog and surviv
   const choose = await within(dialog).findByLabelText(
     'Choose a discovered model',
   );
-  fireEvent.change(choose, { target: { value: 'model-b' } });
+  changeControl(choose, { target: { value: 'model-b' } });
   expect(within(dialog).getByLabelText('Default model')).toHaveValue('model-b');
   fireEvent.click(within(dialog).getByRole('button', { name: 'Apply' }));
   expect(await within(dialog).findByRole('alert')).toHaveTextContent(
@@ -349,8 +349,8 @@ it('syncs a remote connection in two calls without applying it, with actionable 
   const claudeRow = await harnessRow('Claude Agent');
   await waitFor(() =>
     expect(
-      within(claudeRow).getByRole('option', { name: 'Shared Anthropic' }),
-    ).toBeInTheDocument(),
+      selectOption(claudeRow, { name: 'Shared Anthropic' }),
+    ).toHaveTextContent('Shared Anthropic'),
   );
   expect(calls.some((c) => c.path.includes('/apply'))).toBe(false);
 });
@@ -451,7 +451,7 @@ it('keeps unsaved edits through close, save failure and an edit conflict until t
   expect(
     within(dialog).getByRole('button', { name: 'Save connection' }),
   ).toBeDisabled();
-  fireEvent.change(name, { target: { value: 'Work renamed' } });
+  changeControl(name, { target: { value: 'Work renamed' } });
   fireEvent.keyDown(dialog, { key: 'Escape' });
   expect(
     await screen.findByRole('alertdialog', { name: 'Discard changes?' }),
@@ -459,7 +459,7 @@ it('keeps unsaved edits through close, save failure and an edit conflict until t
   fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }));
   expect(within(dialog).getByLabelText('Name')).toHaveValue('Work renamed');
   // A changed endpoint needs the key again before saving.
-  fireEvent.change(within(dialog).getByLabelText('Base URL'), {
+  changeControl(within(dialog).getByLabelText('Base URL'), {
     target: { value: 'https://other.test/v1' },
   });
   expect(
@@ -470,11 +470,11 @@ it('keeps unsaved edits through close, save failure and an edit conflict until t
   expect(
     within(dialog).getByRole('button', { name: 'Save connection' }),
   ).toBeDisabled();
-  fireEvent.change(within(dialog).getByLabelText('Base URL'), {
+  changeControl(within(dialog).getByLabelText('Base URL'), {
     target: { value: 'https://work.test/v1' },
   });
   // A different wire format cannot reuse the saved key either.
-  fireEvent.change(within(dialog).getByLabelText('API format'), {
+  changeControl(within(dialog).getByLabelText('API format'), {
     target: { value: 'openai_chat' },
   });
   expect(within(dialog).getByLabelText('API key')).toBeRequired();
@@ -486,7 +486,7 @@ it('keeps unsaved edits through close, save failure and an edit conflict until t
   expect(
     within(dialog).getByRole('button', { name: 'Save connection' }),
   ).toBeDisabled();
-  fireEvent.change(within(dialog).getByLabelText('API format'), {
+  changeControl(within(dialog).getByLabelText('API format'), {
     target: { value: 'openai_responses' },
   });
   expect(within(dialog).getByLabelText('API key')).not.toBeRequired();
@@ -587,38 +587,37 @@ it('lets Content Quality reuse the form and picker without losing its unsaved wr
   ).toBeVisible();
   await waitFor(() =>
     expect(
-      within(picker).getByRole('option', { name: 'Chat One' }),
+      selectOption(picker, { name: 'Chat One' }),
     ).toBeEnabled(),
   );
   expect(
-    within(picker).getByRole('option', { name: 'Responses Only' }),
+    selectOption(picker, { name: 'Responses Only' }),
   ).toBeEnabled();
   expect(within(picker).queryByRole('option', { name: /Far Chat/ })).toBeNull();
   expect(screen.getByText('Far Chat')).toBeVisible();
   expect(screen.getByRole('button', { name: 'Sync' })).toBeEnabled();
-  fireEvent.change(screen.getByLabelText('Reader background'), {
+  changeControl(screen.getByLabelText('Reader background'), {
     target: { value: 'Keep me' },
   });
   fireEvent.click(screen.getByRole('button', { name: 'Add connection' }));
   const dialog = await screen.findByRole('dialog', { name: 'Add connection' });
   expect(
-    within(within(dialog).getByLabelText('API format'))
-      .getAllByRole('option')
-      .filter((o) => !(o as HTMLOptionElement).disabled),
+    selectOptions(within(dialog).getByLabelText('API format'))
+      .filter((o) => !(o as HTMLButtonElement).disabled),
   ).toHaveLength(4);
-  fireEvent.change(within(dialog).getByLabelText('API format'), {
+  changeControl(within(dialog).getByLabelText('API format'), {
     target: { value: 'openai_chat' },
   });
-  fireEvent.change(within(dialog).getByLabelText('Name'), {
+  changeControl(within(dialog).getByLabelText('Name'), {
     target: { value: 'Plugin Conn' },
   });
-  fireEvent.change(within(dialog).getByLabelText('Base URL'), {
+  changeControl(within(dialog).getByLabelText('Base URL'), {
     target: { value: 'https://plugin.test/v1' },
   });
-  fireEvent.change(within(dialog).getByLabelText('API key'), {
+  changeControl(within(dialog).getByLabelText('API key'), {
     target: { value: 'k' },
   });
-  fireEvent.change(within(dialog).getByLabelText('Default model'), {
+  changeControl(within(dialog).getByLabelText('Default model'), {
     target: { value: 'p1' },
   });
   await act(async () => {
@@ -666,13 +665,13 @@ it('limits the shared form and picker to the protocols a caller supports', async
   const picker = await screen.findByLabelText('Saved connection');
   await waitFor(() =>
     expect(
-      within(picker).getByRole('option', { name: 'Anthropic One' }),
+      selectOption(picker, { name: 'Anthropic One' }),
     ).toBeEnabled(),
   );
   expect(
-    within(picker).getByRole('option', { name: /Chat One/ }),
+    selectOption(picker, { name: /Chat One/ }),
   ).toBeDisabled();
-  fireEvent.change(picker, { target: { value: 'ant' } });
+  changeControl(picker, { target: { value: 'ant' } });
   expect(onChange).toHaveBeenCalledWith({
     connectionId: 'ant',
     model: 'model-a',
@@ -680,8 +679,7 @@ it('limits the shared form and picker to the protocols a caller supports', async
   fireEvent.click(screen.getByRole('button', { name: 'Add connection' }));
   const dialog = await screen.findByRole('dialog', { name: 'Add connection' });
   expect(
-    within(within(dialog).getByLabelText('API format'))
-      .getAllByRole('option')
+    selectOptions(within(dialog).getByLabelText('API format'))
       .map((o) => o.textContent),
   ).toEqual(['Anthropic Messages']);
 });
@@ -744,7 +742,7 @@ it('keeps Reapply on a bound connection and flags saved or synced changes until 
   expect(reapply()).toBeEnabled();
   await openEdit('Work API');
   const dialog = await screen.findByRole('dialog', { name: 'Edit connection' });
-  fireEvent.change(within(dialog).getByLabelText('Default model'), {
+  changeControl(within(dialog).getByLabelText('Default model'), {
     target: { value: 'model-c' },
   });
   fireEvent.click(
@@ -768,7 +766,7 @@ it('keeps Reapply on a bound connection and flags saved or synced changes until 
   });
   // The harness keeps its applied model unless the user changes it here.
   expect(within(apply).getByLabelText('Default model')).toHaveValue('model-b');
-  fireEvent.change(within(apply).getByLabelText('Default model'), {
+  changeControl(within(apply).getByLabelText('Default model'), {
     target: { value: 'model-c' },
   });
   fireEvent.click(within(apply).getByRole('button', { name: 'Apply' }));
@@ -996,8 +994,7 @@ it('offers a harness its own sign-in to restore, apart from saved connections', 
   const pick = within(claudeRow).getByLabelText('Connection for Claude Agent');
   await waitFor(() =>
     expect(
-      within(pick)
-        .getAllByRole('option')
+      selectOptions(pick)
         .map((o) => o.textContent),
     ).toEqual(['Choose a connection', 'Account sign-in', 'Anthropic API']),
   );
@@ -1010,10 +1007,10 @@ it('offers a harness its own sign-in to restore, apart from saved connections', 
       name: 'Native config',
     }),
   ).toBeNull();
-  const option = within(pick).getByRole('option', {
+  const option = selectOption(pick, {
     name: 'Account sign-in',
-  }) as HTMLOptionElement;
-  fireEvent.change(pick, { target: { value: option.value } });
+  }) as HTMLButtonElement;
+  changeControl(pick, { target: { value: option.getAttribute('data-value')! } });
   fireEvent.click(
     within(claudeRow).getByRole('button', {
       name: 'Apply Account sign-in to Claude Agent',
@@ -1043,14 +1040,14 @@ it('offers a harness its own sign-in to restore, apart from saved connections', 
       'Account sign-in',
     ),
   );
-  expect((pick as HTMLSelectElement).value).toBe(option.value);
+  expect(pick).toHaveValue(option.getAttribute('data-value'));
   expect(
     within(claudeRow).getByRole('button', {
       name: 'Apply Account sign-in to Claude Agent',
     }),
   ).toBeDisabled();
   // Switching back to the API connection is the usual explicit Apply.
-  fireEvent.change(pick, { target: { value: 'ant' } });
+  changeControl(pick, { target: { value: 'ant' } });
   expect(
     within(claudeRow).getByRole('button', {
       name: 'Apply Anthropic API to Claude Agent',
@@ -1075,17 +1072,14 @@ it('keeps a native option usable without compatible connections and shows none o
   );
   await waitFor(() => expect(codexPick).toBeEnabled());
   expect(
-    within(codexPick)
-      .getAllByRole('option')
+    selectOptions(codexPick)
       .map((o) => o.textContent),
   ).toEqual(['Choose a connection', 'Native config']);
   // No native state reported for Claude (as on older runtimes): nothing assumed.
   const claudeRow = await harnessRow('Claude Agent');
   expect(
-    within(within(claudeRow).getByLabelText('Connection for Claude Agent'))
-      .getAllByRole('option')
-      .map((o) => o.textContent),
-  ).toEqual(['No compatible saved connection']);
+    within(claudeRow).getByLabelText('Connection for Claude Agent'),
+  ).toHaveTextContent('No compatible saved connection');
   expect(within(claudeRow).getByTestId('harness-current')).toHaveTextContent(
     'its own sign-in or native configuration',
   );
@@ -1122,7 +1116,7 @@ it('keeps the list order when a harness uses a connection and shows each result 
       .map((row) => row.getAttribute('aria-label'));
   await waitFor(() => expect(names()).toEqual(['Alpha', 'Beta']));
   const codexRow = await harnessRow('Codex');
-  fireEvent.change(within(codexRow).getByLabelText('Connection for Codex'), {
+  changeControl(within(codexRow).getByLabelText('Connection for Codex'), {
     target: { value: 'beta' },
   });
   fireEvent.click(

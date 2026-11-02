@@ -1,123 +1,240 @@
 # Device turn statistics
 
-`GET /api/stats/summary?range=today|7d|30d&tz=<timezone>` is an authenticated
-supervisor API, available through the usual encrypted relay device `/api/*`
-transport. It is not an account-wide relay aggregation. Health responses advertise
-`capabilities.statsSummary: true`; older supervisors omit that capability and
-return 404 for the endpoint. Clients should feature-detect and retain partial-data
-fallbacks. `range` defaults to `today`, `tz` defaults to `UTC`. Invalid values
-return 400.
+`GET /api/stats/summary?range=today|7d|30d|all&tz=<timezone>&origin=<origin>`
+reports this Supervisor's **persisted** execution ledger. It is available through
+normal encrypted relay device transport, to the owner only. Shared grants and
+Treer thread-scoped viewers cannot read device-wide totals. Health advertises
+`capabilities.statsSummary: true`; clients must also handle older devices' 404
+responses and missing additive fields. Defaults are `today`, `UTC`, `all` origins.
+Invalid range, timezone or origin returns 400.
 
-Timezones accept IANA names (including historical DST transitions) or signed
-integer minutes **east of UTC** from -840 to 840. This is the inverse of
-JavaScript's `Date.getTimezoneOffset()`. Percent-encode query values normally.
-Ranges are calendar days including today: 7d means today plus six prior dates.
-Turns are assigned to their start date in the requested timezone. Future starts,
-missing/invalid start timestamps, and deleted threads are excluded. Imported
-turns already in SQLite count; requesting stats never scans external transcripts.
+## Turns and initiating origin
 
-For `range=today`, `hourly` contains 24 zero-filled buckets in local clock-hour
-order (`hour: 0..23`) with `turns`, `failed`, `tokens` and nullable `costUsd`.
-Both occurrences of a repeated fall-back hour are combined in that hour's bucket;
-a skipped spring-forward hour stays zero. Fractional-hour UTC offsets use the
-requested local clock hour. The same start-date, token and unknown-cost rules as
-`daily` apply. Other ranges omit `hourly`; clients can feature-detect the field
-and fall back when reading older Supervisors.
+A turn is one admitted harness execution in one thread. It is not an API request,
+a chat message, a tool call, a steering message or a subscription allowance unit.
+A tool-heavy turn can contain many model requests. All origins count by default:
 
-Counts include running turns; completed/failed/interrupted are terminal subsets.
-Durations include terminal turns with valid start/end times only, including time
-waiting for tools/input. `totals.durationSamples` counts these turns (zero when
-empty), so clients can weight average durations across devices exactly.
-Average and p50 are null with no durations. p50 averages
-the middle pair for even samples. `longestThreads` is the top five threads by
-**mean** terminal-turn duration in the range; `durationMs` is that mean. This
-matches the desktop's "threads with longest average duration" chart.
+| Origin | Authoritative evidence at admission |
+| --- | --- |
+| `owner` | Local/device-owner prompt or goal, with no verified non-owner sender |
+| `guest` | Verified share recipient recorded on the accepted prompt or goal |
+| `agent` | Parent/delegate or peer message, or an explicit Supervisor delegate wake |
+| `automation` | Automation run bound to the queued prompt, or an explicitly scheduled native Claude turn recovered from its transcript |
+| `unknown` | Pre-migration rows and imported executions without trustworthy initiating identity |
 
-Tokens reuse normalized persisted usage (`inputTokens` includes cached input;
-`cachedTokens` means cache reads and is a subset of input, not an extra token
-count). Costs reuse the existing model pricing helper, user overrides, model
-aliases, accumulated per-request estimates, tiers and time-sensitive rates.
-An aggregate `costUsd` is null if any included turn is unpriced or has unknown
-usage; empty aggregates cost zero. Missing token usage contributes zero known
-tokens, so totals can be partial. Daily buckets are zero-filled and ascending;
-model/workspace rows sort by turns descending, with ID tie-breaks. Workspace
-last activity is the latest included completion/start. Current `activeThreads`
-(running/recovering, open) and `runningTurns` (inProgress/recovering) are device-wide,
-independent of range.
+`origin` is the initiator of the execution. Steering by another source does not
+change the already-running turn's origin. Queue acceptance alone is not a turn;
+a cancelled pending prompt and a command-only hook create no turn. A delegate
+execution is counted in its own thread; it is not also a parent execution.
+Resume/connect/recovery observes or continues the same turn ID, and adds no turn
+unless a new prompt actually starts another execution. Interruptions and confirmed
+failures count; `recovering` means completion is unconfirmed, not success/failure.
 
-Migration 20 adds an idempotent `julianday(started_at)` SQLite expression index,
-so offset timestamps and UTC timestamps use the same indexed range scan. The
-summary joins only turn/thread/workspace rows and never reads history items.
-HTTP computes in a blocking worker instead of blocking the async reactor.
-The focused production latency benchmark runs with
-`cargo test --release -p pockymoe-runtime stats_indexed_five_thousand_turns_under_150ms --lib -- --ignored --nocapture`;
-it is intentionally ignored in debug test runs because unoptimized code is not
-a production latency measurement.
+Migration 21 adds `thread_turns.origin` with default `unknown`. It **does not guess
+old origins** from prompt text, titles, thread lineage or current ownership.
+Per-turn responses expose `origin`; older devices may omit it. The query's origin
+filter applies to totals, daily/hourly, models, workspaces, longest threads and
+origin groups. Device-wide `activeThreads` and `runningTurns` are current counts
+and remain independent of the historical range/origin filter.
 
-This calendar summary complements [the thread map](thread-interaction.md#thread-map):
-`/api/thread-activity` reports all-time per-thread totals and windowed runtime;
-this endpoint reports turns started in local calendar dates, terminal statuses,
-model/workspace groups and duration distribution. It reuses the same persisted
-usage and pricing helper, including native per-request/subagent accounting.
-Device hardware metrics and per-watch attribution remain separate endpoints.
+Forked history is context, not a fresh execution. New fork copies retain source
+IDs in `history_copy_of`; summary and activity exclude those copies while the
+conversation still displays them. Old unmarked copies cannot be distinguished
+safely and are not guessed away. A subsequent execution in a fork counts normally.
 
-The endpoint is owner-only, including when forwarded through a relay. Shared
-browser grants and Treer thread-scoped viewers cannot read device-wide totals.
+## Time, counts and duration
 
-## Response type
+Timezone accepts an IANA name or integer minutes **east of UTC**, -840 to 840
+(the inverse of JavaScript `Date.getTimezoneOffset()`). A finite range contains
+today plus zero, six or 29 prior local dates, assigned by execution **start time**.
+Future starts are excluded. Undated/invalid starts cannot be assigned to a finite
+range; `coverage.excludedUndatedTurns` reports their device-wide count for the
+selected origin without pretending to know whether they fall inside the range.
+
+`all` includes undated persisted turns in its totals/model/workspace/origin
+breakdowns. `coverage.undatedTurns` counts them. They have no daily/hourly bucket.
+Finite daily series is zero-filled in local-date order; `all` returns only dates
+with recorded executions. The totals can therefore exceed the sum of daily rows
+by the number of undated turns. Deleted threads and their orphan records are
+excluded. No unrelated devices are included; the client aggregates devices.
+
+`today` adds 24 zero-filled local-clock `hourly` rows (`hour: 0..23`). Both repeated
+fall-back hours share their clock-hour bucket; a skipped spring-forward hour stays
+zero. Fractional offsets use the local clock hour. Other ranges omit `hourly`.
+
+`completed`, `failed`, `interrupted` are terminal subsets of `turns`; running and
+recovering turns remain in the total. `durationSamples` counts terminal executions
+with valid, ordered start/end timestamps. Average and median p50 use only those
+samples; p50 averages the middle pair for even samples. No valid durations means
+null, not zero. Duration is wall time including tools, user input and waits, not
+model decoding time. An import with no final time contributes a turn but no
+duration; known completion times are preserved during import.
+
+`longestThreads` contains the top five threads by **mean** valid terminal-turn
+duration in the selected range. `durationMs` is that mean. Workspace
+`lastActivityAt` is the latest selected completion/start, or null if all included
+turns are undated. Workspaces sort by turn count; model groups sort by known tokens.
+`activeThreads` counts open running/recovering threads; `runningTurns` counts
+non-copy inProgress/recovering rows whose thread is also running/recovering.
+These are current persisted observations, not proof that a disconnected harness
+is still executing.
+
+## Tokens, requests and models
+
+Every aggregate uses the same reporting helper over `token_usage_json`. When
+native per-request snapshots exist, they replace the turn aggregate, **never add
+to it**. Repeated snapshots of one `messageId`/`requestId` retain the largest final
+output counter and count once. Parent and native subagent snapshots are grouped
+under their actual reported models and priced at their observation times. Native
+subagent calls are requests inside the owning execution, not extra thread turns.
+Models are canonicalized with this device's existing pricing catalog and aliases;
+ambiguous labels without an explicit alias are not guessed from current settings.
+
+- `tokens` = recorded input plus output. Token source counters are normalized
+  through the existing harness adapter, including session-counter deltas/resets.
+- `inputTokens` includes cached reads and cache writes. `cachedTokens` and
+  `cacheWriteTokens` are subsets of input; do not add them again to total tokens.
+- `outputTokens` includes reasoning. `reasoningTokens` is a subset of output;
+  do not add it again. One-hour cache writes are a subset of cache writes and
+  retain their distinct rate in the pricing helper.
+- `turns` on a model row means distinct executions touching that model, including
+  missing-usage rows with a known recorded model. A mixed-model execution touches
+  several rows, so **do not sum model-row turns to calculate total turns**.
+- `requests` is the count of distinct recorded native response IDs when that
+  count is known for every included execution. Otherwise it is null. A turn
+  counter, output interval or tool event is never substituted for requests.
+  `knownRequests` remains the confirmed subtotal when `requests` is null.
+- `usageTurns` counts executions with any usable token evidence.
+  `partialUsageTurns` counts executions missing usage or explicitly known to have
+  partial evidence (for example imported parent-only Claude history).
+
+Live Claude native usage includes observed parent and child snapshots once.
+Claude imports/scheduled recovery retain parent request models and usage, but do
+not claim to have backfilled every child log: their request/usage coverage stays
+partial. Codex uses rollout turn totals in preference to a late ACP final-request
+fallback, and subtracts cumulative baselines across resumed processes. Generic
+ACP and Grok can report totals without request IDs: tokens remain usable while
+request counts stay null. Context-window occupancy is never billable usage.
+
+## Costs and completeness
+
+Costs reuse this Supervisor's existing pricing helper, saved user overrides,
+per-request models/times, fast mode, cache durations and long-context rates.
+`costUsd` is the **known priced subtotal**. An unpriced model does not erase priced
+siblings or earlier turns. `unpricedTokens` counts known tokens lacking a usable
+price. Entirely unpriceable nonempty groups have null cost; empty groups cost zero.
+Missing usage cannot be expressed as a fabricated token number: it contributes
+no known tokens, and is reported separately in coverage.
+
+A UI should show a lower-bound cost when `unpricedTokens > 0` **or** usage coverage
+is incomplete, and a missing value when no price is available. Price estimates
+are API token estimates, not subscription invoices or hardware/tool costs.
+Per-turn mixed-request `priceEstimate` also preserves priced siblings and adds
+`unpricedTokens`/`pricePartial`. Historical custom-rate changes reuse saved request
+snapshots when present; older totals cannot reconstruct missing request sizes,
+models or times. Subscription-usage/allowance endpoints measure another quantity
+and must not be added to token charges.
+
+Statistics never open native transcript files or contact a harness. Imports,
+explicit detail hydration and native scheduled recovery persist data through
+their existing paths, so a later summary can gain evidence. There is no promise
+that every run before installation, every external native session, or a missing
+provider log has been recorded. `coverage.source: 'persisted'` and the coverage
+counts describe the available ledger, not an account billing audit. Existing
+missing timestamps/origins/child logs are not silently backfilled or inferred.
+
+## Thread activity and compatibility
+
+`GET /api/thread-activity?hours=24` remains an all-time per-thread map endpoint:
+`turns`, tokens and costs are lifetime; `activeMs`/`hourlyMs` clip duration to the
+requested UTC window and `totalMs` includes valid historical time. An open turn
+adds time only while it is `inProgress` and its thread is `running`. Unconfirmed
+recovering turns add no invented time after their last known bound. Completed imported
+turns without end times add no time. Its tokens/prices now use the same normalized,
+request-aware evidence and exclude marked fork context. `byOrigin` and
+`usageCoverage` expose source counts and missing/partial usage; `pricePartial`
+is true for unpriced tokens **or** missing/partial usage. This endpoint does not
+provide finite-range model totals; clients must not attribute its lifetime usage
+to a thread's current model or relabel it as today's activity.
+
+The summary complements hardware metrics, watch/automation attribution and
+subscription allowance rather than replacing those interfaces. The indexed
+`julianday(started_at)` scan (migration 20) reads turn metadata only; finite ranges
+never load timeline/tool payloads. HTTP computes on a blocking worker. Run the
+focused production latency test with
+`cargo test --release -p pockymoe-runtime stats_indexed_five_thousand_turns_under_150ms --lib -- --ignored --nocapture`.
+
+## TypeScript DTOs
+
+Fields added to existing endpoints are optional when consuming older devices.
+`hourly` is present only for today. The current summary response is:
 
 ```ts
+export type TurnOrigin = 'owner' | 'guest' | 'agent' | 'automation' | 'unknown';
+export interface UsageStats {
+  turns: number;
+  usageTurns: number;
+  partialUsageTurns: number;
+  requests: number | null;
+  knownRequests: number;
+  tokens: number;
+  inputTokens: number;
+  cachedTokens: number;
+  cacheWriteTokens: number;
+  outputTokens: number;
+  reasoningTokens: number;
+  costUsd: number | null;
+  unpricedTokens: number;
+}
 export interface StatsSummary {
-  range: 'today' | '7d' | '30d';
+  range: 'today' | '7d' | '30d' | 'all';
+  origin: 'all' | TurnOrigin;
   generatedAt: string;
-  totals: {
-    turns: number;
+  totals: UsageStats & {
     completed: number;
     failed: number;
     interrupted: number;
     durationSamples: number;
     avgDurationMs: number | null;
     p50DurationMs: number | null;
-    inputTokens: number;
-    outputTokens: number;
-    cachedTokens: number;
-    costUsd: number | null;
   };
-  daily: Array<{
-    date: string; // YYYY-MM-DD in requested timezone
-    turns: number;
-    failed: number;
-    tokens: number;
-    costUsd: number | null;
-  }>;
-  hourly?: Array<{ // present for range=today
-    hour: number; // local clock hour, 0..23
-    turns: number;
-    failed: number;
-    tokens: number;
-    costUsd: number | null;
-  }>;
-  byModel: Array<{
-    model: string;
-    turns: number;
-    tokens: number;
-    costUsd: number | null;
-  }>;
-  byWorkspace: Array<{
-    workspaceId: string;
-    label: string;
-    turns: number;
-    tokens: number;
-    costUsd: number | null;
-    lastActivityAt: string;
+  daily: Array<UsageStats & { date: string; failed: number }>;
+  hourly?: Array<UsageStats & { hour: number; failed: number }>;
+  byModel: Array<UsageStats & { model: string }>;
+  byOrigin: Array<UsageStats & { origin: TurnOrigin }>;
+  byWorkspace: Array<UsageStats & {
+    workspaceId: string; label: string; failed: number;
+    lastActivityAt: string | null;
   }>;
   longestThreads: Array<{
-    threadId: string;
-    title: string;
-    workspaceId: string;
-    durationMs: number; // mean terminal-turn duration
+    threadId: string; title: string; workspaceId: string; durationMs: number;
   }>;
   activeThreads: number;
   runningTurns: number;
+  coverage: {
+    source: 'persisted';
+    missingUsageTurns: number;
+    partialUsageTurns: number;
+    unknownOriginTurns: number;
+    undatedTurns: number;
+    excludedUndatedTurns: number;
+    excludedHistoryCopies: number;
+  };
+}
+export interface ThreadActivityAdditions {
+  byOrigin?: Partial<Record<TurnOrigin, number>>;
+  usageCoverage?: {
+    source: 'persisted';
+    usageTurns: number;
+    missingUsageTurns: number;
+    partialUsageTurns: number;
+    requests: number | null;
+    knownRequests: number;
+    unpricedTokens: number;
+  };
 }
 ```
+
+The statistics page is at `/desktop/devices`, in the desktop client and in a browser signed in to the relay. The devices page links to it.
+
+The account usage list shows only devices with usage for the chosen metric, highest first, eight per page. A device without statistics for the range, because it is offline or its Supervisor is older than 0.13.42, is counted below the list and not shown as zero.

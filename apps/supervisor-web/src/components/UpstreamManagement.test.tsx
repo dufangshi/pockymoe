@@ -1,3 +1,4 @@
+import { changeControl } from '../test/formControls';
 import {
   act,
   fireEvent,
@@ -37,11 +38,13 @@ it('pins configuration to the selected device and never reuses secrets in duplic
   fireEvent.click(screen.getByRole('button', { name: 'Duplicate Work' }));
   expect(screen.getByLabelText('API key')).toHaveValue('');
   expect(screen.getByLabelText('API key')).toBeRequired();
-  fireEvent.change(screen.getByLabelText('API key'), {
+  changeControl(screen.getByLabelText('API key'), {
     target: { value: 'new-secret' },
   });
+  await waitFor(() => expect(screen.getByRole('combobox', { name: 'Model' })).toBeEnabled());
+  fireEvent.click(screen.getByRole('combobox', { name: 'Model' }));
   await screen.findByRole('option', { name: 'test' });
-  fireEvent.change(screen.getByLabelText('Model'), {
+  changeControl(screen.getByLabelText('Model'), {
     target: { value: 'test' },
   });
   fireEvent.click(screen.getByRole('button', { name: 'Save upstream' }));
@@ -73,18 +76,20 @@ it('discards stale model discovery when the upstream changes', async () => {
   render(<UpstreamManagement apiRoot="/relay/devices/device-b/api" />);
   await screen.findByText(/Add an API provider/);
   fireEvent.click(screen.getByRole('button', { name: 'Add upstream' }));
-  fireEvent.change(screen.getByLabelText('Base URL'), {
+  changeControl(screen.getByLabelText('Base URL'), {
     target: { value: 'https://old.example/v1' },
   });
-  fireEvent.change(screen.getByLabelText('API key'), {
+  changeControl(screen.getByLabelText('API key'), {
     target: { value: 'key' },
   });
   await waitFor(() => expect(resolveOld).toBeTypeOf('function'));
-  fireEvent.change(screen.getByLabelText('Base URL'), {
+  changeControl(screen.getByLabelText('Base URL'), {
     target: { value: 'https://new.example/v1' },
   });
+  await waitFor(() => expect(screen.getByRole('combobox', { name: 'Model' })).toBeEnabled());
+  fireEvent.click(screen.getByRole('combobox', { name: 'Model' }));
   await screen.findByRole('option', { name: 'new-model' });
-  fireEvent.change(screen.getByLabelText('Model'), {
+  changeControl(screen.getByLabelText('Model'), {
     target: { value: 'new-model' },
   });
   await act(async () =>
@@ -97,7 +102,7 @@ it('discards stale model discovery when the upstream changes', async () => {
     screen.queryByRole('option', { name: 'old-model' }),
   ).not.toBeInTheDocument();
   expect(screen.getByLabelText('Model')).toHaveValue('new-model');
-  fireEvent.change(screen.getByLabelText('API key'), {
+  changeControl(screen.getByLabelText('API key'), {
     target: { value: 'changed-key' },
   });
   expect(screen.getByLabelText('Model')).toHaveValue('');

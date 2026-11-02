@@ -24,7 +24,7 @@ export function DesktopMapPage({ visible, mapVisible, revealKey, onOpen, childre
   const { locale } = useI18n();
   const index = useDesktopSelector(index => index); const store = useDesktopStore();
   const shell = useAppShellNav(); const navigate = useNavigate();
-  const [scope, setScope] = useState<MapScope>('week'); const [filter, setFilter] = useState('');
+  const [scope, setScope] = useState<MapScope>('all'); const [filter, setFilter] = useState('');
   const [quickLook, setQuickLook] = useState<string | null>(null); const [error, setError] = useState('');
   const [renameSupported, setRenameSupported] = useState<ReadonlySet<string>>(new Set());
   const [searchOpen, setSearchOpen] = useState(false);
@@ -88,7 +88,7 @@ export function DesktopMapPage({ visible, mapVisible, revealKey, onOpen, childre
     void resolveRequest(thread.deviceId, thread.id, requestId, decision, { store }).catch(error => setError(error instanceof Error ? error.message : String(error)));
   }, [store]);
   return <div className="desktop-map-scene thread-ui-shell thread-ui-viewport-constrained" hidden={!visible} inert={!visible} data-theme-effective={shell?.effectiveTheme} data-theme-mode={shell?.themeMode}>
-    <MatterWorkbench title={translate('desktopShell.map')} homeHref={appUrl('/')} options={workbenchUrls({ ...navigation, ...desktopWorkbench, emptyWorkspace: !visible, activeView: 'chat', terminalEnabled: false, onViewChange: () => {}, onNavigate: navigate, onSearch: () => setSearchOpen(true), searchOpen,
+    <MatterWorkbench title={translate('desktopShell.map')} homeHref={appUrl('/')} options={workbenchUrls({ ...navigation, ...desktopWorkbench, workspaceControlsEnabled: false, emptyWorkspace: !visible, activeView: 'chat', terminalEnabled: false, onViewChange: () => {}, onNavigate: navigate, onSearch: () => setSearchOpen(true), searchOpen,
       search: <ConversationSearch threadId={firstThreads[0]?.id ?? ''} workspaceId={firstThreads[0]?.workspaceId ?? ''} deviceLabel={first?.name ?? translate('desktopShell.devices')} deviceId={first?.id} initialScope="device" allowGlobal turns={[]} open={searchOpen} onOpen={() => setSearchOpen(true)} onClose={() => setSearchOpen(false)} onSelect={(_turns, turnId, itemId, query) => { if (firstThreads[0]) { setSearchOpen(false); navigate(`${threadHref(firstThreads[0].id, first?.id)}?${new URLSearchParams({ turnId, itemId, query })}`); } }} onNavigate={(match, query) => { setSearchOpen(false); navigate(`${threadHref(match.threadId, first?.id)}?${new URLSearchParams({ query, ...(match.turnId ? { turnId: match.turnId } : {}), ...(match.itemId ? { itemId: match.itemId } : {}) })}`); }} />,
       renderThreadMenu: (thread, context) => <RecentThreadMenu thread={thread} context={context} currentKey={navigation.currentKey} onFavorite={navigation.onToggleThreadFavorite} onRenamed={navigation.onThreadRenamed} onRemoved={navigation.onThreadRemoved} onNavigate={navigate} />,
     })} settings={<button aria-label={translate('desktopShell.settings')} onClick={shell?.openSettings}><Settings data-icon="settings" /></button>} newThread={<button aria-label={translate('desktopShell.newThread')} onClick={() => first && navigate(`/devices/${encodeURIComponent(first.id)}/threads/new`)}><Plus data-icon="new-thread" /></button>} actions={null} threadMenu={null} connection={<span className="desktop-online-count">{translate('desktopShell.onlineCount', { count: formatNumber(index.devices.filter(device => device.connected).length) })}</span>} explorer={null} revealExplorer={0}>

@@ -88,8 +88,10 @@ import { ConnectionPicker } from './components/ConnectionPicker';
 import { useComposerPreferences } from './lib/useComposerPreferences';
 import { effectiveColorMode, themeChromeColor, useThemeRegistry } from './lib/themePacks';
 
+const DesktopWindowFrame = lazy(() => import('./desktop/DesktopWindowFrame'));
 const DesktopEntry = lazy(() => import('./desktop/DesktopEntry'));
 const DesktopDevicesRoute = lazy(() => import('./desktop/DevicesRoute'));
+const WebDevicesRoute = lazy(() => import('./desktop/WebDevicesRoute'));
 
 const PHONE_DOCK_STORAGE_KEY = 'pockymoe.phoneDock';
 const PHONE_HAND_STORAGE_KEY = 'pockymoe.phoneHand';
@@ -640,6 +642,10 @@ function SupervisorAccessGate({ children }: { children: React.ReactNode }) {
   return relayModeActive() ? <RelayGate>{content}</RelayGate> : <AuthGate>{content}</AuthGate>;
 }
 
+function DesktopFrameBoundary({ children, effectiveTheme }: { children: ReactNode; effectiveTheme: 'light' | 'dark' }) {
+  return window.pockymoeHost ? <Suspense fallback={null}><DesktopWindowFrame effectiveTheme={effectiveTheme}>{children}</DesktopWindowFrame></Suspense> : children;
+}
+
 function RootRoute() {
   const { locale: i18nLocale } = useI18n();
   return window.pockymoeHost ? null : relayModeActive() ? <RelayHomePage /> : <Navigate to="/workspaces" replace />;
@@ -667,8 +673,8 @@ function SupervisorRoutes({
         }
       >
         <Route path="/" element={<RootRoute />} />
-        <Route path="/desktop/devices" element={window.pockymoeHost ? <Suspense fallback={null}><DesktopDevicesRoute /></Suspense> : <Navigate to="/relay-devices" replace />} />
-        <Route path="/desktop/devices/:id" element={window.pockymoeHost ? <Suspense fallback={null}><DesktopDevicesRoute /></Suspense> : <Navigate to="/relay-devices" replace />} />
+        <Route path="/desktop/devices" element={<Suspense fallback={null}>{window.pockymoeHost ? <DesktopDevicesRoute /> : <WebDevicesRoute />}</Suspense>} />
+        <Route path="/desktop/devices/:id" element={<Suspense fallback={null}>{window.pockymoeHost ? <DesktopDevicesRoute /> : <WebDevicesRoute />}</Suspense>} />
         <Route path="/workspaces" element={<WorkspacesPage />} />
         <Route path="/workspaces/new" element={<WorkspaceNewPage />} />
         <Route path="/relay-account" element={<RelayAccountPage />} />
@@ -766,6 +772,7 @@ export function App() {
   return (
     <div className="theme-shell">
       <BrowserRouter basename={webBase}>
+        <DesktopFrameBoundary effectiveTheme={effectiveTheme}>
         <WorkspaceDocumentNavigationGuard>
         <DocumentTitleUpdater />
         <AccountUnlockPrompt />
@@ -793,6 +800,7 @@ export function App() {
             />
           </Routes>
         </WorkspaceDocumentNavigationGuard>
+        </DesktopFrameBoundary>
       </BrowserRouter>
     </div>
   );

@@ -1,14 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Link } from 'react-router-dom';
-import { ArrowUpRight, EllipsisVertical, Monitor } from 'lucide-react';
+import { ArrowUpRight, ArrowUpCircle, EllipsisVertical, Folder, List } from 'lucide-react';
 import { useI18n } from '@pockymoe/thread-ui/i18n';
 import { StatusMark, useLongPress, useMenuKeyboard } from '@pockymoe/thread-ui';
 import { DeviceMonitor } from '../../components/DeviceMonitor';
 import { DeviceStateMark } from '../../pages/relayAdmin/ui';
 import type { DesktopDevice } from '../data/types';
+import { Info } from './UsagePanel';
 import { Sparkline } from './Charts';
-import { compact, deviceColor, money, newerVersion, type DeviceMetrics, type StatsSummary } from './model';
+import { compact, deviceColor, newerVersion, type DeviceMetrics, type StatsSummary } from './model';
 
 export interface DeviceCardProps {
   device: DesktopDevice;
@@ -67,15 +68,14 @@ export function DeviceCard({ device, metric, today, history, counts, cacheLabel,
   const update = newerVersion(metric?.version, metric?.latestVersion);
   return <article className={`pd-device-card ${device.connected ? '' : 'is-offline'}`} aria-label={device.name} {...longPress} onContextMenu={event => { event.preventDefault(); show(event.clientX, event.clientY); }}>
     <header className="pd-card-heading">
-      <Link to={`/desktop/devices/${encodeURIComponent(device.id)}`} className="pd-device-title"><Monitor size={16} aria-hidden /><strong>{device.name}</strong></Link>
-      <span className="pd-presence"><DeviceStateMark state={!device.connected ? 'offline' : unstable ? 'unstable' : 'online'} label={!device.connected ? t('desktopDevices.offline') : unstable ? t('desktopDevices.unstable') : t('desktopDevices.online')} />{device.connected && metric?.latencyMs != null ? <small>{metric.latencyMs}ms</small> : null}</span>
-      <button ref={trigger} className="pd-icon-button" aria-label={t('desktopDevices.actionsFor', { device: device.name })} aria-haspopup="menu" aria-expanded={Boolean(position)} onClick={() => { if (position) close(); else { const box = trigger.current!.getBoundingClientRect(); show(box.right - 212, box.bottom + 4); } }}><EllipsisVertical size={16} data-icon="more" /></button>
+      <DeviceStateMark showLabel={false} state={!device.connected ? 'offline' : unstable ? 'unstable' : 'online'} label={!device.connected ? t('desktopDevices.offline') : unstable ? t('desktopDevices.unstable') : t('desktopDevices.online')} />
+      <Link to={`/desktop/devices/${encodeURIComponent(device.id)}`} className="pd-device-title" title={`${device.name} · Pockymoe ${metric?.version ?? '—'}`}><strong>{device.name}</strong></Link>
+      <span className="pd-presence">{device.connected && metric?.latencyMs != null ? <small>{metric.latencyMs}ms</small> : null}</span>
+      {update ? <button className="pd-update-badge" disabled={!device.connected} onClick={onUpdate} aria-label={t('desktopDevices.updateAvailable', { version: metric?.latestVersion })} title={t('desktopDevices.updateAvailable', { version: metric?.latestVersion })}>{metric?.version}<ArrowUpRight size={10} aria-hidden /></button> : null}
+      <button ref={trigger} className="pd-icon-button" aria-label={t('desktopDevices.actionsFor', { device: device.name })} aria-haspopup="menu" aria-expanded={Boolean(position)} onClick={() => { if (position) close(); else { const box = trigger.current!.getBoundingClientRect(); show(box.right - 212, box.bottom + 4); } }}><EllipsisVertical size={14} data-icon="more" /></button>
     </header>
-    <div className="pd-version"><span>Pockymoe <b>{metric?.version ?? '—'}</b></span>{update ? <button disabled={!device.connected} onClick={onUpdate}>{t('desktopDevices.updateAvailable', { version: metric?.latestVersion })}<ArrowUpRight size={11} aria-hidden /></button> : null}</div>
-    <div className="pd-counts"><span><span className="pd-count-mark"><StatusMark status={counts.running ? 'running' : 'idle'} label={counts.running ? t('desktopDevices.running') : t('desktopDevices.noneRunning')} /></span><b>{counts.running}</b> {t('desktopDevices.running')}</span><span><span className="pd-count-mark"><StatusMark status={counts.attention ? 'waiting' : 'idle'} label={counts.attention ? t('desktopDevices.needsYou') : t('desktopDevices.noneWaiting')} /></span><b>{counts.attention}</b> {t('desktopDevices.needsYou')}</span><span><b>{counts.workspaces}</b> {t('desktopDevices.workspaces', { count: counts.workspaces })}</span><span><b>{counts.threads}</b> {t('desktopDevices.threads', { count: counts.threads })}</span></div>
-    {loading ? <div className={`pd-today ${skeleton ? 'pd-skeleton' : ''}`} aria-label={t('desktopDevices.loadingToday')} /> : <div className="pd-today"><span>{t('desktopDevices.today')}</span><b>{compact(today.totals.turns)}</b> {t('desktopDevices.turnUnit', { count: today.totals.turns })} <span>·</span> {partial ? '—' : compact(today.totals.inputTokens + today.totals.outputTokens)} tokens <span>·</span> ≈ {money(today.totals.costUsd)}</div>}
-    <div className="pd-card-bottom"><Sparkline days={history} color={deviceColor(device.id)} label={t('desktopDevices.deviceActivity14d', { device: device.name })} /><span>{cacheLabel || (partial ? t('desktopDevices.partialRecent') : t('desktopDevices.activity14d'))}</span></div>
-    <footer className="pd-monitor"><span>{t('desktopDevices.liveResources')}</span>{device.connected ? <DeviceMonitor key={device.id} deviceId={device.id} /> : <small>{t('desktopDevices.monitorPaused')}</small>}</footer>
+    <div className="pd-card-readings"><div className="pd-counts"><span title={t('desktopDevices.running')}><StatusMark status={counts.running ? 'running' : 'idle'} label={counts.running ? t('desktopDevices.running') : t('desktopDevices.noneRunning')} /><b>{counts.running}</b></span><span title={t('desktopDevices.needsYou')}><StatusMark status={counts.attention ? 'waiting' : 'idle'} label={counts.attention ? t('desktopDevices.needsYou') : t('desktopDevices.noneWaiting')} /><b>{counts.attention}</b></span><span title={t('desktopDevices.workspaces', { count: counts.workspaces })}><Folder size={11} aria-hidden /><b>{counts.workspaces}</b><span className="sr-only">{t('desktopDevices.workspaces', { count: counts.workspaces })}</span></span><span title={t('desktopDevices.threads', { count: counts.threads })}><List size={11} aria-hidden /><b>{counts.threads}</b><span className="sr-only">{t('desktopDevices.threads', { count: counts.threads })}</span></span></div><div className="pd-monitor">{device.connected ? <DeviceMonitor key={device.id} deviceId={device.id} /> : null}</div></div>
+    <div className="pd-card-bottom"><Sparkline days={history} color={deviceColor(device.id)} label={t('desktopDevices.deviceActivity14d', { device: device.name })} />{loading ? <span className={`pd-today ${skeleton ? 'pd-skeleton' : ''}`} aria-label={t('desktopDevices.loadingToday')} /> : <span className="pd-today" title={t('desktopDevices.today')}><b>{compact(today.totals.turns)}</b>{t('desktopDevices.turnUnit', { count: today.totals.turns })}</span>}{metric?.partial ? <button className="pd-icon-button pd-update-required" aria-label={t('desktopDevices.updateRequired')} title={t('desktopDevices.updateRequired')} disabled={!device.connected} onClick={onUpdate}><ArrowUpCircle size={13} aria-hidden /></button> : null}{cacheLabel || partial ? <Info label={cacheLabel || t('desktopDevices.partialRecent')} message={cacheLabel || t('desktopDevices.partialNote')} /> : null}</div>
     {position && createPortal(<div ref={menu} className="pd-device-menu" role="menu" aria-label={t('desktopDevices.actionsMenuFor', { device: device.name })} style={position}>
       <button role="menuitem" onClick={() => choose(onReveal)}>{t('desktopDevices.revealInMap')}</button>
       <Link role="menuitem" to={`/desktop/devices/${encodeURIComponent(device.id)}`} onClick={() => close()}>{t('desktopDevices.deviceDetails')}</Link>

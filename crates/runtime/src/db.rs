@@ -251,6 +251,23 @@ const RUNTIME_MIGRATIONS: &[Migration] = &[
             Ok(())
         },
     },
+    Migration {
+        version: 21,
+        name: "turn_accounting_provenance",
+        apply: |conn| {
+            let existing = table_columns(conn, "thread_turns")?;
+            if !existing.contains("origin") {
+                conn.execute("ALTER TABLE thread_turns ADD COLUMN origin TEXT NOT NULL DEFAULT 'unknown' CHECK(origin IN ('owner','guest','agent','automation','unknown'))", [])?;
+            }
+            if !existing.contains("history_copy_of") {
+                conn.execute(
+                    "ALTER TABLE thread_turns ADD COLUMN history_copy_of TEXT",
+                    [],
+                )?;
+            }
+            Ok(())
+        },
+    },
 ];
 
 /// The Node Supervisor's migrations, in the order its migrator applied them

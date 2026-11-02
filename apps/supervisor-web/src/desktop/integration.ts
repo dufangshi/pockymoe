@@ -1,16 +1,20 @@
 import { translate } from '@pockymoe/thread-ui/i18n';
 import type { HostCommand, HostCommandResult, PockymoeHost } from './host';
-import { respondToThreadRequest, sendThreadPrompt } from '../lib/api';
+import { deviceRequest, respondToThreadRequest, sendThreadPrompt } from '../lib/api';
 import { buildActivitySnapshot } from './data/activity';
 import type { DesktopIndexStore } from './data/store';
+import { newerVersion } from './devices/model';
+
+/** The first Supervisor with the one-off completion route that spoken summaries run through. */
+const COMPLETION_VERSION = '0.13.43';
 
 export function focusedKeyFromPath(path: string): string | null {
   const match = path.match(/^\/devices\/([^/]+)\/threads\/([^/]+)$/);
   return match && !['new', 'import'].includes(match[2]!) ? `${decodeURIComponent(match[1]!)}:${decodeURIComponent(match[2]!)}` : null;
 }
 export interface CommandDependencies {
-  store: DesktopIndexStore; navigate(path: string): void; openMap(): void; revealInMap(key: string): void; newThread(): void;
-  respond?: typeof respondToThreadRequest; send?: typeof sendThreadPrompt;
+  store: DesktopIndexStore; navigate(path: string): void; openMap(): void; revealInMap(key: string): void; newThread(): void; openUpstreams?(): void;
+  respond?: typeof respondToThreadRequest; send?: typeof sendThreadPrompt; request?: typeof deviceRequest;
 }
 export class NeedsThreadError extends Error { readonly code = 'needsThread'; }
 export async function resolveRequest(deviceId: string, threadId: string, requestId: string, decision: 'approve' | 'deny', deps: Pick<CommandDependencies, 'store' | 'respond'>) {
@@ -36,6 +40,47 @@ export async function resolveRequest(deviceId: string, threadId: string, request
   const updated = await (deps.respond ?? respondToThreadRequest)(threadId, requestId, { answers: { [question.id]: { answers: [option.label] } } }, deviceId);
   deps.store.acceptDetail(deviceId, updated);
 }
+interface TextContextMessage { role: 'user' | 'assistant'; text: string; turnId?: string }
+/** The turn's request and final answer. The two newest turns cover one that started right after this one ended. */
+export async function turnText(deviceId: string, threadId: string, turnId: string | null | undefined, deps: Pick<CommandDependencies, 'request'>) {
+  const request = deps.request ?? deviceRequest;
+  const { messages } = await request<{ messages: TextContextMessage[] }>(deviceId, `api/threads/${encodeURIComponent(threadId)}/summary?turns=2&maxChars=20000`);
+  const owner = turnId && messages.some(message => message.turnId === turnId) ? turnId : messages.at(-1)?.turnId;
+  const own = messages.filter(message => message.turnId === owner);
+  return { request: own.find(message => message.role === 'user')?.text ?? '', answer: own.filter(message => message.role === 'assistant').at(-1)?.text ?? '' };
+}
+interface SavedConnection { id: string; name: string; protocol: string; model?: string; local?: boolean }
+/** A device that cannot answer is skipped: the others' connections are still usable. */
+export async function listConnections(deps: Pick<CommandDependencies, 'store' | 'request'>) {
+  const request = deps.request ?? deviceRequest;
+  const devices = deps.store.getSnapshot().devices.filter(device => device.connected);
+  const lists = await Promise.all(devices.map(async device => {
+    try {
+      const [{ connections }, status] = await Promise.all([
+        request<{ connections: SavedConnection[] }>(device.id, 'api/management/connections'),
+        request<{ runningVersion?: string }>(device.id, 'api/management/supervisor').catch(() => null),
+      ]);
+      // A summary runs on the device holding the upstream, so its version decides whether this one can be used.
+      const version = status?.runningVersion;
+      return connections.filter(connection => connection.local !== false).map(connection => ({ deviceId: device.id, deviceName: device.name, id: connection.id, name: connection.name, protocol: connection.protocol, model: connection.model ?? '', ...(version ? { supervisorVersion: version, needsUpdate: newerVersion(version, COMPLETION_VERSION) } : {}) }));
+    } catch { return []; }
+  }));
+  return lists.flat();
+}
+/** What can be silenced, newest conversation first. An agent thread belongs to its conversation, so only roots are listed. */
+export function muteTargets(store: Pick<DesktopIndexStore, 'getSnapshot'>) {
+  const index = store.getSnapshot();
+  const devices = new Map(index.devices.map(device => [device.id, device.name]));
+  const workspaces = new Map(index.workspaces.map(workspace => [workspace.key, workspace.label]));
+  const recent = (thread: typeof index.threads[number]) => thread.lastTurnStartedAt ?? thread.updatedAt ?? '';
+  return {
+    devices: index.devices.map(device => ({ id: device.id, label: device.name })),
+    workspaces: index.workspaces.map(workspace => ({ id: workspace.key, label: `${workspace.label} · ${devices.get(workspace.deviceId) ?? ''}` })),
+    threads: index.threads.filter(thread => !thread.rootThreadId || thread.rootThreadId === thread.id)
+      .sort((a, b) => recent(b).localeCompare(recent(a))).slice(0, 500)
+      .map(thread => ({ id: thread.key, label: `${thread.title} · ${workspaces.get(`${thread.deviceId}:${thread.workspaceId}`) ?? devices.get(thread.deviceId) ?? ''}` })),
+  };
+}
 export async function handleHostCommand(command: HostCommand, deps: CommandDependencies): Promise<HostCommandResult> {
   try {
     switch (command.type) {
@@ -53,6 +98,25 @@ export async function handleHostCommand(command: HostCommand, deps: CommandDepen
       case 'openMap': deps.openMap(); break;
       case 'newThread': deps.newThread(); break;
       case 'openDevices': deps.navigate('/desktop/devices'); break;
+      case 'turnText': return { ok: true, data: await turnText(command.deviceId, command.threadId, command.turnId, deps) };
+      case 'listConnections': return { ok: true, data: await listConnections(deps) };
+      case 'openUpstreams': deps.openUpstreams?.(); break;
+      case 'listMuteTargets': return { ok: true, data: muteTargets(deps.store) };
+      case 'connectionModels': {
+        const { models } = await (deps.request ?? deviceRequest)<{ models: { id: string; name?: string }[] }>(command.deviceId, `api/management/connections/${encodeURIComponent(command.connectionId)}/models`, { method: 'POST', body: '{}' });
+        return { ok: true, data: models.map(model => ({ id: model.id, name: model.name ?? model.id })) };
+      }
+      case 'completeWithConnection': {
+        const request = deps.request ?? deviceRequest;
+        try {
+          const { text } = await request<{ text: string }>(command.deviceId, `api/management/connections/${encodeURIComponent(command.connectionId)}/complete`, { method: 'POST', body: JSON.stringify({ model: command.model, system: command.system, user: command.user }) });
+          return { ok: true, data: { text } };
+        } catch (error) {
+          // An older Supervisor does not have this route yet.
+          if ([404, 405].includes((error as { statusCode?: number }).statusCode ?? 0)) return { ok: false, code: 'supervisorTooOld', error: translate('settings.connUpdateSupervisor') };
+          throw error;
+        }
+      }
     }
     return { ok: true };
   } catch (error) { return { ok: false, error: error instanceof Error ? error.message : translate('desktopShell.actionFailed'), ...(error instanceof NeedsThreadError ? { code: error.code } : {}) }; }

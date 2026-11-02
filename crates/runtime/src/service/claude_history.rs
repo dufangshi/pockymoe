@@ -33,7 +33,7 @@ struct PendingScheduledTurn {
     model: Option<String>,
     // Claude repeats a message's usage on its thinking/text/tool blocks.
     // Keep the latest snapshot per request, then sum distinct requests once.
-    usage: HashMap<String, crate::usage::Tokens>,
+    usage: HashMap<String, Value>,
     last_usage: Option<crate::usage::Tokens>,
 }
 
@@ -80,7 +80,7 @@ fn scheduled_turns(raw: &str, thread: &str, session: &str, since: &str) -> Vec<S
                 value["message"]["id"].as_str().filter(|v| !v.is_empty()),
                 crate::usage::Tokens::parse(&value["message"]["usage"]),
             ) {
-                pending.usage.insert(message.into(), usage.clone());
+                pending.usage.insert(message.into(), json!({"messageId":message,"model":value["message"]["model"],"parent":true,"observedAt":at,"total":usage,"last":usage}));
                 pending.last_usage = Some(usage);
             }
         }
@@ -127,9 +127,9 @@ fn scheduled_turns(raw: &str, thread: &str, session: &str, since: &str) -> Vec<S
                 let usage = pending.last_usage.map(|last| {
                     let total = pending
                         .usage
-                        .values()
-                        .fold(crate::usage::Tokens::default(), |sum, usage| sum.add(usage));
-                    json!({"total":total,"last":last,"cumulative":false})
+                        .values().filter_map(|r|crate::usage::Tokens::parse(&r["total"]))
+                        .fold(crate::usage::Tokens::default(), |sum, usage| sum.add(&usage));
+                    json!({"total":total,"last":last,"cumulative":false,"requests":pending.usage.into_values().collect::<Vec<_>>(),"source":"claudeScheduledImport"})
                 });
                 turns.push(ScheduledTurn {
                     id: pending.id,
@@ -279,7 +279,7 @@ impl Supervisor {
                 let ordinal: i64 = tx.query_row("SELECT COALESCE(MIN(CASE WHEN started_at>?2 THEN ordinal END),COALESCE(MAX(ordinal),0)+1) FROM thread_turns WHERE thread_id=?1", params![id,turn.started], |r| r.get(0))?;
                 let model = turn.model.as_deref().or(thread.model.as_deref());
                 let usage = turn.usage.as_ref().map(serde_json::to_string).transpose()?;
-                let inserted = tx.execute("INSERT OR IGNORE INTO thread_turns(id,thread_id,status,model,reasoning_effort,display_prompt,started_at,completed_at,ordinal,token_usage_json) VALUES(?1,?2,'completed',?3,?4,?5,?6,?7,?8,?9)", params![turn.id,id,model,thread.reasoning_effort,turn.prompt,turn.started,turn.completed,ordinal,usage])?;
+                let inserted = tx.execute("INSERT OR IGNORE INTO thread_turns(id,thread_id,status,model,reasoning_effort,display_prompt,started_at,completed_at,ordinal,token_usage_json,origin) VALUES(?1,?2,'completed',?3,?4,?5,?6,?7,?8,?9,'automation')", params![turn.id,id,model,thread.reasoning_effort,turn.prompt,turn.started,turn.completed,ordinal,usage])?;
                 if inserted == 0 {
                     // Upgrade already-recovered timers without duplicating their
                     // history or touching active execution/ordinary user turns.
@@ -379,6 +379,8 @@ mod tests {
         assert_eq!(usage["total"]["outputTokens"], 15);
         assert_eq!(usage["total"]["totalTokens"], 195);
         assert_eq!(usage["last"]["totalTokens"], 65);
+        assert_eq!(usage["requests"].as_array().unwrap().len(), 3);
+        assert_eq!(usage["source"], "claudeScheduledImport");
         // Missing request IDs cannot be charged once per content block.
         let anonymous = raw.replace("\"id\":\"progress\",", "");
         assert_eq!(
