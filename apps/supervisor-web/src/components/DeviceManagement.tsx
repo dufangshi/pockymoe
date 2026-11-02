@@ -551,7 +551,7 @@ export function DeviceManagement({ deviceId, action, embedded = false, onClose }
           devices: current.devices.filter(entry => entry.id !== device.id),
         } : current);
       }
-      setDeletingDevice(null);
+      setDeletingDevice(null); if (action === 'remove') onClose?.();
       window.requestAnimationFrame(() => {
         window.requestAnimationFrame(() => {
           if (document.activeElement === document.body) {
@@ -615,7 +615,7 @@ export function DeviceManagement({ deviceId, action, embedded = false, onClose }
         workspaceScope: 'all',
         workspaceIds: [],
       });
-      setSharingDevice(null);
+      setSharingDevice(null); if (action === 'share') onClose?.();
       setDialogError(null);
       await load({ showLoading: false });
     } catch (caught) {
@@ -815,7 +815,7 @@ export function DeviceManagement({ deviceId, action, embedded = false, onClose }
 
   const content = (
     <div>
-      <div className={embedded ? "space-y-6 device-management-embedded" : "product-page space-y-6"} data-page="devices">
+      <div hidden={Boolean(action && action !== 'add')} className={embedded ? "space-y-6 device-management-embedded" : "product-page space-y-6"} data-page="devices">
         {!embedded && <>
         <ProductHeader title={translate("devices.devices")} backHref="/" backLabel={translate("devices.relayHome")} actions={<TourLauncherButton showLabel />} />
 
@@ -850,8 +850,8 @@ export function DeviceManagement({ deviceId, action, embedded = false, onClose }
 
         </>}
         {pageTab === 'devices' || embedded ? (
-        <section aria-labelledby="devices-heading" role="tabpanel" id="devices-page-panel-devices">
-          <div className="flex items-start justify-between gap-4">
+        <section aria-labelledby={action ? undefined : "devices-heading"} role={action ? undefined : "tabpanel"} id="devices-page-panel-devices">
+          {action !== 'add' && <div className="flex items-start justify-between gap-4">
             <div className="min-w-0">
               <h2
                 className="text-lg font-semibold text-[var(--theme-fg)]"
@@ -875,7 +875,7 @@ export function DeviceManagement({ deviceId, action, embedded = false, onClose }
               ref={addDeviceButtonRef}
               type="button"
             >
-              {addDeviceOpen && (!embedded || !deviceId) ? (
+              {addDeviceOpen ? (
                 <X className="h-4 w-4" />
               ) : (
                 <Plus className="h-4 w-4" />
@@ -883,8 +883,8 @@ export function DeviceManagement({ deviceId, action, embedded = false, onClose }
               {addDeviceOpen ? translate("devices.close") : translate("devices.addDevice")}
             </button> : null}
             </div>
-          </div>
-          {addDeviceOpen ? (
+          </div>}
+          {addDeviceOpen && (!embedded || !deviceId) ? (
             <AddDeviceForm
               busy={busy === 'create'}
               deviceName={deviceName}
@@ -897,7 +897,7 @@ export function DeviceManagement({ deviceId, action, embedded = false, onClose }
 
           {createdDevice && createdBinding ? <DeviceTokenPanel result={createdDevice} binding={createdBinding} /> : null}
 
-          <div className="mt-4 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-panel)]">
+          {action !== 'add' && <div className="mt-4 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-panel)]">
             <div className="hidden grid-cols-[minmax(14rem,1fr)_minmax(14rem,0.8fr)_auto] gap-5 border-b border-[var(--theme-border)] px-3 py-2 text-xs font-medium text-[var(--theme-fg-muted)] md:grid">
               <span>{translate("devices.device")}</span>
               <span>{translate("devices.activity")}</span>
@@ -944,7 +944,7 @@ export function DeviceManagement({ deviceId, action, embedded = false, onClose }
               <div className="product-empty">
                 {translate("devices.noDevicesYetAddADeviceTo")}</div>
             )}
-          </div>
+          </div>}
         </section>
         ) : (
         <section role="tabpanel" id="devices-page-panel-shared" aria-labelledby="devices-page-tab-shared">
@@ -963,7 +963,7 @@ export function DeviceManagement({ deviceId, action, embedded = false, onClose }
         )}
         {embedded && deviceId ? <section aria-label={translate('desktopDevices.access')}><h2 className="text-lg font-semibold mb-4">{translate('desktopDevices.access')}</h2><SharedAccessPanel portal={portal} loading={loading} direction={shareDirection} onDirectionChange={direction => setPageView('shared', direction)} attention={attention} onAttentionRefresh={refreshAttention} busyKey={busy} actions={shareActions} outgoingNotice={portal ? <><OrphanDeviceGrants portal={portal} kind="share" /><OrphanDeviceGrants portal={portal} kind="grant" /></> : null} /></section> : null}
       </div>
-      {isolatingDevice ? <DeviceIsolationDialog device={isolatingDevice} controlShares={controlShares(portal, isolatingDevice.id)} onChange={onIsolationChange} onClose={() => setIsolatingDevice(null)} /> : null}
+      {isolatingDevice ? <DeviceIsolationDialog device={isolatingDevice} controlShares={controlShares(portal, isolatingDevice.id)} onChange={onIsolationChange} onClose={() => { setIsolatingDevice(null); if (action === 'isolate') onClose?.(); }} /> : null}
       {editingShare ? (
         <SharePermissionsDialog
           busy={busy === `share:${editingShare.id}`}
@@ -994,7 +994,7 @@ export function DeviceManagement({ deviceId, action, embedded = false, onClose }
           device={sharingDevice}
           error={dialogError}
           onClose={() => {
-            setSharingDevice(null);
+            setSharingDevice(null); if (action === 'share') onClose?.();
             setDialogError(null);
           }}
           onShare={(input) => void createDeviceGrant(sharingDevice, input)}
@@ -1023,7 +1023,7 @@ export function DeviceManagement({ deviceId, action, embedded = false, onClose }
         error={deletingDevice && error?.at === 'remove' ? error.message : null}
         onCancel={() => {
           if (!deletingDevice || busy !== deletingDevice.id) {
-            setDeletingDevice(null);
+            setDeletingDevice(null); if (action === 'remove') onClose?.();
             setError(null);
           }
         }}
@@ -1078,7 +1078,8 @@ export function DeviceManagement({ deviceId, action, embedded = false, onClose }
       />
     </div>
   );
-  return action && onClose ? <FormDialog className="device-management-dialog" title={translate(action === 'add' ? 'devices.addDevice' : 'desktopDevices.deviceDetails')} busy={Boolean(busy)} onClose={closeManagement.requestClose}>{content}{closeAdd.confirmation}{closeManagement.confirmation}</FormDialog> : <>{content}{closeAdd.confirmation}</>;
+  if (action && action !== 'add' && (!portal || !portal.devices.length)) return <FormDialog className="device-management-dialog" title={translate('desktopDevices.deviceDetails')} onClose={() => onClose?.()}>{loading ? <div role="status" className="product-skeleton h-24" aria-label={translate('devices.loadingDevices')} /> : <ErrorMark message={error?.message ?? translate('desktopDevices.deviceMissing')} onRetry={() => { void load(); }} />}</FormDialog>;
+  return action === 'add' && onClose ? <FormDialog className="device-management-dialog" title={translate('devices.addDevice')} busy={Boolean(busy)} onClose={closeManagement.requestClose}>{content}{closeAdd.confirmation}{closeManagement.confirmation}</FormDialog> : <>{content}{closeAdd.confirmation}</>;
 }
 
 export function AddDeviceForm({
