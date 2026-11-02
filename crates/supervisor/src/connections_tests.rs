@@ -466,3 +466,51 @@ async fn native_upstream_management_rejects_shared_grantee_http_requests() {
         assert_eq!(status, 403);
     }
 }
+
+#[tokio::test]
+async fn completion_returns_text_for_the_owner_and_keeps_the_key_here() {
+    let (_temp, s, p, _id) = protected();
+    let upstream = axum::Router::new().route(
+        "/v1/chat/completions",
+        axum::routing::post(|Json(body): Json<Value>| async move {
+            assert_eq!(body["messages"][0]["content"], "Be brief.");
+            assert_eq!(body["messages"][1]["content"], "Say it");
+            Json(json!({"choices":[{"message":{"content":"Spoken line."},"finish_reason":"stop"}]}))
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, upstream).await });
+    let c: saved::Connection = serde_json::from_value(json!({"name":"Local","protocol":"openai_chat","baseUrl":format!("http://{address}/v1"),"model":"small","apiKey":"secret-key"})).unwrap();
+    let id = saved::upsert(&dir(&s), c).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let route = format!("/api/management/connections/{id}/complete");
+    let body = json!({"system":"Be brief.","user":"Say it"});
+    let response = crate::http::router(s.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(&route)
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(!response.status().is_success());
+    let (status, v) = request(&s, Some(&p), &session_key(), "POST", &route, body).await;
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(v, json!({"text":"Spoken line.","model":"small"}));
+    let (status, _) = request(
+        &s,
+        Some(&p),
+        &session_key(),
+        "POST",
+        &route,
+        json!({"system":"","user":" "}),
+    )
+    .await;
+    assert_eq!(status, 400);
+}

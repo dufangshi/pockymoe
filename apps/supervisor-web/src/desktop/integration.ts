@@ -1,6 +1,6 @@
 import { translate } from '@pockymoe/thread-ui/i18n';
 import type { HostCommand, HostCommandResult, PockymoeHost } from './host';
-import { respondToThreadRequest, sendThreadPrompt } from '../lib/api';
+import { deviceRequest, respondToThreadRequest, sendThreadPrompt } from '../lib/api';
 import { buildActivitySnapshot } from './data/activity';
 import type { DesktopIndexStore } from './data/store';
 
@@ -10,7 +10,7 @@ export function focusedKeyFromPath(path: string): string | null {
 }
 export interface CommandDependencies {
   store: DesktopIndexStore; navigate(path: string): void; openMap(): void; revealInMap(key: string): void; newThread(): void;
-  respond?: typeof respondToThreadRequest; send?: typeof sendThreadPrompt;
+  respond?: typeof respondToThreadRequest; send?: typeof sendThreadPrompt; request?: typeof deviceRequest;
 }
 export class NeedsThreadError extends Error { readonly code = 'needsThread'; }
 export async function resolveRequest(deviceId: string, threadId: string, requestId: string, decision: 'approve' | 'deny', deps: Pick<CommandDependencies, 'store' | 'respond'>) {
@@ -36,6 +36,28 @@ export async function resolveRequest(deviceId: string, threadId: string, request
   const updated = await (deps.respond ?? respondToThreadRequest)(threadId, requestId, { answers: { [question.id]: { answers: [option.label] } } }, deviceId);
   deps.store.acceptDetail(deviceId, updated);
 }
+interface TextContextMessage { role: 'user' | 'assistant'; text: string; turnId?: string }
+/** The turn's request and final answer. The two newest turns cover one that started right after this one ended. */
+export async function turnText(deviceId: string, threadId: string, turnId: string | null | undefined, deps: Pick<CommandDependencies, 'request'>) {
+  const request = deps.request ?? deviceRequest;
+  const { messages } = await request<{ messages: TextContextMessage[] }>(deviceId, `api/threads/${encodeURIComponent(threadId)}/summary?turns=2&maxChars=20000`);
+  const owner = turnId && messages.some(message => message.turnId === turnId) ? turnId : messages.at(-1)?.turnId;
+  const own = messages.filter(message => message.turnId === owner);
+  return { request: own.find(message => message.role === 'user')?.text ?? '', answer: own.filter(message => message.role === 'assistant').at(-1)?.text ?? '' };
+}
+interface SavedConnection { id: string; name: string; protocol: string; model?: string; local?: boolean }
+/** A device that cannot answer is skipped: the others' connections are still usable. */
+export async function listConnections(deps: Pick<CommandDependencies, 'store' | 'request'>) {
+  const request = deps.request ?? deviceRequest;
+  const devices = deps.store.getSnapshot().devices.filter(device => device.connected);
+  const lists = await Promise.all(devices.map(async device => {
+    try {
+      const { connections } = await request<{ connections: SavedConnection[] }>(device.id, 'api/management/connections');
+      return connections.filter(connection => connection.local !== false).map(connection => ({ deviceId: device.id, deviceName: device.name, id: connection.id, name: connection.name, protocol: connection.protocol, model: connection.model ?? '' }));
+    } catch { return []; }
+  }));
+  return lists.flat();
+}
 export async function handleHostCommand(command: HostCommand, deps: CommandDependencies): Promise<HostCommandResult> {
   try {
     switch (command.type) {
@@ -53,6 +75,19 @@ export async function handleHostCommand(command: HostCommand, deps: CommandDepen
       case 'openMap': deps.openMap(); break;
       case 'newThread': deps.newThread(); break;
       case 'openDevices': deps.navigate('/desktop/devices'); break;
+      case 'turnText': return { ok: true, data: await turnText(command.deviceId, command.threadId, command.turnId, deps) };
+      case 'listConnections': return { ok: true, data: await listConnections(deps) };
+      case 'completeWithConnection': {
+        const request = deps.request ?? deviceRequest;
+        try {
+          const { text } = await request<{ text: string }>(command.deviceId, `api/management/connections/${encodeURIComponent(command.connectionId)}/complete`, { method: 'POST', body: JSON.stringify({ model: command.model, system: command.system, user: command.user }) });
+          return { ok: true, data: { text } };
+        } catch (error) {
+          // An older Supervisor does not have this route yet.
+          if ([404, 405].includes((error as { statusCode?: number }).statusCode ?? 0)) throw new Error(translate('settings.connUpdateSupervisor'));
+          throw error;
+        }
+      }
     }
     return { ok: true };
   } catch (error) { return { ok: false, error: error instanceof Error ? error.message : translate('desktopShell.actionFailed'), ...(error instanceof NeedsThreadError ? { code: error.code } : {}) }; }

@@ -1,11 +1,47 @@
 import { describe, expect, it, vi } from 'vitest';
+import { translate } from '@pockymoe/thread-ui/i18n';
 import { handleHostCommand, resolveRequest, syncActivity, type CommandDependencies } from './integration';
 import type { DesktopIndex } from './data/types';
 import type { PockymoeHost } from './host';
-vi.mock('../lib/api', () => ({ respondToThreadRequest: vi.fn(), sendThreadPrompt: vi.fn() }));
+vi.mock('../lib/api', () => ({ deviceRequest: vi.fn(), respondToThreadRequest: vi.fn(), sendThreadPrompt: vi.fn() }));
 function dependencies() {
   return { store: { markRead: vi.fn(), loadRequestDetail: vi.fn(), acceptDetail: vi.fn(), patchThread: vi.fn() }, navigate: vi.fn(), openMap: vi.fn(), revealInMap: vi.fn(), newThread: vi.fn(), respond: vi.fn(async () => ({})), send: vi.fn(async () => ({})) } as unknown as CommandDependencies;
 }
+describe('spoken summary commands', () => {
+  const messages = [
+    { role: 'user', text: 'Old ask', turnId: 'T1' }, { role: 'assistant', text: 'Old answer', turnId: 'T1' },
+    { role: 'user', text: 'Fix login', turnId: 'T2' }, { role: 'assistant', text: 'Looking', turnId: 'T2' }, { role: 'assistant', text: 'Login fixed.', turnId: 'T2' },
+    { role: 'user', text: 'Next', turnId: 'T3' },
+  ];
+  const data = (result: { data?: unknown }) => result.data as Record<string, unknown>;
+  it('reads the named turn, its request and its final answer', async () => {
+    const deps = { ...dependencies(), request: vi.fn().mockResolvedValue({ messages }) };
+    const result = await handleHostCommand({ id: 'x', type: 'turnText', deviceId: 'b', threadId: 't/1', turnId: 'T2' }, deps as never);
+    expect(deps.request).toHaveBeenCalledWith('b', 'api/threads/t%2F1/summary?turns=2&maxChars=20000');
+    expect(data(result)).toEqual({ request: 'Fix login', answer: 'Login fixed.' });
+  });
+  it('falls back to the newest turn when the id is unknown', async () => {
+    const deps = { ...dependencies(), request: vi.fn().mockResolvedValue({ messages: messages.slice(0, 5) }) };
+    expect(data(await handleHostCommand({ id: 'x', type: 'turnText', deviceId: 'b', threadId: 't', turnId: 'gone' }, deps as never))).toEqual({ request: 'Fix login', answer: 'Login fixed.' });
+  });
+  it('lists local connections of connected devices and skips one that fails', async () => {
+    const store = { ...dependencies().store, getSnapshot: () => ({ devices: [{ id: 'a', name: 'Mac', connected: true }, { id: 'b', name: 'Old', connected: true }, { id: 'c', name: 'Off', connected: false }] }) };
+    const request = vi.fn(async (device: string) => { if (device === 'b') throw new Error('404'); return { connections: [{ id: 'k', name: 'Main', protocol: 'openai_chat', model: 'm', local: true }, { id: 'r', name: 'Elsewhere', protocol: 'openai_chat', local: false }] }; });
+    const result = await handleHostCommand({ id: 'x', type: 'listConnections' }, { ...dependencies(), store, request } as never);
+    expect(result.data).toEqual([{ deviceId: 'a', deviceName: 'Mac', id: 'k', name: 'Main', protocol: 'openai_chat', model: 'm' }]);
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+  it('completes through the saved connection on its own device', async () => {
+    const request = vi.fn().mockResolvedValue({ text: 'Done.', model: 'm' });
+    const result = await handleHostCommand({ id: 'x', type: 'completeWithConnection', deviceId: 'a', connectionId: 'k', model: 'm', system: 's', user: 'u' }, { ...dependencies(), request } as never);
+    expect(request).toHaveBeenCalledWith('a', 'api/management/connections/k/complete', { method: 'POST', body: JSON.stringify({ model: 'm', system: 's', user: 'u' }) });
+    expect(result).toEqual({ ok: true, data: { text: 'Done.' } });
+  });
+  it('explains a device that cannot complete yet', async () => {
+    const request = vi.fn().mockRejectedValue(Object.assign(new Error('Not found'), { statusCode: 404 }));
+    expect(await handleHostCommand({ id: 'x', type: 'completeWithConnection', deviceId: 'a', connectionId: 'k', model: '', system: 's', user: 'u' }, { ...dependencies(), request } as never)).toEqual({ ok: false, error: translate('settings.connUpdateSupervisor') });
+  });
+});
 describe('desktop host bridge v2', () => {
   it('dispatches every navigation command and acknowledges read marks', async () => {
     const deps = dependencies();

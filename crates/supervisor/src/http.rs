@@ -207,6 +207,10 @@ pub(crate) fn router_with_treer(state: AppState, hub: Option<Arc<crate::treer::H
                     post(crate::connections::test),
                 )
                 .route(
+                    "/api/management/connections/{id}/complete",
+                    post(crate::connections::complete),
+                )
+                .route(
                     "/api/management/upstreams/native/{harness}/activate",
                     post(crate::connections::activate_native),
                 )

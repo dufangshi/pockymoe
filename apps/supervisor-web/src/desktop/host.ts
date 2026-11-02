@@ -104,7 +104,13 @@ export type HostCommand =
   | { id: string; type: 'revealInMap'; key: string }
   | { id: string; type: 'openMap' }
   | { id: string; type: 'newThread' }
-  | { id: string; type: 'openDevices' };
+  | { id: string; type: 'openDevices' }
+  /** Text of a finished turn, for spoken summaries. Answers in `data`. */
+  | { id: string; type: 'turnText'; deviceId: string; threadId: string; turnId?: string | null }
+  /** Saved upstream connections on every connected device. Answers in `data`. */
+  | { id: string; type: 'listConnections' }
+  /** One completion through a saved connection; the key stays on that device. Answers in `data`. */
+  | { id: string; type: 'completeWithConnection'; deviceId: string; connectionId: string; model: string; system: string; user: string };
 
 export interface HostCommandResult {
   ok: boolean;
@@ -112,6 +118,8 @@ export interface HostCommandResult {
   error?: string;
   /** Machine-readable reason; 'needsThread' means the request must be answered inside the thread. */
   code?: 'needsThread';
+  /** Result of a command that asks for data rather than performing an action. */
+  data?: unknown;
 }
 
 export interface DesktopSettings {
