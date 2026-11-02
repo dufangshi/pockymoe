@@ -9,7 +9,7 @@ export function focusedKeyFromPath(path: string): string | null {
   return match && !['new', 'import'].includes(match[2]!) ? `${decodeURIComponent(match[1]!)}:${decodeURIComponent(match[2]!)}` : null;
 }
 export interface CommandDependencies {
-  store: DesktopIndexStore; navigate(path: string): void; openMap(): void; revealInMap(key: string): void; newThread(): void;
+  store: DesktopIndexStore; navigate(path: string): void; openMap(): void; revealInMap(key: string): void; newThread(): void; openUpstreams?(): void;
   respond?: typeof respondToThreadRequest; send?: typeof sendThreadPrompt; request?: typeof deviceRequest;
 }
 export class NeedsThreadError extends Error { readonly code = 'needsThread'; }
@@ -77,6 +77,11 @@ export async function handleHostCommand(command: HostCommand, deps: CommandDepen
       case 'openDevices': deps.navigate('/desktop/devices'); break;
       case 'turnText': return { ok: true, data: await turnText(command.deviceId, command.threadId, command.turnId, deps) };
       case 'listConnections': return { ok: true, data: await listConnections(deps) };
+      case 'openUpstreams': deps.openUpstreams?.(); break;
+      case 'connectionModels': {
+        const { models } = await (deps.request ?? deviceRequest)<{ models: { id: string; name?: string }[] }>(command.deviceId, `api/management/connections/${encodeURIComponent(command.connectionId)}/models`, { method: 'POST' });
+        return { ok: true, data: models.map(model => ({ id: model.id, name: model.name ?? model.id })) };
+      }
       case 'completeWithConnection': {
         const request = deps.request ?? deviceRequest;
         try {

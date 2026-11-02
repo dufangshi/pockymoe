@@ -141,3 +141,11 @@
 
 .pd-usage-filters { display: flex; align-items: center; gap: 6px; min-width: 0; margin-left: auto; }
 .pd-usage-filters .pd-segment { margin-left: 0; }
+.pd-usage-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 28px; margin-top: 4px; font-size: 11px; color: var(--theme-fg-muted); }
+.pd-usage-missing { display: inline-flex; align-items: center; gap: 4px; }
+.pd-pager { display: inline-flex; align-items: center; gap: 4px; font-variant-numeric: tabular-nums; }
+.pd-pager button { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border: 0; border-radius: 6px; background: transparent; color: inherit; }
+.pd-pager button:disabled { opacity: .4; }
+@media (hover: hover) { .pd-pager button:hover:not(:disabled) { background: var(--theme-hover); } }
+.pd-table-empty .pd-link { margin-left: 8px; }
+.pd-link { padding: 0; border: 0; background: none; color: var(--theme-accent-solid); font: inherit; }

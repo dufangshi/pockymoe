@@ -56,8 +56,8 @@ export function DesktopShell({ children, capabilities }: { children: ReactNode; 
   useEffect(() => syncActivity(store, host, () => focusedKeyFromPath(route.current), capabilities.features.badge), [capabilities.features.badge, host, store]);
   useEffect(() => {
     if (typeof host.onCommand !== 'function') return;
-    return host.onCommand(command => { void handleHostCommand(command, { store, navigate, openMap, revealInMap, newThread }).then(result => host.commandResult(command.id, result)); });
-  }, [host, navigate, newThread, openMap, revealInMap, store]);
+    return host.onCommand(command => { void handleHostCommand(command, { store, navigate, openMap, revealInMap, newThread, openUpstreams: () => shell?.openSettingsSection?.('upstreams') }).then(result => host.commandResult(command.id, result)); });
+  }, [host, navigate, newThread, openMap, revealInMap, shell, store]);
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
       if (!(event.metaKey || event.ctrlKey)) return;

@@ -110,7 +110,11 @@ export type HostCommand =
   /** Saved upstream connections on every connected device. Answers in `data`. */
   | { id: string; type: 'listConnections' }
   /** One completion through a saved connection; the key stays on that device. Answers in `data`. */
-  | { id: string; type: 'completeWithConnection'; deviceId: string; connectionId: string; model: string; system: string; user: string };
+  | { id: string; type: 'completeWithConnection'; deviceId: string; connectionId: string; model: string; system: string; user: string }
+  /** Models a saved connection serves, using the same probe as Settings. Answers in `data`. */
+  | { id: string; type: 'connectionModels'; deviceId: string; connectionId: string }
+  /** Opens Settings at the page for adding and testing upstreams. */
+  | { id: string; type: 'openUpstreams' };
 
 export interface HostCommandResult {
   ok: boolean;
