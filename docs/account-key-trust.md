@@ -125,6 +125,18 @@ A device's `identityKey` is the B64 uncompressed SEC1 point from its key
 descriptor. The account fingerprint shown by devices is the first 12 characters
 of `accountKeyId`.
 
+## Account settings
+
+On desktop, Account settings uses the same rail/sidebar and scrollable content
+frame as Workspaces. Browser and phone pages expose the same rows (stacked on
+phones): Profile, Sharing, Sign-in and security, Account keys, Browsers with device
+access, and Danger zone last. The security row includes the vault password and
+recovery code plus authenticator/passkey, trusted-browser and session management.
+OAuth accounts can change their local vault unlock password here; this does not
+enable password sign-in. The unavailable sign-in-password capability is explained
+beside the control. Start over has a danger entry and an explicit confirmation
+with Cancel focused in the password/recovery-session confirmation form.
+
 ## Password, vault and recovery code
 
 The browser derives everything; for an account with a vault the relay never

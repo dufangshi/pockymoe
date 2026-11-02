@@ -79,3 +79,5 @@
    display:none reports a zero-height scroller to tail-follow observers and can
    move a reader's saved position. hidden + inert still suppress paint and input. */
 .desktop-route[hidden] { display: block; visibility: hidden; pointer-events: none; }
+
+[data-desktop-surface] .desktop-route > [data-page="account"] { height: 100%; overflow-y: auto; }

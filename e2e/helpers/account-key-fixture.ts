@@ -224,7 +224,7 @@ export class Fixture {
     await page.getByLabel('Email or username', { exact: true }).fill(account.userId.includes('@') ? account.userId : account.username ?? account.userId);
     await page.getByLabel('Password', { exact: true }).fill(account.password);
     await page.getByRole('button', { name: 'Sign in', exact: true }).click();
-    await expect(page.getByRole('heading', { name: 'Security', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: /^(Security|Sign-in and security)$/, exact: true })).toBeVisible();
     return this.accountMetadata({ ...account, page, context });
   }
   async account(username: string, capture = false): Promise<Account & { username: string }> {
@@ -241,7 +241,7 @@ export class Fixture {
     expect(/^[0-9A-HJKMNP-TV-Z]{4}(-[0-9A-HJKMNP-TV-Z]{4}){7}$/.test(recovery), 'Recovery format').toBe(true);
     if (capture) await screenshot(page, this.info, 'v2-recovery-confirmation');
     await confirmRecoveryCode(page, recovery);
-    await expect(page.getByRole('heading', { name: 'Security', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: /^(Security|Sign-in and security)$/, exact: true })).toBeVisible();
     return this.accountMetadata({ page, context, recovery, password: this.password, username } as Account & { username: string });
   }
   async accountMetadata<T extends Account>(account: T): Promise<T> {

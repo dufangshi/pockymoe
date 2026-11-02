@@ -199,8 +199,10 @@ export function SecurityVerification({
   onVerified,
   onCancel,
   realm = 'default',
+  embedded = false,
 }: {
   realm?: SecurityRealm;
+  embedded?: boolean;
   status: Pick<SecurityStatus, 'authenticatorEnabled' | 'passkeys'>;
   onVerified: (verificationToken?: string) => Promise<void>;
   onCancel: () => void;
@@ -348,8 +350,10 @@ function RecoveryCodes({
 
 export function RelaySecurityPanel({
   realm = 'default',
+  embedded = false,
 }: {
   realm?: SecurityRealm;
+  embedded?: boolean;
 }) {
   const { locale: i18nLocale } = useI18n();
   const call = <T,>(path: string, method = 'GET', body?: unknown) =>
@@ -419,13 +423,13 @@ export function RelaySecurityPanel({
   }
   const date = (value: number) => new Date(value).toLocaleDateString(getLocale());
   return (
-    <section className="grid gap-5 py-6 sm:grid-cols-[11rem_minmax(0,1fr)] sm:gap-8">
-      <header>
+    <section className={embedded ? "space-y-5" : "grid gap-5 py-6 sm:grid-cols-[11rem_minmax(0,1fr)] sm:gap-8"}>
+      {!embedded && <header>
         <h2 className="flex items-center gap-2 text-base font-semibold">
           <ShieldCheck size={18} /> {translate("auth.security")}</h2>
         <p className="mt-1 text-sm text-[var(--theme-fg-muted)]">
           {translate("auth.protectYourAccountAndDevices")}</p>
-      </header>
+      </header>}
       <div className="min-w-0 space-y-5">
         {!status && error?.at === 'load' && (
           <p className="flex items-center gap-1.5 text-sm text-[var(--theme-fg-muted)]">

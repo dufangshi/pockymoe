@@ -1,11 +1,10 @@
 import { AccountSecurityPanel } from '../components/AccountSecurityPanel';
 import { SharingSettingsPanel } from '../components/SharingSettingsPanel';
+import { useDesktopWorkspaceLayout, WorkspacesFrame } from '../desktop/WorkspacesFrame';
+import { useDesktopSelector } from '../desktop/data';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { ErrorMark } from '@pockymoe/thread-ui';
 import { ProductHeader } from '../components/ProductHeader';
-import {
-  RelaySecurityPanel,
-} from '../components/RelaySecurity';
 import { RefreshCw, Save } from 'lucide-react';
 import { FormEvent, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
@@ -242,23 +241,21 @@ export function RelayAccountSettingsPanel({
 
       <SharingSettingsPanel />
       <AccountSecurityPanel />
-      <RelaySecurityPanel />
+
 
     </div>
   );
 }
 
+function DesktopAccountPage() {
+  const deviceId = useDesktopSelector(index => index.devices.find(device => device.connected)?.id ?? index.devices[0]?.id ?? null);
+  return <WorkspacesFrame deviceId={deviceId} sharedOnly={false}><div className="desktop-workspaces-content" data-page="account"><h1 className="text-xl font-semibold">{translate('auth.accountSettings')}</h1><p className="my-5 text-sm text-[var(--theme-fg-muted)]">{translate('auth.manageTheIdentityAndPasswordUsedTo')}</p><RelayAccountSettingsPanel /></div></WorkspacesFrame>;
+}
 export function RelayAccountPage() {
-  const { locale: i18nLocale } = useI18n();
-  return (
-    <div className="product-page !max-w-3xl" data-page="account">
-      <ProductHeader title={translate('auth.accountSettings')} backHref="/relay-devices" backLabel={translate('auth.devices')} />
-      <p className="my-5 text-sm text-[var(--theme-fg-muted)]">{translate('auth.manageTheIdentityAndPasswordUsedTo')}</p>
-      <div className="py-2">
-        <RelayAccountSettingsPanel />
-      </div>
-    </div>
-  );
+  useI18n();
+  const desktop = useDesktopWorkspaceLayout();
+  if (desktop) return <DesktopAccountPage />;
+  return <div className="product-page !max-w-5xl" data-page="account"><ProductHeader title={translate('auth.accountSettings')} backHref="/relay-devices" backLabel={translate('auth.devices')} /><p className="my-5 text-sm text-[var(--theme-fg-muted)]">{translate('auth.manageTheIdentityAndPasswordUsedTo')}</p><RelayAccountSettingsPanel /></div>;
 }
 
 /** A saved profile is confirmed in place; failures are marks after their control. */
