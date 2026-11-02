@@ -164,6 +164,10 @@ test('terminal feedback and link dialog visual check across themes and widths', 
   const evidence = path.resolve('.scratch/terminal-visual');
   await mkdir(evidence, { recursive: true });
   for (const width of [390, 1280]) for (const pack of ['classic', 'plum-pocket', 'terminal']) for (const mode of ['light', 'dark']) {
+    await page.setViewportSize({ width, height: 800 });
+    await page.goto(`${web}/e2e/terminal-host.html?settings&pack=${pack}&mode=${mode}`);
+    await expect(page.getByRole('checkbox', { name: /^Allow terminal programs to write to the clipboard/ })).toBeChecked();
+    await page.getByTestId('terminal-settings').screenshot({ path: path.join(evidence, `${width}-${pack}-${mode}-settings.png`) });
     await page.setViewportSize({ width: 1280, height: 800 });
     await page.goto(`${web}/e2e/terminal-host.html?pack=${pack}&mode=${mode}`);
     await expect(page.locator('html')).toHaveAttribute('data-theme-preset', pack);
