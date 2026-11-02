@@ -23,3 +23,7 @@ export function hasWorkspaceContext(path: string, search = '') {
   if (thread) return !['new', 'import'].includes(thread);
   return /^\/(?:devices\/[^/]+\/)?threads$/.test(path) && Boolean(new URLSearchParams(search).get('workspaceId'));
 }
+
+/** Default true for ordinary Web/mobile routes; only a retained desktop outlet pauses. */
+export const RetainedRouteActiveContext = createContext(true);
+export const useRetainedRouteActive = () => useContext(RetainedRouteActiveContext);

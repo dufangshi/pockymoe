@@ -1,4 +1,5 @@
 import { playHaptic } from '../desktop/surface';
+import { currentSessionActor, observeSessionActor, sessionRevision } from './sessionActor';
 import { appPathname, appUrl } from './webBase';
 import { readAutoCollapseCompletedTurns } from './transcriptPreferences';
 import { deviceRoute, TransportError } from './relayTransportCrypto';
@@ -639,7 +640,7 @@ export async function fetchAuthSession() {
   const result = await request<AuthSessionDto>('api/auth/session', {
     cache: 'no-store',
   });
-  if (result.mode !== 'relay') workspaceActorScope = `local:${result.username??'owner'}`;
+  if (result.mode !== 'relay') { workspaceActorScope = `local:${result.username??'owner'}`; if (!relayModeEnabled()) observeSessionActor(result.authenticated ? workspaceActorScope : null); }
   return result;
 }
 
@@ -649,6 +650,7 @@ export async function login(input: { username: string; password: string }) {
     body: JSON.stringify(input),
   });
   setStoredAuthToken(result.token ?? null);
+  observeSessionActor(`local:${input.username}`);
   return result;
 }
 
@@ -657,15 +659,20 @@ export async function logout() {
   const result = await request<AuthSessionDto>('api/auth/logout', {
     method: 'POST',
   });
-  setStoredAuthToken(null);
+  setStoredAuthToken(null); observeSessionActor(null);
   return result;
 }
 
 export async function fetchRelaySession() {
+  const revision = sessionRevision();
   const result = await request<RelaySessionDto>('relay/auth/session', {
     cache: 'no-store',
   });
+  const actor = result.authenticated && result.user ? `relay:${result.user.id}` : null;
+  // A response begun under A must not reinstall A after another window signed in as B.
+  if (revision !== sessionRevision() && currentSessionActor() !== actor) throw new Error(translate('auth.yourRelaySessionHasEndedSignIn'));
   workspaceActorScope = `relay:${result.user?.id??'anonymous'}`;
+  observeSessionActor(result.authenticated && result.user ? workspaceActorScope : null);
   await setAccountSession(result.authenticated ? result.user?.id ?? null : null, (result as RelaySessionDto & { account?: AccountSessionState }).account ?? false);
   if (result.authenticated && result.user) await rememberAccountLogin(result.user);
   return result;
@@ -742,6 +749,7 @@ export async function relayLogout() {
   try {
     return await request<RelaySessionDto>('relay/auth/logout', { method: 'POST' });
   } finally {
+    observeSessionActor(null);
     cancelAccountLogin(); await logoutAccount(); setStoredRelayToken(null);
     setSelectedRelayDeviceId(null); setSelectedRelayThreadId(null);
   }
@@ -1253,8 +1261,8 @@ export function applyProviderHostConfigArchive(
   );
 }
 
-export function fetchSupervisorHealth() {
-  return request<HealthDto>('/healthz', {
+export function fetchSupervisorHealth(deviceId?: string | null) {
+  return request<HealthDto>(deviceId ? `relay/devices/${encodeURIComponent(deviceId)}/healthz` : '/healthz', {
     cache: 'no-store',
   });
 }

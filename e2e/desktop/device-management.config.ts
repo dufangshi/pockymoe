@@ -6,7 +6,7 @@ const sharedRevision = readFileSync(resolve('thread-ui.sha'), 'utf8').trim().sli
 const sharedBuild = createHash('sha256').update(readFileSync(resolve('apps/supervisor-web/node_modules/@pockymoe/thread-ui/dist/index.js'))).digest('hex').slice(0, 12);
 const port = Number(process.env.DEVICE_MANAGEMENT_PORT ?? 18934);
 export default defineConfig({
-  testDir: '.', testMatch: ['device-management.pw.ts', 'route-frames.pw.ts', 'device-management-actions.pw.ts'], fullyParallel: false,
+  testDir: '.', testMatch: ['device-management.pw.ts', 'route-frames.pw.ts', 'retained-scope.pw.ts', 'device-management-actions.pw.ts'], fullyParallel: false,
   outputDir: '../../.scratch/device-management/playwright',
   timeout: 180000, expect: { timeout: 10000 }, reporter: 'list',
   use: { baseURL: `http://127.0.0.1:${port}`, trace: 'retain-on-failure' },

@@ -195,6 +195,12 @@ window; otherwise the browser asks for the password with the reason.
 
 ## Browsers
 
+Signing out or changing accounts also clears decrypted thread-detail, pending
+prefetch, relay-access and thread-list caches. In-flight responses from the old
+session cannot refill them; account changes rebuild the routed UI, including
+retained desktop threads. Other windows receive the identity boundary through a
+same-origin storage notification.
+
 At sign-in, a browser without a browser key creates one and has the account key
 sign a browser certificate for it. The browser registers the certificate with the
 relay at every sign-in (`POST /relay/account/browsers`, labelled with the browser

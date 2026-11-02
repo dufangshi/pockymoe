@@ -1,5 +1,6 @@
 import { useHostSurface } from './desktop/surface';
 import { MobileHostBoundary, MobileActivity } from './mobile/MobileHost';
+import { useSessionRevision } from './lib/useSessionRevision';
 import { RetainedDesktopRoute } from './desktop/RetainedRoute';
 import { HostScopeRouteGate } from './components/HostScopeRouteGate';
 import {
@@ -671,11 +672,12 @@ function SupervisorRoutes({
 }) {
   const surface = useHostSurface();
   const { locale: i18nLocale } = useI18n();
+  const accountRevision = useSessionRevision();
   return (
     <Routes>
       <Route
         element={
-          <AppShell
+          <AppShell key={accountRevision}
             themeMode={themeMode}
             setThemeMode={setThemeMode}
             effectiveTheme={effectiveTheme}
@@ -716,6 +718,7 @@ function SupervisorRoutes({
 }
 
 export function App() {
+  const surface = useHostSurface();
   const { locale: i18nLocale } = useI18n();
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => readInitialThemeMode());
   const [systemTheme, setSystemTheme] = useState<'light' | 'dark'>(() =>
@@ -783,7 +786,7 @@ export function App() {
     <div className="theme-shell">
       {/* Desktop owns preparation transitions; cached returns must commit before
           paint instead of being deferred by BrowserRouter's default transition. */}
-      <BrowserRouter basename={webBase} {...(window.pockymoeHost ? { useTransitions: false } : {})}>
+      <BrowserRouter basename={webBase} {...(surface === 'desktop' ? { useTransitions: false } : {})}>
         <DesktopFrameBoundary effectiveTheme={effectiveTheme}>
         <WorkspaceDocumentNavigationGuard>
         <DocumentTitleUpdater />

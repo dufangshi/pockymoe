@@ -8,7 +8,7 @@ function ScopedTourProvider({ children }: { children: ReactNode }) { return useH
 import { AppShellSettingsDialog } from '../components/AppShellSettingsDialog';
 import { prepareDesktopThread } from '../pages/ThreadDetailPage';
 import { relayDeviceIdFromPath, threadIdFromPath } from '../lib/relayRoutes';
-import { useDesktopSurface } from './context';
+import { RetainedRouteActiveContext, useDesktopSurface } from './context';
 
 /** Freeze the actual outlet AND its location, rather than an <Outlet /> element
  * that would keep reading the router's new child. Devices and Map are overlays;
@@ -34,11 +34,11 @@ export function RetainedDesktopRoute() {
     } else startTransition(() => setShown(next));
     return () => { active = false; };
   }, [location.key, location.pathname, overlay]);
-  return <>{shown ? <UNSAFE_LocationContext.Provider value={shown.locationContext}>
+  return <>{shown ? <RetainedRouteActiveContext.Provider value={!overlay && location.pathname === shown.path}><UNSAFE_LocationContext.Provider value={shown.locationContext}>
     <HostCapabilitiesProvider scope={shown.scope}><ScopedTourProvider>
       <RoutePaintReady path={shown.path} visit={shown}><HostScopeRouteGate>{shown.outlet}</HostScopeRouteGate></RoutePaintReady>
     </ScopedTourProvider></HostCapabilitiesProvider>
-  </UNSAFE_LocationContext.Provider> : null}<AppShellSettingsDialog /></>;
+  </UNSAFE_LocationContext.Provider></RetainedRouteActiveContext.Provider> : null}<AppShellSettingsDialog /></>;
 }
 
 /** Scope discovery is part of readiness too. Keep the previous page until this

@@ -1,3 +1,5 @@
+import { useRetainedRouteActive } from '../desktop/context';
+import { getThreadCaches, rememberThreadDetail } from './threadCaches';
 import { useDesktopWorkbench } from '../desktop/context';
 import { TurnNotification } from '../components/TurnNotification';
 import { useBrowserStateKey } from '../lib/browserStateScope';
@@ -218,23 +220,11 @@ const EMPTY_ANSWERED_REQUEST_NOTES: NonNullable<
 > = [];
 const EMPTY_ACTIVITY_NOTES: NonNullable<ThreadDetailDto['activityNotes']> = [];
 const EMPTY_PENDING_STEERS: NonNullable<ThreadDetailDto['pendingSteers']> = [];
-/** The last detail of recently opened threads, by route: switching back paints
-    it at once and refreshes quietly, instead of a spinner in place of the
-    conversation and the composer. */
-const recentThreadDetails = new Map<string, ThreadDetailDto>();
-/** Prefetches still in flight, reused by the page that opens the thread. */
-const pendingThreadDetails = new Map<string, Promise<ThreadDetailDto>>();
-/** Each thread's relay access as last checked: a switch shows it at once and
-    checks again quietly, instead of disabling the composer while it asks. */
-const recentRelayAccess = new Map<string, RelayEffectiveAccessDto>();
-function rememberThreadDetail(routeKey: string, detail: ThreadDetailDto) {
-  recentThreadDetails.delete(routeKey);
-  recentThreadDetails.set(routeKey, detail);
-  while (recentThreadDetails.size > 12) recentThreadDetails.delete(recentThreadDetails.keys().next().value!);
-}
 /** Prime the existing bounded detail cache before revealing an unseen desktop
  * thread. The previous page stays painted; no second decryption path is added. */
 export function prepareDesktopThread(threadId: string, deviceId: string | null) {
+  const caches = getThreadCaches();
+  const { recentThreadDetails, pendingThreadDetails } = caches;
   const key = `${deviceId ?? 'local'}:${threadId}`;
   if (recentThreadDetails.has(key)) return Promise.resolve();
   let pending = pendingThreadDetails.get(key);
@@ -242,7 +232,7 @@ export function prepareDesktopThread(threadId: string, deviceId: string | null) 
     pending = fetchThreadDetail(threadId, { limit: INITIAL_DETAIL_TURN_PAGE_SIZE }, deviceId);
     pendingThreadDetails.set(key, pending);
   }
-  return pending.then(detail => { rememberThreadDetail(key, detail); }).finally(() => { pendingThreadDetails.delete(key); });
+  return pending.then(detail => { rememberThreadDetail(caches, key, detail); }).finally(() => { pendingThreadDetails.delete(key); });
 }
 const UNAVAILABLE_AGENT_CAPABILITIES: AgentProviderCapabilitiesDto = {
   sessions: {
@@ -496,10 +486,12 @@ function writeTerminalOpen(routeKey: string, open: boolean) {
   } catch { /* Optional preference. */ }
 }
 
-/** The last thread list per device, kept across thread switches (page remounts). */
-const lastThreadLists = new Map<string, ThreadDto[]>();
 
 export function ThreadDetailPage() {
+  const caches = getThreadCaches();
+  const routeActive = useRetainedRouteActive();
+  const routeActiveRef = useRef(routeActive); routeActiveRef.current = routeActive;
+  const { recentThreadDetails, pendingThreadDetails, recentRelayAccess, lastThreadLists } = caches;
   const hostScope = useHostScope();
   const { locale: i18nLocale } = useI18n();
   const { id = '' } = useParams();
@@ -517,15 +509,16 @@ export function ThreadDetailPage() {
   // away), so the switch paints its conversation instead of a spinner.
   const prefetchingRef = useRef(new Set<string>());
   const prefetchThread = useCallback((href: string) => {
+    if (!routeActiveRef.current) return;
     const threadId = threadIdFromPath(href);
     if (!threadId || threadId === id || relayDeviceIdFromPath(href) !== (relayRouteDeviceId ?? null)) return;
     const key = `${relayRouteDeviceId ?? 'local'}:${threadId}`;
     if (recentThreadDetails.has(key) || prefetchingRef.current.has(key)) return;
     prefetchingRef.current.add(key);
-    const request = fetchThreadDetail(threadId, { limit: INITIAL_DETAIL_TURN_PAGE_SIZE });
+    const request = fetchThreadDetail(threadId, { limit: INITIAL_DETAIL_TURN_PAGE_SIZE }, relayRouteDeviceId);
     pendingThreadDetails.set(key, request);
     void request
-      .then(detail => { if (!recentThreadDetails.has(key)) rememberThreadDetail(key, detail); })
+      .then(detail => { if (!recentThreadDetails.has(key)) rememberThreadDetail(caches, key, detail); })
       .catch(() => { /* Opened normally instead. */ })
       .finally(() => { prefetchingRef.current.delete(key); pendingThreadDetails.delete(key); });
   }, [id, relayRouteDeviceId]);
@@ -627,7 +620,7 @@ export function ThreadDetailPage() {
     const turnId = params.get('searchTurn'), itemId = params.get('searchItem'), query = params.get('searchQuery');
     if (!turnId || !itemId) return;
     let cancelled = false;
-    void fetchThreadTurnDetail(id, turnId).then(turn => {
+    void fetchThreadTurnDetail(id, turnId, relayRouteDeviceId).then(turn => {
       if (cancelled) return;
       setDetail(current => current?.thread.id === id ? {
         ...current,
@@ -803,7 +796,7 @@ export function ThreadDetailPage() {
     .join('\n');
   const threadShown = detail?.thread.id === id;
   useEffect(() => {
-    if (!threadShown || !openTabHrefs) return;
+    if (!routeActive || !threadShown || !openTabHrefs) return;
     const hrefs = openTabHrefs.split('\n');
     let index = 0;
     let timer = 0;
@@ -816,7 +809,7 @@ export function ThreadDetailPage() {
     };
     timer = window.setTimeout(next, 1500);
     return () => window.clearTimeout(timer);
-  }, [threadShown, openTabHrefs, prefetchThread]);
+  }, [routeActive, threadShown, openTabHrefs, prefetchThread]);
   // Task senders and a sub-thread's parent read by their titles.
   const describeThread = useThreadDirectory({
     device: relayRouteDeviceId ?? 'local',
@@ -842,7 +835,7 @@ export function ThreadDetailPage() {
   const openSettingsSection = useRef(shellNav?.openSettingsSection);
   openSettingsSection.current = shellNav?.openSettingsSection;
   const contextInspector = useMemo<ThreadContextInspector | null>(() => relayThreadCanControl && !hostScope ? {
-    load: options => fetchThreadContext(id, options),
+    load: options => fetchThreadContext(id, options, relayRouteDeviceId),
     ...(relayThreadIsOwner ? { openSettings: () => openSettingsSection.current?.('resources') } : {}),
   } : null, [hostScope, id, relayRouteDeviceId, relayThreadCanControl, relayThreadIsOwner]);
   // Terminals are the owner's only; no share or grant gets one (docs/account-key-trust.md#sharing).
@@ -1125,7 +1118,7 @@ export function ThreadDetailPage() {
   // One list for the page, its tabs and the workbench navigation. Other
   // threads' socket events refresh it; the fallback covers renames and deletes.
   const threadList = useThreadListPolling({
-    enabled: Boolean(id),
+    enabled: routeActive && Boolean(id),
     setThreads,
     includeAgentThreads: true,
     live: realtimeConnection.socketOpen,
@@ -1211,8 +1204,8 @@ export function ThreadDetailPage() {
 
   const applyDetailResponse = useCallback(
     (detailResponse: ThreadDetailDto) => {
-      if (activeRouteRef.current !== routeKey || detailResponse.thread.id !== id) return;
-      rememberThreadDetail(routeKey, detailResponse);
+      if (!caches.isCurrent() || activeRouteRef.current !== routeKey || detailResponse.thread.id !== id) return;
+      rememberThreadDetail(caches, routeKey, detailResponse);
       const pendingThreadSettings = pendingThreadSettingsRef.current;
       const nextDetail =
         pendingThreadSettings && Object.keys(pendingThreadSettings).length > 0
@@ -1437,8 +1430,9 @@ export function ThreadDetailPage() {
   useThreadTabStatus(detail?.thread ?? null);
 
   const refreshCapabilities = useCallback(async () => {
+    if (!routeActiveRef.current || !caches.isCurrent()) return;
     if (!id) return;
-    const snapshot = await fetchThreadCapabilitySnapshot(id);
+    const snapshot = await fetchThreadCapabilitySnapshot(id, relayRouteDeviceId);
     if (activeThreadIdRef.current !== id) return;
     setBackendCapabilities(snapshot.effectiveCapabilities ?? UNAVAILABLE_AGENT_CAPABILITIES);
     setBackendManagementSchema((current) => ({
@@ -1455,7 +1449,7 @@ export function ThreadDetailPage() {
   // its connection, a reconnect or a return to the tab refresh it; failures
   // keep the last snapshot.
   const capabilityRefresh = useEventDrivenRefresh({
-    enabled: Boolean(id),
+    enabled: routeActive && Boolean(id),
     refresh: refreshCapabilities,
     fallbackMs: CAPABILITY_FALLBACK_REFRESH_MS,
     coalesceMs: 500,
@@ -1479,6 +1473,7 @@ export function ThreadDetailPage() {
 
   const loadPageContext = useCallback(
     async ({ seedThread }: { seedThread?: ThreadDto | null } = {}) => {
+      if (!routeActiveRef.current || !caches.isCurrent()) return;
       const requestId = pageContextRequestIdRef.current + 1;
       pageContextRequestIdRef.current = requestId;
       const provider =
@@ -1487,7 +1482,7 @@ export function ThreadDetailPage() {
       const cwd = detailRef.current?.workspace.absPath ?? null;
       const threadId = seedThread?.id ?? detailRef.current?.thread.id;
       setModelOptions([]);
-      const fallbackModels = () => fetchAgentBackendModelsFor(provider, {
+      const fallbackModels = () => !routeActiveRef.current ? Promise.resolve([] as ModelOptionDto[]) : fetchAgentBackendModelsFor(provider, {
         ...(provider === 'acp' && agentId ? { agentId } : {}),
         cwd,
       });
@@ -1499,7 +1494,7 @@ export function ThreadDetailPage() {
         ? fetchAgentBackendAgents(provider)
         : Promise.resolve([] as ModelOptionDto[]);
       const capabilityRequest = threadId
-        ? fetchThreadCapabilitySnapshot(threadId)
+        ? fetchThreadCapabilitySnapshot(threadId, relayRouteDeviceId)
         : Promise.resolve(null);
       // Claim the provider before awaiting: detail loads that finish meanwhile
       // (socket open, recovery) must not start the same bundle again.
@@ -1513,7 +1508,7 @@ export function ThreadDetailPage() {
         capabilityRequest,
       ]);
 
-      if (pageContextRequestIdRef.current !== requestId) {
+      if (!routeActiveRef.current || !caches.isCurrent() || pageContextRequestIdRef.current !== requestId) {
         return;
       }
       if (statusResult.status === 'rejected' && modelResult.status === 'rejected') {
@@ -1583,6 +1578,7 @@ export function ThreadDetailPage() {
       reportError?: boolean;
       limit?: number;
     } = {}) => {
+      if (!routeActiveRef.current || !caches.isCurrent()) return;
       if (detailMutationInFlightRef.current > 0) {
         detailRefreshPendingRef.current = true;
         return;
@@ -1601,10 +1597,10 @@ export function ThreadDetailPage() {
       detailLoadStartedAtRef.current = Date.now();
       try {
         const prefetched = limit === INITIAL_DETAIL_TURN_PAGE_SIZE ? pendingThreadDetails.get(routeKey) : undefined;
-        const detailResponse = await (prefetched?.catch(() => fetchThreadDetail(id, { limit })) ?? fetchThreadDetail(id, {
+        const detailResponse = await (prefetched?.catch(() => fetchThreadDetail(id, { limit }, relayRouteDeviceId)) ?? fetchThreadDetail(id, {
           limit,
-        }));
-        if (loadRequestIdRef.current !== requestId || activeRouteRef.current !== routeKey) {
+        }, relayRouteDeviceId));
+        if (!caches.isCurrent() || loadRequestIdRef.current !== requestId || activeRouteRef.current !== routeKey) {
           return;
         }
 
@@ -1622,7 +1618,7 @@ export function ThreadDetailPage() {
           }
         }
       } catch (caught) {
-        if (loadRequestIdRef.current !== requestId || activeRouteRef.current !== routeKey) return;
+        if (!caches.isCurrent() || loadRequestIdRef.current !== requestId || activeRouteRef.current !== routeKey) return;
         if (hostScope && isInvisibleThreadError(caught)) {
           await workbenchNavigation.onThreadRemoved(`local:${id}`);
           setThreads(previous => previous.filter(thread => thread.id !== id));
@@ -1862,13 +1858,16 @@ export function ThreadDetailPage() {
   }, []);
 
   useEffect(() => {
+    if (!routeActive) return;
+    pageContextProviderRef.current = null;
     void loadThreadDetail({
       showLoading: !recentThreadDetails.has(routeKey),
       limit: INITIAL_DETAIL_TURN_PAGE_SIZE,
     });
-  }, [loadThreadDetail]);
+  }, [loadThreadDetail, routeActive]);
 
   useEffect(() => {
+    if (!routeActive) return;
     let isDisposed = false;
     let heartbeatIntervalId: number | null = null;
     let detailRefreshTimer: number | null = null;
@@ -1902,6 +1901,7 @@ export function ThreadDetailPage() {
     const scheduleReconnect = () => {
       if (
         isDisposed ||
+        !routeActiveRef.current ||
         !supervisorBrowserOnlineRef.current ||
         supervisorReconnectTimerRef.current !== null
       ) {
@@ -2348,7 +2348,7 @@ export function ThreadDetailPage() {
     };
 
     const connectSocket = () => {
-      if (isDisposed || !supervisorBrowserOnlineRef.current) {
+      if (isDisposed || !routeActiveRef.current || !supervisorBrowserOnlineRef.current) {
         syncRealtimeConnectionState();
         return;
       }
@@ -2360,7 +2360,7 @@ export function ThreadDetailPage() {
         return;
       }
 
-      const nextSocket = connectSupervisorEvents(handleSocketEvent);
+      const nextSocket = connectSupervisorEvents(handleSocketEvent, { deviceId: relayRouteDeviceId, threadId: id });
       supervisorSocketRef.current = nextSocket;
       syncRealtimeConnectionState();
 
@@ -2434,6 +2434,7 @@ export function ThreadDetailPage() {
     const runHealthCheck = async () => {
       if (
         isDisposed ||
+        !routeActiveRef.current ||
         !supervisorBrowserOnlineRef.current ||
         supervisorHealthInFlightRef.current
       ) {
@@ -2444,7 +2445,7 @@ export function ThreadDetailPage() {
       syncRealtimeConnectionState();
 
       try {
-        await fetchSupervisorHealth();
+        await fetchSupervisorHealth(relayRouteDeviceId);
         supervisorHealthOkAtRef.current = new Date().toISOString();
         const socketState = supervisorSocketRef.current?.readyState ?? SOCKET_CLOSED;
         // A socket that opens refreshes the thread itself; read it here only
@@ -2491,7 +2492,7 @@ export function ThreadDetailPage() {
         handleBrowserOnline();
         return;
       }
-      if (isDisposed || !supervisorBrowserOnlineRef.current) {
+      if (isDisposed || !routeActiveRef.current || !supervisorBrowserOnlineRef.current) {
         syncRealtimeConnectionState();
         return;
       }
@@ -2564,6 +2565,8 @@ export function ThreadDetailPage() {
     appendLiveAgentDelta,
     clearBufferedLiveOutput,
     id,
+    routeActive,
+    relayRouteDeviceId,
     loadThreadDetail,
     queueLiveOutputDelta,
     loadPageContext,
@@ -2585,7 +2588,7 @@ export function ThreadDetailPage() {
       livePlan !== null ||
       liveItems !== null);
   useEffect(() => {
-    if (!turnActivityPending || realtimeSocketOpen) {
+    if (!routeActive || !turnActivityPending || realtimeSocketOpen) {
       return;
     }
 
@@ -2601,7 +2604,7 @@ export function ThreadDetailPage() {
     return () => {
       window.clearInterval(intervalId);
     };
-  }, [turnActivityPending, realtimeSocketOpen, loadThreadDetail]);
+  }, [routeActive, turnActivityPending, realtimeSocketOpen, loadThreadDetail]);
 
   const handleLoadEarlierTurns = useCallback(async () => {
     if (!detail || detail.turns.length === 0 || loadingEarlier) {
@@ -2616,7 +2619,7 @@ export function ThreadDetailPage() {
       const earlier = await fetchThreadDetail(id, {
         limit: DETAIL_TURN_PAGE_SIZE,
         ...(earliestLoadedTurnId ? { beforeTurnId: earliestLoadedTurnId } : {}),
-      });
+      }, relayRouteDeviceId);
       setDetail((current) =>
         current
           ? {
@@ -3199,7 +3202,7 @@ export function ThreadDetailPage() {
         } else {
           await interruptThread(id);
         }
-        return fetchThreadDetail(id);
+        return fetchThreadDetail(id, {}, relayRouteDeviceId);
       });
       clearBufferedLiveOutput();
       setLiveOutput('');
@@ -3356,7 +3359,7 @@ export function ThreadDetailPage() {
   );
 
   const handleLoadTurnDetail = useCallback(
-    (turnId: string) => fetchThreadTurnDetail(id, turnId),
+    (turnId: string) => fetchThreadTurnDetail(id, turnId, relayRouteDeviceId),
     [id],
   );
 
@@ -4156,7 +4159,7 @@ export function ThreadDetailPage() {
         referenceContent: referenceId ? <ThreadPluginScope key={`${referenceDevice}:${referenceId}`} threadId={referenceId} adapter={referencePluginAdapter}><WorkbenchReferencePane key={`${referenceDevice}:${referenceId}`} controller={referenceController} onOpenThread={openReferenceThread} onOpenWorkspaceFile={openReferenceFile} onOpenHarness={composerFocusOwner => setHarnessSettingsTarget({pane:'reference',deviceId:referenceDevice,threadId:referenceId,...(composerFocusOwner ? {composerFocusOwner} : {})})} draft={referenceDraft} onDraftChange={setReferenceDraft} sendShortcut={shellNav?.sendShortcut ?? 'ctrlEnter'} /></ThreadPluginScope> : null,
         collaborationContent: <WorkbenchCollaboration detail={detail} threads={threads} onCompare={onCompareThread} onOpen={openThread} sourceKey={routeKey} visible={workbenchPresentation.value.mode === 'collaboration'} liveItems={liveItems} onNativeResult={target => {
           const source = routeKey;
-          void fetchThreadTurnDetail(id, target.turnId).then(async turn => {
+          void fetchThreadTurnDetail(id, target.turnId, relayRouteDeviceId).then(async turn => {
             if (activeRouteRef.current !== source) return;
             setDetail(current => current ? { ...current, turns: prependTurns(current.turns.map(existing => existing.id === turn.id ? turn : existing), [turn]) } : current);
             const item = turn.items.find(item => item.id === target.itemId);
