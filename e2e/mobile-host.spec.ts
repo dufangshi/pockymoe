@@ -5,8 +5,8 @@ import path from 'node:path';
 const api = `http://127.0.0.1:${process.env.E2E_API_PORT ?? 19182}`;
 const evidence = path.resolve('.scratch/mobile-host/screenshots');
 
-async function host(page: Page, relay = false) {
-  await page.addInitScript(({ relay }) => {
+async function host(page: Page, relay = false, relayOrigin?: string) {
+  await page.addInitScript(({ relay, relayOrigin }) => {
     localStorage.setItem('remote-codex.locale', 'en');
     if (relay) window.__POCKYMOE_BOOTSTRAP__ = { mode: 'relay' };
     const listeners = new Set<(command: any) => void>();
@@ -19,12 +19,12 @@ async function host(page: Page, relay = false) {
       commandResult: (id, result) => { state.results[id] = result; },
       haptics: { play: kind => state.haptics.push(kind) },
       push: { register: async () => ({ token: 'ab'.repeat(32), sandbox: true, kind: 'ios' }) },
-      auth: { openExternal: async url => { state.auth.push(url); return { callbackUrl: `remotecodex://auth/callback?id=${new URL(url).searchParams.get('mobileId')}` }; } },
+      auth: { openExternal: async url => { state.auth.push(url); if ((window as any).mobileCancelAuth) return null; return { callbackUrl: `remotecodex://auth/callback?code=${'c'.repeat(43)}` }; } },
       window: { setTitle: () => {}, openThread: path => { history.pushState(null, '', path); dispatchEvent(new PopStateEvent('popstate')); }, openPreferences: () => {} },
       badge: { set: () => {} }, shell: { openExternal: () => {} }, files: { saveAs: async () => ({ saved: false }) },
-      pet: { setVisible: () => {}, isVisible: async () => false }, settings: { get: async () => ({}), set: async () => ({}) },
+      pet: { setVisible: () => {}, isVisible: async () => false }, settings: { get: async () => ({ webOrigin: location.origin, relayOrigin: relayOrigin ?? location.origin }), set: async () => ({}) },
     } as any;
-  }, { relay });
+  }, { relay, relayOrigin });
 }
 async function fixture(request: APIRequestContext) {
   const absPath = path.resolve(process.env.E2E_WORKSPACE_ROOT!, randomUUID()); await mkdir(absPath, { recursive: true });
@@ -102,7 +102,9 @@ test('mobile account activity, native registration and token rotation run withou
 });
 
 test('Google and GitHub open system auth and redeem only the matching one-use callback', async ({ page }) => {
-  await host(page, true);
+  const shellRelay = 'https://shell-relay.example.test';
+  await host(page, true, shellRelay);
+  const authOrigins: string[] = []; page.on('request', request => { if (request.url().includes('/relay/auth/')) authOrigins.push(new URL(request.url()).origin); });
   await page.route('**/relay/auth/session', route => route.fulfill({ json: { authenticated: false, user: null, registrationSettings: { googleAuthEnabled: true, githubAuthEnabled: true }, registrationEnabled: true } }));
   const prepared: any[] = [], exchanged: any[] = [];
   await page.route('**/relay/auth/mobile/prepare', route => { const body = route.request().postDataJSON(); prepared.push(body); return route.fulfill({ json: { path: `/relay/auth/oauth/${body.provider}/start?mobileId=fixture`, callbackUrl: 'remotecodex://auth/callback' } }); });
@@ -113,7 +115,8 @@ test('Google and GitHub open system auth and redeem only the matching one-use ca
     await expect.poll(() => exchanged.length).toBe(provider === 'Google' ? 1 : 2);
     await expect(page.getByText(/registration.*received|admin.*approve/i).first()).toBeVisible();
     expect(prepared.at(-1).provider).toBe(provider.toLowerCase()); expect(prepared.at(-1).proofHash).toHaveLength(43);
-    expect(exchanged.at(-1)).toMatchObject({ id: 'fixture' }); expect(exchanged.at(-1).proof).toHaveLength(64);
+    expect(exchanged.at(-1)).toMatchObject({ code: 'c'.repeat(43) }); expect(exchanged.at(-1)).not.toHaveProperty('id'); expect(exchanged.at(-1).proof).toHaveLength(64);
+    expect(authOrigins.length).toBeGreaterThan(0); expect(authOrigins.every(origin => origin === shellRelay)).toBe(true);
   }
 });
 
@@ -125,4 +128,28 @@ test('browser and desktop retain their existing signed-out layout', async ({ pag
   await page.goto('/relay-portal?desktopMockHost=1');
   await expect(page.locator('.desktop-window-frame')).toBeVisible();
   await expect(page.getByRole('link', { name: 'Continue with Google' })).toBeVisible();
+});
+
+
+test('cancelled system sign-in shows its failure across phone and desktop theme appearances', async ({ page }) => {
+  await host(page, true);
+  await page.addInitScript(() => { (window as any).mobileCancelAuth = true; });
+  await page.route('**/relay/auth/session', route => route.fulfill({ json: { authenticated: false, user: null, registrationSettings: { googleAuthEnabled: true }, registrationEnabled: true } }));
+  await page.route('**/relay/auth/mobile/prepare', route => route.fulfill({ json: { path: '/relay/auth/oauth/google/start?mobileId=fixture', callbackUrl: 'remotecodex://auth/callback' } }));
+  let exchanges = 0;
+  await page.route('**/relay/auth/mobile/exchange', route => { exchanges++; return route.fulfill({ status: 401, json: {} }); });
+  await mkdir(path.resolve('.scratch/security-review/screenshots'), { recursive: true });
+  await page.goto('/relay-portal');
+  for (const pack of ['classic', 'plum-pocket', 'terminal']) for (const mode of ['light', 'dark']) {
+    await page.evaluate(({ pack, mode }) => { localStorage.setItem('pockymoe-theme-preset', pack); localStorage.setItem('remote-codex-theme-mode', mode); }, { pack, mode });
+    await page.reload();
+    await page.getByRole('button', { name: 'Continue with Google' }).click();
+    const failure = page.locator('.auth-notice[data-tone="warning"]');
+    await expect(failure).toContainText(/cancelled/i);
+    for (const width of [393, 1440]) {
+      await page.setViewportSize({ width, height: 900 }); await expect(failure).toBeVisible();
+      await page.screenshot({ path: path.resolve(`.scratch/security-review/screenshots/auth-${pack}-${mode}-${width}.png`) });
+    }
+  }
+  expect(exchanges).toBe(0);
 });

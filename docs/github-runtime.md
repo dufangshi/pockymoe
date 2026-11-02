@@ -125,20 +125,29 @@ a hosted deployment. A self-hosted separate-origin Web build may explicitly set
 configuration, not a default in published runtime assets.
 
 Our Pages deployment deliberately keeps its own configured origin. Repository
-variables used by the deployment workflows are:
+secrets used by the deployment workflows are:
 
-| Variable | Purpose | Example |
+| Secret | Purpose | Example |
 | --- | --- | --- |
 | `POCKYMOE_RELAY_ORIGIN` | Existing Relay HTTPS origin, also fed into the Pages Web build | `https://relay.example.com` |
 | `POCKYMOE_WEB_DOMAIN` | Pages CNAME, asset carry-forward host, and Relay redirect/preflight target | `app.example.com` |
 | `POCKYMOE_LEGACY_RELAY_ORIGIN` | Former Relay origin whose isolation the deployment checks | `https://legacy-relay.example.com` |
 
 Origins must have no trailing slash, path, query, credentials or port; the Web
-hostname is lowercase. Set the two new variables to the corresponding current
+hostname is lowercase. Set all three secrets to the corresponding current
 hosts before using `pages-deploy.yml` or `relay-deploy.yml`. The preflight refuses
-missing or malformed settings. The Relay workflow passes its variables into the
-SSH steps and checks the same systemd service, environment origins, redirect and
+missing or malformed settings (both workflows require all three). The Relay
+workflow passes its secrets into the SSH steps and checks the same systemd service, environment origins, redirect and
 legacy boundary as before. No server configuration is rewritten by this change.
+Repository secrets are available to the Pages build and the Relay job in the
+`relay-rust-canary` environment; separate environment copies are not required.
+An environment secret with the same name overrides the repository secret and
+must be set consistently or removed. The `github-pages` deployment job does not
+need separate copies. Do not use repository variables for these three addresses:
+variables are not masked in public Actions logs. Each build/deploy preflight
+registers `::add-mask::` for the secret values **and derived hostnames and Web/WS
+origins** before they reach curl, SSH, systemd output or Web build diagnostics.
+Existing logs from older runs are not retroactively redacted.
 `POCKYMOE_DEV_ALLOWED_HOSTS` is an optional comma-separated environment variable
 for local Vite development hosts; no deployment host is hard-coded in Vite.
 

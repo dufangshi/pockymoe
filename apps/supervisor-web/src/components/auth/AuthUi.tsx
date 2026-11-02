@@ -235,7 +235,7 @@ export function OAuthButtons({ google, github, onStart, busy }: {
     <div className="auth-oauth grid gap-2.5">
       {google ? item('google', <GoogleMark />, translate('auth.continueWithGoogle')) : null}
       {github ? item('github', <GitHubMark />, translate('auth.continueWithGitHub')) : null}
-      {error && <ErrorMark message={error} />}
+      {error && <AuthNotice tone="warning">{error}</AuthNotice>}
     </div>
   );
 }

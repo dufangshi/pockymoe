@@ -727,6 +727,40 @@ async fn mobile_oauth_handoff_requires_proof_is_single_use_and_sets_webview_cook
             .unwrap();
         assert!(prepared.status().is_success());
         let prepared: Value = prepared.json().await.unwrap();
+        let public_id =
+            url::Url::parse(&format!("{}{}", f.base, prepared["path"].as_str().unwrap()))
+                .unwrap()
+                .query_pairs()
+                .find(|(k, _)| k == "mobileId")
+                .unwrap()
+                .1
+                .into_owned();
+        // Attacker prepares with its own proof and sends this public start URL
+        // to a victim. Polling before and after victim approval is indistinguishable.
+        let polls = [
+            json!({"id":public_id,"proof":proof}),
+            json!({"id":public_id,"code":public_id,"proof":proof}),
+            json!({"id":public_id,"code":"z".repeat(43),"proof":proof}),
+        ];
+        let mut before = Vec::new();
+        for body in &polls {
+            let reply = f
+                .client
+                .post(format!("{}/relay/auth/mobile/exchange", f.base))
+                .header("origin", &f.base)
+                .json(body)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(reply.status(), StatusCode::UNAUTHORIZED);
+            assert!(reply
+                .headers()
+                .get_all(header::SET_COOKIE)
+                .iter()
+                .next()
+                .is_none());
+            before.push(reply.bytes().await.unwrap());
+        }
         let start = f
             .client
             .get(format!("{}{}", f.base, prepared["path"].as_str().unwrap()))
@@ -767,18 +801,38 @@ async fn mobile_oauth_handoff_requires_proof_is_single_use_and_sets_webview_cook
             mobile_auth::CALLBACK
         );
         assert!(!callback.as_str().contains("token"));
-        let id = callback
+        assert!(!callback.query_pairs().any(|(k, _)| k == "id"));
+        let callback_code = callback
             .query_pairs()
-            .find(|(k, _)| k == "id")
+            .find(|(k, _)| k == "code")
             .unwrap()
             .1
             .to_string();
+        assert_eq!(callback_code.len(), 43);
+        for (index, body) in polls.iter().enumerate() {
+            let reply = f
+                .client
+                .post(format!("{}/relay/auth/mobile/exchange", f.base))
+                .header("origin", &f.base)
+                .json(body)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(reply.status(), StatusCode::UNAUTHORIZED);
+            assert!(reply
+                .headers()
+                .get_all(header::SET_COOKIE)
+                .iter()
+                .next()
+                .is_none());
+            assert_eq!(reply.bytes().await.unwrap(), before[index]);
+        }
         if provider == "github" {
             let conn = f.state.store.conn.lock().await;
             let user: String = conn
                 .query_row(
                     "SELECT user_id FROM relay_mobile_oauth WHERE id=?1",
-                    [&id],
+                    [&public_id],
                     |r| r.get(0),
                 )
                 .unwrap();
@@ -788,7 +842,7 @@ async fn mobile_oauth_handoff_requires_proof_is_single_use_and_sets_webview_cook
             f.client
                 .post(format!("{}/relay/auth/mobile/exchange", f.base))
                 .header("origin", &f.base)
-                .json(&json!({"id":id,"proof":proof}))
+                .json(&json!({"code":callback_code,"proof":proof}))
         };
         assert_eq!(
             exchange("00".repeat(32)).send().await.unwrap().status(),
@@ -799,11 +853,21 @@ async fn mobile_oauth_handoff_requires_proof_is_single_use_and_sets_webview_cook
             let (user, path): (Option<String>, Option<String>) = conn
                 .query_row(
                     "SELECT user_id,return_path FROM relay_mobile_oauth WHERE id=?1",
-                    [&id],
+                    [&public_id],
                     |r| Ok((r.get(0)?, r.get(1)?)),
                 )
                 .unwrap();
             assert!(user.is_some(), "OAuth failed to log in: {path:?}");
+            let stored: String = conn
+                .query_row(
+                    "SELECT code_hash FROM relay_mobile_oauth WHERE id=?1",
+                    [&public_id],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(stored, security::token_hash(&callback_code));
+            assert_ne!(stored, callback_code);
+            mobile_auth::ensure_schema(&conn).unwrap();
         }
         let reply = exchange(proof.clone()).send().await.unwrap();
         assert_eq!(reply.status(), StatusCode::OK);

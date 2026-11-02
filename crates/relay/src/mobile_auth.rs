@@ -1,5 +1,6 @@
 //! System-browser OAuth handoff. Only the originating WebView holds the proof;
-//! the deep link contains an expiring one-use identifier, never a login session.
+//! the callback contains a fresh secret code, never the public preparation ID.
+//! Both that code and the WebView proof are required; neither alone grants login.
 use super::*;
 
 pub(super) const CALLBACK: &str = "remotecodex://auth/callback";
@@ -8,6 +9,16 @@ pub(super) fn ensure_schema(conn: &Connection) -> Result<()> {
       id TEXT PRIMARY KEY, proof_hash TEXT NOT NULL, provider TEXT NOT NULL,
       invite_hash TEXT, oauth_state TEXT UNIQUE, user_id TEXT REFERENCES relay_users(id) ON DELETE CASCADE,
       return_path TEXT, expires_at INTEGER NOT NULL);")?;
+    let has_code: bool = conn
+        .prepare("PRAGMA table_info(relay_mobile_oauth)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<_>>>()?
+        .iter()
+        .any(|name| name == "code_hash");
+    if !has_code {
+        conn.execute_batch("ALTER TABLE relay_mobile_oauth ADD COLUMN code_hash TEXT;")?;
+    }
+    conn.execute_batch("CREATE UNIQUE INDEX IF NOT EXISTS relay_mobile_oauth_code ON relay_mobile_oauth(code_hash);")?;
     Ok(())
 }
 pub(super) fn routes() -> Router<Arc<AppState>> {
@@ -22,7 +33,25 @@ struct Prepare {
     proof_hash: String,
     invite_code: Option<String>,
 }
-async fn prepare(State(state): State<Arc<AppState>>, Json(input): Json<Prepare>) -> Response {
+async fn prepare(
+    State(state): State<Arc<AppState>>,
+    peer: Option<axum::Extension<axum::extract::ConnectInfo<std::net::SocketAddr>>>,
+    Json(input): Json<Prepare>,
+) -> Response {
+    // Limit every attempt, including malformed/incorrect invites, before DB work.
+    // Never trust forwarded IP headers supplied by unauthenticated browsers.
+    let peer = peer
+        .map(|p| p.0 .0.ip().to_string())
+        .unwrap_or_else(|| "unknown".into());
+    if !state
+        .admission
+        .allow(format!("mobile-prepare-ip:{peer}"), 5, 600)
+        || !state
+            .admission
+            .allow("mobile-prepare-global".into(), 200, 600)
+    {
+        return StatusCode::TOO_MANY_REQUESTS.into_response();
+    }
     if OAuthProvider::parse(&input.provider).is_none()
         || input.proof_hash.len() != 43
         || !input
@@ -74,24 +103,22 @@ pub(super) fn bind(conn: &Connection, id: &str, target: &str) -> Result<()> {
     anyhow::ensure!(conn.execute("UPDATE relay_mobile_oauth SET oauth_state=?2 WHERE id=?1 AND oauth_state IS NULL AND expires_at>?3",params![id,signed,chrono::Utc::now().timestamp_millis()])? == 1, "Expired mobile login");
     Ok(())
 }
+fn finish(
+    conn: &Connection,
+    signed: &str,
+    user: Option<&str>,
+    path: &str,
+) -> Result<Option<Response>> {
+    // The preparer knows id and proof. Only the system-browser callback gets this
+    // fresh 256-bit code; storing its hash prevents the public ID being redeemed.
+    let code = security::random_token();
+    let changed = conn.execute("UPDATE relay_mobile_oauth SET user_id=?2,return_path=?3,code_hash=?4 WHERE oauth_state=?1 AND code_hash IS NULL AND expires_at>?5",
+        params![signed,user,path,security::token_hash(&code),chrono::Utc::now().timestamp_millis()])?;
+    Ok((changed == 1)
+        .then(|| Redirect::temporary(&format!("{CALLBACK}?code={code}")).into_response()))
+}
 pub(super) fn complete(conn: &Connection, signed: &str, user: &str) -> Result<Option<Response>> {
-    let id: Option<String> = conn
-        .query_row(
-            "SELECT id FROM relay_mobile_oauth WHERE oauth_state=?1 AND expires_at>?2",
-            params![signed, chrono::Utc::now().timestamp_millis()],
-            |r| r.get(0),
-        )
-        .optional()?;
-    let Some(id) = id else {
-        return Ok(None);
-    };
-    conn.execute(
-        "UPDATE relay_mobile_oauth SET user_id=?2,return_path='/relay-portal' WHERE id=?1",
-        params![id, user],
-    )?;
-    Ok(Some(
-        Redirect::temporary(&format!("{CALLBACK}?id={id}")).into_response(),
-    ))
+    finish(conn, signed, Some(user), "/relay-portal")
 }
 // Preserve the existing localized refusal/pending-sign-up route across the
 // browser boundary, but never accept a client-selected redirect destination.
@@ -114,32 +141,18 @@ pub(super) fn redirect(conn: &Connection, signed: &str, response: Response) -> R
         "/relay-portal{}",
         url.query().map(|q| format!("?{q}")).unwrap_or_default()
     );
-    let id: Option<String> = conn
-        .query_row(
-            "SELECT id FROM relay_mobile_oauth WHERE oauth_state=?1 AND expires_at>?2",
-            params![signed, chrono::Utc::now().timestamp_millis()],
-            |r| r.get(0),
-        )
-        .optional()
-        .ok()
-        .flatten();
-    let Some(id) = id else {
-        return response;
-    };
-    if conn
-        .execute(
-            "UPDATE relay_mobile_oauth SET return_path=?2 WHERE id=?1",
-            params![id, path],
-        )
-        .is_err()
-    {
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    match finish(conn, signed, None, &path) {
+        Ok(Some(response)) => response,
+        Ok(None) => response,
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
-    Redirect::temporary(&format!("{CALLBACK}?id={id}")).into_response()
 }
+
 #[derive(Deserialize)]
 struct Exchange {
-    id: String,
+    #[serde(default)]
+    code: String,
+    #[serde(default)]
     proof: String,
 }
 async fn exchange(
@@ -147,21 +160,18 @@ async fn exchange(
     headers: HeaderMap,
     Json(input): Json<Exchange>,
 ) -> Response {
-    if input.proof.len() != 64 {
-        return StatusCode::BAD_REQUEST.into_response();
+    // The same response for a missing/invalid code, pending, expired, unknown,
+    // wrong proof or consumed login: polling a known preparation ID is useless.
+    if input.proof.len() != 64 || input.code.len() != 43 {
+        return unauthorized();
     }
     let conn = state.store.conn.lock().await;
     let hash = security::token_hash(&input.proof);
-    let row: Option<(Option<String>,String)> = conn.query_row("SELECT user_id,return_path FROM relay_mobile_oauth WHERE id=?1 AND proof_hash=?2 AND return_path IS NOT NULL AND expires_at>?3",params![input.id,hash,chrono::Utc::now().timestamp_millis()],|r|Ok((r.get(0)?,r.get(1)?))).optional().ok().flatten();
+    let code_hash = security::token_hash(&input.code);
+    let row: Option<(Option<String>,String)> = conn.query_row("DELETE FROM relay_mobile_oauth WHERE code_hash=?1 AND proof_hash=?2 AND return_path IS NOT NULL AND expires_at>?3 RETURNING user_id,return_path",params![code_hash,hash,chrono::Utc::now().timestamp_millis()],|r|Ok((r.get(0)?,r.get(1)?))).optional().ok().flatten();
     let Some((user, path)) = row else {
         return unauthorized();
     };
-    if conn
-        .execute("DELETE FROM relay_mobile_oauth WHERE id=?1", [&input.id])
-        .is_err()
-    {
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-    }
     let Some(user) = user else {
         return Json(json!({"path":path})).into_response();
     };
@@ -177,4 +187,113 @@ async fn exchange(
         auth_api::login_response(&conn, &state, &user, &headers, true, false)
     };
     result.unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn peer(
+        address: std::net::SocketAddr,
+    ) -> Option<axum::Extension<axum::extract::ConnectInfo<std::net::SocketAddr>>> {
+        Some(axum::Extension(axum::extract::ConnectInfo(address)))
+    }
+    fn input() -> Prepare {
+        Prepare {
+            provider: "google".into(),
+            proof_hash: security::token_hash(&"ab".repeat(32)),
+            invite_code: None,
+        }
+    }
+    #[tokio::test]
+    async fn prepare_is_bounded_per_peer_and_globally_before_invite_validation() {
+        let (state, dir) = crate::tests::test_app_state("mobile-rate");
+        for index in 0..6 {
+            let source_peer = peer(format!("127.0.0.1:{}", 40000 + index).parse().unwrap());
+            let result = prepare(State(state.clone()), source_peer, Json(input())).await;
+            assert_eq!(
+                result.status(),
+                if index < 5 {
+                    StatusCode::OK
+                } else {
+                    StatusCode::TOO_MANY_REQUESTS
+                }
+            );
+        }
+        // Rejected attempts never create rows and a second peer is independent.
+        let source_peer = peer("127.0.0.2:40000".parse().unwrap());
+        assert_eq!(
+            prepare(State(state.clone()), source_peer, Json(input()))
+                .await
+                .status(),
+            StatusCode::OK
+        );
+        for index in 0..194 {
+            let source_peer = peer(std::net::SocketAddr::new(
+                std::net::Ipv4Addr::new(10, 0, (index / 250) as u8, (index % 250 + 1) as u8).into(),
+                40000,
+            ));
+            assert_eq!(
+                prepare(State(state.clone()), source_peer, Json(input()))
+                    .await
+                    .status(),
+                StatusCode::OK
+            );
+        }
+        let source_peer = peer("192.0.2.1:40000".parse().unwrap());
+        assert_eq!(
+            prepare(State(state.clone()), source_peer, Json(input()))
+                .await
+                .status(),
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        let count: i64 = state
+            .store
+            .conn
+            .lock()
+            .await
+            .query_row("SELECT count(*) FROM relay_mobile_oauth", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 200);
+        drop(state);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[tokio::test]
+    async fn incorrect_invites_and_malformed_proofs_consume_the_same_prepare_budget() {
+        let (state, dir) = crate::tests::test_app_state("mobile-invite-rate");
+        set_relay_setting(
+            &*state.store.conn.lock().await,
+            "registrationPassword",
+            "synthetic-invite",
+        )
+        .unwrap();
+        for index in 0..6 {
+            let mut value = input();
+            value.invite_code = Some("incorrect".into());
+            if index % 2 == 0 {
+                value.proof_hash = "invalid".into();
+            }
+            let response = prepare(State(state.clone()), None, Json(value)).await;
+            assert_eq!(
+                response.status(),
+                if index < 5 {
+                    StatusCode::BAD_REQUEST
+                } else {
+                    StatusCode::TOO_MANY_REQUESTS
+                }
+            );
+        }
+        assert_eq!(
+            state
+                .store
+                .conn
+                .lock()
+                .await
+                .query_row("SELECT count(*) FROM relay_mobile_oauth", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        drop(state);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }

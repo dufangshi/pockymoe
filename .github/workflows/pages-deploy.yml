@@ -32,13 +32,17 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
-      VITE_POCKYMOE_RELAY_ORIGIN: ${{ vars.POCKYMOE_RELAY_ORIGIN }}
+      POCKYMOE_RELAY_ORIGIN: ${{ secrets.POCKYMOE_RELAY_ORIGIN }}
+      POCKYMOE_LEGACY_RELAY_ORIGIN: ${{ secrets.POCKYMOE_LEGACY_RELAY_ORIGIN }}
+      VITE_POCKYMOE_RELAY_ORIGIN: ${{ secrets.POCKYMOE_RELAY_ORIGIN }}
       VITE_POCKYMOE_LEGACY_UPGRADE: ${{ vars.POCKYMOE_LEGACY_UPGRADE || '1' }}
-      POCKYMOE_WEB_DOMAIN: ${{ vars.POCKYMOE_WEB_DOMAIN }}
+      POCKYMOE_WEB_DOMAIN: ${{ secrets.POCKYMOE_WEB_DOMAIN }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
+      - name: Mask and validate deployment addresses
+        run: python3 scripts/check-deployment-addresses.py --mask
       - name: Read shared UI pin and validate relay configuration
         id: ui
         shell: bash

@@ -39,4 +39,6 @@ verify、四平台 native、固定 UI 的 Web 构建并行，package 依赖全�
 
 需要当前设备更新时通过设备管理 API，或旧版迁移所需的 setup 兼容桥。核对 job completed、运行版本/PID/Relay 重连和受维护线程恢复。交付提交、版本、run 链接、相关验证及真实限制；不要把安装成功等同于后台已更新。
 
-发布前运行 `python3 scripts/check-production-address.py --tracked`，打包后扫描整个 release-assets（含 ZIP 解包内容）。runtime Web 使用 `POCKYMOE_RUNTIME_RELEASE=1` 且不内置 Relay；自有 Pages/Relay 的地址只读仓库变量 `POCKYMOE_RELAY_ORIGIN`、`POCKYMOE_WEB_DOMAIN`、`POCKYMOE_LEGACY_RELAY_ORIGIN`，见 `docs/github-runtime.md`。Windows Device Manager 的既有 manifest 是独立发布的固定例外，不纳入 runtime 资产。
+发布前运行 `python3 scripts/check-production-address.py --tracked`，打包后扫描整个 release-assets（含 ZIP 解包内容）。runtime Web 使用 `POCKYMOE_RUNTIME_RELEASE=1` 且不内置 Relay；自有 Pages/Relay 的地址只读仓库 secrets `POCKYMOE_RELAY_ORIGIN`、`POCKYMOE_WEB_DOMAIN`、`POCKYMOE_LEGACY_RELAY_ORIGIN`，见 `docs/github-runtime.md`。Windows Device Manager 的既有 manifest 是独立发布的固定例外，不纳入 runtime 资产。
+
+部署前先运行地址 preflight（`--mask`）：三个地址 secrets 必须齐全，且派生的主机名也要注册 `::add-mask::`，不能用未遮罩的仓库 variables。Relay 的 `relay-rust-canary` 环境可继承仓库 secrets；同名环境 secret 会覆盖仓库值。

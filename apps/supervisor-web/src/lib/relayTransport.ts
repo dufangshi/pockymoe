@@ -2,7 +2,7 @@ import { supervisorPath } from './webBase';
 import { boundDevices } from './accountVault';
 import { accountRevocations } from './accountVaultState';
 import { verifySharedDeviceRole } from './accountTransport';
-import { relayUrl } from './relayOrigin';
+import { relayOrigin, relayUrl } from './relayOrigin';
 import { getLocale, translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import workerUrl from './relayServiceWorker.ts?worker&url';
 import { relayWorkerRegistration } from './staticWeb';
@@ -132,6 +132,16 @@ export async function ensureRelayWorker() {
   })();
   try {
     await workerReady;
+    if (window.pockymoeHost) {
+      // A worker restart loses per-page configuration. Acknowledge it before
+      // media/download reads can start, even if registration was already ready.
+      await new Promise<void>((resolve, reject) => {
+        const channel = new MessageChannel();
+        const timeout = setTimeout(() => { channel.port1.close(); reject(new Error(translate('auth.unableToLoadTheRelayPortal'))); }, 10000);
+        channel.port1.onmessage = () => { clearTimeout(timeout); channel.port1.close(); resolve(); };
+        navigator.serviceWorker.controller!.postMessage({ type: 'pockymoe-page-relay', origin: relayOrigin() }, [channel.port2]);
+      });
+    }
     if (!workerPageReset) { navigator.serviceWorker.controller?.postMessage({ type: 'pockymoe-account-reset' }); workerPageReset = true; }
     navigator.serviceWorker.controller?.postMessage({ type: 'remote-codex-locale', locale: getLocale() });
     return await navigator.serviceWorker.ready;

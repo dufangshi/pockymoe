@@ -233,19 +233,42 @@ turns need not wait for the periodic heartbeat. Older devices can omit the field
 
 Delivery uses `apns-push-type: liveactivity`, topic
 `<POCKYMOE_APNS_TOPIC>.push-type.liveactivity`, the registration's sandbox setting,
-and collapse ID `account-activity`. The ActivityKit payload is:
+and collapse ID `account-activity`. `content-state` matches the iOS
+`ActivityContentState` exactly:
 
-```json
-{"aps":{"timestamp":1793606400,"event":"update","content-state":{"counts":{"running":1,"needsInput":0,"failed":0,"completed":0,"interrupted":0},"threads":[{"threadId":"00000000-0000-4000-8000-000000000000","state":"running","since":"2026-11-02T08:00:00Z"}],"updatedAt":"2026-11-02T08:00:00Z"}}}
-```
+- `rows`: up to three prioritized `{ key, state, startedAt }` entries. `key` is
+  the same `deviceId:rootThreadId` conversation key as the local activity cache.
+- `totalCount`, `waitingCount`, `failedCount`, `runningCount`, `completedCount`:
+  account counts across all conversations, including rows beyond the first three.
+- `endedAt`: null while running/waiting, otherwise the end time.
+- `earliestStart`: the earliest still-running member's start, or the leading row's
+  timestamp when there are no running members.
 
-Counts include all conversations; at most 20 prioritized thread rows fit the APNs
-4 KiB payload limit. These rows contain only IDs, state and times. Titles remain
-in the phone cache supplied by `activity.sync`; absent titles use generic text.
-No `alert`, push-to-start attributes or remote approval controls are sent. With no
-running/waiting conversations, `event` is `end` and `dismissal-date` is 15 minutes
-after the update. Terminal rows older than 15 minutes are excluded; device snapshots
-expire after 24 hours. A disconnected device retains its last snapshot until then.
+The rows contain only IDs, state and timestamps, never titles or device names.
+No `alert`, push-to-start attributes or remote approval controls are sent. A
+failed/waiting conversation can also count as running if another member runs;
+display priority does not prematurely end the activity. With no running/waiting
+conversations, `event` is `end` and `completedCount` counts all finished rows;
+`dismissal-date` is 15 minutes after the update. Terminal rows older than 15
+minutes are excluded; device snapshots expire after 24 hours. A disconnected
+device retains its last snapshot until then.
+
+**Date encoding:** ActivityKit requires default Codable encoding strategies for
+`content-state`. Swift Foundation `Date` defaults to seconds since **2001-01-01
+00:00:00 UTC**, including `rows[].startedAt`, `earliestStart` and non-null `endedAt`.
+The outer APNs `timestamp` and `dismissal-date` instead use Unix seconds since
+**1970-01-01**. Converting between them subtracts/adds 978307200 seconds. Do not
+configure a custom Date decoder in the iOS ActivityKit model. Apple's
+[ActivityKit push guidance](https://developer.apple.com/documentation/activitykit/starting-and-updating-live-activities-with-activitykit-push-notifications)
+requires the default strategies and separately defines the envelope Unix timestamp.
+
+Shared fixtures are `crates/relay/test-fixtures/live-activity-update.json` and
+`live-activity-end.json`; Relay tests compare its output to those bytes. To verify
+against the client model without duplicating it, compile the actual client's
+`ios/Shared/ActivityPolicy.swift` alongside `scripts/check-live-activity-fixture.swift`,
+then run that executable with both JSON fixture paths. This checks default Date
+decoding against fixed Unix times, counts, keys and the dismissal interval. It is
+a payload compatibility check, not an APNs delivery test.
 
 The additive `relay_live_activity_tokens`, `relay_live_activity_devices` and
 `relay_live_activity_outbox` tables preserve existing registrations and data.

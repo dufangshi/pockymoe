@@ -47,16 +47,50 @@ The Web creates a random proof and sends its SHA-256/base64url hash to
 The returned Relay start path binds the normal OAuth state, PKCE verifier and
 system-browser HttpOnly cookie. The invite code is stored only as a hash.
 
-The Relay returns to the fixed `remotecodex://auth/callback?id=…` deep link, matching
-the installed apps' existing scheme. The shell returns that URL through
-`auth.openExternal`. The page checks the callback and identifier, then redeems
-`{ id, proof }` at `POST /relay/auth/mobile/exchange`. The identifier expires after
-ten minutes and is single-use; intercepting it without the page's proof cannot
-establish a session. Login cookies are issued into the WebView. Existing MFA,
-trusted-browser, account setup/unlock and remembered destination rules still apply.
-No login session or native credential is placed in the deep link. Cancellation
-keeps the current page; refusal and pending registration resume the existing
-localized portal notices. Browser and desktop OAuth keep their normal redirects.
+The preparation ID is public and cannot be redeemed. Once the provider returns,
+the Relay generates a **fresh random 256-bit code**, stores only its hash, and
+returns it only through `remotecodex://auth/callback?code=…`. The shell passes that
+URL through `auth.openExternal`; the page redeems `{ code, proof }` at
+`POST /relay/auth/mobile/exchange`. The code expires with the ten-minute attempt
+and is consumed atomically. Missing, wrong, pending, expired or used codes all
+produce the same unauthorized response without cookies. Someone who prepared a
+phishing link and knows the preparation ID/proof still cannot obtain the callback
+code by polling. A stolen callback code alone also lacks the page's proof.
+
+Login cookies are issued into the WebView, preserving MFA, trusted-browser,
+account setup/unlock and the remembered destination. Refusal and pending
+registration use the same secret-code handoff before showing the localized portal
+notice. There is no custom authorization/start page: the start endpoint redirects
+directly to the provider's configured application authorization UI. Browser and
+desktop OAuth keep their existing redirects. No login session is put in the deep
+link. Cancellation, an unsupported auth bridge or a failed connection shows the
+existing visible sign-in warning; it never silently succeeds or falls back to
+embedded provider sign-in.
+
+`prepare` uses the existing admission limiter before proof/invite validation:
+five attempts per transport-peer IP per ten minutes and 200 globally per ten
+minutes. Invalid invites/proofs consume the same budget. Raw peer IPs are used;
+unauthenticated forwarding headers cannot choose a new bucket. Requests without
+peer metadata share an `unknown` bucket. Existing browser auth limits also apply.
+
+## Web and Relay connection origins
+
+The native shell resolves the person's one entered address before loading Web:
+an HTTPS redirect to the Web UI keeps the typed Relay origin; a direct Web UI
+uses one origin for both; an advanced Relay override and stored Web/Relay pairs
+are preserved. A failed first connection stays on the native connection page
+with an inline reason; native offline recovery offers Retry and Change address.
+Those native screens and migration probes belong to the client repository.
+
+Before rendering or sending any session request, the page reads the mobile
+shell's `settings.get()` pair and uses its `relayOrigin` in preference to the
+Web build's origin. This applies to sign-in, account/device HTTP, sockets,
+notification registration and media. Web identity/passkey trust stays bound to
+the Web origin. The service worker keeps a separate Relay setting for each
+controlled page and delegates custom-origin encrypted reads back to that exact
+page; it cannot route them through another open window. Invalid or unavailable
+shell settings block requests with a visible failure instead of contacting a
+potentially unrelated Relay built into the Web site.
 
 ## System activity surfaces
 

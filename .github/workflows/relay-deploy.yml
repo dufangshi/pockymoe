@@ -54,17 +54,17 @@ jobs:
     environment: relay-rust-canary
     timeout-minutes: 60
     env:
-      POCKYMOE_RELAY_ORIGIN: ${{ vars.POCKYMOE_RELAY_ORIGIN }}
-      POCKYMOE_WEB_DOMAIN: ${{ vars.POCKYMOE_WEB_DOMAIN }}
-      POCKYMOE_LEGACY_RELAY_ORIGIN: ${{ vars.POCKYMOE_LEGACY_RELAY_ORIGIN }}
+      POCKYMOE_RELAY_ORIGIN: ${{ secrets.POCKYMOE_RELAY_ORIGIN }}
+      POCKYMOE_WEB_DOMAIN: ${{ secrets.POCKYMOE_WEB_DOMAIN }}
+      POCKYMOE_LEGACY_RELAY_ORIGIN: ${{ secrets.POCKYMOE_LEGACY_RELAY_ORIGIN }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Validate deployment addresses
+      - name: Mask and validate deployment addresses
         if: inputs.deploy
-        run: python3 scripts/check-deployment-addresses.py
+        run: python3 scripts/check-deployment-addresses.py --mask
 
       - name: Capture deployment boundaries
         if: inputs.deploy

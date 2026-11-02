@@ -1198,15 +1198,15 @@ scripts, `thread-ui.sha` or the workflow itself, and on manual dispatch from
 `main`. It reads the full shared UI commit from the tracked file `thread-ui.sha`,
 checks out `dufangshi/pockymoe-thread-ui-rust` at exactly that commit and refuses
 one that is not on that repository's `main`, builds with
-`VITE_POCKYMOE_RELAY_ORIGIN` from the repository variable `POCKYMOE_RELAY_ORIGIN`
-and `POCKYMOE_WEB_DOMAIN` from the repository variable of the same name, runs the check script and deploys
+`VITE_POCKYMOE_RELAY_ORIGIN` from the repository secret `POCKYMOE_RELAY_ORIGIN`
+and `POCKYMOE_WEB_DOMAIN` from the repository secret of the same name, runs the check script and deploys
 with `actions/deploy-pages`. Before deploying, `scripts/carry-web-assets.mjs` copies the
 hashed assets the live site serves (and those it carried itself) into the new build
 for 72 hours after they stopped being current, up to 300 MB, and records them in
 `asset-history.json`. A page opened before a deployment then still loads its lazy
 chunks (Files, the editor) instead of reloading; past that window it reloads once
 (`installStaleBuildReload`). The carried assets come only from this site's own
-earlier deployments. Whoever can push to `main`, change that variable or
+earlier deployments. Whoever can push to `main`, change that secret or
 publish to the shared UI's `main` decides the code that receives users' passwords.
 
 The relay at `https://relay.example.com` runs API-only: its environment file

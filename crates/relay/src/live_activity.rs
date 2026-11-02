@@ -107,16 +107,19 @@ pub(super) fn replace(conn: &Connection, device: &str, rows: &Value) -> Result<(
 }
 
 fn payload(conn: &Connection, user: &str) -> Result<Value> {
-    let now = chrono::Utc::now();
-    let mut stmt = conn.prepare("SELECT a.snapshot FROM relay_live_activity_devices a JOIN relay_devices d ON d.id=a.device_id WHERE d.owner_user_id=?1 AND a.updated_at>?2 ORDER BY a.device_id")?;
+    payload_at(conn, user, chrono::Utc::now())
+}
+fn payload_at(conn: &Connection, user: &str, now: chrono::DateTime<chrono::Utc>) -> Result<Value> {
+    let mut stmt = conn.prepare("SELECT a.device_id,a.snapshot FROM relay_live_activity_devices a JOIN relay_devices d ON d.id=a.device_id WHERE d.owner_user_id=?1 AND a.updated_at>?2 ORDER BY a.device_id")?;
     let snapshots = stmt
         .query_map(params![user, now.timestamp_millis() - 86_400_000], |r| {
-            r.get::<_, String>(0)
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let mut threads = Vec::new();
+    let mut earliest_running: Option<f64> = None;
     let mut counts = json!({"running":0,"needsInput":0,"failed":0,"completed":0,"interrupted":0});
-    for snapshot in snapshots {
+    for (device, snapshot) in snapshots {
         for row in serde_json::from_str::<Vec<Value>>(&snapshot)? {
             let state = row["state"].as_str().unwrap_or("");
             let since = chrono::DateTime::parse_from_rfc3339(row["since"].as_str().unwrap_or(""))?;
@@ -132,7 +135,16 @@ fn payload(conn: &Connection, user: &str) -> Result<Value> {
             if state != "running" && row["runningSince"].is_string() {
                 counts["running"] = json!(counts["running"].as_u64().unwrap_or(0) + 1);
             }
-            threads.push(row);
+            let started = row["runningSince"]
+                .as_str()
+                .unwrap_or(row["since"].as_str().unwrap_or(""));
+            if state == "running" || row["runningSince"].is_string() {
+                let started = swift_date(
+                    chrono::DateTime::parse_from_rfc3339(started)?.with_timezone(&chrono::Utc),
+                );
+                earliest_running = Some(earliest_running.map_or(started, |old| old.min(started)));
+            }
+            threads.push(json!({"key":format!("{device}:{}",row["threadId"].as_str().unwrap_or("")),"state":state,"startedAt":swift_date(chrono::DateTime::parse_from_rfc3339(started)?.with_timezone(&chrono::Utc))}));
         }
     }
     // APNs has a 4 KiB limit. Counts include every conversation; the compact
@@ -146,17 +158,37 @@ fn payload(conn: &Connection, user: &str) -> Result<Value> {
     threads.sort_by(|a, b| {
         priority(a)
             .cmp(&priority(b))
-            .then_with(|| a["since"].as_str().cmp(&b["since"].as_str()))
+            .then_with(|| {
+                a["startedAt"]
+                    .as_f64()
+                    .partial_cmp(&b["startedAt"].as_f64())
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| a["key"].as_str().cmp(&b["key"].as_str()))
     });
-    threads.truncate(20);
+    let total_count = threads.len();
+    let earliest_start = earliest_running.unwrap_or_else(|| {
+        threads
+            .first()
+            .and_then(|row| row["startedAt"].as_f64())
+            .unwrap_or_else(|| swift_date(now))
+    });
+    threads.truncate(3);
     let ended = counts["running"] == 0 && counts["needsInput"] == 0;
     // ActivityKit owns the system surface: a static running ring and system
     // timer replace looping SVG animation (ui-principles §6 exception).
-    let mut aps = json!({"timestamp":now.timestamp(),"event":if ended {"end"} else {"update"},"content-state":{"counts":counts,"threads":threads,"updatedAt":now.to_rfc3339()}});
+    let mut aps = json!({"timestamp":now.timestamp(),"event":if ended {"end"} else {"update"},"content-state":{"rows":threads,"totalCount":total_count,"waitingCount":counts["needsInput"],"failedCount":counts["failed"],"runningCount":counts["running"],"completedCount":if ended {json!(total_count)} else {counts["completed"].clone()},"endedAt":if ended {json!(swift_date(now))} else {Value::Null},"earliestStart":earliest_start}});
     if ended {
         aps["dismissal-date"] = json!(now.timestamp() + 900);
     }
     Ok(json!({"aps":aps}))
+}
+
+// ActivityKit requires default Codable strategies for content-state. Foundation
+// Date's default encoding is seconds since 2001-01-01 (not Unix); APNs envelope
+// timestamp/dismissal-date remain Unix seconds. See the shared JSON fixtures.
+fn swift_date(date: chrono::DateTime<chrono::Utc>) -> f64 {
+    date.timestamp_millis() as f64 / 1000.0 - 978_307_200.0
 }
 
 pub(super) async fn deliver_batch(state: &AppState, http: &reqwest::Client) -> Result<()> {
@@ -208,6 +240,39 @@ pub(super) async fn deliver_batch(state: &AppState, http: &reqwest::Client) -> R
 mod tests {
     use super::*;
     #[test]
+    fn live_activity_payload_matches_ios_shared_fixtures() -> Result<()> {
+        let (state, dir) = crate::tests::test_app_state("ios-activity-fixture");
+        let conn = state.store.conn.try_lock().unwrap();
+        let device = "00000000-0000-4000-8000-000000000001";
+        conn.execute(
+            "INSERT INTO relay_users VALUES ('u','u','u','user',1,NULL,'now','salt','hash')",
+            [],
+        )?;
+        conn.execute(
+            "INSERT INTO relay_devices VALUES (?1,'u',?1,NULL,?1,?1,'now')",
+            [device],
+        )?;
+        for raw in [
+            include_str!("../test-fixtures/live-activity-update.json"),
+            include_str!("../test-fixtures/live-activity-end.json"),
+        ] {
+            let expected: Value = serde_json::from_str(raw)?;
+            let now =
+                chrono::DateTime::from_timestamp(expected["aps"]["timestamp"].as_i64().unwrap(), 0)
+                    .unwrap();
+            let rows=expected["aps"]["content-state"]["rows"].as_array().unwrap().iter().map(|row| {
+                let timestamp=row["startedAt"].as_f64().unwrap()+978_307_200.0;
+                json!({"threadId":row["key"].as_str().unwrap().split(':').nth(1).unwrap(),"state":row["state"],"since":chrono::DateTime::from_timestamp(timestamp as i64,0).unwrap().to_rfc3339()})
+            }).collect::<Vec<_>>();
+            conn.execute("INSERT INTO relay_live_activity_devices VALUES (?1,?2,?3) ON CONFLICT(device_id) DO UPDATE SET snapshot=excluded.snapshot,updated_at=excluded.updated_at",params![device,json!(rows).to_string(),now.timestamp_millis()])?;
+            assert_eq!(payload_at(&conn, "u", now)?, expected);
+        }
+        drop(conn);
+        drop(state);
+        std::fs::remove_dir_all(dir)?;
+        Ok(())
+    }
+    #[test]
     fn live_activity_privacy_account_isolation_rotation_and_additive_schema() -> Result<()> {
         let (state, dir) = crate::tests::test_app_state("live-activity");
         let conn = state.store.conn.try_lock().unwrap();
@@ -243,11 +308,11 @@ mod tests {
             1
         );
         let p: Value = serde_json::from_str(&queued)?;
-        assert_eq!(p["aps"]["content-state"]["counts"]["needsInput"], 1);
+        assert_eq!(p["aps"]["content-state"]["waitingCount"], 1);
         assert_eq!(p["aps"]["event"], "update");
         assert_eq!(
-            p["aps"]["content-state"]["threads"][0],
-            json!({"threadId":id,"state":"needsInput","since":chrono::DateTime::parse_from_rfc3339(rows[0]["since"].as_str().unwrap())?.to_rfc3339()})
+            p["aps"]["content-state"]["rows"][0],
+            json!({"key":format!("owner:{id}"),"state":"needsInput","startedAt":swift_date(chrono::DateTime::parse_from_rfc3339(rows[0]["since"].as_str().unwrap())?.with_timezone(&chrono::Utc))})
         );
         assert!(register(&conn, "owner", "invalid").is_err());
         register(&conn, "owner", &"cd".repeat(32))?;
@@ -303,13 +368,10 @@ mod tests {
         let rows = (0..250).map(|_|json!({"threadId":Uuid::new_v4().to_string(),"state":"running","since":now_rfc3339(),"runningSince":now_rfc3339()})).collect::<Vec<_>>();
         replace(&conn, "d", &json!(rows))?;
         let p = payload(&conn, "u")?;
-        assert_eq!(p["aps"]["content-state"]["counts"]["running"], 250);
+        assert_eq!(p["aps"]["content-state"]["runningCount"], 250);
         assert_eq!(
-            p["aps"]["content-state"]["threads"]
-                .as_array()
-                .unwrap()
-                .len(),
-            20
+            p["aps"]["content-state"]["rows"].as_array().unwrap().len(),
+            3
         );
         assert!(p.to_string().len() <= 4096);
         assert_eq!(p["aps"]["event"], "update");
@@ -321,8 +383,8 @@ mod tests {
         )?;
         let p = payload(&conn, "u")?;
         assert_eq!(p["aps"]["event"], "update");
-        assert_eq!(p["aps"]["content-state"]["counts"]["failed"], 1);
-        assert_eq!(p["aps"]["content-state"]["counts"]["running"], 1);
+        assert_eq!(p["aps"]["content-state"]["failedCount"], 1);
+        assert_eq!(p["aps"]["content-state"]["runningCount"], 1);
         drop(conn);
         drop(state);
         std::fs::remove_dir_all(dir)?;
