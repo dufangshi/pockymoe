@@ -14,6 +14,11 @@ Connection tests request only a brief answer but allow 1,024 output tokens for
 models that use part of that budget for reasoning. Incomplete responses still
 fail the test.
 
+`POST /api/management/connections/{id}/complete` runs one text completion with a
+saved connection and returns only `{"text","model"}`. It takes `system`, `user` and
+an optional `model`, in any of the connection's protocols, with the same owner-only
+access as the connection test. The desktop pet uses it for spoken summaries.
+
 ## Local storage and migration
 
 Connections are stored privately beside the Supervisor database in

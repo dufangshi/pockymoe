@@ -265,6 +265,48 @@ pub async fn test(
         json!({"ok":true,"latencyMs":start.elapsed().as_millis(),"model":if input.model.is_empty(){&c.model}else{&input.model}}),
     ))
 }
+/// A one-off text completion for the owner's own tools, such as the desktop pet's
+/// spoken summaries. The key stays here; only the answer goes back.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CompleteInput {
+    #[serde(default)]
+    model: String,
+    system: String,
+    user: String,
+}
+const COMPLETE_MAX_CHARS: usize = 64 * 1024;
+pub async fn complete(
+    State(s): State<Arc<Supervisor>>,
+    Path(id): Path<String>,
+    Json(input): Json<CompleteInput>,
+) -> Result<Json<Value>, Failure> {
+    if input.user.trim().is_empty()
+        || input.system.chars().count() > COMPLETE_MAX_CHARS
+        || input.user.chars().count() > COMPLETE_MAX_CHARS
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"code":"invalid_completion","message":"The prompt is empty or too long."})),
+        ));
+    }
+    let c = {
+        let _g = s.upstream_gate.lock().await;
+        saved::get(&dir(&s), &id).map_err(failure)?
+    };
+    let text = saved::complete(
+        &c,
+        &input.model,
+        &input.system,
+        &input.user,
+        saved::CONNECTION_PROBE_MAX_TOKENS,
+    )
+    .await
+    .map_err(failure)?;
+    Ok(Json(
+        json!({"text":text,"model":if input.model.is_empty(){&c.model}else{&input.model}}),
+    ))
+}
 pub async fn test_draft(
     State(s): State<Arc<Supervisor>>,
     Json(input): Json<Value>,
