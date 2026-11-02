@@ -59,3 +59,19 @@
   :root:root [data-desktop-surface] .matter-tabs-row { display: none; }
   :root:root [data-desktop-surface] .matter-topbar { position: relative; z-index: 5; grid-column: 1 / -1; grid-row: 1; height: var(--desktop-title-height, 38px); box-sizing: border-box; padding-left: var(--desktop-controls-left); padding-right: var(--desktop-controls-right); -webkit-app-region: drag; }
 }
+
+.desktop-workspaces-scroll { height: 100%; overflow: auto; min-width: 0; }
+.desktop-workspaces-content { box-sizing: border-box; padding: 32px; width: 100%; max-width: 944px; margin: 0; }
+.desktop-workspaces-title { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.desktop-workspaces-title h1 { margin: 0; font-size: 20px; font-weight: 600; }
+.desktop-workspace-device { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; }
+.desktop-workspace-device > :last-child { flex: 1; min-width: 0; }
+.desktop-workspace-actions { display: grid; margin: 0 4px 16px; }
+.desktop-workspace-actions > :is(a, button) { display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 6px 10px; color: var(--theme-fg); background: transparent; border: 0; border-radius: 6px; text-decoration: none; font-size: 12px; text-align: left; }
+.desktop-workspace-actions > :is(a, button):focus-visible { outline: 2px solid var(--theme-accent-solid); }
+@media (hover: hover) { .desktop-workspace-actions > :is(a, button):hover { background: var(--theme-hover); } }
+@media (max-width: 899px) { .desktop-workspaces-content { padding-inline: 20px; } }
+
+:root:root [data-desktop-surface] .desktop-workspaces-shell .matter-content { padding: 0; }
+
+:root:root [data-desktop-surface] .desktop-workspaces-shell :is(.matter-sidebar, .matter-content) { margin: 0; }

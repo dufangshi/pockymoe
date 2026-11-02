@@ -1,3 +1,5 @@
+import { WorkspacesFrame, useDesktopWorkspaceLayout } from '../desktop/WorkspacesFrame';
+import type { ReactNode } from 'react';
 import { getLocale } from '@pockymoe/thread-ui/i18n';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { ErrorMark } from '@pockymoe/thread-ui';
@@ -90,6 +92,7 @@ export function WorkspacesPage() {
   const relayDeviceId = relayDeviceIdFromPath(location.pathname);
   const deviceId = relayDeviceId ?? (relayModeActive() ? readSelectedRelayDeviceId() : null);
   const shellNav = useAppShellNav();
+  const desktopLayout = useDesktopWorkspaceLayout();
   const [workspaces, setWorkspaces] = useState<WorkspaceDto[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadAttempt, setLoadAttempt] = useState(0);
@@ -271,16 +274,7 @@ export function WorkspacesPage() {
     : runtimeError ? translate("workbench.runtimeNotAvailable") : translate("files.checkingRuntime");
   const rowMark = (at: string) => error?.at === at ? <ErrorMark message={error.message} /> : null;
 
-  return (
-    <div className="product-page space-y-4" data-page="workspaces">
-      <ProductHeader title={translate("files.workspaces")} subtitle={deviceName?.deviceId === deviceId ? deviceName.name : undefined} {...(relayDeviceId ? {backHref: '/relay-devices', backLabel: translate("files.backToDevices")} : {})} actions={<>
-        {!relayDeviceId && <TourLauncherButton showLabel />}
-        {shellNav?.openThreadMap && <button type="button" onClick={shellNav.openThreadMap} aria-label={translate('workbench.threadMap')} title={translate('workbench.threadMap')} className="product-icon-button"><LayoutDashboard data-icon="thread-map" size={19} /></button>}
-        {!sharedOnly && <Link to={currentRelayScopedPath('/threads/import')} aria-label={translate("files.importSession")} title={translate("files.importSession")} className="product-icon-button"><FileInput data-icon="import" size={19} /></Link>}
-        {!sharedOnly && <Link to={currentRelayScopedPath('/workspaces/new')} aria-label={translate("files.addWorkspace")} title={translate("files.addWorkspace")} className="product-icon-button"><Plus data-icon="add" size={20} /></Link>}
-      </>} />
-
-      {deviceName?.deviceId === deviceId && deviceName.connected === false ? <p className="flex items-center gap-2 text-sm text-[var(--theme-fg-muted)]">{translate('desktopDevices.offline')}<ErrorMark kind="unavailable" message={translate('devices.deviceIsolationOffline')} /></p> : null}
+  const supervisorDetails = (
       <details className="group border-y border-[var(--theme-border)]">
         <summary className="flex min-h-11 cursor-pointer list-none items-center gap-3 py-2.5 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--theme-accent-ring)] [&::-webkit-details-marker]:hidden">
           <span
@@ -324,6 +318,18 @@ export function WorkspacesPage() {
           />
         </dl>
       </details>
+  );
+  const content = (
+    <div className={desktopLayout ? "desktop-workspaces-content space-y-6" : "product-page space-y-4"} data-page="workspaces">
+      {desktopLayout ? <header className="desktop-workspaces-title"><h1>{translate('files.workspaces')}</h1><button className="product-icon-button" aria-label={translate('desktopDevices.refresh')} title={translate('desktopDevices.refresh')} disabled={loading} onClick={() => setLoadAttempt(attempt => attempt + 1)}><RefreshCw size={16} aria-hidden /></button></header> : <ProductHeader title={translate("files.workspaces")} subtitle={deviceName?.deviceId === deviceId ? deviceName.name : undefined} {...(relayDeviceId ? {backHref: '/relay-devices', backLabel: translate("files.backToDevices")} : {})} actions={<>
+        {!relayDeviceId && <TourLauncherButton showLabel />}
+        {shellNav?.openThreadMap && <button type="button" onClick={shellNav.openThreadMap} aria-label={translate('workbench.threadMap')} title={translate('workbench.threadMap')} className="product-icon-button"><LayoutDashboard data-icon="thread-map" size={19} /></button>}
+        {!sharedOnly && <Link to={currentRelayScopedPath('/threads/import')} aria-label={translate("files.importSession")} title={translate("files.importSession")} className="product-icon-button"><FileInput data-icon="import" size={19} /></Link>}
+        {!sharedOnly && <Link to={currentRelayScopedPath('/workspaces/new')} aria-label={translate("files.addWorkspace")} title={translate("files.addWorkspace")} className="product-icon-button"><Plus data-icon="add" size={20} /></Link>}
+      </>} />}
+
+      {deviceName?.deviceId === deviceId && deviceName.connected === false ? <p className="flex items-center gap-2 text-sm text-[var(--theme-fg-muted)]">{translate('desktopDevices.offline')}<ErrorMark kind="unavailable" message={translate('devices.deviceIsolationOffline')} /></p> : null}
+      {!desktopLayout && supervisorDetails}
 
       {/* The list could not load: a short label, the reason behind a mark, and a visible Retry. */}
       {!loading && error?.at === 'load' ? (
@@ -461,6 +467,7 @@ export function WorkspacesPage() {
         </section>
       ) : null}
 
+      {desktopLayout && supervisorDetails}
       <RenameDialog
         open={editingWorkspaceId !== null}
         title={translate("files.renameWorkspace")}
@@ -507,6 +514,7 @@ export function WorkspacesPage() {
       />
     </div>
   );
+  return desktopLayout ? <WorkspacesFrame deviceId={deviceId} sharedOnly={sharedOnly}>{content}</WorkspacesFrame> : content;
 }
 
 function WorkspaceActionsMenu({
