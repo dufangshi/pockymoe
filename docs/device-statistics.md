@@ -234,3 +234,7 @@ export interface ThreadActivityAdditions {
   };
 }
 ```
+
+The statistics page is at `/desktop/devices`, in the desktop client and in a browser signed in to the relay. The devices page links to it.
+
+The account usage list shows only devices with usage for the chosen metric, highest first, eight per page. A device without statistics for the range, because it is offline or its Supervisor is older than 0.13.42, is counted below the list and not shown as zero.
