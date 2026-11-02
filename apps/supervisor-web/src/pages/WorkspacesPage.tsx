@@ -138,6 +138,8 @@ export function WorkspacesPage() {
     let cancelled = false;
 
     const load = async () => {
+      setLoading(true);
+      setError(null);
       const [workspaceResult, runtimeResult] = await Promise.allSettled([
         fetchWorkspaces(),
         fetchRuntimeConfig(),
@@ -321,7 +323,7 @@ export function WorkspacesPage() {
   );
   const content = (
     <div className={desktopLayout ? "desktop-workspaces-content space-y-6" : "product-page space-y-4"} data-page="workspaces">
-      {desktopLayout ? <header className="desktop-workspaces-title"><h1>{translate('files.workspaces')}</h1><button className="product-icon-button" aria-label={translate('desktopDevices.refresh')} title={translate('desktopDevices.refresh')} disabled={loading} onClick={() => setLoadAttempt(attempt => attempt + 1)}><RefreshCw size={16} aria-hidden /></button></header> : <ProductHeader title={translate("files.workspaces")} subtitle={deviceName?.deviceId === deviceId ? deviceName.name : undefined} {...(relayDeviceId ? {backHref: '/relay-devices', backLabel: translate("files.backToDevices")} : {})} actions={<>
+      {desktopLayout ? <header className="desktop-workspaces-title"><h1>{translate('files.workspaces')}</h1><button className="product-icon-button" aria-label={translate('desktopDevices.refresh')} title={translate('desktopDevices.refresh')} disabled={loading} onClick={() => { setLoading(true); setLoadAttempt(attempt => attempt + 1); }}><RefreshCw size={16} className={loading ? 'animate-spin' : undefined} aria-hidden /></button></header> : <ProductHeader title={translate("files.workspaces")} subtitle={deviceName?.deviceId === deviceId ? deviceName.name : undefined} {...(relayDeviceId ? {backHref: '/relay-devices', backLabel: translate("files.backToDevices")} : {})} actions={<>
         {!relayDeviceId && <TourLauncherButton showLabel />}
         {shellNav?.openThreadMap && <button type="button" onClick={shellNav.openThreadMap} aria-label={translate('workbench.threadMap')} title={translate('workbench.threadMap')} className="product-icon-button"><LayoutDashboard data-icon="thread-map" size={19} /></button>}
         {!sharedOnly && <Link to={currentRelayScopedPath('/threads/import')} aria-label={translate("files.importSession")} title={translate("files.importSession")} className="product-icon-button"><FileInput data-icon="import" size={19} /></Link>}

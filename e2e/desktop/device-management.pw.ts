@@ -33,3 +33,38 @@ test('workspace visual evidence and route frames', async ({ page }) => {
   }
 });
 
+
+test('workspace states keep their gaps below 900px and a plain browser keeps its header', async ({ page, browser }) => {
+  await page.setViewportSize({ width: 850, height: 1000 });
+  await seed(page);
+  let release!: () => void;
+  const pending = new Promise<void>(resolve => { release = resolve; });
+  let failed = false;
+  await page.route('**/relay/devices/device-0/api/workspaces*', async route => {
+    if (failed) { await route.fulfill({ status: 503, json: { code: 'unavailable', message: 'Fixture unavailable' } }); return; }
+    await pending;
+    await route.fulfill({ json: [] });
+  });
+  await page.goto('/devices/device-0/workspaces?desktopMockHost=1');
+  const content = page.locator('.desktop-workspaces-content');
+  const gap = async () => {
+    const title = (await page.locator('.desktop-workspaces-title').boundingBox())!;
+    const sidebar = (await page.locator('.desktop-workspaces-shell .matter-sidebar').boundingBox())!;
+    expect(title.x - sidebar.x - sidebar.width).toBe(20);
+    expect(title.y).toBe(70);
+  };
+  await expect(content.locator('.product-skeleton').first()).toBeVisible(); await gap();
+  release();
+  await expect(content.locator('.product-empty')).toBeVisible(); await gap();
+  failed = true; await page.reload();
+  await expect(content.getByRole('button', { name: '重试', exact: true })).toBeVisible(); await gap();
+  const ordinary = await browser.newPage();
+  await seed(ordinary, 'classic', false, false, false, false);
+  await ordinary.route('**/api/workspaces', route => route.fulfill({ json: [] }));
+  await ordinary.route('**/api/storage*', route => route.fulfill({ json: { deviceName: 'Fixture' } }));
+  await ordinary.routeWebSocket(/\/ws/, socket => socket.onMessage(() => undefined));
+  await ordinary.goto('/devices/device-0/workspaces');
+  await expect(ordinary.locator('.product-navigation')).toBeVisible();
+  await expect(ordinary.locator('.desktop-workspaces-shell')).toHaveCount(0);
+  await ordinary.close();
+});
