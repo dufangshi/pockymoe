@@ -1,3 +1,4 @@
+import { devicesHref } from '../lib/devicesRoute';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { ErrorMark } from '@pockymoe/thread-ui';
 import { ProductHeader } from '../components/ProductHeader';
@@ -106,7 +107,7 @@ export function RelayHomePage() {
           ) : (
             <Link
               className="relay-button-primary mt-6 inline-flex h-11 items-center gap-2 px-4"
-              to={authenticated ? '/relay-devices' : '/relay-portal'}
+              to={authenticated ? devicesHref() : '/relay-portal'}
             >
               <MonitorSmartphone aria-hidden="true" className="h-4 w-4" />
               {authenticated ? translate("auth.openDevices") : translate("auth.signIn")}

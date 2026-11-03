@@ -3,7 +3,8 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { MemoryRouter } from 'react-router-dom';
 import { RelayUserMenu } from './RelayUserMenu';
 
-const actions = vi.hoisted(() => ({ settings: vi.fn(), tour: vi.fn() }));
+const actions = vi.hoisted(() => ({ settings: vi.fn(), tour: vi.fn(), attention: 0 }));
+vi.mock('./sharedAccess/useAccountShareAttention', () => ({ useAccountShareAttention: () => ({ attention: new Map(Array.from({ length: actions.attention }, (_, i) => [String(i), 'pending'])) }) }));
 vi.mock('./AppShellNavContext', () => ({ useAppShellNav: () => ({ openSettings: actions.settings }) }));
 vi.mock('./onboarding/TourProvider', () => ({ useTour: () => ({ openHub: actions.tour }) }));
 vi.mock('../lib/api', () => ({
@@ -13,7 +14,7 @@ vi.mock('../lib/api', () => ({
   relayLogout: vi.fn(),
 }));
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => { vi.clearAllMocks(); actions.attention = 0; });
 afterEach(() => vi.unstubAllGlobals());
 
 async function openMenu() {
@@ -71,4 +72,16 @@ it('repositions when browser chrome changes only the visual viewport', async () 
     viewport.dispatchEvent(new Event('scroll'));
   });
   expect(screen.queryByRole('menu')).toBeNull();
+});
+
+it('names share attention and opens the rail-specific settings dialog', async () => {
+  actions.attention = 2;
+  const settings = vi.fn();
+  render(<MemoryRouter><RelayUserMenu rail onSettings={settings} /></MemoryRouter>);
+  const trigger = await screen.findByRole('button', { name: /Relay account menu for demo.*Sharing: 2 to review/ });
+  vi.spyOn(trigger, 'getBoundingClientRect').mockReturnValue(new DOMRect(8, 700, 40, 40));
+  fireEvent.click(trigger);
+  expect(screen.getByRole('menuitem', { name: /Device management.*2/ })).toBeVisible();
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Settings' }));
+  expect(settings).toHaveBeenCalledOnce(); expect(actions.settings).not.toHaveBeenCalled();
 });

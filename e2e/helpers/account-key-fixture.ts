@@ -127,7 +127,7 @@ export async function confirmRecoveryCode(page: Page, code: string) {
 export async function unlock(page: Page, password: string) {
   const dialog = page.getByRole('dialog', { name: UNLOCK_DIALOG });
   await expect(dialog).toBeVisible();
-  await dialog.getByLabel('Password', { exact: true }).fill(password);
+  await dialog.getByLabel(/^(Password|Unlock password)$/, { exact: true }).fill(password);
   const button = dialog.getByRole('button', { name: 'Unlock', exact: true });
   const blocked = !await button.isEnabled() || await button.evaluate(button => {
     const rect = button.getBoundingClientRect();
@@ -224,7 +224,7 @@ export class Fixture {
     await page.getByLabel('Email or username', { exact: true }).fill(account.userId.includes('@') ? account.userId : account.username ?? account.userId);
     await page.getByLabel('Password', { exact: true }).fill(account.password);
     await page.getByRole('button', { name: 'Sign in', exact: true }).click();
-    await expect(page.getByRole('heading', { name: 'Security', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: /^(Security|Sign-in and security)$/, exact: true })).toBeVisible();
     return this.accountMetadata({ ...account, page, context });
   }
   async account(username: string, capture = false): Promise<Account & { username: string }> {
@@ -241,7 +241,7 @@ export class Fixture {
     expect(/^[0-9A-HJKMNP-TV-Z]{4}(-[0-9A-HJKMNP-TV-Z]{4}){7}$/.test(recovery), 'Recovery format').toBe(true);
     if (capture) await screenshot(page, this.info, 'v2-recovery-confirmation');
     await confirmRecoveryCode(page, recovery);
-    await expect(page.getByRole('heading', { name: 'Security', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: /^(Security|Sign-in and security)$/, exact: true })).toBeVisible();
     return this.accountMetadata({ page, context, recovery, password: this.password, username } as Account & { username: string });
   }
   async accountMetadata<T extends Account>(account: T): Promise<T> {
@@ -290,7 +290,7 @@ export class Fixture {
   }
   async bind(owner: Account, device: Device, capture = false) {
     const page = owner.page;
-    await page.goto(this.base + '/relay-devices');
+    await page.goto(this.base + '/desktop/devices/' + device.id);
     const row = page.locator('article').filter({ has: page.getByText(`Signed device ${device.db.match(/device-(\d+)/)![1]}`, { exact: true }) });
     const status = row.getByRole('button', { name: 'Not protected', exact: true });
     await expect(status).toBeVisible();

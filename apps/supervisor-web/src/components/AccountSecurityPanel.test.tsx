@@ -8,7 +8,7 @@ vi.mock('../lib/accountVault', () => ({ currentAccount: async () => vectors.acco
 vi.mock('../lib/accountVaultState', () => ({ accountRequest: state.request, accountRevocations: async () => [], revokeAccountSubject: state.revoked,
   changeAccountPassword: state.change, regenerateRecoveryCode: state.recovery, startAccountOver: state.reset }));
 vi.mock('../lib/relaySecurity', () => ({ securityRequest: state.authStatus }));
-vi.mock('./RelaySecurity', () => ({ SecurityVerification: ({ onVerified }: { onVerified: () => void }) => <button onClick={onVerified}>Verify factor</button> }));
+vi.mock('./RelaySecurity', () => ({ RelaySecurityPanel: () => null, SecurityVerification: ({ onVerified }: { onVerified: () => void }) => <button onClick={onVerified}>Verify factor</button> }));
 vi.mock('../lib/accountAuth', () => ({ isOAuthAccount: async () => true, accountSessionState: state.session }));
 vi.mock('../lib/accountCrypto', () => ({ verifyBrowserCertificate: state.verify }));
 vi.mock('./AccountUnlockPrompt', () => ({ RecoveryConfirmation: ({ code, onConfirm }: { code: string; onConfirm: () => void }) => <div>{code}<button onClick={onConfirm}>Saved code</button></div> }));
@@ -79,7 +79,10 @@ it.each(['en', 'zh-CN'] as const)('requires a current password to confirm normal
   setLocale(locale); state.reset.mockRejectedValue(new Error('keep the dialog open'));
   render(<AccountSecurityPanel />); await screen.findByText('My laptop');
   fireEvent.click(screen.getByRole('button', { name: translate('auth.accountStartOver') }));
-  expect(screen.getByText(translate('auth.accountResetWarning'))).toBeVisible();
+  const confirmation = await screen.findByRole('dialog');
+  await waitFor(() => expect(within(confirmation).getByRole('button', { name: translate('workbench.cancel') })).toHaveFocus());
+  await screen.findByRole('button', { name: translate('auth.continue') });
+  expect(within(screen.getByRole('dialog')).getByText(translate('auth.accountResetWarning'))).toBeVisible();
   const input = screen.getByLabelText(translate('auth.currentPassword'));
   expect(input).toBeRequired();
   fireEvent.click(screen.getByRole('button', { name: translate('auth.continue') }));
@@ -92,6 +95,9 @@ it('allows restricted recovery-session Start over without asking for a forgotten
   state.session.mockResolvedValue({ recovery: true }); state.reset.mockRejectedValue(new Error('keep the dialog open'));
   render(<AccountSecurityPanel />); await screen.findByText('My laptop');
   fireEvent.click(screen.getByRole('button', { name: translate('auth.accountStartOver') }));
+  const confirmation = await screen.findByRole('dialog');
+  await waitFor(() => expect(within(confirmation).getByRole('button', { name: translate('workbench.cancel') })).toHaveFocus());
+  await screen.findByRole('button', { name: translate('auth.continue') });
   expect(screen.queryByLabelText(translate('auth.currentPassword'))).toBeNull();
   fireEvent.click(screen.getByRole('button', { name: translate('auth.continue') }));
   await waitFor(() => expect(state.reset).toHaveBeenCalledWith(undefined));

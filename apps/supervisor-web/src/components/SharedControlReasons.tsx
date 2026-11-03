@@ -1,3 +1,4 @@
+import { devicesHref } from '../lib/devicesRoute';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import type { RelayAccessGrantDto, RelayPortalSummaryDto, RelaySessionShareDto } from '@pockymoe/shared';
 import { Link } from 'react-router-dom';
@@ -82,7 +83,7 @@ export function SharedControlReasons({ shares }: { shares: ControlShare[] }) {
           <p>{translate('devices.sharedControlFix')}</p>
         </>
       ) : null}
-      <Link className="shared-control-link" to="/relay-devices?tab=shared&dir=out">{translate('devices.sharedControlOpen')}</Link>
+      <Link className="shared-control-link" to={devicesHref('?tab=shared&dir=out')}>{translate('devices.sharedControlOpen')}</Link>
     </div>
   );
 }

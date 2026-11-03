@@ -272,7 +272,7 @@ describe('device shared for control', () => {
     // Waiting for the safety-code check or read-only: not a reason.
     expect(popover).not.toHaveTextContent('waiting');
     expect(popover).not.toHaveTextContent('reader');
-    expect(within(popover).getByRole('link', { name: 'Open Sharing' })).toHaveAttribute('href', '/relay-devices?tab=shared&dir=out');
+    expect(within(popover).getByRole('link', { name: 'Open Sharing' })).toHaveAttribute('href', '/desktop/devices?tab=shared&dir=out');
     fireEvent.keyDown(window, { key: 'Escape' });
     expect(screen.queryByRole('dialog')).toBeNull();
     // The isolation dialog names the opposite direction too.

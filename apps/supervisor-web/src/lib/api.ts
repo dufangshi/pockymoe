@@ -191,6 +191,7 @@ function relayModeEnabled() {
     appPathname(window.location.pathname).startsWith('/relay-admin') ||
     appPathname(window.location.pathname).startsWith('/relay-account') ||
     appPathname(window.location.pathname).startsWith('/relay-devices') ||
+    appPathname(window.location.pathname).startsWith('/desktop/devices') ||
     appPathname(window.location.pathname).startsWith('/relay-guide') ||
     window.location.search.includes('relay=1') ||
     window.localStorage.getItem(RELAY_MODE_STORAGE_KEY) === 'true'

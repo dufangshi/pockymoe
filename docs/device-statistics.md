@@ -235,6 +235,19 @@ export interface ThreadActivityAdditions {
 }
 ```
 
-The statistics page is at `/desktop/devices`, in the desktop client and in a browser signed in to the relay. The devices page links to it.
+On PC, device management and statistics share `/desktop/devices`, in the desktop
+client and in a browser signed in to the relay. The top **Devices / Sharing** tabs
+keep totals and the amber share review count. Sharing retains `tab=shared` and
+`dir=out` in the URL and uses the same SharedAccessPanel and permission dialogs.
+**Protect all devices** appears before **Add device** when a device is known to be
+unprotected. Device cards link to Workspaces; offline cards retain their state and
+cached-data explanation. Device details retain sharing, isolation, setup commands,
+token replacement and removal. Incoming shared access remains in Sharing.
+
+Old `/relay-devices` links on PC use a replace redirect preserving the complete
+query, including `tab`, `dir`, `shareDevice` and `action`. Signed-out visitors go to
+the sign-in portal. Phone-width browsers (under 640px on document load) and mobile
+hosts retain the original `/relay-devices` page because phones have no dedicated
+device page. Resizing a mounted page does not change this routing decision.
 
 The account usage list shows only devices with usage for the chosen metric, highest first, eight per page. A device without statistics for the range, because it is offline or its Supervisor is older than 0.13.42, is counted below the list and not shown as zero.

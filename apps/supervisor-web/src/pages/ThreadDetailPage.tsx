@@ -1,6 +1,7 @@
+import { RelayUserMenu } from '../components/RelayUserMenu';
 import { useRetainedRouteActive } from '../desktop/context';
 import { getThreadCaches, rememberThreadDetail } from './threadCaches';
-import { useDesktopWorkbench } from '../desktop/context';
+import { useDesktopSurface, useDesktopWorkbench } from '../desktop/context';
 import { TurnNotification } from '../components/TurnNotification';
 import { useBrowserStateKey } from '../lib/browserStateScope';
 import { TRANSCRIPT_PREFERENCE_EVENT } from '../lib/transcriptPreferences';
@@ -786,6 +787,7 @@ export function ThreadDetailPage() {
   });
   const workbenchNavigation = useWorkbenchNavigation(detail, threads, relayRouteDeviceId, id, { sharesDeviceThreads: true });
   const desktopWorkbench = useDesktopWorkbench(workbenchNavigation);
+  const desktopSurface = useDesktopSurface();
   // Once this thread shows, the other open tabs are read one by one in the
   // background, so switching to any of them (any workspace, not only a pointed-at
   // one) paints its conversation at once instead of waiting for the device.
@@ -4055,7 +4057,7 @@ export function ThreadDetailPage() {
       terminalAvailable,
     ],
   );
-  const workspaceReturnHref = appUrl(currentWorkspacesHref());
+  const workspaceReturnHref = appUrl(desktopSurface ? '/' : currentWorkspacesHref());
   // A failed turn's error sits behind a mark on its prompt, not again above the thread.
   const pageError = loading ? null : error ?? detail?.thread.lastError ?? null;
   const errorOnPrompt = pageError !== null && (
@@ -4211,6 +4213,7 @@ export function ThreadDetailPage() {
       adapter={surfaceAdapter}
       metaContent={metaContent}
       settingsContent={settingsContent}
+      {...(relayModeActive() && !hostScope ? { renderRailSettings: (open: () => void) => <RelayUserMenu rail onSettings={open} /> } : {})}
       settingsSections={appSettingsSections({ scoped: Boolean(hostScope) })}
       mobileHeaderAction={mobileSessionConnectionButton}
       workspaceReturnHref={workspaceReturnHref}
