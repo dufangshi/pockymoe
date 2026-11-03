@@ -14,7 +14,7 @@ export const DesktopSurfaceContext = createContext<DesktopSurfaceContextValue | 
 export const useDesktopSurface = () => useContext(DesktopSurfaceContext);
 export function useDesktopWorkbench(navigation: NavigationActions) {
   const surface = useDesktopSurface();
-  return surface ? { workspaceControlsEnabled: surface.workspaceControlsEnabled !== false, sidebarLeading: surface.renderActivity(navigation), railLeading: surface.railLeading } : {};
+  return surface ? { showTerminal: true, workspaceControlsEnabled: surface.workspaceControlsEnabled !== false, sidebarLeading: surface.renderActivity(navigation), railLeading: surface.railLeading } : {};
 }
 
 export function hasWorkspaceContext(path: string, search = '') {

@@ -1,7 +1,8 @@
-import { useDesktopWorkbench } from '../desktop/context';
+import { RelayUserMenu } from '../components/RelayUserMenu';
+import { useDesktopSurface, useDesktopWorkbench } from '../desktop/context';
 import { useHostScope } from '../lib/hostCapabilities';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useSyncExternalStore } from 'react';
 import { Link, Navigate, useNavigate, useSearchParams } from 'react-router-dom';
 import { MessageSquarePlus, Plus, Settings } from 'lucide-react';
 import { ErrorMark, MatterWorkbench } from '@pockymoe/thread-ui';
@@ -17,10 +18,14 @@ import { useThreadListPolling } from './useThreadListPolling';
 import { appUrl } from '../lib/webBase';
 import { workbenchUrls } from '../lib/workbenchUrls';
 
+const wideRail = () => window.matchMedia('(min-width: 640px)').matches;
+const subscribeRailWidth = (changed: () => void) => { const media = window.matchMedia('(min-width: 640px)'); media.addEventListener('change', changed); return () => media.removeEventListener('change', changed); };
+
 // A workspace opens its shell and thread list without choosing a conversation.
 export function ThreadsPage() {
   useI18n();
   const hostScope = useHostScope();
+  const showAccountRail = useSyncExternalStore(subscribeRailWidth, wideRail);
   const [params] = useSearchParams();
   const workspaceId = params.get('workspaceId');
   const deviceId = currentRelayDeviceIdFromPath();
@@ -39,6 +44,7 @@ export function ThreadsPage() {
   const canCreate = newThreads.allowed && (!newThreads.workspaceId || newThreads.workspaceId === workspaceId);
   const navigation = useWorkbenchNavigation(null, threads, deviceId, undefined, { workspace, sharesDeviceThreads: true });
   const desktopWorkbench = useDesktopWorkbench(navigation);
+  const desktopSurface = useDesktopSurface();
   // Keep the workspace list live without selecting newly created threads.
   useThreadListPolling({ enabled: !loading && !!workspace, setThreads, intervalMs: 30_000, includeAgentThreads: true, sharedWorkspaceId });
   useEffect(() => {
@@ -68,11 +74,11 @@ export function ThreadsPage() {
   const createHref = currentNewThreadHref(workspaceId ?? workspace?.id);
   return <div className="thread-ui-shell thread-ui-viewport-constrained h-full" data-theme-effective={shell?.effectiveTheme ?? 'light'} data-theme-mode={shell?.themeMode ?? 'system'}>
     <MatterWorkbench
-      title={workspace?.label ?? translate("workbench.workspace")} homeHref={hostScope ? undefined : appUrl(currentWorkspacesHref())}
+      title={workspace?.label ?? translate("workbench.workspace")} homeHref={hostScope ? undefined : appUrl(desktopSurface ? '/' : currentWorkspacesHref())}
       options={workbenchUrls({ ...navigation, ...desktopWorkbench, emptyWorkspace: true, workspacePath: workspace?.absPath ?? '', activeView: 'chat', terminalEnabled: false, onViewChange: () => {}, onSearch: () => {}, onNavigate: navigate,
         renderThreadMenu: (thread, context) => <RecentThreadMenu thread={thread} context={context} currentKey={navigation.currentKey} onFavorite={navigation.onToggleThreadFavorite} onRenamed={navigation.onThreadRenamed} onRemoved={navigation.onThreadRemoved} onNavigate={navigate} /> })}
       deviceMonitor={hostScope ? null : <TourLauncherButton />}
-      settings={!hostScope && <button aria-label={translate("workbench.openSettings")} onClick={shell?.openSettings}><Settings data-icon="settings" /></button>}
+      settings={!hostScope && (relayModeActive() && showAccountRail ? <RelayUserMenu rail /> : <button aria-label={translate("workbench.openSettings")} onClick={shell?.openSettings}><Settings data-icon="settings" /></button>)}
       newThread={!loading && !error && canCreate && (!hostScope || workspace) && <Link to={createHref} aria-label={translate("workbench.newThread_02057e")}><Plus data-icon="new-thread" /></Link>}
       actions={null} threadMenu={null} connection={null} explorer={null} revealExplorer={0}
     >
